@@ -1,0 +1,44 @@
+import Foundation
+
+/// Read-only snapshot of how the owner's Lidarr is set up. `run` never throws: a section that fails to read
+/// simply stays at its empty value, and `reachable` says whether `/system/status` answered.
+public struct LidarrAudit: Sendable, Equatable {
+    /// Quality profiles Magpie provisions start with this name (Task 5.1).
+    public static let magpieProfilePrefix = "Magpie"
+
+    public var reachable: Bool
+    public var version: String
+    public var authEnabled: Bool
+    public var roots: [RootFolder]
+    public var hasMagpieProfiles: Bool
+    /// Tubifarry (or any Lidarr plugin) is installed (A15).
+    public var tubifarry: Bool
+    /// False means deleting from Lidarr is permanent (G3).
+    public var recycleBinSet: Bool
+    public var healthIssues: [HealthIssue]
+
+    public init(reachable: Bool = false, version: String = "", authEnabled: Bool = false, roots: [RootFolder] = [],
+                hasMagpieProfiles: Bool = false, tubifarry: Bool = false, recycleBinSet: Bool = false,
+                healthIssues: [HealthIssue] = []) {
+        self.reachable = reachable; self.version = version; self.authEnabled = authEnabled; self.roots = roots
+        self.hasMagpieProfiles = hasMagpieProfiles; self.tubifarry = tubifarry; self.recycleBinSet = recycleBinSet
+        self.healthIssues = healthIssues
+    }
+
+    public static func run(_ c: LidarrClient) async -> LidarrAudit {
+        var audit = LidarrAudit()
+        if let status = try? await c.status() {
+            audit.reachable = true
+            audit.version = status.version
+            audit.authEnabled = status.authenticationMethod.lowercased() != "none"
+        }
+        audit.roots = (try? await c.rootFolders()) ?? []
+        let profiles = (try? await c.qualityProfiles()) ?? []
+        audit.hasMagpieProfiles = profiles.contains { $0.name.hasPrefix(magpieProfilePrefix) }
+        let plugins = (try? await c.pluginTexts()) ?? nil
+        audit.tubifarry = plugins?.contains { $0.contains("tubifarry") } ?? false
+        audit.recycleBinSet = ((try? await c.recycleBin()) ?? nil) != nil
+        audit.healthIssues = (try? await c.health()) ?? []
+        return audit
+    }
+}

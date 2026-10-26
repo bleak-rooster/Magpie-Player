@@ -1,0 +1,41 @@
+{
+  "parent": "/music/",
+  "directories": [
+    {
+      "type": "folder",
+      "name": "Aurora Field",
+      "path": "/music/library/Aurora Field/",
+      "size": 0,
+      "lastModified": "2026-10-26T15:00:10Z"
+    },
+    {
+      "type": "folder",
+      "name": "Éléonore Brûlé",
+      "path": "/music/library/Éléonore Brûlé/",
+      "size": 0,
+      "lastModified": "2026-10-26T15:00:11Z"
+    },
+    {
+      "type": "folder",
+      "name": "The Midnight Cartographers",
+      "path": "/music/library/The Midnight Cartographers/",
+      "size": 0,
+      "lastModified": "2026-10-26T15:00:14Z"
+    },
+    {
+      "type": "folder",
+      "name": "Various Artists",
+      "path": "/music/library/Various Artists/",
+      "size": 0,
+      "lastModified": "2026-10-26T15:00:16Z"
+    },
+    {
+      "type": "folder",
+      "name": "坂本光",
+      "path": "/music/library/坂本光/",
+      "size": 0,
+      "lastModified": "2026-10-26T15:00:12Z"
+    }
+  ],
+  "files": []
+}

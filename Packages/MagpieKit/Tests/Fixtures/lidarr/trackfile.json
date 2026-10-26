@@ -1,0 +1,22 @@
+[
+  {
+    "id": 601,
+    "artistId": 7,
+    "albumId": 31,
+    "path": "/music/finds/Aurora Field/Lowlands (2016)/01 - Intro.flac",
+    "size": 31457280,
+    "dateAdded": "2026-10-26T18:30:00Z",
+    "quality": {
+      "quality": {
+        "id": 6,
+        "name": "FLAC"
+      },
+      "revision": {
+        "version": 1,
+        "real": 0,
+        "isRepack": false
+      }
+    },
+    "qualityCutoffNotMet": false
+  }
+]

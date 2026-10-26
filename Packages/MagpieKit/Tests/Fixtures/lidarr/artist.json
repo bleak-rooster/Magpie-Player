@@ -1,0 +1,40 @@
+[
+  {
+    "id": 7,
+    "status": "continuing",
+    "ended": false,
+    "artistName": "Aurora Field",
+    "foreignArtistId": "0f2a3c4d-1111-4a2b-8c3d-5e6f7a8b9c0d",
+    "artistType": "Group",
+    "disambiguation": "",
+    "path": "/music/finds/Aurora Field",
+    "monitored": true,
+    "monitorNewItems": "all",
+    "qualityProfileId": 2,
+    "metadataProfileId": 1,
+    "rootFolderPath": "/music/finds/",
+    "folder": "Aurora Field",
+    "tags": [
+      1
+    ],
+    "added": "2026-10-20T10:00:00Z",
+    "statistics": {
+      "albumCount": 2,
+      "trackFileCount": 0,
+      "trackCount": 0,
+      "totalTrackCount": 21,
+      "sizeOnDisk": 0,
+      "percentOfTracks": 0
+    },
+    "someFutureField": {
+      "x": 1
+    }
+  },
+  {
+    "id": 8,
+    "artistName": "No MBID Yet",
+    "foreignArtistId": "not-a-uuid",
+    "path": "/music/library/No MBID Yet",
+    "monitored": false
+  }
+]

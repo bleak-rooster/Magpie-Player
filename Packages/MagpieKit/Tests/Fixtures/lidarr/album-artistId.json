@@ -1,0 +1,21 @@
+[
+  {
+    "id": 31,
+    "title": "Lowlands",
+    "disambiguation": "",
+    "artistId": 7,
+    "foreignAlbumId": "7a8b9c0d-2222-4b3c-9d4e-6f7a8b9c0d1e",
+    "monitored": true,
+    "albumType": "Album",
+    "secondaryTypes": [],
+    "releaseDate": "2016-03-04T00:00:00Z",
+    "statistics": {
+      "trackFileCount": 0,
+      "trackCount": 10,
+      "totalTrackCount": 10,
+      "sizeOnDisk": 0,
+      "percentOfTracks": 0
+    },
+    "grabbed": false
+  }
+]

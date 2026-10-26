@@ -1,0 +1,31 @@
+[
+  {
+    "id": 901,
+    "albumId": 31,
+    "artistId": 7,
+    "size": 104857600.0,
+    "sizeleft": 26214400.0,
+    "status": "downloading",
+    "trackedDownloadStatus": "ok",
+    "trackedDownloadState": "downloading",
+    "timeleft": "00:04:12",
+    "title": "Aurora Field - Lowlands",
+    "statusMessages": []
+  },
+  {
+    "id": 902,
+    "albumId": 32,
+    "size": 0,
+    "sizeleft": 0,
+    "status": "queued",
+    "trackedDownloadState": "importPending",
+    "statusMessages": [
+      {
+        "title": "Aurora Field - Continuum",
+        "messages": [
+          "Has unmatched tracks"
+        ]
+      }
+    ]
+  }
+]
