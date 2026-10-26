@@ -7,3 +7,7 @@ xcuserdata/
 node_modules/
 .env
 *.local.json
+
+# Magpie dev stack (dev/): generated data and credentials
+/dev/data/
+/dev/.env.local

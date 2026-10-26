@@ -1,0 +1,105 @@
+# Magpie local dev/test stack. DEV ONLY: never expose this to the internet.
+#
+#   dev/bootstrap.sh     bring up + configure (preferred entry point)
+#   dev/smoke.sh         API smoke test
+#   dev/reset.sh         wipe everything under dev/data + the compose volumes
+#
+# Shared music tree (host dev/data/music -> /music in BOTH containers, so Lidarr and Navidrome see identical
+# paths and no path translation is needed):
+#   /music/library   main library     -> Navidrome library 1 + Lidarr root folder
+#   /music/samples   Samples ("Finds") -> Navidrome library 2 (created by bootstrap) + Lidarr root folder
+# Both are on the same volume, so Lidarr's Keep move (samples -> library) is a rename (see research/sandbox-samples.md).
+#
+# Ports bind to 127.0.0.1 by default. To test from a physical iPhone on the LAN:
+#   MAGPIE_BIND=0.0.0.0 docker compose -f dev/docker-compose.yml up -d
+name: magpie-dev
+
+services:
+  navidrome:
+    image: deluan/navidrome:0.64.2
+    container_name: magpie-navidrome
+    restart: unless-stopped
+    ports:
+      - "${MAGPIE_BIND:-127.0.0.1}:4533:4533"
+    environment:
+      ND_MUSICFOLDER: /music/library          # becomes library 1 ("Music Library")
+      ND_DATAFOLDER: /data
+      ND_SCANNER_SCHEDULE: "0"                # no periodic scans; watcher + explicit startScan only
+      ND_SCANNER_SCANONSTARTUP: "true"
+      ND_SCANNER_PURGEMISSING: "never"        # Navidrome default; the app's Keeper calls DELETE /api/missing
+      ND_ENABLEINSIGHTSCOLLECTOR: "false"
+      ND_LOGLEVEL: info
+      ND_SESSIONTIMEOUT: 168h
+      ND_ENABLESHARING: "true"
+      ND_LASTFM_ENABLED: "false"              # keep the dev stack offline-friendly
+      ND_LISTENBRAINZ_ENABLED: "true"         # per-user token is set in the UI / by the app
+      ND_ENABLEUSEREDITING: "true"
+      # Admin is NOT auto-created from env: bootstrap.sh calls POST /auth/createAdmin on first run with a
+      # generated password (stored in dev/.env.local). ND_DEVAUTOCREATEADMINPASSWORD would also work but puts the
+      # password in the container env.
+    volumes:
+      - navidrome_data:/data
+      - ./data/music:/music
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:4533/ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  lidarr:
+    # 3.2.x is only published on the develop channel (master/latest is 3.1.6.5079 as of 2026-10-26).
+    image: lscr.io/linuxserver/lidarr:develop-3.2.0.5144-ls269
+    container_name: magpie-lidarr
+    restart: unless-stopped
+    ports:
+      - "${MAGPIE_BIND:-127.0.0.1}:8686:8686"
+    environment:
+      PUID: "${PUID:-1000}"
+      PGID: "${PGID:-1000}"
+      TZ: "${TZ:-Etc/UTC}"
+    volumes:
+      - lidarr_config:/config
+      - ./data/music:/music
+      - ./data/downloads:/downloads
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8686/ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 60
+
+  # --- optional profiles -------------------------------------------------------------------------------------
+
+  # TODO(phase 4, profile "tubifarry"): Lidarr + Tubifarry plugin variant for fast-lane tests.
+  # Plugins are mainline since Lidarr 3.1.2-develop: install Tubifarry from System -> Plugins
+  # (https://github.com/TypNull/Tubifarry) into a separate config volume so the default stack stays vanilla.
+  # lidarr-tubifarry:
+  #   profiles: ["tubifarry"]
+  #   image: lscr.io/linuxserver/lidarr:develop-3.2.0.5144-ls269
+  #   ports: ["${MAGPIE_BIND:-127.0.0.1}:8687:8686"]
+  #   volumes: [lidarr_tubifarry_config:/config, ./data/music:/music, ./data/downloads:/downloads]
+
+  # "Quick fetch" API-shape testing only: slskd with no Soulseek credentials and no network connect,
+  # so it never touches the Soulseek network. Start with: docker compose --profile quickfetch up -d
+  slskd:
+    profiles: ["quickfetch"]
+    image: slskd/slskd:0.26.2
+    container_name: magpie-slskd
+    restart: unless-stopped
+    ports:
+      - "${MAGPIE_BIND:-127.0.0.1}:5030:5030"
+    environment:
+      SLSKD_REMOTE_CONFIGURATION: "false"
+      SLSKD_NO_CONNECT: "true"                # offline: do not connect to the Soulseek network
+      SLSKD_NO_AUTH: "true"                   # dev only, bound to localhost
+      SLSKD_SHARED_DIR: /music/library
+      SLSKD_DOWNLOADS_DIR: /downloads/slskd
+      SLSKD_INCOMPLETE_DIR: /downloads/slskd-incomplete
+    volumes:
+      - slskd_app:/app
+      - ./data/music:/music:ro
+      - ./data/downloads:/downloads
+
+volumes:
+  navidrome_data:
+  lidarr_config:
+  slskd_app:
