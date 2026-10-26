@@ -272,7 +272,7 @@ import os
         let transport = MockTransport()
         transport.stub(pathSuffix: "/rest/startScan", body: ok)
         transport.stub(pathSuffix: "/rest/getScanStatus", body: ok)
-        transport.stub(pathSuffix: "/rest/ping", body: Data())
+        transport.stub(pathSuffix: "/rest/ping", body: ok)
         transport.stub(method: "POST", pathSuffix: "/auth/login", body: Fixtures.data("login"))
         let client = NavidromeClient(endpoint: ServerEndpoint(bases: [testBase]), credentials: testCredentials,
                                      transport: transport, now: { clock.withLock { $0 } })

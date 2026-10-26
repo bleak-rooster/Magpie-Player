@@ -32,7 +32,7 @@ public actor NavidromeClient {
 
     // MARK: - Connect and auth
 
-    /// Picks the first base answering `/rest/ping`, then logs in. Concurrent callers share one login.
+    /// Picks the first base answering `/rest/ping` with a Subsonic answer, then logs in. Concurrent callers share one login.
     public func connect() async throws -> LoginResult {
         let s = try await singleFlightLogin(reprobe: true, staleGeneration: nil)
         return s.login!
@@ -70,8 +70,9 @@ public actor NavidromeClient {
                     URLQueryItem(name: "c", value: clientName),
                     URLQueryItem(name: "f", value: "json"),
                 ])
-                guard let (_, response) = try? await transport.send(URLRequest(url: url)) else { return false }
-                return (200..<300).contains(response.statusCode)
+                guard let (data, response) = try? await transport.send(URLRequest(url: url)) else { return false }
+                // Security H2: a 200 from a router or captive portal is not a server; the password stays home.
+                return (200..<300).contains(response.statusCode) && SubsonicPing.isServerAnswer(data)
             }
         }
         guard let base else { throw NavidromeError.noReachableServer }

@@ -27,7 +27,7 @@ import os
         let transport = MockTransport()
         transport.stub(pathSuffix: "/rest/ping") { req in
             let ok = req.url?.host == "music.example"
-            return .init(status: ok ? 200 : 502, body: Data(), headers: [:])
+            return .init(status: ok ? 200 : 502, body: ok ? pingOK : Data(), headers: [:])
         }
         transport.stub(method: "POST", pathSuffix: "/auth/login", body: Fixtures.data("login"))
         let (client, _) = makeClient(bases: [dead, testBase], transport: transport)
@@ -146,4 +146,43 @@ import os
         #expect(songRequests[0].value(forHTTPHeaderField: "X-ND-Authorization") == "Bearer eyJfake.eyJfake.fake-signature")
         #expect(songRequests[1].value(forHTTPHeaderField: "X-ND-Authorization") == "Bearer refreshed.jwt.value")
     }
+
+    // MARK: - Security H2: only a Subsonic ping answer gets the password
+
+    @Test(arguments: [
+        #"{"subsonic-response":{"status":"ok","version":"1.16.1"}}"#,
+        // Navidrome 0.64 answers a ping without `u` like this (dev stack, 2026-10-27).
+        #"{"subsonic-response":{"status":"failed","version":"1.16.1","type":"navidrome","serverVersion":"0.64.2","openSubsonic":true,"error":{"code":10,"message":"missing parameter: 'u'"}}}"#,
+        #"{"subsonic-response":{"status":"failed","version":"1.16.1","error":{"code":40,"message":"Wrong username or password"}}}"#,
+    ])
+    func subsonicPingAnswersAreServers(_ body: String) {
+        #expect(SubsonicPing.isServerAnswer(Data(body.utf8)))
+    }
+
+    @Test(arguments: [
+        "",
+        "<html><body>Router login</body></html>",
+        "OK",
+        "{}",
+        #"{"status":"ok"}"#,
+        #"{"subsonic-response":{"status":"weird"}}"#,
+        #"{"subsonic-response":{"status":"failed","error":{"code":10}}}"#,
+        #"{"subsonic-response":{"status":"failed","version":"1.16.1","error":{"code":70,"message":"not found"}}}"#,
+        #"{"subsonic-response":{"status":"failed","version":"1.16.1"}}"#,
+    ])
+    func otherAnswersAreNotServers(_ body: String) {
+        #expect(!SubsonicPing.isServerAnswer(Data(body.utf8)))
+    }
+
+    /// A captive portal or router answers 200 to every path: no login is sent to it.
+    @Test func portalAnswering200NeverGetsThePassword() async {
+        let transport = MockTransport()
+        transport.stub(pathSuffix: "/rest/ping", body: Data("<html>Welcome to the hotel Wi-Fi</html>".utf8))
+        transport.stub(method: "POST", pathSuffix: "/auth/login", body: Fixtures.data("login"))
+        let (client, _) = makeClient(transport: transport)
+        await #expect(throws: NavidromeError.noReachableServer) { try await client.connect() }
+        #expect(!transport.requests.contains { $0.httpMethod == "POST" }, "no password sent")
+    }
 }
+
+private let pingOK = Data(#"{"subsonic-response":{"status":"ok","version":"1.16.1"}}"#.utf8)
