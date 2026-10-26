@@ -76,6 +76,19 @@ private func ext(_ artist: String, _ title: String, _ d: TimeInterval? = nil, re
         #expect(two.librarySong(for: ext("Beyonce", "Halo")) == nil, "two candidates: not sure which")
     }
 
+    @Test func radioEditInTheLibraryMatchesThePlainTitle() throws {
+        let index = MatchIndex(songs: [song("edit", "Beyoncé", "Halo (Radio Edit)", 220)])
+        #expect(try #require(index.match(ext("Beyonce", "Halo", 221))).confidence >= MatchIndex.acceptThreshold)
+        #expect(index.librarySong(for: ext("Beyonce", "Halo")) == "edit", "name-only, unique")
+    }
+
+    @Test func extendedMixIsNotHiddenByName() {
+        let index = MatchIndex(songs: [song("halo", "Beyoncé", "Halo", 261)])
+        #expect(index.librarySong(for: ext("Beyonce", "Halo (Extended Mix)")) == nil)
+        let mixes = MatchIndex(songs: [song("ext", "Beyoncé", "Halo (Extended Mix)", 400)])
+        #expect(mixes.librarySong(for: ext("Beyonce", "Halo (Club Mix)")) == nil, "same key, still a version")
+    }
+
     @Test func versionsAreNeverHiddenByName() {
         let studio = MatchIndex(songs: [song("halo", "Beyoncé", "Halo", 261)])
         #expect(studio.match(ext("Beyonce", "Halo (Live)")) == nil, "different key")
@@ -132,6 +145,15 @@ private func ext(_ artist: String, _ title: String, _ d: TimeInterval? = nil, re
         #expect(Normalize.name("Featuring Ghosts") == "featuring ghosts", "a name that starts with the word keeps it")
     }
 
+    @Test func housekeepingAsidesAreTheSameRecording() {
+        for title in ["Halo (Radio Edit)", "Halo (Album Version)", "Halo - Single Version", "Halo (Original Mix)",
+                      "Halo [Radio Version]", "Halo (7\" Version)", "Halo (12\" Version)", "Halo (LP Version)",
+                      "Halo - Mono Version", "Halo (Clean Version)", "Halo (Explicit Version)", "Halo (Edit Version)"] {
+            #expect(Normalize.name(title) == "halo", "\(title)")
+            #expect(!Normalize.hasVersionAside(title), "\(title)")
+        }
+    }
+
     @Test func midTitleFtIsPartOfTheTitle() {
         #expect(Normalize.name("Six ft Under") == "six ft under")
         #expect(Normalize.name("Feat of Strength") == "feat of strength")
@@ -141,9 +163,12 @@ private func ext(_ artist: String, _ title: String, _ d: TimeInterval? = nil, re
         #expect(Normalize.name("Halo [Live] (feat. X)") == "halo live")
         #expect(Normalize.name("Halo (Live)") == "halo live")
         #expect(Normalize.name("Halo - Live") == "halo live")
-        #expect(Normalize.name("Halo (Acoustic Version)") == "halo acoustic version")
+        #expect(Normalize.name("Halo (Acoustic Version)") == "halo acoustic")
+        #expect(Normalize.name("Halo (Acoustic)") == Normalize.name("Halo (Acoustic Version)"))
         #expect(Normalize.name("Halo [Remix]") == "halo remix")
-        #expect(Normalize.name("Halo (Radio Edit)") == "halo edit")
+        #expect(Normalize.name("Halo (Extended Mix)") == "halo mix")
+        #expect(Normalize.name("Halo (Club Mix)") == "halo mix")
+        #expect(Normalize.hasVersionAside("Halo (Extended Mix)"))
         #expect(Normalize.name("Halo (Live at Wembley, Remastered)") == "halo live")
         #expect(Normalize.hasVersionAside("Halo (Live)") && Normalize.hasVersionAside("Halo - Acoustic"))
         #expect(!Normalize.hasVersionAside("Halo (Remastered 2011)") && !Normalize.hasVersionAside("Live Forever"))

@@ -8,6 +8,15 @@ public enum Normalize {
         "live", "acoustic", "remix", "demo", "instrumental", "unplugged", "karaoke", "edit", "mix", "version",
     ]
 
+    /// Housekeeping asides that name the same recording, stripped like "(Remastered 2011)" even
+    /// though they contain a version word. Matched as a whole phrase after punctuation is dropped
+    /// (so `7" Version` is "7 version").
+    public static let sameRecordingPhrases: Set<String> = [
+        "album version", "single version", "radio edit", "radio version", "original mix", "original version",
+        "explicit version", "clean version", "mono version", "stereo version", "lp version", "7 version",
+        "12 version", "edit version",
+    ]
+
     /// `artist` and `title`, normalised and joined. Equal keys mean "same song, by name".
     public static func key(artist: String, title: String) -> String {
         name(artist) + "\u{1F}" + name(title)
@@ -29,7 +38,7 @@ public enum Normalize {
     public static func hasVersionAside(_ title: String) -> Bool {
         let folded = fold(title)
         let asides = bracketed(folded).map(\.aside) + (dashSplit(folded).map { [String($0.suffix)] } ?? [])
-        return asides.contains { !versionWordsIn($0).isEmpty }
+        return asides.contains { !versionWordsIn($0).isEmpty }   // housekeeping asides yield none
     }
 
     // MARK: - Steps
@@ -82,8 +91,11 @@ public enum Normalize {
     /// "halo - remastered 2011" → "halo"; "halo - feat. x" → "halo"; "halo - live" stays (another
     /// recording); other suffixes stay too (they may be part of the title).
     private static func removingDashSuffix(_ s: String) -> String {
-        guard let (head, suffix) = dashSplit(s), versionWordsIn(String(suffix)).isEmpty,
-              suffix.contains("remaster") || isFeatClause(String(suffix)) else { return s }
+        guard let (head, suffix) = dashSplit(s) else { return s }
+        let text = String(suffix)
+        let strip = sameRecordingPhrases.contains(words(text))
+            || (versionWordsIn(text).isEmpty && (text.contains("remaster") || isFeatClause(text)))
+        guard strip else { return s }
         return String(head)
     }
 
@@ -105,8 +117,13 @@ public enum Normalize {
         return kept.joined(separator: " ")
     }
 
+    /// The version words an aside keeps. None for a housekeeping phrase ("Radio Edit"); a bare
+    /// "version" next to another version word is dropped ("Acoustic Version" → "acoustic").
     private static func versionWordsIn(_ s: String) -> [String] {
-        words(s).split(separator: " ").map(String.init).filter { versionWords.contains($0) }
+        let text = words(s)
+        guard !sameRecordingPhrases.contains(text) else { return [] }
+        let found = text.split(separator: " ").map(String.init).filter { versionWords.contains($0) }
+        return found.count > 1 ? found.filter { $0 != "version" } : found
     }
 
     /// Punctuation and symbols become spaces; runs of spaces collapse to one.
