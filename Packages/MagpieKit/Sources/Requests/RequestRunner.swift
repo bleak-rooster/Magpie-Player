@@ -52,6 +52,8 @@ public actor RequestRunner {
     public static let lidarrSilenceLimit: TimeInterval = 300
     /// A newly added artist's album has this long to appear (Lidarr refreshes the artist asynchronously).
     public static let albumAppearLimit: TimeInterval = 15 * 60
+    /// After adding an artist, Lidarr may still (re)apply `albumsToMonitor` this long; Cancel keeps checking.
+    public static let addSettleTime: TimeInterval = 10 * 60
 
     public static func pollInterval(foreground: Bool) -> Duration { foreground ? .seconds(5) : .seconds(30) }
 
@@ -419,6 +421,7 @@ public actor RequestRunner {
         let body = try Self.addArtistBody(lookup: lookup, setup: setup, releaseGroup: plan.releaseGroupMBID)
         await mutate(id) {
             $0.addSent = true
+            $0.addedAt = self.now()
             $0.root = setup.rootFolderPath
         }
         let data: Data
@@ -478,7 +481,7 @@ public actor RequestRunner {
         guard let albums = try? await lidarr.albums(artistId: artistId) else { return }
         lastLidarrContact = now()
         guard let album = albums.first(where: { $0.foreignAlbumId == rg }) else {
-            if r.isActive, now().timeIntervalSince(r.searchStartedAt ?? r.updatedAt) > Self.albumAppearLimit,
+            if r.isActive, now().timeIntervalSince(r.addedAt ?? r.searchStartedAt ?? r.createdAt) > Self.albumAppearLimit,
                r.joinedTo == nil {
                 await apply(id, .error(.noRelease))
             }
@@ -628,7 +631,8 @@ public actor RequestRunner {
 
     /// Fallback mode never deletes. It unmonitors the album only when the ledger says Magpie monitored it
     /// (`wasMonitoredBefore == false`), it is not kept, no other live request needs it, and a fresh GET
-    /// shows it still monitored.
+    /// shows it still monitored. For an artist Magpie just added, it keeps checking for `addSettleTime`:
+    /// Lidarr applies `albumsToMonitor` when its refresh finishes, possibly after the Cancel.
     private func cleanup(_ id: RequestID) async {
         guard let r = request(id), r.cleanupPending else { return }
         func done() async { await mutate(id) { $0.cleanupPending = false } }
@@ -638,11 +642,11 @@ public actor RequestRunner {
                 && (other.isActive || other.state == .ready || other.state == .kept)
         }
         if shared { return await done() }
+        let settling = r.addSent && r.joinedTo == nil
+            && now().timeIntervalSince(r.addedAt ?? r.createdAt) < Self.addSettleTime
         if r.albumId == nil { await discoverAlbum(id) }
         guard let current = request(id), let albumId = current.albumId, let artistId = current.lidarrArtistId else {
-            // A new artist's album may still appear; give it the same time the request would have had.
-            let waiting = r.addSent && now().timeIntervalSince(r.updatedAt) < Self.albumAppearLimit
-            if !waiting { await done() }
+            if !settling { await done() }   // the album may still appear
             return
         }
         do {
@@ -650,9 +654,10 @@ public actor RequestRunner {
                 return await done()
             }
             let albums = try await lidarr.albums(artistId: artistId)
-            guard let album = albums.first(where: { $0.id == albumId }), album.monitored else { return await done() }
-            _ = try await gate.send("PUT", "album/monitor", body: AlbumMonitorBody(albumIds: [albumId], monitored: false))
-            await done()
+            if let album = albums.first(where: { $0.id == albumId }), album.monitored {
+                _ = try await gate.send("PUT", "album/monitor", body: AlbumMonitorBody(albumIds: [albumId], monitored: false))
+            }
+            if !settling { await done() }
         } catch {
             // Lidarr unreachable, changes switched off or the ledger unreadable: try again on a later tick.
             Log.logger("requests").error("clean-up postponed: \(String(describing: error), privacy: .public)")

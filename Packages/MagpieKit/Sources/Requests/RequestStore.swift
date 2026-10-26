@@ -55,6 +55,9 @@ public struct MagpieRequest: Sendable, Codable, Equatable, Identifiable {
     /// `POST /artist` was sent for this request. Set (and saved) before the write, so after a relaunch the
     /// artist is never mistaken for one the owner already had.
     public var addSent: Bool = false
+    /// When `POST /artist` was sent. Lidarr applies `albumsToMonitor` only when its refresh of the new artist
+    /// finishes, so for a while after this the album's monitored flag isn't final.
+    public var addedAt: Date?
     /// Another request already asked for this release group; this one only follows it and never writes (G7).
     public var joinedTo: RequestID?
     /// The add already started the search (`searchForMissingAlbums`) or a joined request: skip the next AlbumSearch.

@@ -173,6 +173,31 @@ import MagpieCore
         #expect(await h.runner.requests.map(\.id) == [b])
     }
 
+    /// Lidarr applies `albumsToMonitor` when its refresh of a new artist ends, which can be after a quick
+    /// Cancel: the clean-up keeps checking for a while and unmonitors it then.
+    @Test func cancelRightAfterAddCatchesLateMonitor() async throws {
+        let h = await Harness()
+        h.server.artistIsNew()
+        h.server.with { s in for i in s.albumsOnAdd.indices { s.albumsOnAdd[i].monitored = false } }
+        let id = try await h.runner.tryRecording(h.recording(recAlbumOnly), tier: .standard)
+        await h.runner.settle()
+        await h.runner.cancel(id)
+        #expect(h.server.writeBodies().map(\.0) == ["POST artist"])
+        #expect(await h.request(id)?.cleanupPending == true)
+
+        h.server.with { s in for i in s.albums.indices where s.albums[i].id == 51 { s.albums[i].monitored = true } }
+        h.clock.advance(30)
+        await h.runner.tick()
+        #expect(h.server.writeBodies().map(\.0) == ["POST artist", "PUT album/monitor"])
+        #expect(h.server.with { $0.albums.first { $0.id == 51 }?.monitored } == false)
+
+        h.clock.advance(RequestRunner.addSettleTime)
+        await h.runner.tick()
+        #expect(await h.request(id)?.cleanupPending == false)
+        #expect(await !h.runner.needsPolling)
+        #expect(!h.server.writes.contains { $0.httpMethod == "DELETE" })
+    }
+
     /// G1: with changes off nothing is created and nothing is written.
     @Test func gateOffNoWrites() async throws {
         let h = await Harness(changesOn: false)
