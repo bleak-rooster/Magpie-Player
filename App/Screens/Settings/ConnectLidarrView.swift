@@ -147,7 +147,17 @@ enum LidarrSummary {
         var symbol: String
     }
 
+    static let keyRejected = "The API key no longer works"
+
+    /// The one-line status under Lidarr in Settings.
+    static func status(_ audit: LidarrAudit?) -> String {
+        guard let audit else { return "Connected" }
+        if audit.keyRejected { return keyRejected }
+        return audit.reachable ? (audit.version.isEmpty ? "Connected" : "Version \(audit.version)") : "Not answering"
+    }
+
     static func lines(for a: LidarrAudit) -> [Line] {
+        if a.keyRejected { return [Line(title: "Status", value: keyRejected, symbol: "key")] }
         guard a.reachable else {
             return [Line(title: "Status", value: "Not answering right now", symbol: "wifi.exclamationmark")]
         }

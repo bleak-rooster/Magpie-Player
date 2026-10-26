@@ -136,10 +136,7 @@ struct SettingsView: View {
         }
     }
 
-    private var summary: String {
-        guard let status = model.lidarrStatus else { return "Connected" }
-        return status.reachable ? (status.version.isEmpty ? "Connected" : "Version \(status.version)") : "Not answering"
-    }
+    private var summary: String { LidarrSummary.status(model.lidarrStatus) }
 
     @ViewBuilder private var rootPicker: some View {
         let roots = model.lidarrStatus?.roots.map(\.path) ?? []

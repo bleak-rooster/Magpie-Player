@@ -1,4 +1,5 @@
 import DesignSystem
+import NavidromeKit
 import Requests
 import SwiftUI
 
@@ -98,8 +99,11 @@ struct LoadableView<Value, Content: View>: View {
 }
 
 enum BrowseErrorCopy {
+    static let unexpectedResponse = "Something in front of your music server answered instead of it. Check that its address still reaches the server directly."
+
     static func message(for error: Error) -> String {
-        AppModel.isConnectionError(error)
+        if case NavidromeError.unexpectedResponse = error { return unexpectedResponse }
+        return AppModel.isConnectionError(error)
             ? "Your music server isn't answering right now."
             : "Something went wrong. Try again in a moment."
     }

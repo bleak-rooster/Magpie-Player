@@ -6,6 +6,8 @@ enum ConnectErrorCopy {
     static let badCredentials = "That username or password didn't work."
     static let noAddress = "Add the address of your music server."
     static let generic = "Something went wrong talking to your music server. Try again in a moment."
+    /// Something answered, but not Navidrome's API (a reverse proxy's sign-in page, a captive portal).
+    static let notAMusicServer = "That address answered, but it doesn't look like a music server. If a sign-in page sits in front of it, use an address that reaches the server directly."
 
     /// B3: a certificate this device doesn't trust. v1 has no in-app override (AVPlayer would ignore it).
     static let untrustedCertificate = """
@@ -45,6 +47,8 @@ enum ConnectErrorCopy {
             return badCredentials
         case NavidromeError.noReachableServer:
             return unreachable("your music server")
+        case NavidromeError.unexpectedResponse:
+            return notAMusicServer
         case let urlError as URLError:
             return message(for: urlError, url: urlError.failingURL)
         default:

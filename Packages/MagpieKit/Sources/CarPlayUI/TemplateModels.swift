@@ -124,7 +124,7 @@ public enum CarPlayRows {
 
     public static func home(recent: [Album], newest: [Album], frequent: [Album]) -> [CPSectionModel] {
         func shelf(_ key: String, _ header: String, _ albums: [Album]) -> CPSectionModel {
-            CPSectionModel(header: header, rows: albums.prefix(homeShelfSize).map {
+            CPSectionModel(header: header, rows: unique(albums, \.id).prefix(homeShelfSize).map {
                 albumRow($0, id: "home.\(key).\($0.id)")
             })
         }
@@ -162,32 +162,34 @@ public enum CarPlayRows {
     // MARK: Lists (depth 2)
 
     public static func playlists(_ playlists: [Playlist]) -> [CPSectionModel] {
-        nonEmpty(playlists.map {
-            CPRowModel(id: "playlist.\($0.id)", title: $0.name, detail: songCount($0.songCount),
-                       artworkKey: $0.coverArtId, action: .open(.playlist(id: $0.id, title: $0.name)))
+        nonEmpty(unique(playlists, \.id).map {
+            let name = display($0.name, "Untitled playlist")
+            return CPRowModel(id: "playlist.\($0.id)", title: name, detail: songCount($0.songCount),
+                              artworkKey: $0.coverArtId, action: .open(.playlist(id: $0.id, title: name)))
         })
     }
 
     public static func artists(_ artists: [Artist]) -> [CPSectionModel] {
-        nonEmpty(artists.map {
-            CPRowModel(id: "artist.\($0.id)", title: $0.name,
-                       detail: $0.albumCount == 1 ? "1 album" : "\($0.albumCount) albums",
-                       artworkKey: $0.coverArtId, action: .open(.artist(id: $0.id, name: $0.name)))
+        nonEmpty(unique(artists, \.id).map {
+            let name = display($0.name, unknownArtist)
+            return CPRowModel(id: "artist.\($0.id)", title: name,
+                              detail: $0.albumCount == 1 ? "1 album" : "\($0.albumCount) albums",
+                              artworkKey: $0.coverArtId, action: .open(.artist(id: $0.id, name: name)))
         })
     }
 
     public static func albums(_ albums: [Album]) -> [CPSectionModel] {
-        nonEmpty(albums.map { albumRow($0, id: "album.\($0.id)") })
+        nonEmpty(unique(albums, \.id).map { albumRow($0, id: "album.\($0.id)") })
     }
 
     /// A recent search re-run: library songs, then albums.
     public static func searchResults(_ result: LibrarySearchResult, playingId: String?) -> [CPSectionModel] {
         let songs = CPSectionModel(header: "Songs", rows: result.songs.enumerated().map { i, song in
-            CPRowModel(id: "song.\(i).\(song.id)", title: song.title, detail: song.artist,
+            CPRowModel(id: "song.\(i).\(song.id)", title: display(song.title, untitled), detail: song.artist,
                        artworkKey: song.coverArtId, playing: song.id == playingId,
                        action: .play(.songs(result.songs, startAt: i)))
         })
-        let albums = CPSectionModel(header: "Albums", rows: result.albums.map { albumRow($0, id: "album.\($0.id)") })
+        let albums = CPSectionModel(header: "Albums", rows: unique(result.albums, \.id).map { albumRow($0, id: "album.\($0.id)") })
         let sections = [songs, albums].filter { !$0.rows.isEmpty }
         return sections.isEmpty ? state(.empty) : sections
     }
@@ -196,12 +198,13 @@ public enum CarPlayRows {
     /// detail line.
     public static func searchItems(_ result: LibrarySearchResult) -> [CPRowModel] {
         let songs = result.songs.enumerated().map { i, song in
-            CPRowModel(id: "song.\(i).\(song.id)", title: song.title, detail: "Song · \(song.artist)",
+            CPRowModel(id: "song.\(i).\(song.id)", title: display(song.title, untitled), detail: "Song · \(song.artist)",
                        artworkKey: song.coverArtId, action: .play(.songs(result.songs, startAt: i)))
         }
-        let albums = result.albums.map {
-            CPRowModel(id: "album.\($0.id)", title: $0.name, detail: "Album · \($0.artist)",
-                       artworkKey: $0.coverArtId, action: .open(.album(id: $0.id, title: $0.name)))
+        let albums = unique(result.albums, \.id).map {
+            let name = display($0.name, untitledAlbum)
+            return CPRowModel(id: "album.\($0.id)", title: name, detail: "Album · \($0.artist)",
+                              artworkKey: $0.coverArtId, action: .open(.album(id: $0.id, title: name)))
         }
         return songs + albums
     }
@@ -214,7 +217,7 @@ public enum CarPlayRows {
         let shuffle = CPRowModel(id: "album.shuffle", title: "Shuffle", detail: songCount(songs.count),
                                  action: .play(.album(id: album.id, shuffled: true)))
         let tracks = songs.enumerated().map { i, song in
-            CPRowModel(id: "track.\(i).\(song.id)", title: song.title, detail: duration(song.duration),
+            CPRowModel(id: "track.\(i).\(song.id)", title: display(song.title, untitled), detail: duration(song.duration),
                        playing: song.id == playingId, action: .play(.songs(songs, startAt: i)))
         }
         return [CPSectionModel(header: nil, rows: [shuffle]), CPSectionModel(header: album.artist, rows: tracks)]
@@ -223,7 +226,7 @@ public enum CarPlayRows {
     public static func playlist(_ playlist: Playlist, songs: [Song], playingId: String?) -> [CPSectionModel] {
         guard !songs.isEmpty else { return state(.empty) }
         return [CPSectionModel(header: nil, rows: songs.enumerated().map { i, song in
-            CPRowModel(id: "track.\(i).\(song.id)", title: song.title, detail: song.artist,
+            CPRowModel(id: "track.\(i).\(song.id)", title: display(song.title, untitled), detail: song.artist,
                        artworkKey: song.coverArtId, playing: song.id == playingId,
                        action: .play(.songs(songs, startAt: i)))
         })]
@@ -234,8 +237,8 @@ public enum CarPlayRows {
         guard !albums.isEmpty else { return state(.empty) }
         let shuffle = CPRowModel(id: "artist.shuffle", title: "Shuffle", detail: artist.name,
                                  action: .play(.artistShuffle(id: artist.id)))
-        let rows = albums.map {
-            CPRowModel(id: "album.\($0.id)", title: $0.name, detail: $0.year.map(String.init),
+        let rows = unique(albums, \.id).map {
+            CPRowModel(id: "album.\($0.id)", title: display($0.name, untitledAlbum), detail: $0.year.map(String.init),
                        artworkKey: $0.coverArtId, action: .play(.album(id: $0.id, shuffled: false)))
         }
         return [CPSectionModel(header: nil, rows: [shuffle]), CPSectionModel(header: "Albums", rows: rows)]
@@ -244,8 +247,24 @@ public enum CarPlayRows {
     // MARK: Helpers
 
     private static func albumRow(_ album: Album, id: String) -> CPRowModel {
-        CPRowModel(id: id, title: album.name, detail: album.artist, artworkKey: album.coverArtId,
-                   action: .open(.album(id: album.id, title: album.name)))
+        let name = display(album.name, untitledAlbum)
+        return CPRowModel(id: id, title: name, detail: album.artist, artworkKey: album.coverArtId,
+                          action: .open(.album(id: album.id, title: name)))
+    }
+
+    static let untitled = "Untitled"
+    static let untitledAlbum = "Untitled album"
+    static let unknownArtist = "Unknown artist"
+
+    /// Tags can leave a name empty; a car screen never shows a blank row or title.
+    private static func display(_ name: String, _ fallback: String) -> String {
+        name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? fallback : name
+    }
+
+    /// Rows are matched by id (in-place updates, artwork): an id a server page repeats is shown once.
+    private static func unique<T>(_ items: some Sequence<T>, _ id: KeyPath<T, String>) -> [T] {
+        var seen = Set<String>()
+        return items.filter { seen.insert($0[keyPath: id]).inserted }
     }
 
     private static func nonEmpty(_ rows: [CPRowModel]) -> [CPSectionModel] {
