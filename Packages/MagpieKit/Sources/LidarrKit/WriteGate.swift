@@ -1,5 +1,6 @@
 import Foundation
 import MagpieCore
+import os
 
 // G1: every Lidarr write goes through `LidarrWriteGate`. The HTTP channel to Lidarr (`LidarrConnection`) is
 // defined in this file so that `fileprivate` confines non-GET requests to the gate: `LidarrClient` holds a
@@ -44,7 +45,7 @@ struct LidarrConnection: Sendable {
 public enum WriteGateError: Error, Sendable, Equatable {
     /// "Allow Magpie to change Lidarr" is off (G1).
     case disabled
-    /// The call is on the never-call list (G3, G5); it was not sent.
+    /// The call is on the never-call list or not on the allow list (G3, G5); it was not sent.
     case forbidden(String)
     /// Not a write Magpie can express safely (method other than POST/PUT/DELETE, `..`, a full URL…).
     case invalidRequest(String)
@@ -71,13 +72,16 @@ public struct ChangeLogEntry: Sendable, Equatable, Codable {
 // MARK: - Request normalisation and the never-call list
 
 /// A write request reduced to the form Lidarr's router sees: upper-case method, fully percent-decoded path
-/// segments (empty segments dropped, `api`/`api/vN` prefix removed) and decoded query items. The refusal
+/// segments (empty segments dropped, a leading `api/v1` removed) and decoded query items. The refusal
 /// checks and the request that is sent are both built from this one value, so they cannot disagree.
 struct WriteTarget: Equatable {
     let method: String
     /// Original case, for sending.
     let segments: [String]
     let query: [URLQueryItem]
+    /// The path began with `api` but not `api/v1` (e.g. `/api/missing`): never sent (the gate only writes
+    /// under `<base>/api/v1/`).
+    let foreignPrefix: Bool
     /// Lower-cased segments, for matching (Lidarr routes are case-insensitive).
     var key: [String] { segments.map { $0.lowercased() } }
 
@@ -97,14 +101,12 @@ struct WriteTarget: Equatable {
         var segments = decodedPath.split(separator: "/", omittingEmptySubsequences: true).map(String.init)
         for s in segments {
             let unsafe = s == "." || s == ".." || s.contains(";")
-                || s.unicodeScalars.contains { CharacterSet.controlCharacters.contains($0) || $0 == "?" }
+                || s.unicodeScalars.contains { !$0.isASCII || CharacterSet.controlCharacters.contains($0) || $0 == "?" }
             if unsafe { throw WriteGateError.invalidRequest("path segment") }
         }
+        var foreignPrefix = false
         if segments.first?.lowercased() == "api" {
-            segments.removeFirst()
-            if let v = segments.first?.lowercased(), v.count > 1, v.hasPrefix("v"), v.dropFirst().allSatisfy(\.isNumber) {
-                segments.removeFirst()
-            }
+            if segments.count > 1, segments[1].lowercased() == "v1" { segments.removeFirst(2) } else { foreignPrefix = true }
         }
         guard !segments.isEmpty else { throw WriteGateError.invalidRequest("empty path") }
 
@@ -116,10 +118,14 @@ struct WriteTarget: Equatable {
                 let name = try Self.fullyDecoded(kv[0].replacingOccurrences(of: "+", with: " "))
                 let value = try kv.count > 1 ? Self.fullyDecoded(kv[1].replacingOccurrences(of: "+", with: " ")) : nil
                 guard !name.isEmpty else { continue }
+                guard name.unicodeScalars.allSatisfy({ $0.isASCII && !CharacterSet.controlCharacters.contains($0) }) else {
+                    throw WriteGateError.invalidRequest("query name")
+                }
                 items.append(URLQueryItem(name: name, value: value))
             }
         }
         self.method = method
+        self.foreignPrefix = foreignPrefix
         self.segments = segments
         self.query = items
     }
@@ -145,7 +151,9 @@ struct WriteTarget: Equatable {
     }
 }
 
-/// The never-call list (G3, G5, brief ruling 2). Checked on the normalised `WriteTarget` and the body.
+/// Which writes the gate lets through (G1, G3, G5, fix-round ruling 1). Two layers:
+/// 1. the never-call list, checked first as defence in depth;
+/// 2. an allow list of request shapes. Anything not on it is refused.
 enum ForbiddenWrites {
     /// Owner configuration resources Magpie never writes to, by any method (G5).
     static let ownerResources: Set<String> = [
@@ -157,12 +165,23 @@ enum ForbiddenWrites {
     static let falseOnlyFlags: Set<String> = ["deletefiles", "addimportlistexclusion"]
     /// `POST /command` names Magpie may start. Anything else (rename, retag, backup, reset API key…) is refused.
     static let allowedCommands: Set<String> = ["albumsearch", "artistsearch", "refreshartist", "refreshalbum"]
+    /// `applyTags` values allowed in `PUT /artist/editor` (`replace` would wipe the owner's tags, A4).
+    static let allowedApplyTags: Set<String> = ["add", "remove"]
 
     /// Why the request is refused, or nil when it may be sent.
     static func reason(_ t: WriteTarget, body: Data?) -> String? {
+        if t.foreignPrefix { return "not under /api/v1" }
+        let json = body.flatMap { try? JSONSerialization.jsonObject(with: $0, options: [.fragmentsAllowed]) }
+        if body != nil, json == nil { return "body is not JSON" }
+        if let why = neverCall(t, json: json) { return why }
+        return allowListed(t, json: json)
+    }
+
+    // MARK: Layer 1: the never-call list
+
+    static func neverCall(_ t: WriteTarget, json: Any?) -> String? {
         let key = t.key
         let resource = key[0]
-
         if resource == "config" { return "owner configuration (\(key.joined(separator: "/")))" }
         if ownerResources.contains(resource) { return "owner configuration (\(resource))" }
         if createOnlyResources.contains(resource), !(t.method == "POST" && key.count == 1) {
@@ -177,13 +196,81 @@ enum ForbiddenWrites {
         for item in t.query where falseOnlyFlags.contains(item.name.lowercased().trimmingCharacters(in: .whitespaces)) {
             if !isFalse(item.value) { return "\(item.name) must be false" }
         }
-        let json = body.flatMap { try? JSONSerialization.jsonObject(with: $0, options: [.fragmentsAllowed]) }
         if let json, let flag = truthyFlag(in: json) { return "\(flag) must be false" }
-        if resource == "command", t.method == "POST" {
-            guard key.count == 1, let name = (json as? [String: Any])?.first(where: { $0.key.lowercased() == "name" })?.value as? String,
-                  allowedCommands.contains(name.lowercased()) else { return "command not allowed" }
+        return nil
+    }
+
+    // MARK: Layer 2: the allow list
+
+    private static func isId(_ s: String) -> Bool { !s.isEmpty && s.allSatisfy { $0.isASCII && $0.isNumber } }
+
+    static func allowListed(_ t: WriteTarget, json: Any?) -> String? {
+        let key = t.key
+        let notAllowed = "\(t.method) /\(key.joined(separator: "/")) is not on the allow list"
+        let noQuery: String? = t.query.isEmpty ? nil : "no query allowed on \(t.method) /\(key[0])"
+        switch (t.method, key.count) {
+        case ("POST", 1) where ["tag", "qualityprofile", "metadataprofile", "artist"].contains(key[0]):
+            return noQuery
+        case ("POST", 1) where key[0] == "command":
+            return noQuery ?? commandReason(json)
+        case ("PUT", 2) where key[0] == "artist" && key[1] == "editor":
+            return noQuery ?? editorReason(json)
+        case ("PUT", 2) where key[0] == "artist" && isId(key[1]):
+            return noQuery
+        case ("PUT", 2) where key[0] == "album" && (key[1] == "monitor" || isId(key[1])):
+            return noQuery
+        case ("DELETE", 2) where key[0] == "artist" && isId(key[1]):
+            return artistDeleteReason(t.query)
+        default:
+            return notAllowed
+        }
+    }
+
+    /// `DELETE /artist/{id}` only with explicit `deleteFiles=false` and `addImportListExclusion=false`, nothing else.
+    private static func artistDeleteReason(_ query: [URLQueryItem]) -> String? {
+        var seen = Set<String>()
+        for item in query {
+            let name = item.name.lowercased()
+            guard falseOnlyFlags.contains(name), isFalse(item.value) else { return "artist delete needs deleteFiles=false and addImportListExclusion=false only" }
+            seen.insert(name)
+        }
+        return seen == falseOnlyFlags ? nil : "artist delete needs explicit deleteFiles=false and addImportListExclusion=false"
+    }
+
+    /// Exactly one `name` key (any case), naming an allowed command.
+    private static func commandReason(_ json: Any?) -> String? {
+        guard let object = json as? [String: Any] else { return "command needs a body" }
+        let names = object.filter { $0.key.lowercased() == "name" }
+        guard names.count == 1, let name = names.first?.value as? String,
+              allowedCommands.contains(name.lowercased()) else { return "command not allowed" }
+        return nil
+    }
+
+    /// No `deleteFiles` / `addImportListExclusion` key at any depth; `applyTags` (at most one) is add or remove.
+    private static func editorReason(_ json: Any?) -> String? {
+        guard let object = json as? [String: Any] else { return "artist editor needs a body" }
+        if let flag = anyKey(falseOnlyFlags, in: object) { return "artist editor body must not carry \(flag)" }
+        let apply = object.filter { $0.key.lowercased() == "applytags" }
+        guard apply.count <= 1 else { return "applyTags given twice" }
+        if let value = apply.first?.value {
+            guard let s = value as? String, allowedApplyTags.contains(s.lowercased()) else { return "applyTags must be add or remove" }
         }
         return nil
+    }
+
+    private static func anyKey(_ names: Set<String>, in value: Any) -> String? {
+        switch value {
+        case let d as [String: Any]:
+            for (k, v) in d {
+                if names.contains(k.lowercased()) { return k }
+                if let inner = anyKey(names, in: v) { return inner }
+            }
+            return nil
+        case let a as [Any]:
+            return a.lazy.compactMap { anyKey(names, in: $0) }.first
+        default:
+            return nil
+        }
     }
 
     private static func isFalse(_ value: String?) -> Bool {
@@ -255,7 +342,11 @@ enum BodySummary {
 // MARK: - The gate
 
 /// The only way Magpie changes Lidarr (G1). Off until the owner turns on "Allow Magpie to change Lidarr";
-/// refuses the never-call list; logs every write (method, path, body without secrets) before sending it.
+/// sends only allow-listed writes; logs every write (method, path, body without secrets) before sending it.
+///
+/// Nothing is cached per instance: the switch is read from UserDefaults on every send, and the change log is
+/// re-read from disk (under a process-wide lock) before each append, so several gates on the same suite and
+/// log file stay consistent.
 public actor LidarrWriteGate {
     public static let enabledDefaultsKey = "magpie.lidarr.writesEnabled"
     public static let maxBodySummary = 1_000
@@ -267,36 +358,41 @@ public actor LidarrWriteGate {
         LocalFile.url("lidarr-change-log.json", in: directory)
     }
 
+    /// Serialises read-modify-write of change-log files across all gate instances.
+    private static let logLock = OSAllocatedUnfairLock()
+
     private let connection: LidarrConnection
     private let logURL: URL
     private let defaults: UserDefaults
-    private var log: [ChangeLogEntry]
     private let now: @Sendable () -> Date
-
-    /// The "Allow Magpie to change Lidarr" switch. Persisted; false until the owner turns it on.
-    public private(set) var enabled: Bool
 
     /// `defaultsSuite` names the UserDefaults suite holding the switch (nil: standard defaults; tests pass their own).
     public init(client: LidarrClient, logURL: URL, defaultsSuite: String? = nil,
                 now: @escaping @Sendable () -> Date = { Date() }) {
-        let defaults = defaultsSuite.flatMap { UserDefaults(suiteName: $0) } ?? .standard
         self.connection = client.connection
         self.logURL = logURL
-        self.defaults = defaults
+        self.defaults = defaultsSuite.flatMap { UserDefaults(suiteName: $0) } ?? .standard
         self.now = now
-        self.enabled = defaults.bool(forKey: Self.enabledDefaultsKey)
-        self.log = LocalFile.load([ChangeLogEntry].self, from: logURL, fallback: [], category: "lidarr")
     }
 
+    /// The "Allow Magpie to change Lidarr" switch. Persisted; false until the owner turns it on.
+    public var enabled: Bool { defaults.bool(forKey: Self.enabledDefaultsKey) }
+
     public func setEnabled(_ on: Bool) {
-        enabled = on
         defaults.set(on, forKey: Self.enabledDefaultsKey)
     }
 
-    public func changeLog() -> [ChangeLogEntry] { log }
+    /// The change log as saved on disk. Empty when there is none or it cannot be read right now.
+    public func changeLog() -> [ChangeLogEntry] {
+        (try? Self.logLock.withLock { [logURL] in try Self.readLog(logURL) }) ?? []
+    }
 
-    /// Sends one write. `path` is relative to the API root (`artist/12?deleteFiles=false`; a leading
-    /// `/api/v1/` is accepted). Returns the response body on 2xx.
+    private static func readLog(_ url: URL) throws -> [ChangeLogEntry] {
+        try LocalFile.load([ChangeLogEntry].self, from: url, fallback: [], category: "lidarr")
+    }
+
+    /// Sends one write. `path` is relative to `<base>/api/v1/` (`artist/12?deleteFiles=false&…`; a leading
+    /// `/api/v1/` is accepted, any other `/api/…` is refused). Returns the response body on 2xx.
     public func send(_ method: String, _ path: String, body: (any Encodable & Sendable)?) async throws -> Data {
         let target = try WriteTarget(method: method, path: path)
         let data = try body.map { try JSONEncoder().encode($0) }
@@ -308,17 +404,25 @@ public actor LidarrWriteGate {
 
         let entry = ChangeLogEntry(date: now(), method: target.method, path: target.logPath,
                                    bodySummary: BodySummary.make(data, apiKey: connection.apiKey, limit: Self.maxBodySummary))
-        var next = log + [entry]
-        if next.count > Self.maxLogEntries { next.removeFirst(next.count - Self.maxLogEntries) }
-        do { try LocalFile.save(next, to: logURL) } catch { throw WriteGateError.logUnavailable }
-        log = next
+        do {
+            try Self.logLock.withLock { [logURL] in
+                var log = try Self.readLog(logURL)
+                log.append(entry)
+                if log.count > Self.maxLogEntries { log.removeFirst(log.count - Self.maxLogEntries) }
+                try LocalFile.save(log, to: logURL)
+            }
+        } catch {
+            throw WriteGateError.logUnavailable
+        }
 
         let (responseData, response) = try await connection.send(
             target.method, path: target.segments.joined(separator: "/"), query: target.query, body: data)
-        // Other writes may have been appended (or old entries trimmed) meanwhile: find ours again.
-        if let index = log.lastIndex(of: entry) {
-            log[index].status = response.statusCode
-            try? LocalFile.save(log, to: logURL)
+        try? Self.logLock.withLock { [logURL] in
+            var log = try Self.readLog(logURL)
+            if let index = log.lastIndex(of: entry) {
+                log[index].status = response.statusCode
+                try LocalFile.save(log, to: logURL)
+            }
         }
         switch response.statusCode {
         case 200..<300: return responseData

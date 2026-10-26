@@ -166,6 +166,19 @@ else
   ok "UI forms login already configured"
 fi
 
+# Dev marker (G0): Magpie's Lidarr write tests refuse to run unless instanceName is "magpie-dev-lidarr"
+# (Lidarr requires the name to contain "lidarr", so plain "magpie-dev" is rejected).
+# Dev stack only, straight curl (not Magpie's write gate). The password is re-sent so forms login keeps working.
+host=$(lget /config/host)
+if [[ $(jq -r .instanceName <<<"$host") != magpie-dev-lidarr ]]; then
+  r=$(lsend PUT /config/host/1 "$(jq -c --arg p "$LIDARR_UI_PASSWORD" \
+    '.instanceName="magpie-dev-lidarr" | .password=$p | .passwordConfirmation=$p' <<<"$host")")
+  [[ $(jq -r .instanceName <<<"$r" 2>/dev/null) == magpie-dev-lidarr ]] && ok "instanceName set to magpie-dev-lidarr (dev marker)" \
+    || warn "could not set instanceName: $(jq -c . <<<"$r" 2>/dev/null | cut -c1-300)"
+else
+  ok "instanceName is magpie-dev-lidarr (dev marker)"
+fi
+
 # Root folders
 QP=$(lget /qualityprofile | jq -r '[.[] | select(.name=="Lossless")][0].id // .[0].id')
 MP=$(lget /metadataprofile | jq -r '[.[] | select(.name=="Standard")][0].id // .[0].id')

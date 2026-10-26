@@ -22,15 +22,18 @@ final class RecordingTransport: HTTPTransport {
 extension LidarrDevStack {
     /// The dev stack's Lidarr root folders, as `dev/bootstrap.sh` creates them.
     static let devRoots: Set<String> = ["/music/library", "/music/samples"]
+    /// `dev/bootstrap.sh` sets this instance name (Lidarr insists the name contains "lidarr").
+    static let devInstanceName = "magpie-dev-lidarr"
 
-    /// G0 for write tests: on top of `load()` (local host + `.env.local` dev marker), the server itself must
-    /// look like the dev stack (its root folders are exactly the bootstrap ones). Aborts otherwise.
+    /// G0 for every Lidarr write test: on top of `load()` (local host + `.env.local` dev marker), the server
+    /// must carry the dev marker (`system/status.instanceName == "magpie-dev-lidarr"`) and the bootstrap root
+    /// folders. Aborts otherwise.
     static func writableClient(_ transport: HTTPTransport) async throws -> LidarrClient {
         let cfg = try load()
         let client = LidarrClient(base: cfg.url, apiKey: cfg.apiKey, transport: transport)
         let status = try await client.status()
         let roots = Set(try await client.rootFolders().map(\.path))
-        guard status.instanceName == "Lidarr", roots == devRoots else { throw Failure.notDevStack }
+        guard status.instanceName == devInstanceName, roots == devRoots else { throw Failure.notDevStack }
         return client
     }
 }

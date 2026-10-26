@@ -32,6 +32,8 @@ public struct LedgerEntry: Sendable, Equatable, Codable {
 }
 
 /// The on-device record of every Lidarr album request Magpie made. One entry per album id.
+/// The file is read on first use. If it cannot be read (e.g. before first unlock), every call throws
+/// `LocalFileError.unavailable` and nothing is written, so callers refuse ledger-dependent actions.
 public actor Ledger {
     /// `Application Support/Magpie/lidarr-ledger.json`.
     public static func defaultURL(in directory: URL = URL.applicationSupportDirectory) -> URL {
@@ -39,23 +41,35 @@ public actor Ledger {
     }
 
     private let fileURL: URL?
-    public private(set) var entries: [LedgerEntry]
+    private var cache: [LedgerEntry]?
 
     /// `fileURL` nil keeps the ledger in memory only.
     public init(fileURL: URL?) {
         self.fileURL = fileURL
-        self.entries = fileURL.map { LocalFile.load([LedgerEntry].self, from: $0, fallback: [], category: "ledger") } ?? []
+        self.cache = fileURL == nil ? [] : nil
+    }
+
+    private func loaded() throws -> [LedgerEntry] {
+        if let cache { return cache }
+        guard let fileURL else { return [] }
+        let read = try LocalFile.load([LedgerEntry].self, from: fileURL, fallback: [], category: "ledger")
+        cache = read
+        return read
+    }
+
+    public var entries: [LedgerEntry] {
+        get throws { try loaded() }
     }
 
     /// Adds the entry, or replaces the one for the same album. Saved before returning.
     public func record(_ e: LedgerEntry) throws {
-        var next = entries
+        var next = try loaded()
         if let i = next.firstIndex(where: { $0.albumId == e.albumId }) { next[i] = e } else { next.append(e) }
         if let fileURL { try LocalFile.save(next, to: fileURL) }
-        entries = next
+        cache = next
     }
 
-    public func entry(albumId: Int) -> LedgerEntry? {
-        entries.first { $0.albumId == albumId }
+    public func entry(albumId: Int) throws -> LedgerEntry? {
+        try loaded().first { $0.albumId == albumId }
     }
 }
