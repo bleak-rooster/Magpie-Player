@@ -48,7 +48,7 @@ public struct SongRow: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(Self.accessibilityLabel(for: song))
         .accessibilityValue(state.voiceOverValue ?? "")
-        .accessibilityHint(state == .notYet ? "Double-tap to try it." : "")
+        .accessibilityHint(state.accessibilityHint ?? "")
         .modifier(RowActions(state: state, onTry: onTry, onKeep: onKeep))
     }
 
@@ -86,7 +86,7 @@ private struct RowActions: ViewModifier {
     func body(content: Content) -> some View {
         switch state {
         case .notYet:
-            content.accessibilityAction(named: "Try", onTry).accessibilityAddTraits(.isButton)
+            content.accessibilityAction(.default, onTry).accessibilityAction(named: "Try", onTry).accessibilityAddTraits(.isButton)
         case .find, .newFind:
             content.accessibilityAction(named: "Keep", onKeep)
         default:

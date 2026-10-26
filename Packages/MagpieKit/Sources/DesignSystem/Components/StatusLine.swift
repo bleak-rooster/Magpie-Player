@@ -1,5 +1,7 @@
 import SwiftUI
 
+public enum RowAction: Sendable, Hashable { case `try`, keep }
+
 /// What a song/album is, in Magpie's terms. Drives art shape, the status line and VoiceOver.
 public enum RowState: Sendable, Hashable {
     case library
@@ -87,6 +89,13 @@ public enum RowState: Sendable, Hashable {
         case .notFound: return "magnifyingglass"
         }
     }
+
+    /// The row's default (double-tap) action, if the row itself has one. Drives both the hint and the handler.
+    /// Find/new-find rows have none: their default is Play (handled by the screen); Keep is a named action.
+    public var primaryAction: RowAction? { self == .notYet ? .try : nil }
+
+    /// Hint spoken for the primary action; `nil` when there is no primary action.
+    public var accessibilityHint: String? { primaryAction == .try ? "Double-tap to try it." : nil }
 
     /// Names of the custom accessibility actions the row offers beyond its default.
     public var accessibilityActionNames: [String] {

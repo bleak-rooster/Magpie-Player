@@ -101,4 +101,12 @@ import DesignSystem
         #expect(Hallmark.accessibilityText(for: .hiRes) == "High-resolution lossless")
         #expect(CapsuleButton.minimumHitSize >= 44)
     }
+
+    @Test func hintsAlwaysHaveADefaultAction() {
+        let all: [RowState] = [.library, .downloaded, .notYet, .onItsWay(progress: nil, phrase: ""), .newFind,
+                               .find(daysLeft: 3), .keptLosslessSoon, .lossless, .notFound]
+        for s in all { #expect((s.accessibilityHint != nil) == (s.primaryAction != nil), "\(s)") }
+        #expect(RowState.notYet.primaryAction == .try)
+        #expect(RowState.notYet.accessibilityHint == "Double-tap to try it.")
+    }
 }
