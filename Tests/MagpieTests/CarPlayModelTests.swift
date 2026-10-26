@@ -186,3 +186,28 @@ import UIKit
         #expect(alpha(px / 2, px / 30) == 255, "grooves are opaque")
     }
 }
+
+/// The search template's answers when queries finish out of order.
+@Suite struct LatestResultsTests {
+    @Test func staleQueryNeverBlanksNewerResults() {
+        var gate = LatestResults<String>()
+        let a = gate.begin()          // "a" (slow)
+        let ab = gate.begin()         // "ab" (fast)
+        #expect(gate.complete(ab, with: ["Abba", "Abbey Road"]) == ["Abba", "Abbey Road"])
+        // "a" finishes later: it hands back what's showing, not its own results and not [].
+        #expect(gate.complete(a, with: ["Adele"]) == ["Abba", "Abbey Road"])
+        #expect(gate.delivered == ["Abba", "Abbey Road"])
+        #expect(gate.stale() == ["Abba", "Abbey Road"])
+    }
+
+    @Test func newestQueryWinsAndClearingIsAllowed() {
+        var gate = LatestResults<String>()
+        let first = gate.begin()
+        #expect(gate.isCurrent(first))
+        #expect(gate.complete(first, with: ["x"]) == ["x"])
+        let cleared = gate.begin()
+        #expect(!gate.isCurrent(first))
+        #expect(gate.complete(cleared, with: []) == [], "the newest query may show nothing (empty text)")
+        #expect(gate.stale() == [])
+    }
+}

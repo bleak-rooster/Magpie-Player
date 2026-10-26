@@ -35,3 +35,34 @@ public func needsRebuild(old: [CPSectionModel], new: [CPSectionModel]) -> Bool {
     }
     return false
 }
+
+/// Orders the search template's answers. Each keystroke starts a query; queries can finish out
+/// of order. Only the newest query's results are shown; an older one that finishes (or is
+/// cancelled) later hands back what is already showing, never an empty list that would blank
+/// the newer results.
+public struct LatestResults<Item> {
+    public private(set) var generation = 0
+    /// The list most recently handed to the system.
+    public private(set) var delivered: [Item] = []
+
+    public init() {}
+
+    /// A new query starts; returns its ticket.
+    public mutating func begin() -> Int {
+        generation += 1
+        return generation
+    }
+
+    public func isCurrent(_ ticket: Int) -> Bool { ticket == generation }
+
+    /// What the query with `ticket` should complete with: its own `items` when it is the newest
+    /// (they become what's showing), otherwise what is showing already.
+    public mutating func complete(_ ticket: Int, with items: [Item]) -> [Item] {
+        guard isCurrent(ticket) else { return delivered }
+        delivered = items
+        return items
+    }
+
+    /// A superseded or cancelled query completes with what is showing.
+    public func stale() -> [Item] { delivered }
+}

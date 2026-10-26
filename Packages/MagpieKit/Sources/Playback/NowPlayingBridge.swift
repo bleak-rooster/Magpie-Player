@@ -25,6 +25,8 @@ public final class NowPlayingBridge {
         var duration: TimeInterval?
         var second: Int
         var upcomingCount: Int
+        var isShuffled: Bool
+        var repeatMode: RepeatMode
     }
 
     public init(player: Player, artworkURL: @escaping (Song) -> URL?, onLike: @escaping (Song) -> Void) {
@@ -36,7 +38,8 @@ public final class NowPlayingBridge {
             var last: Snapshot?
             let snapshots = Observations { @MainActor in
                 Snapshot(entryId: player.queue.current?.id, isPlaying: player.isPlaying, duration: player.duration,
-                         second: Int(player.position), upcomingCount: player.queue.upcoming.count)
+                         second: Int(player.position), upcomingCount: player.queue.upcoming.count,
+                         isShuffled: player.isShuffled, repeatMode: player.repeatMode)
             }
             for await snapshot in snapshots where snapshot != last {
                 guard let self else { return }
@@ -59,6 +62,7 @@ public final class NowPlayingBridge {
     // MARK: - Now Playing info
 
     private func publish(loadArtwork: Bool) {
+        Self.syncModes(of: player)
         let center = MPNowPlayingInfoCenter.default()
         guard let entry = player.queue.current else {
             center.nowPlayingInfo = nil
@@ -113,6 +117,50 @@ public final class NowPlayingBridge {
         MPMediaItemArtwork(boundsSize: image.size) { _ in image }
     }
 
+    // MARK: - Shuffle and repeat
+
+    /// Shuffle from a remote command or a CarPlay button: any shuffle type but `.off` turns it on.
+    public static func applyShuffle(_ type: MPShuffleType, to player: Player) {
+        player.setShuffled(type != .off)
+        syncModes(of: player)
+    }
+
+    public static func applyRepeat(_ type: MPRepeatType, to player: Player) {
+        player.repeatMode = repeatMode(type)
+        syncModes(of: player)
+    }
+
+    public nonisolated static func repeatType(_ mode: RepeatMode) -> MPRepeatType {
+        switch mode {
+        case .off: .off
+        case .all: .all
+        case .one: .one
+        }
+    }
+
+    public nonisolated static func repeatMode(_ type: MPRepeatType) -> RepeatMode {
+        switch type {
+        case .one: .one
+        case .all: .all
+        default: .off
+        }
+    }
+
+    /// Handlers for `changeShuffleModeCommand` / `changeRepeatModeCommand` (exposed for tests).
+    public static let shuffleCommandAction: @Sendable @MainActor (Player, CommandInput) -> Void = { p, input in
+        if case .shuffle(let type) = input { applyShuffle(type, to: p) }
+    }
+    public static let repeatCommandAction: @Sendable @MainActor (Player, CommandInput) -> Void = { p, input in
+        if case .repeatMode(let type) = input { applyRepeat(type, to: p) }
+    }
+
+    /// The system draws the shuffle and repeat buttons (lock screen, CarPlay) from these.
+    public static func syncModes(of player: Player) {
+        let commands = MPRemoteCommandCenter.shared()
+        commands.changeShuffleModeCommand.currentShuffleType = player.isShuffled ? .items : .off
+        commands.changeRepeatModeCommand.currentRepeatType = repeatType(player.repeatMode)
+    }
+
     // MARK: - Remote commands
 
     private func registerCommands() {
@@ -122,19 +170,40 @@ public final class NowPlayingBridge {
         add(c.togglePlayPauseCommand) { p, _ in p.toggle() }
         add(c.nextTrackCommand) { p, _ in p.next() }
         add(c.previousTrackCommand) { p, _ in p.previous() }
-        add(c.changePlaybackPositionCommand) { p, position in
-            if let position { p.seek(position) }
+        add(c.changePlaybackPositionCommand) { p, input in
+            if case .position(let t) = input { p.seek(t) }
         }
+        add(c.changeShuffleModeCommand, Self.shuffleCommandAction)
+        add(c.changeRepeatModeCommand, Self.repeatCommandAction)
         add(c.likeCommand) { [weak self] p, _ in
             guard let song = p.queue.current?.song else { return }
             self?.onLike(song)
         }
     }
 
-    /// Registers a handler that runs on the main actor. `position` carries the target time for
-    /// `changePlaybackPositionCommand`.
+    /// What a remote command event carries, copied out so it can cross to the main actor.
+    public enum CommandInput: Sendable, Equatable {
+        case none
+        case position(TimeInterval)
+        case shuffle(MPShuffleType)
+        case repeatMode(MPRepeatType)
+
+        public nonisolated init(_ event: MPRemoteCommandEvent) {
+            if let e = event as? MPChangePlaybackPositionCommandEvent {
+                self = .position(e.positionTime)
+            } else if let e = event as? MPChangeShuffleModeCommandEvent {
+                self = .shuffle(e.shuffleType)
+            } else if let e = event as? MPChangeRepeatModeCommandEvent {
+                self = .repeatMode(e.repeatType)
+            } else {
+                self = .none
+            }
+        }
+    }
+
+    /// Registers a handler that runs on the main actor with the event's input.
     private func add(_ command: MPRemoteCommand,
-                     _ action: @escaping @Sendable @MainActor (Player, TimeInterval?) -> Void) {
+                     _ action: @escaping @Sendable @MainActor (Player, CommandInput) -> Void) {
         command.isEnabled = true
         let target = command.addTarget(handler: Self.commandHandler(player: player, action: action))
         commandTargets.append((command, target))
@@ -143,14 +212,14 @@ public final class NowPlayingBridge {
     /// Built in a nonisolated context: MediaPlayer may invoke command handlers off the main
     /// thread, so the closure must not be main-actor-isolated. It hops to the main actor itself.
     nonisolated static func commandHandler(
-        player: Player, action: @escaping @Sendable @MainActor (Player, TimeInterval?) -> Void
+        player: Player, action: @escaping @Sendable @MainActor (Player, CommandInput) -> Void
     ) -> (MPRemoteCommandEvent) -> MPRemoteCommandHandlerStatus {
         { event in
-            let position = (event as? MPChangePlaybackPositionCommandEvent)?.positionTime
+            let input = CommandInput(event)
             if Thread.isMainThread {
-                MainActor.assumeIsolated { action(player, position) }
+                MainActor.assumeIsolated { action(player, input) }
             } else {
-                Task { @MainActor in action(player, position) }
+                Task { @MainActor in action(player, input) }
             }
             return .success
         }

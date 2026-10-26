@@ -56,7 +56,8 @@ public final class CarPlayController: NSObject {
     private var bindings: [ObjectIdentifier: ListBinding] = [:]
     private var watches: [Task<Void, Never>] = []
 
-    private var searchGeneration = 0
+    private var searchResults = LatestResults<CPListItem>()
+    private var searchTask: Task<Void, Never>?
     private var lastSearch = ""
     /// Artwork loading for the search template's current results.
     private var searchArtwork: ListBinding?
@@ -101,6 +102,7 @@ public final class CarPlayController: NSObject {
         resetBindings()
         searchArtwork?.cancel()
         searchArtwork = nil
+        searchTask?.cancel()
         interface.delegate = nil
         sessionConfiguration = nil
     }
@@ -308,27 +310,20 @@ public final class CarPlayController: NSObject {
         updateNowPlayingButtons()
     }
 
+    /// Same Player calls as the lock screen's shuffle/repeat commands (`NowPlayingBridge`),
+    /// which also keeps the commands' current types (the glyphs) in sync.
     private func updateNowPlayingButtons() {
         let shuffle = CPNowPlayingShuffleButton { [weak self] _ in
             guard let player = self?.player else { return }
-            player.setShuffled(!player.isShuffled)
+            NowPlayingBridge.applyShuffle(player.isShuffled ? .off : .items, to: player)
         }
         shuffle.isSelected = player.isShuffled
         let repeatButton = CPNowPlayingRepeatButton { [weak self] _ in
             guard let player = self?.player else { return }
-            player.repeatMode = player.repeatMode.next
+            NowPlayingBridge.applyRepeat(NowPlayingBridge.repeatType(player.repeatMode.next), to: player)
         }
         repeatButton.isSelected = player.repeatMode != .off
         CPNowPlayingTemplate.shared.updateNowPlayingButtons([shuffle, repeatButton])
-
-        // The system draws the shuffle/repeat glyphs from these.
-        let commands = MPRemoteCommandCenter.shared()
-        commands.changeShuffleModeCommand.currentShuffleType = player.isShuffled ? .items : .off
-        commands.changeRepeatModeCommand.currentRepeatType = switch player.repeatMode {
-        case .off: .off
-        case .all: .all
-        case .one: .one
-        }
     }
 
     private struct PlayerModes: Equatable, Sendable {
@@ -565,19 +560,23 @@ extension CarPlayController: CPTabBarTemplateDelegate {
 extension CarPlayController: CPSearchTemplateDelegate {
     public func searchTemplate(_ searchTemplate: CPSearchTemplate, updatedSearchText searchText: String,
                                completionHandler: @escaping ([CPListItem]) -> Void) {
-        searchGeneration += 1
-        let generation = searchGeneration
+        searchTask?.cancel()   // the older query completes with what's showing (below)
+        let ticket = searchResults.begin()
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else {
-            completionHandler([])
+            completionHandler(searchResults.complete(ticket, with: []))
             return
         }
-        Task {
+        searchTask = Task {
+            // Stale or cancelled: never hand back [] (it could blank newer results).
+            @MainActor func finish(_ items: [CPListItem]) { completionHandler(searchResults.complete(ticket, with: items)) }
             try? await Task.sleep(for: .milliseconds(250))
-            guard generation == searchGeneration else { return completionHandler([]) }
+            guard !Task.isCancelled, searchResults.isCurrent(ticket) else { return completionHandler(searchResults.stale()) }
             do {
                 let result = try await library.search(query)
-                guard generation == searchGeneration else { return completionHandler([]) }
+                guard !Task.isCancelled, searchResults.isCurrent(ticket) else {
+                    return completionHandler(searchResults.stale())
+                }
                 lastSearch = query
                 let rows = await Task.detached(priority: .userInitiated) { CarPlayRows.searchItems(result) }.value
                 let fitted = Array(rows.prefix(Int(CPListTemplate.maximumItemCount)))
@@ -589,7 +588,8 @@ extension CarPlayController: CPSearchTemplateDelegate {
                     items[row.id] = item
                     return item
                 }
-                completionHandler(list)
+                finish(list)
+                guard searchResults.isCurrent(ticket) else { return }
                 // Artwork arrives after the results are shown.
                 searchArtwork?.cancel()
                 searchArtwork = binding
@@ -597,10 +597,11 @@ extension CarPlayController: CPSearchTemplateDelegate {
                 binding.shown = [CPSectionModel(header: nil, rows: fitted)]
                 loadArtwork(binding)
             } catch {
+                guard !Task.isCancelled, searchResults.isCurrent(ticket) else {
+                    return completionHandler(searchResults.stale())
+                }
                 let state: CarPlayState = library.isOutOfReach(error) ? .outOfReach : .failed
-                completionHandler(CarPlayRows.state(state).flatMap(\.rows).map {
-                    CPListItem(text: $0.title, detailText: $0.detail)
-                })
+                finish(CarPlayRows.state(state).flatMap(\.rows).map { CPListItem(text: $0.title, detailText: $0.detail) })
             }
         }
     }

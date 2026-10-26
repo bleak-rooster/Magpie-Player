@@ -2,6 +2,7 @@ import Foundation
 import Testing
 import MagpieCore
 import Playback
+import MediaPlayer
 import UIKit
 
 @MainActor
@@ -374,5 +375,57 @@ extension PlayerTests {
         player.repeatMode = .off
         #expect(engine.setItemsCalls.last!.items.map(\.0) == [current] + player.queue.upcoming.map(\.id))
         #expect(engine.setItemsCalls.last!.items.count == 4)
+    }
+}
+
+/// Shuffle and repeat from the lock screen or the car (CarPlay's buttons call the same functions).
+@MainActor
+@Suite(.serialized) struct NowPlayingModeCommandTests {
+    private func makePlayer() -> Player {
+        let player = Player(engine: FakeEngine(), scrobbler: FakeScrobbler(), urls: FakeURLs(),
+                            defaults: UserDefaults(suiteName: "NowPlayingModeCommandTests.\(UUID().uuidString)")!)
+        player.play((1...5).map { Song(id: "\($0)", title: "S\($0)", artist: "A", album: "B", duration: 100) },
+                    startAt: 0)
+        return player
+    }
+
+    @Test func shuffleCommandChangesPlayerAndCurrentType() {
+        let player = makePlayer()
+        let command = MPRemoteCommandCenter.shared().changeShuffleModeCommand
+        NowPlayingBridge.shuffleCommandAction(player, .shuffle(.items))
+        #expect(player.isShuffled)
+        #expect(command.currentShuffleType == .items)
+        NowPlayingBridge.shuffleCommandAction(player, .shuffle(.off))
+        #expect(!player.isShuffled)
+        #expect(command.currentShuffleType == .off)
+        NowPlayingBridge.shuffleCommandAction(player, .shuffle(.collections))
+        #expect(player.isShuffled, "any shuffle type but off turns shuffle on")
+    }
+
+    @Test func repeatCommandChangesPlayerAndCurrentType() {
+        let player = makePlayer()
+        let command = MPRemoteCommandCenter.shared().changeRepeatModeCommand
+        for (type, mode) in [(MPRepeatType.all, RepeatMode.all), (.one, .one), (.off, .off)] {
+            NowPlayingBridge.repeatCommandAction(player, .repeatMode(type))
+            #expect(player.repeatMode == mode)
+            #expect(command.currentRepeatType == type)
+        }
+    }
+
+    @Test func bridgeRegistersShuffleAndRepeatAndFollowsPlayer() async throws {
+        let player = makePlayer()
+        let bridge = NowPlayingBridge(player: player, artworkURL: { _ in nil }, onLike: { _ in })
+        defer { bridge.invalidate() }
+        let center = MPRemoteCommandCenter.shared()
+        #expect(center.changeShuffleModeCommand.isEnabled)
+        #expect(center.changeRepeatModeCommand.isEnabled)
+        // A change made elsewhere (the phone's queue screen) reaches the system's current types.
+        player.setShuffled(true)
+        player.repeatMode = .one
+        for _ in 0..<100 where center.changeRepeatModeCommand.currentRepeatType != .one {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(center.changeShuffleModeCommand.currentShuffleType == .items)
+        #expect(center.changeRepeatModeCommand.currentRepeatType == .one)
     }
 }
