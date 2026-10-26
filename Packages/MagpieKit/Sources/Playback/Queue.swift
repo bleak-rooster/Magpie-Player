@@ -120,6 +120,33 @@ public struct PlayQueue: Codable, Sendable {
         }
     }
 
+    /// Drops everything that would play after the current entry (Up Next and the rest of `main`).
+    public mutating func clearUpcoming() {
+        upNext = []
+        guard let i = currentIndex else { return }
+        main.removeSubrange((i + 1)...)
+    }
+
+    /// Makes the first entry of `main` current (repeat all) and returns it.
+    @discardableResult
+    public mutating func wrapToStart() -> QueueEntry? {
+        guard !main.isEmpty else { return nil }
+        currentIndex = 0
+        return current
+    }
+
+    /// Puts `main` back in the order of `order` (entry ids); entries not listed keep their relative
+    /// order after the listed ones. The current entry stays current.
+    public mutating func restoreOrder(_ order: [UUID]) {
+        let rank = Dictionary(order.enumerated().map { ($1, $0) }, uniquingKeysWith: { a, _ in a })
+        let currentId = current?.id
+        main = main.enumerated().sorted { a, b in
+            let ra = rank[a.element.id] ?? Int.max, rb = rank[b.element.id] ?? Int.max
+            return ra != rb ? ra < rb : a.offset < b.offset
+        }.map(\.element)
+        if let currentId { currentIndex = main.firstIndex { $0.id == currentId } }
+    }
+
     /// Shuffles `main` deterministically for `seed`, keeping the current entry first and current.
     /// Up Next keeps its order.
     public mutating func shuffle(seed: UInt64) {

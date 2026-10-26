@@ -168,3 +168,45 @@ import MagpieCore
         #expect(back.currentIndex == 1)
     }
 }
+
+extension QueueTests {
+    @Test func clearUpcomingKeepsCurrentAndHistory() {
+        var q = PlayQueue()
+        q.replace(with: Self.songs("1", "2", "3", "4"), startAt: 1)
+        q.playNext(Self.songs("x"))
+        q.clearUpcoming()
+        #expect(ids(q.main) == ["1", "2"])
+        #expect(q.upNext.isEmpty)
+        #expect(q.current?.song.id == "2")
+        #expect(q.upcoming.isEmpty)
+    }
+
+    @Test func clearUpcomingOnIdleQueueIsNoOp() {
+        var q = PlayQueue()
+        q.clearUpcoming()
+        #expect(q.main.isEmpty && q.current == nil)
+    }
+
+    @Test func wrapToStartMakesFirstEntryCurrent() {
+        var q = PlayQueue()
+        q.replace(with: Self.songs("1", "2", "3"), startAt: 2)
+        #expect(q.wrapToStart()?.song.id == "1")
+        #expect(q.current?.song.id == "1")
+        #expect(ids(q.upcoming) == ["2", "3"])
+        var empty = PlayQueue()
+        #expect(empty.wrapToStart() == nil)
+    }
+
+    @Test func restoreOrderUndoesShuffleAndKeepsCurrent() {
+        var q = PlayQueue()
+        q.replace(with: Self.songs("1", "2", "3", "4", "5"), startAt: 1)
+        let original = q.main.map(\.id)
+        q.shuffle(seed: 7)
+        let currentId = q.current!.id
+        q.addToEnd(Self.songs("late"))
+        q.restoreOrder(original)
+        #expect(ids(q.main) == ["1", "2", "3", "4", "5", "late"], "entries added since go last")
+        #expect(q.current?.id == currentId)
+        #expect(q.current?.song.id == "2")
+    }
+}

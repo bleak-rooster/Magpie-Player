@@ -11,6 +11,8 @@ struct NowPlayingView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var scrubbing: TimeInterval?
     @State private var panel: Panel?
+    /// The server advertises `songLyrics` (A13); the Lyrics button is hidden until it does.
+    @State private var lyricsAvailable = false
     private let themed = Themed()
 
     private enum Panel: String, Identifiable { case lyrics, queue; var id: String { rawValue } }
@@ -54,10 +56,11 @@ struct NowPlayingView: View {
         .foregroundStyle(p.inkColor)
         .background(p.bgColor.ignoresSafeArea())
         .presentationDragIndicator(theme.character == .classic ? .visible : .hidden)
+        .task { lyricsAvailable = (try? await model.serverAdvertises("songLyrics")) ?? false }
         .sheet(item: $panel) { panel in
             switch panel {
-            case .lyrics: LyricsPanel()
-            case .queue: QueuePanel()
+            case .lyrics: LyricsView()
+            case .queue: QueueView()
             }
         }
     }
@@ -180,10 +183,12 @@ struct NowPlayingView: View {
 
     private var bottomBar: some View {
         HStack {
-            Button { panel = .lyrics } label: {
-                Image(systemName: "quote.bubble").font(.title3).frame(width: Tokens.minHitSize, height: Tokens.minHitSize)
+            if lyricsAvailable {
+                Button { panel = .lyrics } label: {
+                    Image(systemName: "quote.bubble").font(.title3).frame(width: Tokens.minHitSize, height: Tokens.minHitSize)
+                }
+                .accessibilityLabel("Lyrics")
             }
-            .accessibilityLabel("Lyrics")
             Spacer()
             Button { panel = .queue } label: {
                 Image(systemName: "list.bullet").font(.title3).frame(width: Tokens.minHitSize, height: Tokens.minHitSize)
@@ -193,73 +198,5 @@ struct NowPlayingView: View {
         .buttonStyle(.plain)
         .foregroundStyle(themed.palette.ink2Color)
         .padding(.horizontal, Tokens.Spacing.xxl)
-    }
-}
-
-/// The current song's lyrics, plain text (synced highlighting comes later).
-private struct LyricsPanel: View {
-    @Environment(AppModel.self) private var model
-    @State private var lyrics: Loadable<Lyrics?> = .loading
-
-    var body: some View {
-        let song = model.player.queue.current?.song
-        NavigationStack {
-            ScrollView {
-                LoadableView(state: lyrics, retry: { await load(song) }) { lyrics in
-                    if let lyrics, !lyrics.lines.isEmpty {
-                        VStack(alignment: .leading, spacing: Tokens.Spacing.m) {
-                            ForEach(Array(lyrics.lines.enumerated()), id: \.offset) { _, line in
-                                Text(line.text).font(.title3.weight(.semibold))
-                            }
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(Tokens.Spacing.xxl)
-                    } else {
-                        ContentUnavailableView("No lyrics for this song", systemImage: "quote.bubble")
-                    }
-                }
-            }
-            .navigationTitle(song?.title ?? "Lyrics")
-            .navigationBarTitleDisplayMode(.inline)
-            .magpieScreen()
-        }
-        .presentationDetents([.medium, .large])
-        .task(id: song?.id) { await load(song) }
-    }
-
-    private func load(_ song: Song?) async {
-        guard let id = song?.id else { lyrics = .loaded(nil); return }
-        do {
-            lyrics = .loaded(try await model.request { try await $0.lyrics(songId: id) })
-        } catch {
-            lyrics = .failed(BrowseErrorCopy.message(for: error))
-        }
-    }
-}
-
-/// What plays next. (Reordering and editing arrive with the Queue screen in M2.)
-private struct QueuePanel: View {
-    @Environment(AppModel.self) private var model
-
-    var body: some View {
-        let upcoming = model.player.queue.upcoming
-        NavigationStack {
-            List {
-                if upcoming.isEmpty {
-                    ContentUnavailableView("Nothing up next", systemImage: "list.bullet")
-                        .listRowBackground(Color.clear)
-                }
-                ForEach(upcoming) { entry in
-                    Artwork(entry.song.coverArtId, side: 48) { SongRow(song: entry.song, state: .library, artwork: $0) }
-                        .listRowInsets(EdgeInsets())
-                        .listRowBackground(Color.clear)
-                }
-            }
-            .listStyle(.plain)
-            .navigationTitle("Up next")
-            .navigationBarTitleDisplayMode(.inline)
-            .magpieScreen()
-        }
-        .presentationDetents([.medium, .large])
     }
 }

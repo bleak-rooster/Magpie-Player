@@ -2,6 +2,20 @@ import Foundation
 import MagpieCore
 import Observation
 
+/// What happens when the queue (or, for `.one`, the current song) ends.
+public enum RepeatMode: String, Sendable, Hashable, Codable, CaseIterable {
+    case off, all, one
+
+    /// The next mode when the repeat button is tapped: off, all, one, off.
+    public var next: RepeatMode {
+        switch self {
+        case .off: .all
+        case .all: .one
+        case .one: .off
+        }
+    }
+}
+
 /// The app's single player: owns the queue, drives a `PlaybackEngine`, and scrobbles.
 ///
 /// The engine always holds `[current] + upcoming`, starting at index 0. Any queue edit re-sends
@@ -12,6 +26,9 @@ public final class Player {
     public private(set) var isPlaying = false
     public private(set) var position: TimeInterval = 0
     public private(set) var duration: TimeInterval?
+    /// Repeat is in-memory: a new launch starts with it off.
+    public var repeatMode: RepeatMode = .off
+    public private(set) var isShuffled = false
     /// Last playback error for the current entry, if any (cleared when a new entry starts).
     public private(set) var lastError: String?
 
@@ -38,6 +55,8 @@ public final class Player {
     @ObservationIgnored private var needsReload = false
     /// The current entry failed; engine item changes are ignored until the user acts.
     @ObservationIgnored private var failedEntryId: UUID?
+    /// `main` order before shuffle was switched on, so switching it off can put it back.
+    @ObservationIgnored private var unshuffledOrder: [UUID]?
     @ObservationIgnored private var pendingScrobbles: [UUID: Task<Void, Never>] = [:]
 
     /// Scrobble bookkeeping for the entry that is playing.
@@ -70,6 +89,8 @@ public final class Player {
 
     public func play(_ songs: [Song], startAt: Int) {
         queue.replace(with: songs, startAt: startAt)
+        isShuffled = false
+        unshuffledOrder = nil
         loadCurrent()
         resume()
     }
@@ -84,7 +105,13 @@ public final class Player {
     }
 
     public func next() {
-        guard queue.advance() != nil else { return }
+        guard queue.advance() != nil else {
+            if repeatMode == .all, queue.wrapToStart() != nil {
+                needsReload = true
+                resume()
+            }
+            return
+        }
         if needsReload {
             loadCurrent()
             return
@@ -141,6 +168,26 @@ public final class Player {
         syncEngine()
     }
 
+    /// Shuffle on/off. On shuffles `main` (current stays first); off restores the order it had.
+    public func setShuffled(_ on: Bool, seed: UInt64 = .random(in: .min ... .max)) {
+        guard on != isShuffled else { return }
+        if on {
+            unshuffledOrder = queue.main.map(\.id)
+            queue.shuffle(seed: seed)
+        } else if let order = unshuffledOrder {
+            queue.restoreOrder(order)
+            unshuffledOrder = nil
+        }
+        isShuffled = on
+        syncEngine()
+    }
+
+    /// Clears everything after the current song; the current song keeps playing.
+    public func clearUpcoming() {
+        queue.clearUpcoming()
+        syncEngine()
+    }
+
     /// The active server address changed (failover): rebuild every URL the engine holds, from the
     /// current entry on, and resume the current entry where it was.
     public func urlsInvalidated() {
@@ -159,6 +206,13 @@ public final class Player {
         case .itemChanged(let id):
             guard failedEntryId == nil, id != queue.current?.id else { return }
             guard queue.upcoming.contains(where: { $0.id == id }) else { return }
+            if repeatMode == .one {
+                // The engine moved on by itself; put the same song back on from the start.
+                loadCurrent()
+                engine.play()
+                isPlaying = true
+                return
+            }
             while queue.current?.id != id, queue.advance() != nil {}
             beginEntry()
         case .time(let id, let t, let d):
@@ -180,6 +234,13 @@ public final class Player {
         case .ended:
             isPlaying = false
             needsReload = true
+            switch repeatMode {
+            case .off: break
+            case .one: resume()
+            case .all:
+                queue.wrapToStart()
+                resume()
+            }
         case .playing(let playing):
             isPlaying = playing
         }

@@ -53,6 +53,17 @@ private let away = URL(string: "https://music.example.com/navidrome")!
         transport.inner.stub(pathSuffix: "/rest/scrobble", body: ok)
     }
 
+    @Test func asksForExtensionsOncePerSession() async throws {
+        transport.inner.stub(pathSuffix: "/rest/getOpenSubsonicExtensions", body: Data(
+            #"{"subsonic-response":{"status":"ok","version":"1.16.1","openSubsonicExtensions":[{"name":"songLyrics","versions":[1]}]}}"#.utf8))
+        let model = makeModel()
+        try await model.signIn(urls: [home], username: "admin", password: "pw")
+        #expect(try await model.serverAdvertises("songLyrics"))
+        #expect(try await !model.serverAdvertises("formPost"))
+        let asked = transport.inner.requests.filter { $0.url?.path.hasSuffix("/rest/getOpenSubsonicExtensions") == true }
+        #expect(asked.count == 1)
+    }
+
     func makeModel() -> AppModel {
         AppModel(store: store, transport: transport, probeTransport: transport, engine: engine,
                  defaults: defaults, systemNowPlaying: false)

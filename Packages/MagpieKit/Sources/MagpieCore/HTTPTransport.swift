@@ -8,7 +8,17 @@ public struct URLSessionTransport: HTTPTransport {
     public let timeout: TimeInterval
     private let session: URLSession
 
-    public init(timeout: TimeInterval = 15, session: URLSession = .shared) {
+    /// Subsonic auth rides in the query string (`u`, `t`, `s`), so the default session is ephemeral
+    /// and has no URLCache: nothing is written to disk.
+    public static func defaultConfiguration() -> URLSessionConfiguration {
+        let config = URLSessionConfiguration.ephemeral
+        config.urlCache = nil
+        config.requestCachePolicy = .reloadIgnoringLocalCacheData
+        return config
+    }
+
+    public init(timeout: TimeInterval = 15,
+                session: URLSession = URLSession(configuration: URLSessionTransport.defaultConfiguration())) {
         self.timeout = timeout
         self.session = session
     }

@@ -269,3 +269,95 @@ extension PlayerTests {
                 "after a failure, next loads the entry rather than relying on the engine's queue")
     }
 }
+
+extension PlayerTests {
+    @Test func repeatModeCyclesOffAllOne() {
+        #expect(RepeatMode.off.next == .all)
+        #expect(RepeatMode.all.next == .one)
+        #expect(RepeatMode.one.next == .off)
+    }
+
+    @Test func repeatAllWrapsWhenQueueEnds() {
+        let player = makePlayer()
+        player.repeatMode = .all
+        player.play([Self.song("1"), Self.song("2")], startAt: 1)
+        player.handle(.ended)
+        #expect(player.queue.current?.song.id == "1")
+        #expect(player.isPlaying)
+        #expect(engine.setItemsCalls.last!.items.first!.0 == player.queue.current!.id)
+        #expect(player.position == 0)
+    }
+
+    @Test func repeatAllNextAtEndWraps() {
+        let player = makePlayer()
+        player.repeatMode = .all
+        player.play([Self.song("1"), Self.song("2")], startAt: 1)
+        player.next()
+        #expect(player.queue.current?.song.id == "1")
+        #expect(player.isPlaying)
+    }
+
+    @Test func repeatOffStopsAtEnd() {
+        let player = makePlayer()
+        player.play([Self.song("1"), Self.song("2")], startAt: 1)
+        player.next()
+        #expect(player.queue.current?.song.id == "2")
+        player.handle(.ended)
+        #expect(!player.isPlaying)
+        #expect(player.queue.current?.song.id == "2")
+    }
+
+    @Test func repeatOneReplaysInsteadOfAdvancing() {
+        let player = makePlayer()
+        player.repeatMode = .one
+        player.play([Self.song("1"), Self.song("2")], startAt: 0)
+        let current = player.queue.current!.id
+        let loads = engine.setItemsCalls.count
+        player.handle(.itemChanged(player.queue.upcoming[0].id))   // engine moved on by itself
+        #expect(player.queue.current?.id == current)
+        #expect(engine.setItemsCalls.count == loads + 1)
+        #expect(engine.setItemsCalls.last!.items.first!.0 == current, "current entry reloaded from the start")
+        #expect(player.isPlaying)
+    }
+
+    @Test func repeatOneReplaysAtEnd() {
+        let player = makePlayer()
+        player.repeatMode = .one
+        player.play([Self.song("1")], startAt: 0)
+        player.handle(.ended)
+        #expect(player.isPlaying)
+        #expect(player.queue.current?.song.id == "1")
+    }
+
+    @Test func clearUpcomingKeepsCurrentPlaying() {
+        let player = makePlayer()
+        player.play([Self.song("1"), Self.song("2"), Self.song("3")], startAt: 0)
+        player.playNext([Self.song("x")])
+        let current = player.queue.current!.id
+        player.clearUpcoming()
+        #expect(player.queue.current?.id == current)
+        #expect(player.queue.upcoming.isEmpty)
+        #expect(player.isPlaying)
+        #expect(engine.setItemsCalls.last!.items.map(\.0) == [current])
+    }
+
+    @Test func shuffleToggleRestoresOrder() {
+        let player = makePlayer()
+        player.play((1...6).map { Self.song("\($0)") }, startAt: 0)
+        player.setShuffled(true, seed: 3)
+        #expect(player.isShuffled)
+        #expect(player.queue.current?.song.id == "1")
+        player.setShuffled(false)
+        #expect(!player.isShuffled)
+        #expect(player.queue.main.map(\.song.id) == ["1", "2", "3", "4", "5", "6"])
+        #expect(player.queue.current?.song.id == "1")
+    }
+
+    @Test func playingNewSongsClearsShuffle() {
+        let player = makePlayer()
+        player.play([Self.song("1"), Self.song("2")], startAt: 0)
+        player.setShuffled(true, seed: 1)
+        player.play([Self.song("3")], startAt: 0)
+        #expect(!player.isShuffled)
+    }
+}

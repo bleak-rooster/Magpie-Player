@@ -44,7 +44,7 @@ struct MainTabs: View {
                 NavigationStack { LibraryView().magpieRoutes() }
             }
             Tab(value: AppTab.search, role: .search) {
-                NavigationStack { SearchPlaceholderView().magpieRoutes() }
+                SearchView()
             }
         }
         .tabViewBottomAccessory(isEnabled: model.player.queue.current != nil) {

@@ -25,14 +25,14 @@ final class BrowseFlowTests: XCTestCase {
         return DevStack(url: url, user: user, password: password)
     }
 
-    @MainActor func testSignInBrowsePlay() throws {
+    /// Launches signed out, signs in to the dev stack and waits for the tab bar.
+    @MainActor private func launchSignedIn() throws -> XCUIApplication {
         let stack = try devStack()
         continueAfterFailure = false
         let app = XCUIApplication()
         app.launchArguments = ["-MagpieResetState", "YES"]
         app.launch()
 
-        // Connect
         let address = app.textFields["connect-address-0"]
         XCTAssertTrue(address.waitForExistence(timeout: 10))
         address.tap()
@@ -45,11 +45,16 @@ final class BrowseFlowTests: XCTestCase {
         password.typeText(stack.password)
         app.buttons["connect-continue"].tap()
 
-        // Signed in: the tab bar appears. Dismiss a save-password prompt if the system offers one.
-        let library = app.tabBars.buttons["Library"]
         let notNow = app.buttons["Not Now"]
         if notNow.waitForExistence(timeout: 3) { notNow.tap() }
-        XCTAssertTrue(library.waitForExistence(timeout: 20), "did not reach the tabs; error: \(errorText(app))")
+        XCTAssertTrue(app.tabBars.buttons["Library"].waitForExistence(timeout: 20),
+                      "did not reach the tabs; error: \(errorText(app))")
+        return app
+    }
+
+    @MainActor func testSignInBrowsePlay() throws {
+        let app = try launchSignedIn()
+        let library = app.tabBars.buttons["Library"]
         // Library › Albums › first album. The tab bar can swallow a tap while it settles; tap again if so.
         let albums = app.buttons["library-albums"]
         for _ in 0..<3 where !albums.exists {
@@ -69,6 +74,26 @@ final class BrowseFlowTests: XCTestCase {
         firstTrack.tap()
 
         // The mini player shows that title.
+        let mini = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Now playing: \(title),")).firstMatch
+        XCTAssertTrue(mini.waitForExistence(timeout: 15), "mini player did not show \(title)")
+    }
+
+    /// Search tab: type a name from the dev library, tap the first song, see it in the mini player.
+    @MainActor func testSearchAndPlay() throws {
+        let app = try launchSignedIn()
+        // The tab bar can swallow a tap while it settles; tap again if so.
+        let field = app.searchFields.firstMatch
+        for _ in 0..<3 where !field.exists {
+            app.tabBars.buttons["Search"].tap()
+            _ = field.waitForExistence(timeout: 5)
+        }
+        XCTAssertTrue(field.exists, "search field not found")
+        field.tap()
+        field.typeText("Paper Planes")
+        let song = app.buttons["search-song-0"]
+        XCTAssertTrue(song.waitForExistence(timeout: 15), "no song result for the dev library's Paper Planes")
+        let title = song.label.components(separatedBy: ", ").first ?? song.label
+        song.tap()
         let mini = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Now playing: \(title),")).firstMatch
         XCTAssertTrue(mini.waitForExistence(timeout: 15), "mini player did not show \(title)")
     }

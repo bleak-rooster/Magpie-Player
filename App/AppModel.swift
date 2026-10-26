@@ -44,6 +44,8 @@ final class AppModel {
     var theme: Theme
     /// Star changes made this session, by song id (the queue's copies of songs are not edited).
     private(set) var starOverrides: [String: Bool] = [:]
+    /// OpenSubsonic extensions the server advertises (A13), fetched once per session.
+    private(set) var advertisedExtensions: Set<String>?
     /// A session is saved but the Keychain can't be read yet (before first unlock). Not signed out:
     /// the UI waits, and the session is restored when protected data becomes available.
     private(set) var isWaitingForUnlock = false
@@ -170,6 +172,7 @@ final class AppModel {
         try store.save(endpoint: endpoint, credentials: credentials)
         reconnectTask = nil
         starOverrides = [:]
+        advertisedExtensions = nil
         isWaitingForUnlock = false
         stopObservingUnlock()
         ArtworkCache.shared.removeAll()
@@ -184,6 +187,7 @@ final class AppModel {
         store.clear()
         session = nil
         starOverrides = [:]
+        advertisedExtensions = nil
         reconnectTask = nil
         isWaitingForUnlock = false
         stopObservingUnlock()
@@ -301,6 +305,15 @@ final class AppModel {
 
     func shuffle(_ songs: [Song]) {
         play(songs.shuffled(), startAt: 0)
+    }
+
+    /// Whether the server advertises the OpenSubsonic extension `name` (e.g. "songLyrics"). Asks once
+    /// per session; a failed ask throws and is retried next time.
+    func serverAdvertises(_ name: String) async throws -> Bool {
+        if let known = advertisedExtensions { return known.contains(name) }
+        let found = try await request { try await $0.extensions() }
+        advertisedExtensions = found
+        return found.contains(name)
     }
 
     func isStarred(_ song: Song) -> Bool { starOverrides[song.id] ?? song.starred }
