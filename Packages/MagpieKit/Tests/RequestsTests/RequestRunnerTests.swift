@@ -357,6 +357,18 @@ import MagpieCore
         #expect(!h.server.writeBodies().contains { $0.0 == "POST artist" })
     }
 
+    /// A retired runner does nothing more, so a successor on the same store never races it.
+    @Test func stoppedRunnerDoesNothing() async throws {
+        let h = await Harness()
+        h.server.ownerHasArtist(albumMonitored: false)
+        await h.runner.stop()
+        await #expect(throws: RequestRunner.TryError.unavailable) {
+            _ = try await h.runner.tryRecording(h.recording(recAlbumOnly), tier: .standard)
+        }
+        await h.runner.tick()
+        #expect(h.server.transport.requests.isEmpty)
+    }
+
     @Test func refusalsFailAndOutagesWait() {
         #expect(RequestRunner.event(for: WriteGateError.forbidden("x")) == .error(.addFailed))
         #expect(RequestRunner.event(for: WriteGateError.disabled) == .lidarrUnavailable)

@@ -55,8 +55,10 @@ extension AppModel {
         pollTask?.cancel()
         pollTask = nil
         pollGeneration += 1
+        let retired = runner
         runner = nil
         gate = nil
+        if let retired { Task { await retired.stop() } }
         guard session != nil, let client = lidarrClient else {
             requests = []
             return
@@ -76,6 +78,7 @@ extension AppModel {
             }
         })
         runnerTasks.append(Task { [weak self] in
+            await retired?.stop()   // the old runner never saves over what this one loads
             await runner.load()
             self?.pollRequests()
         })

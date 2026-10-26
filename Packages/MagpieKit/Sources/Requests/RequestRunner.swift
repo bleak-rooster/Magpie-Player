@@ -96,6 +96,7 @@ public actor RequestRunner {
     private var busy: Set<RequestID> = []
     private var inFlight: [RequestID: Task<Void, Never>] = [:]
     private var ticking = false
+    private var stopped = false
     private var lastIndexRefresh: Date?
     private var lastLidarrContact: Date
     private var watchers: [UUID: AsyncStream<[MagpieRequest]>.Continuation] = [:]
@@ -146,7 +147,7 @@ public actor RequestRunner {
     /// Asks for `recording`. A request for the same song that is still on its way (or ready) is returned
     /// instead of a new one. Work continues in the background; watch `updates`.
     public func tryRecording(_ recording: ExternalRecording, tier: Tier) async throws -> RequestID {
-        guard await load() else { throw TryError.unavailable }
+        guard !stopped, await load() else { throw TryError.unavailable }
         if let existing = list.first(where: { ($0.isActive || $0.state == .ready) && Self.sameSong($0.recording, recording) }) {
             return existing.id
         }
@@ -176,6 +177,14 @@ public actor RequestRunner {
         await changed()
     }
 
+    /// Retires this runner (sign-out, another Lidarr): no further steps, writes or saves. A write already
+    /// on the wire still completes; nothing follows it. Call before another runner loads the same store.
+    public func stop() {
+        stopped = true
+        for c in watchers.values { c.finish() }
+        watchers = [:]
+    }
+
     /// Waits for work started by `tryRecording` (tests).
     public func settle() async {
         while let entry = inFlight.first {
@@ -188,7 +197,7 @@ public actor RequestRunner {
 
     /// One pass: resume interrupted steps, retry what is due, poll Lidarr, scan and check the library.
     public func tick() async {
-        guard !ticking, await load() else { return }
+        guard !ticking, !stopped, await load() else { return }
         ticking = true
         defer { ticking = false }
         for r in list where r.isActive { await advance(r.id) }
@@ -203,7 +212,7 @@ public actor RequestRunner {
     private func request(_ id: RequestID) -> MagpieRequest? { list.first { $0.id == id } }
 
     private func mutate(_ id: RequestID, _ change: (inout MagpieRequest) -> Void) async {
-        guard let i = list.firstIndex(where: { $0.id == id }) else { return }
+        guard !stopped, let i = list.firstIndex(where: { $0.id == id }) else { return }
         var r = list[i]
         change(&r)
         guard r != list[i] else { return }
@@ -213,6 +222,7 @@ public actor RequestRunner {
     }
 
     private func changed() async {
+        guard !stopped else { return }
         do { try await store.save(list) } catch {
             Log.logger("requests").error("requests not saved: \(error.localizedDescription, privacy: .public)")
         }
@@ -263,6 +273,7 @@ public actor RequestRunner {
     }
 
     private func perform(_ effect: Effect, _ id: RequestID) async {
+        guard !stopped else { return }
         switch effect {
         case .resolveRelease: await resolve(id)
         case .addOrMonitor(let plan): await addOrMonitor(id, plan)
