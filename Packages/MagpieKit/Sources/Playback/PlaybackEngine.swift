@@ -5,8 +5,9 @@ import MagpieCore
 public enum EngineEvent: Sendable, Equatable {
     /// The engine moved on to the item with this id (gapless auto-advance or after `setItems`/`next`).
     case itemChanged(UUID)
-    /// Playback position of the current item; `duration` is nil while unknown (e.g. live transcodes).
-    case time(TimeInterval, duration: TimeInterval?)
+    /// Playback position of the item with this id; `duration` is nil while unknown (e.g. live
+    /// transcodes). Carries the id so a tick buffered from the previous item can be dropped.
+    case time(UUID, TimeInterval, duration: TimeInterval?)
     case stalled
     case failed(UUID, String)
     /// The last item finished.

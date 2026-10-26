@@ -154,15 +154,19 @@ public final class Player {
             guard queue.upcoming.contains(where: { $0.id == id }) else { return }
             while queue.current?.id != id, queue.advance() != nil {}
             beginEntry()
-        case .time(let t, let d):
+        case .time(let id, let t, let d):
+            guard id == queue.current?.id else { return }   // stale tick from the previous item
             position = t
             if let d { duration = d }
             maybeSubmitScrobble()
         case .stalled:
             break
         case .failed(let id, let message):
+            // Only the current entry matters; the engine retries a failed upcoming item when it
+            // is reached. Stop the engine too, so a dead server can't race through the queue.
             guard id == queue.current?.id else { return }
             lastError = message
+            engine.pause()
             isPlaying = false
         case .ended:
             isPlaying = false

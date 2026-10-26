@@ -119,7 +119,7 @@ public final class AVQueueEngine: PlaybackEngine {
 
     /// Appends the item after the last enqueued one when the current item is close to its end.
     private func topUp() {
-        guard let current = player.currentItem else { return }
+        guard let current = player.currentItem, current.status != .failed else { return }
         let items = player.items()
         guard items.count < Self.maxEnqueued, items.count == 1 else { return }
         let duration = current.duration.seconds
@@ -165,16 +165,29 @@ public final class AVQueueEngine: PlaybackEngine {
         continuation.yield(.itemChanged(info.id))
     }
 
+    /// A failed current item stops playback (no auto-advance past it). A failed upcoming item is
+    /// dropped from the AVQueuePlayer; `itemEnded` enqueues a fresh copy when it is reached.
     private func itemFailed(_ oid: ObjectIdentifier, _ message: String) {
         guard let info = enqueued[oid] else { return }
+        if let current = player.currentItem, ObjectIdentifier(current) == oid {
+            wantsToPlay = false
+            player.pause()
+            for item in player.items().dropFirst() {
+                player.remove(item)
+                forget(item)
+            }
+        } else if let item = player.items().first(where: { ObjectIdentifier($0) == oid }) {
+            player.remove(item)
+            forget(item)
+        }
         continuation.yield(.failed(info.id, message))
     }
 
     private func tick(_ time: CMTime) {
-        guard let current = player.currentItem else { return }
+        guard let current = player.currentItem, let info = enqueued[ObjectIdentifier(current)] else { return }
         lastTime = time.seconds
         let d = current.duration.seconds
-        continuation.yield(.time(time.seconds, duration: d.isFinite && d > 0 ? d : nil))
+        continuation.yield(.time(info.id, time.seconds, duration: d.isFinite && d > 0 ? d : nil))
         topUp()
     }
 
@@ -230,7 +243,13 @@ public final class AVQueueEngine: PlaybackEngine {
         if list.last?.id == info.id {
             wantsToPlay = false
             continuation.yield(.ended)
+            return
         }
+        // Nothing queued behind the finished item (the next one failed earlier and was dropped):
+        // enqueue a fresh copy of the next entry so playback carries on instead of stopping silently.
+        let behind = player.items().drop { ObjectIdentifier($0) != oid }.dropFirst()
+        guard behind.isEmpty, let i = list.firstIndex(where: { $0.id == info.id }), i + 1 < list.count else { return }
+        enqueue(list[i + 1])
     }
 
     // MARK: - Audio session (iOS)

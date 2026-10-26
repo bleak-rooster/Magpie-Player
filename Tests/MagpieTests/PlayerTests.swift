@@ -2,6 +2,7 @@ import Foundation
 import Testing
 import MagpieCore
 import Playback
+import UIKit
 
 @MainActor
 final class FakeEngine: PlaybackEngine {
@@ -56,13 +57,13 @@ final class FakeURLs: StreamURLProvider {
     @Test func scrobblesAtHalf() async {
         let player = makePlayer()
         player.play([Self.song("1", duration: 200), Self.song("2", duration: 1000)], startAt: 0)
-        player.handle(.time(10, duration: 200))
-        player.handle(.time(99, duration: 200))
+        player.handle(.time(player.queue.current!.id, 10, duration: 200))
+        player.handle(.time(player.queue.current!.id, 99, duration: 200))
         await player.waitForPendingScrobbles()
         #expect(await scrobbler.calls == [.init(songId: "1", submission: false)])
 
-        player.handle(.time(100, duration: 200))
-        player.handle(.time(150, duration: 200))
+        player.handle(.time(player.queue.current!.id, 100, duration: 200))
+        player.handle(.time(player.queue.current!.id, 150, duration: 200))
         await player.waitForPendingScrobbles()
         #expect(await scrobbler.calls == [.init(songId: "1", submission: false),
                                           .init(songId: "1", submission: true)],
@@ -71,8 +72,8 @@ final class FakeURLs: StreamURLProvider {
         // Long track: 240 s cap comes before 50%.
         let second = player.queue.upcoming[0].id
         player.handle(.itemChanged(second))
-        player.handle(.time(239, duration: 1000))
-        player.handle(.time(240, duration: 1000))
+        player.handle(.time(player.queue.current!.id, 239, duration: 1000))
+        player.handle(.time(player.queue.current!.id, 240, duration: 1000))
         await player.waitForPendingScrobbles()
         #expect(await scrobbler.calls.suffix(2) == [.init(songId: "2", submission: false),
                                                     .init(songId: "2", submission: true)])
@@ -83,7 +84,7 @@ final class FakeURLs: StreamURLProvider {
         let player = makePlayer()
         player.countPlays = false
         player.play([Self.song("1")], startAt: 0)
-        player.handle(.time(150, duration: 200))
+        player.handle(.time(player.queue.current!.id, 150, duration: 200))
         await player.waitForPendingScrobbles()
         #expect(await scrobbler.calls.isEmpty)
 
@@ -95,7 +96,7 @@ final class FakeURLs: StreamURLProvider {
         let findsLibraryId = 2
         let player = makePlayer(isFind: { $0.libraryId == findsLibraryId })
         player.play([Self.song("f", libraryId: findsLibraryId), Self.song("k", libraryId: 1)], startAt: 0)
-        player.handle(.time(150, duration: 200))
+        player.handle(.time(player.queue.current!.id, 150, duration: 200))
         await player.waitForPendingScrobbles()
         #expect(await scrobbler.calls.isEmpty)
 
@@ -107,7 +108,7 @@ final class FakeURLs: StreamURLProvider {
     @Test func rebuildsURLsAfterFailover() {
         let player = makePlayer()
         player.play([Self.song("1"), Self.song("2"), Self.song("3")], startAt: 1)
-        player.handle(.time(42, duration: 200))
+        player.handle(.time(player.queue.current!.id, 42, duration: 200))
         let before = engine.setItemsCalls.last!.items
         #expect(before.map(\.1.host) == ["192.168.1.2", "192.168.1.2"])
 
@@ -127,13 +128,13 @@ final class FakeURLs: StreamURLProvider {
     @Test func backRestartsBefore3s() {
         let player = makePlayer()
         player.play([Self.song("1"), Self.song("2")], startAt: 1)
-        player.handle(.time(3.5, duration: 200))
+        player.handle(.time(player.queue.current!.id, 3.5, duration: 200))
         player.previous()
         #expect(player.queue.current?.song.id == "2", "past 3 s: restart the song")
         #expect(engine.seeks.last == 0)
         #expect(player.position == 0)
 
-        player.handle(.time(2, duration: 200))
+        player.handle(.time(player.queue.current!.id, 2, duration: 200))
         player.previous()
         #expect(player.queue.current?.song.id == "1", "within 3 s: go to the previous song")
         #expect(engine.setItemsCalls.last!.items.first!.0 == player.queue.current!.id)
@@ -177,7 +178,7 @@ extension PlayerTests {
     @Test func replayAfterQueueEndedStartsCurrentOver() async {
         let player = makePlayer()
         player.play([Self.song("1")], startAt: 0)
-        player.handle(.time(150, duration: 200))
+        player.handle(.time(player.queue.current!.id, 150, duration: 200))
         player.handle(.ended)
         #expect(!player.isPlaying)
         let loads = engine.setItemsCalls.count
@@ -197,5 +198,49 @@ extension PlayerTests {
         #expect(!player.isPlaying)
         #expect(engine.setItemsCalls.last!.items.isEmpty)
         #expect(engine.pauseCount == 1)
+    }
+}
+
+extension PlayerTests {
+    @Test func failedCurrentPausesEngine() {
+        let player = makePlayer()
+        player.play([Self.song("1"), Self.song("2")], startAt: 0)
+        player.handle(.failed(player.queue.upcoming[0].id, "upcoming failed"))
+        #expect(player.isPlaying && engine.pauseCount == 0, "an upcoming failure is the engine's business")
+        player.handle(.failed(player.queue.current!.id, "server gone"))
+        #expect(!player.isPlaying)
+        #expect(engine.pauseCount == 1)
+        #expect(player.lastError == "server gone")
+        #expect(player.queue.current?.song.id == "1", "no skipping ahead")
+    }
+
+    @Test func staleTickDoesNotScrobbleNewEntry() async {
+        let player = makePlayer()
+        player.play([Self.song("1", duration: 400), Self.song("2", duration: 400)], startAt: 0)
+        let first = player.queue.current!.id
+        player.next()
+        player.handle(.time(first, 210, duration: 400))
+        #expect(player.position == 0, "tick from the previous item ignored")
+        await player.waitForPendingScrobbles()
+        #expect(await scrobbler.calls == [.init(songId: "1", submission: false),
+                                          .init(songId: "2", submission: false)])
+    }
+}
+
+@Suite struct NowPlayingArtworkTests {
+    @Test func artworkHandlerWorksOffMain() async {
+        let image = UIGraphicsImageRenderer(size: CGSize(width: 4, height: 4)).image { ctx in
+            UIColor.red.setFill(); ctx.fill(CGRect(x: 0, y: 0, width: 4, height: 4))
+        }
+        nonisolated(unsafe) let artwork = NowPlayingBridge.makeArtwork(image)
+        // MediaPlayer asks for artwork on a background queue; do the same.
+        let (offMain, gotImage) = await withCheckedContinuation { cont in
+            DispatchQueue.global().async {
+                cont.resume(returning: (!Thread.isMainThread,
+                                        artwork.image(at: CGSize(width: 4, height: 4)) != nil))
+            }
+        }
+        #expect(offMain)
+        #expect(gotImage)
     }
 }

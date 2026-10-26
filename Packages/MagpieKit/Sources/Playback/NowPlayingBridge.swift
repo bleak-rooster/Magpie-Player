@@ -95,9 +95,15 @@ public final class NowPlayingBridge {
         artworkTask = Task { [weak self] in
             guard let (data, _) = try? await URLSession.shared.data(from: url),
                   let image = UIImage(data: data), !Task.isCancelled, let self else { return }
-            self.artwork = (id, MPMediaItemArtwork(boundsSize: image.size) { _ in image })
+            self.artwork = (id, Self.makeArtwork(image))
             if self.player.queue.current?.song.coverArtId == id { self.publish(loadArtwork: false) }
         }
+    }
+
+    /// MediaPlayer calls the artwork handler off the main thread (lock screen, CarPlay). Built in
+    /// a nonisolated context so the closure is not main-actor-isolated (which would trap there).
+    public nonisolated static func makeArtwork(_ image: UIImage) -> MPMediaItemArtwork {
+        MPMediaItemArtwork(boundsSize: image.size) { _ in image }
     }
 
     // MARK: - Remote commands
@@ -121,10 +127,18 @@ public final class NowPlayingBridge {
     /// Registers a handler that runs on the main actor. `position` carries the target time for
     /// `changePlaybackPositionCommand`.
     private func add(_ command: MPRemoteCommand,
-                     _ action: @escaping @MainActor (Player, TimeInterval?) -> Void) {
+                     _ action: @escaping @Sendable @MainActor (Player, TimeInterval?) -> Void) {
         command.isEnabled = true
-        let player = self.player
-        let target = command.addTarget { event in
+        let target = command.addTarget(handler: Self.commandHandler(player: player, action: action))
+        commandTargets.append((command, target))
+    }
+
+    /// Built in a nonisolated context: MediaPlayer may invoke command handlers off the main
+    /// thread, so the closure must not be main-actor-isolated. It hops to the main actor itself.
+    nonisolated static func commandHandler(
+        player: Player, action: @escaping @Sendable @MainActor (Player, TimeInterval?) -> Void
+    ) -> (MPRemoteCommandEvent) -> MPRemoteCommandHandlerStatus {
+        { event in
             let position = (event as? MPChangePlaybackPositionCommandEvent)?.positionTime
             if Thread.isMainThread {
                 MainActor.assumeIsolated { action(player, position) }
@@ -133,7 +147,6 @@ public final class NowPlayingBridge {
             }
             return .success
         }
-        commandTargets.append((command, target))
     }
 }
 #endif
