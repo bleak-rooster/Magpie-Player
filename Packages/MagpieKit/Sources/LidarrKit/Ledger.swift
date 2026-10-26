@@ -29,13 +29,26 @@ public struct LedgerEntry: Sendable, Equatable, Codable {
     /// The Lidarr server this entry belongs to (`LidarrClient.instanceScope`). Ids are only meaningful on
     /// that server; a `Ledger` scoped to another server never sees this entry.
     public var instance: String?
+    /// False while Magpie has only *decided* to monitor the album (recorded before the write); true once the
+    /// write succeeded or a GET showed it monitored. Only applied entries may be undone. Nil = applied.
+    public var applied: Bool?
+    /// The request that made this entry (its `RequestID` text), if any.
+    public var requestId: String?
+    /// Set when the request that made the entry finished and its clean-up is done: a closed entry says
+    /// nothing about who monitors the album *now*, so it is never inherited.
+    public var closedAt: Date?
 
     public init(lidarrArtistId: Int, albumId: Int?, rgMbid: MBID, createdArtist: Bool, wasMonitoredBefore: Bool,
-                root: String, mode: LedgerMode, keptAt: Date? = nil, instance: String? = nil) {
+                root: String, mode: LedgerMode, keptAt: Date? = nil, instance: String? = nil,
+                applied: Bool? = nil, requestId: String? = nil, closedAt: Date? = nil) {
         self.lidarrArtistId = lidarrArtistId; self.albumId = albumId; self.rgMbid = rgMbid
         self.createdArtist = createdArtist; self.wasMonitoredBefore = wasMonitoredBefore
         self.root = root; self.mode = mode; self.keptAt = keptAt; self.instance = instance
+        self.applied = applied; self.requestId = requestId; self.closedAt = closedAt
     }
+
+    public var isApplied: Bool { applied != false }
+    public var isOpen: Bool { closedAt == nil }
 }
 
 /// The on-device record of every Lidarr album request Magpie made. One entry per (server, album id), plus

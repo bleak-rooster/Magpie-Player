@@ -85,6 +85,10 @@ final class FakeLidarr: @unchecked Sendable {
         var down = false
         /// POST /artist creates the artist but answers 504 (the outcome looks unclear to Magpie).
         var addAnswers504 = false
+        /// PUT /album/monitor: applies, then answers 504 (lost answer) this many times.
+        var monitorAppliedThen504 = 0
+        /// PUT /album/monitor: answers 503 without applying this many times.
+        var monitorFails503 = 0
         /// Hold the n-th GET whose path ends with `suffix`.
         var hold: (suffix: String, n: Int)?
         var holdSeen = 0
@@ -162,8 +166,19 @@ final class FakeLidarr: @unchecked Sendable {
         t.stub(method: "PUT", pathSuffix: "/api/v1/album/monitor") { [self] req in
             let body = try! JSONSerialization.jsonObject(with: req.httpBody!) as! [String: Any]
             let ids = body["albumIds"] as! [Int], on = body["monitored"] as! Bool
-            with { s in for i in s.albums.indices where ids.contains(s.albums[i].id) { s.albums[i].monitored = on } }
-            return reply([[String: Any]]())
+            let unapplied: Bool = with { s in
+                guard s.monitorFails503 > 0 else { return false }
+                s.monitorFails503 -= 1
+                return true
+            }
+            if unapplied { return MockTransport.Response(status: 503) }
+            let lost: Bool = with { s in
+                for i in s.albums.indices where ids.contains(s.albums[i].id) { s.albums[i].monitored = on }
+                guard s.monitorAppliedThen504 > 0 else { return false }
+                s.monitorAppliedThen504 -= 1
+                return true
+            }
+            return lost ? MockTransport.Response(status: 504) : reply([[String: Any]]())
         }
         t.stub(method: "POST", pathSuffix: "/api/v1/artist") { [self] req in
             let body = try! JSONSerialization.jsonObject(with: req.httpBody!) as! [String: Any]

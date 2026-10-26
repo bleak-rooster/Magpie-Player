@@ -118,8 +118,8 @@ public actor RequestRunner {
         self.library = library; self.store = store; self.setup = setup; self.now = now; self.onReady = onReady
         self.lastLidarrContact = now()
         // Critical: ids are only meaningful on their own server. A ledger for another Lidarr disables the runner.
-        if let scope = ledger.instance, scope != lidarr.instanceScope {
-            Log.logger("requests").fault("ledger is for another Lidarr; requests disabled")
+        if ledger.instance != lidarr.instanceScope {
+            Log.logger("requests").fault("ledger is unscoped or for another Lidarr; requests disabled")
             self.stopped = true
         }
     }
@@ -457,15 +457,33 @@ public actor RequestRunner {
     private struct AddFailure: Error { var reason: FailReason }
 
     /// Ruling 3: once the album is known, a retry only searches again. If the album is no longer monitored
-    /// (or gone), that is the owner's decision in Lidarr: stop, write nothing. Right after Magpie added the
-    /// artist the album may not be monitored *yet* (Lidarr's refresh), so that window doesn't count.
+    /// (or gone), that is the owner's decision in Lidarr: stop, write nothing. Two exceptions: right after
+    /// Magpie added the artist (Lidarr's refresh may not have applied `albumsToMonitor` yet), and Magpie's own
+    /// monitor still only an intent in the ledger (its PUT never landed): then the monitor is finished.
     private func retrySearchOnly(_ id: RequestID, _ r: MagpieRequest, albumId: Int, artistId: Int) async throws {
         let albums = try await lidarr.albums(artistId: artistId)
         lastLidarrContact = now()
-        let settling = r.addSent && now().timeIntervalSince(r.addedAt ?? r.createdAt) < Self.addSettleTime
-        guard let album = albums.first(where: { $0.id == albumId }), album.monitored || settling else {
-            throw AddFailure(reason: .stoppedInLidarr)
+        guard let album = albums.first(where: { $0.id == albumId }) else { throw AddFailure(reason: .stoppedInLidarr) }
+        let entry = try await ledger.entry(albumId: albumId)
+        let myIntent = entry.map { !$0.isApplied && $0.isOpen && $0.requestId == id.description } ?? false
+        if myIntent {
+            if album.monitored {
+                try await markApplied(entry!)   // the earlier PUT did land
+            } else {
+                try ensure(id, .adding)
+                _ = try await gate.send("PUT", "album/monitor", body: AlbumMonitorBody(albumIds: [albumId], monitored: true))
+                try await markApplied(entry!)
+            }
+            return
         }
+        let settling = r.addSent && now().timeIntervalSince(r.addedAt ?? r.createdAt) < Self.addSettleTime
+        guard album.monitored || settling else { throw AddFailure(reason: .stoppedInLidarr) }
+    }
+
+    private func markApplied(_ entry: LedgerEntry) async throws {
+        var e = entry
+        e.applied = true
+        try await ledger.record(e)
     }
 
     /// The add was sent but its outcome was unclear (timeout, relaunch) and the artist exists now: it is
@@ -474,7 +492,7 @@ public actor RequestRunner {
         try ensure(id, .adding)
         try await ledger.record(LedgerEntry(lidarrArtistId: artist.id, albumId: nil, rgMbid: rg, createdArtist: true,
                                             wasMonitoredBefore: false, root: r.root ?? artist.rootFolderPath ?? "",
-                                            mode: .fallback))
+                                            mode: .fallback, requestId: id.description))
         await mutate(id) {
             $0.lidarrArtistId = artist.id
             $0.skipNextSearch = true
@@ -482,9 +500,12 @@ public actor RequestRunner {
         await discoverAlbum(id)
     }
 
-    /// A7 / G6: monitor the one album and search; no tags, no profile or artist change. The ledger is written
-    /// before the album is touched; the request learns the album id only once it is monitored, so a retry
-    /// never mistakes Magpie's unfinished monitor for the owner unmonitoring it.
+    /// A7 / G6: monitor the one album and search; no tags, no profile or artist change.
+    ///
+    /// Order (fix round 2): the ledger gets an *intent* entry, the request learns the ids (so clean-up can
+    /// always find the album), then the PUT; the entry becomes *applied* when the PUT succeeds or, if its
+    /// answer was lost (502/504, timeout), when a follow-up GET shows the album monitored. Only applied
+    /// entries are ever undone.
     private func monitorExisting(_ id: RequestID, _ r: MagpieRequest, artist: LidarrArtist, rg: MBID) async throws {
         let albums = try await lidarr.albums(artistId: artist.id)
         guard let album = albums.first(where: { $0.foreignAlbumId == rg }) else {
@@ -498,22 +519,38 @@ public actor RequestRunner {
             return
         }
         let prior = try await ledger.entry(albumId: album.id)
-        // Monitored now: by the owner, unless Magpie's own earlier request (ledger) did it.
-        let wasMonitoredBefore = album.monitored ? (prior?.wasMonitoredBefore ?? true) : false
+        // Monitored now: the owner's, unless an open entry of this request or of a live request says Magpie
+        // did it. Closed entries (finished requests) are never inherited: the owner may have monitored it since.
+        let liveIds = Set(list.filter { $0.isActive }.map(\.id.description)).union([id.description])
+        let livePrior = prior.flatMap { p in p.isOpen && p.isApplied && p.requestId.map(liveIds.contains) == true ? p : nil }
+        let wasMonitoredBefore = album.monitored ? (livePrior?.wasMonitoredBefore ?? true) : false
+        let needsMonitor = !album.monitored
         try ensure(id, .adding)
-        try await ledger.record(LedgerEntry(
+        let entry = LedgerEntry(
             lidarrArtistId: artist.id, albumId: album.id, rgMbid: rg,
-            createdArtist: prior?.createdArtist == true,
+            createdArtist: (try? await ledger.createdArtist(artist.id)) == true,
             wasMonitoredBefore: wasMonitoredBefore,
-            root: artist.rootFolderPath ?? r.root ?? artist.path ?? "", mode: .fallback, keptAt: prior?.keptAt))
-        if !album.monitored {
-            try ensure(id, .adding)
-            _ = try await gate.send("PUT", "album/monitor", body: AlbumMonitorBody(albumIds: [album.id], monitored: true))
-        }
+            root: artist.rootFolderPath ?? r.root ?? artist.path ?? "", mode: .fallback, keptAt: prior?.keptAt,
+            applied: !needsMonitor, requestId: id.description)
+        try await ledger.record(entry)
         await mutate(id) {
             $0.lidarrArtistId = artist.id
             $0.albumId = album.id
         }
+        guard needsMonitor else { return }
+        try ensure(id, .adding)
+        do {
+            _ = try await gate.send("PUT", "album/monitor", body: AlbumMonitorBody(albumIds: [album.id], monitored: true))
+        } catch let e as WriteGateError {
+            throw e   // nothing was sent: the entry stays an intent
+        } catch {
+            // The answer was lost, but Lidarr may have applied it: look.
+            if let now = try? await lidarr.albums(artistId: artist.id), now.first(where: { $0.id == album.id })?.monitored == true {
+                try? await markApplied(entry)
+            }
+            throw error
+        }
+        try await markApplied(entry)
     }
 
     /// A6: one atomic `POST /artist` built from the lookup row: main root, Fast Start, "Magpie Finds"
@@ -556,7 +593,7 @@ public actor RequestRunner {
         do {
             try await ledger.record(LedgerEntry(lidarrArtistId: artistId, albumId: nil, rgMbid: plan.releaseGroupMBID,
                                                 createdArtist: true, wasMonitoredBefore: false,
-                                                root: setup.rootFolderPath, mode: .fallback))
+                                                root: setup.rootFolderPath, mode: .fallback, requestId: id.description))
         } catch {
             Log.logger("requests").error("ledger not written for a new artist; retried with its album")
         }
@@ -622,7 +659,7 @@ public actor RequestRunner {
             do {
                 try await ledger.record(LedgerEntry(lidarrArtistId: artistId, albumId: album.id, rgMbid: rg,
                                                     createdArtist: true, wasMonitoredBefore: false,
-                                                    root: r.root ?? "", mode: .fallback))
+                                                    root: r.root ?? "", mode: .fallback, requestId: id.description))
             } catch {
                 return   // no ledger, no album id: tried again next tick
             }
@@ -820,23 +857,38 @@ public actor RequestRunner {
             other.id != id && other.plan?.releaseGroupMBID == rg
                 && (other.isActive || other.state == .ready || other.state == .kept)
         }
-        if shared { return await done() }
+        if shared { return await done() }   // the entry stays open: the other request still relies on it
         let settling = r.addSent && r.joinedTo == nil
             && now().timeIntervalSince(r.addedAt ?? r.createdAt) < Self.addSettleTime
         if r.albumId == nil { await discoverAlbum(id) }
-        guard let current = request(id), let albumId = current.albumId, let artistId = current.lidarrArtistId else {
+        var albumId = request(id)?.albumId, artistId = request(id)?.lidarrArtistId
+        if albumId == nil, let mine = try? await ledger.entries.last(where: {
+            $0.requestId == id.description && $0.albumId != nil && $0.isOpen
+        }) {
+            albumId = mine.albumId
+            artistId = mine.lidarrArtistId
+        }
+        guard let albumId, let artistId else {
             if !settling { await done() }   // the album may still appear
             return
         }
         do {
-            guard let entry = try await ledger.entry(albumId: albumId), !entry.wasMonitoredBefore, entry.keptAt == nil else {
-                return await done()
+            guard let entry = try await ledger.entry(albumId: albumId) else { return await done() }
+            // Only an open, applied entry of Magpie's own monitor is undone (never an intent, a kept album or
+            // an album the owner had monitored).
+            if entry.isOpen, entry.isApplied, !entry.wasMonitoredBefore, entry.keptAt == nil {
+                let albums = try await lidarr.albums(artistId: artistId)
+                if let album = albums.first(where: { $0.id == albumId }), album.monitored {
+                    _ = try await gate.send("PUT", "album/monitor", body: AlbumMonitorBody(albumIds: [albumId], monitored: false))
+                }
             }
-            let albums = try await lidarr.albums(artistId: artistId)
-            if let album = albums.first(where: { $0.id == albumId }), album.monitored {
-                _ = try await gate.send("PUT", "album/monitor", body: AlbumMonitorBody(albumIds: [albumId], monitored: false))
+            guard !settling else { return }
+            if entry.isOpen {
+                var closed = entry
+                closed.closedAt = now()
+                try await ledger.record(closed)
             }
-            if !settling { await done() }
+            await done()
         } catch {
             // Lidarr unreachable, changes switched off or the ledger unreadable: try again on a later tick.
             Log.logger("requests").error("clean-up postponed: \(String(describing: error), privacy: .public)")

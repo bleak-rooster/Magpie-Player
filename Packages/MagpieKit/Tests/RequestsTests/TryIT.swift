@@ -74,7 +74,7 @@ struct TryIT {
         let setup = RequestRunner.Setup(rootFolderPath: "/music/library", qualityProfileId: provisioned.fastStartProfileId,
                                         metadataProfileId: provisioned.findsMetadataProfileId,
                                         tagIds: [provisioned.magpieTagId])
-        let ledger = Ledger(fileURL: dir.appending(path: "ledger.json"))
+        let ledger = Ledger(fileURL: dir.appending(path: "ledger.json"), instance: client.instanceScope)
         let runner = RequestRunner(
             lidarr: client, gate: gate, ledger: ledger, mb: mb,
             library: LibraryAccess(startScan: {}, isScanning: { false }, refreshIndex: {}, songId: { _ in nil }),

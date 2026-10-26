@@ -243,4 +243,93 @@ import MagpieCore
         #expect(dates[0] == started.addingTimeInterval(-60))
         #expect(dates[1] == started.addingTimeInterval(300 - 60), "second poll starts at the first poll, minus a minute")
     }
+
+    // MARK: - Fix round 2
+
+    /// 1: the monitor PUT landed but its answer was lost (504): the request still knows the album, the
+    /// follow-up GET marks the entry applied, and Cancel unmonitors it.
+    @Test func lostMonitorAnswerStillUndoneOnCancel() async throws {
+        let h = await Harness()
+        h.server.ownerHasArtist(albumMonitored: false)
+        h.server.with { $0.monitorAppliedThen504 = 1 }
+        let id = try await h.runner.tryRecording(h.recording(recAlbumOnly), tier: .standard)
+        await h.runner.settle()
+        let r = try #require(await h.request(id))
+        guard case .waiting = r.state else { Issue.record("expected waiting, got \(r.state)"); return }
+        #expect(r.lidarrArtistId == 7 && r.albumId == 31)
+        #expect(try await h.ledger.entry(albumId: 31)?.isApplied == true)
+        await h.runner.cancel(id)
+        let writes = h.server.writeBodies()
+        #expect(writes.map(\.0) == ["PUT album/monitor", "PUT album/monitor"])
+        #expect(writes.last?.1["monitored"] as? Bool == false)
+        #expect(try await h.ledger.entry(albumId: 31)?.isOpen == false, "closed once cleaned up")
+    }
+
+    /// 2: an intent (decided, never applied) is never undone, even if the album is monitored by then.
+    @Test func intentEntryIsNeverUndone() async throws {
+        let h = await Harness()
+        h.server.ownerHasArtist(albumMonitored: true)   // the owner monitored it meanwhile
+        var r = MagpieRequest(recording: h.recording(recAlbumOnly), tier: .standard, createdAt: h.clock.now)
+        r.state = .cancelled
+        r.cleanupPending = true
+        r.plan = Plan(recordingMBID: recAlbumOnly, releaseGroupMBID: rgAlbum, artistMBID: artistA, lidarrArtistId: 7,
+                      mode: .fallback)
+        r.lidarrArtistId = 7
+        r.albumId = 31
+        try await h.store.save([r])
+        try await h.ledger.record(LedgerEntry(lidarrArtistId: 7, albumId: 31, rgMbid: rgAlbum, createdArtist: false,
+                                              wasMonitoredBefore: false, root: "/music/library", mode: .fallback,
+                                              applied: false, requestId: r.id.description))
+        await h.runner.tick()
+        #expect(h.server.writes.isEmpty)
+        #expect(await h.request(r.id)?.cleanupPending == false)
+        #expect(h.server.with { $0.albums.first { $0.id == 31 }?.monitored } == true)
+    }
+
+    /// 2: the monitor PUT failed without landing: the retry finishes Magpie's own monitor (not "Stopped in Lidarr").
+    @Test func unappliedMonitorIsRedoneOnRetry() async throws {
+        let h = await Harness()
+        h.server.ownerHasArtist(albumMonitored: false)
+        h.server.with { $0.monitorFails503 = 1 }
+        let id = try await h.runner.tryRecording(h.recording(recAlbumOnly), tier: .standard)
+        await h.runner.settle()
+        #expect(try await h.ledger.entry(albumId: 31)?.isApplied == false)
+        h.clock.advance(61)
+        await h.runner.tick()
+        #expect(await h.state(id) == .searching)
+        #expect(h.server.writeBodies().map(\.0) == ["PUT album/monitor", "PUT album/monitor", "POST command"])
+        #expect(try await h.ledger.entry(albumId: 31)?.isApplied == true)
+    }
+
+    /// 3: a finished request's entry is closed; if the owner then monitors the album, a new request treats it
+    /// as the owner's and its Cancel leaves it monitored.
+    @Test func closedEntryIsNotInherited() async throws {
+        let h = await Harness()
+        h.server.ownerHasArtist(albumMonitored: false)
+        let a = try await h.runner.tryRecording(h.recording(recAlbumOnly), tier: .standard)
+        await h.runner.settle()
+        await h.runner.cancel(a)
+        #expect(try await h.ledger.entry(albumId: 31)?.isOpen == false)
+        h.server.with { s in for i in s.albums.indices where s.albums[i].id == 31 { s.albums[i].monitored = true } }
+
+        let b = try await h.runner.tryRecording(h.recording(recAlbumOnly2, title: "Other"), tier: .standard)
+        await h.runner.settle()
+        #expect(try await h.ledger.entry(albumId: 31)?.wasMonitoredBefore == true)
+        await h.runner.cancel(b)
+        #expect(h.server.writeBodies().map(\.0) == ["PUT album/monitor", "POST command", "PUT album/monitor", "POST command"])
+        #expect(h.server.with { $0.albums.first { $0.id == 31 }?.monitored } == true)
+    }
+
+    /// 4: an unscoped ledger is refused.
+    @Test func runnerRefusesAnUnscopedLedger() async throws {
+        let h = await Harness()
+        let client = LidarrClient(base: URL(string: "https://music.example/lidarr")!, apiKey: "k", transport: h.server.clientTransport)
+        let runner = RequestRunner(lidarr: client, gate: h.gate, ledger: Ledger(fileURL: nil),
+                                   mb: MusicBrainzClient(transport: h.server.transport),
+                                   library: h.library.access, store: h.store, setup: { Harness.setup })
+        await #expect(throws: RequestRunner.TryError.unavailable) {
+            _ = try await runner.tryRecording(h.recording(recAlbumOnly), tier: .standard)
+        }
+        #expect(h.server.transport.requests.isEmpty)
+    }
 }
