@@ -36,4 +36,41 @@ import Testing
     @Test func redactsHeadersCaseInsensitively() {
         #expect(Redactor.sanitize(headers: ["authorization": "x"])["authorization"] == "•••")
     }
+
+    /// Security M5: a logged error never carries its failing URL (credentials included).
+    @Test func errorCategoryNeverIncludesTheURL() {
+        let secret = "https://user:pw@music.example/rest/ping?u=sam&t=tok&s=salt"
+        let error = URLError(.timedOut, userInfo: [NSURLErrorFailingURLStringErrorKey: secret,
+                                                   NSURLErrorFailingURLErrorKey: URL(string: secret)!])
+        #expect(String(describing: error).contains("tok"), "precondition: the default description leaks")
+        let text = Log.category(of: error)
+        #expect(text == "URLError \(URLError.Code.timedOut.rawValue)")
+        let ns = NSError(domain: "X", code: 7, userInfo: [NSURLErrorFailingURLStringErrorKey: secret])
+        #expect(Log.category(of: ns) == "X 7")
+    }
+
+    /// Security M5 lint: no source logs `String(describing:)` or `localizedDescription` publicly (either can
+    /// carry a URL with credentials). Use `Log.category(of:)`.
+    @Test func noPublicErrorDescriptionsInLogs() throws {
+        let root = URL(filePath: #filePath).deletingLastPathComponent()   // Tests/MagpieCoreTests
+            .deletingLastPathComponent().deletingLastPathComponent()      // Packages/MagpieKit
+        let dirs = [root.appending(path: "Sources"),
+                    root.deletingLastPathComponent().deletingLastPathComponent().appending(path: "App")]
+        var offenders: [String] = []
+        var scanned = 0
+        for dir in dirs {
+            let files = FileManager.default.enumerator(at: dir, includingPropertiesForKeys: nil)?
+                .compactMap { $0 as? URL }.filter { $0.pathExtension == "swift" } ?? []
+            for file in files {
+                scanned += 1
+                let lines = try String(contentsOf: file, encoding: .utf8).split(separator: "\n")
+                for (n, line) in lines.enumerated() where line.contains("privacy: .public")
+                    && (line.contains("String(describing:") || line.contains("localizedDescription")) {
+                    offenders.append("\(file.lastPathComponent):\(n + 1)")
+                }
+            }
+        }
+        #expect(scanned > 20)
+        #expect(offenders.isEmpty, "public error text in logs: \(offenders)")
+    }
 }

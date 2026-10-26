@@ -18,6 +18,14 @@ public enum Log {
         return headerText.isEmpty ? "\(method) \(url)" : "\(method) \(url) [\(headerText)]"
     }
 
+    /// What kind of error it was, never its text: an `NSError`/`URLError` description can carry the failing
+    /// URL (`NSErrorFailingURLStringKey`), credentials included (security M5). Safe for `privacy: .public`.
+    public static func category(of error: Error) -> String {
+        if let url = error as? URLError { return "URLError \(url.code.rawValue)" }
+        let ns = error as NSError
+        return "\(ns.domain) \(ns.code)"
+    }
+
     public static func request(_ r: URLRequest, category: String = "network") {
         let text = describe(r)
         logger(category).debug("\(text, privacy: .public)")

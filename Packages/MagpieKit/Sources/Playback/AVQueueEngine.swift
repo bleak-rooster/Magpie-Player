@@ -288,7 +288,7 @@ public final class AVQueueEngine: PlaybackEngine {
         do {
             try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, policy: .longFormAudio)
         } catch {
-            Log.logger("playback").error("audio session category failed: \(error.localizedDescription, privacy: .public)")
+            Log.logger("playback").error("audio session category failed: \(Log.category(of: error), privacy: .public)")
         }
     }
 
@@ -298,7 +298,7 @@ public final class AVQueueEngine: PlaybackEngine {
             try AVAudioSession.sharedInstance().setActive(true)
             sessionActivated = true
         } catch {
-            Log.logger("playback").error("audio session activation failed: \(error.localizedDescription, privacy: .public)")
+            Log.logger("playback").error("audio session activation failed: \(Log.category(of: error), privacy: .public)")
         }
     }
 

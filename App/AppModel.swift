@@ -401,7 +401,7 @@ final class AppModel {
             do {
                 try await store.refresh(fetchPage: fetch)
             } catch {
-                Log.logger("matchindex").error("refresh failed: \(error.localizedDescription, privacy: .public)")
+                Log.logger("matchindex").error("refresh failed: \(Log.category(of: error), privacy: .public)")
             }
         }
     }
@@ -549,7 +549,7 @@ final class AppModel {
             }
         } catch {
             starOverrides[song.id] = !target
-            Log.logger("session").error("star failed: \(error.localizedDescription, privacy: .public)")
+            Log.logger("session").error("star failed: \(Log.category(of: error), privacy: .public)")
         }
     }
 }

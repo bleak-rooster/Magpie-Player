@@ -45,7 +45,7 @@ struct SessionStore: SessionStoring {
             e = try keychain.get(Self.endpointKey)
             c = try keychain.get(Self.credentialsKey)
         } catch {
-            Log.logger("session").error("keychain unreadable: \(String(describing: error), privacy: .public)")
+            Log.logger("session").error("keychain unreadable: \(Log.category(of: error), privacy: .public)")
             return .unavailable
         }
         guard let e, let c,

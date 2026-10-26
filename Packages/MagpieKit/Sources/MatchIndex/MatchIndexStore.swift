@@ -95,7 +95,7 @@ public actor MatchIndexStore {
                 try AtomicFile.write(Snapshot(version: Snapshot.currentVersion, savedAt: now, index: built), to: fileURL)
                 try Self.excludeFromBackup(fileURL)
             } catch {
-                Log.logger("matchindex").error("snapshot not saved: \(error.localizedDescription, privacy: .public)")
+                Log.logger("matchindex").error("snapshot not saved: \(Log.category(of: error), privacy: .public)")
             }
         }
     }
