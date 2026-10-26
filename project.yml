@@ -85,6 +85,8 @@ targets:
     sources: [Tests/MagpieTests]
     dependencies:
       - target: Magpie
+      - package: MagpieKit
+        product: MagpieTestSupport
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.bleak-rooster.magpie.tests

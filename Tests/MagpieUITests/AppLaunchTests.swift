@@ -6,6 +6,6 @@ final class AppLaunchTests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["-MagpieResetState", "YES"]
         app.launch()
-        XCTAssertTrue(app.staticTexts["Connect your music"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["Your music server"].waitForExistence(timeout: 10))
     }
 }
