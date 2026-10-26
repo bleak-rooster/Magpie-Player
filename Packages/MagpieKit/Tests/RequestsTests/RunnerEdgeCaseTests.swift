@@ -111,7 +111,7 @@ private let proxyPage = MockTransport.Response(
         await h.runner.cancel(id)
         await h.runner.tick()
         #expect(await h.state(id) == .cancelled)
-        #expect(h.server.writes.count == writesBefore + 0, "no undo PUT while Lidarr answers HTML")
+        #expect(h.server.writes.count == writesBefore, "no undo PUT while Lidarr answers HTML")
         #expect(await h.request(id)?.cleanupPending == true, "the undo is owed, not dropped")
 
         h.server.with { $0.everyLidarrAnswer = nil }
