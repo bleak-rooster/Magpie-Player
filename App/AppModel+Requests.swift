@@ -58,6 +58,8 @@ extension AppModel {
         let retired = runner
         runner = nil
         gate = nil
+        ledger = nil
+        requestStore = nil
         if let retired { Task { await retired.stop() } }
         guard session != nil, let client = lidarrClient else {
             requests = []
@@ -65,6 +67,12 @@ extension AppModel {
         }
         let gate = LidarrWriteGate(client: client, logURL: LidarrWriteGate.defaultLogURL(in: dataDirectory),
                                    defaultsSuite: gateDefaultsSuite)
+        // CRITICAL 1: one ledger view and one requests file per Lidarr server.
+        let scope = client.instanceScope
+        let ledger = Ledger(fileURL: Ledger.defaultURL(in: dataDirectory), instance: scope)
+        let requestStore = RequestStore(fileURL: RequestStore.defaultURL(in: dataDirectory, instance: scope))
+        self.ledger = ledger
+        self.requestStore = requestStore
         let runner = RequestRunner(
             lidarr: client, gate: gate, ledger: ledger, mb: musicBrainz, library: libraryAccess(), store: requestStore,
             setup: { [weak self] in await self?.lidarrSetup?.runnerSetup },
@@ -209,6 +217,12 @@ extension AppModel {
 
     func forgetRequest(_ id: RequestID) async {
         await runner?.forget(id)
+    }
+
+    /// "Not showing up in your library yet" › Check again.
+    func checkAgain(_ id: RequestID) async {
+        await runner?.checkAgain(id)
+        pollRequests()
     }
 
     func magpieRequest(_ id: RequestID) -> MagpieRequest? { requests.first { $0.id == id } }

@@ -10,7 +10,7 @@ struct ActivityView: View {
     private let themed = Themed()
 
     var body: some View {
-        let groups = Dictionary(grouping: model.requests.reversed()) { RequestCopy.group($0.state) }
+        let groups = Dictionary(grouping: model.requests.reversed()) { RequestCopy.group($0) }
         List {
             if groups.keys.allSatisfy({ $0 == nil }) {
                 ContentUnavailableView("Nothing on its way", systemImage: "tray",
@@ -42,6 +42,9 @@ struct ActivityView: View {
         .listRowBackground(Color.clear)
         .accessibilityIdentifier("request-\(request.recording.title)")
         .swipeActions {
+            if request.isNotListed {
+                Button("Check again") { Task { await model.checkAgain(request.id) } }
+            }
             if RequestCopy.canCancel(request.state) {
                 Button("Stop looking", role: .destructive) { Task { await model.cancelRequest(request.id) } }
             } else if !request.cleanupPending {
@@ -57,16 +60,15 @@ struct RequestRow: View {
     private let themed = Themed()
 
     var body: some View {
-        let state = request.state
         HStack(spacing: Tokens.Spacing.m) {
-            RecordArt(side: 44, isSpinning: RequestCopy.group(state) == .inProgress && request.tier != .patient)
+            RecordArt(side: 44, isSpinning: RequestCopy.group(request) == .inProgress && request.tier != .patient)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
                 Text(request.recording.title).font(.body).lineLimit(2)
                 Text(request.recording.artist).font(.footnote).foregroundStyle(themed.palette.ink2Color).lineLimit(1)
-                Label(RequestCopy.status(state), systemImage: RequestCopy.symbol(state))
+                Label(RequestCopy.status(request), systemImage: RequestCopy.symbol(request))
                     .font(.caption).foregroundStyle(themed.palette.accentInkColor).lineLimit(2)
-                if request.tier == .patient, RequestCopy.group(state) == .inProgress {
+                if request.tier == .patient, RequestCopy.group(request) == .inProgress {
                     Text(RequestCopy.tierLine(.patient)).font(.caption).foregroundStyle(themed.palette.ink2Color)
                 }
             }
@@ -74,7 +76,7 @@ struct RequestRow: View {
         .padding(.vertical, Tokens.Spacing.xs)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(request.recording.title), \(request.recording.artist)")
-        .accessibilityValue(RequestCopy.status(state))
+        .accessibilityValue(RequestCopy.status(request))
     }
 }
 
@@ -104,7 +106,7 @@ struct RequestDetailView: View {
     @ViewBuilder private func content(_ request: MagpieRequest) -> some View {
         let state = request.state
         VStack(spacing: Tokens.Spacing.l) {
-            if request.tier != .patient, RequestCopy.group(state) != .attention {
+            if request.tier != .patient, RequestCopy.group(request) != .attention {
                 WaitView(title: request.recording.title, artist: subtitle(request), stage: RequestCopy.stage(state),
                          phrase: RequestCopy.phrase(state, tier: request.tier))
             } else {
@@ -134,10 +136,10 @@ struct RequestDetailView: View {
                 RecordArt(side: 150).accessibilityHidden(true).padding(.vertical, Tokens.Spacing.l)
                 Text(request.recording.title).magpieDisplay(.title2).multilineTextAlignment(.center)
                 Text(subtitle(request)).font(.subheadline).foregroundStyle(themed.palette.ink2Color)
-                Label(RequestCopy.status(request.state), systemImage: RequestCopy.symbol(request.state))
+                Label(RequestCopy.status(request), systemImage: RequestCopy.symbol(request))
                     .font(.body).foregroundStyle(themed.palette.accentInkColor)
                     .accessibilityIdentifier("request-status")
-                if request.tier == .patient, RequestCopy.group(request.state) == .inProgress {
+                if request.tier == .patient, RequestCopy.group(request) == .inProgress {
                     Text("This one might take a while. It can take a few hours. You can leave; it'll be in your library when it's home.")
                         .font(.footnote).foregroundStyle(themed.palette.ink2Color).multilineTextAlignment(.center)
                 }
@@ -158,6 +160,12 @@ struct RequestDetailView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .accessibilityIdentifier("request-play")
+            }
+            if request.isNotListed {
+                Button("Check again") { Task { await model.checkAgain(requestId) } }
+                    .buttonStyle(.bordered)
+                    .frame(minHeight: Tokens.minHitSize)
+                    .accessibilityIdentifier("request-check-again")
             }
             if RequestCopy.canCancel(request.state) {
                 Button("Stop looking", role: .destructive) { confirmsStop = true }

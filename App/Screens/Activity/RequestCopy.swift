@@ -18,6 +18,17 @@ enum RequestCopy {
     }
 
     /// Where Activity lists the request; nil for stopped or removed ones.
+    static func group(_ request: MagpieRequest) -> Group? {
+        request.isNotListed ? .attention : group(request.state)
+    }
+
+    static let notListed = "Not showing up in your library yet"
+
+    /// The status line for a request (its state, or the not-listed note).
+    static func status(_ request: MagpieRequest) -> String {
+        request.isNotListed ? notListed : status(request.state)
+    }
+
     static func group(_ state: RequestState) -> Group? {
         switch state {
         case .pending, .resolving, .adding, .searching, .downloading, .importing: .inProgress
@@ -60,6 +71,7 @@ enum RequestCopy {
             case .noRelease: "Couldn't find a release with this song"
             case .notInCatalogue: "Not in this artist's catalogue on your server"
             case .addFailed: "Your server said no to this one"
+            case .stoppedInLidarr: "Stopped in Lidarr"
             case .unknown: "Something went wrong"
             }
         }
@@ -81,6 +93,10 @@ enum RequestCopy {
     static func percent(_ p: Double) -> String { "\(Int((min(1, max(0, p)) * 100).rounded()))%" }
 
     /// SF Symbol paired with the status text (D3: state is never shape or colour alone).
+    static func symbol(_ request: MagpieRequest) -> String {
+        request.isNotListed ? "exclamationmark.circle" : symbol(request.state)
+    }
+
     static func symbol(_ state: RequestState) -> String {
         switch group(state) {
         case .inProgress: "arrow.down.circle"

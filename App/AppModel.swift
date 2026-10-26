@@ -84,9 +84,10 @@ final class AppModel {
     @ObservationIgnored let appDefaults: UserDefaults
     /// Where the change log, ledger and requests live (Application Support/Magpie).
     @ObservationIgnored let dataDirectory: URL
-    /// The one ledger for the whole app (re-reads its file on every call, so it can't go stale).
-    @ObservationIgnored let ledger: Ledger
-    @ObservationIgnored let requestStore: RequestStore
+    /// The ledger and requests of the connected Lidarr (scoped by `LidarrClient.instanceScope`, so another
+    /// server's ids are never acted on). Rebuilt with the runner; the ledger re-reads its file on every call.
+    @ObservationIgnored var ledger: Ledger?
+    @ObservationIgnored var requestStore: RequestStore?
     @ObservationIgnored var gate: LidarrWriteGate?
     @ObservationIgnored var runner: RequestRunner?
     @ObservationIgnored var runnerTasks: [Task<Void, Never>] = []
@@ -140,8 +141,6 @@ final class AppModel {
         self.notifications = notifications
         let data = dataDirectory ?? FileManager.default.temporaryDirectory.appending(path: "magpie-\(UUID().uuidString)")
         self.dataDirectory = data
-        self.ledger = Ledger(fileURL: Ledger.defaultURL(in: data))
-        self.requestStore = RequestStore(fileURL: RequestStore.defaultURL(in: data))
         self.gateDefaultsSuite = gateDefaultsSuite
         self.gateDefaults = gateDefaultsSuite.flatMap { UserDefaults(suiteName: $0) } ?? .standard
         self.changesAllowed = gateDefaults.bool(forKey: LidarrWriteGate.enabledDefaultsKey)
@@ -269,6 +268,7 @@ final class AppModel {
 
     /// Stops playback, forgets the server and clears the Keychain.
     func signOut() {
+        let retiring = runner, doomed = requestStore
         player.play([], startAt: 0)
         store.clear()
         session = nil
@@ -286,7 +286,10 @@ final class AppModel {
         lidarrStatus = nil
         setupStore.clear()
         rebuildRunner()
-        Task { [requestStore] in await requestStore.erase() }
+        Task {
+            await retiring?.stop()
+            await doomed?.erase()
+        }
     }
 
     // MARK: - Requests with failover

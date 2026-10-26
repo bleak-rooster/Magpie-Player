@@ -134,6 +134,49 @@ final class MemoryTokenStore: ListenBrainzTokenStoring, @unchecked Sendable {
         UserDefaults(suiteName: gateSuite)?.removePersistentDomain(forName: gateSuite)
     }
 
+    /// CRITICAL 1: switching to another Lidarr shows none of the first one's requests and writes nothing for them.
+    @Test func switchingLidarrScopesRequests() async throws {
+        stubRoots(["/music/library"])
+        saveProvisioned()
+        LidarrSetupStore(defaults: defaults).save(LidarrSetup(base: lidarrBase, fastStartProfileId: 4,
+                                                              findsMetadataProfileId: 3, magpieTagId: 1,
+                                                              rootFolderPath: "/music/library"))
+        let t = transport.inner
+        t.stub(pathSuffix: "/ws/2/recording/\(recordingMBID.rawValue)", body: Data(#"""
+        {"id":"\#(recordingMBID.rawValue)","title":"Harbour Lights","artist-credit":[{"artist":{"id":"\#(artistMBID)"}}],
+         "releases":[{"id":"545b96d6-c867-3053-9548-3e8635390e38","title":"The Cat Is Out","status":"Official",
+           "release-group":{"id":"\#(rg)","primary-type":"Album","secondary-types":[]}}]}
+        """#.utf8))
+        t.stub(pathSuffix: "/api/v1/artist", body: Data(#"[{"id":7,"artistName":"Judie Tzuke","foreignArtistId":"\#(artistMBID)"}]"#.utf8))
+        t.stub(pathSuffix: "/api/v1/album", body: Data(#"[{"id":31,"title":"The Cat Is Out","artistId":7,"foreignAlbumId":"\#(rg)","monitored":true}]"#.utf8))
+        t.stub(method: "POST", pathSuffix: "/api/v1/command", body: Data(#"{"id":5}"#.utf8))
+
+        let model = makeModel()
+        try await model.signIn(urls: [home], username: "admin", password: "pw")
+        _ = try await model.connectLidarr(base: lidarrBase, apiKey: "key")
+        await model.setChangesAllowed(true)
+        let id = try await model.tryRecording(ExternalRecording(recordingMBID: recordingMBID, title: "Harbour Lights",
+                                                                artist: "Judie Tzuke", source: .listenBrainz))
+        for _ in 0..<200 where model.magpieRequest(id)?.state != .searching { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(model.magpieRequest(id) != nil)
+
+        let other = URL(string: "http://192.168.1.3:8686")!
+        _ = try await model.connectLidarr(base: other, apiKey: "other-key")
+        for _ in 0..<50 { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(model.requests.isEmpty, "another Lidarr's requests are not shown")
+        #expect(model.ledger?.instance != nil)
+        let ledgerEntries = try await model.ledger?.entries ?? []
+        #expect(ledgerEntries.isEmpty)
+        await model.cancelRequest(id)
+        #expect(!t.requests.contains { $0.url?.host == "192.168.1.3" && $0.httpMethod != "GET" })
+
+        _ = try await model.connectLidarr(base: lidarrBase, apiKey: "key")
+        for _ in 0..<200 where model.magpieRequest(id) == nil { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(model.magpieRequest(id) != nil, "back on the first Lidarr, its request is there again")
+        model.signOut()
+        UserDefaults(suiteName: gateSuite)?.removePersistentDomain(forName: gateSuite)
+    }
+
     @Test func countPlaysOffSendsNoScrobbles() async throws {
         let t = MockTransport()
         t.stub(pathSuffix: "/rest/ping", body: ok)
@@ -189,7 +232,7 @@ final class MemoryTokenStore: ListenBrainzTokenStoring, @unchecked Sendable {
             .waiting(reason: WaitReason(.stillLooking, since: .now), retryAt: .now),
             .waiting(reason: WaitReason(.serviceUnavailable, since: .now), retryAt: .now),
             .waiting(reason: WaitReason(.downloadFailed, since: .now), retryAt: .now),
-        ] + FailReason.allCases.map { .failed(reason: $0) }
+        ] + FailReason.allCases.filter { $0 != .stoppedInLidarr }.map { .failed(reason: $0) }
         for s in all {
             let text = RequestCopy.status(s) + RequestCopy.phrase(s, tier: .standard)
             #expect(!text.isEmpty)
@@ -198,6 +241,15 @@ final class MemoryTokenStore: ListenBrainzTokenStoring, @unchecked Sendable {
             }
         }
         #expect(RequestCopy.status(.downloading(progress: 0.62)) == "Bringing it home · 62%")
+        // Fix round ruling: the owner's own stop in Lidarr is named as such.
+        #expect(RequestCopy.status(.failed(reason: .stoppedInLidarr)) == "Stopped in Lidarr")
+        var stuck = MagpieRequest(recording: ExternalRecording(title: "t", artist: "a", source: .listenBrainz),
+                                  tier: .standard, createdAt: .now)
+        stuck.state = .importing
+        #expect(RequestCopy.group(stuck) == .inProgress)
+        stuck.notListedAt = .now
+        #expect(RequestCopy.group(stuck) == .attention)
+        #expect(RequestCopy.status(stuck) == "Not showing up in your library yet")
         #expect(RequestCopy.phrase(.searching, tier: .patient) == "can take a few hours")
         #expect(RequestCopy.tierLine(.standard) == "Standard · usually a few minutes")
         #expect(RequestCopy.canCancel(.searching) && !RequestCopy.canCancel(.ready) && !RequestCopy.canCancel(.cancelled))

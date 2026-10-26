@@ -56,6 +56,9 @@ public enum FailReason: String, Sendable, Codable, CaseIterable {
     case notInCatalogue
     /// Lidarr refused the add / monitor.
     case addFailed
+    /// On a retry the album was no longer monitored (or gone) in Lidarr: the owner's decision; nothing is
+    /// re-monitored.
+    case stoppedInLidarr
     case unknown
 }
 

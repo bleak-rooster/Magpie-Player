@@ -24,10 +24,51 @@ final class TestClock: @unchecked Sendable {
     func advance(_ seconds: TimeInterval) { lock.withLock { $0 = $0.addingTimeInterval(seconds) } }
 }
 
+/// Holds one request in flight until released, and says when it has arrived.
+actor Latch {
+    private var arrived = false
+    private var released = false
+    private var arrivalWaiters: [CheckedContinuation<Void, Never>] = []
+    private var holders: [CheckedContinuation<Void, Never>] = []
+
+    func hold() async {
+        arrived = true
+        arrivalWaiters.forEach { $0.resume() }
+        arrivalWaiters = []
+        if released { return }
+        await withCheckedContinuation { holders.append($0) }
+    }
+
+    func waitArrived() async {
+        if arrived { return }
+        await withCheckedContinuation { arrivalWaiters.append($0) }
+    }
+
+    func release() {
+        released = true
+        holders.forEach { $0.resume() }
+        holders = []
+    }
+}
+
+/// The transport the client uses: the mock, except that the n-th request matching `hold` waits on `latch`.
+struct HoldingTransport: HTTPTransport {
+    let inner: MockTransport
+    let lidarr: FakeLidarr
+
+    func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        if let latch = lidarr.shouldHold(request) { await latch.hold() }
+        return try await inner.send(request)
+    }
+}
+
 final class FakeLidarr: @unchecked Sendable {
     struct Artist { var id: Int; var mbid: MBID; var root: String }
     struct Album { var id: Int; var artistId: Int; var rg: MBID; var title: String; var monitored: Bool }
-    struct Queued { var albumId: Int; var size: Double; var sizeleft: Double }
+    struct Queued {
+        var albumId: Int; var size: Double; var sizeleft: Double
+        var status = "downloading"; var tracked = "downloading"; var messages: [String] = []
+    }
     struct Event { var albumId: Int; var type: String; var date: Date }
 
     struct State {
@@ -42,6 +83,35 @@ final class FakeLidarr: @unchecked Sendable {
         var nextArtistId = 42
         var nextCommandId = 77
         var down = false
+        /// POST /artist creates the artist but answers 504 (the outcome looks unclear to Magpie).
+        var addAnswers504 = false
+        /// Hold the n-th GET whose path ends with `suffix`.
+        var hold: (suffix: String, n: Int)?
+        var holdSeen = 0
+    }
+
+    let latch = Latch()
+
+    func shouldHold(_ request: URLRequest) -> Latch? {
+        let path = request.url?.path ?? ""
+        let hit: Bool = with { s in
+            guard let h = s.hold, (request.httpMethod ?? "GET") == "GET", path.hasSuffix(h.suffix) else { return false }
+            s.holdSeen += 1
+            return s.holdSeen == h.n
+        }
+        return hit ? latch : nil
+    }
+
+    var clientTransport: HoldingTransport { HoldingTransport(inner: transport, lidarr: self) }
+
+    /// GETs to MusicBrainz so far.
+    var mbCalls: Int { transport.requests.filter { $0.url?.path.contains("/ws/2/") == true }.count }
+
+    /// `history/since` `date` values asked for, in order.
+    var historyDates: [String] {
+        transport.requests.filter { $0.url?.path.hasSuffix("/history/since") == true }.compactMap {
+            URLComponents(url: $0.url!, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "date" }?.value
+        }
     }
 
     let state = OSAllocatedUnfairLock(initialState: State())
@@ -62,7 +132,7 @@ final class FakeLidarr: @unchecked Sendable {
 
     func writeBodies() -> [(String, [String: Any])] {
         writes.map { req in
-            let path = req.url!.path.replacingOccurrences(of: "/lidarr/api/v1/", with: "")
+            let path = req.url!.path.replacingOccurrences(of: "/lidarr/api/v1/", with: "").replacingOccurrences(of: "/api/v1/", with: "")
             let body = req.httpBody.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:]
             return ("\(req.httpMethod!) \(path)", body)
         }
@@ -107,6 +177,7 @@ final class FakeLidarr: @unchecked Sendable {
                 }
                 return id
             }
+            if with({ $0.addAnswers504 }) { return MockTransport.Response(status: 504) }
             return reply(["id": id, "artistName": "Aurora Field"], status: 201)
         }
         t.stub(method: "POST", pathSuffix: "/api/v1/command") { [self] _ in
@@ -116,7 +187,8 @@ final class FakeLidarr: @unchecked Sendable {
         t.stub(pathSuffix: "/api/v1/queue/details") { [self] _ in
             if let d = down() { return d }
             return reply(with { s in s.queue.map { ["albumId": $0.albumId, "size": $0.size, "sizeleft": $0.sizeleft,
-                                                    "status": "downloading", "trackedDownloadState": "downloading"] as [String: Any] } })
+                                                    "status": $0.status, "trackedDownloadState": $0.tracked,
+                                                    "statusMessages": [["title": "t", "messages": $0.messages]]] as [String: Any] } })
         }
         t.stub(pathSuffix: "/api/v1/history/since") { [self] _ in
             if let d = down() { return d }
@@ -201,15 +273,16 @@ struct Harness {
     static let setup = RequestRunner.Setup(rootFolderPath: "/music/library", qualityProfileId: 4,
                                            metadataProfileId: 3, tagIds: [1])
 
-    init(changesOn: Bool = true, directory: URL? = nil, lidarr existing: FakeLidarr? = nil) async {
+    init(changesOn: Bool = true, directory: URL? = nil, lidarr existing: FakeLidarr? = nil,
+         base: URL = URL(string: "https://music.example/lidarr")!) async {
         let dir = directory ?? FileManager.default.temporaryDirectory.appending(path: "magpie-runner-\(UUID().uuidString)")
         let lidarr = existing ?? FakeLidarr()
-        let client = LidarrClient(base: URL(string: "https://music.example/lidarr")!, apiKey: "k", transport: lidarr.transport)
+        let client = LidarrClient(base: base, apiKey: "k", transport: lidarr.clientTransport)
         gate = LidarrWriteGate(client: client, logURL: dir.appending(path: "log.json"), defaultsSuite: suite)
         await gate.setEnabled(changesOn)
-        ledger = Ledger(fileURL: dir.appending(path: "ledger.json"))
-        store = RequestStore(fileURL: dir.appending(path: "requests.json"))
-        let mb = MusicBrainzClient(transport: lidarr.transport,
+        ledger = Ledger(fileURL: dir.appending(path: "ledger.json"), instance: client.instanceScope)
+        store = RequestStore(fileURL: RequestStore.defaultURL(in: dir, instance: client.instanceScope))
+        let mb = MusicBrainzClient(transport: lidarr.clientTransport,
                                    limiter: RateLimiter(perSecond: 1_000, sleep: { _ in }))
         let clock = self.clock, ready = self.ready
         runner = RequestRunner(lidarr: client, gate: gate, ledger: ledger, mb: mb, library: library.access,

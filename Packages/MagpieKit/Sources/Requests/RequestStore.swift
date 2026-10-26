@@ -70,6 +70,11 @@ public struct MagpieRequest: Sendable, Codable, Equatable, Identifiable {
     /// Date of the newest download failure already acted on.
     public var failureSeenAt: Date?
     public var lastScanAt: Date?
+    /// When the request last entered `importing`.
+    public var importingSince: Date?
+    /// Set when the library still didn't list the song `RequestRunner.importingLimit` after import: the
+    /// library is no longer polled for it until the owner taps Check again.
+    public var notListedAt: Date?
     /// The library song once Navidrome lists it.
     public var songId: String?
     /// Cancel/fail clean-up (unmonitor) still to do.
@@ -88,6 +93,9 @@ public struct MagpieRequest: Sendable, Codable, Equatable, Identifiable {
 
     /// Counts toward the limit of 5 (G7) and is polled: not finished and not yet ready.
     public var isActive: Bool { !state.isTerminal && state != .ready }
+
+    /// Imported by Lidarr but not listed by the library after the time limit (Needs attention).
+    public var isNotListed: Bool { state == .importing && notListedAt != nil }
 }
 
 public enum RequestStoreError: Error, Equatable {
@@ -98,8 +106,10 @@ public enum RequestStoreError: Error, Equatable {
 
 /// The requests on disk (`Application Support/Magpie/requests.json`), written atomically with file protection.
 public actor RequestStore {
-    public static func defaultURL(in directory: URL = URL.applicationSupportDirectory) -> URL {
-        directory.appending(path: "Magpie/requests.json")
+    /// `Application Support/Magpie/requests-<instance>.json`: one file per Lidarr server
+    /// (`LidarrClient.instanceScope`), so requests never cross servers.
+    public static func defaultURL(in directory: URL = URL.applicationSupportDirectory, instance: String) -> URL {
+        directory.appending(path: "Magpie/requests-\(instance).json")
     }
 
     private let fileURL: URL?

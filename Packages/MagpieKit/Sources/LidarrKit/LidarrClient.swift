@@ -17,6 +17,12 @@ public struct LidarrClient: Sendable {
         self.connection = LidarrConnection(base: base, apiKey: apiKey, transport: transport)
     }
 
+    /// Identifies this Lidarr server for on-device records (ledger, requests): a hash of the address and the
+    /// API key, which is unique per Lidarr install. Lidarr has no stable server id in `/system/status`
+    /// (`instanceName` is a free label). A changed address or regenerated key starts a fresh scope: Magpie
+    /// then forgets earlier requests rather than risk acting on another server's ids.
+    public var instanceScope: String { connection.instanceScope }
+
     // MARK: - Plumbing
 
     private func get(_ path: String, _ query: [URLQueryItem] = []) async throws -> (Data, HTTPURLResponse) {

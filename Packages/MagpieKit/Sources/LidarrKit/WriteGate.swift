@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import MagpieCore
 import os
@@ -18,6 +19,14 @@ struct LidarrConnection: Sendable {
         self.base = base
         self.apiKey = apiKey
         self.transport = transport
+    }
+
+    /// Hash of the address and API key (`LidarrClient.instanceScope`); the key itself never leaves this type.
+    var instanceScope: String {
+        var text = base.absoluteString.lowercased()
+        while text.hasSuffix("/") { text.removeLast() }
+        let digest = SHA256.hash(data: Data("\(text)|\(apiKey)".utf8))
+        return digest.prefix(12).map { String(format: "%02x", $0) }.joined()
     }
 
     /// A GET under `api/v1/`. Reads only.

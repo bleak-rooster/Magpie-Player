@@ -203,7 +203,7 @@ private struct SearchContent: View {
     /// A song already asked for shows how it's coming along instead of "Not in your library".
     private func rowState(for recording: ExternalRecording) -> RowState {
         guard let request = app.requests.last(where: { r in
-            RequestCopy.group(r.state) != nil && (r.recording.recordingMBID.map { $0 == recording.recordingMBID } ?? false)
+            RequestCopy.group(r) != nil && (r.recording.recordingMBID.map { $0 == recording.recordingMBID } ?? false)
         }) else { return .notYet }
         switch request.state {
         case .downloading(let p) where p > 0: return .onItsWay(progress: p, phrase: RequestCopy.percent(p))
