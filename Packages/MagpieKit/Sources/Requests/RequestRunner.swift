@@ -250,10 +250,24 @@ public actor RequestRunner {
     private func changed() async {
         guard !stopped else { return }
         do { try await store.save(list) } catch {
-            Log.logger("requests").error("requests not saved: \(error.localizedDescription, privacy: .public)")
+            Log.logger("requests").error("requests not saved: \(Log.category(of: error), privacy: .public)")
         }
         publish()
     }
+
+    /// M6: the request list on disk *now*. Called before every Lidarr write, so what the write depends on
+    /// (`addSent`, the album and artist ids, the cancelled state) survives a relaunch. Throws when the save
+    /// fails: the write is not sent and the request waits.
+    private func persist() async throws {
+        guard !stopped else { throw Superseded() }
+        do { try await store.save(list) } catch {
+            Log.logger("requests").error("requests not saved; Lidarr write postponed")
+            throw NotSaved()
+        }
+    }
+
+    /// The request list could not be saved before a Lidarr write (M6): nothing was sent; wait and retry.
+    private struct NotSaved: Error {}
 
     private func publish() {
         for c in watchers.values { c.yield(list) }
@@ -469,29 +483,43 @@ public actor RequestRunner {
         let albums = try await lidarr.albums(artistId: artistId)
         lastLidarrContact = now()
         guard let album = albums.first(where: { $0.id == albumId }) else { throw AddFailure(reason: .stoppedInLidarr) }
-        if let entry = try await ledger.entry(albumId: albumId), entry.isOpen, !entry.isApplied,
-           entry.requestId == id.description {
-            var e = entry
-            switch (entry.send, album.monitored) {
-            case (.notSent, true):
-                e.wasMonitoredBefore = true
-                e.send = .applied
-                try await ledger.record(e)
-            case (.notSent, false):
-                try ensure(id, .adding)
-                try await sendMonitor(e, artistId: artistId, albumId: albumId)
-            case (.unclear, true):
-                e.send = .applied
-                try await ledger.record(e)
-            case (.unclear, false):
-                throw AddFailure(reason: .stoppedInLidarr)
-            case (.applied, _):
-                break
-            }
-            return
+        if let entry = try await ledger.entry(albumId: albumId), Self.isOwnPending(entry, id) {
+            return try await resolveOwnPending(id, entry, monitored: album.monitored, artistId: artistId, albumId: albumId)
         }
         let settling = r.addSent && now().timeIntervalSince(r.addedAt ?? r.createdAt) < Self.addSettleTime
         guard album.monitored || settling else { throw AddFailure(reason: .stoppedInLidarr) }
+    }
+
+    /// An open entry of this request whose monitor isn't known to have applied (`notSent` or `unclear`).
+    static func isOwnPending(_ entry: LedgerEntry, _ id: RequestID) -> Bool {
+        entry.isOpen && !entry.isApplied && entry.requestId == id.description
+    }
+
+    /// The fix-round-3 table for this request's own pending entry, used by both `retrySearchOnly` and
+    /// `monitorExisting` (security H1: never replace an `unclear` entry with a fresh `notSent` one):
+    /// - not sent + monitored now: the owner did it (wasMonitoredBefore = true, never undone);
+    /// - not sent + unmonitored: send it now (`sendMonitor`);
+    /// - unclear + monitored: Magpie's write landed (applied);
+    /// - unclear + unmonitored: maybe it landed and the owner undid it: stop, no write.
+    private func resolveOwnPending(_ id: RequestID, _ entry: LedgerEntry, monitored: Bool,
+                                   artistId: Int, albumId: Int) async throws {
+        var e = entry
+        switch (entry.send, monitored) {
+        case (.notSent, true):
+            e.wasMonitoredBefore = true
+            e.send = .applied
+            try await ledger.record(e)
+        case (.notSent, false):
+            try ensure(id, .adding)
+            try await sendMonitor(e, artistId: artistId, albumId: albumId)
+        case (.unclear, true):
+            e.send = .applied
+            try await ledger.record(e)
+        case (.unclear, false):
+            throw AddFailure(reason: .stoppedInLidarr)
+        case (.applied, _):
+            break
+        }
     }
 
     /// Sends `PUT /album/monitor` for an entry already in the ledger (fix rounds 4–5).
@@ -507,6 +535,7 @@ public actor RequestRunner {
     /// If saving the outcome fails, the entry stays `unclear` (never more permissive than the truth).
     /// Rethrows any failure so the request waits.
     private func sendMonitor(_ entry: LedgerEntry, artistId: Int, albumId: Int) async throws {
+        try await persist()   // M6: the request's ids are on disk before anything can land in Lidarr
         var e = entry
         e.send = .unclear
         try await ledger.record(e)
@@ -557,8 +586,11 @@ public actor RequestRunner {
     /// A7 / G6: monitor the one album and search; no tags, no profile or artist change.
     ///
     /// Order (fix rounds 2–4): the ledger gets a `notSent` entry, the request learns the ids (so clean-up can
-    /// always find the album), then `sendMonitor` marks it `unclear`, sends the PUT and records the outcome.
-    /// Only applied entries are ever undone.
+    /// always find the album), then `sendMonitor` saves the request, marks the entry `unclear`, sends the PUT
+    /// and records the outcome. Only applied entries are ever undone.
+    ///
+    /// This request's own pending entry (its ids were lost, e.g. a failed save before a relaunch) is resolved
+    /// by `resolveOwnPending`, never overwritten (security H1).
     private func monitorExisting(_ id: RequestID, _ r: MagpieRequest, artist: LidarrArtist, rg: MBID) async throws {
         let albums = try await lidarr.albums(artistId: artist.id)
         guard let album = albums.first(where: { $0.foreignAlbumId == rg }) else {
@@ -572,6 +604,15 @@ public actor RequestRunner {
             return
         }
         let prior = try await ledger.entry(albumId: album.id)
+        if let prior, Self.isOwnPending(prior, id) {
+            try ensure(id, .adding)
+            await mutate(id) {
+                $0.lidarrArtistId = artist.id
+                $0.albumId = album.id
+            }
+            return try await resolveOwnPending(id, prior, monitored: album.monitored, artistId: artist.id,
+                                               albumId: album.id)
+        }
         // Monitored now: the owner's, unless an open entry of this request or of a live request says Magpie
         // did it. Closed entries (finished requests) are never inherited: the owner may have monitored it since.
         let liveIds = Set(list.filter { $0.isActive }.map(\.id.description)).union([id.description])
@@ -615,6 +656,10 @@ public actor RequestRunner {
             $0.root = setup.rootFolderPath
         }
         func nothingSent() async { await mutate(id) { $0.addSent = false; $0.addedAt = nil } }
+        do { try await persist() } catch {   // M6: `addSent` is on disk before the POST, or nothing is sent
+            await nothingSent()
+            throw error
+        }
         let data: Data
         do {
             data = try await gate.send("POST", "artist", body: body)
@@ -737,6 +782,7 @@ public actor RequestRunner {
         }
         do {
             try ensure(id, .searching)
+            try await persist()
             let data = try await gate.send("POST", "command", body: CommandBody(name: "AlbumSearch", albumIds: [r.albumId!]))
             let commandId = (try? JSONDecoder().decode(JSONValue.self, from: data))?["id"]?.intValue
             await mutate(id) {
@@ -869,7 +915,7 @@ public actor RequestRunner {
             if lastIndexRefresh.map({ t.timeIntervalSince($0) >= refreshEvery }) ?? true {
                 lastIndexRefresh = t
                 do { try await library.refreshIndex() } catch {
-                    Log.logger("requests").error("index refresh failed: \(error.localizedDescription, privacy: .public)")
+                    Log.logger("requests").error("index refresh failed: \(Log.category(of: error), privacy: .public)")
                 }
             }
             let rescanEvery = Self.clamp(youngest / 2, Self.rescanInterval)
@@ -927,6 +973,7 @@ public actor RequestRunner {
             if entry.isOpen, entry.isApplied, !entry.wasMonitoredBefore, entry.keptAt == nil {
                 let albums = try await lidarr.albums(artistId: artistId)
                 if let album = albums.first(where: { $0.id == albumId }), album.monitored {
+                    try await persist()
                     _ = try await gate.send("PUT", "album/monitor", body: AlbumMonitorBody(albumIds: [albumId], monitored: false))
                 }
             }
@@ -939,7 +986,7 @@ public actor RequestRunner {
             await done()
         } catch {
             // Lidarr unreachable, changes switched off or the ledger unreadable: try again on a later tick.
-            Log.logger("requests").error("clean-up postponed: \(String(describing: error), privacy: .public)")
+            Log.logger("requests").error("clean-up postponed: \(Log.category(of: error), privacy: .public)")
         }
     }
 
