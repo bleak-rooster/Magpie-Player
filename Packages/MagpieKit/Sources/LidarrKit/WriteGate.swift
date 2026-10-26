@@ -490,7 +490,7 @@ enum JSONKeyScan {
             switch peek {
             case UInt8(ascii: "{"): try object(depth: depth)
             case UInt8(ascii: "["): try array(depth: depth)
-            case UInt8(ascii: "\""): _ = try string()
+            case UInt8(ascii: "\""): _ = try string()   // control characters are fine in values
             case .some:
                 // Number or literal: consume up to the next delimiter.
                 let start = i
@@ -509,8 +509,10 @@ enum JSONKeyScan {
             if peek == UInt8(ascii: "}") { i += 1; return }
             while true {
                 skipSpace()
-                let (key, ascii) = try string()
+                let (key, ascii, control) = try string()
                 guard ascii else { throw Refusal(reason: "non-ASCII key in body") }
+                // Security L6: `\t`, `\u0000`… in a key: refused, so the key checked is the key Lidarr parses.
+                guard !control else { throw Refusal(reason: "control character in a body key") }
                 guard keys.insert(key.lowercased()).inserted else { throw Refusal(reason: "duplicate key \(key) in body") }
                 skipSpace()
                 try expect(UInt8(ascii: ":"))
@@ -537,16 +539,18 @@ enum JSONKeyScan {
             }
         }
 
-        /// The decoded string, and whether every character in it is ASCII (escapes included: `ſ` is not).
-        mutating func string() throws -> (String, Bool) {
+        /// The decoded string, whether every character in it is ASCII (escapes included: `ſ` is not), and
+        /// whether it holds a control character (< 0x20, raw or escaped, `\t` `\n` `\b` `\f` `\r` included).
+        mutating func string() throws -> (String, ascii: Bool, control: Bool) {
             try expect(UInt8(ascii: "\""))
             var out = ""
             var ascii = true
+            var control = false
             while let b = peek {
                 i += 1
                 switch b {
                 case UInt8(ascii: "\""):
-                    return (out, ascii)
+                    return (out, ascii, control)
                 case UInt8(ascii: "\\"):
                     guard let e = peek else { throw Refusal(reason: "body is not JSON") }
                     i += 1
@@ -557,15 +561,18 @@ enum JSONKeyScan {
                             throw Refusal(reason: "body is not JSON")
                         }
                         i += 4
+                        if code < 0x20 { control = true }
                         if code < 0x80, let s = Unicode.Scalar(code) { out.unicodeScalars.append(s) } else { ascii = false }
                     case UInt8(ascii: "\""), UInt8(ascii: "\\"), UInt8(ascii: "/"):
                         out.unicodeScalars.append(Unicode.Scalar(e))
                     case UInt8(ascii: "b"), UInt8(ascii: "f"), UInt8(ascii: "n"), UInt8(ascii: "r"), UInt8(ascii: "t"):
-                        out.unicodeScalars.append(Unicode.Scalar(e))   // only identity matters here
+                        control = true
+                        out.unicodeScalars.append(Unicode.Scalar(e))
                     default:
                         throw Refusal(reason: "body is not JSON")
                     }
                 default:
+                    if b < 0x20 { control = true }
                     if b >= 0x80 { ascii = false } else { out.unicodeScalars.append(Unicode.Scalar(b)) }
                 }
             }

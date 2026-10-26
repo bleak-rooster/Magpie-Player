@@ -505,4 +505,46 @@ struct GateEnv {
         #expect(try reason("PUT", "album/monitor", raw: #" {"albumIds":[1,2],"monitored":true,"x":[{"id":1},{"id":2}]} "#) == nil)
         #expect(try reason("POST", "command", raw: #"{"name":"AlbumSearch","albumIds":[3]}"#) == nil)
     }
+
+    /// Security L6 (audit E5): `\\uXXXX` and other escapes in raw bodies. The backslash is built at runtime so
+    /// the bytes scanned really contain an escape (a Swift literal would decode it first).
+    static let escapeCases: [(method: String, path: String, body: String, refused: Bool)] = [
+        ("PUT", "artist/editor", #"{"artistIds":[1],"deleteFilBSu0065s":true}"#, true),
+        ("PUT", "artist/editor", #"{"artistIds":[1],"applyTagBSu017f":"replace"}"#, true),
+        ("PUT", "artist/editor", #"{"artistIds":[1],"applyTags":"replBSu0061ce"}"#, true),
+        ("PUT", "artist/editor", #"{"artistIds":[1],"applyTags":"add","applyTagBSu0073":"replace"}"#, true),
+        ("PUT", "artist/editor", #"{"artistIds":[1],"applyTags":"add","APPLYTAGBSu0053":"replace"}"#, true),
+        ("POST", "command", #"{"name":"AlbumSearch","NBSu0041ME":"RenameFiles"}"#, true),
+        ("POST", "command", #"{"nBSu0061me":"DeleteArtist"}"#, true),
+        ("POST", "command", #"{"name":"AlbumBSu0053earch","albumIds":[1]}"#, false),
+        ("POST", "artist", #"{"addOptions":{"addImportListExclusioBSu006E":true}}"#, true),
+        ("POST", "artist", #"{"BSud83dBSude00":1}"#, true),
+        ("POST", "artist", #"{"deleteFiles":"BSu0074rue"}"#, true),
+        ("POST", "artist", #"{"deleteFileBSu0053":true}"#, true),
+        // Hardening: control characters in keys, escaped or not, are refused (the scanner's key identity
+        // must match the parser's).
+        ("POST", "artist", #"{"deleteFilesBSu0000":true}"#, true),
+        ("POST", "artist", #"{"deleteFilesBSu001f":true}"#, true),
+        ("POST", "artist", #"{"deleteFilesBSt":true}"#, true),
+        ("POST", "artist", #"{"deleteFilesBSn":true}"#, true),
+        ("POST", "artist", #"{"aBSbBSfBSr":1}"#, true),
+        ("POST", "artist", "{\"deleteFiles\u{09}\":true}", true),
+        // Escapes that are not control characters stay fine in keys; control escapes in values stay fine.
+        ("POST", "tag", #"{"laBSu0062el":"x"}"#, false),
+        ("POST", "tag", #"{"label":"aBStbBSnBSu0001"}"#, false),
+        ("POST", "tag", #"{"label":"aBSu0020b"}"#, false),
+    ]
+
+    @Test(arguments: escapeCases.indices)
+    func escapesInRawBodies(_ n: Int) throws {
+        let c = Self.escapeCases[n]
+        let backslash = String(UnicodeScalar(0x5C))
+        let raw = c.body.replacingOccurrences(of: "BS", with: backslash)
+        let bytes = Data(raw.utf8)
+        // The bytes hold real escapes: one backslash per "BS" and no literal "BS" left.
+        #expect(bytes.filter { $0 == 0x5C }.count == c.body.components(separatedBy: "BS").count - 1)
+        #expect(!raw.contains("BS"))
+        let reason = ForbiddenWrites.reason(try WriteTarget(method: c.method, path: c.path), body: bytes)
+        #expect((reason != nil) == c.refused, "\(c.method) \(c.path) \(raw): \(reason ?? "allowed")")
+    }
 }
