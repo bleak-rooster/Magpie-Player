@@ -1,3 +1,4 @@
+import CarPlayUI
 import Foundation
 import MagpieCore
 import MagpieTestSupport
@@ -233,6 +234,24 @@ final class LockableStore: SessionStoring {
         model.resumeSavedSession()
         #expect(model.session == nil)
         #expect(!model.isWaitingForUnlock)
+    }
+
+    /// Cold launch from the car: the CarPlay scene shows "locked" until first unlock, then the
+    /// library; signed out shows "not set up".
+    @Test func carPlayFollowsSessionState() {
+        let store = LockableStore()
+        let model = AppModel(store: store, transport: transport, probeTransport: transport, engine: FakeEngine(),
+                             defaults: defaults, systemNowPlaying: false)
+        model.resumeSavedSession()
+        #expect(CarPlaySceneDelegate.availability(model) == .locked)
+
+        store.unlock(with: SavedSession(endpoint: ServerEndpoint(bases: [home]),
+                                        credentials: NavidromeCredentials(username: "admin", password: "pw")))
+        model.protectedDataBecameAvailable()
+        #expect(CarPlaySceneDelegate.availability(model) == .ready(account: model.artworkScope ?? "?"))
+
+        model.signOut()
+        #expect(CarPlaySceneDelegate.availability(model) == .notSetUp)
     }
 
     @Test func signOutClearsArtworkCacheAndScopeSeparatesAccounts() async throws {
