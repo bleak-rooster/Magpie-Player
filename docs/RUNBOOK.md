@@ -8,6 +8,7 @@ Every shell: `export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer` (
 - `scripts/test-app.sh` runs `xcodegen generate`, then unit and UI tests on the "iPhone 18 Pro" simulator (iOS 27.0 runtime).
 - `scripts/test-all.sh` runs both.
 - `scripts/it.sh` runs server integration tests (`MAGPIE_IT=1`, dev stack only).
+- Navidrome rate-limits logins (about 5 per 20 seconds per client; more answer **429**). `scripts/it.sh` and `MAGPIE_IT=1 scripts/test-app.sh` each log in several times, so wait about 20 seconds between runs, or the next run fails with 429s that have nothing to do with the change under test.
 - `scripts/build.sh` generates the project and builds the app.
 
 `Magpie.xcodeproj` and `App/Info.plist` are generated from `project.yml` and are git-ignored.
@@ -50,4 +51,9 @@ Not automatable from the command line: the CarPlay window is a GUI menu item (UI
 ## Connecting to a real server
 - Self-signed HTTPS (B3): Magpie does not override certificate trust (AVPlayer would ignore it). Install your CA into the simulator with `xcrun simctl keychain booted add-root-cert <ca.pem>` (on a device, install and trust a profile). Connect says so when it sees an untrusted certificate.
 - LAN address times out (B4) but opens in Safari on the Mac: check System Settings › Privacy & Security › Local Network for Xcode/Simulator. `localhost` in the simulator is the Mac.
-- Plain HTTP outside the home network works only in Debug builds (B2); Release asks for HTTPS.
+- **Use HTTPS (a reverse proxy) for any address that leaves the house.** Plain `http://` sends the Navidrome password at sign-in, a replayable token on every stream URL and the Lidarr API key (full control of Lidarr) unencrypted.
+- Plain HTTP outside the home network works only in Debug builds (B2); Release asks for HTTPS. Debug deliberately keeps `NSAllowsArbitraryLoads` (security review M2 ruling) so owner testing can use `http://` host names. The mitigation is in the app, not ATS: before the password or the Lidarr key goes over plain `http://` to an address that isn't loopback, LAN (10/8, 172.16/12, 192.168/16), link-local, `.local`, a single-label name, CGNAT/Tailscale (100.64/10) or IPv6 unique/link-local, Connect asks "This address isn't encrypted. Your password will be sent in the clear." The answer is remembered per address (scheme, host, port) in the app's settings.
+- Addresses typed without `http://` or `https://` become `https://`, unless they are private (as above), which become `http://`. Addresses with `user:password@` are refused: enter credentials in their own fields.
+- Before signing in, the address must answer `rest/ping` like a Subsonic server (`subsonic-response` with status ok, or failed with an authentication/missing-parameter error, which is how Navidrome answers a ping without credentials). A router, captive portal or proxy page that answers 200 gets nothing; Connect says the address "doesn't look like a music server".
+- Redirects are followed only within the same scheme, host and port; a redirect elsewhere (or https to http) is refused and shows as an error.
+- "Allow Magpie to change Lidarr" and the Lidarr set-up (profiles, tag, root folder) belong to one Lidarr (address + API key). Disconnecting Lidarr, signing out, or connecting another Lidarr turns the switch off and forgets the set-up; a newly connected Lidarr always starts with changes off.

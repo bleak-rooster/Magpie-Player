@@ -6,6 +6,23 @@ used loopback only. The dev stack was not contacted.
 
 Scope: spec §5, G0–G9, plan Task 8.2 / Global Constraints, plus the parked Task 5.3 ledger item.
 
+## Status (Task 8.2 fixes, 2026-10-27)
+
+| Item | Status | Commit(s) | Regression tests |
+|---|---|---|---|
+| H1 | **Fixed.** `monitorExisting` resolves this request's own open `notSent`/`unclear` entry with the `retrySearchOnly` table (shared `resolveOwnPending`); it never replaces it | `15b982b` | `RunnerSecurityTests.ownUnclearEntryIsNeverOverwrittenAfterAFailedSave` (E6 reproduction: no PUT, no search, `.failed(.stoppedInLidarr)`, entry stays `unclear`), `ownNotSentEntryIsSentWhenTheAlbumIsUnmonitored` |
+| H2 | **Fixed** (minimum + consent). Login only after a Subsonic ping answer, in both the client and the app probe. Plain `http://` to a non-private address (not loopback, LAN, link-local, `.local`, single-label, CGNAT 100.64/10, IPv6 ULA/link-local) needs the owner's consent in Connect, remembered per origin; same for the Lidarr key. Schemeless input defaults to `https://` unless private. Connect recommends HTTPS. Deviation: a literal "status ok" would refuse every real Navidrome (0.64.2 answers an unauthenticated ping with `status: failed`, code 10), so a `failed` envelope with a version and an auth/missing-parameter code (10, 40–44) also counts | `ee4034f`, `db0f2e8` | `NavidromeAuthTests.portalAnswering200NeverGetsThePassword`, `subsonicPingAnswersAreServers`, `otherAnswersAreNotServers`; `SecurityAppTests.plainHTTPToAPublicAddressNeedsConsent`, `privateAndEncryptedAddressesNeedNoConsent`, `plainHTTPLidarrNeedsConsent`, `a200ThatIsNotSubsonicGetsNoPassword`; `ServerAddressSecurityTests` |
+| M1 | **Fixed.** `SameOriginRedirects` (scheme, host and port must match the original request) on `URLSessionTransport` (per task, whatever session), the artwork transport and the now-playing artwork session | `9cfa7c6` | `HTTPTransportTests.crossOriginRedirectIsNotFollowed` (302/307, URLProtocol stub), `downgradeRedirectIsNotFollowed`, `sameOriginRedirectIsFollowed`, `redirectPolicyComparesOrigins` |
+| M2 | **Accepted (ruling).** Debug keeps `NSAllowsArbitraryLoads` for owner testing with http host names; H2 consent is the mitigation. Documented in `docs/RUNBOOK.md` | "Task 8.2 docs" commit | n/a |
+| M3 | **Fixed.** Switch key `magpie.lidarr.writesEnabled.<instanceScope>`; `LidarrSetup` stored per `instanceScope`; both forgotten on disconnect, sign-out and when another Lidarr replaces the connected one; a newly connected Lidarr starts with writes off | `37ad518`, `db0f2e8` | `WriteGateTests.switchIsScopedToOneLidarr`; `SecurityAppTests.disconnectForgetsTheSwitchAndSetup`, `signOutForgetsTheSwitch`, `anotherLidarrStartsWithWritesOff` |
+| M4 | **No change (ruling):** fallback-mode ready songs are library songs | n/a | n/a |
+| M5 | **Fixed.** `user:pass@` addresses refused with a validation message (Connect and Connect Lidarr). Public error logs use `Log.category(of:)` (URLError code or domain+code), never `String(describing:)`/`localizedDescription` | `10d3bd7`, `db0f2e8` | `RedactorTests.errorCategoryNeverIncludesTheURL`, `noPublicErrorDescriptionsInLogs` (lint over Sources and App); `ServerAddressSecurityTests.credentialsInAddressAreRefused` |
+| M6 | **Fixed.** Throwing `persist()` before `POST /artist`, `PUT album/monitor`, `AlbumSearch` and the clean-up unmonitor; a failed save means the request waits and nothing is sent | `15b982b` | `RunnerSecurityTests.monitorWaitsWhenTheRequestCannotBeSaved`, `addWaitsWhenTheRequestCannotBeSaved`, `searchWaitsWhenTheRequestCannotBeSaved` |
+| L6 | **Fixed.** E5 cases moved into `WriteGateTests` (backslashes built at runtime, bytes asserted); control characters (< 0x20, raw or escaped, `\b \f \n \r \t` included) refused in body keys | `2f78b50` | `BodyKeyScanTests.escapesInRawBodies` (21 cases) |
+| L1–L5, L7–L12 | Open (Low), not in this round's rulings | n/a | n/a |
+
+Also documented in the RUNBOOK: Navidrome's login rate limit (about 5 logins per 20 s, then 429) and spacing `scripts/it.sh` runs.
+
 ## Method / evidence log
 
 | # | What was run | Result |
