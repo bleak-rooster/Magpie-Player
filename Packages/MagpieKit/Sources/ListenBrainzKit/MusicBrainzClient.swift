@@ -12,6 +12,12 @@ public struct MBReleaseGroup: Sendable, Hashable {
     /// `Album`, `Single`, `EP`, ... (nil when MusicBrainz has none).
     public var primaryType: String?
     public var secondaryTypes: [String]
+
+    public init(id: MBID, primaryType: String? = nil, secondaryTypes: [String] = []) {
+        self.id = id
+        self.primaryType = primaryType
+        self.secondaryTypes = secondaryTypes
+    }
 }
 
 public struct MBRelease: Sendable, Hashable {
@@ -21,6 +27,14 @@ public struct MBRelease: Sendable, Hashable {
     public var date: String?
     public var status: String?
     public var releaseGroup: MBReleaseGroup
+
+    public init(id: MBID, title: String, date: String? = nil, status: String? = nil, releaseGroup: MBReleaseGroup) {
+        self.id = id
+        self.title = title
+        self.date = date
+        self.status = status
+        self.releaseGroup = releaseGroup
+    }
 }
 
 public struct MBRecording: Sendable, Hashable {
@@ -28,6 +42,13 @@ public struct MBRecording: Sendable, Hashable {
     public var title: String
     public var releases: [MBRelease]
     public var isrcs: [String]
+
+    public init(id: MBID, title: String, releases: [MBRelease], isrcs: [String] = []) {
+        self.id = id
+        self.title = title
+        self.releases = releases
+        self.isrcs = isrcs
+    }
 }
 
 /// MusicBrainz WS/2. Call only on a Try tap, never per search row (A8). Calls are spaced at 1 per second.
