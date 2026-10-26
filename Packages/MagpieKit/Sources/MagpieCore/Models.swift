@@ -1,0 +1,144 @@
+import Foundation
+
+public struct Song: Sendable, Hashable, Codable {
+    public var id: String
+    public var title: String
+    public var artist: String
+    public var artistId: String?
+    public var album: String
+    public var albumId: String?
+    public var track: Int?
+    public var disc: Int?
+    public var duration: TimeInterval
+    public var suffix: String?
+    public var bitRate: Int?
+    public var coverArtId: String?
+    public var recordingMBID: MBID?
+    public var isrcs: [String]
+    public var libraryId: Int?
+    public var starred: Bool
+
+    public init(id: String, title: String, artist: String, artistId: String? = nil,
+                album: String, albumId: String? = nil, track: Int? = nil, disc: Int? = nil,
+                duration: TimeInterval, suffix: String? = nil, bitRate: Int? = nil,
+                coverArtId: String? = nil, recordingMBID: MBID? = nil, isrcs: [String] = [],
+                libraryId: Int? = nil, starred: Bool = false) {
+        self.id = id; self.title = title; self.artist = artist; self.artistId = artistId
+        self.album = album; self.albumId = albumId; self.track = track; self.disc = disc
+        self.duration = duration; self.suffix = suffix; self.bitRate = bitRate
+        self.coverArtId = coverArtId; self.recordingMBID = recordingMBID; self.isrcs = isrcs
+        self.libraryId = libraryId; self.starred = starred
+    }
+}
+
+public struct Album: Sendable, Hashable, Codable {
+    public var id: String
+    public var name: String
+    public var artist: String
+    public var artistId: String?
+    public var year: Int?
+    public var songCount: Int
+    public var duration: TimeInterval
+    public var coverArtId: String?
+    public var releaseGroupMBID: MBID?
+    public var songs: [Song]?
+
+    public init(id: String, name: String, artist: String, artistId: String? = nil, year: Int? = nil,
+                songCount: Int, duration: TimeInterval, coverArtId: String? = nil,
+                releaseGroupMBID: MBID? = nil, songs: [Song]? = nil) {
+        self.id = id; self.name = name; self.artist = artist; self.artistId = artistId
+        self.year = year; self.songCount = songCount; self.duration = duration
+        self.coverArtId = coverArtId; self.releaseGroupMBID = releaseGroupMBID; self.songs = songs
+    }
+}
+
+public struct Artist: Sendable, Hashable, Codable {
+    public var id: String
+    public var name: String
+    public var albumCount: Int
+    public var coverArtId: String?
+    public var mbid: MBID?
+
+    public init(id: String, name: String, albumCount: Int, coverArtId: String? = nil, mbid: MBID? = nil) {
+        self.id = id; self.name = name; self.albumCount = albumCount
+        self.coverArtId = coverArtId; self.mbid = mbid
+    }
+}
+
+public struct Playlist: Sendable, Hashable, Codable {
+    public var id: String
+    public var name: String
+    public var songCount: Int
+    public var duration: TimeInterval
+    public var coverArtId: String?
+
+    public init(id: String, name: String, songCount: Int, duration: TimeInterval, coverArtId: String? = nil) {
+        self.id = id; self.name = name; self.songCount = songCount
+        self.duration = duration; self.coverArtId = coverArtId
+    }
+}
+
+public enum ExternalSource: String, Sendable, Hashable, Codable {
+    case listenBrainz, lidarr
+}
+
+public struct ExternalRecording: Sendable, Hashable, Codable {
+    public var recordingMBID: MBID?
+    public var artistMBID: MBID?
+    public var title: String
+    public var artist: String
+    public var releaseTitle: String?
+    public var duration: TimeInterval?
+    public var source: ExternalSource
+
+    public init(recordingMBID: MBID? = nil, artistMBID: MBID? = nil, title: String, artist: String,
+                releaseTitle: String? = nil, duration: TimeInterval? = nil, source: ExternalSource) {
+        self.recordingMBID = recordingMBID; self.artistMBID = artistMBID; self.title = title
+        self.artist = artist; self.releaseTitle = releaseTitle; self.duration = duration
+        self.source = source
+    }
+}
+
+public enum Quality: Sendable, Hashable, Codable {
+    case sample, losslessSoon, lossless, hiRes, standard
+
+    /// Lossless containers (flac/alac/wav) map to `.lossless`; everything else, including unknown, is `.standard`.
+    public static func from(suffix: String?, bitRate: Int?) -> Quality {
+        switch suffix?.lowercased() {
+        case "flac", "alac", "wav": return .lossless
+        default: return .standard
+        }
+    }
+}
+
+public enum AlbumListType: String, Sendable, Hashable, Codable {
+    case recent, newest, frequent, alphabeticalByName, random
+}
+
+public struct LibrarySearchResult: Sendable, Hashable, Codable {
+    public var songs: [Song]
+    public var albums: [Album]
+    public var artists: [Artist]
+
+    public init(songs: [Song] = [], albums: [Album] = [], artists: [Artist] = []) {
+        self.songs = songs; self.albums = albums; self.artists = artists
+    }
+}
+
+public struct LyricLine: Sendable, Hashable, Codable {
+    public var start: TimeInterval?
+    public var text: String
+
+    public init(start: TimeInterval? = nil, text: String) {
+        self.start = start; self.text = text
+    }
+}
+
+public struct Lyrics: Sendable, Hashable, Codable {
+    public var synced: Bool
+    public var lines: [LyricLine]
+
+    public init(synced: Bool, lines: [LyricLine]) {
+        self.synced = synced; self.lines = lines
+    }
+}
