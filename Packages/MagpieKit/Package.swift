@@ -22,8 +22,8 @@ let package = Package(
         .target(name: "NavidromeKit", dependencies: ["MagpieCore"]),
         .target(name: "ListenBrainzKit", dependencies: ["MagpieCore"]),
         .target(name: "LidarrKit", dependencies: ["MagpieCore"]),
-        .target(name: "MatchIndex", dependencies: ["MagpieCore"]),
-        .target(name: "Search", dependencies: ["MagpieCore", "MatchIndex"]),
+        .target(name: "MatchIndex", dependencies: ["MagpieCore", "NavidromeKit"]),
+        .target(name: "Search", dependencies: ["MagpieCore", "MatchIndex", "ListenBrainzKit", "LidarrKit"]),
         .target(name: "Requests", dependencies: ["MagpieCore", "LidarrKit"]),
         .target(name: "Playback", dependencies: ["MagpieCore"]),
         .target(name: "DesignSystem", dependencies: ["MagpieCore"]),
@@ -40,6 +40,8 @@ let package = Package(
                     dependencies: ["ListenBrainzKit", "MagpieCore", "MagpieTestSupport"],
                     resources: [.copy("../Fixtures/listenbrainz"), .copy("../Fixtures/musicbrainz")]),
         .testTarget(name: "PlaybackTests", dependencies: ["Playback", "MagpieCore"]),
+        .testTarget(name: "MatchIndexTests", dependencies: ["MatchIndex", "MagpieCore"]),
+        .testTarget(name: "SearchTests", dependencies: ["Search", "MatchIndex", "MagpieCore", "LidarrKit"]),
     ],
     swiftLanguageModes: [.v6]
 )

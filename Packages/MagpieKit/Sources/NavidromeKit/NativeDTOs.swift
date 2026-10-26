@@ -25,7 +25,11 @@ struct NativeSong: Decodable {
     let suffix: String?
     let bitRate: Int?
     let hasCoverArt: Bool?
+    struct Participant: Decodable { let mbzArtistId: String? }
+    struct Participants: Decodable { let artist: [Participant]? }
     let mbzRecordingID: String?   // validated in mapping, never decoded as MBID
+    let mbzArtistId: String?
+    let participants: Participants?
     let tags: Tags?
     let libraryId: Int?
     let missing: Bool?

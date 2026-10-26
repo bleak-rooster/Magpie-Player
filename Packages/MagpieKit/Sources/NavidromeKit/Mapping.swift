@@ -20,7 +20,9 @@ enum Mapping {
              album: d.album ?? "", albumId: d.albumId, track: d.trackNumber, disc: d.discNumber,
              duration: d.duration ?? 0, suffix: d.suffix, bitRate: d.bitRate,
              coverArtId: d.hasCoverArt == true ? "mf-\(d.id)" : nil,
-             recordingMBID: mbid(d.mbzRecordingID), isrcs: d.tags?.isrc ?? [], libraryId: d.libraryId,
+             recordingMBID: mbid(d.mbzRecordingID),
+             artistMBID: mbid(d.mbzArtistId) ?? mbid(d.participants?.artist?.first?.mbzArtistId),
+             isrcs: d.tags?.isrc ?? [], libraryId: d.libraryId,
              starred: d.starred ?? false)
     }
 

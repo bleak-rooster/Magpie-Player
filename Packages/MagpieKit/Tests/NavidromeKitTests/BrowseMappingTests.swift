@@ -94,6 +94,26 @@ import os
         #expect(result.songs.allSatisfy { $0.id != (page[2]["id"] as! String) })
     }
 
+    @Test func songPageMapsArtistMBIDFromParticipantsOrTopLevel() async throws {
+        var page = Fixtures.json("apiSongPage") as! [[String: Any]]
+        #expect(page[0]["mbzArtistId"] == nil, "the dev fixture has none")
+        var participants = page[0]["participants"] as! [String: Any]
+        var artists = participants["artist"] as! [[String: Any]]
+        artists[0]["mbzArtistId"] = "4D8175EA-CC33-4565-8A8E-6B0F6C7A3F11"
+        participants["artist"] = artists
+        page[0]["participants"] = participants
+        page[1]["mbzArtistId"] = "not-an-mbid"
+        page[2]["mbzArtistId"] = "75ab6ba6-9197-4f83-8a23-a1925a7ec5a2"
+        let body = try JSONSerialization.data(withJSONObject: page)
+        let (client, _) = try await connected {
+            $0.stub(pathSuffix: "/api/song", body: body, headers: ["X-Total-Count": "8"])
+        }
+        let songs = try await client.songsPage(start: 0, end: 8).songs
+        #expect(songs[0].artistMBID?.rawValue == "4d8175ea-cc33-4565-8a8e-6b0f6c7a3f11")
+        #expect(songs[1].artistMBID == nil)
+        #expect(songs[2].artistMBID?.rawValue == "75ab6ba6-9197-4f83-8a23-a1925a7ec5a2")
+    }
+
     @Test func streamURLHasEstimateContentLength() async throws {
         let (client, _) = try await connected { _ in }
         let url = client.streamURL(songId: "abc 123", maxBitRate: 320, format: "mp3")

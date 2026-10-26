@@ -14,6 +14,8 @@ public struct Song: Sendable, Hashable, Codable {
     public var bitRate: Int?
     public var coverArtId: String?
     public var recordingMBID: MBID?
+    /// The (first) track artist's MusicBrainz id, when the file is tagged with one (native API only).
+    public var artistMBID: MBID?
     public var isrcs: [String]
     public var libraryId: Int?
     public var starred: Bool
@@ -21,13 +23,13 @@ public struct Song: Sendable, Hashable, Codable {
     public init(id: String, title: String, artist: String, artistId: String? = nil,
                 album: String, albumId: String? = nil, track: Int? = nil, disc: Int? = nil,
                 duration: TimeInterval, suffix: String? = nil, bitRate: Int? = nil,
-                coverArtId: String? = nil, recordingMBID: MBID? = nil, isrcs: [String] = [],
-                libraryId: Int? = nil, starred: Bool = false) {
+                coverArtId: String? = nil, recordingMBID: MBID? = nil, artistMBID: MBID? = nil,
+                isrcs: [String] = [], libraryId: Int? = nil, starred: Bool = false) {
         self.id = id; self.title = title; self.artist = artist; self.artistId = artistId
         self.album = album; self.albumId = albumId; self.track = track; self.disc = disc
         self.duration = duration; self.suffix = suffix; self.bitRate = bitRate
-        self.coverArtId = coverArtId; self.recordingMBID = recordingMBID; self.isrcs = isrcs
-        self.libraryId = libraryId; self.starred = starred
+        self.coverArtId = coverArtId; self.recordingMBID = recordingMBID; self.artistMBID = artistMBID
+        self.isrcs = isrcs; self.libraryId = libraryId; self.starred = starred
     }
 }
 
@@ -89,13 +91,16 @@ public struct ExternalRecording: Sendable, Hashable, Codable {
     public var artist: String
     public var releaseTitle: String?
     public var duration: TimeInterval?
+    /// ISRCs when the source knows them (LB labs search doesn't; A8).
+    public var isrcs: [String]
     public var source: ExternalSource
 
     public init(recordingMBID: MBID? = nil, artistMBID: MBID? = nil, title: String, artist: String,
-                releaseTitle: String? = nil, duration: TimeInterval? = nil, source: ExternalSource) {
+                releaseTitle: String? = nil, duration: TimeInterval? = nil, isrcs: [String] = [],
+                source: ExternalSource) {
         self.recordingMBID = recordingMBID; self.artistMBID = artistMBID; self.title = title
         self.artist = artist; self.releaseTitle = releaseTitle; self.duration = duration
-        self.source = source
+        self.isrcs = isrcs; self.source = source
     }
 }
 
