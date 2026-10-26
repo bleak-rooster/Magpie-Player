@@ -9,7 +9,10 @@ struct RootView: View {
     var body: some View {
         let theme = model.theme
         Group {
-            if model.session == nil {
+            if model.session == nil, model.isWaitingForUnlock {
+                ContentUnavailableView("Unlock to continue", systemImage: "lock",
+                                       description: Text("Magpie will pick up where you left off once your iPhone is unlocked."))
+            } else if model.session == nil {
                 ConnectView()
             } else {
                 MainTabs()

@@ -4,6 +4,9 @@ import MagpieCore
 import NavidromeKit
 import Observation
 import Playback
+#if os(iOS)
+import UIKit
+#endif
 
 /// A signed-in Navidrome session.
 struct Session {
@@ -41,8 +44,12 @@ final class AppModel {
     var theme: Theme
     /// Star changes made this session, by song id (the queue's copies of songs are not edited).
     private(set) var starOverrides: [String: Bool] = [:]
+    /// A session is saved but the Keychain can't be read yet (before first unlock). Not signed out:
+    /// the UI waits, and the session is restored when protected data becomes available.
+    private(set) var isWaitingForUnlock = false
 
-    @ObservationIgnored private let store: SessionStore
+    @ObservationIgnored private let store: any SessionStoring
+    @ObservationIgnored private var unlockObserver: NSObjectProtocol?
     @ObservationIgnored private let transport: HTTPTransport
     @ObservationIgnored private let probeTransport: HTTPTransport
     @ObservationIgnored private let box: ClientBox
@@ -52,7 +59,7 @@ final class AppModel {
     @ObservationIgnored private var nowPlaying: NowPlayingBridge?
     #endif
 
-    init(store: SessionStore = .standard,
+    init(store: any SessionStoring = SessionStore.standard,
          transport: HTTPTransport = URLSessionTransport(),
          probeTransport: HTTPTransport = URLSessionTransport(timeout: 6),
          engine: (any PlaybackEngine)? = nil,
@@ -80,7 +87,7 @@ final class AppModel {
 
     /// Builds the shared model from what the Keychain holds. `-MagpieResetState YES` signs out first
     /// (UI tests). `-MagpieCharacter classic|signature|immersive` picks the look.
-    static func restore(store: SessionStore = .standard, defaults: UserDefaults = .standard) -> AppModel {
+    static func restore(store: any SessionStoring = SessionStore.standard, defaults: UserDefaults = .standard) -> AppModel {
         if defaults.bool(forKey: "MagpieResetState") { store.clear() }
         var theme = Theme()
         if let raw = defaults.string(forKey: "MagpieCharacter"), let c = Character(rawValue: raw) { theme.character = c }
@@ -90,13 +97,54 @@ final class AppModel {
     }
 
     /// Starts using the saved session without waiting for the network, then connects in the background.
+    /// If the Keychain is locked, waits for `protectedDataDidBecomeAvailable` and tries again.
     func resumeSavedSession() {
-        guard let saved = store.load() else { return }
+        let saved: SavedSession
+        switch store.load() {
+        case .none:
+            isWaitingForUnlock = false
+            return
+        case .unavailable:
+            isWaitingForUnlock = true
+            observeUnlock()
+            return
+        case .session(let s):
+            saved = s
+        }
+        isWaitingForUnlock = false
+        stopObservingUnlock()
+        guard session == nil else { return }
         let client = makeClient(saved.endpoint, saved.credentials)
         session = Session(client: client, endpoint: saved.endpoint, credentials: saved.credentials,
                           activeBase: saved.endpoint.bases[0], isAdmin: false)
         box.set(client)
         Task { await reconnect(rebuildAlways: true) }
+    }
+
+    /// Protected data (the Keychain) became readable: retry the restore.
+    func protectedDataBecameAvailable() {
+        guard isWaitingForUnlock else { return }
+        resumeSavedSession()
+    }
+
+    private func observeUnlock() {
+        #if os(iOS)
+        guard unlockObserver == nil else { return }
+        unlockObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.protectedDataDidBecomeAvailableNotification, object: nil, queue: nil
+        ) { [weak self] _ in
+            if Thread.isMainThread {
+                MainActor.assumeIsolated { self?.protectedDataBecameAvailable() }
+            } else {
+                Task { @MainActor in self?.protectedDataBecameAvailable() }
+            }
+        }
+        #endif
+    }
+
+    private func stopObservingUnlock() {
+        if let unlockObserver { NotificationCenter.default.removeObserver(unlockObserver) }
+        unlockObserver = nil
     }
 
     // MARK: - Sign in / out
@@ -122,6 +170,9 @@ final class AppModel {
         try store.save(endpoint: endpoint, credentials: credentials)
         reconnectTask = nil
         starOverrides = [:]
+        isWaitingForUnlock = false
+        stopObservingUnlock()
+        ArtworkCache.shared.removeAll()
         session = Session(client: client, endpoint: endpoint, credentials: credentials,
                           activeBase: base, isAdmin: login.isAdmin)
         box.set(client)
@@ -134,7 +185,10 @@ final class AppModel {
         session = nil
         starOverrides = [:]
         reconnectTask = nil
+        isWaitingForUnlock = false
+        stopObservingUnlock()
         box.set(nil)
+        ArtworkCache.shared.removeAll()
     }
 
     // MARK: - Requests with failover
@@ -227,6 +281,13 @@ final class AppModel {
     }
 
     // MARK: - Library helpers
+
+    /// Identifies the server and account cover art belongs to, so cached art never crosses accounts.
+    /// Stable across address failover (same server, different route).
+    var artworkScope: String? {
+        guard let s = session else { return nil }
+        return "\(s.endpoint.bases[0].absoluteString)|\(s.username)"
+    }
 
     func coverArtURL(_ id: String?, size: Int) -> URL? {
         guard let id, let client = session?.client else { return nil }

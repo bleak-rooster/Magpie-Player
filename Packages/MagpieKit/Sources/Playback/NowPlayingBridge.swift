@@ -93,12 +93,19 @@ public final class NowPlayingBridge {
         guard let id = song.coverArtId, artwork?.coverArtId != id, let url = artworkURL(song) else { return }
         artworkTask?.cancel()
         artworkTask = Task { [weak self] in
-            guard let (data, _) = try? await URLSession.shared.data(from: url),
+            guard let (data, _) = try? await Self.artworkSession.data(from: url),
                   let image = UIImage(data: data), !Task.isCancelled, let self else { return }
             self.artwork = (id, Self.makeArtwork(image))
             if self.player.queue.current?.song.coverArtId == id { self.publish(loadArtwork: false) }
         }
     }
+
+    /// Artwork URLs carry server auth in the query: no disk cache, no shared session.
+    public nonisolated static let artworkSession: URLSession = {
+        let config = URLSessionConfiguration.ephemeral
+        config.urlCache = nil
+        return URLSession(configuration: config)
+    }()
 
     /// MediaPlayer calls the artwork handler off the main thread (lock screen, CarPlay). Built in
     /// a nonisolated context so the closure is not main-actor-isolated (which would trap there).

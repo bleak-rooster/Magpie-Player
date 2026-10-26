@@ -5,6 +5,7 @@ import NavidromeKit
 import os
 import Playback
 import Testing
+import UIKit
 @testable import Magpie
 
 /// Routes to a MockTransport, except hosts marked down, which fail like an unplugged server.
@@ -62,14 +63,14 @@ private let away = URL(string: "https://music.example.com/navidrome")!
         try await model.signIn(urls: [home, away], username: "admin", password: "pw")
         #expect(model.session?.activeBase == home)
         #expect(model.session?.isAdmin == true)
-        let saved = try #require(store.load())
+        let saved = try #require(store.load().saved)
         #expect(saved.endpoint.bases == [home, away])
         #expect(saved.credentials.username == "admin")
 
         model.play([Song(id: "s1", title: "T", artist: "A", album: "B", duration: 100)], startAt: 0)
         model.signOut()
         #expect(model.session == nil)
-        #expect(store.load() == nil)
+        #expect(store.load().saved == nil)
         #expect(model.player.queue.current == nil)
     }
 
@@ -102,7 +103,7 @@ private let away = URL(string: "https://music.example.com/navidrome")!
             #expect(failures.map(\.url) == [home, away])
         }
         #expect(model.session == nil)
-        #expect(store.load() == nil)
+        #expect(store.load().saved == nil)
     }
 
     @Test func badCredentialsDoNotSave() async throws {
@@ -115,7 +116,7 @@ private let away = URL(string: "https://music.example.com/navidrome")!
             try await model.signIn(urls: [home], username: "admin", password: "wrong")
         }
         #expect(model.session == nil)
-        #expect(store.load() == nil)
+        #expect(store.load().saved == nil)
     }
 
     /// Review focus 3: the home address dies mid-session; the next request moves to the away address,
@@ -140,7 +141,7 @@ private let away = URL(string: "https://music.example.com/navidrome")!
         #expect(rebuilt.allSatisfy { $0.1.host == away.host && $0.1.path.hasPrefix("/navidrome/rest/stream") })
         #expect(engine.seeks.last == 0)
         // The saved order is what the user entered, not the failover order.
-        #expect(store.load()?.endpoint.bases == [home, away])
+        #expect(store.load().saved?.endpoint.bases == [home, away])
         store.clear()
     }
 
@@ -170,6 +171,83 @@ private let away = URL(string: "https://music.example.com/navidrome")!
         await model.toggleStar(song)   // unstar isn't stubbed: 404 → reverts to starred
         #expect(model.isStarred(song))
         store.clear()
+    }
+}
+
+/// A store whose Keychain can be "locked" (unreadable) and later unlocked.
+final class LockableStore: SessionStoring {
+    private let state = OSAllocatedUnfairLock(initialState: (locked: true, saved: SavedSession?.none))
+    func unlock(with saved: SavedSession?) { state.withLock { $0 = (false, saved) } }
+    func save(endpoint: ServerEndpoint, credentials: NavidromeCredentials) throws {
+        state.withLock { $0.saved = SavedSession(endpoint: endpoint, credentials: credentials) }
+    }
+    func load() -> SessionLoad {
+        state.withLock { s in s.locked ? .unavailable : (s.saved.map(SessionLoad.session) ?? SessionLoad.none) }
+    }
+    func clear() { state.withLock { $0.saved = nil } }
+}
+
+@MainActor
+@Suite(.serialized) struct AppModelLockAndArtworkTests {
+    let transport = HostSwitchTransport()
+    let defaults = UserDefaults(suiteName: "AppModelLockTests.\(UUID().uuidString)")!
+
+    init() {
+        transport.inner.stub(pathSuffix: "/rest/ping", body: ok)
+        transport.inner.stub(method: "POST", pathSuffix: "/auth/login", body: loginJSON)
+    }
+
+    /// Before first unlock the Keychain can't be read: that is not "signed out". Once protected data
+    /// becomes available the saved session is restored.
+    @Test func lockedKeychainWaitsThenRestoresOnUnlock() async throws {
+        let store = LockableStore()
+        let model = AppModel(store: store, transport: transport, probeTransport: transport, engine: FakeEngine(),
+                             defaults: defaults, systemNowPlaying: false)
+        model.resumeSavedSession()
+        #expect(model.session == nil)
+        #expect(model.isWaitingForUnlock)
+
+        store.unlock(with: SavedSession(endpoint: ServerEndpoint(bases: [home]),
+                                        credentials: NavidromeCredentials(username: "admin", password: "pw")))
+        NotificationCenter.default.post(name: UIApplication.protectedDataDidBecomeAvailableNotification, object: nil)
+        #expect(!model.isWaitingForUnlock)
+        #expect(model.session?.username == "admin")
+    }
+
+    @Test func emptyKeychainIsSignedOutNotWaiting() {
+        let store = LockableStore()
+        store.unlock(with: nil)
+        let model = AppModel(store: store, transport: transport, probeTransport: transport, engine: FakeEngine(),
+                             defaults: defaults, systemNowPlaying: false)
+        model.resumeSavedSession()
+        #expect(model.session == nil)
+        #expect(!model.isWaitingForUnlock)
+    }
+
+    @Test func signOutClearsArtworkCacheAndScopeSeparatesAccounts() async throws {
+        let store = LockableStore()
+        store.unlock(with: nil)
+        let model = AppModel(store: store, transport: transport, probeTransport: transport, engine: FakeEngine(),
+                             defaults: defaults, systemNowPlaying: false)
+        try await model.signIn(urls: [home], username: "admin", password: "pw")
+        let adminScope = try #require(model.artworkScope)
+        let key = ArtworkCache.key(scope: adminScope, coverArtId: "al-1", size: 300)
+        ArtworkCache.shared.store(UIImage(systemName: "star")!, for: key)
+        #expect(ArtworkCache.shared.cached(key) != nil)
+
+        model.signOut()
+        #expect(ArtworkCache.shared.cached(key) == nil)
+        #expect(model.artworkScope == nil)
+
+        try await model.signIn(urls: [home], username: "listener", password: "pw")
+        #expect(model.artworkScope != adminScope)
+    }
+
+    @Test func artworkIsNeverCachedOnDisk() {
+        let config = ArtworkCache.sessionConfiguration
+        #expect(config.urlCache == nil)
+        #expect(config.requestCachePolicy == .reloadIgnoringLocalCacheData)
+        #expect(NowPlayingBridge.artworkSession.configuration.urlCache == nil)
     }
 }
 

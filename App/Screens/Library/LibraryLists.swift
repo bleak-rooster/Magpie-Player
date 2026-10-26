@@ -52,6 +52,7 @@ struct AlbumsListView: View {
     @State private var albums: Loadable<[Album]> = .loading
     @State private var exhausted = false
     @State private var loadingMore = false
+    @State private var moreError: String?
     private static let page = 60
 
     var body: some View {
@@ -59,6 +60,18 @@ struct AlbumsListView: View {
             LoadableView(state: albums, retry: { await loadFirst() }) { albums in
                 AlbumGrid(albums: albums, subtitle: { $0.artist }, onAppearLast: { Task { await loadMore() } })
                     .padding(.vertical, Tokens.Spacing.l)
+                if let moreError {
+                    VStack(spacing: Tokens.Spacing.s) {
+                        Text(moreError).font(.footnote).multilineTextAlignment(.center)
+                        Button("Try again") { Task { await loadMore() } }
+                            .frame(minHeight: Tokens.minHitSize)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.bottom, Tokens.Spacing.xxl)
+                    .accessibilityIdentifier("albums-more-error")
+                } else if loadingMore {
+                    ProgressView().padding(.bottom, Tokens.Spacing.xxl)
+                }
             }
         }
         .navigationTitle("Albums")
@@ -79,10 +92,16 @@ struct AlbumsListView: View {
     private func loadMore() async {
         guard !exhausted, !loadingMore, let current = albums.value else { return }
         loadingMore = true
+        moreError = nil
         defer { loadingMore = false }
         let offset = current.count
-        guard let more = try? await model.request({ try await $0.albumList(.alphabeticalByName, size: Self.page, offset: offset) })
-        else { return }
+        let more: [Album]
+        do {
+            more = try await model.request { try await $0.albumList(.alphabeticalByName, size: Self.page, offset: offset) }
+        } catch {
+            moreError = BrowseErrorCopy.message(for: error)
+            return
+        }
         exhausted = more.count < Self.page
         let known = Set(current.map(\.id))
         albums = .loaded(current + more.filter { !known.contains($0.id) })

@@ -9,6 +9,7 @@ struct ArtistView: View {
     @State private var page: Loadable<Page> = .loading
     @State private var topSongs: [Song] = []
     @State private var gathering = false
+    @State private var playError: String?
     private let themed = Themed()
 
     struct Page {
@@ -45,6 +46,11 @@ struct ArtistView: View {
                         .frame(maxWidth: .infinity)
                 }
                 .disabled(albums.isEmpty || gathering)
+                if let playError {
+                    Label(playError, systemImage: "exclamationmark.triangle")
+                        .font(.footnote).foregroundStyle(p.ink2Color)
+                        .accessibilityIdentifier("artist-play-error")
+                }
             }
             .frame(maxWidth: .infinity)
             .padding(.horizontal, Tokens.Spacing.margin)
@@ -89,9 +95,12 @@ struct ArtistView: View {
     /// Fetches every album's tracks (in parallel), then plays them in album order.
     private func playAll(_ albums: [Album], shuffled: Bool) async {
         gathering = true
+        playError = nil
         defer { gathering = false }
         let ids = albums.map(\.id)
-        guard let songs = try? await model.request({ client in
+        let songs: [Song]
+        do {
+            songs = try await model.request({ client in
             try await withThrowingTaskGroup(of: (Int, [Song]).self) { group in
                 for (i, id) in ids.enumerated() {
                     group.addTask { (i, try await client.album(id: id).songs ?? []) }
@@ -100,7 +109,12 @@ struct ArtistView: View {
                 for try await (i, songs) in group { byIndex[i] = songs }
                 return ids.indices.flatMap { byIndex[$0] ?? [] }
             }
-        }) else { return }
+        })
+        } catch {
+            playError = BrowseErrorCopy.message(for: error)
+            AccessibilityNotification.Announcement(playError ?? "").post()
+            return
+        }
         shuffled ? model.shuffle(songs) : model.play(songs, startAt: 0)
     }
 }
