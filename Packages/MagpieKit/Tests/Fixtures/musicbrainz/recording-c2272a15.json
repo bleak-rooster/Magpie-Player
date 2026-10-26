@@ -1,0 +1,319 @@
+{
+    "first-release-date": "1985",
+    "releases": [
+        {
+            "text-representation": {
+                "language": "eng",
+                "script": "Latn"
+            },
+            "id": "545b96d6-c867-3053-9548-3e8635390e38",
+            "status": "Official",
+            "date": "1985",
+            "release-events": [
+                {
+                    "area": {
+                        "id": "8a754a16-0027-3a29-b6d7-2b40ea0481ed",
+                        "sort-name": "United Kingdom",
+                        "type": null,
+                        "disambiguation": "",
+                        "iso-3166-1-codes": [
+                            "GB"
+                        ],
+                        "type-id": null,
+                        "name": "United Kingdom"
+                    },
+                    "date": "1985"
+                }
+            ],
+            "barcode": null,
+            "release-group": {
+                "id": "01a340b4-1d99-4083-ad92-fa2803368bed",
+                "title": "The Cat Is Out",
+                "secondary-type-ids": [],
+                "first-release-date": "1985",
+                "releases": [],
+                "secondary-types": [],
+                "disambiguation": "",
+                "primary-type-id": "f529b476-6e62-324f-b0aa-1f3e33d313fc",
+                "primary-type": "Album"
+            },
+            "disambiguation": "",
+            "quality": "normal",
+            "country": "GB",
+            "title": "The Cat Is Out",
+            "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+            "packaging-id": null,
+            "packaging": null
+        },
+        {
+            "title": "The Cat Is Out",
+            "packaging": "Cardboard/Paper Sleeve",
+            "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+            "packaging-id": "f7101ce3-0384-39ce-9fde-fbbd0044d35f",
+            "date": "1985",
+            "release-events": [
+                {
+                    "area": {
+                        "disambiguation": "",
+                        "iso-3166-1-codes": [
+                            "GB"
+                        ],
+                        "type-id": null,
+                        "name": "United Kingdom",
+                        "id": "8a754a16-0027-3a29-b6d7-2b40ea0481ed",
+                        "sort-name": "United Kingdom",
+                        "type": null
+                    },
+                    "date": "1985"
+                }
+            ],
+            "text-representation": {
+                "language": "eng",
+                "script": "Latn"
+            },
+            "id": "e81063ae-bb5a-414f-b8a0-69c3c7669895",
+            "status": "Official",
+            "quality": "normal",
+            "country": "GB",
+            "release-group": {
+                "primary-type": "Album",
+                "primary-type-id": "f529b476-6e62-324f-b0aa-1f3e33d313fc",
+                "disambiguation": "",
+                "secondary-types": [],
+                "releases": [],
+                "first-release-date": "1985",
+                "secondary-type-ids": [],
+                "title": "The Cat Is Out",
+                "id": "01a340b4-1d99-4083-ad92-fa2803368bed"
+            },
+            "barcode": "",
+            "disambiguation": ""
+        },
+        {
+            "text-representation": {
+                "language": "eng",
+                "script": "Latn"
+            },
+            "status": "Official",
+            "id": "b5cdfb5f-35a5-4bc5-bbca-57839a71813a",
+            "date": "1985",
+            "release-events": [
+                {
+                    "area": {
+                        "disambiguation": "",
+                        "type-id": null,
+                        "iso-3166-1-codes": [
+                            "GB"
+                        ],
+                        "name": "United Kingdom",
+                        "id": "8a754a16-0027-3a29-b6d7-2b40ea0481ed",
+                        "type": null,
+                        "sort-name": "United Kingdom"
+                    },
+                    "date": "1985"
+                }
+            ],
+            "barcode": "",
+            "release-group": {
+                "primary-type": "Album",
+                "primary-type-id": "f529b476-6e62-324f-b0aa-1f3e33d313fc",
+                "disambiguation": "",
+                "releases": [],
+                "secondary-types": [],
+                "first-release-date": "1985",
+                "secondary-type-ids": [],
+                "title": "The Cat Is Out",
+                "id": "01a340b4-1d99-4083-ad92-fa2803368bed"
+            },
+            "disambiguation": "1st pressing",
+            "quality": "normal",
+            "country": "GB",
+            "title": "The Cat Is Out",
+            "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+            "packaging-id": "ec27701a-4a22-37f4-bfac-6616e0f9750a",
+            "packaging": "Jewel Case"
+        },
+        {
+            "packaging": null,
+            "packaging-id": null,
+            "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+            "title": "The Cat Is Out",
+            "country": "GB",
+            "quality": "normal",
+            "disambiguation": "",
+            "barcode": null,
+            "release-group": {
+                "primary-type": "Album",
+                "primary-type-id": "f529b476-6e62-324f-b0aa-1f3e33d313fc",
+                "disambiguation": "",
+                "first-release-date": "1985",
+                "releases": [],
+                "secondary-types": [],
+                "secondary-type-ids": [],
+                "title": "The Cat Is Out",
+                "id": "01a340b4-1d99-4083-ad92-fa2803368bed"
+            },
+            "release-events": [
+                {
+                    "date": "1989",
+                    "area": {
+                        "id": "8a754a16-0027-3a29-b6d7-2b40ea0481ed",
+                        "sort-name": "United Kingdom",
+                        "type": null,
+                        "iso-3166-1-codes": [
+                            "GB"
+                        ],
+                        "type-id": null,
+                        "disambiguation": "",
+                        "name": "United Kingdom"
+                    }
+                }
+            ],
+            "date": "1989",
+            "id": "eadbff20-3377-3e8a-885b-2d6c7e7dfd18",
+            "status": "Official",
+            "text-representation": {
+                "script": "Latn",
+                "language": "eng"
+            }
+        },
+        {
+            "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+            "packaging-id": null,
+            "packaging": null,
+            "title": "The Cat Is Out",
+            "barcode": null,
+            "release-group": {
+                "releases": [],
+                "secondary-types": [],
+                "first-release-date": "1985",
+                "secondary-type-ids": [],
+                "title": "The Cat Is Out",
+                "id": "01a340b4-1d99-4083-ad92-fa2803368bed",
+                "primary-type": "Album",
+                "primary-type-id": "f529b476-6e62-324f-b0aa-1f3e33d313fc",
+                "disambiguation": ""
+            },
+            "disambiguation": "",
+            "country": "GB",
+            "quality": "normal",
+            "text-representation": {
+                "script": "Latn",
+                "language": "eng"
+            },
+            "status": "Official",
+            "id": "3bd1ad20-6dc4-3dba-a4c9-a1910f0b7b84",
+            "date": "1989",
+            "release-events": [
+                {
+                    "area": {
+                        "disambiguation": "",
+                        "iso-3166-1-codes": [
+                            "GB"
+                        ],
+                        "type-id": null,
+                        "name": "United Kingdom",
+                        "id": "8a754a16-0027-3a29-b6d7-2b40ea0481ed",
+                        "type": null,
+                        "sort-name": "United Kingdom"
+                    },
+                    "date": "1989"
+                }
+            ]
+        },
+        {
+            "packaging": "Jewel Case",
+            "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+            "packaging-id": "ec27701a-4a22-37f4-bfac-6616e0f9750a",
+            "title": "The Cat Is Out",
+            "country": "GB",
+            "quality": "normal",
+            "disambiguation": "",
+            "barcode": "5017615627527",
+            "release-group": {
+                "primary-type": "Album",
+                "primary-type-id": "f529b476-6e62-324f-b0aa-1f3e33d313fc",
+                "disambiguation": "",
+                "first-release-date": "1985",
+                "releases": [],
+                "secondary-types": [],
+                "secondary-type-ids": [],
+                "title": "The Cat Is Out",
+                "id": "01a340b4-1d99-4083-ad92-fa2803368bed"
+            },
+            "release-events": [
+                {
+                    "date": "1992",
+                    "area": {
+                        "disambiguation": "",
+                        "iso-3166-1-codes": [
+                            "GB"
+                        ],
+                        "type-id": null,
+                        "name": "United Kingdom",
+                        "id": "8a754a16-0027-3a29-b6d7-2b40ea0481ed",
+                        "sort-name": "United Kingdom",
+                        "type": null
+                    }
+                }
+            ],
+            "date": "1992",
+            "id": "9bdf9cf9-81d7-46e3-b8d0-caaf8969fe3a",
+            "status": "Official",
+            "text-representation": {
+                "language": "eng",
+                "script": "Latn"
+            }
+        },
+        {
+            "title": "The Cat Is Out",
+            "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+            "packaging-id": null,
+            "packaging": null,
+            "status": "Official",
+            "id": "e3f0a2b9-2e15-4048-bfa6-d8406123ddec",
+            "text-representation": {
+                "language": "eng",
+                "script": "Latn"
+            },
+            "release-events": [
+                {
+                    "area": {
+                        "iso-3166-1-codes": [
+                            "GB"
+                        ],
+                        "type-id": null,
+                        "disambiguation": "",
+                        "name": "United Kingdom",
+                        "id": "8a754a16-0027-3a29-b6d7-2b40ea0481ed",
+                        "sort-name": "United Kingdom",
+                        "type": null
+                    },
+                    "date": "2001"
+                }
+            ],
+            "date": "2001",
+            "disambiguation": "",
+            "barcode": "505159119325",
+            "release-group": {
+                "first-release-date": "1985",
+                "secondary-types": [],
+                "releases": [],
+                "secondary-type-ids": [],
+                "title": "The Cat Is Out",
+                "id": "01a340b4-1d99-4083-ad92-fa2803368bed",
+                "primary-type": "Album",
+                "primary-type-id": "f529b476-6e62-324f-b0aa-1f3e33d313fc",
+                "disambiguation": ""
+            },
+            "country": "GB",
+            "quality": "normal"
+        }
+    ],
+    "title": "Harbour Lights",
+    "video": false,
+    "isrcs": [],
+    "id": "c2272a15-8f3a-4cdc-8f32-7e723352d44d",
+    "disambiguation": "",
+    "length": 346000
+}

@@ -36,6 +36,9 @@ let package = Package(
         .testTarget(name: "LidarrKitTests",
                     dependencies: ["LidarrKit", "MagpieCore", "MagpieTestSupport"],
                     resources: [.copy("../Fixtures/lidarr")]),
+        .testTarget(name: "ListenBrainzKitTests",
+                    dependencies: ["ListenBrainzKit", "MagpieCore", "MagpieTestSupport"],
+                    resources: [.copy("../Fixtures/listenbrainz"), .copy("../Fixtures/musicbrainz")]),
         .testTarget(name: "PlaybackTests", dependencies: ["Playback", "MagpieCore"]),
     ],
     swiftLanguageModes: [.v6]
