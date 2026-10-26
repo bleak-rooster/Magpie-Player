@@ -13,14 +13,29 @@ public struct ServerEndpoint: Codable, Sendable, Hashable {
     public func url(_ base: URL, path: String, query: [URLQueryItem] = []) -> URL {
         guard var components = URLComponents(url: base, resolvingAgainstBaseURL: false) else { return base }
         let basePath = components.percentEncodedPath.trimmingSuffix("/")
-        let extra = path.trimmingPrefix("/")
+        let extra = path.split(separator: "/", omittingEmptySubsequences: true)
+            .map { Self.encodeSegment(String($0)) }
+            .joined(separator: "/")
         components.percentEncodedPath = extra.isEmpty ? basePath : basePath + "/" + extra
         components.percentEncodedQuery = query.isEmpty ? nil : query.map { item in
             let name = Self.encode(item.name)
             guard let value = item.value else { return name }
             return name + "=" + Self.encode(value)
         }.joined(separator: "&")
-        return components.url ?? base
+        guard let url = components.url else {
+            preconditionFailure("ServerEndpoint.url: could not build URL from base \(base) and path \(path)")
+        }
+        return url
+    }
+
+    private static let segmentAllowed: CharacterSet = {
+        var set = CharacterSet.urlPathAllowed
+        set.remove(charactersIn: "/")
+        return set
+    }()
+
+    private static func encodeSegment(_ s: String) -> String {
+        s.addingPercentEncoding(withAllowedCharacters: segmentAllowed) ?? s
     }
 
     private static let queryAllowed: CharacterSet = {
@@ -39,9 +54,6 @@ private extension String {
         var out = self
         while out.last == s { out.removeLast() }
         return out
-    }
-    func trimmingPrefix(_ s: Character) -> String {
-        String(drop(while: { $0 == s }))
     }
 }
 

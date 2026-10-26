@@ -13,6 +13,17 @@ import MagpieTestSupport
         #expect(endpoint.url(slashBase, path: "rest/ping").absoluteString == "https://h/navidrome/rest/ping")
     }
 
+    @Test func encodesPathSegments() {
+        let base = URL(string: "https://h/navidrome")!
+        let endpoint = ServerEndpoint(bases: [base])
+        #expect(endpoint.url(base, path: "rest/my song.mp3").absoluteString == "https://h/navidrome/rest/my%20song.mp3")
+        #expect(endpoint.url(base, path: "a?b#c/d").absoluteString == "https://h/navidrome/a%3Fb%23c/d")
+        #expect(endpoint.url(base, path: "Beyoncé/日本").absoluteString
+            == "https://h/navidrome/Beyonc%C3%A9/%E6%97%A5%E6%9C%AC")
+        #expect(endpoint.url(base, path: "x", query: [URLQueryItem(name: "q", value: "1")]).absoluteString
+            == "https://h/navidrome/x?q=1")
+    }
+
     @Test func keepsPortAndRootBase() {
         let base = URL(string: "http://192.168.1.5:4533")!
         let endpoint = ServerEndpoint(bases: [base])
