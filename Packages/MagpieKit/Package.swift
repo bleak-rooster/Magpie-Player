@@ -30,6 +30,9 @@ let package = Package(
         .target(name: "CarPlayUI", dependencies: ["MagpieCore", "Playback"]),
         .target(name: "MagpieTestSupport", dependencies: ["MagpieCore"]),
         .testTarget(name: "MagpieCoreTests", dependencies: ["MagpieCore", "MagpieTestSupport"]),
+        .testTarget(name: "NavidromeKitTests",
+                    dependencies: ["NavidromeKit", "MagpieCore", "MagpieTestSupport"],
+                    resources: [.copy("../Fixtures/navidrome")]),
     ],
     swiftLanguageModes: [.v6]
 )

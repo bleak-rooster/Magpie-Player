@@ -9,6 +9,10 @@ public final class MockTransport: HTTPTransport {
         public var status: Int
         public var body: Data
         public var headers: [String: String]
+
+        public init(status: Int, body: Data = Data(), headers: [String: String] = [:]) {
+            self.status = status; self.body = body; self.headers = headers
+        }
     }
 
     private struct Route: Sendable {
