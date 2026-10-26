@@ -9,6 +9,12 @@ import Testing
         let config = URLSessionTransport.defaultConfiguration()
         #expect(config.urlCache == nil)
         #expect(config.requestCachePolicy == .reloadIgnoringLocalCacheData)
-        #expect(config.httpCookieStorage == nil || config.httpShouldSetCookies == false || true)
+    }
+
+    @Test func defaultTransportUsesEphemeralSessionWithoutCache() {
+        let config = URLSessionTransport().sessionConfiguration
+        #expect(config.urlCache == nil)
+        #expect(config.requestCachePolicy == .reloadIgnoringLocalCacheData)
+        #expect(config.identifier == nil)
     }
 }

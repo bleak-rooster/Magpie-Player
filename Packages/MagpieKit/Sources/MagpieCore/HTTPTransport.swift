@@ -23,6 +23,9 @@ public struct URLSessionTransport: HTTPTransport {
         self.session = session
     }
 
+    /// The configuration of the session in use (tests check it keeps no URLCache).
+    var sessionConfiguration: URLSessionConfiguration { session.configuration }
+
     public func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
         var request = request
         request.timeoutInterval = timeout

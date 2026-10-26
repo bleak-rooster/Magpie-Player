@@ -361,3 +361,18 @@ extension PlayerTests {
         #expect(!player.isShuffled)
     }
 }
+
+extension PlayerTests {
+    @Test func repeatOneSendsOnlyCurrentAndOffRestoresPrefetch() {
+        let player = makePlayer()
+        player.play([Self.song("1"), Self.song("2"), Self.song("3")], startAt: 0)
+        let current = player.queue.current!.id
+        player.repeatMode = .one
+        #expect(engine.setItemsCalls.last!.items.map(\.0) == [current], "no prefetch of the next song")
+        player.playNext([Self.song("x")])
+        #expect(engine.setItemsCalls.last!.items.map(\.0) == [current], "edits keep it that way")
+        player.repeatMode = .off
+        #expect(engine.setItemsCalls.last!.items.map(\.0) == [current] + player.queue.upcoming.map(\.id))
+        #expect(engine.setItemsCalls.last!.items.count == 4)
+    }
+}

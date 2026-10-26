@@ -27,7 +27,11 @@ public final class Player {
     public private(set) var position: TimeInterval = 0
     public private(set) var duration: TimeInterval?
     /// Repeat is in-memory: a new launch starts with it off.
-    public var repeatMode: RepeatMode = .off
+    public var repeatMode: RepeatMode = .off {
+        // Repeat one holds back the upcoming items (no gapless prefetch of the next song), so
+        // switching into or out of it re-sends the engine's list.
+        didSet { if oldValue != repeatMode, queue.current != nil { syncEngine() } }
+    }
     public private(set) var isShuffled = false
     /// Last playback error for the current entry, if any (cleared when a new entry starts).
     public private(set) var lastError: String?
@@ -270,7 +274,8 @@ public final class Player {
             isPlaying = false
             return
         }
-        let items = ([current] + queue.upcoming).map { ($0.id, urls.streamURL(for: $0.song)) }
+        let following = repeatMode == .one ? [] : queue.upcoming
+        let items = ([current] + following).map { ($0.id, urls.streamURL(for: $0.song)) }
         engine.setItems(items, startAt: 0)
     }
 
