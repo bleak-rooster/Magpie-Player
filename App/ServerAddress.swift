@@ -38,7 +38,10 @@ enum ServerAddress {
     /// longer name such as `10.0.0.1.evil.com`).
     static func ipv4(_ host: String) -> [UInt8]? {
         let labels = host.split(separator: ".", omittingEmptySubsequences: false)
-        guard labels.count == 4, labels.allSatisfy({ !$0.isEmpty && $0.allSatisfy(\.isASCII) && $0.allSatisfy(\.isNumber) })
+        // A leading zero (`010`) is octal to the system resolver but decimal to `inet_pton`: not an address
+        // we classify, so such a host is public.
+        guard labels.count == 4, labels.allSatisfy({ !$0.isEmpty && $0.allSatisfy(\.isASCII) && $0.allSatisfy(\.isNumber)
+                                                   && !($0.count > 1 && $0.first == "0") })
         else { return nil }
         var addr = in_addr()
         guard inet_pton(AF_INET, host, &addr) == 1 else { return nil }

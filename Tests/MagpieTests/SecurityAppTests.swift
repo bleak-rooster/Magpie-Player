@@ -198,7 +198,7 @@ private let publicLidarr = URL(string: "http://lidarr.example.com:8686")!
         for s in ["http://10.0.0.1.evil.com", "http://127.0.0.1.evil.com", "http://192.168.1.1.attacker.net",
                   "http://evil.10.0.0.1.com", "http://134744072", "http://0x08080808", "http://100.64.0.1.evil.com",
                   "http://169.254.1.1.evil.com", "http://172.16.0.1.x.y", "http://10.1", "http://1.2.3.4.5",
-                  "http://localhost.evil.com"] {
+                  "http://localhost.evil.com", "http://010.0.0.1", "http://192.168.001.1", "http://0127.0.0.1"] {
             let url = URL(string: s)!
             #expect(!ServerAddress.isPrivate(url), "\(s)")
             #expect(!ServerAddress.isLoopback(url), "\(s)")
