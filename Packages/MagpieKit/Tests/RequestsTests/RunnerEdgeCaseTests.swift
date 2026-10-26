@@ -215,4 +215,38 @@ private let proxyPage = MockTransport.Response(
         #expect(h.library.state.withLock { $0.scans } == scansAtImport)
         #expect(h.library.state.withLock { $0.refreshes } < 20, "backed off")
     }
+
+    /// Fix round 1: a healthy 10-minute scan with one request importing refreshes the index at most every 2
+    /// minutes (each refresh pages the whole library), and the song is found once the scan ends.
+    @Test func refreshesThrottledDuringAHealthyScan() async throws {
+        let h = await Harness()
+        h.server.ownerHasArtist(albumMonitored: false)
+        let id = try await h.runner.tryRecording(h.recording(recAlbumOnly), tier: .standard)
+        await h.runner.settle()
+        h.server.with { $0.history = [.init(albumId: 31, type: "trackFileImported", date: h.clock.now)] }
+        h.library.state.withLock { $0.scanning = true }
+        await h.runner.tick()
+        #expect(await h.state(id) == .importing)
+        let before = h.library.state.withLock { $0.refreshes }
+        var refreshedAt: [Date] = []
+        for _ in 0..<(10 * 60 / 5) {
+            h.clock.advance(5)
+            let n = h.library.state.withLock { $0.refreshes }
+            await h.runner.tick()
+            if h.library.state.withLock({ $0.refreshes }) > n { refreshedAt.append(h.clock.now) }
+        }
+        let gaps = zip(refreshedAt.dropFirst(), refreshedAt).map { $0.timeIntervalSince($1) }
+        #expect(gaps.allSatisfy { $0 >= 120 }, "refresh gaps while scanning: \(gaps)")
+        let during = h.library.state.withLock { $0.refreshes } - before
+        #expect(during <= 5, "\(during) refreshes during a 10-minute scan")
+        #expect(during >= 1, "still refreshes, so a stuck scan recovers")
+
+        h.library.list(recAlbumOnly, as: "s1")
+        h.library.state.withLock { $0.scanning = false }
+        for _ in 0..<(5 * 60 / 5) where await h.state(id) != .ready {
+            h.clock.advance(5)
+            await h.runner.tick()
+        }
+        #expect(await h.state(id) == .ready)
+    }
 }

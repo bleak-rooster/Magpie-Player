@@ -26,8 +26,13 @@ public actor MatchIndexStore {
     private var refreshing: Task<Void, Error>?
 
     /// `fileURL` nil keeps the index in memory only.
-    public init(fileURL: URL?) {
+    /// The most pages one refresh reads (2,000,000 songs): a server that never ends a library can't loop forever.
+    public static let defaultMaxPages = 2000
+    private let maxPages: Int
+
+    public init(fileURL: URL?, maxPages: Int = MatchIndexStore.defaultMaxPages) {
         self.fileURL = fileURL
+        self.maxPages = maxPages
     }
 
     /// Where the snapshot for one server and account lives: Application Support/Magpie/MatchIndex/<hash>.json.
@@ -76,14 +81,21 @@ public actor MatchIndexStore {
 
     private func rebuild(_ fetchPage: PageFetcher) async throws {
         var songs: [Song] = []
+        var seen = Set<String>()
         var start = 0
-        while true {
+        for pageNumber in 1...maxPages {
             try Task.checkCancellation()
             let page = try await fetchPage(start, start + Self.pageSize)
-            songs.append(contentsOf: page.songs)
+            let fresh = page.songs.filter { seen.insert($0.id).inserted }
+            songs.append(contentsOf: fresh)
             start += Self.pageSize
             // `songs` may be short of a page when the server skipped missing files, so page by position.
             if start >= page.total { break }
+            // A server that ignores `_start`/`_end` (same page, or the whole library, every time) adds nothing new.
+            if pageNumber > 1, !page.songs.isEmpty, fresh.isEmpty { break }
+            if pageNumber == maxPages {
+                Log.logger("matchindex").warning("stopped at \(self.maxPages, privacy: .public) pages; keeping what was read")
+            }
         }
         let built = MatchIndex(songs: songs)
         try Task.checkCancellation()   // erased (signed out) meanwhile

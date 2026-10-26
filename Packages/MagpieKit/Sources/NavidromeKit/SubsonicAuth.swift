@@ -33,6 +33,8 @@ public enum NavidromeError: Error, Equatable, Sendable {
     case api(code: Int, message: String)
     /// The address answered, but not with the API (e.g. a reverse proxy's HTML sign-in page).
     case unexpectedResponse
+    /// The server answered JSON, but not in a shape Magpie reads (e.g. a field changed in a newer version).
+    case unexpectedData
 }
 
 /// Subsonic token auth: `u, t, s, v, c, f`. The password is never sent.

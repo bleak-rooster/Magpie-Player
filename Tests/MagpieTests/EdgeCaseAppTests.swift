@@ -123,6 +123,23 @@ private let lidarrScope = LidarrClient(base: lidarrBase, apiKey: "key", transpor
         tearDown(model)
     }
 
+    /// Fix round 1: real JSON in a shape Magpie can't read (a newer Navidrome) is not blamed on a proxy.
+    @Test func unexpectedJSONShapeIsNotBlamedOnAProxy() async throws {
+        stubNavidrome()
+        transport.inner.stub(pathSuffix: "/rest/getArtists", body: Data(
+            #"{"subsonic-response":{"status":"ok","version":"1.16.1","artists":{"index":"changed"}}}"#.utf8))
+        let model = makeModel()
+        try await model.signIn(urls: [proxied], username: "admin", password: "pw")
+        var thrown: Error?
+        do { _ = try await model.request { try await $0.artists() } } catch { thrown = error }
+        let error = try #require(thrown)
+        #expect(error as? NavidromeError == .unexpectedData)
+        #expect(BrowseErrorCopy.message(for: error) == BrowseErrorCopy.unexpectedData)
+        #expect(ConnectErrorCopy.message(for: error) == ConnectErrorCopy.unexpectedData)
+        #expect(BrowseErrorCopy.unexpectedData != BrowseErrorCopy.unexpectedResponse)
+        tearDown(model)
+    }
+
     /// Subsonic `status: "failed"` in a 200 (e.g. an album deleted while browsing): a calm message, no failover.
     @Test func subsonicFailedIsCalm() async throws {
         stubNavidrome()

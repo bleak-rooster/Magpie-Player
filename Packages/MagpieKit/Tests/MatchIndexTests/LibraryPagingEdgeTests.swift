@@ -102,7 +102,7 @@ private func pageRanges(_ t: MockTransport) -> [Range<Int>] {
         let store = MatchIndexStore(fileURL: nil)
         try await store.refresh(using: client)
         let index = await store.index
-        #expect(index.count == 2000)
+        #expect(index.count == 1998, "each id once (s1 and s1001 were overwritten by repeats)")
         let dup = ExternalRecording(recordingMBID: MBID("00000000-0000-0000-0000-000000000000"), title: "x", artist: "y",
                                     source: .listenBrainz)
         #expect(index.match(dup)?.songId == "s000000")
@@ -145,5 +145,46 @@ private func pageRanges(_ t: MockTransport) -> [Range<Int>] {
         fail.withLock { $0 = true }
         await #expect(throws: NavidromeError.http(status: 502)) { try await store.refresh(using: client) }
         #expect(await store.index.count == 3000)
+    }
+
+    // MARK: Fix round 1: servers that ignore paging
+
+    /// No total header and `_start`/`_end` ignored (the same full page every time): stops after the second page
+    /// adds nothing new.
+    @Test func serverIgnoringStartStops() async throws {
+        let (client, t) = library(rows: { _, _ in (0..<1000).map { row($0) } }, total: { nil })
+        let store = MatchIndexStore(fileURL: nil)
+        try await store.refresh(using: client)
+        #expect(pageRanges(t).count == 2)
+        #expect(await store.index.count == 1000)
+    }
+
+    /// No total header and the whole library on every call: stops after the second call, keeps one copy.
+    @Test func serverReturningWholeLibraryStops() async throws {
+        let (client, t) = library(rows: { _, _ in (0..<2500).map { row($0) } }, total: { nil })
+        let store = MatchIndexStore(fileURL: nil)
+        try await store.refresh(using: client)
+        #expect(pageRanges(t).count == 2)
+        #expect(await store.index.count == 2500)
+    }
+
+    /// A server that never ends (new ids forever, no total): the page cap stops it and keeps what was gathered.
+    @Test func pageCapStopsANeverEndingServer() async throws {
+        let (client, t) = library(rows: { s, e in (s..<e).map { row($0) } }, total: { nil })
+        let store = MatchIndexStore(fileURL: nil, maxPages: 5)
+        try await store.refresh(using: client)
+        #expect(pageRanges(t).count == 5)
+        #expect(await store.index.count == 5000)
+        #expect(MatchIndexStore.defaultMaxPages == 2000)
+    }
+
+    /// A well-behaved server with a total still pages fully past the dedup check.
+    @Test func wellBehavedServerStillPagesFully() async throws {
+        let n = 4_321
+        let (client, t) = library(rows: { s, e in (s..<min(e, n)).map { row($0) } }, total: { n })
+        let store = MatchIndexStore(fileURL: nil)
+        try await store.refresh(using: client)
+        #expect(pageRanges(t).count == 5)
+        #expect(await store.index.count == n)
     }
 }

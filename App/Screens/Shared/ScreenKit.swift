@@ -99,10 +99,12 @@ struct LoadableView<Value, Content: View>: View {
 }
 
 enum BrowseErrorCopy {
+    static let unexpectedData = ConnectErrorCopy.unexpectedData
     static let unexpectedResponse = "Something in front of your music server answered instead of it. Check that its address still reaches the server directly."
 
     static func message(for error: Error) -> String {
         if case NavidromeError.unexpectedResponse = error { return unexpectedResponse }
+        if case NavidromeError.unexpectedData = error { return unexpectedData }
         return AppModel.isConnectionError(error)
             ? "Your music server isn't answering right now."
             : "Something went wrong. Try again in a moment."

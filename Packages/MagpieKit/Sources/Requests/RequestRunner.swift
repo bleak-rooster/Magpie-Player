@@ -47,6 +47,8 @@ public actor RequestRunner {
     /// Match-index refresh while a request is importing: at most every 30 s at first, backing off with the
     /// request's time in `importing` (half of it) up to 5 minutes (brief ruling 4).
     public static let indexRefreshInterval: ClosedRange<TimeInterval> = 30...300
+    /// Index refreshes while Navidrome reports a scan running: at least this far apart.
+    public static let scanningRefreshInterval: TimeInterval = 120
     /// Another `startScan` while a request is importing and still not listed: 2 minutes, backing off to 10.
     public static let rescanInterval: ClosedRange<TimeInterval> = 120...600
     /// Imported but still not listed after this long: Needs attention, and the library is left alone for it
@@ -911,7 +913,10 @@ public actor RequestRunner {
             // the scan reaches them): the index is refreshed either way; a new scan only starts when none runs.
             let scanning = try? await library.isScanning()
             let youngest = importing.map { t.timeIntervalSince($0.importingSince ?? t) }.min() ?? 0
-            let refreshEvery = Self.clamp(youngest / 2, Self.indexRefreshInterval)
+            // While a scan runs, refresh at most every `scanningRefreshInterval` (each refresh pages the whole
+            // library); still refresh, so a scan status stuck at "scanning" recovers.
+            let backoff = Self.clamp(youngest / 2, Self.indexRefreshInterval)
+            let refreshEvery = scanning == true ? max(backoff, Self.scanningRefreshInterval) : backoff
             if lastIndexRefresh.map({ t.timeIntervalSince($0) >= refreshEvery }) ?? true {
                 lastIndexRefresh = t
                 do { try await library.refreshIndex() } catch {

@@ -218,4 +218,24 @@ private func logins(_ t: MockTransport) -> Int {
         let short = try await client.songsPage(start: 20, end: 40)
         #expect(short.total == 30, "a short page is the end")
     }
+
+    // MARK: Fix round 1: JSON of the wrong shape is not a proxy page
+
+    /// Real JSON the client can't read (a field changed type in a newer Navidrome) is `unexpectedData`, not
+    /// "something in front of your server".
+    @Test func jsonOfTheWrongShapeIsUnexpectedData() async throws {
+        let (client, transport) = makeClient()
+        transport.stub(pathSuffix: "/rest/getAlbumList2", body: envelope(#""albumList2":{"album":"not a list"}"#))
+        transport.stub(pathSuffix: "/api/song", body: Data(#"  [{"title":"no id"}]"#.utf8), headers: ["X-Total-Count": "1"])
+        await #expect(throws: NavidromeError.unexpectedData) { try await client.albumList(.newest, size: 5, offset: 0) }
+        await #expect(throws: NavidromeError.unexpectedData) { try await client.songsPage(start: 0, end: 1000) }
+    }
+
+    @Test func nonJSONBodiesAreUnexpectedResponse() async throws {
+        let (client, transport) = makeClient()
+        transport.stub(pathSuffix: "/rest/getArtists", body: Data("\n  Bad Gateway".utf8))
+        transport.stub(pathSuffix: "/rest/getPlaylists", body: Data())
+        await #expect(throws: NavidromeError.unexpectedResponse) { try await client.artists() }
+        await #expect(throws: NavidromeError.unexpectedResponse) { try await client.playlists() }
+    }
 }

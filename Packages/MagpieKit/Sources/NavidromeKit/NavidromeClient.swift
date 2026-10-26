@@ -154,10 +154,13 @@ public actor NavidromeClient {
         return body
     }
 
-    /// JSON that isn't the API's (a proxy's HTML sign-in page, a captive portal) is `unexpectedResponse`.
+    /// A body that isn't JSON at all (a proxy's HTML sign-in page, a captive portal, nothing) is
+    /// `unexpectedResponse`; JSON in a shape Magpie can't read is `unexpectedData`.
     private static func decode<T: Decodable>(_ type: T.Type, _ data: Data) throws -> T {
         do { return try JSONDecoder().decode(T.self, from: data) } catch is DecodingError {
-            throw NavidromeError.unexpectedResponse
+            let first = data.first { !$0.isASCIIWhitespace }
+            throw first == UInt8(ascii: "{") || first == UInt8(ascii: "[")
+                ? NavidromeError.unexpectedData : NavidromeError.unexpectedResponse
         }
     }
 
@@ -316,4 +319,8 @@ public actor NavidromeClient {
             ?? (rows.count < end - start ? start + rows.count : end + 1)
         return (songs, total)
     }
+}
+
+private extension UInt8 {
+    var isASCIIWhitespace: Bool { self == 0x20 || self == 0x09 || self == 0x0A || self == 0x0D }
 }

@@ -7,6 +7,8 @@ enum ConnectErrorCopy {
     static let noAddress = "Add the address of your music server."
     static let generic = "Something went wrong talking to your music server. Try again in a moment."
     /// Something answered, but not Navidrome's API (a reverse proxy's sign-in page, a captive portal).
+    /// The server answered JSON Magpie can't read (e.g. a newer version changed a field).
+    static let unexpectedData = "Your music server sent something Magpie didn't expect."
     static let notAMusicServer = "That address answered, but it doesn't look like a music server. If a sign-in page sits in front of it, use an address that reaches the server directly."
 
     /// B3: a certificate this device doesn't trust. v1 has no in-app override (AVPlayer would ignore it).
@@ -60,6 +62,8 @@ enum ConnectErrorCopy {
             return unreachable("your music server")
         case NavidromeError.unexpectedResponse:
             return notAMusicServer
+        case NavidromeError.unexpectedData:
+            return unexpectedData
         case let urlError as URLError:
             return message(for: urlError, url: urlError.failingURL)
         default:
