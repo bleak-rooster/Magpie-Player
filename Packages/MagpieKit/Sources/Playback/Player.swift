@@ -33,8 +33,11 @@ public final class Player {
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private let now: () -> Date
     @ObservationIgnored private var playback: TrackPlayback?
-    /// The engine played the last item to its end; resuming starts the current entry over.
-    @ObservationIgnored private var reachedEnd = false
+    /// The engine stopped on its own (end of list, or the current entry failed); resuming or
+    /// skipping reloads the engine instead of relying on what it still holds.
+    @ObservationIgnored private var needsReload = false
+    /// The current entry failed; engine item changes are ignored until the user acts.
+    @ObservationIgnored private var failedEntryId: UUID?
     @ObservationIgnored private var pendingScrobbles: [UUID: Task<Void, Never>] = [:]
 
     /// Scrobble bookkeeping for the entry that is playing.
@@ -82,6 +85,10 @@ public final class Player {
 
     public func next() {
         guard queue.advance() != nil else { return }
+        if needsReload {
+            loadCurrent()
+            return
+        }
         // The engine already holds the old upcoming list, whose head is the new current entry.
         engine.next()
         beginEntry()
@@ -150,7 +157,7 @@ public final class Player {
     public func handle(_ event: EngineEvent) {
         switch event {
         case .itemChanged(let id):
-            guard id != queue.current?.id else { return }
+            guard failedEntryId == nil, id != queue.current?.id else { return }
             guard queue.upcoming.contains(where: { $0.id == id }) else { return }
             while queue.current?.id != id, queue.advance() != nil {}
             beginEntry()
@@ -166,11 +173,13 @@ public final class Player {
             // is reached. Stop the engine too, so a dead server can't race through the queue.
             guard id == queue.current?.id else { return }
             lastError = message
+            failedEntryId = id
+            needsReload = true
             engine.pause()
             isPlaying = false
         case .ended:
             isPlaying = false
-            reachedEnd = true
+            needsReload = true
         case .playing(let playing):
             isPlaying = playing
         }
@@ -187,7 +196,7 @@ public final class Player {
 
     private func resume() {
         guard queue.current != nil else { return }
-        if reachedEnd { loadCurrent() }
+        if needsReload { loadCurrent() }
         engine.play()
         isPlaying = true
     }
@@ -212,7 +221,8 @@ public final class Player {
 
     /// A new entry became current: reset position and scrobble state, send "now playing".
     private func beginEntry() {
-        reachedEnd = false
+        needsReload = false
+        failedEntryId = nil
         position = 0
         lastError = nil
         guard let entry = queue.current else {

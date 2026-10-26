@@ -244,3 +244,28 @@ extension PlayerTests {
         #expect(gotImage)
     }
 }
+
+extension PlayerTests {
+    @Test func itemChangedAfterFailureDoesNotAdvance() async {
+        let player = makePlayer()
+        player.play([Self.song("1"), Self.song("2")], startAt: 0)
+        let failed = player.queue.current!.id
+        player.handle(.failed(failed, "server gone"))
+        player.handle(.itemChanged(player.queue.upcoming[0].id))
+        #expect(player.queue.current?.id == failed)
+        #expect(player.lastError == "server gone")
+        #expect(!player.isPlaying)
+        await player.waitForPendingScrobbles()
+        #expect(await scrobbler.calls == [.init(songId: "1", submission: false)], "no now-playing for song 2")
+
+        // The user acts: play retries the failed entry; next moves on.
+        player.toggle()
+        #expect(player.lastError == nil && player.isPlaying)
+        #expect(engine.setItemsCalls.last!.items.first!.0 == failed, "retry reloads the failed entry")
+        player.handle(.failed(failed, "still gone"))
+        player.next()
+        #expect(player.queue.current?.song.id == "2")
+        #expect(engine.setItemsCalls.last!.items.first!.0 == player.queue.current!.id,
+                "after a failure, next loads the entry rather than relying on the engine's queue")
+    }
+}

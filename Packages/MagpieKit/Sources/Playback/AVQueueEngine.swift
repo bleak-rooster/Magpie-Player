@@ -28,7 +28,11 @@ public final class AVQueueEngine: PlaybackEngine {
     private var player = AVQueuePlayer()
     private var list: [(id: UUID, url: URL)] = []
     private var enqueued: [ObjectIdentifier: Enqueued] = [:]
+    /// The entry the engine considers current (last `.itemChanged`). Failure handling keys off this,
+    /// not `player.currentItem`, because AVQueuePlayer may already have skipped past a failed item.
     private var reportedId: UUID?
+    /// Set when the current entry failed and playback was halted on it.
+    private var haltedId: UUID?
     private var lastTime: TimeInterval = 0
     /// What the user asked for; survives interruptions so we know whether to resume.
     private var wantsToPlay = false
@@ -65,6 +69,7 @@ public final class AVQueueEngine: PlaybackEngine {
             }
         } else {
             clearPlayer()
+            haltedId = nil
             enqueue(target)
             lastTime = 0
             reportCurrent()
@@ -79,7 +84,8 @@ public final class AVQueueEngine: PlaybackEngine {
         activateSessionIfNeeded()
         #endif
         if player.currentItem == nil, let first = list.first {
-            // Finished the list earlier; play it again from its first item.
+            // Finished the list or halted on a failure: (re)load the first item.
+            haltedId = nil
             enqueue(first)
             reportCurrent()
         }
@@ -102,8 +108,14 @@ public final class AVQueueEngine: PlaybackEngine {
             continuation.yield(.ended)
             return
         }
-        if player.items().count < 2 { enqueue(list[nextIndex]) }
-        player.advanceToNextItem()
+        haltedId = nil
+        if player.currentItem != nil, player.items().count >= 2 {
+            player.advanceToNextItem()
+        } else {
+            clearPlayer()
+            enqueue(list[nextIndex])
+            if wantsToPlay { player.play() }
+        }
         lastTime = 0
         reportCurrent()
         topUp()
@@ -112,8 +124,9 @@ public final class AVQueueEngine: PlaybackEngine {
     // MARK: - Queue upkeep
 
     private func indexAfterCurrent() -> Int? {
-        guard let current = player.currentItem, let info = enqueued[ObjectIdentifier(current)],
-              let i = list.firstIndex(where: { $0.id == info.id }), i + 1 < list.count else { return nil }
+        guard let id = reportedId, let i = list.firstIndex(where: { $0.id == id }), i + 1 < list.count else {
+            return nil
+        }
         return i + 1
     }
 
@@ -155,6 +168,13 @@ public final class AVQueueEngine: PlaybackEngine {
     /// bookkeeping for items AVQueuePlayer has already let go of.
     private func reportCurrent() {
         let live = Set(player.items().map(ObjectIdentifier.init))
+        // AVQueuePlayer skips past a failed item on its own. If the item it dropped is the one we
+        // reported as current and it failed, halt on it instead of reporting the next one.
+        if let dropped = enqueued.values.first(where: { !live.contains(ObjectIdentifier($0.item)) && $0.id == reportedId }),
+           dropped.item.status == .failed {
+            haltOnFailure(dropped.id, dropped.item.error?.localizedDescription ?? "Playback failed")
+            return
+        }
         for (oid, e) in enqueued where !live.contains(oid) {
             e.statusObservation.invalidate()
             enqueued[oid] = nil
@@ -169,18 +189,27 @@ public final class AVQueueEngine: PlaybackEngine {
     /// dropped from the AVQueuePlayer; `itemEnded` enqueues a fresh copy when it is reached.
     private func itemFailed(_ oid: ObjectIdentifier, _ message: String) {
         guard let info = enqueued[oid] else { return }
-        if let current = player.currentItem, ObjectIdentifier(current) == oid {
-            wantsToPlay = false
-            player.pause()
-            for item in player.items().dropFirst() {
-                player.remove(item)
-                forget(item)
-            }
-        } else if let item = player.items().first(where: { ObjectIdentifier($0) == oid }) {
+        if info.id == reportedId {
+            haltOnFailure(info.id, message)
+            return
+        }
+        if let item = player.items().first(where: { ObjectIdentifier($0) == oid }) {
             player.remove(item)
             forget(item)
         }
         continuation.yield(.failed(info.id, message))
+    }
+
+    /// Stops on the failed current entry: pause, empty the AVQueuePlayer (it may already sit on the
+    /// next song), keep `reportedId` on the failed entry, and report the failure once.
+    private func haltOnFailure(_ id: UUID, _ message: String) {
+        guard haltedId != id else { return }
+        wantsToPlay = false
+        player.pause()
+        clearPlayer()
+        reportedId = id
+        haltedId = id
+        continuation.yield(.failed(id, message))
     }
 
     private func tick(_ time: CMTime) {
