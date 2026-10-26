@@ -89,28 +89,29 @@ import os
 
     @Test func concurrent401sLoginOnce() async throws {
         let transport = MockTransport()
-        let expired = OSAllocatedUnfairLock(initialState: true)
-        transport.stub(method: "POST", pathSuffix: "/auth/login") { _ in
-            expired.withLock { $0 = false }
-            return .init(status: 200, body: Fixtures.data("login"), headers: [:])
-        }
+        let rejected = OSAllocatedUnfairLock(initialState: 0)
+        // The first five browse requests get 401, independent of login state.
         transport.stub(pathSuffix: "/rest/getAlbumList2") { _ in
-            expired.withLock { $0 }
+            let n = rejected.withLock { v -> Int in v += 1; return v }
+            return n <= 5
                 ? .init(status: 401, body: Data(), headers: [:])
                 : .init(status: 200, body: Fixtures.data("getAlbumList2"), headers: [:])
         }
-        let (client, _) = makeClient(transport: transport)
-        _ = try await client.connect()
-        let loginsBefore = transport.requests.filter { $0.url?.path.hasSuffix("/auth/login") == true }.count
-        #expect(loginsBefore == 1)
-        expired.withLock { $0 = true }
+        // Login is held back until all five 401s are recorded, so every request is in flight together.
+        let gated = LoginGateTransport(inner: transport, rejected: rejected, waitFor: 5)
+        _ = makeClient(transport: transport)   // stubs ping + login on the shared mock
+        let gatedClient = NavidromeClient(endpoint: ServerEndpoint(bases: [testBase]),
+                                          credentials: testCredentials, transport: gated)
+        _ = try await gatedClient.connect()
+        func logins() -> Int { transport.requests.filter { $0.url?.path.hasSuffix("/auth/login") == true }.count }
+        #expect(logins() == 1)
         let counts = try await withThrowingTaskGroup(of: Int.self) { group in
-            for _ in 0..<5 { group.addTask { try await client.albumList(.newest, size: 50, offset: 0).count } }
+            for _ in 0..<5 { group.addTask { try await gatedClient.albumList(.newest, size: 50, offset: 0).count } }
             return try await group.reduce(into: [Int]()) { $0.append($1) }
         }
         #expect(counts == Array(repeating: 7, count: 5))
-        let loginsAfter = transport.requests.filter { $0.url?.path.hasSuffix("/auth/login") == true }.count
-        #expect(loginsAfter - loginsBefore == 1)
+        #expect(rejected.withLock { $0 } >= 5)
+        #expect(logins() == 2)   // initial connect + exactly one shared re-login
     }
 
     @Test func subsonicError40TriggersReloginThenRetry() async throws {

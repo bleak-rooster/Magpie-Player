@@ -1,6 +1,7 @@
 import Foundation
 import MagpieCore
 import MagpieTestSupport
+import os
 @testable import NavidromeKit
 
 enum Fixtures {
@@ -35,4 +36,20 @@ func queryItems(_ request: URLRequest) -> [URLQueryItem] {
 
 func queryValue(_ request: URLRequest, _ name: String) -> String? {
     queryItems(request).first { $0.name == name }?.value
+}
+
+/// Delays `/auth/login` once at least one 401 has been seen, until `waitFor` of them have been recorded.
+struct LoginGateTransport: HTTPTransport {
+    let inner: MockTransport
+    let rejected: OSAllocatedUnfairLock<Int>
+    let waitFor: Int
+
+    func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        if request.url?.path.hasSuffix("/auth/login") == true, rejected.withLock({ $0 }) > 0 {
+            for _ in 0..<2000 where rejected.withLock({ $0 }) < waitFor {
+                try await Task.sleep(for: .milliseconds(5))
+            }
+        }
+        return try await inner.send(request)
+    }
 }

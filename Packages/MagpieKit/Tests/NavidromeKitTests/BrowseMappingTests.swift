@@ -243,6 +243,20 @@ import os
         #expect(try await client.scanStatus() == true)
     }
 
+    @Test func failedStartScanCanBeRetriedImmediately() async throws {
+        let first = OSAllocatedUnfairLock(initialState: true)
+        let ok = Data(#"{"subsonic-response":{"status":"ok","version":"1.16.1"}}"#.utf8)
+        let (client, transport) = try await connected {
+            $0.stub(pathSuffix: "/rest/startScan") { _ in
+                first.withLock { v -> Bool in defer { v = false }; return v }
+                    ? .init(status: 500) : .init(status: 200, body: ok)
+            }
+        }
+        await #expect(throws: NavidromeError.http(status: 500)) { try await client.startScan(target: "1:x") }
+        try await client.startScan(target: "1:x")
+        #expect(transport.requests.filter { $0.url?.path.hasSuffix("startScan") == true }.count == 2)
+    }
+
     @Test func apiErrorSurfacesCodeAndMessage() async throws {
         let body = Data(#"{"subsonic-response":{"status":"failed","version":"1.16.1","error":{"code":70,"message":"not found"}}}"#.utf8)
         let (client, _) = try await connected { $0.stub(pathSuffix: "/rest/getAlbum", body: body) }

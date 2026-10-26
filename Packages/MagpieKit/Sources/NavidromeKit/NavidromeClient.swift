@@ -255,10 +255,10 @@ public actor NavidromeClient {
         let key = target ?? ""
         let t = now()
         if let last = lastScan[key], t.timeIntervalSince(last) < Self.scanDebounce { return }
-        lastScan[key] = t
         var extra = [URLQueryItem(name: "fullScan", value: "false")]
         if let target { extra.append(URLQueryItem(name: "target", value: target)) }
         _ = try await subsonic("startScan", extra)
+        lastScan[key] = t   // only after success: a failed scan must be retryable immediately
     }
 
     public func scanStatus() async throws -> Bool {
