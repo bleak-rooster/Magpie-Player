@@ -1,19 +1,120 @@
 # Magpie Runbook
 
-## Toolchain
-Every shell: `export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer` (xcode-select points to CLT). The scripts do this for you. Requires XcodeGen (`brew install xcodegen`).
+Magpie v1 is an owner-only iOS 27 + CarPlay music app for your own Navidrome, with Lidarr for "Try this song". This page tells you how to run it against **your** servers. Details of what each milestone does are at the bottom (Reference).
 
-## Scripts
-- `scripts/test-packages.sh` runs `swift test` in `Packages/MagpieKit`.
-- `scripts/test-app.sh` runs `xcodegen generate`, then unit and UI tests on the "iPhone 18 Pro" simulator (iOS 27.0 runtime).
-- `scripts/test-all.sh` runs both.
-- `scripts/it.sh` runs server integration tests (`MAGPIE_IT=1`, dev stack only).
-- Navidrome rate-limits logins (about 5 per 20 seconds per client; more answer **429**). `scripts/it.sh` and `MAGPIE_IT=1 scripts/test-app.sh` each log in several times, so wait about 20 seconds between runs, or the next run fails with 429s that have nothing to do with the change under test.
-- `scripts/build.sh` generates the project and builds the app.
+Built so far: milestones M0 to M5 (sign in, browse, play, search, queue, lyrics, CarPlay library browsing, Lidarr connect, Try in "straight into your library" mode, Requests). Not built yet: see section 5.
 
-`Magpie.xcodeproj` and `App/Info.plist` are generated from `project.yml` and are git-ignored.
+## 1. Test on your own servers in 5 steps
 
-## What works
+**Step 1. Build and open it.** You need Xcode 27.1 at `/Applications/Xcode.app` and XcodeGen (`brew install xcodegen`).
+```sh
+cd /Users/dev/Dev/navidrome_player
+export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+xcodegen generate
+open Magpie.xcodeproj
+```
+In Xcode pick the **Magpie** scheme and the **iPhone 18 Pro** simulator (iOS 27.0 runtime), then press Run. Or from Terminal: `scripts/build.sh`.
+- `xcode-select -p` currently points at the Command Line Tools, so bare `xcodebuild` and `simctl` fail. The scripts and the `export` line above work around it. To fix it for good: `sudo xcode-select -s /Applications/Xcode.app`. First run may also need `xcodebuild -runFirstLaunch` and accepting the license.
+
+**Step 2. Connect to Navidrome.** The first screen asks for an address, user and password. Use an admin account if you want the pre-flight checks to be complete.
+- Address: `https://music.example.com`, or `http://192.168.1.20:4533` on your LAN, or a Tailscale name. Several addresses are allowed (first one that answers wins). Include the base path if your proxy has one (`https://host/navidrome`).
+- Typed without a scheme: it becomes `https://`, except private addresses (LAN, `.local`, single-word names, Tailscale 100.x), which become `http://`.
+- Plain `http://` to a public-looking address: Connect warns "This address isn't encrypted. Your password will be sent in the clear." and asks you to agree. The answer is remembered per address. Prefer HTTPS for anything outside your house.
+- Self-signed certificate: Magpie does not trust it (playback would ignore any override). Install your CA in the simulator, then reconnect:
+  `xcrun simctl keychain booted add-root-cert /path/to/ca.pem`
+- Do not put `user:password@` in the address; it is refused.
+
+**Step 3. Browse and play.** Tap "Start listening". Open an album, play a track, try Search, the queue (from Now Playing) and lyrics. Nothing is written to your servers yet, except scrobbles (see warnings in section 3: switch **Count plays** off in Settings if you don't want test plays recorded).
+
+**Step 4. Connect Lidarr (read-only first).** Home › "Finish setting up" › Connect Lidarr. Enter the address and API key (Lidarr › Settings › General). Magpie checks the key and shows a summary: version, root folders and free space, whether Tubifarry was found, recycle bin, and Lidarr's health messages. Nothing is written. Read it (and section 2).
+
+**Step 5. Allow changes, set up, and Try one song.**
+1. Library › gear › Lidarr: switch on **Allow Magpie to change Lidarr** (off by default; per Lidarr).
+2. Tap **Set up Magpie in Lidarr**. It creates only what is missing (section 3).
+3. Choose **New music goes to** (your root folder; Magpie never guesses if you have several).
+4. Search for a song you do not own. In the "Not in your library" band tap **Try** (or **Ask for it** if you have no Tubifarry). Watch Library › Requests. Then check **Settings › Lidarr change log** and Lidarr's own Activity page.
+
+Start with one song by a small artist, preferably one you wouldn't mind seeing in Lidarr.
+
+## 2. Pre-flight checks before you Try
+
+Check these once; none of them need Magpie.
+
+| Check | How | If it fails |
+|---|---|---|
+| Navidrome 0.64 or newer, and an admin login | Navidrome footer / About page | Older versions are untested. A non-admin works for listening but can't scan the library |
+| Lidarr 3.x reachable from the Mac | Connect Lidarr shows its version | v1 was verified on 3.2.0.5144 (develop channel). 3.1.x should work. See the monitor note in section 3 |
+| Lidarr recycle bin set | Lidarr › Settings › Media Management › Recycle Bin (the Connect Lidarr summary shows "deletes are permanent" if unset) | Set one. Magpie v1 never deletes, but you may |
+| Same music folder seen by both | Compare Lidarr's root folder path with Navidrome's library path | v1 has no path mapping. If they differ, a song never becomes **Ready** even though Lidarr imported it (Magpie checks that Navidrome lists it) |
+| Subsonic connection works | Connect succeeded and Home shows shelves | Check the base path and that the address returns Subsonic JSON, not a login page |
+| `songLyrics` extension | Lyrics button appears in Now Playing | Without it the lyrics sheet is hidden. Not a fault |
+| Last.fm agent (top songs) | Artist screen shows "Popular" | Hidden when your server has none. Not a fault |
+| Tubifarry | Connect Lidarr summary says found / not found | Found: speed **Standard** ("Try it", live wait screen). Not found: **Patient** ("Ask for it", shows up later in Requests) |
+
+## 3. What Try does to your Lidarr, exactly
+
+The whole write list, nothing else is ever sent:
+- **Set up Magpie in Lidarr** creates, only if missing: quality profiles *Magpie Fast Start* and *Magpie Lossless*; metadata profiles *Magpie Finds* and *Magpie Albums+EPs*; tags `magpie` and `magpie-find`. If a profile with one of those names exists with different settings, set-up stops and tells you. Nothing you already have is edited.
+- **Try, artist already in Lidarr:** Magpie picks the smallest release by that artist containing the song, sets just that one album to monitored (`PUT /album/monitor`) and starts an `AlbumSearch`. The artist, its profile and tags are not touched.
+- **Try, new artist:** one `POST /artist` to your chosen root folder with *Magpie Fast Start*, metadata profile *Magpie Finds*, tag `magpie`, "monitor new items: none", only that release monitored, search on add.
+- **The `addOptions.monitor` deviation:** the design said to send `addOptions.monitor: "none"`. On Lidarr 3.2.0.5144 that unmonitors the artist and searches zero albums, so Magpie leaves it out. Result: the artist stays monitored, new items are not monitored, and only the one album is. If your Lidarr is a different version, check the artist in Lidarr after your first Try that its monitored albums are only the one you asked for.
+- **Searching:** if nothing is found, Magpie sends `AlbumSearch` again after 1 min, 5 min, 15 min, then hourly, giving up after 24 h (about 25 searches per request, at most 5 requests active at once). That is real load on your indexers.
+- **Never deletes.** v1 sends no delete to Lidarr for Try. **Stop looking** unmonitors an album only if Magpie was the one who monitored it. An artist Magpie added stays in Lidarr; remove it there yourself if you want it gone.
+- **Change log = undo map.** Every write (method, path, body, no secrets) is recorded on the phone before it is sent: Settings › Lidarr change log. Magpie also keeps an on-device ledger of albums it touched, per Lidarr (address + key).
+
+**Warnings (B8, B9):**
+- Try causes **real indexer searches and downloads** on your Lidarr and adds artists to your library root. Look at the change log afterwards.
+- **Count plays** is on by default: plays are scrobbled by Navidrome to your ListenBrainz/Last.fm. Turn it off in Settings while testing if you don't want that.
+- The first Try goes straight into your library (there is no separate Finds folder yet, so the Try sheet says so).
+
+## 4. CarPlay in the simulator
+
+**CarPlay was not visually verified overnight.** It is covered by unit tests of the templates and a clean-launch check, but nobody has watched it run, because the CarPlay window can't be driven from the command line. Please look at it.
+
+1. Run Magpie in the iPhone 18 Pro simulator and sign in (Step 1 to 2).
+2. Open **DeviceHub** (`/Applications/Xcode.app/Contents/Applications/DeviceHub.app`; older Xcodes: Simulator). Menu **I/O › External Displays › CarPlay**.
+3. Tap Magpie on the CarPlay home screen. Check: three tabs (Home, Library, Search); Library › Albums › an album › a track plays and Now Playing shows the cover with Shuffle and Repeat; Search › "Type a search" opens the keyboard; after signing out, Home says "Not set up on this iPhone yet".
+4. Driving limits (only if your CarPlay window offers them): "Type a search" turns disabled ("Unavailable while driving") and long lists end with "Showing n of m".
+- Device only: cold launch with a locked phone, and real head-unit artwork.
+- CarPlay on a physical phone needs Apple's approved CarPlay audio entitlement in your provisioning profile; the simulator doesn't.
+
+## 5. Known limits, risks and troubleshooting
+
+**Not built yet** (overnight order was hardening before features):
+- **M6 Finds**: a separate Finds folder, Keep / "Not for me", the Finds tab, CarPlay Try and Keep.
+- **M7 polish**: Immersive look, Increase Contrast tokens, more themes, Finds on CarPlay, Siri.
+- Also missing: Up Next list and Downloaded in CarPlay, path mapping, Live Activity, mailbox/Listener/invites (v2).
+- Some small review items were parked, not fixed (listed in the SDD ledger).
+
+**Accepted security risks** (docs/reviews/security-v1.md):
+- Debug builds allow `http://` to any host name (so you can test with a hostname); the in-app consent prompt is the protection, not the OS.
+- Plain `http://` to private/LAN addresses is not prompted; on a hostile network reusing your LAN range, an impostor server could get the password. Single-word host names (`music`, `nas`) count as home network.
+- AVPlayer follows redirects itself, so the same-origin redirect rule covers browsing and artwork, not streams.
+- Use HTTPS for anything that leaves your house. Plain http sends the password at sign-in, a replayable token on every stream URL and the Lidarr API key (full control of Lidarr).
+
+**Navidrome login rate limit:** about 5 logins per 20 seconds, then **429**. If you reinstall and reconnect repeatedly, wait 20 s. Same for `scripts/it.sh` runs.
+
+**Troubleshooting**
+- LAN address times out but opens in Safari on the Mac: System Settings › Privacy & Security › Local Network, allow Xcode / Simulator. `localhost` in the simulator is the Mac.
+- "Doesn't look like a music server": the address answered with a web page (router, captive portal, proxy login). Check the address and any proxy base path.
+- Behind a reverse proxy at a sub-path, include the path in the address (`https://host/navidrome`, `https://host/lidarr`). If a proxy returns an HTML login page, Magpie shows an error instead of crashing; fix the proxy's auth (API paths must be reachable with the Subsonic/Lidarr credentials).
+- Lidarr says wrong key: re-copy from Lidarr › Settings › General.
+- Song stays "Bringing it home": see the path mapping row in section 2; after 20 minutes it says "Not showing up in your library yet" with **Check again**.
+- Untrusted certificate: see Step 2.
+- Disconnecting Lidarr, signing out, or connecting a different Lidarr turns the change switch off and forgets set-up; a new Lidarr always starts with changes off.
+
+## 6. Dev stack and tests
+
+- **Dev stack** (throwaway local Navidrome + Lidarr with a fixture library, bound to 127.0.0.1): see `dev/README.md`. `dev/bootstrap.sh` starts and configures it, `dev/smoke.sh` checks every API the app uses. Needs Docker, curl, jq, openssl, ffmpeg. Tests only ever talk to localhost (a dev marker is required); never your real servers.
+- `scripts/test-all.sh`: package tests (`swift test` in `Packages/MagpieKit`) then app unit and UI tests on the iPhone 18 Pro simulator. `scripts/test-packages.sh` and `scripts/test-app.sh` run each half. `scripts/build.sh` builds only.
+- `scripts/it.sh`: integration tests against the dev stack (`MAGPIE_IT=1`). `MAGPIE_IT=1 scripts/test-app.sh` adds the app flows. Wait about 20 s between runs (login rate limit).
+- `Magpie.xcodeproj` and `App/Info.plist` are generated from `project.yml` (`xcodegen generate`) and are git-ignored.
+
+---
+
+# Reference: what each milestone does
+
+## Details by milestone
 - M5: Try (fallback mode) and Requests. **This is the path to test against your own Lidarr first.** It writes to Lidarr, so read the warnings below before you start.
   - **Settings** (Library › gear, replaces the account menu): Appearance (Signature; more looks in M7), Servers (addresses, signed-in user, Sign out), Lidarr (Connect / summary, "New music goes to" root folder, Speed, **Allow Magpie to change Lidarr**, **Set up Magpie in Lidarr**, **Lidarr change log**), ListenBrainz token (optional, Keychain only, sent only to api.listenbrainz.org), **Count plays**, About.
   - **Allow Magpie to change Lidarr** (G1) is off by default. Every Lidarr write goes through one gate that checks it, refuses anything not on its allow list, and logs method, path and body (no secrets) to the on-device change log before sending (Settings › Lidarr change log, newest first; it is your undo map).
