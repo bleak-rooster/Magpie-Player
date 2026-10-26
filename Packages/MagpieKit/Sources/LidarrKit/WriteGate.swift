@@ -359,7 +359,12 @@ enum BodySummary {
 /// re-read from disk (under a process-wide lock) before each append, so several gates on the same suite and
 /// log file stay consistent.
 public actor LidarrWriteGate {
+    /// The switch's UserDefaults key prefix. The switch itself is per Lidarr instance (security M3):
+    /// `enabledKey(scope:)`, so another Lidarr (or a new API key) always starts with writes off.
     public static let enabledDefaultsKey = "magpie.lidarr.writesEnabled"
+
+    /// The switch's key for one Lidarr instance (`LidarrClient.instanceScope`).
+    public static func enabledKey(scope: String) -> String { "\(enabledDefaultsKey).\(scope)" }
     public static let maxBodySummary = 1_000
     /// Oldest entries are dropped beyond this.
     public static let maxLogEntries = 5_000
@@ -387,10 +392,10 @@ public actor LidarrWriteGate {
     }
 
     /// The "Allow Magpie to change Lidarr" switch. Persisted; false until the owner turns it on.
-    public var enabled: Bool { defaults.bool(forKey: Self.enabledDefaultsKey) }
+    public var enabled: Bool { defaults.bool(forKey: Self.enabledKey(scope: connection.instanceScope)) }
 
     public func setEnabled(_ on: Bool) {
-        defaults.set(on, forKey: Self.enabledDefaultsKey)
+        defaults.set(on, forKey: Self.enabledKey(scope: connection.instanceScope))
     }
 
     /// The change log as saved on disk. Empty when there is none or it cannot be read right now.

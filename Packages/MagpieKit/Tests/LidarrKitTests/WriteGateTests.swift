@@ -48,6 +48,31 @@ struct GateEnv {
         #expect(await LidarrWriteGate(client: client, logURL: env.logURL, defaultsSuite: env.defaults).enabled == false)
     }
 
+    /// Security M3: the switch belongs to one Lidarr instance (address + API key). Another Lidarr, or the same
+    /// address with a new key, starts with writes off; the old global key means nothing.
+    @Test func switchIsScopedToOneLidarr() async throws {
+        let env = GateEnv()
+        let (client, t) = makeClient()
+        t.stub(method: "POST", pathSuffix: "/tag", body: json(#"{"id":1}"#))
+        let gate = LidarrWriteGate(client: client, logURL: env.logURL, defaultsSuite: env.defaults)
+        await gate.setEnabled(true)
+        #expect(await gate.enabled)
+        let other = LidarrClient(base: URL(string: "http://192.168.1.3:8686")!, apiKey: "other", transport: t)
+        let newKey = LidarrClient(base: testBase, apiKey: "rotated", transport: t)
+        for c in [other, newKey] {
+            let g = LidarrWriteGate(client: c, logURL: env.logURL, defaultsSuite: env.defaults)
+            #expect(await g.enabled == false)
+            await #expect(throws: WriteGateError.disabled) {
+                _ = try await g.send("POST", "tag", body: JSONValue.object(["label": .string("x")]))
+            }
+        }
+        let legacy = UserDefaults(suiteName: env.defaults)!
+        legacy.set(true, forKey: LidarrWriteGate.enabledDefaultsKey)
+        #expect(await LidarrWriteGate(client: other, logURL: env.logURL, defaultsSuite: env.defaults).enabled == false)
+        #expect(legacy.bool(forKey: LidarrWriteGate.enabledKey(scope: client.instanceScope)))
+        #expect(t.requests.isEmpty)
+    }
+
     struct Call: Sendable, CustomTestStringConvertible {
         var method: String
         var path: String
