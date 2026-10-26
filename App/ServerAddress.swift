@@ -34,42 +34,65 @@ enum ServerAddress {
         return .url(url)
     }
 
-    /// Private IPv4 ranges, link-local, `.local` and single-label names: places only reachable at home.
+    /// The host as an IPv4 address: exactly four decimal labels, parsed by `inet_pton` (never a prefix of a
+    /// longer name such as `10.0.0.1.evil.com`).
+    static func ipv4(_ host: String) -> [UInt8]? {
+        let labels = host.split(separator: ".", omittingEmptySubsequences: false)
+        guard labels.count == 4, labels.allSatisfy({ !$0.isEmpty && $0.allSatisfy(\.isASCII) && $0.allSatisfy(\.isNumber) })
+        else { return nil }
+        var addr = in_addr()
+        guard inet_pton(AF_INET, host, &addr) == 1 else { return nil }
+        return withUnsafeBytes(of: &addr) { Array($0) }
+    }
+
+    /// The host as an IPv6 address (brackets allowed), parsed by `inet_pton`.
+    static func ipv6(_ host: String) -> [UInt8]? {
+        let bare = host.hasPrefix("[") && host.hasSuffix("]") ? String(host.dropFirst().dropLast()) : host
+        guard bare.contains(":") else { return nil }
+        var addr = in6_addr()
+        guard inet_pton(AF_INET6, bare, &addr) == 1 else { return nil }
+        return withUnsafeBytes(of: &addr) { Array($0) }
+    }
+
+    private static func host(_ url: URL) -> String? {
+        url.host(percentEncoded: false)?.lowercased()
+    }
+
+    /// Private IPv4 ranges (10/8, 172.16/12, 192.168/16), link-local 169.254/16, `.local`, and single-label
+    /// names that aren't numbers (`nas`): places only reachable at home. A single label made of digits
+    /// (`134744072` is 8.8.8.8 to the resolver) is not a name, so it is not local.
     static func isLocalNetwork(_ url: URL) -> Bool {
-        guard let host = url.host?.lowercased() else { return false }
-        if host.hasSuffix(".local") { return true }
-        let octets = host.split(separator: ".").compactMap { UInt8($0) }
-        if octets.count == 4 {
-            switch (octets[0], octets[1]) {
+        guard let host = host(url), !host.isEmpty else { return false }
+        if let ip = ipv4(host) {
+            switch (ip[0], ip[1]) {
             case (10, _), (192, 168), (169, 254): return true
             case (172, let b) where (16...31).contains(b): return true
             default: return false
             }
         }
-        return !host.contains(".") && !host.contains(":") && host != "localhost"
+        if ipv6(host) != nil { return false }
+        if host.hasSuffix(".local") { return true }
+        guard !host.contains("."), !host.contains(":"), host != "localhost" else { return false }
+        // Numeric-looking single labels (decimal, hex `0x…`, octal) are addresses to the resolver.
+        return !(host.first?.isNumber ?? true)
     }
 
     /// This device: `localhost`, 127.0.0.0/8, `::1`.
     static func isLoopback(_ url: URL) -> Bool {
-        guard let host = url.host(percentEncoded: false)?.lowercased() else { return false }
-        if host == "localhost" || host == "::1" || host == "[::1]" { return true }
-        let octets = host.split(separator: ".").compactMap { UInt8($0) }
-        return octets.count == 4 && octets[0] == 127
+        guard let host = host(url) else { return false }
+        if host == "localhost" { return true }
+        if let ip = ipv4(host) { return ip[0] == 127 }
+        if let ip = ipv6(host) { return ip == [UInt8](repeating: 0, count: 15) + [1] }
+        return false
     }
 
     /// Never on the open internet: loopback, the home network (`isLocalNetwork`), carrier-grade NAT
     /// 100.64.0.0/10 (Tailscale), and IPv6 unique-local (fc00::/7) and link-local (fe80::/10).
     static func isPrivate(_ url: URL) -> Bool {
         if isLoopback(url) || isLocalNetwork(url) { return true }
-        guard let host = url.host(percentEncoded: false)?.lowercased() else { return false }
-        let octets = host.split(separator: ".").compactMap { UInt8($0) }
-        if octets.count == 4, host.split(separator: ".").count == 4 {
-            return octets[0] == 100 && (64...127).contains(octets[1])
-        }
-        let bare = host.trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
-        if bare.contains(":"), let first = bare.split(separator: ":").first, let word = UInt16(first, radix: 16) {
-            return (word & 0xFE00) == 0xFC00 || (word & 0xFFC0) == 0xFE80
-        }
+        guard let host = host(url) else { return false }
+        if let ip = ipv4(host) { return ip[0] == 100 && (64...127).contains(ip[1]) }
+        if let ip = ipv6(host) { return (ip[0] & 0xFE) == 0xFC || (ip[0] == 0xFE && (ip[1] & 0xC0) == 0x80) }
         return false
     }
 

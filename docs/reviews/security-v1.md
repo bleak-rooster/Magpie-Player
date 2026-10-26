@@ -21,6 +21,14 @@ Scope: spec §5, G0–G9, plan Task 8.2 / Global Constraints, plus the parked Ta
 | L6 | **Fixed.** E5 cases moved into `WriteGateTests` (backslashes built at runtime, bytes asserted); control characters (< 0x20, raw or escaped, `\b \f \n \r \t` included) refused in body keys | `2f78b50` | `BodyKeyScanTests.escapesInRawBodies` (21 cases) |
 | L1–L5, L7–L12 | Open (Low), not in this round's rulings | n/a | n/a |
 
+Fix round 1: IPv4/IPv6 hosts are classified only when the whole host is an address (`inet_pton`), so `10.0.0.1.evil.com`, `127.0.0.1.evil.com`, `evil.10.0.0.1.com` and numeric single labels such as `134744072` (8.8.8.8 to the resolver) are public: consent is asked and schemeless input becomes `https://` (`ServerAddressSecurityTests.lookalikeHostsArePublic`). The Connect Lidarr consent alert names the host.
+
+### Accepted residual risks
+
+- **AVPlayer follows redirects itself.** Streams are not fetched through `URLSessionTransport`, so `SameOriginRedirects` does not apply. No custom headers are sent; the `u`/`t`/`s` credentials stay in the original URL's query and are not forwarded to the redirect target by the redirect itself.
+- **Plain http to private/LAN addresses is not prompted.** On a hostile network that reuses the owner's LAN range (hotel, café), a host at the saved address that answers with a Subsonic envelope could receive the password. The ping check stops routers and portals that answer anything with 200, not a deliberate impostor. HTTPS is the documented setup.
+- **Single-label host names (`music`, `nas`) count as home network** (controller ruling): no consent prompt and schemeless input becomes `http://`. A search-domain or DNS-hijack setup could resolve such a name to a public host.
+
 Also documented in the RUNBOOK: Navidrome's login rate limit (about 5 logins per 20 s, then 429) and spacing `scripts/it.sh` runs.
 
 ## Method / evidence log

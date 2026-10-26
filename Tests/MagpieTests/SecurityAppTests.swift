@@ -192,13 +192,37 @@ private let publicLidarr = URL(string: "http://lidarr.example.com:8686")!
         #expect(ServerAddress.check("ftp://host") == .invalid)
     }
 
+    /// Fix round 1: only a whole-host IPv4/IPv6 address is classified as one; names that merely start or end
+    /// like a private address, and numeric single labels (resolved as IPv4), are public.
+    @Test func lookalikeHostsArePublic() {
+        for s in ["http://10.0.0.1.evil.com", "http://127.0.0.1.evil.com", "http://192.168.1.1.attacker.net",
+                  "http://evil.10.0.0.1.com", "http://134744072", "http://0x08080808", "http://100.64.0.1.evil.com",
+                  "http://169.254.1.1.evil.com", "http://172.16.0.1.x.y", "http://10.1", "http://1.2.3.4.5",
+                  "http://localhost.evil.com"] {
+            let url = URL(string: s)!
+            #expect(!ServerAddress.isPrivate(url), "\(s)")
+            #expect(!ServerAddress.isLoopback(url), "\(s)")
+            #expect(!ServerAddress.isLocalNetwork(url), "\(s)")
+            #expect(ServerAddress.isUnencryptedPublic(url), "\(s)")
+        }
+        #expect(ServerAddress.parse("10.0.0.1.evil.com") == URL(string: "https://10.0.0.1.evil.com"))
+        #expect(ServerAddress.parse("134744072:4533") == URL(string: "https://134744072:4533"))
+        #expect(ServerAddress.parse("127.0.0.1.evil.com:4533") == URL(string: "https://127.0.0.1.evil.com:4533"))
+        // Kept: single-label non-numeric names stay home network (documented residual risk).
+        #expect(ServerAddress.isLocalNetwork(URL(string: "http://music")!))
+        #expect(ServerAddress.parse("music:4533") == URL(string: "http://music:4533"))
+    }
+
     @Test func privateAddresses() {
         for s in ["http://127.0.0.1", "http://localhost", "http://[::1]", "http://100.64.0.1", "http://100.127.255.255",
-                  "http://[fe80::1]", "http://[fd00::1]", "http://10.1.2.3", "http://nas"] {
+                  "http://[fe80::1]", "http://[fd00::1]", "http://10.1.2.3", "http://nas", "http://172.31.0.1",
+                  "http://192.168.0.1", "http://169.254.3.4", "http://127.9.9.9", "http://nas.local",
+                  "http://[0:0:0:0:0:0:0:1]", "http://[fc00::1]", "http://[febf::1]"] {
             #expect(ServerAddress.isPrivate(URL(string: s)!), "\(s)")
         }
         for s in ["http://100.63.255.255", "http://100.128.0.1", "http://1.1.1.1", "https://music.example.com",
-                  "http://[2001:db8::1]"] {
+                  "http://[2001:db8::1]", "http://172.32.0.1", "http://[fec0::1]", "http://[::2]",
+                  "http://[::ffff:10.0.0.1]"] {
             #expect(!ServerAddress.isPrivate(URL(string: s)!), "\(s)")
         }
     }

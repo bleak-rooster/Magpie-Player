@@ -39,7 +39,7 @@ struct ConnectLidarrView: View {
                 }
                 Button("Cancel", role: .cancel) { unencrypted = nil }
             } message: {
-                Text(LidarrConnectCopy.plainHTTPMessage)
+                Text(LidarrConnectCopy.plainHTTPMessage + "\n\n" + (unencrypted.map { $0.host ?? $0.absoluteString } ?? ""))
             }
             .task(id: model.lidarr) {
                 guard model.lidarr != nil, audit == nil else { return }
