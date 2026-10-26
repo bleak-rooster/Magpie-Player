@@ -55,22 +55,40 @@ extension KeyedDecodingContainer where Key == AnyKey {
         return nil
     }
 
+    /// Rows without a usable id are useless to callers; throwing lets `LossyArray` drop them.
+    func requiredInt(_ key: String) throws -> Int {
+        guard let i = int(key) else {
+            throw DecodingError.keyNotFound(AnyKey(key), .init(codingPath: codingPath, debugDescription: "missing or invalid \(key)"))
+        }
+        return i
+    }
+
     func double(_ key: String) -> Double? { value(key, as: Double.self) }
 
     func date(_ key: String) -> Date? { value(key, as: String.self).flatMap(LidarrDates.parse) }
 }
 
 enum LidarrDates {
+    // Formatters are created once; ISO8601DateFormatter is safe to use concurrently for parsing/formatting.
+    nonisolated(unsafe) private static let fractional: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+    nonisolated(unsafe) private static let plain = ISO8601DateFormatter()
+
+    /// Lidarr (.NET) emits up to 7 fractional digits (`...00.1234567Z`); the formatter wants exactly 3.
     static func parse(_ s: String) -> Date? {
-        let fractional = ISO8601DateFormatter()
-        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let d = fractional.date(from: s) { return d }
-        return ISO8601DateFormatter().date(from: s)
+        if let d = plain.date(from: s) { return d }
+        guard let dot = s.firstIndex(of: ".") else { return nil }
+        let digits = s[s.index(after: dot)...].prefix { $0.isNumber }
+        guard !digits.isEmpty else { return nil }
+        let rest = s[digits.endIndex...]
+        let ms = String((digits + "000").prefix(3))
+        return fractional.date(from: String(s[..<dot]) + "." + ms + rest)
     }
 
-    static func format(_ d: Date) -> String {
-        ISO8601DateFormatter().string(from: d)
-    }
+    static func format(_ d: Date) -> String { plain.string(from: d) }
 }
 
 public struct LidarrStatus: Sendable, Equatable, Decodable {
@@ -123,7 +141,7 @@ public struct RootFolder: Sendable, Equatable, Decodable {
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: AnyKey.self)
-        id = c.int("id") ?? 0
+        id = try c.requiredInt("id")
         path = c.value("path") ?? ""
         freeSpace = c.value("freeSpace", as: Int64.self) ?? c.double("freeSpace").map { Int64($0) }
         name = c.text("name")
@@ -139,7 +157,7 @@ public struct QualityProfile: Sendable, Equatable, Decodable {
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: AnyKey.self)
-        id = c.int("id") ?? 0
+        id = try c.requiredInt("id")
         name = c.text("name") ?? ""
     }
 }
@@ -152,7 +170,7 @@ public struct MetadataProfile: Sendable, Equatable, Decodable {
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: AnyKey.self)
-        id = c.int("id") ?? 0
+        id = try c.requiredInt("id")
         name = c.text("name") ?? ""
     }
 }
@@ -165,7 +183,7 @@ public struct LidarrTag: Sendable, Equatable, Decodable {
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: AnyKey.self)
-        id = c.int("id") ?? 0
+        id = try c.requiredInt("id")
         label = c.text("label") ?? ""
     }
 }
@@ -270,7 +288,7 @@ public struct LidarrArtist: Sendable, Equatable, Decodable {
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: AnyKey.self)
-        id = c.int("id") ?? 0
+        id = try c.requiredInt("id")
         artistName = c.text("artistName") ?? ""
         foreignArtistId = c.mbid("foreignArtistId")
         path = c.value("path")
@@ -305,7 +323,7 @@ public struct LidarrAlbum: Sendable, Equatable, Decodable {
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: AnyKey.self)
-        id = c.int("id") ?? 0
+        id = try c.requiredInt("id")
         title = c.text("title") ?? ""
         artistId = c.int("artistId")
         foreignAlbumId = c.mbid("foreignAlbumId")
@@ -429,7 +447,7 @@ public struct CommandStatus: Sendable, Equatable, Decodable {
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: AnyKey.self)
-        id = c.int("id") ?? 0
+        id = try c.requiredInt("id")
         name = c.text("name") ?? ""
         status = c.text("status") ?? ""
         result = c.text("result")
@@ -454,7 +472,7 @@ public struct TrackFile: Sendable, Equatable, Decodable {
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: AnyKey.self)
-        id = c.int("id") ?? 0
+        id = try c.requiredInt("id")
         path = c.value("path") ?? ""
         albumId = c.int("albumId")
         size = c.value("size", as: Int64.self)

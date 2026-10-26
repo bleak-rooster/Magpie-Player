@@ -148,3 +148,44 @@ import MagpieTestSupport
         await #expect(throws: LidarrError.http(status: 500)) { try await client.rootFolders() }
     }
 }
+
+@Suite struct FixRoundTests {
+    @Test func dateParsingHandlesLidarrVariants() {
+        let base = LidarrDates.parse("2026-10-26T18:00:00Z")!
+        for s in ["2026-10-26T18:00:00.1234567Z", "2026-10-26T18:00:00.123Z", "2026-10-26T18:00:00+00:00",
+                  "2026-10-26T18:00:00.5+00:00"] {
+            let d = LidarrDates.parse(s)
+            #expect(d != nil, "\(s)")
+            #expect(abs((d ?? .distantPast).timeIntervalSince(base)) < 1, "\(s)")
+        }
+        #expect(abs(LidarrDates.parse("2026-10-26T18:00:00.1234567Z")!.timeIntervalSince(base) - 0.123) < 0.001)
+        #expect(LidarrDates.parse("garbage") == nil)
+    }
+
+    @Test func historyDatesWithSevenDigitFractionDecode() async throws {
+        let t = MockTransport()
+        t.stub(pathSuffix: "/history/since", body: json(#"[{"id":1,"eventType":"grabbed","date":"2026-10-26T18:00:00.1234567Z"}]"#))
+        let (client, _) = makeClient(t)
+        #expect(try await client.historySince(.now).first?.date != nil)
+    }
+
+    @Test func rowsWithoutIdAreDropped() async throws {
+        let t = MockTransport()
+        t.stub(pathSuffix: "/rootfolder", body: json(#"[{"path":"/a"},{"id":2,"path":"/b"},{"id":"x","path":"/c"}]"#))
+        t.stub(pathSuffix: "/artist", body: json(#"[{"artistName":"No id"},{"id":3,"artistName":"Ok"}]"#))
+        t.stub(pathSuffix: "/command", body: json(#"[{"name":"x"},{"id":9,"name":"y","status":"queued"}]"#))
+        t.stub(pathSuffix: "/trackfile", body: json(#"[{"path":"/p"},{"id":5,"path":"/q"}]"#))
+        let (client, _) = makeClient(t)
+        #expect(try await client.rootFolders().map(\.id) == [2])
+        #expect(try await client.artists().map(\.id) == [3])
+        #expect(try await client.commands().map(\.id) == [9])
+        #expect(try await client.trackFiles(albumId: 1).map(\.id) == [5])
+    }
+
+    @Test func singleObjectWithoutIdThrows() async {
+        let t = MockTransport()
+        t.stub(pathSuffix: "/artist/7", body: json(#"{"artistName":"No id"}"#))
+        let (client, _) = makeClient(t)
+        await #expect(throws: LidarrError.decoding) { try await client.artist(id: 7) }
+    }
+}
