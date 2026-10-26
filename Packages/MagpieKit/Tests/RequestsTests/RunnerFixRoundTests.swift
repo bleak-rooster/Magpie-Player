@@ -286,12 +286,30 @@ import MagpieCore
         #expect(h.server.with { $0.albums.first { $0.id == 31 }?.monitored } == true)
     }
 
-    /// Round 3: a 503 that didn't land and couldn't be confirmed is "unclear": the retry writes nothing
-    /// and stops the request (when in doubt, don't write).
-    @Test func unclearUnmonitoredStopsOnRetry() async throws {
+    /// Round 4: a 503 whose confirming GET shows the album still unmonitored is verifiably not sent: the
+    /// retry sends the PUT again (and it is Magpie's to undo).
+    @Test func failedPutConfirmedUnmonitoredIsSentAgain() async throws {
         let h = await Harness()
         h.server.ownerHasArtist(albumMonitored: false)
         h.server.with { $0.monitorFails503 = 1 }
+        let id = try await h.runner.tryRecording(h.recording(recAlbumOnly), tier: .standard)
+        await h.runner.settle()
+        #expect(try await h.ledger.entry(albumId: 31)?.send == .notSent)
+        h.clock.advance(61)
+        await h.runner.tick()
+        #expect(await h.state(id) == .searching)
+        #expect(try await h.ledger.entry(albumId: 31)?.send == .applied)
+        await h.runner.cancel(id)
+        #expect(h.server.writeBodies().map(\.0) == ["PUT album/monitor", "PUT album/monitor", "POST command",
+                                                    "PUT album/monitor"])
+        #expect(h.server.with { $0.albums.first { $0.id == 31 }?.monitored } == false)
+    }
+
+    /// Round 4: a 503 whose confirming GET fails too stays unclear: the retry writes nothing and stops.
+    @Test func failedPutUnconfirmedStopsOnRetry() async throws {
+        let h = await Harness()
+        h.server.ownerHasArtist(albumMonitored: false)
+        h.server.with { $0.monitorFails503 = 1; $0.confirmFailsAfterLost = true }
         let id = try await h.runner.tryRecording(h.recording(recAlbumOnly), tier: .standard)
         await h.runner.settle()
         #expect(try await h.ledger.entry(albumId: 31)?.send == .unclear)
@@ -299,6 +317,72 @@ import MagpieCore
         await h.runner.tick()
         #expect(await h.state(id) == .failed(reason: .stoppedInLidarr))
         #expect(h.server.writeBodies().map(\.0) == ["PUT album/monitor"])
+    }
+
+    /// Round 4: the app dies while the PUT is in flight (Lidarr may apply it). The entry on disk already says
+    /// unclear; after the relaunch the owner has unmonitored the album, so the retry writes nothing and stops.
+    @Test func crashWhileMonitorInFlightNeverOverridesTheOwner() async throws {
+        let h = await Harness()
+        h.server.ownerHasArtist(albumMonitored: false)
+        h.server.with { $0.hold = ("/api/v1/album/monitor", 1); $0.holdMethod = "PUT" }
+        let id = try await h.runner.tryRecording(h.recording(recAlbumOnly), tier: .standard)
+        await h.server.latch.waitArrived()
+        // On disk, read by a fresh ledger: the send is already unclear while the PUT is in flight.
+        let onDisk = Ledger(fileURL: h.dir.appending(path: "ledger.json"), instance: h.ledger.instance)
+        #expect(try await onDisk.entry(albumId: 31)?.send == .unclear)
+
+        await h.runner.stop()   // the app dies; Lidarr applied the PUT, then the owner unmonitored it
+        let again = await Harness(directory: h.dir, lidarr: h.server)
+        #expect(await again.runner.load())
+        await again.runner.tick()
+        h.clock.advance(61); again.clock.advance(61)
+        await again.runner.tick()
+        #expect(await again.state(id) == .failed(reason: .stoppedInLidarr))
+        #expect(h.server.writes.isEmpty, "no PUT from the relaunched runner, no search")
+        await again.runner.cancel(id)
+        #expect(h.server.writes.isEmpty, "an unclear entry is never undone")
+        await h.server.latch.release()
+    }
+
+    /// Round 4: entries saved without a known send state never read as applied (fail safe).
+    @Test func legacyEntriesDecodeAsUnclear() throws {
+        func decode(_ extra: String) throws -> LedgerEntry {
+            let json = #"{"lidarrArtistId":7,"albumId":31,"rgMbid":"\#(rgAlbum.rawValue)","createdArtist":false,"#
+                + #""wasMonitoredBefore":false,"root":"/music/library","mode":"fallback"\#(extra)}"#
+            return try JSONDecoder().decode(LedgerEntry.self, from: Data(json.utf8))
+        }
+        #expect(try decode("").send == .unclear, "no send (round 3: nil meant applied)")
+        #expect(try decode(#","applied":false"#).send == .unclear, "round 2 intent")
+        #expect(try decode(#","applied":true"#).send == .unclear, "round 2 applied: not trusted")
+        #expect(try decode(#","send":"sentMaybe""#).send == .unclear, "unknown value")
+        #expect(try decode(#","send":null"#).send == .unclear)
+        #expect(try decode(#","send":"notSent""#).send == .notSent)
+        #expect(try decode(#","send":"applied""#).isApplied)
+        #expect(try !decode("").isApplied)
+        let e = try decode(#","send":"applied","requestId":"r1""#)
+        #expect(try JSONDecoder().decode(LedgerEntry.self, from: JSONEncoder().encode(e)) == e)
+    }
+
+    /// Round 4: clean-up never undoes a legacy entry (decoded as unclear), even when the album is monitored.
+    @Test func cleanupNeverUndoesALegacyEntry() async throws {
+        let h = await Harness()
+        h.server.ownerHasArtist(albumMonitored: true)
+        var r = MagpieRequest(recording: h.recording(recAlbumOnly), tier: .standard, createdAt: h.clock.now)
+        r.state = .cancelled
+        r.cleanupPending = true
+        r.plan = Plan(recordingMBID: recAlbumOnly, releaseGroupMBID: rgAlbum, artistMBID: artistA, lidarrArtistId: 7,
+                      mode: .fallback)
+        r.lidarrArtistId = 7
+        r.albumId = 31
+        try await h.store.save([r])
+        let json = #"{"lidarrArtistId":7,"albumId":31,"rgMbid":"\#(rgAlbum.rawValue)","createdArtist":false,"#
+            + #""wasMonitoredBefore":false,"root":"/music/library","mode":"fallback","applied":true,"#
+            + #""requestId":"\#(r.id.description)"}"#
+        try await h.ledger.record(JSONDecoder().decode(LedgerEntry.self, from: Data(json.utf8)))
+        await h.runner.tick()
+        #expect(h.server.writes.isEmpty)
+        #expect(await h.request(r.id)?.cleanupPending == false)
+        #expect(h.server.with { $0.albums.first { $0.id == 31 }?.monitored } == true)
     }
 
     /// Round 3 (a): the PUT landed, its answer was lost and the confirming GET failed; then the owner
@@ -366,6 +450,8 @@ import MagpieCore
                       mode: .fallback)
         try await h.store.save([r])
         await h.runner.tick()
+        #expect(try await h.ledger.entry(albumId: 31)?.send == .notSent, "the gate refused it: nothing left")
+        #expect(h.server.writes.isEmpty)
         await h.gate.setEnabled(true)
         h.clock.advance(61)
         await h.runner.tick()

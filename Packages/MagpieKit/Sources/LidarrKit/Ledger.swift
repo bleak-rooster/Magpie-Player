@@ -8,11 +8,13 @@ public enum LedgerMode: String, Sendable, Codable {
     case finds
 }
 
-/// Whether Magpie's monitor write for an entry reached Lidarr (fix round 3: "when in doubt, don't write").
+/// Whether Magpie's monitor write for an entry reached Lidarr (fix rounds 3–4: "when in doubt, don't write").
 public enum MonitorSend: String, Sendable, Codable {
-    /// Refused by the gate (switched off, …): nothing left the device.
+    /// Verifiably not in Lidarr: refused by the gate before anything left the device, or a GET after a
+    /// failed write showed the album still unmonitored. A retry may send it.
     case notSent
-    /// Sent, but the answer was lost and a GET couldn't confirm it.
+    /// May have reached Lidarr: recorded just before every send (so a crash mid-send leaves it), and kept
+    /// when the answer was lost and a GET couldn't tell. Never re-sent, never undone.
     case unclear
     /// Succeeded, or a GET showed the album monitored.
     case applied
@@ -39,9 +41,9 @@ public struct LedgerEntry: Sendable, Equatable, Codable {
     /// The Lidarr server this entry belongs to (`LidarrClient.instanceScope`). Ids are only meaningful on
     /// that server; a `Ledger` scoped to another server never sees this entry.
     public var instance: String?
-    /// Where Magpie's monitor write stands (recorded before the write). Only applied entries may be undone.
-    /// Nil = applied (nothing needed writing, or Lidarr monitored it through `albumsToMonitor`).
-    public var send: MonitorSend?
+    /// Where Magpie's monitor write stands. Only applied entries may be undone. Entries saved without a known
+    /// state (older files, round 2's `applied` flag, an unknown value) read as `unclear`: fail safe.
+    public var send: MonitorSend
     /// The request that made this entry (its `RequestID` text), if any.
     public var requestId: String?
     /// Set when the request that made the entry finished and its clean-up is done: a closed entry says
@@ -50,15 +52,40 @@ public struct LedgerEntry: Sendable, Equatable, Codable {
 
     public init(lidarrArtistId: Int, albumId: Int?, rgMbid: MBID, createdArtist: Bool, wasMonitoredBefore: Bool,
                 root: String, mode: LedgerMode, keptAt: Date? = nil, instance: String? = nil,
-                send: MonitorSend? = nil, requestId: String? = nil, closedAt: Date? = nil) {
+                send: MonitorSend = .unclear, requestId: String? = nil, closedAt: Date? = nil) {
         self.lidarrArtistId = lidarrArtistId; self.albumId = albumId; self.rgMbid = rgMbid
         self.createdArtist = createdArtist; self.wasMonitoredBefore = wasMonitoredBefore
         self.root = root; self.mode = mode; self.keptAt = keptAt; self.instance = instance
         self.send = send; self.requestId = requestId; self.closedAt = closedAt
     }
 
-    public var isApplied: Bool { (send ?? .applied) == .applied }
+    public var isApplied: Bool { send == .applied }
     public var isOpen: Bool { closedAt == nil }
+
+    private enum CodingKeys: String, CodingKey {
+        case lidarrArtistId, albumId, rgMbid, createdArtist, wasMonitoredBefore, root, mode, keptAt, instance
+        case send, requestId, closedAt
+    }
+
+    /// Fix round 4: a missing or unknown `send` decodes as `unclear`, never as applied. That includes entries
+    /// from round 2 (`applied: true/false`, no `send`) and from round 3 (no `send` meant applied): pre-release,
+    /// so they are not trusted for an undo.
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        lidarrArtistId = try c.decode(Int.self, forKey: .lidarrArtistId)
+        albumId = try c.decodeIfPresent(Int.self, forKey: .albumId)
+        rgMbid = try c.decode(MBID.self, forKey: .rgMbid)
+        createdArtist = try c.decode(Bool.self, forKey: .createdArtist)
+        wasMonitoredBefore = try c.decode(Bool.self, forKey: .wasMonitoredBefore)
+        root = try c.decode(String.self, forKey: .root)
+        mode = try c.decode(LedgerMode.self, forKey: .mode)
+        keptAt = try c.decodeIfPresent(Date.self, forKey: .keptAt)
+        instance = try c.decodeIfPresent(String.self, forKey: .instance)
+        send = ((try? c.decodeIfPresent(String.self, forKey: .send)) ?? nil).flatMap(MonitorSend.init(rawValue:))
+            ?? .unclear
+        requestId = try c.decodeIfPresent(String.self, forKey: .requestId)
+        closedAt = try c.decodeIfPresent(Date.self, forKey: .closedAt)
+    }
 }
 
 /// The on-device record of every Lidarr album request Magpie made. One entry per (server, album id), plus

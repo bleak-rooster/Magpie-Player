@@ -89,12 +89,14 @@ final class FakeLidarr: @unchecked Sendable {
         var monitorAppliedThen504 = 0
         /// PUT /album/monitor: answers 503 without applying this many times.
         var monitorFails503 = 0
-        /// After a lost (504) monitor answer, the next GET /album fails too (the confirm can't tell).
+        /// After a failed monitor PUT (504 lost answer or 503), the next GET /album fails too (the confirm
+        /// can't tell).
         var confirmFailsAfterLost = false
         /// GET /album answers 503 this many times.
         var albumGetFailures = 0
-        /// Hold the n-th GET whose path ends with `suffix`.
+        /// Hold the n-th request (method `holdMethod`) whose path ends with `suffix`.
         var hold: (suffix: String, n: Int)?
+        var holdMethod = "GET"
         var holdSeen = 0
     }
 
@@ -103,7 +105,9 @@ final class FakeLidarr: @unchecked Sendable {
     func shouldHold(_ request: URLRequest) -> Latch? {
         let path = request.url?.path ?? ""
         let hit: Bool = with { s in
-            guard let h = s.hold, (request.httpMethod ?? "GET") == "GET", path.hasSuffix(h.suffix) else { return false }
+            guard let h = s.hold, (request.httpMethod ?? "GET") == s.holdMethod, path.hasSuffix(h.suffix) else {
+                return false
+            }
             s.holdSeen += 1
             return s.holdSeen == h.n
         }
@@ -179,6 +183,7 @@ final class FakeLidarr: @unchecked Sendable {
             let unapplied: Bool = with { s in
                 guard s.monitorFails503 > 0 else { return false }
                 s.monitorFails503 -= 1
+                if s.confirmFailsAfterLost { s.albumGetFailures += 1 }
                 return true
             }
             if unapplied { return MockTransport.Response(status: 503) }
