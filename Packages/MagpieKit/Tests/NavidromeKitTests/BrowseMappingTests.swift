@@ -217,6 +217,27 @@ import os
         #expect(queryValue(req, "time") == "1700000000000")
     }
 
+    @Test func starAndUnstarSendTheSongId() async throws {
+        let ok = Data(#"{"subsonic-response":{"status":"ok","version":"1.16.1"}}"#.utf8)
+        let (client, transport) = try await connected {
+            $0.stub(pathSuffix: "/rest/star", body: ok)
+            $0.stub(pathSuffix: "/rest/unstar", body: ok)
+        }
+        try await client.star(id: "s1")
+        let star = try #require(transport.requests.last { $0.url?.path.hasSuffix("/rest/star") == true })
+        #expect(queryValue(star, "id") == "s1")
+        #expect(star.url?.path == "/navidrome/rest/star")
+        try await client.unstar(id: "s2")
+        let unstar = try #require(transport.requests.last { $0.url?.path.hasSuffix("/rest/unstar") == true })
+        #expect(queryValue(unstar, "id") == "s2")
+    }
+
+    @Test func starFailureSurfaces() async throws {
+        let failed = Data(#"{"subsonic-response":{"status":"failed","version":"1.16.1","error":{"code":70,"message":"not found"}}}"#.utf8)
+        let (client, _) = try await connected { $0.stub(pathSuffix: "/rest/star", body: failed) }
+        await #expect(throws: NavidromeError.api(code: 70, message: "not found")) { try await client.star(id: "nope") }
+    }
+
     @Test func startScanIsQuickAndDebouncedPerTarget() async throws {
         let ok = Data(#"{"subsonic-response":{"status":"ok","version":"1.16.1","scanStatus":{"scanning":true,"count":0}}}"#.utf8)
         let clock = OSAllocatedUnfairLock(initialState: Date(timeIntervalSince1970: 1000))

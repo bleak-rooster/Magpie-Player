@@ -249,6 +249,16 @@ public actor NavidromeClient {
         _ = try await subsonic("scrobble", extra)
     }
 
+    /// Stars ("likes") a song, album or artist by id.
+    public func star(id: String) async throws {
+        _ = try await subsonic("star", [URLQueryItem(name: "id", value: id)])
+    }
+
+    /// Removes a star.
+    public func unstar(id: String) async throws {
+        _ = try await subsonic("unstar", [URLQueryItem(name: "id", value: id)])
+    }
+
     /// Quick scan (`fullScan=false`). `target` is `<libraryId>:<path relative to that library>`.
     /// At most one scan per target per 10 s; a debounced call returns without contacting the server.
     public func startScan(target: String?) async throws {
