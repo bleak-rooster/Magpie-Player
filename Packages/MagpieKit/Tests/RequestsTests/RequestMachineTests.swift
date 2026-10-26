@@ -23,7 +23,7 @@ private enum S: String, CaseIterable {
         case .kept: .kept
         case .dismissed: .dismissed
         case .cancelled: .cancelled
-        case .waiting: .waiting(reason: wr, retryAt: t0.addingTimeInterval(60))
+        case .waiting: .waiting(reason: wr, retryAt: t0)
         case .failed: .failed(reason: .unknown)
         }
     }
@@ -108,7 +108,9 @@ private let valid: [Key: (RequestState, [Effect])] = {
         Key(s: .downloading, e: .queueProgress): (.downloading(progress: 0.5), [.poll]),
         Key(s: .searching, e: .imported): (.importing, [.scan]),
         Key(s: .downloading, e: .imported): (.importing, [.scan]),
-        Key(s: .importing, e: .visibleInLibrary): (.ready, [.notifyReady]),
+        Key(s: .waiting, e: .imported): (.importing, [.scan]),
+        Key(s: .adding, e: .imported): (.importing, [.scan]),
+        Key(s: .waiting, e: .queueProgress): (.downloading(progress: 0.5), [.poll]),
         Key(s: .searching, e: .noGrabAfter): retry(.stillLooking, after: 60),
         Key(s: .searching, e: .downloadFailed): retry(.downloadFailed, after: 60),
         Key(s: .downloading, e: .downloadFailed): retry(.downloadFailed, after: 60),
@@ -122,6 +124,7 @@ private let valid: [Key: (RequestState, [Effect])] = {
         m[Key(s: s, e: .error)] = (.failed(reason: .addFailed), [.cleanup])
     }
     for s in [S.pending, .resolving, .adding, .searching, .downloading, .importing, .waiting] {
+        m[Key(s: s, e: .visibleInLibrary)] = (.ready, [.notifyReady])
         m[Key(s: s, e: .cancel)] = (.cancelled, [.cleanup])
     }
     return m
@@ -134,7 +137,7 @@ private let valid: [Key: (RequestState, [Effect])] = {
             #expect(_guardState(s.value) == s)
             for e in E.allCases {
                 #expect(_guardEvent(e.value) == e)
-                let got = RequestMachine.step(s.value, e.value, now: t0)
+                let got = RequestMachine.step(s.value, e.value, now: t0, prior: nil)
                 let want = valid[Key(s: s, e: e)] ?? (s.value, [])
                 #expect(got.0 == want.0 && got.1 == want.1, "\(s) x \(e): got \(got), want \(want)")
                 checked += 1
@@ -146,23 +149,58 @@ private let valid: [Key: (RequestState, [Effect])] = {
     @Test func terminalStatesIgnoreEverything() {
         for s in [S.kept, .dismissed, .cancelled, .failed] {
             for e in E.allCases {
-                let got = RequestMachine.step(s.value, e.value, now: t0)
+                let got = RequestMachine.step(s.value, e.value, now: t0, prior: nil)
                 #expect(got.0 == s.value && got.1.isEmpty)
             }
         }
     }
 
     @Test func noGrabBelowThresholdIsIgnored() {
-        let got = RequestMachine.step(.searching, .noGrabAfter(599), now: t0)
+        let got = RequestMachine.step(.searching, .noGrabAfter(599), now: t0, prior: nil)
         #expect(got.0 == .searching && got.1.isEmpty)
-        let late = RequestMachine.step(.searching, .noGrabAfter(900), now: t0)
+        let late = RequestMachine.step(.searching, .noGrabAfter(900), now: t0, prior: nil)
         if case .waiting(let r, _) = late.0 { #expect(r.kind == .stillLooking) } else { Issue.record("expected waiting") }
     }
 
+    @Test func lidarrSelfRetryWhileWaiting() {
+        let w = S.waiting.value
+        #expect(RequestMachine.step(w, .imported, now: t0, prior: wr).0 == .importing)
+        #expect(RequestMachine.step(w, .visibleInLibrary(songId: "s"), now: t0, prior: wr) == (.ready, [.notifyReady]))
+        #expect(RequestMachine.step(.searching, .visibleInLibrary(songId: "s"), now: t0, prior: nil) == (.ready, [.notifyReady]))
+    }
+
+    @Test func importCompletingDuringServiceWait() {
+        let (w, _) = RequestMachine.step(.downloading(progress: 0.3), .lidarrUnavailable, now: t0, prior: nil)
+        #expect(RequestMachine.step(w, .imported, now: t0, prior: nil).0 == .importing)
+        #expect(RequestMachine.step(w, .visibleInLibrary(songId: "s"), now: t0, prior: nil).0 == .ready)
+    }
+
+    @Test func staleRetryDueIsIgnored() {
+        let w = RequestState.waiting(reason: wr, retryAt: t0.addingTimeInterval(60))
+        let early = RequestMachine.step(w, .retryDue, now: t0.addingTimeInterval(59), prior: nil)
+        #expect(early.0 == w && early.1.isEmpty)
+        #expect(RequestMachine.step(w, .retryDue, now: t0.addingTimeInterval(60), prior: nil).0 == .resolving)
+    }
+
+    @Test func laterUnrelatedWaitAfterResetGetsNormalBackoff() {
+        let much = t0.addingTimeInterval(3 * 86_400)
+        let (s, _) = RequestMachine.step(.searching, .lidarrUnavailable, now: much, prior: nil)
+        guard case .waiting(let r, let at) = s else { Issue.record("expected waiting"); return }
+        #expect(r.attempt == 0 && r.since == much && at == much.addingTimeInterval(60))
+    }
+
+    @Test func kindChangeRestartsAttempt() {
+        let prior = WaitReason(.stillLooking, attempt: 3, since: t0)
+        let (s, _) = RequestMachine.step(.searching, .lidarrUnavailable, now: t0.addingTimeInterval(100), prior: prior)
+        guard case .waiting(let r, let at) = s else { Issue.record("expected waiting"); return }
+        #expect(r.kind == .serviceUnavailable && r.attempt == 0 && r.since == t0)
+        #expect(at == t0.addingTimeInterval(160))
+    }
+
     @Test func progressIsClamped() {
-        #expect(RequestMachine.step(.searching, .queueProgress(1.7), now: t0).0 == .downloading(progress: 1))
-        #expect(RequestMachine.step(.searching, .queueProgress(-1), now: t0).0 == .downloading(progress: 0))
-        #expect(RequestMachine.step(.searching, .queueProgress(.nan), now: t0).0 == .downloading(progress: 0))
+        #expect(RequestMachine.step(.searching, .queueProgress(1.7), now: t0, prior: nil).0 == .downloading(progress: 1))
+        #expect(RequestMachine.step(.searching, .queueProgress(-1), now: t0, prior: nil).0 == .downloading(progress: 0))
+        #expect(RequestMachine.step(.searching, .queueProgress(.nan), now: t0, prior: nil).0 == .downloading(progress: 0))
     }
 
     @Test func backoffSchedule() {
@@ -183,10 +221,10 @@ private let valid: [Key: (RequestState, [Effect])] = {
 
     @Test func failsAfter24h() {
         let waiting = RequestState.waiting(reason: WaitReason(.stillLooking, attempt: 5, since: t0),
-                                           retryAt: t0.addingTimeInterval(86_400))
-        let early = RequestMachine.step(waiting, .retryDue, now: t0.addingTimeInterval(86_399))
+                                           retryAt: t0.addingTimeInterval(60))
+        let early = RequestMachine.step(waiting, .retryDue, now: t0.addingTimeInterval(86_399), prior: nil)
         #expect(early.0 == .resolving)
-        let late = RequestMachine.step(waiting, .retryDue, now: t0.addingTimeInterval(86_400))
+        let late = RequestMachine.step(waiting, .retryDue, now: t0.addingTimeInterval(86_400), prior: nil)
         #expect(late.0 == .failed(reason: .notFoundYet) && late.1 == [.cleanup])
         // Re-entering waiting after the limit fails straight away.
         let prior = WaitReason(.stillLooking, attempt: 6, since: t0)

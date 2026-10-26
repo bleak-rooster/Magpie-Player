@@ -104,10 +104,13 @@ public struct RequestMachine {
     public static let giveUpAfter: TimeInterval = 24 * 3600
     public static let noGrabThreshold: TimeInterval = 600
 
-    /// - Parameter prior: the request's most recent `WaitReason`, if it waited before and has since resumed.
-    ///   The runner persists it so backoff and the 24 h limit continue across retries.
+    /// - Parameter prior: the request's most recent `WaitReason` within the current waiting episode, or nil.
+    ///   Runner contract: persist the `WaitReason` of every `waiting` state and pass it back here; reset it to nil
+    ///   on forward progress (entering `downloading`, `importing` or `ready`). Backoff attempts count per
+    ///   `WaitKind` (a kind change restarts at 0); `since` (the 24 h limit) carries over within an episode.
+    ///   Forgetting to pass it retries every 60 s forever; never resetting it fails a later unrelated wait early.
     public static func step(_ s: RequestState, _ e: RequestEvent, now: Date,
-                            prior: WaitReason? = nil) -> (RequestState, [Effect]) {
+                            prior: WaitReason?) -> (RequestState, [Effect]) {
         let unchanged = (s, [Effect]())
         if s.isTerminal { return unchanged }
 
@@ -122,14 +125,18 @@ public struct RequestMachine {
         case (.searching, .searchStarted):
             return (.searching, [.poll])
 
-        case let (.searching, .queueProgress(p)), let (.downloading, .queueProgress(p)):
+        case let (.searching, .queueProgress(p)), let (.downloading, .queueProgress(p)),
+             let (.waiting, .queueProgress(p)):
             return (.downloading(progress: clamp(p)), [.poll])
-        case (.searching, .imported), (.downloading, .imported):
+        case (.adding, .imported), (.searching, .imported), (.downloading, .imported), (.waiting, .imported):
             return (.importing, [.scan])
         case let (.searching, .noGrabAfter(t)):
             guard t >= noGrabThreshold else { return unchanged }
             return wait(.stillLooking, now: now, prior: prior)
-        case (.importing, .visibleInLibrary):
+        // Library visibility is ground truth: it completes the request from any pre-ready state.
+        case (.pending, .visibleInLibrary), (.resolving, .visibleInLibrary), (.adding, .visibleInLibrary),
+             (.searching, .visibleInLibrary), (.downloading, .visibleInLibrary), (.importing, .visibleInLibrary),
+             (.waiting, .visibleInLibrary):
             return (.ready, [.notifyReady])
 
         case (.resolving, .lidarrUnavailable), (.adding, .lidarrUnavailable), (.searching, .lidarrUnavailable),
@@ -142,7 +149,8 @@ public struct RequestMachine {
              let (.downloading, .error(r)), let (.importing, .error(r)):
             return (.failed(reason: r), [.cleanup])
 
-        case let (.waiting(reason, _), .retryDue):
+        case let (.waiting(reason, retryAt), .retryDue):
+            guard now >= retryAt else { return unchanged }  // stale or duplicate timer
             if now.timeIntervalSince(reason.since) >= giveUpAfter {
                 return (.failed(reason: .notFoundYet), [.cleanup])
             }
@@ -167,7 +175,7 @@ public struct RequestMachine {
         if now.timeIntervalSince(since) >= giveUpAfter {
             return (.failed(reason: .notFoundYet), [.cleanup])
         }
-        let attempt = (prior?.attempt).map { $0 + 1 } ?? 0
+        let attempt = (prior.flatMap { $0.kind == kind ? $0.attempt + 1 : nil }) ?? 0
         let retryAt = now.addingTimeInterval(backoff[min(attempt, backoff.count - 1)])
         return (.waiting(reason: WaitReason(kind, attempt: attempt, since: since), retryAt: retryAt),
                 [.scheduleRetry(retryAt)])
