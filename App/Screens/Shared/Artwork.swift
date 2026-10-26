@@ -21,7 +21,7 @@ final class ArtworkCache {
         return config
     }()
     nonisolated static let transport: HTTPTransport =
-        URLSessionTransport(timeout: 20, session: URLSession(configuration: sessionConfiguration))
+        URLSessionTransport(timeout: 20, session: SameOriginRedirects.session(configuration: sessionConfiguration))
 
     init() { cache.countLimit = 400 }
 

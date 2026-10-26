@@ -97,18 +97,19 @@ public final class NowPlayingBridge {
         guard let id = song.coverArtId, artwork?.coverArtId != id, let url = artworkURL(song) else { return }
         artworkTask?.cancel()
         artworkTask = Task { [weak self] in
-            guard let (data, _) = try? await Self.artworkSession.data(from: url),
+            guard let (data, _) = try? await Self.artworkSession.data(from: url, delegate: SameOriginRedirects.shared),
                   let image = UIImage(data: data), !Task.isCancelled, let self else { return }
             self.artwork = (id, Self.makeArtwork(image))
             if self.player.queue.current?.song.coverArtId == id { self.publish(loadArtwork: false) }
         }
     }
 
-    /// Artwork URLs carry server auth in the query: no disk cache, no shared session.
+    /// Artwork URLs carry server auth in the query: no disk cache, no shared session, and no redirect to
+    /// another origin (security M1).
     public nonisolated static let artworkSession: URLSession = {
         let config = URLSessionConfiguration.ephemeral
         config.urlCache = nil
-        return URLSession(configuration: config)
+        return SameOriginRedirects.session(configuration: config)
     }()
 
     /// MediaPlayer calls the artwork handler off the main thread (lock screen, CarPlay). Built in

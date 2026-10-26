@@ -18,7 +18,7 @@ public struct URLSessionTransport: HTTPTransport {
     }
 
     public init(timeout: TimeInterval = 15,
-                session: URLSession = URLSession(configuration: URLSessionTransport.defaultConfiguration())) {
+                session: URLSession = SameOriginRedirects.session(configuration: URLSessionTransport.defaultConfiguration())) {
         self.timeout = timeout
         self.session = session
     }
@@ -29,7 +29,8 @@ public struct URLSessionTransport: HTTPTransport {
     public func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
         var request = request
         request.timeoutInterval = timeout
-        let (data, response) = try await session.data(for: request)
+        // The redirect policy is set per task too, so it holds whatever session was passed in (M1).
+        let (data, response) = try await session.data(for: request, delegate: SameOriginRedirects.shared)
         guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
         return (data, http)
     }
