@@ -1,0 +1,96 @@
+import SwiftUI
+
+/// Mini player. Play/pause and Next are separate accessibility elements; Magic Tap toggles playback.
+public struct MiniPlayer: View {
+    private let title: String
+    private let artist: String
+    private let artwork: Image?
+    private let isPlaying: Bool
+    private let onPlayPause: () -> Void
+    private let onNext: () -> Void
+    private let onOpen: () -> Void
+    private let themed = ThemedPalette()
+    @Environment(\.magpieTheme) private var theme
+    @Environment(\.dynamicTypeSize) private var typeSize
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    public init(title: String, artist: String, artwork: Image? = nil, isPlaying: Bool,
+                onPlayPause: @escaping () -> Void, onNext: @escaping () -> Void, onOpen: @escaping () -> Void = {}) {
+        self.title = title; self.artist = artist; self.artwork = artwork; self.isPlaying = isPlaying
+        self.onPlayPause = onPlayPause; self.onNext = onNext; self.onOpen = onOpen
+    }
+
+    public var body: some View {
+        let ax = typeSize.isAccessibilitySize
+        HStack(spacing: 10) {
+            Button(action: onOpen) {
+                HStack(spacing: 10) {
+                    SleeveArt(image: artwork, side: 36)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(title).font(.subheadline.weight(.semibold)).lineLimit(ax ? 2 : 1)
+                        Text(artist).font(.caption).foregroundStyle(.secondary).lineLimit(ax ? 2 : 1)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Now playing: \(title), \(artist)")
+            .accessibilityValue(isPlaying ? "Playing" : "Paused")
+            .accessibilityHint("Opens Now Playing")
+
+            Button(action: onPlayPause) {
+                Image(systemName: isPlaying ? "pause.fill" : "play.fill")
+                    .font(.title3).frame(width: Tokens.minHitSize, height: Tokens.minHitSize).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(isPlaying ? "Pause" : "Play")
+            .accessibilityAddTraits(isPlaying ? [] : .startsMediaSession)
+
+            if !ax {   // at accessibility sizes Next is offered as an action instead
+                Button(action: onNext) {
+                    Image(systemName: "forward.fill")
+                        .font(.title3).frame(width: Tokens.minHitSize, height: Tokens.minHitSize).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Next track")
+            }
+        }
+        .foregroundStyle(.primary)
+        .padding(.horizontal, 8).padding(.vertical, 6)
+        .frame(minHeight: 52)
+        .background { background }
+        .accessibilityElement(children: .contain)
+        .modifier(MagicTap(action: onPlayPause))
+        .accessibilityAction(named: "Next track", onNext)
+        .accessibilityAction(named: "Open Now Playing", onOpen)
+    }
+
+    // System material with hierarchical text styles; opaque surface under Reduce Transparency (a11y H2).
+    @ViewBuilder private var background: some View {
+        let shape = RoundedRectangle(cornerRadius: 26, style: .continuous)
+        if reduceTransparency {
+            shape.fill(themed.palette.surfaceColor).overlay(shape.strokeBorder(themed.palette.sepColor))
+        } else {
+            shape.fill(.regularMaterial)
+        }
+    }
+}
+
+/// Magic Tap toggles playback (iOS only; the trait does not exist on macOS).
+private struct MagicTap: ViewModifier {
+    let action: () -> Void
+    func body(content: Content) -> some View {
+        #if os(iOS)
+        content.accessibilityAction(.magicTap, action)
+        #else
+        content
+        #endif
+    }
+}
+
+#Preview("MiniPlayer") {
+    VStack { MiniPlayer(title: "Last Stop Lullaby", artist: "Ada Okafor", isPlaying: true, onPlayPause: {}, onNext: {})
+             MiniPlayer(title: "Last Stop Lullaby", artist: "Ada Okafor", isPlaying: false, onPlayPause: {}, onNext: {}) }
+        .padding()
+}
