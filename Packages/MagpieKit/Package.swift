@@ -33,6 +33,7 @@ let package = Package(
         .testTarget(name: "NavidromeKitTests",
                     dependencies: ["NavidromeKit", "MagpieCore", "MagpieTestSupport"],
                     resources: [.copy("../Fixtures/navidrome")]),
+        .testTarget(name: "PlaybackTests", dependencies: ["Playback", "MagpieCore"]),
     ],
     swiftLanguageModes: [.v6]
 )
