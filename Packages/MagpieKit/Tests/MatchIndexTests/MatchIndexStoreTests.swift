@@ -50,6 +50,23 @@ import Testing
         #expect(await store.index.count == 3)
     }
 
+    @Test func cancellingTheCallerStopsTheRefresh() async throws {
+        let store = MatchIndexStore(fileURL: nil)
+        let pages = OSAllocatedUnfairLock(initialState: 0)
+        let task = Task {
+            try await store.refresh { _, _ in
+                pages.withLock { $0 += 1 }
+                try await Task.sleep(for: .seconds(3600))   // cancellable, like URLSession
+                return (Self.songs(1000), 5000)
+            }
+        }
+        for _ in 0..<10_000 where pages.withLock({ $0 }) == 0 { await Task.yield() }
+        task.cancel()
+        await #expect(throws: CancellationError.self) { try await task.value }
+        #expect(pages.withLock { $0 } == 1)
+        #expect(await store.index.count == 0)
+    }
+
     @Test func damagedSnapshotIsIgnored() async throws {
         let url = tempURL()
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)

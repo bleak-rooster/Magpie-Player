@@ -67,29 +67,44 @@ struct HomeView: View {
     }
 }
 
-/// Shown until new music can be found and brought home (Lidarr, M4). D9: setup continues from Home.
+/// D9: setup continues from Home. Opens the Lidarr connection sheet (Settings reuses it in M5).
 private struct FinishSettingUpCard: View {
+    @Environment(AppModel.self) private var model
+    @State private var showsConnect = false
     private let themed = Themed()
 
     var body: some View {
         let p = themed.palette
-        HStack(alignment: .top, spacing: Tokens.Spacing.m) {
-            Image(systemName: "sparkles")
-                .font(.title2)
-                .foregroundStyle(p.accentInkColor)
-                .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: Tokens.Spacing.xs) {
-                Text("Finish setting up").font(.headline)
-                Text("Let Magpie find songs you don't have yet and bring the ones you love home. Coming in a later update.")
-                    .font(.subheadline)
-                    .foregroundStyle(p.ink2Color)
+        let connected = model.lidarr != nil
+        Button { showsConnect = true } label: {
+            HStack(alignment: .top, spacing: Tokens.Spacing.m) {
+                Image(systemName: connected ? "checkmark.circle" : "sparkles")
+                    .font(.title2)
+                    .foregroundStyle(p.accentInkColor)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: Tokens.Spacing.xs) {
+                    Text("Finish setting up").font(.headline)
+                    Text(connected
+                         ? "Search now shows music that's not in your library. Bringing songs home comes next."
+                         : "Let Magpie find songs you don't have yet and bring the ones you love home.")
+                        .font(.subheadline)
+                        .foregroundStyle(p.ink2Color)
+                    Text(connected ? "Review" : "Continue")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(p.accentInkColor)
+                        .padding(.top, Tokens.Spacing.xs)
+                }
+                Spacer(minLength: 0)
             }
-            Spacer(minLength: 0)
+            .padding(Tokens.Spacing.l)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(p.surfaceColor, in: RoundedRectangle(cornerRadius: Tokens.Radius.card, style: .continuous))
+            .contentShape(Rectangle())
         }
-        .padding(Tokens.Spacing.l)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(p.surfaceColor, in: RoundedRectangle(cornerRadius: Tokens.Radius.card, style: .continuous))
+        .buttonStyle(.plain)
         .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("finish-setting-up")
+        .sheet(isPresented: $showsConnect) { ConnectLidarrView() }
     }
 }
 

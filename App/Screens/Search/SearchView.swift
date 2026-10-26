@@ -1,9 +1,10 @@
 import DesignSystem
 import MagpieCore
+import Search
 import SwiftUI
 
-/// Search tab: type to search the library. Recent searches when the field is empty; Top result,
-/// Songs, Artists and Albums when it isn't.
+/// Search tab: type to search. Recent searches when the field is empty; otherwise the library's Top
+/// result, Songs, Artists and Albums, then a "Not in your library" band (D4: library first).
 struct SearchView: View {
     @Environment(AppModel.self) private var app
     @State private var model: SearchModel?
@@ -30,7 +31,9 @@ struct SearchView: View {
         .task {
             guard model == nil else { return }
             let app = app
-            model = SearchModel(search: { q in try await app.request { try await $0.search(q) } },
+            model = SearchModel(search: { q, early in
+                                    try await app.mergedSearch().runReportingLibraryFailure(q, libraryFirst: early)
+                                },
                                 errorMessage: BrowseErrorCopy.message(for:))
         }
     }
@@ -46,6 +49,7 @@ private struct SearchContent: View {
     let model: SearchModel
     let scope: SearchScope
     @State private var recents = RecentSearches().items
+    @State private var showsTurnOnChanges = false
     private let themed = Themed()
 
     var body: some View {
@@ -81,6 +85,7 @@ private struct SearchContent: View {
         .navigationTitle("Search")
         .magpieScreen()
         .scrollDismissesKeyboard(.interactively)
+        .sheet(isPresented: $showsTurnOnChanges) { TurnOnChangesSheet() }
     }
 
     // MARK: - Start
@@ -88,7 +93,7 @@ private struct SearchContent: View {
     @ViewBuilder private var recentSection: some View {
         if recents.isEmpty {
             ContentUnavailableView("Search your library", systemImage: "magnifyingglass",
-                                   description: Text("Find songs, artists and albums by name."))
+                                   description: Text("Find songs, artists and albums by name, in your library and beyond."))
                 .listRowBackground(Color.clear)
         } else {
             Section {
@@ -139,6 +144,91 @@ private struct SearchContent: View {
                 ForEach(sections.albums, id: \.id) { albumRow($0) }
             } header: { header("Albums") }
         }
+        notYetBand(sections.notYet)
+    }
+
+    // MARK: - Not in your library
+
+    /// Below every library row, never interleaved (D4). Each row says "Not in your library" in text
+    /// with a symbol, not by its round art alone (D3).
+    @ViewBuilder private func notYetBand(_ band: NotYetSections) -> some View {
+        let songs = scope == .all || scope == .songs ? band.songs : []
+        let artists = scope == .all || scope == .artists ? band.artists : []
+        let albums = scope == .all || scope == .albums ? band.albums : []
+        let kinds = [songs.isEmpty, artists.isEmpty, albums.isEmpty].filter { !$0 }.count
+        if kinds > 0 {
+            Section {
+                if !songs.isEmpty {
+                    if kinds > 1 { subheader("Songs") }
+                    ForEach(Array(songs.enumerated()), id: \.offset) { index, recording in
+                        notYetSongRow(recording, index: index)
+                    }
+                }
+                if !artists.isEmpty {
+                    if kinds > 1 { subheader("Artists") }
+                    ForEach(Array(artists.enumerated()), id: \.offset) { index, artist in
+                        notYetArtistRow(artist).accessibilityIdentifier("search-notyet-artist-\(index)")
+                    }
+                }
+                if !albums.isEmpty {
+                    if kinds > 1 { subheader("Albums") }
+                    ForEach(Array(albums.enumerated()), id: \.offset) { index, album in
+                        notYetAlbumRow(album).accessibilityIdentifier("search-notyet-album-\(index)")
+                    }
+                }
+            } header: {
+                header("Not in your library").accessibilityIdentifier("search-notyet-header")
+            }
+        }
+    }
+
+    private func subheader(_ title: String) -> some View {
+        Text(title).font(.subheadline.weight(.semibold)).foregroundStyle(themed.palette.ink2Color)
+            .accessibilityAddTraits(.isHeader)
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+    }
+
+    private func notYetSongRow(_ recording: ExternalRecording, index: Int) -> some View {
+        let song = Song(id: "notyet-\(index)", title: recording.title, artist: recording.artist,
+                        album: recording.releaseTitle ?? "", duration: recording.duration ?? 0)
+        return SongRow(song: song, state: .notYet, onTry: { showsTurnOnChanges = true })
+            .accessibilityIdentifier("search-notyet-song-\(index)")
+            .listRowInsets(EdgeInsets())
+            .listRowBackground(Color.clear)
+    }
+
+    private func notYetArtistRow(_ artist: NotYetArtist) -> some View {
+        HStack(spacing: Tokens.Spacing.m) {
+            // A plain circle: the groove ring is invisible at this size (review of D3).
+            Circle().fill(themed.palette.surfaceColor).frame(width: 48, height: 48)
+                .overlay { Image(systemName: "person.fill").foregroundStyle(themed.palette.ink2Color) }
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(artist.name).font(.body)
+                StatusLine(.notYet)
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(artist.name), artist")
+        .accessibilityValue(RowState.notYet.voiceOverValue ?? "")
+        .listRowBackground(Color.clear)
+    }
+
+    private func notYetAlbumRow(_ album: NotYetAlbum) -> some View {
+        HStack(spacing: Tokens.Spacing.m) {
+            RecordArt(side: 48)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(album.title).font(.body).lineLimit(2)
+                Text([album.kind ?? "Album", album.artist].joined(separator: " \u{00B7} "))
+                    .font(.footnote).foregroundStyle(themed.palette.ink2Color).lineLimit(1)
+                StatusLine(.notYet)
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(album.title), \(album.kind ?? "Album") by \(album.artist)")
+        .accessibilityValue(RowState.notYet.voiceOverValue ?? "")
+        .listRowBackground(Color.clear)
     }
 
     private func header(_ title: String) -> some View {
@@ -210,5 +300,24 @@ private struct SearchContent: View {
     private func remember(_ query: String) {
         RecentSearches().add(query)
         recents = RecentSearches().items
+    }
+}
+
+/// Try while changes to Lidarr are off (G1, which arrives with Settings in M5). M5 replaces this sheet.
+struct TurnOnChangesSheet: View {
+    nonisolated static let message = "Turn on 'Allow Magpie to change Lidarr' in Settings to bring songs home."
+    @Environment(\.dismiss) private var dismiss
+    private let themed = Themed()
+
+    var body: some View {
+        VStack(spacing: Tokens.Spacing.l) {
+            Image(systemName: "record.circle").font(.largeTitle).foregroundStyle(themed.palette.accentInkColor)
+                .accessibilityHidden(true)
+            Text(Self.message).font(.body).multilineTextAlignment(.center)
+                .accessibilityIdentifier("turn-on-changes-message")
+            Button("OK") { dismiss() }.buttonStyle(.borderedProminent)
+        }
+        .padding(Tokens.Spacing.xxl)
+        .presentationDetents([.medium])
     }
 }

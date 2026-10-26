@@ -98,6 +98,47 @@ final class BrowseFlowTests: XCTestCase {
         XCTAssertTrue(mini.waitForExistence(timeout: 15), "mini player did not show \(title)")
     }
 
+    /// Home › Finish setting up › connect the dev stack's Lidarr: the read-only summary appears
+    /// (version, sign-in, root folders, ...). Disconnects again so the next run starts clean.
+    @MainActor func testConnectLidarrShowsSummary() throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let lidarrURL = env["MAGPIE_IT_LIDARR_URL"], let key = env["MAGPIE_IT_LIDARR_KEY"],
+              !lidarrURL.isEmpty, !key.isEmpty else { throw XCTSkip("no dev-stack Lidarr passed in") }
+        guard let host = URLComponents(string: lidarrURL)?.host, ["127.0.0.1", "localhost"].contains(host) else {
+            XCTFail("Refusing a non-local Lidarr (\(lidarrURL))")
+            return
+        }
+        let app = try launchSignedIn()
+        let card = app.buttons["finish-setting-up"]
+        for _ in 0..<3 where !card.exists {
+            app.tabBars.buttons["Home"].tap()
+            _ = card.waitForExistence(timeout: 5)
+        }
+        card.tap()
+        let address = app.textFields["lidarr-address"]
+        XCTAssertTrue(address.waitForExistence(timeout: 10))
+        address.tap()
+        address.typeText(lidarrURL)
+        let apiKey = app.secureTextFields["lidarr-api-key"]
+        apiKey.tap()
+        apiKey.typeText(key)
+        app.buttons["lidarr-connect"].tap()
+
+        func labelled(_ prefix: String) -> XCUIElement {
+            app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", prefix)).firstMatch
+        }
+        let error = app.staticTexts["lidarr-error"]
+        XCTAssertTrue(labelled("Version").waitForExistence(timeout: 20),
+                      "did not connect to the dev Lidarr; error: \(error.exists ? error.label : "none")")
+        XCTAssertTrue(labelled("Root folders").exists)
+        XCTAssertTrue(labelled("Recycle bin").exists)
+        // The form is lazy: scroll to the bottom for Disconnect.
+        let disconnect = app.buttons["Disconnect Lidarr"]
+        for _ in 0..<6 where !disconnect.exists { app.swipeUp() }
+        disconnect.tap()
+        XCTAssertTrue(app.textFields["lidarr-address"].waitForExistence(timeout: 10))
+    }
+
     @MainActor private func errorText(_ app: XCUIApplication) -> String {
         let error = app.staticTexts["connect-error"]
         return error.exists ? error.label : "none"

@@ -20,6 +20,14 @@ if [ "${MAGPIE_IT:-}" = "1" ]; then
   export TEST_RUNNER_MAGPIE_IT_URL="$it_url"
   export TEST_RUNNER_MAGPIE_IT_USER="$(envval NAVIDROME_ADMIN_USER)"
   export TEST_RUNNER_MAGPIE_IT_PASSWORD="$(envval NAVIDROME_ADMIN_PASSWORD)"
+  lidarr_url="$(envval LIDARR_URL)"
+  case "$lidarr_url" in
+    http://127.0.0.1:*|http://localhost:*|https://127.0.0.1:*|https://localhost:*)
+      export TEST_RUNNER_MAGPIE_IT_LIDARR_URL="$lidarr_url"
+      export TEST_RUNNER_MAGPIE_IT_LIDARR_KEY="$(envval LIDARR_API_KEY)" ;;
+    "") ;;
+    *) echo "LIDARR_URL ($lidarr_url) is not local; refusing" >&2; exit 1 ;;
+  esac
 fi
 
 xcodegen generate

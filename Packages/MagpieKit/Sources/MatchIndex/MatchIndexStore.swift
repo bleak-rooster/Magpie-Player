@@ -60,13 +60,18 @@ public actor MatchIndexStore {
     }
 
     /// Pages through the whole library, then swaps in the new index and saves it. A failure part-way
-    /// keeps the previous index. Concurrent calls share one refresh.
+    /// keeps the previous index. Concurrent calls share one refresh; cancelling the caller that
+    /// started it cancels it.
     public func refresh(fetchPage: @escaping PageFetcher) async throws {
         if let refreshing { return try await refreshing.value }
         let task = Task { try await self.rebuild(fetchPage) }
         refreshing = task
         defer { refreshing = nil }
-        try await task.value
+        try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            task.cancel()
+        }
     }
 
     private func rebuild(_ fetchPage: PageFetcher) async throws {

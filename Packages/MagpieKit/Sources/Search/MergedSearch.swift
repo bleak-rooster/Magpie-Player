@@ -63,7 +63,12 @@ public struct MergedSearch: Sendable {
 
     /// Like `run`, but when the library search fails (or runs out of time) and nothing came from
     /// outside either, throws the library's error so the screen can say search didn't work.
-    public func runReportingLibraryFailure(_ q: String) async throws -> SearchSections {
+    ///
+    /// - Parameter libraryFirst: called with the library-only sections as soon as the library answers,
+    ///   so library rows never wait for slower outside sources. The return value adds the band.
+    public func runReportingLibraryFailure(
+        _ q: String, libraryFirst: (@Sendable (SearchSections) async -> Void)? = nil
+    ) async throws -> SearchSections {
         let query = q.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return .empty }
         let library = self.library, sleep = self.sleep, libraryTimeout = self.libraryTimeout, sources = self.sources
@@ -81,7 +86,11 @@ public struct MergedSearch: Sendable {
             for await hit in group { all.append(hit) }
             return all.sorted { $0.0 < $1.0 }.map(\.1)    // source order, not arrival order
         }
-        let (lib, ext) = await (libraryResult, outside)
+        let lib = await libraryResult
+        if let libraryFirst, case .success(let found) = lib {
+            await libraryFirst(SearchSections.library(found, query: query))
+        }
+        let ext = await outside
         let merged = Self.merge(query: query, library: (try? lib.get()) ?? LibrarySearchResult(),
                                 outside: ext, index: await index())
         if case .failure(let error) = lib, merged.notYet.isEmpty { throw error }

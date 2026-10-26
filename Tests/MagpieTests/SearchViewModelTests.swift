@@ -1,6 +1,7 @@
 import Foundation
 import MagpieCore
 import os
+import Search
 import Testing
 @testable import Magpie
 
@@ -66,7 +67,7 @@ final class FakeSearch: @unchecked Sendable {
 
     func makeModel() -> SearchModel {
         let fake = self.fake, sleeper = self.sleeper
-        return SearchModel(search: { try await fake($0) }, sleep: { try await sleeper.sleep($0) })
+        return SearchModel(search: { q, _ in .library(try await fake(q), query: q) }, sleep: { try await sleeper.sleep($0) })
     }
 
     /// Lets the model's task run until it is waiting out the debounce.
@@ -113,6 +114,30 @@ final class FakeSearch: @unchecked Sendable {
         #expect(fake.queries.isEmpty)
         #expect(model.results.isEmpty)
         #expect(model.phase == .idle)
+    }
+
+    @Test func libraryRowsShowBeforeTheNotYetBand() async {
+        let gate = ManualSleeper()
+        let library = SearchSections.library(fake.result, query: "har")
+        var full = library
+        full.notYet = NotYetSections(songs: [ExternalRecording(title: "Harbour Wall", artist: "Ines Morrow",
+                                                               source: .listenBrainz)])
+        let sleeper = self.sleeper, done = full
+        let model = SearchModel(search: { _, early in
+            await early(library)
+            try await gate.sleep(.seconds(5))     // the outside sources are still out
+            return done
+        }, sleep: { try await sleeper.sleep($0) })
+        model.update(query: "har")
+        await untilDebouncing()
+        sleeper.releaseAll()
+        for _ in 0..<1000 where gate.waiting == 0 { await Task.yield() }
+        #expect(model.results == library)
+        #expect(model.phase == .searching)
+        gate.releaseAll()
+        await model.settle()
+        #expect(model.results == full)
+        #expect(model.phase == .done)
     }
 
     @Test func failureShowsMessageAndKeepsNothingStale() async {

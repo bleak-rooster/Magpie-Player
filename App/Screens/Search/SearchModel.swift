@@ -1,9 +1,11 @@
 import Foundation
 import MagpieCore
 import Observation
+import Search
 
-/// Library search as you type: waits for a pause, cancels whatever was in flight, and ignores
-/// stale answers. The search call and the sleep are injected so tests run without real time.
+/// Search as you type (library first, then "Not in your library"): waits for a pause, cancels
+/// whatever was in flight, and ignores stale answers. The search call and the sleep are injected so
+/// tests run without real time.
 @MainActor @Observable
 final class SearchModel {
     enum Phase: Equatable {
@@ -19,13 +21,19 @@ final class SearchModel {
     private(set) var results = SearchSections.empty
     private(set) var phase = Phase.idle
 
-    @ObservationIgnored private let search: @Sendable (String) async throws -> LibrarySearchResult
+    /// The sections for a query. It may hand over library-only sections early (`early`), before the
+    /// "Not in your library" band is ready; it throws only when there is nothing to show because the
+    /// library search failed (`MergedSearch.runReportingLibraryFailure`).
+    typealias Search = @Sendable (_ query: String, _ early: @escaping @Sendable (SearchSections) async -> Void)
+        async throws -> SearchSections
+
+    @ObservationIgnored private let search: Search
     @ObservationIgnored private let sleep: @Sendable (Duration) async throws -> Void
     @ObservationIgnored private let debounce: Duration
     @ObservationIgnored private let errorMessage: (Error) -> String
     @ObservationIgnored private var task: Task<Void, Never>?
 
-    init(search: @escaping @Sendable (String) async throws -> LibrarySearchResult,
+    init(search: @escaping Search,
          sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
          debounce: Duration = SearchModel.debounce,
          errorMessage: @escaping (Error) -> String = { _ in "Search didn't work. Try again in a moment." }) {
@@ -52,9 +60,11 @@ final class SearchModel {
             do {
                 try await sleep(debounce)
                 try Task.checkCancellation()
-                let found = try await search(trimmed)
+                let found = try await search(trimmed) { [weak self] early in
+                    await self?.showEarly(early, for: newQuery)
+                }
                 try Task.checkCancellation()
-                self?.finish(.library(found, query: trimmed), for: newQuery)
+                self?.finish(found, for: newQuery)
             } catch is CancellationError {
                 return
             } catch let error as URLError where error.code == .cancelled {
@@ -69,6 +79,12 @@ final class SearchModel {
     /// Waits for the current query's search to finish (tests).
     func settle() async {
         await task?.value
+    }
+
+    /// Library rows while the outside sources are still out. Still `.searching`.
+    private func showEarly(_ sections: SearchSections, for q: String) {
+        guard q == query, phase == .searching, !sections.isEmpty else { return }
+        results = sections
     }
 
     private func finish(_ sections: SearchSections, for q: String) {

@@ -66,7 +66,7 @@ private let away = URL(string: "https://music.example.com/navidrome")!
     }
 
     func makeModel() -> AppModel {
-        AppModel(store: store, transport: transport, probeTransport: transport, engine: engine,
+        AppModel(store: store, lidarrStore: MemoryLidarrStore(), matchIndexDirectory: nil, transport: transport, probeTransport: transport, engine: engine,
                  defaults: defaults, systemNowPlaying: false)
     }
 
@@ -122,7 +122,7 @@ private let away = URL(string: "https://music.example.com/navidrome")!
         let t = HostSwitchTransport()
         t.inner.stub(pathSuffix: "/rest/ping", body: ok)
         t.inner.stub(method: "POST", pathSuffix: "/auth/login", status: 401)
-        let model = AppModel(store: store, transport: t, probeTransport: t, engine: engine,
+        let model = AppModel(store: store, lidarrStore: MemoryLidarrStore(), matchIndexDirectory: nil, transport: t, probeTransport: t, engine: engine,
                              defaults: defaults, systemNowPlaying: false)
         await #expect(throws: NavidromeError.badCredentials) {
             try await model.signIn(urls: [home], username: "admin", password: "wrong")
@@ -213,7 +213,7 @@ final class LockableStore: SessionStoring {
     /// becomes available the saved session is restored.
     @Test func lockedKeychainWaitsThenRestoresOnUnlock() async throws {
         let store = LockableStore()
-        let model = AppModel(store: store, transport: transport, probeTransport: transport, engine: FakeEngine(),
+        let model = AppModel(store: store, lidarrStore: MemoryLidarrStore(), matchIndexDirectory: nil, transport: transport, probeTransport: transport, engine: FakeEngine(),
                              defaults: defaults, systemNowPlaying: false)
         model.resumeSavedSession()
         #expect(model.session == nil)
@@ -229,7 +229,7 @@ final class LockableStore: SessionStoring {
     @Test func emptyKeychainIsSignedOutNotWaiting() {
         let store = LockableStore()
         store.unlock(with: nil)
-        let model = AppModel(store: store, transport: transport, probeTransport: transport, engine: FakeEngine(),
+        let model = AppModel(store: store, lidarrStore: MemoryLidarrStore(), matchIndexDirectory: nil, transport: transport, probeTransport: transport, engine: FakeEngine(),
                              defaults: defaults, systemNowPlaying: false)
         model.resumeSavedSession()
         #expect(model.session == nil)
@@ -240,7 +240,7 @@ final class LockableStore: SessionStoring {
     /// library; signed out shows "not set up".
     @Test func carPlayFollowsSessionState() {
         let store = LockableStore()
-        let model = AppModel(store: store, transport: transport, probeTransport: transport, engine: FakeEngine(),
+        let model = AppModel(store: store, lidarrStore: MemoryLidarrStore(), matchIndexDirectory: nil, transport: transport, probeTransport: transport, engine: FakeEngine(),
                              defaults: defaults, systemNowPlaying: false)
         model.resumeSavedSession()
         #expect(CarPlaySceneDelegate.availability(model) == .locked)
@@ -257,7 +257,7 @@ final class LockableStore: SessionStoring {
     @Test func signOutClearsArtworkCacheAndScopeSeparatesAccounts() async throws {
         let store = LockableStore()
         store.unlock(with: nil)
-        let model = AppModel(store: store, transport: transport, probeTransport: transport, engine: FakeEngine(),
+        let model = AppModel(store: store, lidarrStore: MemoryLidarrStore(), matchIndexDirectory: nil, transport: transport, probeTransport: transport, engine: FakeEngine(),
                              defaults: defaults, systemNowPlaying: false)
         try await model.signIn(urls: [home], username: "admin", password: "pw")
         let adminScope = try #require(model.artworkScope)

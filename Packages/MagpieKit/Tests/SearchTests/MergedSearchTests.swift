@@ -57,6 +57,13 @@ private func ext(_ artist: String, _ title: String, mbid: String? = nil) -> Exte
     ExternalRecording(recordingMBID: mbid.flatMap(MBID.init), title: title, artist: artist, source: .listenBrainz)
 }
 
+final class EarlyBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: SearchSections?
+    var value: SearchSections? { lock.withLock { stored } }
+    func set(_ s: SearchSections) { lock.withLock { stored = s } }
+}
+
 @Suite struct MergedSearchTests {
     let clock = TestClock()
 
@@ -122,11 +129,15 @@ private func ext(_ artist: String, _ title: String, mbid: String? = nil) -> Exte
             return ExternalHits()
         }
         let merged = search(library: LibrarySearchResult(songs: [harbourLights]), sources: [lbNeverAnswers])
-        let task = Task { await merged.run("harbour") }
+        let early = EarlyBox()
+        let task = Task { try await merged.runReportingLibraryFailure("harbour", libraryFirst: { early.set($0) }) }
         await clock.until(waiting: 1)            // library answered; only LB's 5 s limit is left
         #expect(clock.waiting == 1)
+        for _ in 0..<10_000 where early.value == nil { await Task.yield() }
+        #expect(early.value?.songs == [harbourLights], "library rows are shown before LB gives up")
+        #expect(clock.now == .zero)
         clock.advance(by: .seconds(5))
-        let s = await task.value
+        let s = try await task.value
         #expect(s.songs == [harbourLights])
         #expect(s.notYet.isEmpty)
         #expect(clock.now <= .milliseconds(5200), "results within 5.2 s")

@@ -1,9 +1,13 @@
 import DesignSystem
 import Foundation
+import LidarrKit
+import ListenBrainzKit
 import MagpieCore
+import MatchIndex
 import NavidromeKit
 import Observation
 import Playback
+import Search
 #if os(iOS)
 import UIKit
 #endif
@@ -49,8 +53,16 @@ final class AppModel {
     /// A session is saved but the Keychain can't be read yet (before first unlock). Not signed out:
     /// the UI waits, and the session is restored when protected data becomes available.
     private(set) var isWaitingForUnlock = false
+    /// The owner's Lidarr, when connected (M4: read-only). Kept in the Keychain next to the session.
+    private(set) var lidarr: LidarrConnection?
 
     @ObservationIgnored private let store: any SessionStoring
+    @ObservationIgnored private let lidarrStore: any LidarrConnectionStoring
+    /// The library's match index for the signed-in server and account (nil when signed out).
+    @ObservationIgnored private(set) var matchIndex: MatchIndexStore?
+    @ObservationIgnored private var matchIndexTask: Task<Void, Never>?
+    @ObservationIgnored private let matchIndexDirectory: URL?
+    @ObservationIgnored private var musicBrainzClient: MusicBrainzClient?
     @ObservationIgnored private var unlockObserver: NSObjectProtocol?
     @ObservationIgnored private let transport: HTTPTransport
     @ObservationIgnored private let probeTransport: HTTPTransport
@@ -61,7 +73,11 @@ final class AppModel {
     @ObservationIgnored private var nowPlaying: NowPlayingBridge?
     #endif
 
+    /// - Parameter matchIndexDirectory: where match-index snapshots go (Application Support); nil keeps
+    ///   them in memory only (tests).
     init(store: any SessionStoring = SessionStore.standard,
+         lidarrStore: any LidarrConnectionStoring = LidarrConnectionStore.standard,
+         matchIndexDirectory: URL? = URL.applicationSupportDirectory,
          transport: HTTPTransport = URLSessionTransport(),
          probeTransport: HTTPTransport = URLSessionTransport(timeout: 6),
          engine: (any PlaybackEngine)? = nil,
@@ -70,6 +86,9 @@ final class AppModel {
          systemNowPlaying: Bool = true) {
         let box = ClientBox()
         self.store = store
+        self.lidarrStore = lidarrStore
+        self.matchIndexDirectory = matchIndexDirectory
+        self.lidarr = lidarrStore.load()
         self.transport = transport
         self.probeTransport = probeTransport
         self.box = box
@@ -90,7 +109,10 @@ final class AppModel {
     /// Builds the shared model from what the Keychain holds. `-MagpieResetState YES` signs out first
     /// (UI tests). `-MagpieCharacter classic|signature|immersive` picks the look.
     static func restore(store: any SessionStoring = SessionStore.standard, defaults: UserDefaults = .standard) -> AppModel {
-        if defaults.bool(forKey: "MagpieResetState") { store.clear() }
+        if defaults.bool(forKey: "MagpieResetState") {
+            store.clear()
+            LidarrConnectionStore.standard.clear()
+        }
         var theme = Theme()
         if let raw = defaults.string(forKey: "MagpieCharacter"), let c = Character(rawValue: raw) { theme.character = c }
         let model = AppModel(store: store, defaults: defaults, theme: theme)
@@ -121,6 +143,7 @@ final class AppModel {
                           activeBase: saved.endpoint.bases[0], isAdmin: false)
         box.set(client)
         Task { await reconnect(rebuildAlways: true) }
+        startMatchIndex()
     }
 
     /// Protected data (the Keychain) became readable: retry the restore.
@@ -179,6 +202,7 @@ final class AppModel {
         session = Session(client: client, endpoint: endpoint, credentials: credentials,
                           activeBase: base, isAdmin: login.isAdmin)
         box.set(client)
+        startMatchIndex()
     }
 
     /// Stops playback, forgets the server and clears the Keychain.
@@ -193,6 +217,9 @@ final class AppModel {
         stopObservingUnlock()
         box.set(nil)
         ArtworkCache.shared.removeAll()
+        stopMatchIndex(erase: true)
+        lidarrStore.clear()
+        lidarr = nil
     }
 
     // MARK: - Requests with failover
@@ -282,6 +309,105 @@ final class AppModel {
     /// The same addresses with `base` first, so the client tries the one that just answered.
     nonisolated static func preferring(_ base: URL, in endpoint: ServerEndpoint) -> ServerEndpoint {
         ServerEndpoint(bases: [base] + endpoint.bases.filter { $0 != base })
+    }
+
+    // MARK: - Match index
+
+    /// Loads the last snapshot for this server and account, then rebuilds the index in the background.
+    /// Never blocks the UI; search uses whatever index is complete.
+    /// A connection error during the refresh goes through `request`'s failover like any other request.
+    private func startMatchIndex() {
+        stopMatchIndex(erase: false)
+        guard let s = session else { return }
+        let url = matchIndexDirectory.map {
+            MatchIndexStore.snapshotURL(server: s.endpoint.bases[0].absoluteString, user: s.username, in: $0)
+        }
+        let store = MatchIndexStore(fileURL: url)
+        matchIndex = store
+        matchIndexTask = Task { [weak self] in
+            await store.loadSnapshot()
+            guard !Task.isCancelled else { return }
+            do {
+                let endpoint = s.endpoint, user = s.username
+                try await store.refresh { [weak self] start, end in
+                    // Never fill this account's index from another session (signed out or in meanwhile).
+                    guard let self, await self.isSignedIn(to: endpoint, as: user) else { throw CancellationError() }
+                    return try await self.request { try await $0.songsPage(start: start, end: end) }
+                }
+            } catch {
+                Log.logger("matchindex").error("refresh failed: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+    }
+
+    private func isSignedIn(to endpoint: ServerEndpoint, as user: String) -> Bool {
+        session?.endpoint == endpoint && session?.username == user
+    }
+
+    /// Waits for the current load-and-refresh to finish (tests).
+    func matchIndexSettled() async { await matchIndexTask?.value }
+
+    private func stopMatchIndex(erase: Bool) {
+        matchIndexTask?.cancel()
+        matchIndexTask = nil
+        if erase, let store = matchIndex { Task { await store.erase() } }
+        matchIndex = nil
+    }
+
+    // MARK: - Lidarr (read-only in M4)
+
+    /// A client for the connected Lidarr, if any.
+    var lidarrClient: LidarrClient? {
+        lidarr.map { LidarrClient(base: $0.base, apiKey: $0.apiKey, transport: transport) }
+    }
+
+    /// Checks the address and key (`/system/status`), reads the setup (audit, no writes) and saves the
+    /// connection to the Keychain. Throws `LidarrError.unauthorized` for a wrong key, or the URL error.
+    func connectLidarr(base: URL, apiKey: String) async throws -> LidarrAudit {
+        let connection = LidarrConnection(base: base, apiKey: apiKey.trimmingCharacters(in: .whitespacesAndNewlines))
+        let client = LidarrClient(base: connection.base, apiKey: connection.apiKey, transport: transport)
+        _ = try await client.status()
+        let audit = await LidarrAudit.run(client)
+        try lidarrStore.save(connection)
+        lidarr = connection
+        return audit
+    }
+
+    /// The connected Lidarr's setup, read again. Nil when not connected.
+    func lidarrAudit() async -> LidarrAudit? {
+        guard let client = lidarrClient else { return nil }
+        return await LidarrAudit.run(client)
+    }
+
+    func disconnectLidarr() {
+        lidarrStore.clear()
+        lidarr = nil
+    }
+
+    // MARK: - Search
+
+    /// Library search merged with ListenBrainz and (when connected) Lidarr. Built per search so it
+    /// follows the current session, Lidarr connection and match index.
+    func mergedSearch() -> MergedSearch {
+        var sources: [MergedSearch.Source] = [.listenBrainz(ListenBrainzClient(transport: transport, token: nil))]
+        if let lidarr = lidarrClient { sources.append(.lidarr(lidarr)) }
+        let index = matchIndex
+        return MergedSearch(
+            library: { [weak self] q in
+                guard let self else { throw NavidromeError.noReachableServer }
+                return try await self.request { try await $0.search(q) }
+            },
+            sources: sources,
+            index: { await index?.index ?? .empty })
+    }
+
+    /// The one MusicBrainz client (1 request per second across the whole app), made on first use.
+    /// Only Try uses it (A8), never search.
+    var musicBrainz: MusicBrainzClient {
+        if let musicBrainzClient { return musicBrainzClient }
+        let client = MusicBrainzClient(transport: transport)
+        musicBrainzClient = client
+        return client
     }
 
     // MARK: - Library helpers
