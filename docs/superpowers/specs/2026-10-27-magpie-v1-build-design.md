@@ -67,4 +67,6 @@ Concurrency: Swift 6 strict; app target default MainActor; packages nonisolated 
 
 ## 7. Done means
 
+**Amended (D18):** Done = highest milestone (M0–M8 in docs/reviews/v1-decision-review.md §4) tagged green, with RUNBOOK stating which. API corrections A1–A17 and guards G0–G9 in that review override this document where they differ.
+
 `xcodebuild test` green on iOS 27.1 simulator; `swift test` green for packages; integration suite green on the dev stack; security review findings Critical/High fixed; `docs/RUNBOOK.md` tells the owner how to run it against their own Navidrome + Lidarr in 5 steps, including the pre-flight checks (Navidrome ≥ 0.64 + admin, Lidarr 3.x reachable, samples root present or fallback, Subsonic connection, import-to-visible delay, song-ID stability across upgrade).
