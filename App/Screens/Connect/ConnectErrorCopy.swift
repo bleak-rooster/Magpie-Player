@@ -15,6 +15,17 @@ enum ConnectErrorCopy {
         that signed it (in the simulator: xcrun simctl keychain booted add-root-cert ca.pem), then try again.
         """
 
+    /// Security M5: `user:password@host` typed into an address.
+    static let credentialsInAddress = "Leave your username and password out of the address. Enter them in the fields below."
+
+    /// Security H2: asked before the password goes over plain http to an address outside the home network.
+    static let plainHTTPTitle = "This address isn't encrypted."
+    static let plainHTTPMessage = "Your password will be sent in the clear. Use an https:// address when you can."
+    static let plainHTTPConfirm = "Send Anyway"
+
+    /// Connect's advice under the addresses.
+    static let httpsAdvice = "Use an https:// address for anything outside your home. Plain http:// sends your password unencrypted."
+
     /// B2: plain HTTP outside the home network in a Release build.
     static let needsHTTPS = "Use HTTPS for addresses outside your home network."
 
@@ -67,6 +78,7 @@ enum ConnectErrorCopy {
         if let local = failures.first(where: { isTimeout($0.error) && ServerAddress.isLocalNetwork($0.url) }) {
             return localNetworkHint(local.url.host ?? local.url.absoluteString)
         }
+        if failures.contains(where: { ($0.error as? NavidromeError) == .unexpectedResponse }) { return notAMusicServer }
         if case NavidromeError.http = first.error {
             return "\(first.url.host ?? "That address") answered, but it doesn't look like a music server."
         }

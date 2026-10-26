@@ -2,9 +2,11 @@ import Foundation
 import Requests
 
 /// What setting up Magpie in Lidarr produced, and where fallback-mode requests go. Not secret, so it lives in
-/// UserDefaults; tied to one Lidarr address so a different server starts over.
+/// UserDefaults; tied to one Lidarr instance (address + API key, `LidarrClient.instanceScope`) so a different
+/// server, or a new key at the same address, starts over (security M3).
 struct LidarrSetup: Codable, Equatable, Sendable {
     var base: URL
+    var scope: String
     /// From `Provisioner.ensure` ("Set up Magpie in Lidarr"); nil until it has succeeded.
     var fastStartProfileId: Int?
     var findsMetadataProfileId: Int?
@@ -23,21 +25,29 @@ struct LidarrSetup: Codable, Equatable, Sendable {
     }
 }
 
+/// One saved setup per Lidarr instance (`magpie.lidarr.setup.<scope>`).
 struct LidarrSetupStore {
     let defaults: UserDefaults
-    private let key = "magpie.lidarr.setup"
+    /// Before security M3 the setup was keyed by address only; it is ignored and removed.
+    private static let legacyKey = "magpie.lidarr.setup"
 
-    func load(for base: URL) -> LidarrSetup {
-        guard let data = defaults.data(forKey: key),
-              let saved = try? JSONDecoder().decode(LidarrSetup.self, from: data), saved.base == base else {
-            return LidarrSetup(base: base)
+    private static func key(_ scope: String) -> String { "\(legacyKey).\(scope)" }
+
+    func load(base: URL, scope: String) -> LidarrSetup {
+        guard let data = defaults.data(forKey: Self.key(scope)),
+              let saved = try? JSONDecoder().decode(LidarrSetup.self, from: data), saved.scope == scope else {
+            return LidarrSetup(base: base, scope: scope)
         }
         return saved
     }
 
     func save(_ setup: LidarrSetup) {
-        defaults.set(try? JSONEncoder().encode(setup), forKey: key)
+        defaults.set(try? JSONEncoder().encode(setup), forKey: Self.key(setup.scope))
     }
 
-    func clear() { defaults.removeObject(forKey: key) }
+    /// Forgets the setup of one Lidarr (disconnect, sign-out), and the unscoped one of older builds.
+    func clear(scope: String) {
+        defaults.removeObject(forKey: Self.key(scope))
+        defaults.removeObject(forKey: Self.legacyKey)
+    }
 }

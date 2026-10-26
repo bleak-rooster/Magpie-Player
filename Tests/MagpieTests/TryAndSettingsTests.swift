@@ -14,6 +14,7 @@ private let loginJSON = Data(#"""
 """#.utf8)
 private let home = URL(string: "http://192.168.1.2:4533")!
 private let lidarrBase = URL(string: "http://192.168.1.2:8686")!
+private let lidarrScope = LidarrClient(base: lidarrBase, apiKey: "key", transport: MockTransport()).instanceScope
 private let artistMBID = "64db764c-2251-4f95-aa40-10fc91d509d8"
 private let recordingMBID = MBID("c2272a15-8f3a-4cdc-8f32-7e723352d44d")!
 private let rg = "01a340b4-1d99-4083-ad92-fa2803368bed"
@@ -53,7 +54,7 @@ final class MemoryTokenStore: ListenBrainzTokenStoring, @unchecked Sendable {
     }
 
     func saveProvisioned() {
-        LidarrSetupStore(defaults: defaults).save(LidarrSetup(base: lidarrBase, fastStartProfileId: 4,
+        LidarrSetupStore(defaults: defaults).save(LidarrSetup(base: lidarrBase, scope: lidarrScope, fastStartProfileId: 4,
                                                               findsMetadataProfileId: 3, magpieTagId: 1))
     }
 
@@ -138,7 +139,7 @@ final class MemoryTokenStore: ListenBrainzTokenStoring, @unchecked Sendable {
     @Test func switchingLidarrScopesRequests() async throws {
         stubRoots(["/music/library"])
         saveProvisioned()
-        LidarrSetupStore(defaults: defaults).save(LidarrSetup(base: lidarrBase, fastStartProfileId: 4,
+        LidarrSetupStore(defaults: defaults).save(LidarrSetup(base: lidarrBase, scope: lidarrScope, fastStartProfileId: 4,
                                                               findsMetadataProfileId: 3, magpieTagId: 1,
                                                               rootFolderPath: "/music/library"))
         let t = transport.inner

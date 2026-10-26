@@ -125,9 +125,14 @@ extension AppModel {
 
     // MARK: - Settings: Lidarr
 
-    /// G1: the persisted "Allow Magpie to change Lidarr" switch, shared with every write gate.
+    /// G1: the persisted "Allow Magpie to change Lidarr" switch of the connected Lidarr (security M3: per
+    /// instance), shared with every write gate for it.
     func setChangesAllowed(_ on: Bool) async {
-        if let gate { await gate.setEnabled(on) } else { gateDefaults.set(on, forKey: LidarrWriteGate.enabledDefaultsKey) }
+        guard let scope = lidarrScope else {   // no Lidarr: nothing to allow
+            changesAllowed = false
+            return
+        }
+        if let gate { await gate.setEnabled(on) } else { gateDefaults.set(on, forKey: LidarrWriteGate.enabledKey(scope: scope)) }
         changesAllowed = on
         if on { pollRequests() }
     }

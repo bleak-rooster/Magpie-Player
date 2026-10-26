@@ -12,6 +12,8 @@ struct ConnectLidarrView: View {
     @State private var isWorking = false
     @State private var error: String?
     @State private var audit: LidarrAudit?
+    /// A plain-http public address waiting for the owner's yes (security H2).
+    @State private var unencrypted: URL?
 
     var body: some View {
         NavigationStack {
@@ -26,6 +28,18 @@ struct ConnectLidarrView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
+            }
+            .alert(LidarrConnectCopy.plainHTTPTitle, isPresented: Binding(
+                get: { unencrypted != nil }, set: { if !$0 { unencrypted = nil } })
+            ) {
+                Button(LidarrConnectCopy.plainHTTPConfirm, role: .destructive) {
+                    if let url = unencrypted { model.allowPlainHTTP([url]) }
+                    unencrypted = nil
+                    Task { await connect() }
+                }
+                Button("Cancel", role: .cancel) { unencrypted = nil }
+            } message: {
+                Text(LidarrConnectCopy.plainHTTPMessage)
             }
             .task(id: model.lidarr) {
                 guard model.lidarr != nil, audit == nil else { return }
@@ -54,7 +68,7 @@ struct ConnectLidarrView: View {
         } header: {
             Text("Lidarr")
         } footer: {
-            Text("Lidarr finds music you don't have yet. The API key is in Lidarr under Settings › General › Security. Magpie changes nothing in Lidarr until you allow it in Settings.")
+            Text("Lidarr finds music you don't have yet. The API key is in Lidarr under Settings › General › Security. Magpie changes nothing in Lidarr until you allow it in Settings. Use an https:// address for anything outside your home: plain http:// sends the key unencrypted.")
         }
         if let error {
             Section {
@@ -77,7 +91,13 @@ struct ConnectLidarrView: View {
     }
 
     private func connect() async {
-        guard let url = ServerAddress.parse(address) else {
+        let url: URL
+        switch ServerAddress.check(address) {
+        case .url(let parsed): url = parsed
+        case .containsCredentials:
+            error = LidarrConnectCopy.credentialsInAddress
+            return
+        case .invalid:
             error = LidarrConnectCopy.invalidAddress(address)
             return
         }
@@ -87,6 +107,8 @@ struct ConnectLidarrView: View {
         do {
             audit = try await model.connectLidarr(base: url, apiKey: apiKey)
             apiKey = ""
+        } catch is PlainHTTPConsentRequired {
+            unencrypted = url
         } catch {
             self.error = LidarrConnectCopy.message(for: error, host: url.host ?? url.absoluteString)
         }
@@ -184,6 +206,10 @@ enum LidarrSummary {
 enum LidarrConnectCopy {
     static let badKey = "That API key didn't work. Copy it again from Lidarr › Settings › General › Security."
     static let notLidarr = "That address answered, but it doesn't look like Lidarr."
+    static let credentialsInAddress = "Leave any username and password out of the address."
+    static let plainHTTPTitle = "This address isn't encrypted."
+    static let plainHTTPMessage = "Your Lidarr API key will be sent in the clear, and it gives full control of Lidarr. Use an https:// address when you can."
+    static let plainHTTPConfirm = "Send Anyway"
 
     static func invalidAddress(_ text: String) -> String {
         "\u{201C}\(text.trimmingCharacters(in: .whitespaces))\u{201D} doesn't look like a web address."

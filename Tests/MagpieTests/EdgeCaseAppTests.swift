@@ -25,6 +25,7 @@ private let proxyPage = Data("<!DOCTYPE html><html><head><title>Sign in</title><
 private let home = URL(string: "http://192.168.1.2:4533")!
 private let proxied = URL(string: "https://music.example.com/navidrome/")!
 private let lidarrBase = URL(string: "http://192.168.1.2:8686")!
+private let lidarrScope = LidarrClient(base: lidarrBase, apiKey: "key", transport: MockTransport()).instanceScope
 
 @MainActor
 @Suite(.serialized) struct EdgeCaseAppTests {
@@ -226,7 +227,7 @@ private let lidarrBase = URL(string: "http://192.168.1.2:8686")!
         """#.utf8))
         for suffix in ["/api/v1/artist", "/api/v1/album", "/api/v1/artist/lookup"] { t.stub(pathSuffix: suffix, status: 401) }
         for method in ["PUT", "POST", "DELETE"] { t.stub(method: method, pathSuffix: "", status: 401) }
-        LidarrSetupStore(defaults: defaults).save(LidarrSetup(base: lidarrBase, fastStartProfileId: 4,
+        LidarrSetupStore(defaults: defaults).save(LidarrSetup(base: lidarrBase, scope: lidarrScope, fastStartProfileId: 4,
                                                               findsMetadataProfileId: 3, magpieTagId: 1))
         let model = makeModel()
         try await model.signIn(urls: [home], username: "admin", password: "pw")

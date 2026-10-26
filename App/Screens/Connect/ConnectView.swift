@@ -12,6 +12,8 @@ struct ConnectView: View {
     @State private var password = ""
     @State private var isConnecting = false
     @State private var error: String?
+    /// Plain-http public addresses waiting for the owner's yes (security H2).
+    @State private var unencrypted: [URL] = []
     @FocusState private var focus: Field?
 
     private enum Field: Hashable { case address(Int), username, password }
@@ -52,6 +54,10 @@ struct ConnectView: View {
                     Text("We switch between these on our own when you leave the house.")
                         .font(.footnote).foregroundStyle(p.ink2Color)
                         .padding(.horizontal, Tokens.Spacing.l)
+                    Label(ConnectErrorCopy.httpsAdvice, systemImage: "lock.fill")
+                        .font(.footnote).foregroundStyle(p.ink2Color)
+                        .padding(.horizontal, Tokens.Spacing.l)
+                        .accessibilityIdentifier("connect-https-advice")
 
                     group {
                         field("Username") {
@@ -103,6 +109,19 @@ struct ConnectView: View {
         }
         .onChange(of: error) { _, new in
             if let new { AccessibilityNotification.Announcement(new).post() }
+        }
+        .alert(ConnectErrorCopy.plainHTTPTitle, isPresented: Binding(
+            get: { !unencrypted.isEmpty }, set: { if !$0 { unencrypted = [] } })
+        ) {
+            Button(ConnectErrorCopy.plainHTTPConfirm, role: .destructive) {
+                model.allowPlainHTTP(unencrypted)
+                unencrypted = []
+                Task { await connect() }
+            }
+            .accessibilityIdentifier("connect-plain-http-confirm")
+            Button("Cancel", role: .cancel) { unencrypted = [] }
+        } message: {
+            Text(ConnectErrorCopy.plainHTTPMessage + "\n\n" + unencrypted.map { $0.host ?? $0.absoluteString }.joined(separator: ", "))
         }
     }
 
@@ -191,11 +210,16 @@ struct ConnectView: View {
         let typed = addresses.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
         var urls: [URL] = []
         for text in typed {
-            guard let url = ServerAddress.parse(text) else {
+            switch ServerAddress.check(text) {
+            case .url(let url):
+                urls.append(url)
+            case .containsCredentials:
+                error = ConnectErrorCopy.credentialsInAddress
+                return
+            case .invalid:
                 error = ConnectErrorCopy.message(for: SignInError.invalidAddress(text))
                 return
             }
-            urls.append(url)
         }
         guard !username.isEmpty else {
             error = "Enter your username."
@@ -206,6 +230,8 @@ struct ConnectView: View {
         defer { isConnecting = false }
         do {
             try await model.signIn(urls: urls, username: username, password: password)
+        } catch let consent as PlainHTTPConsentRequired {
+            unencrypted = consent.urls
         } catch {
             self.error = ConnectErrorCopy.message(for: error)
         }

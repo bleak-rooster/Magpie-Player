@@ -143,7 +143,7 @@ final class AppModel {
         self.dataDirectory = data
         self.gateDefaultsSuite = gateDefaultsSuite
         self.gateDefaults = gateDefaultsSuite.flatMap { UserDefaults(suiteName: $0) } ?? .standard
-        self.changesAllowed = gateDefaults.bool(forKey: LidarrWriteGate.enabledDefaultsKey)
+        self.changesAllowed = false
         self.appDefaults = defaults
         self.setupStore = LidarrSetupStore(defaults: defaults)
         self.countPlays = defaults.object(forKey: Self.countPlaysKey) as? Bool ?? true
@@ -162,7 +162,10 @@ final class AppModel {
         }
         #endif
         watchPlaybackErrors()
-        lidarrSetup = lidarr.map { setupStore.load(for: $0.base) }
+        if let scope = lidarrScope, let lidarr {
+            changesAllowed = gateDefaults.bool(forKey: LidarrWriteGate.enabledKey(scope: scope))
+            lidarrSetup = setupStore.load(base: lidarr.base, scope: scope)
+        }
     }
 
     /// Builds the shared model from what the Keychain holds. `-MagpieResetState YES` signs out first
@@ -237,6 +240,9 @@ final class AppModel {
     /// Tries each address in order; the first that answers is used. Saves to the Keychain on success.
     func signIn(urls: [URL], username: String, password: String) async throws {
         guard !urls.isEmpty else { throw SignInError.noAddress }
+        // Security H2: the password never goes over plain http to a public address without the owner's say-so.
+        let unencrypted = urls.filter { !plainHTTPConsent.allows($0) }
+        guard unencrypted.isEmpty else { throw PlainHTTPConsentRequired(urls: unencrypted) }
         let endpoint = ServerEndpoint(bases: urls)
         var failures: [ProbeFailure] = []
         var reached: URL?
@@ -280,11 +286,11 @@ final class AppModel {
         box.set(nil)
         ArtworkCache.shared.removeAll()
         stopMatchIndex(erase: true)
+        forgetLidarrPermissions()
         lidarrStore.clear()
         lidarr = nil
         lidarrSetup = nil
         lidarrStatus = nil
-        setupStore.clear()
         rebuildRunner()
         Task {
             await retiring?.stop()
@@ -358,15 +364,18 @@ final class AppModel {
         }
     }
 
-    /// Nil when `base` answers `/rest/ping` with 2xx; otherwise the error (URLError or HTTP status).
+    /// Nil when `base` answers `/rest/ping` with 2xx and a Subsonic answer (security H2: a router or captive
+    /// portal that answers 200 to anything never gets the password); otherwise the error (URLError, HTTP
+    /// status, or `unexpectedResponse`).
     func probe(_ base: URL) async -> Error? {
         let url = ServerEndpoint(bases: [base]).url(base, path: "rest/ping", query: [
             URLQueryItem(name: "v", value: "1.16.1"), URLQueryItem(name: "c", value: "Magpie"),
             URLQueryItem(name: "f", value: "json"),
         ])
         do {
-            let (_, response) = try await probeTransport.send(URLRequest(url: url))
-            return (200..<300).contains(response.statusCode) ? nil : NavidromeError.http(status: response.statusCode)
+            let (data, response) = try await probeTransport.send(URLRequest(url: url))
+            guard (200..<300).contains(response.statusCode) else { return NavidromeError.http(status: response.statusCode) }
+            return SubsonicPing.isServerAnswer(data) ? nil : NavidromeError.unexpectedResponse
         } catch {
             return error
         }
@@ -438,6 +447,26 @@ final class AppModel {
 
     // MARK: - Lidarr
 
+    /// The connected Lidarr's instance (`LidarrClient.instanceScope`: address + API key), if any.
+    var lidarrScope: String? { lidarrClient?.instanceScope }
+
+    /// Security M3: the write switch and the setup belong to one Lidarr. Disconnect and sign-out forget both,
+    /// so the next Lidarr starts with writes off and is set up afresh.
+    func forgetLidarrPermissions() {
+        if let scope = lidarrScope {
+            gateDefaults.removeObject(forKey: LidarrWriteGate.enabledKey(scope: scope))
+            setupStore.clear(scope: scope)
+        }
+        gateDefaults.removeObject(forKey: LidarrWriteGate.enabledDefaultsKey)   // unscoped switch of older builds
+        changesAllowed = false
+    }
+
+    /// Owner consent to plain http per address (security H2), kept with the app's settings.
+    var plainHTTPConsent: PlainHTTPConsent { PlainHTTPConsent(defaults: appDefaults) }
+
+    /// The owner said yes to sending credentials unencrypted to these addresses.
+    func allowPlainHTTP(_ urls: [URL]) { plainHTTPConsent.grant(urls) }
+
     /// A client for the connected Lidarr, if any.
     var lidarrClient: LidarrClient? {
         lidarr.map { LidarrClient(base: $0.base, apiKey: $0.apiKey, transport: transport) }
@@ -445,15 +474,22 @@ final class AppModel {
 
     /// Checks the address and key (`/system/status`), reads the setup (audit, no writes) and saves the
     /// connection to the Keychain. Throws `LidarrError.unauthorized` for a wrong key, or the URL error.
+    /// A newly connected Lidarr always starts with "Allow Magpie to change Lidarr" off (security M3).
     func connectLidarr(base: URL, apiKey: String) async throws -> LidarrAudit {
+        // Security H2: the API key never goes over plain http to a public address without the owner's say-so.
+        guard plainHTTPConsent.allows(base) else { throw PlainHTTPConsentRequired(urls: [base]) }
         let connection = LidarrConnection(base: base, apiKey: apiKey.trimmingCharacters(in: .whitespacesAndNewlines))
         let client = LidarrClient(base: connection.base, apiKey: connection.apiKey, transport: transport)
         _ = try await client.status()
         let audit = await LidarrAudit.run(client)
         try lidarrStore.save(connection)
+        if lidarr != nil { forgetLidarrPermissions() }   // the one being replaced
         lidarr = connection
+        let scope = client.instanceScope
+        gateDefaults.removeObject(forKey: LidarrWriteGate.enabledKey(scope: scope))
+        changesAllowed = false
         lidarrStatus = audit
-        lidarrSetup = setupStore.load(for: connection.base)
+        lidarrSetup = setupStore.load(base: connection.base, scope: scope)
         adoptOnlyRoot(audit)
         rebuildRunner()
         return audit
@@ -471,6 +507,7 @@ final class AppModel {
     }
 
     func disconnectLidarr() {
+        forgetLidarrPermissions()
         lidarrStore.clear()
         lidarr = nil
         lidarrSetup = nil
