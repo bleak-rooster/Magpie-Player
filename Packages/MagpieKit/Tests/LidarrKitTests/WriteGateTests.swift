@@ -440,3 +440,54 @@ struct GateEnv {
         await #expect(throws: LocalFileError.unavailable) { _ = try await ledger.entry(albumId: 2) }
     }
 }
+
+@Suite struct BodyKeyScanTests {
+    typealias Call = WriteGateTests.Call
+
+    /// Fix round 2: keys .NET would fold onto a checked name (U+017F "ſ" upper-cases to "S"), at any depth.
+    static let nonASCIIKeys: [Call] = [
+        Call("PUT", "artist/editor", #"{"artistIds":[1],"tags":[],"applyTagſ":"replace"}"#),
+        Call("PUT", "artist/editor", #"{"deleteFileſ":true}"#),
+        Call("POST", "artist", #"{"addOptions":{"addImportListExcluſion":true}}"#),
+        Call("PUT", "artist/editor", #"{"artistIds":[1],"x":[{"ok":1},{"deleteFileſ":true}]}"#),
+        Call("POST", "command", #"{"name":"AlbumSearch","nAme":"x"}"#),
+    ]
+
+    @Test(arguments: nonASCIIKeys)
+    func refusedThroughTheGate(_ call: Call) async throws {
+        let env = GateEnv()
+        let t = MockTransport()
+        for m in ["POST", "PUT", "DELETE"] { t.stub(method: m, pathSuffix: "", body: json("{}")) }
+        let (client, _) = makeClient(t)
+        let gate = await env.gate(client, enabled: true)
+        let body = try JSONDecoder().decode(JSONValue.self, from: json(call.body!))
+        await #expect(throws: WriteGateError.self) { _ = try await gate.send(call.method, call.path, body: body) }
+        #expect(t.requests.isEmpty)
+    }
+
+    private func reason(_ method: String, _ path: String, raw: String) throws -> String? {
+        ForbiddenWrites.reason(try WriteTarget(method: method, path: path), body: Data(raw.utf8))
+    }
+
+    @Test func rawBodiesAreScannedAsSent() throws {
+        // Duplicate keys JSONSerialization would collapse (keeps the first; System.Text.Json takes the last).
+        #expect(try reason("POST", "command", raw: #"{"name":"AlbumSearch","name":"RenameFiles"}"#) != nil)
+        #expect(try reason("POST", "command", raw: #"{"name":"AlbumSearch","NAME":"AlbumSearch"}"#) != nil)
+        #expect(try reason("PUT", "artist/editor",
+                           raw: #"{"artistIds":[1],"tags":[{"a":1,"A":2}],"applyTags":"add"}"#) != nil)
+        #expect(try reason("PUT", "artist/editor", raw: #"{"applyTags":"add","applyTags":"replace"}"#) != nil)
+        // Non-ASCII keys, raw UTF-8 or escaped.
+        #expect(try reason("PUT", "artist/editor", raw: #"{"applyTagſ":"replace"}"#) != nil)
+        #expect(try reason("PUT", "artist/editor", raw: #"{"deleteFileſ":true}"#) != nil)
+        #expect(try reason("POST", "artist", raw: #"{"a":[[{"addImportListExcluſion":true}]]}"#) != nil)
+        // Escaped ASCII is decoded before comparing.
+        #expect(try reason("POST", "command", raw: #"{"name":"AlbumSearch","name":"RenameFiles"}"#) != nil)
+        // Not JSON / trailing data.
+        #expect(try reason("POST", "tag", raw: #"{"label":"x"} {"label":"y"}"#) != nil)
+        #expect(try reason("POST", "tag", raw: #"{"label":"x""#) != nil)
+        // Non-ASCII values are fine; same key in sibling objects is fine.
+        #expect(try reason("POST", "tag", raw: #"{"label":"café ſ"}"#) == nil)
+        #expect(try reason("PUT", "album/monitor", raw: #" {"albumIds":[1,2],"monitored":true,"x":[{"id":1},{"id":2}]} "#) == nil)
+        #expect(try reason("POST", "command", raw: #"{"name":"AlbumSearch","albumIds":[3]}"#) == nil)
+    }
+}

@@ -171,6 +171,8 @@ enum ForbiddenWrites {
     /// Why the request is refused, or nil when it may be sent.
     static func reason(_ t: WriteTarget, body: Data?) -> String? {
         if t.foreignPrefix { return "not under /api/v1" }
+        // Checked on the exact bytes that will be sent, before anything reads the body as a dictionary.
+        if let body, let why = JSONKeyScan.problem(in: body) { return why }
         let json = body.flatMap { try? JSONSerialization.jsonObject(with: $0, options: [.fragmentsAllowed]) }
         if body != nil, json == nil { return "body is not JSON" }
         if let why = neverCall(t, json: json) { return why }
@@ -428,6 +430,137 @@ public actor LidarrWriteGate {
         case 200..<300: return responseData
         case 401, 403: throw LidarrError.unauthorized
         default: throw LidarrError.http(status: response.statusCode)
+        }
+    }
+}
+
+// MARK: - Raw body key scan
+
+/// Scans the exact bytes that will be sent for JSON object keys Lidarr could read differently from us:
+/// - non-ASCII keys (.NET case-insensitive binding folds e.g. U+017F "ſ" to "S", so `deleteFileſ` binds as
+///   `deleteFiles` while our lower-cased comparisons miss it);
+/// - duplicate keys, compared case-insensitively (JSONSerialization keeps one, System.Text.Json the last).
+/// Returns why the body is refused, or nil.
+enum JSONKeyScan {
+    private struct Refusal: Error { let reason: String }
+    private static let maxDepth = 64
+
+    static func problem(in data: Data) -> String? {
+        var scanner = Scanner(bytes: Array(data))
+        do {
+            scanner.skipSpace()
+            try scanner.value(depth: 0)
+            scanner.skipSpace()
+            guard scanner.atEnd else { return "body has trailing data" }
+            return nil
+        } catch let r as Refusal {
+            return r.reason
+        } catch {
+            return "body is not JSON"
+        }
+    }
+
+    private struct Scanner {
+        let bytes: [UInt8]
+        var i = 0
+
+        var atEnd: Bool { i >= bytes.count }
+        var peek: UInt8? { i < bytes.count ? bytes[i] : nil }
+
+        mutating func skipSpace() {
+            while let b = peek, b == 0x20 || b == 0x09 || b == 0x0A || b == 0x0D { i += 1 }
+        }
+
+        mutating func expect(_ b: UInt8) throws {
+            guard peek == b else { throw Refusal(reason: "body is not JSON") }
+            i += 1
+        }
+
+        mutating func value(depth: Int) throws {
+            guard depth < JSONKeyScan.maxDepth else { throw Refusal(reason: "body nested too deeply") }
+            switch peek {
+            case UInt8(ascii: "{"): try object(depth: depth)
+            case UInt8(ascii: "["): try array(depth: depth)
+            case UInt8(ascii: "\""): _ = try string()
+            case .some:
+                // Number or literal: consume up to the next delimiter.
+                let start = i
+                while let b = peek, !(b == UInt8(ascii: ",") || b == UInt8(ascii: "]") || b == UInt8(ascii: "}")
+                                      || b == 0x20 || b == 0x09 || b == 0x0A || b == 0x0D) { i += 1 }
+                guard i > start else { throw Refusal(reason: "body is not JSON") }
+            case .none:
+                throw Refusal(reason: "body is not JSON")
+            }
+        }
+
+        mutating func object(depth: Int) throws {
+            try expect(UInt8(ascii: "{"))
+            var keys = Set<String>()
+            skipSpace()
+            if peek == UInt8(ascii: "}") { i += 1; return }
+            while true {
+                skipSpace()
+                let (key, ascii) = try string()
+                guard ascii else { throw Refusal(reason: "non-ASCII key in body") }
+                guard keys.insert(key.lowercased()).inserted else { throw Refusal(reason: "duplicate key \(key) in body") }
+                skipSpace()
+                try expect(UInt8(ascii: ":"))
+                skipSpace()
+                try value(depth: depth + 1)
+                skipSpace()
+                if peek == UInt8(ascii: ",") { i += 1; continue }
+                try expect(UInt8(ascii: "}"))
+                return
+            }
+        }
+
+        mutating func array(depth: Int) throws {
+            try expect(UInt8(ascii: "["))
+            skipSpace()
+            if peek == UInt8(ascii: "]") { i += 1; return }
+            while true {
+                skipSpace()
+                try value(depth: depth + 1)
+                skipSpace()
+                if peek == UInt8(ascii: ",") { i += 1; continue }
+                try expect(UInt8(ascii: "]"))
+                return
+            }
+        }
+
+        /// The decoded string, and whether every character in it is ASCII (escapes included: `ſ` is not).
+        mutating func string() throws -> (String, Bool) {
+            try expect(UInt8(ascii: "\""))
+            var out = ""
+            var ascii = true
+            while let b = peek {
+                i += 1
+                switch b {
+                case UInt8(ascii: "\""):
+                    return (out, ascii)
+                case UInt8(ascii: "\\"):
+                    guard let e = peek else { throw Refusal(reason: "body is not JSON") }
+                    i += 1
+                    switch e {
+                    case UInt8(ascii: "u"):
+                        guard i + 4 <= bytes.count,
+                              let code = UInt32(String(decoding: bytes[i..<i + 4], as: UTF8.self), radix: 16) else {
+                            throw Refusal(reason: "body is not JSON")
+                        }
+                        i += 4
+                        if code < 0x80, let s = Unicode.Scalar(code) { out.unicodeScalars.append(s) } else { ascii = false }
+                    case UInt8(ascii: "\""), UInt8(ascii: "\\"), UInt8(ascii: "/"):
+                        out.unicodeScalars.append(Unicode.Scalar(e))
+                    case UInt8(ascii: "b"), UInt8(ascii: "f"), UInt8(ascii: "n"), UInt8(ascii: "r"), UInt8(ascii: "t"):
+                        out.unicodeScalars.append(Unicode.Scalar(e))   // only identity matters here
+                    default:
+                        throw Refusal(reason: "body is not JSON")
+                    }
+                default:
+                    if b >= 0x80 { ascii = false } else { out.unicodeScalars.append(Unicode.Scalar(b)) }
+                }
+            }
+            throw Refusal(reason: "body is not JSON")
         }
     }
 }
