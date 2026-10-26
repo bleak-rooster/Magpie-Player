@@ -33,6 +33,7 @@ struct SubsonicBody: Decodable {
     let error: APIError?
     let albumList2: AlbumList?
     let album: SubsonicAlbum?
+    let song: SubsonicSong?
     let artists: ArtistsIndex?
     let artist: SubsonicArtist?
     let playlists: Playlists?

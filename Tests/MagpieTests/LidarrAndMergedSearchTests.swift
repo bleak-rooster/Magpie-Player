@@ -55,7 +55,7 @@ private let lidarrSearch = Data(#"""
     }
 
     func makeModel() -> AppModel {
-        AppModel(store: store, lidarrStore: lidarrStore, matchIndexDirectory: nil, transport: transport,
+        AppModel(store: store, lidarrStore: lidarrStore, matchIndexDirectory: nil, dataDirectory: nil, transport: transport,
                  probeTransport: transport, engine: FakeEngine(), defaults: UserDefaults(suiteName: UUID().uuidString)!,
                  systemNowPlaying: false)
     }
@@ -103,7 +103,7 @@ private let lidarrSearch = Data(#"""
         #expect(lidarrStore.load() == LidarrConnection(base: lidarrBase, apiKey: "key"))
         #expect(model.lidarr != nil)
         let lidarrCalls = transport.inner.requests.filter { $0.url?.port == 8686 }
-        #expect(!lidarrCalls.isEmpty && lidarrCalls.allSatisfy { $0.httpMethod == "GET" }, "M4 never writes to Lidarr")
+        #expect(!lidarrCalls.isEmpty && lidarrCalls.allSatisfy { $0.httpMethod == "GET" }, "connecting never writes to Lidarr")
 
         model.signOut()
         #expect(model.lidarr == nil)
@@ -113,7 +113,7 @@ private let lidarrSearch = Data(#"""
     @Test func wrongKeyIsNotSaved() async throws {
         let t = HostSwitchTransport()
         t.inner.stub(pathSuffix: "/api/v1/system/status", status: 401)
-        let model = AppModel(store: store, lidarrStore: lidarrStore, matchIndexDirectory: nil, transport: t,
+        let model = AppModel(store: store, lidarrStore: lidarrStore, matchIndexDirectory: nil, dataDirectory: nil, transport: t,
                              probeTransport: t, engine: FakeEngine(), defaults: UserDefaults(suiteName: UUID().uuidString)!,
                              systemNowPlaying: false)
         await #expect(throws: LidarrError.unauthorized) {
@@ -146,6 +146,6 @@ private let lidarrSearch = Data(#"""
     }
 
     @Test func tryWhileChangesAreOffSaysWhereToTurnThemOn() {
-        #expect(TurnOnChangesSheet.message == "Turn on 'Allow Magpie to change Lidarr' in Settings to bring songs home.")
+        #expect(TryAvailability.changesOff.message == "Turn on 'Allow Magpie to change Lidarr' in Settings to bring songs home.")
     }
 }

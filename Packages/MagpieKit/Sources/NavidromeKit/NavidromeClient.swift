@@ -170,6 +170,13 @@ public actor NavidromeClient {
         return Mapping.album(album, withSongs: true)
     }
 
+    /// One song by id (a request that just became Ready, D6).
+    public func song(id: String) async throws -> Song {
+        let body = try await subsonic("getSong", [URLQueryItem(name: "id", value: id)])
+        guard let song = body.song else { throw NavidromeError.api(code: 70, message: "song missing from response") }
+        return Mapping.song(song)
+    }
+
     public func artists() async throws -> [Artist] {
         let body = try await subsonic("getArtists")
         return (body.artists?.index ?? []).flatMap { $0.artist ?? [] }.map(Mapping.artist)

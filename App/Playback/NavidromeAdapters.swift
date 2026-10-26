@@ -14,11 +14,21 @@ final class ClientBox: Sendable {
     func set(_ client: NavidromeClient?) { lock.withLock { $0 = client } }
 }
 
-/// Scrobbles through Navidrome (which forwards to the owner's ListenBrainz/Last.fm).
+/// G8 "Count plays": whether plays are scrobbled. Read on every scrobble, so the switch takes effect at once.
+final class PlayCounting: Sendable {
+    private let lock: OSAllocatedUnfairLock<Bool>
+    init(on: Bool) { lock = OSAllocatedUnfairLock(initialState: on) }
+    var isOn: Bool { lock.withLock { $0 } }
+    func set(_ on: Bool) { lock.withLock { $0 = on } }
+}
+
+/// Scrobbles through Navidrome (which forwards to the owner's ListenBrainz/Last.fm), unless Count plays is off.
 struct NavidromeScrobbler: Scrobbler {
     let box: ClientBox
+    var counting = PlayCounting(on: true)
 
     func scrobble(songId: String, submission: Bool, at: Date?) async throws {
+        guard counting.isOn else { return }
         guard let client = box.client else { return }   // signed out meanwhile
         try await client.scrobble(songId: songId, submission: submission, at: at)
     }

@@ -139,6 +139,56 @@ final class BrowseFlowTests: XCTestCase {
         XCTAssertTrue(app.textFields["lidarr-address"].waitForExistence(timeout: 10))
     }
 
+    /// Library › Settings with the dev Lidarr connected: the G1 switch (off), set-up, change log and Count
+    /// plays are there; Library has a Requests row. Reads only: nothing is switched on.
+    @MainActor func testSettingsShowLidarrControlsAndRequests() throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let lidarrURL = env["MAGPIE_IT_LIDARR_URL"], let key = env["MAGPIE_IT_LIDARR_KEY"],
+              !lidarrURL.isEmpty, !key.isEmpty else { throw XCTSkip("no dev-stack Lidarr passed in") }
+        guard let host = URLComponents(string: lidarrURL)?.host, ["127.0.0.1", "localhost"].contains(host) else {
+            XCTFail("Refusing a non-local Lidarr (\(lidarrURL))")
+            return
+        }
+        let app = try launchSignedIn()
+        let libraryTab = app.tabBars.buttons["Library"]
+        let settings = app.buttons["open-settings"]
+        for _ in 0..<3 where !settings.exists {
+            libraryTab.tap()
+            _ = settings.waitForExistence(timeout: 5)
+        }
+        XCTAssertTrue(app.buttons["library-requests"].exists)
+        settings.tap()
+
+        let connect = app.buttons["settings-connect-lidarr"]
+        XCTAssertTrue(connect.waitForExistence(timeout: 10))
+        connect.tap()
+        let address = app.textFields["lidarr-address"]
+        XCTAssertTrue(address.waitForExistence(timeout: 10))
+        address.tap()
+        address.typeText(lidarrURL)
+        let apiKey = app.secureTextFields["lidarr-api-key"]
+        apiKey.tap()
+        apiKey.typeText(key)
+        app.buttons["lidarr-connect"].tap()
+        let version = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", "Version")).firstMatch
+        XCTAssertTrue(version.waitForExistence(timeout: 20))
+        app.buttons["Done"].firstMatch.tap()
+
+        let toggle = app.switches["settings-allow-changes"]
+        XCTAssertTrue(toggle.waitForExistence(timeout: 10))
+        XCTAssertEqual(toggle.value as? String, "0", "G1: changes are off until the owner turns them on")
+        XCTAssertTrue(app.buttons["settings-provision"].exists)
+        XCTAssertFalse(app.buttons["settings-provision"].isEnabled, "set-up needs changes allowed")
+        let log = app.buttons["settings-change-log"]
+        for _ in 0..<4 where !log.isHittable { app.swipeUp() }
+        log.tap()
+        XCTAssertTrue(app.navigationBars["Lidarr change log"].waitForExistence(timeout: 10))
+        app.navigationBars.buttons.firstMatch.tap()
+        let countPlays = app.switches["settings-count-plays"]
+        for _ in 0..<4 where !countPlays.isHittable { app.swipeUp() }
+        XCTAssertTrue(countPlays.exists)
+    }
+
     @MainActor private func errorText(_ app: XCUIApplication) -> String {
         let error = app.staticTexts["connect-error"]
         return error.exists ? error.label : "none"

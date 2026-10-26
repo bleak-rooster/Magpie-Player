@@ -67,7 +67,7 @@ struct HomeView: View {
     }
 }
 
-/// D9: setup continues from Home. Opens the Lidarr connection sheet (Settings reuses it in M5).
+/// D9: setup continues from Home. Opens the Lidarr connection sheet (also in Settings).
 private struct FinishSettingUpCard: View {
     @Environment(AppModel.self) private var model
     @State private var showsConnect = false
@@ -85,7 +85,7 @@ private struct FinishSettingUpCard: View {
                 VStack(alignment: .leading, spacing: Tokens.Spacing.xs) {
                     Text("Finish setting up").font(.headline)
                     Text(connected
-                         ? "Search now shows music that's not in your library. Bringing songs home comes next."
+                         ? "Search shows music that's not in your library. To bring songs home, finish in Settings › Lidarr."
                          : "Let Magpie find songs you don't have yet and bring the ones you love home.")
                         .font(.subheadline)
                         .foregroundStyle(p.ink2Color)

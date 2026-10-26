@@ -7,6 +7,7 @@ import MatchIndex
 import NavidromeKit
 import Observation
 import Playback
+import Requests
 import Search
 #if os(iOS)
 import UIKit
@@ -53,18 +54,53 @@ final class AppModel {
     /// A session is saved but the Keychain can't be read yet (before first unlock). Not signed out:
     /// the UI waits, and the session is restored when protected data becomes available.
     private(set) var isWaitingForUnlock = false
-    /// The owner's Lidarr, when connected (M4: read-only). Kept in the Keychain next to the session.
+    // The request/settings state below is set from AppModel+Requests.swift (internal setters); views only read it.
+
+    /// The owner's Lidarr, when connected. Kept in the Keychain next to the session.
     private(set) var lidarr: LidarrConnection?
+    /// "Allow Magpie to change Lidarr" (G1): mirrors the write gate's persisted switch. Off by default.
+    var changesAllowed: Bool
+    /// Provisioning results and the main root folder for the connected Lidarr.
+    var lidarrSetup: LidarrSetup?
+    /// The connected Lidarr's setup as last read (speed tier, root folders). Nil until read.
+    var lidarrStatus: LidarrAudit?
+    /// Try requests, newest last (from the runner).
+    var requests: [MagpieRequest] = []
+    /// G8 "Count plays": scrobbling on (default) or off.
+    var countPlays: Bool
+    /// Whether an optional ListenBrainz token is saved.
+    var hasListenBrainzToken = false
+    /// The scene is active: requests poll every 5 s, otherwise every 30 s.
+    var isForeground = true {
+        didSet { if isForeground, !oldValue { pollRequests() } }
+    }
 
     @ObservationIgnored private let store: any SessionStoring
     @ObservationIgnored private let lidarrStore: any LidarrConnectionStoring
+    @ObservationIgnored let tokenStore: any ListenBrainzTokenStoring
+    @ObservationIgnored let setupStore: LidarrSetupStore
+    @ObservationIgnored let gateDefaultsSuite: String?
+    @ObservationIgnored let gateDefaults: UserDefaults
+    @ObservationIgnored let appDefaults: UserDefaults
+    /// Where the change log, ledger and requests live (Application Support/Magpie).
+    @ObservationIgnored let dataDirectory: URL
+    /// The one ledger for the whole app (re-reads its file on every call, so it can't go stale).
+    @ObservationIgnored let ledger: Ledger
+    @ObservationIgnored let requestStore: RequestStore
+    @ObservationIgnored var gate: LidarrWriteGate?
+    @ObservationIgnored var runner: RequestRunner?
+    @ObservationIgnored var runnerTasks: [Task<Void, Never>] = []
+    @ObservationIgnored var pollTask: Task<Void, Never>?
+    @ObservationIgnored var pollGeneration = 0
+    @ObservationIgnored let playCounting: PlayCounting
+    @ObservationIgnored let notifications: Bool
     /// The library's match index for the signed-in server and account (nil when signed out).
     @ObservationIgnored private(set) var matchIndex: MatchIndexStore?
     @ObservationIgnored private var matchIndexTask: Task<Void, Never>?
     @ObservationIgnored private let matchIndexDirectory: URL?
     @ObservationIgnored private var musicBrainzClient: MusicBrainzClient?
     @ObservationIgnored private var unlockObserver: NSObjectProtocol?
-    @ObservationIgnored private let transport: HTTPTransport
+    @ObservationIgnored let transport: HTTPTransport
     @ObservationIgnored private let probeTransport: HTTPTransport
     @ObservationIgnored private let box: ClientBox
     @ObservationIgnored private var reconnectTask: Task<Bool, Never>?
@@ -75,25 +111,48 @@ final class AppModel {
 
     /// - Parameter matchIndexDirectory: where match-index snapshots go (Application Support); nil keeps
     ///   them in memory only (tests).
+    /// - Parameter dataDirectory: where the Lidarr change log, ledger and requests go; nil uses a fresh
+    ///   temporary folder (tests).
+    /// - Parameter gateDefaultsSuite: UserDefaults suite of the "Allow Magpie to change Lidarr" switch (nil: standard).
     init(store: any SessionStoring = SessionStore.standard,
          lidarrStore: any LidarrConnectionStoring = LidarrConnectionStore.standard,
+         tokenStore: any ListenBrainzTokenStoring = ListenBrainzTokenStore.standard,
          matchIndexDirectory: URL? = URL.applicationSupportDirectory,
+         dataDirectory: URL? = URL.applicationSupportDirectory,
+         gateDefaultsSuite: String? = nil,
          transport: HTTPTransport = URLSessionTransport(),
          probeTransport: HTTPTransport = URLSessionTransport(timeout: 6),
          engine: (any PlaybackEngine)? = nil,
          defaults: UserDefaults = .standard,
          theme: Theme = Theme(),
-         systemNowPlaying: Bool = true) {
+         systemNowPlaying: Bool = true,
+         notifications: Bool = true) {
         let box = ClientBox()
         self.store = store
         self.lidarrStore = lidarrStore
+        self.tokenStore = tokenStore
         self.matchIndexDirectory = matchIndexDirectory
         self.lidarr = lidarrStore.load()
         self.transport = transport
         self.probeTransport = probeTransport
         self.box = box
         self.theme = theme
-        self.player = Player(engine: engine ?? AVQueueEngine(), scrobbler: NavidromeScrobbler(box: box),
+        self.notifications = notifications
+        let data = dataDirectory ?? FileManager.default.temporaryDirectory.appending(path: "magpie-\(UUID().uuidString)")
+        self.dataDirectory = data
+        self.ledger = Ledger(fileURL: Ledger.defaultURL(in: data))
+        self.requestStore = RequestStore(fileURL: RequestStore.defaultURL(in: data))
+        self.gateDefaultsSuite = gateDefaultsSuite
+        self.gateDefaults = gateDefaultsSuite.flatMap { UserDefaults(suiteName: $0) } ?? .standard
+        self.changesAllowed = gateDefaults.bool(forKey: LidarrWriteGate.enabledDefaultsKey)
+        self.appDefaults = defaults
+        self.setupStore = LidarrSetupStore(defaults: defaults)
+        self.countPlays = defaults.object(forKey: Self.countPlaysKey) as? Bool ?? true
+        self.hasListenBrainzToken = tokenStore.load() != nil
+        let counting = PlayCounting(on: defaults.object(forKey: Self.countPlaysKey) as? Bool ?? true)
+        self.playCounting = counting
+        self.player = Player(engine: engine ?? AVQueueEngine(),
+                             scrobbler: NavidromeScrobbler(box: box, counting: counting),
                              urls: NavidromeStreamURLs(box: box), defaults: defaults)
         #if os(iOS)
         if systemNowPlaying {
@@ -104,6 +163,7 @@ final class AppModel {
         }
         #endif
         watchPlaybackErrors()
+        lidarrSetup = lidarr.map { setupStore.load(for: $0.base) }
     }
 
     /// Builds the shared model from what the Keychain holds. `-MagpieResetState YES` signs out first
@@ -144,6 +204,7 @@ final class AppModel {
         box.set(client)
         Task { await reconnect(rebuildAlways: true) }
         startMatchIndex()
+        rebuildRunner()
     }
 
     /// Protected data (the Keychain) became readable: retry the restore.
@@ -203,6 +264,7 @@ final class AppModel {
                           activeBase: base, isAdmin: login.isAdmin)
         box.set(client)
         startMatchIndex()
+        rebuildRunner()
     }
 
     /// Stops playback, forgets the server and clears the Keychain.
@@ -220,6 +282,11 @@ final class AppModel {
         stopMatchIndex(erase: true)
         lidarrStore.clear()
         lidarr = nil
+        lidarrSetup = nil
+        lidarrStatus = nil
+        setupStore.clear()
+        rebuildRunner()
+        Task { [requestStore] in await requestStore.erase() }
     }
 
     // MARK: - Requests with failover
@@ -324,20 +391,32 @@ final class AppModel {
         }
         let store = MatchIndexStore(fileURL: url)
         matchIndex = store
-        matchIndexTask = Task { [weak self] in
+        let fetch = songPages(for: s)
+        matchIndexTask = Task {
             await store.loadSnapshot()
             guard !Task.isCancelled else { return }
             do {
-                let endpoint = s.endpoint, user = s.username
-                try await store.refresh { [weak self] start, end in
-                    // Never fill this account's index from another session (signed out or in meanwhile).
-                    guard let self, await self.isSignedIn(to: endpoint, as: user) else { throw CancellationError() }
-                    return try await self.request { try await $0.songsPage(start: start, end: end) }
-                }
+                try await store.refresh(fetchPage: fetch)
             } catch {
                 Log.logger("matchindex").error("refresh failed: \(error.localizedDescription, privacy: .public)")
             }
         }
+    }
+
+    /// `/api/song` pages for this session, through `request`'s failover.
+    private func songPages(for s: Session) -> MatchIndexStore.PageFetcher {
+        let endpoint = s.endpoint, user = s.username
+        return { [weak self] start, end in
+            // Never fill this account's index from another session (signed out or in meanwhile).
+            guard let self, await self.isSignedIn(to: endpoint, as: user) else { throw CancellationError() }
+            return try await self.request { try await $0.songsPage(start: start, end: end) }
+        }
+    }
+
+    /// Rebuilds the match index now (a request's song may have landed). Shares a refresh already running.
+    func refreshMatchIndex() async throws {
+        guard let s = session, let store = matchIndex else { return }
+        try await store.refresh(fetchPage: songPages(for: s))
     }
 
     private func isSignedIn(to endpoint: ServerEndpoint, as user: String) -> Bool {
@@ -354,7 +433,7 @@ final class AppModel {
         matchIndex = nil
     }
 
-    // MARK: - Lidarr (read-only in M4)
+    // MARK: - Lidarr
 
     /// A client for the connected Lidarr, if any.
     var lidarrClient: LidarrClient? {
@@ -370,18 +449,30 @@ final class AppModel {
         let audit = await LidarrAudit.run(client)
         try lidarrStore.save(connection)
         lidarr = connection
+        lidarrStatus = audit
+        lidarrSetup = setupStore.load(for: connection.base)
+        adoptOnlyRoot(audit)
+        rebuildRunner()
         return audit
     }
 
     /// The connected Lidarr's setup, read again. Nil when not connected.
     func lidarrAudit() async -> LidarrAudit? {
         guard let client = lidarrClient else { return nil }
-        return await LidarrAudit.run(client)
+        let audit = await LidarrAudit.run(client)
+        if lidarrClient != nil {
+            lidarrStatus = audit
+            adoptOnlyRoot(audit)
+        }
+        return audit
     }
 
     func disconnectLidarr() {
         lidarrStore.clear()
         lidarr = nil
+        lidarrSetup = nil
+        lidarrStatus = nil
+        rebuildRunner()
     }
 
     // MARK: - Search
@@ -389,7 +480,8 @@ final class AppModel {
     /// Library search merged with ListenBrainz and (when connected) Lidarr. Built per search so it
     /// follows the current session, Lidarr connection and match index.
     func mergedSearch() -> MergedSearch {
-        var sources: [MergedSearch.Source] = [.listenBrainz(ListenBrainzClient(transport: transport, token: nil))]
+        // A9: the token only ever goes to api.listenbrainz.org; the client never sends it to labs.
+        var sources: [MergedSearch.Source] = [.listenBrainz(ListenBrainzClient(transport: transport, token: tokenStore.load()))]
         if let lidarr = lidarrClient { sources.append(.lidarr(lidarr)) }
         let index = matchIndex
         return MergedSearch(

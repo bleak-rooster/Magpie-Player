@@ -1,11 +1,13 @@
 import DesignSystem
 import MagpieCore
+import Requests
 import SwiftUI
 
-/// Library: Playlists, Artists, Albums, then recently added albums. (Finds and Requests rows arrive in M5/M6.)
+/// Library: Playlists, Artists, Albums, Requests, then recently added albums. (Finds arrive in M6.)
 struct LibraryView: View {
     @Environment(AppModel.self) private var model
     @State private var recent: Loadable<[Album]> = .loading
+    @State private var showsSettings = false
     private let themed = Themed()
 
     var body: some View {
@@ -18,6 +20,8 @@ struct LibraryView: View {
                     row("Artists", symbol: "music.mic", route: .artists)
                     Divider().overlay(p.sepColor).padding(.leading, 52)
                     row("Albums", symbol: "square.stack", route: .albums)
+                    Divider().overlay(p.sepColor).padding(.leading, 52)
+                    row("Requests", symbol: "arrow.down.circle", route: .requests, detail: requestsDetail)
                 }
                 VStack(alignment: .leading, spacing: Tokens.Spacing.m) {
                     Text("Recently added").magpieDisplay(.title2).accessibilityAddTraits(.isHeader)
@@ -33,28 +37,34 @@ struct LibraryView: View {
         .magpieLargeTitle("Library")
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                Menu {
-                    if let name = model.session?.username { Text("Signed in as \(name)") }
-                    Button("Sign out", systemImage: "rectangle.portrait.and.arrow.right", role: .destructive) {
-                        model.signOut()
-                    }
-                } label: {
-                    Image(systemName: "person.crop.circle")
+                Button { showsSettings = true } label: {
+                    Image(systemName: "gearshape")
                 }
-                .accessibilityLabel("Account")
+                .accessibilityLabel("Settings")
+                .accessibilityIdentifier("open-settings")
             }
         }
+        .sheet(isPresented: $showsSettings) { SettingsView() }
         .magpieScreen()
         .task { if recent.value == nil { await load() } }
     }
 
-    private func row(_ title: String, symbol: String, route: Route) -> some View {
+    /// "2 on their way" while requests are in progress.
+    private var requestsDetail: String? {
+        let n = model.requests.filter(\.isActive).count
+        return n == 0 ? nil : "\(n) on \(n == 1 ? "its" : "their") way"
+    }
+
+    private func row(_ title: String, symbol: String, route: Route, detail: String? = nil) -> some View {
         NavigationLink(value: route) {
             HStack(spacing: Tokens.Spacing.m) {
                 Image(systemName: symbol).font(.title3).foregroundStyle(themed.palette.accentInkColor)
                     .frame(width: 28).accessibilityHidden(true)
                 Text(title).font(.title3)
                 Spacer()
+                if let detail {
+                    Text(detail).font(.subheadline).foregroundStyle(themed.palette.ink2Color)
+                }
                 Image(systemName: "chevron.right").font(.footnote.weight(.semibold))
                     .foregroundStyle(themed.palette.ink2Color).accessibilityHidden(true)
             }

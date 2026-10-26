@@ -33,3 +33,29 @@ struct LidarrConnectionStore: LidarrConnectionStoring {
 
     func clear() { try? keychain.remove(Self.key) }
 }
+
+/// The optional ListenBrainz user token (Settings). Keychain only.
+protocol ListenBrainzTokenStoring: Sendable {
+    func save(_ token: String) throws
+    func load() -> String?
+    func clear()
+}
+
+struct ListenBrainzTokenStore: ListenBrainzTokenStoring {
+    let keychain: KeychainStore
+
+    static let standard = ListenBrainzTokenStore(keychain: SessionStore.standard.keychain)
+
+    private static let key = "listenbrainz.token"
+
+    func save(_ token: String) throws { try keychain.set(Data(token.utf8), for: Self.key) }
+
+    func load() -> String? {
+        guard let data = try? keychain.get(Self.key), let token = String(data: data, encoding: .utf8), !token.isEmpty else {
+            return nil
+        }
+        return token
+    }
+
+    func clear() { try? keychain.remove(Self.key) }
+}

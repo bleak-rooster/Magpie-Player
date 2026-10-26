@@ -1,5 +1,6 @@
 import DesignSystem
 import MagpieCore
+import Requests
 import Search
 import SwiftUI
 
@@ -49,7 +50,7 @@ private struct SearchContent: View {
     let model: SearchModel
     let scope: SearchScope
     @State private var recents = RecentSearches().items
-    @State private var showsTurnOnChanges = false
+    @State private var trying: TryTarget?
     private let themed = Themed()
 
     var body: some View {
@@ -85,7 +86,7 @@ private struct SearchContent: View {
         .navigationTitle("Search")
         .magpieScreen()
         .scrollDismissesKeyboard(.interactively)
-        .sheet(isPresented: $showsTurnOnChanges) { TurnOnChangesSheet() }
+        .sheet(item: $trying) { TrySheet(recording: $0.recording) }
     }
 
     // MARK: - Start
@@ -192,10 +193,24 @@ private struct SearchContent: View {
     private func notYetSongRow(_ recording: ExternalRecording, index: Int) -> some View {
         let song = Song(id: "notyet-\(index)", title: recording.title, artist: recording.artist,
                         album: recording.releaseTitle ?? "", duration: recording.duration ?? 0)
-        return SongRow(song: song, state: .notYet, onTry: { showsTurnOnChanges = true })
+        return SongRow(song: song, state: rowState(for: recording),
+                       onTry: { trying = TryTarget(recording: recording) })
             .accessibilityIdentifier("search-notyet-song-\(index)")
             .listRowInsets(EdgeInsets())
             .listRowBackground(Color.clear)
+    }
+
+    /// A song already asked for shows how it's coming along instead of "Not in your library".
+    private func rowState(for recording: ExternalRecording) -> RowState {
+        guard let request = app.requests.last(where: { r in
+            RequestCopy.group(r.state) != nil && (r.recording.recordingMBID.map { $0 == recording.recordingMBID } ?? false)
+        }) else { return .notYet }
+        switch request.state {
+        case .downloading(let p) where p > 0: return .onItsWay(progress: p, phrase: RequestCopy.percent(p))
+        case .waiting, .failed: return .notFound
+        case .ready, .kept: return .library
+        default: return .onItsWay(progress: nil, phrase: "")
+        }
     }
 
     private func notYetArtistRow(_ artist: NotYetArtist) -> some View {
@@ -303,21 +318,8 @@ private struct SearchContent: View {
     }
 }
 
-/// Try while changes to Lidarr are off (G1, which arrives with Settings in M5). M5 replaces this sheet.
-struct TurnOnChangesSheet: View {
-    nonisolated static let message = "Turn on 'Allow Magpie to change Lidarr' in Settings to bring songs home."
-    @Environment(\.dismiss) private var dismiss
-    private let themed = Themed()
-
-    var body: some View {
-        VStack(spacing: Tokens.Spacing.l) {
-            Image(systemName: "record.circle").font(.largeTitle).foregroundStyle(themed.palette.accentInkColor)
-                .accessibilityHidden(true)
-            Text(Self.message).font(.body).multilineTextAlignment(.center)
-                .accessibilityIdentifier("turn-on-changes-message")
-            Button("OK") { dismiss() }.buttonStyle(.borderedProminent)
-        }
-        .padding(Tokens.Spacing.xxl)
-        .presentationDetents([.medium])
-    }
+/// The not-yet song a Try sheet is open for.
+private struct TryTarget: Identifiable {
+    let id = UUID()
+    let recording: ExternalRecording
 }

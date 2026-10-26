@@ -5,6 +5,7 @@ import SwiftUI
 struct RootView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.colorScheme) private var scheme
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         let theme = model.theme
@@ -24,6 +25,7 @@ struct RootView: View {
         .accessibilityAction(.magicTap) {
             if model.player.queue.current != nil { model.player.toggle() }
         }
+        .onChange(of: scenePhase, initial: true) { _, phase in model.isForeground = phase == .active }
     }
 }
 

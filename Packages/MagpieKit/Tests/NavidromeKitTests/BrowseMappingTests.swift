@@ -33,6 +33,14 @@ import os
         #expect(songs[0].suffix == "flac")
     }
 
+    @Test func songById() async throws {
+        let body = Data(#"{"subsonic-response":{"status":"ok","version":"1.16.1","song":{"id":"s9","title":"Harbour Lights","artist":"Judie Tzuke","album":"The Cat Is Out","duration":232}}}"#.utf8)
+        let (client, t) = try await connected { $0.stub(pathSuffix: "/rest/getSong", body: body) }
+        let song = try await client.song(id: "s9")
+        #expect(song.id == "s9" && song.title == "Harbour Lights" && song.duration == 232)
+        #expect(t.requests.last.flatMap { queryValue($0, "id") } == "s9")
+    }
+
     @Test func compilationArtistIsVarious() async throws {
         let (client, _) = try await connected {
             $0.stub(pathSuffix: "/rest/getAlbum", body: Fixtures.data("getAlbum-compilation"))

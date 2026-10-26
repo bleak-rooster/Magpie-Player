@@ -1,4 +1,5 @@
 import DesignSystem
+import Requests
 import SwiftUI
 
 /// Where a browse screen can take you.
@@ -9,6 +10,9 @@ enum Route: Hashable {
     case artists
     case albums
     case playlists
+    /// Library › Requests (Activity).
+    case requests
+    case request(RequestID)
 }
 
 extension View {
@@ -22,6 +26,8 @@ extension View {
             case .artists: ArtistsListView()
             case .albums: AlbumsListView()
             case .playlists: PlaylistsListView()
+            case .requests: ActivityView()
+            case .request(let id): RequestDetailView(requestId: id)
             }
         }
     }

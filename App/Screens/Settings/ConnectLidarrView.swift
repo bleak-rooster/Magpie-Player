@@ -3,7 +3,7 @@ import LidarrKit
 import SwiftUI
 
 /// Connect Lidarr (address + API key) and show a calm summary of how it is set up. Read-only: nothing
-/// is written to Lidarr. Opened from Home's "Finish setting up" card now; Settings reuses it (M5).
+/// is written to Lidarr here. Opened from Home's "Finish setting up" card and from Settings.
 struct ConnectLidarrView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
@@ -54,7 +54,7 @@ struct ConnectLidarrView: View {
         } header: {
             Text("Lidarr")
         } footer: {
-            Text("Lidarr finds music you don't have yet. The API key is in Lidarr under Settings › General › Security. Magpie only reads from Lidarr for now.")
+            Text("Lidarr finds music you don't have yet. The API key is in Lidarr under Settings › General › Security. Magpie changes nothing in Lidarr until you allow it in Settings.")
         }
         if let error {
             Section {
@@ -98,7 +98,7 @@ struct ConnectLidarrView: View {
         Section {
             LabeledContent("Address", value: connection.base.absoluteString)
         } footer: {
-            Text("Magpie can now show music that's not in your library. It doesn't change anything in Lidarr yet.")
+            Text("Magpie can now show music that's not in your library. It changes nothing in Lidarr until you turn on \u{201C}Allow Magpie to change Lidarr\u{201D} in Settings.")
         }
         if let audit {
             Section("Setup") {
