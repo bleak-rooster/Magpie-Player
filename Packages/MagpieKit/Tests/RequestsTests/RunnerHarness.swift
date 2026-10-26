@@ -58,6 +58,13 @@ struct HoldingTransport: HTTPTransport {
 
     func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
         if let latch = lidarr.shouldHold(request) { await latch.hold() }
+        let timesOut: Bool = lidarr.with { s in
+            guard request.httpMethod == "PUT", request.url?.path.hasSuffix("/album/monitor") == true,
+                  s.monitorTimesOut > 0 else { return false }
+            s.monitorTimesOut -= 1
+            return true
+        }
+        if timesOut { throw URLError(.timedOut) }
         return try await inner.send(request)
     }
 }
@@ -89,6 +96,11 @@ final class FakeLidarr: @unchecked Sendable {
         var monitorAppliedThen504 = 0
         /// PUT /album/monitor: answers 503 without applying this many times.
         var monitorFails503 = 0
+        /// PUT /album/monitor: answers `monitorRejectStatus` (a 4xx) without applying this many times.
+        var monitorRejects = 0
+        var monitorRejectStatus = 400
+        /// PUT /album/monitor: the client times out (URLError) before Lidarr has applied it, this many times.
+        var monitorTimesOut = 0
         /// After a failed monitor PUT (504 lost answer or 503), the next GET /album fails too (the confirm
         /// can't tell).
         var confirmFailsAfterLost = false
@@ -187,6 +199,12 @@ final class FakeLidarr: @unchecked Sendable {
                 return true
             }
             if unapplied { return MockTransport.Response(status: 503) }
+            let rejected: Int? = with { s in
+                guard s.monitorRejects > 0 else { return nil }
+                s.monitorRejects -= 1
+                return s.monitorRejectStatus
+            }
+            if let rejected { return MockTransport.Response(status: rejected) }
             let lost: Bool = with { s in
                 for i in s.albums.indices where ids.contains(s.albums[i].id) { s.albums[i].monitored = on }
                 guard s.monitorAppliedThen504 > 0 else { return false }

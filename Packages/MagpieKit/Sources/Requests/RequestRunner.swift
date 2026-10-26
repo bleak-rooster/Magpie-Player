@@ -494,14 +494,16 @@ public actor RequestRunner {
         guard album.monitored || settling else { throw AddFailure(reason: .stoppedInLidarr) }
     }
 
-    /// Sends `PUT /album/monitor` for an entry already in the ledger (fix round 4).
+    /// Sends `PUT /album/monitor` for an entry already in the ledger (fix rounds 4–5).
     ///
     /// The entry is saved as `unclear` *before* the PUT, so if the app dies while it is in flight the entry
     /// never claims "not sent". If that save fails, nothing is sent. Afterwards:
     /// - success: `applied`;
     /// - `WriteGateError`: `notSent` (the gate throws every one of them before anything leaves the device);
-    /// - any other error: a confirming GET decides. Monitored: `applied`; unmonitored: `notSent` (verifiably
-    ///   not in Lidarr, so a retry may send it); GET failed or album gone: stays `unclear`.
+    /// - a 4xx answer actually received from Lidarr (a definitive rejection): `notSent`;
+    /// - anything else (timeout, connection error, 5xx): a confirming GET that shows the album monitored
+    ///   makes it `applied`; otherwise it stays `unclear`. "Unmonitored" proves nothing here: the PUT may
+    ///   still be in flight after a client-side timeout and land after the GET.
     /// If saving the outcome fails, the entry stays `unclear` (never more permissive than the truth).
     /// Rethrows any failure so the request waits.
     private func sendMonitor(_ entry: LedgerEntry, artistId: Int, albumId: Int) async throws {
@@ -515,14 +517,27 @@ public actor RequestRunner {
             try? await ledger.record(e)
             throw refusal
         } catch {
-            if let album = (try? await lidarr.albums(artistId: artistId))?.first(where: { $0.id == albumId }) {
-                e.send = album.monitored ? .applied : .notSent
+            if Self.isDefinitiveRejection(error) {
+                e.send = .notSent
+                try? await ledger.record(e)
+            } else if (try? await lidarr.albums(artistId: artistId))?.first(where: { $0.id == albumId })?.monitored
+                        == true {
+                e.send = .applied
                 try? await ledger.record(e)
             }
             throw error
         }
         e.send = .applied
         try await ledger.record(e)
+    }
+
+    /// Lidarr answered the write with a 4xx: it was received and refused, so it did not apply.
+    static func isDefinitiveRejection(_ error: Error) -> Bool {
+        switch error as? LidarrError {
+        case .http(let status)?: return (400..<500).contains(status)
+        case .unauthorized?: return true   // 401 / 403
+        default: return false
+        }
     }
 
     /// The add was sent but its outcome was unclear (timeout, relaunch) and the artist exists now: it is

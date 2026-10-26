@@ -286,15 +286,39 @@ import MagpieCore
         #expect(h.server.with { $0.albums.first { $0.id == 31 }?.monitored } == true)
     }
 
-    /// Round 4: a 503 whose confirming GET shows the album still unmonitored is verifiably not sent: the
-    /// retry sends the PUT again (and it is Magpie's to undo).
-    @Test func failedPutConfirmedUnmonitoredIsSentAgain() async throws {
+    /// Round 5: a client timeout (or a 5xx) followed by a confirming GET that shows the album unmonitored
+    /// stays unclear (the PUT may still land after the GET). The retry writes nothing and stops.
+    @Test func timeoutThenConfirmUnmonitoredStaysUnclear() async throws {
+        for failure in ["timeout", "503"] {
+            let h = await Harness()
+            h.server.ownerHasArtist(albumMonitored: false)
+            h.server.with { s in
+                if failure == "timeout" { s.monitorTimesOut = 1 } else { s.monitorFails503 = 1 }
+            }
+            let id = try await h.runner.tryRecording(h.recording(recAlbumOnly), tier: .standard)
+            await h.runner.settle()
+            #expect(try await h.ledger.entry(albumId: 31)?.send == .unclear, "\(failure)")
+            h.clock.advance(61)
+            await h.runner.tick()
+            #expect(await h.state(id) == .failed(reason: .stoppedInLidarr), "\(failure)")
+            let sent = await h.gate.changeLog().map { "\($0.method) \($0.path)" }
+            #expect(sent.count == 1 && sent[0].hasPrefix("PUT") && sent[0].contains("album/monitor"),
+                    "only the first PUT left (\(failure)): \(sent)")
+            await h.runner.cancel(id)
+            #expect(await h.gate.changeLog().count == 1, "an unclear entry is never undone (\(failure))")
+        }
+    }
+
+    /// Round 5: a 4xx answer received from Lidarr is a definitive rejection: notSent. A 429 waits and the
+    /// retry sends the PUT again (Magpie's to undo).
+    @Test func rejectedPutIsSentAgainOnRetry() async throws {
         let h = await Harness()
         h.server.ownerHasArtist(albumMonitored: false)
-        h.server.with { $0.monitorFails503 = 1 }
+        h.server.with { $0.monitorRejects = 1; $0.monitorRejectStatus = 429 }
         let id = try await h.runner.tryRecording(h.recording(recAlbumOnly), tier: .standard)
         await h.runner.settle()
         #expect(try await h.ledger.entry(albumId: 31)?.send == .notSent)
+        guard case .waiting = try #require(await h.state(id)) else { Issue.record("expected waiting"); return }
         h.clock.advance(61)
         await h.runner.tick()
         #expect(await h.state(id) == .searching)
@@ -303,6 +327,25 @@ import MagpieCore
         #expect(h.server.writeBodies().map(\.0) == ["PUT album/monitor", "PUT album/monitor", "POST command",
                                                     "PUT album/monitor"])
         #expect(h.server.with { $0.albums.first { $0.id == 31 }?.monitored } == false)
+    }
+
+    /// Round 5: a 400 fails the request (unchanged policy) with the entry notSent; trying the song again
+    /// sends the PUT again.
+    @Test func rejectedPutIsSentAgainOnNextTry() async throws {
+        let h = await Harness()
+        h.server.ownerHasArtist(albumMonitored: false)
+        h.server.with { $0.monitorRejects = 1; $0.monitorRejectStatus = 400 }
+        let first = try await h.runner.tryRecording(h.recording(recAlbumOnly), tier: .standard)
+        await h.runner.settle()
+        #expect(await h.state(first) == .failed(reason: .addFailed))
+        #expect(try await h.ledger.entry(albumId: 31)?.send == .notSent)
+        let again = try await h.runner.tryRecording(h.recording(recAlbumOnly), tier: .standard)
+        await h.runner.settle()
+        #expect(again != first)
+        #expect(await h.state(again) == .searching)
+        #expect(try await h.ledger.entry(albumId: 31)?.send == .applied)
+        #expect(h.server.writeBodies().map(\.0) == ["PUT album/monitor", "PUT album/monitor", "POST command"])
+        #expect(h.server.with { $0.albums.first { $0.id == 31 }?.monitored } == true)
     }
 
     /// Round 4: a 503 whose confirming GET fails too stays unclear: the retry writes nothing and stops.
