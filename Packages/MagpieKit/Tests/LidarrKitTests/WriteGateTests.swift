@@ -311,6 +311,21 @@ struct GateEnv {
         #expect(try await reopened.entries == ledger.entries)
         #expect(try url.resourceValues(forKeys: [.isExcludedFromBackupKey]).isExcludedFromBackup == true)
     }
+
+    /// Two instances on one file: neither caches, so neither loses the other's entries.
+    @Test func instancesOnOneFileStayConsistent() async throws {
+        let url = FileManager.default.temporaryDirectory.appending(path: "magpie-ledger-\(UUID().uuidString)/ledger.json")
+        let rg = MBID("0a3f5a6e-2f0b-4d8e-9d55-1b2c3d4e5f60")!
+        let a = Ledger(fileURL: url), b = Ledger(fileURL: url)
+        _ = try await a.entries   // a has read the (empty) file
+        try await b.record(LedgerEntry(lidarrArtistId: 1, albumId: 10, rgMbid: rg, createdArtist: true,
+                                       wasMonitoredBefore: false, root: "/m", mode: .fallback))
+        #expect(try await a.entry(albumId: 10) != nil)
+        try await a.record(LedgerEntry(lidarrArtistId: 2, albumId: 20, rgMbid: rg, createdArtist: false,
+                                       wasMonitoredBefore: true, root: "/m", mode: .fallback))
+        #expect(try await b.entries.map(\.albumId) == [10, 20])
+        #expect(try await b.entry(rgMbid: rg)?.albumId == 20)
+    }
 }
 
 @Suite struct WriteGateAllowListTests {

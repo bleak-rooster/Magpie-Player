@@ -51,6 +51,9 @@ public enum FailReason: String, Sendable, Codable, CaseIterable {
     case notFoundYet
     /// No usable release was found for the song.
     case noRelease
+    /// The artist is in Lidarr but none of its releases there contains the song (A7). Profiles are never
+    /// changed to make it fit.
+    case notInCatalogue
     /// Lidarr refused the add / monitor.
     case addFailed
     case unknown

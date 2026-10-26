@@ -101,6 +101,16 @@ public struct LidarrClient: Sendable {
         return hits.first { $0.foreignArtistId == mbid }
     }
 
+    /// The lookup row for `mbid` as raw JSON, the base of the single atomic `POST /artist` (A6). `nil` when
+    /// Lidarr knows no artist with that MBID.
+    public func artistLookupJSON(mbid: MBID) async throws -> JSONValue? {
+        let data = try await ok("artist/lookup", [URLQueryItem(name: "term", value: "lidarr:" + mbid.rawValue)])
+        guard let rows = (try? JSONDecoder().decode(JSONValue.self, from: data))?.arrayValue else {
+            throw LidarrError.decoding
+        }
+        return rows.first { $0["foreignArtistId"]?.stringValue.flatMap(MBID.init) == mbid }
+    }
+
     /// Text search (A10: flaky SkyHook search). Only artist and album rows are returned.
     public func search(term: String) async throws -> [LidarrSearchHit] {
         try await list(LidarrSearchHit.self, "search", [URLQueryItem(name: "term", value: term)])

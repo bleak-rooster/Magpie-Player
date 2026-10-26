@@ -42,12 +42,19 @@ public struct MBRecording: Sendable, Hashable {
     public var title: String
     public var releases: [MBRelease]
     public var isrcs: [String]
+    /// The credited artists' MBIDs, in credit order (the first is the main artist).
+    public var artistIds: [MBID]
+    /// Length in seconds, when MusicBrainz knows it.
+    public var length: TimeInterval?
 
-    public init(id: MBID, title: String, releases: [MBRelease], isrcs: [String] = []) {
+    public init(id: MBID, title: String, releases: [MBRelease], isrcs: [String] = [], artistIds: [MBID] = [],
+                length: TimeInterval? = nil) {
         self.id = id
         self.title = title
         self.releases = releases
         self.isrcs = isrcs
+        self.artistIds = artistIds
+        self.length = length
     }
 }
 
@@ -71,7 +78,7 @@ public actor MusicBrainzClient {
         try await limiter.wait()
         var request = URLRequest(url: ServerEndpoint(bases: [Self.base]).url(
             Self.base, path: "ws/2/recording/\(mbid.rawValue)",
-            query: [URLQueryItem(name: "inc", value: "releases+release-groups+isrcs"),
+            query: [URLQueryItem(name: "inc", value: "releases+release-groups+isrcs+artist-credits"),
                     URLQueryItem(name: "fmt", value: "json")]))
         request.httpMethod = "GET"
         request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
@@ -86,7 +93,9 @@ public actor MusicBrainzClient {
               let id = MBID(dto.id) else { throw MusicBrainzError.decoding }
         return MBRecording(id: id, title: (dto.title ?? "").capped,
                            releases: dto.releases?.values.compactMap(\.release) ?? [],
-                           isrcs: (dto.isrcs ?? []).map(\.capped).filter { !$0.isEmpty })
+                           isrcs: (dto.isrcs ?? []).map(\.capped).filter { !$0.isEmpty },
+                           artistIds: dto.artistCredit?.values.compactMap { $0.artist?.id.flatMap(MBID.init) } ?? [],
+                           length: dto.length.flatMap { $0 > 0 ? $0 / 1000 : nil })
     }
 }
 
@@ -95,6 +104,16 @@ private struct RecordingDTO: Decodable {
     var title: String?
     var releases: LossyArray<ReleaseDTO>?
     var isrcs: [String]?
+    var artistCredit: LossyArray<CreditDTO>?
+    /// Milliseconds.
+    var length: Double?
+
+    enum CodingKeys: String, CodingKey { case id, title, releases, isrcs, length, artistCredit = "artist-credit" }
+
+    struct CreditDTO: Decodable {
+        struct ArtistDTO: Decodable { var id: String? }
+        var artist: ArtistDTO?
+    }
 
     struct ReleaseDTO: Decodable {
         var id: String?

@@ -46,7 +46,7 @@ private let harbour = MBID("c2272a15-8f3a-4cdc-8f32-7e723352d44d")!
         #expect(req.url?.path == "/ws/2/recording/\(harbour.rawValue)")
         let items = URLComponents(url: req.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
         #expect(items.contains { $0.name == "fmt" && $0.value == "json" })
-        #expect(items.contains { $0.name == "inc" && $0.value == "releases+release-groups+isrcs" })
+        #expect(items.contains { $0.name == "inc" && $0.value == "releases+release-groups+isrcs+artist-credits" })
         #expect(req.value(forHTTPHeaderField: "Authorization") == nil)
     }
 
@@ -70,7 +70,8 @@ private let harbour = MBID("c2272a15-8f3a-4cdc-8f32-7e723352d44d")!
     @Test func parsesSinglesEPsIsrcsAndDropsBadReleases() async throws {
         let t = MockTransport()
         t.stub(pathSuffix: "/recording/\(harbour.rawValue)", body: json("""
-        {"id":"C2272A15-8F3A-4CDC-8F32-7E723352D44D","title":"T","isrcs":["GBAAA8500001"," "],
+        {"id":"C2272A15-8F3A-4CDC-8F32-7E723352D44D","title":"T","isrcs":["GBAAA8500001"," "],"length":232000,
+         "artist-credit":[{"name":"J","artist":{"id":"64db764c-2251-4f95-aa40-10fc91d509d8"}},{"name":"x","artist":{"id":"bad"}}],
          "releases":[
           {"id":"545b96d6-c867-3053-9548-3e8635390e38","title":"S","date":"","status":"Official",
            "release-group":{"id":"01a340b4-1d99-4083-ad92-fa2803368bed","primary-type":"Single","secondary-types":["Live"]}},
@@ -85,6 +86,8 @@ private let harbour = MBID("c2272a15-8f3a-4cdc-8f32-7e723352d44d")!
         let rec = try await MusicBrainzClient(transport: t, limiter: FakeClock().limiter()).recording(harbour)
         #expect(rec.id == harbour)
         #expect(rec.isrcs == ["GBAAA8500001"])
+        #expect(rec.artistIds == [MBID("64db764c-2251-4f95-aa40-10fc91d509d8")!])
+        #expect(rec.length == 232)
         #expect(rec.releases.map(\.title) == ["S", "E", "No type"])
         #expect(rec.releases.map(\.releaseGroup.primaryType) == ["Single", "EP", nil])
         #expect(rec.releases[0].releaseGroup.secondaryTypes == ["Live"])

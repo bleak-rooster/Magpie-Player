@@ -1,5 +1,6 @@
 import Foundation
 import MagpieCore
+import os
 
 /// Where a request's album was brought in: the main root (fallback mode) or the confirmed Finds root.
 public enum LedgerMode: String, Sendable, Codable {
@@ -32,44 +33,59 @@ public struct LedgerEntry: Sendable, Equatable, Codable {
 }
 
 /// The on-device record of every Lidarr album request Magpie made. One entry per album id.
-/// The file is read on first use. If it cannot be read (e.g. before first unlock), every call throws
-/// `LocalFileError.unavailable` and nothing is written, so callers refuse ledger-dependent actions.
+/// Nothing is cached per instance: every call re-reads the file under a process-wide lock (like the change
+/// log), so several `Ledger` values on the same file always agree. If the file cannot be read (e.g. before
+/// first unlock), every call throws `LocalFileError.unavailable` and nothing is written, so callers refuse
+/// ledger-dependent actions.
 public actor Ledger {
     /// `Application Support/Magpie/lidarr-ledger.json`.
     public static func defaultURL(in directory: URL = URL.applicationSupportDirectory) -> URL {
         LocalFile.url("lidarr-ledger.json", in: directory)
     }
 
+    /// Serialises read-modify-write of ledger files across all instances.
+    private static let fileLock = OSAllocatedUnfairLock()
+
     private let fileURL: URL?
-    private var cache: [LedgerEntry]?
+    /// Only used when `fileURL` is nil.
+    private var memory: [LedgerEntry] = []
 
     /// `fileURL` nil keeps the ledger in memory only.
     public init(fileURL: URL?) {
         self.fileURL = fileURL
-        self.cache = fileURL == nil ? [] : nil
     }
 
-    private func loaded() throws -> [LedgerEntry] {
-        if let cache { return cache }
-        guard let fileURL else { return [] }
-        let read = try LocalFile.load([LedgerEntry].self, from: fileURL, fallback: [], category: "ledger")
-        cache = read
-        return read
+    private static func read(_ url: URL) throws -> [LedgerEntry] {
+        try LocalFile.load([LedgerEntry].self, from: url, fallback: [], category: "ledger")
     }
 
     public var entries: [LedgerEntry] {
-        get throws { try loaded() }
+        get throws {
+            guard let fileURL else { return memory }
+            return try Self.fileLock.withLock { try Self.read(fileURL) }
+        }
     }
 
     /// Adds the entry, or replaces the one for the same album. Saved before returning.
     public func record(_ e: LedgerEntry) throws {
-        var next = try loaded()
+        guard let fileURL else { memory = Self.upserting(e, into: memory); return }
+        try Self.fileLock.withLock {
+            try LocalFile.save(Self.upserting(e, into: try Self.read(fileURL)), to: fileURL)
+        }
+    }
+
+    private static func upserting(_ e: LedgerEntry, into list: [LedgerEntry]) -> [LedgerEntry] {
+        var next = list
         if let i = next.firstIndex(where: { $0.albumId == e.albumId }) { next[i] = e } else { next.append(e) }
-        if let fileURL { try LocalFile.save(next, to: fileURL) }
-        cache = next
+        return next
     }
 
     public func entry(albumId: Int) throws -> LedgerEntry? {
-        try loaded().first { $0.albumId == albumId }
+        try entries.first { $0.albumId == albumId }
+    }
+
+    /// The newest entry for a release group (G7: dedupe by rgMbid before any add).
+    public func entry(rgMbid: MBID) throws -> LedgerEntry? {
+        try entries.last { $0.rgMbid == rgMbid }
     }
 }
