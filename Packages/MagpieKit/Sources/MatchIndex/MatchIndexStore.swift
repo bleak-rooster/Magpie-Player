@@ -93,10 +93,21 @@ public actor MatchIndexStore {
         if let fileURL {
             do {
                 try AtomicFile.write(Snapshot(version: Snapshot.currentVersion, savedAt: now, index: built), to: fileURL)
+                try Self.excludeFromBackup(fileURL)
             } catch {
                 Log.logger("matchindex").error("snapshot not saved: \(error.localizedDescription, privacy: .public)")
             }
         }
+    }
+
+    /// The snapshot is library metadata the app can rebuild: keep it (and its folder) out of device
+    /// backups. Set after every write, since the atomic replace swaps in a new file.
+    static func excludeFromBackup(_ fileURL: URL) throws {
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        var file = fileURL, dir = fileURL.deletingLastPathComponent()
+        try file.setResourceValues(values)
+        try dir.setResourceValues(values)
     }
 
     /// Forgets the index and deletes the snapshot (sign-out).

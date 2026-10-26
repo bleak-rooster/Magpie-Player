@@ -110,10 +110,12 @@ public struct MatchIndex: Sendable, Codable {
     /// The library song `r` already is, for hiding duplicates in search: a match at ≥ `acceptThreshold`,
     /// or a by-name match (0.6) when exactly one library song has that artist and title (research §4,
     /// step 5: "treat as in-library only if unambiguous"). LB search carries no durations, so without
-    /// this every untagged library song would also show up as "Not in your library".
+    /// this every untagged library song would also show up as "Not in your library". A title that marks
+    /// itself as another version ("Halo (Live)") never counts on a name-only match, so it can be tried.
     public func librarySong(for r: ExternalRecording) -> String? {
         guard let m = match(r) else { return nil }
         if m.confidence >= Self.acceptThreshold { return m.songId }
+        if Normalize.hasVersionAside(r.title) { return nil }
         return byKey[Normalize.key(artist: r.artist, title: r.title)]?.count == 1 ? m.songId : nil
     }
 

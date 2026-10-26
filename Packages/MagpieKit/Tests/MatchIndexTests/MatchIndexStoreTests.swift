@@ -25,6 +25,10 @@ import Testing
         #expect(calls.withLock { $0 } == [0..<1000, 1000..<2000, 2000..<3000])
         #expect(await store.index.count == 2345)
         #expect(FileManager.default.fileExists(atPath: url.path))
+        #expect(try url.resourceValues(forKeys: [.isExcludedFromBackupKey]).isExcludedFromBackup == true,
+                "the snapshot never goes into device backups")
+        #expect(try url.deletingLastPathComponent().resourceValues(forKeys: [.isExcludedFromBackupKey])
+            .isExcludedFromBackup == true)
 
         let relaunched = MatchIndexStore(fileURL: url)
         #expect(await relaunched.index.count == 0)

@@ -122,6 +122,16 @@ final class EarlyBox: @unchecked Sendable {
         #expect(s.notYet.albums.map(\.title) == ["Fieldnotes"], "an album the library has is dropped")
     }
 
+    @Test func liveVersionIsNotYetWhenTheLibraryHasTheStudioOne() async {
+        let lb = MergedSearch.Source(timeout: .seconds(5)) { _ in
+            ExternalHits(songs: [ext("Corin Hale", "Harbour Lights"), ext("Corin Hale", "Harbour Lights (Live)"),
+                                 ext("Corin Hale", "Harbour Lights - Acoustic")])
+        }
+        let s = await search(library: LibrarySearchResult(songs: [harbourLights]),
+                             index: MatchIndex(songs: [harbourLights]), sources: [lb]).run("harbour lights")
+        #expect(s.notYet.songs.map(\.title) == ["Harbour Lights (Live)", "Harbour Lights - Acoustic"])
+    }
+
     @Test func sourceTimeoutDegrades() async throws {
         let lbNeverAnswers = MergedSearch.Source(timeout: .seconds(5)) { _ in
             // Ignores cancellation on purpose: search must not wait for it.

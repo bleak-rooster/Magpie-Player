@@ -140,6 +140,39 @@ final class FakeSearch: @unchecked Sendable {
         #expect(model.phase == .done)
     }
 
+    /// Query A had results; while B runs (its library is empty, the outside sources still out),
+    /// none of A's rows, library or not-yet, are on screen.
+    @Test func newQueryNeverShowsThePreviousQuerysRows() async {
+        let gate = ManualSleeper()
+        var a = SearchSections.library(fake.result, query: "har")
+        a.notYet = NotYetSections(songs: [ExternalRecording(title: "Harbour Wall", artist: "Ines Morrow",
+                                                            source: .listenBrainz)])
+        let sleeper = self.sleeper, resultA = a
+        let model = SearchModel(search: { q, early in
+            if q == "har" { return resultA }
+            await early(SearchSections.library(LibrarySearchResult(), query: q))
+            try await gate.sleep(.seconds(5))
+            return .empty
+        }, sleep: { try await sleeper.sleep($0) })
+        model.update(query: "har")
+        await untilDebouncing()
+        sleeper.releaseAll()
+        await model.settle()
+        #expect(model.results == resultA)
+
+        model.update(query: "zebra")
+        #expect(model.results.isEmpty, "cleared as soon as the query changes")
+        await untilDebouncing()
+        sleeper.releaseAll()
+        for _ in 0..<1000 where gate.waiting == 0 { await Task.yield() }
+        #expect(model.results.isEmpty)
+        #expect(model.results.notYet.isEmpty)
+        #expect(model.phase == .searching)
+        gate.releaseAll()
+        await model.settle()
+        #expect(model.phase == .done)
+    }
+
     @Test func failureShowsMessageAndKeepsNothingStale() async {
         fake.failure = URLError(.notConnectedToInternet)
         let model = makeModel()

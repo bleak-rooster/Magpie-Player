@@ -43,7 +43,8 @@ final class SearchModel {
         self.errorMessage = errorMessage
     }
 
-    /// The query changed. An empty (or blank) query clears the results at once.
+    /// The query changed. Results for the previous query are cleared at once (they would be tappable
+    /// and wrong while the new search runs); an empty (or blank) query goes back to idle.
     func update(query newQuery: String) {
         query = newQuery
         task?.cancel()
@@ -54,6 +55,7 @@ final class SearchModel {
             phase = .idle
             return
         }
+        results = .empty
         phase = .searching
         let search = self.search, sleep = self.sleep, debounce = self.debounce
         task = Task { [weak self] in
@@ -81,9 +83,9 @@ final class SearchModel {
         await task?.value
     }
 
-    /// Library rows while the outside sources are still out. Still `.searching`.
+    /// Library rows (possibly none) while the outside sources are still out. Still `.searching`.
     private func showEarly(_ sections: SearchSections, for q: String) {
-        guard q == query, phase == .searching, !sections.isEmpty else { return }
+        guard q == query, phase == .searching else { return }
         results = sections
     }
 
