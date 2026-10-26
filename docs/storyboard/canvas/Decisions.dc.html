@@ -1,0 +1,300 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Your decisions</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,500;0,6..72,600;1,6..72,500&display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+*{box-sizing:border-box}
+button{font:inherit;color:inherit;cursor:pointer}
+.board{width:1440px;height:2400px;overflow:hidden;background:#FBFAF7;color:#16130F;padding:64px;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Helvetica Neue",system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+.serif{font-family:ui-serif,"New York","Newsreader",Georgia,serif;font-weight:600}
+.eyebrow{font-size:12px;line-height:16px;font-weight:600;letter-spacing:1.2px;text-transform:uppercase;color:#6B655C;margin:0}
+.top{display:grid;grid-template-columns:minmax(0,1fr) 560px;gap:56px;align-items:end}
+.h1{font-size:60px;line-height:64px;letter-spacing:-0.8px;margin:10px 0 14px}
+.intro{font-size:17px;line-height:25px;color:#3F3A33;margin:0;max-width:640px;text-wrap:pretty}
+.strip{background:#F2EFE9;border-radius:22px;padding:22px 24px;display:flex;flex-direction:column;gap:14px}
+.strip-row{display:flex;align-items:baseline;gap:10px}
+.count{font-size:48px;line-height:50px;font-family:ui-rounded,"SF Pro Rounded",-apple-system,system-ui,sans-serif;font-weight:700;font-variant-numeric:tabular-nums}
+.count-of{font-size:17px;line-height:22px;color:#3F3A33}
+.ticks{display:grid;grid-template-columns:repeat(20,minmax(0,1fr));gap:4px}
+.tick{height:10px;border-radius:5px;background:#E3DED5}
+.tick.on{background:#0E6F68}
+.tick.diff{background:#16130F}
+.agree{font-size:14px;line-height:20px;color:#3F3A33;margin:0}
+.key{display:flex;gap:16px;font-size:12px;line-height:16px;color:#6B655C}
+.key span{display:inline-flex;align-items:center;gap:6px}
+.key i{width:14px;height:8px;border-radius:4px;display:inline-block}
+.actions{display:flex;gap:10px;flex-wrap:wrap}
+.btn{min-height:40px;padding:0 18px;border-radius:999px;font-size:14px;font-weight:600;border:1px solid transparent}
+.btn-ink{background:#16130F;color:#FBFAF7}
+.btn-ghost{background:transparent;border-color:#CFC6B8;color:#16130F}
+.btn:focus-visible,.opt:focus-visible{outline:2px solid #0E6F68;outline-offset:2px}
+.cols{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:20px;align-items:start;margin-top:44px}
+.col{display:flex;flex-direction:column;gap:14px}
+.col-h{display:flex;align-items:baseline;justify-content:space-between;border-bottom:1px solid #E3DED5;padding-bottom:8px;margin-bottom:2px}
+.col-h h2{font-size:24px;line-height:30px;margin:0;letter-spacing:-0.3px}
+.col-h span{font-size:12px;line-height:16px;color:#6B655C}
+.dec{background:#FFFFFF;border:1px solid #E3DED5;border-radius:20px;padding:14px 16px 16px;display:flex;flex-direction:column;gap:10px}
+.dec.done{border-color:#D6CDBF}
+.dec-h{display:flex;gap:10px;align-items:flex-start}
+.no{flex:none;min-width:22px;font-family:ui-rounded,"SF Pro Rounded",-apple-system,system-ui,sans-serif;font-variant-numeric:tabular-nums;font-size:13px;line-height:21px;font-weight:700;color:#0E6F68}
+.q{font-size:16px;line-height:21px;font-weight:600;margin:0}
+.why{font-size:13px;line-height:18px;color:#6B655C;margin:2px 0 0}
+.status{flex:none;font-size:11px;line-height:14px;font-weight:600;letter-spacing:.4px;text-transform:uppercase;padding:4px 8px;border-radius:999px;background:#F2EFE9;color:#6B655C;white-space:nowrap}
+.status.done{background:rgba(14,111,104,.10);color:#0E6F68}
+.opts{display:flex;flex-direction:column;gap:6px}
+.opt{display:flex;align-items:center;gap:10px;width:100%;min-height:46px;text-align:left;padding:6px 10px;border-radius:12px;border:1px solid #E3DED5;background:#FBFAF7;transition:border-color .15s,background .15s}
+.opt:hover{border-color:#CFC6B8;background:#F7F4EE}
+.opt.sel{border-color:#0E6F68;background:rgba(14,111,104,.06);box-shadow:inset 0 0 0 0.5px #0E6F68}
+.letter{flex:none;width:24px;height:24px;border-radius:50%;border:1px solid #CFC6B8;display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:#6B655C;background:#FFFFFF}
+.opt.sel .letter{background:#0E6F68;border-color:#0E6F68;color:#FFFFFF}
+.ot{flex:1;min-width:0;display:flex;flex-direction:column}
+.oname{font-size:14px;line-height:18px;font-weight:600;display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+.rec{font-family:ui-serif,"New York","Newsreader",Georgia,serif;font-style:italic;font-weight:500;font-size:13px;line-height:16px;color:#0E6F68}
+.otrade{font-size:12.5px;line-height:16px;color:#6B655C}
+.sw{flex:none;width:20px;height:20px;border-radius:50%;box-shadow:inset 0 0 0 1px rgba(0,0,0,.12)}
+</style>
+</helmet>
+<div class="board">
+  <header class="top">
+    <div>
+      <p class="eyebrow">Magpie · storyboard · for Sam</p>
+      <h1 class="serif h1">Your decisions</h1>
+      <p class="intro">Twenty choices about how the app looks, reads and behaves; the name and accent are already settled. Tap the option you want; tap it again to undo. My pick is marked Recommended on every card, and each option carries its trade-off, so disagreeing is quick.</p>
+    </div>
+    <section class="strip" aria-label="Progress">
+      <div class="strip-row">
+        <span class="count">{{decided}}</span>
+        <span class="count-of">of {{total}} decided</span>
+      </div>
+      <div class="ticks" aria-hidden="true">
+        <sc-for list="{{ticks}}" as="t" hint-placeholder-count="20">
+          <span class="{{t.cls}}"></span>
+        </sc-for>
+      </div>
+      <p class="agree">{{agreeText}}</p>
+      <div class="key"><span><i style="background:#0E6F68"></i>Matches my pick</span><span><i style="background:#16130F"></i>Your own call</span><span><i style="background:#E3DED5"></i>Still open</span></div>
+      <div class="actions">
+        <button type="button" class="btn btn-ink" onClick="{{takeAll}}">Take every recommendation</button>
+        <button type="button" class="btn btn-ghost" onClick="{{clearAll}}">Clear choices</button>
+      </div>
+    </section>
+  </header>
+
+  <div class="cols">
+    <sc-for list="{{cols}}" as="c" hint-placeholder-count="3">
+      <div class="col">
+        <div class="col-h"><h2 class="serif">{{c.title}}</h2><span>{{c.range}}</span></div>
+        <sc-for list="{{c.decs}}" as="d" hint-placeholder-count="6">
+          <article class="{{d.cls}}">
+            <div class="dec-h">
+              <span class="no">{{d.no}}</span>
+              <div style="flex:1;min-width:0">
+                <h3 class="q">{{d.q}}</h3>
+                <p class="why">{{d.why}}</p>
+              </div>
+              <span class="{{d.statusCls}}">{{d.status}}</span>
+            </div>
+            <div class="opts" role="group" aria-label="{{d.q}}">
+              <sc-for list="{{d.opts}}" as="o" hint-placeholder-count="3">
+                <button type="button" class="{{o.cls}}" aria-pressed="{{o.pressed}}" onClick="{{o.pick}}">
+                  <span class="letter">{{o.letter}}</span>
+                  <span class="ot">
+                    <span class="oname">{{o.name}}<sc-if value="{{o.rec}}" hint-placeholder-val="{{false}}"><span class="rec">Recommended</span></sc-if></span>
+                    <span class="otrade">{{o.trade}}</span>
+                  </span>
+                  <sc-if value="{{o.hasSwatch}}" hint-placeholder-val="{{false}}"><span class="sw" style="background:{{o.swatch}}"></span></sc-if>
+                </button>
+              </sc-for>
+            </div>
+          </article>
+        </sc-for>
+      </div>
+    </sc-for>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":2400}}'>
+class Component extends DCLogic {
+  columns() {
+    return [
+      { title: 'Name, words & look', decs: [
+        { id: 'name', q: 'What is the app called?', why: 'Decided: Magpie. A bird that collects shiny things and brings them home.', rec: 0, opts: [
+          ['Magpie', 'Your pick. Trademark check needed (musicMagpie, UK)'],
+          ['Crate', 'Crate-digging feel; a common word, hard to search'],
+          ['Spindle', 'Distinctive and ownable; meaning is less obvious'],
+          ['Keep', 'Matches the main action; muddles button copy']] },
+        { id: 'word', q: 'The word on the main button', why: 'The action that makes a song yours for good.', rec: 0, opts: [
+          ['Keep', 'Warm, fits the sleeve story; new to people'],
+          ['Add', 'Familiar from every music app; says less'],
+          ['Save', 'Clear, but sounds like a bookmark, not owning']] },
+        { id: 'roles', q: 'Names for the two roles', why: 'Who holds the keys, and who just listens.', rec: 0, opts: [
+          ['Curator / Listener', 'Clear and kind; no clash with Keep'],
+          ['Keeper / Listener', 'The spec’s wording; clashes with the Keep button'],
+          ['Owner / Member', 'Plain; sounds like billing, implies one owner']] },
+        { id: 'character', q: 'Default Character', why: 'Anyone can change it in Settings → Appearance.', rec: 1, opts: [
+          ['Classic', 'Stock iOS; safest, least of its own'],
+          ['Signature', 'Serif titles, records and sleeves; still native'],
+          ['Immersive', 'Art takes over; always dark, heavier on battery']] },
+        { id: 'accent', q: 'Accent colour', why: 'Decided: Sheen, the green-blue glint on a magpie’s wing. Buttons, progress and the Keep moment.', rec: 0, opts: [
+          ['Sheen', 'Your pick. Unclaimed by Apple Music or Spotify', '#3CC4B8'],
+          ['Ultramarine', 'Calm and crisp; close to system blue', '#3D5AFE'],
+          ['Tangerine', 'Fresh; reads as Spotify green at a glance', '#F25C05']] },
+        { id: 'np', q: 'Default Now Playing', why: 'The full player, out of the box.', rec: 0, opts: [
+          ['Signature', 'Big sleeve, quiet controls; light on battery'],
+          ['Immersive', 'Full-bleed art and motion; the wow, costs power']] },
+        { id: 'viz', q: 'Visualizer in Immersive', why: 'Off with Reduce Motion or Low Power.', rec: 1, opts: [
+          ['Off, art only', 'Calmest; nothing moves but the music'],
+          ['Grooves', 'Rings ripple from the record; on-brand, light'],
+          ['Particles', 'The most striking; the most battery'],
+          ['Waveform bars', 'Familiar; looks like every other player']] }
+      ]},
+      { title: 'Screens & first run', decs: [
+        { id: 'tabs', q: 'Tab structure', why: 'Search is always the separate circle (iOS 27).', rec: 0, opts: [
+          ['Home · Explore · Library', 'Room for discovery; Activity sits on the avatar'],
+          ['Home · Explore · Library · Activity', 'Requests always in view; one more tab to scan'],
+          ['Home · Library', 'Simplest; Explore folds into Home shelves']] },
+        { id: 'onboard', q: 'How long is the owner’s setup?', why: 'Listeners only ever scan a QR code.', rec: 1, opts: [
+          ['Full guided, 7 steps', 'Everything works on day one; about 5 minutes'],
+          ['Essentials now, rest later', 'Music and requests in 2 minutes; finish in Settings'],
+          ['Music only', 'Fastest start; Try it stays off until set up']] },
+        { id: 'quick', q: 'Where Quick fetch runs', why: 'The under-a-minute tier (about 30 s). Off until you turn it on.', rec: 0, opts: [
+          ['Mac helper and web app only', 'Keeps the iPhone app App Store-safe'],
+          ['Also inside the iPhone app', 'No Mac needed; a real App Review risk']] },
+        { id: 'listener', q: 'When a Listener asks for music', why: 'What happens when Leo or Mum taps Try or Keep.', rec: 0, opts: [
+          ['No approval, with a cap', 'Feels instant; 25 open items stops floods'],
+          ['A Curator approves each', 'Full control; Listeners wait on you'],
+          ['Try freely, approve Keeps', 'Finds are cheap; discographies get a look']] },
+        { id: 'notyet', q: 'How a not-yet song looks', why: 'The one state Apple Music doesn’t have.', rec: 0, opts: [
+          ['Bare record', 'Unmistakable and ours; round art in lists is new'],
+          ['Dimmed square', 'Quiet and familiar; easy to miss'],
+          ['Outlined square', 'Clear in lists; looks like a missing image']] },
+        { id: 'tap', q: 'Tapping a not-yet song', why: 'The first touch on something you don’t have.', rec: 1, opts: [
+          ['Try straight away', 'Fastest; a long wait comes as a surprise'],
+          ['Open the Try sheet first', 'Shows the honest estimate; one extra tap'],
+          ['Free preview first, if any', 'Instant when it exists; about 1 song in 20']] },
+        { id: 'chips', q: 'Licence on free previews', why: 'Rare openly licensed recordings that play at once.', rec: 1, opts: [
+          ['Chip on the song row', 'Honest at a glance; adds noise to lists'],
+          ['Only in the info sheet', 'Clean lists; credit is one tap away'],
+          ['Hidden', 'Cleanest; skips credit some licences require']] }
+      ]},
+      { title: 'Try it, Keep & the car', decs: [
+        { id: 'disco', q: 'How much to keep by default', why: 'Preselected on the Keep sheet; change it each time.', rec: 3, opts: [
+          ['Just this song’s release', 'Smallest; a single or EP, little disk'],
+          ['This album', 'The record you heard, nothing else'],
+          ['Albums', 'Studio albums only; skips EPs and singles'],
+          ['Albums + EPs', 'The fuller picture without the clutter'],
+          ['Everything', 'Singles, live, compilations; the most disk'],
+          ['Future releases only', 'Nothing old; new releases arrive by themselves']] },
+        { id: 'expiry', q: 'How long finds last', why: 'Unkept finds fade, then go quietly.', rec: 1, opts: [
+          ['3 days', 'Tidy disk; easy to miss one'],
+          ['7 days', 'A week of listening; a gentle fade'],
+          ['14 days', 'More time; a fuller shelf'],
+          ['30 days', 'Relaxed; finds linger like library songs'],
+          ['Never', 'No fading; the library fills with maybes']] },
+        { id: 'finish', q: 'A Try lands while music plays', why: 'You tried something, then kept listening.', rec: 0, opts: [
+          ['Slot it in next', 'You hear it soon, nothing gets cut off'],
+          ['Wait in New finds', 'Your queue never changes; easy to forget'],
+          ['Ask with a banner', 'Your call each time; one more interruption']] },
+        { id: 'lossless', q: 'When the lossless file arrives', why: 'A genuine lossless file replaces the trial file later.', rec: 0, opts: [
+          ['Quiet stamp change', 'Calm; you see it next time you look'],
+          ['A notification each time', 'You always know; chatty for big discographies'],
+          ['No sign at all', 'Calmest; quality stays a mystery']] },
+        { id: 'cptry', q: 'Try in CarPlay', why: 'One tap while driving. No sheets, nothing to read.', rec: 0, opts: [
+          ['Allowed, one tap', 'Plays itself or joins Up Next'],
+          ['Shown, brought home when parked', 'Seen in the car; Try waits until you stop'],
+          ['Hidden while driving', 'Simplest; library only on the road']] },
+        { id: 'cptabs', q: 'CarPlay tabs', why: 'Four tabs; Now Playing has its own button.', rec: 0, opts: [
+          ['Home · Library · Finds · Search', 'Your finds one tap away in the car'],
+          ['Home · Library · Radio · Search', 'Lean-back radio; Finds move into Home'],
+          ['Home · Explore · Library · Search', 'Mirrors the phone; more browsing while driving']] }
+      ]}
+    ];
+  }
+
+  renderVals() {
+    const letters = 'ABCDEF';
+    const sel = Object.assign({ name: 0, accent: 0 }, (this.state && this.state.sel) || {});
+    const setSel = (next) => this.setState({ sel: next });
+    const cols = this.columns();
+    const all = [];
+    cols.forEach((c) => c.decs.forEach((d) => all.push(d)));
+    let n = 0;
+    const outCols = cols.map((c) => {
+      const first = n + 1;
+      const decs = c.decs.map((d) => {
+        n += 1;
+        const chosen = sel[d.id];
+        const has = chosen !== undefined;
+        const opts = d.opts.map((o, i) => {
+          const selected = chosen === i;
+          return {
+            letter: letters[i],
+            name: o[0],
+            trade: o[1],
+            swatch: o[2] || '',
+            hasSwatch: !!o[2],
+            rec: i === d.rec,
+            selected: selected,
+            pressed: selected ? 'true' : 'false',
+            cls: selected ? 'opt sel' : 'opt',
+            pick: () => {
+              const next = Object.assign({}, sel);
+              if (next[d.id] === i) { delete next[d.id]; } else { next[d.id] = i; }
+              setSel(next);
+            }
+          };
+        });
+        return {
+          no: (n < 10 ? '0' : '') + n,
+          q: d.q,
+          why: d.why,
+          opts: opts,
+          cls: has ? 'dec done' : 'dec',
+          status: has ? 'Chose ' + letters[chosen] : 'Open',
+          statusCls: has ? 'status done' : 'status'
+        };
+      });
+      return { title: c.title, range: first + '–' + n, decs: decs };
+    });
+    const total = all.length;
+    let decided = 0;
+    let match = 0;
+    const ticks = all.map((d) => {
+      const chosen = sel[d.id];
+      if (chosen === undefined) return { cls: 'tick' };
+      decided += 1;
+      if (chosen === d.rec) { match += 1; return { cls: 'tick on' }; }
+      return { cls: 'tick diff' };
+    });
+    const differ = decided - match;
+    const own = differ + (differ === 1 ? ' is your own call.' : ' are your own call.');
+    let agreeText = 'Nothing chosen yet. My picks are marked Recommended; take them all and change only what you disagree with.';
+    if (decided > 0 && decided < total) agreeText = match + ' match my pick, ' + own + ' ' + (total - decided) + ' still open.';
+    if (decided === total) agreeText = 'All decided. ' + match + ' match my pick, ' + own + ' The storyboard follows these next.';
+    return {
+      cols: outCols,
+      ticks: ticks,
+      total: total,
+      decided: decided,
+      agreeText: agreeText,
+      takeAll: () => {
+        const next = {};
+        all.forEach((d) => { next[d.id] = d.rec; });
+        setSel(next);
+      },
+      clearAll: () => setSel({})
+    };
+  }
+}
+</script>
+</body>
+</html>

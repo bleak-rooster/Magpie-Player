@@ -1,0 +1,434 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Design language — Components</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,500;6..72,600&display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+*{box-sizing:border-box}
+button{font:inherit;color:inherit;background:none;border:0;padding:0;cursor:pointer}
+a{color:inherit;text-decoration:none}
+.app{--font-text:-apple-system,BlinkMacSystemFont,"SF Pro Text","Helvetica Neue",system-ui,sans-serif;--font-num:ui-rounded,"SF Pro Rounded",-apple-system,system-ui,sans-serif;--font-display:var(--font-text);--display-weight:700;--display-track:-0.4px;--accent:#3CC4B8;--accent-ink:#3CC4B8;--on-accent:#04201D;--r-art:8px;--r-card:20px;font-family:var(--font-text);color:var(--ink);background:var(--bg);-webkit-font-smoothing:antialiased}
+.ch-signature,.ch-immersive{--font-display:ui-serif,"New York","Newsreader",Georgia,serif;--display-weight:600}
+.ch-classic.sc-light{--bg:#FFFFFF;--surface:#F2F2F7;--surface2:#E5E5EA;--ink:#000000;--ink2:#6C6C70;--sep:#D1D1D6;--accent-ink:#0E6F68;--glass:rgba(250,250,252,.72);--glass-line:rgba(255,255,255,.7);--shadow:0 8px 28px rgba(0,0,0,.12)}
+.ch-classic.sc-dark{--bg:#000000;--surface:#1C1C1E;--surface2:#2C2C2E;--ink:#FFFFFF;--ink2:#98989F;--sep:#38383A;--glass:rgba(38,38,42,.66);--glass-line:rgba(255,255,255,.14);--shadow:0 8px 28px rgba(0,0,0,.5)}
+.ch-signature.sc-light{--bg:#FBFAF7;--surface:#F2EFE9;--surface2:#E8E3DA;--ink:#16130F;--ink2:#6B655C;--sep:#E3DED5;--accent-ink:#0E6F68;--glass:rgba(251,250,247,.7);--glass-line:rgba(255,255,255,.75);--shadow:0 10px 30px rgba(40,25,10,.14)}
+.ch-signature.sc-dark{--bg:#0E0D0C;--surface:#1A1816;--surface2:#24211E;--ink:#F4F1EA;--ink2:#A39C90;--sep:#2C2925;--glass:rgba(36,33,30,.62);--glass-line:rgba(255,255,255,.12);--shadow:0 10px 30px rgba(0,0,0,.55)}
+.ch-immersive{--bg:#0B0A10;--surface:rgba(255,255,255,.10);--surface2:rgba(255,255,255,.16);--ink:#FFFFFF;--ink2:rgba(255,255,255,.72);--sep:rgba(255,255,255,.16);--glass:rgba(255,255,255,.14);--glass-line:rgba(255,255,255,.22);--shadow:0 10px 30px rgba(0,0,0,.4)}
+.backdrop{display:none}
+.ch-immersive .backdrop{display:block;position:absolute;inset:-60px;filter:blur(48px) saturate(1.3) brightness(.55);transform:scale(1.15);z-index:0}
+.ch-immersive .scrim{position:absolute;inset:0;background:linear-gradient(180deg,rgba(0,0,0,.15),rgba(0,0,0,.55));z-index:0}
+.layer{position:relative;z-index:1}
+/* type */
+.large-title{font-family:var(--font-display);font-weight:var(--display-weight);letter-spacing:var(--display-track);font-size:34px;line-height:41px;margin:0}
+.title1{font-family:var(--font-display);font-weight:var(--display-weight);letter-spacing:var(--display-track);font-size:28px;line-height:34px;margin:0}
+.title2{font-family:var(--font-display);font-weight:var(--display-weight);letter-spacing:-0.2px;font-size:22px;line-height:28px;margin:0}
+.title3{font-weight:600;font-size:20px;line-height:25px;margin:0}
+.headline{font-weight:600;font-size:17px;line-height:22px}
+.body{font-size:17px;line-height:22px}
+.callout{font-size:16px;line-height:21px}
+.subhead{font-size:15px;line-height:20px}
+.footnote{font-size:13px;line-height:18px}
+.caption{font-size:12px;line-height:16px}
+.muted{color:var(--ink2)}
+.num{font-family:var(--font-num);font-variant-numeric:tabular-nums}
+.accent{color:var(--accent-ink)}
+/* surfaces */
+.glass{background:var(--glass);-webkit-backdrop-filter:blur(26px) saturate(180%);backdrop-filter:blur(26px) saturate(180%);border:0.5px solid var(--glass-line);box-shadow:var(--shadow)}
+.card{background:var(--surface);border-radius:var(--r-card)}
+.sep{height:0.5px;background:var(--sep)}
+/* art (fictional covers) */
+.art{border-radius:var(--r-art);position:relative;overflow:hidden;flex:none}
+.art-1{background:radial-gradient(circle at 70% 30%,#F4D58D 0 18%,transparent 19%),linear-gradient(180deg,#0F4C5C 0 58%,#E9C46A 58% 62%,#1B6F78 62%)}
+.art-2{background:radial-gradient(circle at 30% 65%,#FFE8D6 0 10%,transparent 11%),radial-gradient(circle at 62% 40%,#F4A261 0 14%,transparent 15%),linear-gradient(160deg,#9B2226,#E76F51)}
+.art-3{background:radial-gradient(circle at 50% 55%,#FF4D8D 0 22%,transparent 23%),repeating-linear-gradient(0deg,#2B2D42 0 10px,#24263A 10px 20px)}
+.art-4{background:radial-gradient(ellipse at 50% 110%,#B7E4C7 0 35%,transparent 36%),linear-gradient(135deg,#1B4332,#40916C)}
+.art-5{background:linear-gradient(0deg,#F1FAEE 0 30%,transparent 30%),radial-gradient(circle at 50% 70%,#A8DADC 0 30%,transparent 31%),linear-gradient(180deg,#1D3557,#457B9D)}
+.art-6{background:repeating-linear-gradient(90deg,#FFB703 0 14%,#FB8500 14% 28%,#F2E8CF 28% 42%)}
+.art-7{background:radial-gradient(circle at 30% 30%,#111 0 12%,transparent 13%),linear-gradient(45deg,transparent 48%,#111 48% 52%,transparent 52%),#EFE9DD}
+.art-8{background:radial-gradient(circle at 75% 75%,#FFD166 0 16%,transparent 17%),linear-gradient(200deg,#7209B7,#F72585 60%,#FF9E00)}
+.art-9{background:conic-gradient(from 200deg at 40% 60%,#264653,#2A9D8F,#E9C46A,#264653)}
+.art-10{background:radial-gradient(circle at 50% 40%,#FDF0D5 0 25%,transparent 26%),linear-gradient(180deg,#C1121F,#780000)}
+/* record = not in library yet (Signature/Immersive). Classic shows a dimmed square instead */
+.rec{border-radius:50%}
+.rec::before{content:"";position:absolute;inset:0;border-radius:50%;background:repeating-radial-gradient(circle at 50% 50%,rgba(0,0,0,0) 0 2px,rgba(0,0,0,.16) 2px 2.6px)}
+.rec::after{content:"";position:absolute;left:50%;top:50%;width:20%;height:20%;transform:translate(-50%,-50%);border-radius:50%;background:var(--bg);box-shadow:0 0 0 1.5px rgba(0,0,0,.25)}
+.ch-classic .rec{border-radius:var(--r-art);opacity:.55}
+.ch-classic .rec::before,.ch-classic .rec::after{display:none}
+.ch-immersive .rec::after{background:#15131A}
+.spin{animation:spin 1.8s linear infinite}
+.ch-classic .spin{animation:none}
+@keyframes spin{to{transform:rotate(360deg)}}
+.fade-1{filter:saturate(.75)}.fade-2{filter:saturate(.5)}.fade-3{filter:saturate(.25)}.fade-4{filter:saturate(.05) brightness(.9)}
+/* days-left arc around a record: wrapper sets --p (0-100) */
+.arc{border-radius:50%;padding:2.5px;background:conic-gradient(var(--accent) calc(var(--p)*1%),var(--sep) 0);flex:none}
+.ch-classic .arc{background:none;padding:0}
+/* hallmark (quality stamp) */
+.hallmark{display:inline-flex;align-items:center;gap:4px;font-size:11px;line-height:14px;font-weight:600;letter-spacing:.3px;padding:2px 6px;border-radius:5px;border:1px solid var(--sep);color:var(--ink2);text-transform:uppercase}
+.ch-signature .hallmark,.ch-immersive .hallmark{font-family:var(--font-display);font-style:italic;text-transform:none;letter-spacing:0;font-size:12px}
+.hallmark.gold{color:var(--accent-ink);border-color:currentColor}
+/* buttons */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:44px;padding:0 18px;border-radius:999px;font-weight:600;font-size:15px}
+.btn-fill{background:var(--accent);color:var(--on-accent)}
+.btn-tint{background:color-mix(in srgb,var(--accent) 16%,transparent);color:var(--accent-ink)}
+.ch-immersive .btn-tint,.sc-dark .btn-tint{color:var(--accent)}
+.btn-glass{background:var(--glass);border:0.5px solid var(--glass-line);-webkit-backdrop-filter:blur(20px);backdrop-filter:blur(20px)}
+.capsule{display:inline-flex;align-items:center;gap:4px;height:30px;padding:0 12px;border-radius:999px;font-weight:600;font-size:13px;background:color-mix(in srgb,var(--accent) 16%,transparent);color:var(--accent-ink)}
+.sc-dark .capsule,.ch-immersive .capsule{color:var(--accent)}
+.icon-btn{width:44px;height:44px;display:inline-flex;align-items:center;justify-content:center;border-radius:999px;color:var(--ink)}
+.icon-btn svg,.ico{width:22px;height:22px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+/* list row */
+.row{display:flex;align-items:center;gap:12px;min-height:60px;padding:0 16px}
+.row .thumb{width:48px;height:48px}
+.row-text{flex:1;min-width:0;display:flex;flex-direction:column;gap:1px}
+.row-text .t1{font-size:16px;line-height:21px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.row-text .t2{font-size:13px;line-height:18px;color:var(--ink2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--accent);flex:none}
+/* tab bar + mini player (iOS 27 Liquid Glass) */
+.tabbar{position:absolute;left:16px;right:16px;bottom:24px;height:62px;display:flex;gap:10px;z-index:5}
+.tabs{flex:1;border-radius:999px;display:flex;align-items:center;justify-content:space-around;padding:0 6px}
+.tab{display:flex;flex-direction:column;align-items:center;gap:2px;font-size:10px;font-weight:600;color:var(--ink);min-width:64px;padding:6px 0;border-radius:999px}
+.tab svg{width:24px;height:24px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.tab.on{color:var(--accent-ink);background:color-mix(in srgb,var(--ink) 8%,transparent)}
+.sc-dark .tab.on,.ch-immersive .tab.on{color:var(--accent)}
+.tab-search{width:62px;height:62px;border-radius:999px;display:flex;align-items:center;justify-content:center;flex:none}
+.tab-search svg{width:24px;height:24px;stroke:var(--ink);fill:none;stroke-width:2;stroke-linecap:round}
+.mini{position:absolute;left:16px;right:16px;bottom:96px;height:52px;border-radius:999px;display:flex;align-items:center;gap:10px;padding:0 8px 0 8px;z-index:5}
+.mini .thumb{width:36px;height:36px;border-radius:8px}
+.mini .rec{border-radius:50%}
+/* sheet */
+.sheet{position:absolute;left:0;right:0;bottom:0;border-radius:34px 34px 0 0;background:var(--bg);box-shadow:0 -10px 40px rgba(0,0,0,.25);z-index:8}
+.grabber{width:36px;height:5px;border-radius:3px;background:var(--sep);margin:6px auto 0}
+.dim{position:absolute;inset:0;background:rgba(0,0,0,.4);z-index:7}
+/* grooves ripple (fetch wait) */
+.ripple{position:absolute;border-radius:50%;border:1px solid var(--accent);opacity:0;animation:ripple 3.6s ease-out infinite}
+@keyframes ripple{0%{transform:scale(.6);opacity:.55}100%{transform:scale(1.9);opacity:0}}
+.ch-classic .ripple{display:none}
+@media (prefers-reduced-motion: reduce){.spin,.ripple{animation:none}}
+</style>
+<style>
+/* ---- shared accent tweak ---- */
+.app{--accent:var(--pick-accent,#3CC4B8);--on-accent:var(--pick-on,#04201D)}
+.app.sc-light{--accent-ink:var(--pick-ink,#0E6F68)}
+.app.sc-dark,.app.ch-immersive{--accent-ink:var(--pick-accent,#3CC4B8)}
+/* ---- board: Components ---- */
+.board{width:1440px;height:1900px;position:relative;overflow:hidden;padding:52px 44px;display:flex;flex-direction:column;gap:36px}
+.eyebrow{font-size:12px;line-height:16px;letter-spacing:1.6px;text-transform:uppercase;color:var(--ink2);font-weight:600}
+.serif{font-family:var(--font-display);font-weight:600;letter-spacing:-0.4px}
+.sh{display:flex;align-items:baseline;gap:12px;padding-bottom:12px;border-bottom:1px solid var(--sep);margin-bottom:18px}
+.sh .n{font-family:var(--font-num);font-size:13px;color:var(--ink2);font-variant-numeric:tabular-nums}
+.sh h2{font-family:var(--font-display);font-weight:600;font-size:24px;line-height:30px;letter-spacing:-0.3px;margin:0}
+.sh .aside{margin-left:auto;font-size:13px;color:var(--ink2)}
+.colhead{height:30px;display:flex;align-items:baseline;gap:8px}
+.colhead b{font-family:var(--font-display);font-weight:600;font-size:17px}
+.colhead span{font-size:12px;color:var(--ink2)}
+.lcol{width:390px;border-radius:24px;overflow:hidden;box-shadow:0 0 0 0.5px rgba(22,19,15,.12)}
+.lr{height:72px;min-height:72px;position:relative}
+.lr + .lr::before{content:"";position:absolute;left:76px;right:0;top:0;height:0.5px;background:var(--sep)}
+.lr .t2 .hallmark{vertical-align:1px}
+.t2f{display:flex !important;align-items:center;gap:6px}
+.lic{display:inline-flex;align-items:center;height:16px;padding:0 5px;border-radius:4px;border:1px solid var(--sep);font-size:10px;font-weight:700;letter-spacing:.4px;color:var(--ink2);flex:none}
+.lbl{height:72px;display:flex;flex-direction:column;justify-content:center;gap:2px;border-top:0.5px solid var(--sep)}
+.lbl:first-of-type{border-top:0}
+.lbl .nm{font-size:13px;line-height:17px;font-weight:600}
+.lbl .nm .num{color:var(--ink2);font-weight:500;margin-right:4px}
+.lbl .no{font-size:11px;line-height:14px;color:var(--ink2);text-wrap:pretty}
+.pl{font-size:12px;line-height:16px;color:var(--ink2);margin:0 0 10px;letter-spacing:1.2px;text-transform:uppercase;font-weight:600}
+.slice{position:relative;width:390px;overflow:hidden;border-radius:24px}
+.strip{display:flex;align-items:center;gap:10px;padding:14px 16px;border-radius:18px;flex-wrap:wrap}
+.strip .who{font-size:11px;letter-spacing:1px;text-transform:uppercase;font-weight:600;color:var(--ink2);width:70px}
+.tile{display:flex;flex-direction:column;gap:8px;width:140px}
+.tile .tt{font-size:14px;line-height:18px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tile .ts{font-size:12px;line-height:16px;color:var(--ink2);margin-top:-6px}
+</style>
+</helmet>
+<div class="app ch-signature sc-light board" style="--pick-accent:{{accent}};--pick-ink:{{accentInk}};--pick-on:{{onAccent}}">
+
+  <header style="display:flex;align-items:flex-end;justify-content:space-between;gap:40px;padding:0 4px">
+    <div style="display:flex;flex-direction:column;gap:10px">
+      <div class="eyebrow">Magpie · Design language · Components</div>
+      <h1 class="serif" style="font-size:54px;line-height:58px;margin:0;letter-spacing:-1px">Every state a song can be in.</h1>
+    </div>
+    <p class="callout muted" style="max-width:440px;margin:0 0 6px;text-wrap:pretty">One row, ten states, at real phone width. The markup is identical in each column; only the Character and scheme change.</p>
+  </header>
+
+  <!-- 01 State ladder -->
+  <section>
+    <div class="sh"><span class="n">01</span><h2>Song row state ladder</h2><span class="aside">390 pt rows · top to bottom is the life of a song</span></div>
+    <div style="display:flex;gap:16px;align-items:flex-start">
+      <div style="width:134px;flex:none">
+        <div class="colhead"></div>
+        <div style="display:flex;flex-direction:column">
+          <div class="lbl"><div class="nm"><span class="num">1</span>In library</div><div class="no">Square art, no badge</div></div>
+          <div class="lbl"><div class="nm"><span class="num">2</span>Downloaded</div><div class="no">Plays offline</div></div>
+          <div class="lbl"><div class="nm"><span class="num">3</span>Not yet</div><div class="no">Bare record + Try</div></div>
+          <div class="lbl"><div class="nm"><span class="num">4</span>Open preview</div><div class="no">Free recording, licence shown</div></div>
+          <div class="lbl"><div class="nm"><span class="num">5</span>Bringing it home</div><div class="no">Record spins, honest estimate</div></div>
+          <div class="lbl"><div class="nm"><span class="num">6</span>New find</div><div class="no">Accent dot until played</div></div>
+          <div class="lbl"><div class="nm"><span class="num">7</span>Find</div><div class="no">Days-left arc + Keep</div></div>
+          <div class="lbl"><div class="nm"><span class="num">8</span>Kept</div><div class="no">Sleeve; upgrade queued</div></div>
+          <div class="lbl"><div class="nm"><span class="num">9</span>Lossless</div><div class="no">Genuine FLAC in place</div></div>
+          <div class="lbl"><div class="nm"><span class="num">10</span>Not spotted yet</div><div class="no">Calm, still looking</div></div>
+        </div>
+      </div>
+
+      <sc-for list="{{cols}}" as="c" hint-placeholder-count="3">
+        <div style="display:flex;flex-direction:column">
+          <div class="colhead"><b>{{c.name}}</b><span>{{c.scheme}}</span></div>
+          <div class="app ch-{{c.ch}} sc-{{c.sc}} lcol">
+
+            <div class="row lr">
+              <div class="art art-1 thumb"></div>
+              <div class="row-text"><div class="t1">Low Tide Radio</div><div class="t2">Marlow Vance</div></div>
+              <button class="icon-btn" aria-label="More"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="19" cy="12" r="1.3"/></svg></button>
+            </div>
+
+            <div class="row lr">
+              <div class="art art-4 thumb"></div>
+              <div class="row-text"><div class="t1">Glasshouse</div><div class="t2 t2f"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" style="width:14px;height:14px;stroke-width:2.2"><circle cx="12" cy="12" r="9"/><path d="M12 7.5v8M8.5 12.5L12 16l3.5-3.5"/></svg>Juniper &amp; the Fold</div></div>
+              <button class="icon-btn" aria-label="More"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="19" cy="12" r="1.3"/></svg></button>
+            </div>
+
+            <div class="row lr">
+              <div class="art art-5 thumb rec"></div>
+              <div class="row-text"><div class="t1">Harbour Lights</div><div class="t2">Corin Hale · Not in your library yet</div></div>
+              <button class="capsule">Try</button>
+            </div>
+
+            <div class="row lr">
+              <div class="art art-7 thumb rec"></div>
+              <div class="row-text"><div class="t1">Fieldnotes</div><div class="t2 t2f">Ines Morrow<span class="lic">CC BY</span></div></div>
+              <button class="capsule"><svg viewBox="0 0 24 24" aria-hidden="true" style="width:11px;height:11px;fill:currentColor"><path d="M7 4.5v15a1 1 0 0 0 1.5.9l12-7.5a1 1 0 0 0 0-1.8l-12-7.5A1 1 0 0 0 7 4.5z"/></svg>Preview</button>
+            </div>
+
+            <div class="row lr">
+              <div class="art art-5 thumb rec spin"></div>
+              <div class="row-text"><div class="t1">Harbour Lights</div><div class="t2">Bringing it home · about <span class="num">30</span> s</div></div>
+              <sc-if value="{{c.isClassic}}" hint-placeholder-val="{{ false }}">
+                <span class="icon-btn" aria-hidden="true" style="color:var(--ink2)"><svg viewBox="0 0 24 24" style="width:20px;height:20px"><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M5.6 18.4l2.1-2.1M16.3 7.7l2.1-2.1"/></svg></span>
+              </sc-if>
+            </div>
+
+            <div class="row lr">
+              <div class="art art-5 thumb rec"></div>
+              <div class="row-text"><div class="t1" style="font-weight:600">Harbour Lights</div><div class="t2">Corin Hale · New find</div></div>
+              <span class="dot" role="img" aria-label="New" style="margin-right:6px"></span>
+            </div>
+
+            <div class="row lr">
+              <div class="arc" style="--p:71"><div class="art art-6 thumb rec fade-1" style="width:43px;height:43px"></div></div>
+              <div class="row-text"><div class="t1">Analog Summer</div><div class="t2 t2f"><span class="hallmark">Sample</span><span><span class="num">5</span> days left</span></div></div>
+              <button class="capsule">Keep</button>
+            </div>
+
+            <div class="row lr">
+              <div class="art art-8 thumb"></div>
+              <div class="row-text"><div class="t1">Afterglow Theory</div><div class="t2 t2f">Lumen Park<span class="hallmark">Lossless soon</span></div></div>
+              <button class="icon-btn" aria-label="More"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="19" cy="12" r="1.3"/></svg></button>
+            </div>
+
+            <div class="row lr">
+              <div class="art art-9 thumb"></div>
+              <div class="row-text"><div class="t1">Tessellate</div><div class="t2 t2f">Oro Bay<span class="hallmark gold">Lossless</span></div></div>
+              <button class="icon-btn" aria-label="More"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="19" cy="12" r="1.3"/></svg></button>
+            </div>
+
+            <div class="row lr">
+              <div class="art art-1 thumb rec fade-2"></div>
+              <div class="row-text"><div class="t1">Paper Moon (Live)</div><div class="t2">Marlow Vance · Not spotted yet</div></div>
+              <button class="capsule" style="background:var(--surface);color:var(--ink)">Keep looking</button>
+            </div>
+
+          </div>
+        </div>
+      </sc-for>
+    </div>
+  </section>
+
+  <!-- 02 Components -->
+  <section>
+    <div class="sh"><span class="n">02</span><h2>Building blocks</h2><span class="aside">Signature unless noted</span></div>
+    <div style="display:grid;grid-template-columns:minmax(0,1fr) 390px 390px;column-gap:40px;row-gap:32px">
+
+      <!-- Buttons -->
+      <div>
+        <p class="pl">Buttons</p>
+        <div style="display:flex;flex-direction:column;gap:10px">
+          <div class="app ch-classic sc-light strip" style="box-shadow:0 0 0 0.5px rgba(22,19,15,.12)">
+            <span class="who">Classic</span>
+            <button class="btn btn-fill">Keep</button>
+            <button class="btn btn-tint">Try it</button>
+            <button class="capsule">Try</button>
+          </div>
+          <div class="app ch-signature sc-light strip" style="background:var(--surface)">
+            <span class="who">Signature</span>
+            <button class="btn btn-fill"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" style="width:18px;height:18px"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M8 12.5l3 3 5-6"/></svg>Keep</button>
+            <button class="btn btn-tint">Try it</button>
+            <button class="capsule">Keep</button>
+          </div>
+          <div class="app ch-signature sc-dark strip" style="position:relative;overflow:hidden">
+            <div class="art art-3" style="position:absolute;inset:0;border-radius:0;filter:brightness(.9)"></div>
+            <span class="who" style="position:relative;color:rgba(255,255,255,.8)">Glass</span>
+            <button class="btn btn-glass" style="position:relative"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" style="width:18px;height:18px"><path d="M3 7h3c5 0 7 10 12 10h3M3 17h3c2 0 3.4-1.6 4.6-3.6M13.4 9.6C14.6 7.6 16 7 18 7h3M18 4l3 3-3 3M18 14l3 3-3 3"/></svg>Shuffle</button>
+            <button class="icon-btn btn-glass" aria-label="Play" style="position:relative"><svg viewBox="0 0 24 24" aria-hidden="true" style="fill:currentColor;stroke:none;width:18px;height:18px"><path d="M7 4.5v15a1 1 0 0 0 1.5.9l12-7.5a1 1 0 0 0 0-1.8l-12-7.5A1 1 0 0 0 7 4.5z"/></svg></button>
+            <button class="capsule" style="position:relative">Try</button>
+          </div>
+        </div>
+        <p class="caption muted" style="margin:10px 0 0">Fill: one primary per screen. Tint: secondary. Capsule: inline row action, 30 pt tall inside a 44 pt hit area.</p>
+      </div>
+
+      <!-- Tab bar normal -->
+      <div>
+        <p class="pl">Tab bar + mini player</p>
+        <div class="app ch-signature sc-dark slice" style="height:232px">
+          <div style="display:flex;gap:16px;padding:0 16px">
+            <div class="art art-1" style="width:171px;height:171px"></div>
+            <div class="art art-9" style="width:171px;height:171px"></div>
+          </div>
+          <a class="mini glass" href="NP-Signature.dc.html">
+            <div class="art art-3 thumb"></div>
+            <div class="row-text"><div class="t1" style="font-size:15px;font-weight:600">Last Stop Lullaby</div><div class="t2">Ada Okafor</div></div>
+            <span class="icon-btn" aria-hidden="true"><svg viewBox="0 0 24 24" style="fill:currentColor;stroke:none"><rect x="6" y="4" width="4.2" height="16" rx="1.2"/><rect x="13.8" y="4" width="4.2" height="16" rx="1.2"/></svg></span>
+            <span class="icon-btn" aria-hidden="true"><svg viewBox="0 0 24 24" style="fill:currentColor;stroke:none"><path d="M3 5.5v13l9-6.5zM12 5.5v13l9-6.5z"/></svg></span>
+          </a>
+          <nav class="tabbar" aria-label="Tabs">
+            <div class="tabs glass">
+              <a class="tab on" href="Home.dc.html"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z"/></svg>Home</a>
+              <a class="tab" href="Explore.dc.html"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/><path d="M19 16l.7 1.8 1.8.7-1.8.7L19 21l-.7-1.8-1.8-.7 1.8-.7z"/></svg>Explore</a>
+              <a class="tab" href="Library.dc.html"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="9" width="16" height="11" rx="2"/><path d="M6 6h12M8 3h8"/></svg>Library</a>
+            </div>
+            <a class="tab-search glass" href="Search-Start.dc.html" aria-label="Search"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.2-4.2"/></svg></a>
+          </nav>
+        </div>
+        <p class="caption muted" style="margin:10px 0 0">iOS 27: three tabs, Search as its own circle, the player as the bottom accessory.</p>
+      </div>
+
+      <!-- Tab bar bringing it home -->
+      <div>
+        <p class="pl">Mini player · bringing it home</p>
+        <div class="app ch-signature sc-dark slice" style="height:232px">
+          <div style="display:flex;gap:16px;padding:0 16px">
+            <div class="art art-1" style="width:171px;height:171px"></div>
+            <div class="art art-9" style="width:171px;height:171px"></div>
+          </div>
+          <a class="mini glass" href="Try-Wait-Fast.dc.html">
+            <div class="art art-5 thumb rec spin"></div>
+            <div class="row-text"><div class="t1" style="font-size:15px;font-weight:600">Bringing home Harbour Lights</div><div class="t2">about <span class="num">30</span> s</div></div>
+            <span class="icon-btn" aria-hidden="true" style="color:var(--ink2)"><svg viewBox="0 0 24 24"><path d="M9 5l7 7-7 7"/></svg></span>
+          </a>
+          <nav class="tabbar" aria-label="Tabs">
+            <div class="tabs glass">
+              <a class="tab" href="Home.dc.html"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z"/></svg>Home</a>
+              <a class="tab" href="Explore.dc.html"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/><path d="M19 16l.7 1.8 1.8.7-1.8.7L19 21l-.7-1.8-1.8-.7 1.8-.7z"/></svg>Explore</a>
+              <a class="tab on" href="Library.dc.html"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="9" width="16" height="11" rx="2"/><path d="M6 6h12M8 3h8"/></svg>Library</a>
+            </div>
+            <a class="tab-search glass" href="Search-Start.dc.html" aria-label="Search"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.2-4.2"/></svg></a>
+          </nav>
+        </div>
+        <p class="caption muted" style="margin:10px 0 0">Nothing else is playing, so the wait takes the accessory. Tap returns to the wait screen.</p>
+      </div>
+
+      <!-- Tiles + avatar -->
+      <div>
+        <p class="pl">Tiles and avatar</p>
+        <div style="display:flex;gap:16px;align-items:flex-start">
+          <div class="tile" style="width:112px">
+            <div class="art art-4" style="width:112px;height:112px"></div>
+            <span class="tt">Glasshouse</span><span class="ts">Juniper &amp; the Fold</span>
+          </div>
+          <div class="tile" style="width:112px">
+            <div class="art art-7 rec" style="width:112px;height:112px"></div>
+            <span class="tt">Fieldnotes</span><span class="ts">Ines Morrow · Not yet</span>
+          </div>
+          <div class="tile" style="align-items:center;width:96px">
+            <div class="art art-2" style="width:96px;height:96px;border-radius:50%;margin-top:8px"></div>
+            <span class="tt" style="margin-top:8px">The Quiet Hours</span><span class="ts">Artist</span>
+          </div>
+          <div class="tile" style="align-items:center;width:96px">
+            <div style="width:96px;height:96px;border-radius:50%;padding:7px;margin-top:8px;background:repeating-radial-gradient(circle at 50% 50%,#141414 0 1.6px,#262422 1.6px 3px)"><div class="art art-5" style="width:100%;height:100%;border-radius:50%"></div></div>
+            <span class="tt" style="margin-top:8px">Corin Hale</span><span class="ts">Not yet</span>
+          </div>
+        </div>
+        <p class="caption muted" style="margin:14px 0 0;text-wrap:pretty">Sleeve = yours. Record = not yet. Artists you have are plain round photos; artists not in the library sit in a record ring. Centred captions, smaller than album tiles.</p>
+      </div>
+
+      <!-- Section header + toast -->
+      <div>
+        <p class="pl">Section header · banner</p>
+        <div class="app ch-signature sc-light slice" style="height:330px;box-shadow:0 0 0 0.5px rgba(22,19,15,.12)">
+          <div style="display:flex;align-items:baseline;justify-content:space-between;padding:18px 16px 12px">
+            <h3 class="title2">New from artists you follow</h3>
+            <a class="subhead accent" href="Home.dc.html" style="font-weight:600">See all</a>
+          </div>
+          <div style="display:flex;gap:12px;padding:0 16px">
+            <div class="tile" style="width:150px"><div class="art art-7 rec" style="width:150px;height:150px"></div><span class="tt">Fieldnotes</span><span class="ts">Ines Morrow</span></div>
+            <div class="tile" style="width:150px"><div class="art art-8" style="width:150px;height:150px"></div><span class="tt">Afterglow Theory</span><span class="ts">Lumen Park</span></div>
+            <div class="tile" style="width:150px"><div class="art art-10 rec" style="width:150px;height:150px"></div></div>
+          </div>
+          <div class="glass" style="position:absolute;left:12px;right:12px;bottom:14px;height:64px;border-radius:22px;display:flex;align-items:center;gap:12px;padding:0 10px 0 12px">
+            <div class="art art-5 rec" style="width:40px;height:40px"></div>
+            <div class="row-text"><div class="t1" style="font-size:14px;font-weight:600">Harbour Lights is ready to play</div><div class="t2">Corin Hale</div></div>
+            <a class="capsule" href="NP-Signature.dc.html">Play</a>
+          </div>
+        </div>
+      </div>
+
+      <!-- Sheet -->
+      <div>
+        <p class="pl">Sheet · Keep</p>
+        <div class="app ch-signature sc-light slice" style="height:330px;box-shadow:0 0 0 0.5px rgba(22,19,15,.12)">
+          <div style="display:flex;gap:16px;padding:16px">
+            <div class="art art-6" style="width:171px;height:171px"></div>
+            <div class="art art-2" style="width:171px;height:171px"></div>
+          </div>
+          <div class="dim"></div>
+          <section class="sheet" aria-label="Keep Analog Summer" style="height:290px;padding:0 20px 20px;display:flex;flex-direction:column;gap:12px">
+            <div class="grabber"></div>
+            <div style="display:flex;align-items:center;gap:14px;margin-top:6px">
+              <div class="arc" style="--p:71"><div class="art art-6 rec fade-1" style="width:52px;height:52px"></div></div>
+              <div style="display:flex;flex-direction:column;gap:2px;min-width:0">
+                <h3 class="title2">Keep Analog Summer?</h3>
+                <span class="footnote muted">Velvet Static · <span class="num">5</span> days left</span>
+              </div>
+            </div>
+            <p class="subhead muted" style="margin:0;text-wrap:pretty">It moves into your library and we’ll swap the quick copy for lossless.</p>
+            <a class="card" href="Keep-Sheet.dc.html" style="display:flex;align-items:center;justify-content:space-between;min-height:44px;padding:0 14px;border-radius:14px">
+              <span class="subhead">Also bring in</span>
+              <span class="subhead muted" style="display:inline-flex;align-items:center;gap:4px">Albums + EPs<svg class="ico" viewBox="0 0 24 24" aria-hidden="true" style="width:14px;height:14px"><path d="M9 5l7 7-7 7"/></svg></span>
+            </a>
+            <button class="btn btn-fill" style="width:100%;height:50px;font-size:17px">Keep</button>
+          </section>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"accent":{"editor":"color","options":["#3CC4B8","#3D5AFE","#F25C05"],"default":"#3CC4B8","section":"Look"},"$preview":{"width":1440,"height":1900}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const a = String(this.props.accent ?? '#3CC4B8').toUpperCase();
+    const map = { '#3CC4B8': ['#0E6F68', '#04201D'], '#3D5AFE': ['#3D5AFE', '#FFFFFF'], '#F25C05': ['#C2410C', '#00140F'] };
+    const m = map[a] || [a, '#FFFFFF'];
+    return {
+      accent: a, accentInk: m[0], onAccent: m[1],
+      cols: [
+        { name: 'Classic', scheme: 'light', ch: 'classic', sc: 'light', isClassic: true },
+        { name: 'Signature', scheme: 'light', ch: 'signature', sc: 'light', isClassic: false },
+        { name: 'Signature', scheme: 'dark', ch: 'signature', sc: 'dark', isClassic: false }
+      ]
+    };
+  }
+}
+</script>
+</body>
+</html>

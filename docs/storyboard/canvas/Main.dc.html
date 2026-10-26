@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Magpie — storyboard overview</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,500;6..72,600&display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+*{box-sizing:border-box}
+.app{--font-text:-apple-system,BlinkMacSystemFont,"SF Pro Text","Helvetica Neue",system-ui,sans-serif;--font-num:ui-rounded,"SF Pro Rounded",-apple-system,system-ui,sans-serif;--font-display:ui-serif,"New York","Newsreader",Georgia,serif;--bg:#FBFAF7;--surface:#F2EFE9;--ink:#16130F;--ink2:#6B655C;--sep:#E3DED5;--accent:#3CC4B8;--accent-ink:#0E6F68;--r-art:8px;font-family:var(--font-text);color:var(--ink);background:var(--bg);-webkit-font-smoothing:antialiased}
+.art{border-radius:var(--r-art);position:relative;overflow:hidden;flex:none}
+.art-1{background:radial-gradient(circle at 70% 30%,#F4D58D 0 18%,transparent 19%),linear-gradient(180deg,#0F4C5C 0 58%,#E9C46A 58% 62%,#1B6F78 62%)}
+.art-3{background:radial-gradient(circle at 50% 55%,#FF4D8D 0 22%,transparent 23%),repeating-linear-gradient(0deg,#2B2D42 0 10px,#24263A 10px 20px)}
+.art-4{background:radial-gradient(ellipse at 50% 110%,#B7E4C7 0 35%,transparent 36%),linear-gradient(135deg,#1B4332,#40916C)}
+.art-5{background:linear-gradient(0deg,#F1FAEE 0 30%,transparent 30%),radial-gradient(circle at 50% 70%,#A8DADC 0 30%,transparent 31%),linear-gradient(180deg,#1D3557,#457B9D)}
+.art-6{background:repeating-linear-gradient(90deg,#FFB703 0 14%,#FB8500 14% 28%,#F2E8CF 28% 42%)}
+.art-8{background:radial-gradient(circle at 75% 75%,#FFD166 0 16%,transparent 17%),linear-gradient(200deg,#7209B7,#F72585 60%,#FF9E00)}
+.rec{border-radius:50%}
+.rec::before{content:"";position:absolute;inset:0;border-radius:50%;background:repeating-radial-gradient(circle at 50% 50%,rgba(0,0,0,0) 0 2px,rgba(0,0,0,.16) 2px 2.6px)}
+.rec::after{content:"";position:absolute;left:50%;top:50%;width:20%;height:20%;transform:translate(-50%,-50%);border-radius:50%;background:var(--bg);box-shadow:0 0 0 1.5px rgba(0,0,0,.25)}
+.spin{animation:spin 1.8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion: reduce){.spin{animation:none}}
+.fade-2{filter:saturate(.5)}.fade-4{filter:saturate(.05) brightness(.9)}
+.arc{border-radius:50%;padding:3px;background:conic-gradient(var(--accent) calc(var(--p)*1%),var(--sep) 0);flex:none}
+.hallmark{display:inline-flex;align-items:center;font-family:var(--font-display);font-style:italic;font-size:15px;line-height:18px;padding:3px 8px;border-radius:6px;border:1px solid var(--sep);color:var(--ink2)}
+.hallmark.gold{color:var(--accent-ink);border-color:currentColor}
+.eyebrow{font-size:12px;line-height:16px;letter-spacing:1.4px;text-transform:uppercase;font-weight:600;color:var(--ink2)}
+.motif-title{font-family:var(--font-display);font-weight:600;font-size:22px;line-height:28px;margin:0}
+.motif-copy{font-size:14px;line-height:20px;color:var(--ink2);margin:0}
+a{color:var(--accent-ink)}a:hover{color:#0A524D}
+</style>
+</helmet>
+<div class="app" style="width:1440px;height:1000px;padding:88px 96px;display:flex;flex-direction:column;gap:64px;overflow:hidden">
+  <div style="display:grid;grid-template-columns:minmax(0,1.25fr) minmax(0,1fr);gap:72px;align-items:end">
+    <div style="display:flex;flex-direction:column;gap:20px">
+      <div class="eyebrow">Storyboard · iPhone &amp; CarPlay · draft for your decisions · 26 Oct 2026</div>
+      <h1 style="margin:0;font-family:var(--font-display);font-weight:600;font-size:96px;line-height:96px;letter-spacing:-2px">Magpie</h1>
+      <p style="margin:0;font-family:var(--font-display);font-size:34px;line-height:42px;font-weight:500;max-width:720px">Music you own lives in its sleeve. Music you don’t have yet is a bare record.</p>
+      <p style="margin:0;font-size:17px;line-height:26px;color:var(--ink2);max-width:680px">Like the bird, Magpie spots the shiny things and brings them home. One music app for your own server. Search finds everything. Anything you don’t have yet can be tried in seconds to minutes, kept with one tap, and upgraded to lossless. If you don’t keep it, it fades away. You never see the services behind it.</p>
+    </div>
+    <div style="position:relative;height:300px">
+      <div class="art art-5 rec spin" style="position:absolute;right:150px;top:20px;width:260px;height:260px;box-shadow:0 30px 60px rgba(29,53,87,.28)"></div>
+      <div class="art art-4" style="position:absolute;right:0;top:0;width:280px;height:280px;border-radius:14px;box-shadow:0 30px 60px rgba(27,67,50,.32)"></div>
+    </div>
+  </div>
+
+  <div style="display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:32px;border-top:1px solid var(--sep);padding-top:40px">
+    <div style="display:flex;flex-direction:column;gap:14px">
+      <div style="display:flex;gap:10px;align-items:center;height:72px">
+        <div class="art art-1" style="width:64px;height:64px"></div>
+        <div class="art art-5 rec" style="width:64px;height:64px"></div>
+      </div>
+      <h2 class="motif-title">Sleeve or record</h2>
+      <p class="motif-copy">Square art: in your library. Round art with grooves: not yet. Used everywhere, CarPlay included.</p>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:14px">
+      <div style="display:flex;align-items:center;height:72px"><div class="art art-5 rec spin" style="width:64px;height:64px"></div></div>
+      <h2 class="motif-title">Spin-up</h2>
+      <p class="motif-copy">While a song is being brought home, its record spins at 33⅓ rpm, with an honest estimate rather than a spinner.</p>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:14px">
+      <div style="display:flex;gap:8px;align-items:center;height:72px">
+        <div class="art art-8 rec" style="width:44px;height:44px"></div>
+        <div class="art art-8" style="width:52px;height:52px;border-radius:30%"></div>
+        <div class="art art-8" style="width:64px;height:64px"></div>
+      </div>
+      <h2 class="motif-title">Slip into the sleeve</h2>
+      <p class="motif-copy">Tapping Keep morphs the record into a square sleeve. It’s the app’s one bouncy moment.</p>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:14px">
+      <div style="display:flex;gap:10px;align-items:center;height:72px">
+        <div class="arc" style="--p:85"><div class="art art-6 rec" style="width:52px;height:52px"></div></div>
+        <div class="arc" style="--p:45"><div class="art art-6 rec fade-2" style="width:52px;height:52px"></div></div>
+        <div class="arc" style="--p:10"><div class="art art-6 rec fade-4" style="width:52px;height:52px"></div></div>
+      </div>
+      <h2 class="motif-title">Fade to keep</h2>
+      <p class="motif-copy">Finds lose colour day by day. Keeping one restores it, and the rest leave quietly.</p>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:14px">
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;height:72px">
+        <span class="hallmark">Sample</span>
+        <span class="hallmark">Lossless soon</span>
+        <span class="hallmark gold">Lossless</span>
+      </div>
+      <h2 class="motif-title">Hallmark</h2>
+      <p class="motif-copy">Quality shown as a quiet stamp that shimmers once when the genuine lossless file arrives.</p>
+    </div>
+  </div>
+
+  <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,1fr);gap:48px;border-top:1px solid var(--sep);padding-top:36px">
+    <div style="display:flex;flex-direction:column;gap:10px">
+      <div class="eyebrow">How to read this canvas</div>
+      <p style="margin:0;font-size:15px;line-height:23px">Each page in the left menu is one part of the app. Phone screens are live. Open a screen’s <b>Tweaks</b> to switch its <b>Character</b> (Classic · Signature · Immersive) and light or dark. Press <b>Play</b> to click through.</p>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:10px">
+      <div class="eyebrow">Pages</div>
+      <p style="margin:0;font-size:15px;line-height:23px">Design language · App map &amp; journeys · Setup &amp; invites · Home &amp; library · Search · Try it → Keep · Now Playing · Activity &amp; settings · Lock screen &amp; widgets · <b>CarPlay</b> · Your decisions</p>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:10px">
+      <div class="eyebrow">What you decide</div>
+      <p style="margin:0;font-size:15px;line-height:23px">The <b>Your decisions</b> page lists every open flow and design choice, each with a recommendation. Pick an option on the board or reply in chat. Nothing gets built until you approve.</p>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":1000}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return {};
+  }
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,865 @@
+{
+ "v": 3,
+ "createdOnFiles": {
+  "v": 1,
+  "at": "2026-10-26T14:13:48Z"
+ },
+ "title": "Storyboard \u2014 iPhone & CarPlay",
+ "launch": {
+  "view": "canvas",
+  "page": "intro"
+ },
+ "pages": [
+  {
+   "id": "intro",
+   "name": "Overview"
+  },
+  {
+   "id": "language",
+   "name": "Design language"
+  },
+  {
+   "id": "map",
+   "name": "App map & journeys"
+  },
+  {
+   "id": "onboard",
+   "name": "Setup & invites"
+  },
+  {
+   "id": "home",
+   "name": "Home & library"
+  },
+  {
+   "id": "search",
+   "name": "Search"
+  },
+  {
+   "id": "try",
+   "name": "Try it & Keep"
+  },
+  {
+   "id": "play",
+   "name": "Now Playing"
+  },
+  {
+   "id": "activity",
+   "name": "Activity & settings"
+  },
+  {
+   "id": "system",
+   "name": "Lock screen & widgets"
+  },
+  {
+   "id": "carplay",
+   "name": "CarPlay"
+  },
+  {
+   "id": "decide",
+   "name": "Your decisions"
+  }
+ ],
+ "boards": {
+  "Main.dc.html": {
+   "x": 0,
+   "y": 0,
+   "w": 1440,
+   "h": 1000,
+   "title": "Overview",
+   "page": "intro"
+  },
+  "Compare-Character.dc.html": {
+   "x": 0,
+   "y": 1240,
+   "w": 1400,
+   "h": 1000,
+   "title": "Character dial \u2014 one screen, three looks",
+   "page": "intro"
+  },
+  "Lang-Foundations.dc.html": {
+   "x": 0,
+   "y": 0,
+   "w": 1440,
+   "h": 1700,
+   "title": "Foundations",
+   "page": "language"
+  },
+  "Lang-Motifs.dc.html": {
+   "x": 1520,
+   "y": 0,
+   "w": 1440,
+   "h": 1500,
+   "title": "Signature motifs & motion",
+   "page": "language"
+  },
+  "Lang-Components.dc.html": {
+   "x": 3040,
+   "y": 0,
+   "w": 1440,
+   "h": 1900,
+   "title": "Components & song states",
+   "page": "language"
+  },
+  "Map-IA.dc.html": {
+   "x": 0,
+   "y": 0,
+   "w": 1600,
+   "h": 1100,
+   "title": "App map",
+   "page": "map"
+  },
+  "Map-Journeys.dc.html": {
+   "x": 1680,
+   "y": 0,
+   "w": 1600,
+   "h": 1400,
+   "title": "Key journeys",
+   "page": "map"
+  },
+  "Onb-Welcome.dc.html": {
+   "x": 0,
+   "y": 0,
+   "w": 390,
+   "h": 844,
+   "title": "1 Welcome",
+   "page": "onboard",
+   "is_interactive": true,
+   "radius": 48
+  },
+  "Onb-Connect.dc.html": {
+   "x": 470,
+   "y": 0,
+   "w": 390,
+   "h": 844,
+   "title": "2 Connect your music",
+   "page": "onboard",
+   "is_interactive": true,
+   "radius": 48
+  },
+  "Onb-Lidarr.dc.html": {
+   "x": 940,
+   "y": 0,
+   "w": 390,
+   "h": 844,
+   "title": "3 Turn on requests",
+   "page": "onboard",
+   "is_interactive": true,
+   "radius": 48
+  },
+  "Onb-Samples.dc.html": {
+   "x": 1410,
+   "y": 0,
+   "w": 390,
+   "h": 844,
+   "title": "4 Finds shelf",
+   "page": "onboard",
+   "is_interactive": true,
+   "radius": 48
+  },
+  "Onb-Speed.dc.html": {
+   "x": 1880,
+   "y": 0,
+   "w": 390,
+   "h": 844,
+   "title": "5 Speed check",
+   "page": "onboard",
+   "is_interactive": true,
+   "radius": 48
+  },
+  "Onb-Household.dc.html": {
+   "x": 2350,
+   "y": 0,
+   "w": 390,
+   "h": 844,
+   "title": "6 Household defaults",
+   "page": "onboard",
+   "is_interactive": true,
+   "radius": 48
+  },
+  "Onb-Invite.dc.html": {
+   "x": 2820,
+   "y": 0,
+   "w": 390,
+   "h": 844,
+   "title": "7 Invite someone",
+   "page": "onboard",
+   "is_interactive": true,
+   "radius": 48
+  },
+  "Join-Scan.dc.html": {
+   "x": 3290,
+   "y": 0,
+   "w": 390,
+   "h": 844,
+   "title": "Listener joins",
+   "page": "onboard",
+   "is_interactive": true,
+   "radius": 48
+  },
+  "Join-Ready.dc.html": {
+   "x": 3760,
+   "y": 0,
+   "w": 390,
+   "h": 844,
+   "title": "Listener ready",
+   "page": "onboard",
+   "is_interactive": true,
+   "radius": 48
+  },
+  "Home.dc.html": {
+   "x": 0,
+   "y": 0,
+   "w": 390,
+   "h": 844,
+   "title": "Home",
+   "page": "home",
+   "is_interactive": true,
+   "radius": 48
+  },
+  "Explore.dc.html": {
+   "x": 470,
+   "y": 0,
+   "w": 390,
+   "h": 844,
+   "title": "Explore",
+   "page": "home",
+   "is_interactive": true,
+   "radius": 48
+  },
+  "Library.dc.html": {
+   "x": 940,
+   "y": 0,
+   "w": 390,
+   "h": 844,
+   "title": "Library",
+   "page": "home",
+   "is_interactive": true,
+   "radius": 48
+  },
+  "Album.dc.html": {
+   "x": 1410,
+   "y": 0,
+   "w": 390,
+   "h": 844,
+   "title": "Album",
+   "page": "home",
+   "is_interactive": true,
+   "radius": 48
+  },
+  "Artist.dc.html": {
+   "x": 1880,
+   "y": 0,
+   "w": 390,
+   "h": 844,
+   "title": "Artist",
+   "page": "home",
+   "is_interactive": true,
+   "radius": 48
+  },
+  "Playlist.dc.html": {
+   "x": 2350,
+   "y": 0,
+   "w": 390,
+   "h": 844,
+   "title": "Playlist / mix",
+   "page": "home",
+   "is_interactive": true,
+   "radius": 48
+  },
+  "Downloads.dc.html": {
+   "x": 2820,
+   "y": 0,
+   "w": 390,
+   "h": 844,
+   "title": "Downloads & offline",
+   "page": "home",
+   "is_interactive": true,
+   "radius": 48
+  },
+  "Search-Start.dc.html": {
+   "x": 0,
+   "y": 0,
+   "w": 390,
+   "h": 844,
+   "title": "Search \u2014 start",
+   "page": "search",
+   "is_interactive": true,
+   "radius": 48
+  },
+  "Search-Results.dc.html": {
+   "x": 470,
+   "y": 0,
+   "w": 390,
+   "h": 844,
+   "title": "Search \u2014 merged results",
+   "page": "search",
+   "is_interactive": true,
+   "radius": 48
+  },
+  "Search-Artist-NotYet.dc.html": {
+   "x": 940,
+   "y": 0,
+   "w": 390,
+   "h": 844,
+   "title": "Artist not in library",
+   "page": "search",
+   "is_interactive": true,
+   "radius": 48
+  },
+  "Search-Album-NotYet.dc.html": {
+   "x": 1410,
+   "y": 0,
+   "w": 390,
+   "h": 844,
+   "title": "Album not in library",
+   "page": "search",
+   "is_interactive": true,
+   "radius": 48
+  },
+  "Try-Sheet.dc.html": {
+   "x": 0,
+   "y": 0,
+   "w": 390,
+   "h": 844,
+   "title": "Tap a song you don't have",
+   "page": "try",
+   "is_interactive": true,
+   "radius": 48
+  },
+  "Try-Wait-Fast.dc.html": {
+   "x": 470,
+   "y": 0,
+   "w": 390,
+   "h": 844,
+   "title": "Wait \u2014 Quick fetch",
+   "page": "try",
+   "is_interactive": true,
+   "radius": 48
+  },
+  "Try-Wait-Standard.dc.html": {
+   "x": 940,
+   "y": 0,
+   "w": 390,
+   "h": 844,
+   "title": "Wait \u2014 Standard",
+   "page": "try",
+   "is_interactive": true,
+   "radius": 48
+  },
+  "Try-Wait-Slow.dc.html": {
+   "x": 1410,
+   "y": 0,
+   "w": 390,
+   "h": 844,
+   "title": "Wait \u2014 Patient / away",
+   "page": "try",
+   "is_interactive": true,
+   "radius": 48
+  },
+  "Try-Ready.dc.html": {
+   "x": 1880,
+   "y": 0,
+   "w": 390,
+   "h": 844,
+   "title": "Ready \u2014 playing a find",
+   "page": "try",
+   "is_interactive": true,
+   "radius": 48
+  },
+  "Keep-Sheet.dc.html": {
+   "x": 2350,
+   "y": 0,
+   "w": 390,
+   "h": 844,
+   "title": "Keep \u2014 how much?",
+   "page": "try",
+   "is_interactive": true,
+   "radius": 48
+  },
+  "Keep-Done.dc.html": {
+   "x": 2820,
+   "y": 0,
+   "w": 390,
+   "h": 844,
+   "title": "Kept \u2014 slipping into the sleeve",
+   "page": "try",
+   "is_interactive": true,
+   "radius": 48
+  },
+  "Try-Shelf.dc.html": {
+   "x": 3290,
+   "y": 0,
+   "w": 390,
+   "h": 844,
+   "title": "Finds shelf (fading)",
+   "page": "try",
+   "is_interactive": true,
+   "radius": 48
+  },
+  "Listener-Request.dc.html": {
+   "x": 3760,
+   "y": 0,
+   "w": 390,
+   "h": 844,
+   "title": "Listener's request",
+   "page": "try",
+   "is_interactive": true,
+   "radius": 48
+  },
+  "NP-Classic.dc.html": {
+   "x": 0,
+   "y": 0,
+   "w": 390,
+   "h": 844,
+   "title": "Now Playing \u2014 Classic",
+   "page": "play",
+   "is_interactive": true,
+   "radius": 48
+  },
+  "NP-Signature.dc.html": {
+   "x": 470,
+   "y": 0,
+   "w": 390,
+   "h": 844,
+   "title": "Now Playing \u2014 Signature",
+   "page": "play",
+   "is_interactive": true,
+   "radius": 48
+  },
+  "NP-Immersive.dc.html": {
+   "x": 940,
+   "y": 0,
+   "w": 390,
+   "h": 844,
+   "title": "Now Playing \u2014 Immersive",
+   "page": "play",
+   "is_interactive": true,
+   "radius": 48
+  },
+  "NP-Sample.dc.html": {
+   "x": 1410,
+   "y": 0,
+   "w": 390,
+   "h": 844,
+   "title": "Now Playing \u2014 a find",
+   "page": "play",
+   "is_interactive": true,
+   "radius": 48
+  },
+  "NP-Queue.dc.html": {
+   "x": 1880,
+   "y": 0,
+   "w": 390,
+   "h": 844,
+   "title": "Queue",
+   "page": "play",
+   "is_interactive": true,
+   "radius": 48
+  },
+  "NP-Lyrics.dc.html": {
+   "x": 2350,
+   "y": 0,
+   "w": 390,
+   "h": 844,
+   "title": "Lyrics",
+   "page": "play",
+   "is_interactive": true,
+   "radius": 48
+  },
+  "NP-Output.dc.html": {
+   "x": 2820,
+   "y": 0,
+   "w": 390,
+   "h": 844,
+   "title": "Output & quality",
+   "page": "play",
+   "is_interactive": true,
+   "radius": 48
+  },
+  "NP-Visualizers.dc.html": {
+   "x": 0,
+   "y": 1084,
+   "w": 1640,
+   "h": 844,
+   "title": "Immersive visualizer styles",
+   "page": "play"
+  },
+  "Activity.dc.html": {
+   "x": 0,
+   "y": 0,
+   "w": 390,
+   "h": 844,
+   "title": "Activity",
+   "page": "activity",
+   "is_interactive": true,
+   "radius": 48
+  },
+  "Household.dc.html": {
+   "x": 470,
+   "y": 0,
+   "w": 390,
+   "h": 844,
+   "title": "Household",
+   "page": "activity",
+   "is_interactive": true,
+   "radius": 48
+  },
+  "Settings.dc.html": {
+   "x": 940,
+   "y": 0,
+   "w": 390,
+   "h": 844,
+   "title": "Settings",
+   "page": "activity",
+   "is_interactive": true,
+   "radius": 48
+  },
+  "Settings-Appearance.dc.html": {
+   "x": 1410,
+   "y": 0,
+   "w": 390,
+   "h": 844,
+   "title": "Appearance \u2014 Character dial",
+   "page": "activity",
+   "is_interactive": true,
+   "radius": 48
+  },
+  "Settings-Sources.dc.html": {
+   "x": 1880,
+   "y": 0,
+   "w": 390,
+   "h": 844,
+   "title": "Sources & speed",
+   "page": "activity",
+   "is_interactive": true,
+   "radius": 48
+  },
+  "Offline.dc.html": {
+   "x": 2350,
+   "y": 0,
+   "w": 390,
+   "h": 844,
+   "title": "Away / offline",
+   "page": "activity",
+   "is_interactive": true,
+   "radius": 48
+  },
+  "States-Gallery.dc.html": {
+   "x": 0,
+   "y": 1084,
+   "w": 1440,
+   "h": 1000,
+   "title": "Calm states gallery",
+   "page": "activity"
+  },
+  "Sys-Lock.dc.html": {
+   "x": 0,
+   "y": 0,
+   "w": 390,
+   "h": 844,
+   "title": "Lock screen",
+   "page": "system",
+   "is_interactive": true,
+   "radius": 48
+  },
+  "Sys-LiveActivity.dc.html": {
+   "x": 470,
+   "y": 0,
+   "w": 390,
+   "h": 844,
+   "title": "Live Activity & Island",
+   "page": "system",
+   "is_interactive": true,
+   "radius": 48
+  },
+  "Sys-Widgets.dc.html": {
+   "x": 940,
+   "y": 0,
+   "w": 390,
+   "h": 844,
+   "title": "Widgets",
+   "page": "system",
+   "is_interactive": true,
+   "radius": 48
+  },
+  "Sys-Notifications.dc.html": {
+   "x": 1410,
+   "y": 0,
+   "w": 390,
+   "h": 844,
+   "title": "Notifications",
+   "page": "system",
+   "is_interactive": true,
+   "radius": 48
+  },
+  "CP-Home.dc.html": {
+   "x": 0,
+   "y": 0,
+   "w": 800,
+   "h": 480,
+   "title": "CarPlay \u2014 Home",
+   "page": "carplay",
+   "radius": 24,
+   "is_interactive": true
+  },
+  "CP-Library.dc.html": {
+   "x": 880,
+   "y": 0,
+   "w": 800,
+   "h": 480,
+   "title": "CarPlay \u2014 Library",
+   "page": "carplay",
+   "radius": 24,
+   "is_interactive": true
+  },
+  "CP-Album.dc.html": {
+   "x": 1760,
+   "y": 0,
+   "w": 800,
+   "h": 480,
+   "title": "CarPlay \u2014 Album",
+   "page": "carplay",
+   "radius": 24,
+   "is_interactive": true
+  },
+  "CP-Search.dc.html": {
+   "x": 2640,
+   "y": 0,
+   "w": 800,
+   "h": 480,
+   "title": "CarPlay \u2014 Search",
+   "page": "carplay",
+   "radius": 24,
+   "is_interactive": true
+  },
+  "CP-SearchResults.dc.html": {
+   "x": 3520,
+   "y": 0,
+   "w": 800,
+   "h": 480,
+   "title": "CarPlay \u2014 Results",
+   "page": "carplay",
+   "radius": 24,
+   "is_interactive": true
+  },
+  "CP-TryAlert.dc.html": {
+   "x": 0,
+   "y": 600,
+   "w": 800,
+   "h": 480,
+   "title": "CarPlay \u2014 Try from the car",
+   "page": "carplay",
+   "radius": 24,
+   "is_interactive": true
+  },
+  "CP-NowPlaying.dc.html": {
+   "x": 880,
+   "y": 600,
+   "w": 800,
+   "h": 480,
+   "title": "CarPlay \u2014 Now Playing",
+   "page": "carplay",
+   "radius": 24,
+   "is_interactive": true
+  },
+  "CP-NowPlaying-Sample.dc.html": {
+   "x": 1760,
+   "y": 600,
+   "w": 800,
+   "h": 480,
+   "title": "CarPlay \u2014 Playing a find",
+   "page": "carplay",
+   "radius": 24,
+   "is_interactive": true
+  },
+  "CP-ReadyToTry.dc.html": {
+   "x": 2640,
+   "y": 600,
+   "w": 800,
+   "h": 480,
+   "title": "CarPlay \u2014 Finds",
+   "page": "carplay",
+   "radius": 24,
+   "is_interactive": true
+  },
+  "CP-States.dc.html": {
+   "x": 3520,
+   "y": 600,
+   "w": 800,
+   "h": 480,
+   "title": "CarPlay \u2014 Locked / away",
+   "page": "carplay",
+   "radius": 24,
+   "is_interactive": true
+  },
+  "Decisions.dc.html": {
+   "x": 0,
+   "y": 0,
+   "w": 1440,
+   "h": 2400,
+   "title": "Decision board",
+   "page": "decide",
+   "is_interactive": true
+  },
+  "Brand-Magpie.dc.html": {
+   "x": 1520,
+   "y": 0,
+   "w": 1440,
+   "h": 1000,
+   "title": "Brand \u2014 Magpie",
+   "page": "intro"
+  }
+ },
+ "order": [
+  "Main.dc.html",
+  "Compare-Character.dc.html",
+  "Lang-Foundations.dc.html",
+  "Lang-Motifs.dc.html",
+  "Lang-Components.dc.html",
+  "Map-IA.dc.html",
+  "Map-Journeys.dc.html",
+  "Onb-Welcome.dc.html",
+  "Onb-Connect.dc.html",
+  "Onb-Lidarr.dc.html",
+  "Onb-Samples.dc.html",
+  "Onb-Speed.dc.html",
+  "Onb-Household.dc.html",
+  "Onb-Invite.dc.html",
+  "Join-Scan.dc.html",
+  "Join-Ready.dc.html",
+  "Home.dc.html",
+  "Explore.dc.html",
+  "Library.dc.html",
+  "Album.dc.html",
+  "Artist.dc.html",
+  "Playlist.dc.html",
+  "Downloads.dc.html",
+  "Search-Start.dc.html",
+  "Search-Results.dc.html",
+  "Search-Artist-NotYet.dc.html",
+  "Search-Album-NotYet.dc.html",
+  "Try-Sheet.dc.html",
+  "Try-Wait-Fast.dc.html",
+  "Try-Wait-Standard.dc.html",
+  "Try-Wait-Slow.dc.html",
+  "Try-Ready.dc.html",
+  "Keep-Sheet.dc.html",
+  "Keep-Done.dc.html",
+  "Try-Shelf.dc.html",
+  "Listener-Request.dc.html",
+  "NP-Classic.dc.html",
+  "NP-Signature.dc.html",
+  "NP-Immersive.dc.html",
+  "NP-Sample.dc.html",
+  "NP-Queue.dc.html",
+  "NP-Lyrics.dc.html",
+  "NP-Output.dc.html",
+  "NP-Visualizers.dc.html",
+  "Activity.dc.html",
+  "Household.dc.html",
+  "Settings.dc.html",
+  "Settings-Appearance.dc.html",
+  "Settings-Sources.dc.html",
+  "Offline.dc.html",
+  "States-Gallery.dc.html",
+  "Sys-Lock.dc.html",
+  "Sys-LiveActivity.dc.html",
+  "Sys-Widgets.dc.html",
+  "Sys-Notifications.dc.html",
+  "CP-Home.dc.html",
+  "CP-Library.dc.html",
+  "CP-Album.dc.html",
+  "CP-Search.dc.html",
+  "CP-SearchResults.dc.html",
+  "CP-TryAlert.dc.html",
+  "CP-NowPlaying.dc.html",
+  "CP-NowPlaying-Sample.dc.html",
+  "CP-ReadyToTry.dc.html",
+  "CP-States.dc.html",
+  "Decisions.dc.html",
+  "Brand-Magpie.dc.html"
+ ],
+ "notes": {
+  "t_onboard": {
+   "x": 0,
+   "y": -300,
+   "text": "Setup (owner, once) & joining",
+   "kind": "title1",
+   "page": "onboard",
+   "maxW": 2400
+  },
+  "t_home": {
+   "x": 0,
+   "y": -300,
+   "text": "Home & library",
+   "kind": "title1",
+   "page": "home",
+   "maxW": 2400
+  },
+  "t_search": {
+   "x": 0,
+   "y": -300,
+   "text": "Search: library + not yet, one list",
+   "kind": "title1",
+   "page": "search",
+   "maxW": 2400
+  },
+  "t_try": {
+   "x": 0,
+   "y": -300,
+   "text": "Try it \u2192 Keep (Finds)",
+   "kind": "title1",
+   "page": "try",
+   "maxW": 2400
+  },
+  "t_play": {
+   "x": 0,
+   "y": -300,
+   "text": "Now Playing",
+   "kind": "title1",
+   "page": "play",
+   "maxW": 2400
+  },
+  "t_activity": {
+   "x": 0,
+   "y": -300,
+   "text": "Activity, household, settings",
+   "kind": "title1",
+   "page": "activity",
+   "maxW": 2400
+  },
+  "t_system": {
+   "x": 0,
+   "y": -300,
+   "text": "Lock screen, Live Activity, widgets",
+   "kind": "title1",
+   "page": "system",
+   "maxW": 2400
+  },
+  "t_carplay": {
+   "x": 0,
+   "y": -300,
+   "text": "CarPlay (iOS 27 templates)",
+   "kind": "title1",
+   "page": "carplay",
+   "maxW": 2400
+  },
+  "t_language": {
+   "x": 0,
+   "y": -300,
+   "text": "Design language",
+   "kind": "title1",
+   "page": "language",
+   "maxW": 2400
+  },
+  "t_map": {
+   "x": 0,
+   "y": -300,
+   "text": "App map & journeys",
+   "kind": "title1",
+   "page": "map",
+   "maxW": 2400
+  }
+ },
+ "designSystems": []
+}
