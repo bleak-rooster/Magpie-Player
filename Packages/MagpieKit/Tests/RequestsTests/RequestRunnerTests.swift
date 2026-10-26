@@ -49,7 +49,7 @@ import MagpieCore
         #expect(body["monitored"] as? Bool == true)
         #expect(body["monitorNewItems"] as? String == "none")
         let options = try #require(body["addOptions"] as? [String: Any])
-        #expect(options["monitor"] as? String == "none")
+        #expect(options["monitor"] == nil, "\"none\" would unmonitor the artist too (verified on Lidarr 3.2)")
         #expect(options["albumsToMonitor"] as? [String] == [rgSingle.rawValue])
         #expect(options["searchForMissingAlbums"] as? Bool == true)
 

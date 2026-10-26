@@ -424,6 +424,11 @@ public actor RequestRunner {
 
     /// A6: one atomic `POST /artist` built from the lookup row: main root, Fast Start, "Magpie Finds"
     /// metadata, tag `magpie`, nothing new monitored, only this release group, search on add.
+    ///
+    /// `addOptions.monitor` is deliberately left out (Lidarr reads it as "unknown"). Verified on Lidarr
+    /// 3.2.0.5144: with `monitor: "none"` Lidarr also unmonitors the *artist*, so `searchForMissingAlbums`
+    /// searches 0 albums and nothing ever downloads; without it the artist stays monitored and
+    /// `albumsToMonitor` alone decides, monitoring exactly this release group.
     private func addArtist(_ id: RequestID, plan: Plan) async throws {
         guard let setup = await setup() else { throw WriteGateError.disabled }   // set-up removed meanwhile: wait
         guard let lookup = try await lidarr.artistLookupJSON(mbid: plan.artistMBID) else {
@@ -462,7 +467,6 @@ public actor RequestRunner {
             "monitorNewItems": .string("none"),
             "tags": .array(setup.tagIds.map { .int($0) }),
             "addOptions": .object([
-                "monitor": .string("none"),
                 "albumsToMonitor": .array([.string(releaseGroup.rawValue)]),
                 "searchForMissingAlbums": .bool(true),
             ]),

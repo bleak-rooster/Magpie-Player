@@ -88,14 +88,16 @@ struct TryIT {
         var createdArtistId: Int?
         do {
             var request = try #require(await runner.requests.first { $0.id == id })
-            createdArtistId = request.addSent ? request.lidarrArtistId : nil
-            #expect(request.state == .searching, "state: \(request.state)")
-            // Lidarr refreshes the new artist asynchronously; the album shows up shortly.
-            for _ in 0..<45 where request.albumId == nil {
+            // Lidarr refreshes the new artist asynchronously; the album shows up shortly. A transient outage
+            // (MusicBrainz or the metadata server busy) makes the request wait and retry after a minute.
+            for _ in 0..<90 where request.albumId == nil {
                 try await Task.sleep(for: .seconds(2))
                 await runner.tick()
                 request = try #require(await runner.requests.first { $0.id == id })
+                if request.addSent { createdArtistId = request.lidarrArtistId }
             }
+            if request.addSent { createdArtistId = request.lidarrArtistId }
+            #expect(request.state == .searching, "state: \(request.state)")
             let artistId = try #require(request.lidarrArtistId)
             let albumId = try #require(request.albumId, "the album never appeared in Lidarr")
             let rg = try #require(request.plan?.releaseGroupMBID)
@@ -108,6 +110,7 @@ struct TryIT {
             #expect(artist["metadataProfileId"]?.intValue == provisioned.findsMetadataProfileId)
             #expect(artist["tags"]?.arrayValue?.compactMap(\.intValue) == [provisioned.magpieTagId])
             #expect(artist["monitorNewItems"]?.stringValue == "none")
+            #expect(artist["monitored"]?.boolValue == true, "an unmonitored artist would never be searched")
             let albums = try await client.albums(artistId: artistId)
             #expect(albums.first { $0.id == albumId }?.monitored == true)
             #expect(albums.first { $0.id == albumId }?.foreignAlbumId == rg)
