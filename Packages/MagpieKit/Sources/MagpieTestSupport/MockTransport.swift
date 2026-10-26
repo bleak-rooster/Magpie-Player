@@ -32,6 +32,9 @@ public final class MockTransport: HTTPTransport {
 
     public var requests: [URLRequest] { state.withLock { $0.requests } }
 
+    /// Records a request answered elsewhere (a wrapping transport that short-circuits), so `requests` stays complete.
+    public func record(_ request: URLRequest) { state.withLock { $0.requests.append(request) } }
+
     public func stub(method: String = "GET", pathSuffix: String, status: Int = 200,
                      body: Data = Data(), headers: [String: String] = [:]) {
         stub(method: method, pathSuffix: pathSuffix) { _ in Response(status: status, body: body, headers: headers) }

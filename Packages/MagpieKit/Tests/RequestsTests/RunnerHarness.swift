@@ -58,6 +58,12 @@ struct HoldingTransport: HTTPTransport {
 
     func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
         if let latch = lidarr.shouldHold(request) { await latch.hold() }
+        if request.url?.path.contains("/api/v1/") == true, let answer = lidarr.with({ $0.everyLidarrAnswer }) {
+            let http = HTTPURLResponse(url: request.url!, statusCode: answer.status, httpVersion: "HTTP/1.1",
+                                       headerFields: answer.headers)!
+            lidarr.transport.record(request)
+            return (answer.body, http)
+        }
         let timesOut: Bool = lidarr.with { s in
             guard request.httpMethod == "PUT", request.url?.path.hasSuffix("/album/monitor") == true,
                   s.monitorTimesOut > 0 else { return false }
@@ -90,6 +96,8 @@ final class FakeLidarr: @unchecked Sendable {
         var nextArtistId = 42
         var nextCommandId = 77
         var down = false
+        /// Every Lidarr request (any method) gets this answer: a proxy's HTML page, a 401 for a wrong key.
+        var everyLidarrAnswer: MockTransport.Response?
         /// POST /artist creates the artist but answers 504 (the outcome looks unclear to Magpie).
         var addAnswers504 = false
         /// PUT /album/monitor: applies, then answers 504 (lost answer) this many times.

@@ -4,6 +4,8 @@ import Foundation
 /// simply stays at its empty value, and `reachable` says whether `/system/status` answered.
 public struct LidarrAudit: Sendable, Equatable {
     public var reachable: Bool
+    /// `/system/status` answered 401/403: the saved API key no longer works (regenerated in Lidarr).
+    public var keyRejected: Bool
     public var version: String
     public var authEnabled: Bool
     public var roots: [RootFolder]
@@ -15,21 +17,24 @@ public struct LidarrAudit: Sendable, Equatable {
     public var recycleBinSet: Bool
     public var healthIssues: [HealthIssue]
 
-    public init(reachable: Bool = false, version: String = "", authEnabled: Bool = false, roots: [RootFolder] = [],
+    public init(reachable: Bool = false, keyRejected: Bool = false, version: String = "", authEnabled: Bool = false, roots: [RootFolder] = [],
                 hasMagpieProfiles: Bool = false, tubifarry: Bool = false, recycleBinSet: Bool = false,
                 healthIssues: [HealthIssue] = []) {
-        self.reachable = reachable; self.version = version; self.authEnabled = authEnabled; self.roots = roots
+        self.reachable = reachable; self.keyRejected = keyRejected; self.version = version; self.authEnabled = authEnabled; self.roots = roots
         self.hasMagpieProfiles = hasMagpieProfiles; self.tubifarry = tubifarry; self.recycleBinSet = recycleBinSet
         self.healthIssues = healthIssues
     }
 
     public static func run(_ c: LidarrClient) async -> LidarrAudit {
         var audit = LidarrAudit()
-        if let status = try? await c.status() {
+        do {
+            let status = try await c.status()
             audit.reachable = true
             audit.version = status.version
             audit.authEnabled = status.authenticationMethod.lowercased() != "none"
-        }
+        } catch LidarrError.unauthorized {
+            audit.keyRejected = true
+        } catch {}
         audit.roots = (try? await c.rootFolders()) ?? []
         let quality = Set(((try? await c.qualityProfiles()) ?? []).map(\.name))
         let metadata = Set(((try? await c.metadataProfiles()) ?? []).map(\.name))

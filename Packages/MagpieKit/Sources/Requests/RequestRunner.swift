@@ -860,7 +860,10 @@ public actor RequestRunner {
             await mutate(r.id) { $0.notListedAt = t }
         }
         let importing = list.filter { $0.state == .importing && $0.notListedAt == nil && !busy.contains($0.id) }
-        if !importing.isEmpty, let scanning = try? await library.isScanning(), !scanning {
+        if !importing.isEmpty {
+            // A scan status stuck at "scanning" must not hide a song Navidrome already lists (it lists files as
+            // the scan reaches them): the index is refreshed either way; a new scan only starts when none runs.
+            let scanning = try? await library.isScanning()
             let youngest = importing.map { t.timeIntervalSince($0.importingSince ?? t) }.min() ?? 0
             let refreshEvery = Self.clamp(youngest / 2, Self.indexRefreshInterval)
             if lastIndexRefresh.map({ t.timeIntervalSince($0) >= refreshEvery }) ?? true {
@@ -870,7 +873,8 @@ public actor RequestRunner {
                 }
             }
             let rescanEvery = Self.clamp(youngest / 2, Self.rescanInterval)
-            if importing.contains(where: { $0.lastScanAt.map { t.timeIntervalSince($0) >= rescanEvery } ?? true }) {
+            if scanning == false,
+               importing.contains(where: { $0.lastScanAt.map { t.timeIntervalSince($0) >= rescanEvery } ?? true }) {
                 try? await library.startScan()
                 for r in importing { await mutate(r.id) { $0.lastScanAt = t } }
             }
