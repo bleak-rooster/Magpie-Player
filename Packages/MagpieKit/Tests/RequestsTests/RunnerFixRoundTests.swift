@@ -279,26 +279,100 @@ import MagpieCore
         try await h.store.save([r])
         try await h.ledger.record(LedgerEntry(lidarrArtistId: 7, albumId: 31, rgMbid: rgAlbum, createdArtist: false,
                                               wasMonitoredBefore: false, root: "/music/library", mode: .fallback,
-                                              applied: false, requestId: r.id.description))
+                                              send: .unclear, requestId: r.id.description))
         await h.runner.tick()
         #expect(h.server.writes.isEmpty)
         #expect(await h.request(r.id)?.cleanupPending == false)
         #expect(h.server.with { $0.albums.first { $0.id == 31 }?.monitored } == true)
     }
 
-    /// 2: the monitor PUT failed without landing: the retry finishes Magpie's own monitor (not "Stopped in Lidarr").
-    @Test func unappliedMonitorIsRedoneOnRetry() async throws {
+    /// Round 3: a 503 that didn't land and couldn't be confirmed is "unclear": the retry writes nothing
+    /// and stops the request (when in doubt, don't write).
+    @Test func unclearUnmonitoredStopsOnRetry() async throws {
         let h = await Harness()
         h.server.ownerHasArtist(albumMonitored: false)
         h.server.with { $0.monitorFails503 = 1 }
         let id = try await h.runner.tryRecording(h.recording(recAlbumOnly), tier: .standard)
         await h.runner.settle()
-        #expect(try await h.ledger.entry(albumId: 31)?.isApplied == false)
+        #expect(try await h.ledger.entry(albumId: 31)?.send == .unclear)
         h.clock.advance(61)
         await h.runner.tick()
-        #expect(await h.state(id) == .searching)
-        #expect(h.server.writeBodies().map(\.0) == ["PUT album/monitor", "PUT album/monitor", "POST command"])
-        #expect(try await h.ledger.entry(albumId: 31)?.isApplied == true)
+        #expect(await h.state(id) == .failed(reason: .stoppedInLidarr))
+        #expect(h.server.writeBodies().map(\.0) == ["PUT album/monitor"])
+    }
+
+    /// Round 3 (a): the PUT landed, its answer was lost and the confirming GET failed; then the owner
+    /// unmonitored the album. The retry must not monitor it again.
+    @Test func lostAnswerThenOwnerUnmonitorsIsRespected() async throws {
+        let h = await Harness()
+        h.server.ownerHasArtist(albumMonitored: false)
+        h.server.with { $0.monitorAppliedThen504 = 1; $0.confirmFailsAfterLost = true }
+        let id = try await h.runner.tryRecording(h.recording(recAlbumOnly), tier: .standard)
+        await h.runner.settle()
+        #expect(try await h.ledger.entry(albumId: 31)?.send == .unclear)
+        h.server.with { s in for i in s.albums.indices { s.albums[i].monitored = false } }   // the owner
+        h.clock.advance(61)
+        await h.runner.tick()
+        #expect(await h.state(id) == .failed(reason: .stoppedInLidarr))
+        #expect(h.server.writeBodies().map(\.0) == ["PUT album/monitor"], "no second monitor, no search")
+    }
+
+    /// Round 3: an unclear entry is never undone, even though Magpie's write did land.
+    @Test func cancelNeverUndoesAnUnclearEntry() async throws {
+        let h = await Harness()
+        h.server.ownerHasArtist(albumMonitored: false)
+        h.server.with { $0.monitorAppliedThen504 = 1; $0.confirmFailsAfterLost = true }
+        let id = try await h.runner.tryRecording(h.recording(recAlbumOnly), tier: .standard)
+        await h.runner.settle()
+        #expect(try await h.ledger.entry(albumId: 31)?.send == .unclear)
+        await h.runner.cancel(id)
+        #expect(h.server.writeBodies().map(\.0) == ["PUT album/monitor"])
+        #expect(await h.request(id)?.cleanupPending == false)
+    }
+
+    /// Round 3 (b): the first PUT was never sent (changes off); the owner then monitored the album. The
+    /// retry takes it as the owner's (wasMonitoredBefore) and Cancel leaves it monitored.
+    @Test func notSentThenOwnerMonitorsIsTheOwners() async throws {
+        let h = await Harness(changesOn: false)
+        h.server.ownerHasArtist(albumMonitored: false)
+        var r = MagpieRequest(recording: h.recording(recAlbumOnly), tier: .standard, createdAt: h.clock.now)
+        r.state = .adding
+        r.plan = Plan(recordingMBID: recAlbumOnly, releaseGroupMBID: rgAlbum, artistMBID: artistA, lidarrArtistId: 7,
+                      mode: .fallback)
+        try await h.store.save([r])
+        await h.runner.tick()
+        #expect(try await h.ledger.entry(albumId: 31)?.send == .notSent)
+        #expect(h.server.writes.isEmpty)
+
+        h.server.with { s in for i in s.albums.indices where s.albums[i].id == 31 { s.albums[i].monitored = true } }
+        await h.gate.setEnabled(true)
+        h.clock.advance(61)
+        await h.runner.tick()
+        #expect(await h.state(r.id) == .searching)
+        let entry = try #require(try await h.ledger.entry(albumId: 31))
+        #expect(entry.wasMonitoredBefore && entry.isApplied)
+        await h.runner.cancel(r.id)
+        #expect(h.server.writeBodies().map(\.0) == ["POST command"], "search only; the owner's monitor stays")
+        #expect(h.server.with { $0.albums.first { $0.id == 31 }?.monitored } == true)
+    }
+
+    /// Round 3: not sent and still unmonitored: the retry sends it (and it is Magpie's to undo).
+    @Test func notSentAndUnmonitoredIsSentOnRetry() async throws {
+        let h = await Harness(changesOn: false)
+        h.server.ownerHasArtist(albumMonitored: false)
+        var r = MagpieRequest(recording: h.recording(recAlbumOnly), tier: .standard, createdAt: h.clock.now)
+        r.state = .adding
+        r.plan = Plan(recordingMBID: recAlbumOnly, releaseGroupMBID: rgAlbum, artistMBID: artistA, lidarrArtistId: 7,
+                      mode: .fallback)
+        try await h.store.save([r])
+        await h.runner.tick()
+        await h.gate.setEnabled(true)
+        h.clock.advance(61)
+        await h.runner.tick()
+        #expect(await h.state(r.id) == .searching)
+        #expect(try await h.ledger.entry(albumId: 31)?.send == .applied)
+        await h.runner.cancel(r.id)
+        #expect(h.server.writeBodies().map(\.0) == ["PUT album/monitor", "POST command", "PUT album/monitor"])
     }
 
     /// 3: a finished request's entry is closed; if the owner then monitors the album, a new request treats it

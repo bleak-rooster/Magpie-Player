@@ -457,22 +457,35 @@ public actor RequestRunner {
     private struct AddFailure: Error { var reason: FailReason }
 
     /// Ruling 3: once the album is known, a retry only searches again. If the album is no longer monitored
-    /// (or gone), that is the owner's decision in Lidarr: stop, write nothing. Two exceptions: right after
-    /// Magpie added the artist (Lidarr's refresh may not have applied `albumsToMonitor` yet), and Magpie's own
-    /// monitor still only an intent in the ledger (its PUT never landed): then the monitor is finished.
+    /// (or gone), that is the owner's decision in Lidarr: stop, write nothing. Exceptions: right after Magpie
+    /// added the artist (Lidarr's refresh may not have applied `albumsToMonitor` yet), and this request's own
+    /// monitor that isn't applied yet, resolved by the fix-round-3 rules ("when in doubt, don't write"):
+    /// - not sent + monitored now: the owner did it (wasMonitoredBefore = true, never undone);
+    /// - not sent + unmonitored: send it now (then confirm);
+    /// - unclear + monitored: Magpie's write landed (applied);
+    /// - unclear + unmonitored: maybe the owner undid it: stop, no write.
     private func retrySearchOnly(_ id: RequestID, _ r: MagpieRequest, albumId: Int, artistId: Int) async throws {
         let albums = try await lidarr.albums(artistId: artistId)
         lastLidarrContact = now()
         guard let album = albums.first(where: { $0.id == albumId }) else { throw AddFailure(reason: .stoppedInLidarr) }
-        let entry = try await ledger.entry(albumId: albumId)
-        let myIntent = entry.map { !$0.isApplied && $0.isOpen && $0.requestId == id.description } ?? false
-        if myIntent {
-            if album.monitored {
-                try await markApplied(entry!)   // the earlier PUT did land
-            } else {
+        if let entry = try await ledger.entry(albumId: albumId), entry.isOpen, !entry.isApplied,
+           entry.requestId == id.description {
+            var e = entry
+            switch (entry.send ?? .applied, album.monitored) {
+            case (.notSent, true):
+                e.wasMonitoredBefore = true
+                e.send = .applied
+                try await ledger.record(e)
+            case (.notSent, false):
                 try ensure(id, .adding)
-                _ = try await gate.send("PUT", "album/monitor", body: AlbumMonitorBody(albumIds: [albumId], monitored: true))
-                try await markApplied(entry!)
+                try await sendMonitor(e, artistId: artistId, albumId: albumId)
+            case (.unclear, true):
+                e.send = .applied
+                try await ledger.record(e)
+            case (.unclear, false):
+                throw AddFailure(reason: .stoppedInLidarr)
+            case (.applied, _):
+                break
             }
             return
         }
@@ -480,10 +493,25 @@ public actor RequestRunner {
         guard album.monitored || settling else { throw AddFailure(reason: .stoppedInLidarr) }
     }
 
-    private func markApplied(_ entry: LedgerEntry) async throws {
+    /// Sends `PUT /album/monitor` for an entry already in the ledger and records the outcome: `applied` on
+    /// success; `notSent` on a gate refusal; otherwise a confirming GET decides `applied` or `unclear`.
+    /// Rethrows any failure so the request waits.
+    private func sendMonitor(_ entry: LedgerEntry, artistId: Int, albumId: Int) async throws {
         var e = entry
-        e.applied = true
-        try await ledger.record(e)
+        do {
+            _ = try await gate.send("PUT", "album/monitor", body: AlbumMonitorBody(albumIds: [albumId], monitored: true))
+            e.send = .applied
+            try await ledger.record(e)
+        } catch let refusal as WriteGateError {
+            e.send = .notSent
+            try? await ledger.record(e)
+            throw refusal
+        } catch {
+            let confirmed = (try? await lidarr.albums(artistId: artistId))?.first { $0.id == albumId }?.monitored == true
+            e.send = confirmed ? .applied : .unclear
+            try? await ledger.record(e)
+            throw error
+        }
     }
 
     /// The add was sent but its outcome was unclear (timeout, relaunch) and the artist exists now: it is
@@ -502,9 +530,8 @@ public actor RequestRunner {
 
     /// A7 / G6: monitor the one album and search; no tags, no profile or artist change.
     ///
-    /// Order (fix round 2): the ledger gets an *intent* entry, the request learns the ids (so clean-up can
-    /// always find the album), then the PUT; the entry becomes *applied* when the PUT succeeds or, if its
-    /// answer was lost (502/504, timeout), when a follow-up GET shows the album monitored. Only applied
+    /// Order (fix rounds 2–3): the ledger gets a `notSent` entry, the request learns the ids (so clean-up can
+    /// always find the album), then the PUT (`sendMonitor` records applied / notSent / unclear). Only applied
     /// entries are ever undone.
     private func monitorExisting(_ id: RequestID, _ r: MagpieRequest, artist: LidarrArtist, rg: MBID) async throws {
         let albums = try await lidarr.albums(artistId: artist.id)
@@ -531,7 +558,7 @@ public actor RequestRunner {
             createdArtist: (try? await ledger.createdArtist(artist.id)) == true,
             wasMonitoredBefore: wasMonitoredBefore,
             root: artist.rootFolderPath ?? r.root ?? artist.path ?? "", mode: .fallback, keptAt: prior?.keptAt,
-            applied: !needsMonitor, requestId: id.description)
+            send: needsMonitor ? .notSent : .applied, requestId: id.description)
         try await ledger.record(entry)
         await mutate(id) {
             $0.lidarrArtistId = artist.id
@@ -539,18 +566,7 @@ public actor RequestRunner {
         }
         guard needsMonitor else { return }
         try ensure(id, .adding)
-        do {
-            _ = try await gate.send("PUT", "album/monitor", body: AlbumMonitorBody(albumIds: [album.id], monitored: true))
-        } catch let e as WriteGateError {
-            throw e   // nothing was sent: the entry stays an intent
-        } catch {
-            // The answer was lost, but Lidarr may have applied it: look.
-            if let now = try? await lidarr.albums(artistId: artist.id), now.first(where: { $0.id == album.id })?.monitored == true {
-                try? await markApplied(entry)
-            }
-            throw error
-        }
-        try await markApplied(entry)
+        try await sendMonitor(entry, artistId: artist.id, albumId: album.id)
     }
 
     /// A6: one atomic `POST /artist` built from the lookup row: main root, Fast Start, "Magpie Finds"

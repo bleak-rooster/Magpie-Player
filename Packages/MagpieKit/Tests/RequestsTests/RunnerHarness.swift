@@ -89,6 +89,10 @@ final class FakeLidarr: @unchecked Sendable {
         var monitorAppliedThen504 = 0
         /// PUT /album/monitor: answers 503 without applying this many times.
         var monitorFails503 = 0
+        /// After a lost (504) monitor answer, the next GET /album fails too (the confirm can't tell).
+        var confirmFailsAfterLost = false
+        /// GET /album answers 503 this many times.
+        var albumGetFailures = 0
         /// Hold the n-th GET whose path ends with `suffix`.
         var hold: (suffix: String, n: Int)?
         var holdSeen = 0
@@ -157,6 +161,12 @@ final class FakeLidarr: @unchecked Sendable {
         }
         t.stub(pathSuffix: "/api/v1/album") { [self] req in
             if let d = down() { return d }
+            let fail: Bool = with { s in
+                guard s.albumGetFailures > 0 else { return false }
+                s.albumGetFailures -= 1
+                return true
+            }
+            if fail { return MockTransport.Response(status: 503) }
             let artistId = URLComponents(url: req.url!, resolvingAgainstBaseURL: false)?.queryItems?
                 .first { $0.name == "artistId" }?.value.flatMap(Int.init)
             return reply(with { s in s.albums.filter { $0.artistId == artistId }.map {
@@ -176,6 +186,7 @@ final class FakeLidarr: @unchecked Sendable {
                 for i in s.albums.indices where ids.contains(s.albums[i].id) { s.albums[i].monitored = on }
                 guard s.monitorAppliedThen504 > 0 else { return false }
                 s.monitorAppliedThen504 -= 1
+                if s.confirmFailsAfterLost { s.albumGetFailures += 1 }
                 return true
             }
             return lost ? MockTransport.Response(status: 504) : reply([[String: Any]]())

@@ -8,6 +8,16 @@ public enum LedgerMode: String, Sendable, Codable {
     case finds
 }
 
+/// Whether Magpie's monitor write for an entry reached Lidarr (fix round 3: "when in doubt, don't write").
+public enum MonitorSend: String, Sendable, Codable {
+    /// Refused by the gate (switched off, …): nothing left the device.
+    case notSent
+    /// Sent, but the answer was lost and a GET couldn't confirm it.
+    case unclear
+    /// Succeeded, or a GET showed the album monitored.
+    case applied
+}
+
 /// What Magpie did for one album request (A2: tags are artist-level only, so album ownership lives here).
 /// Deletes and unmonitors are only ever allowed for objects the ledger says Magpie created (G3, G6).
 ///
@@ -29,9 +39,9 @@ public struct LedgerEntry: Sendable, Equatable, Codable {
     /// The Lidarr server this entry belongs to (`LidarrClient.instanceScope`). Ids are only meaningful on
     /// that server; a `Ledger` scoped to another server never sees this entry.
     public var instance: String?
-    /// False while Magpie has only *decided* to monitor the album (recorded before the write); true once the
-    /// write succeeded or a GET showed it monitored. Only applied entries may be undone. Nil = applied.
-    public var applied: Bool?
+    /// Where Magpie's monitor write stands (recorded before the write). Only applied entries may be undone.
+    /// Nil = applied (nothing needed writing, or Lidarr monitored it through `albumsToMonitor`).
+    public var send: MonitorSend?
     /// The request that made this entry (its `RequestID` text), if any.
     public var requestId: String?
     /// Set when the request that made the entry finished and its clean-up is done: a closed entry says
@@ -40,14 +50,14 @@ public struct LedgerEntry: Sendable, Equatable, Codable {
 
     public init(lidarrArtistId: Int, albumId: Int?, rgMbid: MBID, createdArtist: Bool, wasMonitoredBefore: Bool,
                 root: String, mode: LedgerMode, keptAt: Date? = nil, instance: String? = nil,
-                applied: Bool? = nil, requestId: String? = nil, closedAt: Date? = nil) {
+                send: MonitorSend? = nil, requestId: String? = nil, closedAt: Date? = nil) {
         self.lidarrArtistId = lidarrArtistId; self.albumId = albumId; self.rgMbid = rgMbid
         self.createdArtist = createdArtist; self.wasMonitoredBefore = wasMonitoredBefore
         self.root = root; self.mode = mode; self.keptAt = keptAt; self.instance = instance
-        self.applied = applied; self.requestId = requestId; self.closedAt = closedAt
+        self.send = send; self.requestId = requestId; self.closedAt = closedAt
     }
 
-    public var isApplied: Bool { applied != false }
+    public var isApplied: Bool { (send ?? .applied) == .applied }
     public var isOpen: Bool { closedAt == nil }
 }
 
