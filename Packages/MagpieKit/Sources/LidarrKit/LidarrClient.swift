@@ -7,30 +7,20 @@ public enum LidarrError: Error, Sendable, Equatable {
     case decoding
 }
 
-/// Read-only Lidarr v1 client. It issues GET requests only; writes arrive in Task 5.1 behind the write gate.
+/// Read-only Lidarr v1 client. It can only issue GETs: writes go through `LidarrWriteGate` (G1), which owns
+/// the only code path that sends POST, PUT or DELETE (see `LidarrConnection` in WriteGate.swift).
 public struct LidarrClient: Sendable {
-    private let endpoint: ServerEndpoint
-    private let base: URL
-    private let apiKey: String
-    private let transport: HTTPTransport
+    let connection: LidarrConnection
 
     /// `base` is the Lidarr root, optionally with a reverse-proxy path (`https://host/lidarr`); it is preserved.
     public init(base: URL, apiKey: String, transport: HTTPTransport) {
-        self.endpoint = ServerEndpoint(bases: [base])
-        self.base = base
-        self.apiKey = apiKey
-        self.transport = transport
+        self.connection = LidarrConnection(base: base, apiKey: apiKey, transport: transport)
     }
 
     // MARK: - Plumbing
 
     private func get(_ path: String, _ query: [URLQueryItem] = []) async throws -> (Data, HTTPURLResponse) {
-        var request = URLRequest(url: endpoint.url(base, path: "api/v1/" + path, query: query))
-        request.httpMethod = "GET"
-        request.setValue(apiKey, forHTTPHeaderField: "X-Api-Key")
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
-        Log.request(request, category: "lidarr")
-        return try await transport.send(request)
+        try await connection.get(path, query)
     }
 
     private func ok(_ path: String, _ query: [URLQueryItem] = []) async throws -> Data {
@@ -46,6 +36,9 @@ public struct LidarrClient: Sendable {
         let data = try await ok(path, query)
         do { return try JSONDecoder().decode(T.self, from: data) } catch { throw LidarrError.decoding }
     }
+
+    /// Raw JSON of a GET (provisioning reads schemas and existing profiles whole, A15).
+    func json(_ path: String) async throws -> JSONValue { try await decode(JSONValue.self, path) }
 
     private func list<T: Decodable>(_ type: T.Type, _ path: String, _ query: [URLQueryItem] = []) async throws -> [T] {
         try await decode(LossyArray<T>.self, path, query).values

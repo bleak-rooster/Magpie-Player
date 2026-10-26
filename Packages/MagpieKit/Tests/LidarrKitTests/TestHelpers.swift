@@ -29,6 +29,7 @@ func auditTransport(_ overrides: [String: Data] = [:]) -> MockTransport {
     t.stub(pathSuffix: "/health", body: Fixtures.data("health"))
     t.stub(pathSuffix: "/rootfolder", body: Fixtures.data("rootfolder"))
     t.stub(pathSuffix: "/qualityprofile", body: Fixtures.data("qualityprofile"))
+    t.stub(pathSuffix: "/metadataprofile", body: Fixtures.data("metadataprofile"))
     t.stub(pathSuffix: "/system/plugins", body: Fixtures.data("system-plugins"))
     t.stub(pathSuffix: "/config/mediamanagement", body: Fixtures.data("config-mediamanagement"))
     return t

@@ -3,13 +3,11 @@ import Foundation
 /// Read-only snapshot of how the owner's Lidarr is set up. `run` never throws: a section that fails to read
 /// simply stays at its empty value, and `reachable` says whether `/system/status` answered.
 public struct LidarrAudit: Sendable, Equatable {
-    /// Quality profiles Magpie provisions start with this name (Task 5.1).
-    public static let magpieProfilePrefix = "Magpie"
-
     public var reachable: Bool
     public var version: String
     public var authEnabled: Bool
     public var roots: [RootFolder]
+    /// All four profiles `Provisioner` creates exist, by exact name.
     public var hasMagpieProfiles: Bool
     /// Tubifarry (or any Lidarr plugin) is installed (A15).
     public var tubifarry: Bool
@@ -33,8 +31,10 @@ public struct LidarrAudit: Sendable, Equatable {
             audit.authEnabled = status.authenticationMethod.lowercased() != "none"
         }
         audit.roots = (try? await c.rootFolders()) ?? []
-        let profiles = (try? await c.qualityProfiles()) ?? []
-        audit.hasMagpieProfiles = profiles.contains { $0.name.hasPrefix(magpieProfilePrefix) }
+        let quality = Set(((try? await c.qualityProfiles()) ?? []).map(\.name))
+        let metadata = Set(((try? await c.metadataProfiles()) ?? []).map(\.name))
+        audit.hasMagpieProfiles = quality.isSuperset(of: Provisioner.qualityProfileNames)
+            && metadata.isSuperset(of: Provisioner.metadataProfileNames)
         let plugins = (try? await c.pluginTexts()) ?? nil
         audit.tubifarry = plugins?.contains { $0.contains("tubifarry") } ?? false
         audit.recycleBinSet = ((try? await c.recycleBin()) ?? nil) != nil

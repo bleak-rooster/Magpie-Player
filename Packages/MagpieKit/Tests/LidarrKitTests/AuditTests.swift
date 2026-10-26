@@ -34,11 +34,18 @@ import MagpieTestSupport
         #expect(!audit.authEnabled)
     }
 
-    @Test func magpieProfilesDetectedByName() async {
-        let t = auditTransport(["/qualityprofile": json(#"[{"id":1,"name":"Any"},{"id":9,"name":"Magpie Standard"}]"#)])
-        let (client, _) = makeClient(t)
-        let audit = await LidarrAudit.run(client)
-        #expect(audit.hasMagpieProfiles)
+    @Test func magpieProfilesDetectedByExactNames() async {
+        let quality = json(#"[{"id":1,"name":"Any"},{"id":9,"name":"Magpie Fast Start"},{"id":10,"name":"Magpie Lossless"}]"#)
+        let metadata = json(#"[{"id":1,"name":"Standard"},{"id":5,"name":"Magpie Finds"},{"id":6,"name":"Magpie Albums+EPs"}]"#)
+        let (client, _) = makeClient(auditTransport(["/qualityprofile": quality, "/metadataprofile": metadata]))
+        #expect(await LidarrAudit.run(client).hasMagpieProfiles)
+
+        // A look-alike name, or only some of the four, is not enough.
+        let lookalike = json(#"[{"id":9,"name":"Magpie Standard"},{"id":10,"name":"Magpie Lossless"}]"#)
+        let (partial, _) = makeClient(auditTransport(["/qualityprofile": lookalike, "/metadataprofile": metadata]))
+        #expect(await LidarrAudit.run(partial).hasMagpieProfiles == false)
+        let (noMetadata, _) = makeClient(auditTransport(["/qualityprofile": quality]))
+        #expect(await LidarrAudit.run(noMetadata).hasMagpieProfiles == false)
     }
 
     @Test func pluginsMissingIsNotDetected() async throws {
