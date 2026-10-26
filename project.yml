@@ -1,0 +1,110 @@
+name: Magpie
+options:
+  bundleIdPrefix: com.bleak-rooster
+  deploymentTarget:
+    iOS: "27.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    DEVELOPMENT_TEAM: ""
+configs:
+  Debug: debug
+  Release: release
+packages:
+  MagpieKit:
+    path: Packages/MagpieKit
+targets:
+  Magpie:
+    type: application
+    platform: iOS
+    sources:
+      - path: App
+        excludes:
+          - Info.plist
+    dependencies:
+      - package: MagpieKit
+        product: MagpieCore
+      - package: MagpieKit
+        product: NavidromeKit
+      - package: MagpieKit
+        product: ListenBrainzKit
+      - package: MagpieKit
+        product: LidarrKit
+      - package: MagpieKit
+        product: MatchIndex
+      - package: MagpieKit
+        product: Search
+      - package: MagpieKit
+        product: Requests
+      - package: MagpieKit
+        product: Playback
+      - package: MagpieKit
+        product: DesignSystem
+      - package: MagpieKit
+        product: CarPlayUI
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.bleak-rooster.magpie
+        PRODUCT_NAME: Magpie
+        CODE_SIGN_ENTITLEMENTS: App/Magpie.entitlements
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: App/Info.plist
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+        TARGETED_DEVICE_FAMILY: "1,2"
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleDisplayName: Magpie
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: true
+          UISceneConfigurations:
+            UIWindowSceneSessionRoleApplication:
+              - UISceneConfigurationName: Default Configuration
+            CPTemplateApplicationSceneSessionRoleApplication:
+              - UISceneConfigurationName: CarPlay
+                UISceneClassName: CPTemplateApplicationScene
+                UISceneDelegateClassName: $(PRODUCT_MODULE_NAME).CarPlaySceneDelegate
+        UIBackgroundModes: [audio]
+        NSLocalNetworkUsageDescription: Magpie connects to your music server on your home network.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+        UILaunchScreen: {}
+    postBuildScripts:
+      - name: Debug-only ATS arbitrary loads
+        basedOnDependencyAnalysis: false
+        script: |
+          if [ "$CONFIGURATION" = "Debug" ]; then
+            PLIST="$TARGET_BUILD_DIR/$INFOPLIST_PATH"
+            /usr/libexec/PlistBuddy -c "Add :NSAppTransportSecurity:NSAllowsArbitraryLoads bool true" "$PLIST" 2>/dev/null || \
+            /usr/libexec/PlistBuddy -c "Set :NSAppTransportSecurity:NSAllowsArbitraryLoads true" "$PLIST"
+          fi
+  MagpieTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [Tests/MagpieTests]
+    dependencies:
+      - target: Magpie
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.bleak-rooster.magpie.tests
+        GENERATE_INFOPLIST_FILE: YES
+  MagpieUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [Tests/MagpieUITests]
+    dependencies:
+      - target: Magpie
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.bleak-rooster.magpie.uitests
+        GENERATE_INFOPLIST_FILE: YES
+schemes:
+  Magpie:
+    build:
+      targets:
+        Magpie: all
+    test:
+      targets:
+        - MagpieTests
+        - MagpieUITests

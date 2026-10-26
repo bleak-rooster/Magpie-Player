@@ -1,0 +1,35 @@
+// swift-tools-version: 6.4
+import PackageDescription
+
+let package = Package(
+    name: "MagpieKit",
+    platforms: [.iOS(.v27), .macOS(.v27)],
+    products: [
+        .library(name: "MagpieCore", targets: ["MagpieCore"]),
+        .library(name: "NavidromeKit", targets: ["NavidromeKit"]),
+        .library(name: "ListenBrainzKit", targets: ["ListenBrainzKit"]),
+        .library(name: "LidarrKit", targets: ["LidarrKit"]),
+        .library(name: "MatchIndex", targets: ["MatchIndex"]),
+        .library(name: "Search", targets: ["Search"]),
+        .library(name: "Requests", targets: ["Requests"]),
+        .library(name: "Playback", targets: ["Playback"]),
+        .library(name: "DesignSystem", targets: ["DesignSystem"]),
+        .library(name: "CarPlayUI", targets: ["CarPlayUI"]),
+        .library(name: "MagpieTestSupport", targets: ["MagpieTestSupport"]),
+    ],
+    targets: [
+        .target(name: "MagpieCore"),
+        .target(name: "NavidromeKit", dependencies: ["MagpieCore"]),
+        .target(name: "ListenBrainzKit", dependencies: ["MagpieCore"]),
+        .target(name: "LidarrKit", dependencies: ["MagpieCore"]),
+        .target(name: "MatchIndex", dependencies: ["MagpieCore"]),
+        .target(name: "Search", dependencies: ["MagpieCore", "MatchIndex"]),
+        .target(name: "Requests", dependencies: ["MagpieCore", "LidarrKit"]),
+        .target(name: "Playback", dependencies: ["MagpieCore"]),
+        .target(name: "DesignSystem", dependencies: ["MagpieCore"]),
+        .target(name: "CarPlayUI", dependencies: ["MagpieCore", "Playback"]),
+        .target(name: "MagpieTestSupport", dependencies: ["MagpieCore"]),
+        .testTarget(name: "MagpieCoreTests", dependencies: ["MagpieCore", "MagpieTestSupport"]),
+    ],
+    swiftLanguageModes: [.v6]
+)
