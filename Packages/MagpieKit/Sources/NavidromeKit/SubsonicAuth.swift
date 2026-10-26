@@ -31,6 +31,8 @@ public enum NavidromeError: Error, Equatable, Sendable {
     case badCredentials
     case http(status: Int)
     case api(code: Int, message: String)
+    /// The address answered, but not with the API (e.g. a reverse proxy's HTML sign-in page).
+    case unexpectedResponse
 }
 
 /// Subsonic token auth: `u, t, s, v, c, f`. The password is never sent.

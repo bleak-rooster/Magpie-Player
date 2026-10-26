@@ -88,7 +88,7 @@ public actor NavidromeClient {
         case 401, 403: throw NavidromeError.badCredentials
         default: throw NavidromeError.http(status: response.statusCode)
         }
-        let dto = try JSONDecoder().decode(LoginDTO.self, from: data)
+        let dto = try Self.decode(LoginDTO.self, data)
         let login = LoginResult(userId: dto.id, isAdmin: dto.isAdmin ?? false,
                                 username: dto.username ?? credentials.username, jwt: dto.token,
                                 subsonicToken: dto.subsonicToken ?? "", subsonicSalt: dto.subsonicSalt ?? "")
@@ -144,13 +144,20 @@ public actor NavidromeClient {
         guard (200..<300).contains(response.statusCode) else {
             throw response.statusCode == 401 ? NavidromeError.badCredentials : NavidromeError.http(status: response.statusCode)
         }
-        let body = try JSONDecoder().decode(SubsonicEnvelope.self, from: data).response
+        let body = try Self.decode(SubsonicEnvelope.self, data).response
         if body.status != "ok" {
             let error = body.error
             if error?.code == 40 || error?.code == 44 { throw NavidromeError.badCredentials }
             throw NavidromeError.api(code: error?.code ?? 0, message: error?.message ?? "")
         }
         return body
+    }
+
+    /// JSON that isn't the API's (a proxy's HTML sign-in page, a captive portal) is `unexpectedResponse`.
+    private static func decode<T: Decodable>(_ type: T.Type, _ data: Data) throws -> T {
+        do { return try JSONDecoder().decode(T.self, from: data) } catch is DecodingError {
+            throw NavidromeError.unexpectedResponse
+        }
     }
 
     private func int(_ name: String, _ v: Int) -> URLQueryItem { URLQueryItem(name: name, value: String(v)) }
@@ -301,9 +308,11 @@ public actor NavidromeClient {
             .replacingOccurrences(of: "Bearer ", with: ""), !refreshed.isEmpty {
             session.withLock { $0.login?.jwt = refreshed }
         }
-        let rows = try JSONDecoder().decode([NativeSong].self, from: data)
+        let rows = try Self.decode([NativeSong].self, data)
         let songs = rows.filter { $0.missing != true }.map(Mapping.song)
-        let total = response.value(forHTTPHeaderField: "X-Total-Count").flatMap { Int($0) } ?? rows.count
+        // Without the header (a proxy dropped it), a full page means there may be more; a short one is the end.
+        let total = response.value(forHTTPHeaderField: "X-Total-Count").flatMap { Int($0) }
+            ?? (rows.count < end - start ? start + rows.count : end + 1)
         return (songs, total)
     }
 }
