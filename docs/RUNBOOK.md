@@ -14,6 +14,7 @@ xcodegen generate
 open Magpie.xcodeproj
 ```
 In Xcode pick the **Magpie** scheme and the **iPhone 18 Pro** simulator (iOS 27.0 runtime), then press Run. Or from Terminal: `scripts/build.sh`.
+- Keep simulators apart: the one you sign in to your real servers with is for you only. The test scripts use their own simulator, **Magpie Tests** (section 6); never run tests on a simulator that is signed in to real servers.
 - `xcode-select -p` currently points at the Command Line Tools, so bare `xcodebuild` and `simctl` fail. The scripts and the `export` line above work around it. To fix it for good: `sudo xcode-select -s /Applications/Xcode.app`. First run may also need `xcodebuild -runFirstLaunch` and accepting the license.
 
 **Step 2. Connect to Navidrome.** The first screen asks for an address, user and password. Use an admin account if you want the pre-flight checks to be complete.
@@ -149,7 +150,8 @@ A lost answer is never followed by the same write until a fresh read shows what 
 ## 6. Dev stack and tests
 
 - **Dev stack** (throwaway local Navidrome + Lidarr with a fixture library, bound to 127.0.0.1): see `dev/README.md`. `dev/bootstrap.sh` starts and configures it, `dev/smoke.sh` checks every API the app uses. Needs Docker, curl, jq, openssl, ffmpeg. Tests only ever talk to localhost (a dev marker is required); never your real servers.
-- `scripts/test-all.sh`: first `scripts/check-writes.sh` (G1: fails if package code outside `LidarrKit/WriteGate.swift` builds a POST/PUT/DELETE/PATCH request; Navidrome `auth/login` is the one allowlisted write), then package tests (`swift test` in `Packages/MagpieKit`) then app unit and UI tests on the iPhone 18 Pro simulator. `scripts/test-packages.sh` and `scripts/test-app.sh` run each half. `scripts/build.sh` builds only.
+- `scripts/test-all.sh`: first `scripts/check-writes.sh` (G1: fails if product code, `Packages/MagpieKit/Sources` and `App/`, builds a POST/PUT/DELETE/PATCH request anywhere outside `LidarrKit/WriteGate.swift`, and if test code, `Packages/MagpieKit/Tests` and `Tests/`, sets a write method on a real request outside its short allowlist; Navidrome `auth/login` is the one allowlisted product write), then package tests (`swift test` in `Packages/MagpieKit`) then app unit and UI tests. `scripts/test-packages.sh` and `scripts/test-app.sh` run each half. `scripts/build.sh` builds only.
+- **App tests run only on the "Magpie Tests" simulator** (iPhone 18 Pro, iOS 27.0). `scripts/test-app.sh` creates it when it is missing (`scripts/test-sim.sh`) and never touches any other simulator. Hosted unit tests launch the real app, and the UI tests reset its Keychain (`-MagpieResetState`), so **never run the test scripts against a simulator signed in to real servers**, and test against your real servers in a simulator of their own (the iPhone 18 Pro one in Step 1). As a test host the app also resumes no saved session and builds no request runner. Erasing "Magpie Tests" is always safe.
 - `scripts/it.sh`: integration tests against the dev stack (`MAGPIE_IT=1`). `MAGPIE_IT=1 scripts/test-app.sh` adds the app flows. Wait about 20 s between runs (login rate limit).
 - `Magpie.xcodeproj` and `App/Info.plist` are generated from `project.yml` (`xcodegen generate`) and are git-ignored.
 

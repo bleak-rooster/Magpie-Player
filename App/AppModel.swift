@@ -229,14 +229,24 @@ final class AppModel {
 
     /// Builds the shared model from what the Keychain holds. `-MagpieResetState YES` signs out first
     /// (UI tests). `-MagpieCharacter classic|signature|immersive` picks the look.
-    static func restore(store: any SessionStoring = SessionStore.standard, defaults: UserDefaults = .standard) -> AppModel {
+    ///
+    /// Final fix 2 C-I1 (G0): as the host of hosted unit tests (`XCTestConfigurationFilePath` set) it resumes no
+    /// saved session and builds no runner, so tests never talk to whatever server the simulator is signed in to.
+    /// A test opts in with `MAGPIE_TEST_HOST_RESTORE=1`.
+    static func restore(store: any SessionStoring = SessionStore.standard, defaults: UserDefaults = .standard,
+                        environment: [String: String] = ProcessInfo.processInfo.environment) -> AppModel {
         if defaults.bool(forKey: "MagpieResetState") {
             store.clear()
             LidarrConnectionStore.standard.clear()
         }
         let model = AppModel(store: store, defaults: defaults, theme: savedTheme(defaults))
-        model.resumeSavedSession()
+        if resumesSavedSession(environment: environment) { model.resumeSavedSession() }
         return model
+    }
+
+    /// False while the app is a unit-test host, unless the test opted in (C-I1).
+    nonisolated static func resumesSavedSession(environment: [String: String]) -> Bool {
+        environment["XCTestConfigurationFilePath"] == nil || environment["MAGPIE_TEST_HOST_RESTORE"] == "1"
     }
 
     /// Starts using the saved session without waiting for the network, then connects in the background.

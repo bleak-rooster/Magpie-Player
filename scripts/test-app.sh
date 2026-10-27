@@ -30,5 +30,9 @@ if [ "${MAGPIE_IT:-}" = "1" ]; then
   esac
 fi
 
+# C-I1 (G0): hosted tests launch the real app and UI tests reset its Keychain, so they run only on the dedicated
+# "Magpie Tests" simulator (created if missing), never on one that may be signed in to real servers.
+sim="$(scripts/test-sim.sh)"
+
 xcodegen generate
-xcodebuild test -project Magpie.xcodeproj -scheme Magpie -destination 'platform=iOS Simulator,name=iPhone 18 Pro,OS=27.0' -quiet
+xcodebuild test -project Magpie.xcodeproj -scheme Magpie -destination "platform=iOS Simulator,id=$sim" -quiet

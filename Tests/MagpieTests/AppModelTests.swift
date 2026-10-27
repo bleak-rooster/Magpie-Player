@@ -97,6 +97,22 @@ private let away = URL(string: "https://music.example.com/navidrome")!
         store.clear()
     }
 
+    /// Final fix 2 C-I1 (G0): hosted tests launch the real app, whose `AppModel.shared` would resume the
+    /// simulator's saved session (maybe a real server) and rebuild its runner. As a test host it resumes nothing,
+    /// unless a test opts in with `MAGPIE_TEST_HOST_RESTORE=1`.
+    @Test func testHostNeverResumesTheSavedSession() throws {
+        try store.save(endpoint: ServerEndpoint(bases: [home]),
+                       credentials: NavidromeCredentials(username: "admin", password: "pw"))
+        let host = ["XCTestConfigurationFilePath": "/tmp/x.xctestconfiguration"]
+        #expect(!AppModel.resumesSavedSession(environment: host))
+        #expect(AppModel.resumesSavedSession(environment: host.merging(["MAGPIE_TEST_HOST_RESTORE": "1"]) { $1 }))
+        #expect(AppModel.resumesSavedSession(environment: [:]), "the app itself resumes as before")
+        let model = AppModel.restore(store: store, defaults: defaults, environment: host)
+        #expect(model.session == nil && model.runner == nil)
+        #expect(store.load().saved != nil, "nothing signed out either")
+        store.clear()
+    }
+
     @Test func signInPicksFirstAnsweringAddress() async throws {
         transport.setDown([home.host!])
         let model = makeModel()
