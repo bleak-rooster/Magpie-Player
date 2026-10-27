@@ -566,6 +566,7 @@ final class AppModel {
         let client = LidarrClient(base: connection.base, apiKey: connection.apiKey, transport: transport)
         _ = try await client.status()
         let audit = await LidarrAudit.run(client)
+        // A-M4: the audit read `client`, and `connection` is what is saved and adopted into below (the ids belong to it).
         try lidarrStore.save(connection)
         if lidarr != nil { forgetLidarrPermissions() }   // the one being replaced
         lidarr = connection
@@ -584,8 +585,10 @@ final class AppModel {
     /// The connected Lidarr's setup, read again. Nil when not connected.
     func lidarrAudit() async -> LidarrAudit? {
         guard let client = lidarrClient else { return nil }
+        let scope = lidarrScope
         let audit = await LidarrAudit.run(client)
-        if lidarrClient != nil {
+        // Final fix 2 A-M4: only into the Lidarr it read. Another one connected (or none) meanwhile: adopt nothing.
+        if lidarrClient != nil, lidarrScope == scope {
             lidarrStatus = audit
             adoptOnlyRoot(audit)
             adoptFindTag(audit)

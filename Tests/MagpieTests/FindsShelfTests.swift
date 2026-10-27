@@ -402,6 +402,30 @@ private let t0 = Date(timeIntervalSince1970: 1_900_000_000)
     }
 
     /// No tag yet: Finds says it isn't finished and how to finish it; fallback Try keeps working.
+    /// Final fix 2 A-M4: an audit of one Lidarr that answers after another Lidarr was connected adopts nothing
+    /// into the new one's setup (its ids belong to the Lidarr it read).
+    @Test func aLateAuditAdoptsNothingIntoAnotherLidarr() async throws {
+        let model = try await connected()
+        let (arrived, arrivedNow) = AsyncStream<Void>.makeStream()
+        let (release, releaseNow) = AsyncStream<Void>.makeStream()
+        transport.setHook { request in
+            guard request.url?.path.hasSuffix("/api/v1/tag") == true else { return }
+            arrivedNow.yield()
+            for await _ in release { break }
+        }
+        let audit = Task { await model.lidarrAudit() }
+        for await _ in arrived { break }   // the first Lidarr's audit is waiting on its tag read
+        transport.setHook(nil)
+        _ = try await model.connectLidarr(base: lidarrBase, apiKey: "another-key")   // no magpie-find there
+        model.chooseRoot("/music/library")
+        #expect(model.lidarrSetup?.findTagId == nil)
+        hasFindTag.withLock { $0 = true }   // what the late audit reads
+        releaseNow.yield()
+        _ = await audit.value
+        #expect(model.lidarrSetup?.findTagId == nil, "the first Lidarr's tag id never lands in the second's setup")
+        cleanUp(model)
+    }
+
     @Test func missingFindTagSaysSetUpAgain() async throws {
         let model = try await connected()
         model.lidarrSetup?.findTagId = nil

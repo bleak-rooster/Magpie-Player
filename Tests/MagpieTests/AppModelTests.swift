@@ -20,7 +20,15 @@ final class HostSwitchTransport: HTTPTransport {
         failure.withLock { $0 = code }
     }
 
+    /// Runs before each request is answered (a test can hold one there).
+    private let hook = OSAllocatedUnfairLock<(@Sendable (URLRequest) async -> Void)?>(initialState: nil)
+
+    func setHook(_ hook: (@Sendable (URLRequest) async -> Void)?) {
+        self.hook.withLock { $0 = hook }
+    }
+
     func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        if let hook = hook.withLock({ $0 }) { await hook(request) }
         if let host = request.url?.host, down.withLock({ $0.contains(host) }) {
             throw URLError(failure.withLock { $0 }, userInfo: [NSURLErrorFailingURLErrorKey: request.url as Any])
         }
