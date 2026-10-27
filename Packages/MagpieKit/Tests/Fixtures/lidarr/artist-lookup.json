@@ -1,0 +1,78 @@
+[
+  {
+    "status": "ended",
+    "ended": true,
+    "artistName": "The Beatles",
+    "foreignArtistId": "b10bbbfc-cf9e-42e0-be17-e2c3e1d2600d",
+    "tadbId": 0,
+    "discogsId": 0,
+    "artistType": "Group",
+    "disambiguation": "UK rock band, “The Fab Four”",
+    "links": [
+      {
+        "url": "https://www.thebeatles.com/",
+        "name": "thebeatles"
+      },
+      {
+        "url": "https://www.discogs.com/artist/82730",
+        "name": "discogs"
+      }
+    ],
+    "nextAlbum": null,
+    "lastAlbum": null,
+    "images": [
+      {
+        "coverType": "fanart",
+        "url": "/MediaCoverProxy/c195639f534d056abee6781758d0a67a23aabcee9e77c654ff089cf65adf1731/beatles-the-53062b2a99606.jpg",
+        "remoteUrl": "https://images.lidarr.audio/cache/https://assets.fanart.tv/fanart/beatles-the-53062b2a99606.jpg",
+        "extension": ".jpg"
+      },
+      {
+        "coverType": "banner",
+        "url": "/MediaCoverProxy/c949cb70e997ac0ad140873b758e619bc57ea7f38f09e96072ece4c2d91bd925/beatles-the-5304a6cd34c6e.jpg",
+        "remoteUrl": "https://images.lidarr.audio/cache/https://assets.fanart.tv/fanart/beatles-the-5304a6cd34c6e.jpg",
+        "extension": ".jpg"
+      },
+      {
+        "coverType": "clearlogo",
+        "url": "/MediaCoverProxy/a6b6600749d2dcc4f7c0cbe593bb25b0657eef9c9c8b636caa78e6dbf02d1196/beatles-the-5244b8bce3ac4.png",
+        "remoteUrl": "https://images.lidarr.audio/cache/https://assets.fanart.tv/fanart/beatles-the-5244b8bce3ac4.png",
+        "extension": ".png"
+      },
+      {
+        "coverType": "poster",
+        "url": "/MediaCoverProxy/d899a9167421fcc99de5292ca77946f63370b9e2f1ba417ac2d55bd44af5042b/beatles-the-4facf1550225f.jpg",
+        "remoteUrl": "https://images.lidarr.audio/cache/https://assets.fanart.tv/fanart/beatles-the-4facf1550225f.jpg",
+        "extension": ".jpg"
+      }
+    ],
+    "remotePoster": "https://images.lidarr.audio/cache/https://assets.fanart.tv/fanart/beatles-the-4facf1550225f.jpg",
+    "qualityProfileId": 0,
+    "metadataProfileId": 0,
+    "monitored": false,
+    "monitorNewItems": "all",
+    "folder": "The Beatles",
+    "genres": [
+      "Rock",
+      "Pop",
+      "Pop Rock",
+      "Merseybeat",
+      "Psychedelic Pop",
+      "Psychedelic Rock",
+      "Classic Rock",
+      "Rock And Roll",
+      "Experimental Rock",
+      "Britpop",
+      "Folk Rock",
+      "Mainstream Rock"
+    ],
+    "cleanName": "thebeatles",
+    "sortName": "beatles",
+    "tags": [],
+    "added": "0001-01-01T00:00:00Z",
+    "ratings": {
+      "votes": 86,
+      "value": 9.6
+    }
+  }
+]

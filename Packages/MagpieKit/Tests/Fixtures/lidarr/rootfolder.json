@@ -1,0 +1,28 @@
+[
+  {
+    "name": "Music Library",
+    "path": "/music/library",
+    "defaultMetadataProfileId": 1,
+    "defaultQualityProfileId": 2,
+    "defaultMonitorOption": "all",
+    "defaultNewItemMonitorOption": "all",
+    "defaultTags": [],
+    "accessible": true,
+    "freeSpace": 733184000000,
+    "totalSpace": 994610155520,
+    "id": 1
+  },
+  {
+    "name": "Samples",
+    "path": "/music/samples",
+    "defaultMetadataProfileId": 1,
+    "defaultQualityProfileId": 2,
+    "defaultMonitorOption": "all",
+    "defaultNewItemMonitorOption": "all",
+    "defaultTags": [],
+    "accessible": true,
+    "freeSpace": 733184000000,
+    "totalSpace": 994610155520,
+    "id": 2
+  }
+]

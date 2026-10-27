@@ -1,0 +1,9 @@
+{
+ "id": "0BTOCyRT5FKL0nlJp7uUh7",
+ "isAdmin": true,
+ "name": "Admin",
+ "subsonicSalt": "fakesalt",
+ "subsonicToken": "00000000000000000000000000000000",
+ "token": "eyJfake.eyJfake.fake-signature",
+ "username": "admin"
+}

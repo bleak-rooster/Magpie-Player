@@ -34,3 +34,14 @@ Owner (Jordan) authorised overnight autonomous work on 2026-10-26: "approve ever
 | D18 | **Adopt the v1 decision review in full** (docs/reviews/v1-decision-review.md): milestone order M0–M8 with a tagged green build + RUNBOOK update per milestone; API corrections A1–A17; safety guards G0–G9 (master "Allow Magpie to change Lidarr" switch off by default, change log, explicit Finds-root confirmation — no "samples" name auto-detect, ledger, delete/move preconditions, never modify owner config); blockers B1–B10 in the RUNBOOK. "Done" = highest milestone tagged green. | v1 decision review | Accepted |
 | D19 | Overnight agents never touch real servers: tests run against 127.0.0.1/localhost dev stack only (G0). | v1 decision review | Accepted |
 | D20 | Execution: subagent-driven (fresh implementer per task + reviewer), milestone-gated. | Owner asked for agents | Accepted |
+
+### 2026-10-27 — final review fix wave (docs/reviews/final-review-v1.md)
+
+| # | Decision | Driven by | Status |
+|---|---|---|---|
+| D21 | Fix I1–I5 in one wave plus a G1 write-verb check (`scripts/check-writes.sh`, run by `test-all.sh`). Other review Minors stay deferred per the review's triage. | Final review | Accepted |
+| D22 | I1: `PlayCounting` is the only Count plays switch (`Player.countPlays` removed). | Final review I1 | Accepted |
+| D23 | I4: waiting copy names no service ("Can't bring songs home right now. We'll try again.", plus the reason when known) instead of the review's "Lidarr isn't answering" — §5 voice rule. | Design language §5 vs review | Accepted with change |
+| D24 | I2: an https failure that looks like a plain-http server suggests typing `http://`. A genuinely broken https server can get the same advice — accepted, it's advice only. | Re-review Minor | Accepted |
+| D25 | `BrowseFlowTests.testConnectLidarrShowsSummary` fails intermittently and identically before the fix wave; treated as a pre-existing UI-test flake, not a regression. | Fix report | Accepted, flagged for owner |
+| D26 | The RUNBOOK device-build command is unverified (no signing team or device during the overnight run). | Fix report | Flagged for owner |

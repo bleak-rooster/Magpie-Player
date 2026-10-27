@@ -1,0 +1,172 @@
+import Foundation
+import MagpieCore
+import os
+
+/// Where a request's album was brought in: the main root (fallback mode) or the confirmed Finds root.
+public enum LedgerMode: String, Sendable, Codable {
+    case fallback
+    case finds
+}
+
+/// Whether Magpie's monitor write for an entry reached Lidarr (fix rounds 3–4: "when in doubt, don't write").
+public enum MonitorSend: String, Sendable, Codable {
+    /// Verifiably not in Lidarr: refused by the gate before anything left the device, or a GET after a
+    /// failed write showed the album still unmonitored. A retry may send it.
+    case notSent
+    /// May have reached Lidarr: recorded just before every send (so a crash mid-send leaves it), and kept
+    /// when the answer was lost and a GET couldn't tell. Never re-sent, never undone.
+    case unclear
+    /// Succeeded, or a GET showed the album monitored.
+    case applied
+}
+
+/// What Magpie did for one album request (A2: tags are artist-level only, so album ownership lives here).
+/// Deletes and unmonitors are only ever allowed for objects the ledger says Magpie created (G3, G6).
+///
+/// `albumId` is nil for an artist-level entry: Magpie created the artist, but Lidarr hasn't listed the album
+/// yet (its refresh after the add is asynchronous). It is replaced by the album entry once the album is known.
+public struct LedgerEntry: Sendable, Equatable, Codable {
+    public var lidarrArtistId: Int
+    public var albumId: Int?
+    public var rgMbid: MBID
+    /// Magpie added the artist (false: the artist was already in the owner's library).
+    public var createdArtist: Bool
+    /// The album was already monitored before Magpie touched it, so Cancel must not unmonitor it.
+    public var wasMonitoredBefore: Bool
+    /// Root folder the artist lived in when the request was made.
+    public var root: String
+    public var mode: LedgerMode
+    /// Set when the owner kept the album.
+    public var keptAt: Date?
+    /// The Lidarr server this entry belongs to (`LidarrClient.instanceScope`). Ids are only meaningful on
+    /// that server; a `Ledger` scoped to another server never sees this entry.
+    public var instance: String?
+    /// Where Magpie's monitor write stands. Only applied entries may be undone. Entries saved without a known
+    /// state (older files, round 2's `applied` flag, an unknown value) read as `unclear`: fail safe.
+    public var send: MonitorSend
+    /// The request that made this entry (its `RequestID` text), if any.
+    public var requestId: String?
+    /// Set when the request that made the entry finished and its clean-up is done: a closed entry says
+    /// nothing about who monitors the album *now*, so it is never inherited.
+    public var closedAt: Date?
+
+    public init(lidarrArtistId: Int, albumId: Int?, rgMbid: MBID, createdArtist: Bool, wasMonitoredBefore: Bool,
+                root: String, mode: LedgerMode, keptAt: Date? = nil, instance: String? = nil,
+                send: MonitorSend = .unclear, requestId: String? = nil, closedAt: Date? = nil) {
+        self.lidarrArtistId = lidarrArtistId; self.albumId = albumId; self.rgMbid = rgMbid
+        self.createdArtist = createdArtist; self.wasMonitoredBefore = wasMonitoredBefore
+        self.root = root; self.mode = mode; self.keptAt = keptAt; self.instance = instance
+        self.send = send; self.requestId = requestId; self.closedAt = closedAt
+    }
+
+    public var isApplied: Bool { send == .applied }
+    public var isOpen: Bool { closedAt == nil }
+
+    private enum CodingKeys: String, CodingKey {
+        case lidarrArtistId, albumId, rgMbid, createdArtist, wasMonitoredBefore, root, mode, keptAt, instance
+        case send, requestId, closedAt
+    }
+
+    /// Fix round 4: a missing or unknown `send` decodes as `unclear`, never as applied. That includes entries
+    /// from round 2 (`applied: true/false`, no `send`) and from round 3 (no `send` meant applied): pre-release,
+    /// so they are not trusted for an undo.
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        lidarrArtistId = try c.decode(Int.self, forKey: .lidarrArtistId)
+        albumId = try c.decodeIfPresent(Int.self, forKey: .albumId)
+        rgMbid = try c.decode(MBID.self, forKey: .rgMbid)
+        createdArtist = try c.decode(Bool.self, forKey: .createdArtist)
+        wasMonitoredBefore = try c.decode(Bool.self, forKey: .wasMonitoredBefore)
+        root = try c.decode(String.self, forKey: .root)
+        mode = try c.decode(LedgerMode.self, forKey: .mode)
+        keptAt = try c.decodeIfPresent(Date.self, forKey: .keptAt)
+        instance = try c.decodeIfPresent(String.self, forKey: .instance)
+        send = ((try? c.decodeIfPresent(String.self, forKey: .send)) ?? nil).flatMap(MonitorSend.init(rawValue:))
+            ?? .unclear
+        requestId = try c.decodeIfPresent(String.self, forKey: .requestId)
+        closedAt = try c.decodeIfPresent(Date.self, forKey: .closedAt)
+    }
+}
+
+/// The on-device record of every Lidarr album request Magpie made. One entry per (server, album id), plus
+/// artist-level entries for artists Magpie created whose album isn't listed yet.
+///
+/// A ledger is scoped to one Lidarr server (`instance`): it stamps what it records and ignores every entry
+/// from another server, so ids from the dev stack can never steer writes on the owner's Lidarr.
+/// Nothing is cached per instance: every call re-reads the file under a process-wide lock (like the change
+/// log), so several `Ledger` values on the same file always agree. If the file cannot be read (e.g. before
+/// first unlock), every call throws `LocalFileError.unavailable` and nothing is written, so callers refuse
+/// ledger-dependent actions.
+public actor Ledger {
+    /// `Application Support/Magpie/lidarr-ledger.json`.
+    public static func defaultURL(in directory: URL = URL.applicationSupportDirectory) -> URL {
+        LocalFile.url("lidarr-ledger.json", in: directory)
+    }
+
+    /// Serialises read-modify-write of ledger files across all instances.
+    private static let fileLock = OSAllocatedUnfairLock()
+
+    private let fileURL: URL?
+    /// The server this ledger reads and writes for; nil = unscoped (sees only unstamped entries).
+    public nonisolated let instance: String?
+    /// Only used when `fileURL` is nil.
+    private var memory: [LedgerEntry] = []
+
+    /// `fileURL` nil keeps the ledger in memory only.
+    public init(fileURL: URL?, instance: String? = nil) {
+        self.fileURL = fileURL
+        self.instance = instance
+    }
+
+    private static func read(_ url: URL) throws -> [LedgerEntry] {
+        try LocalFile.load([LedgerEntry].self, from: url, fallback: [], category: "ledger")
+    }
+
+    private func all() throws -> [LedgerEntry] {
+        guard let fileURL else { return memory }
+        return try Self.fileLock.withLock { try Self.read(fileURL) }
+    }
+
+    /// This server's entries.
+    public var entries: [LedgerEntry] {
+        get throws { try all().filter { $0.instance == instance } }
+    }
+
+    /// Adds the entry (stamped with this ledger's server), or replaces this server's entry for the same album.
+    /// An album entry also replaces the artist-level entry for the same artist and release group.
+    public func record(_ e: LedgerEntry) throws {
+        let stamped = { var x = e; x.instance = self.instance; return x }()
+        guard let fileURL else { memory = Self.upserting(stamped, into: memory); return }
+        try Self.fileLock.withLock {
+            try LocalFile.save(Self.upserting(stamped, into: try Self.read(fileURL)), to: fileURL)
+        }
+    }
+
+    private static func upserting(_ e: LedgerEntry, into list: [LedgerEntry]) -> [LedgerEntry] {
+        var next = list.filter { old in
+            guard old.instance == e.instance else { return true }
+            if let albumId = e.albumId {
+                if old.albumId == albumId { return false }
+                // The album is known now: drop the artist-level placeholder it replaces.
+                return !(old.albumId == nil && old.lidarrArtistId == e.lidarrArtistId && old.rgMbid == e.rgMbid)
+            }
+            return !(old.albumId == nil && old.lidarrArtistId == e.lidarrArtistId && old.rgMbid == e.rgMbid)
+        }
+        next.append(e)
+        return next
+    }
+
+    public func entry(albumId: Int) throws -> LedgerEntry? {
+        try entries.first { $0.albumId == albumId }
+    }
+
+    /// The newest entry for a release group (G7: dedupe by rgMbid before any add).
+    public func entry(rgMbid: MBID) throws -> LedgerEntry? {
+        try entries.last { $0.rgMbid == rgMbid }
+    }
+
+    /// Whether Magpie created this artist on this server.
+    public func createdArtist(_ lidarrArtistId: Int) throws -> Bool {
+        try entries.contains { $0.lidarrArtistId == lidarrArtistId && $0.createdArtist }
+    }
+}

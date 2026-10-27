@@ -11,3 +11,5 @@ node_modules/
 # Magpie dev stack (dev/): generated data and credentials
 /dev/data/
 /dev/.env.local
+Magpie.xcodeproj/
+App/Info.plist

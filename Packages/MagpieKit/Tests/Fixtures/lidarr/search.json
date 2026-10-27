@@ -1,0 +1,348 @@
+[
+  {
+    "foreignId": "a74b1b7f-71a5-4011-9441-d0b5e4122711",
+    "artist": {
+      "status": "continuing",
+      "ended": false,
+      "artistName": "Radiohead",
+      "foreignArtistId": "a74b1b7f-71a5-4011-9441-d0b5e4122711",
+      "tadbId": 0,
+      "discogsId": 0,
+      "overview": "Radiohead are an English rock band formed in Abingdon, Oxfordshire, in 1985. The band members are Thom Yorke ; the brothers Jonny Greenwood and Colin Greenwood (bass); Ed O'Brien ; and Philip Selway (drums). They have worked with the producer Nigel Godrich and the cover artist Stanley Donwood since 1994. Radiohead's experimental approach is credited with advancing the sound of alternative rock.",
+      "artistType": "Group",
+      "disambiguation": "",
+      "links": [
+        {
+          "url": "http://www.radiohead.com/",
+          "name": "radiohead"
+        },
+        {
+          "url": "http://musicmoz.org/Bands_and_Artists/R/Radiohead/",
+          "name": "musicmoz"
+        }
+      ],
+      "nextAlbum": null,
+      "lastAlbum": null,
+      "images": [
+        {
+          "coverType": "banner",
+          "url": "/MediaCoverProxy/73d4df53f26d5a32996748aa2bb675fc1e861e3d8ab42314aa1aa11a4a359b45/radiohead-503beb86c3395.jpg",
+          "remoteUrl": "https://images.lidarr.audio/cache/https://assets.fanart.tv/fanart/radiohead-503beb86c3395.jpg",
+          "extension": ".jpg"
+        },
+        {
+          "coverType": "poster",
+          "url": "/MediaCoverProxy/358ea11f131073cd3c88cfac330d84c6eaf0f115bf7b26000125c424b499394a/radiohead-4faa76dca1bba.jpg",
+          "remoteUrl": "https://images.lidarr.audio/cache/https://assets.fanart.tv/fanart/radiohead-4faa76dca1bba.jpg",
+          "extension": ".jpg"
+        },
+        {
+          "coverType": "fanart",
+          "url": "/MediaCoverProxy/2b00360b0b987584c7fac868aaf5c0f9c473d3744c4be1c777845b1a555cc03b/radiohead-4e68f40838818.jpg",
+          "remoteUrl": "https://images.lidarr.audio/cache/https://assets.fanart.tv/fanart/radiohead-4e68f40838818.jpg",
+          "extension": ".jpg"
+        },
+        {
+          "coverType": "clearlogo",
+          "url": "/MediaCoverProxy/210d93407b508ad7f6013b228a37baa76b6b51187a97a94e5c8281d2346a7ea1/radiohead-503bea2d9cbc8.png",
+          "remoteUrl": "https://images.lidarr.audio/cache/https://assets.fanart.tv/fanart/radiohead-503bea2d9cbc8.png",
+          "extension": ".png"
+        }
+      ],
+      "remotePoster": "https://images.lidarr.audio/cache/https://assets.fanart.tv/fanart/radiohead-4faa76dca1bba.jpg",
+      "qualityProfileId": 0,
+      "metadataProfileId": 0,
+      "monitored": false,
+      "monitorNewItems": "all",
+      "folder": "Radiohead",
+      "genres": [
+        "Alternative Rock",
+        "Art Rock",
+        "Rock",
+        "Experimental Rock",
+        "Electronic",
+        "Indie Rock",
+        "Experimental",
+        "Art Pop",
+        "Post-Britpop",
+        "Electronica",
+        "Britpop",
+        "Chamber Pop",
+        "Indietronica",
+        "Post-Grunge",
+        "Crossover Prog",
+        "Electronic Rock",
+        "Ambient Pop",
+        "Idm"
+      ],
+      "tags": [],
+      "added": "0001-01-01T00:00:00Z",
+      "ratings": {
+        "votes": 80,
+        "value": 9.0
+      }
+    },
+    "id": 1
+  },
+  {
+    "foreignId": "32e804ba-8e1f-3641-95ed-11b62d0c9157",
+    "album": {
+      "title": "Radiohead",
+      "disambiguation": "",
+      "artistId": 0,
+      "foreignAlbumId": "32e804ba-8e1f-3641-95ed-11b62d0c9157",
+      "monitored": false,
+      "anyReleaseOk": true,
+      "profileId": 0,
+      "duration": 1520000,
+      "albumType": "Single",
+      "secondaryTypes": [],
+      "ratings": {
+        "votes": 0,
+        "value": 0
+      },
+      "releaseDate": "1998-01-01T00:00:00Z",
+      "releases": [
+        {
+          "id": 0,
+          "albumId": 0,
+          "foreignReleaseId": "2a72687b-080e-4f24-933e-ae84d3b5f614",
+          "title": "Radiohead",
+          "status": "Official",
+          "duration": 1520000,
+          "trackCount": 3,
+          "mediumCount": 1,
+          "media": [
+            {
+              "mediumNumber": 1,
+              "mediumName": "",
+              "mediumFormat": "CD"
+            }
+          ],
+          "disambiguation": "",
+          "country": [
+            "United Kingdom"
+          ],
+          "label": [
+            "Blue Room Released"
+          ],
+          "format": "CD",
+          "monitored": true
+        }
+      ],
+      "genres": [
+        "Electronic",
+        "Goa Trance",
+        "Psytrance"
+      ],
+      "mediumCount": 1,
+      "media": [
+        {
+          "mediumNumber": 1,
+          "mediumName": "",
+          "mediumFormat": "CD"
+        }
+      ],
+      "artist": {
+        "status": "continuing",
+        "ended": false,
+        "artistName": "X-Dream",
+        "foreignArtistId": "635da8c0-f19a-41b9-8764-fd80306b4159",
+        "tadbId": 0,
+        "discogsId": 0,
+        "artistType": "Group",
+        "disambiguation": "German goa trance/psy-trance/techno group",
+        "links": [
+          {
+            "url": "http://www.gplusrecords.com/",
+            "name": "gplusrecords"
+          },
+          {
+            "url": "https://www.discogs.com/artist/4751",
+            "name": "discogs"
+          }
+        ],
+        "nextAlbum": null,
+        "lastAlbum": null,
+        "images": [],
+        "qualityProfileId": 0,
+        "metadataProfileId": 0,
+        "monitored": false,
+        "monitorNewItems": "all",
+        "folder": "X-Dream",
+        "genres": [
+          "Goa Trance",
+          "Psytrance"
+        ],
+        "tags": [],
+        "added": "0001-01-01T00:00:00Z",
+        "ratings": {
+          "votes": 2,
+          "value": 9.0
+        }
+      },
+      "images": [],
+      "links": [
+        {
+          "url": "https://www.discogs.com/master/29005",
+          "name": "discogs"
+        }
+      ]
+    },
+    "id": 2
+  },
+  {
+    "foreignId": "3e19d5e9-4ac5-33a9-a1f8-5c8796c80363",
+    "album": {
+      "title": "2003‐09‐29: Breakfast With Radiohead, KROQ, Capitol Records, Hollywood, CA, USA",
+      "disambiguation": "",
+      "artistId": 0,
+      "foreignAlbumId": "3e19d5e9-4ac5-33a9-a1f8-5c8796c80363",
+      "monitored": false,
+      "anyReleaseOk": true,
+      "profileId": 0,
+      "duration": 0,
+      "albumType": "Album",
+      "secondaryTypes": [
+        "Live"
+      ],
+      "ratings": {
+        "votes": 0,
+        "value": 0
+      },
+      "releaseDate": "0001-01-01T00:00:00Z",
+      "releases": [
+        {
+          "id": 0,
+          "albumId": 0,
+          "foreignReleaseId": "8fae35a0-84d6-43d2-a03d-127c4933df69",
+          "title": "2003‐09‐29: Breakfast With Radiohead, KROQ, Capitol Records, Hollywood, CA, USA",
+          "status": "Bootleg",
+          "duration": 0,
+          "trackCount": 12,
+          "mediumCount": 1,
+          "media": [
+            {
+              "mediumNumber": 1,
+              "mediumName": "Unknown",
+              "mediumFormat": "Unknown"
+            }
+          ],
+          "disambiguation": "",
+          "country": [],
+          "label": [],
+          "format": "Unknown",
+          "monitored": true
+        }
+      ],
+      "genres": [],
+      "mediumCount": 1,
+      "media": [
+        {
+          "mediumNumber": 1,
+          "mediumName": "Unknown",
+          "mediumFormat": "Unknown"
+        }
+      ],
+      "artist": {
+        "status": "continuing",
+        "ended": false,
+        "artistName": "Radiohead",
+        "foreignArtistId": "a74b1b7f-71a5-4011-9441-d0b5e4122711",
+        "tadbId": 0,
+        "discogsId": 0,
+        "artistType": "Group",
+        "disambiguation": "",
+        "links": [
+          {
+            "url": "http://www.radiohead.com/",
+            "name": "radiohead"
+          },
+          {
+            "url": "http://musicmoz.org/Bands_and_Artists/R/Radiohead/",
+            "name": "musicmoz"
+          }
+        ],
+        "nextAlbum": null,
+        "lastAlbum": null,
+        "images": [],
+        "qualityProfileId": 0,
+        "metadataProfileId": 0,
+        "monitored": false,
+        "monitorNewItems": "all",
+        "folder": "Radiohead",
+        "genres": [
+          "Alternative Rock",
+          "Art Rock",
+          "Rock",
+          "Experimental Rock",
+          "Electronic",
+          "Indie Rock",
+          "Experimental",
+          "Art Pop",
+          "Post-Britpop",
+          "Electronica",
+          "Britpop",
+          "Chamber Pop",
+          "Indietronica",
+          "Post-Grunge",
+          "Crossover Prog",
+          "Electronic Rock",
+          "Ambient Pop",
+          "Idm"
+        ],
+        "tags": [],
+        "added": "0001-01-01T00:00:00Z",
+        "ratings": {
+          "votes": 80,
+          "value": 9.0
+        }
+      },
+      "images": [
+        {
+          "coverType": "cover",
+          "url": "/MediaCoverProxy/2416b2c251480dfa8c154494c6dd7ecaf58d0937b142ec859b14134202ec2618/19661404639-1200.jpg",
+          "remoteUrl": "https://images.lidarr.audio/cache/https://coverartarchive.org/release/8fae35a0-84d6-43d2-a03d-127c4933df69/19661404639-1200.jpg",
+          "extension": ".jpg"
+        }
+      ],
+      "links": [],
+      "remoteCover": "https://images.lidarr.audio/cache/https://coverartarchive.org/release/8fae35a0-84d6-43d2-a03d-127c4933df69/19661404639-1200.jpg"
+    },
+    "id": 3
+  },
+  {
+    "foreignId": "e48fc8b3-e8ab-4dd4-9dc8-6b0f06ef07d6",
+    "artist": {
+      "status": "continuing",
+      "ended": false,
+      "artistName": "Radiohead Cover Brasil",
+      "foreignArtistId": "e48fc8b3-e8ab-4dd4-9dc8-6b0f06ef07d6",
+      "tadbId": 0,
+      "discogsId": 0,
+      "disambiguation": "",
+      "links": [
+        {
+          "url": "https://www.facebook.com/RadioheadCoverBrasil",
+          "name": "facebook"
+        }
+      ],
+      "nextAlbum": null,
+      "lastAlbum": null,
+      "images": [],
+      "qualityProfileId": 0,
+      "metadataProfileId": 0,
+      "monitored": false,
+      "monitorNewItems": "all",
+      "folder": "Radiohead Cover Brasil",
+      "genres": [],
+      "tags": [],
+      "added": "0001-01-01T00:00:00Z",
+      "ratings": {
+        "votes": 0,
+        "value": 0
+      }
+    },
+    "id": 18
+  }
+]

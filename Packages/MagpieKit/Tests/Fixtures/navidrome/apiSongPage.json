@@ -1,0 +1,707 @@
+[
+ {
+  "bookmarkPosition": 0,
+  "id": "0jBS37Pu9a7l78Tf1ksgUC",
+  "libraryId": 1,
+  "libraryPath": "/music/library",
+  "libraryName": "Music Library",
+  "folderId": "5TU2mZvDm5m5FAxp7q27gv",
+  "path": "Aurora Field/Continuum (2019)/01 - First Light.flac",
+  "title": "First Light",
+  "album": "Continuum",
+  "artistId": "4P6dcXuFfjX7ECrNZl8kpL",
+  "artist": "Aurora Field",
+  "albumArtistId": "4P6dcXuFfjX7ECrNZl8kpL",
+  "albumArtist": "Aurora Field",
+  "albumId": "3NSQIJjYL6Tuvl8bKWgBu8",
+  "hasCoverArt": true,
+  "trackNumber": 1,
+  "discNumber": 1,
+  "year": 2019,
+  "date": "2019-03-15",
+  "originalYear": 2019,
+  "originalDate": "2019-03-15",
+  "releaseYear": 2019,
+  "releaseDate": "2019-03-15",
+  "size": 1433607,
+  "suffix": "flac",
+  "duration": 14,
+  "bitRate": 802,
+  "sampleRate": 44100,
+  "bitDepth": 24,
+  "channels": 2,
+  "codec": "",
+  "genre": "Ambient",
+  "genres": [
+   {
+    "id": "35NylIdyQvMZdoZg2mR79J",
+    "name": "Ambient"
+   }
+  ],
+  "orderTitle": "first light",
+  "orderAlbumName": "continuum",
+  "orderArtistName": "aurora field",
+  "orderAlbumArtistName": "aurora field",
+  "compilation": false,
+  "lyrics": "[]",
+  "explicitStatus": "",
+  "mbzRecordingID": "20a2961b-d8e8-481c-bd5b-abb38a2850ad",
+  "mbzReleaseTrackId": "c3218a9d-a349-46a8-b22d-8116c931a59a",
+  "mbzAlbumId": "339be777-09e4-48c4-a50a-7e6274f94565",
+  "mbzReleaseGroupId": "75ab6ba6-9197-4f83-8a23-a1925a7ec5a2",
+  "mbzAlbumType": "album",
+  "rgAlbumGain": null,
+  "rgAlbumPeak": null,
+  "rgTrackGain": null,
+  "rgTrackPeak": null,
+  "tags": {
+   "disctotal": [
+    "1"
+   ],
+   "genre": [
+    "Ambient"
+   ],
+   "isrc": [
+    "GBXYZ1900001"
+   ],
+   "recordlabel": [
+    "Northern Drift Recordings"
+   ],
+   "releasetype": [
+    "album"
+   ],
+   "tracktotal": [
+    "6"
+   ]
+  },
+  "participants": {
+   "albumartist": [
+    {
+     "id": "4P6dcXuFfjX7ECrNZl8kpL",
+     "name": "Aurora Field",
+     "missing": false
+    }
+   ],
+   "artist": [
+    {
+     "id": "4P6dcXuFfjX7ECrNZl8kpL",
+     "name": "Aurora Field",
+     "missing": false
+    }
+   ]
+  },
+  "missing": false,
+  "birthTime": "2026-10-26T15:00:08.399563353Z",
+  "createdAt": "2026-10-26T15:00:19.655667708Z",
+  "updatedAt": "2026-10-26T15:00:08.471041841Z"
+ },
+ {
+  "bookmarkPosition": 0,
+  "id": "0xxKsq5ev3ANGc4W3GBylP",
+  "libraryId": 2,
+  "libraryPath": "/music/samples",
+  "libraryName": "Samples",
+  "folderId": "454h6GoA1rZJR7XkbtrZex",
+  "path": "Kites Over Lagos/Paper Planes (2024)/01 - Paper Planes.mp3",
+  "title": "Paper Planes",
+  "album": "Paper Planes",
+  "artistId": "3zFLY5Nyggu0NuVJEMdpZF",
+  "artist": "Kites Over Lagos",
+  "albumArtistId": "3zFLY5Nyggu0NuVJEMdpZF",
+  "albumArtist": "Kites Over Lagos",
+  "albumId": "0f4zLnUzeKdJXzqGPPWjIx",
+  "hasCoverArt": true,
+  "trackNumber": 1,
+  "discNumber": 1,
+  "year": 2024,
+  "date": "2024",
+  "originalYear": 2024,
+  "originalDate": "2024",
+  "releaseYear": 2024,
+  "releaseDate": "2024-02-09",
+  "size": 432032,
+  "suffix": "mp3",
+  "duration": 16.04,
+  "bitRate": 192,
+  "sampleRate": 44100,
+  "channels": 2,
+  "codec": "MP3",
+  "genre": "Afrobeats",
+  "genres": [
+   {
+    "id": "2g1mmJB1b7YlbwJjuAyTik",
+    "name": "Afrobeats"
+   }
+  ],
+  "orderTitle": "paper planes",
+  "orderAlbumName": "paper planes",
+  "orderArtistName": "kites over lagos",
+  "orderAlbumArtistName": "kites over lagos",
+  "compilation": false,
+  "lyrics": "[]",
+  "explicitStatus": "",
+  "mbzRecordingID": "fcd354c8-9ee4-4808-a830-198e1adec0d5",
+  "mbzReleaseTrackId": "29e68614-79bc-4481-bda9-d07e98525404",
+  "mbzAlbumId": "563689ff-4306-46da-9205-3cd7ad7a503c",
+  "mbzReleaseGroupId": "afbc27c1-2d68-4962-9616-f115c88c29a5",
+  "rgAlbumGain": null,
+  "rgAlbumPeak": null,
+  "rgTrackGain": null,
+  "rgTrackPeak": null,
+  "tags": {
+   "disctotal": [
+    "1"
+   ],
+   "genre": [
+    "Afrobeats"
+   ],
+   "isrc": [
+    "NGKOL2400001"
+   ],
+   "tracktotal": [
+    "1"
+   ]
+  },
+  "participants": {
+   "albumartist": [
+    {
+     "id": "3zFLY5Nyggu0NuVJEMdpZF",
+     "name": "Kites Over Lagos",
+     "missing": false
+    }
+   ],
+   "artist": [
+    {
+     "id": "3zFLY5Nyggu0NuVJEMdpZF",
+     "name": "Kites Over Lagos",
+     "missing": false
+    }
+   ]
+  },
+  "missing": false,
+  "birthTime": "2026-10-26T15:00:17.903895205Z",
+  "createdAt": "2026-10-26T15:00:19.667867Z",
+  "updatedAt": "2026-10-26T15:00:18.02074055Z"
+ },
+ {
+  "bookmarkPosition": 0,
+  "id": "1C5Pg7qoSlFSvsBURK7sXr",
+  "libraryId": 1,
+  "libraryPath": "/music/library",
+  "libraryName": "Music Library",
+  "folderId": "1Mej3IXSpnsX1GJZCpl227",
+  "path": "\u00c9l\u00e9onore Br\u00fbl\u00e9/Caf\u00e9 de la M\u00e9moire (2008)/02 - \u00c0lbum de famille.mp3",
+  "title": "\u00c0lbum de famille",
+  "album": "Caf\u00e9 de la M\u00e9moire",
+  "artistId": "6qPKKtKyOfln6euM0SLjm6",
+  "artist": "\u00c9l\u00e9onore Br\u00fbl\u00e9",
+  "albumArtistId": "6qPKKtKyOfln6euM0SLjm6",
+  "albumArtist": "\u00c9l\u00e9onore Br\u00fbl\u00e9",
+  "albumId": "5B3Y2on12j5m6CdV8Mb0FM",
+  "hasCoverArt": true,
+  "trackNumber": 2,
+  "discNumber": 1,
+  "year": 2008,
+  "date": "2008-11-03",
+  "originalYear": 0,
+  "releaseYear": 0,
+  "size": 226528,
+  "suffix": "mp3",
+  "duration": 10.03,
+  "bitRate": 160,
+  "sampleRate": 44100,
+  "channels": 2,
+  "codec": "MP3",
+  "genre": "Chanson",
+  "genres": [
+   {
+    "id": "5ih0qja7dA2Y8PZkODG90m",
+    "name": "Chanson"
+   }
+  ],
+  "orderTitle": "album de famille",
+  "orderAlbumName": "cafe de la memoire",
+  "orderArtistName": "eleonore brule",
+  "orderAlbumArtistName": "eleonore brule",
+  "compilation": false,
+  "lyrics": "[]",
+  "explicitStatus": "",
+  "rgAlbumGain": null,
+  "rgAlbumPeak": null,
+  "rgTrackGain": null,
+  "rgTrackPeak": null,
+  "tags": {
+   "disctotal": [
+    "1"
+   ],
+   "genre": [
+    "Chanson"
+   ],
+   "tracktotal": [
+    "6"
+   ]
+  },
+  "participants": {
+   "albumartist": [
+    {
+     "id": "6qPKKtKyOfln6euM0SLjm6",
+     "name": "\u00c9l\u00e9onore Br\u00fbl\u00e9",
+     "missing": false
+    }
+   ],
+   "artist": [
+    {
+     "id": "6qPKKtKyOfln6euM0SLjm6",
+     "name": "\u00c9l\u00e9onore Br\u00fbl\u00e9",
+     "missing": false
+    }
+   ]
+  },
+  "missing": false,
+  "birthTime": "2026-10-26T15:00:11.77068767Z",
+  "createdAt": "2026-10-26T15:00:19.661576583Z",
+  "updatedAt": "2026-10-26T15:00:11.845402384Z"
+ },
+ {
+  "bookmarkPosition": 0,
+  "id": "1DfYrcbT8ilyRBL8yqwxTJ",
+  "libraryId": 1,
+  "libraryPath": "/music/library",
+  "libraryName": "Music Library",
+  "folderId": "5NHh7ra9JedIGqw4ncvayc",
+  "path": "Aurora Field/Lowlands (2016)/05 - Lowlands.mp3",
+  "title": "Lowlands",
+  "album": "Lowlands",
+  "artistId": "4P6dcXuFfjX7ECrNZl8kpL",
+  "artist": "Aurora Field",
+  "albumArtistId": "4P6dcXuFfjX7ECrNZl8kpL",
+  "albumArtist": "Aurora Field",
+  "albumId": "4PsnaTaRcpeQpaeV9NT0Iy",
+  "hasCoverArt": true,
+  "trackNumber": 5,
+  "discNumber": 1,
+  "year": 2016,
+  "date": "2016",
+  "originalYear": 2016,
+  "originalDate": "2016",
+  "releaseYear": 2016,
+  "releaseDate": "2016",
+  "size": 479627,
+  "suffix": "mp3",
+  "duration": 19.04,
+  "bitRate": 192,
+  "sampleRate": 44100,
+  "channels": 2,
+  "codec": "MP3",
+  "genre": "Ambient",
+  "genres": [
+   {
+    "id": "35NylIdyQvMZdoZg2mR79J",
+    "name": "Ambient"
+   }
+  ],
+  "orderTitle": "lowlands",
+  "orderAlbumName": "lowlands",
+  "orderArtistName": "aurora field",
+  "orderAlbumArtistName": "aurora field",
+  "compilation": false,
+  "lyrics": "[]",
+  "explicitStatus": "",
+  "mbzRecordingID": "b750d98a-8263-4d0f-9155-e1ae7c3b8b89",
+  "mbzReleaseTrackId": "b785a38b-7fc2-4ab2-8529-dec9d30bfb24",
+  "mbzAlbumId": "b83e454c-2d2f-4a6b-93ab-4499bf398959",
+  "mbzReleaseGroupId": "9d8e0b71-1603-4dff-88e1-64bef4cef000",
+  "rgAlbumGain": null,
+  "rgAlbumPeak": null,
+  "rgTrackGain": null,
+  "rgTrackPeak": null,
+  "tags": {
+   "disctotal": [
+    "1"
+   ],
+   "genre": [
+    "Ambient"
+   ],
+   "isrc": [
+    "GBXYZ1600015"
+   ],
+   "tracktotal": [
+    "6"
+   ]
+  },
+  "participants": {
+   "albumartist": [
+    {
+     "id": "4P6dcXuFfjX7ECrNZl8kpL",
+     "name": "Aurora Field",
+     "missing": false
+    }
+   ],
+   "artist": [
+    {
+     "id": "4P6dcXuFfjX7ECrNZl8kpL",
+     "name": "Aurora Field",
+     "missing": false
+    }
+   ]
+  },
+  "missing": false,
+  "birthTime": "2026-10-26T15:00:11.099135045Z",
+  "createdAt": "2026-10-26T15:00:19.650807583Z",
+  "updatedAt": "2026-10-26T15:00:11.23629516Z"
+ },
+ {
+  "bookmarkPosition": 0,
+  "id": "1TbbTlZd3mhCZqNS23Fc3x",
+  "libraryId": 1,
+  "libraryPath": "/music/library",
+  "libraryName": "Music Library",
+  "folderId": "6LgHCCKTD6BITroME8ZXiQ",
+  "path": "The Midnight Cartographers/Atlas of Small Hours (2022)/CD2/2-05 - Home Port.flac",
+  "title": "Home Port",
+  "album": "Atlas of Small Hours",
+  "artistId": "3fdajVl9wRj4B3fxCFXdwX",
+  "artist": "The Midnight Cartographers",
+  "albumArtistId": "3fdajVl9wRj4B3fxCFXdwX",
+  "albumArtist": "The Midnight Cartographers",
+  "albumId": "2MsARQLkcirsVkzR9ovlI4",
+  "hasCoverArt": true,
+  "trackNumber": 5,
+  "discNumber": 2,
+  "year": 2022,
+  "date": "2022-10-21",
+  "originalYear": 2022,
+  "originalDate": "2022-10-21",
+  "releaseYear": 2022,
+  "releaseDate": "2022-10-21",
+  "size": 3116970,
+  "suffix": "flac",
+  "duration": 20,
+  "bitRate": 1236,
+  "sampleRate": 44100,
+  "bitDepth": 24,
+  "channels": 2,
+  "codec": "",
+  "genre": "Indie Rock",
+  "genres": [
+   {
+    "id": "38I0WSpDX37vgWCeeCsuOI",
+    "name": "Indie Rock"
+   }
+  ],
+  "orderTitle": "home port",
+  "orderAlbumName": "atlas of small hours",
+  "orderArtistName": "midnight cartographers",
+  "orderAlbumArtistName": "midnight cartographers",
+  "compilation": false,
+  "lyrics": "[]",
+  "explicitStatus": "",
+  "mbzRecordingID": "425354a9-e8d3-4561-a8a5-6cf481e901f2",
+  "mbzReleaseTrackId": "27ebe019-0535-4c07-bfe3-61bb10f8096a",
+  "mbzAlbumId": "f5fe3ae5-17f3-4748-bc3d-513914f95237",
+  "mbzReleaseGroupId": "58e7bd9f-dbff-45d0-8eaf-700ea8f45ba6",
+  "mbzAlbumType": "album",
+  "rgAlbumGain": null,
+  "rgAlbumPeak": null,
+  "rgTrackGain": null,
+  "rgTrackPeak": null,
+  "tags": {
+   "disctotal": [
+    "2"
+   ],
+   "genre": [
+    "Indie Rock"
+   ],
+   "isrc": [
+    "USMC12200205"
+   ],
+   "releasetype": [
+    "album"
+   ],
+   "tracktotal": [
+    "10"
+   ]
+  },
+  "participants": {
+   "albumartist": [
+    {
+     "id": "3fdajVl9wRj4B3fxCFXdwX",
+     "name": "The Midnight Cartographers",
+     "missing": false
+    }
+   ],
+   "artist": [
+    {
+     "id": "3fdajVl9wRj4B3fxCFXdwX",
+     "name": "The Midnight Cartographers",
+     "missing": false
+    }
+   ]
+  },
+  "missing": false,
+  "birthTime": "2026-10-26T15:00:16.091983696Z",
+  "createdAt": "2026-10-26T15:00:19.647296375Z",
+  "updatedAt": "2026-10-26T15:00:16.239873907Z"
+ },
+ {
+  "bookmarkPosition": 0,
+  "id": "1cc69vqg1M4bSID2HN7Y5e",
+  "libraryId": 1,
+  "libraryPath": "/music/library",
+  "libraryName": "Music Library",
+  "folderId": "2QBCDnkSIZ5MAD8Zlks24y",
+  "path": "The Midnight Cartographers/Atlas of Small Hours (2022)/CD1/1-01 - North by Northwest.flac",
+  "title": "North by Northwest",
+  "album": "Atlas of Small Hours",
+  "artistId": "3fdajVl9wRj4B3fxCFXdwX",
+  "artist": "The Midnight Cartographers",
+  "albumArtistId": "3fdajVl9wRj4B3fxCFXdwX",
+  "albumArtist": "The Midnight Cartographers",
+  "albumId": "2MsARQLkcirsVkzR9ovlI4",
+  "hasCoverArt": true,
+  "trackNumber": 1,
+  "discNumber": 1,
+  "year": 2022,
+  "date": "2022-10-21",
+  "originalYear": 2022,
+  "originalDate": "2022-10-21",
+  "releaseYear": 2022,
+  "releaseDate": "2022-10-21",
+  "size": 1866950,
+  "suffix": "flac",
+  "duration": 12,
+  "bitRate": 1227,
+  "sampleRate": 44100,
+  "bitDepth": 24,
+  "channels": 2,
+  "codec": "",
+  "genre": "Indie Rock",
+  "genres": [
+   {
+    "id": "38I0WSpDX37vgWCeeCsuOI",
+    "name": "Indie Rock"
+   }
+  ],
+  "orderTitle": "north by northwest",
+  "orderAlbumName": "atlas of small hours",
+  "orderArtistName": "midnight cartographers",
+  "orderAlbumArtistName": "midnight cartographers",
+  "compilation": false,
+  "lyrics": "[]",
+  "explicitStatus": "",
+  "mbzRecordingID": "3f5a9861-813a-4d07-939f-510b2d773751",
+  "mbzReleaseTrackId": "86466345-9746-4e1d-b672-4c43d048aed0",
+  "mbzAlbumId": "f5fe3ae5-17f3-4748-bc3d-513914f95237",
+  "mbzReleaseGroupId": "58e7bd9f-dbff-45d0-8eaf-700ea8f45ba6",
+  "mbzAlbumType": "album",
+  "rgAlbumGain": null,
+  "rgAlbumPeak": null,
+  "rgTrackGain": null,
+  "rgTrackPeak": null,
+  "tags": {
+   "disctotal": [
+    "2"
+   ],
+   "genre": [
+    "Indie Rock"
+   ],
+   "isrc": [
+    "USMC12200101"
+   ],
+   "releasetype": [
+    "album"
+   ],
+   "tracktotal": [
+    "10"
+   ]
+  },
+  "participants": {
+   "albumartist": [
+    {
+     "id": "3fdajVl9wRj4B3fxCFXdwX",
+     "name": "The Midnight Cartographers",
+     "missing": false
+    }
+   ],
+   "artist": [
+    {
+     "id": "3fdajVl9wRj4B3fxCFXdwX",
+     "name": "The Midnight Cartographers",
+     "missing": false
+    }
+   ]
+  },
+  "missing": false,
+  "birthTime": "2026-10-26T15:00:14.422381494Z",
+  "createdAt": "2026-10-26T15:00:19.641158667Z",
+  "updatedAt": "2026-10-26T15:00:14.515906637Z"
+ },
+ {
+  "bookmarkPosition": 0,
+  "id": "1eISruIfmfq772WINiwaLQ",
+  "libraryId": 1,
+  "libraryPath": "/music/library",
+  "libraryName": "Music Library",
+  "folderId": "2k8B5K2P70E1md76EJDXuV",
+  "path": "\u5742\u672c\u5149/\u591c\u660e\u3051\u306e\u8857 (2021)/05 - \u591c\u7a7a\u306b\u6eb6\u3051\u308b\u5149\u306e\u3088\u3046\u306b\u3001\u541b\u306e\u540d\u524d\u3092\u4f55\u5ea6\u3082\u547c\u3093\u3060\u3042\u306e\u65e5\u306e\u5e30\u308a\u9053\u3067 (Extended Night-Drive Version, Remastered 2024 \u2014 Live at the Lighthouse).m4a",
+  "title": "\u591c\u7a7a\u306b\u6eb6\u3051\u308b\u5149\u306e\u3088\u3046\u306b\u3001\u541b\u306e\u540d\u524d\u3092\u4f55\u5ea6\u3082\u547c\u3093\u3060\u3042\u306e\u65e5\u306e\u5e30\u308a\u9053\u3067 (Extended Night-Drive Version, Remastered 2024 \u2014 Live at the Lighthouse)",
+  "album": "\u591c\u660e\u3051\u306e\u8857",
+  "artistId": "6vpwOWwcbE4koh7sOTQm6m",
+  "artist": "\u5742\u672c\u5149",
+  "albumArtistId": "6vpwOWwcbE4koh7sOTQm6m",
+  "albumArtist": "\u5742\u672c\u5149",
+  "albumId": "496opfBitKDEHtPzkLuIPd",
+  "hasCoverArt": true,
+  "trackNumber": 5,
+  "discNumber": 1,
+  "year": 2021,
+  "date": "2021-07-07",
+  "originalYear": 0,
+  "releaseYear": 2021,
+  "releaseDate": "2021-07-07",
+  "size": 497999,
+  "suffix": "m4a",
+  "duration": 20.02,
+  "bitRate": 192,
+  "sampleRate": 44100,
+  "bitDepth": 16,
+  "channels": 2,
+  "codec": "AAC",
+  "genre": "J-Pop",
+  "genres": [
+   {
+    "id": "5UtiHKOdVfM0juREGPEx6E",
+    "name": "J-Pop"
+   }
+  ],
+  "orderTitle": "\u591c\u7a7a\u306b\u6eb6\u3051\u308b\u5149\u306e\u3088\u3046\u306b\u3001\u541b\u306e\u540d\u524d\u3092\u4f55\u5ea6\u3082\u547c\u3093\u3060\u3042\u306e\u65e5\u306e\u5e30\u308a\u9053\u3067 (extended night-drive version, remastered 2024 - live at the lighthouse)",
+  "orderAlbumName": "\u591c\u660e\u3051\u306e\u8857",
+  "orderArtistName": "\u5742\u672c\u5149",
+  "orderAlbumArtistName": "\u5742\u672c\u5149",
+  "compilation": false,
+  "lyrics": "[]",
+  "explicitStatus": "",
+  "rgAlbumGain": null,
+  "rgAlbumPeak": null,
+  "rgTrackGain": null,
+  "rgTrackPeak": null,
+  "tags": {
+   "disctotal": [
+    "1"
+   ],
+   "encodedby": [
+    "Lavf63.1.102"
+   ],
+   "genre": [
+    "J-Pop"
+   ],
+   "tracktotal": [
+    "7"
+   ]
+  },
+  "participants": {
+   "albumartist": [
+    {
+     "id": "6vpwOWwcbE4koh7sOTQm6m",
+     "name": "\u5742\u672c\u5149",
+     "missing": false
+    }
+   ],
+   "artist": [
+    {
+     "id": "6vpwOWwcbE4koh7sOTQm6m",
+     "name": "\u5742\u672c\u5149",
+     "missing": false
+    }
+   ]
+  },
+  "missing": false,
+  "birthTime": "2026-10-26T15:00:13.472296619Z",
+  "createdAt": "2026-10-26T15:00:19.664720417Z",
+  "updatedAt": "2026-10-26T15:00:13.658883943Z"
+ },
+ {
+  "bookmarkPosition": 0,
+  "id": "1zMagoMlaawgzEoadkw1bK",
+  "libraryId": 1,
+  "libraryPath": "/music/library",
+  "libraryName": "Music Library",
+  "folderId": "2k8B5K2P70E1md76EJDXuV",
+  "path": "\u5742\u672c\u5149/\u591c\u660e\u3051\u306e\u8857 (2021)/06 - \u661f\u5c51.m4a",
+  "title": "\u661f\u5c51",
+  "album": "\u591c\u660e\u3051\u306e\u8857",
+  "artistId": "6vpwOWwcbE4koh7sOTQm6m",
+  "artist": "\u5742\u672c\u5149",
+  "albumArtistId": "6vpwOWwcbE4koh7sOTQm6m",
+  "albumArtist": "\u5742\u672c\u5149",
+  "albumId": "496opfBitKDEHtPzkLuIPd",
+  "hasCoverArt": true,
+  "trackNumber": 6,
+  "discNumber": 1,
+  "year": 2021,
+  "date": "2021-07-07",
+  "originalYear": 0,
+  "releaseYear": 2021,
+  "releaseDate": "2021-07-07",
+  "size": 280433,
+  "suffix": "m4a",
+  "duration": 11.02,
+  "bitRate": 192,
+  "sampleRate": 44100,
+  "bitDepth": 16,
+  "channels": 2,
+  "codec": "AAC",
+  "genre": "J-Pop",
+  "genres": [
+   {
+    "id": "5UtiHKOdVfM0juREGPEx6E",
+    "name": "J-Pop"
+   }
+  ],
+  "orderTitle": "\u661f\u5c51",
+  "orderAlbumName": "\u591c\u660e\u3051\u306e\u8857",
+  "orderArtistName": "\u5742\u672c\u5149",
+  "orderAlbumArtistName": "\u5742\u672c\u5149",
+  "compilation": false,
+  "lyrics": "[]",
+  "explicitStatus": "",
+  "rgAlbumGain": null,
+  "rgAlbumPeak": null,
+  "rgTrackGain": null,
+  "rgTrackPeak": null,
+  "tags": {
+   "disctotal": [
+    "1"
+   ],
+   "encodedby": [
+    "Lavf63.1.102"
+   ],
+   "genre": [
+    "J-Pop"
+   ],
+   "tracktotal": [
+    "7"
+   ]
+  },
+  "participants": {
+   "albumartist": [
+    {
+     "id": "6vpwOWwcbE4koh7sOTQm6m",
+     "name": "\u5742\u672c\u5149",
+     "missing": false
+    }
+   ],
+   "artist": [
+    {
+     "id": "6vpwOWwcbE4koh7sOTQm6m",
+     "name": "\u5742\u672c\u5149",
+     "missing": false
+    }
+   ]
+  },
+  "missing": false,
+  "birthTime": "2026-10-26T15:00:13.74735606Z",
+  "createdAt": "2026-10-26T15:00:19.665068875Z",
+  "updatedAt": "2026-10-26T15:00:13.854637397Z"
+ }
+]

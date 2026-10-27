@@ -1,0 +1,34 @@
+{
+ "subsonic-response": {
+  "status": "ok",
+  "version": "1.16.1",
+  "type": "navidrome",
+  "serverVersion": "0.64.2 (10114574)",
+  "openSubsonic": true,
+  "lyricsList": {
+   "structuredLyrics": [
+    {
+     "displayArtist": "Aurora Field",
+     "displayTitle": "First Light",
+     "lang": "eng",
+     "offset": 0,
+     "synced": true,
+     "line": [
+      {
+       "start": 0,
+       "value": "Before the dawn"
+      },
+      {
+       "start": 4200,
+       "value": "The static hums"
+      },
+      {
+       "start": 9000,
+       "value": ""
+      }
+     ]
+    }
+   ]
+  }
+ }
+}
