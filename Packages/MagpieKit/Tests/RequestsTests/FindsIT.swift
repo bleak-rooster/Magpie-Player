@@ -74,6 +74,12 @@ struct FindsIT {
                                                 losslessProfileId: provisioned.losslessProfileId,
                                                 findTagId: provisioned.findTagId)
         let ledger = Ledger(fileURL: dir.appending(path: "ledger.json"), instance: client.instanceScope)
+        // FM1: the runner's gate confines Keep's move and Not for me's deletes, like the app's (same switch and log).
+        let confinedGate = LidarrWriteGate(
+            client: client, logURL: dir.appending(path: "log.json"), defaultsSuite: suite,
+            confinement: WriteConfinement(ledger: ledger, roots: {
+                .init(mainRoot: keepSetup.mainRoot, findsRoot: keepSetup.findsRoot, findTagId: keepSetup.findTagId)
+            }))
         let library = LibraryAccess(
             startScan: { try await navidrome.startScan(target: nil) },
             isScanning: { try await navidrome.scanStatus() },
@@ -91,7 +97,7 @@ struct FindsIT {
                 let folder = artistPath.split(separator: "/").last.map(String.init) ?? ""
                 return try await navidrome.songs(recordingMBID: id, inLibrary: main.id, under: folder).first
             })
-        let runner = RequestRunner(lidarr: client, gate: gate, ledger: ledger, mb: mb, library: library,
+        let runner = RequestRunner(lidarr: client, gate: confinedGate, ledger: ledger, mb: mb, library: library,
                                    store: RequestStore(fileURL: dir.appending(path: "requests.json")),
                                    setup: { setup }, keepSetup: { keepSetup })
 
@@ -216,10 +222,11 @@ struct FindsIT {
         // Clean up: the artist Magpie created (files kept by Lidarr: deleteFiles=false), then its folder on the dev
         // data volume, then a scan so Navidrome lets the songs go.
         try? FileManager.default.removeItem(at: downloads)
+        // Straight to the dev Lidarr (`devLidarr`): the gate (FM1) refuses deleting a kept artist, by design.
         if let createdArtistId {
             try await TryIT.waitForRefresh(client)
-            _ = try await gate.send("DELETE", "artist/\(createdArtistId)?deleteFiles=false&addImportListExclusion=false",
-                                    body: nil)
+            _ = try await Self.devLidarr("DELETE", "artist/\(createdArtistId)",
+                                         query: ["deleteFiles": "false", "addImportListExclusion": "false"])
         }
         _ = artistFolder
         var removed = false
@@ -345,7 +352,7 @@ struct FindsIT {
         guard (200..<300).contains(status) else {
             throw TryDevStack.NotDevStack(description: "\(method) \(path): HTTP \(status) \(String(decoding: data.prefix(300), as: UTF8.self))")
         }
-        let json = try JSONSerialization.jsonObject(with: data)
+        let json = data.isEmpty ? [String: Any]() : try JSONSerialization.jsonObject(with: data)   // a DELETE: no body
         if array { return ["rows": json as? [Any] ?? []] }
         return json as? [String: Any] ?? [:]
     }

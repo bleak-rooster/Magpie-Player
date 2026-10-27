@@ -71,11 +71,15 @@ extension AppModel {
             requests = []
             return
         }
-        let gate = LidarrWriteGate(client: client, logURL: LidarrWriteGate.defaultLogURL(in: dataDirectory),
-                                   defaultsSuite: gateDefaultsSuite)
         // CRITICAL 1: one ledger view and one requests file per Lidarr server.
         let scope = client.instanceScope
         let ledger = Ledger(fileURL: Ledger.defaultURL(in: dataDirectory), instance: scope)
+        // FM1: the gate confines deletes and artist edits itself, from this ledger and the owner's setup.
+        let confinement = WriteConfinement(ledger: ledger, roots: { [weak self] in
+            await self?.gateRoots ?? WriteConfinement.Roots(mainRoot: nil, findsRoot: nil, findTagId: nil)
+        })
+        let gate = LidarrWriteGate(client: client, logURL: LidarrWriteGate.defaultLogURL(in: dataDirectory),
+                                   defaultsSuite: gateDefaultsSuite, confinement: confinement)
         let requestStore = RequestStore(fileURL: RequestStore.defaultURL(in: dataDirectory, instance: scope))
         self.ledger = ledger
         self.requestStore = requestStore
@@ -104,6 +108,13 @@ extension AppModel {
             self?.pollRequests()
         })
         if lidarrStatus == nil { Task { _ = await lidarrAudit() } }
+    }
+
+    /// FM1: what the write gate confines deletes and moves to: the main root, the confirmed Finds root and the
+    /// `magpie-find` tag, as the owner set them up (the gate checks them against Lidarr's fresh root folders).
+    var gateRoots: WriteConfinement.Roots {
+        WriteConfinement.Roots(mainRoot: lidarrSetup?.rootFolderPath, findsRoot: findsSetup?.findsRoot,
+                               findTagId: lidarrSetup?.findTagId)
     }
 
     /// The library as the runner sees it: plain quick scan (A12), the shared match index.

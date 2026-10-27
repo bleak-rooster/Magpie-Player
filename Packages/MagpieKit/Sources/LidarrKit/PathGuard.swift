@@ -79,6 +79,15 @@ public struct PathGuard: Sendable, Equatable {
         return result
     }
 
+    /// G2 on fresh state: `finds` is one of Lidarr's `roots` (byte-exact after standardising) and still passes
+    /// `validateRoot` against every other root and the main root.
+    public static func findsRootStillValid(_ finds: String, main: String, roots: [String]) -> Bool {
+        guard let f = standardize(finds).map({ Array($0.utf8) }) else { return false }
+        let isFinds = { (p: String) in standardize(p).map { Array($0.utf8) == f } ?? false }
+        guard roots.contains(where: isFinds) else { return false }
+        return validateRoot(finds, others: roots.filter { !isFinds($0) } + [main]) == .ok
+    }
+
     /// The lexical standard form of an absolute POSIX path (`/a/b`, `/` for the root); nil when not absolute.
     /// `..` above `/` stays at `/`, as on a real filesystem.
     public static func standardize(_ path: String) -> String? {

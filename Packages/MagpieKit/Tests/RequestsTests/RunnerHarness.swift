@@ -442,8 +442,22 @@ final class FakeLidarr: @unchecked Sendable {
                 return (song + extra).filter { row in
                     (artistId == nil || row.1 == artistId) && (albumId == nil || row.2 == albumId)
                         && (artistId != nil || albumId != nil)
-                }.map { ["id": $0.0, "path": $0.3, "albumId": $0.2] as [String: Any] }
+                }.map { ["id": $0.0, "path": $0.3, "albumId": $0.2, "artistId": $0.1] as [String: Any] }
             })
+        }
+        // The write gate reads each track file before deleting it (FM1).
+        for id in 1...4 {
+            t.stub(pathSuffix: "/api/v1/trackfile/\(id)") { [self] _ in
+                let row: [String: Any]? = with { s in
+                    if id == 1, let a = s.artists.first(where: { $0.recorded != nil }) {
+                        return ["id": 1, "artistId": a.id, "albumId": 50, "path": a.recorded! + "/" + FakeLidarr.songFile]
+                    }
+                    return s.extraFiles.first { $0.id == id && $0.recorded }.map {
+                        ["id": $0.id, "artistId": $0.artistId, "albumId": $0.albumId, "path": $0.path]
+                    }
+                }
+                return row.map { reply($0) } ?? MockTransport.Response(status: 404)
+            }
         }
         t.stub(pathSuffix: "/api/v1/album") { [self] req in
             if let d = down() { return d }
@@ -652,9 +666,15 @@ struct Harness {
         let lidarr = existing ?? FakeLidarr()
         library = FakeLibrary(events: lidarr.events)
         let client = LidarrClient(base: base, apiKey: "k", transport: lidarr.clientTransport)
-        gate = LidarrWriteGate(client: client, logURL: dir.appending(path: "log.json"), defaultsSuite: suite)
-        await gate.setEnabled(changesOn)
         ledger = Ledger(fileURL: dir.appending(path: "ledger.json"), instance: client.instanceScope)
+        // FM1: the gate confines deletes and artist edits from the ledger and the owner's setup, like the app's.
+        let confinement = WriteConfinement(ledger: ledger, roots: {
+            WriteConfinement.Roots(mainRoot: keep?.mainRoot ?? setup.rootFolderPath, findsRoot: keep?.findsRoot,
+                                   findTagId: keep?.findTagId)
+        })
+        gate = LidarrWriteGate(client: client, logURL: dir.appending(path: "log.json"), defaultsSuite: suite,
+                               confinement: confinement)
+        await gate.setEnabled(changesOn)
         store = RequestStore(fileURL: RequestStore.defaultURL(in: dir, instance: client.instanceScope))
         let mb = MusicBrainzClient(transport: lidarr.clientTransport,
                                    limiter: RateLimiter(perSecond: 1_000, sleep: { _ in }))

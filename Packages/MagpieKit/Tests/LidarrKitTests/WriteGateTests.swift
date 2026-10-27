@@ -214,6 +214,9 @@ struct GateEnv {
         Call("PUT", "artist/editor", #"{"artistIds":[1],"monitorNewItems":"all","qualityProfileId":3}"#),
         Call("PUT", "artist/editor", #"{"artistIds":[1],"MonitorNewItems":"new","rootFolderPath":"/x"}"#),
         Call("PUT", "artist/editor", #"{"monitorNewItems":"new"}"#),
+        // Security L9 / FM1: whole-resource PUTs of an artist or album (no caller; they could change anything).
+        Call("PUT", "artist/12", #"{"id":12,"monitored":true}"#),
+        Call("PUT", "album/3", #"{"id":3,"monitored":true}"#),
     ]
 
     @Test(arguments: forbidden)
@@ -257,8 +260,18 @@ struct GateEnv {
         t.stub(method: "DELETE", pathSuffix: "/api/v1/artist/12", body: json("{}"))
         t.stub(method: "PUT", pathSuffix: "/api/v1/album/monitor", body: json("[]"))
         t.stub(method: "POST", pathSuffix: "/api/v1/command", body: json(#"{"id":99}"#))
+        // FM1: the artist delete is confined to a find Magpie created (ledger, fresh reads).
+        t.stub(pathSuffix: "/api/v1/rootfolder", body: json(#"[{"id":1,"path":"/music/library"},{"id":2,"path":"/music/samples"}]"#))
+        t.stub(pathSuffix: "/api/v1/artist/12", body: json(#"{"id":12,"artistName":"F","path":"/music/samples/F","tags":[2]}"#))
         let (client, _) = makeClient(t)
-        let gate = await env.gate(client, enabled: true)
+        let ledger = Ledger(fileURL: nil, instance: client.instanceScope)
+        try await ledger.record(LedgerEntry(lidarrArtistId: 12, albumId: 3, rgMbid: MBID("00000000-0000-0000-0000-000000000003")!,
+                                            createdArtist: true, wasMonitoredBefore: false, root: "/music/samples", mode: .finds))
+        let gate = LidarrWriteGate(client: client, logURL: env.logURL, defaultsSuite: env.defaults,
+                                   confinement: WriteConfinement(ledger: ledger, roots: {
+                                       .init(mainRoot: "/music/library", findsRoot: "/music/samples", findTagId: 2)
+                                   }))
+        await gate.setEnabled(true)
 
         let created = try await gate.send("POST", "tag", body: JSONValue.object(["label": .string("magpie")]))
         #expect(try JSONDecoder().decode(JSONValue.self, from: created)["id"]?.intValue == 4)
@@ -266,7 +279,7 @@ struct GateEnv {
         _ = try await gate.send("PUT", "album/monitor", body: JSONValue.object(["albumIds": .array([.int(3)]), "monitored": .bool(false)]))
         _ = try await gate.send("POST", "command", body: JSONValue.object(["name": .string("AlbumSearch"), "albumIds": .array([.int(3)])]))
 
-        let requests = t.requests
+        let requests = t.requests.filter { $0.httpMethod != "GET" }
         #expect(requests.map { $0.httpMethod ?? "" } == ["POST", "DELETE", "PUT", "POST"])
         #expect(requests[0].url?.absoluteString == "https://music.example/lidarr/api/v1/tag")
         #expect(requests[0].value(forHTTPHeaderField: "X-Api-Key") == testKey)
@@ -392,23 +405,10 @@ struct GateEnv {
         Call("POST", "qualityprofile", #"{"name":"Magpie Lossless"}"#),
         Call("POST", "metadataprofile", #"{"name":"Magpie Finds"}"#),
         Call("POST", "artist", #"{"foreignArtistId":"x","addOptions":{"monitor":"none"}}"#),
-        Call("PUT", "artist/12", #"{"id":12,"monitored":true}"#),
-        Call("PUT", "//API//V1//Artist//Editor//", #"{"artistIds":[12],"tags":[2],"applyTags":"remove"}"#),
-        Call("PUT", "artist/editor", #"{"artistIds":[12],"tags":[2],"applyTags":"add"}"#),
-        Call("PUT", "artist/editor", #"{"artistIds":[12],"rootFolderPath":"/music/library","moveFiles":true}"#),
-        Call("PUT", "artist/editor", #"{"artistIds":[12],"monitorNewItems":"new"}"#),
-        Call("PUT", "artist/editor", #"{"ArtistIds":[12],"MonitorNewItems":"New"}"#),
         Call("PUT", "album/monitor", #"{"albumIds":[3],"monitored":true}"#),
         Call("PUT", "album/monitor", #"{"albumIds":[3,4,5],"monitored":true}"#),
-        Call("PUT", "album/3", #"{"id":3,"monitored":true}"#),
-        Call("DELETE", "artist/12?deleteFiles=false&addImportListExclusion=false"),
-        Call("DELETE", "artist/12?AddImportListExclusion=FALSE&deleteFiles=False"),
         Call("POST", "command", #"{"name":"AlbumSearch","albumIds":[3]}"#),
         Call("POST", "command", #"{"name":"RefreshArtist","artistId":12}"#),
-        Call("DELETE", "trackfile/9"),
-        Call("DELETE", "/API/V1/TrackFile/9/"),
-        Call("DELETE", "trackfile/bulk", #"{"trackFileIds":[9,10]}"#),
-        Call("DELETE", "/api/v1/TrackFile/Bulk", #"{"trackFileIds":[9]}"#),
     ]
 
     @Test(arguments: allowed)

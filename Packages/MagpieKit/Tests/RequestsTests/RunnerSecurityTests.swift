@@ -130,4 +130,37 @@ import MagpieCore
         #expect(h.server.writeBodies().map(\.0) == ["PUT album/monitor"], "no AlbumSearch")
         #expect(isWaiting(await h.state(id)))
     }
+
+    /// FM1: the gate holds even when the runner is bypassed. The owner's artist 7 looks exactly like a find (in the
+    /// Finds root, tagged `magpie-find`, a track file there) and a Try on it ledgered the album; but the ledger
+    /// never says Magpie created it, so every destructive write sent straight to the gate is refused.
+    @Test func ownerArtistIsSafeWhenTheRunnerIsBypassed() async throws {
+        let h = await Harness(setup: Harness.findsSetup)
+        h.server.ownerHasArtist(albumMonitored: false)
+        h.server.with { s in
+            s.artists[0].root = "/music/samples"
+            s.artists[0].tags = [1, 2]
+            s.extraFiles = [.init(id: 2, artistId: 7, albumId: 31, path: "/music/samples/Aurora Field/Lowlands/01.flac",
+                                  onDisk: "/music/samples/Aurora Field/Lowlands/01.flac")]
+        }
+        _ = try await h.runner.tryRecording(h.recording(recAlbumOnly), tier: .standard)
+        await h.runner.settle()
+        #expect(try await h.ledger.entries.contains { $0.lidarrArtistId == 7 && !$0.createdArtist })
+        let before = h.server.writes.count
+        let calls: [(String, String, (any Encodable & Sendable)?)] = [
+            ("DELETE", "artist/7?deleteFiles=false&addImportListExclusion=false", nil),
+            ("DELETE", "trackfile/2", nil),
+            ("DELETE", "trackfile/bulk", RequestRunner.TrackFileIdsBody(trackFileIds: [2])),
+            ("PUT", "artist/editor", RequestRunner.MoveBody(artistIds: [7], rootFolderPath: "/music/library", moveFiles: true,
+                                                            qualityProfileId: 9, tags: [2], applyTags: "remove")),
+            ("PUT", "artist/editor", RequestRunner.UntagBody(artistIds: [7], tags: [2], applyTags: "remove")),
+        ]
+        for (method, path, body) in calls {
+            await #expect(throws: WriteGateError.self, "\(method) \(path)") {
+                _ = try await h.gate.send(method, path, body: body)
+            }
+        }
+        #expect(h.server.writes.count == before, "nothing reached Lidarr")
+        #expect(h.server.with { $0.artists.count == 1 && $0.extraFiles.count == 1 })
+    }
 }

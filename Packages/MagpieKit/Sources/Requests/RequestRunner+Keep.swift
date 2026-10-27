@@ -206,7 +206,7 @@ extension RequestRunner {
             await nothingKept(id, artistId)   // the gate throws before anything leaves the device
             switch refusal {
             case .disabled: throw KeepError.changesOff
-            case .logUnavailable: throw KeepError.unavailable
+            case .logUnavailable, .unconfirmed: throw KeepError.unavailable
             case .forbidden, .invalidRequest: throw KeepError.moveFailed
             }
         } catch let error where Self.isDefinitiveRejection(error) {

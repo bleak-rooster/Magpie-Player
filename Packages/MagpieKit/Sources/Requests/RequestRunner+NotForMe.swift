@@ -350,7 +350,7 @@ extension RequestRunner {
     private static func error(for refusal: WriteGateError) -> NotForMeError {
         switch refusal {
         case .disabled: .changesOff
-        case .logUnavailable: .unavailable
+        case .logUnavailable, .unconfirmed: .unavailable
         case .forbidden, .invalidRequest: .failed
         }
     }

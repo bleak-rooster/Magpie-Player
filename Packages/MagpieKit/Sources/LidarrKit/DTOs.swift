@@ -494,10 +494,14 @@ public struct TrackFile: Sendable, Equatable, Decodable {
     /// Quality name such as `FLAC` or `MP3-320`.
     public var quality: String?
     public var albumId: Int?
+    /// The artist the file belongs to (the write gate confines track file deletes to Magpie's finds, FM1).
+    public var artistId: Int?
     public var size: Int64?
 
-    public init(id: Int, path: String, quality: String? = nil, albumId: Int? = nil, size: Int64? = nil) {
-        self.id = id; self.path = path; self.quality = quality; self.albumId = albumId; self.size = size
+    public init(id: Int, path: String, quality: String? = nil, albumId: Int? = nil, artistId: Int? = nil,
+                size: Int64? = nil) {
+        self.id = id; self.path = path; self.quality = quality; self.albumId = albumId; self.artistId = artistId
+        self.size = size
     }
 
     public init(from decoder: Decoder) throws {
@@ -505,6 +509,7 @@ public struct TrackFile: Sendable, Equatable, Decodable {
         id = try c.requiredInt("id")
         path = c.value("path") ?? ""
         albumId = c.int("albumId")
+        artistId = c.int("artistId")
         size = c.value("size", as: Int64.self)
         let outer = try? c.nestedContainer(keyedBy: AnyKey.self, forKey: AnyKey("quality"))
         let inner = try? outer?.nestedContainer(keyedBy: AnyKey.self, forKey: AnyKey("quality"))

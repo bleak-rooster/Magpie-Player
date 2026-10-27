@@ -303,7 +303,7 @@ extension RequestRunner {
     static func bringInError(_ error: Error) -> BringInError {
         switch error as? WriteGateError {
         case .disabled?: .changesOff
-        case .logUnavailable?: .unavailable
+        case .logUnavailable?, .unconfirmed?: .unavailable
         default: .failed
         }
     }

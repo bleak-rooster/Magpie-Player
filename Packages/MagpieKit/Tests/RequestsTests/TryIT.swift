@@ -201,12 +201,13 @@ struct TryIT {
             Issue.record(error)
         }
 
-        // Clean up: only the artist Magpie created, through the gate's one allowed delete shape. Not while
-        // Lidarr is still refreshing it (a refresh in flight re-creates a deleted artist).
+        // Clean up: only the artist Magpie created, with deleteFiles=false. Not while Lidarr is still refreshing it
+        // (a refresh in flight re-creates a deleted artist). Straight to the dev Lidarr (`devLidarr`, G0 checked
+        // above): the gate confines artist deletes to finds in the Finds folder (FM1), and this one may not be.
         if let createdArtistId {
             try await Self.waitForRefresh(client)
-            _ = try await gate.send("DELETE", "artist/\(createdArtistId)?deleteFiles=false&addImportListExclusion=false",
-                                    body: nil)
+            _ = try await FindsIT.devLidarr("DELETE", "artist/\(createdArtistId)",
+                                            query: ["deleteFiles": "false", "addImportListExclusion": "false"])
         }
     }
 

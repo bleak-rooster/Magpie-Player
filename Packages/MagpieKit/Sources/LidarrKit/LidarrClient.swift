@@ -141,6 +141,9 @@ public struct LidarrClient: Sendable {
         try await list(TrackFile.self, "trackfile", [URLQueryItem(name: "albumId", value: String(albumId))])
     }
 
+    /// One track file (the write gate reads each file before it lets a delete through, FM1).
+    public func trackFile(id: Int) async throws -> TrackFile { try await decode(TrackFile.self, "trackfile/\(id)") }
+
     // MARK: - Progress
 
     /// Queue entries for the given albums (all entries when `albumIds` is empty). A14: use `QueueItem.progress`.

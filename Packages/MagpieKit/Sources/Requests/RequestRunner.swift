@@ -782,10 +782,7 @@ public actor RequestRunner {
     /// spelling, byte for byte, after standardising), and neither equals, holds nor sits inside any other root
     /// folder or the main root.
     static func findsRootStillValid(_ finds: String, main: String, roots: [String]) -> Bool {
-        guard let f = PathGuard.standardize(finds).map({ Array($0.utf8) }) else { return false }
-        let isFinds = { (p: String) in PathGuard.standardize(p).map { Array($0.utf8) == f } ?? false }
-        guard roots.contains(where: isFinds) else { return false }
-        return PathGuard.validateRoot(finds, others: roots.filter { !isFinds($0) } + [main]) == .ok
+        PathGuard.findsRootStillValid(finds, main: main, roots: roots)
     }
 
     static func addArtistBody(lookup: JSONValue, setup: Setup, releaseGroup: MBID) throws -> JSONValue {
@@ -1099,7 +1096,7 @@ public actor RequestRunner {
         case let e as WriteGateError:
             switch e {
             case .forbidden, .invalidRequest: return .error(.addFailed)
-            case .disabled, .logUnavailable: return .lidarrUnavailable
+            case .disabled, .logUnavailable, .unconfirmed: return .lidarrUnavailable
             }
         case let e as LidarrError:
             if case .http(let status) = e, (400..<500).contains(status), status != 408, status != 429 {
