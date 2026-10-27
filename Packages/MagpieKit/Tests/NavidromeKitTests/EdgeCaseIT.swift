@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import MagpieCore
+import MagpieTestSupport
 @testable import NavidromeKit
 
 /// Task 8.1 against the real dev-stack Navidrome (G0: local host and dev marker only, read-only calls): the error
@@ -13,7 +14,7 @@ struct EdgeCaseIT {
         let cfg = try DevStack.load()
         let client = NavidromeClient(endpoint: ServerEndpoint(bases: [cfg.url]),
                                      credentials: NavidromeCredentials(username: cfg.user, password: cfg.password),
-                                     transport: URLSessionTransport())
+                                     transport: SharedLoginTransport())
 
         // An unknown id is Subsonic `failed` code 70 in an HTTP 200, surfaced as `.api(70, _)`.
         do {

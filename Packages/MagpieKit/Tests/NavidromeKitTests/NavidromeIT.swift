@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import MagpieCore
+import MagpieTestSupport
 @testable import NavidromeKit
 
 /// Integration tests against the local dev stack. Run via `scripts/it.sh` (sets MAGPIE_IT=1).
@@ -46,7 +47,7 @@ struct NavidromeIT {
         let cfg = try DevStack.load()
         return NavidromeClient(endpoint: ServerEndpoint(bases: [cfg.url]),
                                credentials: NavidromeCredentials(username: cfg.user, password: cfg.password),
-                               transport: URLSessionTransport())
+                               transport: SharedLoginTransport())
     }
 
     @Test func connectBrowsePlayableStream() async throws {

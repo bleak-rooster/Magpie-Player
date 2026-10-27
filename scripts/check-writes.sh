@@ -5,12 +5,13 @@
 #   - a "POST" / "PUT" / "DELETE" / "PATCH" literal, except as the verb of `gate.send(...)` (which is the gate).
 # Comment lines are ignored. Allowlist (file, and a path that must appear on the 3 lines above the hit):
 #   NavidromeKit/NavidromeClient.swift  auth/login   Navidrome sign-in, not Lidarr.
+#   MagpieTestSupport/SharedLoginTransport.swift  auth/login   IT helper sharing that Navidrome sign-in (H1).
 # G1_SRC overrides the tree to scan (used to check this script against a planted violation).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 src="${G1_SRC:-Packages/MagpieKit/Sources}"
 gate="$src/LidarrKit/WriteGate.swift"
-allow=("NavidromeKit/NavidromeClient.swift|auth/login")
+allow=("NavidromeKit/NavidromeClient.swift|auth/login" "MagpieTestSupport/SharedLoginTransport.swift|auth/login")
 
 hits=$(
   {

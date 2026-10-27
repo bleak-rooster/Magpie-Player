@@ -50,6 +50,10 @@ enum TryDevStack {
         return (url, key)
     }
 
+    /// MusicBrainz for the ITs (Task H1): the captured answer for the test recording, never musicbrainz.org (its
+    /// 503s made the ITs flaky, and tests contact no outside service). The client and its limiter are the app's.
+    static func musicBrainz() -> MusicBrainzClient { MusicBrainzClient(transport: FixtureMusicBrainz()) }
+
     static func client() async throws -> LidarrClient {
         let (url, key) = try lidarrAccess()
         let client = LidarrClient(base: url, apiKey: key, transport: URLSessionTransport())
@@ -59,6 +63,22 @@ enum TryDevStack {
             throw NotDevStack(description: "not the dev stack's Lidarr (instance \(status.instanceName))")
         }
         return client
+    }
+}
+
+/// Answers `GET ws/2/recording/<TryIT.recording>` from `Tests/Fixtures/musicbrainz`; refuses anything else. The
+/// fixture was captured without `artist-credits`, so the credit (Judie Tzuke, `TryIT.artist`) is added here.
+struct FixtureMusicBrainz: HTTPTransport {
+    static let fixture = TryDevStack.repoRoot
+        .appending(path: "Packages/MagpieKit/Tests/Fixtures/musicbrainz/recording-c2272a15.json")
+
+    func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        guard let url = request.url, url.host == MusicBrainzClient.base.host,
+              url.path == "/ws/2/recording/\(TryIT.recording.rawValue)" else { throw URLError(.notConnectedToInternet) }
+        var json = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: Self.fixture)) as? [String: Any])
+        json["artist-credit"] = [["name": "Judie Tzuke", "artist": ["id": TryIT.artist.rawValue, "name": "Judie Tzuke"]]]
+        let data = try JSONSerialization.data(withJSONObject: json)
+        return (data, HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: nil)!)
     }
 }
 
@@ -95,13 +115,12 @@ struct TryIT {
     private func run(finds: Bool) async throws {
         let name = finds ? "findsOnDevStack" : "fallbackOnDevStack"
         let client = try await TryDevStack.client()
-        let mb = MusicBrainzClient(transport: URLSessionTransport())
+        let mb = TryDevStack.musicBrainz()
 
-        // The external metadata (Lidarr's metadata server and MusicBrainz) must answer, else SKIP.
+        // Lidarr's metadata server (asked by the dev Lidarr itself) must answer, else SKIP.
         let lookup: JSONValue?
         do {
             lookup = try await client.artistLookupJSON(mbid: Self.artist)
-            _ = try await mb.recording(Self.recording)
         } catch {
             print("SKIP TryIT.\(name): external metadata server unreachable (\(error))")
             return

@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import MagpieCore
+import MagpieTestSupport
 import ListenBrainzKit
 import NavidromeKit
 @testable import LidarrKit
@@ -28,13 +29,12 @@ struct FindsIT {
 
     private func run(letGo: Bool) async throws {
         let client = try await TryDevStack.client()
-        let mb = MusicBrainzClient(transport: URLSessionTransport())
+        let mb = TryDevStack.musicBrainz()
         do {
             guard try await client.artistLookupJSON(mbid: TryIT.artist) != nil else {
                 print("SKIP FindsIT: Lidarr's metadata server doesn't know the test artist")
                 return
             }
-            _ = try await mb.recording(TryIT.recording)
         } catch {
             print("SKIP FindsIT: external metadata server unreachable (\(error))")
             return
@@ -44,7 +44,7 @@ struct FindsIT {
         let fixture = TryDevStack.repoRoot.appending(path: Self.fixture)
         try #require(FileManager.default.fileExists(atPath: fixture.path), "run dev/bootstrap.sh (fixtures)")
 
-        // Navidrome: one login for the whole test (it rate-limits /auth/login).
+        // Navidrome: one login shared by every IT (it rate-limits /auth/login).
         let env = try TryDevStack.env()
         guard let ndURL = env["NAVIDROME_URL"].flatMap(URL.init(string:)), let host = ndURL.host,
               ["127.0.0.1", "localhost"].contains(host),
@@ -53,7 +53,7 @@ struct FindsIT {
         }
         let navidrome = NavidromeClient(endpoint: ServerEndpoint(bases: [ndURL]),
                                         credentials: NavidromeCredentials(username: user, password: password),
-                                        transport: URLSessionTransport())
+                                        transport: SharedLoginTransport())
         _ = try await navidrome.connect()
         let libraries = try await navidrome.libraries()
         let main = try #require(libraries.first { $0.path == "/music/library" })
@@ -245,8 +245,9 @@ struct FindsIT {
         let files = try await client.trackFiles(albumId: albumId)
         try #require(!files.isEmpty)
         let check = try await runner.notForMeCheck(id)
-        let recycleBin = try await client.recycleBin()
-        #expect(check.permanent == (recycleBin == nil))
+        // The dev stack's Lidarr has no recycle bin (bootstrap leaves it unset): the sheet must say permanent.
+        try #require(try await client.recycleBin() == nil, "the dev Lidarr has a recycle bin set; unset it")
+        #expect(check.permanent)
         var outcome = try await runner.notForMe(id, permanentConfirmed: check.permanent)
         for _ in 0..<30 where outcome == .stillGoing {
             try await Task.sleep(for: .seconds(2))
@@ -288,9 +289,16 @@ struct FindsIT {
     /// `TryDevStack.client()` first): `ManualImport` is deliberately not on the gate's allow list, so this goes
     /// straight to the dev Lidarr. Waits for the import to finish.
     static func devManualImport(folder: String, artistId: Int, albumId: Int, recording: MBID) async throws {
-        let album = try await devLidarr("GET", "album/\(albumId)")
-        let release = (album["releases"] as? [[String: Any]])?.first { $0["monitored"] as? Bool == true }
-        let releaseId = try #require(release?["id"] as? Int, "the album has no monitored release")
+        // Lidarr picks the album's monitored release while it refreshes the album: wait for it (up to 30 s), then
+        // take any release (a manual import to another release switches Lidarr to it).
+        var releases: [[String: Any]] = []
+        for _ in 0..<15 {
+            releases = try await devLidarr("GET", "album/\(albumId)")["releases"] as? [[String: Any]] ?? []
+            if releases.contains(where: { $0["monitored"] as? Bool == true }) { break }
+            try await Task.sleep(for: .seconds(2))
+        }
+        let release = releases.first { $0["monitored"] as? Bool == true } ?? releases.first
+        let releaseId = try #require(release?["id"] as? Int, "the album has no release")
         let tracks = try await devLidarr("GET", "track", query: ["albumId": "\(albumId)"], array: true)
         let rows = tracks["rows"] as? [[String: Any]] ?? []
         let track = try #require(rows.first { $0["foreignRecordingId"] as? String == recording.rawValue },
