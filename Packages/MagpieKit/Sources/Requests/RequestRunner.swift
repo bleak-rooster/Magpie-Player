@@ -54,7 +54,8 @@ public struct LibraryAccess: Sendable {
 /// - dedupe by release group against running requests, the ledger and Lidarr; at most 5 active (G7);
 /// - Ready only when the match index finds the recording after a plain `startScan` (A12, D7);
 /// - Cancel unmonitors the album only when Magpie monitored it, and never deletes anything (G6);
-/// - Keep (RequestRunner+Keep.swift) and Not for me (RequestRunner+NotForMe.swift) act on ready finds only.
+/// - Keep (RequestRunner+Keep.swift) and Not for me (RequestRunner+NotForMe.swift) act on ready finds only;
+///   Bring in more (RequestRunner+BringInMore.swift) on kept, moved finds only.
 ///
 /// Every write goes through `LidarrWriteGate` (G1) and every album Magpie touches is in the `Ledger` first.
 /// Call `tick()` on a timer (5 s in the foreground, 30 s otherwise); it does nothing for finished requests.
@@ -124,7 +125,7 @@ public actor RequestRunner {
     let lidarr: LidarrClient
     let gate: LidarrWriteGate
     let ledger: Ledger
-    private let mb: MusicBrainzClient
+    let mb: MusicBrainzClient
     let library: LibraryAccess
     private let store: RequestStore
     private let setup: @Sendable () async -> Setup?
@@ -137,8 +138,9 @@ public actor RequestRunner {
     private(set) var list: [MagpieRequest] = []
     private var loaded = false
     private var busy: Set<RequestID> = []
-    /// Lidarr artists a Keep or a Not for me is working on right now (RequestRunner+Keep.swift,
-    /// RequestRunner+NotForMe.swift): one at a time per artist, so the two never run together on one artist.
+    /// Lidarr artists a Keep, a Not for me or a Bring in more is working on right now (RequestRunner+Keep.swift,
+    /// RequestRunner+NotForMe.swift, RequestRunner+BringInMore.swift): one at a time per artist, so they never run
+    /// together on one artist.
     var keepingArtists: Set<Int> = []
     /// The artists in `keepingArtists` that a Not for me holds (so Keep can say why it can't go ahead).
     var lettingGoArtists: Set<Int> = []

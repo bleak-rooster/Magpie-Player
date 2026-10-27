@@ -189,6 +189,25 @@ struct FindsIT {
             #expect(librarySong.libraryId == main.id)
             #expect(request.songId == librarySong.id)
             #expect(await gate.changeLog().filter { $0.path == "/api/v1/artist/editor" }.count == 1, "one move")
+
+            // Bring in more (Task 7.1b): Lidarr 3.2 takes the album monitor and the follow-only editor body
+            // (`{artistIds, monitorNewItems}`); nothing that was monitored is unmonitored. The dev stack has no
+            // indexers, so the search finds nothing.
+            let monitoredBefore = Set(try await client.albums(artistId: artistId).filter(\.monitored).map(\.id))
+            let offer = try await runner.bringInOffer(id)
+            #expect(offer.artistId == artistId && !offer.followsNewReleases)
+            let albumsAndEPs = try #require(offer.options[.albumsAndEPs])
+            print("FindsIT bring in more: \(albumsAndEPs.albumIds.count) of \(albumsAndEPs.available) albums/EPs, "
+                  + "length \(albumsAndEPs.duration.map { "\(Int($0)) s" } ?? "unknown")")
+            let result = try await runner.bringIn(id, choice: .albumsAndEPs, follow: true)
+            #expect(result.albums == albumsAndEPs.albumIds.count && result.following)
+            let monitoredAfter = Set(try await client.albums(artistId: artistId).filter(\.monitored).map(\.id))
+            #expect(monitoredBefore.isSubset(of: monitoredAfter), "nothing unmonitored")
+            #expect(Set(albumsAndEPs.albumIds).isSubset(of: monitoredAfter))
+            let following = try await client.artist(id: artistId)
+            #expect(following.monitorNewItems == "new")
+            #expect(following.qualityProfileId == provisioned.losslessProfileId, "profiles untouched")
+            #expect(following.path == kept.path, "not moved")
         } catch is Done {
         } catch {
             Issue.record(error)

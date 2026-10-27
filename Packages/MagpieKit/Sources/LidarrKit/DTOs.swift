@@ -280,14 +280,17 @@ public struct LidarrArtist: Sendable, Equatable, Decodable {
     public var tags: [Int]
     public var albumCount: Int?
     public var trackFileCount: Int?
+    /// Which albums Lidarr monitors when they show up (`all`, `new`, `none`); Follow new releases (Task 7.1b).
+    public var monitorNewItems: String?
 
     public init(id: Int, artistName: String, foreignArtistId: MBID? = nil, path: String? = nil,
                 rootFolderPath: String? = nil, monitored: Bool = false, qualityProfileId: Int? = nil,
-                metadataProfileId: Int? = nil, tags: [Int] = [], albumCount: Int? = nil, trackFileCount: Int? = nil) {
+                metadataProfileId: Int? = nil, tags: [Int] = [], albumCount: Int? = nil, trackFileCount: Int? = nil,
+                monitorNewItems: String? = nil) {
         self.id = id; self.artistName = artistName; self.foreignArtistId = foreignArtistId; self.path = path
         self.rootFolderPath = rootFolderPath; self.monitored = monitored; self.qualityProfileId = qualityProfileId
         self.metadataProfileId = metadataProfileId; self.tags = tags; self.albumCount = albumCount
-        self.trackFileCount = trackFileCount
+        self.trackFileCount = trackFileCount; self.monitorNewItems = monitorNewItems
     }
 
     public init(from decoder: Decoder) throws {
@@ -304,6 +307,7 @@ public struct LidarrArtist: Sendable, Equatable, Decodable {
         let stats = try? c.nestedContainer(keyedBy: AnyKey.self, forKey: AnyKey("statistics"))
         albumCount = stats?.int("albumCount")
         trackFileCount = stats?.int("trackFileCount")
+        monitorNewItems = c.value("monitorNewItems")
     }
 }
 
@@ -317,12 +321,16 @@ public struct LidarrAlbum: Sendable, Equatable, Decodable {
     public var releaseDate: Date?
     public var trackCount: Int?
     public var trackFileCount: Int?
+    /// Seconds of music, from Lidarr's `duration` (milliseconds, the length of the release it would bring in).
+    /// Nil when Lidarr doesn't know it (0 or missing): never guessed (A5).
+    public var duration: TimeInterval?
 
     public init(id: Int, title: String, artistId: Int? = nil, foreignAlbumId: MBID? = nil, monitored: Bool = false,
-                albumType: String? = nil, releaseDate: Date? = nil, trackCount: Int? = nil, trackFileCount: Int? = nil) {
+                albumType: String? = nil, releaseDate: Date? = nil, trackCount: Int? = nil, trackFileCount: Int? = nil,
+                duration: TimeInterval? = nil) {
         self.id = id; self.title = title; self.artistId = artistId; self.foreignAlbumId = foreignAlbumId
         self.monitored = monitored; self.albumType = albumType; self.releaseDate = releaseDate
-        self.trackCount = trackCount; self.trackFileCount = trackFileCount
+        self.trackCount = trackCount; self.trackFileCount = trackFileCount; self.duration = duration
     }
 
     public init(from decoder: Decoder) throws {
@@ -337,6 +345,7 @@ public struct LidarrAlbum: Sendable, Equatable, Decodable {
         let stats = try? c.nestedContainer(keyedBy: AnyKey.self, forKey: AnyKey("statistics"))
         trackCount = stats?.int("trackCount")
         trackFileCount = stats?.int("trackFileCount")
+        duration = c.double("duration").flatMap { $0 > 0 && $0.isFinite ? $0 / 1000 : nil }
     }
 }
 

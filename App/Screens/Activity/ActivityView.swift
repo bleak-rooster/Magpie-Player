@@ -83,25 +83,25 @@ struct RequestRow: View {
 
 /// One request. Standard tier while on its way: the wait screen with real progress. Otherwise (Patient, D8, or
 /// needs attention): no spinner, just where it stands. Stop looking cancels (G6); Ready plays it.
+/// While it's on screen the app counts the owner as waiting on it: the landing rule (D6, AppModel+Landing.swift)
+/// plays it at once when it's ready and nothing else is playing.
 struct RequestDetailView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     let requestId: RequestID
-    /// Shown right after Try from the sheet: the landing rule may start it when it's ready (D6).
-    var playsWhenReady = false
     @State private var confirmsStop = false
-    @State private var played = false
     private let themed = Themed()
 
     var body: some View {
-        if let request = model.magpieRequest(requestId) {
-            content(request)
-                .onChange(of: request.state) { _, state in
-                    if state == .ready { Task { await land(request) } }
-                }
-        } else {
-            ContentUnavailableView("Not on the list any more", systemImage: "tray")
+        Group {
+            if let request = model.magpieRequest(requestId) {
+                content(request)
+            } else {
+                ContentUnavailableView("Not on the list any more", systemImage: "tray")
+            }
         }
+        .onAppear { model.waitScreenAppeared(requestId) }
+        .onDisappear { model.waitScreenDisappeared(requestId) }
     }
 
     @ViewBuilder private func content(_ request: MagpieRequest) -> some View {
@@ -190,15 +190,8 @@ struct RequestDetailView: View {
         .padding(.horizontal, Tokens.Spacing.largeTitleMargin)
     }
 
-    /// D6: plays at once only if the owner is still here and nothing else is playing.
-    private func land(_ request: MagpieRequest) async {
-        guard playsWhenReady, !played, !model.player.isPlaying else { return }
-        await play(request)
-    }
-
     private func play(_ request: MagpieRequest) async {
         guard let song = await model.readySong(request) else { return }
-        played = true
-        if model.player.isPlaying { model.player.playNext([song]) } else { model.play([song], startAt: 0) }
+        model.playReady(song, request: request.id)
     }
 }

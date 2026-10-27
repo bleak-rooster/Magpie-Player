@@ -82,6 +82,23 @@ import MagpieTestSupport
         #expect(files[0].quality == "FLAC")
     }
 
+    /// Bring in more (Task 7.1b, A5): an album's length from Lidarr's `duration` (milliseconds; 0 or missing is
+    /// unknown, never a guess), and whether the artist already follows new releases.
+    @Test func albumDurationAndArtistFollowing() async throws {
+        let t = MockTransport()
+        t.stub(pathSuffix: "/album", body: Data(#"""
+        [{"id":1,"title":"A","albumType":"Album","duration":2520000,"monitored":false},
+         {"id":2,"title":"B","albumType":"EP","duration":0,"monitored":false},
+         {"id":3,"title":"C","albumType":"Single","monitored":true}]
+        """#.utf8))
+        t.stub(pathSuffix: "/artist/7", body: Data(#"{"id":7,"artistName":"X","monitorNewItems":"new","tags":[]}"#.utf8))
+        let (client, _) = makeClient(t)
+
+        let albums = try await client.albums(artistId: 7)
+        #expect(albums.map(\.duration) == [2520, nil, nil])
+        #expect(try await client.artist(id: 7).monitorNewItems == "new")
+    }
+
     @Test func commands() async throws {
         let t = MockTransport()
         t.stub(pathSuffix: "/command/367", body: Fixtures.data("command-id"))

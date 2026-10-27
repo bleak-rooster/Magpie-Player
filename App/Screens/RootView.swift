@@ -58,19 +58,62 @@ struct MainTabs: View {
     }
 }
 
-/// The design-system mini player fed from `Player`.
+/// The design-system mini player fed from `Player`. While a find that just became ready waits next in the queue
+/// (D6), the accessory offers it instead: "<song> is ready", Play now.
 private struct MiniPlayerAccessory: View {
     @Environment(AppModel.self) private var model
     let open: () -> Void
 
     var body: some View {
         let player = model.player
-        if let song = player.queue.current?.song {
+        if let banner = model.visibleBanner {
+            PlayNowBannerView(banner: banner)
+        } else if let song = player.queue.current?.song {
             Artwork(song.coverArtId, side: 36) { image in
                 MiniPlayer(title: song.title, artist: song.artist, artwork: image, isPlaying: player.isPlaying,
                            onPlayPause: { player.toggle() }, onNext: { player.next() }, onOpen: open)
             }
             .accessibilityIdentifier("mini-player")
         }
+    }
+}
+
+/// D6: the in-app "Play now" banner. Text and symbol, not shape alone (D3); Play now and Not now are their own
+/// buttons, and VoiceOver offers Play now as the default action.
+private struct PlayNowBannerView: View {
+    @Environment(AppModel.self) private var model
+    let banner: PlayNowBanner
+    private let themed = Themed()
+
+    var body: some View {
+        let p = themed.palette
+        HStack(spacing: 10) {
+            Image(systemName: "record.circle").font(.title2).foregroundStyle(p.accentInkColor)
+                .frame(width: 36, height: 36)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(LandingCopy.title(banner.song)).font(.subheadline.weight(.semibold)).lineLimit(1)
+                Text(LandingCopy.upNext).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            }
+            .accessibilityElement(children: .combine)
+            Spacer(minLength: 0)
+            Button(LandingCopy.playNow) { model.playNow(banner) }
+                .buttonStyle(.borderedProminent)
+                .buttonBorderShape(.capsule)
+                .frame(minHeight: Tokens.minHitSize)
+                .accessibilityAddTraits(.startsMediaSession)
+                .accessibilityIdentifier("play-now")
+            Button { model.dismissBanner() } label: {
+                Image(systemName: "xmark").font(.footnote.weight(.semibold))
+                    .frame(width: Tokens.minHitSize, height: Tokens.minHitSize).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Not now")
+        }
+        .padding(.horizontal, 8).padding(.vertical, 6)
+        .frame(minHeight: 52)
+        .accessibilityElement(children: .contain)
+        .accessibilityAction(named: LandingCopy.playNow) { model.playNow(banner) }
+        .accessibilityIdentifier("play-now-banner")
     }
 }

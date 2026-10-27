@@ -124,7 +124,7 @@ A lost answer is never followed by the same write until a fresh read shows what 
 
 **Not built yet** (overnight order was hardening before features):
 - **M7 polish**: Immersive look, Increase Contrast tokens, more themes, Finds on CarPlay (CarPlay Try and Keep), Siri.
-- Finds: no automatic expiry (days left is display only), no "Bring in more from this artist" after Keep, no undo toast for Not for me (the recycle bin is the undo).
+- Finds: no automatic expiry (days left is display only), no undo toast for Not for me (the recycle bin is the undo).
 - Also missing: Up Next list and Downloaded in CarPlay, path mapping, Live Activity, mailbox/Listener/invites (v2).
 - Some small review items were parked, not fixed (listed in the SDD ledger).
 
@@ -157,6 +157,9 @@ A lost answer is never followed by the same write until a fresh read shows what 
 # Reference: what each milestone does
 
 ## Details by milestone
+- M7 (in progress): Task 7.1a Character dial and Immersive-lite. Task 7.1b:
+  - **Landing rule** (D6): a Try that becomes ready plays at once only while you are still on its wait screen (Try sheet or Requests) with the app open and nothing else playing. Otherwise it goes next in the queue (never cutting in) and the bottom bar shows "<song> is ready · Play now" (✕ dismisses). Patient ("Ask for it") requests don't land; they just show up.
+  - **Bring in more** (D5): after a Keep that moved the find into your library (not after "stays in your Finds folder for now" or a failed Keep), a sheet asks "Bring in more from <artist>?": Albums and EPs (preselected), This album only (the album the song is on, from MusicBrainz), Everything, plus **Follow new releases**. Each choice shows "about N hours of music" from the lengths Lidarr already knows, or no number. Writes (through the gate, logged): `PUT /album/monitor {albumIds, monitored: true}` for releases not monitored yet, one `AlbumSearch` for them, and with the toggle `PUT /artist/editor {artistIds: [id], monitorNewItems: "new"}` (the gate allows only that shape, never `none`). Nothing is unmonitored, profiles and tags are untouched, albums another request is working on are skipped. At most 20 releases per Bring in more (newest first; the sheet says so), and not while 5 requests are on their way. Only for artists Magpie added. `scripts/it.sh` checks it in `FindsIT.keepMovesOnDevStack`.
 - M6: Finds mode, behind **Use a Finds folder** (default off); see section 3a for set-up and the exact writes.
   - Set-up (Task 6.1): the owner confirms the Finds root folder (never guessed, never nested with another root), the Navidrome library that is the same folder, and a path mapping when the two see it under different paths. Path confinement (`PathGuard`) compares whole path components byte for byte.
   - Try into Finds (Task 6.2a): new artists go into the Finds root tagged `magpie` + `magpie-find`; Library › Finds shows New finds (here, not played yet), the other finds with days left (7 − days since they arrived; nothing leaves by itself), and finds on their way; the "Sample" hallmark; finds are never scrobbled.

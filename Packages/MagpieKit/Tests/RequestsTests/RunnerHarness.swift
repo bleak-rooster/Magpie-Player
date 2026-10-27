@@ -93,6 +93,8 @@ final class FakeLidarr: @unchecked Sendable {
         var files: String? = nil
         /// Where `GET /trackfile?artistId=` says they are (Lidarr updates it shortly after a move).
         var recorded: String? = nil
+        /// Bring in more (Task 7.1b): Follow new releases sets it through the artist editor.
+        var monitorNewItems = "none"
         var currentPath: String { path ?? root + "/Aurora Field" }
     }
     /// A `/command` row (Keep's BulkMoveArtist, A3).
@@ -112,7 +114,11 @@ final class FakeLidarr: @unchecked Sendable {
         /// No command shows up at all and the files never moved (a restart orphaned the move, then it was pruned).
         case prunedFilesStayed
     }
-    struct Album { var id: Int; var artistId: Int; var rg: MBID; var title: String; var monitored: Bool }
+    struct Album {
+        var id: Int; var artistId: Int; var rg: MBID; var title: String; var monitored: Bool
+        /// Bring in more (Task 7.1b): Lidarr's album type, length (ms; nil: not sent) and release date.
+        var type = "Album"; var duration: Int? = nil; var releaseDate: String? = nil
+    }
     /// Not for me (Task 6.2c): a track file besides the artist's song (id 1, album 50). `path` is where Lidarr
     /// records it; `onDisk` where it really is (nil: gone).
     struct ExtraFile { var id: Int; var artistId: Int; var albumId: Int; var path: String; var recorded = true; var onDisk: String? }
@@ -293,6 +299,7 @@ final class FakeLidarr: @unchecked Sendable {
                     default: break
                     }
                     if let q = body["qualityProfileId"] as? Int { s.artists[i].quality = q }
+                    if let m = body["monitorNewItems"] as? String { s.artists[i].monitorNewItems = m }
                     if let root = body["rootFolderPath"] as? String, body["moveFiles"] as? Bool == false {
                         // Path only, from the existing folder name; nothing moves.
                         let folder = String(s.artists[i].currentPath.split(separator: "/").last!)
@@ -447,8 +454,12 @@ final class FakeLidarr: @unchecked Sendable {
             let artistId = URLComponents(url: req.url!, resolvingAgainstBaseURL: false)?.queryItems?
                 .first { $0.name == "artistId" }?.value.flatMap(Int.init)
             return reply(with { s in s.albums.filter { $0.artistId == artistId }.map {
-                ["id": $0.id, "title": $0.title, "artistId": $0.artistId, "foreignAlbumId": $0.rg.rawValue,
-                 "monitored": $0.monitored, "albumType": "Album"] as [String: Any] } })
+                var row: [String: Any] = ["id": $0.id, "title": $0.title, "artistId": $0.artistId,
+                                          "foreignAlbumId": $0.rg.rawValue, "monitored": $0.monitored, "albumType": $0.type]
+                if let d = $0.duration { row["duration"] = d }
+                if let date = $0.releaseDate { row["releaseDate"] = date }
+                return row
+            } })
         }
         t.stub(method: "PUT", pathSuffix: "/api/v1/album/monitor") { [self] req in
             let body = try! JSONSerialization.jsonObject(with: req.httpBody!) as! [String: Any]
@@ -533,7 +544,8 @@ final class FakeLidarr: @unchecked Sendable {
 
     static func artistJSON(_ a: Artist) -> [String: Any] {
         ["id": a.id, "artistName": "A", "foreignArtistId": a.mbid.rawValue, "rootFolderPath": a.root,
-         "path": a.currentPath, "monitored": true, "tags": a.tags, "qualityProfileId": a.quality]
+         "path": a.currentPath, "monitored": true, "tags": a.tags, "qualityProfileId": a.quality,
+         "monitorNewItems": a.monitorNewItems]
     }
 
     /// Lidarr already has the artist (id 7) with the album (id 31) and a live album (id 33).

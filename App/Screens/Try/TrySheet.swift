@@ -29,7 +29,7 @@ struct TrySheet: View {
             Group {
                 switch phase {
                 case .choosing, .working: choosing
-                case .waiting(let id): RequestDetailView(requestId: id, playsWhenReady: true)
+                case .waiting(let id): RequestDetailView(requestId: id)
                 case .asked(let id): asked(id)
                 }
             }

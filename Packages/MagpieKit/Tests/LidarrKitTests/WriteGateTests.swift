@@ -203,6 +203,15 @@ struct GateEnv {
         Call("PUT", "artist/editor", #"{"artistIds":[1],"tags":[2],"applyTags":"replace"}"#),
         Call("PUT", "artist/editor", #"{"artistIds":[1],"tags":[2],"applyTags":"add","ApplyTags":"replace"}"#),
         Call("PUT", "artist/editor"),
+        // Follow new releases (Task 7.1b): one artist, monitorNewItems all/new, nothing else; never un-follow
+        Call("PUT", "artist/editor", #"{"artistIds":[1],"monitorNewItems":"none"}"#),
+        Call("PUT", "artist/editor", #"{"artistIds":[1],"monitorNewItems":true}"#),
+        Call("PUT", "artist/editor", #"{"artistIds":[1,2],"monitorNewItems":"new"}"#),
+        Call("PUT", "artist/editor", #"{"artistIds":[],"monitorNewItems":"new"}"#),
+        Call("PUT", "artist/editor", #"{"artistIds":[1],"monitorNewItems":"new","monitored":false}"#),
+        Call("PUT", "artist/editor", #"{"artistIds":[1],"monitorNewItems":"all","qualityProfileId":3}"#),
+        Call("PUT", "artist/editor", #"{"artistIds":[1],"MonitorNewItems":"new","rootFolderPath":"/x"}"#),
+        Call("PUT", "artist/editor", #"{"monitorNewItems":"new"}"#),
     ]
 
     @Test(arguments: forbidden)
@@ -385,7 +394,10 @@ struct GateEnv {
         Call("PUT", "//API//V1//Artist//Editor//", #"{"artistIds":[12],"tags":[2],"applyTags":"remove"}"#),
         Call("PUT", "artist/editor", #"{"artistIds":[12],"tags":[2],"applyTags":"add"}"#),
         Call("PUT", "artist/editor", #"{"artistIds":[12],"rootFolderPath":"/music/library","moveFiles":true}"#),
+        Call("PUT", "artist/editor", #"{"artistIds":[12],"monitorNewItems":"new"}"#),
+        Call("PUT", "artist/editor", #"{"ArtistIds":[12],"MonitorNewItems":"All"}"#),
         Call("PUT", "album/monitor", #"{"albumIds":[3],"monitored":true}"#),
+        Call("PUT", "album/monitor", #"{"albumIds":[3,4,5],"monitored":true}"#),
         Call("PUT", "album/3", #"{"id":3,"monitored":true}"#),
         Call("DELETE", "artist/12?deleteFiles=false&addImportListExclusion=false"),
         Call("DELETE", "artist/12?AddImportListExclusion=FALSE&deleteFiles=False"),

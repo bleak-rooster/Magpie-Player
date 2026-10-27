@@ -286,9 +286,11 @@ extension AppModel {
         return try? await self.request { try await $0.song(id: songId) }
     }
 
-    /// D7: a local notification, only while the app runs.
+    /// D6: it lands by the one landing rule (AppModel+Landing.swift). D7: a local notification, only while the app
+    /// runs.
     private func requestBecameReady(_ request: MagpieRequest) {
         if request.isFind { Task { await refreshFinds() } }
+        Task { await land(request) }
         guard notifications else { return }
         ReadyNotifier.shared.post(id: request.id.description, title: "\(request.recording.title) is ready",
                                   body: "\(request.recording.artist) · in your \(request.isFind ? "Finds" : "library") now")

@@ -176,6 +176,9 @@ enum ForbiddenWrites {
     static let allowedCommands: Set<String> = ["albumsearch", "artistsearch", "refreshartist", "refreshalbum"]
     /// `applyTags` values allowed in `PUT /artist/editor` (`replace` would wipe the owner's tags, A4).
     static let allowedApplyTags: Set<String> = ["add", "remove"]
+    /// `monitorNewItems` values allowed in `PUT /artist/editor` (Follow new releases, Task 7.1b). Never `none`:
+    /// Magpie only ever adds; it doesn't stop following anything.
+    static let allowedMonitorNewItems: Set<String> = ["all", "new"]
 
     /// Why the request is refused, or nil when it may be sent.
     static func reason(_ t: WriteTarget, body: Data?) -> String? {
@@ -277,6 +280,7 @@ enum ForbiddenWrites {
     }
 
     /// No `deleteFiles` / `addImportListExclusion` key at any depth; `applyTags` (at most one) is add or remove.
+    /// A body with `monitorNewItems` (Follow new releases) is exactly `{artistIds: [one id], monitorNewItems: all|new}`.
     private static func editorReason(_ json: Any?) -> String? {
         guard let object = json as? [String: Any] else { return "artist editor needs a body" }
         if let flag = anyKey(falseOnlyFlags, in: object) { return "artist editor body must not carry \(flag)" }
@@ -284,6 +288,16 @@ enum ForbiddenWrites {
         guard apply.count <= 1 else { return "applyTags given twice" }
         if let value = apply.first?.value {
             guard let s = value as? String, allowedApplyTags.contains(s.lowercased()) else { return "applyTags must be add or remove" }
+        }
+        if let follow = object.first(where: { $0.key.lowercased() == "monitornewitems" })?.value {
+            guard let s = follow as? String, allowedMonitorNewItems.contains(s.lowercased()) else {
+                return "monitorNewItems must be all or new"
+            }
+            guard object.count == 2,
+                  let ids = object.first(where: { $0.key.lowercased() == "artistids" })?.value as? [Any],
+                  ids.count == 1, isPositiveInteger(ids[0]) else {
+                return "following new releases changes one artist and nothing else"
+            }
         }
         return nil
     }

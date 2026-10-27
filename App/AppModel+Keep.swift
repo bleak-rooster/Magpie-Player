@@ -4,6 +4,13 @@ import MagpieCore
 import NavidromeKit
 import Requests
 
+/// What Keep says, and whether "Bring in more" follows: only after the find moved into the library (D5), never
+/// after a Keep that stayed in Finds, one still moving, or one that failed.
+struct KeepReply: Equatable {
+    var message: String
+    var bringsInMore = false
+}
+
 /// What Keep says afterwards (design language §5: about the music, never the services).
 enum KeepCopy {
     static let moved = "Kept. It's in your library now."
@@ -17,6 +24,10 @@ enum KeepCopy {
     static let notSetUp = "Tap 'Set up Magpie in Lidarr' in Settings to keep finds."
     /// The Keep couldn't be settled; nothing more is changed and it isn't offered again.
     static let needsAttention = "Keeping this one didn't finish, and it needs a look before it can be tried again."
+
+    static func reply(_ outcome: RequestRunner.KeepOutcome) -> KeepReply {
+        KeepReply(message: message(outcome), bringsInMore: outcome == .moved)
+    }
 
     static func message(_ outcome: RequestRunner.KeepOutcome) -> String {
         switch outcome {
@@ -51,16 +62,16 @@ extension AppModel {
         return RequestRunner.KeepSetup(findsRoot: root, mainRoot: main, losslessProfileId: lossless, findTagId: find)
     }
 
-    /// Keeps the find; returns what to tell the owner.
-    func keep(_ id: RequestID) async -> String {
-        guard let runner else { return KeepCopy.unavailable }
+    /// Keeps the find; returns what to tell the owner and whether Bring in more follows.
+    func keep(_ id: RequestID) async -> KeepReply {
+        guard let runner else { return KeepReply(message: KeepCopy.unavailable) }
         defer { pollRequests() }   // a move still going, or a song still to look up, is followed by `tick`
         do {
             let outcome = try await runner.keep(id)
             if outcome == .moved { Task { await refreshFinds() } }
-            return KeepCopy.message(outcome)
+            return KeepCopy.reply(outcome)
         } catch {
-            return KeepCopy.message(for: error)
+            return KeepReply(message: KeepCopy.message(for: error))
         }
     }
 
