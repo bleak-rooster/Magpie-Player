@@ -43,7 +43,7 @@ Check these once; none of them need Magpie.
 
 | Check | How | If it fails |
 |---|---|---|
-| Navidrome 0.64 or newer, and an admin login | Navidrome footer / About page | Older versions are untested. A non-admin works for listening but can't scan the library |
+| Navidrome 0.63.2 or newer, and an admin login | Navidrome footer / About page | 0.63.2 was verified on a real server (song paging, `/api/library`, targeted scans, lyrics); older versions are untested. A non-admin works for listening but can't scan the library |
 | Lidarr 3.x reachable from the Mac | Connect Lidarr shows its version | v1 was verified on 3.2.0.5144 (develop channel). 3.1.x should work. See the monitor note in section 3 |
 | Lidarr recycle bin set | Lidarr › Settings › Media Management › Recycle Bin (the Connect Lidarr summary shows "deletes are permanent" if unset) | Set one before you use **Not for me** (Finds mode): it deletes the find's files, and without a recycle bin they are gone for good. The confirm sheet then says "This deletes the files permanently." Magpie never changes this setting |
 | Same music folder seen by both | Compare Lidarr's root folder path with Navidrome's library path | v1 has no path mapping. If they differ, a song never becomes **Ready** even though Lidarr imported it (Magpie checks that Navidrome lists it) |
