@@ -336,15 +336,31 @@ public actor NavidromeClient {
     }
 
     /// Songs with this MusicBrainz recording id (`/api/song?mbz_recording_id=`, verified on 0.64.2), outside
-    /// `excludingLibrary`: Keep looks a moved find up again (A3). Exact id matches only; missing rows dropped.
+    /// `excludingLibrary`. Exact id matches only; missing rows dropped.
     public func songs(recordingMBID: MBID, excludingLibrary: Int?) async throws -> [Song] {
-        let query = [URLQueryItem(name: "mbz_recording_id", value: recordingMBID.rawValue), int("_start", 0), int("_end", 50),
+        try await recordingRows(recordingMBID).filter { excludingLibrary == nil || $0.libraryId != excludingLibrary }
+            .map(Mapping.song)
+    }
+
+    /// Keep (A3): the recording's songs in library `libraryId` under `folder` (relative to that library, compared
+    /// component by component), i.e. where a kept find moved, never the owner's own copy on another release.
+    public func songs(recordingMBID: MBID, inLibrary libraryId: Int, under folder: String) async throws -> [Song] {
+        let prefix = folder.split(separator: "/").map(String.init)
+        return try await recordingRows(recordingMBID).filter { row in
+            guard row.libraryId == libraryId, !prefix.isEmpty,
+                  let parts = row.path?.split(separator: "/").map(String.init), parts.count > prefix.count else {
+                return false
+            }
+            return Array(parts.prefix(prefix.count)) == prefix
+        }.map(Mapping.song)
+    }
+
+    private func recordingRows(_ recording: MBID) async throws -> [NativeSong] {
+        let query = [URLQueryItem(name: "mbz_recording_id", value: recording.rawValue), int("_start", 0), int("_end", 50),
                      URLQueryItem(name: "_sort", value: "id"), URLQueryItem(name: "_order", value: "ASC")]
         let (data, _) = try await native("api/song", query)
         return try Self.decode([NativeSong].self, data)
-            .filter { $0.missing != true && (excludingLibrary == nil || $0.libraryId != excludingLibrary) }
-            .map(Mapping.song)
-            .filter { $0.recordingMBID == recordingMBID }
+            .filter { $0.missing != true && $0.mbzRecordingID.flatMap { MBID($0) } == recording }
     }
 
     /// The library folders and their paths as Navidrome sees them (`/api/library`; B6, G2). Some versions

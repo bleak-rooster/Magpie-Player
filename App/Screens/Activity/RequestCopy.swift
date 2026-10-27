@@ -21,7 +21,7 @@ enum RequestCopy {
 
     /// Where Activity lists the request; nil for stopped or removed ones.
     static func group(_ request: MagpieRequest) -> Group? {
-        request.isNotListed ? .attention : group(request.state)
+        request.isNotListed || request.keepNeedsAttention ? .attention : group(request.state)
     }
 
     static let notListed = "Not showing up in your library yet"
@@ -45,6 +45,7 @@ enum RequestCopy {
     static func status(_ request: MagpieRequest, context: WaitContext = .unknown) -> String {
         if request.isNotListed { return notListed }
         if request.isFind, request.state == .ready {
+            if request.keepNeedsAttention { return keepNeedsAttention }
             return request.keep != nil ? keeping : request.keepFailed ? keepFailed : readyInFinds
         }
         if request.state == .kept { return kept(request) }
@@ -56,6 +57,7 @@ enum RequestCopy {
     /// Task 6.2b: a Keep is moving it.
     static let keeping = "Moving it into your library"
     static let keepFailed = "Ready · in your Finds · couldn't keep it yet"
+    static let keepNeedsAttention = "Couldn't finish keeping it · needs a look"
     static let keptInFinds = "Kept · in your Finds folder for now"
     static let keptLosslessSoon = "Kept · lossless soon"
     static let keptLossless = "Kept · lossless"

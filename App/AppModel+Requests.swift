@@ -120,7 +120,7 @@ extension AppModel {
             refreshIndex: { [weak self] in try await self?.refreshMatchIndex() },
             songId: { [weak self] recording in await self?.matchIndex?.index.librarySong(for: recording) },
             rescanMoved: { [weak self] from, to in try await self?.rescanMoved(from: from, to: to) },
-            keptSong: { [weak self] recording in try await self?.keptSong(recording) })
+            keptSong: { [weak self] recording, artistPath in try await self?.keptSong(recording, artistPath: artistPath) })
     }
 
     /// Polls while any request is on its way: every 5 s in the foreground, 30 s otherwise. Stops by itself

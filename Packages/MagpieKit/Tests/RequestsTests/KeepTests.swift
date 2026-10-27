@@ -81,6 +81,7 @@ import MagpieCore
 
         let r = try #require(await h.request(id))
         #expect(r.songId == "lib-1" && r.relinkPending == false)
+        #expect(h.library.state.withLock { $0.keptSongFolders } == [Self.keptPath], "looked up where it moved")
         let relinked = h.relinked.withLock { $0 }
         #expect(relinked.count == 1 && relinked.first?.1 == "find-1" && relinked.first?.2.id == "lib-1")
     }
@@ -272,6 +273,7 @@ import MagpieCore
         h.server.with { s in
             s.move = .completes
             for i in s.commands.indices where s.commands[i].name == "BulkMoveArtist" { s.commands[i].status = "completed" }
+            s.artists[0].files = s.artists[0].currentPath
         }
         h.library.state.withLock { $0.mainSongs[recSingleAndAlbum] = Self.mainSong }
         h.clock.advance(60)
@@ -344,5 +346,173 @@ import MagpieCore
         h.library.state.withLock { $0.mainSongs[recSingleAndAlbum] = Self.mainSong }
         #expect(try await h.runner.keep(id) == .moved)
         #expect(await h.request(id)?.state == .kept)
+    }
+
+    // MARK: - Fix round 1
+
+    /// Lidarr pruned the command and saved the main root as the artist path, but the track files never left the
+    /// Finds folder (a restart orphaned the move). Not kept, no scan; the artist is pointed back at its files
+    /// (no file moves) with magpie-find and the quality profile, and can be kept again.
+    @Test func prunedCommandWithFilesStillInFindsIsNotKept() async throws {
+        let h = await Harness(setup: Harness.findsSetup)
+        let id = try await Self.readyFind(h)
+        h.server.with { $0.move = .prunedFilesStayed }
+
+        // The start grace, then the files' settle time: longer than Keep waits inline. A later tick decides.
+        #expect(try await h.runner.keep(id) == .stillMoving)
+        h.clock.advance(60)
+        await h.runner.tick()
+
+        #expect(h.library.state.withLock { $0.rescans.isEmpty && $0.mainSongReads == 0 })
+        let editor = Self.editorWrites(h)
+        #expect(editor.count == 2)
+        let restore = try #require(editor.last)
+        #expect(Set(restore.keys) == ["artistIds", "rootFolderPath", "moveFiles", "qualityProfileId", "tags", "applyTags"])
+        #expect(restore["rootFolderPath"] as? String == "/music/samples" && restore["moveFiles"] as? Bool == false)
+        #expect(restore["applyTags"] as? String == "add" && restore["tags"] as? [Int] == [2])
+        let artist = try #require(h.server.with { $0.artists.first })
+        #expect(artist.currentPath == Self.findPath && artist.tags.contains(2) && artist.quality == 4)
+        let r = try #require(await h.request(id))
+        #expect(r.state == .ready && r.keep == nil && r.keepFailed && !r.keepNeedsAttention)
+        #expect(try await h.ledger.entries.allSatisfy { $0.keptAt == nil })
+
+        h.server.with { $0.move = .completes }
+        h.library.state.withLock { $0.mainSongs[recSingleAndAlbum] = Self.mainSong }
+        #expect(try await h.runner.keep(id) == .moved)
+    }
+
+    /// Lidarr 3.2 leaves the track file paths at the old folder after a move (seen on the dev stack); a Lidarr
+    /// that updates them is fine too. Either way the files are looked for on disk in the new folder.
+    @Test(arguments: [false, true])
+    func movedFilesAreFoundOnDisk(follow: Bool) async throws {
+        let h = await Harness(setup: Harness.findsSetup)
+        let id = try await Self.readyFind(h)
+        h.server.with { $0.trackFilesFollowMove = follow }
+        h.library.state.withLock { $0.mainSongs[recSingleAndAlbum] = Self.mainSong }
+        #expect(try await h.runner.keep(id) == .moved)
+        #expect(Self.editorWrites(h).count == 1, "no restore")
+    }
+
+    /// The command completed but the files aren't all under the main root (some in Finds, some elsewhere): not
+    /// kept, nothing more written, needs attention.
+    @Test func filesNotWhereLidarrSaysNeedAttention() async throws {
+        let h = await Harness(setup: Harness.findsSetup)
+        let id = try await Self.readyFind(h)
+        h.server.with { $0.filesLandIn = "/elsewhere/Aurora Field" }
+        await #expect(throws: RequestRunner.KeepError.needsAttention) { try await h.runner.keep(id) }
+        #expect(h.library.state.withLock { $0.rescans.isEmpty })
+        #expect(Self.editorWrites(h).count == 1)
+        let r = try #require(await h.request(id))
+        #expect(r.state == .ready && r.keepNeedsAttention && r.keep == nil)
+        #expect(try await h.ledger.entries.filter { $0.lidarrArtistId == 42 }.allSatisfy { $0.keptAt != nil },
+                "still says kept: nothing deletes it")
+    }
+
+    /// G4: Lidarr's naming gives a different folder now (a MusicBrainz rename or a new folder format): the move
+    /// would land in an unchecked folder, so only magpie-find comes off.
+    @Test func renamedArtistUntagsOnly() async throws {
+        let h = await Harness(setup: Harness.findsSetup)
+        let id = try await Self.readyFind(h)
+        h.server.with { $0.lookupFolder = "Aurora Field (UK band)" }
+        #expect(try await h.runner.keep(id) == .keptInPlace)
+        let body = try #require(Self.editorWrites(h).last)
+        #expect(Set(body.keys) == ["artistIds", "tags", "applyTags"])
+        #expect(h.server.with { $0.artists.first?.currentPath } == Self.findPath)
+    }
+
+    /// G4: the owner's folder differs only in case (a case-insensitive volume would merge them): it counts.
+    @Test(arguments: ["/music/library/aurora field", "/music/library/AURORA FIELD", "/music/library/Aurora Fíeld"])
+    func caseVariantFolderUntagsOnly(folder: String) async throws {
+        let h = await Harness(setup: Harness.findsSetup)
+        let id = try await Self.readyFind(h)
+        h.server.with { $0.folders = [folder] }
+        #expect(try await h.runner.keep(id) == .keptInPlace)
+        #expect(Set(try #require(Self.editorWrites(h).last).keys) == ["artistIds", "tags", "applyTags"])
+    }
+
+    @Test func looseFolderComparison() {
+        #expect(RequestRunner.looselyEqual("Caf\u{E9}", "Cafe\u{301}"), "NFC and NFD")
+        #expect(RequestRunner.looselyEqual("Judie Tzuke", "judie tzuke"))
+        #expect(!RequestRunner.looselyEqual("Judie Tzuke", "Judie Tzuke 2"))
+        #expect(RequestRunner.mustStayInFinds(current: "A", named: nil, existing: []), "Lidarr's folder unknown")
+        #expect(!RequestRunner.mustStayInFinds(current: "A", named: "A", existing: ["B"]))
+    }
+
+    /// One Keep per artist: two ready finds of the same artist kept at once send one move, and both are kept.
+    @Test func concurrentKeepsOnOneArtistMoveOnce() async throws {
+        let h = await Harness(setup: Harness.findsSetup)
+        let first = try await Self.readyFind(h)
+        let second = try await h.runner.tryRecording(h.recording(recAlbumOnly, title: "Other"), tier: .standard)
+        await h.runner.settle()
+        h.library.state.withLock { $0.indexed[recAlbumOnly] = "find-2" }
+        await h.runner.tick()
+        let secondReady = try #require(await h.request(second))
+        try #require(secondReady.state == .ready && secondReady.lidarrArtistId == 42)
+        h.library.state.withLock { $0.mainSongs[recSingleAndAlbum] = Self.mainSong }
+
+        async let a = h.runner.keep(first)
+        async let b = h.runner.keep(second)
+        let outcomes = try await [a, b]
+        #expect(outcomes.contains(.moved))
+        #expect(Self.editorWrites(h).count == 1, "one move for the artist")
+        let (r1, r2) = (await h.request(first), await h.request(second))
+        #expect(r1?.state == .kept && r2?.state == .kept)
+        // Afterwards the ledger says kept: no second move either.
+        await #expect(throws: RequestRunner.KeepError.notAFind) { try await h.runner.keep(second) }
+        #expect(Self.editorWrites(h).count == 1)
+    }
+
+    /// Kept in place: the other ready finds of the now-untagged artist are kept too (no Keep offered on them).
+    @Test func keptInPlaceKeepsTheSiblings() async throws {
+        let h = await Harness(setup: Harness.findsSetup)
+        let first = try await Self.readyFind(h)
+        let second = try await h.runner.tryRecording(h.recording(recAlbumOnly, title: "Other"), tier: .standard)
+        await h.runner.settle()
+        h.library.state.withLock { $0.indexed[recAlbumOnly] = "find-2" }
+        await h.runner.tick()
+        h.server.with { $0.folders = [Self.keptPath] }
+        #expect(try await h.runner.keep(first) == .keptInPlace)
+        let r = try #require(await h.request(second))
+        #expect(r.state == .kept && r.keptInPlace)
+    }
+
+    /// Bounded: a move still running `keepMoveLimit` after the write is followed no further. Needs attention, the
+    /// ledger keeps saying kept, and Keep isn't sent again.
+    @Test func moveThatNeverFinishesNeedsAttention() async throws {
+        let h = await Harness(setup: Harness.findsSetup)
+        let id = try await Self.readyFind(h)
+        h.server.with { $0.move = .hangs }
+        #expect(try await h.runner.keep(id) == .stillMoving)
+        h.clock.advance(RequestRunner.keepMoveLimit)
+        await h.runner.tick()
+        let r = try #require(await h.request(id))
+        #expect(r.keep == nil && r.keepNeedsAttention && r.state == .ready)
+        #expect(!(await h.runner.needsPolling))
+        let reads = h.server.with { $0.commandReads.count }
+        h.clock.advance(3600)
+        await h.runner.tick()
+        #expect(h.server.with { $0.commandReads.count } == reads, "followed no further")
+        await #expect(throws: RequestRunner.KeepError.notAFind) { try await h.runner.keep(id) }
+        #expect(Self.editorWrites(h).count == 1)
+        #expect(try await h.ledger.entries.filter { $0.lidarrArtistId == 42 }.allSatisfy { $0.keptAt != nil })
+    }
+
+    /// Bounded: putting the find back is refused (4xx): needs attention at once, never retried.
+    @Test func refusedRestoreNeedsAttention() async throws {
+        let h = await Harness(setup: Harness.findsSetup)
+        let id = try await Self.readyFind(h)
+        h.server.with {
+            $0.move = .fails
+            $0.rejectRestores = true
+        }
+        await #expect(throws: RequestRunner.KeepError.needsAttention) { try await h.runner.keep(id) }
+        let writes = h.server.writes.count
+        for _ in 0..<3 {
+            h.clock.advance(120)
+            await h.runner.tick()
+        }
+        #expect(h.server.writes.count == writes, "no retries")
+        let r = try #require(await h.request(id))
+        #expect(r.keepNeedsAttention && r.keep == nil)
     }
 }

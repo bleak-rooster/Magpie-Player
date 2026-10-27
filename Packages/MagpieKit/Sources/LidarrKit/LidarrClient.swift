@@ -132,6 +132,11 @@ public struct LidarrClient: Sendable {
         try await list(LidarrAlbum.self, "album", [URLQueryItem(name: "artistId", value: String(artistId))])
     }
 
+    /// Every track file of the artist (Keep checks where the files really are after a move, A3).
+    public func trackFiles(artistId: Int) async throws -> [TrackFile] {
+        try await list(TrackFile.self, "trackfile", [URLQueryItem(name: "artistId", value: String(artistId))])
+    }
+
     public func trackFiles(albumId: Int) async throws -> [TrackFile] {
         try await list(TrackFile.self, "trackfile", [URLQueryItem(name: "albumId", value: String(albumId))])
     }
@@ -152,6 +157,32 @@ public struct LidarrClient: Sendable {
     public func commands() async throws -> [CommandStatus] { try await list(CommandStatus.self, "command") }
 
     // MARK: - Filesystem
+
+    /// The folders directly inside `path` on Lidarr's filesystem, as Lidarr spells them (no trailing `/`).
+    /// Keep compares these loosely (case, Unicode) against the folder it would move into (G4).
+    public func directories(in path: String) async throws -> [String] {
+        try await listing(path, files: false).directories.map(Self.trimmed)
+    }
+
+    /// The files directly inside `path` on Lidarr's filesystem (Keep checks the moved files are really there:
+    /// Lidarr 3.2 doesn't update track file paths when it moves an artist, verified on the dev stack).
+    public func files(in path: String) async throws -> [String] {
+        try await listing(path, files: true).files.map(Self.trimmed)
+    }
+
+    private func listing(_ path: String, files: Bool) async throws -> FilesystemListing {
+        let folder = Self.trimmed(path)
+        return try await decode(FilesystemListing.self, "filesystem", [
+            URLQueryItem(name: "path", value: folder == "/" ? "/" : folder + "/"),
+            URLQueryItem(name: "includeFiles", value: files ? "true" : "false"),
+        ])
+    }
+
+    private static func trimmed(_ path: String) -> String {
+        var p = path
+        while p.count > 1, p.hasSuffix("/") { p.removeLast() }
+        return p
+    }
 
     /// Whether a directory exists on Lidarr's filesystem. Lidarr lists the closest existing folder for a missing
     /// path (and answers 200 for an empty folder), so this lists the parent and looks for the directory in it.

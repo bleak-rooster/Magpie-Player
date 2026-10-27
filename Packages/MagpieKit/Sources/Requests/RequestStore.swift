@@ -107,6 +107,16 @@ public struct MagpieRequest: Sendable, Codable, Equatable, Identifiable {
         set { lastKeepFailed = newValue ? true : nil }
     }
     var lastKeepFailed: Bool?
+    /// The last Keep couldn't be settled from here (a move that never finished, a find that couldn't be put
+    /// back, files that aren't where Lidarr says): it needs the owner's look. The ledger keeps saying kept, so
+    /// nothing deletes it and Keep isn't offered again.
+    public var keepNeedsAttention: Bool {
+        get { keepStuck ?? false }
+        set { keepStuck = newValue ? true : nil }
+    }
+    var keepStuck: Bool?
+    /// Lidarr's artist folder after a confirmed move (the kept song is looked up there, A3).
+    public var movedTo: String?
     /// Kept and moved: the library song is looked up again by MBID (A3). False once found or given up; nil
     /// for requests that never moved.
     public var relinkPending: Bool?
@@ -158,6 +168,14 @@ public struct KeepProgress: Sendable, Codable, Equatable {
     /// The highest `/command` id Lidarr listed before the move was asked for: only later ones are this move.
     public var commandBaseline: Int
     public var lastCheckAt: Date?
+    /// When the move first looked finished but the track files weren't all in the main root yet (Lidarr updates
+    /// track file paths shortly after the command completes): they get `RequestRunner.keepStartGrace` to settle.
+    public var filesUnsettledSince: Date?
+    /// Restore writes sent so far (bounded by `RequestRunner.keepRestoreLimit`).
+    public var restoreAttempts: Int?
+    /// Lidarr saved the main root as the artist path but the files never left `fromPath`: the restore also
+    /// points the artist back at the Finds root, without moving files.
+    public var revertPath: Bool?
 
     public init(phase: Phase, startedAt: Date, artistId: Int, fromPath: String, findsRoot: String, mainRoot: String,
                 findTagId: Int, priorQualityProfileId: Int?, commandBaseline: Int) {

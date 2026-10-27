@@ -197,11 +197,14 @@ public struct LidarrArtistLookup: Sendable, Equatable, Decodable {
     public var artistType: String?
     public var status: String?
     public var id: Int?
+    /// The artist folder name Lidarr's naming format gives now (`folder`): where a move puts it (G4).
+    public var folder: String?
 
     public init(foreignArtistId: MBID?, artistName: String, disambiguation: String? = nil, overview: String? = nil,
-                artistType: String? = nil, status: String? = nil, id: Int? = nil) {
+                artistType: String? = nil, status: String? = nil, id: Int? = nil, folder: String? = nil) {
         self.foreignArtistId = foreignArtistId; self.artistName = artistName; self.disambiguation = disambiguation
         self.overview = overview; self.artistType = artistType; self.status = status; self.id = id
+        self.folder = folder
     }
 
     public init(from decoder: Decoder) throws {
@@ -213,6 +216,7 @@ public struct LidarrArtistLookup: Sendable, Equatable, Decodable {
         artistType = c.text("artistType")
         status = c.text("status")
         id = c.int("id").flatMap { $0 > 0 ? $0 : nil }
+        folder = c.value("folder", as: String.self).flatMap { $0.isEmpty ? nil : $0 }
     }
 }
 
@@ -502,6 +506,7 @@ public struct TrackFile: Sendable, Equatable, Decodable {
 /// `/filesystem` response, only the part `filesystemExists` needs.
 struct FilesystemListing: Decodable {
     var directories: [String]
+    var files: [String]
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: AnyKey.self)
@@ -512,5 +517,6 @@ struct FilesystemListing: Decodable {
             }
         }
         directories = (c.value("directories", as: LossyArray<Entry>.self)?.values ?? []).map(\.path)
+        files = (c.value("files", as: LossyArray<Entry>.self)?.values ?? []).map(\.path)
     }
 }

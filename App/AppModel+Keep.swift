@@ -15,6 +15,8 @@ enum KeepCopy {
     static let unavailable = "Can't keep it right now. Try again in a moment."
     static let changesOff = "Turn on 'Allow Magpie to change Lidarr' in Settings to keep finds."
     static let notSetUp = "Tap 'Set up Magpie in Lidarr' in Settings to keep finds."
+    /// The Keep couldn't be settled; nothing more is changed and it isn't offered again.
+    static let needsAttention = "Keeping this one didn't finish, and it needs a look before it can be tried again."
 
     static func message(_ outcome: RequestRunner.KeepOutcome) -> String {
         switch outcome {
@@ -30,6 +32,7 @@ enum KeepCopy {
         case .notSetUp?: notSetUp
         case .notAFind?: notAFind
         case .moveFailed?: moveFailed
+        case .needsAttention?: needsAttention
         case .unavailable?, nil: unavailable
         }
     }
@@ -86,21 +89,36 @@ extension AppModel {
     /// new folder isn't inside exactly one other Navidrome library.
     nonisolated static func keepScanTargets(to: String, findsLibrary: NavidromeLibrary, mapping: PathMapping?,
                                             libraries: [NavidromeLibrary]) -> [String] {
-        guard let mapped = mapping.map({ $0.toNavidrome(to) }) ?? PathGuard.standardize(to) else { return [] }
+        guard let (library, relative) = keptLocation(to, findsLibrary: findsLibrary, mapping: mapping,
+                                                     libraries: libraries) else { return [] }
+        return ["\(findsLibrary.id):", "\(library.id):\(relative)"]
+    }
+
+    /// The Navidrome library a Lidarr artist folder is in (exactly one, not the Finds library) and the folder
+    /// relative to it, through the Finds mapping.
+    nonisolated static func keptLocation(_ artistPath: String, findsLibrary: NavidromeLibrary, mapping: PathMapping?,
+                                         libraries: [NavidromeLibrary]) -> (NavidromeLibrary, String)? {
+        guard let mapped = mapping.map({ $0.toNavidrome(artistPath) }) ?? PathGuard.standardize(artistPath) else {
+            return nil
+        }
         let holders = libraries.filter { library in
             library.id != findsLibrary.id
                 && PathGuard(findsRoot: library.path, otherRoots: [], caseInsensitive: false).isInside(mapped)
         }
         guard holders.count == 1, let library = holders.first,
-              let base = PathGuard.standardize(library.path) else { return [] }
-        let relative = mapped.split(separator: "/").dropFirst(base.split(separator: "/").count).joined(separator: "/")
-        return ["\(findsLibrary.id):", "\(library.id):\(relative)"]
+              let base = PathGuard.standardize(library.path) else { return nil }
+        return (library, mapped.split(separator: "/").dropFirst(base.split(separator: "/").count).joined(separator: "/"))
     }
 
-    /// The kept recording's song outside the Finds library (nil while Navidrome hasn't listed it there yet).
-    func keptSong(_ recording: MBID) async throws -> Song? {
-        let finds = findsSetup?.library?.id
-        return try await request { try await $0.songs(recordingMBID: recording, excludingLibrary: finds) }.first
+    /// The kept recording's song in the folder the artist moved to (nil while Navidrome hasn't listed it there,
+    /// or when that folder can't be placed in a library: then the song isn't relinked). Never the owner's own
+    /// copy of the recording on another release.
+    func keptSong(_ recording: MBID, artistPath: String) async throws -> Song? {
+        guard let finds = findsSetup, let findsLibrary = finds.library,
+              let (library, folder) = Self.keptLocation(artistPath, findsLibrary: findsLibrary, mapping: finds.mapping,
+                                                        libraries: try await navidromeLibraries()) else { return nil }
+        let id = library.id
+        return try await request { try await $0.songs(recordingMBID: recording, inLibrary: id, under: folder) }.first
     }
 
     /// The runner found the kept song in the library: queue slots now hold the library song, and the finds

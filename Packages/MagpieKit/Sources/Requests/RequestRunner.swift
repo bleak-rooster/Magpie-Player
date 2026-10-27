@@ -16,8 +16,9 @@ public struct LibraryAccess: Sendable {
     /// After Keep's move: scan where the artist folder was and where it is now (Lidarr's paths), so the old
     /// entry goes missing and the new one appears (A3, A12).
     public var rescanMoved: @Sendable (_ from: String, _ to: String) async throws -> Void
-    /// After Keep's move: the recording's song in the library outside the Finds library; nil while not listed.
-    public var keptSong: @Sendable (MBID) async throws -> Song?
+    /// After Keep's move: the recording's song in the folder the artist moved to (Lidarr's path); nil while not
+    /// listed there. Never the owner's own copy of the recording elsewhere.
+    public var keptSong: @Sendable (MBID, _ artistPath: String) async throws -> Song?
 
     /// `rescanMoved` nil: one plain quick scan. `keptSong` nil: never found (the request keeps its song id).
     public init(startScan: @escaping @Sendable () async throws -> Void,
@@ -25,11 +26,11 @@ public struct LibraryAccess: Sendable {
                 refreshIndex: @escaping @Sendable () async throws -> Void,
                 songId: @escaping @Sendable (ExternalRecording) async -> String?,
                 rescanMoved: (@Sendable (_ from: String, _ to: String) async throws -> Void)? = nil,
-                keptSong: (@Sendable (MBID) async throws -> Song?)? = nil) {
+                keptSong: (@Sendable (MBID, _ artistPath: String) async throws -> Song?)? = nil) {
         self.startScan = startScan; self.isScanning = isScanning
         self.refreshIndex = refreshIndex; self.songId = songId
         self.rescanMoved = rescanMoved ?? { _, _ in try await startScan() }
-        self.keptSong = keptSong ?? { _ in nil }
+        self.keptSong = keptSong ?? { _, _ in nil }
     }
 
     /// Straight to one Navidrome client and match index (`startScan` is always `fullScan=false`, G7).
@@ -135,8 +136,8 @@ public actor RequestRunner {
     private(set) var list: [MagpieRequest] = []
     private var loaded = false
     private var busy: Set<RequestID> = []
-    /// Requests a Keep is working on right now (RequestRunner+Keep.swift).
-    var keeping: Set<RequestID> = []
+    /// Lidarr artists a Keep is working on right now (RequestRunner+Keep.swift): one Keep per artist.
+    var keepingArtists: Set<Int> = []
     /// When the kept song was last looked up, per request (throttles `relink`).
     var relinkChecks: [RequestID: Date] = [:]
     private var inFlight: [RequestID: Task<Void, Never>] = [:]

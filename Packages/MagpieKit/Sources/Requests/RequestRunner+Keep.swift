@@ -11,16 +11,27 @@ import MagpieCore
 /// - the artist (fresh GET) carries `magpie-find` and its path is strictly inside the Finds root (a case-sensitive
 ///   `PathGuard` built from those root folders).
 ///
-/// Then `GET /filesystem` for `<main root>/<artist folder>`: if it exists, only `magpie-find` comes off and the
-/// find stays where it is (G4). Otherwise one `PUT /artist/editor` with exactly the G4 body. Lidarr saves the new
-/// path at once and moves the files in a `BulkMoveArtist` command, reverting the path if the move fails (A3), so
-/// Keep waits for that command and then checks the artist path again before it claims anything. Only then are
-/// both folders scanned and the song looked up again by MBID.
+/// One Keep per artist at a time: no other request of the artist has a Keep under way and no ledger entry of the
+/// artist says kept.
+///
+/// G4 destination: the editor moves the folder to `<main root>/<folder>`, where `folder` comes from Lidarr's
+/// naming format and the artist's current name (lookup `folder`), not from the current folder. If that name differs
+/// from the current folder's (a rename, a changed format), or a folder of either name already exists in the main
+/// root (compared ignoring case, diacritics and width, so a case-insensitive or NFD volume can't hide the owner's
+/// folder), only `magpie-find` comes off and the find stays where it is. Otherwise one `PUT /artist/editor` with
+/// exactly the G4 body.
+///
+/// Lidarr saves the new path at once and moves the files in a `BulkMoveArtist` command, reverting the path if the
+/// move fails (A3). So Keep waits for that command, then checks the artist path (strictly inside the main root)
+/// and every track file on disk in the new folder (Lidarr's filesystem API; 3.2 leaves the track file records at
+/// the old paths), with the find's folder gone from the Finds root, before it claims anything. Only then are both folders scanned and the song looked up again
+/// by MBID in the folder it moved to.
 ///
 /// M6: the Keep is saved (request and ledger) before every write, so a relaunch only follows it, never writes the
 /// move twice. The ledger says "kept" from just before the write (Not for me refuses kept albums, G3.4) until the
-/// Keep verifiably failed. A failed move puts back what the PUT changed (`magpie-find`, the quality profile), so
-/// the find can be kept again.
+/// Keep verifiably failed. A failed move puts back what the PUT changed (`magpie-find`, the quality profile, and the
+/// artist path when Lidarr saved the new one but never moved the files), so the find can be kept again. What can't
+/// be settled within the limits ends in "needs attention": the ledger keeps saying kept, nothing more is written.
 extension RequestRunner {
     /// Where Keep moves finds, from the owner's Finds and Lidarr setup.
     public struct KeepSetup: Sendable, Equatable {
@@ -58,6 +69,8 @@ extension RequestRunner {
         case notAFind
         /// Lidarr refused or couldn't do the move. Nothing is kept; the find is as it was (or being put back).
         case moveFailed
+        /// The Keep couldn't be settled from here; it needs the owner's look (`keepNeedsAttention`).
+        case needsAttention
     }
 
     /// Between checks of a move in progress.
@@ -71,6 +84,10 @@ extension RequestRunner {
     /// The kept song is looked up again at most this often, and for this long after the move.
     public static let relinkInterval: TimeInterval = 15
     public static let relinkLimit: TimeInterval = 30 * 60
+    /// A move still not finished this long after the write: followed no further (needs attention).
+    public static let keepMoveLimit: TimeInterval = 30 * 60
+    /// Restore writes before giving up (a 4xx gives up at once).
+    public static let keepRestoreLimit = 5
 
     // MARK: - Bodies (A4: only the fields Keep changes)
 
@@ -91,12 +108,16 @@ extension RequestRunner {
         var applyTags: String
     }
 
-    /// A failed move: put back what the PUT already changed. Nil fields are left out.
+    /// A failed move: put back what the PUT already changed. Nil fields are left out. `rootFolderPath` +
+    /// `moveFiles: false` only when Lidarr saved the main root but the files never left the Finds folder: it points
+    /// the artist back at them and moves nothing.
     struct RestoreBody: Encodable, Sendable {
         var artistIds: [Int]
-        var qualityProfileId: Int?
-        var tags: [Int]?
-        var applyTags: String?
+        var rootFolderPath: String? = nil
+        var moveFiles: Bool? = nil
+        var qualityProfileId: Int? = nil
+        var tags: [Int]? = nil
+        var applyTags: String? = nil
     }
 
     // MARK: - Keep
@@ -104,19 +125,26 @@ extension RequestRunner {
     /// Keeps a ready find (see the type comment). Throws `KeepError`; nothing is claimed unless it returns.
     public func keep(_ id: RequestID) async throws -> KeepOutcome {
         guard !stopped, await load() else { throw KeepError.unavailable }
-        guard !keeping.contains(id) else { return .stillMoving }   // a Keep for it is already under way
         guard let r = request(id) else { throw KeepError.notAFind }
-        keeping.insert(id)
-        defer { keeping.remove(id) }
+        guard let artistId = r.keep?.artistId ?? r.lidarrArtistId else { throw KeepError.notAFind }
+        // One Keep per artist: the whole artist moves.
+        guard !keepingArtists.contains(artistId) else { return .stillMoving }
+        keepingArtists.insert(artistId)
+        defer { keepingArtists.remove(artistId) }
         // M6: already written. Only see how it went; never write it again.
         if r.keep != nil { return try await followKeep(id, inline: true) }
-        guard r.state == .ready, let artistId = r.lidarrArtistId else { throw KeepError.notAFind }
+        guard r.state == .ready, !r.keepNeedsAttention else { throw KeepError.notAFind }
+        if list.contains(where: { $0.id != id && $0.keep?.artistId == artistId }) { return .stillMoving }
         guard await gate.enabled else { throw KeepError.changesOff }
         guard let setup = await keepSetup() else { throw KeepError.notSetUp }
 
-        let created: Bool
-        do { created = try await ledger.createdArtist(artistId) } catch { throw KeepError.unavailable }
-        guard created else { throw KeepError.notAFind }
+        let entries: [LedgerEntry]
+        do { entries = try await ledger.entries.filter { $0.lidarrArtistId == artistId } } catch {
+            throw KeepError.unavailable
+        }
+        guard entries.contains(where: \.createdArtist) else { throw KeepError.notAFind }
+        // Kept already, or a Keep of it that isn't settled (needs attention): never a second move.
+        guard !entries.contains(where: { $0.keptAt != nil }) else { throw KeepError.notAFind }
         let roots: [String], artist: LidarrArtist, commands: [CommandStatus]
         do {
             roots = try await lidarr.rootFolders().map(\.path)
@@ -128,19 +156,27 @@ extension RequestRunner {
             throw KeepError.unavailable
         }
         lastLidarrContact = now()
-        guard Self.mayKeep(artist, request: r, setup: setup, roots: roots), let from = artist.path else {
+        guard Self.mayKeep(artist, request: r, setup: setup, roots: roots), let from = artist.path,
+              let mbid = artist.foreignArtistId else {
             throw KeepError.notAFind
         }
         // Something is already moving this artist (not Magpie's Keep, or one whose record was lost): leave it.
         guard !commands.contains(where: { Self.isMove($0, of: artistId) && !Self.isFinished($0) }) else {
             throw KeepError.unavailable
         }
-        let destination = Self.destination(of: from, in: setup.mainRoot)
-        let exists: Bool
-        do { exists = try await lidarr.filesystemExists(path: destination) } catch { throw KeepError.unavailable }
+        // G4: where the editor would put it, and whether anything is there already.
+        let named: String?, existing: [String]
+        do {
+            named = try await lidarr.artistLookup(mbid: mbid)?.folder
+            existing = try await lidarr.directories(in: setup.mainRoot)
+        } catch {
+            throw KeepError.unavailable
+        }
+        let current = Self.lastComponent(from)
+        let untagOnly = Self.mustStayInFinds(current: current, named: named, existing: existing.map(Self.lastComponent))
 
         let progress = KeepProgress(
-            phase: exists ? .untagging : .moving, startedAt: now(), artistId: artistId, fromPath: from,
+            phase: untagOnly ? .untagging : .moving, startedAt: now(), artistId: artistId, fromPath: from,
             findsRoot: setup.findsRoot, mainRoot: setup.mainRoot, findTagId: setup.findTagId,
             priorQualityProfileId: artist.qualityProfileId, commandBaseline: commands.map(\.id).max() ?? 0)
         // M6: the Keep is on disk, and the ledger says kept, before anything can reach Lidarr.
@@ -155,7 +191,7 @@ extension RequestRunner {
             await nothingKept(id, artistId)
             throw KeepError.unavailable
         }
-        let body: any Encodable & Sendable = exists
+        let body: any Encodable & Sendable = untagOnly
             ? UntagBody(artistIds: [artistId], tags: [setup.findTagId], applyTags: "remove")
             : MoveBody(artistIds: [artistId], rootFolderPath: setup.mainRoot, moveFiles: true,
                        qualityProfileId: setup.losslessProfileId, tags: [setup.findTagId], applyTags: "remove")
@@ -176,8 +212,8 @@ extension RequestRunner {
             Log.logger("requests").error("Keep: no answer from Lidarr; following the move")
             return try await followKeep(id, inline: true)
         }
-        if exists {
-            await finishInPlace(id)
+        if untagOnly {
+            await finishInPlace(id, artistId: artistId)
             return .keptInPlace
         }
         return try await followKeep(id, inline: true)
@@ -190,11 +226,11 @@ extension RequestRunner {
             guard !stopped, let r = request(id) else { throw KeepError.unavailable }
             guard let progress = r.keep else {
                 if r.state == .kept { return r.keptInPlace ? .keptInPlace : .moved }
-                throw KeepError.moveFailed
+                throw r.keepNeedsAttention ? KeepError.needsAttention : KeepError.moveFailed
             }
             switch await checkKeep(id, progress) {
             case .done(let outcome): return outcome
-            case .failed: throw KeepError.moveFailed
+            case .failed: throw request(id)?.keepNeedsAttention == true ? KeepError.needsAttention : KeepError.moveFailed
             case .pending:
                 await mutate(id) { $0.keep?.lastCheckAt = self.now() }
                 guard now() < deadline else { return .stillMoving }
@@ -215,34 +251,109 @@ extension RequestRunner {
         }
     }
 
-    /// A3: done only when the move command completed and the artist path (fresh GET) is under the main root.
-    /// Lidarr saves the new path before it moves anything, so the path alone proves nothing while a move runs.
+    /// A3: done only when the move command completed (or is long gone from Lidarr's list, which prunes finished
+    /// commands) with nothing moving now, the artist path is under the main root, and every track file is on disk
+    /// in the new folder (`filesMoved`).
+    /// Lidarr saves the new path before it moves anything, so the artist path alone proves nothing.
     private func checkMove(_ id: RequestID, _ p: KeepProgress) async -> KeepCheck {
         let commands: [CommandStatus], artist: LidarrArtist
         do {
             commands = try await lidarr.commands()
             artist = try await lidarr.artist(id: p.artistId)
         } catch {
-            return .pending   // can't tell now; checked again
+            return await stillPending(id, p)   // can't tell now; checked again
         }
         lastLidarrContact = now()
         let mine = commands.filter { $0.id > p.commandBaseline && Self.isMove($0, of: p.artistId) }
-        if mine.contains(where: { !Self.isFinished($0) }) { return .pending }
+        if mine.contains(where: { !Self.isFinished($0) }) { return await stillPending(id, p) }
         let finished = mine.max { $0.id < $1.id }
         let started = now().timeIntervalSince(p.startedAt) >= Self.keepStartGrace
-        let mover = PathGuard(findsRoot: p.mainRoot, otherRoots: [p.findsRoot], caseInsensitive: false)
-        let inMain = artist.path.map(mover.isInside) ?? false
-        if inMain, let path = artist.path,
-           finished.map({ $0.status.lowercased() == "completed" }) ?? started {
-            // Completed, or long gone from Lidarr's list (it prunes finished commands) with nothing moving now.
-            await finishMove(id, p, to: path)
-            return .done(.moved)
+        let main = Self.mainGuard(p)
+        let inMain = artist.path.map(main.isInside) ?? false
+        if inMain, finished.map({ $0.status.lowercased() == "completed" }) ?? started {
+            guard let files = try? await lidarr.trackFiles(artistId: p.artistId), let path = artist.path,
+                  let moved = await filesMoved(p, to: path, files: files) else { return await stillPending(id, p) }
+            if moved {
+                await finishMove(id, p, to: path)
+                return .done(.moved)
+            }
+            // The filesystem may lag the command a little: give it time before deciding.
+            guard let since = p.filesUnsettledSince else {
+                await mutate(id) { $0.keep?.filesUnsettledSince = self.now() }
+                return .pending
+            }
+            guard now().timeIntervalSince(since) >= Self.keepStartGrace else { return await stillPending(id, p) }
+            if await filesNeverLeft(p, files: files) {
+                // Lidarr saved the main root but never moved the files (a restart orphaned the move): not kept.
+                Log.logger("requests").error("Keep: the files never left the Finds folder")
+                return await beginRestore(id, revertPath: true)
+            }
+            Log.logger("requests").error("Keep: the files aren't where Lidarr says")
+            await needsAttention(id)
+            return .failed
         }
         if finished == nil, !started { return .pending }   // not listed yet
         // Failed, reverted (Lidarr's RevertPath after an IOException) or never started.
         Log.logger("requests").error("Keep: the move didn't go through")
+        return await beginRestore(id, revertPath: false)
+    }
+
+    /// Every track file is on disk (Lidarr's filesystem) inside the artist's new folder, and the find's folder is
+    /// gone from the Finds root. Lidarr 3.2 leaves the track file paths at the old folder after a move (verified on
+    /// the dev stack), so each one is looked for at its place under the new folder. Nil: can't tell right now.
+    private func filesMoved(_ p: KeepProgress, to artistPath: String, files: [TrackFile]) async -> Bool? {
+        let main = Self.mainGuard(p)
+        let source = PathGuard(findsRoot: p.fromPath, otherRoots: [p.mainRoot], caseInsensitive: false)
+        guard main.isInside(artistPath), !files.isEmpty else { return false }
+        var expected: [String] = []
+        for file in files {
+            if main.isInside(file.path) {
+                expected.append(file.path)
+            } else if source.isInside(file.path), let base = PathGuard.standardize(p.fromPath),
+                      let full = PathGuard.standardize(file.path) {
+                expected.append(artistPath + full.dropFirst(base.count))
+            } else {
+                return false
+            }
+        }
+        guard expected.allSatisfy(main.isInside) else { return false }
+        do {
+            for (folder, wanted) in Dictionary(grouping: expected, by: { ($0 as NSString).deletingLastPathComponent }) {
+                let present = Set(try await lidarr.files(in: folder))
+                guard wanted.allSatisfy(present.contains) else { return false }
+            }
+            let inFinds = try await lidarr.directories(in: p.findsRoot)
+            return !inFinds.contains { Self.sameBytes($0, p.fromPath) }
+        } catch {
+            return nil
+        }
+    }
+
+    /// Lidarr's records and its filesystem agree that nothing moved: every track file is inside the find's folder,
+    /// that folder is still there, and no folder of its name is in the main root. Only then may the restore point
+    /// the artist back at the Finds folder.
+    private func filesNeverLeft(_ p: KeepProgress, files: [TrackFile]) async -> Bool {
+        let source = PathGuard(findsRoot: p.fromPath, otherRoots: [p.mainRoot], caseInsensitive: false)
+        guard !files.isEmpty, files.allSatisfy({ source.isInside($0.path) }),
+              let inMain = try? await lidarr.directories(in: p.mainRoot),
+              let inFinds = try? await lidarr.directories(in: p.findsRoot) else { return false }
+        let folder = Self.lastComponent(p.fromPath)
+        return !inMain.contains { Self.looselyEqual(Self.lastComponent($0), folder) }
+            && inFinds.contains { Self.sameBytes($0, p.fromPath) }
+    }
+
+    /// Still moving: pending, until `keepMoveLimit` after the write (then needs attention).
+    private func stillPending(_ id: RequestID, _ p: KeepProgress) async -> KeepCheck {
+        guard now().timeIntervalSince(p.startedAt) >= Self.keepMoveLimit else { return .pending }
+        Log.logger("requests").error("Keep: the move didn't finish in time")
+        await needsAttention(id)
+        return .failed
+    }
+
+    private func beginRestore(_ id: RequestID, revertPath: Bool) async -> KeepCheck {
         await mutate(id) {
             $0.keep?.phase = .restoring
+            $0.keep?.revertPath = revertPath ? true : nil
             $0.keepFailed = true
         }
         if let restoring = request(id)?.keep { await restore(id, restoring) }
@@ -252,10 +363,10 @@ extension RequestRunner {
     /// Destination existed and the untag answer was lost: done once `magpie-find` is gone; not applied when it is
     /// still there after `keepStartGrace`.
     private func checkUntag(_ id: RequestID, _ p: KeepProgress) async -> KeepCheck {
-        guard let artist = try? await lidarr.artist(id: p.artistId) else { return .pending }
+        guard let artist = try? await lidarr.artist(id: p.artistId) else { return await stillPending(id, p) }
         lastLidarrContact = now()
         if !artist.tags.contains(p.findTagId) {
-            await finishInPlace(id)
+            await finishInPlace(id, artistId: p.artistId)
             return .done(.keptInPlace)
         }
         guard now().timeIntervalSince(p.startedAt) >= Self.keepStartGrace else { return .pending }
@@ -264,41 +375,66 @@ extension RequestRunner {
         return .failed
     }
 
-    /// Puts back `magpie-find` and the quality profile the PUT changed, if the artist is back inside the Finds
-    /// root (fresh GETs). A failed write leaves the phase at `.restoring` for a later tick.
+    /// Puts back what the PUT changed, from fresh GETs: `magpie-find`, the quality profile and, with `revertPath`,
+    /// the artist path (to the Finds root, no files moved). Done when the artist is a find in the Finds folder
+    /// again. A write that fails without an answer waits for a later tick; a 4xx, `keepRestoreLimit` writes, or an
+    /// artist that is neither back in Finds nor (with `revertPath`) in the main root end in needs attention.
     private func restore(_ id: RequestID, _ p: KeepProgress) async {
-        let artist: LidarrArtist, roots: [String]
-        do {
-            artist = try await lidarr.artist(id: p.artistId)
-            roots = try await lidarr.rootFolders().map(\.path)
-        } catch {
-            return
-        }
-        lastLidarrContact = now()
-        let finds = Self.findsGuard(findsRoot: p.findsRoot, mainRoot: p.mainRoot, roots: roots)
-        if let path = artist.path, finds.isInside(path) {
+        for _ in 0..<2 {
+            guard let p = request(id)?.keep, p.phase == .restoring else { return }
+            let artist: LidarrArtist, roots: [String]
+            do {
+                artist = try await lidarr.artist(id: p.artistId)
+                roots = try await lidarr.rootFolders().map(\.path)
+            } catch {
+                return
+            }
+            lastLidarrContact = now()
+            let finds = Self.findsGuard(findsRoot: p.findsRoot, mainRoot: p.mainRoot, roots: roots)
             var body = RestoreBody(artistIds: [p.artistId])
+            let inFinds = artist.path.map(finds.isInside) ?? false
+            if !inFinds {
+                guard p.revertPath == true, artist.path.map(Self.mainGuard(p).isInside) == true else {
+                    // Not in the Finds folder: the ledger keeps saying kept, so nothing ever deletes it.
+                    return await needsAttention(id)
+                }
+                body.rootFolderPath = p.findsRoot
+                body.moveFiles = false
+            }
             if !artist.tags.contains(p.findTagId) {
                 body.tags = [p.findTagId]
                 body.applyTags = "add"
             }
             if let prior = p.priorQualityProfileId, artist.qualityProfileId != prior { body.qualityProfileId = prior }
-            if body.tags != nil || body.qualityProfileId != nil {
-                do {
-                    try await persist()
-                    _ = try await gate.send("PUT", "artist/editor", body: body)
-                } catch {
-                    Log.logger("requests").error("Keep: putting the find back postponed")
-                    return
+            guard body.tags != nil || body.qualityProfileId != nil || body.rootFolderPath != nil else {
+                // A find again: Not for me may remove it later.
+                try? await setKept(p.artistId, at: nil)
+                return await mutate(id) {
+                    $0.keep = nil
+                    $0.keepFailed = true
                 }
             }
-            // A find again: Not for me may remove it later.
-            try? await setKept(p.artistId, at: nil)
+            guard (p.restoreAttempts ?? 0) < Self.keepRestoreLimit else { return await needsAttention(id) }
+            await mutate(id) { $0.keep?.restoreAttempts = (p.restoreAttempts ?? 0) + 1 }
+            do {
+                try await persist()
+                _ = try await gate.send("PUT", "artist/editor", body: body)
+            } catch let error where error is WriteGateError || Self.isDefinitiveRejection(error) {
+                Log.logger("requests").error("Keep: putting the find back was refused")
+                return await needsAttention(id)
+            } catch {
+                Log.logger("requests").error("Keep: putting the find back postponed")
+                return
+            }
         }
-        // Otherwise it isn't in the Finds folder: the ledger keeps saying kept, so nothing ever deletes it.
+    }
+
+    /// The Keep can't be settled from here: stop following it, write nothing more. The ledger keeps saying kept.
+    private func needsAttention(_ id: RequestID) async {
         await mutate(id) {
             $0.keep = nil
             $0.keepFailed = true
+            $0.keepNeedsAttention = true
         }
     }
 
@@ -313,6 +449,7 @@ extension RequestRunner {
                 $0.keepFailed = false
                 $0.relinkPending = true
                 $0.movedAt = self.now()
+                $0.movedTo = path
             }
         }
         do { try await library.rescanMoved(p.fromPath, path) } catch {
@@ -321,12 +458,16 @@ extension RequestRunner {
         for r in kept { await relink(r.id) }
     }
 
-    private func finishInPlace(_ id: RequestID) async {
-        await apply(id, .keep)
-        await mutate(id) {
-            $0.keep = nil
-            $0.keepFailed = false
-            $0.keptInPlace = true
+    /// Kept where it is: this request and every other ready request of the (now untagged) artist.
+    private func finishInPlace(_ id: RequestID, artistId: Int) async {
+        let kept = list.filter { $0.lidarrArtistId == artistId && ($0.id == id || ($0.state == .ready && $0.keep == nil)) }
+        for r in kept {
+            await apply(r.id, .keep)
+            await mutate(r.id) {
+                $0.keep = nil
+                $0.keepFailed = false
+                $0.keptInPlace = true
+            }
         }
     }
 
@@ -346,16 +487,17 @@ extension RequestRunner {
 
     // MARK: - After the move (A3: re-resolve song ids by MBID)
 
-    /// Looks the kept song up again by MBID. Found: the request's song id and file type are updated and
-    /// `onRelinked` tells the app (queue entries, finds identity). Gives up `relinkLimit` after the move.
+    /// Looks the kept song up again by MBID in the folder it moved to. Found: the request's song id and file type
+    /// are updated and `onRelinked` tells the app (queue entries, finds identity). Gives up `relinkLimit` after
+    /// the move.
     func relink(_ id: RequestID) async {
         guard let r = request(id), r.relinkPending == true else { return }
         relinkChecks[id] = now()
-        guard let recording = r.recording.recordingMBID ?? r.plan?.recordingMBID else {
+        guard let recording = r.recording.recordingMBID ?? r.plan?.recordingMBID, let folder = r.movedTo else {
             return await mutate(id) { $0.relinkPending = false }
         }
         let found: Song?
-        do { found = try await library.keptSong(recording) } catch { found = nil }
+        do { found = try await library.keptSong(recording, folder) } catch { found = nil }
         guard let song = found else {
             if now().timeIntervalSince(r.movedAt ?? r.updatedAt) >= Self.relinkLimit {
                 await mutate(id) { $0.relinkPending = false }
@@ -373,13 +515,15 @@ extension RequestRunner {
 
     /// `tick()`: follows Keeps still settling (at most every `keepCheckInterval`) and looks kept songs up again.
     func followKeeps() async {
-        for r in list where r.keep != nil && !keeping.contains(r.id) {
+        for r in list {
+            guard let artistId = r.keep?.artistId, !keepingArtists.contains(artistId) else { continue }
             if let last = r.keep?.lastCheckAt, now().timeIntervalSince(last) < Self.keepCheckInterval { continue }
-            keeping.insert(r.id)
+            keepingArtists.insert(artistId)
             _ = try? await followKeep(r.id, inline: false)
-            keeping.remove(r.id)
+            keepingArtists.remove(artistId)
         }
-        for r in list where r.relinkPending == true && !keeping.contains(r.id) {
+        for r in list where r.relinkPending == true {
+            if let artistId = r.lidarrArtistId, keepingArtists.contains(artistId) { continue }
             if let last = relinkChecks[r.id], now().timeIntervalSince(last) < Self.relinkInterval { continue }
             await relink(r.id)
         }
@@ -396,10 +540,33 @@ extension RequestRunner {
         return findsGuard(findsRoot: setup.findsRoot, mainRoot: setup.mainRoot, roots: roots).isInside(path)
     }
 
+    /// G4: the move would land somewhere other than a fresh folder of the find's own name: Lidarr's folder name is
+    /// unknown or differs from the current one, or a folder of either name is in the main root already. Loose
+    /// comparison (case, diacritics, width; Swift `==` already treats NFC and NFD alike): a near match counts as
+    /// the same folder, which only keeps more finds in place.
+    static func mustStayInFinds(current: String, named: String?, existing: [String]) -> Bool {
+        guard let named, looselyEqual(current, named) else { return true }
+        return existing.contains { looselyEqual($0, current) || looselyEqual($0, named) }
+    }
+
+    static func looselyEqual(_ a: String, _ b: String) -> Bool {
+        let fold = { (s: String) in s.folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: nil) }
+        return fold(a) == fold(b)
+    }
+
+    static func lastComponent(_ path: String) -> String {
+        path.split(separator: "/").last.map(String.init) ?? ""
+    }
+
     /// The Finds root, confined against every other fresh root folder and the main root; case-sensitive.
     static func findsGuard(findsRoot: String, mainRoot: String, roots: [String]) -> PathGuard {
         PathGuard(findsRoot: findsRoot, otherRoots: roots.filter { !sameBytes($0, findsRoot) } + [mainRoot],
                   caseInsensitive: false)
+    }
+
+    /// Strictly inside the main root (and not inside the Finds root), byte-exact.
+    static func mainGuard(_ p: KeepProgress) -> PathGuard {
+        PathGuard(findsRoot: p.mainRoot, otherRoots: [p.findsRoot], caseInsensitive: false)
     }
 
     /// The same folder, byte for byte, after standardising.
@@ -408,21 +575,10 @@ extension RequestRunner {
         return Array(x.utf8) == Array(y.utf8)
     }
 
-    /// Where Lidarr moves the artist folder: the main root plus the folder's own name.
-    static func destination(of artistPath: String, in mainRoot: String) -> String {
-        let folder = artistPath.split(separator: "/").last.map(String.init) ?? ""
-        let root = PathGuard.standardize(mainRoot) ?? mainRoot
-        return (root == "/" ? "" : root) + "/" + folder
-    }
-
     /// A `BulkMoveArtist` for this artist, or one whose artists can't be read (counted, to be safe).
     static func isMove(_ c: CommandStatus, of artistId: Int) -> Bool {
         c.name.lowercased() == "bulkmoveartist" && (c.artistIds.isEmpty || c.artistIds.contains(artistId))
     }
 
     static func isFinished(_ c: CommandStatus) -> Bool { finishedCommandStates.contains(c.status.lowercased()) }
-}
-
-extension RequestRunner.RestoreBody {
-    init(artistIds: [Int]) { self.init(artistIds: artistIds, qualityProfileId: nil, tags: nil, applyTags: nil) }
 }

@@ -89,6 +89,10 @@ final class FakeLidarr: @unchecked Sendable {
         var path: String? = nil
         var tags: [Int] = []
         var quality = 4
+        /// Where the artist's files really are on disk; nil: no files.
+        var files: String? = nil
+        /// Where `GET /trackfile?artistId=` says they are (Lidarr updates it shortly after a move).
+        var recorded: String? = nil
         var currentPath: String { path ?? root + "/Aurora Field" }
     }
     /// A `/command` row (Keep's BulkMoveArtist, A3).
@@ -103,8 +107,10 @@ final class FakeLidarr: @unchecked Sendable {
         case revertsSilently
         /// Stays started (a slow copy to another volume).
         case hangs
-        /// No command shows up at all (the PUT never reached Lidarr's command queue).
+        /// No command shows up at all: it completed and Lidarr pruned it; the files moved.
         case neverListed
+        /// No command shows up at all and the files never moved (a restart orphaned the move, then it was pruned).
+        case prunedFilesStayed
     }
     struct Album { var id: Int; var artistId: Int; var rg: MBID; var title: String; var monitored: Bool }
     struct Queued {
@@ -164,9 +170,18 @@ final class FakeLidarr: @unchecked Sendable {
         var commandsDown = false
         /// `PUT /artist/editor`: the client times out before it reaches Lidarr, this many times.
         var editorTimesOut = 0
+        /// The artist folder Lidarr's naming format gives (lookup `folder`); a move lands there.
+        var lookupFolder = "Aurora Field"
+        /// `PUT /artist/editor` putting a find back (`applyTags: add`) answers 400.
+        var rejectRestores = false
+        /// A completed move leaves the files here instead of in the new artist folder.
+        var filesLandIn: String?
+        /// `/trackfile` follows a move (Lidarr 3.2 doesn't: the paths stay at the old folder).
+        var trackFilesFollowMove = false
     }
 
     let latch = Latch()
+    static let songFile = "Lowlands (2016)/01 - Song.mp3"
     /// What happened, in order: `/command` reads (`command:<BulkMoveArtist statuses>`) and library rescans.
     let events = OSAllocatedUnfairLock(initialState: [String]())
 
@@ -234,6 +249,7 @@ final class FakeLidarr: @unchecked Sendable {
         }
         t.stub(method: "PUT", pathSuffix: "/api/v1/artist/editor") { [self] req in
             let body = try! JSONSerialization.jsonObject(with: req.httpBody!) as! [String: Any]
+            if body["applyTags"] as? String == "add", with({ $0.rejectRestores }) { return MockTransport.Response(status: 400) }
             if let rejected: Int = with({ s in
                 guard s.editorRejects > 0 else { return nil }
                 s.editorRejects -= 1
@@ -249,12 +265,20 @@ final class FakeLidarr: @unchecked Sendable {
                     default: break
                     }
                     if let q = body["qualityProfileId"] as? Int { s.artists[i].quality = q }
-                    if let root = body["rootFolderPath"] as? String {
-                        // Lidarr saves the new path at once and queues the move (A3).
+                    if let root = body["rootFolderPath"] as? String, body["moveFiles"] as? Bool == false {
+                        // Path only, from the existing folder name; nothing moves.
                         let folder = String(s.artists[i].currentPath.split(separator: "/").last!)
                         s.artists[i].path = root + "/" + folder
                         s.artists[i].root = root
-                        if s.move != .neverListed {
+                    } else if let root = body["rootFolderPath"] as? String {
+                        // Lidarr saves the new path at once (its naming format's folder) and queues the move (A3).
+                        s.artists[i].path = root + "/" + s.lookupFolder
+                        s.artists[i].root = root
+                        if s.move == .neverListed {
+                            s.artists[i].files = s.artists[i].path
+                            s.artists[i].recorded = s.artists[i].path
+                        }
+                        if s.move != .neverListed, s.move != .prunedFilesStayed {
                             s.nextCommandId += 1
                             s.commands.append(Command(id: s.nextCommandId, name: "BulkMoveArtist", status: "queued",
                                                       artistIds: [s.artists[i].id]))
@@ -279,6 +303,12 @@ final class FakeLidarr: @unchecked Sendable {
                     default: nil
                     }
                     guard let next else { continue }
+                    if s.commands[i].status == "started", s.move == .completes {
+                        for a in s.artists.indices where s.commands[i].artistIds.contains(s.artists[a].id) {
+                            s.artists[a].files = s.filesLandIn ?? s.artists[a].currentPath
+                            if s.trackFilesFollowMove { s.artists[a].recorded = s.artists[a].files }
+                        }
+                    }
                     if s.commands[i].status == "started", s.move != .completes {
                         for a in s.artists.indices where s.commands[i].artistIds.contains(s.artists[a].id) {
                             s.artists[a].root = "/music/samples"
@@ -298,22 +328,40 @@ final class FakeLidarr: @unchecked Sendable {
             })
         }
         t.stub(pathSuffix: "/api/v1/filesystem") { [self] req in
-            let parent = URLComponents(url: req.url!, resolvingAgainstBaseURL: false)?.queryItems?
-                .first { $0.name == "path" }?.value ?? ""
-            let dirs: [String] = with { s in
-                let all = s.folders.union(s.artists.map(\.currentPath))
-                return all.filter { ($0 as NSString).deletingLastPathComponent + "/" == parent }.sorted()
+            let items = URLComponents(url: req.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            let parent = items.first { $0.name == "path" }?.value ?? ""
+            let withFiles = items.first { $0.name == "includeFiles" }?.value == "true"
+            let (dirs, files): ([String], [String]) = with { s in
+                // On disk: the extra folders, and each artist's files folder with its album folder and song.
+                let songs = s.artists.compactMap(\.files).map { $0 + "/" + FakeLidarr.songFile }
+                var folders = s.folders
+                for song in songs {
+                    var d = (song as NSString).deletingLastPathComponent
+                    while d.count > 1 { folders.insert(d); d = (d as NSString).deletingLastPathComponent }
+                }
+                let inParent = { (p: String) in (p as NSString).deletingLastPathComponent + "/" == parent }
+                return (folders.filter(inParent).sorted(), songs.filter(inParent).sorted())
             }
-            return reply(["parent": parent, "directories": dirs.map { ["path": $0 + "/", "name": "x"] }, "files": [Any]()])
+            return reply(["parent": parent, "directories": dirs.map { ["path": $0 + "/", "name": "x"] },
+                          "files": withFiles ? files.map { ["path": $0, "name": "x"] } : [[String: Any]]()])
         }
         t.stub(pathSuffix: "/api/v1/rootfolder") { [self] _ in
             if with({ $0.rootsDown }) { return MockTransport.Response(status: 503) }
             return reply(with { s in s.roots.enumerated().map { ["id": $0.offset + 1, "path": $0.element] as [String: Any] } })
         }
-        t.stub(pathSuffix: "/api/v1/artist/lookup") { _ in
+        t.stub(pathSuffix: "/api/v1/artist/lookup") { [self] _ in
             reply([["artistName": "Aurora Field", "foreignArtistId": artistA.rawValue, "qualityProfileId": 0,
                     "metadataProfileId": 0, "monitored": false, "monitorNewItems": "all", "tags": [Int](),
-                    "RootFolderPath": "/x", "overview": "Band"]])
+                    "RootFolderPath": "/x", "overview": "Band", "folder": with { $0.lookupFolder }]])
+        }
+        t.stub(pathSuffix: "/api/v1/trackfile") { [self] req in
+            let artistId = URLComponents(url: req.url!, resolvingAgainstBaseURL: false)?.queryItems?
+                .first { $0.name == "artistId" }?.value.flatMap(Int.init)
+            return reply(with { s in
+                return s.artists.filter { $0.id == artistId }.compactMap(\.recorded).map {
+                    ["id": 1, "path": $0 + "/" + FakeLidarr.songFile, "albumId": 50] as [String: Any]
+                }
+            })
         }
         t.stub(pathSuffix: "/api/v1/album") { [self] req in
             if let d = down() { return d }
@@ -359,9 +407,11 @@ final class FakeLidarr: @unchecked Sendable {
             let id: Int = with { s in
                 let id = s.nextArtistId
                 s.nextArtistId += 1
+                let root = body["rootFolderPath"] as! String
                 s.artists.append(Artist(id: id, mbid: MBID(body["foreignArtistId"] as! String)!,
-                                        root: body["rootFolderPath"] as! String, tags: body["tags"] as? [Int] ?? [],
-                                        quality: body["qualityProfileId"] as? Int ?? 0))
+                                        root: root, tags: body["tags"] as? [Int] ?? [],
+                                        quality: body["qualityProfileId"] as? Int ?? 0, files: root + "/Aurora Field",
+                                        recorded: root + "/Aurora Field"))
                 if s.albumsAppearOnAdd {
                     s.albums += s.albumsOnAdd.map { var a = $0; a.artistId = id; return a }
                 }
@@ -444,6 +494,8 @@ final class FakeLibrary: @unchecked Sendable {
         /// Keep: songs of the main library by recording (re-resolved after the move).
         var mainSongs: [MBID: Song] = [:]
         var mainSongReads = 0
+        /// The artist folders the kept song was looked up in.
+        var keptSongFolders: [String] = []
     }
 
     let state = OSAllocatedUnfairLock(initialState: State())
@@ -464,7 +516,13 @@ final class FakeLibrary: @unchecked Sendable {
                 state.withLock { $0.rescans.append((from, to)) }
                 events.withLock { $0.append("rescan") }
             },
-            keptSong: { [self] id in state.withLock { $0.mainSongReads += 1; return $0.mainSongs[id] } })
+            keptSong: { [self] id, folder in
+                state.withLock {
+                    $0.mainSongReads += 1
+                    $0.keptSongFolders.append(folder)
+                    return $0.mainSongs[id]
+                }
+            })
     }
 }
 

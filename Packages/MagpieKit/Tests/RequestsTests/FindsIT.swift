@@ -81,10 +81,23 @@ struct FindsIT {
                 let folder = to.split(separator: "/").last.map(String.init) ?? ""
                 try await navidrome.startScan(targets: ["\(finds.id):", "\(main.id):\(folder)"])
             },
-            keptSong: { id in try await navidrome.songs(recordingMBID: id, excludingLibrary: finds.id).first })
+            keptSong: { id, artistPath in
+                // Same paths for Lidarr and Navidrome on the dev stack: the artist folder inside the main library.
+                let folder = artistPath.split(separator: "/").last.map(String.init) ?? ""
+                return try await navidrome.songs(recordingMBID: id, inLibrary: main.id, under: folder).first
+            })
         let runner = RequestRunner(lidarr: client, gate: gate, ledger: ledger, mb: mb, library: library,
                                    store: RequestStore(fileURL: dir.appending(path: "requests.json")),
                                    setup: { setup }, keepSetup: { keepSetup })
+
+        // Cleanup removes only the folders this test created (G0: never an owner-ish folder of the dev library).
+        let musicRoot = TryDevStack.repoRoot.appending(path: "dev/data/music")
+        func folders() -> [String: Set<String>] {
+            Dictionary(uniqueKeysWithValues: ["library", "samples"].map { root in
+                (root, Set((try? FileManager.default.contentsOfDirectory(atPath: musicRoot.appending(path: root).path)) ?? []))
+            })
+        }
+        let before = folders()
 
         let id = try await runner.tryRecording(
             ExternalRecording(recordingMBID: TryIT.recording, title: "Harbour Lights", artist: "Judie Tzuke",
@@ -141,7 +154,14 @@ struct FindsIT {
             #expect(kept.path?.hasPrefix("/music/library/") == true, "artist path: \(kept.path ?? "nil")")
             #expect(!kept.tags.contains(provisioned.findTagId))
             #expect(kept.qualityProfileId == provisioned.losslessProfileId)
-            #expect(try await client.trackFiles(albumId: albumId).allSatisfy { $0.path.hasPrefix("/music/library/") })
+            // On disk (Lidarr's filesystem): the find's folder left the Finds root and its files are in the new
+            // folder. Lidarr 3.2 doesn't update the track file paths on a move, so those aren't checked.
+            #expect(try await client.directories(in: "/music/samples").allSatisfy { !$0.hasSuffix("/Judie Tzuke") })
+            if let newPath = kept.path, let albumDir = try await client.directories(in: newPath).first {
+                #expect(try await client.files(in: albumDir).contains { $0.hasSuffix("Harbour Lights.mp3") })
+            } else {
+                Issue.record("no album folder in \(kept.path ?? "nil")")
+            }
             #expect(try await ledger.entries.filter { $0.lidarrArtistId == artistId }.allSatisfy { $0.keptAt != nil })
 
             // The song is in the main library now, under its (re-resolved) id.
@@ -169,14 +189,15 @@ struct FindsIT {
             _ = try await gate.send("DELETE", "artist/\(createdArtistId)?deleteFiles=false&addImportListExclusion=false",
                                     body: nil)
         }
-        if let folder = artistFolder?.split(separator: "/").last.map(String.init), !folder.isEmpty, folder != "..",
-           folder != "." {
-            for root in ["library", "samples"] {
-                let path = TryDevStack.repoRoot.appending(path: "dev/data/music/\(root)/\(folder)")
-                try? FileManager.default.removeItem(at: path)
+        _ = artistFolder
+        var removed = false
+        for (root, now) in folders() {
+            for created in now.subtracting(before[root] ?? []) where !created.isEmpty && created != ".." && created != "." {
+                try? FileManager.default.removeItem(at: musicRoot.appending(path: root).appending(path: created))
+                removed = true
             }
-            try? await navidrome.startScan(target: nil)
         }
+        if removed { try? await navidrome.startScan(target: nil) }
     }
 
     // MARK: - Fixture set-up (dev stack only)

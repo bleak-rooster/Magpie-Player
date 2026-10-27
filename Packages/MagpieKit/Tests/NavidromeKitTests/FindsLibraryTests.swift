@@ -86,4 +86,22 @@ import Testing
         #expect(queryItems(req).filter { $0.name == "target" }.map(\.value) == ["2:", "1:Aurora Field"])
         #expect(queryValue(req, "fullScan") == "false")
     }
+
+    /// Fix 6.2b-4: the kept song is looked up in the folder the artist moved to, never the owner's own copy of
+    /// the recording on another release (same MBID, other folder) or a sibling folder (`Aurora Field 2`).
+    @Test func songsByRecordingUnderTheMovedFolder() async throws {
+        var rows = Fixtures.json("apiSongPage") as! [[String: Any]]
+        let mbid = rows[0]["mbzRecordingID"] as! String
+        for i in 0..<4 { rows[i]["mbzRecordingID"] = mbid; rows[i]["libraryId"] = 1; rows[i]["missing"] = false }
+        rows[0]["path"] = "Owner Compilations/Best Of/03 - Song.flac"
+        rows[1]["path"] = "Aurora Field 2/Lowlands/01 - Song.mp3"
+        rows[2]["path"] = "Aurora Field/Lowlands (2016)/01 - Song.mp3"
+        rows[3]["path"] = "Aurora Field/Lowlands (2016)/01 - Song.mp3"
+        rows[3]["libraryId"] = 2
+        let body = try JSONSerialization.data(withJSONObject: rows)
+        let (client, _) = try await connected { $0.stub(pathSuffix: "/api/song", body: body) }
+        let songs = try await client.songs(recordingMBID: MBID(mbid)!, inLibrary: 1, under: "Aurora Field")
+        #expect(songs.map(\.id) == [rows[2]["id"] as! String])
+        #expect(try await client.songs(recordingMBID: MBID(mbid)!, inLibrary: 1, under: "").isEmpty)
+    }
 }

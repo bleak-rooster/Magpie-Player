@@ -95,6 +95,28 @@ import MagpieTestSupport
         #expect(try await client.commands().count == 3)
     }
 
+    /// Fix 6.2b-2: the folders in the main root, and Lidarr's own folder name for the artist (lookup `folder`).
+    @Test func directoriesAndLookupFolder() async throws {
+        let t = MockTransport()
+        t.stub(pathSuffix: "/filesystem", body: Data(#"""
+        {"parent":"/music/","directories":[{"path":"/music/library/Judie Tzuke/","name":"Judie Tzuke"},{"path":"/music/library/x","name":"x"}],"files":[{"path":"/music/library/a.mp3","name":"a.mp3"}]}
+        """#.utf8))
+        t.stub(pathSuffix: "/artist/lookup", body: Data(#"""
+        [{"artistName":"Judie Tzuke","foreignArtistId":"64db764c-2251-4f95-aa40-10fc91d509d8","folder":"Judie Tzuke"}]
+        """#.utf8))
+        let (client, transport) = makeClient(t)
+        #expect(try await client.directories(in: "/music/library") == ["/music/library/Judie Tzuke", "/music/library/x"])
+        let req = try #require(transport.requests.first { $0.url?.path.hasSuffix("/filesystem") == true })
+        #expect(URLComponents(url: req.url!, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "path" }?.value
+                == "/music/library/")
+        #expect(try await client.files(in: "/music/library/") == ["/music/library/a.mp3"])
+        let filesReq = try #require(transport.requests.last { $0.url?.path.hasSuffix("/filesystem") == true })
+        #expect(URLComponents(url: filesReq.url!, resolvingAgainstBaseURL: false)?.queryItems?
+                    .first { $0.name == "includeFiles" }?.value == "true")
+        let lookup = try await client.artistLookup(mbid: MBID("64db764c-2251-4f95-aa40-10fc91d509d8")!)
+        #expect(lookup?.folder == "Judie Tzuke")
+    }
+
     /// Task 6.2b (A3): Keep follows the `BulkMoveArtist` that covers its artist; the artist ids come from the
     /// command body (`artist[].artistId` in Lidarr's BulkMoveArtistCommand; other spellings defensively).
     @Test func commandBodyArtistIds() async throws {

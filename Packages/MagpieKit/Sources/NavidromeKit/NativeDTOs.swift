@@ -32,6 +32,8 @@ struct NativeSong: Decodable {
     let participants: Participants?
     let tags: Tags?
     let libraryId: Int?
+    /// Relative to the library's folder.
+    let path: String?
     let missing: Bool?
     let starred: Bool?
     let createdAt: String?   // parsed in mapping (nine fraction digits on 0.64.2)

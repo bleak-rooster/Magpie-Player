@@ -46,7 +46,9 @@ struct FindsShelf: Equatable {
 
     /// The ready request on this song with no Keep under way (the runner checks everything else on fresh state).
     static func keepRequest(for song: Song, in requests: [MagpieRequest]) -> RequestID? {
-        requests.last { $0.state == .ready && $0.songId == song.id && $0.keep == nil && $0.lidarrArtistId != nil }?.id
+        requests.last {
+            $0.state == .ready && $0.songId == song.id && $0.keep == nil && !$0.keepNeedsAttention && $0.lidarrArtistId != nil
+        }?.id
     }
 
     /// 7 − whole days since `created`, between 0 and 7.

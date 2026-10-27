@@ -463,4 +463,29 @@ private let t0 = Date(timeIntervalSince1970: 1_900_000_000)
         #expect(AppModel.keepScanTargets(to: "/data/library/Aurora Field", findsLibrary: finds, mapping: nil,
                                          libraries: [main, finds]).isEmpty, "paths differ, no mapping: plain scan")
     }
+
+    /// Fix 6.2b-5: a Keep that needs attention says so, sits under Needs attention, and isn't offered again.
+    @Test func keepNeedingAttention() {
+        var r = Self.readyFindRequest(songId: "a")
+        r.keepNeedsAttention = true
+        r.keepFailed = true
+        #expect(RequestCopy.status(r) == "Couldn't finish keeping it · needs a look")
+        #expect(RequestCopy.group(r) == .attention)
+        let shelf = FindsShelf(songs: [Self.song("a", created: t0)], requests: [r], played: [], now: t0)
+        #expect(shelf.newFinds.first?.keepRequest == nil)
+        #expect(KeepCopy.message(for: RequestRunner.KeepError.needsAttention) == KeepCopy.needsAttention)
+        #expect(!KeepCopy.needsAttention.contains("Lidarr"))
+    }
+
+    /// Fix 6.2b-4: the kept song is looked up in the library and folder the artist moved to.
+    @Test func keptLocation() {
+        let finds = NavidromeLibrary(id: 2, name: "Samples", path: "/music/samples")
+        let main = NavidromeLibrary(id: 1, name: "Music", path: "/music/library")
+        let hit = AppModel.keptLocation("/data/library/Aurora Field", findsLibrary: finds,
+                                        mapping: PathMapping(lidarrPrefix: "/data", navidromePrefix: "/music"),
+                                        libraries: [main, finds])
+        #expect(hit?.0 == main && hit?.1 == "Aurora Field")
+        #expect(AppModel.keptLocation("/music/samples/Aurora Field", findsLibrary: finds, mapping: nil,
+                                      libraries: [main, finds]) == nil, "never the Finds library")
+    }
 }
