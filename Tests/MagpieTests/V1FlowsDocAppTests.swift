@@ -116,8 +116,7 @@ private func eventually(_ seconds: Double = 5, _ condition: () -> Bool) async ->
     // MARK: §3a / §4 What the password travels in
 
     /// The password goes only in `POST /auth/login` bodies, but on every login (sign-in, and again on each launch
-    /// that resumes the session), not "once". A resumed launch may log in twice: the provisional client (used at
-    /// once by the match-index refresh) and the client `reconnect(rebuildAlways: true)` builds.
+    /// that resumes the session), not "once".
     @Test func passwordTravelsOnlyInLoginBodiesOnEveryLogin() async throws {
         let model = makeModel()
         try await model.signIn(urls: [home], username: "admin", password: "pw-v1-secret")
@@ -128,7 +127,7 @@ private func eventually(_ seconds: Double = 5, _ condition: () -> Bool) async ->
             String(data: $0.httpBody ?? Data(), encoding: .utf8)?.contains("pw-v1-secret") == true
         }
         let signInOnly = 1
-        #expect(withPassword.count >= signInOnly + 1, "the relaunch logs in with the password again: \(withPassword.count)")
+        #expect(withPassword.count == signInOnly + 1, "the relaunch logs in with the password once more: \(withPassword.count)")
         #expect(withPassword.allSatisfy { $0.httpMethod == "POST" && $0.url?.path.hasSuffix("/auth/login") == true })
         #expect(!transport.inner.requests.contains { $0.url?.absoluteString.contains("pw-v1-secret") == true })
         relaunched.signOut()
@@ -227,6 +226,26 @@ private func eventually(_ seconds: Double = 5, _ condition: () -> Bool) async ->
             .contains("finished-lidarr") == false })
         #expect(try await done.entries.isEmpty, "every entry was closed: forgotten")
         #expect(try await open.entries.count == 2, "an open entry keeps that Lidarr's whole ledger")
+        cleanUp(model)
+    }
+
+    /// V-fix (V1 O3): a resumed launch logs in once. Calls made while the launch's reconnect is under way (the
+    /// match-index refresh, the first screens) wait for it and use its client, instead of the provisional client
+    /// logging in on its own.
+    @Test func resumedLaunchLogsInOnce() async throws {
+        let model = makeModel()
+        try await model.signIn(urls: [home], username: "admin", password: "pw")
+        let logins = { self.transport.inner.requests.filter { $0.url?.path.hasSuffix("/auth/login") == true }.count }
+        let before = logins()
+
+        let relaunched = makeModel()
+        relaunched.resumeSavedSession()
+        _ = try await relaunched.request { try await $0.albumList(.newest, size: 12, offset: 0) }
+        await relaunched.matchIndexSettled()
+        #expect(await relaunched.reconnect(rebuildAlways: false))
+
+        #expect(logins() - before == 1, "one login for the whole launch, not \(logins() - before)")
+        relaunched.signOut()
         cleanUp(model)
     }
 

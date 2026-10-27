@@ -146,6 +146,7 @@ final class AppModel {
     @ObservationIgnored private let probeTransport: HTTPTransport
     @ObservationIgnored private let box: ClientBox
     @ObservationIgnored private var reconnectTask: Task<Bool, Never>?
+    @ObservationIgnored private var reconnectGeneration = 0
     @ObservationIgnored private var errorWatch: Task<Void, Never>?
     #if os(iOS)
     @ObservationIgnored private var nowPlaying: NowPlayingBridge?
@@ -279,7 +280,8 @@ final class AppModel {
         session = Session(client: client, endpoint: saved.endpoint, credentials: saved.credentials,
                           activeBase: saved.endpoint.bases[0], isAdmin: false)
         box.set(client)
-        Task { await reconnect(rebuildAlways: true) }
+        // O3: started now, so every call made meanwhile waits for it (`request`): one login per launch.
+        startReconnect(rebuildAlways: true)
         startMatchIndex()
         reloadKeychainItems()
         rebuildRunner()
@@ -400,6 +402,9 @@ final class AppModel {
     /// Runs `op` against the current client. On a connection error, re-probes the addresses, moves
     /// to the first that answers (rebuilding the client and the player's stream URLs) and retries once.
     func request<T: Sendable>(_ op: @Sendable (NavidromeClient) async throws -> T) async throws -> T {
+        // A reconnect under way (a resumed launch, a failover) is about to replace the client: use its result, so
+        // the client it retires never logs in on its own (O3).
+        if let pending = reconnectTask { _ = await pending.value }
         guard let client = session?.client else { throw NavidromeError.noReachableServer }
         do {
             return try await op(client)
@@ -419,12 +424,24 @@ final class AppModel {
     /// Single-flight. Returns true when the session is on an address that answers.
     @discardableResult
     func reconnect(rebuildAlways: Bool) async -> Bool {
-        if let task = reconnectTask { return await task.value }
-        let task = Task { await performReconnect(rebuildAlways: rebuildAlways) }
+        await startReconnect(rebuildAlways: rebuildAlways).value
+    }
+
+    /// The reconnect under way, or a new one; `reconnectTask` is set before this returns.
+    @discardableResult
+    private func startReconnect(rebuildAlways: Bool) -> Task<Bool, Never> {
+        if let task = reconnectTask { return task }
+        reconnectGeneration += 1
+        let generation = reconnectGeneration
+        // Main-actor isolated: it starts after `reconnectTask` is set, and clears it before anyone sees the result.
+        let task = Task { [weak self] () -> Bool in
+            guard let self else { return false }
+            let ok = await self.performReconnect(rebuildAlways: rebuildAlways)
+            if self.reconnectGeneration == generation { self.reconnectTask = nil }
+            return ok
+        }
         reconnectTask = task
-        let ok = await task.value
-        if reconnectTask == task { reconnectTask = nil }
-        return ok
+        return task
     }
 
     private func performReconnect(rebuildAlways: Bool) async -> Bool {
