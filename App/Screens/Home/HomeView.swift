@@ -21,8 +21,10 @@ struct HomeView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Tokens.Spacing.xxl) {
-                FinishSettingUpCard()
-                    .padding(.horizontal, Tokens.Spacing.margin)
+                if model.showsFinishSettingUp {   // final fix 2 B-M2: only while a step is left
+                    FinishSettingUpCard()
+                        .padding(.horizontal, Tokens.Spacing.margin)
+                }
                 LoadableView(state: shelves, retry: load) { s in
                     if s.isEmpty {
                         ContentUnavailableView("No music yet", systemImage: "music.note",
@@ -49,6 +51,9 @@ struct HomeView: View {
         // the status bar.
         .toolbarBackground(themed.palette.bgColor, for: .navigationBar)
         .toolbarBackgroundVisibility(.visible, for: .navigationBar)
+        // Final fix 2 H3-M7: the bar's soft scroll-edge blur still let covers show behind the large title; a hard
+        // edge keeps the title on the page colour.
+        .scrollEdgeEffectStyle(.hard, for: .top)
         .magpieScreen()
         .task { if shelves.value == nil { await load() } }
         // Its own task, so the library's shelves never wait for it. Read once (Refresh reads again), and again
@@ -101,6 +106,9 @@ struct HomeView: View {
 
 /// What Home's "Finish setting up" card says. About the music; it points to Settings without naming a service (§5).
 enum HomeCopy {
+    /// Try works; only Finds is left (B-M2).
+    static let finishFinds = "Your Finds folder needs one more step in Settings."
+
     static func finishSettingUp(connected: Bool) -> String {
         connected
             ? "Search shows music that's not in your library. To bring songs home, finish the last steps in Settings."
@@ -108,11 +116,13 @@ enum HomeCopy {
     }
 }
 
-/// D9: setup continues from Home. Opens the Lidarr connection sheet (also in Settings).
+/// D9: setup continues from Home. Opens the Lidarr connection sheet until one is connected; then Review opens
+/// Settings, where the steps left are (final fix 2 B-M2).
 private struct FinishSettingUpCard: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dynamicTypeSize) private var typeSize
     @State private var showsConnect = false
+    @State private var showsSettings = false
     private let themed = Themed()
 
     var body: some View {
@@ -122,7 +132,7 @@ private struct FinishSettingUpCard: View {
         let layout = typeSize.isAccessibilitySize
             ? AnyLayout(VStackLayout(alignment: .leading, spacing: Tokens.Spacing.s))
             : AnyLayout(HStackLayout(alignment: .top, spacing: Tokens.Spacing.m))
-        Button { showsConnect = true } label: {
+        Button { if connected { showsSettings = true } else { showsConnect = true } } label: {
             layout {
                 Image(systemName: connected ? "checkmark.circle" : "sparkles")
                     .font(.title2)
@@ -130,7 +140,7 @@ private struct FinishSettingUpCard: View {
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: Tokens.Spacing.xs) {
                     Text("Finish setting up").font(.headline)
-                    Text(HomeCopy.finishSettingUp(connected: connected))
+                    Text(model.tryAvailability.message == nil ? HomeCopy.finishFinds : HomeCopy.finishSettingUp(connected: connected))
                         .font(.subheadline)
                         .foregroundStyle(p.ink2Color)
                     Text(connected ? "Review" : "Continue")
@@ -148,6 +158,7 @@ private struct FinishSettingUpCard: View {
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("finish-setting-up")
         .sheet(isPresented: $showsConnect) { ConnectLidarrView() }
+        .sheet(isPresented: $showsSettings) { SettingsView() }
     }
 }
 

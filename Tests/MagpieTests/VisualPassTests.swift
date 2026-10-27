@@ -17,7 +17,7 @@ import Testing
         let tries = [TryAvailability.noLidarr, .changesOff, .notSetUp, .noRoot].compactMap(\.message)
         #expect(tries.count == 4)
         let texts = tries + [
-            HomeCopy.finishSettingUp(connected: true), HomeCopy.finishSettingUp(connected: false),
+            HomeCopy.finishSettingUp(connected: true), HomeCopy.finishSettingUp(connected: false), HomeCopy.finishFinds,
             KeepCopy.changesOff, KeepCopy.notSetUp, NotForMeCopy.changesOff, NotForMeCopy.notSetUp,
             BringInCopy.message(for: RequestRunner.BringInError.changesOff),
             BringInCopy.message(for: RequestRunner.BringInError.notSetUp),
@@ -28,7 +28,7 @@ import Testing
             #expect(!text.contains("\"") && !text.contains(">"), "M6: \(text)")
             #expect(text.firstMatch(of: /(^|\s)'/) == nil, "M6: straight opening quote in \(text)")
         }
-        for text in tries + [HomeCopy.finishSettingUp(connected: true), KeepCopy.changesOff, NotForMeCopy.changesOff] {
+        for text in tries + [HomeCopy.finishSettingUp(connected: true), HomeCopy.finishFinds, KeepCopy.changesOff, NotForMeCopy.changesOff] {
             #expect(text.contains("Settings"), "still says where to go: \(text)")
         }
     }

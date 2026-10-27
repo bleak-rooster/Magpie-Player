@@ -254,6 +254,13 @@ extension AppModel {
         return .available(speedTier)
     }
 
+    /// Final fix 2 B-M2: Home's "Finish setting up" card, while something is left: Try doesn't work yet, or Finds
+    /// is on but half set up (or needs set-up run again). Finds off is a choice, not a step left.
+    var showsFinishSettingUp: Bool {
+        guard case .available = tryAvailability else { return true }
+        return findsStatus == .notFinished || findsStatus == .needsSetUpAgain
+    }
+
     /// I4: why waiting requests can't move, as far as the app knows: Try's availability first, then a key the last
     /// audit found rejected.
     var waitContext: RequestCopy.WaitContext {

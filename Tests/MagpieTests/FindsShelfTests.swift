@@ -426,6 +426,28 @@ private let t0 = Date(timeIntervalSince1970: 1_900_000_000)
         cleanUp(model)
     }
 
+    /// Final fix 2 B-M2: Home's "Finish setting up" card shows until Try works and Finds isn't half set up.
+    @Test func finishSettingUpCardOnlyWhileSomethingIsLeft() async throws {
+        let signedIn = makeModel()
+        try await signedIn.signIn(urls: [home], username: "admin", password: "pw")
+        #expect(signedIn.showsFinishSettingUp, "no Lidarr yet")
+        cleanUp(signedIn)
+
+        let model = try await connected()
+        #expect(model.showsFinishSettingUp, "changes are off")
+        await model.setChangesAllowed(true)
+        #expect(!model.showsFinishSettingUp, "Try works; Finds off is a choice, not a step left")
+        let libraries = try await model.navidromeLibraries()
+        try model.confirmFindsRoot("/music/samples")
+        model.setUseFindsFolder(true)
+        #expect(model.findsStatus == .notFinished && model.showsFinishSettingUp)
+        try model.chooseFindsLibrary(libraries[1], among: libraries, mapping: nil)
+        #expect(model.findsStatus == .on && !model.showsFinishSettingUp)
+        model.lidarrSetup?.findTagId = nil
+        #expect(model.findsStatus == .needsSetUpAgain && model.showsFinishSettingUp)
+        cleanUp(model)
+    }
+
     @Test func missingFindTagSaysSetUpAgain() async throws {
         let model = try await connected()
         model.lidarrSetup?.findTagId = nil
