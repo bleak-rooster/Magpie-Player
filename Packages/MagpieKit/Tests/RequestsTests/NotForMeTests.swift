@@ -62,6 +62,26 @@ import MagpieCore
 
     // MARK: - G3 refusals (nothing written)
 
+    /// Security FL2: the album id must still be the request's release group in Lidarr (a refresh can re-create album
+    /// rows and a row id can be reused). Another release group under that id, or no such album: nothing is deleted.
+    @Test func refusesAnAlbumIdNowAnotherReleaseGroup() async throws {
+        for change in [{ (s: inout FakeLidarr.State) in
+                           for i in s.albums.indices where s.albums[i].id == 50 { s.albums[i].rg = mbid(99) } },
+                       { (s: inout FakeLidarr.State) in s.albums.removeAll { $0.id == 50 } }] {
+            let h = await Harness(setup: Harness.findsSetup)
+            let id = try await Self.readyFind(h)
+            let rg = try #require(await h.request(id)?.plan?.releaseGroupMBID)
+            #expect(h.server.with { s in s.albums.contains { $0.id == 50 && $0.rg == rg } }, "the find's album as added")
+            h.server.with(change)
+            let before = h.server.writes.count
+            await #expect(throws: RequestRunner.NotForMeError.notAFind) { _ = try await h.runner.notForMeCheck(id) }
+            await #expect(throws: RequestRunner.NotForMeError.notAFind) {
+                _ = try await h.runner.notForMe(id, permanentConfirmed: true)
+            }
+            #expect(h.server.writes.count == before)
+        }
+    }
+
     /// G3.4: never on a kept album: not after Keep, and not when the ledger says kept for any album of the artist.
     @Test func refusesKeptAlbum() async throws {
         let h = await Harness(setup: Harness.findsSetup)

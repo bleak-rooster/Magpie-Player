@@ -8,6 +8,7 @@ import MagpieCore
 ///   request, G6), with no Keep under way, kept or needing a look on any request of the artist, and no other
 ///   request still bringing the album in;
 /// - the ledger says Magpie created the artist and the album request, and nothing of the artist is kept (G3.1, G3.4);
+/// - Lidarr's album with that id is still the request's release group (security FL2);
 /// - the stored Finds root still checks out against fresh root folders; the artist (fresh GET) carries
 ///   `magpie-find`; its folder and every track file of the artist are strictly inside the Finds root and inside the
 ///   artist's own folder (a case-sensitive, byte-exact `PathGuard` built from those root folders, G3.2, G3.3);
@@ -396,12 +397,14 @@ extension RequestRunner {
         let entries: [LedgerEntry]
         do { entries = try await ledger.entries.filter { $0.lidarrArtistId == artistId } } catch { return .unknown }
         guard entries.contains(where: \.createdArtist), !entries.contains(where: { $0.keptAt != nil }),
-              let entry = entries.first(where: { $0.albumId == albumId }), !entry.wasMonitoredBefore else { return .no }
-        let roots: [String], artist: LidarrArtist, commands: [CommandStatus]
+              let entry = entries.first(where: { $0.albumId == albumId }), !entry.wasMonitoredBefore,
+              entry.rgMbid == r.plan?.releaseGroupMBID else { return .no }
+        let roots: [String], artist: LidarrArtist, commands: [CommandStatus], albums: [LidarrAlbum]
         let albumFiles: [TrackFile], artistFiles: [TrackFile], recycleBin: String?
         do {
             roots = try await lidarr.rootFolders().map(\.path)
             artist = try await lidarr.artist(id: artistId)
+            albums = try await lidarr.albums(artistId: artistId)
             commands = try await lidarr.commands()
             albumFiles = try await lidarr.trackFiles(albumId: albumId)
             artistFiles = try await lidarr.trackFiles(artistId: artistId)
@@ -413,6 +416,8 @@ extension RequestRunner {
         }
         lastLidarrContact = now()
         guard Self.mayKeep(artist, request: r, setup: setup, roots: roots), let path = artist.path else { return .no }
+        // FL2: the album id is still the request's release group (a refresh can re-create rows and reuse an id).
+        guard albums.contains(where: { $0.id == albumId && $0.foreignAlbumId == entry.rgMbid }) else { return .no }
         if let artistPath, !Self.sameBytes(path, artistPath) { return .no }
         guard !commands.contains(where: { Self.isMove($0, of: artistId) && !Self.isFinished($0) }) else { return .no }
         let finds = Self.findsGuard(findsRoot: setup.findsRoot, mainRoot: setup.mainRoot, roots: roots)
