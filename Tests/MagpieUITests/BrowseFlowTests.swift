@@ -45,8 +45,16 @@ final class BrowseFlowTests: XCTestCase {
         password.typeText(stack.password)
         app.buttons["connect-continue"].tap()
 
+        // iOS offers to save the password 1-3 s after Continue. The button exists while the prompt is still
+        // sliding in, and a tap then can be lost; a prompt left up swallows the next tap outside it (that tap
+        // only dismisses it). Tap until it is gone.
         let notNow = app.buttons["Not Now"]
-        if notNow.waitForExistence(timeout: 3) { notNow.tap() }
+        if notNow.waitForExistence(timeout: 5) {
+            for _ in 0..<3 where notNow.exists {
+                notNow.tap()
+                _ = notNow.waitForNonExistence(timeout: 2)
+            }
+        }
         XCTAssertTrue(app.tabBars.buttons["Library"].waitForExistence(timeout: 20),
                       "did not reach the tabs; error: \(errorText(app))")
         return app
