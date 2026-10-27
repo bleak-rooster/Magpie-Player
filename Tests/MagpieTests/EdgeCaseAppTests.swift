@@ -218,7 +218,7 @@ private let lidarrScope = LidarrClient(base: lidarrBase, apiKey: "key", transpor
         var thrown: Error?
         do { _ = try await model.connectLidarr(base: lidarrBase, apiKey: "key") } catch { thrown = error }
         let error = try #require(thrown)
-        #expect(LidarrConnectCopy.message(for: error, host: "192.168.1.2") == LidarrConnectCopy.notLidarr)
+        #expect(LidarrConnectCopy.message(for: error, url: lidarrBase) == LidarrConnectCopy.notLidarr)
         #expect(model.lidarr == nil && lidarrStore.load() == nil)
         tearDown(model)
     }

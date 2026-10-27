@@ -28,6 +28,10 @@ enum ConnectErrorCopy {
     /// Connect's advice under the addresses.
     static let httpsAdvice = "Use an https:// address for anything outside your home. Plain http:// sends your password unencrypted."
 
+    /// Final review I2: an https address (often assumed, when no scheme was typed) whose server speaks plain
+    /// http, as Navidrome on 4533 and Lidarr on 8686 do. The TLS handshake fails; the server is running.
+    static let httpsNotAnswering = "That address doesn't answer over https. If your server uses plain http, type http:// in front."
+
     /// B2: plain HTTP outside the home network in a Release build.
     static let needsHTTPS = "Use HTTPS for addresses outside your home network."
 
@@ -76,6 +80,7 @@ enum ConnectErrorCopy {
     private static func unreachableMessage(_ failures: [ProbeFailure]) -> String {
         guard let first = failures.first else { return unreachable("your music server") }
         if failures.contains(where: { isCertificateError($0.error) }) { return untrustedCertificate }
+        if failures.contains(where: { isPlainHTTPAnswer($0.error, url: $0.url) }) { return httpsNotAnswering }
         if failures.contains(where: { ($0.error as? URLError)?.code == .appTransportSecurityRequiresSecureConnection }) {
             return needsHTTPS
         }
@@ -91,6 +96,7 @@ enum ConnectErrorCopy {
 
     private static func message(for error: URLError, url: URL?) -> String {
         if isCertificateError(error) { return untrustedCertificate }
+        if let url, isPlainHTTPAnswer(error, url: url) { return httpsNotAnswering }
         if error.code == .appTransportSecurityRequiresSecureConnection { return needsHTTPS }
         if let url, isTimeout(error), ServerAddress.isLocalNetwork(url) { return localNetworkHint(url.host ?? "") }
         return unreachable(url?.host ?? "your music server")
@@ -100,6 +106,13 @@ enum ConnectErrorCopy {
         guard let e = error as? URLError else { return false }
         return [.serverCertificateUntrusted, .serverCertificateHasUnknownRoot, .serverCertificateHasBadDate,
                 .serverCertificateNotYetValid, .clientCertificateRejected, .clientCertificateRequired].contains(e.code)
+    }
+
+    /// An https request that failed in a way a plain-http server produces: the handshake fails, or what came
+    /// back isn't TLS / HTTP Magpie can read.
+    static func isPlainHTTPAnswer(_ error: Error, url: URL) -> Bool {
+        guard url.scheme?.lowercased() == "https", let e = error as? URLError else { return false }
+        return [.secureConnectionFailed, .cannotParseResponse, .badServerResponse].contains(e.code)
     }
 
     private static func isTimeout(_ error: Error) -> Bool {

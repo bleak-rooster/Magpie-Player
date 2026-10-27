@@ -110,7 +110,7 @@ struct ConnectLidarrView: View {
         } catch is PlainHTTPConsentRequired {
             unencrypted = url
         } catch {
-            self.error = LidarrConnectCopy.message(for: error, host: url.host ?? url.absoluteString)
+            self.error = LidarrConnectCopy.message(for: error, url: url)
         }
     }
 
@@ -215,11 +215,13 @@ enum LidarrConnectCopy {
         "\u{201C}\(text.trimmingCharacters(in: .whitespaces))\u{201D} doesn't look like a web address."
     }
 
-    static func message(for error: Error, host: String) -> String {
+    static func message(for error: Error, url: URL) -> String {
         switch error {
         case LidarrError.unauthorized: return badKey
         case LidarrError.decoding, LidarrError.http: return notLidarr
-        default: return "Couldn't reach Lidarr at \(host). Check the address and that Lidarr is running."
+        case _ where ConnectErrorCopy.isPlainHTTPAnswer(error, url: url): return ConnectErrorCopy.httpsNotAnswering
+        default:
+            return "Couldn't reach Lidarr at \(url.host ?? url.absoluteString). Check the address and that Lidarr is running."
         }
     }
 }

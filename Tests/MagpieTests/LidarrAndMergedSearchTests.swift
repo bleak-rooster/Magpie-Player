@@ -121,7 +121,18 @@ private let lidarrSearch = Data(#"""
         }
         #expect(model.lidarr == nil)
         #expect(lidarrStore.load() == nil)
-        #expect(LidarrConnectCopy.message(for: LidarrError.unauthorized, host: "x") == LidarrConnectCopy.badKey)
+        #expect(LidarrConnectCopy.message(for: LidarrError.unauthorized, url: lidarrBase) == LidarrConnectCopy.badKey)
+    }
+
+    /// Final review I2: Lidarr speaks plain http on 8686; an assumed https fails the TLS handshake.
+    @Test func lidarrTLSFailureOverHTTPSSuggestsPlainHTTP() {
+        let https = URL(string: "https://nas.tail1234.ts.net:8686")!
+        for code in [URLError.Code.secureConnectionFailed, .cannotParseResponse, .badServerResponse] {
+            #expect(LidarrConnectCopy.message(for: URLError(code), url: https) == ConnectErrorCopy.httpsNotAnswering)
+        }
+        let plain = URL(string: "http://nas.tail1234.ts.net:8686")!
+        #expect(LidarrConnectCopy.message(for: URLError(.badServerResponse), url: plain)
+                == "Couldn't reach Lidarr at nas.tail1234.ts.net. Check the address and that Lidarr is running.")
     }
 
     @Test func musicBrainzClientIsSharedAndLazy() {

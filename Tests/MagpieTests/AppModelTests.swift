@@ -312,10 +312,37 @@ final class LockableStore: SessionStoring {
         #expect(ConnectErrorCopy.message(for: SignInError.unreachable(failures)) == ConnectErrorCopy.needsHTTPS)
     }
 
+    /// Final review I2: a MagicDNS name typed without a scheme becomes https; a plain-http server then fails
+    /// the TLS handshake. Say so, instead of "check that the server is running".
+    @Test func tlsFailureOverHTTPSSuggestsPlainHTTP() {
+        let url = URL(string: "https://nas.tail1234.ts.net:4533")!
+        for code in [URLError.Code.secureConnectionFailed, .cannotParseResponse, .badServerResponse] {
+            let failures = [ProbeFailure(url: url, error: URLError(code))]
+            #expect(ConnectErrorCopy.message(for: SignInError.unreachable(failures)) == ConnectErrorCopy.httpsNotAnswering,
+                    "\(code)")
+            let direct = URLError(code, userInfo: [NSURLErrorFailingURLErrorKey: url])
+            #expect(ConnectErrorCopy.message(for: direct) == ConnectErrorCopy.httpsNotAnswering, "\(code)")
+        }
+        #expect(ConnectErrorCopy.httpsNotAnswering.contains("http://"))
+    }
+
+    @Test func badResponseOverPlainHTTPIsStillUnreachable() {
+        let failures = [ProbeFailure(url: URL(string: "http://192.168.1.20:4533")!, error: URLError(.badServerResponse))]
+        #expect(ConnectErrorCopy.message(for: SignInError.unreachable(failures)) == ConnectErrorCopy.unreachable("192.168.1.20"))
+    }
+
+    @Test func certificateTroubleStillComesFirst() {
+        let url = URL(string: "https://nas.tail1234.ts.net:4533")!
+        let failures = [ProbeFailure(url: url, error: URLError(.secureConnectionFailed)),
+                        ProbeFailure(url: url, error: URLError(.serverCertificateUntrusted))]
+        #expect(ConnectErrorCopy.message(for: SignInError.unreachable(failures)) == ConnectErrorCopy.untrustedCertificate)
+    }
+
     @Test func copyNeverNamesServicesOutsideTheServiceLine() {
         // Connect may name Navidrome in its subtitle; error messages talk about "your music server".
         for message in [ConnectErrorCopy.badCredentials, ConnectErrorCopy.generic, ConnectErrorCopy.untrustedCertificate,
-                        ConnectErrorCopy.localNetworkHint("x"), ConnectErrorCopy.unreachable("x")] {
+                        ConnectErrorCopy.localNetworkHint("x"), ConnectErrorCopy.unreachable("x"),
+                        ConnectErrorCopy.httpsNotAnswering] {
             #expect(!message.contains("Navidrome"))
         }
     }
