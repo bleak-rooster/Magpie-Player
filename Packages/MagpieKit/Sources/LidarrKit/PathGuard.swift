@@ -22,6 +22,10 @@ public enum RootValidation: Sendable, Equatable {
 /// server, `Artist/..` is not its lexical parent. Lidarr never reports `..` in artist or track paths, so
 /// refusing costs nothing. (`validateRoot` and `PathMapping` do resolve `..`; there it only refuses more.)
 ///
+/// Paths are split on the byte `/` (0x2F), never on Characters (security FL1): a combining mark right after `/`
+/// makes the two one Character, so a Character split would miss that `/` (and a `..` before it). A component that
+/// would fuse with its `/` that way (it starts with a combining or other extending scalar) is refused by `isInside`.
+///
 /// Accepting comparisons are byte-exact (UTF-8): Swift's `==` treats Unicode-equivalent spellings as equal,
 /// but on ext4 `Fundé` (precomposed) and `Fundé` (decomposed) are different folders. Refusing comparisons
 /// stay loose (canonical equivalence, case folded), which only refuses more.
@@ -53,7 +57,7 @@ public struct PathGuard: Sendable, Equatable {
     /// True when `path` is strictly below the Finds root (never the root itself), has no `..` component, and
     /// is inside no other root.
     public func isInside(_ path: String) -> Bool {
-        guard isValid, !path.split(separator: "/").contains(".."),
+        guard isValid, !Self.byteComponents(path).contains(where: { Self.isDotDot($0) || Self.fusesWithSlash($0) }),
               let root = findsRoot.map(Self.components), let p = Self.standardize(path).map(Self.components)
         else { return false }
         guard p.count > root.count, Self.exactPrefix(p, root, foldCase: caseInsensitive) else { return false }
@@ -91,21 +95,33 @@ public struct PathGuard: Sendable, Equatable {
     /// The lexical standard form of an absolute POSIX path (`/a/b`, `/` for the root); nil when not absolute.
     /// `..` above `/` stays at `/`, as on a real filesystem.
     public static func standardize(_ path: String) -> String? {
-        guard path.hasPrefix("/") else { return nil }
-        var parts: [Substring] = []
-        for part in path.split(separator: "/", omittingEmptySubsequences: true) {
-            switch part {
-            case ".": continue
-            case "..": if !parts.isEmpty { parts.removeLast() }
-            default: parts.append(part)
+        guard path.utf8.first == UInt8(ascii: "/") else { return nil }
+        var parts: [String] = []
+        for part in byteComponents(path) {
+            if Array(part.utf8) == [UInt8(ascii: ".")] { continue }
+            if isDotDot(part) {
+                if !parts.isEmpty { parts.removeLast() }
+            } else {
+                parts.append(part)
             }
         }
         return "/" + parts.joined(separator: "/")
     }
 
-    static func components(_ standardized: String) -> [String] {
-        standardized.split(separator: "/").map(String.init)
+    static func components(_ standardized: String) -> [String] { byteComponents(standardized) }
+
+    /// The non-empty components between `/` bytes (FL1: never a Character split).
+    public static func byteComponents(_ path: String) -> [String] {
+        path.utf8.split(separator: UInt8(ascii: "/"), omittingEmptySubsequences: true)
+            .map { String(decoding: $0, as: UTF8.self) }
     }
+
+    /// Exactly the bytes `..`.
+    static func isDotDot(_ component: String) -> Bool { Array(component.utf8) == Array("..".utf8) }
+
+    /// Starts with a scalar that joins the preceding `/` into one Character (a combining mark, ZWJ, an emoji
+    /// modifier…): such a name is never one Magpie confines.
+    static func fusesWithSlash(_ component: String) -> Bool { ("/" + component).count != component.count + 1 }
 
     /// Loose: Swift `==` (canonical equivalence). Use only where a match refuses.
     static func isBelowOrEqual(_ path: [String], _ root: [String], foldCase: Bool) -> Bool {

@@ -589,7 +589,7 @@ extension RequestRunner {
     }
 
     static func lastComponent(_ path: String) -> String {
-        path.split(separator: "/").last.map(String.init) ?? ""
+        PathGuard.byteComponents(path).last ?? ""   // FL1: split on the byte `/`
     }
 
     /// The Finds root, confined against every other fresh root folder and the main root; case-sensitive.

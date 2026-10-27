@@ -345,10 +345,12 @@ public actor NavidromeClient {
     /// Keep (A3): the recording's songs in library `libraryId` under `folder` (relative to that library, compared
     /// component by component), i.e. where a kept find moved, never the owner's own copy on another release.
     public func songs(recordingMBID: MBID, inLibrary libraryId: Int, under folder: String) async throws -> [Song] {
-        let prefix = folder.split(separator: "/").map(String.init)
+        // Split and compared on bytes (security FL1): a combining mark after `/` can't hide a component.
+        let components = { (p: String) in p.utf8.split(separator: UInt8(ascii: "/")).map(Array.init) }
+        let prefix = components(folder)
         return try await recordingRows(recordingMBID).filter { row in
-            guard row.libraryId == libraryId, !prefix.isEmpty,
-                  let parts = row.path?.split(separator: "/").map(String.init), parts.count > prefix.count else {
+            guard row.libraryId == libraryId, !prefix.isEmpty, let parts = row.path.map(components),
+                  parts.count > prefix.count else {
                 return false
             }
             return Array(parts.prefix(prefix.count)) == prefix

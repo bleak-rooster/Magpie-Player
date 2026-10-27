@@ -36,6 +36,22 @@ struct PathGuardTests {
         #expect(!guardSamples.isInside("/music/samples/Artist/x.flac/.."))
     }
 
+    /// Security FL1: components are split on the byte `/`, not on Characters. A combining mark right after `/`
+    /// makes `/` and the mark one Character, so a Character split hid the `..` (`/finds/../\u{0338}x` resolves to
+    /// `/\u{0338}x` on the server). A component that would fuse with its `/` is refused too.
+    @Test func combiningMarksCantHideDotDot() {
+        for path in ["/music/samples/../\u{0338}x", "/music/samples/../\u{0301}library/x", "/music/samples/Artist/../\u{200D}x",
+                     "/music/samples/\u{0338}x", "/music/samples/Artist/\u{0301}Album/x.flac",
+                     "/music/samples/Artist/\u{20DD}x", "/music/samples/../\u{1F3FB}x"] {
+            #expect(!guardSamples.isInside(path), "\(path.unicodeScalars.map { String($0.value, radix: 16) })")
+        }
+        // A mark inside a name is just a name (decomposed é).
+        #expect(guardSamples.isInside("/music/samples/Fund\u{0065}\u{0301}/x.flac"))
+        #expect(PathGuard.standardize("/music/samples/../\u{0338}x") == "/music/\u{0338}x")
+        #expect(PathGuard.standardize("/\u{0338}music") == "/\u{0338}music")
+        #expect(PathGuard.components("/a/\u{0338}b") == ["a", "\u{0338}b"])
+    }
+
     @Test func trailingSlashOK() {
         let g = PathGuard(findsRoot: "/music/samples/", otherRoots: ["/music/library/"], caseInsensitive: false)
         #expect(g.isInside("/music/samples/Artist/"))
