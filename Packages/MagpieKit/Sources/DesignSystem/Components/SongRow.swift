@@ -12,7 +12,6 @@ public struct SongRow: View {
     private let onTry: () -> Void
     private let onKeep: (() -> Void)?
     private let themed = ThemedPalette()
-    @Environment(\.magpieTheme) private var theme
     @Environment(\.dynamicTypeSize) private var typeSize
     @ScaledMetric(relativeTo: .body) private var thumb: CGFloat = 48
 
@@ -53,21 +52,14 @@ public struct SongRow: View {
         .modifier(RowActions(state: state, onTry: onTry, onKeep: onKeep))
     }
 
-    private var artView: some View {
-        ZStack(alignment: .bottomTrailing) {
-            if state.isRecord {
-                RecordArt(image: artwork, side: thumb, saturation: state.saturation,
-                          arc: state.arcFraction, isSpinning: state.isOnItsWay)
-            } else {
-                SleeveArt(image: artwork, side: thumb)
-            }
+    @ViewBuilder private var artView: some View {
+        if state.isRecord {
             // Classic draws records as squares, so the glyph badge carries the state there (a11y C2).
-            if theme.character == .classic, let symbol = state.statusSymbol, state.isRecord {
-                Image(systemName: symbol).font(.system(size: 10, weight: .bold))
-                    .foregroundStyle(themed.palette.onAccentColor)
-                    .padding(3).background(themed.palette.accentColor, in: Circle())
-                    .offset(x: 4, y: 4)
-            }
+            RecordArt(image: artwork, side: thumb, saturation: state.saturation,
+                      arc: state.arcFraction, isSpinning: state.isOnItsWay)
+                .recordBadge(state.statusSymbol)
+        } else {
+            SleeveArt(image: artwork, side: thumb)
         }
     }
 

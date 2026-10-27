@@ -11,7 +11,7 @@ struct NotYetAlbumRow: View {
 
     var body: some View {
         HStack(spacing: Tokens.Spacing.m) {
-            RecordArt(side: 48)
+            RecordArt(side: 48).recordBadge(RowState.notYet.statusSymbol)
             VStack(alignment: .leading, spacing: 1) {
                 Text(title).font(.body).lineLimit(2)
                 Text(detail).font(.footnote).foregroundStyle(themed.palette.ink2Color).lineLimit(1)

@@ -40,7 +40,10 @@ public struct Hallmark: View {
             let tint = isGenuineLossless ? p.accentInkColor : p.ink2Color
             Group {
                 if typeSize.isAccessibilitySize {
-                    Text(text).font(.footnote.weight(.semibold)).foregroundStyle(tint)   // plain text at AX sizes
+                    // Plain text at AX sizes, on one line: a stamp is never hyphenated ("Loss-less", H3 I4). Callers
+                    // give it its own line; if it's still tight it shrinks a little rather than break.
+                    Text(text).font(.footnote.weight(.semibold)).foregroundStyle(tint)
+                        .lineLimit(1).minimumScaleFactor(0.75)
                 } else {
                     Text(text)
                         .font(.system(size: 11, weight: .semibold))      // upright SF at <= 12 pt (a11y L3)

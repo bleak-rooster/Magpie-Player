@@ -73,8 +73,8 @@ enum BringInCopy {
 
     static func message(for error: Error) -> String {
         switch error as? RequestRunner.BringInError {
-        case .changesOff?: "Turn on 'Allow Magpie to change Lidarr' in Settings to bring in more."
-        case .notSetUp?: "Tap 'Set up Magpie in Lidarr' in Settings to bring in more."
+        case .changesOff?: "Bringing in more is switched off. Turn it on in Settings."
+        case .notSetUp?: "Bringing in more needs one more step in Settings."
         case .notKept?: "This one can't bring in more from here."
         case .tooMany?: "Five songs and releases are already on their way. Bring in more when one of them is home or has stopped."
         case .failed?: "Couldn't bring them in this time. Nothing new is on its way yet."

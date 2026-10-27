@@ -221,7 +221,7 @@ enum LidarrConnectCopy {
         case LidarrError.decoding, LidarrError.http: return notLidarr
         case _ where ConnectErrorCopy.isPlainHTTPAnswer(error, url: url): return ConnectErrorCopy.httpsNotAnswering
         default:
-            return "Couldn't reach Lidarr at \(url.host ?? url.absoluteString). Check the address and that Lidarr is running."
+            return "Couldn't reach Lidarr at \(ConnectErrorCopy.hostAndPort(url) ?? url.absoluteString). Check the address and that Lidarr is running."
         }
     }
 }

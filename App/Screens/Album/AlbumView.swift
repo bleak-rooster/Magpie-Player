@@ -86,13 +86,13 @@ struct AlbumView: View {
     }
 }
 
-/// Play and Shuffle capsules, side by side.
+/// Play and Shuffle capsules, side by side (stacked at accessibility sizes).
 struct PlayShuffleButtons: View {
     @Environment(AppModel.self) private var model
     let songs: [Song]
 
     var body: some View {
-        HStack(spacing: Tokens.Spacing.m) {
+        CapsuleRow {
             wide("Play", symbol: "play.fill") { model.play(songs, startAt: 0) }
             wide("Shuffle", symbol: "shuffle") { model.shuffle(songs) }
         }

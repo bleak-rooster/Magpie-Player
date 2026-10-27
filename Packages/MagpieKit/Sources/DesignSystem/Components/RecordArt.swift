@@ -1,10 +1,11 @@
 import SwiftUI
 
 /// Round art with grooves and a spindle hole (the bare record): music you don't have yet.
-/// In Classic the record renders as a full-opacity square with no grooves; callers show the status badge.
+/// In Classic the record renders as a full-opacity square with no grooves; callers show the status badge
+/// (`recordBadge(_:)`).
 public struct RecordArt: View {
     private let image: Image?
-    private let placeholder: Color
+    private let placeholder: Color?
     private let side: CGFloat?
     private let saturation: Double
     private let arc: Double?
@@ -16,10 +17,17 @@ public struct RecordArt: View {
     /// - Parameters:
     ///   - arc: fraction (0...1) of the sample window left; draws the "fade to keep" ring.
     ///   - isSpinning: spin at 33 1/3 rpm (1.8 s/turn). Ignored under Reduce Motion.
-    public init(image: Image? = nil, placeholder: Color = .gray.opacity(0.45), side: CGFloat? = nil,
+    ///   - placeholder: the fill under missing art; nil uses `placeholder(dark:)`.
+    public init(image: Image? = nil, placeholder: Color? = nil, side: CGFloat? = nil,
                 saturation: Double = 1, arc: Double? = nil, isSpinning: Bool = false) {
         self.image = image; self.placeholder = placeholder; self.side = side
         self.saturation = saturation; self.arc = arc; self.isSpinning = isSpinning
+    }
+
+    /// The bare record's fill: at least 3:1 against the page in every Character and scheme, so the record still
+    /// reads as a shape before its art arrives (WCAG 1.4.11; H3 M4).
+    public nonisolated static func placeholder(dark: Bool) -> PaletteColor {
+        dark ? PaletteColor(hex: 0x7C7C7C) : PaletteColor(hex: 0x8E8E93)
     }
 
     /// Spin only while fetching and only when Reduce Motion is off.
@@ -28,13 +36,14 @@ public struct RecordArt: View {
     public var body: some View {
         let spin = Self.shouldSpin(isSpinning: isSpinning, reduceMotion: reduceMotion)
         let p = theme.colors(for: scheme)
+        let fill = placeholder ?? Self.placeholder(dark: theme.character == .immersive || scheme == .dark).color
         Group {
             if theme.character == .classic {
-                SleeveArt(image: image, placeholder: placeholder, side: side, saturation: saturation)
+                SleeveArt(image: image, placeholder: fill, side: side, saturation: saturation)
             } else {
                 ZStack {
                     TimelineView(.animation(paused: !spin)) { ctx in
-                        disc(p).rotationEffect(.degrees(spin ? angle(at: ctx.date) : 0))
+                        disc(p, fill: fill).rotationEffect(.degrees(spin ? angle(at: ctx.date) : 0))
                     }
                     if let arc { ArcRing(fraction: arc, fill: p.accentInkColor, track: p.sepColor) }
                 }
@@ -50,9 +59,9 @@ public struct RecordArt: View {
         return t / Tokens.Motion.recordTurn * 360
     }
 
-    private func disc(_ p: Palette) -> some View {
+    private func disc(_ p: Palette, fill: Color) -> some View {
         ZStack {
-            placeholder
+            fill
             if let image { image.resizable().scaledToFill() }
             Canvas { gc, size in
                 let c = CGPoint(x: size.width / 2, y: size.height / 2)
@@ -72,6 +81,34 @@ public struct RecordArt: View {
         .saturation(saturation)
         .clipShape(Circle())
         .padding(arc == nil ? 0 : 2.5)
+    }
+}
+
+public extension View {
+    /// Classic draws records as squares, so a glyph badge carries the state there (D3, a11y C2). Signature and
+    /// Immersive keep the round record and show nothing extra. `size` is the glyph's point size.
+    func recordBadge(_ symbol: String?, size: CGFloat = 10) -> some View {
+        modifier(RecordBadge(symbol: symbol, size: size))
+    }
+}
+
+private struct RecordBadge: ViewModifier {
+    let symbol: String?
+    let size: CGFloat
+    @Environment(\.magpieTheme) private var theme
+    @Environment(\.colorScheme) private var scheme
+
+    func body(content: Content) -> some View {
+        content.overlay(alignment: .bottomTrailing) {
+            if theme.character == .classic, let symbol {
+                let p = theme.colors(for: scheme)
+                Image(systemName: symbol).font(.system(size: size, weight: .bold))
+                    .foregroundStyle(p.onAccentColor)
+                    .padding(size * 0.3).background(p.accentColor, in: Circle())
+                    .offset(x: size * 0.4, y: size * 0.4)
+                    .accessibilityHidden(true)
+            }
+        }
     }
 }
 

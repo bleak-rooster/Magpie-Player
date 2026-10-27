@@ -126,24 +126,30 @@ private struct SearchContent: View {
 
     @ViewBuilder private func results(_ sections: SearchSections) -> some View {
         if scope == .all, let top = sections.top {
-            Section { topRow(top, in: sections) } header: { header("Top result") }
+            Section {
+                header("Top result")
+                topRow(top, in: sections)
+            }
         }
         if scope == .all || scope == .songs, !sections.songs.isEmpty {
             Section {
+                header("Songs")
                 ForEach(Array(sections.songs.enumerated()), id: \.element.id) { index, song in
                     songRow(song, index: index, in: sections.songs)
                 }
-            } header: { header("Songs") }
+            }
         }
         if scope == .all || scope == .artists, !sections.artists.isEmpty {
             Section {
+                header("Artists")
                 ForEach(sections.artists, id: \.id) { artistRow($0) }
-            } header: { header("Artists") }
+            }
         }
         if scope == .all || scope == .albums, !sections.albums.isEmpty {
             Section {
+                header("Albums")
                 ForEach(sections.albums, id: \.id) { albumRow($0) }
-            } header: { header("Albums") }
+            }
         }
         notYetBand(sections.notYet)
     }
@@ -159,6 +165,7 @@ private struct SearchContent: View {
         let kinds = [songs.isEmpty, artists.isEmpty, albums.isEmpty].filter { !$0 }.count
         if kinds > 0 {
             Section {
+                header("Not in your library").accessibilityIdentifier("search-notyet-header")
                 if !songs.isEmpty {
                     if kinds > 1 { subheader("Songs") }
                     ForEach(Array(songs.enumerated()), id: \.offset) { index, recording in
@@ -177,8 +184,6 @@ private struct SearchContent: View {
                         notYetAlbumRow(album).accessibilityIdentifier("search-notyet-album-\(index)")
                     }
                 }
-            } header: {
-                header("Not in your library").accessibilityIdentifier("search-notyet-header")
             }
         }
     }
@@ -223,9 +228,14 @@ private struct SearchContent: View {
             .listRowBackground(Color.clear)
     }
 
+    /// A section's title as its first row, not a List header: plain-list headers pin while scrolling and slid
+    /// over the status bar under the search field (H3 I1).
     private func header(_ title: String) -> some View {
         Text(title).magpieDisplay(.title3).foregroundStyle(themed.palette.inkColor)
-            .textCase(nil).accessibilityAddTraits(.isHeader)
+            .accessibilityAddTraits(.isHeader)
+            .padding(.top, Tokens.Spacing.m)
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
     }
 
     @ViewBuilder private func topRow(_ item: SearchItem, in sections: SearchSections) -> some View {

@@ -112,6 +112,9 @@ private struct PlayNowBannerView: View {
         }
         .padding(.horizontal, 8).padding(.vertical, 6)
         .frame(minHeight: 52)
+        // The accessory is a fixed-height bar: like the mini player, its text stops growing at xxxLarge (H3 I3).
+        .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
+        .accessibilityShowsLargeContentViewer { Text(LandingCopy.title(banner.song)) }
         .accessibilityElement(children: .contain)
         .accessibilityAction(named: LandingCopy.playNow) { model.playNow(banner) }
         .accessibilityIdentifier("play-now-banner")

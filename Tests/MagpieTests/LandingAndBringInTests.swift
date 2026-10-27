@@ -258,7 +258,7 @@ import Testing
         for e in [RequestRunner.BringInError.changesOff, .notSetUp, .notKept, .tooMany, .unavailable, .failed, .unconfirmed] {
             texts.append(BringInCopy.message(for: e))
         }
-        for text in texts where !text.contains("in Settings") {   // Settings names its own switches and buttons
+        for text in texts {   // H3 I5: even the pointers to Settings name no service
             #expect(!text.contains("Lidarr") && !text.contains("Navidrome") && !text.contains("MusicBrainz"),
                     "§5: no service names outside Settings: \(text)")
         }

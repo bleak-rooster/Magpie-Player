@@ -22,8 +22,8 @@ enum KeepCopy {
     static let moveFailed = "Couldn't keep it this time. It's still in your Finds, so you can try again."
     static let notAFind = CPKeepResult.notAFind.message
     static let unavailable = "Can't keep it right now. Try again in a moment."
-    static let changesOff = "Turn on 'Allow Magpie to change Lidarr' in Settings to keep finds."
-    static let notSetUp = "Tap 'Set up Magpie in Lidarr' in Settings to keep finds."
+    static let changesOff = "Keeping finds is switched off. Turn it on in Settings."
+    static let notSetUp = "Keeping finds needs one more step in Settings."
     /// The Keep couldn't be settled; nothing more is changed and it isn't offered again.
     static let needsAttention = "Keeping this one didn't finish, and it needs a look before it can be tried again."
 

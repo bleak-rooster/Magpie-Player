@@ -12,12 +12,6 @@ struct ActivityView: View {
     var body: some View {
         let groups = Dictionary(grouping: model.requests.reversed()) { RequestCopy.group($0) }
         List {
-            if groups.keys.allSatisfy({ $0 == nil }) {
-                ContentUnavailableView("Nothing on its way", systemImage: "tray",
-                                       description: Text("Songs you try from Search show up here until they're home."))
-                    .listRowBackground(Color.clear)
-                    .accessibilityIdentifier("activity-empty")
-            }
             ForEach(RequestCopy.Group.allCases, id: \.self) { group in
                 if let items = groups[group], !items.isEmpty {
                     Section {
@@ -30,7 +24,16 @@ struct ActivityView: View {
             }
         }
         .listStyle(.plain)
+        // Over the list, not a row in it, so no separators frame it (H3 M8).
+        .overlay {
+            if groups.keys.allSatisfy({ $0 == nil }) {
+                ContentUnavailableView("Nothing on its way", systemImage: "tray",
+                                       description: Text("Songs you try from Search show up here until they're home."))
+                    .accessibilityIdentifier("activity-empty")
+            }
+        }
         .navigationTitle("Requests")
+        .navigationBarTitleDisplayMode(.inline)   // as with rows; an empty list would otherwise show a large title
         .magpieScreen()
         .refreshable { model.pollRequests() }
     }

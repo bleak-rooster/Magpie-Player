@@ -44,6 +44,13 @@ enum ConnectErrorCopy {
         """
     }
 
+    /// The address as the owner would recognise it in an error: the host, with the port when one was given
+    /// ("127.0.0.1:9"), so a mistyped port shows (H3 M9).
+    static func hostAndPort(_ url: URL) -> String? {
+        guard let host = url.host else { return nil }
+        return url.port.map { "\(host):\($0)" } ?? host
+    }
+
     static func unreachable(_ host: String) -> String {
         "Couldn't reach \(host). Check the address and that the server is running."
     }
@@ -85,21 +92,21 @@ enum ConnectErrorCopy {
             return needsHTTPS
         }
         if let local = failures.first(where: { isTimeout($0.error) && ServerAddress.isLocalNetwork($0.url) }) {
-            return localNetworkHint(local.url.host ?? local.url.absoluteString)
+            return localNetworkHint(hostAndPort(local.url) ?? local.url.absoluteString)
         }
         if failures.contains(where: { ($0.error as? NavidromeError) == .unexpectedResponse }) { return notAMusicServer }
         if case NavidromeError.http = first.error {
-            return "\(first.url.host ?? "That address") answered, but it doesn't look like a music server."
+            return "\(hostAndPort(first.url) ?? "That address") answered, but it doesn't look like a music server."
         }
-        return unreachable(first.url.host ?? first.url.absoluteString)
+        return unreachable(hostAndPort(first.url) ?? first.url.absoluteString)
     }
 
     private static func message(for error: URLError, url: URL?) -> String {
         if isCertificateError(error) { return untrustedCertificate }
         if let url, isPlainHTTPAnswer(error, url: url) { return httpsNotAnswering }
         if error.code == .appTransportSecurityRequiresSecureConnection { return needsHTTPS }
-        if let url, isTimeout(error), ServerAddress.isLocalNetwork(url) { return localNetworkHint(url.host ?? "") }
-        return unreachable(url?.host ?? "your music server")
+        if let url, isTimeout(error), ServerAddress.isLocalNetwork(url) { return localNetworkHint(hostAndPort(url) ?? "") }
+        return unreachable(url.flatMap(hostAndPort) ?? "your music server")
     }
 
     static func isCertificateError(_ error: Error) -> Bool {

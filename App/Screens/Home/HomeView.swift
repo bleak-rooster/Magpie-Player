@@ -45,6 +45,10 @@ struct HomeView: View {
             await made
         }
         .magpieLargeTitle("Home")
+        // H3 M7: a solid bar in the page colour once scrolled, so covers don't show through under the title and
+        // the status bar.
+        .toolbarBackground(themed.palette.bgColor, for: .navigationBar)
+        .toolbarBackgroundVisibility(.visible, for: .navigationBar)
         .magpieScreen()
         .task { if shelves.value == nil { await load() } }
         // Its own task, so the library's shelves never wait for it. Read once (Refresh reads again), and again
@@ -95,26 +99,38 @@ struct HomeView: View {
     }
 }
 
+/// What Home's "Finish setting up" card says. About the music; it points to Settings without naming a service (§5).
+enum HomeCopy {
+    static func finishSettingUp(connected: Bool) -> String {
+        connected
+            ? "Search shows music that's not in your library. To bring songs home, finish the last steps in Settings."
+            : "Let Magpie find songs you don't have yet and bring the ones you love home."
+    }
+}
+
 /// D9: setup continues from Home. Opens the Lidarr connection sheet (also in Settings).
 private struct FinishSettingUpCard: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.dynamicTypeSize) private var typeSize
     @State private var showsConnect = false
     private let themed = Themed()
 
     var body: some View {
         let p = themed.palette
         let connected = model.lidarr != nil
+        // Symbol above the text at accessibility sizes, so the text keeps the card's full width (D15).
+        let layout = typeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: Tokens.Spacing.s))
+            : AnyLayout(HStackLayout(alignment: .top, spacing: Tokens.Spacing.m))
         Button { showsConnect = true } label: {
-            HStack(alignment: .top, spacing: Tokens.Spacing.m) {
+            layout {
                 Image(systemName: connected ? "checkmark.circle" : "sparkles")
                     .font(.title2)
                     .foregroundStyle(p.accentInkColor)
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: Tokens.Spacing.xs) {
                     Text("Finish setting up").font(.headline)
-                    Text(connected
-                         ? "Search shows music that's not in your library. To bring songs home, finish in Settings › Lidarr."
-                         : "Let Magpie find songs you don't have yet and bring the ones you love home.")
+                    Text(HomeCopy.finishSettingUp(connected: connected))
                         .font(.subheadline)
                         .foregroundStyle(p.ink2Color)
                     Text(connected ? "Review" : "Continue")
@@ -122,7 +138,6 @@ private struct FinishSettingUpCard: View {
                         .foregroundStyle(p.accentInkColor)
                         .padding(.top, Tokens.Spacing.xs)
                 }
-                Spacer(minLength: 0)
             }
             .padding(Tokens.Spacing.l)
             .frame(maxWidth: .infinity, alignment: .leading)

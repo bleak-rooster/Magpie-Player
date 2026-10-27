@@ -14,8 +14,8 @@ enum NotForMeCopy {
     static let failed = "Couldn't let it go this time. It's still in your Finds."
     static let notAFind = "This one can't be let go from here."
     static let unavailable = "Can't let it go right now. Try again in a moment."
-    static let changesOff = "Turn on 'Allow Magpie to change Lidarr' in Settings to let finds go."
-    static let notSetUp = "Tap 'Set up Magpie in Lidarr' in Settings to let finds go."
+    static let changesOff = "Letting finds go is switched off. Turn it on in Settings."
+    static let notSetUp = "Letting finds go needs one more step in Settings."
     /// The recycle bin was switched off after the sheet said the files could come back.
     static let confirmAgain = "Your recycle bin was switched off, so nothing was deleted yet. Tap Not for me again to confirm."
     /// It couldn't be finished; nothing more is changed and it isn't offered again.

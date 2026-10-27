@@ -38,10 +38,14 @@ struct ArtistView: View {
         let albums = page.albums.sorted { ($0.year ?? 0) > ($1.year ?? 0) }
         return VStack(alignment: .leading, spacing: Tokens.Spacing.xxl) {
             VStack(spacing: Tokens.Spacing.m) {
-                Artwork(page.artist.coverArtId, side: 180) { SleeveArt(image: $0, side: 180).clipShape(Circle()) }
+                Artwork(page.artist.coverArtId, side: 180) { image in
+                    SleeveArt(image: image, placeholder: p.surfaceColor, side: 180)
+                        .overlay { if image == nil { ArtistMonogram(name: page.artist.name) } }
+                        .clipShape(Circle())
+                }
                 Text(page.artist.name).magpieDisplay(.largeTitle).multilineTextAlignment(.center)
                     .accessibilityAddTraits(.isHeader)
-                HStack(spacing: Tokens.Spacing.m) {
+                CapsuleRow {
                     CapsuleButton(gathering ? "Loading…" : "Play", symbol: "play.fill") {
                         Task { await playAll(albums, shuffled: false) }
                     }
@@ -156,5 +160,34 @@ struct ArtistView: View {
             return
         }
         shuffled ? model.shuffle(songs) : model.play(songs, startAt: 0)
+    }
+}
+
+/// An artist without a picture: their initials in the display face, or a person symbol when the name has no
+/// letters (H3 M2). Decorative; the name is right below.
+struct ArtistMonogram: View {
+    let name: String
+    @Environment(\.magpieTheme) private var theme
+    private let themed = Themed()
+
+    var body: some View {
+        Group {
+            if let initials = Self.initials(name) {
+                // A fixed size: it fills a fixed 180 pt circle, and the name below carries Dynamic Type.
+                Text(initials).font(.system(size: 64, weight: .semibold, design: theme.usesSerifDisplay ? .serif : .default))
+            } else {
+                Image(systemName: "person.fill").font(.system(size: 64))
+            }
+        }
+        .foregroundStyle(themed.palette.ink2Color)
+        .accessibilityHidden(true)
+    }
+
+    /// "The Midnight Cartographers" → "MC": the first letters of the first two words, a leading "The" skipped.
+    nonisolated static func initials(_ name: String) -> String? {
+        var words = name.split(whereSeparator: \.isWhitespace).map(String.init)
+        if words.count > 1, words[0].lowercased() == "the" { words.removeFirst() }
+        let letters = words.compactMap { $0.first(where: \.isLetter) }.prefix(2)
+        return letters.isEmpty ? nil : String(letters).uppercased()
     }
 }

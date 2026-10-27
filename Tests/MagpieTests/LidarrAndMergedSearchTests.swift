@@ -132,7 +132,7 @@ private let lidarrSearch = Data(#"""
         }
         let plain = URL(string: "http://nas.tail1234.ts.net:8686")!
         #expect(LidarrConnectCopy.message(for: URLError(.badServerResponse), url: plain)
-                == "Couldn't reach Lidarr at nas.tail1234.ts.net. Check the address and that Lidarr is running.")
+                == "Couldn't reach Lidarr at nas.tail1234.ts.net:8686. Check the address and that Lidarr is running.")
     }
 
     @Test func musicBrainzClientIsSharedAndLazy() {
@@ -157,6 +157,6 @@ private let lidarrSearch = Data(#"""
     }
 
     @Test func tryWhileChangesAreOffSaysWhereToTurnThemOn() {
-        #expect(TryAvailability.changesOff.message == "Turn on 'Allow Magpie to change Lidarr' in Settings to bring songs home.")
+        #expect(TryAvailability.changesOff.message == "Bringing songs home is switched off. Turn it on in Settings.")
     }
 }

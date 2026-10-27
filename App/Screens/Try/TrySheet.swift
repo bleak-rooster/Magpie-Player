@@ -44,6 +44,12 @@ struct TrySheet: View {
         .sheet(isPresented: $showsSettings) { SettingsView() }
     }
 
+    /// The bare record; Classic draws it as a square with the not-yet badge (D3).
+    private var record: some View {
+        RecordArt(side: 140).recordBadge(RowState.notYet.statusSymbol, size: 22)
+            .accessibilityHidden(true).padding(.top, Tokens.Spacing.xl)
+    }
+
     private var isWaiting: Bool { if case .waiting = phase { true } else { false } }
 
     // MARK: - Choosing
@@ -53,12 +59,11 @@ struct TrySheet: View {
         let availability = model.tryAvailability
         return ScrollView {
             VStack(spacing: Tokens.Spacing.l) {
-                RecordArt(side: 140).accessibilityHidden(true).padding(.top, Tokens.Spacing.xl)
+                record
                 VStack(spacing: Tokens.Spacing.xs) {
                     Text(recording.title).magpieDisplay(.title2).multilineTextAlignment(.center)
                     Text(details).font(.subheadline).foregroundStyle(p.ink2Color).multilineTextAlignment(.center)
-                    Label("Not in your library yet", systemImage: "record.circle")
-                        .font(.footnote).foregroundStyle(p.accentInkColor)
+                    StatusLine(.notYet)
                 }
                 switch availability {
                 case .available(let tier):
@@ -124,7 +129,7 @@ struct TrySheet: View {
         let p = themed.palette
         return ScrollView {
             VStack(spacing: Tokens.Spacing.l) {
-                RecordArt(side: 140).accessibilityHidden(true).padding(.top, Tokens.Spacing.xl)
+                record
                 Text("We'll keep looking").magpieDisplay(.title2)
                 Text(recording.title + " · " + recording.artist).font(.subheadline).foregroundStyle(p.ink2Color)
                     .multilineTextAlignment(.center)

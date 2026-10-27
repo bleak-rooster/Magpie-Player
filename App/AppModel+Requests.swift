@@ -4,7 +4,8 @@ import MagpieCore
 import NavidromeKit
 import Requests
 
-/// Whether Try can bring a song home right now, and if not, the calm reason (brief ruling 2).
+/// Whether Try can bring a song home right now, and if not, the calm reason (brief ruling 2). The reason talks
+/// about the music and points to Settings, which names its own switches (§5, H3 I5).
 enum TryAvailability: Equatable {
     case available(Tier)
     case noLidarr
@@ -15,10 +16,10 @@ enum TryAvailability: Equatable {
     var message: String? {
         switch self {
         case .available: nil
-        case .noLidarr: "Connect Lidarr in Settings to bring songs home."
-        case .changesOff: "Turn on 'Allow Magpie to change Lidarr' in Settings to bring songs home."
-        case .notSetUp: "Tap 'Set up Magpie in Lidarr' in Settings to bring songs home."
-        case .noRoot: "Choose where new music goes in Settings › Lidarr to bring songs home."
+        case .noLidarr: "Bringing songs home isn't set up yet. Set it up in Settings."
+        case .changesOff: "Bringing songs home is switched off. Turn it on in Settings."
+        case .notSetUp: "Bringing songs home needs one more step in Settings."
+        case .noRoot: "Choose where new music goes in Settings to bring songs home."
         }
     }
 }

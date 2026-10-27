@@ -328,7 +328,7 @@ final class LockableStore: SessionStoring {
 
     @Test func badResponseOverPlainHTTPIsStillUnreachable() {
         let failures = [ProbeFailure(url: URL(string: "http://192.168.1.20:4533")!, error: URLError(.badServerResponse))]
-        #expect(ConnectErrorCopy.message(for: SignInError.unreachable(failures)) == ConnectErrorCopy.unreachable("192.168.1.20"))
+        #expect(ConnectErrorCopy.message(for: SignInError.unreachable(failures)) == ConnectErrorCopy.unreachable("192.168.1.20:4533"))
     }
 
     @Test func certificateTroubleStillComesFirst() {

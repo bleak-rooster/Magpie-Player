@@ -35,7 +35,7 @@ struct AppearanceView: View {
             }
             Section {
                 Label(reduceMotion ? "Reduce Motion is on: records don't spin, and changes fade."
-                                   : "Records spin while a song is on its way. Reduce Motion in Settings > Accessibility turns that off.",
+                                   : "Records spin while a song is on its way. Reduce Motion in Settings \u{203A} Accessibility turns that off.",
                       systemImage: "figure.walk.motion")
                     .font(.footnote)
                 if model.theme.character == .immersive, reduceTransparency {

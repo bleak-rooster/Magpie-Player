@@ -1,6 +1,8 @@
 import SwiftUI
 
 /// Mini player. Play/pause and Next are separate accessibility elements; Magic Tap toggles playback.
+/// It sits in the tab bar's accessory, a bar of fixed height, so like the tab bar its text stops growing at
+/// xxxLarge, one line each, and the Large Content Viewer shows it in full at accessibility sizes (H3 I3).
 public struct MiniPlayer: View {
     private let title: String
     private let artist: String
@@ -27,23 +29,27 @@ public struct MiniPlayer: View {
                 HStack(spacing: 10) {
                     SleeveArt(image: artwork, side: 36)
                     VStack(alignment: .leading, spacing: 1) {
-                        Text(title).font(.subheadline.weight(.semibold)).lineLimit(ax ? 2 : 1)
-                        Text(artist).font(.caption).foregroundStyle(.secondary).lineLimit(ax ? 2 : 1)
+                        Text(title).font(.subheadline.weight(.semibold)).lineLimit(1)
+                        Text(artist).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                     }
+                    .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
                     Spacer(minLength: 0)
                 }
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .accessibilityShowsLargeContentViewer { Text("\(title), \(artist)") }
             .accessibilityLabel("Now playing: \(title), \(artist)")
             .accessibilityValue(isPlaying ? "Playing" : "Paused")
             .accessibilityHint("Opens Now Playing")
 
             Button(action: onPlayPause) {
                 Image(systemName: isPlaying ? "pause.fill" : "play.fill")
-                    .font(.title3).frame(width: Tokens.minHitSize, height: Tokens.minHitSize).contentShape(Rectangle())
+                    .font(.title3).dynamicTypeSize(...DynamicTypeSize.xxxLarge)
+                    .frame(width: Tokens.minHitSize, height: Tokens.minHitSize).contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .accessibilityShowsLargeContentViewer()
             .accessibilityLabel(isPlaying ? "Pause" : "Play")
             .accessibilityAddTraits(isPlaying ? [] : .startsMediaSession)
 
@@ -57,8 +63,8 @@ public struct MiniPlayer: View {
             }
         }
         .foregroundStyle(.primary)
-        .padding(.horizontal, 8).padding(.vertical, 6)
-        .frame(minHeight: 52)
+        .padding(.horizontal, 8).padding(.vertical, ax ? 2 : 6)
+        .frame(minHeight: ax ? 0 : 52)
         .background { background }
         .accessibilityElement(children: .contain)
         .modifier(MagicTap(action: onPlayPause))

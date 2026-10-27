@@ -120,12 +120,12 @@ public struct StatusLine: View {
 
     public var body: some View {
         if let symbol = state.statusSymbol, !state.statusText.isEmpty {
-            Label {
-                Text(state.statusText).font(theme.numberFont(.caption)).lineLimit(2)
-            } icon: {
-                Image(systemName: symbol).imageScale(.small)
+            // An HStack, not a Label: a Label's icon column leaves a wide gap before the text (H3 M3).
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                Image(systemName: symbol)
+                Text(state.statusText).lineLimit(2)
             }
-            .labelStyle(.titleAndIcon)
+            .font(theme.numberFont(.caption))
             .foregroundStyle(tint)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(state.voiceOverValue ?? state.statusText)

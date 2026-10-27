@@ -4,8 +4,8 @@ import MagpieCore
 import Requests
 
 /// What a request's state says to the owner (D7: honest steps, real % only in the app). Pure, so tests can
-/// check the wording. Never names a service (design language §5), except where a `.needsSettings` wait repeats
-/// Try's pointer to a Settings control by its label.
+/// check the wording. Never names a service (design language §5); a `.needsSettings` wait repeats Try's pointer
+/// to Settings.
 enum RequestCopy {
     enum Group: Int, CaseIterable {
         case inProgress, ready, attention
