@@ -10,11 +10,11 @@ struct SavedSession: Sendable {
 
 /// What reading the saved session found.
 enum SessionLoad: Sendable {
-    /// Nothing saved (or what is saved can't be decoded): show Connect.
+    /// Nothing saved (or what is saved can't be decoded, or the Keychain fails other than locked): show Connect.
     case none
     case session(SavedSession)
-    /// The Keychain couldn't be read right now, e.g. `errSecInteractionNotAllowed` before the
-    /// first unlock after a reboot (CarPlay or background launch). Not the same as signed out.
+    /// The Keychain is locked (`errSecInteractionNotAllowed`) before the first unlock after a reboot
+    /// (CarPlay or background launch). Not the same as signed out.
     case unavailable
 }
 
@@ -45,14 +45,25 @@ struct SessionStore: SessionStoring {
             e = try keychain.get(Self.endpointKey)
             c = try keychain.get(Self.credentialsKey)
         } catch {
-            Log.logger("session").error("keychain unreadable: \(Log.category(of: error), privacy: .public)")
-            return .unavailable
+            return Self.loadFailure(error)
         }
         guard let e, let c,
               let endpoint = try? JSONDecoder().decode(ServerEndpoint.self, from: e),
               let credentials = try? JSONDecoder().decode(NavidromeCredentials.self, from: c),
               !endpoint.bases.isEmpty else { return .none }
         return .session(SavedSession(endpoint: endpoint, credentials: credentials))
+    }
+
+    /// Only "locked" waits for unlock. Any other Keychain error (e.g. -34018 under ad-hoc signing) won't clear
+    /// by itself, so it reads as signed out: Connect is shown and signing in again is the way out.
+    static func loadFailure(_ error: Error) -> SessionLoad {
+        if (error as? KeychainError)?.isLocked == true {
+            Log.logger("session").info("keychain locked; waiting for first unlock")
+            return .unavailable
+        }
+        let what = (error as? KeychainError).map { "OSStatus \($0.status)" } ?? Log.category(of: error)
+        Log.logger("session").error("keychain unreadable: \(what, privacy: .public)")
+        return .none
     }
 
     func clear() {

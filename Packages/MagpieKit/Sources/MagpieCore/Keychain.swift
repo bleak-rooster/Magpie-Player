@@ -3,6 +3,11 @@ import Security
 
 public struct KeychainError: Error, Equatable, Sendable {
     public let status: OSStatus
+
+    public init(status: OSStatus) { self.status = status }
+
+    /// `errSecInteractionNotAllowed`: the device hasn't been unlocked since boot. Clears on first unlock.
+    public var isLocked: Bool { status == errSecInteractionNotAllowed }
 }
 
 /// Generic-password storage, `AfterFirstUnlockThisDeviceOnly`, no access group.

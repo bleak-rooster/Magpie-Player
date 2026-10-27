@@ -72,7 +72,12 @@ final class AppModel {
     var hasListenBrainzToken = false
     /// The scene is active: requests poll every 5 s, otherwise every 30 s.
     var isForeground = true {
-        didSet { if isForeground, !oldValue { pollRequests() } }
+        didSet {
+            guard isForeground, !oldValue else { return }
+            // I3: the Lidarr item may still have been unreadable when the session was restored.
+            if session != nil, reloadKeychainItems() { rebuildRunner() }
+            pollRequests()
+        }
     }
 
     @ObservationIgnored private let store: any SessionStoring
@@ -162,10 +167,26 @@ final class AppModel {
         }
         #endif
         watchPlaybackErrors()
+        readLidarrPermissions()
+    }
+
+    /// The write switch and setup of the connected Lidarr (both are kept per instance).
+    private func readLidarrPermissions() {
         if let scope = lidarrScope, let lidarr {
             changesAllowed = gateDefaults.bool(forKey: LidarrWriteGate.enabledKey(scope: scope))
             lidarrSetup = setupStore.load(base: lidarr.base, scope: scope)
         }
+    }
+
+    /// Final review I3: a launch before first unlock (CarPlay cold start, prewarming) reads the Lidarr connection
+    /// and the ListenBrainz token as absent. Reads them again; true when Lidarr turned up (the runner needs rebuilding).
+    @discardableResult
+    func reloadKeychainItems() -> Bool {
+        hasListenBrainzToken = tokenStore.load() != nil
+        guard lidarr == nil, let saved = lidarrStore.load() else { return false }
+        lidarr = saved
+        readLidarrPermissions()
+        return true
     }
 
     /// Builds the shared model from what the Keychain holds. `-MagpieResetState YES` signs out first
@@ -206,6 +227,7 @@ final class AppModel {
         box.set(client)
         Task { await reconnect(rebuildAlways: true) }
         startMatchIndex()
+        reloadKeychainItems()
         rebuildRunner()
     }
 

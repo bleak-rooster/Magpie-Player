@@ -27,6 +27,23 @@ final class MemoryTokenStore: ListenBrainzTokenStoring, @unchecked Sendable {
     func clear() { saved.withLock { $0 = nil } }
 }
 
+/// A Lidarr store that reads as empty until "unlocked", like the Keychain before first unlock.
+final class LockableLidarrStore: LidarrConnectionStoring, @unchecked Sendable {
+    private let state = OSAllocatedUnfairLock(initialState: (locked: true, saved: LidarrConnection?.none))
+    func unlock(with saved: LidarrConnection?) { state.withLock { $0 = (false, saved) } }
+    func save(_ connection: LidarrConnection) throws { state.withLock { $0.saved = connection } }
+    func load() -> LidarrConnection? { state.withLock { $0.locked ? nil : $0.saved } }
+    func clear() { state.withLock { $0.saved = nil } }
+}
+
+final class LockableTokenStore: ListenBrainzTokenStoring, @unchecked Sendable {
+    private let state = OSAllocatedUnfairLock(initialState: (locked: true, saved: String?.none))
+    func unlock(with saved: String?) { state.withLock { $0 = (false, saved) } }
+    func save(_ token: String) throws { state.withLock { $0.saved = token } }
+    func load() -> String? { state.withLock { $0.locked ? nil : $0.saved } }
+    func clear() { state.withLock { $0.saved = nil } }
+}
+
 @MainActor
 @Suite(.serialized) struct TryAndSettingsTests {
     let transport = HostSwitchTransport()
@@ -218,6 +235,71 @@ final class MemoryTokenStore: ListenBrainzTokenStoring, @unchecked Sendable {
         let scrobbles = transport.inner.requests.filter { $0.url?.path.hasSuffix("/rest/scrobble") == true }
         #expect(scrobbles.contains { $0.url?.query?.contains("submission=true") == true }, "the play is counted")
         model.signOut()
+    }
+
+    /// Final review I3: launched before first unlock (CarPlay cold start, prewarming), the Lidarr connection,
+    /// its write switch and setup, and the ListenBrainz token all read as absent. When protected data becomes
+    /// available they are read again with the session, so Try and Requests work without a relaunch.
+    @Test func lockedLaunchReloadsLidarrOnUnlock() async throws {
+        let sessionStore = LockableStore()
+        let lidarrStore = LockableLidarrStore()
+        let tokens = LockableTokenStore()
+        saveProvisioned()
+        UserDefaults(suiteName: gateSuite)!.set(true, forKey: LidarrWriteGate.enabledKey(scope: lidarrScope))
+        let model = AppModel(store: sessionStore, lidarrStore: lidarrStore, tokenStore: tokens, matchIndexDirectory: nil,
+                             dataDirectory: nil, gateDefaultsSuite: gateSuite, transport: transport,
+                             probeTransport: transport, engine: FakeEngine(), defaults: defaults,
+                             systemNowPlaying: false, notifications: false)
+        model.resumeSavedSession()
+        #expect(model.isWaitingForUnlock)
+        #expect(model.lidarr == nil && !model.changesAllowed && model.lidarrSetup == nil && !model.hasListenBrainzToken)
+
+        sessionStore.unlock(with: SavedSession(endpoint: ServerEndpoint(bases: [home]),
+                                               credentials: NavidromeCredentials(username: "admin", password: "pw")))
+        lidarrStore.unlock(with: LidarrConnection(base: lidarrBase, apiKey: "key"))
+        tokens.unlock(with: "lb-token")
+        model.protectedDataBecameAvailable()
+        #expect(model.session != nil)
+        #expect(model.lidarr == LidarrConnection(base: lidarrBase, apiKey: "key"))
+        #expect(model.changesAllowed, "the persisted write switch is read again")
+        #expect(model.lidarrSetup?.magpieTagId == 1)
+        #expect(model.hasListenBrainzToken)
+        #expect(model.runner != nil, "saved requests are polled again")
+        model.signOut()
+        UserDefaults(suiteName: gateSuite)?.removePersistentDomain(forName: gateSuite)
+    }
+
+    /// I3: a session restored while the Lidarr item still couldn't be read picks Lidarr up on the next foreground.
+    @Test func foregroundReloadsMissingLidarr() async throws {
+        let sessionStore = LockableStore()
+        sessionStore.unlock(with: SavedSession(endpoint: ServerEndpoint(bases: [home]),
+                                               credentials: NavidromeCredentials(username: "admin", password: "pw")))
+        let lidarrStore = LockableLidarrStore()
+        let model = AppModel(store: sessionStore, lidarrStore: lidarrStore, tokenStore: MemoryTokenStore(),
+                             matchIndexDirectory: nil, dataDirectory: nil, gateDefaultsSuite: gateSuite,
+                             transport: transport, probeTransport: transport, engine: FakeEngine(), defaults: defaults,
+                             systemNowPlaying: false, notifications: false)
+        model.resumeSavedSession()
+        #expect(model.session != nil && model.lidarr == nil)
+        model.isForeground = false
+        lidarrStore.unlock(with: LidarrConnection(base: lidarrBase, apiKey: "key"))
+        model.isForeground = true
+        #expect(model.lidarr?.base == lidarrBase)
+        #expect(model.runner != nil)
+        model.signOut()
+    }
+
+    /// I3 / ledger 1.5: only "locked" (`errSecInteractionNotAllowed`) waits for unlock. Any other Keychain error
+    /// (e.g. -34018, missing entitlement under ad-hoc signing) would never clear, so it shows Connect instead.
+    @Test func onlyALockedKeychainWaitsForUnlock() {
+        if case .unavailable = SessionStore.loadFailure(KeychainError(status: errSecInteractionNotAllowed)) {} else {
+            Issue.record("locked must wait for unlock")
+        }
+        for status: OSStatus in [-34018, errSecAuthFailed, errSecDecode] {
+            if case .none = SessionStore.loadFailure(KeychainError(status: status)) {} else {
+                Issue.record("\(status) must not wait for unlock")
+            }
+        }
     }
 
     @Test func listenBrainzTokenIsOptional() throws {
