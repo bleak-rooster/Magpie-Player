@@ -192,6 +192,23 @@ private func eventually(_ seconds: Double = 5, _ condition: () -> Bool) async ->
         cleanUp(model)
     }
 
+    /// V-fix polish: sign-out's clean-up never reaches a session started after it. A quick sign-in again and the same
+    /// Lidarr reconnected: its fresh requests file survives the earlier sign-out's late clean-up.
+    @Test func signOutCleanUpSparesTheNextSession() async throws {
+        let model = makeModel(files: true)
+        try await model.signIn(urls: [home], username: "admin", password: "pw")
+        _ = try await model.connectLidarr(base: lidarrBase, apiKey: "key")
+        let url = RequestStore.defaultURL(in: dir, instance: try #require(model.lidarrScope))
+        try await #require(model.requestStore).save([])
+        model.signOut()
+        #expect(!FileManager.default.fileExists(atPath: url.path), "erased at once, not later")
+        try await model.signIn(urls: [home], username: "admin", password: "pw")
+        _ = try await model.connectLidarr(base: lidarrBase, apiKey: "key")
+        try await #require(model.requestStore).save([])
+        #expect(await !eventually(1) { !FileManager.default.fileExists(atPath: url.path) }, "the new session's file stays")
+        cleanUp(model)
+    }
+
     /// V-fix (V1 O1): recent searches (shared by the phone and the car) are cleared on sign-out.
     @Test func signOutClearsRecentSearches() async throws {
         let model = makeModel()

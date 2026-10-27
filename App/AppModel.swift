@@ -147,6 +147,8 @@ final class AppModel {
     @ObservationIgnored private let box: ClientBox
     @ObservationIgnored private var reconnectTask: Task<Bool, Never>?
     @ObservationIgnored private var reconnectGeneration = 0
+    /// Bumped by sign-in, a resumed session and sign-out: a sign-out's late clean-up only runs while it is unchanged.
+    @ObservationIgnored private var sessionGeneration = 0
     /// This build's ATS allows plain http anywhere (Debug). False: Release, where `atsBlocksPlainHTTP` applies.
     @ObservationIgnored var atsAllowsArbitraryLoads = AppModel.bundleAllowsArbitraryLoads()
     @ObservationIgnored private var errorWatch: Task<Void, Never>?
@@ -278,6 +280,7 @@ final class AppModel {
         isWaitingForUnlock = false
         stopObservingUnlock()
         guard session == nil else { return }
+        sessionGeneration += 1
         let client = makeClient(saved.endpoint, saved.credentials)
         session = Session(client: client, endpoint: saved.endpoint, credentials: saved.credentials,
                           activeBase: saved.endpoint.bases[0], isAdmin: false)
@@ -347,6 +350,7 @@ final class AppModel {
         let login = try await client.connect()
         try store.save(endpoint: endpoint, credentials: credentials)
         reconnectTask = nil
+        sessionGeneration += 1
         starOverrides = [:]
         advertisedExtensions = nil
         isWaitingForUnlock = false
@@ -396,11 +400,19 @@ final class AppModel {
         lidarrStatus = nil
         rebuildRunner()
         RecentSearches(defaults: appDefaults).clear()   // shared with the car
+        // Every Lidarr's requests, and the ledgers with nothing open, now. Never the change log (the owner's undo map).
         let data = dataDirectory
-        Task {
+        RequestStore.eraseAll(in: data)
+        Ledger.forgetFinished(in: data)
+        // Again once the old runner has stopped (a save under way may have rewritten its file), unless a newer
+        // session has started meanwhile: its files are never touched.
+        sessionGeneration += 1
+        let generation = sessionGeneration
+        Task { [weak self] in
             await retiring?.stop()
+            guard let self, self.sessionGeneration == generation else { return }
             await doomed?.erase()
-            // Every Lidarr's requests, and the ledgers with nothing open. Never the change log (the owner's undo map).
+            guard self.sessionGeneration == generation else { return }
             RequestStore.eraseAll(in: data)
             Ledger.forgetFinished(in: data)
         }
