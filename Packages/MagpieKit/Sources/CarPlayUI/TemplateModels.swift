@@ -128,6 +128,12 @@ public enum CarPlayRows {
         return [CPSectionModel(header: nil, rows: [CPRowModel(id: id, title: title, action: .none)])]
     }
 
+    /// Only state rows: a placeholder, which real rows may replace even while the list is on screen.
+    public static func isPlaceholder(_ sections: [CPSectionModel]) -> Bool {
+        let rows = sections.flatMap(\.rows)
+        return !rows.isEmpty && rows.allSatisfy { $0.id.hasPrefix("state.") }
+    }
+
     // MARK: Tab roots (depth 1)
 
     public static func home(recent: [Album], newest: [Album], frequent: [Album]) -> [CPSectionModel] {

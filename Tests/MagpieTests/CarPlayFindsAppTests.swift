@@ -25,7 +25,9 @@ private let t0 = Date(timeIntervalSince1970: 1_900_000_000)
 /// Keep, and "Try it next" uses the phone's Try and lands by the one landing rule (D5, D6, D12, CarPlay H3).
 @MainActor
 @Suite(.serialized) struct CarPlayFindsAppTests {
-    let transport = HostSwitchTransport()
+    let transport = GatedTransport()
+    /// `/api/song` (the Finds library read) answers 503.
+    let songsFail = OSAllocatedUnfairLock(initialState: false)
     let store = SessionStore(keychain: KeychainStore(service: "com.bleak-rooster.magpie.tests.\(UUID().uuidString)"))
     let lidarrStore = MemoryLidarrStore()
     let gateSuite = "magpie-tests-gate-\(UUID().uuidString)"
@@ -36,7 +38,11 @@ private let t0 = Date(timeIntervalSince1970: 1_900_000_000)
         t.stub(pathSuffix: "/rest/ping", body: ok)
         t.stub(method: "POST", pathSuffix: "/auth/login", body: loginJSON)
         t.stub(pathSuffix: "/rest/scrobble", body: ok)
-        t.stub(pathSuffix: "/api/song", body: Data("[]".utf8), headers: ["X-Total-Count": "0"])
+        let songsFail = self.songsFail
+        t.stub(pathSuffix: "/api/song") { _ in
+            songsFail.withLock { $0 } ? MockTransport.Response(status: 503)
+                : MockTransport.Response(status: 200, body: Data("[]".utf8), headers: ["X-Total-Count": "0"])
+        }
         t.stub(pathSuffix: "/api/v1/system/status", body: Data(#"{"version":"3.2.0","instanceName":"Lidarr","authentication":"forms"}"#.utf8))
         t.stub(pathSuffix: "/api/v1/rootfolder", body: Data(#"[{"id":1,"path":"/music/library"}]"#.utf8))
         // Lidarr already has the artist: Try monitors one album and searches.
@@ -217,6 +223,85 @@ private let t0 = Date(timeIntervalSince1970: 1_900_000_000)
         #expect(model.carPlayTryOffer == .unavailable)
         #expect(await model.tryNext(recording) == .failed(.notSetUp))
         #expect(model.requests.isEmpty && model.player.queue.current == nil)
+    }
+
+    /// Fix 1: a paused queue is the owner's. Try it next leaves it alone (no mix) and the find lands right after the
+    /// paused song, as on the phone (D6, Task 7.1b).
+    @Test func tryItNextKeepsAPausedQueue() async throws {
+        let model = try await ready(tubifarry: true)
+        let mine = [Song(id: "m1", title: "Mine", artist: "Me", album: "X", duration: 100),
+                    Song(id: "m2", title: "Mine 2", artist: "Me", album: "X", duration: 100)]
+        model.play(mine, startAt: 0)
+        model.player.toggle()
+        #expect(!model.player.isPlaying)
+        #expect(await model.tryNext(recording) == .queued)
+        #expect(model.player.queue.main.map(\.song.id) == ["m1", "m2"], "the paused queue survives")
+        #expect(!model.player.isPlaying)
+        for _ in 0..<200 where model.requests.isEmpty { try await Task.sleep(for: .milliseconds(10)) }
+        let id = try #require(model.requests.first?.id)
+        model.land(Self.find("harbour"), request: id)
+        #expect(model.player.queue.current?.song.id == "m1")
+        #expect(model.player.queue.upcoming.map(\.song.id) == ["harbour", "m2"], "right after the paused song")
+        cleanUp(model)
+    }
+
+    /// Fix 2: with a Finds library whose songs were never read, every library song might be a find (fail closed).
+    /// The Finds library is read first, so the bridge has library songs to play.
+    @Test func tryItNextReadsTheFindsFirst() async throws {
+        let model = try await ready(tubifarry: true)
+        model.findsSetup = FindsSetup(lidarrScope: "l", navidromeScope: try #require(model.navidromeScope),
+                                      library: NavidromeLibrary(id: 2, name: "Samples", path: "/music/samples"))
+        #expect(model.isFind(Song(id: "jt-1", title: "S", artist: "Judie Tzuke", album: "W", duration: 1)),
+                "unknown ids: fails closed")
+        #expect(await model.tryNext(recording) == .bridging)
+        #expect(Set(model.player.queue.main.prefix(2).map(\.song.id)) == ["jt-1", "jt-2"])
+        cleanUp(model)
+    }
+
+    /// Fix 2: when nothing can be played first (the Finds library can't be read, so no song is known to be from the
+    /// library), the result says so instead of leaving the car silent.
+    @Test func tryItNextWithNothingToPlayFirstSaysSo() async throws {
+        let model = try await ready(tubifarry: true)
+        songsFail.withLock { $0 = true }
+        model.findsSetup = FindsSetup(lidarrScope: "l", navidromeScope: try #require(model.navidromeScope),
+                                      library: NavidromeLibrary(id: 2, name: "Samples", path: "/music/samples"))
+        #expect(await model.tryNext(recording) == .noMix)
+        #expect(model.player.queue.current == nil && !model.player.isPlaying)
+        cleanUp(model)
+    }
+
+    /// Fix 3: the car's search never waits long for outside sources (CPSearchTemplate can't stream): they get a short
+    /// deadline; the library keeps its usual one.
+    @Test func carSearchDoesNotWaitForOutsideSources() async throws {
+        let model = try await ready(tubifarry: true)
+        transport.close("recording-search/json")
+        let start = ContinuousClock.now
+        let result = try await model.carPlaySearch("Judie")
+        let waited = ContinuousClock.now - start
+        transport.open()
+        #expect(result.library.songs.map(\.id) == ["jt-1", "jt-2", "other-1"])
+        #expect(result.notYet.isEmpty)
+        #expect(waited < .seconds(3), "outside sources cut off at \(AppModel.carPlaySourceTimeout)")
+        #expect(AppModel.carPlaySourceTimeout == .milliseconds(1500))
+        #expect(AppModel.carPlayLibraryTimeout == .seconds(60), "the library keeps only the request's own limit")
+        cleanUp(model)
+    }
+
+    /// Fix 7: the car's Keep copy is the phone's, minus anything that asks the driver to do something.
+    @Test func carKeepCopyFollowsThePhone() {
+        let same: [(CPKeepResult, String)] = [(.moved, KeepCopy.moved), (.keptInPlace, KeepCopy.keptInPlace),
+                                              (.stillMoving, KeepCopy.stillMoving), (.notAFind, KeepCopy.notAFind)]
+        for (car, phone) in same { #expect(car.message == phone) }
+        // The phone adds what to do next; the car stops after the description.
+        let shortened: [(CPKeepResult, String)] = [(.moveFailed, KeepCopy.moveFailed),
+                                                   (.needsAttention, KeepCopy.needsAttention),
+                                                   (.unavailable, KeepCopy.unavailable)]
+        for (car, phone) in shortened {
+            #expect(phone.hasPrefix(String(car.message.dropLast())), "\(car.message) vs \(phone)")
+        }
+        // Only the car's: the phone's versions name Settings ("Turn on…", "Tap…").
+        #expect(CPKeepResult.changesOff.message == "Keeping is switched off on this iPhone.")
+        #expect(CPKeepResult.notSetUp.message == "Keeping isn't set up on this iPhone yet.")
     }
 
     /// Try's refusals, as the car says them.

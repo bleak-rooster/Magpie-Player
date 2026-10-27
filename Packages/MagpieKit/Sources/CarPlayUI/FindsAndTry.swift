@@ -62,7 +62,7 @@ public enum CPKeepResult: Sendable, Hashable {
         switch self {
         case .moved: "Kept. It's in your library now."
         case .keptInPlace: "Kept. It'll stay in your Finds folder for now."
-        case .stillMoving: "Kept. It's moving into your library."
+        case .stillMoving: "Moving it into your library. It'll be there soon."
         case .changesOff: "Keeping is switched off on this iPhone."
         case .notSetUp: "Keeping isn't set up on this iPhone yet."
         case .notAFind: "This one can't be kept from here."
@@ -84,9 +84,10 @@ public enum CPTryOffer: Sendable, Hashable {
     /// Patient ("Ask for it", D8): only asked for; it shows up in Finds or the library when it's home.
     case ask(intoFinds: Bool)
 
-    /// D6 in the car: a find never interrupts something playing. With nothing playing, a "Try it next" starts a
-    /// library mix seeded by the artist so the find has something to go next after (CarPlay H3).
-    public func startsBridge(playing: Bool) -> Bool { self == .next && !playing }
+    /// D6 in the car: a find never interrupts what's in the queue. Only with an empty queue does a "Try it next" start
+    /// a library mix seeded by the artist, so the find has something to go next after (CarPlay H3). A paused queue is
+    /// the owner's: it stays, and the find lands right after its song (as on the phone).
+    public func startsBridge(queueEmpty: Bool) -> Bool { self == .next && queueEmpty }
 }
 
 /// The action sheet a not-yet row presents: "Try it next" / "Cancel" (CarPlay H3; titles ≤ 16 characters, L4).
@@ -99,9 +100,9 @@ public struct CPTrySheet: Sendable, Hashable {
 }
 
 extension CarPlayRows {
-    /// The sheet for `recording`, or nil when Try isn't possible here. Says what will happen, given whether
-    /// something is playing now.
-    public static func trySheet(_ recording: ExternalRecording, offer: CPTryOffer, playing: Bool) -> CPTrySheet? {
+    /// The sheet for `recording`, or nil when Try isn't possible here. Says what will happen, given whether the
+    /// queue is empty now.
+    public static func trySheet(_ recording: ExternalRecording, offer: CPTryOffer, queueEmpty: Bool) -> CPTrySheet? {
         let by = "By \(display(recording.artist, unknownArtist))."
         let message: String
         let confirm: String
@@ -110,7 +111,7 @@ extension CarPlayRows {
             return nil
         case .next:
             confirm = "Try it next"
-            message = offer.startsBridge(playing: playing)
+            message = offer.startsBridge(queueEmpty: queueEmpty)
                 ? "\(by) Songs from your library play until it's here, then it goes next."
                 : "\(by) It goes next in your queue once it's here."
         case .ask(let intoFinds):
@@ -125,11 +126,15 @@ extension CarPlayRows {
 public enum CPTryResult: Sendable, Hashable {
     /// Patient: asked for only.
     case asked
-    /// Something was playing: the find goes next once it's here.
+    /// The queue wasn't empty: the find goes next once it's here.
     case queued
-    /// Nothing was playing: the library mix started; the find goes next once it's here.
+    /// The queue was empty: the library mix started; the find goes next once it's here.
     case bridging
+    /// The queue was empty but the library had nothing to play first (`noMixMessage` says so).
+    case noMix
     case failed(CPTryProblem)
+
+    public static let noMixMessage = "Nothing from your library to play first. It goes next once it's here."
 }
 
 /// Why Try didn't start. Describes; never instructs (D12).

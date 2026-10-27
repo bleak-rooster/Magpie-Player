@@ -359,7 +359,8 @@ public final class CarPlayController: NSObject {
     /// A not-yet row: "Try it next" / "Cancel" (modal, no push; CarPlay H3).
     private func offerTry(_ recording: ExternalRecording) {
         guard interface.presentedTemplate == nil,
-              let sheet = CarPlayRows.trySheet(recording, offer: library.tryOffer, playing: player.isPlaying) else { return }
+              let sheet = CarPlayRows.trySheet(recording, offer: library.tryOffer,
+                                                queueEmpty: player.queue.current == nil) else { return }
         let confirm = CPAlertAction(title: sheet.confirm, style: .default) { [weak self] _ in
             self?.interface.dismissTemplate(animated: true) { _, _ in
                 Task { @MainActor in self?.confirmTry(recording) }
@@ -377,6 +378,7 @@ public final class CarPlayController: NSObject {
         Task {
             switch await library.tryNext(recording) {
             case .bridging: showNowPlaying()
+            case .noMix: showMessage(CPTryResult.noMixMessage)
             case .failed(let problem): showMessage(problem.message)
             case .asked, .queued: break
             }
@@ -512,13 +514,16 @@ public final class CarPlayController: NSObject {
         }
     }
 
-    /// Rebuilds the binding's rows (off main) for the song playing now and applies them.
+    /// Rebuilds the binding's rows (off main) for the song playing now and applies them. A build that finishes after
+    /// a newer one started is dropped. Rows that only describe a state stay placeholders, so real rows replace them.
     private func refresh(_ binding: ListBinding) async {
         guard let content = binding.content else { return }
+        binding.generation += 1
+        let generation = binding.generation
         let playing = player.queue.current?.song.id
         let sections = await Task.detached(priority: .userInitiated) { content(playing) }.value
-        guard bindings[ObjectIdentifier(binding.template)] === binding else { return }
-        apply(sections, to: binding, placeholder: false)
+        guard bindings[ObjectIdentifier(binding.template)] === binding, binding.generation == generation else { return }
+        apply(sections, to: binding, placeholder: CarPlayRows.isPlaceholder(sections))
     }
 
     private func apply(_ sections: [CPSectionModel], to binding: ListBinding, placeholder: Bool) {
@@ -563,8 +568,8 @@ public final class CarPlayController: NSObject {
             guard let item = binding.items[row.id] else { continue }
             if item.text != row.title { item.setText(row.title) }
             if item.detailText != row.detail { item.setDetailText(row.detail) }
-            if before[row.id] != row.statusSymbol { setStatusSymbol(item, row) }
-            configure(item, row)
+            configure(item, row)   // sets the accessory type: the status symbol goes on after it
+            if row.statusSymbol != nil || before[row.id] != nil { setStatusSymbol(item, row) }
         }
         binding.shown = sections
         loadArtwork(binding)
@@ -804,6 +809,8 @@ final class ListBinding {
     var artworkKeys: [String: String] = [:]
     /// Rebuilds the rows for the song playing now (nil when nothing has loaded).
     var content: (@Sendable (String?) -> [CPSectionModel])?
+    /// Counts refreshes; only the newest one's rows are applied.
+    var generation = 0
     var loadTask: Task<Void, Never>?
     var artworkTasks: [Task<Void, Never>] = []
 

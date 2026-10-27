@@ -1,3 +1,4 @@
+import CarPlayUI
 import Foundation
 import LidarrKit
 import MagpieCore
@@ -13,12 +14,13 @@ struct KeepReply: Equatable {
 
 /// What Keep says afterwards (design language §5: about the music, never the services).
 enum KeepCopy {
-    static let moved = "Kept. It's in your library now."
+    // The car says these too (CPKeepResult); one source so they can't drift.
+    static let moved = CPKeepResult.moved.message
     /// G4: the main root already had a folder for the artist, so the find stays where it is.
-    static let keptInPlace = "Kept. It'll stay in your Finds folder for now."
-    static let stillMoving = "Moving it into your library. It'll be there soon."
+    static let keptInPlace = CPKeepResult.keptInPlace.message
+    static let stillMoving = CPKeepResult.stillMoving.message
     static let moveFailed = "Couldn't keep it this time. It's still in your Finds, so you can try again."
-    static let notAFind = "This one can't be kept from here."
+    static let notAFind = CPKeepResult.notAFind.message
     static let unavailable = "Can't keep it right now. Try again in a moment."
     static let changesOff = "Turn on 'Allow Magpie to change Lidarr' in Settings to keep finds."
     static let notSetUp = "Tap 'Set up Magpie in Lidarr' in Settings to keep finds."

@@ -595,16 +595,22 @@ final class AppModel {
 
     /// Library search merged with ListenBrainz and (when connected) Lidarr. Built per search so it
     /// follows the current session, Lidarr connection and match index.
-    func mergedSearch() -> MergedSearch {
+    /// - Parameters:
+    ///   - libraryTimeout: the library search's deadline (CarPlay passes a longer one).
+    ///   - sourceTimeout: each outside source's deadline (CarPlay passes a shorter one).
+    func mergedSearch(libraryTimeout: Duration = MergedSearch.libraryTimeout,
+                      sourceTimeout: Duration = MergedSearch.sourceTimeout) -> MergedSearch {
         // A9: the token only ever goes to api.listenbrainz.org; the client never sends it to labs.
-        var sources: [MergedSearch.Source] = [.listenBrainz(ListenBrainzClient(transport: transport, token: tokenStore.load()))]
-        if let lidarr = lidarrClient { sources.append(.lidarr(lidarr)) }
+        var sources: [MergedSearch.Source] = [.listenBrainz(ListenBrainzClient(transport: transport, token: tokenStore.load()),
+                                                            timeout: sourceTimeout)]
+        if let lidarr = lidarrClient { sources.append(.lidarr(lidarr, timeout: sourceTimeout)) }
         let index = matchIndex
         return MergedSearch(
             library: { [weak self] q in
                 guard let self else { throw NavidromeError.noReachableServer }
                 return try await self.request { try await $0.search(q) }
             },
+            libraryTimeout: libraryTimeout,
             sources: sources,
             index: { await index?.index ?? .empty })
     }

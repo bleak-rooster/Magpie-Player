@@ -3,6 +3,7 @@ import Foundation
 import MagpieCore
 import MatchIndex
 import Requests
+import Search
 
 /// What CarPlay reads and does for Finds (Task 7.1d), on top of what the phone already has: the Finds tab is the
 /// phone's Finds shelf, Keep is the phone's Keep (the find's release only: no Bring in more from the car, D5), and
@@ -41,6 +42,24 @@ extension AppModel {
         }
     }
 
+    // MARK: - Search
+
+    /// Outside sources' deadline in the car: CPSearchTemplate shows one list per query and can't add rows later, so
+    /// the library's rows never wait long for them (D4).
+    static let carPlaySourceTimeout: Duration = .milliseconds(1500)
+    /// The library keeps the car's earlier limit: only the request's own timeout (no 3 s cut-off as on the phone,
+    /// where the band can follow later).
+    static let carPlayLibraryTimeout: Duration = .seconds(60)
+
+    /// The phone's merged search with a short deadline for outside sources: library songs and albums, then songs not
+    /// in the library (albums and artists from outside aren't offered in the car).
+    func carPlaySearch(_ query: String) async throws -> CarPlaySearchResult {
+        let sections = try await mergedSearch(libraryTimeout: Self.carPlayLibraryTimeout,
+                                                sourceTimeout: Self.carPlaySourceTimeout).runReportingLibraryFailure(query)
+        return CarPlaySearchResult(library: LibrarySearchResult(songs: sections.songs, albums: sections.albums),
+                                   notYet: sections.notYet.songs)
+    }
+
     // MARK: - Try it next (D6, CarPlay H3)
 
     var carPlayTryOffer: CPTryOffer {
@@ -48,10 +67,10 @@ extension AppModel {
         return tier.asksInsteadOfWaiting ? .ask(intoFinds: triesGoIntoFinds) : .next
     }
 
-    /// The phone's Try for `recording`. It never interrupts something playing: when it is ready it lands by
-    /// `LandingRule` (no wait screen in the car, so it goes next in the queue). With nothing playing, a library mix
-    /// seeded by the artist starts at once, so the find has something to go next after and the app keeps running
-    /// on real audio (the audio session starts only when it plays). Patient requests are only asked for.
+    /// The phone's Try for `recording`. It never interrupts the queue: when it is ready it lands by `LandingRule` (no
+    /// wait screen in the car, so it goes next, right after the current song, playing or paused). With an empty queue,
+    /// a library mix seeded by the artist starts at once, so the find has something to go next after and the app keeps
+    /// running on real audio (the audio session starts only when it plays). Patient requests are only asked for.
     func tryNext(_ recording: ExternalRecording) async -> CPTryResult {
         let offer = carPlayTryOffer
         guard offer != .unavailable else { return .failed(.notSetUp) }
@@ -62,12 +81,13 @@ extension AppModel {
             return .failed(CPTryProblem(error))
         }
         guard offer == .next else { return .asked }
-        guard offer.startsBridge(playing: player.isPlaying) else { return .queued }
+        guard offer.startsBridge(queueEmpty: player.queue.current == nil) else { return .queued }
         let mix = await bridgeMix(seededBy: recording.artist)
         // Something started meanwhile, or the find already landed: leave the queue as it is.
-        guard !mix.isEmpty, offer.startsBridge(playing: player.isPlaying), !landedRequests.contains(id) else {
+        guard offer.startsBridge(queueEmpty: player.queue.current == nil), !landedRequests.contains(id) else {
             return .queued
         }
+        guard !mix.isEmpty else { return .noMix }
         play(mix, startAt: 0)
         return .bridging
     }
@@ -75,6 +95,8 @@ extension AppModel {
     /// Library songs only (never finds): the artist's (by normalised name), then songs from a few random albums
     /// when the artist has few. Empty when the library doesn't answer.
     func bridgeMix(seededBy artist: String) async -> [Song] {
+        // Until the Finds library's songs are known, every library song might be a find (fails closed): read it first.
+        if findsSetup?.library != nil, findIdsCache?.ids == nil { await refreshFinds() }
         let name = Normalize.name(artist)
         let found = (try? await request { try await $0.search(artist, songCount: 100, albumCount: 0, artistCount: 0) })?.songs ?? []
         let byArtist = found.filter { Normalize.name($0.artist) == name }

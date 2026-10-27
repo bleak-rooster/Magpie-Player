@@ -297,18 +297,18 @@ import UIKit
     /// The action sheet is "Try it next" / "Cancel" (CarPlay H3). Its message says what will happen: next in the
     /// queue (never cutting in), a library mix first when nothing plays, and Patient requests are only asked for.
     @Test func tryItNextSheet() throws {
-        let playing = try #require(CarPlayRows.trySheet(recording, offer: .next, playing: true))
+        let playing = try #require(CarPlayRows.trySheet(recording, offer: .next, queueEmpty: false))
         #expect(playing.title == "Harbour Lights")
         #expect(playing.confirm == "Try it next" && CPTrySheet.cancel == "Cancel")
         #expect(playing.message == "By Judie Tzuke. It goes next in your queue once it's here.")
-        let idle = try #require(CarPlayRows.trySheet(recording, offer: .next, playing: false))
+        let idle = try #require(CarPlayRows.trySheet(recording, offer: .next, queueEmpty: true))
         #expect(idle.message == "By Judie Tzuke. Songs from your library play until it's here, then it goes next.")
-        let ask = try #require(CarPlayRows.trySheet(recording, offer: .ask(intoFinds: true), playing: false))
+        let ask = try #require(CarPlayRows.trySheet(recording, offer: .ask(intoFinds: true), queueEmpty: true))
         #expect(ask.confirm == "Ask for it")
         #expect(ask.message == "By Judie Tzuke. This one is asked for, not played now. It shows up in your Finds when it's home.")
-        let askLibrary = try #require(CarPlayRows.trySheet(recording, offer: .ask(intoFinds: false), playing: true))
+        let askLibrary = try #require(CarPlayRows.trySheet(recording, offer: .ask(intoFinds: false), queueEmpty: false))
         #expect(askLibrary.message.hasSuffix("It shows up in your library when it's home."))
-        #expect(CarPlayRows.trySheet(recording, offer: .unavailable, playing: false) == nil)
+        #expect(CarPlayRows.trySheet(recording, offer: .unavailable, queueEmpty: true) == nil)
         for sheet in [playing, idle, ask, askLibrary] {
             #expect(sheet.confirm.count <= 16, "CarPlay L4: short action titles")
             describesNeverInstructs(sheet.message)
@@ -316,13 +316,23 @@ import UIKit
         for problem in [CPTryProblem.tooMany, .notSetUp, .unavailable, .other] { describesNeverInstructs(problem.message) }
     }
 
-    /// D6 in the car: a find never interrupts something playing. Only a "Try it next" with nothing playing starts the
-    /// bridge (Patient requests are only asked for).
+    /// D6 in the car: a find never interrupts what's in the queue. Only a "Try it next" with an empty queue starts the
+    /// bridge; a paused queue is kept and the find lands after its song (Patient requests are only asked for).
     @Test func tryItNextLanding() {
-        #expect(CPTryOffer.next.startsBridge(playing: false))
-        #expect(!CPTryOffer.next.startsBridge(playing: true))
-        #expect(!CPTryOffer.ask(intoFinds: true).startsBridge(playing: false))
-        #expect(!CPTryOffer.unavailable.startsBridge(playing: false))
+        #expect(CPTryOffer.next.startsBridge(queueEmpty: true))
+        #expect(!CPTryOffer.next.startsBridge(queueEmpty: false), "playing or paused: the queue stays")
+        #expect(!CPTryOffer.ask(intoFinds: true).startsBridge(queueEmpty: true))
+        #expect(!CPTryOffer.unavailable.startsBridge(queueEmpty: true))
+        #expect(CPTryResult.noMixMessage == "Nothing from your library to play first. It goes next once it's here.")
+    }
+
+    /// A list showing only a state row is a placeholder: real rows replace it even while it's on screen.
+    @Test func stateRowsArePlaceholders() {
+        for state in [CarPlayState.locked, .notSetUp, .outOfReach, .failed, .empty, .findsOff] {
+            #expect(CarPlayRows.isPlaceholder(CarPlayRows.state(state)))
+        }
+        #expect(!CarPlayRows.isPlaceholder(CarPlayRows.libraryRoot()))
+        #expect(!CarPlayRows.isPlaceholder([]))
     }
 
     /// The bridge (CarPlay H3, review D6): library songs only, the artist's first, topped up from the rest of the
