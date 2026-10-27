@@ -217,9 +217,7 @@ final class AppModel {
             store.clear()
             LidarrConnectionStore.standard.clear()
         }
-        var theme = Theme()
-        if let raw = defaults.string(forKey: "MagpieCharacter"), let c = Character(rawValue: raw) { theme.character = c }
-        let model = AppModel(store: store, defaults: defaults, theme: theme)
+        let model = AppModel(store: store, defaults: defaults, theme: savedTheme(defaults))
         model.resumeSavedSession()
         return model
     }

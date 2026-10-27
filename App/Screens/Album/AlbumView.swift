@@ -17,6 +17,7 @@ struct AlbumView: View {
         }
         .navigationTitle(album.value?.name ?? "")
         .navigationBarTitleDisplayMode(.inline)
+        .background { ArtBackdrop(coverArtId: album.value?.coverArtId) }
         .magpieScreen()
         .task { if album.value == nil { await load() } }
     }

@@ -54,7 +54,7 @@ struct NowPlayingView: View {
             }
         }
         .foregroundStyle(p.inkColor)
-        .background(p.bgColor.ignoresSafeArea())
+        .background { ArtBackdrop(coverArtId: model.player.queue.current?.song.coverArtId) }
         .presentationDragIndicator(theme.character == .classic ? .visible : .hidden)
         .task { lyricsAvailable = (try? await model.serverAdvertises("songLyrics")) ?? false }
         .sheet(item: $panel) { panel in
@@ -99,7 +99,7 @@ struct NowPlayingView: View {
                     .font(.title3)
                     .foregroundStyle(starred ? themed.palette.accentInkColor : themed.palette.inkColor)
                     .frame(width: Tokens.minHitSize, height: Tokens.minHitSize)
-                    .background(themed.palette.surfaceColor, in: Circle())
+                    .background(themed.palette.solidSurfaceColor, in: Circle())
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Star")
@@ -149,7 +149,7 @@ struct NowPlayingView: View {
             Button { player.toggle() } label: {
                 Image(systemName: player.isPlaying ? "pause.fill" : "play.fill").font(.system(size: 34))
                     .frame(width: 76, height: 76)
-                    .background(themed.palette.surfaceColor, in: Circle())
+                    .background(themed.palette.solidSurfaceColor, in: Circle())
             }
             .accessibilityLabel(player.isPlaying ? "Pause" : "Play")
             .accessibilityIdentifier("np-play-pause")
@@ -172,7 +172,7 @@ struct NowPlayingView: View {
                 Image(systemName: "chevron.right").font(.footnote).foregroundStyle(themed.palette.ink2Color)
             }
             .padding(Tokens.Spacing.s)
-            .background(themed.palette.surfaceColor, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .background(themed.palette.solidSurfaceColor, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
         .buttonStyle(.plain)
         .accessibilityElement(children: .ignore)

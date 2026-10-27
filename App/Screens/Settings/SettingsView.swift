@@ -19,7 +19,7 @@ struct SettingsView: View {
             Form {
                 Section {
                     NavigationLink {
-                        AppearancePlaceholder()
+                        AppearanceView()
                     } label: {
                         LabeledContent("Appearance", value: model.theme.character.rawValue.capitalized)
                     }
@@ -221,15 +221,6 @@ struct SettingsView: View {
         } footer: {
             Text("When on, songs you play are added to your listening history. Turn off while you're trying things out.")
         }
-    }
-}
-
-/// M7 brings Classic and Immersive; Signature for now.
-private struct AppearancePlaceholder: View {
-    var body: some View {
-        ContentUnavailableView("Signature", systemImage: "paintpalette",
-                               description: Text("More looks are coming in a later update."))
-            .navigationTitle("Appearance")
     }
 }
 
