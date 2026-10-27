@@ -103,6 +103,26 @@ import MagpieCore
         #expect(try await h.ledger.entry(albumId: 51)?.send == .applied)
     }
 
+    /// V-fix polish: "kept" must be said of this very artist. The kept entries belong to an earlier artist under the
+    /// same reused Lidarr id (another MBID); this artist only has an unkept "created" entry: nothing is brought in.
+    @Test func keptByAnEarlierArtistUnderAReusedIdIsNotKept() async throws {
+        let h = await Harness(setup: Harness.findsSetup)
+        let id = try await Self.keptFind(h)
+        let earlier = MBID("11111111-1111-4111-8111-111111111111")!
+        for var e in try await h.ledger.entries where e.lidarrArtistId == 42 {
+            e.artistMbid = earlier
+            try await h.ledger.record(e)
+        }
+        try await h.ledger.record(LedgerEntry(lidarrArtistId: 42, albumId: 99, rgMbid: Self.second, createdArtist: true,
+                                              wasMonitoredBefore: false, root: "/music/library", mode: .fallback,
+                                              send: .applied, requestId: "other", artistMbid: artistA))
+        let before = h.server.writes.count
+        await #expect(throws: RequestRunner.BringInError.notKept) {
+            _ = try await h.runner.bringIn(id, choice: .everything, follow: true)
+        }
+        #expect(h.server.writes.count == before)
+    }
+
     /// Dedupe: albums already monitored, and albums a request still on its way has in the ledger, are left alone.
     @Test func dedupesAgainstMonitoredAndOpenRequests() async throws {
         let h = await Harness(setup: Harness.findsSetup)

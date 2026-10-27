@@ -278,7 +278,9 @@ extension RequestRunner {
         }
         lastLidarrContact = now()
         guard let expected = r.plan?.artistMBID, artist.foreignArtistId == expected,
-              artistEntries.contains(where: { $0.created(artist) }) else { throw BringInError.notKept }
+              artistEntries.contains(where: { $0.created(artist) }),
+              // Kept, said of this very artist (not of an earlier one under a reused id).
+              artistEntries.contains(where: { $0.keptAt != nil && $0.created(artist) }) else { throw BringInError.notKept }
         let main = PathGuard(findsRoot: setup.mainRoot, otherRoots: [setup.findsRoot], caseInsensitive: false)
         guard !artist.tags.contains(setup.findTagId), let path = artist.path, main.isInside(path) else {
             throw BringInError.notKept
