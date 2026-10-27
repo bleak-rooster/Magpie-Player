@@ -38,13 +38,35 @@ public enum ArtistNotYet {
         }
     }
 
+    /// Words that mark an edition of the same album after a dash ("Glasshouse - Deluxe Edition").
+    static let editionWords: Set<String> = [
+        "deluxe", "edition", "remaster", "remastered", "expanded", "anniversary", "special", "collectors", "collector",
+        "bonus", "reissue", "legacy", "limited", "super",
+    ]
+
+    /// An album title for matching: `Normalize.name` (which drops bracketed housekeeping asides), plus a dash suffix
+    /// that only names an edition. A suffix with a version word ("- Live", "- Demo Edition") keeps it distinct.
+    static func titleKey(_ title: String) -> String {
+        for dash in [" - ", " \u{2013} ", " \u{2014} "] {
+            guard let r = title.range(of: dash, options: .backwards) else { continue }
+            let words = Normalize.name(String(title[r.upperBound...])).split(separator: " ").map(String.init)
+            let head = Normalize.name(String(title[..<r.lowerBound]))
+            if !head.isEmpty, words.contains(where: editionWords.contains),
+               !words.contains(where: { Normalize.versionWords.contains($0) || $0.hasPrefix("remix") }) {
+                return head
+            }
+            break
+        }
+        return Normalize.name(title)
+    }
+
     /// Drops untitled albums and the library's own, one row per album, newest first, at most `limit`.
     static func excluding(_ candidates: [NotYetAlbum], library: [Album]) -> [NotYetAlbum] {
         let groups = Set(library.compactMap(\.releaseGroupMBID))
-        let titles = Set(library.map { Normalize.name($0.name) })
+        let titles = Set(library.map { titleKey($0.name) })
         var seen = Set<String>()
         let kept = candidates.filter { a in
-            let title = Normalize.name(a.title)
+            let title = titleKey(a.title)
             guard !title.isEmpty, !(a.mbid.map(groups.contains) ?? false), !titles.contains(title) else { return false }
             return seen.insert(a.mbid?.rawValue ?? title).inserted && seen.insert("t" + title).inserted
         }

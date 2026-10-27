@@ -80,7 +80,9 @@ struct MadeForYouView: View {
     }
 
     private func load() async {
-        if let found = await model.madeForYouTracks(playlist.id) {
+        let found = await model.madeForYouTracks(playlist.id)
+        guard !Task.isCancelled else { return }   // left before it finished: read again next time
+        if let found {
             rows = .loaded(found)
         } else if rows.value == nil {
             rows = .failed(Self.unavailable)

@@ -22,18 +22,36 @@ extension AppModel {
         return MadeForYou(client: ListenBrainzClient(transport: transport, token: token, limiter: listenBrainzLimiter))
     }
 
-    /// The "Made for you" shelf. Empty without a token, or when ListenBrainz can't be read.
-    func madeForYouPlaylists() async -> [MadeForYou.Playlist] {
-        await madeForYou()?.playlists() ?? []
+    /// Reads the "Made for you" shelf for the token saved now. Without a token the shelf is empty. A read that fails
+    /// or finds nothing keeps what's shown; a read that was cancelled, or outlived the token it was made with (saved
+    /// again, replaced or removed meanwhile), is dropped, so another account's playlists never show.
+    func refreshMadeForYou() async {
+        guard let token = tokenStore.load() else {
+            madeForYouShelf = []
+            return
+        }
+        let generation = listenBrainzTokenGeneration
+        let made = MadeForYou(client: ListenBrainzClient(transport: transport, token: token, limiter: listenBrainzLimiter))
+        let found = await made.playlists()
+        guard !Task.isCancelled, generation == listenBrainzTokenGeneration, tokenStore.load() == token else { return }
+        if !found.isEmpty { madeForYouShelf = found }
+    }
+
+    /// The token was saved, replaced or removed: the shelf belonged to the old one.
+    func listenBrainzTokenChanged() {
+        listenBrainzTokenGeneration += 1
+        madeForYouShelf = []
     }
 
     /// The playlist's songs, in order. Library songs whose details can't be read are left out (never shown as
-    /// not in the library). Nil without a token or when the playlist can't be read.
+    /// not in the library). Nil without a token, when the playlist can't be read, or when cancelled (a cancelled load
+    /// is missing songs, so it is never kept).
     func madeForYouTracks(_ id: MBID) async -> [MadeForYouRow]? {
         guard let made = madeForYou() else { return nil }
         let index = await matchIndex?.index ?? .empty
         guard let tracks = await made.tracks(id, index: index) else { return nil }
         let songs = await librarySongs(tracks.compactMap { if case .library(let id, _) = $0 { id } else { nil } })
+        guard !Task.isCancelled else { return nil }
         return tracks.compactMap { track in
             switch track {
             case .library(let id, _): songs[id].map(MadeForYouRow.library)
@@ -56,6 +74,10 @@ extension AppModel {
             }
             for _ in 0..<Self.madeForYouSongReads { addNext() }
             for await song in group {
+                guard !Task.isCancelled else {   // what's left would be missing songs anyway
+                    group.cancelAll()
+                    return
+                }
                 if let song { found[song.id] = song }
                 addNext()
             }

@@ -96,6 +96,19 @@ private let library = [
         #expect(ContinuousClock.now - started < .seconds(5))
     }
 
+    @Test func dashSuffixEditionsAreTheSameAlbumButVersionsStayDistinct() {
+        func album(_ title: String) -> NotYetAlbum { NotYetAlbum(title: title, artist: "Corin Hale") }
+        let owned = [Album(id: "a", name: "Glasshouse", artist: "Corin Hale", songCount: 1, duration: 60),
+                     Album(id: "b", name: "Saltwater Hymns - Deluxe Edition", artist: "Corin Hale", songCount: 1, duration: 60)]
+        let candidates = ["Glasshouse - Deluxe Edition", "Glasshouse \u{2013} Remastered 2011", "Glasshouse - 10th Anniversary Edition",
+                          "Glasshouse \u{2014} Expanded", "Glasshouse - Special Edition", "Saltwater Hymns",
+                          "Glasshouse - Live", "Glasshouse - Acoustic Sessions", "Glasshouse - Demo Edition",
+                          "Glasshouse (Remix)", "Glasshouse - Remixes"].map(album)
+        let kept = ArtistNotYet.excluding(candidates, library: owned).map(\.title)
+        #expect(kept == ["Glasshouse - Live", "Glasshouse - Acoustic Sessions", "Glasshouse - Demo Edition",
+                         "Glasshouse (Remix)", "Glasshouse - Remixes"])
+    }
+
     @Test func excludingDedupesAndCaps() {
         let rows = (0..<40).map { (i: Int) in NotYetAlbum(title: "Record \(i)", artist: "A", year: i) }
             + [NotYetAlbum(title: "Record 3", artist: "A", year: 3)]

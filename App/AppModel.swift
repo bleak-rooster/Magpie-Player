@@ -86,6 +86,10 @@ final class AppModel {
     var countPlays: Bool
     /// Whether an optional ListenBrainz token is saved.
     var hasListenBrainzToken = false
+    /// Changes whenever the token is saved, replaced or removed: Home's "Made for you" reads again (Task 7.1c).
+    var listenBrainzTokenGeneration = 0
+    /// Home's "Made for you" shelf for the saved token (AppModel+MadeForYou.swift). Empty without a token.
+    var madeForYouShelf: [MadeForYou.Playlist] = []
     /// The scene is active: requests poll every 5 s, otherwise every 30 s.
     var isForeground = true {
         didSet {
@@ -213,7 +217,10 @@ final class AppModel {
     @discardableResult
     func reloadKeychainItems() -> Bool {
         let hasToken = tokenStore.load() != nil
-        if hasToken != hasListenBrainzToken { hasListenBrainzToken = hasToken }   // no needless view updates
+        if hasToken != hasListenBrainzToken {   // no needless view updates
+            hasListenBrainzToken = hasToken
+            listenBrainzTokenChanged()
+        }
         guard lidarr == nil, let saved = lidarrStore.load() else { return false }
         lidarr = saved
         readLidarrPermissions()

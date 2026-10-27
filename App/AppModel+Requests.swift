@@ -225,6 +225,7 @@ extension AppModel {
         let trimmed = token?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if trimmed.isEmpty { tokenStore.clear() } else { try tokenStore.save(trimmed) }
         hasListenBrainzToken = !trimmed.isEmpty
+        listenBrainzTokenChanged()
     }
 
     // MARK: - Try
