@@ -35,6 +35,9 @@ public final class Player {
     public private(set) var isShuffled = false
     /// Last playback error for the current entry, if any (cleared when a new entry starts).
     public private(set) var lastError: String?
+    /// The current song played to its end and nothing followed (final fix 2 B-M3): it was heard, so whatever jumps
+    /// past it doesn't put it back. Cleared when it plays again, is sought or another song starts.
+    public private(set) var hasEnded = false
 
     /// Scrobble at 50 % of the track or this many seconds, whichever comes first.
     static let scrobbleCap: TimeInterval = 240
@@ -125,6 +128,7 @@ public final class Player {
     }
 
     public func seek(_ t: TimeInterval) {
+        hasEnded = false
         engine.seek(to: t)
         position = t
     }
@@ -251,7 +255,7 @@ public final class Player {
             isPlaying = false
             needsReload = true
             switch repeatMode {
-            case .off: break
+            case .off: hasEnded = true
             case .one: resume()
             case .all:
                 queue.wrapToStart()
@@ -273,6 +277,7 @@ public final class Player {
 
     private func resume() {
         guard queue.current != nil else { return }
+        hasEnded = false
         if needsReload { loadCurrent() }
         engine.play()
         isPlaying = true
@@ -299,6 +304,7 @@ public final class Player {
 
     /// A new entry became current: reset position and scrobble state, send "now playing".
     private func beginEntry() {
+        hasEnded = false
         needsReload = false
         failedEntryId = nil
         position = 0

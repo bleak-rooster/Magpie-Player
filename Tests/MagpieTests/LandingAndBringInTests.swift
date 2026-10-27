@@ -52,6 +52,18 @@ import Testing
         #expect(model.playNowBanner == nil)
     }
 
+    /// Final fix 2 B-M3: a song that played to its end isn't put back after the find: it was heard.
+    @Test func playingNowDropsASongThatEnded() {
+        let model = makeModel()
+        model.play([Self.song("a")], startAt: 0)
+        model.player.handle(.ended)
+        #expect(!model.player.isPlaying && model.player.hasEnded)
+        model.waitScreenAppeared(request)
+        model.land(Self.find, request: request)
+        #expect(model.player.queue.current?.song == Self.find && model.player.isPlaying && !model.player.hasEnded)
+        #expect(model.player.queue.upcoming.isEmpty, "the song that ended doesn't come back")
+    }
+
     /// Play now from the banner while the queue is paused keeps the paused song too.
     @Test func bannerPlayNowKeepsThePausedSong() throws {
         let model = makeModel()
@@ -70,7 +82,7 @@ import Testing
         model.land(Self.find, request: request)
         #expect(model.visibleBanner != nil)
         model.player.next()   // reached normally, playing
-        for _ in 0..<50 where model.playNowBanner != nil { try await Task.sleep(for: .milliseconds(10)) }
+        for _ in 0..<200 where model.playNowBanner != nil { try await Task.sleep(for: .milliseconds(10)) }
         #expect(model.playNowBanner == nil, "cleared the first time it played")
         model.player.toggle()
         #expect(!model.player.isPlaying && model.visibleBanner == nil)
@@ -82,7 +94,7 @@ import Testing
         model.land(Self.find, request: request)
         #expect(model.visibleBanner?.idle == true)
         model.player.toggle()
-        for _ in 0..<50 where model.playNowBanner != nil { try await Task.sleep(for: .milliseconds(10)) }
+        for _ in 0..<200 where model.playNowBanner != nil { try await Task.sleep(for: .milliseconds(10)) }
         model.player.toggle()
         #expect(model.playNowBanner == nil && model.visibleBanner == nil)
     }

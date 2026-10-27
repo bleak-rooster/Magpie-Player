@@ -126,9 +126,9 @@ extension AppModel {
 
     /// Makes the upcoming slot `entry` current and plays it. A paused song it would skip past isn't dropped into
     /// what has played: it goes back right after the find (from its start; the player keeps no position for a song
-    /// that isn't current).
+    /// that isn't current). A song that played to its end is history, not paused: it stays behind (B-M3).
     private func jump(to entry: UUID) {
-        let paused = player.isPlaying ? nil : player.queue.current
+        let paused = player.isPlaying || player.hasEnded ? nil : player.queue.current
         player.move(id: entry, to: 0)
         player.next()
         if let paused, player.queue.current?.id == entry {
