@@ -282,7 +282,8 @@ import MagpieTestSupport
 
     // MARK: - Bring in more boundaries
 
-    /// G7 boundary: four requests on their way still allow it; the fifth stops it.
+    /// G7 boundary: four requests on their way still allow it, for the one place left (FL4: the newest release);
+    /// the fifth stops it.
     @Test func fourActiveStillBringIn() async throws {
         let h = await Harness(setup: Harness.findsSetup)
         let id = try await BringInMoreTests.keptFind(h)
@@ -293,7 +294,8 @@ import MagpieTestSupport
         }
         try await h.store.save(try await h.store.load() + active)
         let relaunched = await Harness(directory: h.dir, lidarr: h.server, setup: Harness.findsSetup)
-        #expect(try await relaunched.runner.bringIn(id, choice: .albumsAndEPs, follow: false).albums == 3)
+        #expect(try await relaunched.runner.bringIn(id, choice: .albumsAndEPs, follow: false).albums == 1)
+        #expect(await relaunched.request(id)?.bringingIn == [53])
     }
 
     /// The 20-release limit at its edge: exactly 20 is all of them (not capped); 21 brings in the newest 20.

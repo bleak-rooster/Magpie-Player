@@ -146,6 +146,8 @@ public actor RequestRunner {
     var lettingGoArtists: Set<Int> = []
     /// When the kept song was last looked up, per request (throttles `relink`).
     var relinkChecks: [RequestID: Date] = [:]
+    /// When Bring in more's releases were last checked, per request (throttles `followBringIns`).
+    var bringInChecks: [RequestID: Date] = [:]
     private var inFlight: [RequestID: Task<Void, Never>] = [:]
     private var ticking = false
     private(set) var stopped = false
@@ -224,7 +226,7 @@ public actor RequestRunner {
         }
         guard await gate.enabled else { throw TryError.changesOff }
         guard await setup() != nil else { throw TryError.notSetUp }
-        guard list.filter(\.isActive).count < Self.maxActive else { throw TryError.tooMany }
+        guard activeCount < Self.maxActive else { throw TryError.tooMany }
         let request = MagpieRequest(recording: recording, tier: tier, createdAt: now())
         list.append(request)
         await changed()
@@ -292,7 +294,11 @@ public actor RequestRunner {
         for r in list where r.cleanupPending && !busy.contains(r.id) { await cleanup(r.id) }
         await followKeeps()
         await followNotForMes()
+        await followBringIns()
     }
+
+    /// G7: the places taken in the limit of 5: requests on their way and releases Bring in more is bringing in (FL4).
+    var activeCount: Int { list.reduce(0) { $0 + $1.activePlaces } }
 
     // MARK: - The machine
 

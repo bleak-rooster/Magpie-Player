@@ -118,6 +118,8 @@ final class FakeLidarr: @unchecked Sendable {
         var id: Int; var artistId: Int; var rg: MBID; var title: String; var monitored: Bool
         /// Bring in more (Task 7.1b): Lidarr's album type, length (ms; nil: not sent) and release date.
         var type = "Album"; var duration: Int? = nil; var releaseDate: String? = nil
+        /// Lidarr's `statistics.trackFileCount` (Bring in more counts a release as arrived once it has files).
+        var trackFiles = 0
     }
     /// Not for me (Task 6.2c): a track file besides the artist's song (id 1, album 50). `path` is where Lidarr
     /// records it; `onDisk` where it really is (nil: gone).
@@ -471,7 +473,8 @@ final class FakeLidarr: @unchecked Sendable {
                 .first { $0.name == "artistId" }?.value.flatMap(Int.init)
             return reply(with { s in s.albums.filter { $0.artistId == artistId }.map {
                 var row: [String: Any] = ["id": $0.id, "title": $0.title, "artistId": $0.artistId,
-                                          "foreignAlbumId": $0.rg.rawValue, "monitored": $0.monitored, "albumType": $0.type]
+                                          "foreignAlbumId": $0.rg.rawValue, "monitored": $0.monitored, "albumType": $0.type,
+                                          "statistics": ["trackFileCount": $0.trackFiles]]
                 if let d = $0.duration { row["duration"] = d }
                 if let date = $0.releaseDate { row["releaseDate"] = date }
                 return row

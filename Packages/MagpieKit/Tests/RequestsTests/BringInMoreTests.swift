@@ -145,7 +145,8 @@ import MagpieCore
         #expect(h.server.writes.count == before)
     }
 
-    /// G7: one Bring in more brings in at most `bringInLimit` releases (the newest), and says how many there were.
+    /// G7: one Bring in more brings in at most as many releases as the limit of 5 has room for (security FL4; and
+    /// never more than `bringInLimit`), the newest, and says how many there were.
     @Test func everythingIsCapped() async throws {
         let h = await Harness(setup: Harness.findsSetup)
         let id = try await Self.keptFind(h)
@@ -158,14 +159,13 @@ import MagpieCore
         }
         let offer = try await h.runner.bringInOffer(id)
         let everything = try #require(offer.options[.everything])
-        #expect(everything.albumIds.count == RequestRunner.bringInLimit)
+        #expect(everything.albumIds == [124, 123, 122, 121, 120], "newest first, as many as there's room for")
         #expect(everything.available == 29 && everything.isCapped)
-        #expect(everything.albumIds.first == 124, "newest first")
 
         let result = try await h.runner.bringIn(id, choice: .everything, follow: false)
-        #expect(result.albums == RequestRunner.bringInLimit)
+        #expect(result.albums == RequestRunner.maxActive)
         let monitor = try #require(h.server.writeBodies().last { $0.0 == "PUT album/monitor" })
-        #expect((monitor.1["albumIds"] as? [Int])?.count == RequestRunner.bringInLimit)
+        #expect((monitor.1["albumIds"] as? [Int])?.count == RequestRunner.maxActive)
     }
 
     /// G7: five requests on their way already: no Bring in more now.
@@ -185,6 +185,63 @@ import MagpieCore
             _ = try await relaunched.runner.bringIn(id, choice: .albumsAndEPs, follow: true)
         }
         #expect(h.server.writes.count == before)
+    }
+
+    /// Security FL4: what Bring in more brings in counts toward the limit of 5 like requests on their way, until each
+    /// release has files in Lidarr, is no longer monitored, or a day has passed (as a request gives up).
+    @Test func bringInCountsTowardTheLimitOfFive() async throws {
+        let h = await Harness(setup: Harness.findsSetup)
+        let id = try await Self.keptFind(h)
+        #expect(try await h.runner.bringIn(id, choice: .albumsAndEPs, follow: false).albums == 3)
+        #expect(await h.request(id)?.bringingIn == [53, 52, 51])
+        #expect(await h.runner.activeCount == 3)
+
+        // Three releases and two requests on their way: no room for a Try or another Bring in more.
+        let active = (0..<2).map { i in
+            var r = MagpieRequest(recording: h.recording(mbid(200 + i)), tier: .standard, createdAt: h.clock.now)
+            r.state = .downloading(progress: 0.1)
+            return r
+        }
+        try await h.store.save(try await h.store.load() + active)
+        let relaunched = await Harness(directory: h.dir, lidarr: h.server, setup: Harness.findsSetup)
+        #expect(await relaunched.runner.load())
+        let before = h.server.writes.count
+        await #expect(throws: RequestRunner.TryError.tooMany) {
+            _ = try await relaunched.runner.tryRecording(relaunched.recording(recAlbumOnly), tier: .standard)
+        }
+        await #expect(throws: RequestRunner.BringInError.tooMany) {
+            _ = try await relaunched.runner.bringIn(id, choice: .everything, follow: false)
+        }
+        #expect(h.server.writes.count == before)
+
+        // One arrives (files), one the owner stops monitoring: room again; the last one gives up after a day.
+        h.server.with { s in
+            for i in s.albums.indices where s.albums[i].id == 53 { s.albums[i].trackFiles = 12 }
+            for i in s.albums.indices where s.albums[i].id == 52 { s.albums[i].monitored = false }
+        }
+        relaunched.clock.advance(61)
+        await relaunched.runner.tick()
+        #expect(await relaunched.request(id)?.bringingIn == [51])
+        #expect(await relaunched.runner.activeCount == 3)
+        relaunched.clock.advance(RequestMachine.giveUpAfter)
+        await relaunched.runner.tick()
+        #expect(await relaunched.request(id)?.bringingIn == nil)
+    }
+
+    /// FL4: two requests on their way leave room for three releases.
+    @Test func bringInIsCappedByTheRoomLeft() async throws {
+        let h = await Harness(setup: Harness.findsSetup)
+        let id = try await Self.keptFind(h)
+        let active = (0..<2).map { i in
+            var r = MagpieRequest(recording: h.recording(mbid(200 + i)), tier: .standard, createdAt: h.clock.now)
+            r.state = .searching
+            return r
+        }
+        try await h.store.save(try await h.store.load() + active)
+        let relaunched = await Harness(directory: h.dir, lidarr: h.server, setup: Harness.findsSetup)
+        let everything = try #require(try await relaunched.runner.bringInOffer(id).options[.everything])
+        #expect(everything.albumIds == [54, 53, 52] && everything.available == 4 && everything.isCapped)
+        #expect(try await relaunched.runner.bringIn(id, choice: .everything, follow: false).albums == 3)
     }
 
     /// Not after a Keep that stayed in the Finds folder, and not for a find that isn't kept.

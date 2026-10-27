@@ -138,6 +138,15 @@ public struct MagpieRequest: Sendable, Codable, Equatable, Identifiable {
     }
     var letGoStuck: Bool?
 
+    // Bring in more (security FL4). Optional, so requests saved before it still decode.
+
+    /// Releases a Bring in more from this kept find monitored and searched that haven't arrived yet. Each counts
+    /// toward the limit of 5 (G7) like a request on its way, until Lidarr has files for it, it is no longer
+    /// monitored, or `RequestMachine.giveUpAfter` has passed since `bringInAt`. Nil: none.
+    public var bringingIn: [Int]?
+    /// When the latest Bring in more of this find was sent.
+    public var bringInAt: Date?
+
     public init(id: RequestID = RequestID(), recording: ExternalRecording, tier: Tier, createdAt: Date) {
         self.id = id
         self.recording = recording
@@ -149,6 +158,10 @@ public struct MagpieRequest: Sendable, Codable, Equatable, Identifiable {
 
     /// Counts toward the limit of 5 (G7) and is polled: not finished and not yet ready.
     public var isActive: Bool { !state.isTerminal && state != .ready }
+
+    /// How many places this request takes in the limit of 5 (G7): one while on its way, plus each release Bring in
+    /// more is still bringing in (FL4).
+    public var activePlaces: Int { (isActive ? 1 : 0) + (bringingIn?.count ?? 0) }
 
     /// Headed for (or added to) the Finds folder: a new artist added in Finds mode (Task 6.2a).
     public var isFind: Bool { plan?.mode == .finds }

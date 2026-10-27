@@ -15,8 +15,10 @@ import MagpieCore
 /// `monitorNewItems` to `new` through the artist editor with exactly `{artistIds, monitorNewItems}` (the gate
 /// allows only that shape, and never `none`); an artist that already follows (`all` or `new`) is left alone.
 ///
-/// G7: refused while five requests are on their way, and one Bring in more brings in at most `bringInLimit`
-/// releases, newest first (the offer says how many there were). M6: the albums are in the ledger (kept, closed,
+/// G7: each release it brings in counts toward the limit of 5 like a request on its way (security FL4), until Lidarr
+/// has files for it, it is no longer monitored, or a day has passed (`followBringIns`). So one Bring in more brings
+/// in at most the room left (and never more than `bringInLimit`), newest first (the offer says how many there were),
+/// and it is refused when there is none. M6: the albums are in the ledger (kept, closed,
 /// "may have landed") before the monitor write; afterwards they say whether it applied.
 extension RequestRunner {
     public enum BringInChoice: String, Sendable, CaseIterable {
@@ -100,7 +102,7 @@ extension RequestRunner {
         var options: [BringInChoice: BringInOption] = [:]
         for choice in BringInChoice.allCases {
             options[choice] = Self.bringInOption(target.albums, choice: choice, songAlbums: songAlbums,
-                                                 skip: target.openAlbums, limit: Self.bringInLimit)
+                                                 skip: target.openAlbums, limit: bringInRoom)
         }
         return BringInOffer(artistId: target.artist.id, artistName: target.artist.artistName, options: options,
                             followsNewReleases: Self.follows(target.artist))
@@ -125,11 +127,27 @@ extension RequestRunner {
                                             skip: target.openAlbums, limit: Self.bringInLimit)
             let wanted = option?.albumIds ?? []
             albums = wanted.compactMap { albumId in target.albums.first { $0.id == albumId } }
+            // FL4: the room left now (checked and taken with no await between), the newest first.
+            guard albums.isEmpty || bringInRoom > 0 else { throw BringInError.tooMany }
+            albums = Array(albums.prefix(bringInRoom))
+        }
+        let reserved = albums.map(\.id)
+        if !reserved.isEmpty {
+            await mutate(id) {
+                $0.bringingIn = ($0.bringingIn ?? []) + reserved
+                $0.bringInAt = self.now()
+            }
         }
         let needsFollow = follow && !Self.follows(target.artist)
         var result = BringInResult(albums: 0, searching: false, following: follow && !needsFollow)
         if !albums.isEmpty {
-            albums = try await monitor(albums, artistId: artistId, root: target.mainRoot)
+            do {
+                albums = try await monitor(albums, artistId: artistId, root: target.mainRoot)
+            } catch {
+                await arrived(id, Set(reserved))   // nothing monitored: no place taken
+                throw error
+            }
+            await arrived(id, Set(reserved).subtracting(albums.map(\.id)))
             result.albums = albums.count
             do {
                 _ = try await gate.send("POST", "command", body: SearchBody(name: "AlbumSearch", albumIds: albums.map(\.id)))
@@ -149,6 +167,49 @@ extension RequestRunner {
         }
         return result
     }
+
+    // MARK: - Counting toward G7 (FL4)
+
+    /// Places left in the limit of 5, at most `bringInLimit`.
+    var bringInRoom: Int { max(0, min(Self.bringInLimit, Self.maxActive - activeCount)) }
+
+    /// The releases no longer take a place.
+    private func arrived(_ id: RequestID, _ albumIds: Set<Int>) async {
+        guard !albumIds.isEmpty else { return }
+        await mutate(id) {
+            let left = ($0.bringingIn ?? []).filter { !albumIds.contains($0) }
+            $0.bringingIn = left.isEmpty ? nil : left
+            if left.isEmpty { $0.bringInAt = nil }
+        }
+    }
+
+    /// `tick()`: releases Bring in more is bringing in leave the count once Lidarr has files for them or doesn't
+    /// monitor them (or is gone), or `RequestMachine.giveUpAfter` after the Bring in more. Checked at most every
+    /// `bringInCheckInterval` per find; a read that fails keeps them counted.
+    func followBringIns() async {
+        for r in list {
+            guard let ids = r.bringingIn, !ids.isEmpty else { continue }
+            let since = now().timeIntervalSince(r.bringInAt ?? r.updatedAt)
+            guard since < RequestMachine.giveUpAfter, let artistId = r.lidarrArtistId else {
+                await arrived(r.id, Set(ids))
+                continue
+            }
+            // A last check "in the future" (the clock went back) is due now.
+            if let last = bringInChecks[r.id], (0..<Self.bringInCheckInterval).contains(now().timeIntervalSince(last)) {
+                continue
+            }
+            bringInChecks[r.id] = now()
+            guard let albums = try? await lidarr.albums(artistId: artistId) else { continue }
+            lastLidarrContact = now()
+            let done = ids.filter { id in
+                guard let album = albums.first(where: { $0.id == id }) else { return true }
+                return !album.monitored || (album.trackFileCount ?? 0) > 0
+            }
+            await arrived(r.id, Set(done))
+        }
+    }
+
+    static let bringInCheckInterval: TimeInterval = 60
 
     // MARK: - Internals
 
@@ -183,7 +244,7 @@ extension RequestRunner {
         guard let r = request(id), r.state == .kept, !r.keptInPlace, r.keep == nil, !r.keepNeedsAttention,
               let artistId = r.lidarrArtistId else { throw BringInError.notKept }
         guard await gate.enabled else { throw BringInError.changesOff }
-        guard list.filter(\.isActive).count < Self.maxActive else { throw BringInError.tooMany }
+        guard bringInRoom > 0 else { throw BringInError.tooMany }
         guard let setup = await keepSetup() else { throw BringInError.notSetUp }
 
         let entries: [LedgerEntry]
