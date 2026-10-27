@@ -182,7 +182,8 @@ final class AppModel {
     /// and the ListenBrainz token as absent. Reads them again; true when Lidarr turned up (the runner needs rebuilding).
     @discardableResult
     func reloadKeychainItems() -> Bool {
-        hasListenBrainzToken = tokenStore.load() != nil
+        let hasToken = tokenStore.load() != nil
+        if hasToken != hasListenBrainzToken { hasListenBrainzToken = hasToken }   // no needless view updates
         guard lidarr == nil, let saved = lidarrStore.load() else { return false }
         lidarr = saved
         readLidarrPermissions()
