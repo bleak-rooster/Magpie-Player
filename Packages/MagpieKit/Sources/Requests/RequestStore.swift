@@ -315,4 +315,14 @@ public actor RequestStore {
         memory = []
         if let fileURL { try? FileManager.default.removeItem(at: fileURL) }
     }
+
+    /// Sign-out (V-fix): removes the requests of every Lidarr in `directory` (`requests-<instance>.json`, and copies
+    /// of a damaged one kept aside), not only the connected one's. Call with no runner using them.
+    public static func eraseAll(in directory: URL = URL.applicationSupportDirectory) {
+        let folder = defaultURL(in: directory, instance: "x").deletingLastPathComponent()
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []
+        for name in names where name.hasPrefix("requests-") && name.contains(".json") {
+            try? FileManager.default.removeItem(at: folder.appending(path: name))
+        }
+    }
 }

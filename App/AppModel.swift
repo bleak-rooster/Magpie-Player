@@ -348,7 +348,8 @@ final class AppModel {
         rebuildRunner()
     }
 
-    /// Stops playback, forgets the server and clears the Keychain.
+    /// Stops playback, forgets the server and clears the Keychain, recent searches, every Lidarr's requests and the
+    /// ledgers with nothing open (`Ledger.forgetFinished`). Keeps the change log.
     func signOut() {
         let retiring = runner, doomed = requestStore
         player.play([], startAt: 0)
@@ -383,9 +384,14 @@ final class AppModel {
         lidarrSetup = nil
         lidarrStatus = nil
         rebuildRunner()
+        RecentSearches(defaults: appDefaults).clear()   // shared with the car
+        let data = dataDirectory
         Task {
             await retiring?.stop()
             await doomed?.erase()
+            // Every Lidarr's requests, and the ledgers with nothing open. Never the change log (the owner's undo map).
+            RequestStore.eraseAll(in: data)
+            Ledger.forgetFinished(in: data)
         }
     }
 

@@ -175,6 +175,24 @@ public actor Ledger {
         try entries.last { $0.rgMbid == rgMbid }
     }
 
+    /// Sign-out (V-fix): forgets the entries of every Lidarr whose entries are all closed (finished requests,
+    /// nothing left to undo or follow up). A Lidarr with any open entry keeps all of its entries: the owner may
+    /// reconnect it. The file goes once nothing is left; an unreadable file is left alone.
+    public static func forgetFinished(in directory: URL = URL.applicationSupportDirectory) {
+        let url = defaultURL(in: directory)
+        fileLock.withLock {
+            guard FileManager.default.fileExists(atPath: url.path), let all = try? read(url) else { return }
+            let open = Set(all.filter(\.isOpen).map { $0.instance ?? "" })
+            let kept = all.filter { open.contains($0.instance ?? "") }
+            guard kept.count < all.count else { return }
+            if kept.isEmpty {
+                try? FileManager.default.removeItem(at: url)
+            } else {
+                try? LocalFile.save(kept, to: url)
+            }
+        }
+    }
+
     /// Whether Magpie created this artist on this server (same id and same MBID, `LedgerEntry.created`).
     public func createdArtist(_ artist: LidarrArtist) throws -> Bool {
         try entries.contains { $0.created(artist) }

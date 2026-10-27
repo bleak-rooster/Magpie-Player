@@ -136,6 +136,7 @@ A lost answer is never followed by the same write until a fresh read shows what 
 - Song stays "Bringing it home": see the path mapping row in section 2; after 20 minutes it says "Not showing up in your library yet" with **Check again**.
 - Untrusted certificate: see Step 2.
 - Disconnecting Lidarr, signing out, or connecting a different Lidarr turns the change switch off and forgets set-up; a new Lidarr always starts with changes off.
+- **Signing out** also clears recent searches (phone and car) and the requests of **every** Lidarr this phone was connected to. It never deletes the Lidarr change log (your undo map), and it keeps the ListenBrainz token. The ledger (what Magpie may undo) is kept for every Lidarr that still has an unfinished entry, so a reconnected Lidarr is still handled safely; a Lidarr whose entries are all finished is forgotten.
 
 ## 6. Dev stack and tests
 

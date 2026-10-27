@@ -171,9 +171,9 @@ private func eventually(_ seconds: Double = 5, _ condition: () -> Bool) async ->
         cleanUp(model)
     }
 
-    /// Sign-out erases the requests file of the Lidarr connected *now*. A requests file left by a Lidarr connected
-    /// earlier (then replaced) stays on disk (FLOWS.md says "the requests file").
-    @Test func signOutErasesOnlyTheCurrentLidarrsRequestsFile() async throws {
+    /// V-fix (V1 O2): sign-out erases the requests file of every Lidarr, not only the one connected now: an earlier,
+    /// replaced Lidarr's requests (song titles and artists) don't outlive the account. The change log stays.
+    @Test func signOutErasesEveryLidarrsRequestsFile() async throws {
         let model = makeModel(files: true)
         try await model.signIn(urls: [home], username: "admin", password: "pw")
         _ = try await model.connectLidarr(base: lidarrBase, apiKey: "key")
@@ -182,11 +182,51 @@ private func eventually(_ seconds: Double = 5, _ condition: () -> Bool) async ->
         _ = try await model.connectLidarr(base: URL(string: "http://192.168.1.3:8686")!, apiKey: "other")
         let second = RequestStore.defaultURL(in: dir, instance: try #require(model.lidarrScope))
         try await #require(model.requestStore).save([])
+        let logURL = LidarrWriteGate.defaultLogURL(in: dir)
+        try Data("[]".utf8).write(to: logURL)
 
         model.signOut()
 
         #expect(await eventually { !FileManager.default.fileExists(atPath: second.path) })
-        #expect(FileManager.default.fileExists(atPath: first.path), "the earlier Lidarr's requests file survives")
+        #expect(await eventually { !FileManager.default.fileExists(atPath: first.path) }, "the earlier Lidarr's too")
+        #expect(FileManager.default.fileExists(atPath: logURL.path), "the change log is never deleted")
+        cleanUp(model)
+    }
+
+    /// V-fix (V1 O1): recent searches (shared by the phone and the car) are cleared on sign-out.
+    @Test func signOutClearsRecentSearches() async throws {
+        let model = makeModel()
+        try await model.signIn(urls: [home], username: "admin", password: "pw")
+        let recents = RecentSearches(defaults: defaults)
+        recents.add("harbour lights")
+        #expect(recents.items == ["harbour lights"])
+        model.signOut()
+        #expect(recents.items.isEmpty)
+        cleanUp(model)
+    }
+
+    /// V-fix: sign-out forgets a Lidarr's ledger entries only when all of them are finished (closed). A Lidarr with an
+    /// open entry keeps all of its entries (the owner may reconnect it, and they say what Magpie may undo).
+    @Test func signOutForgetsOnlyFinishedLedgers() async throws {
+        let model = makeModel(files: true)
+        try await model.signIn(urls: [home], username: "admin", password: "pw")
+        let ledgerURL = Ledger.defaultURL(in: dir)
+        let rg = MBID("00000000-0000-0000-0000-000000000031")!
+        let done = Ledger(fileURL: ledgerURL, instance: "finished-lidarr")
+        try await done.record(LedgerEntry(lidarrArtistId: 1, albumId: 10, rgMbid: rg, createdArtist: true,
+                                          wasMonitoredBefore: false, root: "/music", mode: .fallback, closedAt: Date()))
+        let open = Ledger(fileURL: ledgerURL, instance: "open-lidarr")
+        try await open.record(LedgerEntry(lidarrArtistId: 2, albumId: 20, rgMbid: rg, createdArtist: true,
+                                          wasMonitoredBefore: false, root: "/music", mode: .fallback, closedAt: Date()))
+        try await open.record(LedgerEntry(lidarrArtistId: 2, albumId: 21, rgMbid: rg, createdArtist: true,
+                                          wasMonitoredBefore: false, root: "/music", mode: .fallback))
+
+        model.signOut()
+
+        #expect(await eventually { ((try? Data(contentsOf: ledgerURL)).map { String(decoding: $0, as: UTF8.self) } ?? "")
+            .contains("finished-lidarr") == false })
+        #expect(try await done.entries.isEmpty, "every entry was closed: forgotten")
+        #expect(try await open.entries.count == 2, "an open entry keeps that Lidarr's whole ledger")
         cleanUp(model)
     }
 
