@@ -27,8 +27,7 @@ struct FindsSetupView: View {
                     .disabled(setup == nil)
             } footer: {
                 Text("Finds are songs you're trying out. They live in a folder of their own, so you can keep them or let them go. "
-                     + (setup?.useFindsFolder == true ? (setup?.isComplete == true ? FindsCopy.done : FindsCopy.notFinished)
-                                                     : FindsCopy.off))
+                     + model.findsStatus.footer)
                     .accessibilityIdentifier("finds-status")
             }
             if setup?.useFindsFolder == true {

@@ -27,6 +27,17 @@ import MagpieTestSupport
         #expect(!audit.hasMagpieProfiles)
     }
 
+    /// Fix 6.2a-2: the `magpie-find` tag is looked up by name, read-only (a setup made in M5 lacks its id).
+    @Test func findTagLookedUpByName() async {
+        let tags = json(#"[{"id":3,"label":"magpie"},{"id":9,"label":"magpie-find"},{"id":4,"label":"magpie-finder"}]"#)
+        let (client, transport) = makeClient(auditTransport(["/tag": tags]))
+        let audit = await LidarrAudit.run(client)
+        #expect(audit.findTagId == 9)
+        #expect(transport.requests.allSatisfy { ($0.httpMethod ?? "GET") == "GET" })
+        let (none, _) = makeClient(auditTransport(["/tag": json(#"[{"id":3,"label":"magpie"}]"#)]))
+        #expect(await LidarrAudit.run(none).findTagId == nil)
+    }
+
     @Test func authNoneIsNotEnabled() async {
         let t = auditTransport(["/system/status": json(#"{"version":"3.2.0.1","authentication":"none"}"#)])
         let (client, _) = makeClient(t)

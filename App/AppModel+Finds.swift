@@ -23,6 +23,7 @@ extension AppModel {
         if loaded != findsSetup { findsSetup = loaded }
         let played = Set(appDefaults.stringArray(forKey: Self.playedFindsKey(navidromeScope)) ?? [])
         if played != playedFinds { playedFinds = played }
+        syncFindsIdentity()   // the account may have changed even when the setup didn't
     }
 
     /// "Use a Finds folder". Turning it off keeps the confirmed folder, so turning it on again needs no redo.
@@ -111,6 +112,13 @@ extension AppModel {
     /// Try sends new artists into the Finds folder.
     var triesGoIntoFinds: Bool { runnerSetup?.finds != nil }
 
+    /// Where "Use a Finds folder" stands, for Settings.
+    var findsStatus: FindsStatus {
+        guard let finds = findsSetup, finds.useFindsFolder else { return .off }
+        guard finds.isComplete else { return .notFinished }
+        return lidarrSetup?.findTagId == nil ? .needsSetUpAgain : .on
+    }
+
     /// Where Try says the song goes (B8: honest about fallback).
     var tryNote: String { triesGoIntoFinds ? TryCopy.findsNote : TryCopy.fallbackNote }
 
@@ -118,6 +126,11 @@ extension AppModel {
 
     nonisolated static let playedFindsKeyPrefix = "magpie.findsPlayed."
     nonisolated static func playedFindsKey(_ navidromeScope: String) -> String { playedFindsKeyPrefix + navidromeScope }
+    nonisolated static let findSongIdsKeyPrefix = "magpie.findsSongs."
+    /// The Finds library's song ids as last read, per Navidrome account and library (D29 on a cold start).
+    nonisolated static func findSongIdsKey(_ navidromeScope: String, libraryId: Int) -> String {
+        "\(findSongIdsKeyPrefix)\(navidromeScope).\(libraryId)"
+    }
 
     /// The shelf now: the Finds library's songs, finds on their way, New finds.
     func findsShelf(now: Date = Date()) -> FindsShelf {
@@ -132,7 +145,12 @@ extension AppModel {
         }
         do {
             let songs = try await request { try await $0.songs(inLibrary: library.id) }
-            if findsSetup?.library?.id == library.id { findSongs = songs }   // unless the library changed meanwhile
+            guard findsSetup?.library?.id == library.id, let scope = navidromeScope else { return }   // changed meanwhile
+            let key = Self.findSongIdsKey(scope, libraryId: library.id)
+            let ids = Set(songs.map(\.id))
+            appDefaults.set(Array(ids).sorted(), forKey: key)
+            findIdsCache = (key, ids)
+            findSongs = songs
         } catch {
             Log.logger("finds").error("finds not read: \(Log.category(of: error), privacy: .public)")
         }
@@ -142,9 +160,19 @@ extension AppModel {
     func isFind(_ song: Song) -> Bool { findsIdentity.isFind(song) }
 
     /// The Finds library counts whenever one is chosen, even with "Use a Finds folder" off: what's already in
-    /// it is still a find.
+    /// it is still a find. Its song ids come from the last read, saved per account and library; until there
+    /// is one, the identity fails closed (`FindsIdentity`).
     func syncFindsIdentity() {
-        findsIdentity.set(libraryId: findsSetup?.library?.id, songIds: Set(findSongs.map(\.id)))
+        guard let libraryId = findsSetup?.library?.id, let scope = navidromeScope else {
+            findIdsCache = nil
+            findsIdentity.set(libraryId: findsSetup?.library?.id, songIds: nil)
+            return
+        }
+        let key = Self.findSongIdsKey(scope, libraryId: libraryId)
+        if findIdsCache?.key != key {
+            findIdsCache = (key, appDefaults.stringArray(forKey: key).map { Set($0) })
+        }
+        findsIdentity.set(libraryId: libraryId, songIds: findIdsCache?.ids)
     }
 
     /// A find that starts playing is no longer new (saved per Navidrome account).

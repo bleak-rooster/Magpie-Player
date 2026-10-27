@@ -4,6 +4,7 @@ import LidarrKit
 import MagpieCore
 import MagpieTestSupport
 import NavidromeKit
+import os
 import Requests
 import Testing
 @testable import Magpie
@@ -26,6 +27,10 @@ private let t0 = Date(timeIntervalSince1970: 1_900_000_000)
     let lidarrStore = MemoryLidarrStore()
     let gateSuite = "magpie-tests-gate-\(UUID().uuidString)"
     let defaults = UserDefaults(suiteName: "magpie-tests-\(UUID().uuidString)")!
+    /// `/api/song` answers 503 (offline launch, server busy).
+    let songsFail = OSAllocatedUnfairLock(initialState: false)
+    /// `/api/v1/tag` lists `magpie-find` (id 2).
+    let hasFindTag = OSAllocatedUnfairLock(initialState: false)
 
     init() {
         let t = transport.inner
@@ -33,7 +38,13 @@ private let t0 = Date(timeIntervalSince1970: 1_900_000_000)
         t.stub(method: "POST", pathSuffix: "/auth/login", body: loginJSON)
         t.stub(pathSuffix: "/rest/scrobble", body: ok)
         // Library 2 (the Finds library) holds one find; the whole library (match index) is empty here.
+        let songsFail = self.songsFail, hasFindTag = self.hasFindTag
+        t.stub(pathSuffix: "/api/v1/tag") { _ in
+            let rows = hasFindTag.withLock { $0 } ? #"[{"id":1,"label":"magpie"},{"id":2,"label":"magpie-find"}]"# : "[]"
+            return MockTransport.Response(status: 200, body: Data(rows.utf8))
+        }
         t.stub(pathSuffix: "/api/song") { req in
+            if songsFail.withLock({ $0 }) { return MockTransport.Response(status: 503) }
             let library = URLComponents(url: req.url!, resolvingAgainstBaseURL: false)?.queryItems?
                 .first { $0.name == "library_id" }?.value
             let rows = library == "2"
@@ -209,6 +220,100 @@ private let t0 = Date(timeIntervalSince1970: 1_900_000_000)
         model.play([Self.song("kept", created: nil, libraryId: 1)], startAt: 0)
         await model.player.waitForPendingScrobbles()
         #expect(scrobbles() == ["kept"])
+        cleanUp(model)
+    }
+
+    func scrobbledIds() -> [String] {
+        transport.inner.requests.filter { $0.url?.path.hasSuffix("/rest/scrobble") == true }.compactMap {
+            URLComponents(url: $0.url!, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "id" }?.value
+        }
+    }
+
+    /// Fix 6.2a-1: D29 fails closed. With a Finds library set but its songs never read (offline launch), a
+    /// song without a library id (album, artist, search and playlist views) is treated as a find.
+    @Test func unknownFindsFailClosed() async throws {
+        let model = try await connected()
+        songsFail.withLock { $0 = true }
+        try await findsSetUp(model)
+        await model.refreshFinds()
+        model.play([Self.song("maybe-a-find", created: nil, libraryId: nil)], startAt: 0)
+        await model.player.waitForPendingScrobbles()
+        #expect(scrobbledIds().isEmpty, "no now-playing, no scrobble")
+        model.play([Self.song("library", created: nil, libraryId: 1)], startAt: 0)
+        await model.player.waitForPendingScrobbles()
+        #expect(scrobbledIds() == ["library"], "a song known to be in another library still counts")
+        cleanUp(model)
+    }
+
+    /// The Finds songs last read are kept per account and library, so a cold start knows them at once.
+    @Test func savedFindIdsBlockAFindOnColdStart() async throws {
+        let model = try await connected()
+        try await findsSetUp(model)
+        await model.refreshFinds()   // reads and saves ["find-1"]
+        songsFail.withLock { $0 = true }
+        let restored = makeModel()
+        restored.resumeSavedSession()
+        await restored.refreshFinds()   // fails: the saved ids stand
+        #expect(restored.findSongs.isEmpty)
+        restored.play([Self.song("find-1", created: nil, libraryId: nil)], startAt: 0)
+        await restored.player.waitForPendingScrobbles()
+        #expect(scrobbledIds().isEmpty)
+        restored.play([Self.song("not-a-find", created: nil, libraryId: nil)], startAt: 0)
+        await restored.player.waitForPendingScrobbles()
+        #expect(scrobbledIds() == ["not-a-find"], "known ids: other songs scrobble as usual")
+        cleanUp(restored)
+        #expect(!defaults.dictionaryRepresentation().keys.contains { $0.hasPrefix(AppModel.findSongIdsKeyPrefix) },
+                "sign-out forgets them")
+    }
+
+    /// The seed alone (written before any read this launch) blocks a find.
+    @Test func seedAloneBlocksAFind() async throws {
+        let model = try await connected()
+        songsFail.withLock { $0 = true }
+        let scope = try #require(model.navidromeScope)
+        defaults.set(["seeded-find"], forKey: AppModel.findSongIdsKey(scope, libraryId: 2))
+        try await findsSetUp(model)
+        model.play([Self.song("seeded-find", created: nil, libraryId: nil)], startAt: 0)
+        await model.player.waitForPendingScrobbles()
+        #expect(scrobbledIds().isEmpty)
+        model.play([Self.song("other", created: nil, libraryId: nil)], startAt: 0)
+        await model.player.waitForPendingScrobbles()
+        #expect(scrobbledIds() == ["other"])
+        cleanUp(model)
+    }
+
+    // MARK: - Fix 6.2a-2: a Lidarr set up in M5 (no magpie-find id)
+
+    /// The audit finds the tag by name (read-only) and saves its id.
+    @Test func auditAdoptsFindTag() async throws {
+        hasFindTag.withLock { $0 = true }
+        let model = try await connected()
+        model.lidarrSetup?.findTagId = nil
+        _ = await model.lidarrAudit()
+        #expect(model.lidarrSetup?.findTagId == 2)
+        #expect(transport.inner.requests.filter { $0.url?.port == 8686 }.allSatisfy { ($0.httpMethod ?? "GET") == "GET" })
+        try await findsSetUp(model)
+        #expect(model.findsStatus == .on)
+        #expect(model.triesGoIntoFinds)
+        cleanUp(model)
+    }
+
+    /// No tag yet: Finds says it isn't finished and how to finish it; fallback Try keeps working.
+    @Test func missingFindTagSaysSetUpAgain() async throws {
+        let model = try await connected()
+        model.lidarrSetup?.findTagId = nil
+        _ = await model.lidarrAudit()
+        #expect(model.findsStatus == .off)
+        try await findsSetUp(model)
+        #expect(model.findsSetup?.isComplete == true)
+        #expect(model.findsStatus == .needsSetUpAgain)
+        #expect(model.findsStatus.summary == "Not finished")
+        #expect(model.findsStatus.footer == FindsCopy.setUpAgain)
+        #expect(FindsCopy.setUpAgain == "Tap \u{2018}Set up Magpie in Lidarr\u{2019} again to start using your Finds folder.")
+        #expect(model.lidarrSetup?.isProvisioned == true, "fallback Try isn't blocked")
+        #expect(model.runnerSetup != nil && !model.triesGoIntoFinds)
+        model.setUseFindsFolder(false)
+        #expect(model.findsStatus == .off && model.findsStatus.summary == "Off")
         cleanUp(model)
     }
 

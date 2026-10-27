@@ -67,7 +67,7 @@ struct TrySheet: View {
                             .accessibilityIdentifier("try-tier")
                         Text(model.tryNote).font(.footnote).foregroundStyle(p.ink2Color)
                             .multilineTextAlignment(.center)
-                            .accessibilityIdentifier("try-fallback-note")
+                            .accessibilityIdentifier(model.triesGoIntoFinds ? "try-finds-note" : "try-fallback-note")
                     }
                     if let error {
                         Label(error, systemImage: "exclamationmark.circle").font(.footnote)

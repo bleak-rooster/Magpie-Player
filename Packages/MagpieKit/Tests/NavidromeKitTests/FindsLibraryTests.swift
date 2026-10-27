@@ -38,6 +38,10 @@ import Testing
         #expect(abs(created.timeIntervalSince(expected) - 0.655) < 0.01)
         #expect(Mapping.date("2026-10-26T15:00:19Z") == expected)
         #expect(Mapping.date("not a date") == nil)
+        // Fix 6.2a-3: a fraction with no zone designator (read as UTC), and fractions before an offset.
+        #expect(Mapping.date("2026-10-26T15:00:19.5") == expected.addingTimeInterval(0.5))
+        #expect(Mapping.date("2026-10-26T15:00:19") == expected)
+        #expect(Mapping.date("2026-10-26T17:00:19.25+02:00") == expected.addingTimeInterval(0.25))
         #expect(Mapping.date(nil) == nil)
     }
 

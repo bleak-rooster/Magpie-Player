@@ -109,6 +109,9 @@ final class AppModel {
     /// D29: what the player treats as a find (never scrobbled). Kept in step with `findsSetup` and `findSongs`.
     @ObservationIgnored let findsIdentity = FindsIdentity()
     @ObservationIgnored var findPlaysWatch: Task<Void, Never>?
+    /// The Finds library's song ids for the current account and library, as last read or saved
+    /// (`findSongIdsKey`); `ids` nil when never read. Keyed so another account or library reloads it.
+    @ObservationIgnored var findIdsCache: (key: String, ids: Set<String>?)?
     @ObservationIgnored let notifications: Bool
     /// The library's match index for the signed-in server and account (nil when signed out).
     @ObservationIgnored private(set) var matchIndex: MatchIndexStore?
@@ -316,7 +319,12 @@ final class AppModel {
         if let navidromeScope {
             findsStore.clear(navidromeScope: navidromeScope)
             appDefaults.removeObject(forKey: Self.playedFindsKey(navidromeScope))
+            let prefix = Self.findSongIdsKeyPrefix + navidromeScope + "."
+            for key in appDefaults.dictionaryRepresentation().keys where key.hasPrefix(prefix) {
+                appDefaults.removeObject(forKey: key)
+            }
         }
+        findIdsCache = nil
         findSongs = []
         playedFinds = []
         store.clear()
@@ -536,6 +544,7 @@ final class AppModel {
         lidarrStatus = audit
         lidarrSetup = setupStore.load(base: connection.base, scope: scope)
         adoptOnlyRoot(audit)
+        adoptFindTag(audit)
         rebuildRunner()
         return audit
     }
@@ -547,6 +556,7 @@ final class AppModel {
         if lidarrClient != nil {
             lidarrStatus = audit
             adoptOnlyRoot(audit)
+            adoptFindTag(audit)
         }
         return audit
     }

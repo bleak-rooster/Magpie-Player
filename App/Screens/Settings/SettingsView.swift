@@ -142,10 +142,7 @@ struct SettingsView: View {
 
     private var summary: String { LidarrSummary.status(model.lidarrStatus) }
 
-    private var findsSummary: String {
-        guard let finds = model.findsSetup, finds.useFindsFolder else { return "Off" }
-        return finds.isComplete ? "On" : "Not finished"
-    }
+    private var findsSummary: String { model.findsStatus.summary }
 
     @ViewBuilder private var rootPicker: some View {
         // The confirmed Finds folder is never also where new music goes (G2).

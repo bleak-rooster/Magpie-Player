@@ -63,6 +63,33 @@ enum FindsProblem: Error, Equatable {
     }
 }
 
+/// "Use a Finds folder" as Settings shows it.
+enum FindsStatus: Equatable {
+    case off
+    /// Folder or library not chosen yet.
+    case notFinished
+    /// Set up, but Lidarr's setup has no `magpie-find` tag yet (made before Finds mode): Try stays in fallback.
+    case needsSetUpAgain
+    case on
+
+    var summary: String {
+        switch self {
+        case .off: "Off"
+        case .notFinished, .needsSetUpAgain: "Not finished"
+        case .on: "On"
+        }
+    }
+
+    var footer: String {
+        switch self {
+        case .off: FindsCopy.off
+        case .notFinished: FindsCopy.notFinished
+        case .needsSetUpAgain: FindsCopy.setUpAgain
+        case .on: FindsCopy.done
+        }
+    }
+}
+
 enum FindsCopy {
     static func confirmTitle(_ root: String) -> String { "Use \(root) for Finds?" }
     static let confirmMessage = "Magpie will only delete files it brought in here."
@@ -71,6 +98,8 @@ enum FindsCopy {
     static let off = "Off: new music goes straight into your library."
     static let notFinished = "Until this is finished, new music goes straight into your library."
     static let done = "Finds are set up."
+    /// The Finds folder is set up but Lidarr's setup predates Finds (no `magpie-find` tag yet).
+    static let setUpAgain = "Tap \u{2018}Set up Magpie in Lidarr\u{2019} again to start using your Finds folder."
     static let librariesForbidden = "Sign in to your music server with an admin account to choose the library."
     static let librariesFailed = "Couldn't read your music server's libraries. Try again."
 }

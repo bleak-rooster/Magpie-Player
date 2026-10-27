@@ -167,6 +167,14 @@ extension AppModel {
         saveSetup(setup)
     }
 
+    /// Fix 6.2a-2: a Lidarr set up before Finds mode has no `magpie-find` id saved. The audit looks the tag up
+    /// by name (a read); it is only ever created by "Set up Magpie in Lidarr". A found id is never cleared here.
+    func adoptFindTag(_ audit: LidarrAudit) {
+        guard var setup = lidarrSetup, let id = audit.findTagId, setup.findTagId != id else { return }
+        setup.findTagId = id
+        saveSetup(setup)
+    }
+
     /// Exactly one root folder: that is where new music goes. Several: the owner picks; never guessed.
     func adoptOnlyRoot(_ audit: LidarrAudit) {
         guard var setup = lidarrSetup, audit.reachable else { return }
