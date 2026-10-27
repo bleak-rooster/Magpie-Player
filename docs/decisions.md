@@ -45,3 +45,11 @@ Owner (Jordan) authorised overnight autonomous work on 2026-10-26: "approve ever
 | D24 | I2: an https failure that looks like a plain-http server suggests typing `http://`. A genuinely broken https server can get the same advice — accepted, it's advice only. | Re-review Minor | Accepted |
 | D25 | `BrowseFlowTests.testConnectLidarrShowsSummary` fails intermittently and identically before the fix wave; treated as a pre-existing UI-test flake, not a regression. | Fix report | Accepted, flagged for owner |
 | D26 | The RUNBOOK device-build command is unverified (no signing team or device during the overnight run). | Fix report | Flagged for owner |
+
+### 2026-10-27 — phase 2: finish the v1 roadmap
+
+| # | Decision | Driven by | Status |
+|---|---|---|---|
+| D27 | Merge the hardened increment (M0–M5 + M8, tag `m8`) into `main`; build M6/M7 on `v1-finds`. | Owner: "act as a formal dev team" | Accepted |
+| D28 | Remaining v1 order: M6 Finds → M7 Polish → hardening (edge cases, security review of Finds delete/move, final review) → merge, tag `v1.0-rc`. v2 items stay spec-only until the owner has tested on real servers. | Roadmap + G0 | Accepted |
+| D29 | Finds are never scrobbled (Player.isFind wired in M6). | M4 ruling, D10 | Accepted |
