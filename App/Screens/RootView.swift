@@ -93,15 +93,19 @@ private struct PlayNowBannerView: View {
         let player = model.player
         // The idle landing: the find itself is loaded and Play now plays it; nothing else to pause.
         let showsPause = !banner.idle && player.queue.current != nil
-        HStack(spacing: 8) {
-            HStack(spacing: 8) {
-                Image(systemName: "record.circle").font(.title2).foregroundStyle(p.accentInkColor)
-                    .frame(width: 30, height: 36)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(LandingCopy.title(banner.song)).font(.subheadline.weight(.semibold)).lineLimit(1)
-                    Text(LandingCopy.upNext).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+        let titles = VStack(alignment: .leading, spacing: 1) {
+            Text(LandingCopy.title(banner.song)).font(.subheadline.weight(.semibold)).lineLimit(1)
+            Text(LandingCopy.upNext).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+        }
+        HStack(spacing: 4) {
+            // V-fix: the title truncates; when even a short title wouldn't fit beside it, the record icon goes.
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) {
+                    Image(systemName: "record.circle").font(.title2).foregroundStyle(p.accentInkColor)
+                        .frame(width: 30, height: 36)
+                    titles.frame(minWidth: 0, idealWidth: 96, maxWidth: .infinity, alignment: .leading)
                 }
-                Spacer(minLength: 0)
+                titles.frame(maxWidth: .infinity, alignment: .leading)
             }
             .frame(minHeight: Tokens.minHitSize)
             .contentShape(Rectangle())
@@ -109,7 +113,7 @@ private struct PlayNowBannerView: View {
             if showsPause {
                 Button { player.toggle() } label: {
                     Image(systemName: player.isPlaying ? "pause.fill" : "play.fill").font(.body)
-                        .frame(width: 36, height: Tokens.minHitSize).contentShape(Rectangle())
+                        .frame(width: Tokens.minHitSize, height: Tokens.minHitSize).contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("play-now-banner-pause")
@@ -117,10 +121,11 @@ private struct PlayNowBannerView: View {
             Button(LandingCopy.playNow) { model.playNow(banner) }
                 .buttonStyle(.borderedProminent)
                 .buttonBorderShape(.capsule)
+                .fixedSize()
                 .frame(minHeight: Tokens.minHitSize)
             Button { model.dismissBanner() } label: {
                 Image(systemName: "xmark").font(.footnote.weight(.semibold))
-                    .frame(width: 36, height: Tokens.minHitSize).contentShape(Rectangle())
+                    .frame(width: Tokens.minHitSize, height: Tokens.minHitSize).contentShape(Rectangle())
             }
             .buttonStyle(.plain)
         }
