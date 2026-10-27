@@ -137,12 +137,21 @@ unless they regressed. None did.
 - **Symlinks inside the Finds folder.** Lidarr reports a link's unresolved path. A link such as `/finds/Artist/Album -> /music/Owner/Album` placed by someone with server access would let Not for me delete through it. PathGuard's comment documents this. The ledger, `magpie-find` tag and MBID checks still have to pass.
 - **Alias roots.** Two Lidarr roots that are the same directory by symlink or bind mount can't be detected lexically. Keep would see the find's own folder as "existing" and untag only, which is fail-safe.
 - **A TOCTOU between the proof and Lidarr executing the delete** remains in principle, for example the owner moving the artist in Lidarr's UI during that window. Deletes are by track-file id, and the records were proven on disk a moment earlier.
+- **FL5 (accepted, controller ruling).** CarPlay Keep stays one tap with no confirm: Keep is non-destructive (it
+  moves the artist into the library and upgrades quality, reversible by hand, never deletes), and D12 makes it the
+  system add-to-library button.
+- **FL8 (accepted, controller ruling).** CarPlay search and the Artist page query outside services by design (D4,
+  A9, A10): no credentials go to ListenBrainz labs or Lidarr's metadata server (SkyHook), only the search text or
+  MBID.
+- **FL3 remainder.** After the H2b fix Keep moves only while Lidarr's queue is idle and re-checks the destination
+  right before the PUT, but Lidarr still runs the move a moment later: a same-named folder created in exactly that
+  moment can't be prevented from the client.
 - **Older Lows still open from `security-v1.md`**:
   - L1: sign-out keeps the ListenBrainz token, and now the Made for you shelf with it.
   - L5: ListenBrainz path segments are now also built from the server-supplied `validate-token` `user_name` (host fixed, GET only).
   - L7: no response size cap.
   - L8: AirPlay stream credentials.
-  - L9: unused `PUT artist/{id}` / `PUT album/{id}` (folded into FM1).
+  - L9: unused `PUT artist/{id}` / `PUT album/{id}` (folded into FM1; closed by it).
   - L10: `adoptCreatedArtist`. This one is now contained: Not for me and Keep also need `magpie-find`, a path in the Finds root and a matching artist MBID.
   - L11, L12.
 
@@ -176,3 +185,24 @@ unless they regressed. None did.
 - **CarPlay.** Not for me and Bring in more are absent. Try it next needs an action-sheet confirm. Keep is the phone's Keep with every check (see FL5).
 - **G0.** New integration tests (FindsIT) check that the host is `127.0.0.1`/`localhost` and use the dev-instance marker. The raw `devLidarr` helper used for test fixtures bypasses the gate by design and is test-only.
 - **Supply chain.** No new dependencies. No ATS or entitlement changes.
+
+---
+
+## Status (H2b, 2026-10-27)
+
+Every finding was checked again in the code at `38af50f` (after H1) before it was fixed. All of them still applied.
+
+| Finding | Status |
+|---|---|
+| FM1 | Fixed: `bed425d`. The gate's `WriteConfinement` checks the ledger and its own fresh reads. L9 is closed with it. |
+| FM2 | Fixed: `c32a819`. The H1 concern about the silent 10k cap is closed too. |
+| FL1 | Fixed: `4558d59` |
+| FL2 | Fixed: `e154752` |
+| FL3 | Fixed: `73cb57c`. The remainder is in the residual risks. |
+| FL4 | Fixed: `9aa3740`. Bring in more counts toward the limit of 5. |
+| FL5 | Accepted (controller ruling, see the residual risks) |
+| FL6 | Fixed: `8012e3f` |
+| FL7 | Fixed: `8d309ef` |
+| FL8 | Accepted (controller ruling, see the residual risks) |
+| FL9 | Fixed: `0ed46e2` |
+| G0 (controller addition) | Fixed: `40da72f`. `SharedLoginTransport` refuses non-local hosts. |
