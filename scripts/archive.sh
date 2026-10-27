@@ -5,7 +5,8 @@
 #   scripts/archive.sh --unsigned [--build N] [--carplay] [--out DIR]
 #
 #   --team TEAMID  Apple Developer team id (10 characters; Xcode › Settings › Accounts). Or set MAGPIE_TEAM_ID.
-#   --build N      CFBundleVersion, must go up with every upload. Or set MAGPIE_BUILD_NUMBER. Default 1.
+#   --build N      CFBundleVersion, must go up with every upload. Or set MAGPIE_BUILD_NUMBER. Default 1, except
+#                  with --upload, which needs it given (a repeated build number is rejected after the upload).
 #   --carplay      Sign with the CarPlay audio entitlement. Only once Apple has granted it to your team:
 #                  before that, no provisioning profile carries it and signing fails.
 #   --upload       Send the build to App Store Connect with the account signed in to Xcode.
@@ -21,7 +22,7 @@ cd "$(dirname "$0")/.."
 die() { echo "archive.sh: $*" >&2; exit 1; }
 
 team="${MAGPIE_TEAM_ID:-}"
-build="${MAGPIE_BUILD_NUMBER:-1}"
+build="${MAGPIE_BUILD_NUMBER:-}"
 carplay=no
 upload=no
 unsigned=no
@@ -34,11 +35,15 @@ while [ $# -gt 0 ]; do
     --upload) upload=yes; shift ;;
     --unsigned) unsigned=yes; shift ;;
     --out) [ $# -ge 2 ] || die "--out needs a directory"; out="$2"; shift 2 ;;
-    -h|--help) sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) die "unknown option $1 (see --help)" ;;
   esac
 done
 
+if [ -z "$build" ]; then
+  [ "$upload" = no ] || die "--upload needs --build N (higher than the last upload; e.g. --build $(git rev-list --count HEAD 2>/dev/null || echo 2))"
+  build=1
+fi
 [[ "$build" =~ ^[1-9][0-9]{0,8}(\.[0-9]{1,4}){0,2}$ ]] || die "--build must be a number such as 1, 2 or 1.0.3 (got '$build')"
 if [ "$unsigned" = yes ]; then
   [ "$upload" = no ] || die "--upload needs a signed build; drop --unsigned"

@@ -33,6 +33,8 @@ check_variant() {
   pb UILaunchScreen "$plist" >/dev/null || fail "$variant: UILaunchScreen missing"
   # iPad apps that allow multitasking must list all four orientations, or the upload is rejected.
   pb UISupportedInterfaceOrientations~ipad:3 "$plist" >/dev/null || fail "$variant: iPad orientations incomplete"
+  [ "$(pb UISupportedInterfaceOrientations:0 "$plist")" = "UIInterfaceOrientationPortrait" ] \
+    && ! pb UISupportedInterfaceOrientations:1 "$plist" >/dev/null || fail "$variant: iPhone is not portrait-only"
   pb CFBundleIcons:CFBundlePrimaryIcon:CFBundleIconName "$plist" | grep -qx AppIcon || fail "$variant: no AppIcon in Info.plist"
   [ -f "$app/Assets.car" ] || fail "$variant: Assets.car missing"
 
