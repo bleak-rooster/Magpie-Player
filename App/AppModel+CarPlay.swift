@@ -87,7 +87,10 @@ extension AppModel {
         guard offer.startsBridge(queueEmpty: player.queue.current == nil), !landedRequests.contains(id) else {
             return .queued
         }
-        guard !mix.isEmpty else { return .noMix }
+        guard !mix.isEmpty else {
+            startsWhenLanded.insert(id)   // B-M7: no banner to tap in the car; it plays once it's here
+            return .noMix
+        }
         play(mix, startAt: 0)
         return .bridging
     }

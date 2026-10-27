@@ -270,6 +270,23 @@ private let t0 = Date(timeIntervalSince1970: 1_900_000_000)
         cleanUp(model)
     }
 
+    /// Final fix 2 B-M7: nothing to play first in the car, so when the find is here and the queue is still idle, it
+    /// starts (there's no banner to tap in the car). Something started meanwhile: it goes next as usual.
+    @Test func noMixStartsTheFindWhenItLands() async throws {
+        let model = try await ready(tubifarry: true)
+        songsFail.withLock { $0 = true }
+        model.findsSetup = FindsSetup(lidarrScope: "l", navidromeScope: try #require(model.navidromeScope),
+                                      library: NavidromeLibrary(id: 2, name: "Samples", path: "/music/samples"))
+        #expect(await model.tryNext(recording) == .noMix)
+        #expect(CPTryResult.noMixMessage == "Nothing from your library to play first. It plays once it's here.")
+        for _ in 0..<200 where model.requests.isEmpty { try await Task.sleep(for: .milliseconds(10)) }
+        let id = try #require(model.requests.first { $0.recording.recordingMBID == recordingMBID }?.id)
+        model.land(Self.find("harbour"), request: id)
+        #expect(model.player.queue.current?.song.id == "harbour" && model.player.isPlaying)
+        #expect(model.playNowBanner == nil)
+        cleanUp(model)
+    }
+
     /// Fix 3: the car's search never waits long for outside sources (CPSearchTemplate can't stream): they get a short
     /// deadline; the library keeps its usual one.
     @Test func carSearchDoesNotWaitForOutsideSources() async throws {

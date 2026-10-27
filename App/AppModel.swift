@@ -81,6 +81,8 @@ final class AppModel {
     @ObservationIgnored var waitScreens: [RequestID: Int] = [:]
     /// Requests already landed (D6): each lands once.
     @ObservationIgnored var landedRequests: Set<RequestID> = []
+    /// Car Try it next with nothing to play first (final fix 2 B-M7): these start when they land on a still-idle queue.
+    @ObservationIgnored var startsWhenLanded: Set<RequestID> = []
     @ObservationIgnored var bannerWatch: Task<Void, Never>?
     /// G8 "Count plays": scrobbling on (default) or off.
     var countPlays: Bool

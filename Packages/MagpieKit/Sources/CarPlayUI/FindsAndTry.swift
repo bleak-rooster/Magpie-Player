@@ -133,11 +133,12 @@ public enum CPTryResult: Sendable, Hashable {
     case queued
     /// The queue was empty: the library mix started; the find goes next once it's here.
     case bridging
-    /// The queue was empty but the library had nothing to play first (`noMixMessage` says so).
+    /// The queue was empty but the library had nothing to play first (`noMixMessage` says so); the find plays when
+    /// it's here, if nothing else started meanwhile.
     case noMix
     case failed(CPTryProblem)
 
-    public static let noMixMessage = "Nothing from your library to play first. It goes next once it's here."
+    public static let noMixMessage = "Nothing from your library to play first. It plays once it's here."
 }
 
 /// Why Try didn't start. Describes; never instructs (D12).

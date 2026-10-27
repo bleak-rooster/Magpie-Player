@@ -323,7 +323,7 @@ import UIKit
         #expect(!CPTryOffer.next.startsBridge(queueEmpty: false), "playing or paused: the queue stays")
         #expect(!CPTryOffer.ask(intoFinds: true).startsBridge(queueEmpty: true))
         #expect(!CPTryOffer.unavailable.startsBridge(queueEmpty: true))
-        #expect(CPTryResult.noMixMessage == "Nothing from your library to play first. It goes next once it's here.")
+        #expect(CPTryResult.noMixMessage == "Nothing from your library to play first. It plays once it's here.")
     }
 
     /// A list showing only a state row is a placeholder: real rows replace it even while it's on screen.

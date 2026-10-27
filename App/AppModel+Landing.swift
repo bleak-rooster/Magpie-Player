@@ -54,6 +54,8 @@ extension AppModel {
     func land(_ song: Song, request id: RequestID) {
         guard landedRequests.insert(id).inserted else { return }
         guard player.queue.current?.song.id != song.id else { return }   // playing it already
+        // B-M7: a car Try with nothing to play first starts the find, if the queue is still idle.
+        if startsWhenLanded.remove(id) != nil, player.queue.current == nil { return play([song], startAt: 0) }
         switch LandingRule.landing(waitingOnScreen: isOnWaitScreen(id), playing: player.isPlaying) {
         case .play:
             playNow(song)
