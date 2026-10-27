@@ -147,6 +147,8 @@ final class AppModel {
     @ObservationIgnored private let box: ClientBox
     @ObservationIgnored private var reconnectTask: Task<Bool, Never>?
     @ObservationIgnored private var reconnectGeneration = 0
+    /// This build's ATS allows plain http anywhere (Debug). False: Release, where `atsBlocksPlainHTTP` applies.
+    @ObservationIgnored var atsAllowsArbitraryLoads = AppModel.bundleAllowsArbitraryLoads()
     @ObservationIgnored private var errorWatch: Task<Void, Never>?
     #if os(iOS)
     @ObservationIgnored private var nowPlaying: NowPlayingBridge?
@@ -318,14 +320,21 @@ final class AppModel {
     /// Tries each address in order; the first that answers is used. Saves to the Keychain on success.
     func signIn(urls: [URL], username: String, password: String) async throws {
         guard !urls.isEmpty else { throw SignInError.noAddress }
+        // H4: addresses ATS would refuse are named before anything is tried (and never need consent).
+        let blocked = urls.filter(atsBlocks)
+        guard blocked.count < urls.count else {
+            throw SignInError.unreachable(blocked.map { ProbeFailure(url: $0, error: Self.atsError($0)) })
+        }
         // Security H2: the password never goes over plain http to a public address without the owner's say-so.
-        let unencrypted = urls.filter { !plainHTTPConsent.allows($0) }
+        let unencrypted = urls.filter { !atsBlocks($0) && !plainHTTPConsent.allows($0) }
         guard unencrypted.isEmpty else { throw PlainHTTPConsentRequired(urls: unencrypted) }
         let endpoint = ServerEndpoint(bases: urls)
         var failures: [ProbeFailure] = []
         var reached: URL?
         for base in urls {
-            if let error = await probe(base) {
+            if atsBlocks(base) {
+                failures.append(ProbeFailure(url: base, error: Self.atsError(base)))
+            } else if let error = await probe(base) {
                 failures.append(ProbeFailure(url: base, error: error))
             } else {
                 reached = base
@@ -577,6 +586,22 @@ final class AppModel {
         changesAllowed = false
     }
 
+    /// H4: this build's App Transport Security would refuse plain http to `url`.
+    func atsBlocks(_ url: URL) -> Bool {
+        ServerAddress.atsBlocksPlainHTTP(url, allowsArbitraryLoads: atsAllowsArbitraryLoads)
+    }
+
+    nonisolated static func atsError(_ url: URL) -> URLError {
+        URLError(.appTransportSecurityRequiresSecureConnection, userInfo: [NSURLErrorFailingURLErrorKey: url])
+    }
+
+    /// Whether the app's Info.plist allows arbitrary loads with nothing that makes iOS ignore it (Debug, B2).
+    nonisolated static func bundleAllowsArbitraryLoads(_ bundle: Bundle = .main) -> Bool {
+        guard let ats = bundle.object(forInfoDictionaryKey: "NSAppTransportSecurity") as? [String: Any] else { return false }
+        return ats["NSAllowsArbitraryLoads"] as? Bool == true && ats["NSAllowsLocalNetworking"] == nil
+            && ats["NSAllowsArbitraryLoadsInWebContent"] == nil && ats["NSAllowsArbitraryLoadsForMedia"] == nil
+    }
+
     /// Owner consent to plain http per address (security H2), kept with the app's settings.
     var plainHTTPConsent: PlainHTTPConsent { PlainHTTPConsent(defaults: appDefaults) }
 
@@ -592,6 +617,7 @@ final class AppModel {
     /// connection to the Keychain. Throws `LidarrError.unauthorized` for a wrong key, or the URL error.
     /// A newly connected Lidarr always starts with "Allow Magpie to change Lidarr" off (security M3).
     func connectLidarr(base: URL, apiKey: String) async throws -> LidarrAudit {
+        if atsBlocks(base) { throw Self.atsError(base) }   // H4: named before trying
         // Security H2: the API key never goes over plain http to a public address without the owner's say-so.
         guard plainHTTPConsent.allows(base) else { throw PlainHTTPConsentRequired(urls: [base]) }
         let connection = LidarrConnection(base: base, apiKey: apiKey.trimmingCharacters(in: .whitespacesAndNewlines))

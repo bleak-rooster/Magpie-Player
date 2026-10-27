@@ -32,8 +32,9 @@ enum ConnectErrorCopy {
     /// http, as Navidrome on 4533 and Lidarr on 8686 do. The TLS handshake fails; the server is running.
     static let httpsNotAnswering = "That address doesn't answer over https. If your server uses plain http, type http:// in front."
 
-    /// B2: plain HTTP outside the home network in a Release build.
-    static let needsHTTPS = "Use HTTPS for addresses outside your home network."
+    /// B2 / H4: a plain-http address this build can't use (App Transport Security): Tailscale IPs, `*.ts.net`
+    /// names, anything outside the home network. A single-word server name works over http at home.
+    static let needsHTTPS = "This address needs HTTPS. At home you can also use your server's short name, like http://myserver:4533."
 
     /// B4: a home-network address that didn't answer.
     static func localNetworkHint(_ host: String) -> String {

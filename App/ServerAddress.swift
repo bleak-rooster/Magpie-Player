@@ -99,6 +99,19 @@ enum ServerAddress {
         return false
     }
 
+    /// H4: App Transport Security will refuse this plain-http address. Without arbitrary loads (Release), ATS's local
+    /// networking exception covers loopback, private and link-local IPv4, `.local` and single-label names only:
+    /// Tailscale's 100.64/10, other IPs and dotted names (`*.ts.net`) need https. IPv6 unique and link-local
+    /// addresses are not refused here (unverified; ATS gets the final say).
+    static func atsBlocksPlainHTTP(_ url: URL, allowsArbitraryLoads: Bool) -> Bool {
+        guard url.scheme?.lowercased() == "http", !allowsArbitraryLoads else { return false }
+        if isLoopback(url) || isLocalNetwork(url) { return false }
+        if let host = host(url), let ip = ipv6(host) {
+            return !((ip[0] & 0xFE) == 0xFC || (ip[0] == 0xFE && (ip[1] & 0xC0) == 0x80))
+        }
+        return true
+    }
+
     /// Security H2: credentials sent here travel unencrypted over the internet (plain http, public host).
     static func isUnencryptedPublic(_ url: URL) -> Bool {
         url.scheme?.lowercased() == "http" && !isPrivate(url)
