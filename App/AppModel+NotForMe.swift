@@ -23,7 +23,8 @@ enum NotForMeCopy {
 
     /// The confirm sheet (G3.5): the whole release goes, and whether the files can come back.
     static func confirmMessage(album: String?, permanent: Bool) -> String {
-        let what = album.map { "\u{201C}\($0)\u{201D} and every song on it leave your Finds." }
+        let named = album.flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 }
+        let what = named.map { "\u{201C}\($0)\u{201D} and every song on it leave your Finds." }
             ?? "This song and the rest of its release leave your Finds."
         return what + " " + (permanent ? Self.permanent : recycled)
     }

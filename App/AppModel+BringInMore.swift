@@ -13,7 +13,10 @@ enum BringInCopy {
     static let loading = "Looking at what else there is…"
     static let retry = "Try again"
 
-    static func title(_ artist: String) -> String { "Bring in more from \(artist)?" }
+    /// A blank name (Lidarr has none) still reads as a sentence.
+    static func title(_ artist: String) -> String {
+        "Bring in more from \(artist.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "this artist" : artist)?"
+    }
 
     static func choice(_ choice: RequestRunner.BringInChoice) -> String {
         switch choice {

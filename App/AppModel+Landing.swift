@@ -23,7 +23,10 @@ enum LandingCopy {
     static let playNow = "Play now"
     static let upNext = "Next in your queue"
 
-    static func title(_ song: Song) -> String { "\(song.title) is ready" }
+    /// A blank title still reads as a sentence.
+    static func title(_ song: Song) -> String {
+        song.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Your song is ready" : "\(song.title) is ready"
+    }
 }
 
 /// D6, one landing rule (`LandingRule`): a find that just became ready plays at once only while the owner is still
