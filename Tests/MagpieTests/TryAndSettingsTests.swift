@@ -302,6 +302,23 @@ final class LockableTokenStore: ListenBrainzTokenStoring, @unchecked Sendable {
         }
     }
 
+    /// I4: the wait context follows Try's availability first, then a rejected key from the last audit.
+    @Test func waitContextFollowsSettingsThenKey() async throws {
+        stubRoots(["/music/library"])
+        saveProvisioned()
+        let model = makeModel()
+        try await model.signIn(urls: [home], username: "admin", password: "pw")
+        _ = try await model.connectLidarr(base: lidarrBase, apiKey: "key")
+        #expect(model.waitContext == .needsSettings(TryAvailability.changesOff.message!))
+        await model.setChangesAllowed(true)
+        model.chooseRoot("/music/library")
+        #expect(model.waitContext == .unknown)
+        model.lidarrStatus = LidarrAudit(keyRejected: true)   // what the audit records on a 401
+        #expect(model.waitContext == .keyRejected)
+        model.signOut()
+        UserDefaults(suiteName: gateSuite)?.removePersistentDomain(forName: gateSuite)
+    }
+
     @Test func listenBrainzTokenIsOptional() throws {
         let model = makeModel()
         #expect(!model.hasListenBrainzToken)
@@ -313,6 +330,28 @@ final class LockableTokenStore: ListenBrainzTokenStoring, @unchecked Sendable {
 }
 
 @Suite struct RequestCopyTests {
+    /// Final review I4: a request waiting on `.serviceUnavailable` says why, from what the app knows, instead of
+    /// blaming "your server" (the music server is playing).
+    @Test func waitingSaysWhyWithoutBlamingTheMusicServer() {
+        let unavailable = RequestState.waiting(reason: WaitReason(.serviceUnavailable, since: .now), retryAt: .now)
+        let plain = RequestCopy.status(unavailable)
+        #expect(plain == RequestCopy.cantBringHome)
+        #expect(!plain.contains("server"))
+        #expect(RequestCopy.status(unavailable, context: .needsSettings(TryAvailability.changesOff.message!))
+                == TryAvailability.changesOff.message!, "changes off: say how to turn them on")
+        #expect(RequestCopy.status(unavailable, context: .needsSettings(TryAvailability.notSetUp.message!))
+                == TryAvailability.notSetUp.message!)
+        #expect(RequestCopy.status(unavailable, context: .keyRejected) == RequestCopy.keyRejected)
+        for text in [RequestCopy.cantBringHome, RequestCopy.keyRejected] {
+            for name in ["Lidarr", "Navidrome", "MusicBrainz", "ListenBrainz"] { #expect(!text.contains(name)) }
+        }
+        // The context only speaks for serviceUnavailable waits.
+        let looking = RequestState.waiting(reason: WaitReason(.stillLooking, since: .now), retryAt: .now)
+        #expect(RequestCopy.status(looking, context: .keyRejected) == RequestCopy.status(looking))
+        #expect(RequestCopy.status(.searching, context: .keyRejected) == "Looking for the best copy")
+    }
+
+
     @Test func groupsAndSteps() {
         let wait = RequestState.waiting(reason: WaitReason(.stillLooking, since: .now), retryAt: .now)
         #expect(RequestCopy.group(.searching) == .inProgress)

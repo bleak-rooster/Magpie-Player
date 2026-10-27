@@ -131,7 +131,7 @@ struct TrySheet: View {
                     .font(.body).multilineTextAlignment(.center)
                     .accessibilityIdentifier("try-asked")
                 if let r = model.magpieRequest(id) {
-                    Label(RequestCopy.status(r), systemImage: RequestCopy.symbol(r))
+                    Label(RequestCopy.status(r, context: model.waitContext), systemImage: RequestCopy.symbol(r))
                         .font(.footnote).foregroundStyle(p.accentInkColor)
                 }
             }

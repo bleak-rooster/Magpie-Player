@@ -37,7 +37,7 @@ struct ActivityView: View {
 
     private func row(_ request: MagpieRequest) -> some View {
         NavigationLink(value: Route.request(request.id)) {
-            RequestRow(request: request)
+            RequestRow(request: request, context: model.waitContext)
         }
         .listRowBackground(Color.clear)
         .accessibilityIdentifier("request-\(request.recording.title)")
@@ -57,6 +57,7 @@ struct ActivityView: View {
 /// Title, artist, and the request's status as text + symbol (D3).
 struct RequestRow: View {
     let request: MagpieRequest
+    var context: RequestCopy.WaitContext = .unknown
     private let themed = Themed()
 
     var body: some View {
@@ -66,7 +67,7 @@ struct RequestRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(request.recording.title).font(.body).lineLimit(2)
                 Text(request.recording.artist).font(.footnote).foregroundStyle(themed.palette.ink2Color).lineLimit(1)
-                Label(RequestCopy.status(request), systemImage: RequestCopy.symbol(request))
+                Label(RequestCopy.status(request, context: context), systemImage: RequestCopy.symbol(request))
                     .font(.caption).foregroundStyle(themed.palette.accentInkColor).lineLimit(2)
                 if request.tier == .patient, RequestCopy.group(request) == .inProgress {
                     Text(RequestCopy.tierLine(.patient)).font(.caption).foregroundStyle(themed.palette.ink2Color)
@@ -76,7 +77,7 @@ struct RequestRow: View {
         .padding(.vertical, Tokens.Spacing.xs)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(request.recording.title), \(request.recording.artist)")
-        .accessibilityValue(RequestCopy.status(request))
+        .accessibilityValue(RequestCopy.status(request, context: context))
     }
 }
 
@@ -136,7 +137,7 @@ struct RequestDetailView: View {
                 RecordArt(side: 150).accessibilityHidden(true).padding(.vertical, Tokens.Spacing.l)
                 Text(request.recording.title).magpieDisplay(.title2).multilineTextAlignment(.center)
                 Text(subtitle(request)).font(.subheadline).foregroundStyle(themed.palette.ink2Color)
-                Label(RequestCopy.status(request), systemImage: RequestCopy.symbol(request))
+                Label(RequestCopy.status(request, context: model.waitContext), systemImage: RequestCopy.symbol(request))
                     .font(.body).foregroundStyle(themed.palette.accentInkColor)
                     .accessibilityIdentifier("request-status")
                 if request.tier == .patient, RequestCopy.group(request) == .inProgress {

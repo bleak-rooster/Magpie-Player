@@ -3,7 +3,8 @@ import Foundation
 import Requests
 
 /// What a request's state says to the owner (D7: honest steps, real % only in the app). Pure, so tests can
-/// check the wording. Never names a service (design language §5): "your server".
+/// check the wording. Never names a service (design language §5), except where a `.needsSettings` wait repeats
+/// Try's pointer to a Settings control by its label.
 enum RequestCopy {
     enum Group: Int, CaseIterable {
         case inProgress, ready, attention
@@ -24,9 +25,24 @@ enum RequestCopy {
 
     static let notListed = "Not showing up in your library yet"
 
+    /// Final review I4: what the app knows about why requests can't move, beyond the runner's one
+    /// `.serviceUnavailable` (changes switched off, set-up missing, a rejected key, or simply unreachable).
+    enum WaitContext: Equatable {
+        case unknown
+        /// Try isn't available; the message says what to change in Settings (`TryAvailability.message`).
+        case needsSettings(String)
+        /// The last check of the connection found the key rejected.
+        case keyRejected
+    }
+
+    /// Waiting with no known cause: unreachable, or the lookup service or the requests file failed. Never "your
+    /// server", which reads as the music server (it is playing).
+    static let cantBringHome = "Can't bring songs home right now. We'll try again."
+    static let keyRejected = "The key Magpie uses to bring songs home stopped working. Paste a new one in Settings."
+
     /// The status line for a request (its state, or the not-listed note).
-    static func status(_ request: MagpieRequest) -> String {
-        request.isNotListed ? notListed : status(request.state)
+    static func status(_ request: MagpieRequest, context: WaitContext = .unknown) -> String {
+        request.isNotListed ? notListed : status(request.state, context: context)
     }
 
     static func group(_ state: RequestState) -> Group? {
@@ -48,8 +64,8 @@ enum RequestCopy {
         }
     }
 
-    /// One status line.
-    static func status(_ state: RequestState) -> String {
+    /// One status line. `context` only speaks for `.serviceUnavailable` waits.
+    static func status(_ state: RequestState, context: WaitContext = .unknown) -> String {
         switch state {
         case .pending, .resolving, .adding: "Looking"
         case .searching: "Looking for the best copy"
@@ -62,7 +78,12 @@ enum RequestCopy {
         case .waiting(let reason, _):
             switch reason.kind {
             case .stillLooking: "Couldn't spot it yet. We'll keep looking."
-            case .serviceUnavailable: "Your server isn't answering. We'll try again."
+            case .serviceUnavailable:
+                switch context {
+                case .unknown: cantBringHome
+                case .needsSettings(let message): message
+                case .keyRejected: keyRejected
+                }
             case .downloadFailed: "That copy didn't work. Looking for another."
             }
         case .failed(let reason):

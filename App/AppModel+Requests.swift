@@ -82,7 +82,10 @@ extension AppModel {
         runnerTasks.append(Task { [weak self] in
             for await list in await runner.updates {
                 guard let self, self.runner === runner else { return }
+                let wasWaiting = self.hasUnavailableWait
                 self.requests = list
+                // I4: a request just started waiting: re-check the connection so a rejected key is named.
+                if !wasWaiting, self.hasUnavailableWait { Task { _ = await self.lidarrAudit() } }
             }
         })
         runnerTasks.append(Task { [weak self] in
@@ -205,6 +208,21 @@ extension AppModel {
         guard lidarrSetup?.isProvisioned == true else { return .notSetUp }
         guard lidarrSetup?.rootFolderPath != nil else { return .noRoot }
         return .available(speedTier)
+    }
+
+    /// I4: why waiting requests can't move, as far as the app knows: Try's availability first, then a key the last
+    /// audit found rejected.
+    var waitContext: RequestCopy.WaitContext {
+        if let message = tryAvailability.message { return .needsSettings(message) }
+        if lidarrStatus?.keyRejected == true { return .keyRejected }
+        return .unknown
+    }
+
+    /// Some request is waiting because Lidarr (or MusicBrainz, or the requests file) couldn't be used.
+    var hasUnavailableWait: Bool {
+        requests.contains {
+            if case .waiting(let reason, _) = $0.state { reason.kind == .serviceUnavailable } else { false }
+        }
     }
 
     func tryRecording(_ recording: ExternalRecording) async throws -> RequestID {
