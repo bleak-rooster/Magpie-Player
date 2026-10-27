@@ -154,7 +154,8 @@ extension RequestRunner {
     func followNotForMes() async {
         for r in list {
             guard let p = r.notForMe, !keepingArtists.contains(p.artistId) else { continue }
-            if let last = p.lastCheckAt, now().timeIntervalSince(last) < Self.notForMeCheckInterval { continue }
+            // A last check "in the future" (the clock went back) is due now.
+            if let last = p.lastCheckAt, (0..<Self.notForMeCheckInterval).contains(now().timeIntervalSince(last)) { continue }
             hold(p.artistId)
             _ = try? await followNotForMe(r.id, inline: false)
             release(p.artistId)

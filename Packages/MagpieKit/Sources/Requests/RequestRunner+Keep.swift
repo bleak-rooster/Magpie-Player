@@ -549,7 +549,8 @@ extension RequestRunner {
     func followKeeps() async {
         for r in list {
             guard let artistId = r.keep?.artistId, !keepingArtists.contains(artistId) else { continue }
-            if let last = r.keep?.lastCheckAt, now().timeIntervalSince(last) < Self.keepCheckInterval { continue }
+            // A last check "in the future" (the clock went back) is due now.
+            if let last = r.keep?.lastCheckAt, (0..<Self.keepCheckInterval).contains(now().timeIntervalSince(last)) { continue }
             keepingArtists.insert(artistId)
             _ = try? await followKeep(r.id, inline: false)
             keepingArtists.remove(artistId)
