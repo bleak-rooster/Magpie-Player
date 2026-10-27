@@ -256,10 +256,10 @@ public actor RequestRunner {
         lastIndexRefresh = nil
     }
 
-    /// Removes a finished (or ready) request from the list. Clean-up still owed, or a Not for me under way,
-    /// keeps it.
+    /// Removes a finished (or ready) request from the list, only when `canBeRemoved` (FL6: never one whose Keep or
+    /// Not for me is still going or needs a look, or that still has follow-ups owed).
     public func forget(_ id: RequestID) async {
-        guard let r = request(id), !r.isActive, !r.cleanupPending, r.notForMe == nil else { return }
+        guard let r = request(id), r.canBeRemoved, !keepingArtists.contains(r.lidarrArtistId ?? -1) else { return }
         list.removeAll { $0.id == id }
         await changed()
     }

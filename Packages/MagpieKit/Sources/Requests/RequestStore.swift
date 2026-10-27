@@ -159,6 +159,14 @@ public struct MagpieRequest: Sendable, Codable, Equatable, Identifiable {
     /// Counts toward the limit of 5 (G7) and is polled: not finished and not yet ready.
     public var isActive: Bool { !state.isTerminal && state != .ready }
 
+    /// Whether Activity may remove it (security FL6): finished or ready, with no clean-up owed, no Keep or Not for me
+    /// still going or needing a look, no kept song still being looked up, and nothing Bring in more is still
+    /// bringing in. Removing any of those would drop their follow-up (a failed move's put-back, the relink).
+    public var canBeRemoved: Bool {
+        !isActive && !cleanupPending && keep == nil && notForMe == nil && !keepNeedsAttention
+            && !notForMeNeedsAttention && relinkPending != true && (bringingIn ?? []).isEmpty
+    }
+
     /// How many places this request takes in the limit of 5 (G7): one while on its way, plus each release Bring in
     /// more is still bringing in (FL4).
     public var activePlaces: Int { (isActive ? 1 : 0) + (bringingIn?.count ?? 0) }

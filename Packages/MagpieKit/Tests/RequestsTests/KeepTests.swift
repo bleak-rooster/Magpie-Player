@@ -326,6 +326,40 @@ import MagpieCore
         #expect(await h.request(id)?.state == .ready)
     }
 
+    /// Security FL6: Activity's Remove can't drop a request whose Keep or Not for me is still going or needs a look,
+    /// whose kept song is still being looked up, or whose Bring in more is still on its way: the follow-ups (and the
+    /// put-back of a failed move) would be lost with it.
+    @Test func removeWaitsWhileAKeepOrNotForMeIsOpen() async throws {
+        let h = await Harness(setup: Harness.findsSetup)
+        let id = try await Self.readyFind(h)
+        h.server.with { $0.move = .hangs }
+        #expect(try await h.runner.keep(id) == .stillMoving)
+        await h.runner.forget(id)
+        #expect(await h.request(id) != nil, "a Keep still moving stays")
+
+        await h.runner.stop()
+        let saved = try await h.store.load()
+        let base = try #require(saved.first { $0.id == id })
+        var variants: [MagpieRequest] = []
+        for change in [{ (r: inout MagpieRequest) in r.keepNeedsAttention = true },
+                       { (r: inout MagpieRequest) in r.notForMeNeedsAttention = true },
+                       { (r: inout MagpieRequest) in r.relinkPending = true },
+                       { (r: inout MagpieRequest) in r.bringingIn = [51]; r.bringInAt = h.clock.now },
+                       { (r: inout MagpieRequest) in _ = r }] {
+            var r = base
+            r.id = RequestID()
+            r.keep = nil
+            change(&r)
+            variants.append(r)
+        }
+        try await h.store.save(variants)
+        let relaunched = await Harness(directory: h.dir, lidarr: h.server, setup: Harness.findsSetup)
+        #expect(await relaunched.runner.load())
+        for r in variants { await relaunched.runner.forget(r.id) }
+        #expect(await relaunched.runner.requests.map(\.id) == variants.dropLast().map(\.id), "only the settled one goes")
+        #expect(!variants[0].canBeRemoved && variants[4].canBeRemoved)
+    }
+
     /// M6: the Keep is on disk before the PUT. After a relaunch mid-move the new runner only checks how the
     /// move went; it never sends it again.
     @Test func relaunchMidKeepNeverMovesTwice() async throws {

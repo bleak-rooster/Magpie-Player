@@ -47,7 +47,7 @@ struct ActivityView: View {
             }
             if RequestCopy.canCancel(request.state) {
                 Button("Stop looking", role: .destructive) { Task { await model.cancelRequest(request.id) } }
-            } else if !request.cleanupPending {
+            } else if request.canBeRemoved {
                 Button("Remove", role: .destructive) { Task { await model.forgetRequest(request.id) } }
             }
         }
