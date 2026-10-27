@@ -68,6 +68,9 @@ final class AppModel {
     var findsSetup: FindsSetup? { didSet { syncFindsIdentity() } }
     /// The songs of the Finds library, as last read (`refreshFinds`).
     var findSongs: [Song] = [] { didSet { syncFindsIdentity() } }
+    /// Finds let go (Not for me, Task 6.2c) that the Finds library may still list until its scan catches up:
+    /// kept off the shelf until a read no longer lists them.
+    @ObservationIgnored var lettingGoSongIds: Set<String> = []
     /// Finds already played on this account: they are no longer New finds.
     var playedFinds: Set<String> = []
     /// Try requests, newest last (from the runner).
@@ -326,6 +329,7 @@ final class AppModel {
         }
         findIdsCache = nil
         findSongs = []
+        lettingGoSongIds = []
         playedFinds = []
         store.clear()
         session = nil

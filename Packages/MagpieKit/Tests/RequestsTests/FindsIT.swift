@@ -6,32 +6,37 @@ import NavidromeKit
 @testable import LidarrKit
 @testable import Requests
 
-/// Keep against the dev stack (writes!). Run via `scripts/it.sh` (MAGPIE_IT=1). G0 as in `TryIT`: the dev
+/// Keep and Not for me against the dev stack (writes, and Not for me deletes files!). Run via `scripts/it.sh` (MAGPIE_IT=1). G0 as in `TryIT`: the dev
 /// marker, local hosts only, the Lidarr dev instance name and the bootstrap root folders before any write.
 ///
 /// A Finds-mode Try adds the test artist into `/music/samples`; a fixture single is manual-imported as the
-/// song's track (fixture set-up, see `devManualImport`); the find becomes ready in the Finds library; Keep moves
-/// it, and the song must show up under `/music/library` in Navidrome's main library.
+/// song's track (fixture set-up, see `devManualImport`); the find becomes ready in the Finds library. Keep moves
+/// it, and the song must show up under `/music/library` in Navidrome's main library. Not for me deletes it: the
+/// file leaves the disk, the album is unmonitored and the (now empty) artist is removed without deleting files.
 @Suite(.serialized, .enabled(if: TryDevStack.enabled, "set MAGPIE_IT=1 (scripts/it.sh) to run integration tests"))
 struct FindsIT {
     @Test func keepMovesOnDevStack() async throws {
-        try await TryDevStack.exclusive { try await run() }
+        try await TryDevStack.exclusive { try await run(letGo: false) }
+    }
+
+    @Test func notForMeDeletesOnDevStack() async throws {
+        try await TryDevStack.exclusive { try await run(letGo: true) }
     }
 
     /// The fixture single (Samples, "Kites Over Lagos – Paper Planes"), copied into the downloads folder.
     static let fixture = "dev/data/music/samples/Kites Over Lagos/Paper Planes (2024)/01 - Paper Planes.mp3"
 
-    private func run() async throws {
+    private func run(letGo: Bool) async throws {
         let client = try await TryDevStack.client()
         let mb = MusicBrainzClient(transport: URLSessionTransport())
         do {
             guard try await client.artistLookupJSON(mbid: TryIT.artist) != nil else {
-                print("SKIP FindsIT.keepMovesOnDevStack: Lidarr's metadata server doesn't know the test artist")
+                print("SKIP FindsIT: Lidarr's metadata server doesn't know the test artist")
                 return
             }
             _ = try await mb.recording(TryIT.recording)
         } catch {
-            print("SKIP FindsIT.keepMovesOnDevStack: external metadata server unreachable (\(error))")
+            print("SKIP FindsIT: external metadata server unreachable (\(error))")
             return
         }
         try #require(try await client.artists().first { $0.foreignArtistId == TryIT.artist } == nil,
@@ -142,6 +147,13 @@ struct FindsIT {
             let findSong = try #require(try await navidrome.songs(recordingMBID: TryIT.recording, excludingLibrary: nil).first)
             #expect(findSong.libraryId == finds.id)
 
+            if letGo {
+                try await notForMe(runner, id, client: client, gate: gate, ledger: ledger, artistId: artistId,
+                                   albumId: albumId, navidrome: navidrome, findsLibrary: finds.id)
+                if (try? await client.artist(id: artistId)) == nil { createdArtistId = nil }   // removed by Not for me
+                throw Done()
+            }
+
             // Keep.
             var outcome = try await runner.keep(id)
             for _ in 0..<60 where outcome == .stillMoving {
@@ -177,6 +189,7 @@ struct FindsIT {
             #expect(librarySong.libraryId == main.id)
             #expect(request.songId == librarySong.id)
             #expect(await gate.changeLog().filter { $0.path == "/api/v1/artist/editor" }.count == 1, "one move")
+        } catch is Done {
         } catch {
             Issue.record(error)
         }
@@ -198,6 +211,55 @@ struct FindsIT {
             }
         }
         if removed { try? await navidrome.startScan(target: nil) }
+    }
+
+    private struct Done: Error {}
+
+    /// Not for me on the ready find: the confirm check says the files go for good (the dev stack has no recycle
+    /// bin), then the file leaves the disk, the album is unmonitored and the empty artist is removed with
+    /// deleteFiles=false&addImportListExclusion=false.
+    private func notForMe(_ runner: RequestRunner, _ id: RequestID, client: LidarrClient, gate: LidarrWriteGate,
+                          ledger: Ledger, artistId: Int, albumId: Int, navidrome: NavidromeClient,
+                          findsLibrary: Int) async throws {
+        let artist = try await client.artist(id: artistId)
+        let path = try #require(artist.path)
+        let files = try await client.trackFiles(albumId: albumId)
+        try #require(!files.isEmpty)
+        let check = try await runner.notForMeCheck(id)
+        let recycleBin = try await client.recycleBin()
+        #expect(check.permanent == (recycleBin == nil))
+        var outcome = try await runner.notForMe(id, permanentConfirmed: check.permanent)
+        for _ in 0..<30 where outcome == .stillGoing {
+            try await Task.sleep(for: .seconds(2))
+            outcome = try await runner.notForMe(id, permanentConfirmed: check.permanent)
+        }
+        #expect(outcome == .removed)
+        let request = try #require(await runner.requests.first { $0.id == id })
+        #expect(request.state == .dismissed && request.notForMe == nil && !request.notForMeNeedsAttention)
+        // Gone from the disk (Lidarr's filesystem), not just from Lidarr's records.
+        for file in files {
+            let folder = (file.path as NSString).deletingLastPathComponent
+            let present = try await client.files(in: folder)
+            #expect(!present.contains(file.path), "still on disk: \(file.path)")
+        }
+        let log = await gate.changeLog().map { "\($0.method) \($0.path)" }
+        #expect(log.filter { $0 == "DELETE /api/v1/trackfile/bulk" }.count == 1, "\(log)")
+        #expect(log.contains("DELETE /api/v1/artist/\(artistId)?deleteFiles=false&addImportListExclusion=false"), "\(log)")
+        #expect(!log.contains { $0.contains("deleteFiles=true") || $0.contains("addImportListExclusion=true") })
+        do {
+            _ = try await client.artist(id: artistId)
+            Issue.record("the empty artist is still in Lidarr")
+        } catch LidarrError.http(status: 404) {}
+        let folderLeft = try await client.filesystemExists(path: path)
+        let filesLeft = folderLeft ? try await client.contents(in: path).files : []
+        #expect(filesLeft.isEmpty)
+        // Navidrome lets the song go after the scan.
+        for _ in 0..<15 {
+            if try await navidrome.songs(recordingMBID: TryIT.recording, excludingLibrary: nil)
+                .allSatisfy({ $0.libraryId != findsLibrary }) { return }
+            try await Task.sleep(for: .seconds(2))
+        }
+        Issue.record("the find is still listed in the Finds library")
     }
 
     // MARK: - Fixture set-up (dev stack only)

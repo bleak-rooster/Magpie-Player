@@ -153,6 +153,18 @@ public final class Player {
         }
     }
 
+    /// Not for me (Task 6.2c): the songs leave the queue wherever they are. Playing one of them: the next song
+    /// loads (nothing left: the engine stops); otherwise the current song plays on.
+    public func removeSongs(_ songIds: Set<String>) {
+        let current = queue.current?.id
+        guard queue.removeSongs(songIds) else { return }
+        if queue.current?.id != current {
+            loadCurrent()
+        } else {
+            syncEngine()
+        }
+    }
+
     public func move(id: UUID, to index: Int) {
         queue.move(id: id, to: index)
         syncEngine()

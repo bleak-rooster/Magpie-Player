@@ -170,6 +170,14 @@ public struct LidarrClient: Sendable {
         try await listing(path, files: true).files.map(Self.trimmed)
     }
 
+    /// The folders and files directly inside `path` on Lidarr's filesystem, in one listing (Not for me walks the
+    /// artist folder before it removes the artist: only an empty folder lets it go). A missing `path` lists the
+    /// closest existing folder instead, so callers check every entry is inside the folder they asked for.
+    public func contents(in path: String) async throws -> (directories: [String], files: [String]) {
+        let listing = try await listing(path, files: true)
+        return (listing.directories.map(Self.trimmed), listing.files.map(Self.trimmed))
+    }
+
     private func listing(_ path: String, files: Bool) async throws -> FilesystemListing {
         let folder = Self.trimmed(path)
         return try await decode(FilesystemListing.self, "filesystem", [

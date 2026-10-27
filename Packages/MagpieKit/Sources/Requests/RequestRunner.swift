@@ -53,7 +53,8 @@ public struct LibraryAccess: Sendable {
 ///   change to the artist;
 /// - dedupe by release group against running requests, the ledger and Lidarr; at most 5 active (G7);
 /// - Ready only when the match index finds the recording after a plain `startScan` (A12, D7);
-/// - Cancel unmonitors the album only when Magpie monitored it, and never deletes anything (G6).
+/// - Cancel unmonitors the album only when Magpie monitored it, and never deletes anything (G6);
+/// - Keep (RequestRunner+Keep.swift) and Not for me (RequestRunner+NotForMe.swift) act on ready finds only.
 ///
 /// Every write goes through `LidarrWriteGate` (G1) and every album Magpie touches is in the `Ledger` first.
 /// Call `tick()` on a timer (5 s in the foreground, 30 s otherwise); it does nothing for finished requests.
@@ -136,8 +137,11 @@ public actor RequestRunner {
     private(set) var list: [MagpieRequest] = []
     private var loaded = false
     private var busy: Set<RequestID> = []
-    /// Lidarr artists a Keep is working on right now (RequestRunner+Keep.swift): one Keep per artist.
+    /// Lidarr artists a Keep or a Not for me is working on right now (RequestRunner+Keep.swift,
+    /// RequestRunner+NotForMe.swift): one at a time per artist, so the two never run together on one artist.
     var keepingArtists: Set<Int> = []
+    /// The artists in `keepingArtists` that a Not for me holds (so Keep can say why it can't go ahead).
+    var lettingGoArtists: Set<Int> = []
     /// When the kept song was last looked up, per request (throttles `relink`).
     var relinkChecks: [RequestID: Date] = [:]
     private var inFlight: [RequestID: Task<Void, Never>] = [:]
@@ -186,9 +190,13 @@ public actor RequestRunner {
 
     private func unwatch(_ key: UUID) { watchers[key] = nil }
 
-    /// Whether `tick()` has anything to do: an active request, a clean-up still owed, or a Keep to follow.
+    /// Whether `tick()` has anything to do: an active request, a clean-up still owed, or a Keep or Not for me
+    /// to follow.
     public var needsPolling: Bool {
-        list.contains { ($0.isActive && !$0.isNotListed) || $0.cleanupPending || $0.keep != nil || $0.relinkPending == true }
+        list.contains {
+            ($0.isActive && !$0.isNotListed) || $0.cleanupPending || $0.keep != nil || $0.relinkPending == true
+                || $0.notForMe != nil
+        }
     }
 
     /// Loads the saved requests (resume after relaunch). Safe to call again.
@@ -244,9 +252,10 @@ public actor RequestRunner {
         lastIndexRefresh = nil
     }
 
-    /// Removes a finished (or ready) request from the list. Clean-up still owed keeps it.
+    /// Removes a finished (or ready) request from the list. Clean-up still owed, or a Not for me under way,
+    /// keeps it.
     public func forget(_ id: RequestID) async {
-        guard let r = request(id), !r.isActive, !r.cleanupPending else { return }
+        guard let r = request(id), !r.isActive, !r.cleanupPending, r.notForMe == nil else { return }
         list.removeAll { $0.id == id }
         await changed()
     }
@@ -280,6 +289,7 @@ public actor RequestRunner {
         await checkLibrary()
         for r in list where r.cleanupPending && !busy.contains(r.id) { await cleanup(r.id) }
         await followKeeps()
+        await followNotForMes()
     }
 
     // MARK: - The machine

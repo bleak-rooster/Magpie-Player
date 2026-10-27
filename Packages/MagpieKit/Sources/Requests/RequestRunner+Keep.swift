@@ -127,6 +127,11 @@ extension RequestRunner {
         guard !stopped, await load() else { throw KeepError.unavailable }
         guard let r = request(id) else { throw KeepError.notAFind }
         guard let artistId = r.keep?.artistId ?? r.lidarrArtistId else { throw KeepError.notAFind }
+        // Not for me is deleting (or couldn't finish deleting) this artist's find: never move it meanwhile.
+        if lettingGoArtists.contains(artistId)
+            || list.contains(where: { $0.lidarrArtistId == artistId && ($0.notForMe != nil || $0.notForMeNeedsAttention) }) {
+            throw KeepError.notAFind
+        }
         // One Keep per artist: the whole artist moves.
         guard !keepingArtists.contains(artistId) else { return .stillMoving }
         keepingArtists.insert(artistId)

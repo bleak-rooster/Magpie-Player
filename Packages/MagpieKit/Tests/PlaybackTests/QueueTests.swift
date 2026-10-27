@@ -119,6 +119,26 @@ import MagpieCore
         #expect(ids(r.main) == ids(q.main), "same seed, same order")
     }
 
+    /// Task 6.2c: a find let go (Not for me) leaves every slot: history, current, Up Next and the rest. The
+    /// current one gives way to what plays next; nothing left means idle.
+    @Test func removeSongsTakesEverySlot() {
+        var q = PlayQueue()
+        q.replace(with: Self.songs("f", "1", "f", "g", "2"), startAt: 2)
+        q.playNext(Self.songs("g"))
+        let changed = q.removeSongs(["f", "g"])
+        #expect(changed)
+        #expect(ids(q.main) == ["1", "2"] && q.upNext.isEmpty)
+        #expect(q.current?.song.id == "2")
+        let none = q.removeSongs(["nope"])
+        #expect(!none)
+
+        var only = PlayQueue()
+        only.replace(with: Self.songs("f", "f"), startAt: 0)
+        let both = only.removeSongs(["f"])
+        #expect(both)
+        #expect(only.current == nil && only.main.isEmpty)
+    }
+
     @Test func removeCurrentAdvances() {
         var q = PlayQueue()
         q.replace(with: Self.songs("1", "2", "3"), startAt: 1)

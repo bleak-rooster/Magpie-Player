@@ -51,6 +51,16 @@ public struct PlayQueue: Codable, Sendable {
         return changed
     }
 
+    /// Removes every slot holding one of `songIds` (history, current, Up Next and the rest), as `remove(id:)`
+    /// would one by one: a removed current entry gives way to what plays next. Not for me (Task 6.2c) uses it, as
+    /// a find let go can't be streamed any more. Returns whether any slot went.
+    @discardableResult
+    public mutating func removeSongs(_ songIds: Set<String>) -> Bool {
+        let slots = (main + upNext).filter { songIds.contains($0.song.id) }.map(\.id)
+        for slot in slots { remove(id: slot) }
+        return !slots.isEmpty
+    }
+
     /// Puts `songs` at the front of Up Next (ahead of anything already there). Starts an idle queue.
     public mutating func playNext(_ songs: [Song]) {
         guard !songs.isEmpty else { return }

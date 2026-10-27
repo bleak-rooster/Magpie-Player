@@ -2,7 +2,7 @@
 
 Magpie v1 is an owner-only iOS 27 + CarPlay music app for your own Navidrome, with Lidarr for "Try this song". This page tells you how to run it against **your** servers. Details of what each milestone does are at the bottom (Reference).
 
-Built so far: milestones M0 to M5 (sign in, browse, play, search, queue, lyrics, CarPlay library browsing, Lidarr connect, Try in "straight into your library" mode, Requests) plus M8 hardening (edge cases, security fixes, final-review fixes). M6 (Finds mode) and M7 (polish) are **not built**: hardening ran first so you can test the M5 path on your servers. The `m8` tag means M0–M5 + M8, not M6/M7. Not built yet: see section 5.
+Built so far: milestones M0 to M5 (sign in, browse, play, search, queue, lyrics, CarPlay library browsing, Lidarr connect, Try in "straight into your library" mode, Requests), M8 hardening (edge cases, security fixes, final-review fixes) and **M6 Finds mode** (a separate Finds folder, the Finds shelf, Keep and Not for me), which stays behind **Use a Finds folder** and is **off by default** (section 3a). M7 (polish) is **not built**. The `m8` tag means M0–M5 + M8; the `m6` tag adds M6 on top. Not built yet: see section 5.
 
 ## 1. Test on your own servers in 5 steps
 
@@ -44,7 +44,7 @@ Check these once; none of them need Magpie.
 |---|---|---|
 | Navidrome 0.64 or newer, and an admin login | Navidrome footer / About page | Older versions are untested. A non-admin works for listening but can't scan the library |
 | Lidarr 3.x reachable from the Mac | Connect Lidarr shows its version | v1 was verified on 3.2.0.5144 (develop channel). 3.1.x should work. See the monitor note in section 3 |
-| Lidarr recycle bin set | Lidarr › Settings › Media Management › Recycle Bin (the Connect Lidarr summary shows "deletes are permanent" if unset) | Set one. Magpie v1 never deletes, but you may |
+| Lidarr recycle bin set | Lidarr › Settings › Media Management › Recycle Bin (the Connect Lidarr summary shows "deletes are permanent" if unset) | Set one before you use **Not for me** (Finds mode): it deletes the find's files, and without a recycle bin they are gone for good. The confirm sheet then says "This deletes the files permanently." Magpie never changes this setting |
 | Same music folder seen by both | Compare Lidarr's root folder path with Navidrome's library path | v1 has no path mapping. If they differ, a song never becomes **Ready** even though Lidarr imported it (Magpie checks that Navidrome lists it) |
 | Subsonic connection works | Connect succeeded and Home shows shelves | Check the base path and that the address returns Subsonic JSON, not a login page |
 | `songLyrics` extension | Lyrics button appears in Now Playing | Without it the lyrics sheet is hidden. Not a fault |
@@ -59,13 +59,40 @@ The whole write list, nothing else is ever sent:
 - **Try, new artist:** one `POST /artist` to your chosen root folder with *Magpie Fast Start*, metadata profile *Magpie Finds*, tag `magpie`, "monitor new items: none", only that release monitored, search on add.
 - **The `addOptions.monitor` deviation:** the design said to send `addOptions.monitor: "none"`. On Lidarr 3.2.0.5144 that unmonitors the artist and searches zero albums, so Magpie leaves it out. Result: the artist stays monitored, new items are not monitored, and only the one album is. If your Lidarr is a different version, check the artist in Lidarr after your first Try that its monitored albums are only the one you asked for.
 - **Searching:** if nothing is found, Magpie sends `AlbumSearch` again after 1 min, 5 min, 15 min, then hourly, giving up after 24 h (about 25 searches per request, at most 5 requests active at once). That is real load on your indexers.
-- **Never deletes.** v1 sends no delete to Lidarr for Try. **Stop looking** unmonitors an album only if Magpie was the one who monitored it. An artist Magpie added stays in Lidarr; remove it there yourself if you want it gone.
+- **Try and Stop looking never delete.** **Stop looking** unmonitors an album only if Magpie was the one who monitored it. An artist Magpie added stays in Lidarr; remove it there yourself if you want it gone. The only deletes Magpie ever sends are **Not for me** on a find (Finds mode, section 3a).
 - **Change log = undo map.** Every write (method, path, body, no secrets) is recorded on the phone before it is sent: Settings › Lidarr change log. Magpie also keeps an on-device ledger of albums it touched, per Lidarr (address + key).
 
 **Warnings (B8, B9):**
 - Try causes **real indexer searches and downloads** on your Lidarr and adds artists to your library root. Look at the change log afterwards.
 - **Count plays** is on by default: plays are scrobbled by Navidrome to your ListenBrainz/Last.fm. Turn it off in Settings while testing if you don't want that.
-- The first Try goes straight into your library (there is no separate Finds folder yet, so the Try sheet says so).
+- With **Use a Finds folder** off (the default) Try goes straight into your library, and the Try sheet says so. With it on, a new artist goes into your Finds folder instead (section 3a).
+
+## 3a. Finds mode (M6): set-up, Keep and Not for me, exactly
+
+Off by default. With it off nothing below happens, and finds already in the folder can still be kept or let go.
+
+**Set it up** (Settings › Lidarr › Finds; needs Lidarr connected, **Set up Magpie in Lidarr** run, and an admin Navidrome login so the libraries can be read):
+1. In Lidarr, add a root folder for finds (for example `/music/samples`) that is **not** inside, and does not hold, your main music folder or any other root folder. In Navidrome, add a library for the same folder.
+2. Settings › Lidarr › Finds › **Finds folder**: pick that root folder and confirm "Use … for Finds? Magpie will only delete files it brought in here." Magpie never picks it for you, and refuses a folder that equals, holds or sits inside another root folder or the main root.
+3. **In Navidrome**: pick the library that is the same folder. If Lidarr and Navidrome see it under different paths (different container mounts), give the two path starts under **Paths**.
+4. Turn on **Use a Finds folder**. The footer says "Finds are set up." If it asks you to run set-up again, tap **Set up Magpie in Lidarr** (it adds the `magpie-find` tag).
+
+**Try in Finds mode, new artist:** the same single `POST /artist` as section 3, but into the Finds root folder, tagged `magpie` **and** `magpie-find`. Before every add Magpie reads Lidarr's root folders again; if the Finds folder no longer checks out, the song goes into your main library and says so. An artist that is already in your Lidarr is handled exactly as in section 3 (one album monitored in place, never moved, tagged or deleted). The find shows up in Library › Finds when Navidrome lists it there; finds are never scrobbled.
+
+**Keep** (a find's **Keep** button) writes, after checking on fresh Lidarr reads that the artist is one Magpie added (ledger), carries `magpie-find`, and sits strictly inside the Finds folder:
+- normally one `PUT /artist/editor` with exactly `{artistIds:[id], rootFolderPath:<main root>, moveFiles:true, qualityProfileId:<Magpie Lossless>, tags:[<magpie-find>], applyTags:"remove"}`. Lidarr moves the whole artist folder into your main root folder in a `BulkMoveArtist` command; Magpie waits for it, then confirms the files are really in the new folder on disk (Lidarr's filesystem listing), scans both libraries and looks the song up again. The song shows "Lossless soon" until a lossless file replaces the MP3;
+- if your main root already has a folder for that artist (or Lidarr's folder name differs at all from the find's), it moves nothing: `PUT /artist/editor {artistIds:[id], tags:[<magpie-find>], applyTags:"remove"}` only, and says "Kept. It'll stay in your Finds folder for now.";
+- if the move fails, Magpie puts back what the PUT changed (`magpie-find` and the quality profile, and the root folder with `moveFiles:false` only when the files provably never left the Finds folder). What it can't settle within 30 minutes or 5 restore writes ends in **Needs attention**, and nothing more is written.
+
+**Not for me** (swipe left on a find, long-press, or the VoiceOver action) deletes the find's **whole release** from your Finds folder. It is offered only on a ready find of an artist Magpie added in Finds mode: never on an artist that was already in your Lidarr, never for songs that went straight into your library. First a confirm sheet; it reads Lidarr's recycle bin and, when it is unset, says "This deletes the files permanently." Then, each step checked again on fresh Lidarr reads right before it is sent:
+- refused (nothing written) unless: the ledger says Magpie added the artist and the album; nothing of the artist is kept, being kept, or needs attention; no other request is still bringing that album in; the Finds folder still checks out against Lidarr's root folders; the artist carries `magpie-find`; the artist folder and **every** track file of the artist are strictly inside the Finds folder and inside the artist's own folder (exact, case-sensitive comparison: `/music/samples-old` is not inside `/music/samples`); every file to delete is on disk exactly where Lidarr records it; no Lidarr move of the artist is running;
+- `DELETE /api/v1/trackfile/bulk {trackFileIds:[…]}` for the album's files (on a Lidarr without that route, `DELETE /api/v1/trackfile/{id}` one at a time). Lidarr moves them to its recycle bin when one is set;
+- `PUT /api/v1/album/monitor {albumIds:[id], monitored:false}`;
+- `DELETE /api/v1/artist/{id}?deleteFiles=false&addImportListExclusion=false`, only if Magpie added the artist, no other request needs it, Lidarr records no track file and no other monitored album for it, and its folder holds **no file at all** on disk (Lidarr's filesystem listing, not its records). Otherwise the artist stays;
+- the song leaves the queue (the one playing gives way to the next) and the Finds shelf, and Navidrome is asked to scan.
+A lost answer is never followed by the same write until a fresh read shows what is still there. Writes and time are bounded (a few retries, 30 minutes); what can't be finished ends in **Needs attention** ("Couldn't finish letting it go · needs a look") and nothing more is written. Never sent, by any path: `deleteFiles=true`, `addImportListExclusion=true`, `DELETE /artist/editor`, `DELETE /api/missing`, or any change to your Lidarr settings.
+
+**Lidarr 3.2 leaves track file paths stale after a move.** After Keep moves an artist (verified on 3.2.0.5144), `GET /trackfile` still reports the files at their old Finds-folder paths. Magpie therefore never trusts track file paths alone: Keep checks the moved files on disk with Lidarr's filesystem listing, and Not for me deletes a file only when the listing shows it exactly where Lidarr records it, inside the find's folder in the Finds root.
 
 ## 4. CarPlay in the simulator
 
@@ -96,8 +123,8 @@ The whole write list, nothing else is ever sent:
 ## 5. Known limits, risks and troubleshooting
 
 **Not built yet** (overnight order was hardening before features):
-- **M6 Finds**: a separate Finds folder, Keep / "Not for me", the Finds tab, CarPlay Try and Keep.
-- **M7 polish**: Immersive look, Increase Contrast tokens, more themes, Finds on CarPlay, Siri.
+- **M7 polish**: Immersive look, Increase Contrast tokens, more themes, Finds on CarPlay (CarPlay Try and Keep), Siri.
+- Finds: no automatic expiry (days left is display only), no "Bring in more from this artist" after Keep, no undo toast for Not for me (the recycle bin is the undo).
 - Also missing: Up Next list and Downloaded in CarPlay, path mapping, Live Activity, mailbox/Listener/invites (v2).
 - Some small review items were parked, not fixed (listed in the SDD ledger).
 
@@ -130,12 +157,17 @@ The whole write list, nothing else is ever sent:
 # Reference: what each milestone does
 
 ## Details by milestone
-- M8: hardening on top of M5. Edge-case suite, security review fixes (docs/reviews/security-v1.md), and the final-review fixes (docs/reviews/final-review-v1.md): Count plays has one switch; an https address that reaches a plain-http server says to type `http://`; a launch while the Keychain is locked reconnects Lidarr once unlocked; waiting requests say why; `scripts/check-writes.sh` (run by `test-all.sh`) fails if anything outside the Lidarr write gate sends POST/PUT/DELETE. M6 and M7 were skipped for now.
+- M6: Finds mode, behind **Use a Finds folder** (default off); see section 3a for set-up and the exact writes.
+  - Set-up (Task 6.1): the owner confirms the Finds root folder (never guessed, never nested with another root), the Navidrome library that is the same folder, and a path mapping when the two see it under different paths. Path confinement (`PathGuard`) compares whole path components byte for byte.
+  - Try into Finds (Task 6.2a): new artists go into the Finds root tagged `magpie` + `magpie-find`; Library › Finds shows New finds (here, not played yet), the other finds with days left (7 − days since they arrived; nothing leaves by itself), and finds on their way; the "Sample" hallmark; finds are never scrobbled.
+  - Keep (Task 6.2b): moves the artist into the main root (or only untags it when the main root already has its folder), waits for Lidarr's move, proves the files on disk, scans both libraries and repoints the queue at the library song; "Lossless soon" until lossless.
+  - Not for me (Task 6.2c): deletes the find's release from the Finds folder after a confirm sheet, each step proven on fresh Lidarr reads; removes the artist only when it is empty on disk and Magpie added it; takes the songs out of the queue and the shelf.
+- M8: hardening on top of M5. Edge-case suite, security review fixes (docs/reviews/security-v1.md), and the final-review fixes (docs/reviews/final-review-v1.md): Count plays has one switch; an https address that reaches a plain-http server says to type `http://`; a launch while the Keychain is locked reconnects Lidarr once unlocked; waiting requests say why; `scripts/check-writes.sh` (run by `test-all.sh`) fails if anything outside the Lidarr write gate sends POST/PUT/DELETE. M6 came after it (see above); M7 is not built.
 - M5: Try (fallback mode) and Requests. **This is the path to test against your own Lidarr first.** It writes to Lidarr, so read the warnings below before you start.
   - **Settings** (Library › gear, replaces the account menu): Appearance (Signature; more looks in M7), Servers (addresses, signed-in user, Sign out), Lidarr (Connect / summary, "New music goes to" root folder, Speed, **Allow Magpie to change Lidarr**, **Set up Magpie in Lidarr**, **Lidarr change log**), ListenBrainz token (optional, Keychain only, sent only to api.listenbrainz.org), **Count plays**, About.
   - **Allow Magpie to change Lidarr** (G1) is off by default. Every Lidarr write goes through one gate that checks it, refuses anything not on its allow list, and logs method, path and body (no secrets) to the on-device change log before sending (Settings › Lidarr change log, newest first; it is your undo map).
   - **Set up Magpie in Lidarr** (needs the switch on) creates, only if missing, the quality profiles *Magpie Fast Start* and *Magpie Lossless*, the metadata profiles *Magpie Finds* and *Magpie Albums+EPs*, and the tags `magpie` and `magpie-find`. Same-named profiles with other settings stop it with a message; nothing you already have is changed.
-  - **New music goes to**: with one Lidarr root folder it is used; with several you pick one (Magpie never guesses). Finds (a separate folder) arrive in M6, so everything goes straight into your library and the Try sheet says so.
+  - **New music goes to**: with one Lidarr root folder it is used; with several you pick one (Magpie never guesses). With Finds mode off (M6, the default) everything goes straight into your library and the Try sheet says so.
   - **Try** on a "Not in your library" song: unavailable, with the reason and an Open Settings button, until the switch is on, set-up has run and a root folder is chosen. Speed tier: **Standard** when Tubifarry is found ("Try it", then the wait screen: Looking › Spotted it › Bringing it home › Ready, real % while you watch; "Leave" keeps it going), otherwise **Patient** ("Ask for it", a confirmation, no spinner; it shows up in Requests). Plain Lidarr is Patient.
   - What Try does in Lidarr: MusicBrainz is asked once for the song's releases (1 request/s). If the artist is **already in your Lidarr**, Magpie picks the smallest release that artist already has with the song, monitors that one album (`PUT /album/monitor`) and starts an `AlbumSearch`; the artist, its profiles and tags are never touched (A7, G6). If the artist is **new**, one `POST /artist` adds it to the chosen root with *Magpie Fast Start*, *Magpie Finds*, tag `magpie`, "monitor new items: none" and only that release monitored, searching on add (A6). Every album Magpie touches is recorded in the on-device ledger first. At most 5 requests at a time; the same song or release joins the request already running.
   - **Ready** means your library lists the song: after Lidarr imports, Magpie starts a quick library scan (`startScan`, no path mapping) and refreshes its match index (at most every 30 s) until the song shows up. A notification says so while the app is running. Polling: every 5 s in the foreground, 30 s otherwise; requests are saved and resume after a relaunch.

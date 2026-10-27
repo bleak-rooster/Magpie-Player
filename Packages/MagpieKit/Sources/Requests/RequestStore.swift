@@ -125,6 +125,19 @@ public struct MagpieRequest: Sendable, Codable, Equatable, Identifiable {
     /// The library song's file type once re-resolved after Keep ("Lossless soon" until it is lossless).
     public var songSuffix: String?
 
+    // Not for me (Task 6.2c). Optional, so requests saved before it still decode.
+
+    /// A Not for me under way: saved before its first Lidarr write (M6). While set, every step is proven again
+    /// from fresh Lidarr state before it is sent; nothing is ever sent on the saved state alone.
+    public var notForMe: NotForMeProgress?
+    /// Not for me couldn't finish from here (Lidarr refused part of it, or it couldn't be proven safe to go on):
+    /// it needs the owner's look. Nothing more is deleted, and neither Keep nor Not for me is offered again.
+    public var notForMeNeedsAttention: Bool {
+        get { letGoStuck ?? false }
+        set { letGoStuck = newValue ? true : nil }
+    }
+    var letGoStuck: Bool?
+
     public init(id: RequestID = RequestID(), recording: ExternalRecording, tier: Tier, createdAt: Date) {
         self.id = id
         self.recording = recording
@@ -182,6 +195,49 @@ public struct KeepProgress: Sendable, Codable, Equatable {
         self.phase = phase; self.startedAt = startedAt; self.artistId = artistId; self.fromPath = fromPath
         self.findsRoot = findsRoot; self.mainRoot = mainRoot; self.findTagId = findTagId
         self.priorQualityProfileId = priorQualityProfileId; self.commandBaseline = commandBaseline
+    }
+}
+
+/// A Not for me in flight (Task 6.2c), saved before its first Lidarr write so a relaunch picks it up and proves
+/// each remaining step again before sending it.
+public struct NotForMeProgress: Sendable, Codable, Equatable {
+    public enum Phase: String, Sendable, Codable {
+        /// `DELETE /trackfile/bulk` (or one file at a time) for the album's files (A16).
+        case deleting
+        /// `PUT /album/monitor {monitored: false}` (A16).
+        case unmonitoring
+        /// `DELETE /artist/{id}?deleteFiles=false&addImportListExclusion=false`, only when nothing is left (A16).
+        case removingArtist
+    }
+
+    public var phase: Phase
+    public var startedAt: Date
+    public var artistId: Int
+    public var albumId: Int
+    /// The artist folder proven inside the Finds root before the first write: every later step needs the same.
+    public var artistPath: String
+    public var findsRoot: String
+    public var mainRoot: String
+    public var findTagId: Int
+    /// The owner confirmed "This deletes the files permanently." (Lidarr's recycle bin was unset).
+    public var permanentConfirmed: Bool
+    /// A write was sent (or may have been): from here a refusal needs the owner's look instead of undoing nothing.
+    public var sent: Bool
+    /// Lidarr answered the bulk delete with 404 / 405: one track file at a time from now on.
+    public var oneByOne: Bool?
+    /// Writes sent so far, bounded by `writeBudget`.
+    public var writes: Int
+    public var writeBudget: Int
+    /// Writes whose answer never came, bounded by `RequestRunner.notForMeUnansweredLimit`.
+    public var unanswered: Int
+    public var lastCheckAt: Date?
+
+    public init(phase: Phase, startedAt: Date, artistId: Int, albumId: Int, artistPath: String, findsRoot: String,
+                mainRoot: String, findTagId: Int, permanentConfirmed: Bool, writeBudget: Int) {
+        self.phase = phase; self.startedAt = startedAt; self.artistId = artistId; self.albumId = albumId
+        self.artistPath = artistPath; self.findsRoot = findsRoot; self.mainRoot = mainRoot; self.findTagId = findTagId
+        self.permanentConfirmed = permanentConfirmed; self.sent = false; self.writes = 0
+        self.writeBudget = writeBudget; self.unanswered = 0
     }
 }
 

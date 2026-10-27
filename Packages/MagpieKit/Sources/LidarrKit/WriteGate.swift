@@ -232,6 +232,11 @@ enum ForbiddenWrites {
             return noQuery
         case ("DELETE", 2) where key[0] == "artist" && isId(key[1]):
             return artistDeleteReason(t.query)
+        // Not for me (A16): the bulk route, falling back to one file at a time.
+        case ("DELETE", 2) where key[0] == "trackfile" && key[1] == "bulk":
+            return noQuery ?? trackFileBulkReason(json)
+        case ("DELETE", 2) where key[0] == "trackfile" && isId(key[1]):
+            return noQuery ?? (json == nil ? nil : "no body allowed on DELETE /trackfile/{id}")
         default:
             return notAllowed
         }
@@ -246,6 +251,20 @@ enum ForbiddenWrites {
             seen.insert(name)
         }
         return seen == falseOnlyFlags ? nil : "artist delete needs explicit deleteFiles=false and addImportListExclusion=false"
+    }
+
+    /// `DELETE /trackfile/bulk`: exactly `{"trackFileIds": [<positive integers>]}`, at least one id.
+    private static func trackFileBulkReason(_ json: Any?) -> String? {
+        guard let object = json as? [String: Any], object.count == 1, let ids = object["trackFileIds"] as? [Any],
+              !ids.isEmpty, ids.allSatisfy(isPositiveInteger) else {
+            return "track file delete needs exactly a list of track file ids"
+        }
+        return nil
+    }
+
+    private static func isPositiveInteger(_ value: Any) -> Bool {
+        guard let n = value as? NSNumber, CFGetTypeID(n) != CFBooleanGetTypeID() else { return false }
+        return n.int64Value > 0 && Double(n.int64Value) == n.doubleValue
     }
 
     /// Exactly one `name` key (any case), naming an allowed command.

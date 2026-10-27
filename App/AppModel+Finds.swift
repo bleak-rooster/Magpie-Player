@@ -150,7 +150,8 @@ extension AppModel {
             let ids = Set(songs.map(\.id))
             appDefaults.set(Array(ids).sorted(), forKey: key)
             findIdsCache = (key, ids)
-            findSongs = songs
+            lettingGoSongIds.formIntersection(ids)   // gone from the library: nothing left to hide
+            findSongs = songs.filter { !lettingGoSongIds.contains($0.id) }
         } catch {
             Log.logger("finds").error("finds not read: \(Log.category(of: error), privacy: .public)")
         }

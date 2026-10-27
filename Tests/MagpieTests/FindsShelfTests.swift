@@ -488,4 +488,90 @@ private let t0 = Date(timeIntervalSince1970: 1_900_000_000)
         #expect(AppModel.keptLocation("/music/samples/Aurora Field", findsLibrary: finds, mapping: nil,
                                       libraries: [main, finds]) == nil, "never the Finds library")
     }
+
+    // MARK: - Not for me (Task 6.2c)
+
+    static func letGoRequest(songId: String) -> MagpieRequest {
+        var r = readyFindRequest(songId: songId)
+        r.albumId = 50
+        return r
+    }
+
+    /// Not for me is offered only on a ready find of an artist Magpie added in Finds mode (G6: never on an
+    /// existing-artist row or a fallback request), with no Keep or Not for me under way or needing a look.
+    @Test func notForMeIsOfferedOnlyOnAFindMagpieAdded() {
+        let ready = Self.letGoRequest(songId: "a")
+        var existing = Self.letGoRequest(songId: "b")
+        existing.plan?.lidarrArtistId = 7
+        var fallback = Self.letGoRequest(songId: "c")
+        fallback.plan?.mode = .fallback
+        var going = Self.letGoRequest(songId: "d")
+        going.notForMe = NotForMeProgress(phase: .deleting, startedAt: t0, artistId: 42, albumId: 50,
+                                          artistPath: "/music/samples/A", findsRoot: "/music/samples",
+                                          mainRoot: "/music/library", findTagId: 2, permanentConfirmed: false,
+                                          writeBudget: 5)
+        var stuck = Self.letGoRequest(songId: "e")
+        stuck.notForMeNeedsAttention = true
+        var keeping = Self.letGoRequest(songId: "f")
+        keeping.keepNeedsAttention = true
+        let songs = ["a", "b", "c", "d", "e", "f"].map { Self.song($0, created: t0) }
+        let shelf = FindsShelf(songs: songs, requests: [ready, existing, fallback, going, stuck, keeping], played: [],
+                               now: t0)
+        let offered = Dictionary(uniqueKeysWithValues: shelf.newFinds.map { ($0.song.id, $0.notForMeRequest) })
+        #expect(offered["a"] == .some(ready.id))
+        for id in ["b", "c", "d", "e", "f"] { #expect(offered[id] == .some(nil), "\(id)") }
+        let keep = Dictionary(uniqueKeysWithValues: shelf.newFinds.map { ($0.song.id, $0.keepRequest) })
+        #expect(keep["d"] == .some(nil) && keep["e"] == .some(nil), "no Keep while letting go, or after it stuck")
+    }
+
+    /// G3 / G9: the confirm sheet says "This deletes the files permanently." exactly when the recycle bin is
+    /// unset. No service names on the Finds screen (§5).
+    @Test func notForMeCopy() {
+        let permanent = NotForMeCopy.confirmMessage(album: "Lowlands", permanent: true)
+        #expect(permanent.hasSuffix("This deletes the files permanently."))
+        #expect(permanent.contains("Lowlands"))
+        let recycled = NotForMeCopy.confirmMessage(album: nil, permanent: false)
+        #expect(!recycled.contains("permanently"))
+        #expect(NotForMeCopy.message(.removed) == NotForMeCopy.removed)
+        #expect(NotForMeCopy.message(for: RequestRunner.NotForMeError.confirmAgain) == NotForMeCopy.confirmAgain)
+        #expect(NotForMeCopy.message(for: RequestRunner.NotForMeError.needsAttention) == NotForMeCopy.needsAttention)
+        for text in [permanent, recycled, NotForMeCopy.removed, NotForMeCopy.stillGoing, NotForMeCopy.failed,
+                     NotForMeCopy.notAFind, NotForMeCopy.unavailable, NotForMeCopy.confirmAgain,
+                     NotForMeCopy.needsAttention, NotForMeCopy.confirmTitle] {
+            #expect(!text.contains("Lidarr") && !text.contains("Navidrome"), "§5: \(text)")
+        }
+        var r = Self.letGoRequest(songId: "a")
+        r.notForMeNeedsAttention = true
+        #expect(RequestCopy.status(r) == "Couldn't finish letting it go · needs a look")
+        #expect(RequestCopy.group(r) == .attention)
+        r.notForMeNeedsAttention = false
+        r.notForMe = NotForMeProgress(phase: .unmonitoring, startedAt: t0, artistId: 42, albumId: 50,
+                                      artistPath: "/music/samples/A", findsRoot: "/music/samples",
+                                      mainRoot: "/music/library", findTagId: 2, permanentConfirmed: true,
+                                      writeBudget: 5)
+        #expect(RequestCopy.status(r) == "Letting it go")
+    }
+
+    /// Ruling 8: a find let go leaves the queue (the one playing gives way) and the Finds shelf, with the other
+    /// songs of its release; it stays a find for scrobbling (D29).
+    @Test func letGoLeavesTheQueueAndTheShelf() async throws {
+        let model = try await connected()
+        try await findsSetUp(model)
+        await model.refreshFinds()   // find-1 is a known find
+        var find = Self.song("find-1", created: t0, libraryId: 2)
+        var sibling = Self.song("find-2", created: t0, libraryId: 2)
+        var other = Self.song("find-3", created: t0, libraryId: 2)
+        (find.albumId, sibling.albumId, other.albumId) = ("al-1", "al-1", "al-2")
+        model.findSongs = [find, sibling, other]
+        model.play([find, Self.song("lib", created: nil, libraryId: 1), sibling], startAt: 0)
+
+        let request = Self.letGoRequest(songId: "find-1")
+        model.findLetGo(model.letGoSongIds(request))
+
+        #expect(model.player.queue.current?.song.id == "lib")
+        #expect(model.player.queue.upcoming.isEmpty, "the sibling on the same release left too")
+        #expect(model.findSongs.map(\.id) == ["find-3"])
+        #expect(model.isFind(find), "still a find: never scrobbled")
+        cleanUp(model)
+    }
 }

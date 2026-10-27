@@ -113,6 +113,19 @@ final class FakeLidarr: @unchecked Sendable {
         case prunedFilesStayed
     }
     struct Album { var id: Int; var artistId: Int; var rg: MBID; var title: String; var monitored: Bool }
+    /// Not for me (Task 6.2c): a track file besides the artist's song (id 1, album 50). `path` is where Lidarr
+    /// records it; `onDisk` where it really is (nil: gone).
+    struct ExtraFile { var id: Int; var artistId: Int; var albumId: Int; var path: String; var recorded = true; var onDisk: String? }
+    /// How `DELETE /trackfile/bulk` goes.
+    enum BulkDelete: Equatable {
+        case deletes
+        /// Older Lidarr: no such route (405).
+        case noRoute
+        /// Answers 400 and deletes nothing.
+        case rejects
+        /// Answers 200 and deletes nothing.
+        case ignores
+    }
     struct Queued {
         var albumId: Int; var size: Double; var sizeleft: Double
         var status = "downloading"; var tracked = "downloading"; var messages: [String] = []
@@ -180,6 +193,19 @@ final class FakeLidarr: @unchecked Sendable {
         var trackFilesFollowMove = false
         /// A `moveFiles: false` point-back lands here instead of `<root>/<folder>`.
         var pointBackLandsAt: String?
+        // Not for me (Task 6.2c)
+        var extraFiles: [ExtraFile] = []
+        var bulkDelete = BulkDelete.deletes
+        /// Track file deletes: applied, then answered 504 (lost answer), this many times.
+        var deleteAppliedThen504 = 0
+        /// Track file deletes: answered 503 without deleting, this many times.
+        var deleteFails503 = 0
+        /// After the next track file delete arrives, `GET /rootfolder` answers 503 (Lidarr goes away).
+        var rootsDownAfterDelete = false
+        /// `config/mediamanagement.recycleBin`; empty: deletes are permanent.
+        var recycleBin = "/music/.trash"
+        /// `DELETE /artist/{id}`: removes the artist (deleteFiles=false: files stay on disk).
+        var deletedArtists: [Int] = []
     }
 
     let latch = Latch()
@@ -329,6 +355,44 @@ final class FakeLidarr: @unchecked Sendable {
                 }
             })
         }
+        // Not for me (Task 6.2c)
+        @Sendable func deleteFiles(_ ids: [Int]) -> MockTransport.Response {
+            with { s in
+                if s.rootsDownAfterDelete { s.rootsDown = true }
+                if s.deleteFails503 > 0 { s.deleteFails503 -= 1; return MockTransport.Response(status: 503) }
+                for i in s.artists.indices where ids.contains(1) {
+                    s.artists[i].files = nil
+                    s.artists[i].recorded = nil
+                }
+                s.extraFiles.removeAll { ids.contains($0.id) }
+                if s.deleteAppliedThen504 > 0 { s.deleteAppliedThen504 -= 1; return MockTransport.Response(status: 504) }
+                return reply([String: Any]())
+            }
+        }
+        t.stub(method: "DELETE", pathSuffix: "/api/v1/trackfile/bulk") { [self] req in
+            let body = try! JSONSerialization.jsonObject(with: req.httpBody!) as! [String: Any]
+            switch with({ $0.bulkDelete }) {
+            case .deletes: return deleteFiles(body["trackFileIds"] as! [Int])
+            case .noRoute: return MockTransport.Response(status: 405)
+            case .rejects: return MockTransport.Response(status: 400)
+            case .ignores: return reply([String: Any]())
+            }
+        }
+        for id in 1...4 {
+            t.stub(method: "DELETE", pathSuffix: "/api/v1/trackfile/\(id)") { _ in deleteFiles([id]) }
+        }
+        for id in [7, 42, 43] {
+            t.stub(method: "DELETE", pathSuffix: "/api/v1/artist/\(id)") { [self] _ in
+                with { s in
+                    s.artists.removeAll { $0.id == id }
+                    s.deletedArtists.append(id)
+                }
+                return reply([String: Any]())
+            }
+        }
+        t.stub(pathSuffix: "/api/v1/config/mediamanagement") { [self] _ in
+            reply(["recycleBin": with { $0.recycleBin }, "deleteEmptyFolders": false])
+        }
         t.stub(pathSuffix: "/api/v1/filesystem") { [self] req in
             let items = URLComponents(url: req.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
             let parent = items.first { $0.name == "path" }?.value ?? ""
@@ -336,6 +400,7 @@ final class FakeLidarr: @unchecked Sendable {
             let (dirs, files): ([String], [String]) = with { s in
                 // On disk: the extra folders, and each artist's files folder with its album folder and song.
                 let songs = s.artists.compactMap(\.files).map { $0 + "/" + FakeLidarr.songFile }
+                    + s.extraFiles.compactMap(\.onDisk)
                 var folders = s.folders
                 for song in songs {
                     var d = (song as NSString).deletingLastPathComponent
@@ -357,12 +422,18 @@ final class FakeLidarr: @unchecked Sendable {
                     "RootFolderPath": "/x", "overview": "Band", "folder": with { $0.lookupFolder }]])
         }
         t.stub(pathSuffix: "/api/v1/trackfile") { [self] req in
-            let artistId = URLComponents(url: req.url!, resolvingAgainstBaseURL: false)?.queryItems?
-                .first { $0.name == "artistId" }?.value.flatMap(Int.init)
+            let items = URLComponents(url: req.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            let artistId = items.first { $0.name == "artistId" }?.value.flatMap(Int.init)
+            let albumId = items.first { $0.name == "albumId" }?.value.flatMap(Int.init)
             return reply(with { s in
-                return s.artists.filter { $0.id == artistId }.compactMap(\.recorded).map {
-                    ["id": 1, "path": $0 + "/" + FakeLidarr.songFile, "albumId": 50] as [String: Any]
+                let song: [(Int, Int, Int, String)] = s.artists.compactMap { a in
+                    a.recorded.map { (1, a.id, 50, $0 + "/" + FakeLidarr.songFile) }
                 }
+                let extra = s.extraFiles.filter(\.recorded).map { ($0.id, $0.artistId, $0.albumId, $0.path) }
+                return (song + extra).filter { row in
+                    (artistId == nil || row.1 == artistId) && (albumId == nil || row.2 == albumId)
+                        && (artistId != nil || albumId != nil)
+                }.map { ["id": $0.0, "path": $0.3, "albumId": $0.2] as [String: Any] }
             })
         }
         t.stub(pathSuffix: "/api/v1/album") { [self] req in

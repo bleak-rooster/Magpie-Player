@@ -199,6 +199,26 @@ extension PlayerTests {
         #expect(await scrobbler.calls.filter { !$0.submission }.count == 2, "now playing sent again")
     }
 
+    /// Task 6.2c: Not for me takes the find out of the queue. Playing it: the next song loads; nothing else
+    /// queued: the engine stops. A find only later in the queue leaves the current song playing.
+    @Test func removeSongsAfterNotForMe() {
+        let player = makePlayer()
+        player.play([Self.song("f"), Self.song("1"), Self.song("f")], startAt: 0)
+        player.removeSongs(["f"])
+        #expect(player.queue.current?.song.id == "1" && player.queue.upcoming.isEmpty)
+        #expect(engine.setItemsCalls.last!.items.map(\.1.absoluteString) == ["http://192.168.1.2:4533/rest/stream?id=1"])
+
+        player.play([Self.song("1"), Self.song("f")], startAt: 0)
+        let current = player.queue.current?.id
+        player.removeSongs(["f"])
+        #expect(player.queue.current?.id == current && player.queue.upcoming.isEmpty)
+
+        player.play([Self.song("f")], startAt: 0)
+        player.removeSongs(["f"])
+        #expect(player.queue.current == nil && !player.isPlaying)
+        #expect(engine.setItemsCalls.last!.items.isEmpty)
+    }
+
     @Test func removingLastEntryStopsEngine() {
         let player = makePlayer()
         player.play([Self.song("1")], startAt: 0)
