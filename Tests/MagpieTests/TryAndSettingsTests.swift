@@ -4,6 +4,7 @@ import MagpieCore
 import MagpieTestSupport
 import NavidromeKit
 import os
+import Playback
 import Requests
 import Testing
 @testable import Magpie
@@ -199,6 +200,24 @@ final class MemoryTokenStore: ListenBrainzTokenStoring, @unchecked Sendable {
         #expect(model.countPlays, "G8: on by default")
         model.setCountPlays(false)
         #expect(makeModel().countPlays == false)
+    }
+
+    /// Final review I1: Count plays has one switch. Launched with it off, turning it on counts the next play
+    /// without a relaunch.
+    @Test func countPlaysTurnedOnCountsTheNextPlay() async throws {
+        transport.inner.stub(pathSuffix: "/rest/scrobble", body: ok)
+        defaults.set(false, forKey: AppModel.countPlaysKey)
+        let model = makeModel()
+        #expect(!model.countPlays)
+        try await model.signIn(urls: [home], username: "admin", password: "pw")
+        model.setCountPlays(true)
+        model.player.play([Song(id: "s1", title: "T", artist: "A", album: "B", duration: 200, libraryId: 1)], startAt: 0)
+        let entry = try #require(model.player.queue.current?.id)
+        model.player.handle(.time(entry, 150, duration: 200))
+        await model.player.waitForPendingScrobbles()
+        let scrobbles = transport.inner.requests.filter { $0.url?.path.hasSuffix("/rest/scrobble") == true }
+        #expect(scrobbles.contains { $0.url?.query?.contains("submission=true") == true }, "the play is counted")
+        model.signOut()
     }
 
     @Test func listenBrainzTokenIsOptional() throws {

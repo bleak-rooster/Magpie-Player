@@ -152,7 +152,7 @@ final class AppModel {
         self.playCounting = counting
         self.player = Player(engine: engine ?? AVQueueEngine(),
                              scrobbler: NavidromeScrobbler(box: box, counting: counting),
-                             urls: NavidromeStreamURLs(box: box), defaults: defaults)
+                             urls: NavidromeStreamURLs(box: box))
         #if os(iOS)
         if systemNowPlaying {
             nowPlaying = NowPlayingBridge(

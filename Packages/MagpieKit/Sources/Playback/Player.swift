@@ -36,22 +36,15 @@ public final class Player {
     /// Last playback error for the current entry, if any (cleared when a new entry starts).
     public private(set) var lastError: String?
 
-    /// "Count plays" (G8): when off, nothing is scrobbled. Persisted; defaults to on.
-    public var countPlays: Bool {
-        didSet { defaults.set(countPlays, forKey: Self.countPlaysKey) }
-    }
-
     /// Scrobble at 50 % of the track or this many seconds, whichever comes first.
     static let scrobbleCap: TimeInterval = 240
     /// `previous()` restarts the current song once it has played longer than this.
     static let restartThreshold: TimeInterval = 3
-    static let countPlaysKey = "magpie.countPlays"
 
     @ObservationIgnored private let engine: any PlaybackEngine
     @ObservationIgnored private let scrobbler: any Scrobbler
     @ObservationIgnored private let urls: any StreamURLProvider
     @ObservationIgnored private let isFind: (Song) -> Bool
-    @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private let now: () -> Date
     @ObservationIgnored private var playback: TrackPlayback?
     /// The engine stopped on its own (end of list, or the current entry failed); resuming or
@@ -72,14 +65,12 @@ public final class Player {
 
     public init(engine: any PlaybackEngine, scrobbler: any Scrobbler, urls: any StreamURLProvider,
                 isFind: @escaping (Song) -> Bool = { _ in false },
-                defaults: UserDefaults = .standard, now: @escaping () -> Date = { Date() }) {
+                now: @escaping () -> Date = { Date() }) {
         self.engine = engine
         self.scrobbler = scrobbler
         self.urls = urls
         self.isFind = isFind
-        self.defaults = defaults
         self.now = now
-        self.countPlays = defaults.object(forKey: Self.countPlaysKey) as? Bool ?? true
         let events = engine.events
         Task { [weak self] in
             for await event in events {
@@ -312,7 +303,8 @@ public final class Player {
     }
 
     private func scrobble(_ song: Song, submission: Bool, at: Date?) {
-        guard countPlays, !isFind(song) else { return }
+        // "Count plays" (G8) is the scrobbler's to check, so the app has one switch for it.
+        guard !isFind(song) else { return }
         let key = UUID()
         let scrobbler = self.scrobbler
         let songId = song.id

@@ -49,10 +49,9 @@ final class FakeURLs: StreamURLProvider {
     let engine = FakeEngine()
     let scrobbler = FakeScrobbler()
     let urls = FakeURLs()
-    let defaults = UserDefaults(suiteName: "PlayerTests-\(UUID().uuidString)")!
 
     func makePlayer(isFind: @escaping (Song) -> Bool = { _ in false }) -> Player {
-        Player(engine: engine, scrobbler: scrobbler, urls: urls, isFind: isFind, defaults: defaults)
+        Player(engine: engine, scrobbler: scrobbler, urls: urls, isFind: isFind)
     }
 
     @Test func scrobblesAtHalf() async {
@@ -79,18 +78,6 @@ final class FakeURLs: StreamURLProvider {
         #expect(await scrobbler.calls.suffix(2) == [.init(songId: "2", submission: false),
                                                     .init(songId: "2", submission: true)])
         #expect(player.queue.current?.song.id == "2")
-    }
-
-    @Test func noScrobbleWhenCountPlaysOff() async {
-        let player = makePlayer()
-        player.countPlays = false
-        player.play([Self.song("1")], startAt: 0)
-        player.handle(.time(player.queue.current!.id, 150, duration: 200))
-        await player.waitForPendingScrobbles()
-        #expect(await scrobbler.calls.isEmpty)
-
-        let reloaded = makePlayer()
-        #expect(reloaded.countPlays == false, "setting is persisted")
     }
 
     @Test func noScrobbleForFinds() async {
@@ -382,8 +369,7 @@ extension PlayerTests {
 @MainActor
 @Suite(.serialized) struct NowPlayingModeCommandTests {
     private func makePlayer() -> Player {
-        let player = Player(engine: FakeEngine(), scrobbler: FakeScrobbler(), urls: FakeURLs(),
-                            defaults: UserDefaults(suiteName: "NowPlayingModeCommandTests.\(UUID().uuidString)")!)
+        let player = Player(engine: FakeEngine(), scrobbler: FakeScrobbler(), urls: FakeURLs())
         player.play((1...5).map { Song(id: "\($0)", title: "S\($0)", artist: "A", album: "B", duration: 100) },
                     startAt: 0)
         return player
