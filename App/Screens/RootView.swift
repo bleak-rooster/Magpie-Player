@@ -67,7 +67,7 @@ private struct MiniPlayerAccessory: View {
     var body: some View {
         let player = model.player
         if let banner = model.visibleBanner {
-            PlayNowBannerView(banner: banner)
+            PlayNowBannerView(banner: banner, open: open)
         } else if let song = player.queue.current?.song {
             Artwork(song.coverArtId, side: 36) { image in
                 MiniPlayer(title: song.title, artist: song.artist, artwork: image, isPlaying: player.isPlaying,
@@ -79,44 +79,69 @@ private struct MiniPlayerAccessory: View {
 }
 
 /// D6: the in-app "Play now" banner. Text and symbol, not shape alone (D3); Play now and Not now are their own
-/// buttons, and VoiceOver offers Play now as the default action.
+/// buttons. It stands in for the mini player, so it keeps what the mini player gives (final fix 2 B-M4): a tap on
+/// its text opens Now Playing, and while another song plays, a pause button. For VoiceOver it is one element whose
+/// default action is Play now (B-M9); Open Now Playing, Pause or Play, and Not now are its named actions.
 private struct PlayNowBannerView: View {
     @Environment(AppModel.self) private var model
     let banner: PlayNowBanner
+    let open: () -> Void
     private let themed = Themed()
 
     var body: some View {
         let p = themed.palette
-        HStack(spacing: 10) {
-            Image(systemName: "record.circle").font(.title2).foregroundStyle(p.accentInkColor)
-                .frame(width: 36, height: 36)
-                .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(LandingCopy.title(banner.song)).font(.subheadline.weight(.semibold)).lineLimit(1)
-                Text(LandingCopy.upNext).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+        let player = model.player
+        // The idle landing: the find itself is loaded and Play now plays it; nothing else to pause.
+        let showsPause = !banner.idle && player.queue.current != nil
+        HStack(spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: "record.circle").font(.title2).foregroundStyle(p.accentInkColor)
+                    .frame(width: 30, height: 36)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(LandingCopy.title(banner.song)).font(.subheadline.weight(.semibold)).lineLimit(1)
+                    Text(LandingCopy.upNext).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                }
+                Spacer(minLength: 0)
             }
-            .accessibilityElement(children: .combine)
-            Spacer(minLength: 0)
+            .frame(minHeight: Tokens.minHitSize)
+            .contentShape(Rectangle())
+            .onTapGesture(perform: open)
+            if showsPause {
+                Button { player.toggle() } label: {
+                    Image(systemName: player.isPlaying ? "pause.fill" : "play.fill").font(.body)
+                        .frame(width: 36, height: Tokens.minHitSize).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("play-now-banner-pause")
+            }
             Button(LandingCopy.playNow) { model.playNow(banner) }
                 .buttonStyle(.borderedProminent)
                 .buttonBorderShape(.capsule)
                 .frame(minHeight: Tokens.minHitSize)
-                .accessibilityAddTraits(.startsMediaSession)
-                .accessibilityIdentifier("play-now")
             Button { model.dismissBanner() } label: {
                 Image(systemName: "xmark").font(.footnote.weight(.semibold))
-                    .frame(width: Tokens.minHitSize, height: Tokens.minHitSize).contentShape(Rectangle())
+                    .frame(width: 36, height: Tokens.minHitSize).contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Not now")
         }
         .padding(.horizontal, 8).padding(.vertical, 6)
         .frame(minHeight: 52)
         // The accessory is a fixed-height bar: like the mini player, its text stops growing at xxxLarge (H3 I3).
         .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
         .accessibilityShowsLargeContentViewer { Text(LandingCopy.title(banner.song)) }
-        .accessibilityElement(children: .contain)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(LandingCopy.title(banner.song)). \(LandingCopy.upNext)")
+        .accessibilityAddTraits([.isButton, .startsMediaSession])
+        .accessibilityHint("Plays it now.")
+        .accessibilityAction { model.playNow(banner) }
         .accessibilityAction(named: LandingCopy.playNow) { model.playNow(banner) }
+        .accessibilityAction(named: "Open Now Playing", open)
+        .accessibilityActions {
+            if showsPause {
+                Button(player.isPlaying ? "Pause" : "Play") { player.toggle() }
+            }
+        }
+        .accessibilityAction(named: "Not now") { model.dismissBanner() }
         .accessibilityIdentifier("play-now-banner")
     }
 }
