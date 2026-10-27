@@ -43,14 +43,15 @@ private let loginJSON = Data(#"""
 
     @Test(arguments: ["http://127.0.0.1:4533", "http://localhost:4533", "http://192.168.1.20:4533", "http://10.0.0.5",
                       "http://172.16.0.9", "http://169.254.1.1", "http://nas:4533", "http://homeserver:4533",
-                      "http://music.local:4533", "https://100.64.10.20:4533", "https://music.example.com"])
+                      "http://music.local:4533", "https://100.64.10.20:4533", "https://music.example.com",
+                      "http://[::1]:4533", "http://[fd00::1]:4533", "http://[fe80::1]:4533", "http://jukebox:8080"])
     func plainHTTPThatATSAllows(_ text: String) throws {
         let url = try #require(URL(string: text))
         #expect(!ServerAddress.atsBlocksPlainHTTP(url, allowsArbitraryLoads: false))
     }
 
     @Test(arguments: ["http://100.64.10.20:4533", "http://nas.tail0a1b2c.ts.net:4533", "http://music.example.com",
-                      "http://8.8.8.8", "http://134744072"])
+                      "http://8.8.8.8", "http://134744072", "http://[2001:db8::1]:4533"])
     func plainHTTPThatATSBlocks(_ text: String) throws {
         let url = try #require(URL(string: text))
         #expect(ServerAddress.atsBlocksPlainHTTP(url, allowsArbitraryLoads: false))
