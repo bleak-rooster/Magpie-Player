@@ -447,6 +447,11 @@ extension RequestRunner {
                 // Not in the Finds folder: only a proven never-moved artist is pointed back; otherwise the ledger
                 // keeps saying kept, so nothing ever deletes it.
                 guard p.revertPath == true, Self.mainGuard(p).isInside(path) else { return await needsAttention(id) }
+                // FL9: the point-back root must still be a confirmed Lidarr root folder (this fresh read).
+                guard Self.findsRootStillValid(p.findsRoot, main: p.mainRoot, roots: roots) else {
+                    Log.logger("requests").error("Keep: the Finds folder isn't a root folder any more; not pointing back")
+                    return await needsAttention(id)
+                }
                 let files: [TrackFile]
                 do { files = try await lidarr.trackFiles(artistId: p.artistId) } catch { return await notYet(id, p) }
                 switch await filesNeverLeft(p, artistPath: path, files: files) {

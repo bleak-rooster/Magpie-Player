@@ -457,6 +457,26 @@ import MagpieCore
         #expect(try await h.runner.keep(id) == .moved)
     }
 
+    /// Security FL9: the point-back goes only to a Finds root that is still one of Lidarr's root folders (fresh read)
+    /// and still checks out (G2). Removed, or now nested: nothing is pointed anywhere; it needs the owner's look and
+    /// the ledger keeps saying kept.
+    @Test(arguments: [["/music/library"], ["/music/library", "/music/samples", "/music/samples/inner"]])
+    func pointBackNeedsTheFindsRootStillThere(_ roots: [String]) async throws {
+        let h = await Harness(setup: Harness.findsSetup)
+        let id = try await Self.readyFind(h)
+        h.server.with { $0.move = .prunedFilesStayed }
+        #expect(try await h.runner.keep(id) == .stillMoving)
+        h.server.with { $0.roots = roots }
+        h.clock.advance(60)
+        await h.runner.tick()
+
+        #expect(Self.editorWrites(h).count == 1, "only the move: no point-back")
+        let r = try #require(await h.request(id))
+        #expect(r.keep == nil && r.keepNeedsAttention)
+        #expect(try await h.ledger.entries.filter { $0.lidarrArtistId == 42 }.allSatisfy { $0.keptAt != nil })
+        #expect(await h.gate.changeLog().filter { $0.path == "/api/v1/artist/editor" }.count == 1, "not even tried")
+    }
+
     /// Lidarr 3.2 leaves the track file paths at the old folder after a move (seen on the dev stack); a Lidarr
     /// that updates them is fine too. Either way the files are looked for on disk in the new folder.
     @Test(arguments: [false, true])
