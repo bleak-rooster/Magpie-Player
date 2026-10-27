@@ -18,7 +18,7 @@ In Xcode pick the **Magpie** scheme and the **iPhone 18 Pro** simulator (iOS 27.
 
 **Step 2. Connect to Navidrome.** The first screen asks for an address, user and password. Use an admin account if you want the pre-flight checks to be complete.
 - Address: `https://music.example.com`, or `http://192.168.1.20:4533` on your LAN, or a Tailscale name. Several addresses are allowed (first one that answers wins). Include the base path if your proxy has one (`https://host/navidrome`).
-- Typed without a scheme: it becomes `https://`, except private addresses (LAN, `.local`, single-word names, Tailscale 100.x), which become `http://`.
+- Typed without a scheme: it becomes `https://`, except private addresses (LAN, `.local`, single-word names, Tailscale 100.x), which become `http://`. A Tailscale MagicDNS name (`nas.tail1234.ts.net:4533`) becomes `https://`; Navidrome and Lidarr speak plain http on their own ports, so type `http://` in front (Connect says so if https fails).
 - Plain `http://` to a public-looking address: Connect warns "This address isn't encrypted. Your password will be sent in the clear." and asks you to agree. The answer is remembered per address. Prefer HTTPS for anything outside your house.
 - Self-signed certificate: Magpie does not trust it (playback would ignore any override). Install your CA in the simulator, then reconnect:
   `xcrun simctl keychain booted add-root-cert /path/to/ca.pem`
@@ -77,6 +77,21 @@ The whole write list, nothing else is ever sent:
 4. Driving limits (only if your CarPlay window offers them): "Type a search" turns disabled ("Unavailable while driving") and long lists end with "Showing n of m".
 - Device only: cold launch with a locked phone, and real head-unit artwork.
 - CarPlay on a physical phone needs Apple's approved CarPlay audio entitlement in your provisioning profile; the simulator doesn't.
+
+**On a real iPhone (not tested; the overnight test path is the simulator plus your real servers).** The project has no signing team (`DEVELOPMENT_TEAM: ""` in `project.yml`) and always applies `App/Magpie.entitlements`, which asks for `com.apple.developer.carplay-audio`. Until Apple approves that entitlement for your team, signing a device build fails with "provisioning profile doesn't include com.apple.developer.carplay-audio". To build for your phone without CarPlay:
+1. Plug in the phone (Developer Mode on) and find your team id (Xcode › Settings › Accounts, or developer.apple.com › Membership).
+2. Build and install with the team set and the entitlements file left out. Command-line overrides beat `project.yml` and survive `xcodegen generate`:
+   ```sh
+   export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+   xcodegen generate
+   xcodebuild build -project Magpie.xcodeproj -scheme Magpie -configuration Debug \
+     -destination 'generic/platform=iOS' -allowProvisioningUpdates \
+     DEVELOPMENT_TEAM=YOURTEAMID CODE_SIGN_ENTITLEMENTS=
+   ```
+   Then run it from Xcode on the phone, or install the built app with Xcode › Window › Devices and Simulators. In the Xcode UI instead: target Magpie › Signing & Capabilities › pick your team, and in Build Settings clear **Code Signing Entitlements**. `xcodegen generate` resets both, so redo them after each generate (do not commit them).
+3. Without the entitlement the app runs on the phone but never appears in CarPlay. With Apple's approval, keep `CODE_SIGN_ENTITLEMENTS` as is and just set the team.
+- The bundle id `com.bleak-rooster.magpie` must be free for your team; if Xcode says it is taken, add `PRODUCT_BUNDLE_IDENTIFIER=com.yourname.magpie` to the command (Keychain items then start empty: sign in again).
+- First device launch after a reboot before unlocking (CarPlay cold start) waits for the unlock, then restores Navidrome and Lidarr.
 
 ## 5. Known limits, risks and troubleshooting
 

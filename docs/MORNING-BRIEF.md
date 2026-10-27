@@ -7,6 +7,7 @@ Branch `v1-build`, 58 commits ahead of `main`. Full how-to: `docs/RUNBOOK.md`. E
 - **Works:** sign in to Navidrome (multi-address failover), browse, play, queue, lyrics, library search; CarPlay Home / Library / Search with Now Playing; read-only Lidarr connect and audit; search that adds a "Not in your library" band; **Try** a song into Lidarr (new artist or existing), Requests screen with retries up to 24 h; Settings with the master "Allow Magpie to change Lidarr" switch and a change log.
 - **Not built:** M6 Finds (separate folder, Keep / Not for me, CarPlay Try/Keep) and M7 polish (Immersive look, high-contrast tokens). I ran hardening first because you'd test the M5 path against real servers first.
 - **Not seen by a human:** CarPlay UI (can't be driven headless). Please look.
+- **Today's test is the simulator plus your real servers.** A build on your iPhone needs a signing team and, until Apple approves the CarPlay entitlement, a build without it (RUNBOOK section 4, "On a real iPhone"). Untested.
 
 ## Try this first (about 15 minutes)
 1. `cd /Users/dev/Dev/navidrome_player && export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer && xcodegen generate && open Magpie.xcodeproj`. Scheme **Magpie**, simulator **iPhone 18 Pro**, Run.
