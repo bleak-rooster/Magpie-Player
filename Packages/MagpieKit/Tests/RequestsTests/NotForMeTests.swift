@@ -60,6 +60,23 @@ import MagpieCore
         #expect(h.server.with { $0.deletedArtists } == [42])
     }
 
+    /// Final fix 2 A-M2: the gate couldn't confirm the delete for a moment (its own root-folder read failed): not a
+    /// refusal, nothing was sent, so Not for me waits and goes through on a later look (bounded, like Keep's restore).
+    @Test func unconfirmedDeleteWaits() async throws {
+        let h = await Harness(setup: Harness.findsSetup)
+        let id = try await Self.readyFind(h)
+        // The runner reads the root folders twice (proof), then the gate reads them for the delete: that one fails.
+        h.server.with { $0.rootReadsFailing = [$0.rootReads + 3] }
+        let before = h.server.writes.count
+
+        let outcome = try await h.runner.notForMe(id, permanentConfirmed: false)
+
+        #expect(outcome == .removed)
+        #expect(Self.writePaths(h, after: before).first == "DELETE trackfile/bulk")
+        let r = try #require(await h.request(id))
+        #expect(!r.notForMeNeedsAttention)
+    }
+
     // MARK: - G3 refusals (nothing written)
 
     /// Security FL2: the album id must still be the request's release group in Lidarr (a refresh can re-create album

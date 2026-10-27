@@ -227,6 +227,11 @@ extension RequestRunner {
                 _ = try await gate.send("DELETE", "trackfile/bulk", body: TrackFileIdsBody(trackFileIds: ids))
             }
             return .next
+        } catch WriteGateError.unconfirmed {
+            // Final fix 2 A-M2: the gate couldn't check it (a read failed); nothing was sent. Later, bounded by the
+            // write budget and the time limit, like Keep's restore.
+            Log.logger("requests").error("Not for me: the delete postponed (couldn't be checked)")
+            return .pending
         } catch let refusal as WriteGateError {
             // Nothing left the device.
             return await stop(id, Self.error(for: refusal), wasSent: p.sent)
@@ -266,6 +271,10 @@ extension RequestRunner {
         do {
             _ = try await gate.send("PUT", "album/monitor", body: UnmonitorBody(albumIds: [p.albumId], monitored: false))
             return .next
+        } catch WriteGateError.unconfirmed {
+            // A-M2: not checked (the ledger couldn't be read), nothing sent: later, bounded.
+            Log.logger("requests").error("Not for me: unmonitoring postponed (couldn't be checked)")
+            return .pending
         } catch let error where error is WriteGateError || Self.isDefinitiveRejection(error) {
             Log.logger("requests").error("Not for me: unmonitoring the album was refused")
             return await stop(id, .needsAttention, wasSent: true)
