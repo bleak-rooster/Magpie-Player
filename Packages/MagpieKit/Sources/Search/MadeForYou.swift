@@ -48,7 +48,7 @@ public struct MadeForYou: Sendable {
         return Self.resolve(recordings, index: index)
     }
 
-    /// The newest playlist of each kind (playlists of no known kind each stand alone), newest first, at most
+    /// The newest playlist of each kind (playlists of no known kind each stand alone), each id once, newest first, at most
     /// `shelfLimit`.
     static func shelf(_ refs: [LBPlaylistRef]) -> [Playlist] {
         // ISO 8601 dates in one offset sort as text; undated ones go last, in the order given.
@@ -60,10 +60,12 @@ public struct MadeForYou: Sendable {
             default: a.offset < b.offset
             }
         }.map(\.element)
-        var seenKinds = Set<String>()
+        var seenKinds = Set<String>(), seenIds = Set<MBID>()
         var shelf: [Playlist] = []
         for ref in ordered where shelf.count < shelfLimit {
+            guard !seenIds.contains(ref.id) else { continue }   // listed twice: once (Home keys cards by id)
             if let kind = ref.sourcePatch, !seenKinds.insert(kind).inserted { continue }
+            seenIds.insert(ref.id)
             shelf.append(Playlist(id: ref.id, title: ref.sourcePatch.flatMap { kindTitles[$0] } ?? ref.title,
                                   date: ref.date.flatMap(Self.day)))
         }

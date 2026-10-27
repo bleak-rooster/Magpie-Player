@@ -45,6 +45,14 @@ private let playlist = data("""
         #expect(MadeForYou.shelf(many).count == MadeForYou.shelfLimit)
     }
 
+    /// Task H1: a playlist listed twice (Home's shelf is keyed by playlist id) shows once.
+    @Test func aPlaylistListedTwiceShowsOnce() {
+        let id = "7c4dae60-9c2d-4b83-9c20-2eaf4f301d33"
+        let shelf = MadeForYou.shelf([ref(id, "Something special", patch: nil, date: nil),
+                                      ref(id, "Something special", patch: nil, date: nil)])
+        #expect(shelf.map(\.id) == [MBID(id)!])
+    }
+
     @Test func libraryTracksResolveThroughTheMatchLadderOthersAreNotYet() {
         let index = MatchIndex(songs: [Song(id: "lib-1", title: "Harbour Lights", artist: "Corin Hale", album: "Saltwater Hymns",
                                             duration: 232)])
