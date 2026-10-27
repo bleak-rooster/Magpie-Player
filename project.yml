@@ -1,7 +1,7 @@
 name: Magpie
 options:
   bundleIdPrefix: com.bleak-rooster
-  organizationName: dev
+  organizationName: bleak-rooster
   deploymentTarget:
     iOS: "27.0"
   createIntermediateGroups: true
