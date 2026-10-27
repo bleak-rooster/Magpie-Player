@@ -11,7 +11,7 @@ Two build variants:
 1. **Sign in to Xcode.** Xcode › Settings › Accounts › `+` › Apple ID. Pick your paid team (not "Personal Team").
 2. **Find your team id.** Same screen, or developer.apple.com › Account › Membership details. It is 10 capital letters and digits, e.g. `AB12CD34EF`.
 3. **Register the bundle id, then create the app record.** The App Store Connect form only lists bundle ids your team has registered, so a new one has to exist first. Either register it at developer.apple.com › Certificates, Identifiers & Profiles › Identifiers › `+` › App IDs (`com.bleak-rooster.magpie`), or let automatic signing register it by archiving once **without** `--upload` (`scripts/archive.sh --team AB12CD34EF`: it signs and exports an .ipa, and registers the App ID on the way). Then appstoreconnect.apple.com › Apps › `+` › New App:
-   - Platform iOS. Bundle ID `com.bleak-rooster.magpie`. If you'd rather use your own bundle id, change `PRODUCT_BUNDLE_IDENTIFIER` in `project.yml` first.
+   - Platform iOS. Bundle ID `com.bleak-rooster.magpie` (your own reverse-domain namespace; set in `project.yml` as `PRODUCT_BUNDLE_IDENTIFIER`). Create the record under your personal developer account (dev).
    - Name: "Magpie" is probably taken on the App Store, and the store name must be unique even for a TestFlight-only app. Try **Magpie Player**, **Magpie for Navidrome**, or **Magpie Music**. The name on the home screen stays "Magpie" (it comes from the app, not the record).
    - SKU: anything you like, e.g. `magpie-ios-1`. Primary language English. User access: full.
 4. **Archive and upload** (only after the app record exists, step 3).
