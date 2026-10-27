@@ -53,9 +53,10 @@ extension AppModel {
     /// Lands `song` for request `id` (once per request).
     func land(_ song: Song, request id: RequestID) {
         guard landedRequests.insert(id).inserted else { return }
+        let startsNow = startsWhenLanded.remove(id) != nil   // landed: never kept for later
         guard player.queue.current?.song.id != song.id else { return }   // playing it already
         // B-M7: a car Try with nothing to play first starts the find, if the queue is still idle.
-        if startsWhenLanded.remove(id) != nil, player.queue.current == nil { return play([song], startAt: 0) }
+        if startsNow, player.queue.current == nil { return play([song], startAt: 0) }
         switch LandingRule.landing(waitingOnScreen: isOnWaitScreen(id), playing: player.isPlaying) {
         case .play:
             playNow(song)
@@ -65,6 +66,12 @@ extension AppModel {
             guard let entry = (queued ?? player.queue.current)?.id else { return }
             playNowBanner = PlayNowBanner(request: id, song: song, entry: entry, idle: queued == nil)
         }
+    }
+
+    /// A car Try waiting to start when it lands (B-M7) that was cancelled, failed or otherwise ended never starts.
+    func forgetEndedStarts() {
+        guard !startsWhenLanded.isEmpty else { return }
+        for request in requests where request.state.isTerminal { startsWhenLanded.remove(request.id) }
     }
 
     /// The banner while its song is still to come: upcoming in the queue, or (an idle queue's landing) loaded and

@@ -74,7 +74,12 @@ final class AppModel {
     /// Finds already played on this account: they are no longer New finds.
     var playedFinds: Set<String> = []
     /// Try requests, newest last (from the runner).
-    var requests: [MagpieRequest] = [] { didSet { syncRequestFinds() } }
+    var requests: [MagpieRequest] = [] {
+        didSet {
+            syncRequestFinds()
+            forgetEndedStarts()
+        }
+    }
     /// D6: a find that became ready went next in the queue; the in-app "Play now" banner (AppModel+Landing.swift).
     var playNowBanner: PlayNowBanner?
     /// Wait screens on screen now, per request (a request's screen may be shown twice, e.g. sheet and Requests).
@@ -356,6 +361,7 @@ final class AppModel {
                 appDefaults.removeObject(forKey: key)
             }
         }
+        startsWhenLanded = []
         findIdsCache = nil
         findsIdentity.forgetAccount()
         findSongs = []

@@ -287,6 +287,32 @@ private let t0 = Date(timeIntervalSince1970: 1_900_000_000)
         cleanUp(model)
     }
 
+    /// V-fix: a car Try waiting to start when it lands is forgotten once the request is cancelled (or fails), so a
+    /// later landing of the same id can't start it, and once it has landed, even when it was already playing.
+    @Test func startsWhenLandedIsForgottenOnCancelAndOnLanding() async throws {
+        let model = try await ready(tubifarry: true)
+        songsFail.withLock { $0 = true }
+        model.findsSetup = FindsSetup(lidarrScope: "l", navidromeScope: try #require(model.navidromeScope),
+                                      library: NavidromeLibrary(id: 2, name: "Samples", path: "/music/samples"))
+        #expect(await model.tryNext(recording) == .noMix)
+        for _ in 0..<200 where model.requests.isEmpty { try await Task.sleep(for: .milliseconds(10)) }
+        let id = try #require(model.requests.first { $0.recording.recordingMBID == recordingMBID }?.id)
+        #expect(model.startsWhenLanded == [id])
+        await model.cancelRequest(id)
+        for _ in 0..<200 where model.requests.first(where: { $0.id == id })?.state != .cancelled {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(model.startsWhenLanded.isEmpty, "a cancelled request never starts")
+
+        // Landing while that very song already plays still forgets the id.
+        model.startsWhenLanded.insert(id)
+        model.landedRequests.remove(id)
+        model.play([Self.find("harbour")], startAt: 0)
+        model.land(Self.find("harbour"), request: id)
+        #expect(model.startsWhenLanded.isEmpty)
+        cleanUp(model)
+    }
+
     /// Fix 3: the car's search never waits long for outside sources (CPSearchTemplate can't stream): they get a short
     /// deadline; the library keeps its usual one.
     @Test func carSearchDoesNotWaitForOutsideSources() async throws {
