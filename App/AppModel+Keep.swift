@@ -64,15 +64,20 @@ extension AppModel {
 
     /// Keeps the find; returns what to tell the owner and whether Bring in more follows.
     func keep(_ id: RequestID) async -> KeepReply {
-        guard let runner else { return KeepReply(message: KeepCopy.unavailable) }
-        defer { pollRequests() }   // a move still going, or a song still to look up, is followed by `tick`
         do {
-            let outcome = try await runner.keep(id)
-            if outcome == .moved { Task { await refreshFinds() } }
-            return KeepCopy.reply(outcome)
+            return KeepCopy.reply(try await keepFind(id))
         } catch {
             return KeepReply(message: KeepCopy.message(for: error))
         }
+    }
+
+    /// The one Keep, for the phone and the car (AppModel+CarPlay.swift): the runner checks everything on fresh state.
+    func keepFind(_ id: RequestID) async throws -> RequestRunner.KeepOutcome {
+        guard let runner else { throw RequestRunner.KeepError.unavailable }
+        defer { pollRequests() }   // a move still going, or a song still to look up, is followed by `tick`
+        let outcome = try await runner.keep(id)
+        if outcome == .moved { Task { await refreshFinds() } }
+        return outcome
     }
 
     /// Songs kept from Finds that aren't lossless yet: "Lossless soon".

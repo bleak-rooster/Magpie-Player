@@ -1,3 +1,4 @@
+import DesignSystem
 import Foundation
 import MagpieCore
 
@@ -40,6 +41,8 @@ public enum RowAction: Sendable, Hashable {
     case none
     case open(CPDestination)
     case play(CPPlayRequest)
+    /// A not-yet song: offers "Try it next" in an action sheet (modal, no push; D6).
+    case tryNext(ExternalRecording)
 }
 
 public struct CPRowModel: Sendable, Hashable, Identifiable {
@@ -53,11 +56,13 @@ public struct CPRowModel: Sendable, Hashable, Identifiable {
     public var round: Bool
     public var playing: Bool
     public var action: RowAction
+    /// SF Symbol shown with the status text of a find or not-yet row, so state never rests on the art alone (D3).
+    public var statusSymbol: String?
 
     public init(id: String, title: String, detail: String? = nil, artworkKey: String? = nil,
-                round: Bool = false, playing: Bool = false, action: RowAction) {
+                round: Bool = false, playing: Bool = false, action: RowAction, statusSymbol: String? = nil) {
         self.id = id; self.title = title; self.detail = detail; self.artworkKey = artworkKey
-        self.round = round; self.playing = playing; self.action = action
+        self.round = round; self.playing = playing; self.action = action; self.statusSymbol = statusSymbol
     }
 }
 
@@ -102,6 +107,8 @@ public struct CPNavigator: Sendable {
 /// anything (critique H2).
 public enum CarPlayState: Sendable, Hashable {
     case locked, notSetUp, outOfReach, failed, empty
+    /// No Finds library is chosen on the phone.
+    case findsOff
 }
 
 /// Builds the row models for each CarPlay screen. All functions are pure.
@@ -116,6 +123,7 @@ public enum CarPlayRows {
         case .outOfReach: ("state.outOfReach", "Your library is out of reach")
         case .failed: ("state.failed", "Your library didn't send this")
         case .empty: ("state.empty", "Nothing here yet")
+        case .findsOff: ("state.findsOff", "Finds aren't set up on this iPhone")
         }
         return [CPSectionModel(header: nil, rows: [CPRowModel(id: id, title: title, action: .none)])]
     }
@@ -159,6 +167,27 @@ public enum CarPlayRows {
         return sections
     }
 
+    /// The Finds tab (D12): New finds, then the finds with days left, as the phone's Finds shelf has them. Records
+    /// with a text status and a symbol (D3). A tap plays the finds from there; Keep is in Now Playing.
+    public static func finds(_ shelf: CPFindsShelf?, playingId: String?) -> [CPSectionModel] {
+        guard let shelf else { return state(.findsOff) }
+        let all = shelf.newFinds + shelf.finds
+        let songs = all.map(\.song)
+        var index = 0
+        func section(_ header: String, _ finds: [CPFind]) -> CPSectionModel {
+            CPSectionModel(header: header, rows: finds.map { find in
+                defer { index += 1 }
+                let state = find.state
+                return CPRowModel(id: "find.\(find.song.id)", title: display(find.song.title, untitled),
+                                  detail: "\(state.statusText) · \(display(find.song.artist, unknownArtist))",
+                                  artworkKey: find.song.coverArtId, round: true, playing: find.song.id == playingId,
+                                  action: .play(.songs(songs, startAt: index)), statusSymbol: state.statusSymbol)
+            })
+        }
+        let sections = [section("New finds", shelf.newFinds), section("Finds", shelf.finds)].filter { !$0.rows.isEmpty }
+        return sections.isEmpty ? state(.empty) : sections
+    }
+
     // MARK: Lists (depth 2)
 
     public static func playlists(_ playlists: [Playlist]) -> [CPSectionModel] {
@@ -182,21 +211,24 @@ public enum CarPlayRows {
         nonEmpty(unique(albums, \.id).map { albumRow($0, id: "album.\($0.id)") })
     }
 
-    /// A recent search re-run: library songs, then albums.
-    public static func searchResults(_ result: LibrarySearchResult, playingId: String?) -> [CPSectionModel] {
+    /// A recent search re-run: library songs, then albums, then songs not in the library (D4: library first).
+    public static func searchResults(_ result: LibrarySearchResult, notYet: [ExternalRecording] = [],
+                                     offer: CPTryOffer = .unavailable, playingId: String?) -> [CPSectionModel] {
         let songs = CPSectionModel(header: "Songs", rows: result.songs.enumerated().map { i, song in
             CPRowModel(id: "song.\(i).\(song.id)", title: display(song.title, untitled), detail: song.artist,
                        artworkKey: song.coverArtId, playing: song.id == playingId,
                        action: .play(.songs(result.songs, startAt: i)))
         })
         let albums = CPSectionModel(header: "Albums", rows: unique(result.albums, \.id).map { albumRow($0, id: "album.\($0.id)") })
-        let sections = [songs, albums].filter { !$0.rows.isEmpty }
+        let outside = CPSectionModel(header: RowState.notYet.statusText, rows: notYetRows(notYet, offer: offer))
+        let sections = [songs, albums, outside].filter { !$0.rows.isEmpty }
         return sections.isEmpty ? state(.empty) : sections
     }
 
     /// Results for the system search template, which shows a flat list: the kind goes in the
-    /// detail line.
-    public static func searchItems(_ result: LibrarySearchResult) -> [CPRowModel] {
+    /// detail line. Songs not in the library come last.
+    public static func searchItems(_ result: LibrarySearchResult, notYet: [ExternalRecording] = [],
+                                   offer: CPTryOffer = .unavailable) -> [CPRowModel] {
         let songs = result.songs.enumerated().map { i, song in
             CPRowModel(id: "song.\(i).\(song.id)", title: display(song.title, untitled), detail: "Song · \(song.artist)",
                        artworkKey: song.coverArtId, action: .play(.songs(result.songs, startAt: i)))
@@ -206,7 +238,33 @@ public enum CarPlayRows {
             return CPRowModel(id: "album.\($0.id)", title: name, detail: "Album · \($0.artist)",
                               artworkKey: $0.coverArtId, action: .open(.album(id: $0.id, title: name)))
         }
-        return songs + albums
+        return songs + albums + notYetRows(notYet, offer: offer)
+    }
+
+    /// Fits the search template's flat list into `maxItems`: library rows first (D4), but when the list is too long,
+    /// up to a third of it is kept for songs not in the library, so they are never cut off entirely.
+    public static func fitSearchItems(_ rows: [CPRowModel], maxItems: Int) -> [CPRowModel] {
+        guard maxItems > 0 else { return [] }
+        guard rows.count > maxItems else { return rows }
+        let outside = rows.filter { $0.id.hasPrefix(notYetPrefix) }
+        let inside = rows.filter { !$0.id.hasPrefix(notYetPrefix) }
+        let outsideShown = min(outside.count, max(maxItems / 3, maxItems - inside.count))
+        return Array(inside.prefix(maxItems - outsideShown)) + outside.prefix(outsideShown)
+    }
+
+    static let notYetPrefix = "notyet."
+
+    /// A song from outside the library: a record with "Not in your library" and its symbol (D3), and "· Try" when
+    /// Try is possible here; then a tap offers "Try it next". Otherwise the row does nothing.
+    static func notYetRows(_ recordings: [ExternalRecording], offer: CPTryOffer) -> [CPRowModel] {
+        let state = RowState.notYet
+        let status = offer == .unavailable ? state.statusText : "\(state.statusText) · Try"
+        return recordings.enumerated().map { i, recording in
+            CPRowModel(id: "\(notYetPrefix)\(i).\(recording.recordingMBID?.rawValue ?? recording.title)",
+                       title: display(recording.title, untitled),
+                       detail: "\(status) · \(display(recording.artist, unknownArtist))", round: true,
+                       action: offer == .unavailable ? .none : .tryNext(recording), statusSymbol: state.statusSymbol)
+        }
     }
 
     // MARK: Leaves (depth 3): rows play, never push
@@ -257,7 +315,7 @@ public enum CarPlayRows {
     static let unknownArtist = "Unknown artist"
 
     /// Tags can leave a name empty; a car screen never shows a blank row or title.
-    private static func display(_ name: String, _ fallback: String) -> String {
+    static func display(_ name: String, _ fallback: String) -> String {
         name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? fallback : name
     }
 

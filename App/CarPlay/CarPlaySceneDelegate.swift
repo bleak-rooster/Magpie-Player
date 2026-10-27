@@ -4,6 +4,7 @@ import CarPlay
 import CarPlayUI
 import MagpieCore
 import Observation
+import Search
 
 /// The CarPlay scene. Works when Magpie is cold-launched from the car with the phone UI never
 /// opened: `AppModel.shared` restores the session from the Keychain on first use, and the
@@ -91,8 +92,12 @@ final class CarPlayLibraryAdapter: CarPlayLibrary {
         return (result.playlist, result.songs)
     }
 
-    func search(_ query: String) async throws -> LibrarySearchResult {
-        try await model.request { try await $0.search(query, songCount: 20, albumCount: 10, artistCount: 0) }
+    /// The phone's merged search: library first, then songs not in the library (albums and artists from outside
+    /// aren't offered in the car).
+    func search(_ query: String) async throws -> CarPlaySearchResult {
+        let sections = try await model.mergedSearch().runReportingLibraryFailure(query)
+        return CarPlaySearchResult(library: LibrarySearchResult(songs: sections.songs, albums: sections.albums),
+                                   notYet: sections.notYet.songs)
     }
 
     /// Server-side sizes match the phone's, so the in-memory cache is shared.
@@ -110,6 +115,20 @@ final class CarPlayLibraryAdapter: CarPlayLibrary {
     var recentSearches: [String] { recents.items }
 
     func addRecentSearch(_ query: String) { recents.add(query) }
+
+    // Finds, Keep and Try: the phone's own (AppModel+CarPlay.swift).
+
+    var findsShelf: CPFindsShelf? { model.carPlayFinds }
+
+    func refreshFinds() async { await model.refreshFinds() }
+
+    func mayKeep(songId: String) -> Bool { model.carPlayMayKeep(songId: songId) }
+
+    func keep(songId: String) async -> CPKeepResult { await model.carPlayKeep(songId: songId) }
+
+    var tryOffer: CPTryOffer { model.carPlayTryOffer }
+
+    func tryNext(_ recording: ExternalRecording) async -> CPTryResult { await model.tryNext(recording) }
 
     private struct ArtistPage: Sendable {
         let artist: Artist
