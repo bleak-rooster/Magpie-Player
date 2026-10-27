@@ -25,7 +25,9 @@ public struct KeychainStore: Sendable {
     }
 
     public func set(_ data: Data, for key: String) throws {
-        let update = [kSecValueData as String: data]
+        // V-fix: an update sets the class too, so an item saved earlier with another class can't keep it.
+        let update: [String: Any] = [kSecValueData as String: data,
+                                     kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly]
         var status = SecItemUpdate(baseQuery(key) as CFDictionary, update as CFDictionary)
         if status == errSecItemNotFound {
             var add = baseQuery(key)

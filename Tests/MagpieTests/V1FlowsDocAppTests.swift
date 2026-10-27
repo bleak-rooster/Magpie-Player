@@ -198,7 +198,7 @@ private func eventually(_ seconds: Double = 5, _ condition: () -> Bool) async ->
         let service = "com.bleak-rooster.magpie.tests.\(UUID().uuidString)"
         let keychain = KeychainStore(service: service)
         try keychain.set(Data("v".utf8), for: "item")
-        try keychain.set(Data("w".utf8), for: "item")   // an update keeps the class
+        try keychain.set(Data("w".utf8), for: "item")   // an update sets the class again
         defer { try? keychain.remove("item") }
         let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
                                     kSecAttrAccount as String: "item", kSecReturnAttributes as String: true,
@@ -212,6 +212,29 @@ private func eventually(_ seconds: Double = 5, _ condition: () -> Bool) async ->
         #expect(SessionStore.standard.keychain.service == "com.bleak-rooster.magpie.session")
         #expect(LidarrConnectionStore.standard.keychain.service == "com.bleak-rooster.magpie.session")
         #expect(ListenBrainzTokenStore.standard.keychain.service == "com.bleak-rooster.magpie.session")
+    }
+
+    /// V-fix: an item that exists with another protection class is moved to `AfterFirstUnlockThisDeviceOnly` when it
+    /// is updated, so a class mismatch can't persist.
+    @Test func updatingAnItemAlsoSetsItsProtectionClass() throws {
+        let service = "com.bleak-rooster.magpie.tests.\(UUID().uuidString)"
+        let keychain = KeychainStore(service: service)
+        defer { try? keychain.remove("item") }
+        let add: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
+                                  kSecAttrAccount as String: "item", kSecValueData as String: Data("old".utf8),
+                                  kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlocked]
+        #expect(SecItemAdd(add as CFDictionary, nil) == errSecSuccess)
+
+        try keychain.set(Data("new".utf8), for: "item")
+
+        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
+                                    kSecAttrAccount as String: "item", kSecReturnAttributes as String: true,
+                                    kSecMatchLimit as String: kSecMatchLimitOne]
+        var result: CFTypeRef?
+        #expect(SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess)
+        let attributes = try #require(result as? [String: Any])
+        #expect(attributes[kSecAttrAccessible as String] as? String == kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly as String)
+        #expect(try keychain.get("item") == Data("new".utf8))
     }
 
     /// Application Support files are written with `completeFileProtectionUntilFirstUserAuthentication`, also
