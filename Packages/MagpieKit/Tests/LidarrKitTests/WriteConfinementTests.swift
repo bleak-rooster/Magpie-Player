@@ -11,6 +11,9 @@ import MagpieTestSupport
 /// The fake Lidarr: roots `/music/library` (main) and `/music/samples` (Finds). Artist 7 is the owner's (ledger:
 /// an existing-artist request, not created), artist 42 is a find Magpie created (tagged `magpie-find` 2, in the
 /// Finds root). Track file 9 is the owner's, 10 the find's, 11 recorded for the find but outside the Finds root.
+/// The MBID of the find Magpie created (artist 42).
+private let findMBID = "42424242-4242-4242-8242-424242424242"
+
 @Suite struct WriteConfinementTests {
     typealias Call = WriteGateTests.Call
 
@@ -25,7 +28,8 @@ import MagpieTestSupport
 
         init(roots: [String] = ["/music/library", "/music/samples"], ledgerInstance: String? = nil,
              findTags: [Int] = [2], findPath: String = "/music/samples/Find", kept: Bool = false,
-             rootsDown: Bool = false, hold: (method: String, suffix: String)? = nil) async throws {
+             rootsDown: Bool = false, hold: (method: String, suffix: String)? = nil,
+             findArtistMBID: String = findMBID) async throws {
             client = LidarrClient(base: testBase, apiKey: testKey,
                                   transport: HoldTransport(inner: transport, hold: hold, latch: latch))
             ledger = Ledger(fileURL: nil, instance: ledgerInstance ?? client.instanceScope)
@@ -34,7 +38,8 @@ import MagpieTestSupport
                                                 mode: .fallback, send: .applied))
             try await ledger.record(LedgerEntry(lidarrArtistId: 42, albumId: 50, rgMbid: MBID("00000000-0000-0000-0000-000000000050")!,
                                                 createdArtist: true, wasMonitoredBefore: false, root: "/music/samples",
-                                                mode: .finds, keptAt: kept ? Date() : nil, send: .applied))
+                                                mode: .finds, keptAt: kept ? Date() : nil, send: .applied,
+                                                artistMbid: MBID(findMBID)))
             // Album 32: the owner's own, monitored before Magpie's Try came along (G6: never unmonitored).
             try await ledger.record(LedgerEntry(lidarrArtistId: 7, albumId: 32, rgMbid: MBID("00000000-0000-0000-0000-000000000032")!,
                                                 createdArtist: false, wasMonitoredBefore: true, root: "/music/library",
@@ -47,8 +52,8 @@ import MagpieTestSupport
                 "id": 7, "artistName": "Owner", "path": "/music/library/Owner", "rootFolderPath": "/music/library",
                 "monitored": true, "tags": [Int]()]))
             t.stub(pathSuffix: "/api/v1/artist/42", body: reply([
-                "id": 42, "artistName": "Find", "path": findPath, "rootFolderPath": "/music/samples",
-                "monitored": true, "tags": findTags]))
+                "id": 42, "artistName": "Find", "foreignArtistId": findArtistMBID, "path": findPath,
+                "rootFolderPath": "/music/samples", "monitored": true, "tags": findTags]))
             t.stub(pathSuffix: "/api/v1/artist/99", status: 404)
             t.stub(pathSuffix: "/api/v1/trackfile/9", body: reply([
                 "id": 9, "artistId": 7, "albumId": 31, "path": "/music/library/Owner/Album/01.flac"]))
@@ -205,6 +210,19 @@ import MagpieTestSupport
                 await Self.expectRefused(call, gate, fake)
             }
         }
+    }
+
+    /// V-fix: Lidarr reused the id of the artist Magpie created for another artist (another MBID): not Magpie's.
+    @Test func reusedArtistIdIsNotMagpies() async throws {
+        let fake = try await Fake(findArtistMBID: "11111111-1111-4111-8111-111111111111")
+        let gate = await fake.gate()
+        for call in [Call("DELETE", "artist/42?deleteFiles=false&addImportListExclusion=false"),
+                     Call("DELETE", "trackfile/10"),
+                     Call("PUT", "artist/editor", #"{"artistIds":[42],"rootFolderPath":"/music/library","moveFiles":true}"#),
+                     Call("PUT", "artist/editor", #"{"artistIds":[42],"monitorNewItems":"new"}"#)] {
+            await Self.expectRefused(call, gate, fake)
+        }
+        #expect(fake.writes.isEmpty)
     }
 
     /// Kept (G3.4): nothing of a kept artist is deleted. The editor may still put it back (Keep's restore).

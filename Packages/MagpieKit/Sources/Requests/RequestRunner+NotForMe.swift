@@ -424,7 +424,8 @@ extension RequestRunner {
             return .unknown
         }
         lastLidarrContact = now()
-        guard Self.mayKeep(artist, request: r, setup: setup, roots: roots), let path = artist.path else { return .no }
+        guard entries.contains(where: { $0.created(artist) }),   // the same artist, not a reused id
+              Self.mayKeep(artist, request: r, setup: setup, roots: roots), let path = artist.path else { return .no }
         // FL2: the album id is still the request's release group (a refresh can re-create rows and reuse an id).
         guard albums.contains(where: { $0.id == albumId && $0.foreignAlbumId == entry.rgMbid }) else { return .no }
         if let artistPath, !Self.sameBytes(path, artistPath) { return .no }
@@ -450,8 +451,9 @@ extension RequestRunner {
     /// records no track file and no other monitored album for it; and its folder holds no file on disk. A 404:
     /// it is gone already (`.no`, nothing to send).
     private func mayRemoveArtist(_ r: MagpieRequest, _ p: NotForMeProgress) async -> Proven<Void> {
+        let entries: [LedgerEntry]
         do {
-            let entries = try await ledger.entries.filter { $0.lidarrArtistId == p.artistId }
+            entries = try await ledger.entries.filter { $0.lidarrArtistId == p.artistId }
             guard entries.contains(where: \.createdArtist), !entries.contains(where: { $0.keptAt != nil }) else { return .no }
         } catch {
             return .unknown
@@ -467,7 +469,8 @@ extension RequestRunner {
             let artist = try await lidarr.artist(id: p.artistId)
             let roots = try await lidarr.rootFolders().map(\.path)
             lastLidarrContact = now()
-            guard Self.mayKeep(artist, request: r, setup: setup, roots: roots), let path = artist.path,
+            guard entries.contains(where: { $0.created(artist) }),   // the same artist, not a reused id
+                  Self.mayKeep(artist, request: r, setup: setup, roots: roots), let path = artist.path,
                   Self.sameBytes(path, p.artistPath) else { return .no }
             guard try await lidarr.trackFiles(artistId: p.artistId).isEmpty,
                   !(try await lidarr.albums(artistId: p.artistId)).contains(where: { $0.id != p.albumId && $0.monitored })

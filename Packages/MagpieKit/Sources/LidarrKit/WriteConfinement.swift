@@ -113,8 +113,11 @@ public struct WriteConfinement: Sendable {
             self.entries = entries; self.lidarr = lidarr; self.roots = roots
         }
 
-        func created(_ artistId: Int) -> Bool {
-            entries.contains { $0.lidarrArtistId == artistId && $0.createdArtist }
+        /// The ledger says Magpie created the artist Lidarr has under this id now (same MBID: ids can be reused).
+        func created(_ artistId: Int) async throws -> Bool {
+            guard entries.contains(where: { $0.lidarrArtistId == artistId && $0.createdArtist }) else { return false }
+            let fresh = try await artist(artistId)
+            return entries.contains { $0.created(fresh) }
         }
 
         func kept(_ artistId: Int) -> Bool {
@@ -160,7 +163,7 @@ public struct WriteConfinement: Sendable {
 
         /// Created by Magpie, tagged `magpie-find`, and strictly inside the Finds root now. Returns its folder.
         func findArtist(_ id: Int) async throws -> (path: String, guard: PathGuard) {
-            guard created(id) else { throw Refusal(reason: "not an artist Magpie added") }
+            guard try await created(id) else { throw Refusal(reason: "not an artist Magpie added") }
             let (finds, tag) = try await findsGuard()
             let artist = try await artist(id)
             guard artist.tags.contains(tag), let path = artist.path, finds.isInside(path) else {
@@ -215,7 +218,7 @@ public struct WriteConfinement: Sendable {
             guard let ids = value("artistids") as? [Any], ids.count == 1, let id = (ids[0] as? NSNumber)?.intValue else {
                 throw Refusal(reason: "the artist editor changes one artist")
             }
-            guard created(id) else { throw Refusal(reason: "not an artist Magpie added") }
+            guard try await created(id) else { throw Refusal(reason: "not an artist Magpie added") }
             guard let target = value("rootfolderpath") as? String else { return }
             if let move = value("movefiles") as? NSNumber, move.boolValue {
                 // Keep: a tagged find in the Finds folder moves into the main root, nowhere else.

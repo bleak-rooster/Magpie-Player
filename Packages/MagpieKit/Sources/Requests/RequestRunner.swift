@@ -434,7 +434,7 @@ public actor RequestRunner {
             do { albums = try await lidarr.albums(artistId: artist.id) } catch { return await apply(id, .lidarrUnavailable) }
             let available = Set(albums.compactMap(\.foreignAlbumId))
             // An artist Magpie just added may not list its albums yet (Lidarr's refresh): pick as for a new artist.
-            let magpies = (try? await ledger.createdArtist(artist.id)) == true
+            let magpies = (try? await ledger.createdArtist(artist)) == true
             let fits = Set(recording.releases.filter(Self.fitsFindsProfile).map(\.releaseGroup.id))
             guard let rg = ReleasePicker.smallest(containing: recording, available: available)
                     ?? (magpies ? ReleasePicker.smallest(containing: recording, available: fits) : nil) else {
@@ -644,7 +644,8 @@ public actor RequestRunner {
         try ensure(id, .adding)
         try await ledger.record(LedgerEntry(lidarrArtistId: artist.id, albumId: nil, rgMbid: rg, createdArtist: true,
                                             wasMonitoredBefore: false, root: r.root ?? artist.rootFolderPath ?? "",
-                                            mode: r.plan?.mode ?? .fallback, requestId: id.description))
+                                            mode: r.plan?.mode ?? .fallback, requestId: id.description,
+                                            artistMbid: artist.foreignArtistId))
         await mutate(id) {
             $0.lidarrArtistId = artist.id
             $0.skipNextSearch = true
@@ -669,7 +670,7 @@ public actor RequestRunner {
         let albums = try await lidarr.albums(artistId: artist.id)
         guard let album = albums.first(where: { $0.foreignAlbumId == rg }) else {
             // Magpie's own artist whose album isn't listed yet: wait for it (no write), with the usual give-up.
-            guard try await ledger.createdArtist(artist.id) else { throw AddFailure(reason: .notInCatalogue) }
+            guard try await ledger.createdArtist(artist) else { throw AddFailure(reason: .notInCatalogue) }
             try ensure(id, .adding)
             await mutate(id) {
                 $0.lidarrArtistId = artist.id
@@ -695,7 +696,7 @@ public actor RequestRunner {
         // record (a find's own monitor and mode): a second Try of the same release inherits it, never replaces it.
         let readyIds = Set(list.filter { $0.state == .ready || $0.state == .kept }.map(\.id.description))
         let readyPrior = prior.flatMap { p in
-            p.isOpen && p.isApplied && p.createdArtist && p.requestId.map(readyIds.contains) == true ? p : nil
+            p.isOpen && p.isApplied && p.created(artist) && p.requestId.map(readyIds.contains) == true ? p : nil
         }
         let wasMonitoredBefore = album.monitored
             ? (livePrior?.wasMonitoredBefore ?? readyPrior?.wasMonitoredBefore ?? true) : false
@@ -703,11 +704,12 @@ public actor RequestRunner {
         try ensure(id, .adding)
         let entry = LedgerEntry(
             lidarrArtistId: artist.id, albumId: album.id, rgMbid: rg,
-            createdArtist: (try? await ledger.createdArtist(artist.id)) == true,
+            createdArtist: (try? await ledger.createdArtist(artist)) == true,
             wasMonitoredBefore: wasMonitoredBefore,
             root: readyPrior?.root ?? artist.rootFolderPath ?? r.root ?? artist.path ?? "", mode: readyPrior?.mode ?? .fallback,
             keptAt: prior?.keptAt, send: needsMonitor ? .notSent : .applied,
-            requestId: needsMonitor ? id.description : (readyPrior?.requestId ?? id.description))
+            requestId: needsMonitor ? id.description : (readyPrior?.requestId ?? id.description),
+            artistMbid: artist.foreignArtistId)
         try await ledger.record(entry)
         await mutate(id) {
             $0.lidarrArtistId = artist.id
@@ -723,7 +725,7 @@ public actor RequestRunner {
     /// artist Magpie created costs the root-folder read; an owner's artist is never a find (G6). A failed read
     /// throws: the request waits rather than guess.
     private func isFindNow(_ artist: LidarrArtist) async throws -> Bool {
-        guard let setup = await setup(), let finds = setup.finds, try await ledger.createdArtist(artist.id) else {
+        guard let setup = await setup(), let finds = setup.finds, try await ledger.createdArtist(artist) else {
             return false
         }
         let findTags = Set(finds.tagIds).subtracting(setup.tagIds)
@@ -784,7 +786,7 @@ public actor RequestRunner {
             try await ledger.record(LedgerEntry(lidarrArtistId: artistId, albumId: nil, rgMbid: plan.releaseGroupMBID,
                                                 createdArtist: true, wasMonitoredBefore: false,
                                                 root: target.setup.rootFolderPath, mode: target.mode,
-                                                requestId: id.description))
+                                                requestId: id.description, artistMbid: plan.artistMBID))
         } catch {
             Log.logger("requests").error("ledger not written for a new artist; retried with its album")
         }
@@ -875,7 +877,8 @@ public actor RequestRunner {
                 try await ledger.record(LedgerEntry(lidarrArtistId: artistId, albumId: album.id, rgMbid: rg,
                                                     createdArtist: true, wasMonitoredBefore: false,
                                                     root: r.root ?? "", mode: r.plan?.mode ?? .fallback,
-                                                    send: .applied, requestId: id.description))
+                                                    send: .applied, requestId: id.description,
+                                                    artistMbid: r.plan?.artistMBID))
             } catch {
                 return   // no ledger, no album id: tried again next tick
             }

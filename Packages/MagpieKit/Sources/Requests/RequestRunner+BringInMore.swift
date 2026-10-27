@@ -157,7 +157,7 @@ extension RequestRunner {
         var result = BringInResult(albums: 0, searching: false, following: follow && !needsFollow, heldBack: heldBack)
         if !albums.isEmpty {
             do {
-                albums = try await monitor(albums, artistId: artistId, root: target.mainRoot)
+                albums = try await monitor(albums, artist: target.artist, root: target.mainRoot)
             } catch {
                 await arrived(id, Set(reserved))   // nothing monitored: no place taken
                 throw error
@@ -277,7 +277,8 @@ extension RequestRunner {
             throw BringInError.unavailable
         }
         lastLidarrContact = now()
-        guard let expected = r.plan?.artistMBID, artist.foreignArtistId == expected else { throw BringInError.notKept }
+        guard let expected = r.plan?.artistMBID, artist.foreignArtistId == expected,
+              artistEntries.contains(where: { $0.created(artist) }) else { throw BringInError.notKept }
         let main = PathGuard(findsRoot: setup.mainRoot, otherRoots: [setup.findsRoot], caseInsensitive: false)
         guard !artist.tags.contains(setup.findTagId), let path = artist.path, main.isInside(path) else {
             throw BringInError.notKept
@@ -334,13 +335,14 @@ extension RequestRunner {
     /// inherited by a Cancel) and "may have landed" before the PUT; afterwards applied, or not sent when the gate
     /// or Lidarr refused it. A lost answer is checked with a GET: the albums it shows monitored are applied and
     /// returned (they get searched); the rest stay unclear. Returns the albums monitored now.
-    private func monitor(_ albums: [LidarrAlbum], artistId: Int, root: String) async throws -> [LidarrAlbum] {
+    private func monitor(_ albums: [LidarrAlbum], artist: LidarrArtist, root: String) async throws -> [LidarrAlbum] {
+        let artistId = artist.id
         let at = now()
         var entries = albums.compactMap { album in
             album.foreignAlbumId.map {
                 LedgerEntry(lidarrArtistId: artistId, albumId: album.id, rgMbid: $0, createdArtist: true,
                             wasMonitoredBefore: false, root: root, mode: .fallback, keptAt: at, send: .unclear,
-                            closedAt: at)
+                            closedAt: at, artistMbid: artist.foreignArtistId)
             }
         }
         do {

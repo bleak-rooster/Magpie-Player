@@ -145,6 +145,17 @@ import MagpieCore
         #expect(await relaunched.request(id)?.state == .ready)
     }
 
+    /// V-fix: Lidarr gave the id of the artist Magpie created to another artist (another MBID): nothing is moved.
+    @Test func reusedArtistIdIsNotKept() async throws {
+        let h = await Harness(setup: Harness.findsSetup)
+        let id = try await Self.readyFind(h)
+        h.server.with { $0.artists[0].mbid = MBID("11111111-1111-4111-8111-111111111111")! }
+        let before = h.server.writes.count
+        await #expect(throws: RequestRunner.KeepError.notAFind) { try await h.runner.keep(id) }
+        #expect(h.server.writes.count == before)
+        #expect(await h.request(id)?.state == .ready)
+    }
+
     /// G4 / G3.3: the artist path must be strictly inside the confirmed Finds root, compared case-sensitively
     /// and component by component; anything else is refused with nothing written.
     @Test(arguments: ["/music/samples-old/Aurora Field", "/music/Samples/Aurora Field", "/music/library/Aurora Field",

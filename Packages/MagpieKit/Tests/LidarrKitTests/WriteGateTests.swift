@@ -262,11 +262,12 @@ struct GateEnv {
         t.stub(method: "POST", pathSuffix: "/api/v1/command", body: json(#"{"id":99}"#))
         // FM1: the artist delete is confined to a find Magpie created (ledger, fresh reads).
         t.stub(pathSuffix: "/api/v1/rootfolder", body: json(#"[{"id":1,"path":"/music/library"},{"id":2,"path":"/music/samples"}]"#))
-        t.stub(pathSuffix: "/api/v1/artist/12", body: json(#"{"id":12,"artistName":"F","path":"/music/samples/F","tags":[2]}"#))
+        t.stub(pathSuffix: "/api/v1/artist/12", body: json(#"{"id":12,"artistName":"F","foreignArtistId":"12121212-1212-4212-8212-121212121212","path":"/music/samples/F","tags":[2]}"#))
         let (client, _) = makeClient(t)
         let ledger = Ledger(fileURL: nil, instance: client.instanceScope)
         try await ledger.record(LedgerEntry(lidarrArtistId: 12, albumId: 3, rgMbid: MBID("00000000-0000-0000-0000-000000000003")!,
-                                            createdArtist: true, wasMonitoredBefore: false, root: "/music/samples", mode: .finds))
+                                            createdArtist: true, wasMonitoredBefore: false, root: "/music/samples", mode: .finds,
+                                            artistMbid: MBID("12121212-1212-4212-8212-121212121212")))
         let gate = LidarrWriteGate(client: client, logURL: env.logURL, defaultsSuite: env.defaults,
                                    confinement: WriteConfinement(ledger: ledger, roots: {
                                        .init(mainRoot: "/music/library", findsRoot: "/music/samples", findTagId: 2)

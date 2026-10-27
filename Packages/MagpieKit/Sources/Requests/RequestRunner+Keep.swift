@@ -165,7 +165,8 @@ extension RequestRunner {
             throw KeepError.unavailable
         }
         lastLidarrContact = now()
-        guard Self.mayKeep(artist, request: r, setup: setup, roots: roots), let from = artist.path,
+        guard entries.contains(where: { $0.created(artist) }),   // the same artist, not a reused id
+              Self.mayKeep(artist, request: r, setup: setup, roots: roots), let from = artist.path,
               let mbid = artist.foreignArtistId else {
             throw KeepError.notAFind
         }

@@ -31,6 +31,9 @@ public struct LedgerEntry: Sendable, Equatable, Codable {
     public var rgMbid: MBID
     /// Magpie added the artist (false: the artist was already in the owner's library).
     public var createdArtist: Bool
+    /// The artist's MusicBrainz id when the entry was made. Lidarr can hand a deleted artist's id to another
+    /// artist, so "Magpie created it" needs both the id and this MBID to match (`created(_:)`).
+    public var artistMbid: MBID?
     /// The album was already monitored before Magpie touched it, so Cancel must not unmonitor it.
     public var wasMonitoredBefore: Bool
     /// Root folder the artist lived in when the request was made.
@@ -52,19 +55,25 @@ public struct LedgerEntry: Sendable, Equatable, Codable {
 
     public init(lidarrArtistId: Int, albumId: Int?, rgMbid: MBID, createdArtist: Bool, wasMonitoredBefore: Bool,
                 root: String, mode: LedgerMode, keptAt: Date? = nil, instance: String? = nil,
-                send: MonitorSend = .unclear, requestId: String? = nil, closedAt: Date? = nil) {
-        self.lidarrArtistId = lidarrArtistId; self.albumId = albumId; self.rgMbid = rgMbid
+                send: MonitorSend = .unclear, requestId: String? = nil, closedAt: Date? = nil, artistMbid: MBID? = nil) {
+        self.lidarrArtistId = lidarrArtistId; self.albumId = albumId; self.rgMbid = rgMbid; self.artistMbid = artistMbid
         self.createdArtist = createdArtist; self.wasMonitoredBefore = wasMonitoredBefore
         self.root = root; self.mode = mode; self.keptAt = keptAt; self.instance = instance
         self.send = send; self.requestId = requestId; self.closedAt = closedAt
     }
 
     public var isApplied: Bool { send == .applied }
+
+    /// Magpie created `artist`: this entry says so, for the same Lidarr id *and* the same artist MBID. Lidarr may
+    /// reuse a deleted artist's id for another artist; an entry without an MBID never counts (fails safe).
+    public func created(_ artist: LidarrArtist) -> Bool {
+        createdArtist && lidarrArtistId == artist.id && artistMbid != nil && artistMbid == artist.foreignArtistId
+    }
     public var isOpen: Bool { closedAt == nil }
 
     private enum CodingKeys: String, CodingKey {
         case lidarrArtistId, albumId, rgMbid, createdArtist, wasMonitoredBefore, root, mode, keptAt, instance
-        case send, requestId, closedAt
+        case send, requestId, closedAt, artistMbid
     }
 
     /// Fix round 4: a missing or unknown `send` decodes as `unclear`, never as applied. That includes entries
@@ -85,6 +94,7 @@ public struct LedgerEntry: Sendable, Equatable, Codable {
             ?? .unclear
         requestId = try c.decodeIfPresent(String.self, forKey: .requestId)
         closedAt = try c.decodeIfPresent(Date.self, forKey: .closedAt)
+        artistMbid = try? c.decodeIfPresent(MBID.self, forKey: .artistMbid)
     }
 }
 
@@ -165,8 +175,8 @@ public actor Ledger {
         try entries.last { $0.rgMbid == rgMbid }
     }
 
-    /// Whether Magpie created this artist on this server.
-    public func createdArtist(_ lidarrArtistId: Int) throws -> Bool {
-        try entries.contains { $0.lidarrArtistId == lidarrArtistId && $0.createdArtist }
+    /// Whether Magpie created this artist on this server (same id and same MBID, `LedgerEntry.created`).
+    public func createdArtist(_ artist: LidarrArtist) throws -> Bool {
+        try entries.contains { $0.created(artist) }
     }
 }

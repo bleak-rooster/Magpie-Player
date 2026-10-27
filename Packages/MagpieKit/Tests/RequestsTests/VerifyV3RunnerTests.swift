@@ -65,7 +65,7 @@ import MagpieCore
         h.server.with { $0.artists = [.init(id: 42, mbid: artistA, root: "/music/library")] }
         try await h.ledger.record(LedgerEntry(lidarrArtistId: 42, albumId: nil, rgMbid: rgAlbum, createdArtist: true,
                                               wasMonitoredBefore: false, root: "/music/library", mode: .fallback,
-                                              send: .applied, requestId: "earlier"))
+                                              send: .applied, requestId: "earlier", artistMbid: artistA))
         let id = try await h.runner.tryRecording(h.recording(recSingleAndAlbum), tier: .standard)
         await h.runner.settle()
         let r = try #require(await h.request(id))
@@ -73,6 +73,21 @@ import MagpieCore
         #expect(r.plan?.lidarrArtistId == 42)
         #expect(r.state == .searching && r.albumId == nil)
         #expect(h.server.writes.isEmpty, "waits for Lidarr to list the album; never a second add")
+    }
+
+    /// V-fix: the ledger's artist 42 was another artist (Lidarr reused the id after a delete): the owner's artist
+    /// now under that id is not Magpie's, so only the release groups Lidarr lists qualify (none here).
+    @Test func reusedArtistIdIsTheOwnersArtist() async throws {
+        let h = await Harness()
+        h.server.with { $0.artists = [.init(id: 42, mbid: artistA, root: "/music/library")] }
+        try await h.ledger.record(LedgerEntry(lidarrArtistId: 42, albumId: nil, rgMbid: rgAlbum, createdArtist: true,
+                                              wasMonitoredBefore: false, root: "/music/library", mode: .fallback,
+                                              send: .applied, requestId: "earlier",
+                                              artistMbid: MBID("11111111-1111-4111-8111-111111111111")!))
+        let id = try await h.runner.tryRecording(h.recording(recSingleAndAlbum), tier: .standard)
+        await h.runner.settle()
+        #expect(await h.state(id) == .failed(reason: .notInCatalogue))
+        #expect(h.server.writes.isEmpty)
     }
 
     /// §3f Progress, PARTIAL claim "Ten minutes with nothing grabbed after the search finished means still
