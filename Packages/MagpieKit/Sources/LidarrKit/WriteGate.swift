@@ -60,6 +60,9 @@ public enum WriteGateError: Error, Sendable, Equatable {
     case invalidRequest(String)
     /// The change log could not be saved, so the write was not sent (the log is the owner's undo map).
     case logUnavailable
+    /// A delete or move the gate confines (FM1, `WriteConfinement`) couldn't be checked: the ledger or Lidarr
+    /// couldn't be read right now. It was not sent.
+    case unconfirmed
 }
 
 /// One line of the Lidarr change log: what Magpie asked Lidarr to change. Never carries secrets.
@@ -176,6 +179,10 @@ enum ForbiddenWrites {
     static let allowedCommands: Set<String> = ["albumsearch", "artistsearch", "refreshartist", "refreshalbum"]
     /// `applyTags` values allowed in `PUT /artist/editor` (`replace` would wipe the owner's tags, A4).
     static let allowedApplyTags: Set<String> = ["add", "remove"]
+    /// `monitorNewItems` values allowed in `PUT /artist/editor` (Follow new releases, Task 7.1b): only `new`. Never
+    /// `none` (Magpie only ever adds; it doesn't stop following anything) and never `all` (that would also monitor
+    /// old albums Lidarr's next refresh discovers).
+    static let allowedMonitorNewItems: Set<String> = ["new"]
 
     /// Why the request is refused, or nil when it may be sent.
     static func reason(_ t: WriteTarget, body: Data?) -> String? {
@@ -211,6 +218,32 @@ enum ForbiddenWrites {
         return nil
     }
 
+    /// FM1: the allow-listed writes that can delete, move or change an artist, which the gate's confinement must
+    /// also pass (`WriteConfinement`). Nil for every other write.
+    static func confined(_ t: WriteTarget, json: Any?) -> WriteConfinement.Write? {
+        let key = t.key
+        guard key.count == 2 else { return nil }
+        switch (t.method, key[0]) {
+        case ("PUT", "artist") where key[1] == "editor":
+            return .editor(json as? [String: Any] ?? [:])
+        case ("DELETE", "artist"):
+            return Int(key[1]).map { .artistDelete($0) } ?? .trackFileDelete([])
+        case ("DELETE", "trackfile"):
+            if key[1] == "bulk" {
+                let ids = (json as? [String: Any])?["trackFileIds"] as? [Any] ?? []
+                return .trackFileDelete(ids.compactMap { ($0 as? NSNumber)?.intValue })
+            }
+            return .trackFileDelete([Int(key[1])].compactMap { $0 })
+        case ("PUT", "album") where key[1] == "monitor":
+            let object = json as? [String: Any] ?? [:]
+            let value = { (name: String) in object.first { $0.key.lowercased() == name }?.value }
+            let ids = (value("albumids") as? [Any] ?? []).compactMap { ($0 as? NSNumber)?.intValue }
+            return .albumMonitor(albumIds: ids, monitored: (value("monitored") as? NSNumber)?.boolValue ?? true)
+        default:
+            return nil
+        }
+    }
+
     // MARK: Layer 2: the allow list
 
     private static func isId(_ s: String) -> Bool { !s.isEmpty && s.allSatisfy { $0.isASCII && $0.isNumber } }
@@ -226,12 +259,16 @@ enum ForbiddenWrites {
             return noQuery ?? commandReason(json)
         case ("PUT", 2) where key[0] == "artist" && key[1] == "editor":
             return noQuery ?? editorReason(json)
-        case ("PUT", 2) where key[0] == "artist" && isId(key[1]):
-            return noQuery
-        case ("PUT", 2) where key[0] == "album" && (key[1] == "monitor" || isId(key[1])):
-            return noQuery
+        // Security L9 / FM1: never `PUT /artist/{id}` or `PUT /album/{id}` (a whole resource: anything could change).
+        case ("PUT", 2) where key[0] == "album" && key[1] == "monitor":
+            return noQuery ?? albumMonitorReason(json)
         case ("DELETE", 2) where key[0] == "artist" && isId(key[1]):
             return artistDeleteReason(t.query)
+        // Not for me (A16): the bulk route, falling back to one file at a time.
+        case ("DELETE", 2) where key[0] == "trackfile" && key[1] == "bulk":
+            return noQuery ?? trackFileBulkReason(json)
+        case ("DELETE", 2) where key[0] == "trackfile" && isId(key[1]):
+            return noQuery ?? (json == nil ? nil : "no body allowed on DELETE /trackfile/{id}")
         default:
             return notAllowed
         }
@@ -248,6 +285,37 @@ enum ForbiddenWrites {
         return seen == falseOnlyFlags ? nil : "artist delete needs explicit deleteFiles=false and addImportListExclusion=false"
     }
 
+    /// `DELETE /trackfile/bulk`: exactly `{"trackFileIds": [<positive integers>]}`, at least one id.
+    private static func trackFileBulkReason(_ json: Any?) -> String? {
+        guard let object = json as? [String: Any], object.count == 1, let ids = object["trackFileIds"] as? [Any],
+              !ids.isEmpty, ids.allSatisfy(isPositiveInteger) else {
+            return "track file delete needs exactly a list of track file ids"
+        }
+        return nil
+    }
+
+    /// `PUT /album/monitor`: exactly `{albumIds: [positive ids, at least one], monitored: true|false}`. Which
+    /// albums, the gate's confinement decides (H2b fix 1).
+    private static func albumMonitorReason(_ json: Any?) -> String? {
+        guard let object = json as? [String: Any], object.count == 2 else { return "album monitor needs albumIds and monitored only" }
+        let value = { (name: String) in object.first { $0.key.lowercased() == name }?.value }
+        guard let ids = value("albumids") as? [Any], !ids.isEmpty, ids.allSatisfy(isPositiveInteger),
+              let monitored = value("monitored"), isBoolean(monitored) else {
+            return "album monitor needs albumIds and monitored only"
+        }
+        return nil
+    }
+
+    private static func isBoolean(_ value: Any) -> Bool {
+        guard let n = value as? NSNumber else { return false }
+        return CFGetTypeID(n) == CFBooleanGetTypeID()
+    }
+
+    private static func isPositiveInteger(_ value: Any) -> Bool {
+        guard let n = value as? NSNumber, CFGetTypeID(n) != CFBooleanGetTypeID() else { return false }
+        return n.int64Value > 0 && Double(n.int64Value) == n.doubleValue
+    }
+
     /// Exactly one `name` key (any case), naming an allowed command.
     private static func commandReason(_ json: Any?) -> String? {
         guard let object = json as? [String: Any] else { return "command needs a body" }
@@ -257,14 +325,43 @@ enum ForbiddenWrites {
         return nil
     }
 
-    /// No `deleteFiles` / `addImportListExclusion` key at any depth; `applyTags` (at most one) is add or remove.
+    /// The only fields Keep, its restore and Bring in more send (FM1). Never `monitored`, `metadataProfileId`…
+    static let editorKeys: Set<String> = ["artistids", "rootfolderpath", "movefiles", "qualityprofileid", "tags",
+                                          "applytags", "monitornewitems"]
+
+    /// Only `editorKeys`, exactly one artist id, no `deleteFiles` / `addImportListExclusion` key at any depth;
+    /// `applyTags` (at most one) is add or remove and comes with `tags`; `moveFiles` is a boolean and comes with a
+    /// `rootFolderPath` string. A body with `monitorNewItems` (Follow new releases) is exactly `{artistIds: [one id],
+    /// monitorNewItems: new}`. Where an artist may be moved, and which artist, the gate's confinement decides (FM1).
     private static func editorReason(_ json: Any?) -> String? {
         guard let object = json as? [String: Any] else { return "artist editor needs a body" }
         if let flag = anyKey(falseOnlyFlags, in: object) { return "artist editor body must not carry \(flag)" }
+        if let other = object.keys.first(where: { !editorKeys.contains($0.lowercased()) }) {
+            return "artist editor can't change \(other)"
+        }
+        let value = { (name: String) in object.first { $0.key.lowercased() == name }?.value }
+        guard let ids = value("artistids") as? [Any], ids.count == 1, isPositiveInteger(ids[0]) else {
+            return "artist editor changes exactly one artist"
+        }
+        if (value("tags") == nil) != (value("applytags") == nil) { return "tags and applyTags go together" }
+        if let move = value("movefiles") {
+            guard isBoolean(move), value("rootfolderpath") is String else { return "moveFiles needs a root folder" }
+        }
+        if let root = value("rootfolderpath"), !(root is String) { return "rootFolderPath must be a path" }
         let apply = object.filter { $0.key.lowercased() == "applytags" }
         guard apply.count <= 1 else { return "applyTags given twice" }
         if let value = apply.first?.value {
             guard let s = value as? String, allowedApplyTags.contains(s.lowercased()) else { return "applyTags must be add or remove" }
+        }
+        if let follow = object.first(where: { $0.key.lowercased() == "monitornewitems" })?.value {
+            guard let s = follow as? String, allowedMonitorNewItems.contains(s.lowercased()) else {
+                return "monitorNewItems must be new"
+            }
+            guard object.count == 2,
+                  let ids = object.first(where: { $0.key.lowercased() == "artistids" })?.value as? [Any],
+                  ids.count == 1, isPositiveInteger(ids[0]) else {
+                return "following new releases changes one artist and nothing else"
+            }
         }
         return nil
     }
@@ -378,14 +475,22 @@ public actor LidarrWriteGate {
     private static let logLock = OSAllocatedUnfairLock()
 
     private let connection: LidarrConnection
+    /// Reads for the confinement checks (GETs only).
+    private let reader: LidarrClient
+    /// FM1: nil refuses every write the confinement decides (deletes, the artist editor).
+    private let confinement: WriteConfinement?
     private let logURL: URL
     private let defaults: UserDefaults
     private let now: @Sendable () -> Date
 
     /// `defaultsSuite` names the UserDefaults suite holding the switch (nil: standard defaults; tests pass their own).
+    /// `confinement` (FM1): the ledger and the owner's roots the gate checks deletes and artist edits against;
+    /// without it they are refused.
     public init(client: LidarrClient, logURL: URL, defaultsSuite: String? = nil,
-                now: @escaping @Sendable () -> Date = { Date() }) {
+                now: @escaping @Sendable () -> Date = { Date() }, confinement: WriteConfinement? = nil) {
         self.connection = client.connection
+        self.reader = client
+        self.confinement = confinement
         self.logURL = logURL
         self.defaults = defaultsSuite.flatMap { UserDefaults(suiteName: $0) } ?? .standard
         self.now = now
@@ -403,6 +508,11 @@ public actor LidarrWriteGate {
         (try? Self.logLock.withLock { [logURL] in try Self.readLog(logURL) }) ?? []
     }
 
+    private func refused(_ target: WriteTarget, _ why: String) -> WriteGateError {
+        Log.logger("lidarr").error("refused \(target.method, privacy: .public) \(target.logPath, privacy: .public): \(why, privacy: .public)")
+        return .forbidden(why)
+    }
+
     private static func readLog(_ url: URL) throws -> [ChangeLogEntry] {
         try LocalFile.load([ChangeLogEntry].self, from: url, fallback: [], category: "lidarr")
     }
@@ -412,12 +522,50 @@ public actor LidarrWriteGate {
     public func send(_ method: String, _ path: String, body: (any Encodable & Sendable)?) async throws -> Data {
         let target = try WriteTarget(method: method, path: path)
         let data = try body.map { try JSONEncoder().encode($0) }
-        if let why = ForbiddenWrites.reason(target, body: data) {
-            Log.logger("lidarr").error("refused \(target.method, privacy: .public) \(target.logPath, privacy: .public): \(why, privacy: .public)")
-            throw WriteGateError.forbidden(why)
-        }
+        if let why = ForbiddenWrites.reason(target, body: data) { throw refused(target, why) }
+        let json = data.flatMap { try? JSONSerialization.jsonObject(with: $0, options: [.fragmentsAllowed]) }
+        let confined = ForbiddenWrites.confined(target, json: json)
+        if confined != nil, confinement == nil { throw refused(target, "deletes and artist edits need the ledger") }
         guard enabled else { throw WriteGateError.disabled }
+        guard let confined, let confinement else { return try await deliver(target, data) }
+        // FM1: checked from the ledger and fresh reads, after the switch (so nothing is read while it's off). H2b fix
+        // 1: confined writes go one at a time, from their checks to Lidarr's answer, so no other confined write can
+        // slip in between a check and its send.
+        await takeConfinedTurn()
+        defer { passConfinedTurn() }
+        let artists: Set<Int>
+        switch await confinement.check(confined, lidarr: reader) {
+        case .confined(let touched): artists = touched
+        case .refused(let why): throw refused(target, why)
+        case .unknown:
+            Log.logger("lidarr").error("not confirmed \(target.method, privacy: .public) \(target.logPath, privacy: .public)")
+            throw WriteGateError.unconfirmed
+        }
+        guard enabled else { throw WriteGateError.disabled }   // turned off during the reads
+        // The ledger once more, right before a delete: kept meanwhile (Keep saves "kept" before it writes) refuses.
+        switch await confinement.stillUnkept(artists) {
+        case true?: break
+        case false?: throw refused(target, "the artist was kept meanwhile")
+        case nil: throw WriteGateError.unconfirmed
+        }
+        return try await deliver(target, data)
+    }
 
+    private var confinedBusy = false
+    private var confinedWaiting: [CheckedContinuation<Void, Never>] = []
+
+    /// FIFO: waits until no other confined write is between its checks and its answer.
+    private func takeConfinedTurn() async {
+        guard confinedBusy else { confinedBusy = true; return }
+        await withCheckedContinuation { confinedWaiting.append($0) }
+    }
+
+    private func passConfinedTurn() {
+        if confinedWaiting.isEmpty { confinedBusy = false } else { confinedWaiting.removeFirst().resume() }
+    }
+
+    /// Logs the write, sends it, and records Lidarr's answer.
+    private func deliver(_ target: WriteTarget, _ data: Data?) async throws -> Data {
         let entry = ChangeLogEntry(date: now(), method: target.method, path: target.logPath,
                                    bodySummary: BodySummary.make(data, apiKey: connection.apiKey, limit: Self.maxBodySummary))
         do {

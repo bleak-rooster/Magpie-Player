@@ -197,11 +197,14 @@ public struct LidarrArtistLookup: Sendable, Equatable, Decodable {
     public var artistType: String?
     public var status: String?
     public var id: Int?
+    /// The artist folder name Lidarr's naming format gives now (`folder`): where a move puts it (G4).
+    public var folder: String?
 
     public init(foreignArtistId: MBID?, artistName: String, disambiguation: String? = nil, overview: String? = nil,
-                artistType: String? = nil, status: String? = nil, id: Int? = nil) {
+                artistType: String? = nil, status: String? = nil, id: Int? = nil, folder: String? = nil) {
         self.foreignArtistId = foreignArtistId; self.artistName = artistName; self.disambiguation = disambiguation
         self.overview = overview; self.artistType = artistType; self.status = status; self.id = id
+        self.folder = folder
     }
 
     public init(from decoder: Decoder) throws {
@@ -213,6 +216,7 @@ public struct LidarrArtistLookup: Sendable, Equatable, Decodable {
         artistType = c.text("artistType")
         status = c.text("status")
         id = c.int("id").flatMap { $0 > 0 ? $0 : nil }
+        folder = c.value("folder", as: String.self).flatMap { $0.isEmpty ? nil : $0 }
     }
 }
 
@@ -276,14 +280,17 @@ public struct LidarrArtist: Sendable, Equatable, Decodable {
     public var tags: [Int]
     public var albumCount: Int?
     public var trackFileCount: Int?
+    /// Which albums Lidarr monitors when they show up (`all`, `new`, `none`); Follow new releases (Task 7.1b).
+    public var monitorNewItems: String?
 
     public init(id: Int, artistName: String, foreignArtistId: MBID? = nil, path: String? = nil,
                 rootFolderPath: String? = nil, monitored: Bool = false, qualityProfileId: Int? = nil,
-                metadataProfileId: Int? = nil, tags: [Int] = [], albumCount: Int? = nil, trackFileCount: Int? = nil) {
+                metadataProfileId: Int? = nil, tags: [Int] = [], albumCount: Int? = nil, trackFileCount: Int? = nil,
+                monitorNewItems: String? = nil) {
         self.id = id; self.artistName = artistName; self.foreignArtistId = foreignArtistId; self.path = path
         self.rootFolderPath = rootFolderPath; self.monitored = monitored; self.qualityProfileId = qualityProfileId
         self.metadataProfileId = metadataProfileId; self.tags = tags; self.albumCount = albumCount
-        self.trackFileCount = trackFileCount
+        self.trackFileCount = trackFileCount; self.monitorNewItems = monitorNewItems
     }
 
     public init(from decoder: Decoder) throws {
@@ -300,6 +307,7 @@ public struct LidarrArtist: Sendable, Equatable, Decodable {
         let stats = try? c.nestedContainer(keyedBy: AnyKey.self, forKey: AnyKey("statistics"))
         albumCount = stats?.int("albumCount")
         trackFileCount = stats?.int("trackFileCount")
+        monitorNewItems = c.value("monitorNewItems")
     }
 }
 
@@ -313,12 +321,16 @@ public struct LidarrAlbum: Sendable, Equatable, Decodable {
     public var releaseDate: Date?
     public var trackCount: Int?
     public var trackFileCount: Int?
+    /// Seconds of music, from Lidarr's `duration` (milliseconds, the length of the release it would bring in).
+    /// Nil when Lidarr doesn't know it (0 or missing): never guessed (A5).
+    public var duration: TimeInterval?
 
     public init(id: Int, title: String, artistId: Int? = nil, foreignAlbumId: MBID? = nil, monitored: Bool = false,
-                albumType: String? = nil, releaseDate: Date? = nil, trackCount: Int? = nil, trackFileCount: Int? = nil) {
+                albumType: String? = nil, releaseDate: Date? = nil, trackCount: Int? = nil, trackFileCount: Int? = nil,
+                duration: TimeInterval? = nil) {
         self.id = id; self.title = title; self.artistId = artistId; self.foreignAlbumId = foreignAlbumId
         self.monitored = monitored; self.albumType = albumType; self.releaseDate = releaseDate
-        self.trackCount = trackCount; self.trackFileCount = trackFileCount
+        self.trackCount = trackCount; self.trackFileCount = trackFileCount; self.duration = duration
     }
 
     public init(from decoder: Decoder) throws {
@@ -333,6 +345,7 @@ public struct LidarrAlbum: Sendable, Equatable, Decodable {
         let stats = try? c.nestedContainer(keyedBy: AnyKey.self, forKey: AnyKey("statistics"))
         trackCount = stats?.int("trackCount")
         trackFileCount = stats?.int("trackFileCount")
+        duration = c.double("duration").flatMap { $0 > 0 && $0.isFinite ? $0 / 1000 : nil }
     }
 }
 
@@ -438,11 +451,14 @@ public struct CommandStatus: Sendable, Equatable, Decodable {
     public var queued: Date?
     public var started: Date?
     public var ended: Date?
+    /// Artists the command works on (Keep's `BulkMoveArtist`, A3), from its body: `artist[].artistId` (Lidarr's
+    /// `BulkMoveArtistCommand`), and defensively `artists[].artistId`, `artistIds[]`, `artistId`.
+    public var artistIds: [Int]
 
     public init(id: Int, name: String, status: String, result: String? = nil, message: String? = nil,
-                queued: Date? = nil, started: Date? = nil, ended: Date? = nil) {
+                queued: Date? = nil, started: Date? = nil, ended: Date? = nil, artistIds: [Int] = []) {
         self.id = id; self.name = name; self.status = status; self.result = result; self.message = message
-        self.queued = queued; self.started = started; self.ended = ended
+        self.queued = queued; self.started = started; self.ended = ended; self.artistIds = artistIds
     }
 
     public init(from decoder: Decoder) throws {
@@ -455,6 +471,20 @@ public struct CommandStatus: Sendable, Equatable, Decodable {
         queued = c.date("queued")
         started = c.date("started")
         ended = c.date("ended")
+        var ids: [Int] = []
+        if let body = try? c.nestedContainer(keyedBy: AnyKey.self, forKey: AnyKey("body")) {
+            for key in ["artist", "artists"] {
+                ids += (body.value(key, as: LossyArray<ArtistRef>.self)?.values ?? []).compactMap(\.artistId)
+            }
+            ids += body.value("artistIds", as: LossyArray<Int>.self)?.values ?? []
+            if let one = body.int("artistId") { ids.append(one) }
+        }
+        artistIds = ids
+    }
+
+    private struct ArtistRef: Decodable {
+        var artistId: Int?
+        init(from decoder: Decoder) throws { artistId = try decoder.container(keyedBy: AnyKey.self).int("artistId") }
     }
 }
 
@@ -464,10 +494,14 @@ public struct TrackFile: Sendable, Equatable, Decodable {
     /// Quality name such as `FLAC` or `MP3-320`.
     public var quality: String?
     public var albumId: Int?
+    /// The artist the file belongs to (the write gate confines track file deletes to Magpie's finds, FM1).
+    public var artistId: Int?
     public var size: Int64?
 
-    public init(id: Int, path: String, quality: String? = nil, albumId: Int? = nil, size: Int64? = nil) {
-        self.id = id; self.path = path; self.quality = quality; self.albumId = albumId; self.size = size
+    public init(id: Int, path: String, quality: String? = nil, albumId: Int? = nil, artistId: Int? = nil,
+                size: Int64? = nil) {
+        self.id = id; self.path = path; self.quality = quality; self.albumId = albumId; self.artistId = artistId
+        self.size = size
     }
 
     public init(from decoder: Decoder) throws {
@@ -475,6 +509,7 @@ public struct TrackFile: Sendable, Equatable, Decodable {
         id = try c.requiredInt("id")
         path = c.value("path") ?? ""
         albumId = c.int("albumId")
+        artistId = c.int("artistId")
         size = c.value("size", as: Int64.self)
         let outer = try? c.nestedContainer(keyedBy: AnyKey.self, forKey: AnyKey("quality"))
         let inner = try? outer?.nestedContainer(keyedBy: AnyKey.self, forKey: AnyKey("quality"))
@@ -485,6 +520,7 @@ public struct TrackFile: Sendable, Equatable, Decodable {
 /// `/filesystem` response, only the part `filesystemExists` needs.
 struct FilesystemListing: Decodable {
     var directories: [String]
+    var files: [String]
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: AnyKey.self)
@@ -495,5 +531,6 @@ struct FilesystemListing: Decodable {
             }
         }
         directories = (c.value("directories", as: LossyArray<Entry>.self)?.values ?? []).map(\.path)
+        files = (c.value("files", as: LossyArray<Entry>.self)?.values ?? []).map(\.path)
     }
 }

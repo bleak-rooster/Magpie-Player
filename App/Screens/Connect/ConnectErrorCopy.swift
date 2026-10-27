@@ -32,8 +32,9 @@ enum ConnectErrorCopy {
     /// http, as Navidrome on 4533 and Lidarr on 8686 do. The TLS handshake fails; the server is running.
     static let httpsNotAnswering = "That address doesn't answer over https. If your server uses plain http, type http:// in front."
 
-    /// B2: plain HTTP outside the home network in a Release build.
-    static let needsHTTPS = "Use HTTPS for addresses outside your home network."
+    /// B2 / H4: a plain-http address this build can't use (App Transport Security): Tailscale IPs, `*.ts.net`
+    /// names, anything outside the home network. A single-word server name works over http at home.
+    static let needsHTTPS = "This address needs HTTPS. At home you can also use your server's short name, like http://myserver:4533."
 
     /// B4: a home-network address that didn't answer.
     static func localNetworkHint(_ host: String) -> String {
@@ -42,6 +43,13 @@ enum ConnectErrorCopy {
         access is on for Magpie in Settings › Privacy & Security › Local Network (for the simulator: \
         on the Mac, for Xcode and Simulator).
         """
+    }
+
+    /// The address as the owner would recognise it in an error: the host, with the port when one was given
+    /// ("127.0.0.1:9"), so a mistyped port shows (H3 M9).
+    static func hostAndPort(_ url: URL) -> String? {
+        guard let host = url.host else { return nil }
+        return url.port.map { "\(host):\($0)" } ?? host
     }
 
     static func unreachable(_ host: String) -> String {
@@ -85,21 +93,21 @@ enum ConnectErrorCopy {
             return needsHTTPS
         }
         if let local = failures.first(where: { isTimeout($0.error) && ServerAddress.isLocalNetwork($0.url) }) {
-            return localNetworkHint(local.url.host ?? local.url.absoluteString)
+            return localNetworkHint(hostAndPort(local.url) ?? local.url.absoluteString)
         }
         if failures.contains(where: { ($0.error as? NavidromeError) == .unexpectedResponse }) { return notAMusicServer }
         if case NavidromeError.http = first.error {
-            return "\(first.url.host ?? "That address") answered, but it doesn't look like a music server."
+            return "\(hostAndPort(first.url) ?? "That address") answered, but it doesn't look like a music server."
         }
-        return unreachable(first.url.host ?? first.url.absoluteString)
+        return unreachable(hostAndPort(first.url) ?? first.url.absoluteString)
     }
 
     private static func message(for error: URLError, url: URL?) -> String {
         if isCertificateError(error) { return untrustedCertificate }
         if let url, isPlainHTTPAnswer(error, url: url) { return httpsNotAnswering }
         if error.code == .appTransportSecurityRequiresSecureConnection { return needsHTTPS }
-        if let url, isTimeout(error), ServerAddress.isLocalNetwork(url) { return localNetworkHint(url.host ?? "") }
-        return unreachable(url?.host ?? "your music server")
+        if let url, isTimeout(error), ServerAddress.isLocalNetwork(url) { return localNetworkHint(hostAndPort(url) ?? "") }
+        return unreachable(url.flatMap(hostAndPort) ?? "your music server")
     }
 
     static func isCertificateError(_ error: Error) -> Bool {

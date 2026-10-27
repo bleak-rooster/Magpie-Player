@@ -23,7 +23,26 @@ enum Mapping {
              recordingMBID: mbid(d.mbzRecordingID),
              artistMBID: mbid(d.mbzArtistId) ?? mbid(d.participants?.artist?.first?.mbzArtistId),
              isrcs: d.tags?.isrc ?? [], libraryId: d.libraryId,
-             starred: d.starred ?? false)
+             starred: d.starred ?? false, createdAt: date(d.createdAt))
+    }
+
+    /// Shared: creating a formatter per song is slow. `ISO8601DateFormatter` is thread-safe.
+    nonisolated(unsafe) private static let iso8601 = ISO8601DateFormatter()
+
+    /// An ISO 8601 time with any number of fraction digits (Navidrome sends nine); no zone designator reads as
+    /// UTC (Navidrome stores UTC). Nil when unreadable.
+    static func date(_ s: String?) -> Date? {
+        guard var text = s else { return nil }
+        var fraction = 0.0
+        if let dot = text.firstIndex(of: ".") {
+            let end = text[text.index(after: dot)...].firstIndex { !$0.isNumber } ?? text.endIndex
+            fraction = Double("0" + text[dot..<end]) ?? 0
+            text.removeSubrange(dot..<end)
+        }
+        if let t = text.firstIndex(of: "T"), !text[t...].contains(where: { $0 == "Z" || $0 == "+" || $0 == "-" }) {
+            text += "Z"
+        }
+        return iso8601.date(from: text).map { $0.addingTimeInterval(fraction) }
     }
 
     /// Disc, then track; songs without numbers keep server order at the end of their disc.

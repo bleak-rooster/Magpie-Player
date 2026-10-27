@@ -9,24 +9,31 @@ public struct AlbumTile: View {
     private let width: CGFloat
     private let themed = ThemedPalette()
     @Environment(\.magpieTheme) private var theme
+    @Environment(\.dynamicTypeSize) private var typeSize
+
+    /// Tiles widen at accessibility sizes so titles get whole words per line (D15).
+    public nonisolated static let accessibilityWidth: CGFloat = 220
 
     public init(title: String, subtitle: String, artwork: Image? = nil, state: RowState = .library, width: CGFloat = 140) {
         self.title = title; self.subtitle = subtitle; self.artwork = artwork; self.state = state; self.width = width
     }
 
     public var body: some View {
+        let ax = typeSize.isAccessibilitySize
+        let width = ax ? max(width, Self.accessibilityWidth) : width
         VStack(alignment: .leading, spacing: Tokens.Spacing.s) {
             Group {
                 if state.isRecord {
                     RecordArt(image: artwork, side: width, saturation: state.saturation,
                               arc: state.arcFraction, isSpinning: state.isOnItsWay)
+                        .recordBadge(state.statusSymbol, size: 16)
                 } else {
                     SleeveArt(image: artwork, side: width)
                 }
             }
             VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.subheadline.weight(.semibold)).lineLimit(2)
-                Text(subtitle).font(.caption).foregroundStyle(themed.palette.ink2Color).lineLimit(1)
+                Text(title).font(.subheadline.weight(.semibold)).lineLimit(ax ? 4 : 2)
+                Text(subtitle).font(.caption).foregroundStyle(themed.palette.ink2Color).lineLimit(ax ? 3 : 1)
                 StatusLine(state)
             }
         }

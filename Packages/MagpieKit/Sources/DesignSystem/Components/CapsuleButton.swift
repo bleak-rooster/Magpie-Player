@@ -37,6 +37,22 @@ public struct CapsuleButton: View {
     }
 }
 
+/// Capsules side by side (Play / Shuffle), stacked at accessibility sizes so each keeps the full width and no
+/// title breaks mid-word (D15).
+public struct CapsuleRow<Content: View>: View {
+    private let content: Content
+    @Environment(\.dynamicTypeSize) private var typeSize
+
+    public init(@ViewBuilder content: () -> Content) { self.content = content() }
+
+    public var body: some View {
+        let layout = typeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(spacing: Tokens.Spacing.s))
+            : AnyLayout(HStackLayout(spacing: Tokens.Spacing.m))
+        layout { content }
+    }
+}
+
 #Preview("CapsuleButton") {
     HStack { CapsuleButton("Try", symbol: "play.fill") {}; CapsuleButton("Keep", style: .fill) {} }.padding()
 }

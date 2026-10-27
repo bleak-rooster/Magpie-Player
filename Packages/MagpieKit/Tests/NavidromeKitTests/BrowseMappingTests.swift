@@ -306,6 +306,25 @@ import os
         #expect(transport.requests.filter { $0.url?.path.hasSuffix("startScan") == true }.count == 2)
     }
 
+    /// B6/G2: the library folders, as Navidrome sees them (`/api/library`, captured from Navidrome 0.64.2).
+    @Test func librariesListIdNameAndPath() async throws {
+        let (client, transport) = try await connected {
+            $0.stub(pathSuffix: "/api/library", body: Fixtures.data("apiLibrary"), headers: ["X-Total-Count": "2"])
+        }
+        let libraries = try await client.libraries()
+        #expect(libraries == [NavidromeLibrary(id: 1, name: "Music Library", path: "/music/library"),
+                              NavidromeLibrary(id: 2, name: "Samples", path: "/music/samples")])
+        let req = try #require(transport.requests.last { $0.url?.path.hasSuffix("/api/library") == true })
+        #expect(req.url?.path == "/navidrome/api/library", "keeps the base path")
+        #expect(req.value(forHTTPHeaderField: "X-ND-Authorization")?.hasPrefix("Bearer ") == true)
+    }
+
+    @Test func librariesForbiddenSurfaces() async throws {
+        // Some Navidrome versions keep library management to admins.
+        let (client, _) = try await connected { $0.stub(pathSuffix: "/api/library", status: 403) }
+        await #expect(throws: NavidromeError.http(status: 403)) { try await client.libraries() }
+    }
+
     @Test func apiErrorSurfacesCodeAndMessage() async throws {
         let body = Data(#"{"subsonic-response":{"status":"failed","version":"1.16.1","error":{"code":70,"message":"not found"}}}"#.utf8)
         let (client, _) = try await connected { $0.stub(pathSuffix: "/rest/getAlbum", body: body) }

@@ -160,8 +160,26 @@ struct GateEnv {
         Call("PUT", "releaseprofile/1"),
         Call("DELETE", "customformat/1"),
         Call("PUT", "remotepathmapping/1"),
-        Call("DELETE", "trackfile/9"),
-        Call("DELETE", "trackfile/bulk", #"{"trackFileIds":[9]}"#),
+        // Not for me (Task 6.2c, A16): only `DELETE trackfile/{id}` (no query, no body) and `DELETE trackfile/bulk`
+        // with exactly a non-empty list of track file ids.
+        Call("DELETE", "trackfile"),
+        Call("DELETE", "trackfile/bulk"),
+        Call("DELETE", "trackfile/bulk", #"{"trackFileIds":[]}"#),
+        Call("DELETE", "trackfile/bulk", #"{"trackFileIds":[9],"deleteFiles":false}"#),
+        Call("DELETE", "trackfile/bulk", #"{"trackFileIds":[9],"artistId":4}"#),
+        Call("DELETE", "trackfile/bulk", #"{"trackFileIds":["9"]}"#),
+        Call("DELETE", "trackfile/bulk", #"{"trackFileIds":[true]}"#),
+        Call("DELETE", "trackfile/bulk", #"{"trackFileIds":[9.5]}"#),
+        Call("DELETE", "trackfile/bulk", #"{"trackFileIds":[0]}"#),
+        Call("DELETE", "trackfile/bulk", #"{"trackFileIds":9}"#),
+        Call("DELETE", "trackfile/bulk", #"[9]"#),
+        Call("DELETE", "trackfile/bulk?artistId=4", #"{"trackFileIds":[9]}"#),
+        Call("DELETE", "trackfile/9?deleteFiles=false"),
+        Call("DELETE", "trackfile/9", #"{"id":9}"#),
+        Call("DELETE", "trackfile/abc"),
+        Call("DELETE", "trackfile/9/x"),
+        Call("PUT", "trackfile/9", #"{"id":9}"#),
+        Call("PUT", "trackfile/bulk", #"{"trackFileIds":[9]}"#),
         Call("POST", "somethingnew"),
         Call("POST", "/api/v2/tag", #"{"label":"x"}"#),
         Call("POST", "/api/tag", #"{"label":"x"}"#),
@@ -185,6 +203,20 @@ struct GateEnv {
         Call("PUT", "artist/editor", #"{"artistIds":[1],"tags":[2],"applyTags":"replace"}"#),
         Call("PUT", "artist/editor", #"{"artistIds":[1],"tags":[2],"applyTags":"add","ApplyTags":"replace"}"#),
         Call("PUT", "artist/editor"),
+        // Follow new releases (Task 7.1b): one artist, monitorNewItems new, nothing else; never un-follow or "all"
+        Call("PUT", "artist/editor", #"{"artistIds":[1],"monitorNewItems":"none"}"#),
+        Call("PUT", "artist/editor", #"{"artistIds":[1],"monitorNewItems":"all"}"#),
+        Call("PUT", "artist/editor", #"{"artistIds":[1],"monitorNewItems":"All"}"#),
+        Call("PUT", "artist/editor", #"{"artistIds":[1],"monitorNewItems":true}"#),
+        Call("PUT", "artist/editor", #"{"artistIds":[1,2],"monitorNewItems":"new"}"#),
+        Call("PUT", "artist/editor", #"{"artistIds":[],"monitorNewItems":"new"}"#),
+        Call("PUT", "artist/editor", #"{"artistIds":[1],"monitorNewItems":"new","monitored":false}"#),
+        Call("PUT", "artist/editor", #"{"artistIds":[1],"monitorNewItems":"all","qualityProfileId":3}"#),
+        Call("PUT", "artist/editor", #"{"artistIds":[1],"MonitorNewItems":"new","rootFolderPath":"/x"}"#),
+        Call("PUT", "artist/editor", #"{"monitorNewItems":"new"}"#),
+        // Security L9 / FM1: whole-resource PUTs of an artist or album (no caller; they could change anything).
+        Call("PUT", "artist/12", #"{"id":12,"monitored":true}"#),
+        Call("PUT", "album/3", #"{"id":3,"monitored":true}"#),
     ]
 
     @Test(arguments: forbidden)
@@ -228,8 +260,19 @@ struct GateEnv {
         t.stub(method: "DELETE", pathSuffix: "/api/v1/artist/12", body: json("{}"))
         t.stub(method: "PUT", pathSuffix: "/api/v1/album/monitor", body: json("[]"))
         t.stub(method: "POST", pathSuffix: "/api/v1/command", body: json(#"{"id":99}"#))
+        // FM1: the artist delete is confined to a find Magpie created (ledger, fresh reads).
+        t.stub(pathSuffix: "/api/v1/rootfolder", body: json(#"[{"id":1,"path":"/music/library"},{"id":2,"path":"/music/samples"}]"#))
+        t.stub(pathSuffix: "/api/v1/artist/12", body: json(#"{"id":12,"artistName":"F","foreignArtistId":"12121212-1212-4212-8212-121212121212","path":"/music/samples/F","tags":[2]}"#))
         let (client, _) = makeClient(t)
-        let gate = await env.gate(client, enabled: true)
+        let ledger = Ledger(fileURL: nil, instance: client.instanceScope)
+        try await ledger.record(LedgerEntry(lidarrArtistId: 12, albumId: 3, rgMbid: MBID("00000000-0000-0000-0000-000000000003")!,
+                                            createdArtist: true, wasMonitoredBefore: false, root: "/music/samples", mode: .finds,
+                                            artistMbid: MBID("12121212-1212-4212-8212-121212121212")))
+        let gate = LidarrWriteGate(client: client, logURL: env.logURL, defaultsSuite: env.defaults,
+                                   confinement: WriteConfinement(ledger: ledger, roots: {
+                                       .init(mainRoot: "/music/library", findsRoot: "/music/samples", findTagId: 2)
+                                   }))
+        await gate.setEnabled(true)
 
         let created = try await gate.send("POST", "tag", body: JSONValue.object(["label": .string("magpie")]))
         #expect(try JSONDecoder().decode(JSONValue.self, from: created)["id"]?.intValue == 4)
@@ -237,7 +280,7 @@ struct GateEnv {
         _ = try await gate.send("PUT", "album/monitor", body: JSONValue.object(["albumIds": .array([.int(3)]), "monitored": .bool(false)]))
         _ = try await gate.send("POST", "command", body: JSONValue.object(["name": .string("AlbumSearch"), "albumIds": .array([.int(3)])]))
 
-        let requests = t.requests
+        let requests = t.requests.filter { $0.httpMethod != "GET" }
         #expect(requests.map { $0.httpMethod ?? "" } == ["POST", "DELETE", "PUT", "POST"])
         #expect(requests[0].url?.absoluteString == "https://music.example/lidarr/api/v1/tag")
         #expect(requests[0].value(forHTTPHeaderField: "X-Api-Key") == testKey)
@@ -363,14 +406,6 @@ struct GateEnv {
         Call("POST", "qualityprofile", #"{"name":"Magpie Lossless"}"#),
         Call("POST", "metadataprofile", #"{"name":"Magpie Finds"}"#),
         Call("POST", "artist", #"{"foreignArtistId":"x","addOptions":{"monitor":"none"}}"#),
-        Call("PUT", "artist/12", #"{"id":12,"monitored":true}"#),
-        Call("PUT", "//API//V1//Artist//Editor//", #"{"artistIds":[12],"tags":[2],"applyTags":"remove"}"#),
-        Call("PUT", "artist/editor", #"{"artistIds":[12],"tags":[2],"applyTags":"add"}"#),
-        Call("PUT", "artist/editor", #"{"artistIds":[12],"rootFolderPath":"/music/library","moveFiles":true}"#),
-        Call("PUT", "album/monitor", #"{"albumIds":[3],"monitored":true}"#),
-        Call("PUT", "album/3", #"{"id":3,"monitored":true}"#),
-        Call("DELETE", "artist/12?deleteFiles=false&addImportListExclusion=false"),
-        Call("DELETE", "artist/12?AddImportListExclusion=FALSE&deleteFiles=False"),
         Call("POST", "command", #"{"name":"AlbumSearch","albumIds":[3]}"#),
         Call("POST", "command", #"{"name":"RefreshArtist","artistId":12}"#),
     ]
@@ -527,7 +562,8 @@ struct GateEnv {
         #expect(try reason("POST", "tag", raw: #"{"label":"x""#) != nil)
         // Non-ASCII values are fine; same key in sibling objects is fine.
         #expect(try reason("POST", "tag", raw: #"{"label":"café ſ"}"#) == nil)
-        #expect(try reason("PUT", "album/monitor", raw: #" {"albumIds":[1,2],"monitored":true,"x":[{"id":1},{"id":2}]} "#) == nil)
+        #expect(try reason("POST", "command", raw: #" {"name":"AlbumSearch","albumIds":[1,2],"x":[{"id":1},{"id":2}]} "#) == nil)
+        #expect(try reason("PUT", "album/monitor", raw: #" {"albumIds":[1,2],"monitored":true} "#) == nil)
         #expect(try reason("POST", "command", raw: #"{"name":"AlbumSearch","albumIds":[3]}"#) == nil)
     }
 

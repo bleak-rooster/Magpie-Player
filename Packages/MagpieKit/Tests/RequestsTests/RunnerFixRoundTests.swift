@@ -76,7 +76,7 @@ import MagpieCore
         #expect(h.server.mbCalls == 1, "the retry doesn't ask MusicBrainz again")
         let r = try #require(await h.request(id))
         #expect(r.state == .searching && r.lidarrArtistId == 42 && r.albumId == nil)
-        #expect(try await h.ledger.createdArtist(42))
+        #expect(try await h.ledger.createdArtist(LidarrArtist(id: 42, artistName: "Aurora Field", foreignArtistId: artistA)))
 
         h.server.with { s in s.albums = s.albumsOnAdd.map { var a = $0; a.artistId = 42; return a } }
         await h.runner.tick()
@@ -93,12 +93,12 @@ import MagpieCore
         h.server.with { $0.albumsAppearOnAdd = false }
         let id = try await h.runner.tryRecording(h.recording(recAlbumOnly), tier: .standard)
         await h.runner.settle()
-        #expect(try await h.ledger.createdArtist(42))
+        #expect(try await h.ledger.createdArtist(LidarrArtist(id: 42, artistName: "Aurora Field", foreignArtistId: artistA)))
         #expect(await h.state(id) == .searching)
         h.clock.advance(RequestRunner.albumAppearLimit + 1)
         await h.runner.tick()
         #expect(await h.state(id) == .failed(reason: .noRelease))
-        #expect(try await h.ledger.createdArtist(42))
+        #expect(try await h.ledger.createdArtist(LidarrArtist(id: 42, artistName: "Aurora Field", foreignArtistId: artistA)))
     }
 
     /// IMPORTANT 3 ruling: a retry with the album known goes straight to AlbumSearch: no MusicBrainz, no PUT.

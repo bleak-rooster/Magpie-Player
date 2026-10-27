@@ -65,7 +65,7 @@ import DesignSystem
         #expect(RowState.notYet.voiceOverValue == "Not in your library")
         #expect(RowState.find(daysLeft: 3).voiceOverValue == "Find, 3 days left to keep")
         #expect(RowState.find(daysLeft: 1).voiceOverValue == "Find, 1 day left to keep")
-        #expect(RowState.find(daysLeft: 0).voiceOverValue == "Find, leaves today")
+        #expect(RowState.find(daysLeft: 0).voiceOverValue == "Find, time to decide")
         #expect(RowState.onItsWay(progress: 0.4, phrase: "about 30 seconds").voiceOverValue == "Bringing it home, 40 percent")
         #expect(RowState.onItsWay(progress: nil, phrase: "about 30 seconds").voiceOverValue == "Bringing it home, about 30 seconds")
         #expect(RowState.newFind.voiceOverValue == "New find")
@@ -87,10 +87,13 @@ import DesignSystem
     @Test func songRowAccessibilityLabelAndActions() {
         let song = Song(id: "1", title: "Harbour Lights", artist: "Corin Hale", album: "A", duration: 200)
         #expect(SongRow.accessibilityLabel(for: song) == "Harbour Lights, Corin Hale")
-        #expect(RowState.notYet.accessibilityActionNames == ["Try"])
-        #expect(RowState.find(daysLeft: 4).accessibilityActionNames == ["Keep"])
-        #expect(RowState.newFind.accessibilityActionNames == ["Keep"])
-        #expect(RowState.library.accessibilityActionNames.isEmpty)
+        #expect(RowState.notYet.accessibilityActionNames(offersKeep: false) == ["Try"])
+        #expect(RowState.find(daysLeft: 4).accessibilityActionNames(offersKeep: true) == ["Keep"])
+        #expect(RowState.newFind.accessibilityActionNames(offersKeep: true) == ["Keep"])
+        // Task 6.2b: a find row without a Keep handler names no Keep action.
+        #expect(RowState.find(daysLeft: 4).accessibilityActionNames(offersKeep: false).isEmpty)
+        #expect(RowState.newFind.accessibilityActionNames(offersKeep: false).isEmpty)
+        #expect(RowState.library.accessibilityActionNames(offersKeep: true).isEmpty)
     }
 
     @Test func hallmarkAndHitArea() {

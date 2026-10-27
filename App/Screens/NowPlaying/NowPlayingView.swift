@@ -4,11 +4,13 @@ import Playback
 import SwiftUI
 
 /// Now Playing sheet: art, title, artist, star, scrubber (rounded numerals, hallmark), transport,
-/// Up next, and Lyrics / Queue. Signature has a "Playing from" top bar; Classic a grabber only.
+/// Up next, and Lyrics / Queue. Signature has a "Playing from" top bar; Classic a grabber and a close button.
+/// At accessibility sizes text wraps instead of truncating, and the times sit above the hallmark (D15).
 struct NowPlayingView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.magpieTheme) private var theme
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.dynamicTypeSize) private var typeSize
     @State private var scrubbing: TimeInterval?
     @State private var panel: Panel?
     /// The server advertises `songLyrics` (A13); the Lyrics button is hidden until it does.
@@ -24,7 +26,12 @@ struct NowPlayingView: View {
             if let song = player.queue.current?.song {
                 ScrollView {
                     VStack(spacing: Tokens.Spacing.xl) {
-                        if theme.character != .classic { topBar(song) }
+                        if theme.character != .classic {
+                            topBar(song)
+                        } else {
+                            // The grabber alone can't be reached by VoiceOver or Switch Control (H3 M11).
+                            HStack { closeButton; Spacer() }
+                        }
                         Artwork(song.coverArtId, side: 340) { image in
                             SleeveArt(image: image, side: nil)
                                 .aspectRatio(1, contentMode: .fit)
@@ -54,7 +61,7 @@ struct NowPlayingView: View {
             }
         }
         .foregroundStyle(p.inkColor)
-        .background(p.bgColor.ignoresSafeArea())
+        .background { ArtBackdrop(coverArtId: model.player.queue.current?.song.coverArtId) }
         .presentationDragIndicator(theme.character == .classic ? .visible : .hidden)
         .task { lyricsAvailable = (try? await model.serverAdvertises("songLyrics")) ?? false }
         .sheet(item: $panel) { panel in
@@ -67,11 +74,7 @@ struct NowPlayingView: View {
 
     private func topBar(_ song: Song) -> some View {
         HStack {
-            Button { dismiss() } label: {
-                Image(systemName: "chevron.down").font(.title3.weight(.semibold))
-                    .frame(width: Tokens.minHitSize, height: Tokens.minHitSize)
-            }
-            .accessibilityLabel("Close Now Playing")
+            closeButton
             Spacer()
             VStack(spacing: 1) {
                 Text("Playing from").font(.caption).foregroundStyle(themed.palette.ink2Color)
@@ -84,13 +87,27 @@ struct NowPlayingView: View {
         .buttonStyle(.plain)
     }
 
+    private var closeButton: some View {
+        Button { dismiss() } label: {
+            Image(systemName: "chevron.down").font(.title3.weight(.semibold))
+                .frame(width: Tokens.minHitSize, height: Tokens.minHitSize)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Close Now Playing")
+    }
+
     private func meta(_ song: Song) -> some View {
         let starred = model.isStarred(song)
-        return HStack(alignment: .center, spacing: Tokens.Spacing.m) {
+        let ax = typeSize.isAccessibilitySize
+        // The star goes below at accessibility sizes, so a long artist name gets the full width.
+        let layout = ax ? AnyLayout(VStackLayout(alignment: .leading, spacing: Tokens.Spacing.s))
+                        : AnyLayout(HStackLayout(alignment: .center, spacing: Tokens.Spacing.m))
+        return layout {
             VStack(alignment: .leading, spacing: 2) {
-                Text(song.title).magpieDisplay(.title2).lineLimit(2)
+                Text(song.title).magpieDisplay(.title2).lineLimit(ax ? nil : 2)
                     .accessibilityIdentifier("np-title")
-                Text(song.artist).font(.title3).foregroundStyle(themed.palette.ink2Color).lineLimit(1)
+                Text(song.artist).font(.title3).foregroundStyle(themed.palette.ink2Color).lineLimit(ax ? nil : 1)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .accessibilityElement(children: .combine)
@@ -99,7 +116,7 @@ struct NowPlayingView: View {
                     .font(.title3)
                     .foregroundStyle(starred ? themed.palette.accentInkColor : themed.palette.inkColor)
                     .frame(width: Tokens.minHitSize, height: Tokens.minHitSize)
-                    .background(themed.palette.surfaceColor, in: Circle())
+                    .background(themed.palette.solidSurfaceColor, in: Circle())
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Star")
@@ -127,12 +144,24 @@ struct NowPlayingView: View {
                 @unknown default: break
                 }
             }
-            HStack {
-                Text(DurationText.clock(elapsed)).accessibilityHidden(true)   // the slider speaks the time
-                Spacer()
-                Hallmark(Quality.from(suffix: song.suffix, bitRate: song.bitRate))
-                Spacer()
-                Text("-" + DurationText.clock(duration - elapsed)).accessibilityHidden(true)
+            let elapsedText = Text(DurationText.clock(elapsed)).accessibilityHidden(true)   // the slider speaks the time
+            let remainingText = Text("-" + DurationText.clock(duration - elapsed)).accessibilityHidden(true)
+            Group {
+                if typeSize.isAccessibilitySize {
+                    // Times on their own line, the hallmark below with the full width, so it never hyphenates.
+                    VStack(spacing: Tokens.Spacing.xs) {
+                        HStack { elapsedText; Spacer(); remainingText }
+                        Hallmark(model.quality(of: song))
+                    }
+                } else {
+                    HStack {
+                        elapsedText
+                        Spacer()
+                        Hallmark(model.quality(of: song))   // "Lossless soon" for a kept find (Task 6.2b)
+                        Spacer()
+                        remainingText
+                    }
+                }
             }
             .font(theme.numberFont(.caption))
             .foregroundStyle(themed.palette.ink2Color)
@@ -149,7 +178,7 @@ struct NowPlayingView: View {
             Button { player.toggle() } label: {
                 Image(systemName: player.isPlaying ? "pause.fill" : "play.fill").font(.system(size: 34))
                     .frame(width: 76, height: 76)
-                    .background(themed.palette.surfaceColor, in: Circle())
+                    .background(themed.palette.solidSurfaceColor, in: Circle())
             }
             .accessibilityLabel(player.isPlaying ? "Pause" : "Play")
             .accessibilityIdentifier("np-play-pause")
@@ -163,16 +192,21 @@ struct NowPlayingView: View {
     }
 
     private func upNext(_ song: Song) -> some View {
-        Button { panel = .queue } label: {
+        let ax = typeSize.isAccessibilitySize
+        let label = ax ? AnyLayout(VStackLayout(alignment: .leading, spacing: 2))
+                       : AnyLayout(HStackLayout(spacing: Tokens.Spacing.m))
+        return Button { panel = .queue } label: {
             HStack(spacing: Tokens.Spacing.m) {
-                Artwork(song.coverArtId, side: 36) { SleeveArt(image: $0, side: 36) }
-                Text("Up next").font(.footnote.weight(.semibold)).foregroundStyle(themed.palette.ink2Color)
-                Text(song.title).font(.footnote).lineLimit(1)
-                Spacer()
+                if !ax { Artwork(song.coverArtId, side: 36) { SleeveArt(image: $0, side: 36) } }
+                label {
+                    Text("Up next").font(.footnote.weight(.semibold)).foregroundStyle(themed.palette.ink2Color)
+                    Text(song.title).font(.footnote).lineLimit(ax ? nil : 1)
+                }
+                Spacer(minLength: 0)
                 Image(systemName: "chevron.right").font(.footnote).foregroundStyle(themed.palette.ink2Color)
             }
             .padding(Tokens.Spacing.s)
-            .background(themed.palette.surfaceColor, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .background(themed.palette.solidSurfaceColor, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
         .buttonStyle(.plain)
         .accessibilityElement(children: .ignore)

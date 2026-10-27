@@ -117,10 +117,6 @@ struct PlaylistsListView: View {
     var body: some View {
         List {
             LoadableView(state: playlists, retry: load) { playlists in
-                if playlists.isEmpty {
-                    ContentUnavailableView("No playlists yet", systemImage: "music.note.list")
-                        .listRowBackground(Color.clear)
-                }
                 ForEach(playlists, id: \.id) { playlist in
                     NavigationLink(value: Route.playlist(id: playlist.id)) {
                         HStack(spacing: Tokens.Spacing.m) {
@@ -139,7 +135,14 @@ struct PlaylistsListView: View {
             .listRowSeparatorTint(themed.palette.sepColor)
         }
         .listStyle(.plain)
+        // Over the list, not a row in it, so no separators frame it (H3 M8).
+        .overlay {
+            if playlists.value?.isEmpty == true {
+                ContentUnavailableView("No playlists yet", systemImage: "music.note.list")
+            }
+        }
         .navigationTitle("Playlists")
+        .navigationBarTitleDisplayMode(.inline)   // as with rows; an empty list would otherwise show a large title
         .magpieScreen()
         .task { if playlists.value == nil { await load() } }
     }

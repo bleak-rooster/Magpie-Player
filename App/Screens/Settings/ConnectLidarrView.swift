@@ -220,8 +220,9 @@ enum LidarrConnectCopy {
         case LidarrError.unauthorized: return badKey
         case LidarrError.decoding, LidarrError.http: return notLidarr
         case _ where ConnectErrorCopy.isPlainHTTPAnswer(error, url: url): return ConnectErrorCopy.httpsNotAnswering
+        case let e as URLError where e.code == .appTransportSecurityRequiresSecureConnection: return ConnectErrorCopy.needsHTTPS
         default:
-            return "Couldn't reach Lidarr at \(url.host ?? url.absoluteString). Check the address and that Lidarr is running."
+            return "Couldn't reach Lidarr at \(ConnectErrorCopy.hostAndPort(url) ?? url.absoluteString). Check the address and that Lidarr is running."
         }
     }
 }

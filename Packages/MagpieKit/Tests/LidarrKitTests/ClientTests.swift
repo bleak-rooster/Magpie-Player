@@ -82,6 +82,23 @@ import MagpieTestSupport
         #expect(files[0].quality == "FLAC")
     }
 
+    /// Bring in more (Task 7.1b, A5): an album's length from Lidarr's `duration` (milliseconds; 0 or missing is
+    /// unknown, never a guess), and whether the artist already follows new releases.
+    @Test func albumDurationAndArtistFollowing() async throws {
+        let t = MockTransport()
+        t.stub(pathSuffix: "/album", body: Data(#"""
+        [{"id":1,"title":"A","albumType":"Album","duration":2520000,"monitored":false},
+         {"id":2,"title":"B","albumType":"EP","duration":0,"monitored":false},
+         {"id":3,"title":"C","albumType":"Single","monitored":true}]
+        """#.utf8))
+        t.stub(pathSuffix: "/artist/7", body: Data(#"{"id":7,"artistName":"X","monitorNewItems":"new","tags":[]}"#.utf8))
+        let (client, _) = makeClient(t)
+
+        let albums = try await client.albums(artistId: 7)
+        #expect(albums.map(\.duration) == [2520, nil, nil])
+        #expect(try await client.artist(id: 7).monitorNewItems == "new")
+    }
+
     @Test func commands() async throws {
         let t = MockTransport()
         t.stub(pathSuffix: "/command/367", body: Fixtures.data("command-id"))
@@ -93,6 +110,42 @@ import MagpieTestSupport
         #expect(one.result == "successful")
         #expect(one.ended != nil)
         #expect(try await client.commands().count == 3)
+    }
+
+    /// Fix 6.2b-2: the folders in the main root, and Lidarr's own folder name for the artist (lookup `folder`).
+    @Test func directoriesAndLookupFolder() async throws {
+        let t = MockTransport()
+        t.stub(pathSuffix: "/filesystem", body: Data(#"""
+        {"parent":"/music/","directories":[{"path":"/music/library/Judie Tzuke/","name":"Judie Tzuke"},{"path":"/music/library/x","name":"x"}],"files":[{"path":"/music/library/a.mp3","name":"a.mp3"}]}
+        """#.utf8))
+        t.stub(pathSuffix: "/artist/lookup", body: Data(#"""
+        [{"artistName":"Judie Tzuke","foreignArtistId":"64db764c-2251-4f95-aa40-10fc91d509d8","folder":"Judie Tzuke"}]
+        """#.utf8))
+        let (client, transport) = makeClient(t)
+        #expect(try await client.directories(in: "/music/library") == ["/music/library/Judie Tzuke", "/music/library/x"])
+        let req = try #require(transport.requests.first { $0.url?.path.hasSuffix("/filesystem") == true })
+        #expect(URLComponents(url: req.url!, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "path" }?.value
+                == "/music/library/")
+        #expect(try await client.files(in: "/music/library/") == ["/music/library/a.mp3"])
+        let filesReq = try #require(transport.requests.last { $0.url?.path.hasSuffix("/filesystem") == true })
+        #expect(URLComponents(url: filesReq.url!, resolvingAgainstBaseURL: false)?.queryItems?
+                    .first { $0.name == "includeFiles" }?.value == "true")
+        let lookup = try await client.artistLookup(mbid: MBID("64db764c-2251-4f95-aa40-10fc91d509d8")!)
+        #expect(lookup?.folder == "Judie Tzuke")
+    }
+
+    /// Task 6.2b (A3): Keep follows the `BulkMoveArtist` that covers its artist; the artist ids come from the
+    /// command body (`artist[].artistId` in Lidarr's BulkMoveArtistCommand; other spellings defensively).
+    @Test func commandBodyArtistIds() async throws {
+        let t = MockTransport()
+        t.stub(pathSuffix: "/command", body: Data(#"""
+        [{"id":5,"name":"BulkMoveArtist","status":"started","body":{"artist":[{"artistId":42,"sourcePath":"/music/samples/A"}],"destinationRootFolder":"/music/library"}},
+         {"id":6,"name":"RefreshArtist","status":"queued","body":{"artistIds":[7,8]}},
+         {"id":7,"name":"MoveArtist","status":"queued","body":{"artistId":9}},
+         {"id":8,"name":"RssSync","status":"completed","body":{"artist":"not a list"}}]
+        """#.utf8))
+        let (client, _) = makeClient(t)
+        #expect(try await client.commands().map(\.artistIds) == [[42], [7, 8], [9], []])
     }
 
     @Test func profilesAndTags() async throws {

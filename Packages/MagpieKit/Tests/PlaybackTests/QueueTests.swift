@@ -11,6 +11,24 @@ import MagpieCore
 
     func ids(_ entries: [QueueEntry]) -> [String] { entries.map(\.song.id) }
 
+    /// Task 6.2b: a kept find becomes its library song; every slot holding it is updated in place (same slot ids,
+    /// same order, history included). Returns whether a slot changed.
+    @Test func replaceSongUpdatesEverySlot() {
+        var q = PlayQueue()
+        q.replace(with: Self.songs("f", "2", "f"), startAt: 1)
+        q.playNext(Self.songs("f"))
+        let before = (q.main.map(\.id), q.upNext.map(\.id))
+        var kept = Self.song("lib")
+        kept.libraryId = 1
+        let changed = q.replaceSong(id: "f", with: kept)
+        #expect(changed)
+        #expect(ids(q.main) == ["lib", "2", "lib"] && ids(q.upNext) == ["lib"])
+        #expect(q.main.map(\.id) == before.0 && q.upNext.map(\.id) == before.1)
+        #expect(q.current?.song.id == "2")
+        let unchanged = q.replaceSong(id: "nope", with: kept)
+        #expect(!unchanged)
+    }
+
     @Test func upNextPlaysBeforeMain() {
         var q = PlayQueue()
         q.replace(with: Self.songs("1", "2", "3"), startAt: 0)
@@ -99,6 +117,26 @@ import MagpieCore
         r.replace(with: all, startAt: 7)
         r.shuffle(seed: 42)
         #expect(ids(r.main) == ids(q.main), "same seed, same order")
+    }
+
+    /// Task 6.2c: a find let go (Not for me) leaves every slot: history, current, Up Next and the rest. The
+    /// current one gives way to what plays next; nothing left means idle.
+    @Test func removeSongsTakesEverySlot() {
+        var q = PlayQueue()
+        q.replace(with: Self.songs("f", "1", "f", "g", "2"), startAt: 2)
+        q.playNext(Self.songs("g"))
+        let changed = q.removeSongs(["f", "g"])
+        #expect(changed)
+        #expect(ids(q.main) == ["1", "2"] && q.upNext.isEmpty)
+        #expect(q.current?.song.id == "2")
+        let none = q.removeSongs(["nope"])
+        #expect(!none)
+
+        var only = PlayQueue()
+        only.replace(with: Self.songs("f", "f"), startAt: 0)
+        let both = only.removeSongs(["f"])
+        #expect(both)
+        #expect(only.current == nil && only.main.isEmpty)
     }
 
     @Test func removeCurrentAdvances() {

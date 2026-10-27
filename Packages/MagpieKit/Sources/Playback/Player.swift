@@ -35,6 +35,9 @@ public final class Player {
     public private(set) var isShuffled = false
     /// Last playback error for the current entry, if any (cleared when a new entry starts).
     public private(set) var lastError: String?
+    /// The current song played to its end and nothing followed (final fix 2 B-M3): it was heard, so whatever jumps
+    /// past it doesn't put it back. Cleared when it plays again, is sought or another song starts.
+    public private(set) var hasEnded = false
 
     /// Scrobble at 50 % of the track or this many seconds, whichever comes first.
     static let scrobbleCap: TimeInterval = 240
@@ -125,6 +128,7 @@ public final class Player {
     }
 
     public func seek(_ t: TimeInterval) {
+        hasEnded = false
         engine.seek(to: t)
         position = t
     }
@@ -146,6 +150,18 @@ public final class Player {
     public func remove(id: UUID) {
         let current = queue.current?.id
         queue.remove(id: id)
+        if queue.current?.id != current {
+            loadCurrent()
+        } else {
+            syncEngine()
+        }
+    }
+
+    /// Not for me (Task 6.2c): the songs leave the queue wherever they are. Playing one of them: the next song
+    /// loads (nothing left: the engine stops); otherwise the current song plays on.
+    public func removeSongs(_ songIds: Set<String>) {
+        let current = queue.current?.id
+        guard queue.removeSongs(songIds) else { return }
         if queue.current?.id != current {
             loadCurrent()
         } else {
@@ -181,6 +197,15 @@ public final class Player {
     public func clearUpcoming() {
         queue.clearUpcoming()
         syncEngine()
+    }
+
+    /// Keep (Task 6.2b): song `id` is now `song` (the library song a kept find became). The queue's slots are
+    /// updated, so scrobbling sees the library song. When the id changed and the song is current or still to
+    /// play, the engine's URLs are rebuilt and the current entry resumes where it was.
+    public func replaceSong(id: String, with song: Song) {
+        let pending = ([queue.current].compactMap { $0 } + queue.upcoming).contains { $0.song.id == id }
+        guard queue.replaceSong(id: id, with: song), pending, song.id != id else { return }
+        urlsInvalidated()
     }
 
     /// The active server address changed (failover): rebuild every URL the engine holds, from the
@@ -230,7 +255,7 @@ public final class Player {
             isPlaying = false
             needsReload = true
             switch repeatMode {
-            case .off: break
+            case .off: hasEnded = true
             case .one: resume()
             case .all:
                 queue.wrapToStart()
@@ -252,6 +277,7 @@ public final class Player {
 
     private func resume() {
         guard queue.current != nil else { return }
+        hasEnded = false
         if needsReload { loadCurrent() }
         engine.play()
         isPlaying = true
@@ -278,6 +304,7 @@ public final class Player {
 
     /// A new entry became current: reset position and scrobble state, send "now playing".
     private func beginEntry() {
+        hasEnded = false
         needsReload = false
         failedEntryId = nil
         position = 0

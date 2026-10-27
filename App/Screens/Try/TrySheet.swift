@@ -3,7 +3,8 @@ import MagpieCore
 import Requests
 import SwiftUI
 
-/// Try on a song that's not in the library (fallback mode, M5). Standard tier: "Try it", then the wait screen.
+/// Try on a song that's not in the library: into Finds when they're set up (Task 6.2a), else straight into
+/// the library (fallback mode, M5, B8). Standard tier: "Try it", then the wait screen.
 /// Patient tier (D8): "Ask for it", a confirmation, and no spinning wait screen; it shows up in Requests.
 /// When Try isn't possible yet, says why calmly and opens Settings.
 struct TrySheet: View {
@@ -28,7 +29,7 @@ struct TrySheet: View {
             Group {
                 switch phase {
                 case .choosing, .working: choosing
-                case .waiting(let id): RequestDetailView(requestId: id, playsWhenReady: true)
+                case .waiting(let id): RequestDetailView(requestId: id)
                 case .asked(let id): asked(id)
                 }
             }
@@ -43,6 +44,12 @@ struct TrySheet: View {
         .sheet(isPresented: $showsSettings) { SettingsView() }
     }
 
+    /// The bare record; Classic draws it as a square with the not-yet badge (D3).
+    private var record: some View {
+        RecordArt(side: 140).recordBadge(RowState.notYet.statusSymbol, size: 22)
+            .accessibilityHidden(true).padding(.top, Tokens.Spacing.xl)
+    }
+
     private var isWaiting: Bool { if case .waiting = phase { true } else { false } }
 
     // MARK: - Choosing
@@ -52,21 +59,20 @@ struct TrySheet: View {
         let availability = model.tryAvailability
         return ScrollView {
             VStack(spacing: Tokens.Spacing.l) {
-                RecordArt(side: 140).accessibilityHidden(true).padding(.top, Tokens.Spacing.xl)
+                record
                 VStack(spacing: Tokens.Spacing.xs) {
                     Text(recording.title).magpieDisplay(.title2).multilineTextAlignment(.center)
                     Text(details).font(.subheadline).foregroundStyle(p.ink2Color).multilineTextAlignment(.center)
-                    Label("Not in your library yet", systemImage: "record.circle")
-                        .font(.footnote).foregroundStyle(p.accentInkColor)
+                    StatusLine(.notYet)
                 }
                 switch availability {
                 case .available(let tier):
                     VStack(spacing: Tokens.Spacing.s) {
                         Text(RequestCopy.tierLine(tier)).font(.subheadline.weight(.semibold))
                             .accessibilityIdentifier("try-tier")
-                        Text(TryCopy.fallbackNote).font(.footnote).foregroundStyle(p.ink2Color)
+                        Text(model.tryNote).font(.footnote).foregroundStyle(p.ink2Color)
                             .multilineTextAlignment(.center)
-                            .accessibilityIdentifier("try-fallback-note")
+                            .accessibilityIdentifier(model.triesGoIntoFinds ? "try-finds-note" : "try-fallback-note")
                     }
                     if let error {
                         Label(error, systemImage: "exclamationmark.circle").font(.footnote)
@@ -76,7 +82,7 @@ struct TrySheet: View {
                     Button { Task { await start(tier) } } label: {
                         HStack {
                             if phase == .working { ProgressView() }
-                            Text(tier.asksInsteadOfWaiting ? "Ask for it" : "Try it")
+                            Text(tier.asksInsteadOfWaiting ? RequestCopy.askForIt : "Try it")
                         }
                         .frame(maxWidth: .infinity, minHeight: Tokens.minHitSize)
                     }
@@ -123,7 +129,7 @@ struct TrySheet: View {
         let p = themed.palette
         return ScrollView {
             VStack(spacing: Tokens.Spacing.l) {
-                RecordArt(side: 140).accessibilityHidden(true).padding(.top, Tokens.Spacing.xl)
+                record
                 Text("We'll keep looking").magpieDisplay(.title2)
                 Text(recording.title + " · " + recording.artist).font(.subheadline).foregroundStyle(p.ink2Color)
                     .multilineTextAlignment(.center)

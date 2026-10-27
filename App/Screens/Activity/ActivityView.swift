@@ -12,12 +12,6 @@ struct ActivityView: View {
     var body: some View {
         let groups = Dictionary(grouping: model.requests.reversed()) { RequestCopy.group($0) }
         List {
-            if groups.keys.allSatisfy({ $0 == nil }) {
-                ContentUnavailableView("Nothing on its way", systemImage: "tray",
-                                       description: Text("Songs you try from Search show up here until they're home."))
-                    .listRowBackground(Color.clear)
-                    .accessibilityIdentifier("activity-empty")
-            }
             ForEach(RequestCopy.Group.allCases, id: \.self) { group in
                 if let items = groups[group], !items.isEmpty {
                     Section {
@@ -30,7 +24,16 @@ struct ActivityView: View {
             }
         }
         .listStyle(.plain)
+        // Over the list, not a row in it, so no separators frame it (H3 M8).
+        .overlay {
+            if groups.keys.allSatisfy({ $0 == nil }) {
+                ContentUnavailableView("Nothing on its way", systemImage: "tray",
+                                       description: Text("Songs you try from Search show up here until they're home."))
+                    .accessibilityIdentifier("activity-empty")
+            }
+        }
         .navigationTitle("Requests")
+        .navigationBarTitleDisplayMode(.inline)   // as with rows; an empty list would otherwise show a large title
         .magpieScreen()
         .refreshable { model.pollRequests() }
     }
@@ -47,7 +50,7 @@ struct ActivityView: View {
             }
             if RequestCopy.canCancel(request.state) {
                 Button("Stop looking", role: .destructive) { Task { await model.cancelRequest(request.id) } }
-            } else if !request.cleanupPending {
+            } else if request.canBeRemoved {
                 Button("Remove", role: .destructive) { Task { await model.forgetRequest(request.id) } }
             }
         }
@@ -83,25 +86,25 @@ struct RequestRow: View {
 
 /// One request. Standard tier while on its way: the wait screen with real progress. Otherwise (Patient, D8, or
 /// needs attention): no spinner, just where it stands. Stop looking cancels (G6); Ready plays it.
+/// While it's on screen the app counts the owner as waiting on it: the landing rule (D6, AppModel+Landing.swift)
+/// plays it at once when it's ready and nothing else is playing.
 struct RequestDetailView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     let requestId: RequestID
-    /// Shown right after Try from the sheet: the landing rule may start it when it's ready (D6).
-    var playsWhenReady = false
     @State private var confirmsStop = false
-    @State private var played = false
     private let themed = Themed()
 
     var body: some View {
-        if let request = model.magpieRequest(requestId) {
-            content(request)
-                .onChange(of: request.state) { _, state in
-                    if state == .ready { Task { await land(request) } }
-                }
-        } else {
-            ContentUnavailableView("Not on the list any more", systemImage: "tray")
+        Group {
+            if let request = model.magpieRequest(requestId) {
+                content(request)
+            } else {
+                ContentUnavailableView("Not on the list any more", systemImage: "tray")
+            }
         }
+        .onAppear { model.waitScreenAppeared(requestId) }
+        .onDisappear { model.waitScreenDisappeared(requestId) }
     }
 
     @ViewBuilder private func content(_ request: MagpieRequest) -> some View {
@@ -113,11 +116,16 @@ struct RequestDetailView: View {
             } else {
                 calm(request)
             }
+            if request.findsUnavailable {
+                Text(TryCopy.findsUnavailable).font(.footnote).foregroundStyle(themed.palette.ink2Color)
+                    .multilineTextAlignment(.center).padding(.horizontal, Tokens.Spacing.largeTitleMargin)
+                    .accessibilityIdentifier("request-finds-unavailable")
+            }
             actions(request)
         }
         .padding(.bottom, Tokens.Spacing.l)
         .background(themed.palette.bgColor)
-        .navigationTitle(request.tier.title)
+        .navigationTitle(RequestCopy.detailTitle(request))
         .navigationBarTitleDisplayMode(.inline)
         .confirmationDialog("Stop looking for \(request.recording.title)?", isPresented: $confirmsStop,
                             titleVisibility: .visible) {
@@ -141,7 +149,7 @@ struct RequestDetailView: View {
                     .font(.body).foregroundStyle(themed.palette.accentInkColor)
                     .accessibilityIdentifier("request-status")
                 if request.tier == .patient, RequestCopy.group(request) == .inProgress {
-                    Text("This one might take a while. It can take a few hours. You can leave; it'll be in your library when it's home.")
+                    Text("This one might take a while. It can take a few hours. You can leave; it'll be in your \(request.isFind ? "Finds" : "library") when it's home.")
                         .font(.footnote).foregroundStyle(themed.palette.ink2Color).multilineTextAlignment(.center)
                 }
                 if let note = request.note {
@@ -185,15 +193,8 @@ struct RequestDetailView: View {
         .padding(.horizontal, Tokens.Spacing.largeTitleMargin)
     }
 
-    /// D6: plays at once only if the owner is still here and nothing else is playing.
-    private func land(_ request: MagpieRequest) async {
-        guard playsWhenReady, !played, !model.player.isPlaying else { return }
-        await play(request)
-    }
-
     private func play(_ request: MagpieRequest) async {
         guard let song = await model.readySong(request) else { return }
-        played = true
-        if model.player.isPlaying { model.player.playNext([song]) } else { model.play([song], startAt: 0) }
+        model.playReady(song, request: request.id)
     }
 }

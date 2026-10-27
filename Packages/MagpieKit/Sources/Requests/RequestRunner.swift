@@ -7,18 +7,30 @@ import NavidromeKit
 
 /// What the runner needs from the music library: a plain quick scan (A12: no path mapping in v1), scan
 /// status, a match-index refresh, and "is this recording in the library now" (D7: Ready = Navidrome lists it).
+/// Keep (Task 6.2b, A3) adds a scan of both folders after a move and a look-up of the kept song by MBID.
 public struct LibraryAccess: Sendable {
     public var startScan: @Sendable () async throws -> Void
     public var isScanning: @Sendable () async throws -> Bool
     public var refreshIndex: @Sendable () async throws -> Void
     public var songId: @Sendable (ExternalRecording) async -> String?
+    /// After Keep's move: scan where the artist folder was and where it is now (Lidarr's paths), so the old
+    /// entry goes missing and the new one appears (A3, A12).
+    public var rescanMoved: @Sendable (_ from: String, _ to: String) async throws -> Void
+    /// After Keep's move: the recording's song in the folder the artist moved to (Lidarr's path); nil while not
+    /// listed there. Never the owner's own copy of the recording elsewhere.
+    public var keptSong: @Sendable (MBID, _ artistPath: String) async throws -> Song?
 
+    /// `rescanMoved` nil: one plain quick scan. `keptSong` nil: never found (the request keeps its song id).
     public init(startScan: @escaping @Sendable () async throws -> Void,
                 isScanning: @escaping @Sendable () async throws -> Bool,
                 refreshIndex: @escaping @Sendable () async throws -> Void,
-                songId: @escaping @Sendable (ExternalRecording) async -> String?) {
+                songId: @escaping @Sendable (ExternalRecording) async -> String?,
+                rescanMoved: (@Sendable (_ from: String, _ to: String) async throws -> Void)? = nil,
+                keptSong: (@Sendable (MBID, _ artistPath: String) async throws -> Song?)? = nil) {
         self.startScan = startScan; self.isScanning = isScanning
         self.refreshIndex = refreshIndex; self.songId = songId
+        self.rescanMoved = rescanMoved ?? { _, _ in try await startScan() }
+        self.keptSong = keptSong ?? { _, _ in nil }
     }
 
     /// Straight to one Navidrome client and match index (`startScan` is always `fullScan=false`, G7).
@@ -30,15 +42,20 @@ public struct LibraryAccess: Sendable {
     }
 }
 
-/// Runs Try requests against Lidarr in fallback mode (M5): the album goes into the owner's main root folder.
+/// Runs Try requests against Lidarr. Fallback mode (M5): the album goes into the owner's main root folder.
+/// Finds mode (Task 6.2a, `Setup.finds`): a new artist goes into the confirmed Finds root instead, tagged
+/// `magpie` + `magpie-find`, after the Finds root is checked again against fresh root folders (G2).
 ///
 /// Effects of `RequestMachine` are executed here:
-/// - new artist: one atomic `POST /artist` built from `artist/lookup` (A6, main root instead of Finds root);
+/// - new artist: one atomic `POST /artist` built from `artist/lookup` (A6: the Finds root in Finds mode, else
+///   the main root);
 /// - existing artist: `PUT /album/monitor` + `AlbumSearch` on one album it already has (A7, G6), never a
 ///   change to the artist;
 /// - dedupe by release group against running requests, the ledger and Lidarr; at most 5 active (G7);
 /// - Ready only when the match index finds the recording after a plain `startScan` (A12, D7);
-/// - Cancel unmonitors the album only when Magpie monitored it, and never deletes anything (G6).
+/// - Cancel unmonitors the album only when Magpie monitored it, and never deletes anything (G6);
+/// - Keep (RequestRunner+Keep.swift) and Not for me (RequestRunner+NotForMe.swift) act on ready finds only;
+///   Bring in more (RequestRunner+BringInMore.swift) on kept, moved finds only.
 ///
 /// Every write goes through `LidarrWriteGate` (G1) and every album Magpie touches is in the `Ledger` first.
 /// Call `tick()` on a timer (5 s in the foreground, 30 s otherwise); it does nothing for finished requests.
@@ -65,16 +82,31 @@ public actor RequestRunner {
 
     public static func pollInterval(foreground: Bool) -> Duration { foreground ? .seconds(5) : .seconds(30) }
 
-    /// Where fallback-mode adds go and how they are set up (from provisioning and the owner's root choice).
+    /// Where adds go and how they are set up (from provisioning, the owner's root choice and Finds setup).
     public struct Setup: Sendable, Equatable {
+        /// The main root folder: fallback-mode adds, and Finds-mode adds whose Finds root no longer checks out.
         public var rootFolderPath: String
         public var qualityProfileId: Int
         public var metadataProfileId: Int
+        /// Fallback-mode tags (`magpie`).
         public var tagIds: [Int]
+        /// Finds mode: set only when "Use a Finds folder" is on and the Finds setup is complete. Nil: fallback.
+        public var finds: Finds?
 
-        public init(rootFolderPath: String, qualityProfileId: Int, metadataProfileId: Int, tagIds: [Int]) {
+        /// Where Finds-mode adds go: the owner-confirmed Finds root (G2), tagged `magpie` + `magpie-find`.
+        public struct Finds: Sendable, Equatable {
+            public var rootFolderPath: String
+            public var tagIds: [Int]
+
+            public init(rootFolderPath: String, tagIds: [Int]) {
+                self.rootFolderPath = rootFolderPath; self.tagIds = tagIds
+            }
+        }
+
+        public init(rootFolderPath: String, qualityProfileId: Int, metadataProfileId: Int, tagIds: [Int],
+                    finds: Finds? = nil) {
             self.rootFolderPath = rootFolderPath; self.qualityProfileId = qualityProfileId
-            self.metadataProfileId = metadataProfileId; self.tagIds = tagIds
+            self.metadataProfileId = metadataProfileId; self.tagIds = tagIds; self.finds = finds
         }
     }
 
@@ -89,35 +121,55 @@ public actor RequestRunner {
         case unavailable
     }
 
-    private let lidarr: LidarrClient
-    private let gate: LidarrWriteGate
-    private let ledger: Ledger
-    private let mb: MusicBrainzClient
-    private let library: LibraryAccess
+    // Internal (not private) where RequestRunner+Keep.swift needs them.
+    let lidarr: LidarrClient
+    let gate: LidarrWriteGate
+    let ledger: Ledger
+    let mb: MusicBrainzClient
+    let library: LibraryAccess
     private let store: RequestStore
     private let setup: @Sendable () async -> Setup?
-    private let now: @Sendable () -> Date
+    let keepSetup: @Sendable () async -> KeepSetup?
+    let now: @Sendable () -> Date
+    let sleep: @Sendable (Duration) async -> Void
     private let onReady: @Sendable (MagpieRequest) -> Void
+    let onRelinked: @Sendable (MagpieRequest, _ before: String?, Song) -> Void
 
-    private var list: [MagpieRequest] = []
+    private(set) var list: [MagpieRequest] = []
     private var loaded = false
     private var busy: Set<RequestID> = []
+    /// Lidarr artists a Keep, a Not for me or a Bring in more is working on right now (RequestRunner+Keep.swift,
+    /// RequestRunner+NotForMe.swift, RequestRunner+BringInMore.swift): one at a time per artist, so they never run
+    /// together on one artist.
+    var keepingArtists: Set<Int> = []
+    /// The artists in `keepingArtists` that a Not for me holds (so Keep can say why it can't go ahead).
+    var lettingGoArtists: Set<Int> = []
+    /// When the kept song was last looked up, per request (throttles `relink`).
+    var relinkChecks: [RequestID: Date] = [:]
+    /// When Bring in more's releases were last checked, per request (throttles `followBringIns`).
+    var bringInChecks: [RequestID: Date] = [:]
     private var inFlight: [RequestID: Task<Void, Never>] = [:]
     private var ticking = false
-    private var stopped = false
+    private(set) var stopped = false
     private var lastIndexRefresh: Date?
     /// `history/since` cursor: the last successful poll, minus an overlap (PROMOTED B).
     private var historyCursor: Date?
-    private var lastLidarrContact: Date
+    var lastLidarrContact: Date
     private var watchers: [UUID: AsyncStream<[MagpieRequest]>.Continuation] = [:]
 
+    /// `keepSetup` (Task 6.2b): where Keep moves finds; nil while Finds or the lossless profile aren't set up.
+    /// `onRelinked`: a kept song was found again in the library (its id before, the library song now).
     public init(lidarr: LidarrClient, gate: LidarrWriteGate, ledger: Ledger, mb: MusicBrainzClient,
                 library: LibraryAccess, store: RequestStore,
                 setup: @escaping @Sendable () async -> Setup?,
+                keepSetup: @escaping @Sendable () async -> KeepSetup? = { nil },
                 now: @escaping @Sendable () -> Date = { Date() },
-                onReady: @escaping @Sendable (MagpieRequest) -> Void = { _ in }) {
+                sleep: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) },
+                onReady: @escaping @Sendable (MagpieRequest) -> Void = { _ in },
+                onRelinked: @escaping @Sendable (MagpieRequest, _ before: String?, Song) -> Void = { _, _, _ in }) {
         self.lidarr = lidarr; self.gate = gate; self.ledger = ledger; self.mb = mb
-        self.library = library; self.store = store; self.setup = setup; self.now = now; self.onReady = onReady
+        self.library = library; self.store = store; self.setup = setup; self.keepSetup = keepSetup
+        self.now = now; self.sleep = sleep; self.onReady = onReady; self.onRelinked = onRelinked
         self.lastLidarrContact = now()
         // Critical: ids are only meaningful on their own server. A ledger for another Lidarr disables the runner.
         if ledger.instance != lidarr.instanceScope {
@@ -142,8 +194,14 @@ public actor RequestRunner {
 
     private func unwatch(_ key: UUID) { watchers[key] = nil }
 
-    /// Whether `tick()` has anything to do: an active request or a clean-up still owed.
-    public var needsPolling: Bool { list.contains { ($0.isActive && !$0.isNotListed) || $0.cleanupPending } }
+    /// Whether `tick()` has anything to do: an active request, a clean-up still owed, or a Keep or Not for me
+    /// to follow.
+    public var needsPolling: Bool {
+        list.contains {
+            ($0.isActive && !$0.isNotListed) || $0.cleanupPending || $0.keep != nil || $0.relinkPending == true
+                || $0.notForMe != nil
+        }
+    }
 
     /// Loads the saved requests (resume after relaunch). Safe to call again.
     @discardableResult
@@ -168,7 +226,7 @@ public actor RequestRunner {
         }
         guard await gate.enabled else { throw TryError.changesOff }
         guard await setup() != nil else { throw TryError.notSetUp }
-        guard list.filter(\.isActive).count < Self.maxActive else { throw TryError.tooMany }
+        guard activeCount < Self.maxActive else { throw TryError.tooMany }
         let request = MagpieRequest(recording: recording, tier: tier, createdAt: now())
         list.append(request)
         await changed()
@@ -198,9 +256,10 @@ public actor RequestRunner {
         lastIndexRefresh = nil
     }
 
-    /// Removes a finished (or ready) request from the list. Clean-up still owed keeps it.
+    /// Removes a finished (or ready) request from the list, only when `canBeRemoved` (FL6: never one whose Keep or
+    /// Not for me is still going or needs a look, or that still has follow-ups owed).
     public func forget(_ id: RequestID) async {
-        guard let r = request(id), !r.isActive, !r.cleanupPending else { return }
+        guard let r = request(id), r.canBeRemoved, !keepingArtists.contains(r.lidarrArtistId ?? -1) else { return }
         list.removeAll { $0.id == id }
         await changed()
     }
@@ -233,13 +292,19 @@ public actor RequestRunner {
         await pollLidarr()
         await checkLibrary()
         for r in list where r.cleanupPending && !busy.contains(r.id) { await cleanup(r.id) }
+        await followKeeps()
+        await followNotForMes()
+        await followBringIns()
     }
+
+    /// G7: the places taken in the limit of 5: requests on their way and releases Bring in more is bringing in (FL4).
+    var activeCount: Int { list.reduce(0) { $0 + $1.activePlaces } }
 
     // MARK: - The machine
 
-    private func request(_ id: RequestID) -> MagpieRequest? { list.first { $0.id == id } }
+    func request(_ id: RequestID) -> MagpieRequest? { list.first { $0.id == id } }
 
-    private func mutate(_ id: RequestID, _ change: (inout MagpieRequest) -> Void) async {
+    func mutate(_ id: RequestID, _ change: (inout MagpieRequest) -> Void) async {
         guard !stopped, let i = list.firstIndex(where: { $0.id == id }) else { return }
         var r = list[i]
         change(&r)
@@ -260,7 +325,7 @@ public actor RequestRunner {
     /// M6: the request list on disk *now*. Called before every Lidarr write, so what the write depends on
     /// (`addSent`, the album and artist ids, the cancelled state) survives a relaunch. Throws when the save
     /// fails: the write is not sent and the request waits.
-    private func persist() async throws {
+    func persist() async throws {
         guard !stopped else { throw Superseded() }
         do { try await store.save(list) } catch {
             Log.logger("requests").error("requests not saved; Lidarr write postponed")
@@ -298,7 +363,7 @@ public actor RequestRunner {
         if request(id)?.cleanupPending == true { await cleanup(id) }
     }
 
-    private func apply(_ id: RequestID, _ event: RequestEvent, deferCleanup: Bool = false) async {
+    func apply(_ id: RequestID, _ event: RequestEvent, deferCleanup: Bool = false) async {
         guard var r = request(id) else { return }
         let (next, effects) = RequestMachine.step(r.state, event, now: now(), prior: r.priorWait)
         guard next != r.state || !effects.isEmpty else { return }
@@ -369,7 +434,7 @@ public actor RequestRunner {
             do { albums = try await lidarr.albums(artistId: artist.id) } catch { return await apply(id, .lidarrUnavailable) }
             let available = Set(albums.compactMap(\.foreignAlbumId))
             // An artist Magpie just added may not list its albums yet (Lidarr's refresh): pick as for a new artist.
-            let magpies = (try? await ledger.createdArtist(artist.id)) == true
+            let magpies = (try? await ledger.createdArtist(artist)) == true
             let fits = Set(recording.releases.filter(Self.fitsFindsProfile).map(\.releaseGroup.id))
             guard let rg = ReleasePicker.smallest(containing: recording, available: available)
                     ?? (magpies ? ReleasePicker.smallest(containing: recording, available: fits) : nil) else {
@@ -385,8 +450,9 @@ public actor RequestRunner {
             guard let rg = ReleasePicker.smallest(containing: recording, available: fits) else {
                 return await apply(id, .error(.noRelease))
             }
+            // Finds mode is the intent here; the add checks the Finds root again and may fall back (G2, B8).
             plan = Plan(recordingMBID: recordingId, releaseGroupMBID: rg, artistMBID: artistMBID,
-                        lidarrArtistId: nil, mode: .fallback)
+                        lidarrArtistId: nil, mode: await setup()?.finds != nil ? .finds : .fallback)
             title = recording.releases.first { $0.releaseGroup.id == rg }?.title
         }
         await mutate(id) {
@@ -438,6 +504,7 @@ public actor RequestRunner {
                 $0.searchCommandId = leader.searchCommandId
                 $0.grabbed = leader.grabbed
                 $0.skipNextSearch = true
+                if let mode = leader.plan?.mode { $0.plan?.mode = mode }   // a find only if the leader's is one
             }
             return await apply(id, .added)
         }
@@ -577,7 +644,8 @@ public actor RequestRunner {
         try ensure(id, .adding)
         try await ledger.record(LedgerEntry(lidarrArtistId: artist.id, albumId: nil, rgMbid: rg, createdArtist: true,
                                             wasMonitoredBefore: false, root: r.root ?? artist.rootFolderPath ?? "",
-                                            mode: .fallback, requestId: id.description))
+                                            mode: r.plan?.mode ?? .fallback, requestId: id.description,
+                                            artistMbid: artist.foreignArtistId))
         await mutate(id) {
             $0.lidarrArtistId = artist.id
             $0.skipNextSearch = true
@@ -594,10 +662,15 @@ public actor RequestRunner {
     /// This request's own pending entry (its ids were lost, e.g. a failed save before a relaunch) is resolved
     /// by `resolveOwnPending`, never overwritten (security H1).
     private func monitorExisting(_ id: RequestID, _ r: MagpieRequest, artist: LidarrArtist, rg: MBID) async throws {
+        // G6: an artist that was already there never becomes a find (a Finds-mode intent ends here), unless it is
+        // a find right now (D29, final fix 2 A-I1): then its songs are finds too (never scrobbled). Either way
+        // nothing about the artist is written.
+        let mode: LedgerMode = try await isFindNow(artist) ? .finds : .fallback
+        if r.plan?.mode != mode { await mutate(id) { $0.plan?.mode = mode } }
         let albums = try await lidarr.albums(artistId: artist.id)
         guard let album = albums.first(where: { $0.foreignAlbumId == rg }) else {
             // Magpie's own artist whose album isn't listed yet: wait for it (no write), with the usual give-up.
-            guard try await ledger.createdArtist(artist.id) else { throw AddFailure(reason: .notInCatalogue) }
+            guard try await ledger.createdArtist(artist) else { throw AddFailure(reason: .notInCatalogue) }
             try ensure(id, .adding)
             await mutate(id) {
                 $0.lidarrArtistId = artist.id
@@ -619,15 +692,24 @@ public actor RequestRunner {
         // did it. Closed entries (finished requests) are never inherited: the owner may have monitored it since.
         let liveIds = Set(list.filter { $0.isActive }.map(\.id.description)).union([id.description])
         let livePrior = prior.flatMap { p in p.isOpen && p.isApplied && p.requestId.map(liveIds.contains) == true ? p : nil }
-        let wasMonitoredBefore = album.monitored ? (livePrior?.wasMonitoredBefore ?? true) : false
+        // A-M1: the open, applied entry of a ready (or kept) request on an artist Magpie created is that request's
+        // record (a find's own monitor and mode): a second Try of the same release inherits it, never replaces it.
+        let readyIds = Set(list.filter { $0.state == .ready || $0.state == .kept }.map(\.id.description))
+        let readyPrior = prior.flatMap { p in
+            p.isOpen && p.isApplied && p.created(artist) && p.requestId.map(readyIds.contains) == true ? p : nil
+        }
+        let wasMonitoredBefore = album.monitored
+            ? (livePrior?.wasMonitoredBefore ?? readyPrior?.wasMonitoredBefore ?? true) : false
         let needsMonitor = !album.monitored
         try ensure(id, .adding)
         let entry = LedgerEntry(
             lidarrArtistId: artist.id, albumId: album.id, rgMbid: rg,
-            createdArtist: (try? await ledger.createdArtist(artist.id)) == true,
+            createdArtist: (try? await ledger.createdArtist(artist)) == true,
             wasMonitoredBefore: wasMonitoredBefore,
-            root: artist.rootFolderPath ?? r.root ?? artist.path ?? "", mode: .fallback, keptAt: prior?.keptAt,
-            send: needsMonitor ? .notSent : .applied, requestId: id.description)
+            root: readyPrior?.root ?? artist.rootFolderPath ?? r.root ?? artist.path ?? "", mode: readyPrior?.mode ?? .fallback,
+            keptAt: prior?.keptAt, send: needsMonitor ? .notSent : .applied,
+            requestId: needsMonitor ? id.description : (readyPrior?.requestId ?? id.description),
+            artistMbid: artist.foreignArtistId)
         try await ledger.record(entry)
         await mutate(id) {
             $0.lidarrArtistId = artist.id
@@ -638,8 +720,26 @@ public actor RequestRunner {
         try await sendMonitor(entry, artistId: artist.id, albumId: album.id)
     }
 
-    /// A6: one atomic `POST /artist` built from the lookup row: main root, Fast Start, "Magpie Finds"
-    /// metadata, tag `magpie`, nothing new monitored, only this release group, search on add.
+    /// D29 (final fix 2 A-I1): the fresh artist is a find right now: Magpie created it (ledger), it carries
+    /// `magpie-find`, and its folder is inside the Finds root, checked against fresh root folders (G2). Only an
+    /// artist Magpie created costs the root-folder read; an owner's artist is never a find (G6). A failed read
+    /// throws: the request waits rather than guess.
+    private func isFindNow(_ artist: LidarrArtist) async throws -> Bool {
+        guard let setup = await setup(), let finds = setup.finds, try await ledger.createdArtist(artist) else {
+            return false
+        }
+        let findTags = Set(finds.tagIds).subtracting(setup.tagIds)
+        guard !findTags.isEmpty, findTags.isSubset(of: artist.tags), let path = artist.path else { return false }
+        let roots = try await lidarr.rootFolders().map(\.path)
+        lastLidarrContact = now()
+        guard Self.findsRootStillValid(finds.rootFolderPath, main: setup.rootFolderPath, roots: roots) else { return false }
+        return Self.findsGuard(findsRoot: finds.rootFolderPath, mainRoot: setup.rootFolderPath, roots: roots).isInside(path)
+    }
+
+    /// A6: one atomic `POST /artist` built from the lookup row: Fast Start, "Magpie Finds" metadata, nothing
+    /// new monitored, only this release group, search on add. Finds mode: the Finds root and tags `magpie` +
+    /// `magpie-find`, if the Finds root still checks out against fresh root folders (`findsRootStillValid`);
+    /// otherwise, and in fallback mode, the main root and tag `magpie`.
     ///
     /// `addOptions.monitor` is deliberately left out (Lidarr reads it as "unknown"). Verified on Lidarr
     /// 3.2.0.5144: with `monitor: "none"` Lidarr also unmonitors the *artist*, so `searchForMissingAlbums`
@@ -650,12 +750,15 @@ public actor RequestRunner {
         guard let lookup = try await lidarr.artistLookupJSON(mbid: plan.artistMBID) else {
             throw AddFailure(reason: .noRelease)
         }
-        let body = try Self.addArtistBody(lookup: lookup, setup: setup, releaseGroup: plan.releaseGroupMBID)
+        let target = try await destination(setup)
+        let body = try Self.addArtistBody(lookup: lookup, setup: target.setup, releaseGroup: plan.releaseGroupMBID)
         try ensure(id, .adding)
         await mutate(id) {
             $0.addSent = true
             $0.addedAt = self.now()
-            $0.root = setup.rootFolderPath
+            $0.root = target.setup.rootFolderPath
+            $0.plan?.mode = target.mode
+            $0.findsUnavailable = setup.finds != nil && target.mode == .fallback
         }
         func nothingSent() async { await mutate(id) { $0.addSent = false; $0.addedAt = nil } }
         do { try await persist() } catch {   // M6: `addSent` is on disk before the POST, or nothing is sent
@@ -682,7 +785,8 @@ public actor RequestRunner {
         do {
             try await ledger.record(LedgerEntry(lidarrArtistId: artistId, albumId: nil, rgMbid: plan.releaseGroupMBID,
                                                 createdArtist: true, wasMonitoredBefore: false,
-                                                root: setup.rootFolderPath, mode: .fallback, requestId: id.description))
+                                                root: target.setup.rootFolderPath, mode: target.mode,
+                                                requestId: id.description, artistMbid: plan.artistMBID))
         } catch {
             Log.logger("requests").error("ledger not written for a new artist; retried with its album")
         }
@@ -691,6 +795,29 @@ public actor RequestRunner {
             $0.skipNextSearch = true   // `searchForMissingAlbums` starts the search
         }
         await discoverAlbum(id)
+    }
+
+    /// Where a new artist goes. Finds mode reads Lidarr's root folders now (a failure throws: the request waits,
+    /// nothing is added) and uses the Finds root only if it still passes; else the main root (B8).
+    private func destination(_ setup: Setup) async throws -> (setup: Setup, mode: LedgerMode) {
+        guard let finds = setup.finds else { return (setup, .fallback) }
+        let roots = try await lidarr.rootFolders().map(\.path)
+        lastLidarrContact = now()
+        guard Self.findsRootStillValid(finds.rootFolderPath, main: setup.rootFolderPath, roots: roots) else {
+            Log.logger("requests").error("Finds root no longer checks out; adding to the main root")
+            return (setup, .fallback)
+        }
+        var target = setup
+        target.rootFolderPath = finds.rootFolderPath
+        target.tagIds = finds.tagIds
+        return (target, .finds)
+    }
+
+    /// G2, re-checked before every Finds-mode add: the Finds root is still one of Lidarr's root folders (same
+    /// spelling, byte for byte, after standardising), and neither equals, holds nor sits inside any other root
+    /// folder or the main root.
+    static func findsRootStillValid(_ finds: String, main: String, roots: [String]) -> Bool {
+        PathGuard.findsRootStillValid(finds, main: main, roots: roots)
     }
 
     static func addArtistBody(lookup: JSONValue, setup: Setup, releaseGroup: MBID) throws -> JSONValue {
@@ -749,8 +876,9 @@ public actor RequestRunner {
                 // Lidarr monitored it through `albumsToMonitor` of Magpie's own add: Magpie's to undo.
                 try await ledger.record(LedgerEntry(lidarrArtistId: artistId, albumId: album.id, rgMbid: rg,
                                                     createdArtist: true, wasMonitoredBefore: false,
-                                                    root: r.root ?? "", mode: .fallback, send: .applied,
-                                                    requestId: id.description))
+                                                    root: r.root ?? "", mode: r.plan?.mode ?? .fallback,
+                                                    send: .applied, requestId: id.description,
+                                                    artistMbid: r.plan?.artistMBID))
             } catch {
                 return   // no ledger, no album id: tried again next tick
             }
@@ -800,7 +928,7 @@ public actor RequestRunner {
         }
     }
 
-    private static let finishedCommandStates: Set<String> = ["completed", "failed", "aborted", "cancelled", "orphaned"]
+    static let finishedCommandStates: Set<String> = ["completed", "failed", "aborted", "cancelled", "orphaned"]
 
     private func pollLidarr() async {
         let polled = list.filter { r in
@@ -1004,7 +1132,7 @@ public actor RequestRunner {
         case let e as WriteGateError:
             switch e {
             case .forbidden, .invalidRequest: return .error(.addFailed)
-            case .disabled, .logUnavailable: return .lidarrUnavailable
+            case .disabled, .logUnavailable, .unconfirmed: return .lidarrUnavailable
             }
         case let e as LidarrError:
             if case .http(let status) = e, (400..<500).contains(status), status != 408, status != 429 {

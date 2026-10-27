@@ -32,6 +32,27 @@ struct NativeSong: Decodable {
     let participants: Participants?
     let tags: Tags?
     let libraryId: Int?
+    /// Relative to the library's folder.
+    let path: String?
     let missing: Bool?
     let starred: Bool?
+    let createdAt: String?   // parsed in mapping (nine fraction digits on 0.64.2)
+}
+
+/// `/api/library` row (Navidrome 0.58+; verified against 0.64.2).
+struct NativeLibrary: Decodable {
+    let id: Int
+    let name: String?
+    let path: String
+}
+
+/// A Navidrome library folder: its id (the `<libraryId>:` of a targeted scan) and its path on the server.
+public struct NavidromeLibrary: Sendable, Equatable, Hashable, Codable, Identifiable {
+    public var id: Int
+    public var name: String
+    public var path: String
+
+    public init(id: Int, name: String, path: String) {
+        self.id = id; self.name = name; self.path = path
+    }
 }

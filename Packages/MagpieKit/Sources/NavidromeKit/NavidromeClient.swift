@@ -280,11 +280,17 @@ public actor NavidromeClient {
     /// Quick scan (`fullScan=false`). `target` is `<libraryId>:<path relative to that library>`.
     /// At most one scan per target per 10 s; a debounced call returns without contacting the server.
     public func startScan(target: String?) async throws {
-        let key = target ?? ""
+        try await startScan(targets: target.map { [$0] } ?? [])
+    }
+
+    /// One quick scan of several targets (A12; Keep scans the folder a find left and the one it moved to).
+    /// Empty: the whole library. Debounced per set of targets like `startScan(target:)`.
+    public func startScan(targets: [String]) async throws {
+        let key = targets.joined(separator: "\u{1F}")
         let t = now()
         if let last = lastScan[key], t.timeIntervalSince(last) < Self.scanDebounce { return }
         var extra = [URLQueryItem(name: "fullScan", value: "false")]
-        if let target { extra.append(URLQueryItem(name: "target", value: target)) }
+        extra += targets.map { URLQueryItem(name: "target", value: $0) }
         _ = try await subsonic("startScan", extra)
         lastScan[key] = t   // only after success: a failed scan must be retryable immediately
     }
@@ -300,8 +306,87 @@ public actor NavidromeClient {
     public func songsPage(start: Int, end: Int) async throws -> (songs: [Song], total: Int) {
         let query = [int("_start", start), int("_end", end),
                      URLQueryItem(name: "_sort", value: "id"), URLQueryItem(name: "_order", value: "ASC")]
+        let (data, response) = try await native("api/song", query)
+        let rows = try Self.decode([NativeSong].self, data)
+        let songs = rows.filter { $0.missing != true }.map(Mapping.song)
+        // Without the header (a proxy dropped it), a full page means there may be more; a short one is the end.
+        let total = response.value(forHTTPHeaderField: "X-Total-Count").flatMap { Int($0) }
+            ?? (rows.count < end - start ? start + rows.count : end + 1)
+        return (songs, total)
+    }
+
+    /// One library folder's songs as read, and whether that is all of them.
+    public struct LibrarySongs: Sendable, Equatable {
+        public var songs: [Song]
+        /// False when the read stopped at the page limit with more songs left: the list is partial (FM2: a song not
+        /// in it may still be in the library).
+        public var complete: Bool
+
+        public init(songs: [Song], complete: Bool) { self.songs = songs; self.complete = complete }
+    }
+
+    /// Every song of one library folder (the Finds shelf, Task 6.2a), via `/api/song?library_id=`. Rows of
+    /// another library are dropped too, in case a server ignores the filter; at most `maxPages` pages (100,000
+    /// songs by default), and `complete` says whether that was all (security FM2: never a silent cap).
+    public func songs(inLibrary libraryId: Int, pageSize: Int = 500, maxPages: Int = 200) async throws -> LibrarySongs {
+        var songs: [Song] = [], seen = Set<String>(), start = 0
+        for _ in 0..<maxPages {
+            let query = [int("library_id", libraryId), int("_start", start), int("_end", start + pageSize),
+                         URLQueryItem(name: "_sort", value: "id"), URLQueryItem(name: "_order", value: "ASC")]
+            let (data, response) = try await native("api/song", query)
+            let rows = try Self.decode([NativeSong].self, data)
+            for song in rows.filter({ $0.missing != true && $0.libraryId == libraryId }).map(Mapping.song)
+            where seen.insert(song.id).inserted {
+                songs.append(song)
+            }
+            start += pageSize
+            let total = response.value(forHTTPHeaderField: "X-Total-Count").flatMap { Int($0) }
+            if rows.count < pageSize || total.map({ start >= $0 }) == true { return LibrarySongs(songs: songs, complete: true) }
+        }
+        return LibrarySongs(songs: songs, complete: false)
+    }
+
+    /// Songs with this MusicBrainz recording id (`/api/song?mbz_recording_id=`, verified on 0.64.2), outside
+    /// `excludingLibrary`. Exact id matches only; missing rows dropped.
+    public func songs(recordingMBID: MBID, excludingLibrary: Int?) async throws -> [Song] {
+        try await recordingRows(recordingMBID).filter { excludingLibrary == nil || $0.libraryId != excludingLibrary }
+            .map(Mapping.song)
+    }
+
+    /// Keep (A3): the recording's songs in library `libraryId` under `folder` (relative to that library, compared
+    /// component by component), i.e. where a kept find moved, never the owner's own copy on another release.
+    public func songs(recordingMBID: MBID, inLibrary libraryId: Int, under folder: String) async throws -> [Song] {
+        // Split and compared on bytes (security FL1): a combining mark after `/` can't hide a component.
+        let components = { (p: String) in p.utf8.split(separator: UInt8(ascii: "/")).map(Array.init) }
+        let prefix = components(folder)
+        return try await recordingRows(recordingMBID).filter { row in
+            guard row.libraryId == libraryId, !prefix.isEmpty, let parts = row.path.map(components),
+                  parts.count > prefix.count else {
+                return false
+            }
+            return Array(parts.prefix(prefix.count)) == prefix
+        }.map(Mapping.song)
+    }
+
+    private func recordingRows(_ recording: MBID) async throws -> [NativeSong] {
+        let query = [URLQueryItem(name: "mbz_recording_id", value: recording.rawValue), int("_start", 0), int("_end", 50),
+                     URLQueryItem(name: "_sort", value: "id"), URLQueryItem(name: "_order", value: "ASC")]
+        let (data, _) = try await native("api/song", query)
+        return try Self.decode([NativeSong].self, data)
+            .filter { $0.missing != true && $0.mbzRecordingID.flatMap { MBID($0) } == recording }
+    }
+
+    /// The library folders and their paths as Navidrome sees them (`/api/library`; B6, G2). Some versions
+    /// answer 403 to non-admin accounts (`NavidromeError.http(status: 403)`).
+    public func libraries() async throws -> [NavidromeLibrary] {
+        let (data, _) = try await native("api/library", [])
+        return try Self.decode([NativeLibrary].self, data).map { NavidromeLibrary(id: $0.id, name: $0.name ?? "", path: $0.path) }
+    }
+
+    /// A GET on the native API with the session's JWT; keeps a refreshed token. Throws for a non-2xx answer.
+    private func native(_ path: String, _ query: [URLQueryItem]) async throws -> (Data, HTTPURLResponse) {
         let (data, response) = try await authorized({ s in
-            var request = URLRequest(url: self.endpoint.url(s.base ?? self.endpoint.bases[0], path: "api/song", query: query))
+            var request = URLRequest(url: self.endpoint.url(s.base ?? self.endpoint.bases[0], path: path, query: query))
             request.setValue("Bearer \(s.login?.jwt ?? "")", forHTTPHeaderField: "X-ND-Authorization")
             return request
         }, isExpired: { _, r in r.statusCode == 401 })
@@ -312,12 +397,7 @@ public actor NavidromeClient {
             .replacingOccurrences(of: "Bearer ", with: ""), !refreshed.isEmpty {
             session.withLock { $0.login?.jwt = refreshed }
         }
-        let rows = try Self.decode([NativeSong].self, data)
-        let songs = rows.filter { $0.missing != true }.map(Mapping.song)
-        // Without the header (a proxy dropped it), a full page means there may be more; a short one is the end.
-        let total = response.value(forHTTPHeaderField: "X-Total-Count").flatMap { Int($0) }
-            ?? (rows.count < end - start ? start + rows.count : end + 1)
-        return (songs, total)
+        return (data, response)
     }
 }
 

@@ -16,6 +16,10 @@ public struct LidarrAudit: Sendable, Equatable {
     /// False means deleting from Lidarr is permanent (G3).
     public var recycleBinSet: Bool
     public var healthIssues: [HealthIssue]
+    /// The `magpie-find` tag's id, found by name (read-only). A setup made before Finds mode lacks it.
+    public var findTagId: Int?
+    /// The "Magpie Lossless" quality profile's id, found by exact name (read-only): what Keep moves a find to.
+    public var losslessProfileId: Int?
 
     public init(reachable: Bool = false, keyRejected: Bool = false, version: String = "", authEnabled: Bool = false, roots: [RootFolder] = [],
                 hasMagpieProfiles: Bool = false, tubifarry: Bool = false, recycleBinSet: Bool = false,
@@ -36,7 +40,9 @@ public struct LidarrAudit: Sendable, Equatable {
             audit.keyRejected = true
         } catch {}
         audit.roots = (try? await c.rootFolders()) ?? []
-        let quality = Set(((try? await c.qualityProfiles()) ?? []).map(\.name))
+        let qualityProfiles = (try? await c.qualityProfiles()) ?? []
+        let quality = Set(qualityProfiles.map(\.name))
+        audit.losslessProfileId = qualityProfiles.first { $0.name == Provisioner.losslessName }?.id
         let metadata = Set(((try? await c.metadataProfiles()) ?? []).map(\.name))
         audit.hasMagpieProfiles = quality.isSuperset(of: Provisioner.qualityProfileNames)
             && metadata.isSuperset(of: Provisioner.metadataProfileNames)
@@ -44,6 +50,8 @@ public struct LidarrAudit: Sendable, Equatable {
         audit.tubifarry = plugins?.contains { $0.contains("tubifarry") } ?? false
         audit.recycleBinSet = ((try? await c.recycleBin()) ?? nil) != nil
         audit.healthIssues = (try? await c.health()) ?? []
+        // Lidarr stores tag labels lower-cased; the same label is the same tag (as in `Provisioner`).
+        audit.findTagId = ((try? await c.tags()) ?? []).first { $0.label.lowercased() == Provisioner.findTag }?.id
         return audit
     }
 }

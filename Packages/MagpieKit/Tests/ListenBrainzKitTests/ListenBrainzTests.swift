@@ -116,4 +116,88 @@ import MagpieTestSupport
             _ = try await ListenBrainzClient(transport: t2, token: "bad").createdForPlaylists(user: "rob")
         }
     }
+
+    // MARK: - Made for you (Task 7.1c)
+
+    @Test func tokenUserComesFromValidateToken() async throws {
+        let t = MockTransport()
+        t.stub(pathSuffix: "/1/validate-token",
+               body: json(#"{"code":200,"message":"Token valid.","valid":true,"user_name":"rob"}"#))
+        #expect(try await ListenBrainzClient(transport: t, token: "secret-token-123").tokenUser() == "rob")
+        let request = try #require(t.requests.first)
+        #expect(request.url?.host == "api.listenbrainz.org")
+        #expect(request.url?.path == "/1/validate-token")
+        #expect(request.value(forHTTPHeaderField: "Authorization") == "Token secret-token-123")
+        #expect(!(request.url?.absoluteString.contains("secret-token-123") ?? true))
+    }
+
+    @Test func tokenUserNeedsAValidToken() async throws {
+        let t = MockTransport()
+        t.stub(pathSuffix: "/1/validate-token", body: json(#"{"code":200,"message":"Token invalid.","valid":false}"#))
+        await #expect(throws: ListenBrainzError.unauthorized) {
+            _ = try await ListenBrainzClient(transport: t, token: "bad").tokenUser()
+        }
+        let none = MockTransport()
+        await #expect(throws: ListenBrainzError.unauthorized) {
+            _ = try await ListenBrainzClient(transport: none, token: nil).tokenUser()
+        }
+        #expect(none.requests.isEmpty)   // no token: nothing is asked
+    }
+
+    @Test func playlistTracksMap() async throws {
+        let t = MockTransport()
+        let id = try #require(MBID("5a2b8c4e-7a0b-4f61-9a0e-0c8f2d1e9b11"))
+        t.stub(pathSuffix: "/1/playlist/\(id.rawValue)", body: Fixtures.data("playlist", dir: "listenbrainz"))
+        let tracks = try await ListenBrainzClient(transport: t, token: "tok").playlistTracks(id)
+        #expect(tracks.map(\.title) == ["Harbour Lights", "Low Light", "Tidal"])
+        #expect(tracks[0].recordingMBID == MBID("c2272a15-8f3a-4cdc-8f32-7e723352d44d"))
+        #expect(tracks[0].artistMBID == MBID("4f9e3a0e-1c87-4e2c-a0a3-92b5c4f0d6a1"))
+        #expect(tracks[0].artist == "Judie Tzuke")
+        #expect(tracks[0].releaseTitle == "The Cat Is Out")
+        #expect(tracks[0].duration == 232)
+        #expect(tracks[0].source == .listenBrainz)
+        #expect(tracks[1].recordingMBID == MBID("4d8175ea-cc33-4565-8a8e-6b0f6c7a3f11"))   // a plain string identifier
+        #expect(tracks[1].duration == nil)
+        #expect(tracks[2].recordingMBID == nil)
+        #expect(tracks[2].duration == nil)   // 0 is unknown, never a length
+        let request = try #require(t.requests.first)
+        #expect(request.url?.host == "api.listenbrainz.org")
+        #expect(request.httpMethod == "GET")
+    }
+
+    @Test func playlistErrorsThrow() async throws {
+        let id = try #require(MBID("5a2b8c4e-7a0b-4f61-9a0e-0c8f2d1e9b11"))
+        let t = MockTransport()
+        t.stub(pathSuffix: "/1/playlist/\(id.rawValue)", status: 429)
+        await #expect(throws: ListenBrainzError.http(status: 429)) {
+            _ = try await ListenBrainzClient(transport: t, token: "tok").playlistTracks(id)
+        }
+        let t2 = MockTransport()
+        t2.stub(pathSuffix: "/1/playlist/\(id.rawValue)", body: json("[1,2]"))
+        await #expect(throws: ListenBrainzError.decoding) {
+            _ = try await ListenBrainzClient(transport: t2, token: "tok").playlistTracks(id)
+        }
+    }
+
+    @Test func apiCallsTimeOut() async throws {
+        let client = ListenBrainzClient(transport: HangingTransport(), token: "tok", labsTimeout: 0.05, apiTimeout: 0.05)
+        await #expect(throws: ListenBrainzError.timedOut) { _ = try await client.tokenUser() }
+        await #expect(throws: ListenBrainzError.timedOut) { _ = try await client.createdForPlaylists(user: "rob") }
+        let id = try #require(MBID("5a2b8c4e-7a0b-4f61-9a0e-0c8f2d1e9b11"))
+        await #expect(throws: ListenBrainzError.timedOut) { _ = try await client.playlistTracks(id) }
+    }
+
+    @Test func apiCallsAreSpacedByTheLimiterButLabsIsNot() async throws {
+        let clock = FakeClock()
+        let t = MockTransport()
+        t.stub(pathSuffix: "/1/validate-token", body: json(#"{"valid":true,"user_name":"rob"}"#))
+        t.stub(pathSuffix: "/playlists/createdfor", body: Fixtures.data("createdfor", dir: "listenbrainz"))
+        t.stub(pathSuffix: "/recording-search/json", body: json("[]"))
+        let client = ListenBrainzClient(transport: t, token: "tok", limiter: clock.limiter(perSecond: 2))
+        _ = try await client.tokenUser()
+        _ = try await client.searchRecordings("q")
+        _ = try await client.createdForPlaylists(user: "rob")
+        #expect(clock.sleeps == [0.5])   // the second api call waited; labs search did not take a slot
+    }
 }
+

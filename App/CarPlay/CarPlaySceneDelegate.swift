@@ -91,9 +91,7 @@ final class CarPlayLibraryAdapter: CarPlayLibrary {
         return (result.playlist, result.songs)
     }
 
-    func search(_ query: String) async throws -> LibrarySearchResult {
-        try await model.request { try await $0.search(query, songCount: 20, albumCount: 10, artistCount: 0) }
-    }
+    func search(_ query: String) async throws -> CarPlaySearchResult { try await model.carPlaySearch(query) }
 
     /// Server-side sizes match the phone's, so the in-memory cache is shared.
     func artwork(coverArtId: String, pixelSide: Int) async -> UIImage? {
@@ -110,6 +108,20 @@ final class CarPlayLibraryAdapter: CarPlayLibrary {
     var recentSearches: [String] { recents.items }
 
     func addRecentSearch(_ query: String) { recents.add(query) }
+
+    // Finds, Keep and Try: the phone's own (AppModel+CarPlay.swift).
+
+    var findsShelf: CPFindsShelf? { model.carPlayFinds }
+
+    func refreshFinds() async { await model.refreshFinds() }
+
+    func mayKeep(songId: String) -> Bool { model.carPlayMayKeep(songId: songId) }
+
+    func keep(songId: String) async -> CPKeepResult { await model.carPlayKeep(songId: songId) }
+
+    var tryOffer: CPTryOffer { model.carPlayTryOffer }
+
+    func tryNext(_ recording: ExternalRecording) async -> CPTryResult { await model.tryNext(recording) }
 
     private struct ArtistPage: Sendable {
         let artist: Artist

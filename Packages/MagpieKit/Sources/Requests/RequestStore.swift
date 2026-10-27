@@ -81,6 +81,71 @@ public struct MagpieRequest: Sendable, Codable, Equatable, Identifiable {
     public var cleanupPending: Bool = false
     /// Lidarr's latest status message for the download, if any (display only).
     public var note: String?
+    /// Finds mode was on, but the Finds root no longer checked out when the artist was added (G2): the song
+    /// went into the library instead (B8).
+    public var findsUnavailable: Bool {
+        get { findsFellBack ?? false }
+        set { findsFellBack = newValue ? true : nil }
+    }
+    /// Stored optional, so requests saved before Task 6.2a (no such key) still decode.
+    var findsFellBack: Bool?
+
+    // Keep (Task 6.2b). All optional, so requests saved before it still decode.
+
+    /// A Keep that wrote to Lidarr and isn't settled yet (saved before the write, M6). While set, Keep never
+    /// writes the move again: the runner only checks how it went (`RequestRunner.keep`, `tick`).
+    public var keep: KeepProgress?
+    /// Kept where it is: the main root already had a folder for the artist, so only `magpie-find` came off (G4).
+    public var keptInPlace: Bool {
+        get { stayedInFinds ?? false }
+        set { stayedInFinds = newValue ? true : nil }
+    }
+    var stayedInFinds: Bool?
+    /// The last Keep didn't go through (Lidarr couldn't move it); the find is as it was and can be kept again.
+    public var keepFailed: Bool {
+        get { lastKeepFailed ?? false }
+        set { lastKeepFailed = newValue ? true : nil }
+    }
+    var lastKeepFailed: Bool?
+    /// The last Keep couldn't be settled from here (a move that never finished, a find that couldn't be put
+    /// back, files that aren't where Lidarr says): it needs the owner's look. The ledger keeps saying kept, so
+    /// nothing deletes it and Keep isn't offered again.
+    public var keepNeedsAttention: Bool {
+        get { keepStuck ?? false }
+        set { keepStuck = newValue ? true : nil }
+    }
+    var keepStuck: Bool?
+    /// Lidarr's artist folder after a confirmed move (the kept song is looked up there, A3).
+    public var movedTo: String?
+    /// Kept and moved: the library song is looked up again by MBID (A3). False once found or given up; nil
+    /// for requests that never moved.
+    public var relinkPending: Bool?
+    /// When the move was confirmed (the re-resolve gives up `RequestRunner.relinkLimit` after it).
+    public var movedAt: Date?
+    /// The library song's file type once re-resolved after Keep ("Lossless soon" until it is lossless).
+    public var songSuffix: String?
+
+    // Not for me (Task 6.2c). Optional, so requests saved before it still decode.
+
+    /// A Not for me under way: saved before its first Lidarr write (M6). While set, every step is proven again
+    /// from fresh Lidarr state before it is sent; nothing is ever sent on the saved state alone.
+    public var notForMe: NotForMeProgress?
+    /// Not for me couldn't finish from here (Lidarr refused part of it, or it couldn't be proven safe to go on):
+    /// it needs the owner's look. Nothing more is deleted, and neither Keep nor Not for me is offered again.
+    public var notForMeNeedsAttention: Bool {
+        get { letGoStuck ?? false }
+        set { letGoStuck = newValue ? true : nil }
+    }
+    var letGoStuck: Bool?
+
+    // Bring in more (security FL4). Optional, so requests saved before it still decode.
+
+    /// Releases a Bring in more from this kept find monitored and searched that haven't arrived yet. Each counts
+    /// toward the limit of 5 (G7) like a request on its way, until Lidarr has files for it, it is no longer
+    /// monitored, or `RequestMachine.giveUpAfter` has passed since `bringInAt`. Nil: none.
+    public var bringingIn: [Int]?
+    /// When the latest Bring in more of this find was sent.
+    public var bringInAt: Date?
 
     public init(id: RequestID = RequestID(), recording: ExternalRecording, tier: Tier, createdAt: Date) {
         self.id = id
@@ -94,8 +159,107 @@ public struct MagpieRequest: Sendable, Codable, Equatable, Identifiable {
     /// Counts toward the limit of 5 (G7) and is polled: not finished and not yet ready.
     public var isActive: Bool { !state.isTerminal && state != .ready }
 
+    /// Whether Activity may remove it (security FL6): finished or ready, with no clean-up owed, no Keep or Not for me
+    /// still going or needing a look, no kept song still being looked up, and nothing Bring in more is still
+    /// bringing in. Removing any of those would drop their follow-up (a failed move's put-back, the relink).
+    public var canBeRemoved: Bool {
+        !isActive && !cleanupPending && keep == nil && notForMe == nil && !keepNeedsAttention
+            && !notForMeNeedsAttention && relinkPending != true && (bringingIn ?? []).isEmpty
+    }
+
+    /// How many places this request takes in the limit of 5 (G7): one while on its way, plus each release Bring in
+    /// more is still bringing in (FL4).
+    public var activePlaces: Int { (isActive ? 1 : 0) + (bringingIn?.count ?? 0) }
+
+    /// Headed for (or added to) the Finds folder: a new artist added in Finds mode (Task 6.2a).
+    public var isFind: Bool { plan?.mode == .finds }
+
     /// Imported by Lidarr but not listed by the library after the time limit (Needs attention).
     public var isNotListed: Bool { state == .importing && notListedAt != nil }
+}
+
+/// A Keep in flight (Task 6.2b), saved before its first Lidarr write so a relaunch never writes it twice.
+public struct KeepProgress: Sendable, Codable, Equatable {
+    public enum Phase: String, Sendable, Codable {
+        /// `PUT /artist/editor` with the main root was (maybe) sent: wait for `BulkMoveArtist` (A3).
+        case moving
+        /// The destination existed: only `magpie-find` is being removed (G4).
+        case untagging
+        /// The move failed: `magpie-find` and the earlier quality profile are being put back.
+        case restoring
+    }
+
+    public var phase: Phase
+    public var startedAt: Date
+    public var artistId: Int
+    /// The artist folder before the move (inside the Finds root).
+    public var fromPath: String
+    public var findsRoot: String
+    public var mainRoot: String
+    public var findTagId: Int
+    /// The artist's quality profile before Keep, to put back if the move fails.
+    public var priorQualityProfileId: Int?
+    /// The highest `/command` id Lidarr listed before the move was asked for: only later ones are this move.
+    public var commandBaseline: Int
+    public var lastCheckAt: Date?
+    /// When the move first looked finished but the track files weren't all in the main root yet (Lidarr updates
+    /// track file paths shortly after the command completes): they get `RequestRunner.keepStartGrace` to settle.
+    public var filesUnsettledSince: Date?
+    /// Restore writes sent so far (bounded by `RequestRunner.keepRestoreLimit`).
+    public var restoreAttempts: Int?
+    /// Lidarr saved the main root as the artist path but the files never left `fromPath`: the restore also
+    /// points the artist back at the Finds root, without moving files.
+    public var revertPath: Bool?
+
+    public init(phase: Phase, startedAt: Date, artistId: Int, fromPath: String, findsRoot: String, mainRoot: String,
+                findTagId: Int, priorQualityProfileId: Int?, commandBaseline: Int) {
+        self.phase = phase; self.startedAt = startedAt; self.artistId = artistId; self.fromPath = fromPath
+        self.findsRoot = findsRoot; self.mainRoot = mainRoot; self.findTagId = findTagId
+        self.priorQualityProfileId = priorQualityProfileId; self.commandBaseline = commandBaseline
+    }
+}
+
+/// A Not for me in flight (Task 6.2c), saved before its first Lidarr write so a relaunch picks it up and proves
+/// each remaining step again before sending it.
+public struct NotForMeProgress: Sendable, Codable, Equatable {
+    public enum Phase: String, Sendable, Codable {
+        /// `DELETE /trackfile/bulk` (or one file at a time) for the album's files (A16).
+        case deleting
+        /// `PUT /album/monitor {monitored: false}` (A16).
+        case unmonitoring
+        /// `DELETE /artist/{id}?deleteFiles=false&addImportListExclusion=false`, only when nothing is left (A16).
+        case removingArtist
+    }
+
+    public var phase: Phase
+    public var startedAt: Date
+    public var artistId: Int
+    public var albumId: Int
+    /// The artist folder proven inside the Finds root before the first write: every later step needs the same.
+    public var artistPath: String
+    public var findsRoot: String
+    public var mainRoot: String
+    public var findTagId: Int
+    /// The owner confirmed "This deletes the files permanently." (Lidarr's recycle bin was unset).
+    public var permanentConfirmed: Bool
+    /// A write was sent (or may have been): from here a refusal needs the owner's look instead of undoing nothing.
+    public var sent: Bool
+    /// Lidarr answered the bulk delete with 404 / 405: one track file at a time from now on.
+    public var oneByOne: Bool?
+    /// Writes sent so far, bounded by `writeBudget`.
+    public var writes: Int
+    public var writeBudget: Int
+    /// Writes whose answer never came, bounded by `RequestRunner.notForMeUnansweredLimit`.
+    public var unanswered: Int
+    public var lastCheckAt: Date?
+
+    public init(phase: Phase, startedAt: Date, artistId: Int, albumId: Int, artistPath: String, findsRoot: String,
+                mainRoot: String, findTagId: Int, permanentConfirmed: Bool, writeBudget: Int) {
+        self.phase = phase; self.startedAt = startedAt; self.artistId = artistId; self.albumId = albumId
+        self.artistPath = artistPath; self.findsRoot = findsRoot; self.mainRoot = mainRoot; self.findTagId = findTagId
+        self.permanentConfirmed = permanentConfirmed; self.sent = false; self.writes = 0
+        self.writeBudget = writeBudget; self.unanswered = 0
+    }
 }
 
 public enum RequestStoreError: Error, Equatable {
@@ -150,5 +314,15 @@ public actor RequestStore {
     public func erase() {
         memory = []
         if let fileURL { try? FileManager.default.removeItem(at: fileURL) }
+    }
+
+    /// Sign-out (V-fix): removes the requests of every Lidarr in `directory` (`requests-<instance>.json`, and copies
+    /// of a damaged one kept aside), not only the connected one's. Call with no runner using them.
+    public static func eraseAll(in directory: URL = URL.applicationSupportDirectory) {
+        let folder = defaultURL(in: directory, instance: "x").deletingLastPathComponent()
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []
+        for name in names where name.hasPrefix("requests-") && name.contains(".json") {
+            try? FileManager.default.removeItem(at: folder.appending(path: name))
+        }
     }
 }

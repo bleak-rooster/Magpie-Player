@@ -11,13 +11,20 @@ struct LidarrSetup: Codable, Equatable, Sendable {
     var fastStartProfileId: Int?
     var findsMetadataProfileId: Int?
     var magpieTagId: Int?
+    /// The `magpie-find` tag (Finds mode, Task 6.2a). Nil for a setup made before it: Try stays in fallback
+    /// mode until "Set up Magpie in Lidarr" runs again (it looks the tag up by name, A15).
+    var findTagId: Int?
+    /// "Magpie Lossless" (Task 6.2b): what Keep moves a find to. Nil for a setup made before Keep: saved by
+    /// "Set up Magpie in Lidarr", or adopted when the audit finds the profile by name.
+    var losslessProfileId: Int?
     /// The main root folder new music goes into (fallback mode). Picked by the owner when Lidarr has several;
     /// never guessed.
     var rootFolderPath: String?
 
     var isProvisioned: Bool { fastStartProfileId != nil && findsMetadataProfileId != nil && magpieTagId != nil }
 
-    /// What the runner adds with, once provisioned and a root is chosen.
+    /// What the runner adds with in fallback mode, once provisioned and a root is chosen
+    /// (`AppModel.runnerSetup` adds Finds mode).
     var runnerSetup: RequestRunner.Setup? {
         guard let fastStartProfileId, let findsMetadataProfileId, let magpieTagId, let rootFolderPath else { return nil }
         return RequestRunner.Setup(rootFolderPath: rootFolderPath, qualityProfileId: fastStartProfileId,

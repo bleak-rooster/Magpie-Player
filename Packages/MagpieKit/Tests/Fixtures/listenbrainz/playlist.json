@@ -1,0 +1,52 @@
+{
+    "playlist": {
+        "annotation": "Hand-written in the shape of GET /1/playlist/{mbid} (JSPF).",
+        "creator": "troi-bot",
+        "date": "2026-10-25T23:03:53.277850+00:00",
+        "extension": {
+            "https://musicbrainz.org/doc/jspf#playlist": {
+                "additional_metadata": {
+                    "algorithm_metadata": { "source_patch": "weekly-exploration" },
+                    "expires_at": "2026-11-08T23:03:48.011853"
+                },
+                "created_for": "rob",
+                "creator": "troi-bot",
+                "public": true
+            }
+        },
+        "identifier": "https://listenbrainz.org/playlist/5a2b8c4e-7a0b-4f61-9a0e-0c8f2d1e9b11",
+        "title": "Weekly Exploration for rob, week of 2026-10-26 Mon",
+        "track": [
+            {
+                "album": "The Cat Is Out",
+                "creator": "Judie Tzuke",
+                "duration": 232000,
+                "identifier": ["https://musicbrainz.org/recording/c2272a15-8f3a-4cdc-8f32-7e723352d44d"],
+                "title": "Harbour Lights",
+                "extension": {
+                    "https://musicbrainz.org/doc/jspf#track": {
+                        "added_at": "2026-10-25T23:03:53.277850+00:00",
+                        "added_by": "troi-bot",
+                        "artist_identifiers": ["https://musicbrainz.org/artist/4f9e3a0e-1c87-4e2c-a0a3-92b5c4f0d6a1"],
+                        "additional_metadata": { "caa_id": 1234, "caa_release_mbid": "0b0f7a1c-8f0a-4b8e-9d5e-3f1c2b7a6d40" }
+                    }
+                }
+            },
+            {
+                "album": "Glasshouse",
+                "creator": "Corin Hale",
+                "identifier": "https://musicbrainz.org/recording/4d8175ea-cc33-4565-8a8e-6b0f6c7a3f11",
+                "title": "Low Light"
+            },
+            { "creator": "No Title" },
+            { "title": "No Artist" },
+            "garbage",
+            {
+                "creator": "Ines Morrow",
+                "duration": 0,
+                "identifier": ["not-a-recording-url"],
+                "title": "Tidal"
+            }
+        ]
+    }
+}

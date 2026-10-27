@@ -64,12 +64,39 @@ final class AppModel {
     var lidarrSetup: LidarrSetup?
     /// The connected Lidarr's setup as last read (speed tier, root folders). Nil until read.
     var lidarrStatus: LidarrAudit?
+    /// Finds mode's setup for this Lidarr and Navidrome account (AppModel+Finds.swift). Nil unless both are connected.
+    var findsSetup: FindsSetup? { didSet { syncFindsIdentity() } }
+    /// The songs of the Finds library, as last read (`refreshFinds`).
+    var findSongs: [Song] = [] { didSet { syncFindsIdentity() } }
+    /// Finds let go (Not for me, Task 6.2c) that the Finds library may still list until its scan catches up:
+    /// kept off the shelf until a read no longer lists them.
+    @ObservationIgnored var lettingGoSongIds: Set<String> = []
+    /// Finds already played on this account: they are no longer New finds.
+    var playedFinds: Set<String> = []
     /// Try requests, newest last (from the runner).
-    var requests: [MagpieRequest] = []
+    var requests: [MagpieRequest] = [] {
+        didSet {
+            syncRequestFinds()
+            forgetEndedStarts()
+        }
+    }
+    /// D6: a find that became ready went next in the queue; the in-app "Play now" banner (AppModel+Landing.swift).
+    var playNowBanner: PlayNowBanner?
+    /// Wait screens on screen now, per request (a request's screen may be shown twice, e.g. sheet and Requests).
+    @ObservationIgnored var waitScreens: [RequestID: Int] = [:]
+    /// Requests already landed (D6): each lands once.
+    @ObservationIgnored var landedRequests: Set<RequestID> = []
+    /// Car Try it next with nothing to play first (final fix 2 B-M7): these start when they land on a still-idle queue.
+    @ObservationIgnored var startsWhenLanded: Set<RequestID> = []
+    @ObservationIgnored var bannerWatch: Task<Void, Never>?
     /// G8 "Count plays": scrobbling on (default) or off.
     var countPlays: Bool
     /// Whether an optional ListenBrainz token is saved.
     var hasListenBrainzToken = false
+    /// Changes whenever the token is saved, replaced or removed: Home's "Made for you" reads again (Task 7.1c).
+    var listenBrainzTokenGeneration = 0
+    /// Home's "Made for you" shelf for the saved token (AppModel+MadeForYou.swift). Empty without a token.
+    var madeForYouShelf: [MadeForYou.Playlist] = []
     /// The scene is active: requests poll every 5 s, otherwise every 30 s.
     var isForeground = true {
         didSet {
@@ -84,6 +111,7 @@ final class AppModel {
     @ObservationIgnored private let lidarrStore: any LidarrConnectionStoring
     @ObservationIgnored let tokenStore: any ListenBrainzTokenStoring
     @ObservationIgnored let setupStore: LidarrSetupStore
+    @ObservationIgnored let findsStore: FindsSetupStore
     @ObservationIgnored let gateDefaultsSuite: String?
     @ObservationIgnored let gateDefaults: UserDefaults
     @ObservationIgnored let appDefaults: UserDefaults
@@ -99,17 +127,30 @@ final class AppModel {
     @ObservationIgnored var pollTask: Task<Void, Never>?
     @ObservationIgnored var pollGeneration = 0
     @ObservationIgnored let playCounting: PlayCounting
+    /// D29: what the player treats as a find (never scrobbled). Kept in step with `findsSetup` and `findSongs`.
+    @ObservationIgnored let findsIdentity = FindsIdentity()
+    @ObservationIgnored var findPlaysWatch: Task<Void, Never>?
+    /// The Finds library's song ids for the current account and library, as last read or saved
+    /// (`findSongIdsKey`); `ids` nil when never read. Keyed so another account or library reloads it.
+    @ObservationIgnored var findIdsCache: (key: String, ids: Set<String>?)?
     @ObservationIgnored let notifications: Bool
     /// The library's match index for the signed-in server and account (nil when signed out).
     @ObservationIgnored private(set) var matchIndex: MatchIndexStore?
     @ObservationIgnored private var matchIndexTask: Task<Void, Never>?
     @ObservationIgnored private let matchIndexDirectory: URL?
     @ObservationIgnored private var musicBrainzClient: MusicBrainzClient?
+    /// Spaces the app's `api.listenbrainz.org` calls ("Made for you"); labs search never waits on it.
+    @ObservationIgnored let listenBrainzLimiter = RateLimiter(perSecond: 2)
     @ObservationIgnored private var unlockObserver: NSObjectProtocol?
     @ObservationIgnored let transport: HTTPTransport
     @ObservationIgnored private let probeTransport: HTTPTransport
     @ObservationIgnored private let box: ClientBox
     @ObservationIgnored private var reconnectTask: Task<Bool, Never>?
+    @ObservationIgnored private var reconnectGeneration = 0
+    /// Bumped by sign-in, a resumed session and sign-out: a sign-out's late clean-up only runs while it is unchanged.
+    @ObservationIgnored private var sessionGeneration = 0
+    /// This build's ATS allows plain http anywhere (Debug). False: Release, where `atsBlocksPlainHTTP` applies.
+    @ObservationIgnored var atsAllowsArbitraryLoads = AppModel.bundleAllowsArbitraryLoads()
     @ObservationIgnored private var errorWatch: Task<Void, Never>?
     #if os(iOS)
     @ObservationIgnored private var nowPlaying: NowPlayingBridge?
@@ -151,22 +192,28 @@ final class AppModel {
         self.changesAllowed = false
         self.appDefaults = defaults
         self.setupStore = LidarrSetupStore(defaults: defaults)
+        self.findsStore = FindsSetupStore(defaults: defaults)
         self.countPlays = defaults.object(forKey: Self.countPlaysKey) as? Bool ?? true
         self.hasListenBrainzToken = tokenStore.load() != nil
         let counting = PlayCounting(on: defaults.object(forKey: Self.countPlaysKey) as? Bool ?? true)
         self.playCounting = counting
+        let findsIdentity = self.findsIdentity
         self.player = Player(engine: engine ?? AVQueueEngine(),
                              scrobbler: NavidromeScrobbler(box: box, counting: counting),
-                             urls: NavidromeStreamURLs(box: box))
+                             urls: NavidromeStreamURLs(box: box),
+                             isFind: { findsIdentity.isFind($0) })
         #if os(iOS)
         if systemNowPlaying {
             nowPlaying = NowPlayingBridge(
                 player: player,
                 artworkURL: { [weak self] song in self?.coverArtURL(song.coverArtId, size: 600) },
-                onLike: { [weak self] song in Task { await self?.toggleStar(song) } })
+                onLike: { [weak self] song in Task { await self?.toggleStar(song) } },
+                isLiked: { [weak self] song in self?.isStarred(song) ?? song.starred })
         }
         #endif
         watchPlaybackErrors()
+        watchFindPlays()
+        watchBanner()
         readLidarrPermissions()
     }
 
@@ -183,7 +230,10 @@ final class AppModel {
     @discardableResult
     func reloadKeychainItems() -> Bool {
         let hasToken = tokenStore.load() != nil
-        if hasToken != hasListenBrainzToken { hasListenBrainzToken = hasToken }   // no needless view updates
+        if hasToken != hasListenBrainzToken {   // no needless view updates
+            hasListenBrainzToken = hasToken
+            listenBrainzTokenChanged()
+        }
         guard lidarr == nil, let saved = lidarrStore.load() else { return false }
         lidarr = saved
         readLidarrPermissions()
@@ -192,16 +242,24 @@ final class AppModel {
 
     /// Builds the shared model from what the Keychain holds. `-MagpieResetState YES` signs out first
     /// (UI tests). `-MagpieCharacter classic|signature|immersive` picks the look.
-    static func restore(store: any SessionStoring = SessionStore.standard, defaults: UserDefaults = .standard) -> AppModel {
+    ///
+    /// Final fix 2 C-I1 (G0): as the host of hosted unit tests (`XCTestConfigurationFilePath` set) it resumes no
+    /// saved session and builds no runner, so tests never talk to whatever server the simulator is signed in to.
+    /// A test opts in with `MAGPIE_TEST_HOST_RESTORE=1`.
+    static func restore(store: any SessionStoring = SessionStore.standard, defaults: UserDefaults = .standard,
+                        environment: [String: String] = ProcessInfo.processInfo.environment) -> AppModel {
         if defaults.bool(forKey: "MagpieResetState") {
             store.clear()
             LidarrConnectionStore.standard.clear()
         }
-        var theme = Theme()
-        if let raw = defaults.string(forKey: "MagpieCharacter"), let c = Character(rawValue: raw) { theme.character = c }
-        let model = AppModel(store: store, defaults: defaults, theme: theme)
-        model.resumeSavedSession()
+        let model = AppModel(store: store, defaults: defaults, theme: savedTheme(defaults))
+        if resumesSavedSession(environment: environment) { model.resumeSavedSession() }
         return model
+    }
+
+    /// False while the app is a unit-test host, unless the test opted in (C-I1).
+    nonisolated static func resumesSavedSession(environment: [String: String]) -> Bool {
+        environment["XCTestConfigurationFilePath"] == nil || environment["MAGPIE_TEST_HOST_RESTORE"] == "1"
     }
 
     /// Starts using the saved session without waiting for the network, then connects in the background.
@@ -222,11 +280,13 @@ final class AppModel {
         isWaitingForUnlock = false
         stopObservingUnlock()
         guard session == nil else { return }
+        sessionGeneration += 1
         let client = makeClient(saved.endpoint, saved.credentials)
         session = Session(client: client, endpoint: saved.endpoint, credentials: saved.credentials,
                           activeBase: saved.endpoint.bases[0], isAdmin: false)
         box.set(client)
-        Task { await reconnect(rebuildAlways: true) }
+        // O3: started now, so every call made meanwhile waits for it (`request`): one login per launch.
+        startReconnect(rebuildAlways: true)
         startMatchIndex()
         reloadKeychainItems()
         rebuildRunner()
@@ -263,14 +323,21 @@ final class AppModel {
     /// Tries each address in order; the first that answers is used. Saves to the Keychain on success.
     func signIn(urls: [URL], username: String, password: String) async throws {
         guard !urls.isEmpty else { throw SignInError.noAddress }
+        // H4: addresses ATS would refuse are named before anything is tried (and never need consent).
+        let blocked = urls.filter(atsBlocks)
+        guard blocked.count < urls.count else {
+            throw SignInError.unreachable(blocked.map { ProbeFailure(url: $0, error: Self.atsError($0)) })
+        }
         // Security H2: the password never goes over plain http to a public address without the owner's say-so.
-        let unencrypted = urls.filter { !plainHTTPConsent.allows($0) }
+        let unencrypted = urls.filter { !atsBlocks($0) && !plainHTTPConsent.allows($0) }
         guard unencrypted.isEmpty else { throw PlainHTTPConsentRequired(urls: unencrypted) }
         let endpoint = ServerEndpoint(bases: urls)
         var failures: [ProbeFailure] = []
         var reached: URL?
         for base in urls {
-            if let error = await probe(base) {
+            if atsBlocks(base) {
+                failures.append(ProbeFailure(url: base, error: Self.atsError(base)))
+            } else if let error = await probe(base) {
                 failures.append(ProbeFailure(url: base, error: error))
             } else {
                 reached = base
@@ -283,6 +350,7 @@ final class AppModel {
         let login = try await client.connect()
         try store.save(endpoint: endpoint, credentials: credentials)
         reconnectTask = nil
+        sessionGeneration += 1
         starOverrides = [:]
         advertisedExtensions = nil
         isWaitingForUnlock = false
@@ -295,10 +363,26 @@ final class AppModel {
         rebuildRunner()
     }
 
-    /// Stops playback, forgets the server and clears the Keychain.
+    /// Stops playback, forgets the server and clears the Keychain, recent searches, every Lidarr's requests and the
+    /// ledgers with nothing open (`Ledger.forgetFinished`). Keeps the change log.
     func signOut() {
         let retiring = runner, doomed = requestStore
         player.play([], startAt: 0)
+        if let navidromeScope {
+            findsStore.clear(navidromeScope: navidromeScope)
+            appDefaults.removeObject(forKey: Self.playedFindsKey(navidromeScope))
+            appDefaults.removeObject(forKey: Self.findsLibraryKey(navidromeScope))
+            let prefix = Self.findSongIdsKeyPrefix + navidromeScope + "."
+            for key in appDefaults.dictionaryRepresentation().keys where key.hasPrefix(prefix) {
+                appDefaults.removeObject(forKey: key)
+            }
+        }
+        startsWhenLanded = []
+        findIdsCache = nil
+        findsIdentity.forgetAccount()
+        findSongs = []
+        lettingGoSongIds = []
+        playedFinds = []
         store.clear()
         session = nil
         starOverrides = [:]
@@ -315,9 +399,22 @@ final class AppModel {
         lidarrSetup = nil
         lidarrStatus = nil
         rebuildRunner()
-        Task {
+        RecentSearches(defaults: appDefaults).clear()   // shared with the car
+        // Every Lidarr's requests, and the ledgers with nothing open, now. Never the change log (the owner's undo map).
+        let data = dataDirectory
+        RequestStore.eraseAll(in: data)
+        Ledger.forgetFinished(in: data)
+        // Again once the old runner has stopped (a save under way may have rewritten its file), unless a newer
+        // session has started meanwhile: its files are never touched.
+        sessionGeneration += 1
+        let generation = sessionGeneration
+        Task { [weak self] in
             await retiring?.stop()
+            guard let self, self.sessionGeneration == generation else { return }
             await doomed?.erase()
+            guard self.sessionGeneration == generation else { return }
+            RequestStore.eraseAll(in: data)
+            Ledger.forgetFinished(in: data)
         }
     }
 
@@ -326,6 +423,9 @@ final class AppModel {
     /// Runs `op` against the current client. On a connection error, re-probes the addresses, moves
     /// to the first that answers (rebuilding the client and the player's stream URLs) and retries once.
     func request<T: Sendable>(_ op: @Sendable (NavidromeClient) async throws -> T) async throws -> T {
+        // A reconnect under way (a resumed launch, a failover) is about to replace the client: use its result, so
+        // the client it retires never logs in on its own (O3).
+        if let pending = reconnectTask { _ = await pending.value }
         guard let client = session?.client else { throw NavidromeError.noReachableServer }
         do {
             return try await op(client)
@@ -345,12 +445,24 @@ final class AppModel {
     /// Single-flight. Returns true when the session is on an address that answers.
     @discardableResult
     func reconnect(rebuildAlways: Bool) async -> Bool {
-        if let task = reconnectTask { return await task.value }
-        let task = Task { await performReconnect(rebuildAlways: rebuildAlways) }
+        await startReconnect(rebuildAlways: rebuildAlways).value
+    }
+
+    /// The reconnect under way, or a new one; `reconnectTask` is set before this returns.
+    @discardableResult
+    private func startReconnect(rebuildAlways: Bool) -> Task<Bool, Never> {
+        if let task = reconnectTask { return task }
+        reconnectGeneration += 1
+        let generation = reconnectGeneration
+        // Main-actor isolated: it starts after `reconnectTask` is set, and clears it before anyone sees the result.
+        let task = Task { [weak self] () -> Bool in
+            guard let self else { return false }
+            let ok = await self.performReconnect(rebuildAlways: rebuildAlways)
+            if self.reconnectGeneration == generation { self.reconnectTask = nil }
+            return ok
+        }
         reconnectTask = task
-        let ok = await task.value
-        if reconnectTask == task { reconnectTask = nil }
-        return ok
+        return task
     }
 
     private func performReconnect(rebuildAlways: Bool) async -> Bool {
@@ -479,9 +591,27 @@ final class AppModel {
         if let scope = lidarrScope {
             gateDefaults.removeObject(forKey: LidarrWriteGate.enabledKey(scope: scope))
             setupStore.clear(scope: scope)
+            findsStore.clear(lidarrScope: scope)
         }
+        findsSetup = nil
         gateDefaults.removeObject(forKey: LidarrWriteGate.enabledDefaultsKey)   // unscoped switch of older builds
         changesAllowed = false
+    }
+
+    /// H4: this build's App Transport Security would refuse plain http to `url`.
+    func atsBlocks(_ url: URL) -> Bool {
+        ServerAddress.atsBlocksPlainHTTP(url, allowsArbitraryLoads: atsAllowsArbitraryLoads)
+    }
+
+    nonisolated static func atsError(_ url: URL) -> URLError {
+        URLError(.appTransportSecurityRequiresSecureConnection, userInfo: [NSURLErrorFailingURLErrorKey: url])
+    }
+
+    /// Whether the app's Info.plist allows arbitrary loads with nothing that makes iOS ignore it (Debug, B2).
+    nonisolated static func bundleAllowsArbitraryLoads(_ bundle: Bundle = .main) -> Bool {
+        guard let ats = bundle.object(forInfoDictionaryKey: "NSAppTransportSecurity") as? [String: Any] else { return false }
+        return ats["NSAllowsArbitraryLoads"] as? Bool == true && ats["NSAllowsLocalNetworking"] == nil
+            && ats["NSAllowsArbitraryLoadsInWebContent"] == nil && ats["NSAllowsArbitraryLoadsForMedia"] == nil
     }
 
     /// Owner consent to plain http per address (security H2), kept with the app's settings.
@@ -499,12 +629,14 @@ final class AppModel {
     /// connection to the Keychain. Throws `LidarrError.unauthorized` for a wrong key, or the URL error.
     /// A newly connected Lidarr always starts with "Allow Magpie to change Lidarr" off (security M3).
     func connectLidarr(base: URL, apiKey: String) async throws -> LidarrAudit {
+        if atsBlocks(base) { throw Self.atsError(base) }   // H4: named before trying
         // Security H2: the API key never goes over plain http to a public address without the owner's say-so.
         guard plainHTTPConsent.allows(base) else { throw PlainHTTPConsentRequired(urls: [base]) }
         let connection = LidarrConnection(base: base, apiKey: apiKey.trimmingCharacters(in: .whitespacesAndNewlines))
         let client = LidarrClient(base: connection.base, apiKey: connection.apiKey, transport: transport)
         _ = try await client.status()
         let audit = await LidarrAudit.run(client)
+        // A-M4: the audit read `client`, and `connection` is what is saved and adopted into below (the ids belong to it).
         try lidarrStore.save(connection)
         if lidarr != nil { forgetLidarrPermissions() }   // the one being replaced
         lidarr = connection
@@ -514,6 +646,8 @@ final class AppModel {
         lidarrStatus = audit
         lidarrSetup = setupStore.load(base: connection.base, scope: scope)
         adoptOnlyRoot(audit)
+        adoptFindTag(audit)
+        adoptLosslessProfile(audit)
         rebuildRunner()
         return audit
     }
@@ -521,10 +655,14 @@ final class AppModel {
     /// The connected Lidarr's setup, read again. Nil when not connected.
     func lidarrAudit() async -> LidarrAudit? {
         guard let client = lidarrClient else { return nil }
+        let scope = lidarrScope
         let audit = await LidarrAudit.run(client)
-        if lidarrClient != nil {
+        // Final fix 2 A-M4: only into the Lidarr it read. Another one connected (or none) meanwhile: adopt nothing.
+        if lidarrClient != nil, lidarrScope == scope {
             lidarrStatus = audit
             adoptOnlyRoot(audit)
+            adoptFindTag(audit)
+            adoptLosslessProfile(audit)
         }
         return audit
     }
@@ -542,16 +680,22 @@ final class AppModel {
 
     /// Library search merged with ListenBrainz and (when connected) Lidarr. Built per search so it
     /// follows the current session, Lidarr connection and match index.
-    func mergedSearch() -> MergedSearch {
+    /// - Parameters:
+    ///   - libraryTimeout: the library search's deadline (CarPlay passes a longer one).
+    ///   - sourceTimeout: each outside source's deadline (CarPlay passes a shorter one).
+    func mergedSearch(libraryTimeout: Duration = MergedSearch.libraryTimeout,
+                      sourceTimeout: Duration = MergedSearch.sourceTimeout) -> MergedSearch {
         // A9: the token only ever goes to api.listenbrainz.org; the client never sends it to labs.
-        var sources: [MergedSearch.Source] = [.listenBrainz(ListenBrainzClient(transport: transport, token: tokenStore.load()))]
-        if let lidarr = lidarrClient { sources.append(.lidarr(lidarr)) }
+        var sources: [MergedSearch.Source] = [.listenBrainz(ListenBrainzClient(transport: transport, token: tokenStore.load()),
+                                                            timeout: sourceTimeout)]
+        if let lidarr = lidarrClient { sources.append(.lidarr(lidarr, timeout: sourceTimeout)) }
         let index = matchIndex
         return MergedSearch(
             library: { [weak self] q in
                 guard let self else { throw NavidromeError.noReachableServer }
                 return try await self.request { try await $0.search(q) }
             },
+            libraryTimeout: libraryTimeout,
             sources: sources,
             index: { await index?.index ?? .empty })
     }

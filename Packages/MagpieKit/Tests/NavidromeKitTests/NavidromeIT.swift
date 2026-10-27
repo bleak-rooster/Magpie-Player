@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import MagpieCore
+import MagpieTestSupport
 @testable import NavidromeKit
 
 /// Integration tests against the local dev stack. Run via `scripts/it.sh` (sets MAGPIE_IT=1).
@@ -46,13 +47,18 @@ struct NavidromeIT {
         let cfg = try DevStack.load()
         return NavidromeClient(endpoint: ServerEndpoint(bases: [cfg.url]),
                                credentials: NavidromeCredentials(username: cfg.user, password: cfg.password),
-                               transport: URLSessionTransport())
+                               transport: SharedLoginTransport())
     }
 
     @Test func connectBrowsePlayableStream() async throws {
         let client = try client()
         let login = try await client.connect()
         #expect(login.isAdmin)
+        // B6 (Task 6.1): the libraries as Navidrome sees them; same paths as Lidarr's roots on the dev stack.
+        // Checked here to reuse this login (Navidrome rate-limits logins; a separate test can hit 429).
+        let libraryPaths = try await client.libraries().map(\.path)
+        #expect(libraryPaths.contains("/music/library"))
+        #expect(libraryPaths.contains("/music/samples"))
 
         let albums = try await client.albumList(.newest, size: 10, offset: 0)
         #expect(albums.count >= 1)

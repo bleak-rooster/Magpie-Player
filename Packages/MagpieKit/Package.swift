@@ -27,7 +27,7 @@ let package = Package(
         .target(name: "Requests", dependencies: ["MagpieCore", "LidarrKit", "ListenBrainzKit", "NavidromeKit", "MatchIndex"]),
         .target(name: "Playback", dependencies: ["MagpieCore"]),
         .target(name: "DesignSystem", dependencies: ["MagpieCore"]),
-        .target(name: "CarPlayUI", dependencies: ["MagpieCore", "Playback"]),
+        .target(name: "CarPlayUI", dependencies: ["MagpieCore", "Playback", "DesignSystem"]),
         .target(name: "MagpieTestSupport", dependencies: ["MagpieCore"]),
         .testTarget(name: "MagpieCoreTests", dependencies: ["MagpieCore", "MagpieTestSupport"]),
         .testTarget(name: "NavidromeKitTests",
@@ -42,8 +42,9 @@ let package = Package(
         .testTarget(name: "PlaybackTests", dependencies: ["Playback", "MagpieCore"]),
         .testTarget(name: "MatchIndexTests", dependencies: ["MatchIndex", "MagpieCore", "NavidromeKit", "MagpieTestSupport"]),
         .testTarget(name: "RequestsTests",
-                    dependencies: ["Requests", "MagpieCore", "LidarrKit", "ListenBrainzKit", "MagpieTestSupport"]),
-        .testTarget(name: "SearchTests", dependencies: ["Search", "MatchIndex", "MagpieCore", "LidarrKit"]),
+                    dependencies: ["Requests", "MagpieCore", "LidarrKit", "ListenBrainzKit", "NavidromeKit", "MagpieTestSupport"]),
+        .testTarget(name: "SearchTests",
+                    dependencies: ["Search", "MatchIndex", "MagpieCore", "LidarrKit", "ListenBrainzKit", "MagpieTestSupport"]),
     ],
     swiftLanguageModes: [.v6]
 )

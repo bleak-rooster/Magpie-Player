@@ -20,7 +20,15 @@ final class HostSwitchTransport: HTTPTransport {
         failure.withLock { $0 = code }
     }
 
+    /// Runs before each request is answered (a test can hold one there).
+    private let hook = OSAllocatedUnfairLock<(@Sendable (URLRequest) async -> Void)?>(initialState: nil)
+
+    func setHook(_ hook: (@Sendable (URLRequest) async -> Void)?) {
+        self.hook.withLock { $0 = hook }
+    }
+
     func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        if let hook = hook.withLock({ $0 }) { await hook(request) }
         if let host = request.url?.host, down.withLock({ $0.contains(host) }) {
             throw URLError(failure.withLock { $0 }, userInfo: [NSURLErrorFailingURLErrorKey: request.url as Any])
         }
@@ -94,6 +102,22 @@ private let away = URL(string: "https://music.example.com/navidrome")!
         #expect(model.session?.username == "admin")
         #expect(await model.reconnect(rebuildAlways: true))
         #expect(model.session?.isAdmin == true)
+        store.clear()
+    }
+
+    /// Final fix 2 C-I1 (G0): hosted tests launch the real app, whose `AppModel.shared` would resume the
+    /// simulator's saved session (maybe a real server) and rebuild its runner. As a test host it resumes nothing,
+    /// unless a test opts in with `MAGPIE_TEST_HOST_RESTORE=1`.
+    @Test func testHostNeverResumesTheSavedSession() throws {
+        try store.save(endpoint: ServerEndpoint(bases: [home]),
+                       credentials: NavidromeCredentials(username: "admin", password: "pw"))
+        let host = ["XCTestConfigurationFilePath": "/tmp/x.xctestconfiguration"]
+        #expect(!AppModel.resumesSavedSession(environment: host))
+        #expect(AppModel.resumesSavedSession(environment: host.merging(["MAGPIE_TEST_HOST_RESTORE": "1"]) { $1 }))
+        #expect(AppModel.resumesSavedSession(environment: [:]), "the app itself resumes as before")
+        let model = AppModel.restore(store: store, defaults: defaults, environment: host)
+        #expect(model.session == nil && model.runner == nil)
+        #expect(store.load().saved != nil, "nothing signed out either")
         store.clear()
     }
 
@@ -328,7 +352,7 @@ final class LockableStore: SessionStoring {
 
     @Test func badResponseOverPlainHTTPIsStillUnreachable() {
         let failures = [ProbeFailure(url: URL(string: "http://192.168.1.20:4533")!, error: URLError(.badServerResponse))]
-        #expect(ConnectErrorCopy.message(for: SignInError.unreachable(failures)) == ConnectErrorCopy.unreachable("192.168.1.20"))
+        #expect(ConnectErrorCopy.message(for: SignInError.unreachable(failures)) == ConnectErrorCopy.unreachable("192.168.1.20:4533"))
     }
 
     @Test func certificateTroubleStillComesFirst() {

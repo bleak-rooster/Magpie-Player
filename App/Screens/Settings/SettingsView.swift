@@ -4,7 +4,7 @@ import Requests
 import SwiftUI
 
 /// Settings (replaces the Library account menu): Appearance, Servers, Lidarr (connect, set up, the G1 switch,
-/// the main root folder, the change log), ListenBrainz, Count plays (G8), About.
+/// the main root folder, Finds, the change log), ListenBrainz, Count plays (G8), About.
 struct SettingsView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
@@ -13,13 +13,14 @@ struct SettingsView: View {
     @State private var provisionMessage: String?
     @State private var token = ""
     @State private var tokenError: String?
+    @State private var checkingToken = false
 
     var body: some View {
         NavigationStack {
             Form {
                 Section {
                     NavigationLink {
-                        AppearancePlaceholder()
+                        AppearanceView()
                     } label: {
                         LabeledContent("Appearance", value: model.theme.character.rawValue.capitalized)
                     }
@@ -92,6 +93,10 @@ struct SettingsView: View {
                 rootPicker
                 LabeledContent("Speed", value: model.speedTier.title)
                     .accessibilityIdentifier("settings-speed")
+                NavigationLink { FindsSetupView() } label: {
+                    LabeledContent("Finds", value: findsSummary)
+                }
+                .accessibilityIdentifier("settings-finds")
             } header: {
                 Text("Lidarr")
             } footer: {
@@ -138,8 +143,11 @@ struct SettingsView: View {
 
     private var summary: String { LidarrSummary.status(model.lidarrStatus) }
 
+    private var findsSummary: String { model.findsStatus.summary }
+
     @ViewBuilder private var rootPicker: some View {
-        let roots = model.lidarrStatus?.roots.map(\.path) ?? []
+        // The confirmed Finds folder is never also where new music goes (G2).
+        let roots = (model.lidarrStatus?.roots.map(\.path) ?? []).filter { !model.isFindsRoot($0) }
         if roots.count > 1 {
             Picker("New music goes to", selection: Binding(
                 get: { model.lidarrSetup?.rootFolderPath ?? "" },
@@ -191,16 +199,23 @@ struct SettingsView: View {
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .accessibilityIdentifier("settings-lb-token")
-                Button("Save token") {
-                    do {
-                        try model.setListenBrainzToken(token)
-                        token = ""
-                        tokenError = nil
-                    } catch {
-                        tokenError = "Couldn't save the token. Try again."
+                Button(checkingToken ? "Checking…" : "Save token") {
+                    // B-M8: checked with ListenBrainz before it is saved.
+                    checkingToken = true
+                    Task {
+                        do {
+                            try await model.saveListenBrainzToken(token)
+                            token = ""
+                            tokenError = nil
+                        } catch let error as ListenBrainzTokenError {
+                            tokenError = error.message
+                        } catch {
+                            tokenError = "Couldn't save the token. Try again."
+                        }
+                        checkingToken = false
                     }
                 }
-                .disabled(token.trimmingCharacters(in: .whitespaces).isEmpty)
+                .disabled(checkingToken || token.trimmingCharacters(in: .whitespaces).isEmpty)
                 if let tokenError { Text(tokenError).font(.footnote) }
             }
         } header: {
@@ -214,15 +229,6 @@ struct SettingsView: View {
         } footer: {
             Text("When on, songs you play are added to your listening history. Turn off while you're trying things out.")
         }
-    }
-}
-
-/// M7 brings Classic and Immersive; Signature for now.
-private struct AppearancePlaceholder: View {
-    var body: some View {
-        ContentUnavailableView("Signature", systemImage: "paintpalette",
-                               description: Text("More looks are coming in a later update."))
-            .navigationTitle("Appearance")
     }
 }
 

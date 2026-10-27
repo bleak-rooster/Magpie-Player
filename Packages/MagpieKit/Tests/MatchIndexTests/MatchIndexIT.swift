@@ -1,5 +1,6 @@
 import Foundation
 import MagpieCore
+import MagpieTestSupport
 import NavidromeKit
 import Testing
 @testable import MatchIndex
@@ -27,7 +28,7 @@ struct MatchIndexIT {
         }
         return NavidromeClient(endpoint: ServerEndpoint(bases: [url]),
                                credentials: NavidromeCredentials(username: user, password: password),
-                               transport: URLSessionTransport())
+                               transport: SharedLoginTransport())
     }
 
     @Test func buildsFromDevLibraryAndMatchesItsOwnSongs() async throws {

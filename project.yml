@@ -7,7 +7,11 @@ options:
 settings:
   base:
     SWIFT_VERSION: "6.0"
+    # TestFlight (T1): scripts/archive.sh passes the team and build number; neither is stored here.
     DEVELOPMENT_TEAM: ""
+    CODE_SIGN_STYLE: Automatic
+    MARKETING_VERSION: "1.0"
+    CURRENT_PROJECT_VERSION: "1"
 configs:
   Debug: debug
   Release: release
@@ -47,7 +51,14 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.bleak-rooster.magpie
         PRODUCT_NAME: Magpie
-        CODE_SIGN_ENTITLEMENTS: App/Magpie.entitlements
+        # CarPlay audio needs Apple's approval before any profile can carry it, so device builds sign
+        # without it unless MAGPIE_CARPLAY=YES (scripts/archive.sh --carplay). The simulator always has it (B7).
+        MAGPIE_CARPLAY: "NO"
+        MAGPIE_ENTITLEMENTS_YES: App/Magpie.entitlements
+        MAGPIE_ENTITLEMENTS_NO: App/MagpieNoCarPlay.entitlements
+        CODE_SIGN_ENTITLEMENTS: $(MAGPIE_ENTITLEMENTS_$(MAGPIE_CARPLAY))
+        "CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]": App/Magpie.entitlements
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         GENERATE_INFOPLIST_FILE: NO
         INFOPLIST_FILE: App/Info.plist
         ENABLE_USER_SCRIPT_SANDBOXING: NO
@@ -56,6 +67,18 @@ targets:
       path: App/Info.plist
       properties:
         CFBundleDisplayName: Magpie
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        ITSAppUsesNonExemptEncryption: false
+        # iPhone: portrait only (the screens are designed for it). iPad keeps all four: upload validation
+        # rejects a multitasking iPad app without them.
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: true
           UISceneConfigurations:
@@ -74,10 +97,21 @@ targets:
       - name: Debug-only ATS arbitrary loads
         basedOnDependencyAnalysis: false
         script: |
+          # H4: iOS ignores NSAllowsArbitraryLoads while NSAllowsLocalNetworking is present, so Debug swaps one
+          # for the other (arbitrary loads cover the local network too). Release keeps local networking only.
           if [ "$CONFIGURATION" = "Debug" ]; then
             PLIST="$TARGET_BUILD_DIR/$INFOPLIST_PATH"
+            /usr/libexec/PlistBuddy -c "Delete :NSAppTransportSecurity:NSAllowsLocalNetworking" "$PLIST" 2>/dev/null || true
             /usr/libexec/PlistBuddy -c "Add :NSAppTransportSecurity:NSAllowsArbitraryLoads bool true" "$PLIST" 2>/dev/null || \
             /usr/libexec/PlistBuddy -c "Set :NSAppTransportSecurity:NSAllowsArbitraryLoads true" "$PLIST"
+          fi
+      - name: CarPlay scene only with the CarPlay entitlement
+        basedOnDependencyAnalysis: false
+        script: |
+          # Without com.apple.developer.carplay-audio (TestFlight before Apple's approval) don't declare a
+          # CarPlay scene: the app simply isn't offered in CarPlay. Runs before code signing.
+          if ! /usr/libexec/PlistBuddy -c "Print :com.apple.developer.carplay-audio" "$SRCROOT/$CODE_SIGN_ENTITLEMENTS" >/dev/null 2>&1; then
+            /usr/libexec/PlistBuddy -c "Delete :UIApplicationSceneManifest:UISceneConfigurations:CPTemplateApplicationSceneSessionRoleApplication" "$TARGET_BUILD_DIR/$INFOPLIST_PATH" 2>/dev/null || true
           fi
   MagpieTests:
     type: bundle.unit-test

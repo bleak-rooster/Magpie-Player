@@ -50,7 +50,8 @@ public enum RowState: Sendable, Hashable {
             return phrase.isEmpty ? "Bringing it home" : "Bringing it home, \(phrase)"
         case .newFind: return "New find"
         case .find(let d):
-            if d <= 0 { return "Find, leaves today" }
+            // D10: nothing expires by itself in v1, so the last day never says it leaves.
+            if d <= 0 { return "Find, time to decide" }
             return "Find, \(d) \(d == 1 ? "day" : "days") left to keep"
         case .keptLosslessSoon: return "In your library, lossless on the way"
         case .lossless: return "In your library, lossless"
@@ -67,7 +68,7 @@ public enum RowState: Sendable, Hashable {
         case .onItsWay(_, let phrase): return phrase.isEmpty ? "Bringing it home" : "Bringing it home · \(phrase)"
         case .newFind: return "New find"
         case .find(let d):
-            if d <= 0 { return "Find · leaves today" }
+            if d <= 0 { return "Find · time to decide" }
             return "Find · \(d) \(d == 1 ? "day" : "days") left"
         case .keptLosslessSoon: return "Kept · lossless soon"
         case .lossless: return "Lossless"
@@ -97,11 +98,13 @@ public enum RowState: Sendable, Hashable {
     /// Hint spoken for the primary action; `nil` when there is no primary action.
     public var accessibilityHint: String? { primaryAction == .try ? "Double-tap to try it." : nil }
 
-    /// Names of the custom accessibility actions the row offers beyond its default.
-    public var accessibilityActionNames: [String] {
+    /// Names of the custom accessibility actions the row offers beyond its default. Keep is named only when the
+    /// row really offers it (`offersKeep`: the screen passed a Keep handler; a find whose request is gone, or
+    /// whose Keep is under way, has none).
+    public func accessibilityActionNames(offersKeep: Bool) -> [String] {
         switch self {
         case .notYet: return ["Try"]
-        case .find, .newFind: return ["Keep"]
+        case .find, .newFind: return offersKeep ? ["Keep"] : []
         default: return []
         }
     }
@@ -117,12 +120,12 @@ public struct StatusLine: View {
 
     public var body: some View {
         if let symbol = state.statusSymbol, !state.statusText.isEmpty {
-            Label {
-                Text(state.statusText).font(theme.numberFont(.caption)).lineLimit(2)
-            } icon: {
-                Image(systemName: symbol).imageScale(.small)
+            // An HStack, not a Label: a Label's icon column leaves a wide gap before the text (H3 M3).
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                Image(systemName: symbol)
+                Text(state.statusText).lineLimit(2)
             }
-            .labelStyle(.titleAndIcon)
+            .font(theme.numberFont(.caption))
             .foregroundStyle(tint)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(state.voiceOverValue ?? state.statusText)

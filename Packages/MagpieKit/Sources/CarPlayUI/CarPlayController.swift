@@ -16,13 +16,29 @@ public protocol CarPlayLibrary: AnyObject, Sendable {
     func artist(id: String) async throws -> (Artist, [Album])
     func playlists() async throws -> [Playlist]
     func playlist(id: String) async throws -> (Playlist, [Song])
-    func search(_ query: String) async throws -> LibrarySearchResult
+    /// The library's songs and albums for `query`, and songs from outside it.
+    func search(_ query: String) async throws -> CarPlaySearchResult
     /// The cover at least `pixelSide` pixels wide (cached in memory, never on disk), or nil.
     func artwork(coverArtId: String, pixelSide: Int) async -> UIImage?
     /// The library didn't answer at all (as opposed to answering with an error).
     func isOutOfReach(_ error: Error) -> Bool
     var recentSearches: [String] { get }
     func addRecentSearch(_ query: String)
+
+    // Finds (Task 7.1d). The reads below are observable: the controller follows them with `Observations`.
+
+    /// The phone's Finds shelf (New finds, finds with days left); nil when no Finds library is chosen.
+    var findsShelf: CPFindsShelf? { get }
+    /// Reads the Finds library again.
+    func refreshFinds() async
+    /// The song is a find that may be kept now: the phone's Finds row offers Keep for it.
+    func mayKeep(songId: String) -> Bool
+    /// Keeps the find's release through the phone's Keep (no Bring in more from the car, D5).
+    func keep(songId: String) async -> CPKeepResult
+    /// Whether a not-yet song can be tried from the car, and how.
+    var tryOffer: CPTryOffer { get }
+    /// "Try it next" (D6): the phone's Try; with nothing playing, a library mix seeded by the artist starts first.
+    func tryNext(_ recording: ExternalRecording) async -> CPTryResult
 }
 
 /// What the car can show right now.
@@ -34,8 +50,8 @@ public enum CarPlayAvailability: Sendable, Hashable {
     case ready(account: String)
 }
 
-/// Drives the CarPlay templates: tab roots Home · Library · Search (all `CPListTemplate`, C3),
-/// pushed lists within the depth budget, the system search template, and Now Playing.
+/// Drives the CarPlay templates: tab roots Home · Library · Finds · Search (all `CPListTemplate`, C3, D12),
+/// pushed lists within the depth budget, the system search template, and Now Playing (Keep for finds).
 ///
 /// Lists are built as value models off the main thread and applied on it. A list on screen is
 /// only ever updated in place (same rows, new text/playing/artwork); a change of shape is held
@@ -52,6 +68,7 @@ public final class CarPlayController: NSObject {
     private var tabBar: CPTabBarTemplate?
     private var home: ListBinding?
     private var libraryRoot: ListBinding?
+    private var findsRoot: ListBinding?
     private var searchRoot: ListBinding?
     private var bindings: [ObjectIdentifier: ListBinding] = [:]
     private var watches: [Task<Void, Never>] = []
@@ -61,6 +78,11 @@ public final class CarPlayController: NSObject {
     private var lastSearch = ""
     /// Artwork loading for the search template's current results.
     private var searchArtwork: ListBinding?
+    /// Finds whose Keep (from Now Playing) is running, and finds kept from it, by song id.
+    private var keeping: Set<String> = []
+    private var kept: Set<String> = []
+    /// The plain record shown for a not-yet row (no cover to put on its label).
+    private var blankRecord: UIImage?
 
     /// Home shelves ask for this many albums each (the rows are capped by `CarPlayRows`).
     private static let homeFetchSize = CarPlayRows.homeShelfSize
@@ -80,6 +102,7 @@ public final class CarPlayController: NSObject {
         keyboardLimited = configuration.limitedUserInterfaces.contains(.keyboard)
         configureNowPlaying()
         watchPlayer()
+        watchFinds()
     }
 
     /// Shows the tabs when ready, otherwise a list that describes why not. Rebuilds only when the
@@ -120,13 +143,17 @@ public final class CarPlayController: NSObject {
         let homeList = tabRoot("Home", symbol: "house.fill")
         let libraryList = tabRoot("Library", symbol: "square.stack.fill")
         let searchList = tabRoot("Search", symbol: "magnifyingglass")
-        let tabs = CPTabBarTemplate(templates: [homeList, libraryList, searchList])
+        // Four tabs where the car allows four (read at runtime); otherwise Finds is the one left out.
+        let findsList = CPTabBarTemplate.maximumTabCount >= 4 ? tabRoot("Finds", symbol: "record.circle") : nil
+        let tabs = CPTabBarTemplate(templates: [homeList, libraryList, findsList, searchList].compactMap { $0 })
         tabs.delegate = self
         tabBar = tabs
         home = bind(homeList)
         libraryRoot = bind(libraryList)
+        findsRoot = findsList.map(bind)
         searchRoot = bind(searchList)
         if let libraryRoot { apply(CarPlayRows.libraryRoot(), to: libraryRoot, placeholder: false) }
+        refreshFindsRoot()
         refreshSearchRoot()
         loadHome()
         interface.setRootTemplate(tabs, animated: false, completion: nil)
@@ -153,6 +180,28 @@ public final class CarPlayController: NSObject {
         }
     }
 
+    /// The Finds tab shows the phone's shelf as it is now (days left are counted again on each refresh).
+    private func refreshFindsRoot() {
+        guard let findsRoot else { return }
+        let shelf = library.findsShelf
+        findsRoot.content = { CarPlayRows.finds(shelf, playingId: $0) }
+        Task { await refresh(findsRoot) }
+    }
+
+    /// Follows the shelf (a find arrived, was played, kept or let go): rows update in place, and a change of shape
+    /// waits until the tab is off screen (M2).
+    private func watchFinds() {
+        let library = library
+        watches.append(Task { [weak self] in
+            let shelves = Observations { @MainActor in library.findsShelf }
+            var last: CPFindsShelf??
+            for await shelf in shelves where shelf != last {
+                last = shelf
+                self?.refreshFindsRoot()
+            }
+        })
+    }
+
     private func refreshSearchRoot() {
         guard let searchRoot else { return }
         let recents = library.recentSearches
@@ -165,7 +214,7 @@ public final class CarPlayController: NSObject {
 
     /// Browse depth counting the tab root as 1, whichever way the system reports the tab bar.
     private var browseDepth: Int {
-        let roots = [home, libraryRoot, searchRoot].compactMap { $0?.template }
+        let roots = [home, libraryRoot, findsRoot, searchRoot].compactMap { $0?.template }
         let pushed = interface.templates.filter { t in
             !(t is CPTabBarTemplate) && !(t is CPNowPlayingTemplate) && !roots.contains { $0 === t }
         }
@@ -177,6 +226,7 @@ public final class CarPlayController: NSObject {
         case .none: break
         case .open(let destination): open(destination)
         case .play(let request): play(request)
+        case .tryNext(let recording): offerTry(recording)
         }
     }
 
@@ -228,7 +278,8 @@ public final class CarPlayController: NSObject {
         case .searchResults(let query):
             return {
                 let r = try await library.search(query)
-                return { CarPlayRows.searchResults(r, playingId: $0) }
+                let offer = library.tryOffer
+                return { CarPlayRows.searchResults(r.library, notYet: r.notYet, offer: offer, playingId: $0) }
             }
         case .search:
             return { { _ in [] } }
@@ -290,18 +341,55 @@ public final class CarPlayController: NSObject {
         }
     }
 
-    /// Only in direct response to a tap (critique M3). Describes; never instructs.
     private func showUnavailable(_ error: Error) {
+        showMessage(library.isOutOfReach(error) ? "Your library is out of reach" : "Your library didn't send this")
+    }
+
+    /// Only in direct response to a tap (critique M3). Describes; never instructs.
+    private func showMessage(_ title: String) {
         guard interface.presentedTemplate == nil else { return }
-        let title = library.isOutOfReach(error) ? "Your library is out of reach" : "Your library didn't send this"
         let ok = CPAlertAction(title: "OK", style: .cancel) { [weak self] _ in
             self?.interface.dismissTemplate(animated: true, completion: nil)
         }
         interface.presentTemplate(CPAlertTemplate(titleVariants: [title], actions: [ok]), animated: true, completion: nil)
     }
 
+    // MARK: - Try it next
+
+    /// A not-yet row: "Try it next" / "Cancel" (modal, no push; CarPlay H3).
+    private func offerTry(_ recording: ExternalRecording) {
+        guard interface.presentedTemplate == nil,
+              let sheet = CarPlayRows.trySheet(recording, offer: library.tryOffer,
+                                                queueEmpty: player.queue.current == nil) else { return }
+        let confirm = CPAlertAction(title: sheet.confirm, style: .default) { [weak self] _ in
+            self?.interface.dismissTemplate(animated: true) { _, _ in
+                Task { @MainActor in self?.confirmTry(recording) }
+            }
+        }
+        let cancel = CPAlertAction(title: CPTrySheet.cancel, style: .cancel) { [weak self] _ in
+            self?.interface.dismissTemplate(animated: true, completion: nil)
+        }
+        interface.presentTemplate(CPActionSheetTemplate(title: sheet.title, message: sheet.message, actions: [confirm, cancel]),
+                                  animated: true, completion: nil)
+    }
+
+    /// Now Playing opens only once real audio starts (the bridge); otherwise nothing more is shown unless Try failed.
+    private func confirmTry(_ recording: ExternalRecording) {
+        Task {
+            switch await library.tryNext(recording) {
+            case .bridging: showNowPlaying()
+            case .noMix: showMessage(CPTryResult.noMixMessage)
+            case .failed(let problem): showMessage(problem.message)
+            case .asked, .queued: break
+            }
+        }
+    }
+
+    // MARK: - Now Playing
+
     /// Now Playing shows the system's view of `MPNowPlayingInfoCenter` (the real square cover,
-    /// H4). Our buttons: shuffle and repeat.
+    /// H4). Our buttons: Keep (the system add-to-library button, for a find that may be kept; D12, M1), shuffle and
+    /// repeat.
     private func configureNowPlaying() {
         let nowPlaying = CPNowPlayingTemplate.shared
         nowPlaying.isUpNextButtonEnabled = false
@@ -313,6 +401,14 @@ public final class CarPlayController: NSObject {
     /// Same Player calls as the lock screen's shuffle/repeat commands (`NowPlayingBridge`),
     /// which also keeps the commands' current types (the glyphs) in sync.
     private func updateNowPlayingButtons() {
+        var buttons: [CPNowPlayingButton] = []
+        let keep = keepButton
+        if keep.isShown {
+            let add = CPNowPlayingAddToLibraryButton { [weak self] _ in self?.keepCurrent() }
+            add.isEnabled = keep.isEnabled
+            add.isSelected = keep.isSelected
+            buttons.append(add)
+        }
         let shuffle = CPNowPlayingShuffleButton { [weak self] _ in
             guard let player = self?.player else { return }
             NowPlayingBridge.applyShuffle(player.isShuffled ? .off : .items, to: player)
@@ -323,12 +419,35 @@ public final class CarPlayController: NSObject {
             NowPlayingBridge.applyRepeat(NowPlayingBridge.repeatType(player.repeatMode.next), to: player)
         }
         repeatButton.isSelected = player.repeatMode != .off
-        CPNowPlayingTemplate.shared.updateNowPlayingButtons([shuffle, repeatButton])
+        CPNowPlayingTemplate.shared.updateNowPlayingButtons(buttons + [shuffle, repeatButton])
+    }
+
+    private var keepButton: CPKeepButton {
+        let id = player.queue.current?.song.id
+        return CPKeepButton.state(songId: id, mayKeep: id.map { library.mayKeep(songId: $0) } ?? false,
+                                  keeping: keeping, kept: kept)
+    }
+
+    /// Keep from the car: the find's release only, through the phone's Keep; says how it went.
+    private func keepCurrent() {
+        guard keepButton == .offered, let id = player.queue.current?.song.id else { return }
+        keeping.insert(id)
+        updateNowPlayingButtons()
+        Task {
+            let result = await library.keep(songId: id)
+            keeping.remove(id)
+            if result.isKept { kept.insert(id) }
+            updateNowPlayingButtons()
+            showMessage(result.message)
+        }
     }
 
     private struct PlayerModes: Equatable, Sendable {
         var shuffled: Bool
         var repeatMode: RepeatMode
+        /// The song playing, and whether it is a find that may be kept (the Keep button).
+        var songId: String?
+        var mayKeep: Bool
     }
 
     private func watchPlayer() {
@@ -344,8 +463,13 @@ public final class CarPlayController: NSObject {
                 }
             }
         })
+        let library = library
         watches.append(Task { [weak self] in
-            let modes = Observations { @MainActor in PlayerModes(shuffled: player.isShuffled, repeatMode: player.repeatMode) }
+            let modes = Observations { @MainActor in
+                let id = player.queue.current?.song.id
+                return PlayerModes(shuffled: player.isShuffled, repeatMode: player.repeatMode, songId: id,
+                                   mayKeep: id.map { library.mayKeep(songId: $0) } ?? false)
+            }
             var last: PlayerModes?
             for await m in modes where m != last {
                 last = m
@@ -368,6 +492,7 @@ public final class CarPlayController: NSObject {
         tabBar = nil
         home = nil
         libraryRoot = nil
+        findsRoot = nil
         searchRoot = nil
     }
 
@@ -389,13 +514,16 @@ public final class CarPlayController: NSObject {
         }
     }
 
-    /// Rebuilds the binding's rows (off main) for the song playing now and applies them.
+    /// Rebuilds the binding's rows (off main) for the song playing now and applies them. A build that finishes after
+    /// a newer one started is dropped. Rows that only describe a state stay placeholders, so real rows replace them.
     private func refresh(_ binding: ListBinding) async {
         guard let content = binding.content else { return }
+        binding.generation += 1
+        let generation = binding.generation
         let playing = player.queue.current?.song.id
         let sections = await Task.detached(priority: .userInitiated) { content(playing) }.value
-        guard bindings[ObjectIdentifier(binding.template)] === binding else { return }
-        apply(sections, to: binding, placeholder: false)
+        guard bindings[ObjectIdentifier(binding.template)] === binding, binding.generation == generation else { return }
+        apply(sections, to: binding, placeholder: CarPlayRows.isPlaceholder(sections))
     }
 
     private func apply(_ sections: [CPSectionModel], to binding: ListBinding, placeholder: Bool) {
@@ -419,6 +547,7 @@ public final class CarPlayController: NSObject {
             let sectionItems = section.rows.map { row in
                 let item = CPListItem(text: row.title, detailText: row.detail)
                 configure(item, row)
+                if row.statusSymbol != nil { setStatusSymbol(item, row) }
                 items[row.id] = item
                 return item
             }
@@ -434,14 +563,21 @@ public final class CarPlayController: NSObject {
     }
 
     private func updateInPlace(_ binding: ListBinding, _ sections: [CPSectionModel]) {
+        let before = Dictionary(binding.shown.flatMap(\.rows).map { ($0.id, $0.statusSymbol) }, uniquingKeysWith: { a, _ in a })
         for row in sections.flatMap(\.rows) {
             guard let item = binding.items[row.id] else { continue }
             if item.text != row.title { item.setText(row.title) }
             if item.detailText != row.detail { item.setDetailText(row.detail) }
-            configure(item, row)
+            configure(item, row)   // sets the accessory type: the status symbol goes on after it
+            if row.statusSymbol != nil || before[row.id] != nil { setStatusSymbol(item, row) }
         }
         binding.shown = sections
         loadArtwork(binding)
+    }
+
+    /// The status symbol beside a find or not-yet row's text (D3).
+    private func setStatusSymbol(_ item: CPListItem, _ row: CPRowModel) {
+        item.setAccessoryImage(row.statusSymbol.flatMap { UIImage(systemName: $0) })
     }
 
     private func configure(_ item: CPListItem, _ row: CPRowModel) {
@@ -473,21 +609,31 @@ public final class CarPlayController: NSObject {
 
     // MARK: - Artwork
 
+    private static let blankRecordTag = "record"
+
     /// Loads cover art for rows whose artwork changed, a few at a time, sized and (for not-yet
     /// rows) drawn as records off the main thread.
     private func loadArtwork(_ binding: ListBinding) {
         var wanted: [(rowId: String, key: String, round: Bool)] = []
+        let side = CPListItem.maximumImageSize
+        let traitScale = interface.carTraitCollection.displayScale
+        let scale = traitScale > 0 ? traitScale : 2
         for row in binding.shown.flatMap(\.rows) {
-            guard let key = row.artworkKey else { continue }
+            guard let key = row.artworkKey else {
+                // A not-yet song has no cover here: a plain record (D3), drawn once.
+                guard row.round, binding.artworkKeys[row.id] != Self.blankRecordTag else { continue }
+                binding.artworkKeys[row.id] = Self.blankRecordTag
+                let record = blankRecord ?? CarPlayArtwork.blankRecord(size: side, scale: scale)
+                blankRecord = record
+                binding.items[row.id]?.setImage(record)
+                continue
+            }
             let tag = "\(key)|\(row.round)"
             guard binding.artworkKeys[row.id] != tag else { continue }
             binding.artworkKeys[row.id] = tag
             wanted.append((row.id, key, row.round))
         }
         guard !wanted.isEmpty else { return }
-        let side = CPListItem.maximumImageSize
-        let traitScale = interface.carTraitCollection.displayScale
-        let scale = traitScale > 0 ? traitScale : 2
         let pixelSide = Int((max(side.width, side.height) * scale).rounded(.up))
         let library = library
         let task = Task { [weak binding] in
@@ -534,7 +680,7 @@ extension CarPlayController: CPInterfaceControllerDelegate {
     public func templateDidDisappear(_ aTemplate: CPTemplate, animated: Bool) {
         let id = ObjectIdentifier(aTemplate)
         guard let binding = bindings[id] else { return }
-        let isTabRoot = [home, libraryRoot, searchRoot].contains { $0 === binding }
+        let isTabRoot = [home, libraryRoot, findsRoot, searchRoot].contains { $0 === binding }
         if !isTabRoot, !interface.templates.contains(where: { $0 === aTemplate }) {
             binding.cancel()   // popped
             bindings[id] = nil
@@ -546,11 +692,15 @@ extension CarPlayController: CPInterfaceControllerDelegate {
 
 extension CarPlayController: CPTabBarTemplateDelegate {
     public func tabBarTemplate(_ tabBarTemplate: CPTabBarTemplate, didSelect selectedTemplate: CPTemplate) {
-        for binding in [home, libraryRoot, searchRoot] where binding?.template !== selectedTemplate {
+        for binding in [home, libraryRoot, findsRoot, searchRoot] where binding?.template !== selectedTemplate {
             flushPending(binding)
         }
         if selectedTemplate === home?.template {
             loadHome()
+        } else if selectedTemplate === findsRoot?.template {
+            refreshFindsRoot()
+            let library = library
+            Task { await library.refreshFinds() }   // the shelf watch shows what it reads
         } else if selectedTemplate === searchRoot?.template {
             refreshSearchRoot()
         }
@@ -578,13 +728,17 @@ extension CarPlayController: CPSearchTemplateDelegate {
                     return completionHandler(searchResults.stale())
                 }
                 lastSearch = query
-                let rows = await Task.detached(priority: .userInitiated) { CarPlayRows.searchItems(result) }.value
-                let fitted = Array(rows.prefix(Int(CPListTemplate.maximumItemCount)))
+                let offer = library.tryOffer
+                let rows = await Task.detached(priority: .userInitiated) {
+                    CarPlayRows.searchItems(result.library, notYet: result.notYet, offer: offer)
+                }.value
+                let fitted = CarPlayRows.fitSearchItems(rows, maxItems: Int(CPListTemplate.maximumItemCount))
                 let binding = ListBinding(template: CPListTemplate(title: nil, sections: []))
                 var items: [String: CPListItem] = [:]
                 let list = fitted.map { row in
                     let item = CPListItem(text: row.title, detailText: row.detail)
                     item.userInfo = row.action
+                    if row.statusSymbol != nil { setStatusSymbol(item, row) }
                     items[row.id] = item
                     return item
                 }
@@ -655,6 +809,8 @@ final class ListBinding {
     var artworkKeys: [String: String] = [:]
     /// Rebuilds the rows for the song playing now (nil when nothing has loaded).
     var content: (@Sendable (String?) -> [CPSectionModel])?
+    /// Counts refreshes; only the newest one's rows are applied.
+    var generation = 0
     var loadTask: Task<Void, Never>?
     var artworkTasks: [Task<Void, Never>] = []
 
@@ -668,6 +824,15 @@ final class ListBinding {
 }
 
 enum CarPlayArtwork {
+    /// A record with a plain label, for a not-yet row without a cover.
+    nonisolated static func blankRecord(size: CGSize, scale: CGFloat) -> UIImage {
+        let label = UIGraphicsImageRenderer(size: CGSize(width: 8, height: 8)).image { ctx in
+            UIColor(white: 0.55, alpha: 1).setFill()
+            ctx.fill(CGRect(x: 0, y: 0, width: 8, height: 8))
+        }
+        return RoundArt.render(label, size: size, scale: scale)
+    }
+
     /// Square cover (aspect-filled) or record, at the list's image size and the car's scale.
     nonisolated static func prepare(_ image: UIImage, size: CGSize, scale: CGFloat, round: Bool) -> UIImage {
         if round { return RoundArt.render(image, size: size, scale: scale) }

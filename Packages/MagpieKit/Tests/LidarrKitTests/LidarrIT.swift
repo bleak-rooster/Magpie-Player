@@ -35,6 +35,23 @@ enum LidarrDevStack {
 
 @Suite(.enabled(if: LidarrDevStack.enabled, "set MAGPIE_IT=1 (scripts/it.sh) to run integration tests"))
 struct LidarrIT {
+    /// G2/G9 on the dev stack: the Samples root validates against the others, and files Lidarr reports under
+    /// the library root are outside it.
+    @Test func devRootsValidateForFinds() async throws {
+        let cfg = try LidarrDevStack.load()
+        let client = LidarrClient(base: cfg.url, apiKey: cfg.apiKey, transport: URLSessionTransport())
+        let roots = try await client.rootFolders().map(\.path)
+        let samples = try #require(roots.first { $0 == "/music/samples" })
+        let others = roots.filter { $0 != samples }
+        #expect(PathGuard.validateRoot(samples, others: others) == .ok)
+        #expect(PathGuard.validateRoot("/music/library", others: roots) == .equalsOther)
+        let g = PathGuard(findsRoot: samples, otherRoots: others, caseInsensitive: false)
+        for artist in try await client.artists() {
+            guard let path = artist.path, path.hasPrefix("/music/library/") else { continue }
+            #expect(!g.isInside(path))
+        }
+    }
+
     @Test func auditDevStack() async throws {
         let cfg = try LidarrDevStack.load()
         let client = LidarrClient(base: cfg.url, apiKey: cfg.apiKey, transport: URLSessionTransport())
