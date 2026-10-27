@@ -116,7 +116,10 @@ extension CarPlayRows {
                 : "\(by) It goes next in your queue once it's here."
         case .ask(let intoFinds):
             confirm = "Ask for it"
-            message = "\(by) This one is asked for, not played now. It shows up in your \(intoFinds ? "Finds" : "library") when it's home."
+            // B8 (final fix 2 B-I1): only new artists become finds; songs by artists you have go to the library.
+            message = intoFinds
+                ? "\(by) This one is asked for, not played now. New artists go into your Finds first. Songs by artists you have go straight into your library."
+                : "\(by) This one is asked for, not played now. It shows up in your library when it's home."
         }
         return CPTrySheet(title: display(recording.title, untitled), message: message, confirm: confirm)
     }

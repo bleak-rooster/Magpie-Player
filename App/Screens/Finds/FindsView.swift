@@ -24,12 +24,6 @@ struct FindsView: View {
     var body: some View {
         let shelf = model.findsShelf()
         List {
-            if shelf.isEmpty {
-                ContentUnavailableView("No finds yet", systemImage: "record.circle",
-                                       description: Text("Songs you try land here first, so you can get to know them."))
-                    .listRowBackground(Color.clear)
-                    .accessibilityIdentifier("finds-empty")
-            }
             section("New finds", shelf.newFinds, all: shelf)
             section("Finds", shelf.finds, all: shelf)
             if !shelf.onTheirWay.isEmpty {
@@ -46,6 +40,14 @@ struct FindsView: View {
             }
         }
         .listStyle(.plain)
+        // Over the list, not a row in it, so no separators frame it (final fix 2 B-M10, as Requests).
+        .overlay {
+            if shelf.isEmpty {
+                ContentUnavailableView("No finds yet", systemImage: "record.circle",
+                                       description: Text("New artists you try land here first, so you can try them before they join your library. Songs by artists you have go straight into your library."))
+                    .accessibilityIdentifier("finds-empty")
+            }
+        }
         .navigationTitle("Finds")
         .magpieScreen()
         .refreshable { await model.refreshFinds() }

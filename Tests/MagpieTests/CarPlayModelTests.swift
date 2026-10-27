@@ -305,7 +305,7 @@ import UIKit
         #expect(idle.message == "By Judie Tzuke. Songs from your library play until it's here, then it goes next.")
         let ask = try #require(CarPlayRows.trySheet(recording, offer: .ask(intoFinds: true), queueEmpty: true))
         #expect(ask.confirm == "Ask for it")
-        #expect(ask.message == "By Judie Tzuke. This one is asked for, not played now. It shows up in your Finds when it's home.")
+        #expect(ask.message == "By Judie Tzuke. This one is asked for, not played now. New artists go into your Finds first. Songs by artists you have go straight into your library.")
         let askLibrary = try #require(CarPlayRows.trySheet(recording, offer: .ask(intoFinds: false), queueEmpty: false))
         #expect(askLibrary.message.hasSuffix("It shows up in your library when it's home."))
         #expect(CarPlayRows.trySheet(recording, offer: .unavailable, queueEmpty: true) == nil)

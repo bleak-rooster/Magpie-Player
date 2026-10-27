@@ -27,8 +27,8 @@ enum TryAvailability: Equatable {
 enum TryCopy {
     /// B8: fallback mode; say plainly where the song lands.
     static let fallbackNote = "Finds aren't set up, so this goes straight into your library."
-    /// Finds mode (Task 6.2a).
-    static let findsNote = "It goes into your Finds first, so you can try it before it joins your library."
+    /// Finds mode (Task 6.2a). Honest for both cases (B8, final fix 2 B-I1): only new artists become finds.
+    static let findsNote = "New artists go into your Finds first, so you can try them before they join your library. Songs by artists you have go straight into your library."
     /// Finds mode was on, but the Finds folder didn't check out when the song was asked for (G2, B8).
     static let findsUnavailable = "Your Finds folder needs another look in Settings, so this went straight into your library."
     /// G7 / FL4: songs on their way and releases Bring in more is bringing in share the limit of five.

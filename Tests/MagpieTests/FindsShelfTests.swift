@@ -190,7 +190,7 @@ private let t0 = Date(timeIntervalSince1970: 1_900_000_000)
         #expect(model.tryNote == TryCopy.fallbackNote, "B8")
         try await findsSetUp(model)
         #expect(model.tryNote == TryCopy.findsNote)
-        #expect(TryCopy.findsNote == "It goes into your Finds first, so you can try it before it joins your library.")
+        #expect(TryCopy.findsNote == "New artists go into your Finds first, so you can try them before they join your library. Songs by artists you have go straight into your library.")
         #expect(TryCopy.findsUnavailable.contains("straight into your library"))
         cleanUp(model)
     }
