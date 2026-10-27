@@ -353,10 +353,24 @@ final class LockableTokenStore: ListenBrainzTokenStoring, @unchecked Sendable {
         #expect(RequestCopy.rowState(for: recording, in: [r]) == .library)
     }
 
+    /// V-fix (H4 finding 3): the first `.serviceUnavailable` wait is usually a hiccup (the release lookup busy for a
+    /// moment) and the automatic retry follows within a minute: it reads "Still looking…". Only a wait that repeats
+    /// says it can't bring songs home right now.
+    @Test func firstHiccupSaysStillLooking() {
+        let first = RequestState.waiting(reason: WaitReason(.serviceUnavailable, since: .now), retryAt: .now)
+        #expect(RequestCopy.status(first) == RequestCopy.stillTrying)
+        #expect(RequestCopy.stillTrying == "Still looking…")
+        let again = RequestState.waiting(reason: WaitReason(.serviceUnavailable, attempt: 1, since: .now), retryAt: .now)
+        #expect(RequestCopy.status(again) == RequestCopy.cantBringHome)
+        // What the app knows still speaks first.
+        #expect(RequestCopy.status(first, context: .keyRejected) == RequestCopy.keyRejected)
+    }
+
     /// Final review I4: a request waiting on `.serviceUnavailable` says why, from what the app knows, instead of
     /// blaming "your server" (the music server is playing).
     @Test func waitingSaysWhyWithoutBlamingTheMusicServer() {
-        let unavailable = RequestState.waiting(reason: WaitReason(.serviceUnavailable, since: .now), retryAt: .now)
+        let unavailable = RequestState.waiting(reason: WaitReason(.serviceUnavailable, attempt: 1, since: .now),
+                                               retryAt: .now)
         let plain = RequestCopy.status(unavailable)
         #expect(plain == RequestCopy.cantBringHome)
         #expect(!plain.contains("server"))

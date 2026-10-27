@@ -40,6 +40,9 @@ enum RequestCopy {
     /// Waiting with no known cause: unreachable, or the lookup service or the requests file failed. Never "your
     /// server", which reads as the music server (it is playing).
     static let cantBringHome = "Can't bring songs home right now. We'll try again."
+    /// H4: the first such wait. It is usually a moment's hiccup (most often the release lookup, which answers "busy"
+    /// now and then), and the automatic retry follows within a minute; only a wait that repeats is worth saying more.
+    static let stillTrying = "Still looking…"
     static let keyRejected = "The key Magpie uses to bring songs home stopped working. Paste a new one in Settings."
 
     /// The status line for a request (its state, or the not-listed note).
@@ -111,7 +114,7 @@ enum RequestCopy {
             case .stillLooking: "Couldn't spot it yet. We'll keep looking."
             case .serviceUnavailable:
                 switch context {
-                case .unknown: cantBringHome
+                case .unknown: reason.attempt == 0 ? stillTrying : cantBringHome
                 case .needsSettings(let message): message
                 case .keyRejected: keyRejected
                 }
