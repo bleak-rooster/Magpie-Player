@@ -300,8 +300,26 @@ public actor NavidromeClient {
     public func songsPage(start: Int, end: Int) async throws -> (songs: [Song], total: Int) {
         let query = [int("_start", start), int("_end", end),
                      URLQueryItem(name: "_sort", value: "id"), URLQueryItem(name: "_order", value: "ASC")]
+        let (data, response) = try await native("api/song", query)
+        let rows = try Self.decode([NativeSong].self, data)
+        let songs = rows.filter { $0.missing != true }.map(Mapping.song)
+        // Without the header (a proxy dropped it), a full page means there may be more; a short one is the end.
+        let total = response.value(forHTTPHeaderField: "X-Total-Count").flatMap { Int($0) }
+            ?? (rows.count < end - start ? start + rows.count : end + 1)
+        return (songs, total)
+    }
+
+    /// The library folders and their paths as Navidrome sees them (`/api/library`; B6, G2). Some versions
+    /// answer 403 to non-admin accounts (`NavidromeError.http(status: 403)`).
+    public func libraries() async throws -> [NavidromeLibrary] {
+        let (data, _) = try await native("api/library", [])
+        return try Self.decode([NativeLibrary].self, data).map { NavidromeLibrary(id: $0.id, name: $0.name ?? "", path: $0.path) }
+    }
+
+    /// A GET on the native API with the session's JWT; keeps a refreshed token. Throws for a non-2xx answer.
+    private func native(_ path: String, _ query: [URLQueryItem]) async throws -> (Data, HTTPURLResponse) {
         let (data, response) = try await authorized({ s in
-            var request = URLRequest(url: self.endpoint.url(s.base ?? self.endpoint.bases[0], path: "api/song", query: query))
+            var request = URLRequest(url: self.endpoint.url(s.base ?? self.endpoint.bases[0], path: path, query: query))
             request.setValue("Bearer \(s.login?.jwt ?? "")", forHTTPHeaderField: "X-ND-Authorization")
             return request
         }, isExpired: { _, r in r.statusCode == 401 })
@@ -312,12 +330,7 @@ public actor NavidromeClient {
             .replacingOccurrences(of: "Bearer ", with: ""), !refreshed.isEmpty {
             session.withLock { $0.login?.jwt = refreshed }
         }
-        let rows = try Self.decode([NativeSong].self, data)
-        let songs = rows.filter { $0.missing != true }.map(Mapping.song)
-        // Without the header (a proxy dropped it), a full page means there may be more; a short one is the end.
-        let total = response.value(forHTTPHeaderField: "X-Total-Count").flatMap { Int($0) }
-            ?? (rows.count < end - start ? start + rows.count : end + 1)
-        return (songs, total)
+        return (data, response)
     }
 }
 

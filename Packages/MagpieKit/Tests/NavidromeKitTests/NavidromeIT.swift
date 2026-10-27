@@ -49,6 +49,15 @@ struct NavidromeIT {
                                transport: URLSessionTransport())
     }
 
+    /// B6: the dev stack's libraries as Navidrome sees them (same paths as Lidarr's roots there).
+    @Test func librariesOnTheDevStack() async throws {
+        let client = try client()
+        _ = try await client.connect()
+        let paths = try await client.libraries().map(\.path)
+        #expect(paths.contains("/music/library"))
+        #expect(paths.contains("/music/samples"))
+    }
+
     @Test func connectBrowsePlayableStream() async throws {
         let client = try client()
         let login = try await client.connect()

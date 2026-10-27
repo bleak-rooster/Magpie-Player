@@ -50,6 +50,7 @@ extension AppModel {
     /// Builds the write gate and request runner for the current session and Lidarr, or tears them down.
     /// Saved requests are loaded and resumed.
     func rebuildRunner() {
+        reloadFindsSetup()   // the session or the Lidarr changed: so may the Finds setup's scope
         runnerTasks.forEach { $0.cancel() }
         runnerTasks = []
         pollTask?.cancel()
@@ -155,7 +156,7 @@ extension AppModel {
 
     /// The owner's choice of main root folder (fallback mode adds go here).
     func chooseRoot(_ path: String) {
-        guard var setup = lidarrSetup else { return }
+        guard var setup = lidarrSetup, !isFindsRoot(path) else { return }
         setup.rootFolderPath = path
         saveSetup(setup)
     }
@@ -164,7 +165,7 @@ extension AppModel {
     func adoptOnlyRoot(_ audit: LidarrAudit) {
         guard var setup = lidarrSetup, audit.reachable else { return }
         let paths = audit.roots.map(\.path)
-        if setup.rootFolderPath == nil, paths.count == 1 {
+        if setup.rootFolderPath == nil, paths.count == 1, !isFindsRoot(paths[0]) {
             setup.rootFolderPath = paths[0]
             saveSetup(setup)
         }

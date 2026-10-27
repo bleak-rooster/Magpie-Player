@@ -64,6 +64,8 @@ final class AppModel {
     var lidarrSetup: LidarrSetup?
     /// The connected Lidarr's setup as last read (speed tier, root folders). Nil until read.
     var lidarrStatus: LidarrAudit?
+    /// Finds mode's setup for this Lidarr and Navidrome account (AppModel+Finds.swift). Nil unless both are connected.
+    var findsSetup: FindsSetup?
     /// Try requests, newest last (from the runner).
     var requests: [MagpieRequest] = []
     /// G8 "Count plays": scrobbling on (default) or off.
@@ -84,6 +86,7 @@ final class AppModel {
     @ObservationIgnored private let lidarrStore: any LidarrConnectionStoring
     @ObservationIgnored let tokenStore: any ListenBrainzTokenStoring
     @ObservationIgnored let setupStore: LidarrSetupStore
+    @ObservationIgnored let findsStore: FindsSetupStore
     @ObservationIgnored let gateDefaultsSuite: String?
     @ObservationIgnored let gateDefaults: UserDefaults
     @ObservationIgnored let appDefaults: UserDefaults
@@ -151,6 +154,7 @@ final class AppModel {
         self.changesAllowed = false
         self.appDefaults = defaults
         self.setupStore = LidarrSetupStore(defaults: defaults)
+        self.findsStore = FindsSetupStore(defaults: defaults)
         self.countPlays = defaults.object(forKey: Self.countPlaysKey) as? Bool ?? true
         self.hasListenBrainzToken = tokenStore.load() != nil
         let counting = PlayCounting(on: defaults.object(forKey: Self.countPlaysKey) as? Bool ?? true)
@@ -299,6 +303,7 @@ final class AppModel {
     func signOut() {
         let retiring = runner, doomed = requestStore
         player.play([], startAt: 0)
+        if let navidromeScope { findsStore.clear(navidromeScope: navidromeScope) }
         store.clear()
         session = nil
         starOverrides = [:]
@@ -479,7 +484,9 @@ final class AppModel {
         if let scope = lidarrScope {
             gateDefaults.removeObject(forKey: LidarrWriteGate.enabledKey(scope: scope))
             setupStore.clear(scope: scope)
+            findsStore.clear(lidarrScope: scope)
         }
+        findsSetup = nil
         gateDefaults.removeObject(forKey: LidarrWriteGate.enabledDefaultsKey)   // unscoped switch of older builds
         changesAllowed = false
     }

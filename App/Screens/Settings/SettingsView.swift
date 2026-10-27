@@ -4,7 +4,7 @@ import Requests
 import SwiftUI
 
 /// Settings (replaces the Library account menu): Appearance, Servers, Lidarr (connect, set up, the G1 switch,
-/// the main root folder, the change log), ListenBrainz, Count plays (G8), About.
+/// the main root folder, Finds, the change log), ListenBrainz, Count plays (G8), About.
 struct SettingsView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
@@ -92,6 +92,10 @@ struct SettingsView: View {
                 rootPicker
                 LabeledContent("Speed", value: model.speedTier.title)
                     .accessibilityIdentifier("settings-speed")
+                NavigationLink { FindsSetupView() } label: {
+                    LabeledContent("Finds", value: findsSummary)
+                }
+                .accessibilityIdentifier("settings-finds")
             } header: {
                 Text("Lidarr")
             } footer: {
@@ -138,8 +142,14 @@ struct SettingsView: View {
 
     private var summary: String { LidarrSummary.status(model.lidarrStatus) }
 
+    private var findsSummary: String {
+        guard let finds = model.findsSetup, finds.useFindsFolder else { return "Off" }
+        return finds.isComplete ? "On" : "Not finished"
+    }
+
     @ViewBuilder private var rootPicker: some View {
-        let roots = model.lidarrStatus?.roots.map(\.path) ?? []
+        // The confirmed Finds folder is never also where new music goes (G2).
+        let roots = (model.lidarrStatus?.roots.map(\.path) ?? []).filter { !model.isFindsRoot($0) }
         if roots.count > 1 {
             Picker("New music goes to", selection: Binding(
                 get: { model.lidarrSetup?.rootFolderPath ?? "" },
