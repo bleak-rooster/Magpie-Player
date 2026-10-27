@@ -1,5 +1,6 @@
 import Foundation
 import LidarrKit
+import ListenBrainzKit
 import MagpieCore
 import NavidromeKit
 import Requests
@@ -20,6 +21,19 @@ enum TryAvailability: Equatable {
         case .changesOff: "Bringing songs home is switched off. Turn it on in Settings."
         case .notSetUp: "Bringing songs home needs one more step in Settings."
         case .noRoot: "Choose where new music goes in Settings to bring songs home."
+        }
+    }
+}
+
+/// Why Save token didn't save it (B-M8). Plain words; Settings names the service itself.
+enum ListenBrainzTokenError: Error, Equatable {
+    case notAccepted
+    case unreachable
+
+    var message: String {
+        switch self {
+        case .notAccepted: "That token wasn't accepted."
+        case .unreachable: "Couldn't check the token right now. Try again in a moment."
         }
     }
 }
@@ -232,6 +246,21 @@ extension AppModel {
         countPlays = on
         playCounting.set(on)
         appDefaults.set(on, forKey: Self.countPlaysKey)
+    }
+
+    /// Settings' Save token (final fix 2 B-M8): the token is checked with ListenBrainz first (`validate-token`, the
+    /// API host only, A9) and saved only once it is accepted. When it can't be checked, it isn't saved either.
+    func saveListenBrainzToken(_ token: String) async throws {
+        let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return try setListenBrainzToken(nil) }
+        do {
+            _ = try await ListenBrainzClient(transport: transport, token: trimmed, limiter: listenBrainzLimiter).tokenUser()
+        } catch ListenBrainzError.unauthorized {
+            throw ListenBrainzTokenError.notAccepted
+        } catch {
+            throw ListenBrainzTokenError.unreachable
+        }
+        try setListenBrainzToken(trimmed)
     }
 
     func setListenBrainzToken(_ token: String?) throws {

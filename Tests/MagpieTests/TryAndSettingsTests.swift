@@ -146,7 +146,12 @@ final class LockableTokenStore: ListenBrainzTokenStoring, @unchecked Sendable {
 
         await model.cancelRequest(id)
         for _ in 0..<200 where model.magpieRequest(id)?.state != .cancelled { try await Task.sleep(for: .milliseconds(10)) }
-        let writes = t.requests.filter { $0.httpMethod != "GET" && $0.url?.port == 8686 }.map { "\($0.httpMethod!) \($0.url!.path)" }
+        // The clean-up's unmonitor follows the state change: wait for it too (under load it can trail).
+        func lidarrWrites() -> [String] {
+            t.requests.filter { $0.httpMethod != "GET" && $0.url?.port == 8686 }.map { "\($0.httpMethod!) \($0.url!.path)" }
+        }
+        for _ in 0..<200 where lidarrWrites().count < 3 { try await Task.sleep(for: .milliseconds(10)) }
+        let writes = lidarrWrites()
         #expect(writes == ["PUT /api/v1/album/monitor", "POST /api/v1/command", "PUT /api/v1/album/monitor"])
         let log = await model.changeLog()
         #expect(log.count == 3 && log.first?.method == "PUT", "newest first")

@@ -94,14 +94,19 @@ final class GatedTransport: HTTPTransport, @unchecked Sendable {
     let store = SessionStore(keychain: KeychainStore(service: "com.bleak-rooster.magpie.tests.\(UUID().uuidString)"))
     let lidarrStore = MemoryLidarrStore()
     let tokens = MemoryTokenStore()
+    /// What `validate-token` answers instead of "valid, rob".
+    let validateAnswer = OSAllocatedUnfairLock<MockTransport.Response?>(initialState: nil)
 
     init() {
         let t = transport.inner
+        let validateAnswer = self.validateAnswer
         t.stub(pathSuffix: "/rest/ping", body: ok)
         t.stub(method: "POST", pathSuffix: "/auth/login", body: loginJSON)
         t.stub(pathSuffix: "/api/song", body: songPage, headers: ["X-Total-Count": "1"])
         t.stub(pathSuffix: "/rest/getSong", body: getSong)
-        t.stub(pathSuffix: "/1/validate-token", body: Data(#"{"valid":true,"user_name":"rob"}"#.utf8))
+        t.stub(pathSuffix: "/1/validate-token") { _ in
+            validateAnswer.withLock { $0 } ?? MockTransport.Response(status: 200, body: Data(#"{"valid":true,"user_name":"rob"}"#.utf8), headers: [:])
+        }
         t.stub(pathSuffix: "/1/user/rob/playlists/createdfor", body: createdFor)
         t.stub(pathSuffix: "/1/playlist/\(playlistId.rawValue)", body: playlist)
         t.stub(pathSuffix: "/api/v1/system/status", body: Data(#"{"version":"3.2.0","instanceName":"Lidarr","authentication":"forms"}"#.utf8))
@@ -140,6 +145,39 @@ final class GatedTransport: HTTPTransport, @unchecked Sendable {
             #expect(request.httpMethod == "GET")
             #expect(request.value(forHTTPHeaderField: "Authorization") == "Token \(token)")
         }
+    }
+
+    // MARK: - Final fix 2 B-M8
+
+    /// Saving a token checks it first (`validate-token`, the API host only). One that isn't accepted is never saved.
+    @Test func aTokenIsCheckedBeforeItIsSaved() async throws {
+        let model = makeModel()
+        try await model.saveListenBrainzToken("  \(token)  ")
+        #expect(model.hasListenBrainzToken && tokens.load() == token)
+        #expect(listenBrainzRequests.last?.url?.path == "/1/validate-token")
+
+        try model.setListenBrainzToken(nil)
+        validateAnswer.withLock { $0 = MockTransport.Response(status: 200, body: Data(#"{"valid":false,"message":"Invalid token"}"#.utf8), headers: [:]) }
+        await #expect(throws: ListenBrainzTokenError.notAccepted) { try await model.saveListenBrainzToken("wrong") }
+        #expect(!model.hasListenBrainzToken && tokens.load() == nil)
+        #expect(ListenBrainzTokenError.notAccepted.message == "That token wasn't accepted.")
+
+        validateAnswer.withLock { $0 = MockTransport.Response(status: 503, body: Data(), headers: [:]) }
+        await #expect(throws: ListenBrainzTokenError.unreachable) { try await model.saveListenBrainzToken(token) }
+        #expect(tokens.load() == nil, "not checked, not saved")
+    }
+
+    /// A playlist read that outlived its token (replaced or removed meanwhile) is dropped, like the shelf's.
+    @Test func playlistReadOutlivingItsTokenIsDropped() async throws {
+        let model = makeModel()
+        try await model.signIn(urls: [home], username: "admin", password: "pw")
+        try model.setListenBrainzToken(token)
+        transport.close("/1/playlist/\(playlistId.rawValue)")
+        let read = Task { await model.madeForYouTracks(playlistId) }
+        await transport.until(waiting: 1)
+        try model.setListenBrainzToken("other-token-456")
+        transport.open()
+        #expect(await read.value == nil)
     }
 
     @Test func savingOrRemovingTheTokenClearsTheShelf() async throws {

@@ -46,12 +46,14 @@ extension AppModel {
     /// The playlist's songs, in order. Library songs whose details can't be read are left out (never shown as
     /// not in the library). Nil without a token, when the playlist can't be read, or when cancelled (a cancelled load
     /// is missing songs, so it is never kept).
+    /// A read that outlived the token it was made with (saved again, replaced or removed) is dropped too (B-M8).
     func madeForYouTracks(_ id: MBID) async -> [MadeForYouRow]? {
-        guard let made = madeForYou() else { return nil }
+        guard let token = tokenStore.load(), let made = madeForYou() else { return nil }
+        let generation = listenBrainzTokenGeneration
         let index = await matchIndex?.index ?? .empty
         guard let tracks = await made.tracks(id, index: index) else { return nil }
         let songs = await librarySongs(tracks.compactMap { if case .library(let id, _) = $0 { id } else { nil } })
-        guard !Task.isCancelled else { return nil }
+        guard !Task.isCancelled, generation == listenBrainzTokenGeneration, tokenStore.load() == token else { return nil }
         return tracks.compactMap { track in
             switch track {
             case .library(let id, _): songs[id].map(MadeForYouRow.library)

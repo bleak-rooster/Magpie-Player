@@ -13,6 +13,7 @@ struct SettingsView: View {
     @State private var provisionMessage: String?
     @State private var token = ""
     @State private var tokenError: String?
+    @State private var checkingToken = false
 
     var body: some View {
         NavigationStack {
@@ -198,16 +199,23 @@ struct SettingsView: View {
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .accessibilityIdentifier("settings-lb-token")
-                Button("Save token") {
-                    do {
-                        try model.setListenBrainzToken(token)
-                        token = ""
-                        tokenError = nil
-                    } catch {
-                        tokenError = "Couldn't save the token. Try again."
+                Button(checkingToken ? "Checking…" : "Save token") {
+                    // B-M8: checked with ListenBrainz before it is saved.
+                    checkingToken = true
+                    Task {
+                        do {
+                            try await model.saveListenBrainzToken(token)
+                            token = ""
+                            tokenError = nil
+                        } catch let error as ListenBrainzTokenError {
+                            tokenError = error.message
+                        } catch {
+                            tokenError = "Couldn't save the token. Try again."
+                        }
+                        checkingToken = false
                     }
                 }
-                .disabled(token.trimmingCharacters(in: .whitespaces).isEmpty)
+                .disabled(checkingToken || token.trimmingCharacters(in: .whitespaces).isEmpty)
                 if let tokenError { Text(tokenError).font(.footnote) }
             }
         } header: {
