@@ -4,6 +4,7 @@ import MagpieCore
 import MagpieTestSupport
 import MediaPlayer
 import NavidromeKit
+import Observation
 import Playback
 import Testing
 @testable import Magpie
@@ -270,6 +271,29 @@ private let away = URL(string: "https://music.example.com/navidrome")!
 /// FLOWS §3c: Now Playing carries title, artist, album, times and queue index; remote commands are registered.
 @MainActor
 @Suite(.serialized) struct NowPlayingVerifyTests {
+    /// V-fix (V2 O3): the lock screen's like state reads the app's star state (a like from the lock screen or the
+    /// phone flips it at once), not the `starred` flag the song was loaded with.
+    @Test func likeStateFollowsTheAppsStarState() async throws {
+        let stars = StarState()
+        let player = Player(engine: FakeEngine(), scrobbler: FakeScrobbler(), urls: FakeURLs())
+        let bridge = NowPlayingBridge(player: player, artworkURL: { _ in nil }, onLike: { _ in },
+                                      isLiked: { stars.overrides[$0.id] ?? $0.starred })
+        defer { bridge.invalidate() }
+        let like = MPRemoteCommandCenter.shared().likeCommand
+        player.play([Song(id: "1", title: "Song One", artist: "Artist", album: "Album", duration: 180, libraryId: 1)], startAt: 0)
+        let center = MPNowPlayingInfoCenter.default()
+        for _ in 0..<250 where center.nowPlayingInfo?[MPMediaItemPropertyTitle] as? String != "Song One" {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(!like.isActive)
+        stars.overrides["1"] = true
+        for _ in 0..<250 where !like.isActive { try await Task.sleep(for: .milliseconds(20)) }
+        #expect(like.isActive, "a star made in the app shows on the lock screen without a song change")
+        stars.overrides["1"] = false
+        for _ in 0..<250 where like.isActive { try await Task.sleep(for: .milliseconds(20)) }
+        #expect(!like.isActive)
+    }
+
     @Test func nowPlayingInfoAndRemoteCommands() async throws {
         let engine = FakeEngine()
         let player = Player(engine: engine, scrobbler: FakeScrobbler(), urls: FakeURLs())
@@ -298,4 +322,9 @@ private let away = URL(string: "https://music.example.com/navidrome")!
             #expect(command.isEnabled)
         }
     }
+}
+
+/// Stands in for `AppModel.starOverrides` (observable, so the bridge sees changes).
+@MainActor @Observable private final class StarState {
+    var overrides: [String: Bool] = [:]
 }

@@ -12,6 +12,8 @@ public final class NowPlayingBridge {
     private let player: Player
     private let artworkURL: (Song) -> URL?
     private let onLike: (Song) -> Void
+    /// The like button's state for a song: the app's star state (with its unsaved flips), observed.
+    private let isLiked: (Song) -> Bool
     private var artwork: (coverArtId: String, artwork: MPMediaItemArtwork)?
     private var artworkTask: Task<Void, Never>?
     private var observation: Task<Void, Never>?
@@ -27,19 +29,23 @@ public final class NowPlayingBridge {
         var upcomingCount: Int
         var isShuffled: Bool
         var repeatMode: RepeatMode
+        var liked: Bool
     }
 
-    public init(player: Player, artworkURL: @escaping (Song) -> URL?, onLike: @escaping (Song) -> Void) {
+    public init(player: Player, artworkURL: @escaping (Song) -> URL?, onLike: @escaping (Song) -> Void,
+                isLiked: @escaping (Song) -> Bool = { $0.starred }) {
         self.player = player
         self.artworkURL = artworkURL
         self.onLike = onLike
+        self.isLiked = isLiked
         registerCommands()
-        observation = Task { [weak self, player] in
+        observation = Task { [weak self, player, isLiked] in
             var last: Snapshot?
             let snapshots = Observations { @MainActor in
                 Snapshot(entryId: player.queue.current?.id, isPlaying: player.isPlaying, duration: player.duration,
                          second: Int(player.position), upcomingCount: player.queue.upcoming.count,
-                         isShuffled: player.isShuffled, repeatMode: player.repeatMode)
+                         isShuffled: player.isShuffled, repeatMode: player.repeatMode,
+                         liked: player.queue.current.map { isLiked($0.song) } ?? false)
             }
             for await snapshot in snapshots where snapshot != last {
                 guard let self else { return }
@@ -89,7 +95,7 @@ public final class NowPlayingBridge {
             info[MPMediaItemPropertyArtwork] = art.artwork
         }
         center.nowPlayingInfo = info
-        MPRemoteCommandCenter.shared().likeCommand.isActive = song.starred
+        MPRemoteCommandCenter.shared().likeCommand.isActive = isLiked(song)
         if loadArtwork { fetchArtwork(for: song) }
     }
 

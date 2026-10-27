@@ -197,7 +197,8 @@ final class AppModel {
             nowPlaying = NowPlayingBridge(
                 player: player,
                 artworkURL: { [weak self] song in self?.coverArtURL(song.coverArtId, size: 600) },
-                onLike: { [weak self] song in Task { await self?.toggleStar(song) } })
+                onLike: { [weak self] song in Task { await self?.toggleStar(song) } },
+                isLiked: { [weak self] song in self?.isStarred(song) ?? song.starred })
         }
         #endif
         watchPlaybackErrors()
