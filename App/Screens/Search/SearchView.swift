@@ -193,24 +193,11 @@ private struct SearchContent: View {
     private func notYetSongRow(_ recording: ExternalRecording, index: Int) -> some View {
         let song = Song(id: "notyet-\(index)", title: recording.title, artist: recording.artist,
                         album: recording.releaseTitle ?? "", duration: recording.duration ?? 0)
-        return SongRow(song: song, state: rowState(for: recording),
+        return SongRow(song: song, state: RequestCopy.rowState(for: recording, in: app.requests),
                        onTry: { trying = TryTarget(recording: recording) })
             .accessibilityIdentifier("search-notyet-song-\(index)")
             .listRowInsets(EdgeInsets())
             .listRowBackground(Color.clear)
-    }
-
-    /// A song already asked for shows how it's coming along instead of "Not in your library".
-    private func rowState(for recording: ExternalRecording) -> RowState {
-        guard let request = app.requests.last(where: { r in
-            RequestCopy.group(r) != nil && (r.recording.recordingMBID.map { $0 == recording.recordingMBID } ?? false)
-        }) else { return .notYet }
-        switch request.state {
-        case .downloading(let p) where p > 0: return .onItsWay(progress: p, phrase: RequestCopy.percent(p))
-        case .waiting, .failed: return .notFound
-        case .ready, .kept: return .library
-        default: return .onItsWay(progress: nil, phrase: "")
-        }
     }
 
     private func notYetArtistRow(_ artist: NotYetArtist) -> some View {
@@ -231,19 +218,9 @@ private struct SearchContent: View {
     }
 
     private func notYetAlbumRow(_ album: NotYetAlbum) -> some View {
-        HStack(spacing: Tokens.Spacing.m) {
-            RecordArt(side: 48)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(album.title).font(.body).lineLimit(2)
-                Text([album.kind ?? "Album", album.artist].joined(separator: " \u{00B7} "))
-                    .font(.footnote).foregroundStyle(themed.palette.ink2Color).lineLimit(1)
-                StatusLine(.notYet)
-            }
-        }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(album.title), \(album.kind ?? "Album") by \(album.artist)")
-        .accessibilityValue(RowState.notYet.voiceOverValue ?? "")
-        .listRowBackground(Color.clear)
+        NotYetAlbumRow(title: album.title, detail: [album.kind ?? "Album", album.artist].joined(separator: " \u{00B7} "),
+                       label: "\(album.title), \(album.kind ?? "Album") by \(album.artist)")
+            .listRowBackground(Color.clear)
     }
 
     private func header(_ title: String) -> some View {
@@ -319,7 +296,7 @@ private struct SearchContent: View {
 }
 
 /// The not-yet song a Try sheet is open for.
-private struct TryTarget: Identifiable {
+struct TryTarget: Identifiable {
     let id = UUID()
     let recording: ExternalRecording
 }

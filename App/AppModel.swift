@@ -128,6 +128,8 @@ final class AppModel {
     @ObservationIgnored private var matchIndexTask: Task<Void, Never>?
     @ObservationIgnored private let matchIndexDirectory: URL?
     @ObservationIgnored private var musicBrainzClient: MusicBrainzClient?
+    /// Spaces the app's `api.listenbrainz.org` calls ("Made for you"); labs search never waits on it.
+    @ObservationIgnored let listenBrainzLimiter = RateLimiter(perSecond: 2)
     @ObservationIgnored private var unlockObserver: NSObjectProtocol?
     @ObservationIgnored let transport: HTTPTransport
     @ObservationIgnored private let probeTransport: HTTPTransport

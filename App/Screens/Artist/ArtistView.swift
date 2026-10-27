@@ -1,13 +1,17 @@
 import DesignSystem
 import MagpieCore
+import Search
 import SwiftUI
 
-/// Artist: name, Play / Shuffle (every album), Popular (hidden when the server has no top songs, A13), Albums.
+/// Artist: name, Play / Shuffle (every album), Popular (hidden when the server has no top songs, A13), Albums, then
+/// "Not in your library" (Task 7.1c: the artist's other albums, from Lidarr when connected; information only, filled
+/// in after the page and left out when there are none or they can't be read).
 struct ArtistView: View {
     @Environment(AppModel.self) private var model
     let artistId: String
     @State private var page: Loadable<Page> = .loading
     @State private var topSongs: [Song] = []
+    @State private var notYetAlbums: [NotYetAlbum] = []
     @State private var gathering = false
     @State private var playError: String?
     private let themed = Themed()
@@ -76,9 +80,34 @@ struct ArtistView: View {
                     .padding(.horizontal, Tokens.Spacing.largeTitleMargin)
                 AlbumGrid(albums: albums) { $0.year.map(String.init) ?? "" }
             }
+
+            if !notYetAlbums.isEmpty { notYetSection }
         }
         .padding(.vertical, Tokens.Spacing.l)
         .foregroundStyle(p.inkColor)
+    }
+
+    private var notYetSection: some View {
+        let p = themed.palette
+        return VStack(alignment: .leading, spacing: Tokens.Spacing.m) {
+            VStack(alignment: .leading, spacing: Tokens.Spacing.xs) {
+                Text("Not in your library").magpieDisplay(.title2).accessibilityAddTraits(.isHeader)
+                Text("To try one, search for a song from it.").font(.footnote).foregroundStyle(p.ink2Color)
+            }
+            .padding(.horizontal, Tokens.Spacing.largeTitleMargin)
+            LazyVStack(alignment: .leading, spacing: Tokens.Spacing.m) {
+                ForEach(Array(notYetAlbums.enumerated()), id: \.offset) { index, album in
+                    let kind = album.kind ?? "Album"
+                    NotYetAlbumRow(title: album.title,
+                                   detail: [kind, album.year.map(String.init)].compactMap { $0 }.joined(separator: " \u{00B7} "),
+                                   label: [album.title, kind, album.year.map(String.init)].compactMap { $0 }.joined(separator: ", "))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .accessibilityIdentifier("artist-notyet-album-\(index)")
+                }
+            }
+            .padding(.horizontal, Tokens.Spacing.margin)
+        }
+        .accessibilityIdentifier("artist-notyet")
     }
 
     private func load() async {
@@ -86,10 +115,21 @@ struct ArtistView: View {
             let (artist, albums) = try await model.request { [artistId] in try await $0.artist(id: artistId) }
             page = .loaded(Page(artist: artist, albums: albums))
             let name = artist.name
-            topSongs = (try? await model.request { try await $0.topSongs(artistName: name) }) ?? []
+            // Both fill in after the page; neither waits for the other.
+            async let popular: Void = loadTopSongs(name)
+            async let notYet: Void = loadNotYetAlbums(artist, library: albums)
+            _ = await (popular, notYet)
         } catch {
             page = .failed(BrowseErrorCopy.message(for: error))
         }
+    }
+
+    private func loadTopSongs(_ name: String) async {
+        topSongs = (try? await model.request { try await $0.topSongs(artistName: name) }) ?? []
+    }
+
+    private func loadNotYetAlbums(_ artist: Artist, library: [Album]) async {
+        notYetAlbums = await model.artistNotYetAlbums(artist, library: library)
     }
 
     /// Fetches every album's tracks (in parallel), then plays them in album order.

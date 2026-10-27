@@ -1,12 +1,15 @@
 import DesignSystem
 import MagpieCore
+import Search
 import SwiftUI
 
-/// Home: the "Finish setting up" card, then Jump back in (recent), Recently added (newest) and
-/// Most played (frequent). Empty shelves are left out.
+/// Home: the "Finish setting up" card, then Jump back in (recent), Made for you (only with a listening-history
+/// token, Task 7.1c; fills in after the library's shelves and is left out when it can't be read), Recently added
+/// (newest) and Most played (frequent). Empty shelves are left out.
 struct HomeView: View {
     @Environment(AppModel.self) private var model
     @State private var shelves: Loadable<Shelves> = .loading
+    @State private var madeForYou: [MadeForYou.Playlist] = []
     private let themed = Themed()
 
     struct Shelves {
@@ -28,6 +31,7 @@ struct HomeView: View {
                     } else {
                         VStack(alignment: .leading, spacing: Tokens.Spacing.xxl) {
                             shelf("Jump back in", s.recent)
+                            madeForYouShelf
                             shelf("Recently added", s.newest)
                             shelf("Most played", s.frequent)
                         }
@@ -36,10 +40,45 @@ struct HomeView: View {
             }
             .padding(.vertical, Tokens.Spacing.l)
         }
-        .refreshable { await load() }
+        .refreshable {
+            async let made: Void = loadMadeForYou()
+            await load()
+            await made
+        }
         .magpieLargeTitle("Home")
         .magpieScreen()
         .task { if shelves.value == nil { await load() } }
+        // Its own task, so the library's shelves never wait for it. Read once (Refresh reads again), and again when
+        // the token is saved or removed.
+        .task(id: model.hasListenBrainzToken) {
+            if !model.hasListenBrainzToken { madeForYou = [] } else if madeForYou.isEmpty { await loadMadeForYou() }
+        }
+    }
+
+    @ViewBuilder private var madeForYouShelf: some View {
+        if !madeForYou.isEmpty {
+            ShelfSection("Made for you") {
+                ForEach(Array(madeForYou.enumerated()), id: \.element.id) { index, playlist in
+                    NavigationLink(value: Route.madeForYou(playlist)) {
+                        AlbumTile(title: playlist.title,
+                                  subtitle: playlist.date.map { $0.formatted(.dateTime.month(.abbreviated).day()) } ?? "Playlist")
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("made-for-you-\(index)")
+                }
+            }
+            .accessibilityIdentifier("home-made-for-you")
+        }
+    }
+
+    private func loadMadeForYou() async {
+        guard model.hasListenBrainzToken else {
+            madeForYou = []
+            return
+        }
+        // A read that fails (or finds nothing) keeps what's shown; without a token the shelf goes.
+        let found = await model.madeForYouPlaylists()
+        if !found.isEmpty { madeForYou = found }
     }
 
     @ViewBuilder private func shelf(_ title: String, _ albums: [Album]) -> some View {

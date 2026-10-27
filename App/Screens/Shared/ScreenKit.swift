@@ -1,6 +1,7 @@
 import DesignSystem
 import NavidromeKit
 import Requests
+import Search
 import SwiftUI
 
 /// Where a browse screen can take you.
@@ -15,6 +16,8 @@ enum Route: Hashable {
     case requests
     case finds
     case request(RequestID)
+    /// Home › Made for you (Task 7.1c).
+    case madeForYou(MadeForYou.Playlist)
 }
 
 extension View {
@@ -31,6 +34,7 @@ extension View {
             case .requests: ActivityView()
             case .finds: FindsView()
             case .request(let id): RequestDetailView(requestId: id)
+            case .madeForYou(let playlist): MadeForYouView(playlist: playlist)
             }
         }
     }

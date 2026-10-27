@@ -160,4 +160,18 @@ enum RequestCopy {
 
     /// Whether Stop looking (Cancel, G6) is offered.
     static func canCancel(_ state: RequestState) -> Bool { !state.isTerminal && state != .ready }
+
+    /// A not-yet song already asked for shows how it's coming along instead of "Not in your library"
+    /// (Search, Made for you).
+    static func rowState(for recording: ExternalRecording, in requests: [MagpieRequest]) -> RowState {
+        guard let request = requests.last(where: { r in
+            group(r) != nil && (r.recording.recordingMBID.map { $0 == recording.recordingMBID } ?? false)
+        }) else { return .notYet }
+        switch request.state {
+        case .downloading(let p) where p > 0: return .onItsWay(progress: p, phrase: percent(p))
+        case .waiting, .failed: return .notFound
+        case .ready, .kept: return .library
+        default: return .onItsWay(progress: nil, phrase: "")
+        }
+    }
 }
