@@ -178,6 +178,8 @@ final class FakeLidarr: @unchecked Sendable {
         var filesLandIn: String?
         /// `/trackfile` follows a move (Lidarr 3.2 doesn't: the paths stay at the old folder).
         var trackFilesFollowMove = false
+        /// A `moveFiles: false` point-back lands here instead of `<root>/<folder>`.
+        var pointBackLandsAt: String?
     }
 
     let latch = Latch()
@@ -268,7 +270,7 @@ final class FakeLidarr: @unchecked Sendable {
                     if let root = body["rootFolderPath"] as? String, body["moveFiles"] as? Bool == false {
                         // Path only, from the existing folder name; nothing moves.
                         let folder = String(s.artists[i].currentPath.split(separator: "/").last!)
-                        s.artists[i].path = root + "/" + folder
+                        s.artists[i].path = s.pointBackLandsAt ?? root + "/" + folder
                         s.artists[i].root = root
                     } else if let root = body["rootFolderPath"] as? String {
                         // Lidarr saves the new path at once (its naming format's folder) and queues the move (A3).

@@ -436,6 +436,8 @@ import MagpieCore
         #expect(!RequestRunner.looselyEqual("Judie Tzuke", "Judie Tzuke 2"))
         #expect(RequestRunner.mustStayInFinds(current: "A", named: nil, existing: []), "Lidarr's folder unknown")
         #expect(!RequestRunner.mustStayInFinds(current: "A", named: "A", existing: ["B"]))
+        #expect(RequestRunner.mustStayInFinds(current: "the band", named: "The Band", existing: []), "strict names")
+        #expect(RequestRunner.mustStayInFinds(current: "Caf\u{E9}", named: "Cafe\u{301}", existing: []), "NFC vs NFD")
     }
 
     /// One Keep per artist: two ready finds of the same artist kept at once send one move, and both are kept.
@@ -514,5 +516,76 @@ import MagpieCore
         #expect(h.server.writes.count == writes, "no retries")
         let r = try #require(await h.request(id))
         #expect(r.keepNeedsAttention && r.keep == nil)
+    }
+
+    // MARK: - Fix round 2
+
+    /// G4: Lidarr's name differs from the current folder only in case: the folder would change, so untag only.
+    @Test func caseOnlyRenameUntagsOnly() async throws {
+        let h = await Harness(setup: Harness.findsSetup)
+        let id = try await Self.readyFind(h)
+        h.server.with { $0.lookupFolder = "aurora field" }
+        #expect(try await h.runner.keep(id) == .keptInPlace)
+        #expect(Set(try #require(Self.editorWrites(h).last).keys) == ["artistIds", "tags", "applyTags"])
+        #expect(h.server.with { $0.artists.first?.currentPath } == Self.findPath)
+    }
+
+    /// The point-back lands on another path than the find's folder: never counted as restored. Needs attention,
+    /// the ledger keeps saying kept, and Keep isn't offered again.
+    @Test func pointBackOnAnotherPathNeedsAttention() async throws {
+        let h = await Harness(setup: Harness.findsSetup)
+        let id = try await Self.readyFind(h)
+        h.server.with {
+            $0.move = .prunedFilesStayed
+            $0.pointBackLandsAt = "/music/samples/AURORA FIELD"
+        }
+        #expect(try await h.runner.keep(id) == .stillMoving)
+        h.clock.advance(60)
+        await h.runner.tick()
+        let r = try #require(await h.request(id))
+        #expect(r.keepNeedsAttention && r.keep == nil && r.state == .ready)
+        #expect(try await h.ledger.entries.filter { $0.lidarrArtistId == 42 }.allSatisfy { $0.keptAt != nil })
+        #expect(Self.editorWrites(h).count == 2, "the move and one point-back, nothing more")
+    }
+
+    /// The point-back needs the files on disk in the find's folder: records alone don't do. Here the folder is
+    /// there but the files aren't: needs attention, no point-back.
+    @Test func pointBackNeedsTheFilesOnDisk() async throws {
+        let h = await Harness(setup: Harness.findsSetup)
+        let id = try await Self.readyFind(h)
+        h.server.with { s in
+            s.move = .prunedFilesStayed
+            s.artists[0].files = "/elsewhere/Aurora Field"
+            s.folders = [Self.findPath]
+        }
+        #expect(try await h.runner.keep(id) == .stillMoving)
+        h.clock.advance(60)
+        await h.runner.tick()
+        let r = try #require(await h.request(id))
+        #expect(r.keepNeedsAttention)
+        #expect(Self.editorWrites(h).count == 1, "no point-back")
+    }
+
+    /// Restoring while Lidarr can't be read: retried, but only until `keepMoveLimit` after the write.
+    @Test func restoreWithLidarrUnreadableIsBounded() async throws {
+        let h = await Harness(setup: Harness.findsSetup)
+        let id = try await Self.readyFind(h)
+        h.server.with { $0.move = .hangs }
+        #expect(try await h.runner.keep(id) == .stillMoving)
+        h.server.with { s in
+            for i in s.commands.indices where s.commands[i].name == "BulkMoveArtist" { s.commands[i].status = "failed" }
+            s.artists[0].root = "/music/samples"
+            s.artists[0].path = nil   // RevertPath
+            s.rootsDown = true        // the restore's reads fail
+        }
+        h.clock.advance(60)
+        await h.runner.tick()
+        var r = try #require(await h.request(id))
+        #expect(r.keep?.phase == .restoring && !r.keepNeedsAttention)
+        h.clock.advance(RequestRunner.keepMoveLimit)
+        await h.runner.tick()
+        r = try #require(await h.request(id))
+        #expect(r.keepNeedsAttention && r.keep == nil)
+        #expect(Self.editorWrites(h).count == 1)
     }
 }

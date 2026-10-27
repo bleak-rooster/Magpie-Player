@@ -16,7 +16,7 @@ import MagpieCore
 ///
 /// G4 destination: the editor moves the folder to `<main root>/<folder>`, where `folder` comes from Lidarr's
 /// naming format and the artist's current name (lookup `folder`), not from the current folder. If that name differs
-/// from the current folder's (a rename, a changed format), or a folder of either name already exists in the main
+/// at all from the current folder's (byte for byte: a rename, a changed format, even case or accents), or a folder of either name already exists in the main
 /// root (compared ignoring case, diacritics and width, so a case-insensitive or NFD volume can't hide the owner's
 /// folder), only `magpie-find` comes off and the find stays where it is. Otherwise one `PUT /artist/editor` with
 /// exactly the G4 body.
@@ -283,7 +283,7 @@ extension RequestRunner {
                 return .pending
             }
             guard now().timeIntervalSince(since) >= Self.keepStartGrace else { return await stillPending(id, p) }
-            if await filesNeverLeft(p, files: files) {
+            if await filesNeverLeft(p, artistPath: path, files: files) == true {
                 // Lidarr saved the main root but never moved the files (a restart orphaned the move): not kept.
                 Log.logger("requests").error("Keep: the files never left the Finds folder")
                 return await beginRestore(id, revertPath: true)
@@ -329,17 +329,35 @@ extension RequestRunner {
         }
     }
 
-    /// Lidarr's records and its filesystem agree that nothing moved: every track file is inside the find's folder,
-    /// that folder is still there, and no folder of its name is in the main root. Only then may the restore point
-    /// the artist back at the Finds folder.
-    private func filesNeverLeft(_ p: KeepProgress, files: [TrackFile]) async -> Bool {
+    /// Lidarr's records and its filesystem agree that nothing moved, so the restore may point the artist back at
+    /// the find's folder (`moveFiles: false`): the artist folder's name is byte-for-byte the find folder's (so the
+    /// point-back lands exactly on `fromPath`); every track file is recorded inside `fromPath` and is on disk there;
+    /// that folder is still in the Finds root; and the main root has no folder of either name. Nil: can't tell now.
+    /// Proven again before every point-back write.
+    private func filesNeverLeft(_ p: KeepProgress, artistPath: String, files: [TrackFile]) async -> Bool? {
         let source = PathGuard(findsRoot: p.fromPath, otherRoots: [p.mainRoot], caseInsensitive: false)
-        guard !files.isEmpty, files.allSatisfy({ source.isInside($0.path) }),
-              let inMain = try? await lidarr.directories(in: p.mainRoot),
-              let inFinds = try? await lidarr.directories(in: p.findsRoot) else { return false }
-        let folder = Self.lastComponent(p.fromPath)
-        return !inMain.contains { Self.looselyEqual(Self.lastComponent($0), folder) }
-            && inFinds.contains { Self.sameBytes($0, p.fromPath) }
+        let folder = Self.lastComponent(p.fromPath), newFolder = Self.lastComponent(artistPath)
+        guard Array(folder.utf8) == Array(newFolder.utf8), !files.isEmpty,
+              files.allSatisfy({ source.isInside($0.path) }) else { return false }
+        do {
+            for (dir, wanted) in Dictionary(grouping: files.map(\.path), by: { ($0 as NSString).deletingLastPathComponent }) {
+                let present = Set(try await lidarr.files(in: dir))
+                guard wanted.allSatisfy(present.contains) else { return false }
+            }
+            let inMain = try await lidarr.directories(in: p.mainRoot).map(Self.lastComponent)
+            let inFinds = try await lidarr.directories(in: p.findsRoot)
+            return !inMain.contains { Self.looselyEqual($0, folder) || Self.looselyEqual($0, newFolder) }
+                && inFinds.contains { Self.sameBytes($0, p.fromPath) }
+        } catch {
+            return nil
+        }
+    }
+
+    /// Can't settle it now: try again later, until `keepMoveLimit` after the write (then needs attention).
+    private func notYet(_ id: RequestID, _ p: KeepProgress) async {
+        guard now().timeIntervalSince(p.startedAt) >= Self.keepMoveLimit else { return }
+        Log.logger("requests").error("Keep: couldn't put the find back in time")
+        await needsAttention(id)
     }
 
     /// Still moving: pending, until `keepMoveLimit` after the write (then needs attention).
@@ -387,16 +405,25 @@ extension RequestRunner {
                 artist = try await lidarr.artist(id: p.artistId)
                 roots = try await lidarr.rootFolders().map(\.path)
             } catch {
-                return
+                return await notYet(id, p)
             }
             lastLidarrContact = now()
             let finds = Self.findsGuard(findsRoot: p.findsRoot, mainRoot: p.mainRoot, roots: roots)
             var body = RestoreBody(artistIds: [p.artistId])
-            let inFinds = artist.path.map(finds.isInside) ?? false
-            if !inFinds {
-                guard p.revertPath == true, artist.path.map(Self.mainGuard(p).isInside) == true else {
-                    // Not in the Finds folder: the ledger keeps saying kept, so nothing ever deletes it.
-                    return await needsAttention(id)
+            guard let path = artist.path else { return await needsAttention(id) }
+            if finds.isInside(path) {
+                // Back in Finds, but only exactly where it was counts (Lidarr's record must match the files).
+                guard Self.sameBytes(path, p.fromPath) else { return await needsAttention(id) }
+            } else {
+                // Not in the Finds folder: only a proven never-moved artist is pointed back; otherwise the ledger
+                // keeps saying kept, so nothing ever deletes it.
+                guard p.revertPath == true, Self.mainGuard(p).isInside(path) else { return await needsAttention(id) }
+                let files: [TrackFile]
+                do { files = try await lidarr.trackFiles(artistId: p.artistId) } catch { return await notYet(id, p) }
+                switch await filesNeverLeft(p, artistPath: path, files: files) {
+                case true?: break
+                case nil: return await notYet(id, p)
+                case false?: return await needsAttention(id)
                 }
                 body.rootFolderPath = p.findsRoot
                 body.moveFiles = false
@@ -424,7 +451,7 @@ extension RequestRunner {
                 return await needsAttention(id)
             } catch {
                 Log.logger("requests").error("Keep: putting the find back postponed")
-                return
+                return await notYet(id, p)
             }
         }
     }
@@ -541,11 +568,12 @@ extension RequestRunner {
     }
 
     /// G4: the move would land somewhere other than a fresh folder of the find's own name: Lidarr's folder name is
-    /// unknown or differs from the current one, or a folder of either name is in the main root already. Loose
-    /// comparison (case, diacritics, width; Swift `==` already treats NFC and NFD alike): a near match counts as
-    /// the same folder, which only keeps more finds in place.
+    /// unknown or differs from the current one at all (byte for byte), or a folder of either name is in the main
+    /// root already, compared loosely (case, diacritics, width; Swift `==` already treats NFC and NFD alike) so a
+    /// near match counts as existing. Both only keep more finds in place.
     static func mustStayInFinds(current: String, named: String?, existing: [String]) -> Bool {
-        guard let named, looselyEqual(current, named) else { return true }
+        // Strict: any drift in Lidarr's name (even case or accents) means the folder would change. Untag only.
+        guard let named, Array(named.utf8) == Array(current.utf8) else { return true }
         return existing.contains { looselyEqual($0, current) || looselyEqual($0, named) }
     }
 
