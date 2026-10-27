@@ -27,6 +27,21 @@ enum RequestCopy {
 
     static let notListed = "Not showing up in your library yet"
 
+    /// D8: what Try is called when it only asks (Patient): the row's button and the sheet's say the same.
+    static let askForIt = "Ask for it"
+
+    /// The not-yet row's button: "Ask for it" when Try only asks (Patient), otherwise "Try".
+    static func tryTitle(_ availability: TryAvailability) -> String {
+        if case .available(let tier) = availability, tier.asksInsteadOfWaiting { return askForIt }
+        return "Try"
+    }
+
+    /// A request's screen is titled with its song (its artist when the title is blank), not its speed.
+    static func detailTitle(_ request: MagpieRequest) -> String {
+        let title = request.recording.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        return title.isEmpty ? request.recording.artist : title
+    }
+
     /// Final review I4: what the app knows about why requests can't move, beyond the runner's one
     /// `.serviceUnavailable` (changes switched off, set-up missing, a rejected key, or simply unreachable).
     enum WaitContext: Equatable {

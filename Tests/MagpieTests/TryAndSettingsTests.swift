@@ -353,6 +353,21 @@ final class LockableTokenStore: ListenBrainzTokenStoring, @unchecked Sendable {
         #expect(RequestCopy.rowState(for: recording, in: [r]) == .library)
     }
 
+    /// V-fix (H4 copy): the row's button says what the sheet does: "Ask for it" when Patient (D8), else "Try". The
+    /// request screen is titled with the song, not its speed.
+    @Test func tryTitleAndRequestTitleMatchWhatHappens() {
+        #expect(RequestCopy.tryTitle(.available(.patient)) == "Ask for it")
+        #expect(RequestCopy.tryTitle(.available(.patient)) == RequestCopy.askForIt)
+        #expect(RequestCopy.tryTitle(.available(.standard)) == "Try")
+        #expect(RequestCopy.tryTitle(.changesOff) == "Try")
+        let recording = ExternalRecording(recordingMBID: MBID("00000000-0000-0000-0000-000000000099")!, title: "Shaking",
+                                          artist: "Hazel English", source: .listenBrainz)
+        var r = MagpieRequest(recording: recording, tier: .patient, createdAt: .now)
+        #expect(RequestCopy.detailTitle(r) == "Shaking")
+        r.recording.title = "  "
+        #expect(RequestCopy.detailTitle(r) == "Hazel English")
+    }
+
     /// V-fix (H4 finding 3): the first `.serviceUnavailable` wait is usually a hiccup (the release lookup busy for a
     /// moment) and the automatic retry follows within a minute: it reads "Still looking…". Only a wait that repeats
     /// says it can't bring songs home right now.

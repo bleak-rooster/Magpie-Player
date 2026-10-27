@@ -199,6 +199,7 @@ private struct SearchContent: View {
         let song = Song(id: "notyet-\(index)", title: recording.title, artist: recording.artist,
                         album: recording.releaseTitle ?? "", duration: recording.duration ?? 0)
         return SongRow(song: song, state: RequestCopy.rowState(for: recording, in: app.requests),
+                       tryTitle: RequestCopy.tryTitle(app.tryAvailability),
                        onTry: { trying = TryTarget(recording: recording) })
             .accessibilityIdentifier("search-notyet-song-\(index)")
             .listRowInsets(EdgeInsets())

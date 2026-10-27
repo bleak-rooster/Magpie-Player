@@ -125,7 +125,7 @@ struct RequestDetailView: View {
         }
         .padding(.bottom, Tokens.Spacing.l)
         .background(themed.palette.bgColor)
-        .navigationTitle(request.tier.title)
+        .navigationTitle(RequestCopy.detailTitle(request))
         .navigationBarTitleDisplayMode(.inline)
         .confirmationDialog("Stop looking for \(request.recording.title)?", isPresented: $confirmsStop,
                             titleVisibility: .visible) {

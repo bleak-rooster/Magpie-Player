@@ -82,7 +82,7 @@ struct TrySheet: View {
                     Button { Task { await start(tier) } } label: {
                         HStack {
                             if phase == .working { ProgressView() }
-                            Text(tier.asksInsteadOfWaiting ? "Ask for it" : "Try it")
+                            Text(tier.asksInsteadOfWaiting ? RequestCopy.askForIt : "Try it")
                         }
                         .frame(maxWidth: .infinity, minHeight: Tokens.minHitSize)
                     }

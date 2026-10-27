@@ -69,6 +69,7 @@ struct MadeForYouView: View {
             SongRow(song: Song(id: "notyet-\(index)", title: recording.title, artist: recording.artist,
                                album: recording.releaseTitle ?? "", duration: recording.duration ?? 0),
                     state: RequestCopy.rowState(for: recording, in: model.requests),
+                    tryTitle: RequestCopy.tryTitle(model.tryAvailability),
                     onTry: { trying = TryTarget(recording: recording) })
                 .accessibilityIdentifier("made-for-you-notyet-\(index)")
         }
