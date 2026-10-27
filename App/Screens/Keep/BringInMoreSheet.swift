@@ -6,7 +6,7 @@ import SwiftUI
 /// After a Keep that moved the find into the library (D5): "Bring in more from <artist>?" with Albums and EPs
 /// (preselected, the owner default), This album only, Everything, and a separate Follow new releases toggle. Each
 /// choice says how much it is only as "about N hours of music" (A5), and says so when it brings in only the newest
-/// ones (G7). "Not now" changes nothing.
+/// ones (G7). "Not now" changes nothing. After a failure that a fresh look can help, Try again reloads the choices.
 struct BringInMoreSheet: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
@@ -18,7 +18,7 @@ struct BringInMoreSheet: View {
         case loading
         case choosing(RequestRunner.BringInOffer)
         case working(RequestRunner.BringInOffer)
-        case done(String)
+        case done(AppModel.BringInReply)
     }
 
     @State private var phase = Phase.loading
@@ -61,8 +61,17 @@ struct BringInMoreSheet: View {
             }
         case .choosing(let offer), .working(let offer):
             choosing(offer)
-        case .done(let message):
-            Text(message).font(.body).accessibilityIdentifier("bring-in-done")
+        case .done(let reply):
+            Text(reply.message).font(.body).accessibilityIdentifier("bring-in-done")
+            if reply.retryable {
+                Button(BringInCopy.retry) {
+                    phase = .loading
+                    Task { await load() }
+                }
+                .buttonStyle(.bordered)
+                .frame(minHeight: Tokens.minHitSize)
+                .accessibilityIdentifier("bring-in-retry")
+            }
         }
     }
 
@@ -137,15 +146,15 @@ struct BringInMoreSheet: View {
         guard phase == .loading else { return }
         switch await model.bringInOffer(requestId) {
         case .offer(let offer): phase = .choosing(offer)
-        case .message(let text): phase = .done(text)
+        case .message(let reply): phase = .done(reply)
         }
     }
 
     private func bring(_ offer: RequestRunner.BringInOffer) async {
         phase = .working(offer)
         let releases = offer.options[choice].map { !$0.albumIds.isEmpty } ?? false
-        let message = await model.bringIn(requestId, choice: releases ? choice : nil, follow: follow,
-                                          artist: offer.artistName)
-        phase = .done(message)
+        let reply = await model.bringIn(requestId, choice: releases ? choice : nil, follow: follow,
+                                        artist: offer.artistName)
+        phase = .done(reply)
     }
 }

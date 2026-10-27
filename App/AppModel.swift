@@ -81,6 +81,7 @@ final class AppModel {
     @ObservationIgnored var waitScreens: [RequestID: Int] = [:]
     /// Requests already landed (D6): each lands once.
     @ObservationIgnored var landedRequests: Set<RequestID> = []
+    @ObservationIgnored var bannerWatch: Task<Void, Never>?
     /// G8 "Count plays": scrobbling on (default) or off.
     var countPlays: Bool
     /// Whether an optional ListenBrainz token is saved.
@@ -193,6 +194,7 @@ final class AppModel {
         #endif
         watchPlaybackErrors()
         watchFindPlays()
+        watchBanner()
         readLidarrPermissions()
     }
 

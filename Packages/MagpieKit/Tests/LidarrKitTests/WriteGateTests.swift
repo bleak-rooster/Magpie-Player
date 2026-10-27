@@ -203,8 +203,10 @@ struct GateEnv {
         Call("PUT", "artist/editor", #"{"artistIds":[1],"tags":[2],"applyTags":"replace"}"#),
         Call("PUT", "artist/editor", #"{"artistIds":[1],"tags":[2],"applyTags":"add","ApplyTags":"replace"}"#),
         Call("PUT", "artist/editor"),
-        // Follow new releases (Task 7.1b): one artist, monitorNewItems all/new, nothing else; never un-follow
+        // Follow new releases (Task 7.1b): one artist, monitorNewItems new, nothing else; never un-follow or "all"
         Call("PUT", "artist/editor", #"{"artistIds":[1],"monitorNewItems":"none"}"#),
+        Call("PUT", "artist/editor", #"{"artistIds":[1],"monitorNewItems":"all"}"#),
+        Call("PUT", "artist/editor", #"{"artistIds":[1],"monitorNewItems":"All"}"#),
         Call("PUT", "artist/editor", #"{"artistIds":[1],"monitorNewItems":true}"#),
         Call("PUT", "artist/editor", #"{"artistIds":[1,2],"monitorNewItems":"new"}"#),
         Call("PUT", "artist/editor", #"{"artistIds":[],"monitorNewItems":"new"}"#),
@@ -395,7 +397,7 @@ struct GateEnv {
         Call("PUT", "artist/editor", #"{"artistIds":[12],"tags":[2],"applyTags":"add"}"#),
         Call("PUT", "artist/editor", #"{"artistIds":[12],"rootFolderPath":"/music/library","moveFiles":true}"#),
         Call("PUT", "artist/editor", #"{"artistIds":[12],"monitorNewItems":"new"}"#),
-        Call("PUT", "artist/editor", #"{"ArtistIds":[12],"MonitorNewItems":"All"}"#),
+        Call("PUT", "artist/editor", #"{"ArtistIds":[12],"MonitorNewItems":"New"}"#),
         Call("PUT", "album/monitor", #"{"albumIds":[3],"monitored":true}"#),
         Call("PUT", "album/monitor", #"{"albumIds":[3,4,5],"monitored":true}"#),
         Call("PUT", "album/3", #"{"id":3,"monitored":true}"#),

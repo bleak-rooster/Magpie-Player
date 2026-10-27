@@ -239,6 +239,116 @@ import MagpieCore
         #expect(h.server.writes.count == before)
     }
 
+    // MARK: - Lost answers (fix 1)
+
+    /// The monitor write applied but its answer was lost: a fresh read shows the albums monitored, so they are
+    /// applied, searched and reported as coming in.
+    @Test func lostAnswerThatApplied() async throws {
+        let h = await Harness(setup: Harness.findsSetup)
+        let id = try await Self.keptFind(h)
+        h.server.with { $0.monitorAppliedThen504 = 1 }
+        let before = h.server.writes.count
+
+        let result = try await h.runner.bringIn(id, choice: .albumsAndEPs, follow: false)
+
+        #expect(result == .init(albums: 3, searching: true, following: false))
+        let writes = Array(h.server.writeBodies().dropFirst(before))
+        #expect(writes.map(\.0) == ["PUT album/monitor", "POST command"])
+        #expect(writes[1].1["albumIds"] as? [Int] == [53, 52, 51])
+        for album in [51, 52, 53] { #expect(try await h.ledger.entry(albumId: album)?.send == .applied) }
+    }
+
+    /// The answer was lost and the albums aren't monitored: nothing is claimed or searched; the entries stay "may
+    /// have landed".
+    @Test func lostAnswerNotApplied() async throws {
+        let h = await Harness(setup: Harness.findsSetup)
+        let id = try await Self.keptFind(h)
+        h.server.with { $0.monitorFails503 = 1 }
+        let before = h.server.writes.count
+
+        await #expect(throws: RequestRunner.BringInError.failed) {
+            _ = try await h.runner.bringIn(id, choice: .albumsAndEPs, follow: true)
+        }
+        #expect(Array(h.server.writeBodies().dropFirst(before)).map(\.0) == ["PUT album/monitor"])
+        #expect(try await h.ledger.entry(albumId: 53)?.send == .unclear)
+        #expect(Self.monitored(h) == [50, 55])
+    }
+
+    /// The answer was lost and Lidarr can't be read: unconfirmed, nothing more sent.
+    @Test func lostAnswerUnconfirmed() async throws {
+        let h = await Harness(setup: Harness.findsSetup)
+        let id = try await Self.keptFind(h)
+        h.server.with { $0.monitorFails503 = 1; $0.confirmFailsAfterLost = true }
+        let before = h.server.writes.count
+
+        await #expect(throws: RequestRunner.BringInError.unconfirmed) {
+            _ = try await h.runner.bringIn(id, choice: .albumsAndEPs, follow: true)
+        }
+        #expect(Array(h.server.writeBodies().dropFirst(before)).map(\.0) == ["PUT album/monitor"])
+        #expect(try await h.ledger.entry(albumId: 53)?.send == .unclear)
+    }
+
+    // MARK: - Ownership preconditions (fix 2): fresh state decides; refused with nothing written
+
+    static func expectRefused(_ h: Harness, _ runner: RequestRunner, _ id: RequestID) async {
+        let before = h.server.writes.count
+        await #expect(throws: RequestRunner.BringInError.notKept) { _ = try await runner.bringInOffer(id) }
+        await #expect(throws: RequestRunner.BringInError.notKept) {
+            _ = try await runner.bringIn(id, choice: .everything, follow: true)
+        }
+        #expect(h.server.writes.count == before)
+    }
+
+    @Test func refusesArtistMagpieDidNotCreate() async throws {
+        let h = await Harness(setup: Harness.findsSetup)
+        let id = try await Self.keptFind(h)
+        for var e in try await h.ledger.entries where e.lidarrArtistId == 42 {
+            e.createdArtist = false
+            try await h.ledger.record(e)
+        }
+        await Self.expectRefused(h, h.runner, id)
+    }
+
+    @Test func refusesArtistStillAFind() async throws {
+        let h = await Harness(setup: Harness.findsSetup)
+        let id = try await Self.keptFind(h)
+        h.server.with { $0.artists[0].tags.append(2) }
+        await Self.expectRefused(h, h.runner, id)
+    }
+
+    @Test(arguments: ["/music/samples/Aurora Field", "/music/library", "/music/library-old/Aurora Field", "/elsewhere/Aurora Field"])
+    func refusesArtistOutsideTheMainRoot(_ path: String) async throws {
+        let h = await Harness(setup: Harness.findsSetup)
+        let id = try await Self.keptFind(h)
+        h.server.with { $0.artists[0].path = path }
+        await Self.expectRefused(h, h.runner, id)
+    }
+
+    @Test func refusesAnotherArtist() async throws {
+        let h = await Harness(setup: Harness.findsSetup)
+        let id = try await Self.keptFind(h)
+        h.server.with { $0.artists[0].mbid = mbid(999) }
+        await Self.expectRefused(h, h.runner, id)
+    }
+
+    @Test func refusesArtistGoneFromLidarr() async throws {
+        let h = await Harness(setup: Harness.findsSetup)
+        let id = try await Self.keptFind(h)
+        h.server.with { $0.artists = [] }
+        await Self.expectRefused(h, h.runner, id)
+    }
+
+    /// Fix 5: no plan, so the artist can't be told apart from another: refused.
+    @Test func refusesRequestWithoutPlan() async throws {
+        let h = await Harness(setup: Harness.findsSetup)
+        let id = try await Self.keptFind(h)
+        var saved = try await h.store.load()
+        for i in saved.indices where saved[i].id == id { saved[i].plan = nil }
+        try await h.store.save(saved)
+        let relaunched = await Harness(directory: h.dir, lidarr: h.server, setup: Harness.findsSetup)
+        await Self.expectRefused(h, relaunched.runner, id)
+    }
+
     /// Lidarr refuses the monitor write: nothing is claimed, the ledger says not sent, no search is started.
     @Test func refusedMonitorWriteClaimsNothing() async throws {
         let h = await Harness(setup: Harness.findsSetup)
@@ -251,5 +361,24 @@ import MagpieCore
         #expect(!h.server.writeBodies().contains { $0.0 == "PUT artist/editor" && $0.1["monitorNewItems"] != nil })
         #expect(try await h.ledger.entry(albumId: 53)?.send == .notSent)
         #expect(Self.monitored(h) == [50, 55])
+    }
+}
+
+/// D6 proof (fix 8): `onReady` fires only on the transition into ready. A request that is ready already when the
+/// requests are loaded again (relaunch, another runner) never fires it, so the app can't land it a second time
+/// (`AppModel.landedRequests` is memory only).
+@Suite struct ReadyFiresOnceTests {
+    @Test func reloadedReadyRequestDoesNotFireAgain() async throws {
+        let h = await Harness(setup: Harness.findsSetup)
+        let id = try await KeepTests.readyFind(h)
+        await h.runner.tick()
+        #expect(h.ready.withLock { $0 } == [id], "once, on the transition")
+
+        let relaunched = await Harness(directory: h.dir, lidarr: h.server, setup: Harness.findsSetup)
+        #expect(await relaunched.runner.load())
+        await relaunched.runner.tick()
+        await relaunched.runner.tick()
+        #expect(await relaunched.state(id) == .ready)
+        #expect(relaunched.ready.withLock { $0 }.isEmpty)
     }
 }

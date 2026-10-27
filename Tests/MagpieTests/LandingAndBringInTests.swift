@@ -37,7 +37,8 @@ import Testing
         #expect(model.playNowBanner == nil)
     }
 
-    /// Paused queue, still on the wait screen: the find plays now and what was queued stays after it.
+    /// Paused queue, still on the wait screen: the find plays now; the paused song comes right after it (not
+    /// dropped into what has played), then the rest.
     @Test func playingNowKeepsAPausedQueue() {
         let model = makeModel()
         model.play([Self.song("a"), Self.song("b")], startAt: 0)
@@ -46,8 +47,44 @@ import Testing
         model.waitScreenAppeared(request)
         model.land(Self.find, request: request)
         #expect(model.player.queue.current?.song == Self.find && model.player.isPlaying)
-        #expect(model.player.queue.upcoming.map(\.song.id) == ["b"])
+        #expect(model.player.queue.upcoming.map(\.song.id) == ["a", "b"])
+        #expect(model.player.queue.main.prefix { $0.song.id != "find" }.isEmpty, "a isn't in what has played")
         #expect(model.playNowBanner == nil)
+    }
+
+    /// Play now from the banner while the queue is paused keeps the paused song too.
+    @Test func bannerPlayNowKeepsThePausedSong() throws {
+        let model = makeModel()
+        model.play([Self.song("a"), Self.song("b")], startAt: 0)
+        model.player.toggle()
+        model.land(Self.find, request: request)
+        model.playNow(try #require(model.playNowBanner))
+        #expect(model.player.queue.current?.song == Self.find && model.player.isPlaying)
+        #expect(model.player.queue.upcoming.map(\.song.id) == ["a", "b"])
+    }
+
+    /// Fix 3: once the find was reached and played, pausing it later shows the mini player, not the banner.
+    @Test func bannerGoesOnceTheFindPlayed() async throws {
+        let model = makeModel()
+        model.play([Self.song("a")], startAt: 0)
+        model.land(Self.find, request: request)
+        #expect(model.visibleBanner != nil)
+        model.player.next()   // reached normally, playing
+        for _ in 0..<50 where model.playNowBanner != nil { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(model.playNowBanner == nil, "cleared the first time it played")
+        model.player.toggle()
+        #expect(!model.player.isPlaying && model.visibleBanner == nil)
+    }
+
+    /// The idle-queue landing: loaded but never played, the banner shows; once played and paused, it doesn't.
+    @Test func idleLandingBannerUntilPlayed() async throws {
+        let model = makeModel()
+        model.land(Self.find, request: request)
+        #expect(model.visibleBanner?.idle == true)
+        model.player.toggle()
+        for _ in 0..<50 where model.playNowBanner != nil { try await Task.sleep(for: .milliseconds(10)) }
+        model.player.toggle()
+        #expect(model.playNowBanner == nil && model.visibleBanner == nil)
     }
 
     /// Something is playing: never cut in. Next in the queue, with the banner; Play now plays it.
@@ -163,6 +200,17 @@ import Testing
         #expect(BringInCopy.capped(Option(albumIds: [1], available: 1, duration: nil)) == nil)
     }
 
+    /// Fix 7: copy that suggests trying again comes with a Try again button; the rest promises no retry.
+    @Test func retryOnlyWhereOffered() {
+        let all: [RequestRunner.BringInError] = [.changesOff, .notSetUp, .notKept, .tooMany, .unavailable, .failed, .unconfirmed]
+        #expect(all.filter(BringInCopy.isRetryable) == [.unavailable, .failed, .unconfirmed])
+        for e in all {
+            let reply = AppModel.BringInReply(error: e)
+            if reply.message.contains("Try again") || reply.message.contains("try again") { #expect(reply.retryable) }
+        }
+        #expect(!BringInCopy.message(for: RequestRunner.BringInError.failed).contains("Nothing changed"))
+    }
+
     @Test func doneAndErrorCopy() {
         typealias Result = RequestRunner.BringInResult
         #expect(BringInCopy.done(Result(albums: 3, searching: true, following: true), artist: "Aurora Field")
@@ -172,7 +220,7 @@ import Testing
         #expect(BringInCopy.done(Result(albums: 0, searching: false, following: true), artist: "Aurora Field")
                 == "New releases from Aurora Field will come in as they come out.")
         var texts = [BringInCopy.title("X"), BringInCopy.followNote, BringInCopy.done(Result(albums: 2, searching: false, following: false), artist: "X")]
-        for e in [RequestRunner.BringInError.changesOff, .notSetUp, .notKept, .tooMany, .unavailable, .failed] {
+        for e in [RequestRunner.BringInError.changesOff, .notSetUp, .notKept, .tooMany, .unavailable, .failed, .unconfirmed] {
             texts.append(BringInCopy.message(for: e))
         }
         for text in texts where !text.contains("in Settings") {   // Settings names its own switches and buttons

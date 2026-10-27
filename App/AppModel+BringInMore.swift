@@ -11,6 +11,7 @@ enum BringInCopy {
     static let bring = "Bring them in"
     static let notNow = "Not now"
     static let loading = "Looking at what else there is…"
+    static let retry = "Try again"
 
     static func title(_ artist: String) -> String { "Bring in more from \(artist)?" }
 
@@ -65,8 +66,17 @@ enum BringInCopy {
         case .notSetUp?: "Tap 'Set up Magpie in Lidarr' in Settings to bring in more."
         case .notKept?: "This one can't bring in more from here."
         case .tooMany?: "Five songs are already on their way. Bring in more when one of them is home."
-        case .failed?: "Couldn't bring them in this time. Try again in a moment."
-        case .unavailable?, nil: "Can't bring in more right now. Try again in a moment."
+        case .failed?: "Couldn't bring them in this time. Nothing new is on its way yet."
+        case .unconfirmed?: "Couldn't tell whether that went through. Try again to see what's still to come."
+        case .unavailable?, nil: "Can't bring in more right now."
+        }
+    }
+
+    /// The sheet offers Try again (a fresh look at what's still to bring in) after these.
+    static func isRetryable(_ error: Error) -> Bool {
+        switch error as? RequestRunner.BringInError {
+        case .failed?, .unconfirmed?, .unavailable?, nil: true
+        case .changesOff?, .notSetUp?, .notKept?, .tooMany?: false
         }
     }
 }
@@ -74,27 +84,39 @@ enum BringInCopy {
 /// Bring in more (Task 7.1b, D5): the runner reads and writes Lidarr (RequestRunner+BringInMore.swift); the app
 /// shows the choices and says how it went.
 extension AppModel {
-    enum BringInLoad {
-        case offer(RequestRunner.BringInOffer)
-        case message(String)
-    }
+    /// What to tell the owner, and whether the sheet offers Try again.
+    struct BringInReply: Equatable {
+        var message: String
+        var retryable = false
 
-    func bringInOffer(_ id: RequestID) async -> BringInLoad {
-        guard let runner else { return .message(BringInCopy.message(for: RequestRunner.BringInError.unavailable)) }
-        do {
-            return .offer(try await runner.bringInOffer(id))
-        } catch {
-            return .message(BringInCopy.message(for: error))
+        init(message: String, retryable: Bool = false) { self.message = message; self.retryable = retryable }
+
+        init(error: Error) {
+            self.init(message: BringInCopy.message(for: error), retryable: BringInCopy.isRetryable(error))
         }
     }
 
-    /// Brings in `choice` (nil: no releases) and follows new releases when `follow`; returns what to tell the owner.
-    func bringIn(_ id: RequestID, choice: RequestRunner.BringInChoice?, follow: Bool, artist: String) async -> String {
-        guard let runner else { return BringInCopy.message(for: RequestRunner.BringInError.unavailable) }
+    enum BringInLoad {
+        case offer(RequestRunner.BringInOffer)
+        case message(BringInReply)
+    }
+
+    func bringInOffer(_ id: RequestID) async -> BringInLoad {
+        guard let runner else { return .message(BringInReply(error: RequestRunner.BringInError.unavailable)) }
         do {
-            return BringInCopy.done(try await runner.bringIn(id, choice: choice, follow: follow), artist: artist)
+            return .offer(try await runner.bringInOffer(id))
         } catch {
-            return BringInCopy.message(for: error)
+            return .message(BringInReply(error: error))
+        }
+    }
+
+    /// Brings in `choice` (nil: no releases) and follows new releases when `follow`.
+    func bringIn(_ id: RequestID, choice: RequestRunner.BringInChoice?, follow: Bool, artist: String) async -> BringInReply {
+        guard let runner else { return BringInReply(error: RequestRunner.BringInError.unavailable) }
+        do {
+            return BringInReply(message: BringInCopy.done(try await runner.bringIn(id, choice: choice, follow: follow), artist: artist))
+        } catch {
+            return BringInReply(error: error)
         }
     }
 }

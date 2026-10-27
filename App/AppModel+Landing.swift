@@ -9,6 +9,14 @@ struct PlayNowBanner: Equatable {
     var song: Song
     /// The queue slot the find went into.
     var entry: UUID
+    /// The queue was idle: the find became the current song, loaded but not playing.
+    var idle = false
+}
+
+/// What `watchBanner` follows.
+private struct BannerState: Equatable, Sendable {
+    var current: UUID?
+    var playing: Bool
 }
 
 enum LandingCopy {
@@ -48,18 +56,33 @@ extension AppModel {
             playNow(song)
         case .queueNextWithBanner:
             player.playNext([song])
-            let slot = player.queue.upNext.first { $0.song.id == song.id } ?? player.queue.current
-            guard let entry = slot?.id else { return }
-            playNowBanner = PlayNowBanner(request: id, song: song, entry: entry)
+            let queued = player.queue.upNext.first { $0.song.id == song.id }
+            guard let entry = (queued ?? player.queue.current)?.id else { return }
+            playNowBanner = PlayNowBanner(request: id, song: song, entry: entry, idle: queued == nil)
         }
     }
 
-    /// The banner while its song isn't playing yet and is still in the queue.
+    /// The banner while its song is still to come: upcoming in the queue, or (an idle queue's landing) loaded and
+    /// never played yet. Once its slot is reached and plays, `watchBanner` clears it, so a find paused later never
+    /// hides the mini player.
     var visibleBanner: PlayNowBanner? {
         guard let banner = playNowBanner else { return nil }
         let queue = player.queue
-        if queue.current?.id == banner.entry { return player.isPlaying ? nil : banner }
+        if queue.current?.id == banner.entry { return banner.idle && !player.isPlaying ? banner : nil }
         return queue.upcoming.contains { $0.id == banner.entry } ? banner : nil
+    }
+
+    /// Clears the banner the first time its queue slot is current and playing (reached normally, or Play).
+    func watchBanner() {
+        bannerWatch = Task { [weak self, player] in
+            let states = Observations { @MainActor in BannerState(current: player.queue.current?.id, playing: player.isPlaying) }
+            for await state in states {
+                guard let self else { return }
+                if state.playing, let banner = self.playNowBanner, banner.entry == state.current {
+                    self.playNowBanner = nil
+                }
+            }
+        }
     }
 
     /// "Play now": the find plays now; what was queued after it stays.
@@ -69,9 +92,7 @@ extension AppModel {
         if queue.current?.id == banner.entry {
             if !player.isPlaying { player.toggle() }
         } else if queue.upcoming.contains(where: { $0.id == banner.entry }) {
-            player.move(id: banner.entry, to: 0)
-            player.next()
-            if !player.isPlaying { player.toggle() }
+            jump(to: banner.entry)
         } else {
             playNow(banner.song)   // taken out of the queue meanwhile: put it back and play it
         }
@@ -96,7 +117,21 @@ extension AppModel {
     private func playNow(_ song: Song) {
         guard player.queue.current != nil else { return play([song], startAt: 0) }
         player.playNext([song])
+        guard let entry = player.queue.upNext.first?.id else { return }
+        jump(to: entry)
+    }
+
+    /// Makes the upcoming slot `entry` current and plays it. A paused song it would skip past isn't dropped into
+    /// what has played: it goes back right after the find (from its start; the player keeps no position for a song
+    /// that isn't current).
+    private func jump(to entry: UUID) {
+        let paused = player.isPlaying ? nil : player.queue.current
+        player.move(id: entry, to: 0)
         player.next()
+        if let paused, player.queue.current?.id == entry {
+            player.remove(id: paused.id)
+            player.playNext([paused.song])
+        }
         if !player.isPlaying { player.toggle() }
     }
 }

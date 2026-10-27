@@ -176,9 +176,10 @@ enum ForbiddenWrites {
     static let allowedCommands: Set<String> = ["albumsearch", "artistsearch", "refreshartist", "refreshalbum"]
     /// `applyTags` values allowed in `PUT /artist/editor` (`replace` would wipe the owner's tags, A4).
     static let allowedApplyTags: Set<String> = ["add", "remove"]
-    /// `monitorNewItems` values allowed in `PUT /artist/editor` (Follow new releases, Task 7.1b). Never `none`:
-    /// Magpie only ever adds; it doesn't stop following anything.
-    static let allowedMonitorNewItems: Set<String> = ["all", "new"]
+    /// `monitorNewItems` values allowed in `PUT /artist/editor` (Follow new releases, Task 7.1b): only `new`. Never
+    /// `none` (Magpie only ever adds; it doesn't stop following anything) and never `all` (that would also monitor
+    /// old albums Lidarr's next refresh discovers).
+    static let allowedMonitorNewItems: Set<String> = ["new"]
 
     /// Why the request is refused, or nil when it may be sent.
     static func reason(_ t: WriteTarget, body: Data?) -> String? {
@@ -280,7 +281,7 @@ enum ForbiddenWrites {
     }
 
     /// No `deleteFiles` / `addImportListExclusion` key at any depth; `applyTags` (at most one) is add or remove.
-    /// A body with `monitorNewItems` (Follow new releases) is exactly `{artistIds: [one id], monitorNewItems: all|new}`.
+    /// A body with `monitorNewItems` (Follow new releases) is exactly `{artistIds: [one id], monitorNewItems: new}`.
     private static func editorReason(_ json: Any?) -> String? {
         guard let object = json as? [String: Any] else { return "artist editor needs a body" }
         if let flag = anyKey(falseOnlyFlags, in: object) { return "artist editor body must not carry \(flag)" }
@@ -291,7 +292,7 @@ enum ForbiddenWrites {
         }
         if let follow = object.first(where: { $0.key.lowercased() == "monitornewitems" })?.value {
             guard let s = follow as? String, allowedMonitorNewItems.contains(s.lowercased()) else {
-                return "monitorNewItems must be all or new"
+                return "monitorNewItems must be new"
             }
             guard object.count == 2,
                   let ids = object.first(where: { $0.key.lowercased() == "artistids" })?.value as? [Any],

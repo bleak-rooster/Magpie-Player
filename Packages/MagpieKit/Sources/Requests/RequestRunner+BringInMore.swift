@@ -79,8 +79,10 @@ extension RequestRunner {
         /// Lidarr, MusicBrainz or the ledger can't be read right now, or a Keep / Not for me is busy with the
         /// artist. Nothing was written.
         case unavailable
-        /// Lidarr refused the albums (or the answer was lost and they aren't monitored). Nothing is claimed.
+        /// Lidarr refused the albums (or the answer was lost and a fresh read shows none of them monitored).
         case failed
+        /// The answer was lost and Lidarr couldn't be read to tell whether the albums were monitored.
+        case unconfirmed
     }
 
     /// G7: the most releases one Bring in more monitors and searches.
@@ -127,7 +129,7 @@ extension RequestRunner {
         let needsFollow = follow && !Self.follows(target.artist)
         var result = BringInResult(albums: 0, searching: false, following: follow && !needsFollow)
         if !albums.isEmpty {
-            try await monitor(albums, artistId: artistId, root: target.mainRoot)
+            albums = try await monitor(albums, artistId: artistId, root: target.mainRoot)
             result.albums = albums.count
             do {
                 _ = try await gate.send("POST", "command", body: SearchBody(name: "AlbumSearch", albumIds: albums.map(\.id)))
@@ -200,7 +202,7 @@ extension RequestRunner {
             throw BringInError.unavailable
         }
         lastLidarrContact = now()
-        if let expected = r.plan?.artistMBID, artist.foreignArtistId != expected { throw BringInError.notKept }
+        guard let expected = r.plan?.artistMBID, artist.foreignArtistId == expected else { throw BringInError.notKept }
         let main = PathGuard(findsRoot: setup.mainRoot, otherRoots: [setup.findsRoot], caseInsensitive: false)
         guard !artist.tags.contains(setup.findTagId), let path = artist.path, main.isInside(path) else {
             throw BringInError.notKept
@@ -255,8 +257,9 @@ extension RequestRunner {
 
     /// M6: the albums go into the ledger as Magpie's (kept: Not for me never touches them, G3.4; closed: never
     /// inherited by a Cancel) and "may have landed" before the PUT; afterwards applied, or not sent when the gate
-    /// or Lidarr refused it. A lost answer is checked with a GET; what isn't monitored then stays unclear.
-    private func monitor(_ albums: [LidarrAlbum], artistId: Int, root: String) async throws {
+    /// or Lidarr refused it. A lost answer is checked with a GET: the albums it shows monitored are applied and
+    /// returned (they get searched); the rest stay unclear. Returns the albums monitored now.
+    private func monitor(_ albums: [LidarrAlbum], artistId: Int, root: String) async throws -> [LidarrAlbum] {
         let at = now()
         var entries = albums.compactMap { album in
             album.foreignAlbumId.map {
@@ -285,13 +288,16 @@ extension RequestRunner {
             await settle { _ in .notSent }
             throw BringInError.failed
         } catch {
-            if let now = try? await lidarr.albums(artistId: artistId) {
-                let on = Set(now.filter(\.monitored).map(\.id))
-                await settle { on.contains($0.albumId ?? -1) ? .applied : .unclear }
-            }
-            throw BringInError.failed
+            guard let fresh = try? await lidarr.albums(artistId: artistId) else { throw BringInError.unconfirmed }
+            let on = Set(fresh.filter(\.monitored).map(\.id))
+            await settle { on.contains($0.albumId ?? -1) ? .applied : .unclear }
+            let landed = albums.filter { on.contains($0.id) }
+            guard !landed.isEmpty else { throw BringInError.failed }
+            Log.logger("requests").error("Bring in more: answer lost; \(landed.count, privacy: .public) of \(albums.count, privacy: .public) monitored")
+            return landed
         }
         await settle { _ in .applied }
+        return albums
     }
 
     static func bringInError(_ error: Error) -> BringInError {
