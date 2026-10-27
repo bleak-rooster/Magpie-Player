@@ -661,8 +661,11 @@ public actor RequestRunner {
     /// This request's own pending entry (its ids were lost, e.g. a failed save before a relaunch) is resolved
     /// by `resolveOwnPending`, never overwritten (security H1).
     private func monitorExisting(_ id: RequestID, _ r: MagpieRequest, artist: LidarrArtist, rg: MBID) async throws {
-        // G6: an artist that was already there never becomes a find (a Finds-mode intent ends here).
-        if r.plan?.mode != .fallback { await mutate(id) { $0.plan?.mode = .fallback } }
+        // G6: an artist that was already there never becomes a find (a Finds-mode intent ends here), unless it is
+        // a find right now (D29, final fix 2 A-I1): then its songs are finds too (never scrobbled). Either way
+        // nothing about the artist is written.
+        let mode: LedgerMode = try await isFindNow(artist) ? .finds : .fallback
+        if r.plan?.mode != mode { await mutate(id) { $0.plan?.mode = mode } }
         let albums = try await lidarr.albums(artistId: artist.id)
         guard let album = albums.first(where: { $0.foreignAlbumId == rg }) else {
             // Magpie's own artist whose album isn't listed yet: wait for it (no write), with the usual give-up.
@@ -688,15 +691,23 @@ public actor RequestRunner {
         // did it. Closed entries (finished requests) are never inherited: the owner may have monitored it since.
         let liveIds = Set(list.filter { $0.isActive }.map(\.id.description)).union([id.description])
         let livePrior = prior.flatMap { p in p.isOpen && p.isApplied && p.requestId.map(liveIds.contains) == true ? p : nil }
-        let wasMonitoredBefore = album.monitored ? (livePrior?.wasMonitoredBefore ?? true) : false
+        // A-M1: the open, applied entry of a ready (or kept) request on an artist Magpie created is that request's
+        // record (a find's own monitor and mode): a second Try of the same release inherits it, never replaces it.
+        let readyIds = Set(list.filter { $0.state == .ready || $0.state == .kept }.map(\.id.description))
+        let readyPrior = prior.flatMap { p in
+            p.isOpen && p.isApplied && p.createdArtist && p.requestId.map(readyIds.contains) == true ? p : nil
+        }
+        let wasMonitoredBefore = album.monitored
+            ? (livePrior?.wasMonitoredBefore ?? readyPrior?.wasMonitoredBefore ?? true) : false
         let needsMonitor = !album.monitored
         try ensure(id, .adding)
         let entry = LedgerEntry(
             lidarrArtistId: artist.id, albumId: album.id, rgMbid: rg,
             createdArtist: (try? await ledger.createdArtist(artist.id)) == true,
             wasMonitoredBefore: wasMonitoredBefore,
-            root: artist.rootFolderPath ?? r.root ?? artist.path ?? "", mode: .fallback, keptAt: prior?.keptAt,
-            send: needsMonitor ? .notSent : .applied, requestId: id.description)
+            root: readyPrior?.root ?? artist.rootFolderPath ?? r.root ?? artist.path ?? "", mode: readyPrior?.mode ?? .fallback,
+            keptAt: prior?.keptAt, send: needsMonitor ? .notSent : .applied,
+            requestId: needsMonitor ? id.description : (readyPrior?.requestId ?? id.description))
         try await ledger.record(entry)
         await mutate(id) {
             $0.lidarrArtistId = artist.id
@@ -705,6 +716,22 @@ public actor RequestRunner {
         guard needsMonitor else { return }
         try ensure(id, .adding)
         try await sendMonitor(entry, artistId: artist.id, albumId: album.id)
+    }
+
+    /// D29 (final fix 2 A-I1): the fresh artist is a find right now: Magpie created it (ledger), it carries
+    /// `magpie-find`, and its folder is inside the Finds root, checked against fresh root folders (G2). Only an
+    /// artist Magpie created costs the root-folder read; an owner's artist is never a find (G6). A failed read
+    /// throws: the request waits rather than guess.
+    private func isFindNow(_ artist: LidarrArtist) async throws -> Bool {
+        guard let setup = await setup(), let finds = setup.finds, try await ledger.createdArtist(artist.id) else {
+            return false
+        }
+        let findTags = Set(finds.tagIds).subtracting(setup.tagIds)
+        guard !findTags.isEmpty, findTags.isSubset(of: artist.tags), let path = artist.path else { return false }
+        let roots = try await lidarr.rootFolders().map(\.path)
+        lastLidarrContact = now()
+        guard Self.findsRootStillValid(finds.rootFolderPath, main: setup.rootFolderPath, roots: roots) else { return false }
+        return Self.findsGuard(findsRoot: finds.rootFolderPath, mainRoot: setup.rootFolderPath, roots: roots).isInside(path)
     }
 
     /// A6: one atomic `POST /artist` built from the lookup row: Fast Start, "Magpie Finds" metadata, nothing

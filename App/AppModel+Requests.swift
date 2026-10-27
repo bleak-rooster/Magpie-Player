@@ -309,7 +309,16 @@ extension AppModel {
         // FM2: a find from now on, before it can land and play (the refresh below runs next to the landing).
         if request.isFind, let songId = request.songId { findsIdentity.markLanded(songId) }
         if request.isFind { Task { await refreshFinds() } }
-        Task { await land(request) }
+        if !request.isFind, findsLibraryId != nil {
+            // Final fix 2 A-I1, belt and braces: a song the runner didn't call a find can still be in the Finds
+            // library. Read it again before landing, so it never plays as now playing (D29).
+            Task {
+                await refreshFinds()
+                await land(request)
+            }
+        } else {
+            Task { await land(request) }
+        }
         guard notifications else { return }
         ReadyNotifier.shared.post(id: request.id.description, title: "\(request.recording.title) is ready",
                                   body: "\(request.recording.artist) · in your \(request.isFind ? "Finds" : "library") now")

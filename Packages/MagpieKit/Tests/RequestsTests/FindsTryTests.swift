@@ -147,6 +147,76 @@ import MagpieCore
         #expect(!entries.isEmpty && entries.allSatisfy { $0.mode == .finds })
     }
 
+    // MARK: - Final fix 2 A-I1 / A-M1: a second Try from a find artist
+
+    /// A ready find of `recording` (new artist 42 in `/music/samples`, tagged magpie + magpie-find) as `songId`.
+    static func readyFind(_ h: Harness, _ recording: MBID, songId: String) async throws -> RequestID {
+        h.server.artistIsNew()
+        let id = try await h.runner.tryRecording(h.recording(recording), tier: .standard)
+        await h.runner.settle()
+        h.library.state.withLock { $0.indexed[recording] = songId }
+        await h.runner.tick()
+        let r = try #require(await h.request(id))
+        try #require(r.state == .ready && r.isFind && r.lidarrArtistId == 42)
+        return id
+    }
+
+    /// D29: another song by an artist who is a find right now (Magpie created it, it carries magpie-find, it sits
+    /// inside the Finds root) is a find too: never scrobbled, Finds copy. Nothing about the artist is written,
+    /// its ledger entry stays fallback, and Not for me stays off for it (the artist was in Lidarr already).
+    @Test func secondTryOfAFindArtistIsAFind() async throws {
+        let h = await Harness(setup: Harness.findsSetup)
+        _ = try await Self.readyFind(h, recSingleAndAlbum, songId: "find-1")   // album 50 (the single)
+        let writesBefore = h.server.writes.count
+        let id = try await h.runner.tryRecording(h.recording(recAlbumOnly, title: "Other"), tier: .standard)
+        await h.runner.settle()
+        h.library.state.withLock { $0.indexed[recAlbumOnly] = "find-2" }
+        await h.runner.tick()
+
+        let r = try #require(await h.request(id))
+        #expect(r.state == .ready && r.isFind, "a find: never now playing, never scrobbled")
+        #expect(r.plan?.artistExistsInLidarr == true, "Not for me stays hidden")
+        #expect(!h.server.writeBodies().dropFirst(writesBefore).contains { $0.0.hasPrefix("PUT artist") || $0.0 == "POST artist" })
+        #expect(try await h.ledger.entry(albumId: 51)?.mode == .fallback)
+        #expect(h.ready.withLock { $0 }.contains(id))
+    }
+
+    /// The same artist once it isn't a find any more (magpie-find came off, e.g. kept in place): a library song.
+    @Test func secondTryOfAKeptArtistIsNotAFind() async throws {
+        let h = await Harness(setup: Harness.findsSetup)
+        _ = try await Self.readyFind(h, recSingleAndAlbum, songId: "find-1")
+        h.server.with { s in s.artists[0].tags = [1] }
+        let id = try await h.runner.tryRecording(h.recording(recAlbumOnly, title: "Other"), tier: .standard)
+        await h.runner.settle()
+        #expect(await h.request(id)?.isFind == false)
+    }
+
+    /// Outside the Finds root (moved by Keep) it isn't a find either, tags or not.
+    @Test func secondTryOfAMovedArtistIsNotAFind() async throws {
+        let h = await Harness(setup: Harness.findsSetup)
+        _ = try await Self.readyFind(h, recSingleAndAlbum, songId: "find-1")
+        h.server.with { s in s.artists[0].root = "/music/library"; s.artists[0].path = "/music/library/Aurora Field" }
+        let id = try await h.runner.tryRecording(h.recording(recAlbumOnly, title: "Other"), tier: .standard)
+        await h.runner.settle()
+        #expect(await h.request(id)?.isFind == false)
+    }
+
+    /// A-M1: a second Try of the find's own release group once the find is ready keeps the find's ledger entry
+    /// (Magpie monitored it; it's a find), so Not for me and clean-up still know what Magpie did.
+    @Test func secondTryOfTheSameReleaseKeepsTheFindsEntry() async throws {
+        let h = await Harness(setup: Harness.findsSetup)
+        let first = try await Self.readyFind(h, recAlbumOnly, songId: "find-1")   // album 51
+        let before = try #require(try await h.ledger.entry(albumId: 51))
+        try #require(before.mode == .finds && !before.wasMonitoredBefore)
+        let id = try await h.runner.tryRecording(h.recording(recAlbumOnly2, title: "Other"), tier: .standard)
+        await h.runner.settle()
+
+        #expect(await h.request(id)?.isFind == true)
+        let after = try #require(try await h.ledger.entry(albumId: 51))
+        #expect(after.mode == .finds && !after.wasMonitoredBefore && after.createdArtist)
+        #expect(after.requestId == first.description)
+    }
+
     /// Without Finds set up, Try is the M5 fallback, unchanged: no root-folder read.
     @Test func withoutFindsNoRootCheck() async throws {
         let h = await Harness()

@@ -31,6 +31,8 @@ private let t0 = Date(timeIntervalSince1970: 1_900_000_000)
     let songsFail = OSAllocatedUnfairLock(initialState: false)
     /// `/api/v1/tag` lists `magpie-find` (id 2).
     let hasFindTag = OSAllocatedUnfairLock(initialState: false)
+    /// A second song the Finds library lists (a find that landed since the last read).
+    let laterFind = OSAllocatedUnfairLock<String?>(initialState: nil)
 
     init() {
         let t = transport.inner
@@ -38,7 +40,7 @@ private let t0 = Date(timeIntervalSince1970: 1_900_000_000)
         t.stub(method: "POST", pathSuffix: "/auth/login", body: loginJSON)
         t.stub(pathSuffix: "/rest/scrobble", body: ok)
         // Library 2 (the Finds library) holds one find; the whole library (match index) is empty here.
-        let songsFail = self.songsFail, hasFindTag = self.hasFindTag
+        let songsFail = self.songsFail, hasFindTag = self.hasFindTag, laterFind = self.laterFind
         t.stub(pathSuffix: "/api/v1/tag") { _ in
             let rows = hasFindTag.withLock { $0 } ? #"[{"id":1,"label":"magpie"},{"id":2,"label":"magpie-find"}]"# : "[]"
             return MockTransport.Response(status: 200, body: Data(rows.utf8))
@@ -47,11 +49,15 @@ private let t0 = Date(timeIntervalSince1970: 1_900_000_000)
             if songsFail.withLock({ $0 }) { return MockTransport.Response(status: 503) }
             let library = URLComponents(url: req.url!, resolvingAgainstBaseURL: false)?.queryItems?
                 .first { $0.name == "library_id" }?.value
+            let later = laterFind.withLock { $0 }.map {
+                #",{"id":"\#($0)","title":"Later","artist":"Aurora Field","album":"Lowlands","duration":200,"libraryId":2}"#
+            } ?? ""
             let rows = library == "2"
                 ? #"[{"id":"find-1","title":"Paper Planes","artist":"Aurora Field","album":"Lowlands","duration":200,"#
-                    + #""libraryId":2,"createdAt":"2026-10-26T15:00:19.667867Z"}]"#
+                    + #""libraryId":2,"createdAt":"2026-10-26T15:00:19.667867Z"}"# + later + "]"
                 : "[]"
-            return MockTransport.Response(status: 200, body: Data(rows.utf8), headers: ["X-Total-Count": library == "2" ? "1" : "0"])
+            let count = library == "2" ? (later.isEmpty ? "1" : "2") : "0"
+            return MockTransport.Response(status: 200, body: Data(rows.utf8), headers: ["X-Total-Count": count])
         }
         t.stub(pathSuffix: "/api/v1/system/status", body: Data(#"{"version":"3.2.0","instanceName":"Lidarr","authentication":"forms"}"#.utf8))
         t.stub(pathSuffix: "/api/v1/rootfolder", body: Data(#"[{"id":1,"path":"/music/library"},{"id":2,"path":"/music/samples"}]"#.utf8))
@@ -296,6 +302,28 @@ private let t0 = Date(timeIntervalSince1970: 1_900_000_000)
         model.play([Self.song("not-a-find", created: nil, libraryId: nil)], startAt: 0)
         await model.player.waitForPendingScrobbles()
         #expect(scrobbledIds() == ["not-a-find"])
+        cleanUp(model)
+    }
+
+    /// Final fix 2 A-I1 (belt and braces): a request that isn't a Finds-mode one can still land in the Finds library
+    /// (another song by a find artist, from before the runner knew). With a Finds library, the library is read again
+    /// before it lands, so it never plays as now playing.
+    @Test func aNonFindRequestLandingInTheFindsLibraryIsNeverNowPlaying() async throws {
+        let model = try await connected()
+        try await findsSetUp(model)
+        await model.refreshFinds()   // ["find-1"]
+        laterFind.withLock { $0 = "second-find" }   // the library lists it now; the last read didn't
+        transport.inner.stub(pathSuffix: "/rest/getSong", body: Data(#"""
+        {"subsonic-response":{"status":"ok","version":"1.16.1","song":{"id":"second-find","title":"Later","artist":"A","album":"B","duration":200}}}
+        """#.utf8))
+        var request = Self.readyFindRequest(songId: "second-find")
+        request.plan?.mode = .fallback
+        model.waitScreens[request.id] = 1
+        model.requestBecameReady(request)
+        for _ in 0..<200 where model.player.queue.current?.song.id != "second-find" { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(model.player.queue.current?.song.id == "second-find", "it landed")
+        await model.player.waitForPendingScrobbles()
+        #expect(scrobbledIds().isEmpty, "no now playing for a song in the Finds library")
         cleanUp(model)
     }
 
