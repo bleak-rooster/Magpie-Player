@@ -2,7 +2,7 @@
 
 Magpie v1 is an owner-only iOS 27 + CarPlay music app for your own Navidrome, with Lidarr for "Try this song". This page tells you how to run it against **your** servers. Details of what each milestone does are at the bottom (Reference).
 
-Built so far: milestones M0 to M5 (sign in, browse, play, search, queue, lyrics, CarPlay library browsing, Lidarr connect, Try in "straight into your library" mode, Requests). Not built yet: see section 5.
+Built so far: milestones M0 to M5 (sign in, browse, play, search, queue, lyrics, CarPlay library browsing, Lidarr connect, Try in "straight into your library" mode, Requests) plus M8 hardening (edge cases, security fixes, final-review fixes). M6 (Finds mode) and M7 (polish) are **not built**: hardening ran first so you can test the M5 path on your servers. The `m8` tag means M0–M5 + M8, not M6/M7. Not built yet: see section 5.
 
 ## 1. Test on your own servers in 5 steps
 
@@ -130,6 +130,7 @@ The whole write list, nothing else is ever sent:
 # Reference: what each milestone does
 
 ## Details by milestone
+- M8: hardening on top of M5. Edge-case suite, security review fixes (docs/reviews/security-v1.md), and the final-review fixes (docs/reviews/final-review-v1.md): Count plays has one switch; an https address that reaches a plain-http server says to type `http://`; a launch while the Keychain is locked reconnects Lidarr once unlocked; waiting requests say why; `scripts/check-writes.sh` (run by `test-all.sh`) fails if anything outside the Lidarr write gate sends POST/PUT/DELETE. M6 and M7 were skipped for now.
 - M5: Try (fallback mode) and Requests. **This is the path to test against your own Lidarr first.** It writes to Lidarr, so read the warnings below before you start.
   - **Settings** (Library › gear, replaces the account menu): Appearance (Signature; more looks in M7), Servers (addresses, signed-in user, Sign out), Lidarr (Connect / summary, "New music goes to" root folder, Speed, **Allow Magpie to change Lidarr**, **Set up Magpie in Lidarr**, **Lidarr change log**), ListenBrainz token (optional, Keychain only, sent only to api.listenbrainz.org), **Count plays**, About.
   - **Allow Magpie to change Lidarr** (G1) is off by default. Every Lidarr write goes through one gate that checks it, refuses anything not on its allow list, and logs method, path and body (no secrets) to the on-device change log before sending (Settings › Lidarr change log, newest first; it is your undo map).
