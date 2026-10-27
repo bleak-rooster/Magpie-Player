@@ -22,6 +22,29 @@ final class PlayCounting: Sendable {
     func set(_ on: Bool) { lock.withLock { $0 = on } }
 }
 
+/// D29: which songs are finds, for the player's scrobble guard. A song is a find when it is in the Finds
+/// library: by its library id (native API songs) or, since Subsonic songs carry none, by being one of the
+/// Finds library's songs as last read. Read on every scrobble.
+final class FindsIdentity: Sendable {
+    private struct State {
+        var libraryId: Int?
+        var songIds: Set<String> = []
+    }
+
+    private let lock = OSAllocatedUnfairLock(initialState: State())
+
+    func set(libraryId: Int?, songIds: Set<String>) {
+        lock.withLock { $0 = State(libraryId: libraryId, songIds: libraryId == nil ? [] : songIds) }
+    }
+
+    func isFind(_ song: Song) -> Bool {
+        lock.withLock { s in
+            guard let libraryId = s.libraryId else { return false }
+            return song.libraryId == libraryId || s.songIds.contains(song.id)
+        }
+    }
+}
+
 /// Scrobbles through Navidrome (which forwards to the owner's ListenBrainz/Last.fm), unless Count plays is off.
 struct NavidromeScrobbler: Scrobbler {
     let box: ClientBox

@@ -81,6 +81,14 @@ public struct MagpieRequest: Sendable, Codable, Equatable, Identifiable {
     public var cleanupPending: Bool = false
     /// Lidarr's latest status message for the download, if any (display only).
     public var note: String?
+    /// Finds mode was on, but the Finds root no longer checked out when the artist was added (G2): the song
+    /// went into the library instead (B8).
+    public var findsUnavailable: Bool {
+        get { findsFellBack ?? false }
+        set { findsFellBack = newValue ? true : nil }
+    }
+    /// Stored optional, so requests saved before Task 6.2a (no such key) still decode.
+    var findsFellBack: Bool?
 
     public init(id: RequestID = RequestID(), recording: ExternalRecording, tier: Tier, createdAt: Date) {
         self.id = id
@@ -93,6 +101,9 @@ public struct MagpieRequest: Sendable, Codable, Equatable, Identifiable {
 
     /// Counts toward the limit of 5 (G7) and is polled: not finished and not yet ready.
     public var isActive: Bool { !state.isTerminal && state != .ready }
+
+    /// Headed for (or added to) the Finds folder: a new artist added in Finds mode (Task 6.2a).
+    public var isFind: Bool { plan?.mode == .finds }
 
     /// Imported by Lidarr but not listed by the library after the time limit (Needs attention).
     public var isNotListed: Bool { state == .importing && notListedAt != nil }

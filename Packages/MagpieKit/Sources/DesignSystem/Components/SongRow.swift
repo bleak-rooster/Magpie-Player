@@ -3,20 +3,21 @@ import MagpieCore
 
 /// One song. State drives art shape (sleeve vs record), the status line, and VoiceOver.
 /// The row is a single accessibility element; Try/Keep are custom actions, not extra swipe stops.
+/// Keep shows only when `onKeep` is given.
 public struct SongRow: View {
     private let song: Song
     private let state: RowState
     private let artwork: Image?
     private let quality: Quality?
     private let onTry: () -> Void
-    private let onKeep: () -> Void
+    private let onKeep: (() -> Void)?
     private let themed = ThemedPalette()
     @Environment(\.magpieTheme) private var theme
     @Environment(\.dynamicTypeSize) private var typeSize
     @ScaledMetric(relativeTo: .body) private var thumb: CGFloat = 48
 
     public init(song: Song, state: RowState, artwork: Image? = nil, quality: Quality? = nil,
-                onTry: @escaping () -> Void = {}, onKeep: @escaping () -> Void = {}) {
+                onTry: @escaping () -> Void = {}, onKeep: (() -> Void)? = nil) {
         self.song = song; self.state = state; self.artwork = artwork; self.quality = quality
         self.onTry = onTry; self.onKeep = onKeep
     }
@@ -73,7 +74,7 @@ public struct SongRow: View {
     @ViewBuilder private var trailing: some View {
         switch state {
         case .notYet: CapsuleButton("Try", symbol: "play.fill", action: onTry)
-        case .find, .newFind: CapsuleButton("Keep", style: .fill, action: onKeep)
+        case .find, .newFind: if let onKeep { CapsuleButton("Keep", style: .fill, action: onKeep) }
         default: EmptyView()
         }
     }
@@ -82,13 +83,13 @@ public struct SongRow: View {
 private struct RowActions: ViewModifier {
     let state: RowState
     let onTry: () -> Void
-    let onKeep: () -> Void
+    let onKeep: (() -> Void)?
     func body(content: Content) -> some View {
         switch state {
         case .notYet:
             content.accessibilityAction(.default, onTry).accessibilityAction(named: "Try", onTry).accessibilityAddTraits(.isButton)
         case .find, .newFind:
-            content.accessibilityAction(named: "Keep", onKeep)
+            if let onKeep { content.accessibilityAction(named: "Keep", onKeep) } else { content }
         default:
             content
         }

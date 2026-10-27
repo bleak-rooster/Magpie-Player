@@ -19,17 +19,19 @@ public struct Song: Sendable, Hashable, Codable {
     public var isrcs: [String]
     public var libraryId: Int?
     public var starred: Bool
+    /// When the server first listed the song (native API only). A find's days left count from here.
+    public var createdAt: Date?
 
     public init(id: String, title: String, artist: String, artistId: String? = nil,
                 album: String, albumId: String? = nil, track: Int? = nil, disc: Int? = nil,
                 duration: TimeInterval, suffix: String? = nil, bitRate: Int? = nil,
                 coverArtId: String? = nil, recordingMBID: MBID? = nil, artistMBID: MBID? = nil,
-                isrcs: [String] = [], libraryId: Int? = nil, starred: Bool = false) {
+                isrcs: [String] = [], libraryId: Int? = nil, starred: Bool = false, createdAt: Date? = nil) {
         self.id = id; self.title = title; self.artist = artist; self.artistId = artistId
         self.album = album; self.albumId = albumId; self.track = track; self.disc = disc
         self.duration = duration; self.suffix = suffix; self.bitRate = bitRate
         self.coverArtId = coverArtId; self.recordingMBID = recordingMBID; self.artistMBID = artistMBID
-        self.isrcs = isrcs; self.libraryId = libraryId; self.starred = starred
+        self.isrcs = isrcs; self.libraryId = libraryId; self.starred = starred; self.createdAt = createdAt
     }
 }
 

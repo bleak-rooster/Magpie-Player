@@ -116,6 +116,9 @@ final class FakeLidarr: @unchecked Sendable {
         var albumGetFailures = 0
         /// Hold the n-th request (method `holdMethod`) whose path ends with `suffix`.
         var hold: (suffix: String, n: Int)?
+        /// `GET /rootfolder` (Finds mode re-checks the Finds root before every add).
+        var roots = ["/music/library", "/music/samples"]
+        var rootsDown = false
         var holdMethod = "GET"
         var holdSeen = 0
     }
@@ -177,6 +180,10 @@ final class FakeLidarr: @unchecked Sendable {
             if let d = down() { return d }
             return reply(with { s in s.artists.map { ["id": $0.id, "artistName": "A", "foreignArtistId": $0.mbid.rawValue,
                                                        "rootFolderPath": $0.root, "monitored": true, "tags": [Int]()] } })
+        }
+        t.stub(pathSuffix: "/api/v1/rootfolder") { [self] _ in
+            if with({ $0.rootsDown }) { return MockTransport.Response(status: 503) }
+            return reply(with { s in s.roots.enumerated().map { ["id": $0.offset + 1, "path": $0.element] as [String: Any] } })
         }
         t.stub(pathSuffix: "/api/v1/artist/lookup") { _ in
             reply([["artistName": "Aurora Field", "foreignArtistId": artistA.rawValue, "qualityProfileId": 0,
@@ -329,9 +336,13 @@ struct Harness {
 
     static let setup = RequestRunner.Setup(rootFolderPath: "/music/library", qualityProfileId: 4,
                                            metadataProfileId: 3, tagIds: [1])
+    /// Finds mode (Task 6.2a): new artists go to `/music/samples`, tagged `magpie` (1) and `magpie-find` (2).
+    static let findsSetup = RequestRunner.Setup(rootFolderPath: "/music/library", qualityProfileId: 4,
+                                                metadataProfileId: 3, tagIds: [1],
+                                                finds: .init(rootFolderPath: "/music/samples", tagIds: [1, 2]))
 
     init(changesOn: Bool = true, directory: URL? = nil, lidarr existing: FakeLidarr? = nil,
-         base: URL = URL(string: "https://music.example/lidarr")!) async {
+         base: URL = URL(string: "https://music.example/lidarr")!, setup: RequestRunner.Setup = Harness.setup) async {
         let dir = directory ?? FileManager.default.temporaryDirectory.appending(path: "magpie-runner-\(UUID().uuidString)")
         let lidarr = existing ?? FakeLidarr()
         let client = LidarrClient(base: base, apiKey: "k", transport: lidarr.clientTransport)
@@ -343,7 +354,7 @@ struct Harness {
                                    limiter: RateLimiter(perSecond: 1_000, sleep: { _ in }))
         let clock = self.clock, ready = self.ready
         runner = RequestRunner(lidarr: client, gate: gate, ledger: ledger, mb: mb, library: library.access,
-                               store: store, setup: { Harness.setup }, now: { clock.now },
+                               store: store, setup: { setup }, now: { clock.now },
                                onReady: { r in ready.withLock { $0.append(r.id) } })
         self.server = lidarr
         self.dir = dir

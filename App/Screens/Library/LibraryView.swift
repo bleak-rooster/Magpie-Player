@@ -3,7 +3,7 @@ import MagpieCore
 import Requests
 import SwiftUI
 
-/// Library: Playlists, Artists, Albums, Requests, then recently added albums. (Finds arrive in M6.)
+/// Library: Playlists, Artists, Albums, Finds (once a Finds library is chosen), Requests, then recently added albums.
 struct LibraryView: View {
     @Environment(AppModel.self) private var model
     @State private var recent: Loadable<[Album]> = .loading
@@ -21,6 +21,10 @@ struct LibraryView: View {
                     Divider().overlay(p.sepColor).padding(.leading, 52)
                     row("Albums", symbol: "square.stack", route: .albums)
                     Divider().overlay(p.sepColor).padding(.leading, 52)
+                    if model.findsSetup?.library != nil {
+                        row("Finds", symbol: "record.circle", route: .finds, detail: findsDetail)
+                        Divider().overlay(p.sepColor).padding(.leading, 52)
+                    }
                     row("Requests", symbol: "arrow.down.circle", route: .requests, detail: requestsDetail)
                 }
                 VStack(alignment: .leading, spacing: Tokens.Spacing.m) {
@@ -47,6 +51,12 @@ struct LibraryView: View {
         .sheet(isPresented: $showsSettings) { SettingsView() }
         .magpieScreen()
         .task { if recent.value == nil { await load() } }
+    }
+
+    /// "2 new" while there are New finds.
+    private var findsDetail: String? {
+        let n = model.findsShelf().newFinds.count
+        return n == 0 ? nil : "\(n) new"
     }
 
     /// "2 on their way" while requests are in progress.

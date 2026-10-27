@@ -309,6 +309,26 @@ public actor NavidromeClient {
         return (songs, total)
     }
 
+    /// Every song of one library folder (the Finds shelf, Task 6.2a), via `/api/song?library_id=`. Rows of
+    /// another library are dropped too, in case a server ignores the filter; at most `maxPages` pages.
+    public func songs(inLibrary libraryId: Int, pageSize: Int = 500, maxPages: Int = 20) async throws -> [Song] {
+        var songs: [Song] = [], seen = Set<String>(), start = 0
+        for _ in 0..<maxPages {
+            let query = [int("library_id", libraryId), int("_start", start), int("_end", start + pageSize),
+                         URLQueryItem(name: "_sort", value: "id"), URLQueryItem(name: "_order", value: "ASC")]
+            let (data, response) = try await native("api/song", query)
+            let rows = try Self.decode([NativeSong].self, data)
+            for song in rows.filter({ $0.missing != true && $0.libraryId == libraryId }).map(Mapping.song)
+            where seen.insert(song.id).inserted {
+                songs.append(song)
+            }
+            start += pageSize
+            let total = response.value(forHTTPHeaderField: "X-Total-Count").flatMap { Int($0) }
+            if rows.count < pageSize || total.map({ start >= $0 }) == true { break }
+        }
+        return songs
+    }
+
     /// The library folders and their paths as Navidrome sees them (`/api/library`; B6, G2). Some versions
     /// answer 403 to non-admin accounts (`NavidromeError.http(status: 403)`).
     public func libraries() async throws -> [NavidromeLibrary] {

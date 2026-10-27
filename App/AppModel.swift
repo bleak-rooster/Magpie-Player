@@ -65,7 +65,11 @@ final class AppModel {
     /// The connected Lidarr's setup as last read (speed tier, root folders). Nil until read.
     var lidarrStatus: LidarrAudit?
     /// Finds mode's setup for this Lidarr and Navidrome account (AppModel+Finds.swift). Nil unless both are connected.
-    var findsSetup: FindsSetup?
+    var findsSetup: FindsSetup? { didSet { syncFindsIdentity() } }
+    /// The songs of the Finds library, as last read (`refreshFinds`).
+    var findSongs: [Song] = [] { didSet { syncFindsIdentity() } }
+    /// Finds already played on this account: they are no longer New finds.
+    var playedFinds: Set<String> = []
     /// Try requests, newest last (from the runner).
     var requests: [MagpieRequest] = []
     /// G8 "Count plays": scrobbling on (default) or off.
@@ -102,6 +106,9 @@ final class AppModel {
     @ObservationIgnored var pollTask: Task<Void, Never>?
     @ObservationIgnored var pollGeneration = 0
     @ObservationIgnored let playCounting: PlayCounting
+    /// D29: what the player treats as a find (never scrobbled). Kept in step with `findsSetup` and `findSongs`.
+    @ObservationIgnored let findsIdentity = FindsIdentity()
+    @ObservationIgnored var findPlaysWatch: Task<Void, Never>?
     @ObservationIgnored let notifications: Bool
     /// The library's match index for the signed-in server and account (nil when signed out).
     @ObservationIgnored private(set) var matchIndex: MatchIndexStore?
@@ -159,9 +166,11 @@ final class AppModel {
         self.hasListenBrainzToken = tokenStore.load() != nil
         let counting = PlayCounting(on: defaults.object(forKey: Self.countPlaysKey) as? Bool ?? true)
         self.playCounting = counting
+        let findsIdentity = self.findsIdentity
         self.player = Player(engine: engine ?? AVQueueEngine(),
                              scrobbler: NavidromeScrobbler(box: box, counting: counting),
-                             urls: NavidromeStreamURLs(box: box))
+                             urls: NavidromeStreamURLs(box: box),
+                             isFind: { findsIdentity.isFind($0) })
         #if os(iOS)
         if systemNowPlaying {
             nowPlaying = NowPlayingBridge(
@@ -171,6 +180,7 @@ final class AppModel {
         }
         #endif
         watchPlaybackErrors()
+        watchFindPlays()
         readLidarrPermissions()
     }
 
@@ -303,7 +313,12 @@ final class AppModel {
     func signOut() {
         let retiring = runner, doomed = requestStore
         player.play([], startAt: 0)
-        if let navidromeScope { findsStore.clear(navidromeScope: navidromeScope) }
+        if let navidromeScope {
+            findsStore.clear(navidromeScope: navidromeScope)
+            appDefaults.removeObject(forKey: Self.playedFindsKey(navidromeScope))
+        }
+        findSongs = []
+        playedFinds = []
         store.clear()
         session = nil
         starOverrides = [:]

@@ -3,7 +3,8 @@ import MagpieCore
 import Requests
 import SwiftUI
 
-/// Try on a song that's not in the library (fallback mode, M5). Standard tier: "Try it", then the wait screen.
+/// Try on a song that's not in the library: into Finds when they're set up (Task 6.2a), else straight into
+/// the library (fallback mode, M5, B8). Standard tier: "Try it", then the wait screen.
 /// Patient tier (D8): "Ask for it", a confirmation, and no spinning wait screen; it shows up in Requests.
 /// When Try isn't possible yet, says why calmly and opens Settings.
 struct TrySheet: View {
@@ -64,7 +65,7 @@ struct TrySheet: View {
                     VStack(spacing: Tokens.Spacing.s) {
                         Text(RequestCopy.tierLine(tier)).font(.subheadline.weight(.semibold))
                             .accessibilityIdentifier("try-tier")
-                        Text(TryCopy.fallbackNote).font(.footnote).foregroundStyle(p.ink2Color)
+                        Text(model.tryNote).font(.footnote).foregroundStyle(p.ink2Color)
                             .multilineTextAlignment(.center)
                             .accessibilityIdentifier("try-fallback-note")
                     }

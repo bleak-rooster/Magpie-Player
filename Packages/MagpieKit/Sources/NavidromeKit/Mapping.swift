@@ -23,7 +23,18 @@ enum Mapping {
              recordingMBID: mbid(d.mbzRecordingID),
              artistMBID: mbid(d.mbzArtistId) ?? mbid(d.participants?.artist?.first?.mbzArtistId),
              isrcs: d.tags?.isrc ?? [], libraryId: d.libraryId,
-             starred: d.starred ?? false)
+             starred: d.starred ?? false, createdAt: date(d.createdAt))
+    }
+
+    /// An ISO 8601 UTC time with any number of fraction digits (Navidrome sends nine); nil when unreadable.
+    static func date(_ s: String?) -> Date? {
+        guard var text = s else { return nil }
+        var fraction = 0.0
+        if let dot = text.firstIndex(of: "."), let end = text[dot...].firstIndex(where: { !$0.isNumber && $0 != "." }) {
+            fraction = Double("0" + text[dot..<end]) ?? 0
+            text.removeSubrange(dot..<end)
+        }
+        return ISO8601DateFormatter().date(from: text).map { $0.addingTimeInterval(fraction) }
     }
 
     /// Disc, then track; songs without numbers keep server order at the end of their disc.

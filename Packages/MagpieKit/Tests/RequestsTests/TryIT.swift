@@ -39,13 +39,19 @@ enum TryDevStack {
     }
 }
 
-@Suite(.enabled(if: TryDevStack.enabled, "set MAGPIE_IT=1 (scripts/it.sh) to run integration tests"))
+@Suite(.serialized, .enabled(if: TryDevStack.enabled, "set MAGPIE_IT=1 (scripts/it.sh) to run integration tests"))
 struct TryIT {
     /// Judie Tzuke, "Harbour Lights": an artist the dev stack's Lidarr doesn't have (fixture-independent).
     static let recording = MBID("c2272a15-8f3a-4cdc-8f32-7e723352d44d")!
     static let artist = MBID("64db764c-2251-4f95-aa40-10fc91d509d8")!
 
-    @Test func fallbackOnDevStack() async throws {
+    @Test func fallbackOnDevStack() async throws { try await tryOnDevStack(finds: false) }
+
+    /// Task 6.2a: Finds mode adds the artist to the Finds root (`/music/samples`) with tags magpie + magpie-find.
+    @Test func findsOnDevStack() async throws { try await tryOnDevStack(finds: true) }
+
+    private func tryOnDevStack(finds: Bool) async throws {
+        let name = finds ? "findsOnDevStack" : "fallbackOnDevStack"
         let client = try await TryDevStack.client()
         let mb = MusicBrainzClient(transport: URLSessionTransport())
 
@@ -55,11 +61,11 @@ struct TryIT {
             lookup = try await client.artistLookupJSON(mbid: Self.artist)
             _ = try await mb.recording(Self.recording)
         } catch {
-            print("SKIP TryIT.fallbackOnDevStack: external metadata server unreachable (\(error))")
+            print("SKIP TryIT.\(name): external metadata server unreachable (\(error))")
             return
         }
         guard lookup != nil else {
-            print("SKIP TryIT.fallbackOnDevStack: Lidarr's metadata server doesn't know the test artist")
+            print("SKIP TryIT.\(name): Lidarr's metadata server doesn't know the test artist")
             return
         }
         try #require(try await client.artists().first { $0.foreignArtistId == Self.artist } == nil,
@@ -73,7 +79,11 @@ struct TryIT {
         let provisioned = try await Provisioner().ensure(gate: gate, client: client)
         let setup = RequestRunner.Setup(rootFolderPath: "/music/library", qualityProfileId: provisioned.fastStartProfileId,
                                         metadataProfileId: provisioned.findsMetadataProfileId,
-                                        tagIds: [provisioned.magpieTagId])
+                                        tagIds: [provisioned.magpieTagId],
+                                        finds: finds ? .init(rootFolderPath: "/music/samples",
+                                                             tagIds: [provisioned.magpieTagId, provisioned.findTagId]) : nil)
+        let root = finds ? "/music/samples" : "/music/library"
+        let tags = finds ? [provisioned.magpieTagId, provisioned.findTagId] : [provisioned.magpieTagId]
         let ledger = Ledger(fileURL: dir.appending(path: "ledger.json"), instance: client.instanceScope)
         let runner = RequestRunner(
             lidarr: client, gate: gate, ledger: ledger, mb: mb,
@@ -105,10 +115,11 @@ struct TryIT {
             try await Self.waitForRefresh(client)
 
             let artist = try await client.json("artist/\(artistId)")
-            #expect(artist["rootFolderPath"]?.stringValue?.hasPrefix("/music/library") == true)
+            #expect(artist["rootFolderPath"]?.stringValue?.hasPrefix(root) == true)
+            #expect(artist["path"]?.stringValue?.hasPrefix(root + "/") == true)
             #expect(artist["qualityProfileId"]?.intValue == provisioned.fastStartProfileId)
             #expect(artist["metadataProfileId"]?.intValue == provisioned.findsMetadataProfileId)
-            #expect(artist["tags"]?.arrayValue?.compactMap(\.intValue) == [provisioned.magpieTagId])
+            #expect(Set(artist["tags"]?.arrayValue?.compactMap(\.intValue) ?? []) == Set(tags))
             #expect(artist["monitorNewItems"]?.stringValue == "none")
             #expect(artist["monitored"]?.boolValue == true, "an unmonitored artist would never be searched")
             let albums = try await client.albums(artistId: artistId)
@@ -116,7 +127,8 @@ struct TryIT {
             #expect(albums.first { $0.id == albumId }?.foreignAlbumId == rg)
             #expect(albums.filter(\.monitored).map(\.id) == [albumId], "only the one release group is monitored")
             let entry = try #require(try await ledger.entry(albumId: albumId))
-            #expect(entry.createdArtist && !entry.wasMonitoredBefore && entry.mode == .fallback)
+            #expect(entry.createdArtist && !entry.wasMonitoredBefore && entry.mode == (finds ? .finds : .fallback))
+            #expect(request.isFind == finds)
 
             // Cancel unmonitors what Magpie monitored (G6) and deletes nothing.
             await runner.cancel(id)

@@ -24,8 +24,12 @@ enum TryAvailability: Equatable {
 }
 
 enum TryCopy {
-    /// B8: fallback mode is the only mode in M5; say plainly where the song lands.
+    /// B8: fallback mode; say plainly where the song lands.
     static let fallbackNote = "Finds aren't set up, so this goes straight into your library."
+    /// Finds mode (Task 6.2a).
+    static let findsNote = "It goes into your Finds first, so you can try it before it joins your library."
+    /// Finds mode was on, but the Finds folder didn't check out when the song was asked for (G2, B8).
+    static let findsUnavailable = "Your Finds folder needs another look in Settings, so this went straight into your library."
     static let tooMany = "Five songs are already on their way. Try this one when one of them is home."
     static let unavailable = "Your requests can't be read right now. Unlock your iPhone and try again."
     static let changesOff = TryAvailability.changesOff.message!
@@ -51,6 +55,7 @@ extension AppModel {
     /// Saved requests are loaded and resumed.
     func rebuildRunner() {
         reloadFindsSetup()   // the session or the Lidarr changed: so may the Finds setup's scope
+        Task { await refreshFinds() }
         runnerTasks.forEach { $0.cancel() }
         runnerTasks = []
         pollTask?.cancel()
@@ -76,7 +81,7 @@ extension AppModel {
         self.requestStore = requestStore
         let runner = RequestRunner(
             lidarr: client, gate: gate, ledger: ledger, mb: musicBrainz, library: libraryAccess(), store: requestStore,
-            setup: { [weak self] in await self?.lidarrSetup?.runnerSetup },
+            setup: { [weak self] in await self?.runnerSetup },
             onReady: { [weak self] request in Task { @MainActor in self?.requestBecameReady(request) } })
         self.gate = gate
         self.runner = runner
@@ -149,6 +154,7 @@ extension AppModel {
         setup.fastStartProfileId = result.fastStartProfileId
         setup.findsMetadataProfileId = result.findsMetadataProfileId
         setup.magpieTagId = result.magpieTagId
+        setup.findTagId = result.findTagId
         saveSetup(setup)
         _ = await lidarrAudit()
         return result
@@ -259,8 +265,9 @@ extension AppModel {
 
     /// D7: a local notification, only while the app runs.
     private func requestBecameReady(_ request: MagpieRequest) {
+        if request.isFind { Task { await refreshFinds() } }
         guard notifications else { return }
         ReadyNotifier.shared.post(id: request.id.description, title: "\(request.recording.title) is ready",
-                                  body: "\(request.recording.artist) · in your library now")
+                                  body: "\(request.recording.artist) · in your \(request.isFind ? "Finds" : "library") now")
     }
 }

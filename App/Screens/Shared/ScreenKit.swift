@@ -13,6 +13,7 @@ enum Route: Hashable {
     case playlists
     /// Library › Requests (Activity).
     case requests
+    case finds
     case request(RequestID)
 }
 
@@ -28,6 +29,7 @@ extension View {
             case .albums: AlbumsListView()
             case .playlists: PlaylistsListView()
             case .requests: ActivityView()
+            case .finds: FindsView()
             case .request(let id): RequestDetailView(requestId: id)
             }
         }

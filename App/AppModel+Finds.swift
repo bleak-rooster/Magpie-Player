@@ -1,8 +1,12 @@
 import Foundation
 import LidarrKit
+import MagpieCore
 import NavidromeKit
+import Observation
+import Requests
 
-/// Finds-mode setup (Task 6.1): local state only, nothing is written to Lidarr (G5). Try doesn't read it yet.
+/// Finds-mode setup (Task 6.1): local state only, nothing is written to Lidarr (G5). Finds-mode Try, the Finds
+/// shelf and the no-scrobble rule for finds (Task 6.2a, D29).
 extension AppModel {
     /// The signed-in Navidrome account (`FindsSetupStore.navidromeScope`).
     var navidromeScope: String? {
@@ -17,6 +21,8 @@ extension AppModel {
         }
         let loaded = findsStore.load(lidarrScope: lidarrScope, navidromeScope: navidromeScope)
         if loaded != findsSetup { findsSetup = loaded }
+        let played = Set(appDefaults.stringArray(forKey: Self.playedFindsKey(navidromeScope)) ?? [])
+        if played != playedFinds { playedFinds = played }
     }
 
     /// "Use a Finds folder". Turning it off keeps the confirmed folder, so turning it on again needs no redo.
@@ -70,6 +76,7 @@ extension AppModel {
         setup.library = library
         setup.mapping = mapping
         saveFinds(setup)
+        Task { await refreshFinds() }
     }
 
     /// Navidrome's library folders (`/api/library`).
@@ -84,6 +91,74 @@ extension AppModel {
     func isFindsRoot(_ path: String) -> Bool {
         guard let root = findsSetup?.findsRoot else { return false }
         return Self.sameFolder(root, path)
+    }
+
+    // MARK: - Finds-mode Try (Task 6.2a)
+
+    /// What the runner adds with: fallback mode, plus Finds mode only when "Use a Finds folder" is on, the
+    /// Finds setup is complete for this Lidarr and Navidrome account, and both tags are known. The runner
+    /// checks the Finds root again against fresh root folders before each add (G2).
+    var runnerSetup: RequestRunner.Setup? {
+        guard var setup = lidarrSetup?.runnerSetup else { return nil }
+        if let finds = findsSetup, finds.isComplete, let root = finds.findsRoot,
+           let magpie = lidarrSetup?.magpieTagId, let find = lidarrSetup?.findTagId,
+           !Self.sameFolder(root, setup.rootFolderPath) {
+            setup.finds = RequestRunner.Setup.Finds(rootFolderPath: root, tagIds: [magpie, find])
+        }
+        return setup
+    }
+
+    /// Try sends new artists into the Finds folder.
+    var triesGoIntoFinds: Bool { runnerSetup?.finds != nil }
+
+    /// Where Try says the song goes (B8: honest about fallback).
+    var tryNote: String { triesGoIntoFinds ? TryCopy.findsNote : TryCopy.fallbackNote }
+
+    // MARK: - Finds shelf (Task 6.2a)
+
+    nonisolated static let playedFindsKeyPrefix = "magpie.findsPlayed."
+    nonisolated static func playedFindsKey(_ navidromeScope: String) -> String { playedFindsKeyPrefix + navidromeScope }
+
+    /// The shelf now: the Finds library's songs, finds on their way, New finds.
+    func findsShelf(now: Date = Date()) -> FindsShelf {
+        FindsShelf(songs: findSongs, requests: requests, played: playedFinds, now: now)
+    }
+
+    /// Reads the Finds library's songs again. A failure keeps what was read before.
+    func refreshFinds() async {
+        guard let library = findsSetup?.library else {
+            if !findSongs.isEmpty { findSongs = [] }
+            return
+        }
+        do {
+            let songs = try await request { try await $0.songs(inLibrary: library.id) }
+            if findsSetup?.library?.id == library.id { findSongs = songs }   // unless the library changed meanwhile
+        } catch {
+            Log.logger("finds").error("finds not read: \(Log.category(of: error), privacy: .public)")
+        }
+    }
+
+    /// D29: the song is in the Finds library (never scrobbled).
+    func isFind(_ song: Song) -> Bool { findsIdentity.isFind(song) }
+
+    /// The Finds library counts whenever one is chosen, even with "Use a Finds folder" off: what's already in
+    /// it is still a find.
+    func syncFindsIdentity() {
+        findsIdentity.set(libraryId: findsSetup?.library?.id, songIds: Set(findSongs.map(\.id)))
+    }
+
+    /// A find that starts playing is no longer new (saved per Navidrome account).
+    func watchFindPlays() {
+        findPlaysWatch = Task { [weak self, player] in
+            let current = Observations { @MainActor in player.queue.current?.song }
+            for await song in current {
+                guard let self else { return }
+                guard let song, self.isFind(song), let scope = self.navidromeScope,
+                      !self.playedFinds.contains(song.id) else { continue }
+                self.playedFinds.insert(song.id)
+                self.appDefaults.set(Array(self.playedFinds), forKey: Self.playedFindsKey(scope))
+            }
+        }
     }
 
     private func saveFinds(_ setup: FindsSetup) {

@@ -113,6 +113,11 @@ struct RequestDetailView: View {
             } else {
                 calm(request)
             }
+            if request.findsUnavailable {
+                Text(TryCopy.findsUnavailable).font(.footnote).foregroundStyle(themed.palette.ink2Color)
+                    .multilineTextAlignment(.center).padding(.horizontal, Tokens.Spacing.largeTitleMargin)
+                    .accessibilityIdentifier("request-finds-unavailable")
+            }
             actions(request)
         }
         .padding(.bottom, Tokens.Spacing.l)
@@ -141,7 +146,7 @@ struct RequestDetailView: View {
                     .font(.body).foregroundStyle(themed.palette.accentInkColor)
                     .accessibilityIdentifier("request-status")
                 if request.tier == .patient, RequestCopy.group(request) == .inProgress {
-                    Text("This one might take a while. It can take a few hours. You can leave; it'll be in your library when it's home.")
+                    Text("This one might take a while. It can take a few hours. You can leave; it'll be in your \(request.isFind ? "Finds" : "library") when it's home.")
                         .font(.footnote).foregroundStyle(themed.palette.ink2Color).multilineTextAlignment(.center)
                 }
                 if let note = request.note {

@@ -50,7 +50,8 @@ public enum RowState: Sendable, Hashable {
             return phrase.isEmpty ? "Bringing it home" : "Bringing it home, \(phrase)"
         case .newFind: return "New find"
         case .find(let d):
-            if d <= 0 { return "Find, leaves today" }
+            // D10: nothing expires by itself in v1, so the last day never says it leaves.
+            if d <= 0 { return "Find, time to decide" }
             return "Find, \(d) \(d == 1 ? "day" : "days") left to keep"
         case .keptLosslessSoon: return "In your library, lossless on the way"
         case .lossless: return "In your library, lossless"
@@ -67,7 +68,7 @@ public enum RowState: Sendable, Hashable {
         case .onItsWay(_, let phrase): return phrase.isEmpty ? "Bringing it home" : "Bringing it home · \(phrase)"
         case .newFind: return "New find"
         case .find(let d):
-            if d <= 0 { return "Find · leaves today" }
+            if d <= 0 { return "Find · time to decide" }
             return "Find · \(d) \(d == 1 ? "day" : "days") left"
         case .keptLosslessSoon: return "Kept · lossless soon"
         case .lossless: return "Lossless"

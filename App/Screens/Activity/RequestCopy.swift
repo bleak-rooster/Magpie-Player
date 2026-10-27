@@ -42,8 +42,13 @@ enum RequestCopy {
 
     /// The status line for a request (its state, or the not-listed note).
     static func status(_ request: MagpieRequest, context: WaitContext = .unknown) -> String {
-        request.isNotListed ? notListed : status(request.state, context: context)
+        if request.isNotListed { return notListed }
+        if request.isFind, request.state == .ready { return readyInFinds }
+        return status(request.state, context: context)
     }
+
+    /// A find lands in Finds, not in the library (Task 6.2a).
+    static let readyInFinds = "Ready · in your Finds"
 
     static func group(_ state: RequestState) -> Group? {
         switch state {

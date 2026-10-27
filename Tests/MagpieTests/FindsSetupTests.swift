@@ -67,7 +67,7 @@ private let lidarrBase = URL(string: "http://192.168.1.2:8686")!
         let before = model.tryAvailability
         model.setUseFindsFolder(true)
         #expect(model.findsSetup?.useFindsFolder == true)
-        #expect(model.tryAvailability == before, "Try doesn't change until Finds-mode Try (Task 6.2a)")
+        #expect(model.tryAvailability == before, "Try stays available; only where it goes depends on Finds")
         cleanUp(model)
     }
 
