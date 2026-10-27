@@ -250,7 +250,8 @@ import MagpieCore
         h.server.with { $0.editorRejects = 1 }
         await #expect(throws: RequestRunner.KeepError.moveFailed) { try await h.runner.keep(id) }
         #expect(Self.editorWrites(h).count == 1)
-        #expect(h.server.with { $0.commandReads.count } == 1, "only the read before the PUT: no waiting on a refused move")
+        #expect(h.server.with { $0.commandReads.count } == 2,
+                "only the reads before the PUT (FL3: the second right before it): no waiting on a refused move")
         let r = try #require(await h.request(id))
         #expect(r.state == .ready && r.keep == nil)
         #expect(try await h.ledger.entries.allSatisfy { $0.keptAt == nil })
@@ -282,6 +283,47 @@ import MagpieCore
         #expect(r.state == .kept && r.keep == nil && r.songId == "lib-1")
         #expect(Self.editorWrites(h).count == 1, "one move only")
         #expect(h.library.state.withLock { $0.rescans.count } == 1)
+    }
+
+    /// Security FL3: Lidarr runs the move later, from its command queue. While something waits in that queue (or any
+    /// artist is being moved), the destination check could be stale by the time the move runs: Keep waits.
+    @Test(arguments: [FakeLidarr.Command(id: 71, name: "RefreshArtist", status: "queued", artistIds: [7]),
+                      FakeLidarr.Command(id: 71, name: "MoveArtist", status: "started", artistIds: [7])])
+    func busyCommandQueueWritesNothing(_ busy: FakeLidarr.Command) async throws {
+        let h = await Harness(setup: Harness.findsSetup)
+        let id = try await Self.readyFind(h)
+        h.server.with { $0.commands.append(busy) }
+        let before = h.server.writes.count
+        await #expect(throws: RequestRunner.KeepError.unavailable) { _ = try await h.runner.keep(id) }
+        #expect(h.server.writes.count == before)
+        #expect(try await h.ledger.entries.filter { $0.lidarrArtistId == 42 }.allSatisfy { $0.keptAt == nil })
+        h.server.with { $0.commands.removeAll { $0.id == 71 } }
+        #expect(try await h.runner.keep(id) == .moved, "once the queue is quiet it goes")
+    }
+
+    /// FL3: the destination and the queue are checked again right before the PUT. A folder of the find's name that
+    /// turns up in the main root meanwhile (or a queued command) stops the move: nothing written, nothing kept.
+    @Test(arguments: [false, true])
+    func changeJustBeforeThePutWritesNothing(_ queued: Bool) async throws {
+        let h = await Harness(setup: Harness.findsSetup)
+        let id = try await Self.readyFind(h)
+        h.server.with { $0.hold = ("/api/v1/command", 2); $0.holdMethod = "GET" }
+        let before = h.server.writes.count
+        let keep = Task { try await h.runner.keep(id) }
+        await h.server.latch.waitArrived()
+        h.server.with { s in
+            if queued {
+                s.commands.append(FakeLidarr.Command(id: 71, name: "RssSync", status: "queued", artistIds: []))
+            } else {
+                s.folders.insert(Self.keptPath)
+            }
+        }
+        await h.server.latch.release()
+        await #expect(throws: RequestRunner.KeepError.unavailable) { _ = try await keep.value }
+        #expect(h.server.writes.count == before)
+        #expect(try await h.ledger.entries.filter { $0.lidarrArtistId == 42 }.allSatisfy { $0.keptAt == nil })
+        #expect(await h.request(id)?.keep == nil)
+        #expect(await h.request(id)?.state == .ready)
     }
 
     /// M6: the Keep is on disk before the PUT. After a relaunch mid-move the new runner only checks how the

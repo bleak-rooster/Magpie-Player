@@ -11,6 +11,10 @@ import MagpieCore
 /// - the artist (fresh GET) carries `magpie-find` and its path is strictly inside the Finds root (a case-sensitive
 ///   `PathGuard` built from those root folders).
 ///
+/// FL3: Lidarr moves the files later, from its command queue. Keep only writes while nothing waits in that queue
+/// and no artist is being moved, and checks the destination and the queue once more right before the PUT, so the
+/// window in which an owner's folder could appear at the destination is as short as it can be from here.
+///
 /// One Keep per artist at a time: no other request of the artist has a Keep under way and no ledger entry of the
 /// artist says kept.
 ///
@@ -166,7 +170,9 @@ extension RequestRunner {
             throw KeepError.notAFind
         }
         // Something is already moving this artist (not Magpie's Keep, or one whose record was lost): leave it.
-        guard !commands.contains(where: { Self.isMove($0, of: artistId) && !Self.isFinished($0) }) else {
+        // FL3: nor while Lidarr's queue is busy, so the move runs right after the destination was checked.
+        guard !commands.contains(where: { Self.isMove($0, of: artistId) && !Self.isFinished($0) }),
+              !commands.contains(where: Self.holdsTheQueue) else {
             throw KeepError.unavailable
         }
         // G4: where the editor would put it, and whether anything is there already.
@@ -195,6 +201,24 @@ extension RequestRunner {
         } catch {
             await nothingKept(id, artistId)
             throw KeepError.unavailable
+        }
+        // FL3: checked again right before the PUT. A folder of either name that turned up in the main root, or a
+        // busy queue, and nothing is sent (the next Keep decides afresh).
+        if !untagOnly {
+            let unchanged: Bool
+            do {
+                let queue = try await lidarr.commands()
+                let now = try await lidarr.directories(in: setup.mainRoot)
+                unchanged = !queue.contains(where: { Self.isMove($0, of: artistId) && !Self.isFinished($0) })
+                    && !queue.contains(where: Self.holdsTheQueue)
+                    && !Self.mustStayInFinds(current: current, named: named, existing: now.map(Self.lastComponent))
+            } catch {
+                unchanged = false
+            }
+            guard unchanged else {
+                await nothingKept(id, artistId)
+                throw KeepError.unavailable
+            }
         }
         let body: any Encodable & Sendable = untagOnly
             ? UntagBody(artistIds: [artistId], tags: [setup.findTagId], applyTags: "remove")
@@ -615,4 +639,12 @@ extension RequestRunner {
     }
 
     static func isFinished(_ c: CommandStatus) -> Bool { finishedCommandStates.contains(c.status.lowercased()) }
+
+    /// FL3: a command waiting in Lidarr's queue (a move sent now would wait behind it), or a move of any artist
+    /// still going.
+    static func holdsTheQueue(_ c: CommandStatus) -> Bool {
+        let name = c.name.lowercased()
+        return c.status.lowercased() == "queued"
+            || ((name == "bulkmoveartist" || name == "moveartist") && !isFinished(c))
+    }
 }
