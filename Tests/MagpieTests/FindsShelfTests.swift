@@ -326,7 +326,8 @@ private let t0 = Date(timeIntervalSince1970: 1_900_000_000)
         await model.refreshFinds()
         #expect(model.findsShelf().newFinds.map(\.song.id) == ["find-1"])
         model.play(model.findSongs, startAt: 0)
-        try await Task.sleep(for: .milliseconds(50))
+        // The played set is written by an observation of the queue: wait for it (up to 2 s), not a fixed time.
+        for _ in 0..<200 where !model.findsShelf().newFinds.isEmpty { try await Task.sleep(for: .milliseconds(10)) }
         #expect(model.findsShelf().newFinds.isEmpty)
         #expect(model.findsShelf().finds.map(\.song.id) == ["find-1"])
         let restored = makeModel()

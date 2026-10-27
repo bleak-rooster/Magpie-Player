@@ -156,6 +156,8 @@ final class FakeLidarr: @unchecked Sendable {
         var addAnswers504 = false
         /// PUT /album/monitor: applies, then answers 504 (lost answer) this many times.
         var monitorAppliedThen504 = 0
+        /// PUT /album/monitor, once: applies to these album ids only, then answers 504 (partly applied, answer lost).
+        var monitorAppliesOnlyThen504: Set<Int>?
         /// PUT /album/monitor: answers 503 without applying this many times.
         var monitorFails503 = 0
         /// PUT /album/monitor: answers `monitorRejectStatus` (a 4xx) without applying this many times.
@@ -477,6 +479,15 @@ final class FakeLidarr: @unchecked Sendable {
                 return s.monitorRejectStatus
             }
             if let rejected { return MockTransport.Response(status: rejected) }
+            let partly: Bool = with { s in
+                guard let only = s.monitorAppliesOnlyThen504 else { return false }
+                s.monitorAppliesOnlyThen504 = nil
+                for i in s.albums.indices where ids.contains(s.albums[i].id) && only.contains(s.albums[i].id) {
+                    s.albums[i].monitored = on
+                }
+                return true
+            }
+            if partly { return MockTransport.Response(status: 504) }
             let lost: Bool = with { s in
                 for i in s.albums.indices where ids.contains(s.albums[i].id) { s.albums[i].monitored = on }
                 guard s.monitorAppliedThen504 > 0 else { return false }
