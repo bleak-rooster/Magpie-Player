@@ -123,7 +123,7 @@ enum RequestCopy {
             case .noRelease: "Couldn't find a release with this song"
             case .notInCatalogue: "Not in this artist's catalogue on your server"
             case .addFailed: "Your server said no to this one"
-            case .stoppedInLidarr: "Stopped in Lidarr"
+            case .stoppedInLidarr: "Stopped on your server"
             case .unknown: "Something went wrong"
             }
         }
@@ -170,6 +170,7 @@ enum RequestCopy {
         switch request.state {
         case .downloading(let p) where p > 0: return .onItsWay(progress: p, phrase: percent(p))
         case .waiting, .failed: return .notFound
+        case .ready where request.isFind: return .newFind   // final fix 2 B-M5: here, in your Finds
         case .ready, .kept: return .library
         default: return .onItsWay(progress: nil, phrase: "")
         }

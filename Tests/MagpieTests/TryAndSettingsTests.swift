@@ -1,3 +1,4 @@
+import DesignSystem
 import Foundation
 import LidarrKit
 import MagpieCore
@@ -330,6 +331,23 @@ final class LockableTokenStore: ListenBrainzTokenStoring, @unchecked Sendable {
 }
 
 @Suite struct RequestCopyTests {
+    /// Final fix 2 B-M5: a ready find shows as a New find in Search and Made for you, not as a library song; a
+    /// ready library request (and a kept find) as library.
+    @Test func readyFindRowIsANewFind() {
+        let mbid = MBID("00000000-0000-0000-0000-000000000100")!
+        let recording = ExternalRecording(recordingMBID: mbid, title: "S", artist: "A", source: .listenBrainz)
+        var r = MagpieRequest(recording: recording, tier: .standard, createdAt: .now)
+        r.state = .ready
+        r.plan = Plan(recordingMBID: mbid, releaseGroupMBID: MBID("00000000-0000-0000-0000-000000000010")!,
+                      artistMBID: MBID("00000000-0000-0000-0000-000000000001")!, lidarrArtistId: nil, mode: .finds)
+        #expect(RequestCopy.rowState(for: recording, in: [r]) == .newFind)
+        r.plan?.mode = .fallback
+        #expect(RequestCopy.rowState(for: recording, in: [r]) == .library)
+        r.plan?.mode = .finds
+        r.state = .kept
+        #expect(RequestCopy.rowState(for: recording, in: [r]) == .library)
+    }
+
     /// Final review I4: a request waiting on `.serviceUnavailable` says why, from what the app knows, instead of
     /// blaming "your server" (the music server is playing).
     @Test func waitingSaysWhyWithoutBlamingTheMusicServer() {
@@ -373,7 +391,7 @@ final class LockableTokenStore: ListenBrainzTokenStoring, @unchecked Sendable {
             .waiting(reason: WaitReason(.stillLooking, since: .now), retryAt: .now),
             .waiting(reason: WaitReason(.serviceUnavailable, since: .now), retryAt: .now),
             .waiting(reason: WaitReason(.downloadFailed, since: .now), retryAt: .now),
-        ] + FailReason.allCases.filter { $0 != .stoppedInLidarr }.map { .failed(reason: $0) }
+        ] + FailReason.allCases.map { .failed(reason: $0) }
         for s in all {
             let text = RequestCopy.status(s) + RequestCopy.phrase(s, tier: .standard)
             #expect(!text.isEmpty)
@@ -382,8 +400,8 @@ final class LockableTokenStore: ListenBrainzTokenStoring, @unchecked Sendable {
             }
         }
         #expect(RequestCopy.status(.downloading(progress: 0.62)) == "Bringing it home · 62%")
-        // Fix round ruling: the owner's own stop in Lidarr is named as such.
-        #expect(RequestCopy.status(.failed(reason: .stoppedInLidarr)) == "Stopped in Lidarr")
+        // Final fix 2 B-M11: the owner's own stop, without naming the service (§5).
+        #expect(RequestCopy.status(.failed(reason: .stoppedInLidarr)) == "Stopped on your server")
         var stuck = MagpieRequest(recording: ExternalRecording(title: "t", artist: "a", source: .listenBrainz),
                                   tier: .standard, createdAt: .now)
         stuck.state = .importing
