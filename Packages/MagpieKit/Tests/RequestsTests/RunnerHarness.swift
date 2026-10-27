@@ -71,12 +71,41 @@ struct HoldingTransport: HTTPTransport {
             return true
         }
         if timesOut { throw URLError(.timedOut) }
+        let editorTimesOut: Bool = lidarr.with { s in
+            guard request.httpMethod == "PUT", request.url?.path.hasSuffix("/artist/editor") == true,
+                  s.editorTimesOut > 0 else { return false }
+            s.editorTimesOut -= 1
+            return true
+        }
+        if editorTimesOut { throw URLError(.timedOut) }
         return try await inner.send(request)
     }
 }
 
 final class FakeLidarr: @unchecked Sendable {
-    struct Artist { var id: Int; var mbid: MBID; var root: String }
+    struct Artist {
+        var id: Int; var mbid: MBID; var root: String
+        /// Lidarr's artist folder; nil: `<root>/Aurora Field`.
+        var path: String? = nil
+        var tags: [Int] = []
+        var quality = 4
+        var currentPath: String { path ?? root + "/Aurora Field" }
+    }
+    /// A `/command` row (Keep's BulkMoveArtist, A3).
+    struct Command { var id: Int; var name: String; var status: String; var artistIds: [Int] }
+    /// How Lidarr's BulkMoveArtist goes after `PUT /artist/editor` with a root folder (Task 6.2b).
+    enum Move: Equatable {
+        /// queued → started → completed over the next `/command` reads; the files are moved.
+        case completes
+        /// queued → started → failed; Lidarr reverts the artist path (`RevertPath`).
+        case fails
+        /// Completes, but the move hit an IOException: Lidarr logged it and reverted the path.
+        case revertsSilently
+        /// Stays started (a slow copy to another volume).
+        case hangs
+        /// No command shows up at all (the PUT never reached Lidarr's command queue).
+        case neverListed
+    }
     struct Album { var id: Int; var artistId: Int; var rg: MBID; var title: String; var monitored: Bool }
     struct Queued {
         var albumId: Int; var size: Double; var sizeleft: Double
@@ -121,9 +150,25 @@ final class FakeLidarr: @unchecked Sendable {
         var rootsDown = false
         var holdMethod = "GET"
         var holdSeen = 0
+        // Keep (Task 6.2b)
+        var commands: [Command] = [Command(id: 70, name: "RssSync", status: "completed", artistIds: [])]
+        var move = Move.completes
+        /// `/command` reads so far, each with the BulkMoveArtist statuses it showed.
+        var commandReads: [String] = []
+        /// Folders that exist on Lidarr's filesystem (besides the artists' own folders).
+        var folders: Set<String> = []
+        /// `PUT /artist/editor` answers this status (a 4xx: not applied) this many times.
+        var editorRejects = 0
+        /// `PUT /artist/editor` applies, then answers 504 (lost answer) this many times.
+        var editorAppliedThen504 = 0
+        var commandsDown = false
+        /// `PUT /artist/editor`: the client times out before it reaches Lidarr, this many times.
+        var editorTimesOut = 0
     }
 
     let latch = Latch()
+    /// What happened, in order: `/command` reads (`command:<BulkMoveArtist statuses>`) and library rescans.
+    let events = OSAllocatedUnfairLock(initialState: [String]())
 
     func shouldHold(_ request: URLRequest) -> Latch? {
         let path = request.url?.path ?? ""
@@ -178,8 +223,88 @@ final class FakeLidarr: @unchecked Sendable {
         @Sendable func reply(_ object: Any, status: Int = 200) -> MockTransport.Response { Self.reply(object, status: status) }
         t.stub(pathSuffix: "/api/v1/artist") { [self] _ in
             if let d = down() { return d }
-            return reply(with { s in s.artists.map { ["id": $0.id, "artistName": "A", "foreignArtistId": $0.mbid.rawValue,
-                                                       "rootFolderPath": $0.root, "monitored": true, "tags": [Int]()] } })
+            return reply(with { s in s.artists.map(Self.artistJSON) })
+        }
+        for id in [7, 42, 43] {
+            t.stub(pathSuffix: "/api/v1/artist/\(id)") { [self] _ in
+                if let d = down() { return d }
+                guard let artist = with({ s in s.artists.first { $0.id == id } }) else { return MockTransport.Response(status: 404) }
+                return reply(Self.artistJSON(artist))
+            }
+        }
+        t.stub(method: "PUT", pathSuffix: "/api/v1/artist/editor") { [self] req in
+            let body = try! JSONSerialization.jsonObject(with: req.httpBody!) as! [String: Any]
+            if let rejected: Int = with({ s in
+                guard s.editorRejects > 0 else { return nil }
+                s.editorRejects -= 1
+                return 400
+            }) { return MockTransport.Response(status: rejected) }
+            let lost: Bool = with { s in
+                let ids = body["artistIds"] as! [Int]
+                for i in s.artists.indices where ids.contains(s.artists[i].id) {
+                    let tags = body["tags"] as? [Int] ?? []
+                    switch body["applyTags"] as? String {
+                    case "remove": s.artists[i].tags.removeAll { tags.contains($0) }
+                    case "add": s.artists[i].tags += tags.filter { !s.artists[i].tags.contains($0) }
+                    default: break
+                    }
+                    if let q = body["qualityProfileId"] as? Int { s.artists[i].quality = q }
+                    if let root = body["rootFolderPath"] as? String {
+                        // Lidarr saves the new path at once and queues the move (A3).
+                        let folder = String(s.artists[i].currentPath.split(separator: "/").last!)
+                        s.artists[i].path = root + "/" + folder
+                        s.artists[i].root = root
+                        if s.move != .neverListed {
+                            s.nextCommandId += 1
+                            s.commands.append(Command(id: s.nextCommandId, name: "BulkMoveArtist", status: "queued",
+                                                      artistIds: [s.artists[i].id]))
+                        }
+                    }
+                }
+                guard s.editorAppliedThen504 > 0 else { return false }
+                s.editorAppliedThen504 -= 1
+                return true
+            }
+            return lost ? MockTransport.Response(status: 504) : reply([[String: Any]](), status: 202)
+        }
+        t.stub(pathSuffix: "/api/v1/command") { [self] _ in
+            if with({ $0.commandsDown }) { return MockTransport.Response(status: 503) }
+            return reply(with { s in
+                // Each read moves a BulkMoveArtist one step on.
+                for i in s.commands.indices where s.commands[i].name == "BulkMoveArtist" {
+                    let next: String? = switch (s.commands[i].status, s.move) {
+                    case ("queued", _): "started"
+                    case ("started", .completes), ("started", .revertsSilently): "completed"
+                    case ("started", .fails): "failed"
+                    default: nil
+                    }
+                    guard let next else { continue }
+                    if s.commands[i].status == "started", s.move != .completes {
+                        for a in s.artists.indices where s.commands[i].artistIds.contains(s.artists[a].id) {
+                            s.artists[a].root = "/music/samples"
+                            s.artists[a].path = nil   // RevertPath
+                        }
+                    }
+                    s.commands[i].status = next
+                }
+                let statuses = s.commands.filter { $0.name == "BulkMoveArtist" }.map(\.status).joined(separator: ",")
+                s.commandReads.append(statuses)
+                events.withLock { $0.append("command:" + statuses) }
+                return s.commands.map { c in
+                    ["id": c.id, "name": c.name, "status": c.status,
+                     "body": ["artist": c.artistIds.map { ["artistId": $0, "sourcePath": "/music/samples/x"] },
+                              "destinationRootFolder": "/music/library", "name": c.name]] as [String: Any]
+                }
+            })
+        }
+        t.stub(pathSuffix: "/api/v1/filesystem") { [self] req in
+            let parent = URLComponents(url: req.url!, resolvingAgainstBaseURL: false)?.queryItems?
+                .first { $0.name == "path" }?.value ?? ""
+            let dirs: [String] = with { s in
+                let all = s.folders.union(s.artists.map(\.currentPath))
+                return all.filter { ($0 as NSString).deletingLastPathComponent + "/" == parent }.sorted()
+            }
+            return reply(["parent": parent, "directories": dirs.map { ["path": $0 + "/", "name": "x"] }, "files": [Any]()])
         }
         t.stub(pathSuffix: "/api/v1/rootfolder") { [self] _ in
             if with({ $0.rootsDown }) { return MockTransport.Response(status: 503) }
@@ -235,7 +360,8 @@ final class FakeLidarr: @unchecked Sendable {
                 let id = s.nextArtistId
                 s.nextArtistId += 1
                 s.artists.append(Artist(id: id, mbid: MBID(body["foreignArtistId"] as! String)!,
-                                        root: body["rootFolderPath"] as! String))
+                                        root: body["rootFolderPath"] as! String, tags: body["tags"] as? [Int] ?? [],
+                                        quality: body["qualityProfileId"] as? Int ?? 0))
                 if s.albumsAppearOnAdd {
                     s.albums += s.albumsOnAdd.map { var a = $0; a.artistId = id; return a }
                 }
@@ -282,6 +408,11 @@ final class FakeLidarr: @unchecked Sendable {
         }
     }
 
+    static func artistJSON(_ a: Artist) -> [String: Any] {
+        ["id": a.id, "artistName": "A", "foreignArtistId": a.mbid.rawValue, "rootFolderPath": a.root,
+         "path": a.currentPath, "monitored": true, "tags": a.tags, "qualityProfileId": a.quality]
+    }
+
     /// Lidarr already has the artist (id 7) with the album (id 31) and a live album (id 33).
     func ownerHasArtist(albumMonitored: Bool) {
         with { s in
@@ -308,9 +439,18 @@ final class FakeLibrary: @unchecked Sendable {
         var refreshes = 0
         /// What the index knows: `listed` is copied in on refresh.
         var indexed: [MBID: String] = [:]
+        /// Keep: the scans after a move (Lidarr's old and new artist folder).
+        var rescans: [(from: String, to: String)] = []
+        /// Keep: songs of the main library by recording (re-resolved after the move).
+        var mainSongs: [MBID: Song] = [:]
+        var mainSongReads = 0
     }
 
     let state = OSAllocatedUnfairLock(initialState: State())
+    /// Shared with the fake Lidarr's `/command` reads, so tests can see what happened in which order.
+    let events: OSAllocatedUnfairLock<[String]>
+
+    init(events: OSAllocatedUnfairLock<[String]> = .init(initialState: [])) { self.events = events }
 
     func list(_ recording: MBID, as songId: String) { state.withLock { $0.listed[recording] = songId } }
 
@@ -319,13 +459,18 @@ final class FakeLibrary: @unchecked Sendable {
             startScan: { [self] in state.withLock { $0.scans += 1 } },
             isScanning: { [self] in state.withLock { $0.scanning } },
             refreshIndex: { [self] in state.withLock { $0.refreshes += 1; $0.indexed = $0.listed } },
-            songId: { [self] r in r.recordingMBID.flatMap { id in state.withLock { $0.indexed[id] } } })
+            songId: { [self] r in r.recordingMBID.flatMap { id in state.withLock { $0.indexed[id] } } },
+            rescanMoved: { [self] from, to in
+                state.withLock { $0.rescans.append((from, to)) }
+                events.withLock { $0.append("rescan") }
+            },
+            keptSong: { [self] id in state.withLock { $0.mainSongReads += 1; return $0.mainSongs[id] } })
     }
 }
 
 struct Harness {
     let server: FakeLidarr
-    let library = FakeLibrary()
+    let library: FakeLibrary
     let clock = TestClock()
     let ready = OSAllocatedUnfairLock(initialState: [RequestID]())
     let gate: LidarrWriteGate
@@ -340,11 +485,18 @@ struct Harness {
     static let findsSetup = RequestRunner.Setup(rootFolderPath: "/music/library", qualityProfileId: 4,
                                                 metadataProfileId: 3, tagIds: [1],
                                                 finds: .init(rootFolderPath: "/music/samples", tagIds: [1, 2]))
+    /// Keep (Task 6.2b): Finds root `/music/samples`, main root `/music/library`, "Magpie Lossless" 9, magpie-find 2.
+    static let keepSetup = RequestRunner.KeepSetup(findsRoot: "/music/samples", mainRoot: "/music/library",
+                                                   losslessProfileId: 9, findTagId: 2)
+    /// `onRelinked` calls: (request, the song id before, the song after).
+    let relinked = OSAllocatedUnfairLock(initialState: [(RequestID, String?, Song)]())
 
     init(changesOn: Bool = true, directory: URL? = nil, lidarr existing: FakeLidarr? = nil,
-         base: URL = URL(string: "https://music.example/lidarr")!, setup: RequestRunner.Setup = Harness.setup) async {
+         base: URL = URL(string: "https://music.example/lidarr")!, setup: RequestRunner.Setup = Harness.setup,
+         keep: RequestRunner.KeepSetup? = Harness.keepSetup) async {
         let dir = directory ?? FileManager.default.temporaryDirectory.appending(path: "magpie-runner-\(UUID().uuidString)")
         let lidarr = existing ?? FakeLidarr()
+        library = FakeLibrary(events: lidarr.events)
         let client = LidarrClient(base: base, apiKey: "k", transport: lidarr.clientTransport)
         gate = LidarrWriteGate(client: client, logURL: dir.appending(path: "log.json"), defaultsSuite: suite)
         await gate.setEnabled(changesOn)
@@ -352,10 +504,12 @@ struct Harness {
         store = RequestStore(fileURL: RequestStore.defaultURL(in: dir, instance: client.instanceScope))
         let mb = MusicBrainzClient(transport: lidarr.clientTransport,
                                    limiter: RateLimiter(perSecond: 1_000, sleep: { _ in }))
-        let clock = self.clock, ready = self.ready
+        let clock = self.clock, ready = self.ready, relinked = self.relinked
         runner = RequestRunner(lidarr: client, gate: gate, ledger: ledger, mb: mb, library: library.access,
-                               store: store, setup: { setup }, now: { clock.now },
-                               onReady: { r in ready.withLock { $0.append(r.id) } })
+                               store: store, setup: { setup }, keepSetup: { keep }, now: { clock.now },
+                               sleep: { d in clock.advance(Double(d.components.seconds) + Double(d.components.attoseconds) / 1e18) },
+                               onReady: { r in ready.withLock { $0.append(r.id) } },
+                               onRelinked: { r, before, song in relinked.withLock { $0.append((r.id, before, song)) } })
         self.server = lidarr
         self.dir = dir
     }

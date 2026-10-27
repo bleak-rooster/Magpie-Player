@@ -16,6 +16,9 @@ struct FindsShelf: Equatable {
         let song: Song
         let daysLeft: Int
         let isNew: Bool
+        /// The ready request Keep goes through (Task 6.2b); nil when there is none or a Keep is under way, and
+        /// then the row offers no Keep.
+        let keepRequest: RequestID?
 
         var id: String { song.id }
         /// A round record with a text status and a symbol (D3).
@@ -34,11 +37,16 @@ struct FindsShelf: Equatable {
     init(songs: [Song], requests: [MagpieRequest], played: Set<String>, now: Date) {
         let items = songs.map { song in
             Item(song: song, daysLeft: song.createdAt.map { Self.daysLeft(since: $0, now: now) } ?? Self.sampleDays,
-                 isNew: !played.contains(song.id))
+                 isNew: !played.contains(song.id), keepRequest: Self.keepRequest(for: song, in: requests))
         }.sorted { ($0.song.createdAt ?? .distantPast) > ($1.song.createdAt ?? .distantPast) }
         newFinds = items.filter(\.isNew)
         finds = items.filter { !$0.isNew }
         onTheirWay = requests.filter { $0.isFind && $0.isActive }
+    }
+
+    /// The ready request on this song with no Keep under way (the runner checks everything else on fresh state).
+    static func keepRequest(for song: Song, in requests: [MagpieRequest]) -> RequestID? {
+        requests.last { $0.state == .ready && $0.songId == song.id && $0.keep == nil && $0.lidarrArtistId != nil }?.id
     }
 
     /// 7 − whole days since `created`, between 0 and 7.

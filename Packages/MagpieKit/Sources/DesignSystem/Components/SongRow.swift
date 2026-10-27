@@ -89,7 +89,12 @@ private struct RowActions: ViewModifier {
         case .notYet:
             content.accessibilityAction(.default, onTry).accessibilityAction(named: "Try", onTry).accessibilityAddTraits(.isButton)
         case .find, .newFind:
-            if let onKeep { content.accessibilityAction(named: "Keep", onKeep) } else { content }
+            // Named from `accessibilityActionNames(offersKeep:)`, so the spoken action is what the row offers.
+            if let onKeep, let name = state.accessibilityActionNames(offersKeep: true).first {
+                content.accessibilityAction(named: name, onKeep)
+            } else {
+                content
+            }
         default:
             content
         }

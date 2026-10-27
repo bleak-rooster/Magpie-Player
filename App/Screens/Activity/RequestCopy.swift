@@ -1,5 +1,6 @@
 import DesignSystem
 import Foundation
+import MagpieCore
 import Requests
 
 /// What a request's state says to the owner (D7: honest steps, real % only in the app). Pure, so tests can
@@ -43,12 +44,29 @@ enum RequestCopy {
     /// The status line for a request (its state, or the not-listed note).
     static func status(_ request: MagpieRequest, context: WaitContext = .unknown) -> String {
         if request.isNotListed { return notListed }
-        if request.isFind, request.state == .ready { return readyInFinds }
+        if request.isFind, request.state == .ready {
+            return request.keep != nil ? keeping : request.keepFailed ? keepFailed : readyInFinds
+        }
+        if request.state == .kept { return kept(request) }
         return status(request.state, context: context)
     }
 
     /// A find lands in Finds, not in the library (Task 6.2a).
     static let readyInFinds = "Ready · in your Finds"
+    /// Task 6.2b: a Keep is moving it.
+    static let keeping = "Moving it into your library"
+    static let keepFailed = "Ready · in your Finds · couldn't keep it yet"
+    static let keptInFinds = "Kept · in your Finds folder for now"
+    static let keptLosslessSoon = "Kept · lossless soon"
+    static let keptLossless = "Kept · lossless"
+
+    /// Kept: "Lossless soon" until the library song is lossless (Keep moved it to the lossless profile).
+    static func kept(_ request: MagpieRequest) -> String {
+        if request.keptInPlace { return keptInFinds }
+        guard request.relinkPending != nil else { return status(.kept) }   // kept before Task 6.2b
+        let quality = Quality.from(suffix: request.songSuffix, bitRate: nil)
+        return quality == .lossless || quality == .hiRes ? keptLossless : keptLosslessSoon
+    }
 
     static func group(_ state: RequestState) -> Group? {
         switch state {

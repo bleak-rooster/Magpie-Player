@@ -183,6 +183,15 @@ public final class Player {
         syncEngine()
     }
 
+    /// Keep (Task 6.2b): song `id` is now `song` (the library song a kept find became). The queue's slots are
+    /// updated, so scrobbling sees the library song. When the id changed and the song is current or still to
+    /// play, the engine's URLs are rebuilt and the current entry resumes where it was.
+    public func replaceSong(id: String, with song: Song) {
+        let pending = ([queue.current].compactMap { $0 } + queue.upcoming).contains { $0.song.id == id }
+        guard queue.replaceSong(id: id, with: song), pending, song.id != id else { return }
+        urlsInvalidated()
+    }
+
     /// The active server address changed (failover): rebuild every URL the engine holds, from the
     /// current entry on, and resume the current entry where it was.
     public func urlsInvalidated() {

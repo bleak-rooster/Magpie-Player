@@ -60,4 +60,30 @@ import Testing
         #expect(songs.map(\.id) == ["find-0", "find-1", "find-2"], "duplicates across pages are dropped")
         #expect(transport.requests.filter { $0.url?.path.hasSuffix("/api/song") == true }.count == 2)
     }
+
+    /// Task 6.2b (A3): a kept find is looked up again by recording MBID, outside the Finds library.
+    @Test func songsByRecordingExcludeTheFindsLibrary() async throws {
+        var rows = Fixtures.json("apiSongPage") as! [[String: Any]]
+        rows[1]["mbzRecordingID"] = rows[0]["mbzRecordingID"]   // the same recording, still listed in library 2
+        rows[3]["missing"] = true
+        rows[3]["mbzRecordingID"] = rows[0]["mbzRecordingID"]   // a missing row of it
+        let body = try JSONSerialization.data(withJSONObject: rows)
+        let (client, transport) = try await connected { $0.stub(pathSuffix: "/api/song", body: body) }
+        let recording = MBID("20a2961b-d8e8-481c-bd5b-abb38a2850ad")!
+        let songs = try await client.songs(recordingMBID: recording, excludingLibrary: 2)
+        #expect(songs.map(\.id) == ["0jBS37Pu9a7l78Tf1ksgUC"], "exact MBID, not missing, not in the Finds library")
+        #expect(songs.first?.libraryId == 1)
+        let req = try #require(transport.requests.last { $0.url?.path.hasSuffix("/api/song") == true })
+        #expect(queryValue(req, "mbz_recording_id") == recording.rawValue)
+    }
+
+    /// Keep scans both folders in one quick scan: `target` repeated (Navidrome 0.64.2 takes several).
+    @Test func startScanTakesSeveralTargets() async throws {
+        let ok = Data(#"{"subsonic-response":{"status":"ok","version":"1.16.1"}}"#.utf8)
+        let (client, transport) = try await connected { $0.stub(pathSuffix: "/rest/startScan", body: ok) }
+        try await client.startScan(targets: ["2:", "1:Aurora Field"])
+        let req = try #require(transport.requests.last { $0.url?.path.hasSuffix("/rest/startScan") == true })
+        #expect(queryItems(req).filter { $0.name == "target" }.map(\.value) == ["2:", "1:Aurora Field"])
+        #expect(queryValue(req, "fullScan") == "false")
+    }
 }

@@ -280,11 +280,17 @@ public actor NavidromeClient {
     /// Quick scan (`fullScan=false`). `target` is `<libraryId>:<path relative to that library>`.
     /// At most one scan per target per 10 s; a debounced call returns without contacting the server.
     public func startScan(target: String?) async throws {
-        let key = target ?? ""
+        try await startScan(targets: target.map { [$0] } ?? [])
+    }
+
+    /// One quick scan of several targets (A12; Keep scans the folder a find left and the one it moved to).
+    /// Empty: the whole library. Debounced per set of targets like `startScan(target:)`.
+    public func startScan(targets: [String]) async throws {
+        let key = targets.joined(separator: "\u{1F}")
         let t = now()
         if let last = lastScan[key], t.timeIntervalSince(last) < Self.scanDebounce { return }
         var extra = [URLQueryItem(name: "fullScan", value: "false")]
-        if let target { extra.append(URLQueryItem(name: "target", value: target)) }
+        extra += targets.map { URLQueryItem(name: "target", value: $0) }
         _ = try await subsonic("startScan", extra)
         lastScan[key] = t   // only after success: a failed scan must be retryable immediately
     }
@@ -327,6 +333,18 @@ public actor NavidromeClient {
             if rows.count < pageSize || total.map({ start >= $0 }) == true { break }
         }
         return songs
+    }
+
+    /// Songs with this MusicBrainz recording id (`/api/song?mbz_recording_id=`, verified on 0.64.2), outside
+    /// `excludingLibrary`: Keep looks a moved find up again (A3). Exact id matches only; missing rows dropped.
+    public func songs(recordingMBID: MBID, excludingLibrary: Int?) async throws -> [Song] {
+        let query = [URLQueryItem(name: "mbz_recording_id", value: recordingMBID.rawValue), int("_start", 0), int("_end", 50),
+                     URLQueryItem(name: "_sort", value: "id"), URLQueryItem(name: "_order", value: "ASC")]
+        let (data, _) = try await native("api/song", query)
+        return try Self.decode([NativeSong].self, data)
+            .filter { $0.missing != true && (excludingLibrary == nil || $0.libraryId != excludingLibrary) }
+            .map(Mapping.song)
+            .filter { $0.recordingMBID == recordingMBID }
     }
 
     /// The library folders and their paths as Navidrome sees them (`/api/library`; B6, G2). Some versions

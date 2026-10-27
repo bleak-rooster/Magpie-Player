@@ -98,11 +98,13 @@ public enum RowState: Sendable, Hashable {
     /// Hint spoken for the primary action; `nil` when there is no primary action.
     public var accessibilityHint: String? { primaryAction == .try ? "Double-tap to try it." : nil }
 
-    /// Names of the custom accessibility actions the row offers beyond its default.
-    public var accessibilityActionNames: [String] {
+    /// Names of the custom accessibility actions the row offers beyond its default. Keep is named only when the
+    /// row really offers it (`offersKeep`: the screen passed a Keep handler; a find whose request is gone, or
+    /// whose Keep is under way, has none).
+    public func accessibilityActionNames(offersKeep: Bool) -> [String] {
         switch self {
         case .notYet: return ["Try"]
-        case .find, .newFind: return ["Keep"]
+        case .find, .newFind: return offersKeep ? ["Keep"] : []
         default: return []
         }
     }

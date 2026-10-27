@@ -438,11 +438,14 @@ public struct CommandStatus: Sendable, Equatable, Decodable {
     public var queued: Date?
     public var started: Date?
     public var ended: Date?
+    /// Artists the command works on (Keep's `BulkMoveArtist`, A3), from its body: `artist[].artistId` (Lidarr's
+    /// `BulkMoveArtistCommand`), and defensively `artists[].artistId`, `artistIds[]`, `artistId`.
+    public var artistIds: [Int]
 
     public init(id: Int, name: String, status: String, result: String? = nil, message: String? = nil,
-                queued: Date? = nil, started: Date? = nil, ended: Date? = nil) {
+                queued: Date? = nil, started: Date? = nil, ended: Date? = nil, artistIds: [Int] = []) {
         self.id = id; self.name = name; self.status = status; self.result = result; self.message = message
-        self.queued = queued; self.started = started; self.ended = ended
+        self.queued = queued; self.started = started; self.ended = ended; self.artistIds = artistIds
     }
 
     public init(from decoder: Decoder) throws {
@@ -455,6 +458,20 @@ public struct CommandStatus: Sendable, Equatable, Decodable {
         queued = c.date("queued")
         started = c.date("started")
         ended = c.date("ended")
+        var ids: [Int] = []
+        if let body = try? c.nestedContainer(keyedBy: AnyKey.self, forKey: AnyKey("body")) {
+            for key in ["artist", "artists"] {
+                ids += (body.value(key, as: LossyArray<ArtistRef>.self)?.values ?? []).compactMap(\.artistId)
+            }
+            ids += body.value("artistIds", as: LossyArray<Int>.self)?.values ?? []
+            if let one = body.int("artistId") { ids.append(one) }
+        }
+        artistIds = ids
+    }
+
+    private struct ArtistRef: Decodable {
+        var artistId: Int?
+        init(from decoder: Decoder) throws { artistId = try decoder.container(keyedBy: AnyKey.self).int("artistId") }
     }
 }
 

@@ -545,6 +545,7 @@ final class AppModel {
         lidarrSetup = setupStore.load(base: connection.base, scope: scope)
         adoptOnlyRoot(audit)
         adoptFindTag(audit)
+        adoptLosslessProfile(audit)
         rebuildRunner()
         return audit
     }
@@ -557,6 +558,7 @@ final class AppModel {
             lidarrStatus = audit
             adoptOnlyRoot(audit)
             adoptFindTag(audit)
+            adoptLosslessProfile(audit)
         }
         return audit
     }

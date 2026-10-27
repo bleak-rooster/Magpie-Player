@@ -15,20 +15,43 @@ enum TryDevStack {
 
     struct NotDevStack: Error, CustomStringConvertible { var description: String }
 
-    static func client() async throws -> LidarrClient {
-        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-        let text = try String(contentsOf: root.appendingPathComponent("dev/.env.local"), encoding: .utf8)
+    /// TryIT and FindsIT use the same test artist on the one dev Lidarr: never at the same time.
+    static func exclusive(_ body: () async throws -> Void) async throws {
+        await DevStackLock.shared.acquire()
+        do { try await body() } catch {
+            await DevStackLock.shared.release()
+            throw error
+        }
+        await DevStackLock.shared.release()
+    }
+
+    /// `dev/.env.local`, refused without the dev marker.
+    static func env() throws -> [String: String] {
+        let text = try String(contentsOf: repoRoot.appendingPathComponent("dev/.env.local"), encoding: .utf8)
         guard text.contains("Magpie dev stack") else { throw NotDevStack(description: "dev/.env.local lacks the dev marker") }
         var env: [String: String] = [:]
         for line in text.split(separator: "\n") where !line.hasPrefix("#") {
             let parts = line.split(separator: "=", maxSplits: 1).map(String.init)
             if parts.count == 2 { env[parts[0]] = parts[1] }
         }
+        return env
+    }
+
+    static let repoRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+
+    /// The dev Lidarr's address and key; refuses a non-local host (G0).
+    static func lidarrAccess() throws -> (url: URL, key: String) {
+        let env = try env()
         guard let url = env["LIDARR_URL"].flatMap(URL.init(string:)), let key = env["LIDARR_API_KEY"],
               let host = url.host, ["127.0.0.1", "localhost"].contains(host) else {
             throw NotDevStack(description: "LIDARR_URL missing or not local")
         }
+        return (url, key)
+    }
+
+    static func client() async throws -> LidarrClient {
+        let (url, key) = try lidarrAccess()
         let client = LidarrClient(base: url, apiKey: key, transport: URLSessionTransport())
         let status = try await client.status()
         let roots = Set(try await client.rootFolders().map(\.path))
@@ -36,6 +59,21 @@ enum TryDevStack {
             throw NotDevStack(description: "not the dev stack's Lidarr (instance \(status.instanceName))")
         }
         return client
+    }
+}
+
+actor DevStackLock {
+    static let shared = DevStackLock()
+    private var busy = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func acquire() async {
+        guard busy else { busy = true; return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func release() {
+        if waiters.isEmpty { busy = false } else { waiters.removeFirst().resume() }
     }
 }
 
@@ -51,6 +89,10 @@ struct TryIT {
     @Test func findsOnDevStack() async throws { try await tryOnDevStack(finds: true) }
 
     private func tryOnDevStack(finds: Bool) async throws {
+        try await TryDevStack.exclusive { try await run(finds: finds) }
+    }
+
+    private func run(finds: Bool) async throws {
         let name = finds ? "findsOnDevStack" : "fallbackOnDevStack"
         let client = try await TryDevStack.client()
         let mb = MusicBrainzClient(transport: URLSessionTransport())

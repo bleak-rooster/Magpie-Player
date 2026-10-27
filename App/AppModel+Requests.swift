@@ -82,7 +82,11 @@ extension AppModel {
         let runner = RequestRunner(
             lidarr: client, gate: gate, ledger: ledger, mb: musicBrainz, library: libraryAccess(), store: requestStore,
             setup: { [weak self] in await self?.runnerSetup },
-            onReady: { [weak self] request in Task { @MainActor in self?.requestBecameReady(request) } })
+            keepSetup: { [weak self] in await self?.keepSetup },
+            onReady: { [weak self] request in Task { @MainActor in self?.requestBecameReady(request) } },
+            onRelinked: { [weak self] request, before, song in
+                Task { @MainActor in self?.keptSongRelinked(request, before: before, song: song) }
+            })
         self.gate = gate
         self.runner = runner
         runnerTasks.append(Task { [weak self] in
@@ -114,7 +118,9 @@ extension AppModel {
                 return try await self.request { try await $0.scanStatus() }
             },
             refreshIndex: { [weak self] in try await self?.refreshMatchIndex() },
-            songId: { [weak self] recording in await self?.matchIndex?.index.librarySong(for: recording) })
+            songId: { [weak self] recording in await self?.matchIndex?.index.librarySong(for: recording) },
+            rescanMoved: { [weak self] from, to in try await self?.rescanMoved(from: from, to: to) },
+            keptSong: { [weak self] recording in try await self?.keptSong(recording) })
     }
 
     /// Polls while any request is on its way: every 5 s in the foreground, 30 s otherwise. Stops by itself
@@ -155,6 +161,7 @@ extension AppModel {
         setup.findsMetadataProfileId = result.findsMetadataProfileId
         setup.magpieTagId = result.magpieTagId
         setup.findTagId = result.findTagId
+        setup.losslessProfileId = result.losslessProfileId
         saveSetup(setup)
         _ = await lidarrAudit()
         return result
@@ -172,6 +179,14 @@ extension AppModel {
     func adoptFindTag(_ audit: LidarrAudit) {
         guard var setup = lidarrSetup, let id = audit.findTagId, setup.findTagId != id else { return }
         setup.findTagId = id
+        saveSetup(setup)
+    }
+
+    /// Task 6.2b: a setup made before Keep has no "Magpie Lossless" id saved; the audit looks the profile up by
+    /// name (a read). A found id is never cleared here.
+    func adoptLosslessProfile(_ audit: LidarrAudit) {
+        guard var setup = lidarrSetup, let id = audit.losslessProfileId, setup.losslessProfileId != id else { return }
+        setup.losslessProfileId = id
         saveSetup(setup)
     }
 

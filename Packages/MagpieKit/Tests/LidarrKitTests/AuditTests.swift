@@ -38,6 +38,16 @@ import MagpieTestSupport
         #expect(await LidarrAudit.run(none).findTagId == nil)
     }
 
+    /// Task 6.2b: Keep moves a find to "Magpie Lossless", looked up by exact name (read-only).
+    @Test func losslessProfileLookedUpByName() async {
+        let profiles = json(#"[{"id":4,"name":"Magpie Fast Start"},{"id":5,"name":"Magpie Lossless"},{"id":6,"name":"magpie lossless"}]"#)
+        let (client, transport) = makeClient(auditTransport(["/qualityprofile": profiles]))
+        #expect(await LidarrAudit.run(client).losslessProfileId == 5)
+        #expect(transport.requests.allSatisfy { ($0.httpMethod ?? "GET") == "GET" })
+        let (none, _) = makeClient(auditTransport(["/qualityprofile": json(#"[{"id":2,"name":"Lossless"}]"#)]))
+        #expect(await LidarrAudit.run(none).losslessProfileId == nil)
+    }
+
     @Test func authNoneIsNotEnabled() async {
         let t = auditTransport(["/system/status": json(#"{"version":"3.2.0.1","authentication":"none"}"#)])
         let (client, _) = makeClient(t)

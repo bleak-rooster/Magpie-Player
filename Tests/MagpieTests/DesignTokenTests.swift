@@ -87,10 +87,13 @@ import DesignSystem
     @Test func songRowAccessibilityLabelAndActions() {
         let song = Song(id: "1", title: "Harbour Lights", artist: "Corin Hale", album: "A", duration: 200)
         #expect(SongRow.accessibilityLabel(for: song) == "Harbour Lights, Corin Hale")
-        #expect(RowState.notYet.accessibilityActionNames == ["Try"])
-        #expect(RowState.find(daysLeft: 4).accessibilityActionNames == ["Keep"])
-        #expect(RowState.newFind.accessibilityActionNames == ["Keep"])
-        #expect(RowState.library.accessibilityActionNames.isEmpty)
+        #expect(RowState.notYet.accessibilityActionNames(offersKeep: false) == ["Try"])
+        #expect(RowState.find(daysLeft: 4).accessibilityActionNames(offersKeep: true) == ["Keep"])
+        #expect(RowState.newFind.accessibilityActionNames(offersKeep: true) == ["Keep"])
+        // Task 6.2b: a find row without a Keep handler names no Keep action.
+        #expect(RowState.find(daysLeft: 4).accessibilityActionNames(offersKeep: false).isEmpty)
+        #expect(RowState.newFind.accessibilityActionNames(offersKeep: false).isEmpty)
+        #expect(RowState.library.accessibilityActionNames(offersKeep: true).isEmpty)
     }
 
     @Test func hallmarkAndHitArea() {

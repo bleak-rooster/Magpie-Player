@@ -130,7 +130,7 @@ struct NowPlayingView: View {
             HStack {
                 Text(DurationText.clock(elapsed)).accessibilityHidden(true)   // the slider speaks the time
                 Spacer()
-                Hallmark(Quality.from(suffix: song.suffix, bitRate: song.bitRate))
+                Hallmark(model.quality(of: song))   // "Lossless soon" for a kept find (Task 6.2b)
                 Spacer()
                 Text("-" + DurationText.clock(duration - elapsed)).accessibilityHidden(true)
             }

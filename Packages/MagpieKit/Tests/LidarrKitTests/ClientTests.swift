@@ -95,6 +95,20 @@ import MagpieTestSupport
         #expect(try await client.commands().count == 3)
     }
 
+    /// Task 6.2b (A3): Keep follows the `BulkMoveArtist` that covers its artist; the artist ids come from the
+    /// command body (`artist[].artistId` in Lidarr's BulkMoveArtistCommand; other spellings defensively).
+    @Test func commandBodyArtistIds() async throws {
+        let t = MockTransport()
+        t.stub(pathSuffix: "/command", body: Data(#"""
+        [{"id":5,"name":"BulkMoveArtist","status":"started","body":{"artist":[{"artistId":42,"sourcePath":"/music/samples/A"}],"destinationRootFolder":"/music/library"}},
+         {"id":6,"name":"RefreshArtist","status":"queued","body":{"artistIds":[7,8]}},
+         {"id":7,"name":"MoveArtist","status":"queued","body":{"artistId":9}},
+         {"id":8,"name":"RssSync","status":"completed","body":{"artist":"not a list"}}]
+        """#.utf8))
+        let (client, _) = makeClient(t)
+        #expect(try await client.commands().map(\.artistIds) == [[42], [7, 8], [9], []])
+    }
+
     @Test func profilesAndTags() async throws {
         let t = MockTransport()
         t.stub(pathSuffix: "/qualityprofile", body: Fixtures.data("qualityprofile"))

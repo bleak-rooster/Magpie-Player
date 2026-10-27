@@ -23,30 +23,46 @@ final class PlayCounting: Sendable {
 }
 
 /// D29: which songs are finds, for the player's scrobble guard. Read on every scrobble. A song is a find when
-/// it is in the Finds library: by its library id (native API songs) or, since Subsonic songs carry none, by
-/// being one of the Finds library's songs as last read (or saved from an earlier read).
+/// it is in the Finds library: by its library id (native API songs; authoritative when present) or, since
+/// Subsonic songs carry none, by being one of the Finds library's songs as last read (or saved from an earlier
+/// read).
 ///
 /// Fails closed (fix 6.2a-1): while a Finds library is set but its songs are not known yet (cold or offline
 /// start, never read), every song without a library id counts as a find and is not scrobbled.
+///
+/// Keep (Task 6.2b): a song found in the main library after Keep (`markKept`) is not a find, even where a stale
+/// read of the Finds library or the fail-closed rule would say so (Navidrome keeps the song id across the move).
 final class FindsIdentity: Sendable {
     private struct State {
         var libraryId: Int?
         /// Nil: not known yet.
         var songIds: Set<String>?
+        /// Song ids confirmed in the main library after Keep.
+        var kept: Set<String> = []
     }
 
     private let lock = OSAllocatedUnfairLock(initialState: State())
 
-    /// `songIds` nil: the Finds library's songs aren't known yet.
+    /// `songIds` nil: the Finds library's songs aren't known yet. Kept songs are remembered while the Finds
+    /// library stays the same.
     func set(libraryId: Int?, songIds: Set<String>?) {
-        lock.withLock { $0 = State(libraryId: libraryId, songIds: libraryId == nil ? nil : songIds) }
+        lock.withLock {
+            let kept = $0.libraryId == libraryId ? $0.kept : []
+            $0 = State(libraryId: libraryId, songIds: libraryId == nil ? nil : songIds, kept: kept)
+        }
+    }
+
+    /// The song was found in the main library after Keep.
+    func markKept(_ songId: String) {
+        lock.withLock { _ = $0.kept.insert(songId) }
     }
 
     func isFind(_ song: Song) -> Bool {
         lock.withLock { s in
             guard let libraryId = s.libraryId else { return false }
-            if song.libraryId == libraryId { return true }
-            guard let known = s.songIds else { return song.libraryId == nil }
+            if let songLibrary = song.libraryId { return songLibrary == libraryId }
+            if s.kept.contains(song.id) { return false }
+            guard let known = s.songIds else { return true }
             return known.contains(song.id)
         }
     }

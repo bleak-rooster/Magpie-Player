@@ -42,7 +42,7 @@ let package = Package(
         .testTarget(name: "PlaybackTests", dependencies: ["Playback", "MagpieCore"]),
         .testTarget(name: "MatchIndexTests", dependencies: ["MatchIndex", "MagpieCore", "NavidromeKit", "MagpieTestSupport"]),
         .testTarget(name: "RequestsTests",
-                    dependencies: ["Requests", "MagpieCore", "LidarrKit", "ListenBrainzKit", "MagpieTestSupport"]),
+                    dependencies: ["Requests", "MagpieCore", "LidarrKit", "ListenBrainzKit", "NavidromeKit", "MagpieTestSupport"]),
         .testTarget(name: "SearchTests", dependencies: ["Search", "MatchIndex", "MagpieCore", "LidarrKit"]),
     ],
     swiftLanguageModes: [.v6]

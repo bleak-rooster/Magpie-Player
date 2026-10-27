@@ -57,6 +57,8 @@ private let t0 = Date(timeIntervalSince1970: 1_900_000_000)
         t.stub(pathSuffix: "/api/v1/rootfolder", body: Data(#"[{"id":1,"path":"/music/library"},{"id":2,"path":"/music/samples"}]"#.utf8))
         t.stub(pathSuffix: "/api/library", body: Data(#"[{"id":1,"name":"Music","path":"/music/library"},{"id":2,"name":"Samples","path":"/music/samples"}]"#.utf8))
         t.stub(pathSuffix: "/api/v1/config/mediamanagement", body: Data(#"{"recycleBin":"/trash"}"#.utf8))
+        t.stub(pathSuffix: "/api/v1/qualityprofile",
+               body: Data(#"[{"id":4,"name":"Magpie Fast Start"},{"id":9,"name":"Magpie Lossless"}]"#.utf8))
     }
 
     func makeModel() -> AppModel {
@@ -333,5 +335,132 @@ private let t0 = Date(timeIntervalSince1970: 1_900_000_000)
         cleanUp(model)
         #expect(!defaults.dictionaryRepresentation().keys.contains { $0.hasPrefix(AppModel.playedFindsKeyPrefix) },
                 "sign-out forgets which finds were played")
+    }
+
+    // MARK: - Keep (Task 6.2b)
+
+    static func readyFindRequest(songId: String, artistId: Int? = 42) -> MagpieRequest {
+        var r = MagpieRequest(recording: ExternalRecording(recordingMBID: MBID("00000000-0000-0000-0000-000000000100")!,
+                                                           title: "S", artist: "A", source: .listenBrainz),
+                              tier: .standard, createdAt: t0)
+        r.state = .ready
+        r.songId = songId
+        r.lidarrArtistId = artistId
+        r.plan = Plan(recordingMBID: MBID("00000000-0000-0000-0000-000000000100")!,
+                      releaseGroupMBID: MBID("00000000-0000-0000-0000-000000000010")!,
+                      artistMBID: MBID("00000000-0000-0000-0000-000000000001")!, lidarrArtistId: nil, mode: .finds)
+        return r
+    }
+
+    /// Keep is offered (and named for VoiceOver) only on a find with a ready request and no Keep under way.
+    @Test func keepIsOfferedOnlyWithAReadyRequest() {
+        let ready = Self.readyFindRequest(songId: "a")
+        var moving = Self.readyFindRequest(songId: "b")
+        moving.keep = KeepProgress(phase: .moving, startedAt: t0, artistId: 42, fromPath: "/music/samples/A",
+                                   findsRoot: "/music/samples", mainRoot: "/music/library", findTagId: 2,
+                                   priorQualityProfileId: 4, commandBaseline: 0)
+        let songs = [Self.song("a", created: t0), Self.song("b", created: t0), Self.song("c", created: t0)]
+        let shelf = FindsShelf(songs: songs, requests: [ready, moving], played: [], now: t0)
+        let byId = Dictionary(uniqueKeysWithValues: shelf.newFinds.map { ($0.song.id, $0.keepRequest) })
+        #expect(byId["a"] == .some(ready.id))
+        #expect(byId["b"] == .some(nil), "a Keep is under way")
+        #expect(byId["c"] == .some(nil), "no request: nothing to keep through")
+    }
+
+    /// Keep needs the confirmed Finds root, the main root, "Magpie Lossless" and magpie-find; an older setup
+    /// adopts the lossless profile from the audit (a read).
+    @Test func keepSetupAndLosslessAdoption() async throws {
+        let model = try await connected()
+        try await findsSetUp(model, on: false)
+        #expect(model.lidarrSetup?.losslessProfileId == 9, "adopted by name when Lidarr was connected")
+        let setup = try #require(model.keepSetup, "finds already in the folder can be kept with Finds mode off")
+        #expect(setup == RequestRunner.KeepSetup(findsRoot: "/music/samples", mainRoot: "/music/library",
+                                                 losslessProfileId: 9, findTagId: 2))
+        model.lidarrSetup?.losslessProfileId = nil
+        #expect(model.keepSetup == nil)
+        _ = await model.lidarrAudit()
+        #expect(model.lidarrSetup?.losslessProfileId == 9)
+        #expect(transport.inner.requests.filter { $0.url?.port == 8686 }.allSatisfy { ($0.httpMethod ?? "GET") == "GET" })
+        cleanUp(model)
+    }
+
+    /// After Keep the queue holds the library song and the finds identity lets it scrobble, though Navidrome kept
+    /// its id and the saved Finds ids still listed it.
+    @Test func keptSongIsNoLongerAFind() async throws {
+        let model = try await connected()
+        try await findsSetUp(model)
+        await model.refreshFinds()   // find-1 is a known find
+        model.play([Self.song("find-1", created: nil, libraryId: 2), Self.song("next", created: nil, libraryId: 1)],
+                   startAt: 0)
+        await model.player.waitForPendingScrobbles()
+        #expect(scrobbledIds().isEmpty)
+
+        var request = Self.readyFindRequest(songId: "find-1")
+        request.state = .kept
+        model.requests = [request]
+        songsFail.withLock { $0 = true }   // the next Finds read fails: the release must not depend on it
+        model.keptSongRelinked(request, before: "find-1",
+                               song: Self.song("find-1", created: nil, libraryId: 1))
+        #expect(model.player.queue.current?.song.libraryId == 1)
+        #expect(model.findSongs.isEmpty)
+        let scope = try #require(model.navidromeScope)
+        #expect(defaults.stringArray(forKey: AppModel.findSongIdsKey(scope, libraryId: 2)) == [])
+        // A Subsonic copy (no library id) from an album view scrobbles too.
+        model.play([Self.song("find-1", created: nil, libraryId: nil)], startAt: 0)
+        await model.player.waitForPendingScrobbles()
+        #expect(scrobbledIds() == ["find-1"])
+        cleanUp(model)
+    }
+
+    /// "Lossless soon" on a kept song until its file is lossless.
+    @Test func keptSongsAreLosslessSoon() async throws {
+        let model = try await connected()
+        var request = Self.readyFindRequest(songId: "lib-1")
+        request.state = .kept
+        request.relinkPending = false
+        request.songSuffix = "mp3"
+        model.requests = [request]
+        var song = Self.song("lib-1", created: nil, libraryId: 1)
+        song.suffix = "mp3"
+        #expect(model.quality(of: song) == .losslessSoon)
+        #expect(RequestCopy.status(request) == "Kept · lossless soon")
+        song.suffix = "flac"
+        request.songSuffix = "flac"
+        model.requests = [request]
+        #expect(model.quality(of: song) == .lossless)
+        #expect(RequestCopy.status(request) == "Kept · lossless")
+        var other = Self.song("other", created: nil, libraryId: 1)
+        other.suffix = "mp3"
+        #expect(model.quality(of: other) == .standard)
+        cleanUp(model)
+    }
+
+    @Test func keepCopy() {
+        #expect(KeepCopy.keptInPlace == "Kept. It'll stay in your Finds folder for now.", "G4, verbatim")
+        #expect(KeepCopy.message(.moved) == KeepCopy.moved)
+        #expect(KeepCopy.message(for: RequestRunner.KeepError.moveFailed).contains("still in your Finds"))
+        var request = Self.readyFindRequest(songId: "a")
+        request.state = .kept
+        request.keptInPlace = true
+        #expect(RequestCopy.status(request) == "Kept · in your Finds folder for now")
+        for text in [KeepCopy.moved, KeepCopy.keptInPlace, KeepCopy.stillMoving, KeepCopy.moveFailed,
+                     KeepCopy.notAFind, KeepCopy.unavailable] {
+            #expect(!text.contains("Lidarr") && !text.contains("Navidrome"), "§5: no service names outside Settings")
+        }
+    }
+
+    /// A12: one quick scan of the Finds library and of the artist's new folder in the library it landed in.
+    @Test func keepScanTargets() {
+        let finds = NavidromeLibrary(id: 2, name: "Samples", path: "/music/samples")
+        let main = NavidromeLibrary(id: 1, name: "Music", path: "/music/library")
+        #expect(AppModel.keepScanTargets(to: "/music/library/Aurora Field", findsLibrary: finds, mapping: nil,
+                                         libraries: [main, finds]) == ["2:", "1:Aurora Field"])
+        let mapped = PathMapping(lidarrPrefix: "/data", navidromePrefix: "/music")
+        #expect(AppModel.keepScanTargets(to: "/data/library/Aurora Field", findsLibrary: finds, mapping: mapped,
+                                         libraries: [main, finds]) == ["2:", "1:Aurora Field"])
+        #expect(AppModel.keepScanTargets(to: "/elsewhere/Aurora Field", findsLibrary: finds, mapping: nil,
+                                         libraries: [main, finds]).isEmpty, "unknown: one plain scan")
+        #expect(AppModel.keepScanTargets(to: "/data/library/Aurora Field", findsLibrary: finds, mapping: nil,
+                                         libraries: [main, finds]).isEmpty, "paths differ, no mapping: plain scan")
     }
 }

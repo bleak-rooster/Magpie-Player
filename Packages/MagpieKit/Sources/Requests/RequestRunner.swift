@@ -7,18 +7,29 @@ import NavidromeKit
 
 /// What the runner needs from the music library: a plain quick scan (A12: no path mapping in v1), scan
 /// status, a match-index refresh, and "is this recording in the library now" (D7: Ready = Navidrome lists it).
+/// Keep (Task 6.2b, A3) adds a scan of both folders after a move and a look-up of the kept song by MBID.
 public struct LibraryAccess: Sendable {
     public var startScan: @Sendable () async throws -> Void
     public var isScanning: @Sendable () async throws -> Bool
     public var refreshIndex: @Sendable () async throws -> Void
     public var songId: @Sendable (ExternalRecording) async -> String?
+    /// After Keep's move: scan where the artist folder was and where it is now (Lidarr's paths), so the old
+    /// entry goes missing and the new one appears (A3, A12).
+    public var rescanMoved: @Sendable (_ from: String, _ to: String) async throws -> Void
+    /// After Keep's move: the recording's song in the library outside the Finds library; nil while not listed.
+    public var keptSong: @Sendable (MBID) async throws -> Song?
 
+    /// `rescanMoved` nil: one plain quick scan. `keptSong` nil: never found (the request keeps its song id).
     public init(startScan: @escaping @Sendable () async throws -> Void,
                 isScanning: @escaping @Sendable () async throws -> Bool,
                 refreshIndex: @escaping @Sendable () async throws -> Void,
-                songId: @escaping @Sendable (ExternalRecording) async -> String?) {
+                songId: @escaping @Sendable (ExternalRecording) async -> String?,
+                rescanMoved: (@Sendable (_ from: String, _ to: String) async throws -> Void)? = nil,
+                keptSong: (@Sendable (MBID) async throws -> Song?)? = nil) {
         self.startScan = startScan; self.isScanning = isScanning
         self.refreshIndex = refreshIndex; self.songId = songId
+        self.rescanMoved = rescanMoved ?? { _, _ in try await startScan() }
+        self.keptSong = keptSong ?? { _ in nil }
     }
 
     /// Straight to one Navidrome client and match index (`startScan` is always `fullScan=false`, G7).
@@ -107,35 +118,49 @@ public actor RequestRunner {
         case unavailable
     }
 
-    private let lidarr: LidarrClient
-    private let gate: LidarrWriteGate
-    private let ledger: Ledger
+    // Internal (not private) where RequestRunner+Keep.swift needs them.
+    let lidarr: LidarrClient
+    let gate: LidarrWriteGate
+    let ledger: Ledger
     private let mb: MusicBrainzClient
-    private let library: LibraryAccess
+    let library: LibraryAccess
     private let store: RequestStore
     private let setup: @Sendable () async -> Setup?
-    private let now: @Sendable () -> Date
+    let keepSetup: @Sendable () async -> KeepSetup?
+    let now: @Sendable () -> Date
+    let sleep: @Sendable (Duration) async -> Void
     private let onReady: @Sendable (MagpieRequest) -> Void
+    let onRelinked: @Sendable (MagpieRequest, _ before: String?, Song) -> Void
 
-    private var list: [MagpieRequest] = []
+    private(set) var list: [MagpieRequest] = []
     private var loaded = false
     private var busy: Set<RequestID> = []
+    /// Requests a Keep is working on right now (RequestRunner+Keep.swift).
+    var keeping: Set<RequestID> = []
+    /// When the kept song was last looked up, per request (throttles `relink`).
+    var relinkChecks: [RequestID: Date] = [:]
     private var inFlight: [RequestID: Task<Void, Never>] = [:]
     private var ticking = false
-    private var stopped = false
+    private(set) var stopped = false
     private var lastIndexRefresh: Date?
     /// `history/since` cursor: the last successful poll, minus an overlap (PROMOTED B).
     private var historyCursor: Date?
-    private var lastLidarrContact: Date
+    var lastLidarrContact: Date
     private var watchers: [UUID: AsyncStream<[MagpieRequest]>.Continuation] = [:]
 
+    /// `keepSetup` (Task 6.2b): where Keep moves finds; nil while Finds or the lossless profile aren't set up.
+    /// `onRelinked`: a kept song was found again in the library (its id before, the library song now).
     public init(lidarr: LidarrClient, gate: LidarrWriteGate, ledger: Ledger, mb: MusicBrainzClient,
                 library: LibraryAccess, store: RequestStore,
                 setup: @escaping @Sendable () async -> Setup?,
+                keepSetup: @escaping @Sendable () async -> KeepSetup? = { nil },
                 now: @escaping @Sendable () -> Date = { Date() },
-                onReady: @escaping @Sendable (MagpieRequest) -> Void = { _ in }) {
+                sleep: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) },
+                onReady: @escaping @Sendable (MagpieRequest) -> Void = { _ in },
+                onRelinked: @escaping @Sendable (MagpieRequest, _ before: String?, Song) -> Void = { _, _, _ in }) {
         self.lidarr = lidarr; self.gate = gate; self.ledger = ledger; self.mb = mb
-        self.library = library; self.store = store; self.setup = setup; self.now = now; self.onReady = onReady
+        self.library = library; self.store = store; self.setup = setup; self.keepSetup = keepSetup
+        self.now = now; self.sleep = sleep; self.onReady = onReady; self.onRelinked = onRelinked
         self.lastLidarrContact = now()
         // Critical: ids are only meaningful on their own server. A ledger for another Lidarr disables the runner.
         if ledger.instance != lidarr.instanceScope {
@@ -160,8 +185,10 @@ public actor RequestRunner {
 
     private func unwatch(_ key: UUID) { watchers[key] = nil }
 
-    /// Whether `tick()` has anything to do: an active request or a clean-up still owed.
-    public var needsPolling: Bool { list.contains { ($0.isActive && !$0.isNotListed) || $0.cleanupPending } }
+    /// Whether `tick()` has anything to do: an active request, a clean-up still owed, or a Keep to follow.
+    public var needsPolling: Bool {
+        list.contains { ($0.isActive && !$0.isNotListed) || $0.cleanupPending || $0.keep != nil || $0.relinkPending == true }
+    }
 
     /// Loads the saved requests (resume after relaunch). Safe to call again.
     @discardableResult
@@ -251,13 +278,14 @@ public actor RequestRunner {
         await pollLidarr()
         await checkLibrary()
         for r in list where r.cleanupPending && !busy.contains(r.id) { await cleanup(r.id) }
+        await followKeeps()
     }
 
     // MARK: - The machine
 
-    private func request(_ id: RequestID) -> MagpieRequest? { list.first { $0.id == id } }
+    func request(_ id: RequestID) -> MagpieRequest? { list.first { $0.id == id } }
 
-    private func mutate(_ id: RequestID, _ change: (inout MagpieRequest) -> Void) async {
+    func mutate(_ id: RequestID, _ change: (inout MagpieRequest) -> Void) async {
         guard !stopped, let i = list.firstIndex(where: { $0.id == id }) else { return }
         var r = list[i]
         change(&r)
@@ -278,7 +306,7 @@ public actor RequestRunner {
     /// M6: the request list on disk *now*. Called before every Lidarr write, so what the write depends on
     /// (`addSent`, the album and artist ids, the cancelled state) survives a relaunch. Throws when the save
     /// fails: the write is not sent and the request waits.
-    private func persist() async throws {
+    func persist() async throws {
         guard !stopped else { throw Superseded() }
         do { try await store.save(list) } catch {
             Log.logger("requests").error("requests not saved; Lidarr write postponed")
@@ -316,7 +344,7 @@ public actor RequestRunner {
         if request(id)?.cleanupPending == true { await cleanup(id) }
     }
 
-    private func apply(_ id: RequestID, _ event: RequestEvent, deferCleanup: Bool = false) async {
+    func apply(_ id: RequestID, _ event: RequestEvent, deferCleanup: Bool = false) async {
         guard var r = request(id) else { return }
         let (next, effects) = RequestMachine.step(r.state, event, now: now(), prior: r.priorWait)
         guard next != r.state || !effects.isEmpty else { return }
@@ -854,7 +882,7 @@ public actor RequestRunner {
         }
     }
 
-    private static let finishedCommandStates: Set<String> = ["completed", "failed", "aborted", "cancelled", "orphaned"]
+    static let finishedCommandStates: Set<String> = ["completed", "failed", "aborted", "cancelled", "orphaned"]
 
     private func pollLidarr() async {
         let polled = list.filter { r in

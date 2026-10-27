@@ -35,6 +35,22 @@ public struct PlayQueue: Codable, Sendable {
         currentIndex = main.isEmpty ? nil : min(max(startAt, 0), main.count - 1)
     }
 
+    /// Every slot holding song `id` now holds `song` (same slot ids and order; Keep re-resolves a find to its
+    /// library song, Task 6.2b). Returns whether any slot changed.
+    @discardableResult
+    public mutating func replaceSong(id: String, with song: Song) -> Bool {
+        var changed = false
+        func swap(_ entries: inout [QueueEntry]) {
+            for i in entries.indices where entries[i].song.id == id && entries[i].song != song {
+                entries[i] = QueueEntry(id: entries[i].id, song: song)
+                changed = true
+            }
+        }
+        swap(&main)
+        swap(&upNext)
+        return changed
+    }
+
     /// Puts `songs` at the front of Up Next (ahead of anything already there). Starts an idle queue.
     public mutating func playNext(_ songs: [Song]) {
         guard !songs.isEmpty else { return }

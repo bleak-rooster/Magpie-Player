@@ -90,6 +90,31 @@ public struct MagpieRequest: Sendable, Codable, Equatable, Identifiable {
     /// Stored optional, so requests saved before Task 6.2a (no such key) still decode.
     var findsFellBack: Bool?
 
+    // Keep (Task 6.2b). All optional, so requests saved before it still decode.
+
+    /// A Keep that wrote to Lidarr and isn't settled yet (saved before the write, M6). While set, Keep never
+    /// writes the move again: the runner only checks how it went (`RequestRunner.keep`, `tick`).
+    public var keep: KeepProgress?
+    /// Kept where it is: the main root already had a folder for the artist, so only `magpie-find` came off (G4).
+    public var keptInPlace: Bool {
+        get { stayedInFinds ?? false }
+        set { stayedInFinds = newValue ? true : nil }
+    }
+    var stayedInFinds: Bool?
+    /// The last Keep didn't go through (Lidarr couldn't move it); the find is as it was and can be kept again.
+    public var keepFailed: Bool {
+        get { lastKeepFailed ?? false }
+        set { lastKeepFailed = newValue ? true : nil }
+    }
+    var lastKeepFailed: Bool?
+    /// Kept and moved: the library song is looked up again by MBID (A3). False once found or given up; nil
+    /// for requests that never moved.
+    public var relinkPending: Bool?
+    /// When the move was confirmed (the re-resolve gives up `RequestRunner.relinkLimit` after it).
+    public var movedAt: Date?
+    /// The library song's file type once re-resolved after Keep ("Lossless soon" until it is lossless).
+    public var songSuffix: String?
+
     public init(id: RequestID = RequestID(), recording: ExternalRecording, tier: Tier, createdAt: Date) {
         self.id = id
         self.recording = recording
@@ -107,6 +132,39 @@ public struct MagpieRequest: Sendable, Codable, Equatable, Identifiable {
 
     /// Imported by Lidarr but not listed by the library after the time limit (Needs attention).
     public var isNotListed: Bool { state == .importing && notListedAt != nil }
+}
+
+/// A Keep in flight (Task 6.2b), saved before its first Lidarr write so a relaunch never writes it twice.
+public struct KeepProgress: Sendable, Codable, Equatable {
+    public enum Phase: String, Sendable, Codable {
+        /// `PUT /artist/editor` with the main root was (maybe) sent: wait for `BulkMoveArtist` (A3).
+        case moving
+        /// The destination existed: only `magpie-find` is being removed (G4).
+        case untagging
+        /// The move failed: `magpie-find` and the earlier quality profile are being put back.
+        case restoring
+    }
+
+    public var phase: Phase
+    public var startedAt: Date
+    public var artistId: Int
+    /// The artist folder before the move (inside the Finds root).
+    public var fromPath: String
+    public var findsRoot: String
+    public var mainRoot: String
+    public var findTagId: Int
+    /// The artist's quality profile before Keep, to put back if the move fails.
+    public var priorQualityProfileId: Int?
+    /// The highest `/command` id Lidarr listed before the move was asked for: only later ones are this move.
+    public var commandBaseline: Int
+    public var lastCheckAt: Date?
+
+    public init(phase: Phase, startedAt: Date, artistId: Int, fromPath: String, findsRoot: String, mainRoot: String,
+                findTagId: Int, priorQualityProfileId: Int?, commandBaseline: Int) {
+        self.phase = phase; self.startedAt = startedAt; self.artistId = artistId; self.fromPath = fromPath
+        self.findsRoot = findsRoot; self.mainRoot = mainRoot; self.findTagId = findTagId
+        self.priorQualityProfileId = priorQualityProfileId; self.commandBaseline = commandBaseline
+    }
 }
 
 public enum RequestStoreError: Error, Equatable {

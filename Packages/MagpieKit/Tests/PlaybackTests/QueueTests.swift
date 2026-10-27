@@ -11,6 +11,24 @@ import MagpieCore
 
     func ids(_ entries: [QueueEntry]) -> [String] { entries.map(\.song.id) }
 
+    /// Task 6.2b: a kept find becomes its library song; every slot holding it is updated in place (same slot ids,
+    /// same order, history included). Returns whether a slot changed.
+    @Test func replaceSongUpdatesEverySlot() {
+        var q = PlayQueue()
+        q.replace(with: Self.songs("f", "2", "f"), startAt: 1)
+        q.playNext(Self.songs("f"))
+        let before = (q.main.map(\.id), q.upNext.map(\.id))
+        var kept = Self.song("lib")
+        kept.libraryId = 1
+        let changed = q.replaceSong(id: "f", with: kept)
+        #expect(changed)
+        #expect(ids(q.main) == ["lib", "2", "lib"] && ids(q.upNext) == ["lib"])
+        #expect(q.main.map(\.id) == before.0 && q.upNext.map(\.id) == before.1)
+        #expect(q.current?.song.id == "2")
+        let unchanged = q.replaceSong(id: "nope", with: kept)
+        #expect(!unchanged)
+    }
+
     @Test func upNextPlaysBeforeMain() {
         var q = PlayQueue()
         q.replace(with: Self.songs("1", "2", "3"), startAt: 0)
