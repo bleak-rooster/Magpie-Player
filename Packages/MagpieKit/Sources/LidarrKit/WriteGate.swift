@@ -234,6 +234,11 @@ enum ForbiddenWrites {
                 return .trackFileDelete(ids.compactMap { ($0 as? NSNumber)?.intValue })
             }
             return .trackFileDelete([Int(key[1])].compactMap { $0 })
+        case ("PUT", "album") where key[1] == "monitor":
+            let object = json as? [String: Any] ?? [:]
+            let value = { (name: String) in object.first { $0.key.lowercased() == name }?.value }
+            let ids = (value("albumids") as? [Any] ?? []).compactMap { ($0 as? NSNumber)?.intValue }
+            return .albumMonitor(albumIds: ids, monitored: (value("monitored") as? NSNumber)?.boolValue ?? true)
         default:
             return nil
         }
@@ -256,7 +261,7 @@ enum ForbiddenWrites {
             return noQuery ?? editorReason(json)
         // Security L9 / FM1: never `PUT /artist/{id}` or `PUT /album/{id}` (a whole resource: anything could change).
         case ("PUT", 2) where key[0] == "album" && key[1] == "monitor":
-            return noQuery
+            return noQuery ?? albumMonitorReason(json)
         case ("DELETE", 2) where key[0] == "artist" && isId(key[1]):
             return artistDeleteReason(t.query)
         // Not for me (A16): the bulk route, falling back to one file at a time.
@@ -285,6 +290,18 @@ enum ForbiddenWrites {
         guard let object = json as? [String: Any], object.count == 1, let ids = object["trackFileIds"] as? [Any],
               !ids.isEmpty, ids.allSatisfy(isPositiveInteger) else {
             return "track file delete needs exactly a list of track file ids"
+        }
+        return nil
+    }
+
+    /// `PUT /album/monitor`: exactly `{albumIds: [positive ids, at least one], monitored: true|false}`. Which
+    /// albums, the gate's confinement decides (H2b fix 1).
+    private static func albumMonitorReason(_ json: Any?) -> String? {
+        guard let object = json as? [String: Any], object.count == 2 else { return "album monitor needs albumIds and monitored only" }
+        let value = { (name: String) in object.first { $0.key.lowercased() == name }?.value }
+        guard let ids = value("albumids") as? [Any], !ids.isEmpty, ids.allSatisfy(isPositiveInteger),
+              let monitored = value("monitored"), isBoolean(monitored) else {
+            return "album monitor needs albumIds and monitored only"
         }
         return nil
     }
@@ -510,18 +527,45 @@ public actor LidarrWriteGate {
         let confined = ForbiddenWrites.confined(target, json: json)
         if confined != nil, confinement == nil { throw refused(target, "deletes and artist edits need the ledger") }
         guard enabled else { throw WriteGateError.disabled }
-        // FM1: checked from the ledger and fresh reads, after the switch (so nothing is read while it's off).
-        if let confined, let confinement {
-            switch await confinement.check(confined, lidarr: reader) {
-            case .confined: break
-            case .refused(let why): throw refused(target, why)
-            case .unknown:
-                Log.logger("lidarr").error("not confirmed \(target.method, privacy: .public) \(target.logPath, privacy: .public)")
-                throw WriteGateError.unconfirmed
-            }
-            guard enabled else { throw WriteGateError.disabled }   // turned off during the reads
+        guard let confined, let confinement else { return try await deliver(target, data) }
+        // FM1: checked from the ledger and fresh reads, after the switch (so nothing is read while it's off). H2b fix
+        // 1: confined writes go one at a time, from their checks to Lidarr's answer, so no other confined write can
+        // slip in between a check and its send.
+        await takeConfinedTurn()
+        defer { passConfinedTurn() }
+        let artists: Set<Int>
+        switch await confinement.check(confined, lidarr: reader) {
+        case .confined(let touched): artists = touched
+        case .refused(let why): throw refused(target, why)
+        case .unknown:
+            Log.logger("lidarr").error("not confirmed \(target.method, privacy: .public) \(target.logPath, privacy: .public)")
+            throw WriteGateError.unconfirmed
         }
+        guard enabled else { throw WriteGateError.disabled }   // turned off during the reads
+        // The ledger once more, right before a delete: kept meanwhile (Keep saves "kept" before it writes) refuses.
+        switch await confinement.stillUnkept(artists) {
+        case true?: break
+        case false?: throw refused(target, "the artist was kept meanwhile")
+        case nil: throw WriteGateError.unconfirmed
+        }
+        return try await deliver(target, data)
+    }
 
+    private var confinedBusy = false
+    private var confinedWaiting: [CheckedContinuation<Void, Never>] = []
+
+    /// FIFO: waits until no other confined write is between its checks and its answer.
+    private func takeConfinedTurn() async {
+        guard confinedBusy else { confinedBusy = true; return }
+        await withCheckedContinuation { confinedWaiting.append($0) }
+    }
+
+    private func passConfinedTurn() {
+        if confinedWaiting.isEmpty { confinedBusy = false } else { confinedWaiting.removeFirst().resume() }
+    }
+
+    /// Logs the write, sends it, and records Lidarr's answer.
+    private func deliver(_ target: WriteTarget, _ data: Data?) async throws -> Data {
         let entry = ChangeLogEntry(date: now(), method: target.method, path: target.logPath,
                                    bodySummary: BodySummary.make(data, apiKey: connection.apiKey, limit: Self.maxBodySummary))
         do {

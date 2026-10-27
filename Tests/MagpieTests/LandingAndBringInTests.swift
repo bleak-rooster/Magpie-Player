@@ -200,6 +200,41 @@ import Testing
         #expect(BringInCopy.capped(Option(albumIds: [1], available: 1, duration: nil)) == nil)
     }
 
+    /// H2b fix 1 (FL4): the limit of five counts songs and releases on their way, and the copy says so: what is
+    /// counted, and that a place frees up when one is home or stops. A sheet with no room offers following only;
+    /// fewer releases than the sheet said is said, never hidden.
+    @Test func limitCopySaysWhatIsCounted() {
+        typealias Result = RequestRunner.BringInResult
+        typealias Option = RequestRunner.BringInOption
+        for text in [TryCopy.tooMany, BringInCopy.message(for: RequestRunner.BringInError.tooMany)] {
+            #expect(text.contains("songs and releases") && text.contains("home or has stopped"), "\(text)")
+        }
+        #expect(BringInCopy.capped(Option(albumIds: [], available: 3, duration: nil))
+                == "Five songs and releases are already on their way, so these can come in later. You can still follow new releases.")
+        #expect(BringInCopy.done(Result(albums: 2, searching: true, following: false, heldBack: 2), artist: "Aurora Field")
+                == "Bringing in 2 releases from Aurora Field. 2 releases more can come in when something on its way is home.")
+        #expect(BringInCopy.done(Result(albums: 0, searching: false, following: true, heldBack: 3), artist: "Aurora Field")
+                == "New releases from Aurora Field will come in as they come out. 3 releases more can come in when something on its way is home.")
+    }
+
+    /// Library's "N on their way" counts releases Bring in more is still bringing in, like the limit does.
+    @Test func onTheirWayCountsReleases() {
+        let model = AppModel(store: SessionStore(keychain: KeychainStore(service: "com.bleak-rooster.magpie.tests.\(UUID().uuidString)")),
+                             lidarrStore: MemoryLidarrStore(), tokenStore: MemoryTokenStore(), matchIndexDirectory: nil,
+                             dataDirectory: nil, gateDefaultsSuite: "magpie-tests-gate-\(UUID().uuidString)",
+                             transport: MockTransport(), probeTransport: MockTransport(), engine: FakeEngine(),
+                             defaults: UserDefaults(suiteName: UUID().uuidString)!, systemNowPlaying: false,
+                             notifications: false)
+        let recording = ExternalRecording(recordingMBID: nil, title: "S", artist: "A", source: .listenBrainz)
+        var searching = MagpieRequest(recording: recording, tier: .standard, createdAt: Date())
+        searching.state = .searching
+        var kept = MagpieRequest(recording: recording, tier: .standard, createdAt: Date())
+        kept.state = .kept
+        kept.bringingIn = [51, 52]
+        model.requests = [searching, kept]
+        #expect(model.onTheirWay == 3)
+    }
+
     /// Fix 7: copy that suggests trying again comes with a Try again button; the rest promises no retry.
     @Test func retryOnlyWhereOffered() {
         let all: [RequestRunner.BringInError] = [.changesOff, .notSetUp, .notKept, .tooMany, .unavailable, .failed, .unconfirmed]

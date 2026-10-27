@@ -480,6 +480,10 @@ extension RequestRunner {
             do {
                 try await persist()
                 _ = try await gate.send("PUT", "artist/editor", body: body)
+            } catch WriteGateError.unconfirmed {
+                // H2b fix 1: the gate couldn't read Lidarr to check it; nothing was sent. Later (bounded by time).
+                Log.logger("requests").error("Keep: putting the find back postponed (couldn't be checked)")
+                return await notYet(id, p)
             } catch let error where error is WriteGateError || Self.isDefinitiveRejection(error) {
                 Log.logger("requests").error("Keep: putting the find back was refused")
                 return await needsAttention(id)

@@ -333,9 +333,13 @@ struct FindsIT {
         throw TryDevStack.NotDevStack(description: "manual import didn't finish")
     }
 
-    /// A raw request to the dev Lidarr (after `TryDevStack.client()` verified it). Arrays come back as `rows`.
+    /// A raw request to the dev Lidarr. Arrays come back as `rows`. G0 on every call (H2b fix 1: the owner's real
+    /// Lidarr is reachable from this machine): `TryDevStack.client()` checks again that the host is local and the
+    /// Lidarr is the dev instance (`instanceName`, root folders), and the request goes through the app's transport,
+    /// which refuses cross-origin redirects (`SameOriginRedirects`), never `URLSession.shared`.
     static func devLidarr(_ method: String, _ path: String, query: [String: String] = [:], body: [String: Any]? = nil,
                           array: Bool = false) async throws -> [String: Any] {
+        _ = try await TryDevStack.client()
         let (base, key) = try TryDevStack.lidarrAccess()
         var components = URLComponents(url: base.appending(path: "api/v1/" + path), resolvingAgainstBaseURL: false)!
         if !query.isEmpty { components.queryItems = query.map { URLQueryItem(name: $0.key, value: $0.value) } }
@@ -348,8 +352,8 @@ struct FindsIT {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         }
         request.timeoutInterval = 60
-        let (data, response) = try await URLSession.shared.data(for: request)
-        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        let (data, http) = try await URLSessionTransport().send(request)
+        let status = http.statusCode
         guard (200..<300).contains(status) else {
             throw TryDevStack.NotDevStack(description: "\(method) \(path): HTTP \(status) \(String(decoding: data.prefix(300), as: UTF8.self))")
         }

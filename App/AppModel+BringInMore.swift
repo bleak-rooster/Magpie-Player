@@ -45,21 +45,29 @@ enum BringInCopy {
         return ([releases(option.albumIds.count)] + [size(option.duration)].compactMap { $0 }).joined(separator: " · ")
     }
 
-    /// G7: said plainly when a choice has more than one Bring in more brings in.
+    /// G7: said plainly when a choice has more than one Bring in more brings in (the limit of five counts songs and
+    /// releases on their way, FL4).
     static func capped(_ option: RequestRunner.BringInOption) -> String? {
         guard option.isCapped else { return nil }
+        guard !option.albumIds.isEmpty else {
+            return "Five songs and releases are already on their way, so these can come in later. You can still follow new releases."
+        }
         return "That's a lot at once, so the newest \(option.albumIds.count) of \(option.available) come in now."
     }
 
     static func done(_ result: RequestRunner.BringInResult, artist: String) -> String {
         let followNote = result.following ? " New releases will come in too." : ""
+        // FL4: fewer than the sheet said, because more is on its way now than when it opened.
+        let waitNote = result.heldBack > 0
+            ? " \(releases(result.heldBack)) more can come in when something on its way is home." : ""
         if result.albums > 0 {
             let asked = result.searching
                 ? "Bringing in \(releases(result.albums)) from \(artist)."
                 : "Asked for \(releases(result.albums)) from \(artist). They'll come in when they're found."
-            return asked + followNote
+            return asked + followNote + waitNote
         }
-        if result.following { return "New releases from \(artist) will come in as they come out." }
+        if result.following { return "New releases from \(artist) will come in as they come out." + waitNote }
+        if result.heldBack > 0 { return "Five songs and releases are already on their way." + waitNote }
         return "Nothing more to bring in right now."
     }
 
@@ -68,7 +76,7 @@ enum BringInCopy {
         case .changesOff?: "Turn on 'Allow Magpie to change Lidarr' in Settings to bring in more."
         case .notSetUp?: "Tap 'Set up Magpie in Lidarr' in Settings to bring in more."
         case .notKept?: "This one can't bring in more from here."
-        case .tooMany?: "Five songs are already on their way. Bring in more when one of them is home."
+        case .tooMany?: "Five songs and releases are already on their way. Bring in more when one of them is home or has stopped."
         case .failed?: "Couldn't bring them in this time. Nothing new is on its way yet."
         case .unconfirmed?: "Couldn't tell whether that went through. Try again to see what's still to come."
         case .unavailable?, nil: "Can't bring in more right now."
@@ -113,11 +121,14 @@ extension AppModel {
         }
     }
 
-    /// Brings in `choice` (nil: no releases) and follows new releases when `follow`.
-    func bringIn(_ id: RequestID, choice: RequestRunner.BringInChoice?, follow: Bool, artist: String) async -> BringInReply {
+    /// Brings in `choice` (nil: no releases) and follows new releases when `follow`. `offered`: the release ids the
+    /// sheet showed, so never more than it said come in (FL4).
+    func bringIn(_ id: RequestID, choice: RequestRunner.BringInChoice?, offered: [Int]?, follow: Bool,
+                 artist: String) async -> BringInReply {
         guard let runner else { return BringInReply(error: RequestRunner.BringInError.unavailable) }
         do {
-            return BringInReply(message: BringInCopy.done(try await runner.bringIn(id, choice: choice, follow: follow), artist: artist))
+            let result = try await runner.bringIn(id, choice: choice, offered: offered, follow: follow)
+            return BringInReply(message: BringInCopy.done(result, artist: artist))
         } catch {
             return BringInReply(error: error)
         }

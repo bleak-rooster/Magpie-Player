@@ -405,8 +405,6 @@ struct GateEnv {
         Call("POST", "qualityprofile", #"{"name":"Magpie Lossless"}"#),
         Call("POST", "metadataprofile", #"{"name":"Magpie Finds"}"#),
         Call("POST", "artist", #"{"foreignArtistId":"x","addOptions":{"monitor":"none"}}"#),
-        Call("PUT", "album/monitor", #"{"albumIds":[3],"monitored":true}"#),
-        Call("PUT", "album/monitor", #"{"albumIds":[3,4,5],"monitored":true}"#),
         Call("POST", "command", #"{"name":"AlbumSearch","albumIds":[3]}"#),
         Call("POST", "command", #"{"name":"RefreshArtist","artistId":12}"#),
     ]
@@ -563,7 +561,8 @@ struct GateEnv {
         #expect(try reason("POST", "tag", raw: #"{"label":"x""#) != nil)
         // Non-ASCII values are fine; same key in sibling objects is fine.
         #expect(try reason("POST", "tag", raw: #"{"label":"café ſ"}"#) == nil)
-        #expect(try reason("PUT", "album/monitor", raw: #" {"albumIds":[1,2],"monitored":true,"x":[{"id":1},{"id":2}]} "#) == nil)
+        #expect(try reason("POST", "command", raw: #" {"name":"AlbumSearch","albumIds":[1,2],"x":[{"id":1},{"id":2}]} "#) == nil)
+        #expect(try reason("PUT", "album/monitor", raw: #" {"albumIds":[1,2],"monitored":true} "#) == nil)
         #expect(try reason("POST", "command", raw: #"{"name":"AlbumSearch","albumIds":[3]}"#) == nil)
     }
 

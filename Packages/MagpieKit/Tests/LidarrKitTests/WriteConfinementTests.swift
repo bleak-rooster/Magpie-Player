@@ -1,4 +1,5 @@
 import Foundation
+import os
 import Testing
 import MagpieCore
 import MagpieTestSupport
@@ -16,14 +17,17 @@ import MagpieTestSupport
     struct Fake {
         let env = GateEnv()
         let transport = MockTransport()
+        /// Holds the first request matching `holdSuffix` (method `holdMethod`) until `latch` is released.
+        let latch = GateLatch()
         let client: LidarrClient
         let ledger: Ledger
         var roots = ["/music/library", "/music/samples"]
 
         init(roots: [String] = ["/music/library", "/music/samples"], ledgerInstance: String? = nil,
              findTags: [Int] = [2], findPath: String = "/music/samples/Find", kept: Bool = false,
-             rootsDown: Bool = false) async throws {
-            client = LidarrClient(base: testBase, apiKey: testKey, transport: transport)
+             rootsDown: Bool = false, hold: (method: String, suffix: String)? = nil) async throws {
+            client = LidarrClient(base: testBase, apiKey: testKey,
+                                  transport: HoldTransport(inner: transport, hold: hold, latch: latch))
             ledger = Ledger(fileURL: nil, instance: ledgerInstance ?? client.instanceScope)
             try await ledger.record(LedgerEntry(lidarrArtistId: 7, albumId: 31, rgMbid: MBID("00000000-0000-0000-0000-000000000031")!,
                                                 createdArtist: false, wasMonitoredBefore: false, root: "/music/library",
@@ -31,6 +35,10 @@ import MagpieTestSupport
             try await ledger.record(LedgerEntry(lidarrArtistId: 42, albumId: 50, rgMbid: MBID("00000000-0000-0000-0000-000000000050")!,
                                                 createdArtist: true, wasMonitoredBefore: false, root: "/music/samples",
                                                 mode: .finds, keptAt: kept ? Date() : nil, send: .applied))
+            // Album 32: the owner's own, monitored before Magpie's Try came along (G6: never unmonitored).
+            try await ledger.record(LedgerEntry(lidarrArtistId: 7, albumId: 32, rgMbid: MBID("00000000-0000-0000-0000-000000000032")!,
+                                                createdArtist: false, wasMonitoredBefore: true, root: "/music/library",
+                                                mode: .fallback, send: .applied))
             let t = transport
             func reply(_ object: Any) -> Data { try! JSONSerialization.data(withJSONObject: object) }
             t.stub(pathSuffix: "/api/v1/rootfolder", status: rootsDown ? 503 : 200,
@@ -250,5 +258,118 @@ import MagpieTestSupport
         }
         #expect(fake.writes.isEmpty)
         #expect(await gate.changeLog().isEmpty)
+    }
+
+    // MARK: - H2b fix 1: album monitor, one confined write at a time
+
+    /// `PUT album/monitor` is confined too: monitoring only albums Magpie recorded first (a Try, a Bring in more);
+    /// unmonitoring only albums Magpie monitored and nobody kept. The owner's album is never unmonitored.
+    @Test func albumMonitorIsConfinedToTheLedger() async throws {
+        let fake = try await Fake()
+        let gate = await fake.gate()
+        for call in [Call("PUT", "album/monitor", #"{"albumIds":[31],"monitored":true}"#),        // Try, existing artist (G6)
+                     Call("PUT", "album/monitor", #"{"albumIds":[50,31],"monitored":true}"#),
+                     Call("PUT", "album/monitor", #"{"albumIds":[31],"monitored":false}"#),       // Cancel of what Magpie monitored
+                     Call("PUT", "album/monitor", #"{"albumIds":[50],"monitored":false}"#)] {     // Not for me
+            _ = try await gate.send(call.method, call.path, body: Self.body(call))
+        }
+        #expect(fake.writes.count == 4)
+        let refusedFake = try await Fake()
+        let refusing = await refusedFake.gate()
+        for call in [Call("PUT", "album/monitor", #"{"albumIds":[32],"monitored":false}"#),       // the owner's album
+                     Call("PUT", "album/monitor", #"{"albumIds":[50,32],"monitored":false}"#),
+                     Call("PUT", "album/monitor", #"{"albumIds":[99],"monitored":false}"#),
+                     Call("PUT", "album/monitor", #"{"albumIds":[99],"monitored":true}"#),        // never recorded
+                     Call("PUT", "album/monitor", #"{"albumIds":[50],"monitored":true,"x":1}"#),  // extra key
+                     Call("PUT", "album/monitor", #"{"albumIds":[],"monitored":true}"#),
+                     Call("PUT", "album/monitor", #"{"albumIds":[50],"monitored":"false"}"#),
+                     Call("PUT", "album/monitor", #"{"albumIds":[50]}"#)] {
+            await Self.expectRefused(call, refusing, refusedFake)
+        }
+        let kept = try await Fake(kept: true)
+        await Self.expectRefused(Call("PUT", "album/monitor", #"{"albumIds":[50],"monitored":false}"#), await kept.gate(), kept)
+        let unconfined = try await Fake()
+        await Self.expectRefused(Call("PUT", "album/monitor", #"{"albumIds":[31],"monitored":false}"#),
+                                 await unconfined.gate(confined: false), unconfined)
+    }
+
+    /// Confined writes go one at a time: while a delete is between its checks and Lidarr's answer, a second confined
+    /// write neither reads nor sends anything; it goes after.
+    @Test func confinedWritesGoOneAtATime() async throws {
+        let fake = try await Fake(hold: ("DELETE", "/api/v1/trackfile/10"))
+        let gate = await fake.gate()
+        let first = Task { try await gate.send("DELETE", "trackfile/10", body: nil) }
+        await fake.latch.waitArrived()
+        let seen = fake.transport.requests.count
+        let second = Task {
+            try await gate.send("PUT", "artist/editor", body: Self.body(Call("PUT", "artist/editor",
+                #"{"artistIds":[42],"rootFolderPath":"/music/library","moveFiles":true}"#)))
+        }
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(fake.transport.requests.count == seen, "the second write waits, reads included")
+        await fake.latch.release()
+        _ = try await first.value
+        _ = try await second.value
+        #expect(fake.writes.map { $0.httpMethod ?? "" } == ["DELETE", "PUT"])
+    }
+
+    /// The ledger is read once more right before a delete: an artist kept while the checks ran is not deleted.
+    @Test func keptDuringTheChecksIsNotDeleted() async throws {
+        let fake = try await Fake(hold: ("GET", "/api/v1/artist/42"))
+        let gate = await fake.gate()
+        let delete = Task { try await gate.send("DELETE", "artist/42?deleteFiles=false&addImportListExclusion=false", body: nil) }
+        await fake.latch.waitArrived()
+        for var e in try await fake.ledger.entries where e.lidarrArtistId == 42 {
+            e.keptAt = Date()
+            try await fake.ledger.record(e)
+        }
+        await fake.latch.release()
+        await #expect(throws: WriteGateError.self) { _ = try await delete.value }
+        #expect(fake.writes.isEmpty)
+    }
+}
+
+/// Holds one request until released, and says when it has arrived.
+actor GateLatch {
+    private var arrived = false, released = false
+    private var arrivalWaiters: [CheckedContinuation<Void, Never>] = [], holders: [CheckedContinuation<Void, Never>] = []
+
+    func hold() async {
+        arrived = true
+        arrivalWaiters.forEach { $0.resume() }
+        arrivalWaiters = []
+        if released { return }
+        await withCheckedContinuation { holders.append($0) }
+    }
+
+    func waitArrived() async {
+        if arrived { return }
+        await withCheckedContinuation { arrivalWaiters.append($0) }
+    }
+
+    func release() {
+        released = true
+        holders.forEach { $0.resume() }
+        holders = []
+    }
+}
+
+/// The mock, except that the first request matching `hold` waits on `latch`.
+struct HoldTransport: HTTPTransport {
+    let inner: MockTransport
+    let hold: (method: String, suffix: String)?
+    let latch: GateLatch
+    private let used = OSAllocatedUnfairLock(initialState: false)
+
+    init(inner: MockTransport, hold: (method: String, suffix: String)?, latch: GateLatch) {
+        self.inner = inner; self.hold = hold; self.latch = latch
+    }
+
+    func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        if let hold, (request.httpMethod ?? "GET") == hold.method, request.url?.path.hasSuffix(hold.suffix) == true,
+           used.withLock({ let first = !$0; $0 = true; return first }) {
+            await latch.hold()
+        }
+        return try await inner.send(request)
     }
 }

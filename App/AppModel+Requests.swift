@@ -30,7 +30,8 @@ enum TryCopy {
     static let findsNote = "It goes into your Finds first, so you can try it before it joins your library."
     /// Finds mode was on, but the Finds folder didn't check out when the song was asked for (G2, B8).
     static let findsUnavailable = "Your Finds folder needs another look in Settings, so this went straight into your library."
-    static let tooMany = "Five songs are already on their way. Try this one when one of them is home."
+    /// G7 / FL4: songs on their way and releases Bring in more is bringing in share the limit of five.
+    static let tooMany = "Five songs and releases are already on their way. Try this one when one of them is home or has stopped."
     static let unavailable = "Your requests can't be read right now. Unlock your iPhone and try again."
     static let changesOff = TryAvailability.changesOff.message!
     static let notSetUp = TryAvailability.notSetUp.message!
@@ -291,6 +292,9 @@ extension AppModel {
     }
 
     func magpieRequest(_ id: RequestID) -> MagpieRequest? { requests.first { $0.id == id } }
+
+    /// G7 / FL4: songs on their way plus releases Bring in more is still bringing in (the limit of five counts both).
+    var onTheirWay: Int { requests.reduce(0) { $0 + $1.activePlaces } }
 
     /// The library song a Ready request became.
     func readySong(_ request: MagpieRequest) async -> Song? {

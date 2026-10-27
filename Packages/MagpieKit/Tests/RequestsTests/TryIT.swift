@@ -146,8 +146,14 @@ struct TryIT {
         let root = finds ? "/music/samples" : "/music/library"
         let tags = finds ? [provisioned.magpieTagId, provisioned.findTagId] : [provisioned.magpieTagId]
         let ledger = Ledger(fileURL: dir.appending(path: "ledger.json"), instance: client.instanceScope)
+        // FM1 / H2b fix 1: the runner's gate confines album monitors (and deletes) to the ledger, like the app's.
+        let confinedGate = LidarrWriteGate(
+            client: client, logURL: dir.appending(path: "log.json"), defaultsSuite: suite,
+            confinement: WriteConfinement(ledger: ledger, roots: {
+                .init(mainRoot: "/music/library", findsRoot: "/music/samples", findTagId: provisioned.findTagId)
+            }))
         let runner = RequestRunner(
-            lidarr: client, gate: gate, ledger: ledger, mb: mb,
+            lidarr: client, gate: confinedGate, ledger: ledger, mb: mb,
             library: LibraryAccess(startScan: {}, isScanning: { false }, refreshIndex: {}, songId: { _ in nil }),
             store: RequestStore(fileURL: dir.appending(path: "requests.json")), setup: { setup })
 

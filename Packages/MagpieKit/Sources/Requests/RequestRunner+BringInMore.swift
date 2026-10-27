@@ -18,7 +18,8 @@ import MagpieCore
 /// G7: each release it brings in counts toward the limit of 5 like a request on its way (security FL4), until Lidarr
 /// has files for it, it is no longer monitored, or a day has passed (`followBringIns`). So one Bring in more brings
 /// in at most the room left (and never more than `bringInLimit`), newest first (the offer says how many there were),
-/// and it is refused when there is none. M6: the albums are in the ledger (kept, closed,
+/// never more than the sheet offered, and releases are refused when there is no room. Following new releases
+/// downloads nothing now, so it never needs room. M6: the albums are in the ledger (kept, closed,
 /// "may have landed") before the monitor write; afterwards they say whether it applied.
 extension RequestRunner {
     public enum BringInChoice: String, Sendable, CaseIterable {
@@ -63,9 +64,12 @@ extension RequestRunner {
         public var searching: Bool
         /// The artist follows new releases now (sent now, or already).
         public var following: Bool
+        /// Releases the sheet offered that didn't come in now because the limit of 5 has less room than when the
+        /// sheet was shown (FL4): the sheet's number is never exceeded, and a shortfall is said.
+        public var heldBack: Int
 
-        public init(albums: Int, searching: Bool, following: Bool) {
-            self.albums = albums; self.searching = searching; self.following = following
+        public init(albums: Int, searching: Bool, following: Bool, heldBack: Int = 0) {
+            self.albums = albums; self.searching = searching; self.following = following; self.heldBack = heldBack
         }
     }
 
@@ -112,7 +116,13 @@ extension RequestRunner {
 
     /// Monitors and searches what `choice` brings in now (nil: no releases), and follows new releases when
     /// `follow`. Every check is made again; throws `BringInError` (nothing written) unless it returns.
-    public func bringIn(_ id: RequestID, choice: BringInChoice?, follow: Bool) async throws -> BringInResult {
+    ///
+    /// `offered`: the release ids the sheet showed for `choice`. Then exactly those come in (the ones still not in),
+    /// never more, and at most as many as the limit of 5 has room for now; any held back for room are counted in
+    /// `heldBack`. Nil: the choice's newest releases, as many as there is room for. Following new releases downloads
+    /// nothing now, so it never needs room.
+    public func bringIn(_ id: RequestID, choice: BringInChoice?, offered: [Int]? = nil,
+                        follow: Bool) async throws -> BringInResult {
         let target = try await bringInTarget(id)
         let artistId = target.artist.id
         guard !keepingArtists.contains(artistId) else { throw BringInError.unavailable }
@@ -120,16 +130,21 @@ extension RequestRunner {
         defer { keepingArtists.remove(artistId) }
 
         var albums: [LidarrAlbum] = []
+        var heldBack = 0
         if let choice {
             let songAlbums = choice == .thisAlbum ? await songAlbumGroups(target.request) : nil
             if choice == .thisAlbum, songAlbums == nil { throw BringInError.unavailable }
             let option = Self.bringInOption(target.albums, choice: choice, songAlbums: songAlbums,
                                             skip: target.openAlbums, limit: Self.bringInLimit)
-            let wanted = option?.albumIds ?? []
+            let eligible = option?.albumIds ?? []
+            let wanted = offered.map { ids in ids.filter(eligible.contains) } ?? eligible
             albums = wanted.compactMap { albumId in target.albums.first { $0.id == albumId } }
             // FL4: the room left now (checked and taken with no await between), the newest first.
-            guard albums.isEmpty || bringInRoom > 0 else { throw BringInError.tooMany }
-            albums = Array(albums.prefix(bringInRoom))
+            guard albums.isEmpty || bringInRoom > 0 || follow else { throw BringInError.tooMany }
+            if albums.count > bringInRoom {
+                if offered != nil || bringInRoom == 0 { heldBack = albums.count - bringInRoom }
+                albums = Array(albums.prefix(bringInRoom))
+            }
         }
         let reserved = albums.map(\.id)
         if !reserved.isEmpty {
@@ -139,7 +154,7 @@ extension RequestRunner {
             }
         }
         let needsFollow = follow && !Self.follows(target.artist)
-        var result = BringInResult(albums: 0, searching: false, following: follow && !needsFollow)
+        var result = BringInResult(albums: 0, searching: false, following: follow && !needsFollow, heldBack: heldBack)
         if !albums.isEmpty {
             do {
                 albums = try await monitor(albums, artistId: artistId, root: target.mainRoot)
@@ -244,7 +259,6 @@ extension RequestRunner {
         guard let r = request(id), r.state == .kept, !r.keptInPlace, r.keep == nil, !r.keepNeedsAttention,
               let artistId = r.lidarrArtistId else { throw BringInError.notKept }
         guard await gate.enabled else { throw BringInError.changesOff }
-        guard bringInRoom > 0 else { throw BringInError.tooMany }
         guard let setup = await keepSetup() else { throw BringInError.notSetUp }
 
         let entries: [LedgerEntry]

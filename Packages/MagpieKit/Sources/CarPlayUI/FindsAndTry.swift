@@ -143,7 +143,7 @@ public enum CPTryProblem: Sendable, Hashable {
 
     public var message: String {
         switch self {
-        case .tooMany: "Five songs are already on their way."
+        case .tooMany: "Five songs and releases are already on their way."
         case .notSetUp: "Bringing songs home isn't set up on this iPhone."
         case .unavailable: "Your requests can't be read right now."
         case .other: "That didn't work this time."

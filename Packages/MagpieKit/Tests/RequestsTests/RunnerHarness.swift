@@ -177,6 +177,9 @@ final class FakeLidarr: @unchecked Sendable {
         /// `GET /rootfolder` (Finds mode re-checks the Finds root before every add).
         var roots = ["/music/library", "/music/samples"]
         var rootsDown = false
+        /// `GET /rootfolder` reads so far, and the read numbers (1-based) that answer 503 once.
+        var rootReads = 0
+        var rootReadsFailing: Set<Int> = []
         var holdMethod = "GET"
         var holdSeen = 0
         // Keep (Task 6.2b)
@@ -424,7 +427,11 @@ final class FakeLidarr: @unchecked Sendable {
                           "files": withFiles ? files.map { ["path": $0, "name": "x"] } : [[String: Any]]()])
         }
         t.stub(pathSuffix: "/api/v1/rootfolder") { [self] _ in
-            if with({ $0.rootsDown }) { return MockTransport.Response(status: 503) }
+            let fails: Bool = with { s in
+                s.rootReads += 1
+                return s.rootsDown || s.rootReadsFailing.contains(s.rootReads)
+            }
+            if fails { return MockTransport.Response(status: 503) }
             return reply(with { s in s.roots.enumerated().map { ["id": $0.offset + 1, "path": $0.element] as [String: Any] } })
         }
         t.stub(pathSuffix: "/api/v1/artist/lookup") { [self] _ in

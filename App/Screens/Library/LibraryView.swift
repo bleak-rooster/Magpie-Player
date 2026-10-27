@@ -59,9 +59,10 @@ struct LibraryView: View {
         return n == 0 ? nil : "\(n) new"
     }
 
-    /// "2 on their way" while requests are in progress.
+    /// "2 on their way" while requests are in progress (and releases Bring in more is bringing in: they share the
+    /// limit of five, FL4).
     private var requestsDetail: String? {
-        let n = model.requests.filter(\.isActive).count
+        let n = model.onTheirWay
         return n == 0 ? nil : "\(n) on \(n == 1 ? "its" : "their") way"
     }
 

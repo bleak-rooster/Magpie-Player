@@ -146,6 +146,9 @@ unless they regressed. None did.
 - **FL3 remainder.** After the H2b fix Keep moves only while Lidarr's queue is idle and re-checks the destination
   right before the PUT, but Lidarr still runs the move a moment later: a same-named folder created in exactly that
   moment can't be prevented from the client.
+- **Finds identity on sign-out or a new first address (accepted, controller ruling).** The Finds library id is
+  dropped by design on sign-out and when the first Navidrome address changes (a new Navidrome scope): setup is
+  cleared for the next account, so until Finds is set up again the Finds library's songs count as library songs.
 - **Older Lows still open from `security-v1.md`**:
   - L1: sign-out keeps the ListenBrainz token, and now the Made for you shelf with it.
   - L5: ListenBrainz path segments are now also built from the server-supplied `validate-token` `user_name` (host fixed, GET only).

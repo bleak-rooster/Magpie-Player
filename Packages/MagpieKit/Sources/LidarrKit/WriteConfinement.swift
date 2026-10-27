@@ -11,7 +11,13 @@ import MagpieCore
 /// - `DELETE /artist/{id}`: only an artist Magpie created, nothing of it kept, carrying `magpie-find` and strictly
 ///   inside the Finds root right now;
 /// - `DELETE /trackfile/{id}` and `/trackfile/bulk`: every id is read first; each must belong to such an artist and
-///   lie strictly inside both the Finds root and that artist's folder.
+///   lie strictly inside both the Finds root and that artist's folder;
+/// - `PUT /album/monitor` (H2b fix 1): `monitored: true` only for albums the ledger has an entry for (Magpie records
+///   each album before it monitors it: a Try, a Bring in more); `monitored: false` only for albums the ledger says
+///   Magpie monitored (not monitored before) and that aren't kept. Ledger only, no Lidarr read.
+///
+/// The gate runs confined writes one at a time, checks to answer (`LidarrWriteGate`), and reads the ledger's kept
+/// state once more right before sending a delete.
 ///
 /// The roots come from the owner's setup (`roots`), checked against Lidarr's fresh root folders: the main root must
 /// be one of them, and the Finds root must still pass G2 (`PathGuard.findsRootStillValid`). The ledger must belong
@@ -40,7 +46,8 @@ public struct WriteConfinement: Sendable {
     static let maxTrackFiles = 500
 
     enum Verdict: Equatable {
-        case confined
+        /// May be sent. `artists`: the artists a delete touches, whose kept state is read again right before it goes.
+        case confined(artists: Set<Int>)
         case refused(String)
         /// Something couldn't be read: not sent.
         case unknown
@@ -57,6 +64,8 @@ public struct WriteConfinement: Sendable {
         case artistDelete(Int)
         /// `DELETE /trackfile/{id}` or `/trackfile/bulk`.
         case trackFileDelete([Int])
+        /// `PUT /album/monitor`.
+        case albumMonitor(albumIds: [Int], monitored: Bool)
     }
 
     func check(_ write: Write, lidarr: LidarrClient) async -> Verdict {
@@ -66,16 +75,30 @@ public struct WriteConfinement: Sendable {
             do { entries = try await ledger.entries } catch { throw Unreadable() }
             let context = Context(entries: entries, lidarr: lidarr, roots: await roots())
             switch write {
-            case .editor(let body): try await context.editor(body)
-            case .artistDelete(let id): try await context.artistDelete(id)
-            case .trackFileDelete(let ids): try await context.trackFileDelete(ids)
+            case .editor(let body):
+                try await context.editor(body)
+                return .confined(artists: [])
+            case .artistDelete(let id):
+                try await context.artistDelete(id)
+                return .confined(artists: [id])
+            case .trackFileDelete(let ids):
+                return .confined(artists: try await context.trackFileDelete(ids))
+            case .albumMonitor(let ids, let monitored):
+                try context.albumMonitor(ids, monitored: monitored)
+                return .confined(artists: [])
             }
-            return .confined
         } catch let refusal as Refusal {
             return .refused(refusal.reason)
         } catch {
             return .unknown
         }
+    }
+
+    /// Right before a delete is sent: none of `artists` is kept in the ledger now. Nil: the ledger can't be read.
+    func stillUnkept(_ artists: Set<Int>) async -> Bool? {
+        guard !artists.isEmpty else { return true }
+        guard let entries = try? await ledger.entries else { return nil }
+        return !entries.contains { artists.contains($0.lidarrArtistId) && $0.keptAt != nil }
     }
 
     /// One confined write's view: the ledger as read, the owner's roots, and fresh Lidarr reads (cached per write).
@@ -151,7 +174,9 @@ public struct WriteConfinement: Sendable {
             _ = try await findArtist(id)
         }
 
-        func trackFileDelete(_ ids: [Int]) async throws {
+        /// Returns the artists the files belong to.
+        func trackFileDelete(_ ids: [Int]) async throws -> Set<Int> {
+            var artists = Set<Int>()
             guard !ids.isEmpty, ids.count <= WriteConfinement.maxTrackFiles else {
                 throw Refusal(reason: "track file delete needs 1 to \(WriteConfinement.maxTrackFiles) ids")
             }
@@ -167,6 +192,20 @@ public struct WriteConfinement: Sendable {
                                             caseInsensitive: false)
                 guard finds.isInside(file.path), artistGuard.isInside(file.path) else {
                     throw Refusal(reason: "a track file outside the find's folder")
+                }
+                artists.insert(artistId)
+            }
+            return artists
+        }
+
+        func albumMonitor(_ ids: [Int], monitored: Bool) throws {
+            for id in ids {
+                let entry = entries.filter { $0.albumId == id }
+                guard !entry.isEmpty else { throw Refusal(reason: "not an album Magpie asked for") }
+                if !monitored {
+                    guard entry.allSatisfy({ !$0.wasMonitoredBefore && $0.keptAt == nil }) else {
+                        throw Refusal(reason: "Magpie only unmonitors albums it monitored and nobody kept")
+                    }
                 }
             }
         }

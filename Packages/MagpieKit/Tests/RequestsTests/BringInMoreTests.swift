@@ -168,7 +168,8 @@ import MagpieCore
         #expect((monitor.1["albumIds"] as? [Int])?.count == RequestRunner.maxActive)
     }
 
-    /// G7: five requests on their way already: no Bring in more now.
+    /// G7: five requests on their way already: no releases now. Following new releases downloads nothing now, so it
+    /// still goes (H2b fix 1), and the releases it couldn't bring in are counted.
     @Test func atMostFiveActive() async throws {
         let h = await Harness(setup: Harness.findsSetup)
         let id = try await Self.keptFind(h)
@@ -182,9 +183,60 @@ import MagpieCore
         let before = h.server.writes.count
 
         await #expect(throws: RequestRunner.BringInError.tooMany) {
-            _ = try await relaunched.runner.bringIn(id, choice: .albumsAndEPs, follow: true)
+            _ = try await relaunched.runner.bringIn(id, choice: .albumsAndEPs, follow: false)
         }
         #expect(h.server.writes.count == before)
+        let offer = try await relaunched.runner.bringInOffer(id)
+        #expect(offer.options[.albumsAndEPs]?.albumIds == [] && offer.options[.albumsAndEPs]?.available == 3)
+        #expect(try await relaunched.runner.bringIn(id, choice: nil, follow: true)
+                == .init(albums: 0, searching: false, following: true))
+        #expect(h.server.writeBodies().dropFirst(before).map(\.0) == ["PUT artist/editor"], "following only")
+        #expect(await relaunched.request(id)?.bringingIn == nil)
+    }
+
+    /// H2b fix 1: exactly what the sheet offered comes in. The room grew while the sheet was open (a request came
+    /// home): still only the offered releases, not more.
+    @Test func roomThatGrewBringsOnlyWhatWasOffered() async throws {
+        let h = await Harness(setup: Harness.findsSetup)
+        let id = try await Self.keptFind(h)
+        let mine = try await h.store.load()
+        let active = (0..<3).map { i in
+            var r = MagpieRequest(recording: h.recording(mbid(200 + i)), tier: .standard, createdAt: h.clock.now)
+            r.state = .searching
+            return r
+        }
+        try await h.store.save(mine + active)
+        let busy = await Harness(directory: h.dir, lidarr: h.server, setup: Harness.findsSetup)
+        let offered = try #require(try await busy.runner.bringInOffer(id).options[.everything]).albumIds
+        #expect(offered == [54, 53])
+        await busy.runner.stop()
+        try await h.store.save(mine)   // they came home meanwhile: room for 5 now
+        let now = await Harness(directory: h.dir, lidarr: h.server, setup: Harness.findsSetup)
+        let result = try await now.runner.bringIn(id, choice: .everything, offered: offered, follow: false)
+        #expect(result == .init(albums: 2, searching: true, following: false))
+        let monitor = try #require(h.server.writeBodies().last { $0.0 == "PUT album/monitor" })
+        #expect(monitor.1["albumIds"] as? [Int] == [54, 53])
+    }
+
+    /// H2b fix 1: the room shrank while the sheet was open: the newest that fit come in, and the rest are counted
+    /// so the owner hears it.
+    @Test func roomThatShrankSaysHowManyWait() async throws {
+        let h = await Harness(setup: Harness.findsSetup)
+        let id = try await Self.keptFind(h)
+        let offered = try #require(try await h.runner.bringInOffer(id).options[.everything]).albumIds
+        #expect(offered == [54, 53, 52, 51])
+        await h.runner.stop()
+        let active = (0..<3).map { i in
+            var r = MagpieRequest(recording: h.recording(mbid(200 + i)), tier: .standard, createdAt: h.clock.now)
+            r.state = .searching
+            return r
+        }
+        try await h.store.save(try await h.store.load() + active)
+        let now = await Harness(directory: h.dir, lidarr: h.server, setup: Harness.findsSetup)
+        let result = try await now.runner.bringIn(id, choice: .everything, offered: offered, follow: false)
+        #expect(result == .init(albums: 2, searching: true, following: false, heldBack: 2))
+        let monitor = try #require(h.server.writeBodies().last { $0.0 == "PUT album/monitor" })
+        #expect(monitor.1["albumIds"] as? [Int] == [54, 53])
     }
 
     /// Security FL4: what Bring in more brings in counts toward the limit of 5 like requests on their way, until each

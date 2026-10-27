@@ -152,9 +152,9 @@ struct BringInMoreSheet: View {
 
     private func bring(_ offer: RequestRunner.BringInOffer) async {
         phase = .working(offer)
-        let releases = offer.options[choice].map { !$0.albumIds.isEmpty } ?? false
-        let reply = await model.bringIn(requestId, choice: releases ? choice : nil, follow: follow,
-                                        artist: offer.artistName)
+        let offered = offer.options[choice]?.albumIds ?? []
+        let reply = await model.bringIn(requestId, choice: offered.isEmpty ? nil : choice, offered: offered,
+                                        follow: follow, artist: offer.artistName)
         phase = .done(reply)
     }
 }

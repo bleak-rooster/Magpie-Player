@@ -477,6 +477,28 @@ import MagpieCore
         #expect(await h.gate.changeLog().filter { $0.path == "/api/v1/artist/editor" }.count == 1, "not even tried")
     }
 
+    /// H2b fix 1: the gate can't confirm the point-back for a moment (Lidarr didn't answer its own read): not a
+    /// refusal, so the restore waits for a later tick (still bounded by the time limit), and then goes through.
+    @Test func unconfirmedPointBackWaits() async throws {
+        let h = await Harness(setup: Harness.findsSetup)
+        let id = try await Self.readyFind(h)
+        h.server.with { $0.move = .prunedFilesStayed }
+        #expect(try await h.runner.keep(id) == .stillMoving)
+        // The restore reads the root folders, then the gate reads them again: that second read fails once.
+        h.server.with { $0.rootReadsFailing = [$0.rootReads + 2] }
+        h.clock.advance(60)
+        await h.runner.tick()
+        #expect(Self.editorWrites(h).count == 1, "no point-back yet")
+        var r = try #require(await h.request(id))
+        #expect(r.keep?.phase == .restoring && !r.keepNeedsAttention)
+
+        h.clock.advance(RequestRunner.keepCheckInterval)
+        await h.runner.tick()
+        #expect(Self.editorWrites(h).last?["moveFiles"] as? Bool == false)
+        r = try #require(await h.request(id))
+        #expect(r.state == .ready && r.keep == nil && !r.keepNeedsAttention)
+    }
+
     /// Lidarr 3.2 leaves the track file paths at the old folder after a move (seen on the dev stack); a Lidarr
     /// that updates them is fine too. Either way the files are looked for on disk in the new folder.
     @Test(arguments: [false, true])
