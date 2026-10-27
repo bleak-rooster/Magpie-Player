@@ -340,6 +340,7 @@ struct FindsIT {
         var components = URLComponents(url: base.appending(path: "api/v1/" + path), resolvingAgainstBaseURL: false)!
         if !query.isEmpty { components.queryItems = query.map { URLQueryItem(name: $0.key, value: $0.value) } }
         var request = URLRequest(url: components.url!)
+        // G1 allowlist: devLidarr (scripts/check-writes.sh): dev-stack set-up and clean-up only, never product code.
         request.httpMethod = method
         request.setValue(key, forHTTPHeaderField: "X-Api-Key")
         if let body {
