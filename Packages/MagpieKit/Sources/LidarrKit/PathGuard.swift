@@ -15,8 +15,19 @@ public enum RootValidation: Sendable, Equatable {
 /// is true.
 ///
 /// Comparison is on the strings Lidarr and Navidrome report, never on this device's filesystem: paths are
-/// standardised lexically (`.` and empty components dropped, `..` resolved, trailing `/` stripped) and
-/// compared component by component, so `/music/samples-old` is not inside `/music/samples`.
+/// standardised lexically (`.` and empty components dropped, trailing `/` stripped) and compared component by
+/// component, so `/music/samples-old` is not inside `/music/samples`.
+///
+/// `isInside` refuses any path with a `..` component instead of resolving it: if `Artist` is a link on the
+/// server, `Artist/..` is not its lexical parent. Lidarr never reports `..` in artist or track paths, so
+/// refusing costs nothing. (`validateRoot` and `PathMapping` do resolve `..`; there it only refuses more.)
+///
+/// Accepting comparisons are byte-exact (UTF-8): Swift's `==` treats Unicode-equivalent spellings as equal,
+/// but on ext4 `Fundé` (precomposed) and `Fundé` (decomposed) are different folders. Refusing comparisons
+/// stay loose (canonical equivalence, case folded), which only refuses more.
+///
+/// Finds mode builds the guard case-sensitive (`caseInsensitive: false`): the server's volume can't be
+/// detected, and case-sensitive fails safe.
 ///
 /// Symlinks: Magpie can't see the server's filesystem, so it can't follow links. What it guarantees is that a
 /// path passes only when it lies under the confirmed root's own spelling and inside no other root. A link that
@@ -39,11 +50,13 @@ public struct PathGuard: Sendable, Equatable {
         self.isValid = Self.validateRoot(findsRoot, others: otherRoots) == .ok
     }
 
-    /// True when `path` is strictly below the Finds root (never the root itself) and inside no other root.
+    /// True when `path` is strictly below the Finds root (never the root itself), has no `..` component, and
+    /// is inside no other root.
     public func isInside(_ path: String) -> Bool {
-        guard isValid, let root = findsRoot.map(Self.components), let p = Self.standardize(path).map(Self.components)
+        guard isValid, !path.split(separator: "/").contains(".."),
+              let root = findsRoot.map(Self.components), let p = Self.standardize(path).map(Self.components)
         else { return false }
-        guard Self.isStrictlyBelow(p, root, foldCase: caseInsensitive) else { return false }
+        guard p.count > root.count, Self.exactPrefix(p, root, foldCase: caseInsensitive) else { return false }
         // Defence in depth: never inside another root, whatever the case rules (refusing more is safe).
         return !otherRoots.contains { other in
             guard let o = Self.standardize(other).map(Self.components) else { return false }
@@ -56,6 +69,7 @@ public struct PathGuard: Sendable, Equatable {
     /// must be refused too.
     public static func validateRoot(_ root: String, others: [String]) -> RootValidation {
         guard let r = standardize(root).map(components) else { return .notAbsolute }
+        guard !r.isEmpty else { return .nested }   // `/` holds every other folder
         var result = RootValidation.ok
         for other in others {
             guard let o = standardize(other).map(components) else { continue }
@@ -84,13 +98,18 @@ public struct PathGuard: Sendable, Equatable {
         standardized.split(separator: "/").map(String.init)
     }
 
+    /// Loose: Swift `==` (canonical equivalence). Use only where a match refuses.
     static func isBelowOrEqual(_ path: [String], _ root: [String], foldCase: Bool) -> Bool {
         guard path.count >= root.count else { return false }
         return zip(path, root).allSatisfy { foldCase ? $0.lowercased() == $1.lowercased() : $0 == $1 }
     }
 
-    static func isStrictlyBelow(_ path: [String], _ root: [String], foldCase: Bool) -> Bool {
-        path.count > root.count && isBelowOrEqual(path, root, foldCase: foldCase)
+    /// Strict: byte-for-byte UTF-8 (after lower-casing when `foldCase`). Use where a match accepts.
+    static func exactPrefix(_ path: [String], _ root: [String], foldCase: Bool) -> Bool {
+        guard path.count >= root.count else { return false }
+        return zip(path, root).allSatisfy { a, b in
+            foldCase ? Array(a.lowercased().utf8) == Array(b.lowercased().utf8) : Array(a.utf8) == Array(b.utf8)
+        }
     }
 }
 
@@ -111,7 +130,19 @@ public struct PathMapping: Sendable, Equatable, Codable {
         guard let from = PathGuard.standardize(lidarrPrefix).map(PathGuard.components),
               let to = PathGuard.standardize(navidromePrefix).map(PathGuard.components),
               let path = PathGuard.standardize(p).map(PathGuard.components),
-              PathGuard.isBelowOrEqual(path, from, foldCase: false) else { return nil }
+              PathGuard.exactPrefix(path, from, foldCase: false) else { return nil }
         return "/" + (to + path.dropFirst(from.count)).joined(separator: "/")
+    }
+
+    /// A mount-prefix guess for two paths to the same folder: drops the trailing components they share
+    /// (`/srv/lidarr/samples`, `/srv/nd/samples` → `/srv/lidarr` → `/srv/nd`). Nil when either isn't absolute.
+    public static func suggested(lidarr: String, navidrome: String) -> PathMapping? {
+        guard var l = PathGuard.standardize(lidarr).map(PathGuard.components),
+              var n = PathGuard.standardize(navidrome).map(PathGuard.components) else { return nil }
+        while let a = l.last, let b = n.last, Array(a.utf8) == Array(b.utf8) {
+            l.removeLast()
+            n.removeLast()
+        }
+        return PathMapping(lidarrPrefix: "/" + l.joined(separator: "/"), navidromePrefix: "/" + n.joined(separator: "/"))
     }
 }

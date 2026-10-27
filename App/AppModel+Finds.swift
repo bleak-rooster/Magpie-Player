@@ -53,15 +53,19 @@ extension AppModel {
     }
 
     /// B6 / G2: `library` must be the Finds folder as Navidrome sees it (through `mapping` when the paths
-    /// differ) and must neither hold nor sit inside any other Navidrome library (the main library included).
+    /// differ). The mapping is a mount prefix: the main root new music goes to must map too, and the library
+    /// must neither equal, hold nor sit inside it, any other mapped Lidarr root, or any other Navidrome library.
     func chooseFindsLibrary(_ library: NavidromeLibrary, among all: [NavidromeLibrary],
                             mapping: PathMapping?) throws(FindsProblem) {
         guard var setup = findsSetup, let root = setup.findsRoot else { throw .notConnected }
-        let mapped = mapping.map { $0.toNavidrome(root) } ?? PathGuard.standardize(root)
-        guard let mapped, mapped == PathGuard.standardize(library.path) else {
+        guard let main = lidarrSetup?.rootFolderPath else { throw .mainRootFirst }
+        let toNavidrome: (String) -> String? = { path in mapping.map { $0.toNavidrome(path) } ?? PathGuard.standardize(path) }
+        guard let mapped = toNavidrome(root), mapped == PathGuard.standardize(library.path) else {
             throw mapping == nil ? .pathsDiffer : .mappingMismatch
         }
-        let others = all.filter { $0.id != library.id }.map(\.path)
+        guard let mappedMain = toNavidrome(main) else { throw .mainRootNotMapped }
+        let otherRoots = (lidarrStatus?.roots.map(\.path) ?? []).filter { $0 != root }.compactMap(toNavidrome)
+        let others = [mappedMain] + otherRoots + all.filter { $0.id != library.id }.map(\.path)
         guard PathGuard.validateRoot(mapped, others: others) == .ok else { throw .overlapsLibrary }
         setup.library = library
         setup.mapping = mapping

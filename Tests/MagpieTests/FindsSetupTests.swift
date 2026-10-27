@@ -104,6 +104,8 @@ private let lidarrBase = URL(string: "http://192.168.1.2:8686")!
         let libraries = try await model.navidromeLibraries()
         #expect(libraries.map(\.id) == [1, 2])
         try model.confirmFindsRoot("/music/samples")
+        #expect(throws: FindsProblem.mainRootFirst) { try model.chooseFindsLibrary(libraries[1], among: libraries, mapping: nil) }
+        model.chooseRoot("/music/library")
         #expect(throws: FindsProblem.pathsDiffer) { try model.chooseFindsLibrary(libraries[0], among: libraries, mapping: nil) }
         try model.chooseFindsLibrary(libraries[1], among: libraries, mapping: nil)
         #expect(model.findsSetup?.library?.id == 2)
@@ -111,6 +113,7 @@ private let lidarrBase = URL(string: "http://192.168.1.2:8686")!
         model.setUseFindsFolder(true)
         #expect(model.findsSetup?.isComplete == true)
         // Confirming another root starts the library step again.
+        model.lidarrSetup?.rootFolderPath = nil
         try model.confirmFindsRoot("/music/library")
         #expect(model.findsSetup?.library == nil)
         #expect(model.findsSetup?.isComplete == false)
@@ -122,6 +125,7 @@ private let lidarrBase = URL(string: "http://192.168.1.2:8686")!
         stub(roots: ["/data/music/library", "/data/music/samples"], libraries: [(1, "/music/library"), (2, "/music/samples")])
         let model = try await connected()
         let libraries = try await model.navidromeLibraries()
+        model.chooseRoot("/data/music/library")
         try model.confirmFindsRoot("/data/music/samples")
         #expect(throws: FindsProblem.pathsDiffer) { try model.chooseFindsLibrary(libraries[1], among: libraries, mapping: nil) }
         let wrong = PathMapping(lidarrPrefix: "/data/music/samples", navidromePrefix: "/music/library")
@@ -138,9 +142,30 @@ private let lidarrBase = URL(string: "http://192.168.1.2:8686")!
         stub(roots: ["/data/library", "/data/samples"], libraries: [(1, "/music"), (2, "/music/samples")])
         let model = try await connected()
         let libraries = try await model.navidromeLibraries()
+        model.chooseRoot("/data/library")
         try model.confirmFindsRoot("/data/samples")
-        let mapping = PathMapping(lidarrPrefix: "/data/samples", navidromePrefix: "/music/samples")
+        let mapping = PathMapping(lidarrPrefix: "/data", navidromePrefix: "/music")
         #expect(throws: FindsProblem.overlapsLibrary) { try model.chooseFindsLibrary(libraries[1], among: libraries, mapping: mapping) }
+        #expect(model.findsSetup?.library == nil)
+        cleanUp(model)
+    }
+
+    /// Review fix 2: one Navidrome library `/music` holds the main library; a root-to-root "mapping" onto it
+    /// must not pass.
+    @Test func mainLibraryIsNeverTheFindsLibrary() async throws {
+        stub(roots: ["/music/library", "/music/samples"], libraries: [(1, "/music")])
+        let model = try await connected()
+        let libraries = try await model.navidromeLibraries()
+        model.chooseRoot("/music/library")
+        try model.confirmFindsRoot("/music/samples")
+        let swap = PathMapping(lidarrPrefix: "/music/samples", navidromePrefix: "/music")
+        #expect(throws: FindsProblem.mainRootNotMapped) { try model.chooseFindsLibrary(libraries[0], among: libraries, mapping: swap) }
+        // A real mount mapping that covers the main root doesn't put the Finds folder on `/music` either.
+        let mount = PathMapping(lidarrPrefix: "/music", navidromePrefix: "/music")
+        #expect(throws: FindsProblem.mappingMismatch) { try model.chooseFindsLibrary(libraries[0], among: libraries, mapping: mount) }
+        // The view's pre-fill is a mount-prefix guess, not the root-to-root swap.
+        #expect(PathMapping.suggested(lidarr: "/music/samples", navidrome: "/music") == swap,
+                "nothing shared to drop: the guess still has to pass the main-root check")
         #expect(model.findsSetup?.library == nil)
         cleanUp(model)
     }
@@ -149,6 +174,7 @@ private let lidarrBase = URL(string: "http://192.168.1.2:8686")!
         stub(roots: ["/music/library", "/music/samples"], libraries: [(1, "/music/library"), (2, "/music/samples")])
         let model = try await connected()
         let libraries = try await model.navidromeLibraries()
+        model.chooseRoot("/music/library")
         model.setUseFindsFolder(true)
         try model.confirmFindsRoot("/music/samples")
         try model.chooseFindsLibrary(libraries[1], among: libraries, mapping: nil)
@@ -180,6 +206,7 @@ private let lidarrBase = URL(string: "http://192.168.1.2:8686")!
         let model = try await connected()
         await model.setChangesAllowed(true)
         let libraries = try await model.navidromeLibraries()
+        model.chooseRoot("/music/library")
         model.setUseFindsFolder(true)
         try model.confirmFindsRoot("/music/samples")
         try model.chooseFindsLibrary(libraries[1], among: libraries, mapping: nil)
@@ -208,7 +235,7 @@ private let lidarrBase = URL(string: "http://192.168.1.2:8686")!
         #expect(FindsCopy.confirmTitle("/music/samples") == "Use /music/samples for Finds?")
         #expect(FindsCopy.confirmMessage == "Magpie will only delete files it brought in here.")
         for problem in [FindsProblem.notAbsolute, .notARootFolder, .sameAsOther, .nested, .isMainRoot, .pathsDiffer, .mappingMismatch,
-                        .overlapsLibrary, .notConnected] {
+                        .overlapsLibrary, .mainRootFirst, .mainRootNotMapped, .notConnected] {
             #expect(!problem.message.isEmpty)
         }
     }

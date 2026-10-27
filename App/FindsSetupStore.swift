@@ -42,6 +42,8 @@ enum FindsProblem: Error, Equatable {
     case pathsDiffer
     case mappingMismatch
     case overlapsLibrary
+    case mainRootFirst
+    case mainRootNotMapped
     case notConnected
 
     var message: String {
@@ -53,7 +55,9 @@ enum FindsProblem: Error, Equatable {
         case .isMainRoot: "New music already goes here. Finds need a folder of their own."
         case .pathsDiffer: "Navidrome sees that library at a different path. If it's the same folder, say how the paths match."
         case .mappingMismatch: "With these paths, the Finds folder doesn't land on that library."
-        case .overlapsLibrary: "That library is inside another Navidrome library, or holds one. Finds need a folder of their own."
+        case .overlapsLibrary: "That library is your main library, sits inside another library, or holds one. Finds need a folder of their own."
+        case .mainRootFirst: "Choose where new music goes first (Settings \u{203A} Lidarr)."
+        case .mainRootNotMapped: "With these paths, Navidrome can't see where new music goes. Give the start of the path both servers share, such as /data/music and /music."
         case .notConnected: "Connect Lidarr and your music server first."
         }
     }

@@ -160,10 +160,13 @@ struct FindsSetupView: View {
             mappingFor = nil
         } catch {
             libraryError = error.message
-            if error == .pathsDiffer || error == .mappingMismatch, mappingFor?.id != library.id {
+            if error == .pathsDiffer || error == .mappingMismatch || error == .mainRootNotMapped,
+               mappingFor?.id != library.id {
                 mappingFor = library
-                lidarrPrefix = setup?.findsRoot ?? ""
-                navidromePrefix = library.path
+                // A mount-prefix guess (shared trailing folders dropped), not a root-to-root swap.
+                let guess = setup?.findsRoot.flatMap { PathMapping.suggested(lidarr: $0, navidrome: library.path) }
+                lidarrPrefix = guess?.lidarrPrefix ?? setup?.findsRoot ?? ""
+                navidromePrefix = guess?.navidromePrefix ?? library.path
             }
         }
     }

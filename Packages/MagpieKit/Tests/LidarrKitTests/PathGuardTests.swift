@@ -29,10 +29,11 @@ struct PathGuardTests {
         #expect(!guardSamples.isInside("/music/samples/Artist/../../library/x"))
         #expect(!guardSamples.isInside("/music/samples/.."))
         #expect(!guardSamples.isInside("/../../music/samples-old/x"))
-        // `..` that stays inside is resolved, not refused.
-        #expect(guardSamples.isInside("/music/samples/Artist/../Other/x.flac"))
-        // `..` above `/` stays at `/`, as on a real filesystem.
-        #expect(guardSamples.isInside("/../music/samples/Artist/x.flac"))
+        // Refused, not resolved, even when it would stay inside on paper: `Artist` may be a link on the
+        // server (to /music/library/X), and then `Artist/..` is /music/library.
+        #expect(!guardSamples.isInside("/music/samples/Artist/../Other/x.flac"))
+        #expect(!guardSamples.isInside("/../music/samples/Artist/x.flac"))
+        #expect(!guardSamples.isInside("/music/samples/Artist/x.flac/.."))
     }
 
     @Test func trailingSlashOK() {
@@ -62,6 +63,28 @@ struct PathGuardTests {
         #expect(PathGuard.validateRoot("/Music/Library/Samples", others: ["/music/library"]) == .nested)
         let equal = PathGuard(findsRoot: "/music/library", otherRoots: ["/music/library"], caseInsensitive: false)
         #expect(!equal.isInside("/music/library/Artist/x.flac"))
+    }
+
+    @Test func rootOfEverythingRejected() {
+        #expect(PathGuard.validateRoot("/", others: []) == .nested, "`/` holds every folder")
+        #expect(PathGuard.validateRoot("/..", others: []) == .nested)
+        #expect(PathGuard.validateRoot("//./", others: []) == .nested)
+        let everything = PathGuard(findsRoot: "/", otherRoots: [], caseInsensitive: false)
+        #expect(!everything.isInside("/music/library/Artist/x.flac"))
+    }
+
+    /// Swift `==` says these are equal (canonical equivalence); on ext4 they are two folders.
+    @Test func unicodeEquivalentSpellingIsAnotherFolder() {
+        let precomposed = "/music/Fund\u{E9}", decomposed = "/music/Funde\u{301}"
+        #expect(precomposed == decomposed, "the Swift trap this test is about")
+        let g = PathGuard(findsRoot: precomposed, otherRoots: ["/music/library"], caseInsensitive: false)
+        #expect(g.isInside(precomposed + "/Artist/x.flac"))
+        #expect(!g.isInside(decomposed + "/Artist/x.flac"))
+        let ci = PathGuard(findsRoot: precomposed, otherRoots: [], caseInsensitive: true)
+        #expect(!ci.isInside(decomposed + "/Artist/x.flac"))
+        // Refusing comparisons stay loose: a root equivalent to another is refused.
+        #expect(PathGuard.validateRoot(decomposed, others: [precomposed]) == .equalsOther)
+        #expect(PathMapping(lidarrPrefix: precomposed, navidromePrefix: "/m").toNavidrome(decomposed + "/x") == nil)
     }
 
     @Test func notAbsoluteRejected() {
@@ -121,6 +144,18 @@ struct PathMappingTests {
         #expect(toRoot.toNavidrome("/data/samples") == "/samples")
         let fromRoot = PathMapping(lidarrPrefix: "/", navidromePrefix: "/mnt")
         #expect(fromRoot.toNavidrome("/samples/x") == "/mnt/samples/x")
+    }
+
+    @Test func suggestedDropsSharedTail() {
+        #expect(PathMapping.suggested(lidarr: "/data/music/samples", navidrome: "/music/samples")
+                == PathMapping(lidarrPrefix: "/data", navidromePrefix: "/"), "every shared trailing component goes")
+        #expect(PathMapping.suggested(lidarr: "/srv/lidarr/samples", navidrome: "/srv/nd/samples")
+                == PathMapping(lidarrPrefix: "/srv/lidarr", navidromePrefix: "/srv/nd"))
+        #expect(PathMapping.suggested(lidarr: "/music/samples/", navidrome: "/samples")
+                == PathMapping(lidarrPrefix: "/music", navidromePrefix: "/"))
+        #expect(PathMapping.suggested(lidarr: "/music/samples", navidrome: "/music")
+                == PathMapping(lidarrPrefix: "/music/samples", navidromePrefix: "/music"), "nothing shared")
+        #expect(PathMapping.suggested(lidarr: "samples", navidrome: "/music") == nil)
     }
 
     @Test func invalidPrefixMapsNothing() {
