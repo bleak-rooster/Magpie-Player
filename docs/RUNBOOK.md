@@ -121,7 +121,7 @@ The whole write list, nothing else is ever sent:
 ## 6. Dev stack and tests
 
 - **Dev stack** (throwaway local Navidrome + Lidarr with a fixture library, bound to 127.0.0.1): see `dev/README.md`. `dev/bootstrap.sh` starts and configures it, `dev/smoke.sh` checks every API the app uses. Needs Docker, curl, jq, openssl, ffmpeg. Tests only ever talk to localhost (a dev marker is required); never your real servers.
-- `scripts/test-all.sh`: package tests (`swift test` in `Packages/MagpieKit`) then app unit and UI tests on the iPhone 18 Pro simulator. `scripts/test-packages.sh` and `scripts/test-app.sh` run each half. `scripts/build.sh` builds only.
+- `scripts/test-all.sh`: first `scripts/check-writes.sh` (G1: fails if package code outside `LidarrKit/WriteGate.swift` builds a POST/PUT/DELETE/PATCH request; Navidrome `auth/login` is the one allowlisted write), then package tests (`swift test` in `Packages/MagpieKit`) then app unit and UI tests on the iPhone 18 Pro simulator. `scripts/test-packages.sh` and `scripts/test-app.sh` run each half. `scripts/build.sh` builds only.
 - `scripts/it.sh`: integration tests against the dev stack (`MAGPIE_IT=1`). `MAGPIE_IT=1 scripts/test-app.sh` adds the app flows. Wait about 20 s between runs (login rate limit).
 - `Magpie.xcodeproj` and `App/Info.plist` are generated from `project.yml` (`xcodegen generate`) and are git-ignored.
 
