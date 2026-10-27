@@ -268,6 +268,79 @@ private let t0 = Date(timeIntervalSince1970: 1_900_000_000)
                 "sign-out forgets them")
     }
 
+    // MARK: - Security FM2: D29 fails closed
+
+    /// A Finds-mode Try that turns ready while its wait screen shows plays at once (D6). Its song isn't in the last
+    /// read of the Finds library yet (that refresh runs next to the landing), but it is never sent as now playing:
+    /// a ready find's song counts as a find from the ready callback on, and from the request list.
+    @Test func aFindThatJustLandedIsNeverNowPlaying() async throws {
+        let model = try await connected()
+        try await findsSetUp(model)
+        await model.refreshFinds()   // ["find-1"]: the new song isn't listed yet
+        transport.inner.stub(pathSuffix: "/rest/getSong", body: Data(#"""
+        {"subsonic-response":{"status":"ok","version":"1.16.1","song":{"id":"fresh-find","title":"New","artist":"A","album":"B","duration":200}}}
+        """#.utf8))
+        let request = Self.readyFindRequest(songId: "fresh-find")
+        model.waitScreens[request.id] = 1   // the wait screen is showing: it plays at once
+        model.requestBecameReady(request)
+        for _ in 0..<200 where model.player.queue.current?.song.id != "fresh-find" { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(model.player.queue.current?.song.id == "fresh-find", "it landed")
+        await model.player.waitForPendingScrobbles()
+        #expect(scrobbledIds().isEmpty, "no now playing for a find")
+
+        // From the request list alone (a relaunch: the runner publishes its ready finds).
+        model.requests = [Self.readyFindRequest(songId: "listed-find")]
+        model.play([Self.song("listed-find", created: nil, libraryId: nil)], startAt: 0)
+        await model.player.waitForPendingScrobbles()
+        #expect(scrobbledIds().isEmpty)
+        model.play([Self.song("not-a-find", created: nil, libraryId: nil)], startAt: 0)
+        await model.player.waitForPendingScrobbles()
+        #expect(scrobbledIds() == ["not-a-find"])
+        cleanUp(model)
+    }
+
+    /// The Finds library is a Navidrome fact: its identity is kept per Navidrome account, so a Lidarr disconnect, a
+    /// new API key or address (a new Lidarr scope) or a launch without Lidarr still knows what's a find.
+    @Test func findsIdentitySurvivesLidarrDisconnect() async throws {
+        let model = try await connected()
+        try await findsSetUp(model)
+        await model.refreshFinds()
+        model.disconnectLidarr()
+        #expect(model.findsSetup == nil)
+        for song in [Self.song("find-1", created: nil, libraryId: nil), Self.song("any", created: nil, libraryId: 2)] {
+            model.play([song], startAt: 0)
+            await model.player.waitForPendingScrobbles()
+        }
+        #expect(scrobbledIds().isEmpty, "still finds without Lidarr")
+
+        // A cold start without Lidarr, then another Lidarr scope (a new key).
+        let restored = makeModel()
+        restored.resumeSavedSession()
+        restored.play([Self.song("find-1", created: nil, libraryId: nil)], startAt: 0)
+        await restored.player.waitForPendingScrobbles()
+        _ = try await restored.connectLidarr(base: lidarrBase, apiKey: "rotated-key")
+        #expect(restored.findsSetup?.library == nil, "the new Lidarr scope has no Finds setup")
+        restored.play([Self.song("find-1", created: nil, libraryId: nil)], startAt: 0)
+        await restored.player.waitForPendingScrobbles()
+        #expect(scrobbledIds().isEmpty)
+        restored.play([Self.song("library", created: nil, libraryId: nil)], startAt: 0)
+        await restored.player.waitForPendingScrobbles()
+        #expect(scrobbledIds() == ["library"], "known ids: other songs scrobble")
+        cleanUp(restored)
+        #expect(!defaults.dictionaryRepresentation().keys.contains { $0.hasPrefix(AppModel.findsLibraryKeyPrefix) },
+                "sign-out forgets it")
+    }
+
+    /// A Finds library read that stopped at the page limit isn't a list of every find: unknown songs fail closed.
+    @Test func aPartialFindsReadFailsClosed() {
+        let songs = [Self.song("a", created: nil), Self.song("b", created: nil)]
+        #expect(AppModel.findIds(NavidromeClient.LibrarySongs(songs: songs, complete: true)) == ["a", "b"])
+        #expect(AppModel.findIds(NavidromeClient.LibrarySongs(songs: songs, complete: false)) == nil)
+        let identity = FindsIdentity()
+        identity.set(libraryId: 2, songIds: AppModel.findIds(NavidromeClient.LibrarySongs(songs: songs, complete: false)))
+        #expect(identity.isFind(Self.song("past-the-limit", created: nil, libraryId: nil)))
+    }
+
     /// The seed alone (written before any read this launch) blocks a find.
     @Test func seedAloneBlocksAFind() async throws {
         let model = try await connected()

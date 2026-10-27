@@ -96,7 +96,7 @@ extension AppModel {
     /// when the artist has few. Empty when the library doesn't answer.
     func bridgeMix(seededBy artist: String) async -> [Song] {
         // Until the Finds library's songs are known, every library song might be a find (fails closed): read it first.
-        if findsSetup?.library != nil, findIdsCache?.ids == nil { await refreshFinds() }
+        if findsLibraryId != nil, findIdsCache?.ids == nil { await refreshFinds() }
         let name = Normalize.name(artist)
         let found = (try? await request { try await $0.search(artist, songCount: 100, albumCount: 0, artistCount: 0) })?.songs ?? []
         let byArtist = found.filter { Normalize.name($0.artist) == name }

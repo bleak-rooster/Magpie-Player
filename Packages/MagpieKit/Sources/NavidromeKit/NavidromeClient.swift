@@ -315,9 +315,20 @@ public actor NavidromeClient {
         return (songs, total)
     }
 
+    /// One library folder's songs as read, and whether that is all of them.
+    public struct LibrarySongs: Sendable, Equatable {
+        public var songs: [Song]
+        /// False when the read stopped at the page limit with more songs left: the list is partial (FM2: a song not
+        /// in it may still be in the library).
+        public var complete: Bool
+
+        public init(songs: [Song], complete: Bool) { self.songs = songs; self.complete = complete }
+    }
+
     /// Every song of one library folder (the Finds shelf, Task 6.2a), via `/api/song?library_id=`. Rows of
-    /// another library are dropped too, in case a server ignores the filter; at most `maxPages` pages.
-    public func songs(inLibrary libraryId: Int, pageSize: Int = 500, maxPages: Int = 20) async throws -> [Song] {
+    /// another library are dropped too, in case a server ignores the filter; at most `maxPages` pages (100,000
+    /// songs by default), and `complete` says whether that was all (security FM2: never a silent cap).
+    public func songs(inLibrary libraryId: Int, pageSize: Int = 500, maxPages: Int = 200) async throws -> LibrarySongs {
         var songs: [Song] = [], seen = Set<String>(), start = 0
         for _ in 0..<maxPages {
             let query = [int("library_id", libraryId), int("_start", start), int("_end", start + pageSize),
@@ -330,9 +341,9 @@ public actor NavidromeClient {
             }
             start += pageSize
             let total = response.value(forHTTPHeaderField: "X-Total-Count").flatMap { Int($0) }
-            if rows.count < pageSize || total.map({ start >= $0 }) == true { break }
+            if rows.count < pageSize || total.map({ start >= $0 }) == true { return LibrarySongs(songs: songs, complete: true) }
         }
-        return songs
+        return LibrarySongs(songs: songs, complete: false)
     }
 
     /// Songs with this MusicBrainz recording id (`/api/song?mbz_recording_id=`, verified on 0.64.2), outside

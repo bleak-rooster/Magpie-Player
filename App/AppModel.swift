@@ -74,7 +74,7 @@ final class AppModel {
     /// Finds already played on this account: they are no longer New finds.
     var playedFinds: Set<String> = []
     /// Try requests, newest last (from the runner).
-    var requests: [MagpieRequest] = []
+    var requests: [MagpieRequest] = [] { didSet { syncRequestFinds() } }
     /// D6: a find that became ready went next in the queue; the in-app "Play now" banner (AppModel+Landing.swift).
     var playNowBanner: PlayNowBanner?
     /// Wait screens on screen now, per request (a request's screen may be shown twice, e.g. sheet and Requests).
@@ -337,12 +337,14 @@ final class AppModel {
         if let navidromeScope {
             findsStore.clear(navidromeScope: navidromeScope)
             appDefaults.removeObject(forKey: Self.playedFindsKey(navidromeScope))
+            appDefaults.removeObject(forKey: Self.findsLibraryKey(navidromeScope))
             let prefix = Self.findSongIdsKeyPrefix + navidromeScope + "."
             for key in appDefaults.dictionaryRepresentation().keys where key.hasPrefix(prefix) {
                 appDefaults.removeObject(forKey: key)
             }
         }
         findIdsCache = nil
+        findsIdentity.forgetAccount()
         findSongs = []
         lettingGoSongIds = []
         playedFinds = []

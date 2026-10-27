@@ -56,6 +56,24 @@ import Testing
         #expect(identity.isFind(Self.song("s1", libraryId: nil)), "kept ids were forgotten with the library")
     }
 
+    /// Security FM2: a ready find's song counts as a find before any read lists it, with or without a Finds library
+    /// id; a native library id and Keep still decide first; sign-out forgets it.
+    @Test func readyFindsCountBeforeAnyRead() {
+        let identity = FindsIdentity()
+        identity.markLanded("landed")
+        identity.setRequestFinds(["listed"])
+        #expect(identity.isFind(Self.song("landed", libraryId: nil)), "no Finds library known: still a find")
+        identity.set(libraryId: 2, songIds: ["older"])
+        #expect(identity.isFind(Self.song("landed", libraryId: nil)) && identity.isFind(Self.song("listed", libraryId: nil)))
+        #expect(!identity.isFind(Self.song("landed", libraryId: 1)), "listed in another library: not a find")
+        identity.markKept("listed")
+        #expect(!identity.isFind(Self.song("listed", libraryId: nil)), "kept wins")
+        identity.setRequestFinds([])
+        #expect(identity.isFind(Self.song("landed", libraryId: nil)), "landed stays for the session")
+        identity.forgetAccount()
+        #expect(!identity.isFind(Self.song("landed", libraryId: nil)))
+    }
+
     // MARK: - ListenBrainz token after a locked launch
 
     /// Final review I3 / Task 7.1c: a launch before first unlock reads the token as absent. When it turns up, the

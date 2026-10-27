@@ -300,7 +300,9 @@ extension AppModel {
 
     /// D6: it lands by the one landing rule (AppModel+Landing.swift). D7: a local notification, only while the app
     /// runs.
-    private func requestBecameReady(_ request: MagpieRequest) {
+    func requestBecameReady(_ request: MagpieRequest) {
+        // FM2: a find from now on, before it can land and play (the refresh below runs next to the landing).
+        if request.isFind, let songId = request.songId { findsIdentity.markLanded(songId) }
         if request.isFind { Task { await refreshFinds() } }
         Task { await land(request) }
         guard notifications else { return }

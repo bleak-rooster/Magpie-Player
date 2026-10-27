@@ -19,7 +19,9 @@ import Testing
         let (client, transport) = try await connected {
             $0.stub(pathSuffix: "/api/song", body: Fixtures.data("apiSongPage"), headers: ["X-Total-Count": "8"])
         }
-        let songs = try await client.songs(inLibrary: 2)
+        let read = try await client.songs(inLibrary: 2)
+        #expect(read.complete)
+        let songs = read.songs
         #expect(songs.count == 1)
         #expect(songs.allSatisfy { $0.libraryId == 2 })
         let req = try #require(transport.requests.last { $0.url?.path.hasSuffix("/api/song") == true })
@@ -56,9 +58,28 @@ import Testing
         let (client, transport) = try await connected {
             $0.stub(pathSuffix: "/api/song", body: body, headers: ["X-Total-Count": "3"])
         }
-        let songs = try await client.songs(inLibrary: 2, pageSize: 2)
-        #expect(songs.map(\.id) == ["find-0", "find-1", "find-2"], "duplicates across pages are dropped")
+        let read = try await client.songs(inLibrary: 2, pageSize: 2)
+        #expect(read.songs.map(\.id) == ["find-0", "find-1", "find-2"], "duplicates across pages are dropped")
+        #expect(read.complete)
         #expect(transport.requests.filter { $0.url?.path.hasSuffix("/api/song") == true }.count == 2)
+    }
+
+    /// Security FM2 / D29: a read that stops at the page limit with more songs left says so (`complete` false), so
+    /// the app treats unknown songs as finds instead of trusting a partial list. With or without a total.
+    @Test(arguments: [["X-Total-Count": "100"], [:]])
+    func songsInLibrarySaysWhenItStoppedShort(_ headers: [String: String]) async throws {
+        var rows: [[String: Any]] = []
+        for i in 0..<2 {
+            var row = (Fixtures.json("apiSongPage") as! [[String: Any]])[1]
+            row["id"] = "find-\(i)"
+            rows.append(row)
+        }
+        let body = try JSONSerialization.data(withJSONObject: rows)
+        let (client, transport) = try await connected { $0.stub(pathSuffix: "/api/song", body: body, headers: headers) }
+        let read = try await client.songs(inLibrary: 2, pageSize: 2, maxPages: 3)
+        #expect(!read.complete)
+        #expect(read.songs.count == 2)
+        #expect(transport.requests.filter { $0.url?.path.hasSuffix("/api/song") == true }.count == 3)
     }
 
     /// Task 6.2b (A3): a kept find is looked up again by recording MBID, outside the Finds library.

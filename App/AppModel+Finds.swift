@@ -17,9 +17,11 @@ extension AppModel {
     func reloadFindsSetup() {
         guard let lidarrScope, let navidromeScope else {
             if findsSetup != nil { findsSetup = nil }
+            syncFindsIdentity()   // FM2: the Finds library is known per Navidrome account, with a Lidarr or not
             return
         }
         let loaded = findsStore.load(lidarrScope: lidarrScope, navidromeScope: navidromeScope)
+        if let library = loaded.library { rememberFindsLibrary(library.id) }   // setups saved before FM2
         if loaded != findsSetup { findsSetup = loaded }
         let played = Set(appDefaults.stringArray(forKey: Self.playedFindsKey(navidromeScope)) ?? [])
         if played != playedFinds { playedFinds = played }
@@ -76,6 +78,7 @@ extension AppModel {
         guard PathGuard.validateRoot(mapped, others: others) == .ok else { throw .overlapsLibrary }
         setup.library = library
         setup.mapping = mapping
+        rememberFindsLibrary(library.id)
         saveFinds(setup)
         Task { await refreshFinds() }
     }
@@ -132,26 +135,62 @@ extension AppModel {
         "\(findSongIdsKeyPrefix)\(navidromeScope).\(libraryId)"
     }
 
+    /// FM2: the Finds library id per Navidrome account, for the finds identity (D29). It is a Navidrome fact, so it
+    /// outlives the Lidarr-scoped Finds setup: a Lidarr disconnect, a new key or address keep it. Replaced when the
+    /// owner chooses another Finds library; forgotten on sign-out.
+    nonisolated static let findsLibraryKeyPrefix = "magpie.findsLibrary."
+    nonisolated static func findsLibraryKey(_ navidromeScope: String) -> String { findsLibraryKeyPrefix + navidromeScope }
+
+    /// The library whose songs are finds: the Finds setup's, else the one remembered for this Navidrome account.
+    var findsLibraryId: Int? {
+        if let id = findsSetup?.library?.id { return id }
+        return navidromeScope.flatMap { appDefaults.object(forKey: Self.findsLibraryKey($0)) as? Int }
+    }
+
+    private func rememberFindsLibrary(_ id: Int) {
+        guard let scope = navidromeScope, appDefaults.object(forKey: Self.findsLibraryKey(scope)) as? Int != id else { return }
+        appDefaults.set(id, forKey: Self.findsLibraryKey(scope))
+    }
+
+    /// FM2: the ids a read of the Finds library proves are all its songs; nil (unknown, so every song without a
+    /// library id counts as a find) when the read stopped at its page limit.
+    nonisolated static func findIds(_ read: NavidromeClient.LibrarySongs) -> Set<String>? {
+        read.complete ? Set(read.songs.map(\.id)) : nil
+    }
+
+    /// FM2: the songs of ready Finds-mode requests are finds before any read lists them.
+    func syncRequestFinds() {
+        findsIdentity.setRequestFinds(Set(requests.filter { $0.isFind && $0.state == .ready }.compactMap(\.songId)))
+    }
+
     /// The shelf now: the Finds library's songs, finds on their way, New finds.
     func findsShelf(now: Date = Date()) -> FindsShelf {
         FindsShelf(songs: findSongs, requests: requests, played: playedFinds, now: now)
     }
 
-    /// Reads the Finds library's songs again. A failure keeps what was read before.
+    /// Reads the Finds library's songs again. A failure keeps what was read before. The finds identity reads the
+    /// remembered Finds library even without a Lidarr (FM2); the shelf shows it only with a Finds setup.
     func refreshFinds() async {
-        guard let library = findsSetup?.library else {
+        guard let libraryId = findsLibraryId else {
             if !findSongs.isEmpty { findSongs = [] }
             return
         }
         do {
-            let songs = try await request { try await $0.songs(inLibrary: library.id) }
-            guard findsSetup?.library?.id == library.id, let scope = navidromeScope else { return }   // changed meanwhile
-            let key = Self.findSongIdsKey(scope, libraryId: library.id)
-            let ids = Set(songs.map(\.id))
-            appDefaults.set(Array(ids).sorted(), forKey: key)
+            let read = try await request { try await $0.songs(inLibrary: libraryId) }
+            guard findsLibraryId == libraryId, let scope = navidromeScope else { return }   // changed meanwhile
+            let key = Self.findSongIdsKey(scope, libraryId: libraryId)
+            let ids = Self.findIds(read)
+            if let ids {
+                appDefaults.set(Array(ids).sorted(), forKey: key)
+                lettingGoSongIds.formIntersection(ids)   // gone from the library: nothing left to hide
+            } else {
+                // FM2: never a silent cap. Unknown songs count as finds (no scrobble) until a complete read.
+                Log.logger("finds").error("Finds library read stopped at its limit (\(read.songs.count, privacy: .public) songs): unknown songs count as finds")
+                appDefaults.removeObject(forKey: key)
+            }
             findIdsCache = (key, ids)
-            lettingGoSongIds.formIntersection(ids)   // gone from the library: nothing left to hide
-            findSongs = songs.filter { !lettingGoSongIds.contains($0.id) }
+            let shelf = findsSetup?.library?.id == libraryId ? read.songs.filter { !lettingGoSongIds.contains($0.id) } : []
+            if shelf != findSongs { findSongs = shelf } else { syncFindsIdentity() }
         } catch {
             Log.logger("finds").error("finds not read: \(Log.category(of: error), privacy: .public)")
         }
@@ -164,9 +203,9 @@ extension AppModel {
     /// it is still a find. Its song ids come from the last read, saved per account and library; until there
     /// is one, the identity fails closed (`FindsIdentity`).
     func syncFindsIdentity() {
-        guard let libraryId = findsSetup?.library?.id, let scope = navidromeScope else {
+        guard let libraryId = findsLibraryId, let scope = navidromeScope else {
             findIdsCache = nil
-            findsIdentity.set(libraryId: findsSetup?.library?.id, songIds: nil)
+            findsIdentity.set(libraryId: findsLibraryId, songIds: nil)
             return
         }
         let key = Self.findSongIdsKey(scope, libraryId: libraryId)

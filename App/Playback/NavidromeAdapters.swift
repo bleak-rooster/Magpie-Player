@@ -32,6 +32,10 @@ final class PlayCounting: Sendable {
 ///
 /// Keep (Task 6.2b): a song found in the main library after Keep (`markKept`) is not a find, even where a stale
 /// read of the Finds library or the fail-closed rule would say so (Navidrome keeps the song id across the move).
+///
+/// Security FM2: the song of a Finds-mode request that is ready counts as a find from the moment the request is
+/// known ready (`markLanded`, `setRequestFinds`), before any read of the Finds library lists it, so a find that
+/// lands and plays at once is never sent as now playing. That holds without a Finds library id too (fail closed).
 final class FindsIdentity: Sendable {
     private struct State {
         var libraryId: Int?
@@ -39,6 +43,10 @@ final class FindsIdentity: Sendable {
         var songIds: Set<String>?
         /// Song ids confirmed in the main library after Keep.
         var kept: Set<String> = []
+        /// Songs of finds that became ready this session (the runner's ready callback).
+        var landed: Set<String> = []
+        /// Songs of the ready Finds-mode requests (the runner's list).
+        var requestFinds: Set<String> = []
     }
 
     private let lock = OSAllocatedUnfairLock(initialState: State())
@@ -48,8 +56,24 @@ final class FindsIdentity: Sendable {
     func set(libraryId: Int?, songIds: Set<String>?) {
         lock.withLock {
             let kept = $0.libraryId == libraryId ? $0.kept : []
-            $0 = State(libraryId: libraryId, songIds: libraryId == nil ? nil : songIds, kept: kept)
+            $0 = State(libraryId: libraryId, songIds: libraryId == nil ? nil : songIds, kept: kept,
+                       landed: $0.landed, requestFinds: $0.requestFinds)
         }
+    }
+
+    /// FM2: a find became ready with this song (before its request list or any library read says so).
+    func markLanded(_ songId: String) {
+        lock.withLock { _ = $0.landed.insert(songId) }
+    }
+
+    /// FM2: the songs of the ready Finds-mode requests now.
+    func setRequestFinds(_ songIds: Set<String>) {
+        lock.withLock { $0.requestFinds = songIds }
+    }
+
+    /// Sign-out: nothing of the account is remembered.
+    func forgetAccount() {
+        lock.withLock { $0 = State() }
     }
 
     /// The song was found in the main library after Keep.
@@ -59,9 +83,10 @@ final class FindsIdentity: Sendable {
 
     func isFind(_ song: Song) -> Bool {
         lock.withLock { s in
-            guard let libraryId = s.libraryId else { return false }
-            if let songLibrary = song.libraryId { return songLibrary == libraryId }
+            if let libraryId = s.libraryId, let songLibrary = song.libraryId { return songLibrary == libraryId }
             if s.kept.contains(song.id) { return false }
+            if s.landed.contains(song.id) || s.requestFinds.contains(song.id) { return true }
+            guard s.libraryId != nil else { return false }
             guard let known = s.songIds else { return true }
             return known.contains(song.id)
         }
