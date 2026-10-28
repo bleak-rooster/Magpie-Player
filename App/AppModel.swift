@@ -704,7 +704,7 @@ final class AppModel {
     /// Only Try uses it (A8), never search.
     var musicBrainz: MusicBrainzClient {
         if let musicBrainzClient { return musicBrainzClient }
-        let client = MusicBrainzClient(transport: transport)
+        let client = MusicBrainzClient(transport: transport, userAgent: MusicBrainzClient.userAgent(version: Self.marketingVersion))
         musicBrainzClient = client
         return client
     }

@@ -52,7 +52,7 @@ enum TryDevStack {
 
     /// MusicBrainz for the ITs (Task H1): the captured answer for the test recording, never musicbrainz.org (its
     /// 503s made the ITs flaky, and tests contact no outside service). The client and its limiter are the app's.
-    static func musicBrainz() -> MusicBrainzClient { MusicBrainzClient(transport: FixtureMusicBrainz()) }
+    static func musicBrainz() -> MusicBrainzClient { MusicBrainzClient(transport: FixtureMusicBrainz(), userAgent: MusicBrainzClient.userAgent(version: "test")) }
 
     static func client() async throws -> LidarrClient {
         let (url, key) = try lidarrAccess()

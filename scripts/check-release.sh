@@ -13,6 +13,10 @@ fails=0
 fail() { echo "FAIL: $*" >&2; fails=$((fails + 1)); }
 pb() { /usr/libexec/PlistBuddy -c "Print :$1" "$2" 2>/dev/null; }
 
+# The one place the version literal lives is project.yml; the archive must carry exactly that.
+want_version="$(awk -F'"' '/^ *MARKETING_VERSION:/ {print $2; exit}' project.yml)"
+[ -n "$want_version" ] || fail "MARKETING_VERSION not found in project.yml"
+
 check_variant() {
   local variant="$1" carplay="$2"
   local archive="$out/$variant/Magpie.xcarchive"
@@ -22,7 +26,7 @@ check_variant() {
   [ -f "$plist" ] || { fail "$variant: no Info.plist in $app"; return; }
 
   plutil -lint "$plist" >/dev/null || fail "$variant: Info.plist does not lint"
-  [ "$(pb CFBundleShortVersionString "$plist")" = "1.0" ] || fail "$variant: CFBundleShortVersionString is not 1.0"
+  [ "$(pb CFBundleShortVersionString "$plist")" = "$want_version" ] || fail "$variant: CFBundleShortVersionString is not $want_version"
   [ "$(pb CFBundleVersion "$plist")" = "7" ] || fail "$variant: CFBundleVersion is not the --build number (7)"
   [ "$(pb CFBundleIdentifier "$plist")" = "com.bleak-rooster.magpie" ] || fail "$variant: bundle id"
   pb NSAppTransportSecurity:NSAllowsArbitraryLoads "$plist" >/dev/null && fail "$variant: Release has NSAllowsArbitraryLoads"

@@ -7,11 +7,15 @@ import MagpieTestSupport
 private let harbour = MBID("c2272a15-8f3a-4cdc-8f32-7e723352d44d")!
 
 @Suite struct MBTests {
+    @Test func userAgentCarriesVersion() {
+        #expect(MusicBrainzClient.userAgent(version: "0.0.1") == "Magpie/0.0.1 ( https://github.com/bleak-rooster )")
+    }
+
     @Test func rateLimited() async throws {
         let clock = FakeClock()
         let t = MockTransport()
         t.stub(pathSuffix: "/recording/\(harbour.rawValue)", body: Fixtures.data("recording-c2272a15", dir: "musicbrainz"))
-        let mb = MusicBrainzClient(transport: t, limiter: clock.limiter())
+        let mb = MusicBrainzClient(transport: t, userAgent: MusicBrainzClient.userAgent(version: "9.9.9"), limiter: clock.limiter())
         _ = try await mb.recording(harbour)
         _ = try await mb.recording(harbour)
         _ = try await mb.recording(harbour)
@@ -39,9 +43,9 @@ private let harbour = MBID("c2272a15-8f3a-4cdc-8f32-7e723352d44d")!
     @Test func sendsRealUserAgentAndWS2Query() async throws {
         let t = MockTransport()
         t.stub(pathSuffix: "/recording/\(harbour.rawValue)", body: Fixtures.data("recording-c2272a15", dir: "musicbrainz"))
-        _ = try await MusicBrainzClient(transport: t, limiter: FakeClock().limiter()).recording(harbour)
+        _ = try await MusicBrainzClient(transport: t, userAgent: MusicBrainzClient.userAgent(version: "9.9.9"), limiter: FakeClock().limiter()).recording(harbour)
         let req = try #require(t.requests.first)
-        #expect(req.value(forHTTPHeaderField: "User-Agent") == "Magpie/0.1 ( https://github.com/bleak-rooster )")
+        #expect(req.value(forHTTPHeaderField: "User-Agent") == "Magpie/9.9.9 ( https://github.com/bleak-rooster )")
         #expect(req.url?.host == "musicbrainz.org")
         #expect(req.url?.path == "/ws/2/recording/\(harbour.rawValue)")
         let items = URLComponents(url: req.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
@@ -53,7 +57,7 @@ private let harbour = MBID("c2272a15-8f3a-4cdc-8f32-7e723352d44d")!
     @Test func parsesReleaseGroupTypes() async throws {
         let t = MockTransport()
         t.stub(pathSuffix: "/recording/\(harbour.rawValue)", body: Fixtures.data("recording-c2272a15", dir: "musicbrainz"))
-        let rec = try await MusicBrainzClient(transport: t, limiter: FakeClock().limiter()).recording(harbour)
+        let rec = try await MusicBrainzClient(transport: t, userAgent: MusicBrainzClient.userAgent(version: "9.9.9"), limiter: FakeClock().limiter()).recording(harbour)
         #expect(rec.id == harbour)
         #expect(rec.title == "Harbour Lights")
         #expect(rec.releases.count == 7)
@@ -83,7 +87,7 @@ private let harbour = MBID("c2272a15-8f3a-4cdc-8f32-7e723352d44d")!
           {"id":"845b96d6-c867-3053-9548-3e8635390e38","title":"No group"},
           7]}
         """))
-        let rec = try await MusicBrainzClient(transport: t, limiter: FakeClock().limiter()).recording(harbour)
+        let rec = try await MusicBrainzClient(transport: t, userAgent: MusicBrainzClient.userAgent(version: "9.9.9"), limiter: FakeClock().limiter()).recording(harbour)
         #expect(rec.id == harbour)
         #expect(rec.isrcs == ["GBAAA8500001"])
         #expect(rec.artistIds == [MBID("64db764c-2251-4f95-aa40-10fc91d509d8")!])
@@ -99,17 +103,17 @@ private let harbour = MBID("c2272a15-8f3a-4cdc-8f32-7e723352d44d")!
         let t = MockTransport()
         t.stub(pathSuffix: "/recording/\(harbour.rawValue)", status: 404)
         await #expect(throws: MusicBrainzError.notFound) {
-            _ = try await MusicBrainzClient(transport: t, limiter: FakeClock().limiter()).recording(harbour)
+            _ = try await MusicBrainzClient(transport: t, userAgent: MusicBrainzClient.userAgent(version: "9.9.9"), limiter: FakeClock().limiter()).recording(harbour)
         }
         let t2 = MockTransport()
         t2.stub(pathSuffix: "/recording/\(harbour.rawValue)", status: 503)
         await #expect(throws: MusicBrainzError.http(status: 503)) {
-            _ = try await MusicBrainzClient(transport: t2, limiter: FakeClock().limiter()).recording(harbour)
+            _ = try await MusicBrainzClient(transport: t2, userAgent: MusicBrainzClient.userAgent(version: "9.9.9"), limiter: FakeClock().limiter()).recording(harbour)
         }
         let t3 = MockTransport()
         t3.stub(pathSuffix: "/recording/\(harbour.rawValue)", body: json("[]"))
         await #expect(throws: MusicBrainzError.decoding) {
-            _ = try await MusicBrainzClient(transport: t3, limiter: FakeClock().limiter()).recording(harbour)
+            _ = try await MusicBrainzClient(transport: t3, userAgent: MusicBrainzClient.userAgent(version: "9.9.9"), limiter: FakeClock().limiter()).recording(harbour)
         }
     }
 }

@@ -34,7 +34,7 @@ import MagpieCore
     @Test func runnerRefusesALedgerForAnotherLidarr() async throws {
         let h = await Harness()
         let client = LidarrClient(base: URL(string: "http://other:8686")!, apiKey: "x", transport: h.server.clientTransport)
-        let runner = RequestRunner(lidarr: client, gate: h.gate, ledger: h.ledger, mb: MusicBrainzClient(transport: h.server.transport),
+        let runner = RequestRunner(lidarr: client, gate: h.gate, ledger: h.ledger, mb: MusicBrainzClient(transport: h.server.transport, userAgent: MusicBrainzClient.userAgent(version: "test")),
                                    library: h.library.access, store: h.store, setup: { Harness.setup })
         await #expect(throws: RequestRunner.TryError.unavailable) {
             _ = try await runner.tryRecording(h.recording(recAlbumOnly), tier: .standard)
@@ -528,7 +528,7 @@ import MagpieCore
         let h = await Harness()
         let client = LidarrClient(base: URL(string: "https://music.example/lidarr")!, apiKey: "k", transport: h.server.clientTransport)
         let runner = RequestRunner(lidarr: client, gate: h.gate, ledger: Ledger(fileURL: nil),
-                                   mb: MusicBrainzClient(transport: h.server.transport),
+                                   mb: MusicBrainzClient(transport: h.server.transport, userAgent: MusicBrainzClient.userAgent(version: "test")),
                                    library: h.library.access, store: h.store, setup: { Harness.setup })
         await #expect(throws: RequestRunner.TryError.unavailable) {
             _ = try await runner.tryRecording(h.recording(recAlbumOnly), tier: .standard)

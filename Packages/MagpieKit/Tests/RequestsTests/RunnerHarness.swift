@@ -686,7 +686,7 @@ struct Harness {
                                confinement: confinement)
         await gate.setEnabled(changesOn)
         store = RequestStore(fileURL: RequestStore.defaultURL(in: dir, instance: client.instanceScope))
-        let mb = MusicBrainzClient(transport: lidarr.clientTransport,
+        let mb = MusicBrainzClient(transport: lidarr.clientTransport, userAgent: MusicBrainzClient.userAgent(version: "test"),
                                    limiter: RateLimiter(perSecond: 1_000, sleep: { _ in }))
         let clock = self.clock, ready = self.ready, relinked = self.relinked
         runner = RequestRunner(lidarr: client, gate: gate, ledger: ledger, mb: mb, library: library.access,

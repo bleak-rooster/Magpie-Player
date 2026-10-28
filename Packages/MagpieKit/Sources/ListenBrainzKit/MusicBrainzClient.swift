@@ -60,14 +60,15 @@ public struct MBRecording: Sendable, Hashable {
 
 /// MusicBrainz WS/2. Call only on a Try tap, never per search row (A8). Calls are spaced at 1 per second.
 public actor MusicBrainzClient {
-    public static let defaultUserAgent = "Magpie/0.1 ( https://github.com/bleak-rooster )"
+    /// MusicBrainz asks for an app name, version and contact URL. The caller passes the app's own version.
+    public static func userAgent(version: String) -> String { "Magpie/\(version) ( https://github.com/bleak-rooster )" }
     public static let base = URL(string: "https://musicbrainz.org")!
 
     private let transport: HTTPTransport
     private let userAgent: String
     private let limiter: RateLimiter
 
-    public init(transport: HTTPTransport, userAgent: String = MusicBrainzClient.defaultUserAgent,
+    public init(transport: HTTPTransport, userAgent: String,
                 limiter: RateLimiter = RateLimiter(perSecond: 1)) {
         self.transport = transport
         self.userAgent = userAgent
