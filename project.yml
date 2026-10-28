@@ -91,6 +91,8 @@ targets:
                 UISceneDelegateClassName: $(PRODUCT_MODULE_NAME).CarPlaySceneDelegate
         UIBackgroundModes: [audio]
         NSLocalNetworkUsageDescription: Magpie connects to your music server on your home network.
+        # T3 (D38): the Bonjour browse that asks for Local Network access at first launch.
+        NSBonjourServices: ["_http._tcp"]
         # T2 (spec §8): plain http anywhere, in every configuration; Magpie's plain-http consent gate is the control.
         # Never add NSAllowsLocalNetworking (or the web-content/media keys): iOS would then ignore arbitrary loads.
         NSAppTransportSecurity:

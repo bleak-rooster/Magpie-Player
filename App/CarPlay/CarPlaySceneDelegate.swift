@@ -105,6 +105,17 @@ final class CarPlayLibraryAdapter: CarPlayLibrary {
 
     func isOutOfReach(_ error: Error) -> Bool { AppModel.isConnectionError(error) }
 
+    /// T3: denied when known; pending while never answered and the server's address needs it (the prompt can only
+    /// be answered on the phone); otherwise fine.
+    var localNetwork: CPLocalNetwork {
+        switch model.localNetwork.state {
+        case .denied: return .denied
+        case .unknown where model.session.map({ ServerAddress.needsLocalNetworkPermission($0.activeBase) }) ?? false:
+            return .pending
+        default: return .fine
+        }
+    }
+
     var recentSearches: [String] { recents.items }
 
     func addRecentSearch(_ query: String) { recents.add(query) }

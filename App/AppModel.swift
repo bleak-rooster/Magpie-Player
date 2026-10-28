@@ -36,6 +36,8 @@ enum SignInError: Error {
 struct ProbeFailure {
     let url: URL
     let error: Error
+    /// T3: a connection to `url` was seen held back by iOS's Local Network setting.
+    var localNetworkDenied = false
 }
 
 /// App-wide state: the session, the player and the look. Owns no UI, so the CarPlay scene can share
@@ -58,6 +60,8 @@ final class AppModel {
     var savedSessionAwaitingConsent: SavedSessionAwaitingConsent?
     /// Bumped when consent is given, so views that depend on it (Settings › Lidarr) update.
     var plainHTTPConsentRevision = 0
+    /// T3: iOS's Local Network permission (asked at first launch by RootView, and before signing in).
+    let localNetwork: LocalNetworkAccess
     // The request/settings state below is set from AppModel+Requests.swift (internal setters); views only read it.
 
     /// The owner's Lidarr, when connected. Kept in the Keychain next to the session.
@@ -178,7 +182,8 @@ final class AppModel {
          defaults: UserDefaults = .standard,
          theme: Theme = Theme(),
          systemNowPlaying: Bool = true,
-         notifications: Bool = true) {
+         notifications: Bool = true,
+         localNetworkProber: (any LocalNetworkProbing)? = nil) {
         let box = ClientBox()
         self.store = store
         self.lidarrStore = lidarrStore
@@ -196,6 +201,10 @@ final class AppModel {
         self.gateDefaults = gateDefaultsSuite.flatMap { UserDefaults(suiteName: $0) } ?? .standard
         self.changesAllowed = false
         self.appDefaults = defaults
+        // Hosted tests never meet the system prompt (C-I1's environment check).
+        let prober = localNetworkProber ?? (ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil
+                                            ? NWBrowserLocalNetworkProber() : NotNeededProber())
+        self.localNetwork = LocalNetworkAccess(prober: prober, defaults: defaults)
         self.setupStore = LidarrSetupStore(defaults: defaults)
         self.findsStore = FindsSetupStore(defaults: defaults)
         self.countPlays = defaults.object(forKey: Self.countPlaysKey) as? Bool ?? true
@@ -341,13 +350,19 @@ final class AppModel {
         let unencrypted = urls.filter { !plainHTTPConsent.allows($0) }
         guard unencrypted.isEmpty else { throw PlainHTTPConsentRequired(urls: unencrypted) }
         let endpoint = ServerEndpoint(bases: urls)
+        // T3: the Local Network prompt (if not answered yet) comes before the first request to a home address.
+        _ = await localNetwork.ensureAccess(for: urls)
         var failures: [ProbeFailure] = []
         var reached: URL?
         for base in urls {
             if atsBlocks(base) {
                 failures.append(ProbeFailure(url: base, error: Self.atsError(base)))
             } else if let error = await probe(base) {
-                failures.append(ProbeFailure(url: base, error: error))
+                var failure = ProbeFailure(url: base, error: error)
+                if ServerAddress.needsLocalNetworkPermission(base), Self.isConnectionError(error) {
+                    failure.localNetworkDenied = await localNetwork.checkDenied(for: base)
+                }
+                failures.append(failure)
             } else {
                 reached = base
                 break
@@ -440,11 +455,17 @@ final class AppModel {
         if let pending = reconnectTask { _ = await pending.value }
         guard let client = session?.client else { throw NavidromeError.noReachableServer }
         do {
-            return try await op(client)
+            return try noteLocalSuccess(await op(client))
         } catch where Self.isConnectionError(error) {
             guard await reconnect(rebuildAlways: false), let retry = session?.client else { throw error }
-            return try await op(retry)
+            return try noteLocalSuccess(await op(retry))
         }
+    }
+
+    /// T3: a request to a home address worked, so the Local Network setting is on.
+    private func noteLocalSuccess<T>(_ value: T) -> T {
+        if let base = session?.activeBase, ServerAddress.needsLocalNetworkPermission(base) { localNetwork.noteLocalSuccess() }
+        return value
     }
 
     nonisolated static func isConnectionError(_ error: Error) -> Bool {

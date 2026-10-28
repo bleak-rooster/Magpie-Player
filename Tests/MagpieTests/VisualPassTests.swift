@@ -14,8 +14,8 @@ import Testing
     /// I5: the Try sheet, Home's card and the Finds actions describe the music and point to Settings without
     /// naming a service (§5; Settings itself names its switches). M6: curly quotes and "›", never ' " or ">".
     @Test func settingsPointersNameNoServices() {
-        let tries = [TryAvailability.noLidarr, .changesOff, .notSetUp, .noRoot].compactMap(\.message)
-        #expect(tries.count == 4)
+        let tries = [TryAvailability.noLidarr, .addressNotAllowed, .changesOff, .notSetUp, .noRoot].compactMap(\.message)
+        #expect(tries.count == 5)
         let texts = tries + [
             HomeCopy.finishSettingUp(connected: true), HomeCopy.finishSettingUp(connected: false), HomeCopy.finishFinds,
             KeepCopy.changesOff, KeepCopy.notSetUp, NotForMeCopy.changesOff, NotForMeCopy.notSetUp,
@@ -61,7 +61,7 @@ import Testing
         let direct = URLError(.cannotFindHost, userInfo: [NSURLErrorFailingURLErrorKey: URL(string: "https://music.example.com:4533")!])
         #expect(ConnectErrorCopy.message(for: direct) == ConnectErrorCopy.unreachable("music.example.com:4533"))
         let noPort = [ProbeFailure(url: URL(string: "https://music.example.com")!, error: URLError(.timedOut))]
-        #expect(ConnectErrorCopy.message(for: SignInError.unreachable(noPort)) == ConnectErrorCopy.unreachable("music.example.com"))
+        #expect(ConnectErrorCopy.message(for: SignInError.unreachable(noPort)) == ConnectDiagnosis.timedOut("music.example.com").message)
     }
 
     /// M2: an artist without a picture shows their initials, not an empty circle.

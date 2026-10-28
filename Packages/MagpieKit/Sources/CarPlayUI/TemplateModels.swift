@@ -109,7 +109,34 @@ public enum CarPlayState: Sendable, Hashable {
     case locked, notSetUp, outOfReach, failed, empty
     /// No Finds library is chosen on the phone.
     case findsOff
+    /// T3: the library is out of reach and iOS's Local Network setting is off for Magpie.
+    case localNetworkDenied
+    /// T3: out of reach, and the Local Network prompt hasn't been answered (it can only be answered on the phone).
+    /// The one instructive state line (D33, spec §8).
+    case localNetworkPending
+
+    /// D3: the symbol shown with the state's text, for the states that have one.
+    public var statusSymbol: String? {
+        switch self {
+        case .localNetworkDenied: "network.slash"
+        case .localNetworkPending: "iphone"
+        default: nil
+        }
+    }
+
+    /// What a failed read shows: out of reach (with the Local Network reason when there is one), or didn't send.
+    public static func unavailable(outOfReach: Bool, localNetwork: CPLocalNetwork) -> CarPlayState {
+        guard outOfReach else { return .failed }
+        return switch localNetwork {
+        case .fine: .outOfReach
+        case .denied: .localNetworkDenied
+        case .pending: .localNetworkPending
+        }
+    }
 }
+
+/// T3: iOS's Local Network permission as the car needs to know it.
+public enum CPLocalNetwork: Sendable, Hashable { case fine, pending, denied }
 
 /// Builds the row models for each CarPlay screen. All functions are pure.
 public enum CarPlayRows {
@@ -124,8 +151,11 @@ public enum CarPlayRows {
         case .failed: ("state.failed", "Your library didn't send this")
         case .empty: ("state.empty", "Nothing here yet")
         case .findsOff: ("state.findsOff", "Finds aren't set up on this iPhone")
+        case .localNetworkDenied: ("state.localNetworkDenied", "Local network access is off for Magpie")
+        case .localNetworkPending: ("state.localNetworkPending", "Open Magpie on your iPhone once to allow local network access")
         }
-        return [CPSectionModel(header: nil, rows: [CPRowModel(id: id, title: title, action: .none)])]
+        return [CPSectionModel(header: nil, rows: [CPRowModel(id: id, title: title, action: .none,
+                                                              statusSymbol: state.statusSymbol)])]
     }
 
     /// Only state rows: a placeholder, which real rows may replace even while the list is on screen.

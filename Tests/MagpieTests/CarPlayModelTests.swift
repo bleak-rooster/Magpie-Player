@@ -20,6 +20,21 @@ import UIKit
         Song(id: id, title: "Song \(id)", artist: "Artist", album: "Album", duration: 200)
     }
 
+    @Test func localNetworkStateRows() {
+        let denied = try! #require(CarPlayRows.state(.localNetworkDenied).flatMap(\.rows).first)
+        #expect(denied.title == "Local network access is off for Magpie" && denied.statusSymbol == "network.slash")
+        let pending = try! #require(CarPlayRows.state(.localNetworkPending).flatMap(\.rows).first)
+        #expect(pending.title == "Open Magpie on your iPhone once to allow local network access" && pending.statusSymbol == "iphone")
+    }
+
+    /// A failed read: the Local Network reason only when the library is out of reach and the setting explains it.
+    @Test func unavailableStateNamesLocalNetwork() {
+        #expect(CarPlayState.unavailable(outOfReach: true, localNetwork: .fine) == .outOfReach)
+        #expect(CarPlayState.unavailable(outOfReach: true, localNetwork: .denied) == .localNetworkDenied)
+        #expect(CarPlayState.unavailable(outOfReach: true, localNetwork: .pending) == .localNetworkPending)
+        #expect(CarPlayState.unavailable(outOfReach: false, localNetwork: .denied) == .failed)
+    }
+
     @Test func clampRespectsLimits() {
         let sections = [CPSectionModel(header: nil, rows: (0..<30).map { row("\($0)") })]
         let clamped = clamp(sections, maxItems: 12, maxSections: 5)

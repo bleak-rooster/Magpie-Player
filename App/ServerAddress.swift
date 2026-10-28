@@ -114,6 +114,15 @@ enum ServerAddress {
         return false
     }
 
+    /// T3: reaching this address needs iOS's Local Network permission: the home network (`isLocalNetwork`) and IPv6
+    /// unique-local and link-local addresses. Not loopback (this device), Tailscale (its own network interface) or
+    /// anything public. By name class only, like `isPrivate`.
+    static func needsLocalNetworkPermission(_ url: URL) -> Bool {
+        if isLocalNetwork(url) { return true }
+        guard let host = host(url), let ip = ipv6(host) else { return false }
+        return (ip[0] & 0xFE) == 0xFC || (ip[0] == 0xFE && (ip[1] & 0xC0) == 0x80)
+    }
+
     /// H4: App Transport Security will refuse this plain-http address. Without arbitrary loads (no build since T2),
     /// ATS's local networking exception covers loopback, private and link-local IPv4, `.local` and single-label names only:
     /// Tailscale's 100.64/10, other IPs and dotted names (`*.ts.net`) need https. IPv6 unique and link-local

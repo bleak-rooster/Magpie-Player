@@ -22,6 +22,8 @@ public protocol CarPlayLibrary: AnyObject, Sendable {
     func artwork(coverArtId: String, pixelSide: Int) async -> UIImage?
     /// The library didn't answer at all (as opposed to answering with an error).
     func isOutOfReach(_ error: Error) -> Bool
+    /// T3: whether iOS's Local Network setting explains an out-of-reach library.
+    var localNetwork: CPLocalNetwork { get }
     var recentSearches: [String] { get }
     func addRecentSearch(_ query: String)
 
@@ -342,7 +344,8 @@ public final class CarPlayController: NSObject {
     }
 
     private func showUnavailable(_ error: Error) {
-        showMessage(library.isOutOfReach(error) ? "Your library is out of reach" : "Your library didn't send this")
+        let state = CarPlayState.unavailable(outOfReach: library.isOutOfReach(error), localNetwork: library.localNetwork)
+        showMessage(CarPlayRows.state(state).flatMap(\.rows).first?.title ?? "Your library didn't send this")
     }
 
     /// Only in direct response to a tap (critique M3). Describes; never instructs.
@@ -508,7 +511,8 @@ public final class CarPlayController: NSObject {
                 await self.refresh(binding)
             } catch {
                 guard !Task.isCancelled, let self, binding.isPlaceholder else { return }
-                let state: CarPlayState = self.library.isOutOfReach(error) ? .outOfReach : .failed
+                let state = CarPlayState.unavailable(outOfReach: self.library.isOutOfReach(error),
+                                                     localNetwork: self.library.localNetwork)
                 self.apply(CarPlayRows.state(state), to: binding, placeholder: true)
             }
         }
@@ -754,8 +758,11 @@ extension CarPlayController: CPSearchTemplateDelegate {
                 guard !Task.isCancelled, searchResults.isCurrent(ticket) else {
                     return completionHandler(searchResults.stale())
                 }
-                let state: CarPlayState = library.isOutOfReach(error) ? .outOfReach : .failed
-                finish(CarPlayRows.state(state).flatMap(\.rows).map { CPListItem(text: $0.title, detailText: $0.detail) })
+                let state = CarPlayState.unavailable(outOfReach: library.isOutOfReach(error), localNetwork: library.localNetwork)
+                finish(CarPlayRows.state(state).flatMap(\.rows).map {
+                    CPListItem(text: $0.title, detailText: $0.detail, image: nil,
+                               accessoryImage: $0.statusSymbol.flatMap { UIImage(systemName: $0) }, accessoryType: .none)
+                })
             }
         }
     }

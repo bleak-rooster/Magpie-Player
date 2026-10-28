@@ -5,6 +5,7 @@ import SwiftUI
 struct ConnectView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.magpieTheme) private var theme
+    @Environment(\.openURL) private var openURL
     private let themed = Themed()
 
     @State private var addresses: [String] = [""]
@@ -12,6 +13,9 @@ struct ConnectView: View {
     @State private var password = ""
     @State private var isConnecting = false
     @State private var error: String?
+    /// T3: the error is the Local Network one; offer Open Settings.
+    @State private var offersSettings = false
+    @State private var askingLocalNetwork = false
     /// Plain-http public addresses waiting for the owner's yes (security H2).
     @State private var unencrypted: [URL] = []
     @FocusState private var focus: Field?
@@ -83,7 +87,7 @@ struct ConnectView: View {
                     .padding(.top, 18)
 
                     if let error {
-                        Label(error, systemImage: "exclamationmark.triangle.fill")
+                        Label(error, systemImage: offersSettings ? "network.slash" : "exclamationmark.triangle.fill")
                             .font(.callout)
                             .foregroundStyle(p.inkColor)
                             .padding(Tokens.Spacing.l)
@@ -93,6 +97,7 @@ struct ConnectView: View {
                             .accessibilityIdentifier("connect-error")
                             .id("connect-error")
                     }
+                    localNetworkButtons
                 }
                 .padding(.horizontal, Tokens.Spacing.largeTitleMargin)
                 .padding(.top, Tokens.Spacing.xxl)
@@ -140,6 +145,47 @@ struct ConnectView: View {
             Button("Cancel", role: .cancel) { unencrypted = [] }
         } message: {
             Text(ConnectErrorCopy.plainHTTPMessage + "\n\n" + unencrypted.map { $0.host ?? $0.absoluteString }.joined(separator: ", "))
+        }
+    }
+
+    /// T3: ask for Local Network access again (until it is known to be on), and the way to Settings when it is off.
+    @ViewBuilder private var localNetworkButtons: some View {
+        let p = themed.palette
+        if offersSettings {
+            Button {
+                if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
+            } label: {
+                Label("Open Settings", systemImage: "gear")
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(p.accentInkColor)
+                    .frame(maxWidth: .infinity, minHeight: Tokens.minHitSize, alignment: .leading)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, Tokens.Spacing.l)
+            .accessibilityIdentifier("connect-open-settings")
+        }
+        if model.localNetwork.state != .granted {
+            Button {
+                Task {
+                    askingLocalNetwork = true
+                    defer { askingLocalNetwork = false }
+                    await model.localNetwork.request()
+                }
+            } label: {
+                HStack(spacing: Tokens.Spacing.s) {
+                    Label("Allow local network access", systemImage: "network")
+                    if askingLocalNetwork { ProgressView() }
+                }
+                .font(.body.weight(.semibold))
+                .foregroundStyle(p.accentInkColor)
+                .frame(maxWidth: .infinity, minHeight: Tokens.minHitSize, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(askingLocalNetwork)
+            .padding(.horizontal, Tokens.Spacing.l)
+            .accessibilityIdentifier("connect-allow-local-network")
         }
     }
 
@@ -224,6 +270,7 @@ struct ConnectView: View {
     private func connect() async {
         guard !isConnecting else { return }
         error = nil
+        offersSettings = false
         focus = nil
         let typed = addresses.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
         var urls: [URL] = []
@@ -251,6 +298,7 @@ struct ConnectView: View {
         } catch let consent as PlainHTTPConsentRequired {
             unencrypted = consent.urls
         } catch {
+            offersSettings = ConnectErrorCopy.offersOpenSettings(for: error)
             self.error = ConnectErrorCopy.message(for: error)
         }
     }

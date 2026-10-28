@@ -317,17 +317,19 @@ final class LockableStore: SessionStoring {
         #expect(ConnectErrorCopy.untrustedCertificate.contains("add-root-cert"))
     }
 
-    @Test func lanTimeoutGivesB4Hint() {
-        let failures = [ProbeFailure(url: URL(string: "http://192.168.1.20:4533")!, error: URLError(.timedOut))]
-        let message = ConnectErrorCopy.message(for: SignInError.unreachable(failures))
-        #expect(message.contains("192.168.1.20"))
-        #expect(message.contains("Local Network"))
+    /// T3: a LAN timeout blames Local Network only when a connection was seen held back by it (Review Focus 1).
+    @Test func lanTimeoutBlamesLocalNetworkOnlyWhenDenied() {
+        var failure = ProbeFailure(url: URL(string: "http://192.168.1.20:4533")!, error: URLError(.timedOut))
+        #expect(ConnectErrorCopy.message(for: SignInError.unreachable([failure]))
+                == ConnectDiagnosis.timedOut("192.168.1.20:4533").message)
+        failure.localNetworkDenied = true
+        #expect(ConnectErrorCopy.message(for: SignInError.unreachable([failure])) == ConnectDiagnosis.localNetworkDenied.message)
     }
 
-    @Test func remoteTimeoutIsPlainUnreachable() {
+    @Test func remoteTimeoutSaysItDidNotAnswer() {
         let failures = [ProbeFailure(url: URL(string: "https://music.example.com")!, error: URLError(.timedOut))]
         let message = ConnectErrorCopy.message(for: SignInError.unreachable(failures))
-        #expect(message == ConnectErrorCopy.unreachable("music.example.com"))
+        #expect(message == ConnectDiagnosis.timedOut("music.example.com").message)
     }
 
     @Test func plainHTTPOutsideHomeAsksForHTTPS() {

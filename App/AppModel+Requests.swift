@@ -10,6 +10,8 @@ import Requests
 enum TryAvailability: Equatable {
     case available(Tier)
     case noLidarr
+    /// T3 (parked from T2): the saved address is plain http to a public host and waits for the owner's OK.
+    case addressNotAllowed
     case changesOff
     case notSetUp
     case noRoot
@@ -18,6 +20,8 @@ enum TryAvailability: Equatable {
         switch self {
         case .available: nil
         case .noLidarr: "Bringing songs home isn't set up yet. Set it up in Settings."
+        case .addressNotAllowed:
+            "Bringing songs home is waiting for your OK on an unencrypted address. Choose \u{201C}Allow This Address\u{201D} in Settings."
         case .changesOff: "Bringing songs home is switched off. Turn it on in Settings."
         case .notSetUp: "Bringing songs home needs one more step in Settings."
         case .noRoot: "Choose where new music goes in Settings to bring songs home."
@@ -277,6 +281,7 @@ extension AppModel {
 
     var tryAvailability: TryAvailability {
         guard lidarr != nil else { return .noLidarr }
+        guard !lidarrAwaitingConsent else { return .addressNotAllowed }   // no client yet: Try would fail with notSetUp
         guard changesAllowed else { return .changesOff }
         guard lidarrSetup?.isProvisioned == true else { return .notSetUp }
         guard lidarrSetup?.rootFolderPath != nil else { return .noRoot }

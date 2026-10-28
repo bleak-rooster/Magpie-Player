@@ -8,6 +8,7 @@ import SwiftUI
 struct SettingsView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.openURL) private var openURL
     @State private var showsConnect = false
     @State private var provisioning = false
     @State private var provisionMessage: String?
@@ -15,6 +16,7 @@ struct SettingsView: View {
     @State private var tokenError: String?
     @State private var checkingToken = false
     @State private var asksLidarrConsent = false
+    @State private var askingLocalNetwork = false
 
     var body: some View {
         NavigationStack {
@@ -72,12 +74,42 @@ struct SettingsView: View {
                     .accessibilityElement(children: .combine)
                 }
                 LabeledContent("Signed in as", value: session.username)
+                localNetworkRows
                 Button("Sign out", role: .destructive) {
                     dismiss()
                     model.signOut()
                 }
                 .accessibilityIdentifier("settings-sign-out")
             }
+        }
+    }
+
+    /// T3: Connect's Local Network message and buttons: the message and Open Settings while it is off, and the
+    /// button to ask again until it is known to be on.
+    @ViewBuilder private var localNetworkRows: some View {
+        if model.localNetwork.state == .denied {
+            Label(ConnectDiagnosis.localNetworkDenied.message, systemImage: "network.slash")
+                .accessibilityIdentifier("settings-local-network-denied")
+            Button("Open Settings") {
+                if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
+            }
+            .accessibilityIdentifier("connect-open-settings")
+        }
+        if model.localNetwork.state != .granted {
+            Button {
+                Task {
+                    askingLocalNetwork = true
+                    defer { askingLocalNetwork = false }
+                    await model.localNetwork.request()
+                }
+            } label: {
+                HStack {
+                    Label("Allow local network access", systemImage: "network")
+                    if askingLocalNetwork { Spacer(); ProgressView() }
+                }
+            }
+            .disabled(askingLocalNetwork)
+            .accessibilityIdentifier("connect-allow-local-network")
         }
     }
 

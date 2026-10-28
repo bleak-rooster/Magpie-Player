@@ -26,6 +26,8 @@ struct RootView: View {
             if model.player.queue.current != nil { model.player.toggle() }
         }
         .onChange(of: scenePhase, initial: true) { _, phase in model.isForeground = phase == .active }
+        // T3 (spec §8): once per install, whatever the first screen is, so Magpie is listed under Local Network.
+        .task { await model.localNetwork.requestAtFirstLaunch() }
     }
 }
 

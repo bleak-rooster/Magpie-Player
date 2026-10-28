@@ -36,6 +36,7 @@ check_variant() {
   [ "$(pb ITSAppUsesNonExemptEncryption "$plist")" = "false" ] || fail "$variant: ITSAppUsesNonExemptEncryption is not NO"
   [ "$(pb UIBackgroundModes:0 "$plist")" = "audio" ] || fail "$variant: UIBackgroundModes audio missing"
   pb NSLocalNetworkUsageDescription "$plist" >/dev/null || fail "$variant: NSLocalNetworkUsageDescription missing"
+  [ "$(pb NSBonjourServices:0 "$plist")" = "_http._tcp" ] || fail "$variant: NSBonjourServices missing"
   pb UILaunchScreen "$plist" >/dev/null || fail "$variant: UILaunchScreen missing"
   # iPad apps that allow multitasking must list all four orientations, or the upload is rejected.
   pb UISupportedInterfaceOrientations~ipad:3 "$plist" >/dev/null || fail "$variant: iPad orientations incomplete"

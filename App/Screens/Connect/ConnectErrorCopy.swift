@@ -90,18 +90,30 @@ enum ConnectErrorCopy {
         }
     }
 
-    /// The most useful single message across all addresses: certificate trouble first (it never
-    /// fixes itself), then HTTPS, then a home-network hint, then plain "couldn't reach".
+    /// T3: Connect and Settings offer "Open Settings" exactly when the message is the Local Network one.
+    static func offersOpenSettings(for error: Error) -> Bool {
+        guard case SignInError.unreachable(let failures) = error else { return false }
+        return diagnosis(failures) == .localNetworkDenied
+    }
+
+    /// T3: the step that failed for the first address, in order, where it is known (`ConnectDiagnosis`). Nil when
+    /// certificate or https-answer trouble comes first, or no step is known.
+    private static func diagnosis(_ failures: [ProbeFailure]) -> ConnectDiagnosis? {
+        if failures.contains(where: { isCertificateError($0.error) || isPlainHTTPAnswer($0.error, url: $0.url) }) { return nil }
+        return failures.lazy.map {
+            ConnectDiagnosis.classify($0.error, url: $0.url, localNetwork: .unknown, pathDenied: $0.localNetworkDenied,
+                                      onDevice: ConnectDiagnosis.onDevice)
+        }.first { $0 != .other }
+    }
+
+    /// The most useful single message across all addresses: certificate trouble first (it never fixes itself), then
+    /// an https address answered by plain http, then the first failed step that is known (T3: name, Local Network,
+    /// timeout…), then "not a music server", then plain "couldn't reach".
     private static func unreachableMessage(_ failures: [ProbeFailure]) -> String {
         guard let first = failures.first else { return unreachable("your music server") }
         if failures.contains(where: { isCertificateError($0.error) }) { return untrustedCertificate }
         if failures.contains(where: { isPlainHTTPAnswer($0.error, url: $0.url) }) { return httpsNotAnswering }
-        if failures.contains(where: { ($0.error as? URLError)?.code == .appTransportSecurityRequiresSecureConnection }) {
-            return needsHTTPS
-        }
-        if let local = failures.first(where: { isTimeout($0.error) && ServerAddress.isLocalNetwork($0.url) }) {
-            return localNetworkHint(hostAndPort(local.url) ?? local.url.absoluteString)
-        }
+        if let diagnosis = diagnosis(failures) { return diagnosis.message }
         if failures.contains(where: { ($0.error as? NavidromeError) == .unexpectedResponse }) { return notAMusicServer }
         if case NavidromeError.http = first.error {
             return "\(hostAndPort(first.url) ?? "That address") answered, but it doesn't look like a music server."
