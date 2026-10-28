@@ -246,13 +246,19 @@ The Settings › Scrobbling section contains:
 
 With `NSAllowsArbitraryLoads`, everything was OK. Adding a `ts.net` exception domain builds and leaves local results unchanged; it couldn't be exercised without a reachable ts.net host.
 
-**Decision** *(call)*:
-- Keep Release `NSAllowsLocalNetworking`. This satisfies the owner's essential requirement (short name **and** private LAN IP) without weakening ATS.
-- Add `NSExceptionDomains { "ts.net": { NSIncludesSubdomains: true, NSExceptionAllowsInsecureHTTPLoads: true } }`, so Tailscale MagicDNS names (`http://<machine>.<tailnet>.ts.net:4533`) work away from home and in the car. WireGuard already encrypts that traffic.
-- `atsBlocksPlainHTTP` stops refusing `*.ts.net`. The `100.64/10` IP literal stays refused, with the hint "Use your Tailscale name (….ts.net) instead of its 100.x address".
-- `check-release.sh` asserts the exception exists, `NSAllowsLocalNetworking` is true, and there is no `NSAllowsArbitraryLoads` in Release.
-- "Local IP" means the home server's private LAN address (192.168/16, 10/8, 172.16/12), which is what the owner asked for ("local network servers… as well as a local ip address").
-- The private-IP and `.local` results come from the simulator. Device confirmation goes on the owner's TestFlight checklist (DNS and mDNS resolution of the short name and the Local Network prompt are device-only).
+**Decision, revised after an owner device report** *(call, 2026-10-28)*. On the owner's iPhone (TestFlight build 1.0, Release ATS = `NSAllowsLocalNetworking`), no http form worked, and Magpie never appeared under Privacy & Security › Local Network. Root cause: the owner's server name `homeserver` resolves **only** to its Tailscale address `100.64.10.20` (found in H4), with no LAN DNS entry.
+- With Tailscale off, the name doesn't resolve, so no local network access is attempted and no prompt appears.
+- With Tailscale on, the traffic goes to 100.64/10, which ATS and Magpie's pre-refusal block over plain http.
+
+Local-networking-only ATS therefore can't serve the owner's real setup, and the `ts.net` exception wouldn't cover the short name or the 100.x literal. So:
+- **Release switches to `NSAllowsArbitraryLoads = true`**, dropping `NSAllowsLocalNetworking`, which iOS would otherwise let override it. Debug already uses this. `check-release.sh` asserts the new Release dictionary.
+- **Magpie's own gate becomes the control** and must be reviewed adversarially:
+  - plain http to a **public** host requires the existing explicit consent before any credential is sent, with the address marked "Not encrypted" in Settings;
+  - "local" for this purpose = loopback, private IPv4 (10/8, 172.16/12, 192.168/16), 169.254/16, **100.64/10 (Tailscale, WireGuard-encrypted)**, IPv6 ULA and link-local, single-label names, `.local`, and `*.ts.net`;
+  - a name that *resolves* to a local or Tailscale address counts by its name class only *(call: no DNS-based upgrade; the consent prompt is cheap)*.
+- `atsBlocksPlainHTTP` becomes always-false in builds with arbitrary loads. The "needs HTTPS" pre-refusal path stays for any future build without them, and stays tested.
+- **App Store note:** `NSAllowsArbitraryLoads` needs a justification at App Store review (not TestFlight internal testing). The justification is "user-supplied self-hosted media server addresses". This is recorded in TESTFLIGHT.md.
+- **Local Network permission** (separate from ATS) gets its own task: proactive request via `NWBrowser` + `NSBonjourServices`, denial detection with an Open Settings path, and step-by-step connection diagnostics.
 
 Either way:
 - A Release-config app test pins the result. It asserts that `atsBlocksPlainHTTP` agrees with the bundle's ATS dictionary for each address class.
