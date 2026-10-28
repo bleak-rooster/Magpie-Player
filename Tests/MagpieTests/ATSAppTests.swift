@@ -7,10 +7,10 @@ import Testing
 @testable import Magpie
 
 // V-fix (H4 findings 1 and 2): what App Transport Security lets through over plain http, and saying so before trying.
-// Release has only `NSAllowsLocalNetworking`: plain http reaches loopback, private and link-local IPv4, `.local`
-// and single-label names (`http://nas:4533`); raw IPs elsewhere (Tailscale's 100.64/10 included) and dotted names
-// (`*.ts.net`) are blocked. Debug has only `NSAllowsArbitraryLoads` (iOS ignores it when `NSAllowsLocalNetworking`
-// is also present).
+// Since T2 every build has only `NSAllowsArbitraryLoads` (iOS ignores it when `NSAllowsLocalNetworking` is also
+// present) and the consent gate is the control (`ConsentGateTests`). The pre-refusal below models a build with only
+// `NSAllowsLocalNetworking`: plain http reaches loopback, private and link-local IPv4, `.local` and single-label
+// names (`http://nas:4533`); raw IPs elsewhere (Tailscale's 100.64/10 included) and dotted names (`*.ts.net`) are blocked.
 
 private let ok = Data(#"{"subsonic-response":{"status":"ok","version":"1.16.1"}}"#.utf8)
 private let loginJSON = Data(#"""
@@ -32,7 +32,7 @@ private let loginJSON = Data(#"""
         t.stub(pathSuffix: "/api/v1/rootfolder", body: Data(#"[{"id":1,"path":"/music"}]"#.utf8))
     }
 
-    /// A model that behaves like a Release build (no arbitrary loads).
+    /// A model that behaves like a build without arbitrary loads (Release before T2).
     func makeModel() -> AppModel {
         let model = AppModel(store: store, lidarrStore: MemoryLidarrStore(), tokenStore: MemoryTokenStore(),
                              matchIndexDirectory: nil, dataDirectory: nil, transport: transport, probeTransport: transport,
@@ -55,7 +55,7 @@ private let loginJSON = Data(#"""
     func plainHTTPThatATSBlocks(_ text: String) throws {
         let url = try #require(URL(string: text))
         #expect(ServerAddress.atsBlocksPlainHTTP(url, allowsArbitraryLoads: false))
-        #expect(!ServerAddress.atsBlocksPlainHTTP(url, allowsArbitraryLoads: true), "Debug allows any http")
+        #expect(!ServerAddress.atsBlocksPlainHTTP(url, allowsArbitraryLoads: true), "arbitrary loads allow any http")
     }
 
     /// A Tailscale IP over http: no consent prompt and nothing sent; the owner is told to use HTTPS or the short name.
@@ -96,14 +96,12 @@ private let loginJSON = Data(#"""
         #expect(transport.inner.requests.isEmpty)
     }
 
-    #if DEBUG
-    /// The Debug build's ATS dictionary really allows plain http anywhere: arbitrary loads, and no
-    /// `NSAllowsLocalNetworking` (whose presence makes iOS ignore arbitrary loads).
-    @Test func debugBuildAllowsArbitraryLoads() throws {
+    /// This build's ATS dictionary really allows plain http anywhere: arbitrary loads, and no
+    /// `NSAllowsLocalNetworking` (whose presence makes iOS ignore arbitrary loads). Debug and Release alike (T2).
+    @Test func everyBuildAllowsArbitraryLoads() throws {
         let ats = try #require(Bundle.main.object(forInfoDictionaryKey: "NSAppTransportSecurity") as? [String: Any])
         #expect(ats["NSAllowsArbitraryLoads"] as? Bool == true)
         #expect(ats["NSAllowsLocalNetworking"] == nil)
         #expect(AppModel.bundleAllowsArbitraryLoads())
     }
-    #endif
 }

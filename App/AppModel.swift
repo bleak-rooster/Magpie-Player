@@ -149,7 +149,8 @@ final class AppModel {
     @ObservationIgnored private var reconnectGeneration = 0
     /// Bumped by sign-in, a resumed session and sign-out: a sign-out's late clean-up only runs while it is unchanged.
     @ObservationIgnored private var sessionGeneration = 0
-    /// This build's ATS allows plain http anywhere (Debug). False: Release, where `atsBlocksPlainHTTP` applies.
+    /// This build's ATS allows plain http anywhere (every build since T2; the consent gate is the control). False:
+    /// a build without arbitrary loads, where `atsBlocksPlainHTTP` pre-refuses.
     @ObservationIgnored var atsAllowsArbitraryLoads = AppModel.bundleAllowsArbitraryLoads()
     @ObservationIgnored private var errorWatch: Task<Void, Never>?
     #if os(iOS)
@@ -607,9 +608,15 @@ final class AppModel {
         URLError(.appTransportSecurityRequiresSecureConnection, userInfo: [NSURLErrorFailingURLErrorKey: url])
     }
 
-    /// Whether the app's Info.plist allows arbitrary loads with nothing that makes iOS ignore it (Debug, B2).
+    /// Whether the app's Info.plist allows arbitrary loads with nothing that makes iOS ignore it (every build, T2).
     nonisolated static func bundleAllowsArbitraryLoads(_ bundle: Bundle = .main) -> Bool {
-        guard let ats = bundle.object(forInfoDictionaryKey: "NSAppTransportSecurity") as? [String: Any] else { return false }
+        allowsArbitraryLoads(ats: bundle.object(forInfoDictionaryKey: "NSAppTransportSecurity") as? [String: Any])
+    }
+
+    /// B2: an ATS dictionary allows plain http anywhere only with arbitrary loads and none of the keys that make
+    /// iOS ignore it (local networking, web content, media).
+    nonisolated static func allowsArbitraryLoads(ats: [String: Any]?) -> Bool {
+        guard let ats else { return false }
         return ats["NSAllowsArbitraryLoads"] as? Bool == true && ats["NSAllowsLocalNetworking"] == nil
             && ats["NSAllowsArbitraryLoadsInWebContent"] == nil && ats["NSAllowsArbitraryLoadsForMedia"] == nil
     }

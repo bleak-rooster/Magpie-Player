@@ -89,18 +89,26 @@ enum ServerAddress {
         return false
     }
 
+    /// A Tailscale MagicDNS name: `ts.net` or a name ending in `.ts.net` (on a label boundary, so not
+    /// `evil-ts.net` or `nas.ts.net.evil.com`). Judged by the name alone; no DNS lookup.
+    static func isTailscaleName(_ url: URL) -> Bool {
+        guard let host = host(url) else { return false }
+        return host == "ts.net" || host.hasSuffix(".ts.net")
+    }
+
     /// Never on the open internet: loopback, the home network (`isLocalNetwork`), carrier-grade NAT
-    /// 100.64.0.0/10 (Tailscale), and IPv6 unique-local (fc00::/7) and link-local (fe80::/10).
+    /// 100.64.0.0/10 (Tailscale), Tailscale names (`*.ts.net`, T2), and IPv6 unique-local (fc00::/7) and
+    /// link-local (fe80::/10). By name class only: a public name that resolves to a home address still counts as public.
     static func isPrivate(_ url: URL) -> Bool {
-        if isLoopback(url) || isLocalNetwork(url) { return true }
+        if isLoopback(url) || isLocalNetwork(url) || isTailscaleName(url) { return true }
         guard let host = host(url) else { return false }
         if let ip = ipv4(host) { return ip[0] == 100 && (64...127).contains(ip[1]) }
         if let ip = ipv6(host) { return (ip[0] & 0xFE) == 0xFC || (ip[0] == 0xFE && (ip[1] & 0xC0) == 0x80) }
         return false
     }
 
-    /// H4: App Transport Security will refuse this plain-http address. Without arbitrary loads (Release), ATS's local
-    /// networking exception covers loopback, private and link-local IPv4, `.local` and single-label names only:
+    /// H4: App Transport Security will refuse this plain-http address. Without arbitrary loads (no build since T2),
+    /// ATS's local networking exception covers loopback, private and link-local IPv4, `.local` and single-label names only:
     /// Tailscale's 100.64/10, other IPs and dotted names (`*.ts.net`) need https. IPv6 unique and link-local
     /// addresses are not refused here (unverified; ATS gets the final say).
     static func atsBlocksPlainHTTP(_ url: URL, allowsArbitraryLoads: Bool) -> Bool {

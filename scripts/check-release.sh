@@ -29,8 +29,10 @@ check_variant() {
   [ "$(pb CFBundleShortVersionString "$plist")" = "$want_version" ] || fail "$variant: CFBundleShortVersionString is not $want_version"
   [ "$(pb CFBundleVersion "$plist")" = "7" ] || fail "$variant: CFBundleVersion is not the --build number (7)"
   [ "$(pb CFBundleIdentifier "$plist")" = "com.bleak-rooster.magpie" ] || fail "$variant: bundle id"
-  pb NSAppTransportSecurity:NSAllowsArbitraryLoads "$plist" >/dev/null && fail "$variant: Release has NSAllowsArbitraryLoads"
-  [ "$(pb NSAppTransportSecurity:NSAllowsLocalNetworking "$plist")" = "true" ] || fail "$variant: NSAllowsLocalNetworking missing"
+  [ "$(pb NSAppTransportSecurity:NSAllowsArbitraryLoads "$plist")" = "true" ] || fail "$variant: Release lacks NSAllowsArbitraryLoads"
+  for k in NSAllowsLocalNetworking NSAllowsArbitraryLoadsInWebContent NSAllowsArbitraryLoadsForMedia; do
+    pb "NSAppTransportSecurity:$k" "$plist" >/dev/null && fail "$variant: $k present (iOS would ignore arbitrary loads)"
+  done
   [ "$(pb ITSAppUsesNonExemptEncryption "$plist")" = "false" ] || fail "$variant: ITSAppUsesNonExemptEncryption is not NO"
   [ "$(pb UIBackgroundModes:0 "$plist")" = "audio" ] || fail "$variant: UIBackgroundModes audio missing"
   pb NSLocalNetworkUsageDescription "$plist" >/dev/null || fail "$variant: NSLocalNetworkUsageDescription missing"

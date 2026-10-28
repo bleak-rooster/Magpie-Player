@@ -25,6 +25,9 @@ enum ConnectErrorCopy {
     static let plainHTTPMessage = "Your password will be sent in the clear. Use an https:// address when you can."
     static let plainHTTPConfirm = "Send Anyway"
 
+    /// T2 (D3, symbol `lock.open`): Settings' label on a plain-http address outside home and Tailscale.
+    static let notEncrypted = "Not encrypted"
+
     /// Connect's advice under the addresses.
     static let httpsAdvice = "Use an https:// address for anything outside your home. Plain http:// sends your password unencrypted."
 

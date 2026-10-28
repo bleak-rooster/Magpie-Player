@@ -91,21 +91,12 @@ targets:
                 UISceneDelegateClassName: $(PRODUCT_MODULE_NAME).CarPlaySceneDelegate
         UIBackgroundModes: [audio]
         NSLocalNetworkUsageDescription: Magpie connects to your music server on your home network.
+        # T2 (spec §8): plain http anywhere, in every configuration; Magpie's plain-http consent gate is the control.
+        # Never add NSAllowsLocalNetworking (or the web-content/media keys): iOS would then ignore arbitrary loads.
         NSAppTransportSecurity:
-          NSAllowsLocalNetworking: true
+          NSAllowsArbitraryLoads: true
         UILaunchScreen: {}
     postBuildScripts:
-      - name: Debug-only ATS arbitrary loads
-        basedOnDependencyAnalysis: false
-        script: |
-          # H4: iOS ignores NSAllowsArbitraryLoads while NSAllowsLocalNetworking is present, so Debug swaps one
-          # for the other (arbitrary loads cover the local network too). Release keeps local networking only.
-          if [ "$CONFIGURATION" = "Debug" ]; then
-            PLIST="$TARGET_BUILD_DIR/$INFOPLIST_PATH"
-            /usr/libexec/PlistBuddy -c "Delete :NSAppTransportSecurity:NSAllowsLocalNetworking" "$PLIST" 2>/dev/null || true
-            /usr/libexec/PlistBuddy -c "Add :NSAppTransportSecurity:NSAllowsArbitraryLoads bool true" "$PLIST" 2>/dev/null || \
-            /usr/libexec/PlistBuddy -c "Set :NSAppTransportSecurity:NSAllowsArbitraryLoads true" "$PLIST"
-          fi
       - name: CarPlay scene only with the CarPlay entitlement
         basedOnDependencyAnalysis: false
         script: |

@@ -55,7 +55,10 @@ struct SettingsView: View {
         Section("Servers") {
             if let session = model.session {
                 ForEach(Array(session.endpoint.bases.enumerated()), id: \.offset) { index, base in
-                    LabeledContent(index == 0 ? "Address" : "Also tries", value: base.absoluteString)
+                    LabeledContent(index == 0 ? "Address" : "Also tries") {
+                        addressValue(base.absoluteString, base: base)
+                    }
+                    .accessibilityElement(children: .combine)
                 }
                 LabeledContent("Signed in as", value: session.username)
                 Button("Sign out", role: .destructive) {
@@ -84,7 +87,10 @@ struct SettingsView: View {
                 Button {
                     showsConnect = true
                 } label: {
-                    LabeledContent("Lidarr", value: summary)
+                    LabeledContent("Lidarr") {
+                        addressValue(summary, base: model.lidarr?.base)
+                    }
+                    .accessibilityElement(children: .combine)
                 }
                 .foregroundStyle(.primary)
                 .accessibilityIdentifier("settings-lidarr")
@@ -140,6 +146,18 @@ struct SettingsView: View {
     }
 
     private var summary: String { LidarrSummary.status(model.lidarrStatus) }
+
+    /// T2 (D3): a row's value, with "Not encrypted" under it when `base` is plain http outside home and Tailscale.
+    @ViewBuilder private func addressValue(_ value: String, base: URL?) -> some View {
+        VStack(alignment: .trailing, spacing: 2) {
+            Text(value).multilineTextAlignment(.trailing)
+            if let base, ServerAddress.isUnencryptedPublic(base) {
+                Label(ConnectErrorCopy.notEncrypted, systemImage: "lock.open")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
 
     private var findsSummary: String { model.findsStatus.summary }
 
