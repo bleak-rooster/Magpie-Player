@@ -113,7 +113,8 @@ private let loginJSON = Data(#"""
         await #expect(throws: PlainHTTPConsentRequired.self) {
             try await makeModel().signIn(urls: [URL(string: text)!], username: "admin", password: "pw-secret")
         }
-        #expect(!transport.inner.requests.contains { String(data: $0.httpBody ?? Data(), encoding: .utf8)?.contains("pw-secret") == true })
+        #expect(transport.inner.requests.isEmpty)
+        #expect(!carriesSecret("pw-secret"))
     }
 
     /// More disguises: edges of the private ranges, octal and mapped forms, look-alike suffixes, a trailing dot on
@@ -132,6 +133,20 @@ private let loginJSON = Data(#"""
         #expect(!carriesSecret("pw-secret"))
     }
 
+    /// Fix round 1 (minor 1): a host carrying `%` or anything outside letters, digits, `-`, `.`, `:` and brackets is
+    /// never home or Tailscale, whatever it ends with.
+    @Test(arguments: ["http://evil.com%00.ts.net", "http://%00.local", "http://nas%2Fx.local:4533", "http://nas%2F:4533",
+                      "http://evil.com%2F.ts.net", "http://my_nas:4533"])
+    func oddHostCharactersArePublic(_ text: String) async throws {
+        let url = try #require(URL(string: text))
+        #expect(!ServerAddress.isPrivate(url))
+        #expect(ServerAddress.isUnencryptedPublic(url))
+        await #expect(throws: PlainHTTPConsentRequired.self) {
+            try await makeModel().signIn(urls: [url], username: "admin", password: "pw-secret")
+        }
+        #expect(transport.inner.requests.isEmpty)
+    }
+
     @Test func tailscaleNamesOnALabelBoundary() {
         for text in ["http://ts.net", "http://nas.tail0a1b2c.ts.net:4533", "http://NAS.Tail0a1b2c.TS.NET"] {
             #expect(ServerAddress.isTailscaleName(URL(string: text)!), "\(text)")
@@ -142,6 +157,96 @@ private let loginJSON = Data(#"""
         for text in ["http://evil-ts.net", "http://nasts.net", "http://nas.ts.net.evil.com", "http://ts.net.evil.com"] {
             #expect(!ServerAddress.isTailscaleName(URL(string: text)!), "\(text)")
         }
+    }
+
+    // MARK: - Fix round 1 (C1): a saved endpoint never sends credentials to an address without consent
+
+    private static let lan = URL(string: "http://nas:4533")!
+    private static let publicHTTP = URL(string: "http://music.example.com")!
+
+    private func seed(_ bases: [URL]) throws {
+        try store.save(endpoint: ServerEndpoint(bases: bases), credentials: NavidromeCredentials(username: "admin", password: "pw-secret"))
+    }
+
+    private var publicRequests: [URLRequest] { transport.inner.requests.filter { $0.url?.host == "music.example.com" } }
+
+    /// Saved `[unreachable LAN, public http]` with no consent (build 1, or before the consent rule): resume and
+    /// reconnect only ever use the LAN address; stream and artwork URLs never point at the public one.
+    @Test func savedPublicAddressWithoutConsentIsNeverUsed() async throws {
+        try seed([Self.lan, Self.publicHTTP])
+        transport.setDown(["nas"])
+        let model = makeModel()
+        model.resumeSavedSession()
+        let client = try #require(model.session?.client)
+        #expect(model.session?.activeBase == Self.lan)
+        #expect(client.streamURL(songId: "s1", maxBitRate: nil, format: nil).host == "nas")
+        #expect(model.coverArtURL("c1", size: 100)?.host == "nas")
+        #expect(await model.reconnect(rebuildAlways: true) == false)
+        #expect(await model.reconnect(rebuildAlways: false) == false)
+        #expect(model.session?.client.streamURL(songId: "s1", maxBitRate: nil, format: nil).host == "nas")
+        #expect(model.coverArtURL("c1", size: 100)?.host == "nas")
+        #expect(publicRequests.isEmpty, "nothing at all reaches the public address")
+        #expect(!carriesSecret("pw-secret"))
+        model.signOut()
+    }
+
+    /// The same saved endpoint with consent given: failover reaches the public address and signs in there.
+    @Test func savedPublicAddressWithConsentFailsOver() async throws {
+        try seed([Self.lan, Self.publicHTTP])
+        transport.setDown(["nas"])
+        let model = makeModel()
+        model.allowPlainHTTP([Self.publicHTTP])
+        model.resumeSavedSession()
+        #expect(await model.reconnect(rebuildAlways: true))
+        #expect(model.session?.activeBase == Self.publicHTTP)
+        #expect(publicRequests.contains { $0.url?.path.hasSuffix("/auth/login") == true })
+        #expect(model.coverArtURL("c1", size: 100)?.host == "music.example.com")
+        model.signOut()
+    }
+
+    /// Reinstall (the Keychain survives, the consent in settings doesn't), saved endpoint only the public address:
+    /// no session and nothing sent; the owner is asked, and saying yes resumes without retyping the password.
+    @Test func reinstallAsksBeforeResumingAPublicAddress() async throws {
+        try seed([Self.publicHTTP])
+        let model = makeModel()
+        model.resumeSavedSession()
+        #expect(model.session == nil)
+        let pending = try #require(model.savedSessionAwaitingConsent)
+        #expect(pending.unencrypted == [Self.publicHTTP])
+        #expect(pending.bases == [Self.publicHTTP])
+        #expect(pending.username == "admin")
+        #expect(transport.inner.requests.isEmpty)
+        #expect(ConnectErrorCopy.savedSessionNeedsConsent.contains("isn't encrypted"))
+
+        model.allowSavedSession()
+        #expect(model.savedSessionAwaitingConsent == nil)
+        #expect(await model.reconnect(rebuildAlways: true))
+        #expect(model.session?.activeBase == Self.publicHTTP)
+        #expect(publicRequests.contains { $0.url?.path.hasSuffix("/auth/login") == true })
+        model.signOut()
+    }
+
+    /// Saying no leaves the app on Connect with the addresses and username filled in, and still sends nothing.
+    @Test func decliningASavedPublicAddressSendsNothing() throws {
+        try seed([Self.publicHTTP])
+        let model = makeModel()
+        model.resumeSavedSession()
+        model.declineSavedSession()
+        #expect(model.session == nil)
+        #expect(model.savedSessionAwaitingConsent?.unencrypted == [])
+        #expect(model.savedSessionAwaitingConsent?.bases == [Self.publicHTTP])
+        #expect(transport.inner.requests.isEmpty)
+        #expect(!model.plainHTTPConsent.allows(Self.publicHTTP))
+    }
+
+    /// signIn: every address goes through consent, also one that ATS would refuse in a build without arbitrary loads.
+    @Test func signInChecksConsentForEveryAddress() async throws {
+        let model = makeModel()
+        model.atsAllowsArbitraryLoads = false
+        await #expect(throws: PlainHTTPConsentRequired(urls: [Self.publicHTTP])) {
+            try await model.signIn(urls: [Self.lan, Self.publicHTTP], username: "admin", password: "pw")
+        }
+        #expect(transport.inner.requests.isEmpty)
     }
 
     @Test func settingsLabelsPublicPlainHTTP() {

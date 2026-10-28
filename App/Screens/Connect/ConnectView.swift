@@ -110,6 +110,24 @@ struct ConnectView: View {
         .onChange(of: error) { _, new in
             if let new { AccessibilityNotification.Announcement(new).post() }
         }
+        // T2 fix C1: a saved session whose address has no consent yet: ask, and fill in the form either way.
+        .onChange(of: model.savedSessionAwaitingConsent, initial: true) { _, pending in
+            guard let pending else { return }
+            addresses = pending.bases.map(\.absoluteString)
+            username = pending.username
+            error = ConnectErrorCopy.savedSessionNeedsConsent
+        }
+        .alert(ConnectErrorCopy.plainHTTPTitle, isPresented: Binding(
+            get: { !(model.savedSessionAwaitingConsent?.unencrypted.isEmpty ?? true) },
+            set: { _ in })   // only its buttons close it, and each says what happens
+        ) {
+            Button(ConnectErrorCopy.plainHTTPConfirm, role: .destructive) { model.allowSavedSession() }
+                .accessibilityIdentifier("connect-saved-plain-http-confirm")
+            Button("Cancel", role: .cancel) { model.declineSavedSession() }
+        } message: {
+            Text(ConnectErrorCopy.plainHTTPMessage + "\n\n"
+                 + (model.savedSessionAwaitingConsent?.unencrypted ?? []).map { $0.host ?? $0.absoluteString }.joined(separator: ", "))
+        }
         .alert(ConnectErrorCopy.plainHTTPTitle, isPresented: Binding(
             get: { !unencrypted.isEmpty }, set: { if !$0 { unencrypted = [] } })
         ) {

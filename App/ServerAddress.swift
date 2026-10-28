@@ -57,9 +57,16 @@ enum ServerAddress {
         return withUnsafeBytes(of: &addr) { Array($0) }
     }
 
+    /// The host, lower-cased, for classifying. Nil (so: public, never home or Tailscale) when it carries `%` or,
+    /// decoded, anything but letters, digits, `-`, `.`, `:` and brackets (T2 fix round: `evil.com%00.ts.net`).
     private static func host(_ url: URL) -> String? {
-        url.host(percentEncoded: false)?.lowercased()
+        guard let encoded = url.host(percentEncoded: true), !encoded.contains("%"),
+              let host = url.host(percentEncoded: false)?.lowercased(),
+              host.unicodeScalars.allSatisfy({ hostCharacters.contains($0) }) else { return nil }
+        return host
     }
+
+    private static let hostCharacters = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyz0123456789-.:[]")
 
     /// Private IPv4 ranges (10/8, 172.16/12, 192.168/16), link-local 169.254/16, `.local`, and single-label
     /// names that aren't numbers (`nas`): places only reachable at home. A single label made of digits

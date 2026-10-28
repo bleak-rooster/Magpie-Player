@@ -54,6 +54,8 @@ final class AppModel {
     /// A session is saved but the Keychain can't be read yet (before first unlock). Not signed out:
     /// the UI waits, and the session is restored when protected data becomes available.
     private(set) var isWaitingForUnlock = false
+    /// T2 fix C1: a saved session none of whose addresses may get the password yet (see AppModel+Consent).
+    var savedSessionAwaitingConsent: SavedSessionAwaitingConsent?
     // The request/settings state below is set from AppModel+Requests.swift (internal setters); views only read it.
 
     /// The owner's Lidarr, when connected. Kept in the Keychain next to the session.
@@ -281,10 +283,13 @@ final class AppModel {
         isWaitingForUnlock = false
         stopObservingUnlock()
         guard session == nil else { return }
+        // T2 fix C1: a saved address may predate consent (build 1, a reinstall); none usable → ask, send nothing.
+        guard let first = sendableBases(saved.endpoint).first else { return awaitConsent(for: saved) }
+        savedSessionAwaitingConsent = nil
         sessionGeneration += 1
         let client = makeClient(saved.endpoint, saved.credentials)
         session = Session(client: client, endpoint: saved.endpoint, credentials: saved.credentials,
-                          activeBase: saved.endpoint.bases[0], isAdmin: false)
+                          activeBase: first, isAdmin: false)
         box.set(client)
         // O3: started now, so every call made meanwhile waits for it (`request`): one login per launch.
         startReconnect(rebuildAlways: true)
@@ -324,13 +329,14 @@ final class AppModel {
     /// Tries each address in order; the first that answers is used. Saves to the Keychain on success.
     func signIn(urls: [URL], username: String, password: String) async throws {
         guard !urls.isEmpty else { throw SignInError.noAddress }
-        // H4: addresses ATS would refuse are named before anything is tried (and never need consent).
+        // H4: when ATS would refuse every address, say so before anything is tried.
         let blocked = urls.filter(atsBlocks)
         guard blocked.count < urls.count else {
             throw SignInError.unreachable(blocked.map { ProbeFailure(url: $0, error: Self.atsError($0)) })
         }
         // Security H2: the password never goes over plain http to a public address without the owner's say-so.
-        let unencrypted = urls.filter { !atsBlocks($0) && !plainHTTPConsent.allows($0) }
+        // Every address is checked (T2 fix C1): all of them are saved, and a later build may reach them.
+        let unencrypted = urls.filter { !plainHTTPConsent.allows($0) }
         guard unencrypted.isEmpty else { throw PlainHTTPConsentRequired(urls: unencrypted) }
         let endpoint = ServerEndpoint(bases: urls)
         var failures: [ProbeFailure] = []
@@ -350,6 +356,7 @@ final class AppModel {
         let client = makeClient(Self.preferring(base, in: endpoint), credentials)
         let login = try await client.connect()
         try store.save(endpoint: endpoint, credentials: credentials)
+        savedSessionAwaitingConsent = nil
         reconnectTask = nil
         sessionGeneration += 1
         starOverrides = [:]
@@ -469,7 +476,7 @@ final class AppModel {
     private func performReconnect(rebuildAlways: Bool) async -> Bool {
         guard let old = session else { return false }
         var reached: URL?
-        for base in old.endpoint.bases where await probe(base) == nil {
+        for base in sendableBases(old.endpoint) where await probe(base) == nil {   // T2 fix C1
             reached = base
             break
         }
@@ -517,8 +524,10 @@ final class AppModel {
         }
     }
 
+    /// T2 fix C1: the client only ever knows the addresses credentials may go to, so its login, failover, stream
+    /// and artwork URLs can't reach any other. Callers make sure at least one remains.
     private func makeClient(_ endpoint: ServerEndpoint, _ credentials: NavidromeCredentials) -> NavidromeClient {
-        NavidromeClient(endpoint: endpoint, credentials: credentials, transport: transport)
+        NavidromeClient(endpoint: ServerEndpoint(bases: sendableBases(endpoint)), credentials: credentials, transport: transport)
     }
 
     /// The same addresses with `base` first, so the client tries the one that just answered.

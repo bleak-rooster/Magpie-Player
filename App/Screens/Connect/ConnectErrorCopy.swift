@@ -28,6 +28,9 @@ enum ConnectErrorCopy {
     /// T2 (D3, symbol `lock.open`): Settings' label on a plain-http address outside home and Tailscale.
     static let notEncrypted = "Not encrypted"
 
+    /// T2 fix C1: the saved address isn't encrypted and has no consent yet (build 1, or a reinstall).
+    static let savedSessionNeedsConsent = "This saved address isn't encrypted, so Magpie asks before sending your password to it. Enter your password and tap Continue."
+
     /// Connect's advice under the addresses.
     static let httpsAdvice = "Use an https:// address for anything outside your home. Plain http:// sends your password unencrypted."
 
@@ -35,8 +38,9 @@ enum ConnectErrorCopy {
     /// http, as Navidrome on 4533 and Lidarr on 8686 do. The TLS handshake fails; the server is running.
     static let httpsNotAnswering = "That address doesn't answer over https. If your server uses plain http, type http:// in front."
 
-    /// B2 / H4: a plain-http address this build can't use (App Transport Security): Tailscale IPs, `*.ts.net`
-    /// names, anything outside the home network. A single-word server name works over http at home.
+    /// B2 / H4: a plain-http address ATS refuses in a build without arbitrary loads (none since T2, where every build
+    /// allows plain http and the consent prompt is the control). Kept for such a build: there, Tailscale IPs,
+    /// `*.ts.net` names and anything outside the home network need https; a single-word name works at home.
     static let needsHTTPS = "This address needs HTTPS. At home you can also use your server's short name, like http://myserver:4533."
 
     /// B4: a home-network address that didn't answer.
