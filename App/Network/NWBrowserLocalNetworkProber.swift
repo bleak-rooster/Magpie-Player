@@ -23,17 +23,22 @@ enum LocalNetworkBrowseEvent: Sendable, Equatable {
 /// unknown (never granted by default).
 struct LocalNetworkBrowseDecision: Sendable {
     private var policyDenied = false
+    /// Fix round 2: once answered, later events (the timeout, the cancellations) are ignored and not logged.
+    private(set) var isDecided = false
 
-    /// The answer, or nil to keep waiting.
+    /// The answer, or nil to keep waiting (and always nil once decided).
     mutating func handle(_ event: LocalNetworkBrowseEvent) -> LocalNetworkState? {
+        guard !isDecided else { return nil }
+        var answer: LocalNetworkState?
         switch event {
-        case .foundOwnService: return .granted
+        case .foundOwnService: answer = .granted
         case .browserWaitingPolicyDenied: policyDenied = true
         case .browserReady, .browserWaitingOther: policyDenied = false   // only a standing PolicyDenied counts
-        case .browserFailed, .listenerFailed: return .unknown
-        case .timeout: return policyDenied ? .denied : .unknown
+        case .browserFailed, .listenerFailed: answer = .unknown
+        case .timeout: answer = policyDenied ? .denied : .unknown
         }
-        return nil
+        isDecided = answer != nil
+        return answer
     }
 }
 
@@ -80,8 +85,10 @@ struct LocalNetworkBrowseDecision: Sendable {
         let once = Once<LocalNetworkState>()
         let decision = OSAllocatedUnfairLock(initialState: LocalNetworkBrowseDecision())
         let emit: @Sendable (LocalNetworkBrowseEvent) -> Void = { event in
+            let (live, answer) = decision.withLock { d in (!d.isDecided, d.handle(event)) }
+            guard live else { return }   // decided already: no late timeout in the log
             log("event: \(event)")
-            if let answer = decision.withLock({ $0.handle(event) }) { once.resume(answer) }
+            if let answer { once.resume(answer) }
         }
         var stop: (@Sendable () -> Void)?
         let answer = await withCheckedContinuation { continuation in
@@ -98,7 +105,9 @@ struct LocalNetworkBrowseDecision: Sendable {
         _ emit: @escaping @Sendable (LocalNetworkBrowseEvent) -> Void
     ) -> @Sendable () -> Void {
         let name = "Magpie-" + UUID().uuidString.prefix(8)
-        guard let listener = try? NWListener(using: .tcp) else {
+        let parameters = NWParameters.tcp
+        parameters.prohibitedInterfaceTypes = [.cellular]   // advertised on the local network only
+        guard let listener = try? NWListener(using: parameters) else {
             emit(.listenerFailed)
             return {}
         }

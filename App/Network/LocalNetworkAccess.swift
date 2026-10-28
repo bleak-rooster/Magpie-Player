@@ -34,6 +34,7 @@ enum LocalNetworkState: String, Equatable, Sendable {
 
     @ObservationIgnored private let prober: any LocalNetworkProbing
     @ObservationIgnored private let defaults: UserDefaults
+    @ObservationIgnored private var rechecking = false
     /// `granted` or `denied` once known, else `unknown`. Never `notNeeded`.
     private(set) var state: LocalNetworkState
 
@@ -78,6 +79,15 @@ enum LocalNetworkState: String, Equatable, Sendable {
             store(answer)
             return answer
         }
+    }
+
+    /// Fix round 2: Magpie became active while the setting is known to be off. The same browse, silent now (iOS
+    /// prompts once only), notices it was turned on in Settings; only a granted answer is stored. One at a time.
+    func recheckIfDenied() async {
+        guard state == .denied, !rechecking else { return }
+        rechecking = true
+        defer { rechecking = false }
+        if await prober.requestAccess() == .granted, state == .denied { store(.granted) }
     }
 
     /// A request to a local-network address worked: the setting is on.

@@ -9,6 +9,19 @@ import Search
 /// phone's Finds shelf, Keep is the phone's Keep (the find's release only: no Bring in more from the car, D5), and
 /// "Try it next" is the phone's Try, landing by the one landing rule (D6). Not for me isn't offered in the car.
 extension AppModel {
+    /// T3: whether Local Network explains an out-of-reach library in the car: denied when known off, pending while
+    /// never answered, and (fix round 2) only when the server's address needs the permission. A public or Tailscale
+    /// address that is out of reach shows the normal out-of-reach state.
+    var carPlayLocalNetwork: CPLocalNetwork {
+        guard let base = session?.activeBase ?? session?.endpoint.bases.first,
+              ServerAddress.needsLocalNetworkPermission(base) else { return .fine }
+        switch localNetwork.state {
+        case .denied: return .denied
+        case .unknown: return .pending
+        case .granted, .notNeeded: return .fine
+        }
+    }
+
     // MARK: - Finds tab
 
     /// New finds and the finds with days left, as the phone's Finds shelf has them; nil when no Finds library is

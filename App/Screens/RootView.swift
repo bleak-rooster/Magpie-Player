@@ -25,7 +25,11 @@ struct RootView: View {
         .accessibilityAction(.magicTap) {
             if model.player.queue.current != nil { model.player.toggle() }
         }
-        .onChange(of: scenePhase, initial: true) { _, phase in model.isForeground = phase == .active }
+        .onChange(of: scenePhase, initial: true) { _, phase in
+            model.isForeground = phase == .active
+            // T3 fix round 2: each activation (cold launches too) while Local Network is off re-checks silently.
+            if phase == .active { Task { await model.localNetwork.recheckIfDenied() } }
+        }
         // T3 (spec §8): once per install, whatever the first screen is, so Magpie is listed under Local Network.
         .task { await model.localNetwork.requestAtFirstLaunch() }
     }

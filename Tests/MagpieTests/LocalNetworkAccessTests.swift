@@ -217,6 +217,72 @@ private func freshDefaults() -> UserDefaults { UserDefaults(suiteName: "magpie-t
         #expect(d.handle(.timeout) == .unknown)
     }
 
+    /// Fix round 2 (1): once decided, the ask ignores later events, so no late timeout is logged or answered.
+    @Test func decidedIgnoresTheLateTimeout() async {
+        var d = LocalNetworkBrowseDecision()
+        #expect(d.handle(.foundOwnService) == .granted && d.isDecided)
+        #expect(d.handle(.timeout) == nil, "the timeout after a decision is ignored")
+        #expect(d.handle(.browserFailed) == nil)
+        var denied = LocalNetworkBrowseDecision()
+        _ = denied.handle(.browserWaitingPolicyDenied)
+        #expect(!denied.isDecided)
+        #expect(denied.handle(.timeout) == .denied && denied.isDecided)
+
+        // Through `decide`: found, then the stream keeps emitting (a timeout among them); still granted, stop once.
+        let stops = OSAllocatedUnfairLock(initialState: 0)
+        let answer = await NWBrowserLocalNetworkProber.decide(timeout: 0.1) { emit in
+            emit(.foundOwnService); emit(.timeout); emit(.browserFailed)
+            return { stops.withLock { $0 += 1 } }
+        }
+        #expect(answer == .granted && stops.withLock { $0 } == 1)
+    }
+
+    /// Fix round 2 (2): the car blames Local Network only for an address that needs it.
+    @Test func carBlamesLocalNetworkOnlyForAHomeAddress() async throws {
+        let p = FakeProber(); p.answer = .denied; p.denied = true
+        let away = URL(string: "https://music.example.com")!
+        let model = makeModel(prober: p)
+        _ = await model.localNetwork.request()
+        #expect(model.localNetwork.state == .denied)
+        try await model.signIn(urls: [away], username: "admin", password: "pw")
+        #expect(model.carPlayLocalNetwork == .fine, "a public address out of reach is just out of reach")
+        model.signOut()
+        try await model.signIn(urls: [lan], username: "admin", password: "pw")
+        #expect(model.carPlayLocalNetwork == .denied)
+        model.signOut()
+
+        let fresh = LocalNetworkAccessTests()
+        let unknown = FakeProber(); unknown.answer = .unknown
+        let other = fresh.makeModel(prober: unknown)
+        try await other.signIn(urls: [lan], username: "admin", password: "pw")
+        #expect(other.carPlayLocalNetwork == .pending)
+        other.signOut()
+        #expect(other.carPlayLocalNetwork == .fine, "signed out: nothing to blame")
+    }
+
+    /// Fix round 2 (3): becoming active while denied re-runs the silent browse once; a granted answer clears the
+    /// stale denial, anything else leaves it. Never asks when not denied, never twice at once.
+    @Test func activationRechecksAStaleDenial() async {
+        let p = FakeProber(); p.answer = .denied
+        let d = freshDefaults()
+        let a = LocalNetworkAccess(prober: p, defaults: d)
+        await a.recheckIfDenied()
+        #expect(p.requestCalls == 0, "unknown: the first-launch ask, not the re-check, asks")
+        _ = await a.request()
+        #expect(a.state == .denied && p.requestCalls == 1)
+        p.answer = .unknown
+        await a.recheckIfDenied()
+        #expect(a.state == .denied && p.requestCalls == 2, "an undecided browse keeps the denial")
+        p.answer = .granted   // turned on in Settings
+        async let first: Void = a.recheckIfDenied()
+        async let second: Void = a.recheckIfDenied()
+        _ = await (first, second)
+        #expect(a.state == .granted && d.string(forKey: LocalNetworkAccess.stateKey) == "granted")
+        #expect(p.requestCalls == 3, "one browse per activation, never two at once")
+        await a.recheckIfDenied()
+        #expect(p.requestCalls == 3, "granted: nothing to re-check")
+    }
+
     /// The hosted-test fallback never asks the system: nothing to grant, nothing denied.
     @Test func notNeededProberNeverAsks() async {
         let p = NotNeededProber()
