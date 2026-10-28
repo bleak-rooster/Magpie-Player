@@ -93,7 +93,7 @@ struct SettingsView: View {
             Button("Open Settings") {
                 if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
             }
-            .accessibilityIdentifier("connect-open-settings")
+            .accessibilityIdentifier("settings-open-settings")
         }
         if model.localNetwork.state != .granted {
             Button {
@@ -109,7 +109,7 @@ struct SettingsView: View {
                 }
             }
             .disabled(askingLocalNetwork)
-            .accessibilityIdentifier("connect-allow-local-network")
+            .accessibilityIdentifier("settings-allow-local-network")
         }
     }
 

@@ -17,9 +17,9 @@ enum ConnectDiagnosis: Equatable {
         #endif
     }
 
-    /// - Parameter pathDenied: a connection to `url` was just seen held back by the Local Network setting.
-    static func classify(_ error: Error, url: URL, localNetwork: LocalNetworkState, pathDenied: Bool,
-                         onDevice: Bool) -> ConnectDiagnosis {
+    /// - Parameter pathDenied: a connection to `url` was just seen held back by the Local Network setting (the only
+    ///   Local Network evidence used: a remembered "denied" may be stale).
+    static func classify(_ error: Error, url: URL, pathDenied: Bool, onDevice: Bool) -> ConnectDiagnosis {
         let hostAndPort = ConnectErrorCopy.hostAndPort(url) ?? url.absoluteString
         let code = (error as? URLError)?.code
         let nameLookup = code == .cannotFindHost || code == .dnsLookupFailed
@@ -27,7 +27,7 @@ enum ConnectDiagnosis: Equatable {
         if (error as? NavidromeError) == .badCredentials { return .loginFailed }
         if code == .appTransportSecurityRequiresSecureConnection { return .atsBlocked }
         if ServerAddress.needsLocalNetworkPermission(url), AppModel.isConnectionError(error),
-           pathDenied || localNetwork == .denied,
+           pathDenied,
            !nameLookup || url.host(percentEncoded: false)?.lowercased().hasSuffix(".local") == true {
             return .localNetworkDenied
         }

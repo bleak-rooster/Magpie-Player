@@ -2,6 +2,7 @@ import Foundation
 import MagpieCore
 import MagpieTestSupport
 import NavidromeKit
+import os
 import Testing
 @testable import Magpie
 
@@ -150,6 +151,70 @@ private func freshDefaults() -> UserDefaults { UserDefaults(suiteName: "magpie-t
         _ = try await model.request { try await $0.albumList(.newest, size: 1, offset: 0) }
         #expect(model.localNetwork.state == .granted)
         model.signOut()
+    }
+
+    /// Fix M4 (risk a): a remembered or wrong "denied" never stops a sign-in to a server that answers.
+    @Test func deniedStillSignsInWhenTheServerAnswers() async throws {
+        let p = FakeProber(); p.answer = .denied; p.denied = true
+        let model = makeModel(prober: p)
+        try await model.signIn(urls: [lan], username: "admin", password: "pw")
+        #expect(model.session?.activeBase == lan)
+        model.signOut()
+    }
+
+    /// Fix M1: a single-label name may go over Tailscale, so neither a working request nor a passing quick check on it
+    /// proves the setting is on; an IP literal or a `.local` name does.
+    @Test func onlyLiteralsAndDotLocalProveAccess() async throws {
+        #expect(ServerAddress.provesLocalNetworkAccess(lan))
+        #expect(ServerAddress.provesLocalNetworkAccess(URL(string: "http://nas.local:4533")!))
+        #expect(ServerAddress.provesLocalNetworkAccess(URL(string: "http://[fd00::1]:4533")!))
+        #expect(!ServerAddress.provesLocalNetworkAccess(URL(string: "http://homeserver:4533")!))
+        #expect(!ServerAddress.provesLocalNetworkAccess(URL(string: "http://100.64.10.20:4533")!))
+
+        let homebox = URL(string: "http://homeserver:4533")!
+        let p = FakeProber(); p.answer = .denied; p.denied = true
+        let a = LocalNetworkAccess(prober: p, defaults: freshDefaults())
+        #expect(await a.ensureAccess(for: [homebox]) == .denied)
+        p.denied = false
+        #expect(await a.ensureAccess(for: [homebox]) == .denied, "a single-label name proves nothing")
+        #expect(await a.ensureAccess(for: [homebox, lan]) == .granted, "the LAN literal is the one checked")
+
+        transport.inner.stub(pathSuffix: "/rest/getAlbumList2", body: Data(
+            #"{"subsonic-response":{"status":"ok","version":"1.16.1","albumList2":{"album":[]}}}"#.utf8))
+        let q = FakeProber(); q.answer = .unknown
+        let model = makeModel(prober: q)
+        try await model.signIn(urls: [homebox], username: "admin", password: "pw")
+        _ = try await model.request { try await $0.albumList(.newest, size: 1, offset: 0) }
+        #expect(model.localNetwork.state == .unknown, "a working request to homeserver may have gone over Tailscale")
+        model.signOut()
+    }
+
+    /// Fix I1: the ask's decision. Granted only when the browse finds Magpie's own service; denied only when
+    /// PolicyDenied still stands at the deadline; a browse that is merely ready proves nothing.
+    @Test(arguments: [
+        ([LocalNetworkBrowseEvent.browserReady, .foundOwnService], LocalNetworkState.granted),
+        ([.browserReady, .browserWaitingPolicyDenied], .denied),
+        ([.browserReady], .unknown),
+        ([.browserWaitingPolicyDenied, .browserReady], .unknown),
+        ([.browserWaitingPolicyDenied, .foundOwnService], .granted),
+        ([.browserReady, .browserFailed], .unknown),
+        ([.listenerFailed], .unknown),
+    ])
+    func browseDecision(_ events: [LocalNetworkBrowseEvent], _ expected: LocalNetworkState) async {
+        let stopped = OSAllocatedUnfairLock(initialState: false)
+        let answer = await NWBrowserLocalNetworkProber.decide(timeout: 0.2) { emit in
+            for event in events { emit(event) }   // then nothing until the timeout
+            return { stopped.withLock { $0 = true } }
+        }
+        #expect(answer == expected)
+        #expect(stopped.withLock { $0 }, "listener and browser are always cancelled")
+    }
+
+    /// Ready comes first and fast whatever the answer: it must never be taken for granted (fix I1).
+    @Test func readyAloneIsNotGranted() {
+        var d = LocalNetworkBrowseDecision()
+        #expect(d.handle(.browserReady) == nil, "keeps waiting")
+        #expect(d.handle(.timeout) == .unknown)
     }
 
     /// The hosted-test fallback never asks the system: nothing to grant, nothing denied.

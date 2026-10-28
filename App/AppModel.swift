@@ -462,9 +462,10 @@ final class AppModel {
         }
     }
 
-    /// T3: a request to a home address worked, so the Local Network setting is on.
+    /// T3: a request to a home address worked, so the Local Network setting is on (fix M1: only an IP literal or a
+    /// `.local` name proves it; a single-label name may have gone over Tailscale).
     private func noteLocalSuccess<T>(_ value: T) -> T {
-        if let base = session?.activeBase, ServerAddress.needsLocalNetworkPermission(base) { localNetwork.noteLocalSuccess() }
+        if let base = session?.activeBase, ServerAddress.provesLocalNetworkAccess(base) { localNetwork.noteLocalSuccess() }
         return value
     }
 

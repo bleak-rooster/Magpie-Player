@@ -123,6 +123,14 @@ enum ServerAddress {
         return (ip[0] & 0xFE) == 0xFC || (ip[0] == 0xFE && (ip[1] & 0xC0) == 0x80)
     }
 
+    /// T3 fix M1: a request to this address working (or not being held back) shows the Local Network setting is on:
+    /// private and link-local IP literals and `.local` names. Not single-label names: those may resolve to a Tailscale
+    /// address (the owner's `homeserver`), which the setting doesn't govern.
+    static func provesLocalNetworkAccess(_ url: URL) -> Bool {
+        guard needsLocalNetworkPermission(url), let host = host(url) else { return false }
+        return ipv4(host) != nil || ipv6(host) != nil || host.hasSuffix(".local")
+    }
+
     /// H4: App Transport Security will refuse this plain-http address. Without arbitrary loads (no build since T2),
     /// ATS's local networking exception covers loopback, private and link-local IPv4, `.local` and single-label names only:
     /// Tailscale's 100.64/10, other IPs and dotted names (`*.ts.net`) need https. IPv6 unique and link-local

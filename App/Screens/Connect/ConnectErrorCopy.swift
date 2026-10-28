@@ -93,17 +93,24 @@ enum ConnectErrorCopy {
     /// T3: Connect and Settings offer "Open Settings" exactly when the message is the Local Network one.
     static func offersOpenSettings(for error: Error) -> Bool {
         guard case SignInError.unreachable(let failures) = error else { return false }
-        return diagnosis(failures) == .localNetworkDenied
+        return cause(failures) == .step(.localNetworkDenied)
     }
 
-    /// T3: the step that failed for the first address, in order, where it is known (`ConnectDiagnosis`). Nil when
-    /// certificate or https-answer trouble comes first, or no step is known.
-    private static func diagnosis(_ failures: [ProbeFailure]) -> ConnectDiagnosis? {
-        if failures.contains(where: { isCertificateError($0.error) || isPlainHTTPAnswer($0.error, url: $0.url) }) { return nil }
-        return failures.lazy.map {
-            ConnectDiagnosis.classify($0.error, url: $0.url, localNetwork: .unknown, pathDenied: $0.localNetworkDenied,
-                                      onDevice: ConnectDiagnosis.onDevice)
+    /// Which failure the message is about, in order of usefulness.
+    private enum Cause: Equatable {
+        case certificate, httpsAnswer
+        /// T3: the first address, in order, whose failed step is known (`ConnectDiagnosis`).
+        case step(ConnectDiagnosis)
+        case unknown
+    }
+
+    private static func cause(_ failures: [ProbeFailure]) -> Cause {
+        if failures.contains(where: { isCertificateError($0.error) }) { return .certificate }
+        if failures.contains(where: { isPlainHTTPAnswer($0.error, url: $0.url) }) { return .httpsAnswer }
+        let step = failures.lazy.map {
+            ConnectDiagnosis.classify($0.error, url: $0.url, pathDenied: $0.localNetworkDenied, onDevice: ConnectDiagnosis.onDevice)
         }.first { $0 != .other }
+        return step.map(Cause.step) ?? .unknown
     }
 
     /// The most useful single message across all addresses: certificate trouble first (it never fixes itself), then
@@ -111,9 +118,12 @@ enum ConnectErrorCopy {
     /// timeout…), then "not a music server", then plain "couldn't reach".
     private static func unreachableMessage(_ failures: [ProbeFailure]) -> String {
         guard let first = failures.first else { return unreachable("your music server") }
-        if failures.contains(where: { isCertificateError($0.error) }) { return untrustedCertificate }
-        if failures.contains(where: { isPlainHTTPAnswer($0.error, url: $0.url) }) { return httpsNotAnswering }
-        if let diagnosis = diagnosis(failures) { return diagnosis.message }
+        switch cause(failures) {
+        case .certificate: return untrustedCertificate
+        case .httpsAnswer: return httpsNotAnswering
+        case .step(let diagnosis): return diagnosis.message
+        case .unknown: break
+        }
         if failures.contains(where: { ($0.error as? NavidromeError) == .unexpectedResponse }) { return notAMusicServer }
         if case NavidromeError.http = first.error {
             return "\(hostAndPort(first.url) ?? "That address") answered, but it doesn't look like a music server."

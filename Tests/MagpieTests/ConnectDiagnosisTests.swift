@@ -7,8 +7,8 @@ import Testing
 // cause (plan Review Focus 1: `homeserver` resolves only through Tailscale).
 @Suite struct ConnectDiagnosisTests {
     let homebox = URL(string: "http://homeserver:4533")!
-    func c(_ e: Error, _ u: URL, _ s: LocalNetworkState = .granted, denied d: Bool = false, device: Bool = true) -> ConnectDiagnosis {
-        ConnectDiagnosis.classify(e, url: u, localNetwork: s, pathDenied: d, onDevice: device)
+    func c(_ e: Error, _ u: URL, denied d: Bool = false, device: Bool = true) -> ConnectDiagnosis {
+        ConnectDiagnosis.classify(e, url: u, pathDenied: d, onDevice: device)
     }
 
     @Test func localhostOnDeviceOnly() {
@@ -32,11 +32,11 @@ import Testing
     }
 
     @Test func diagnosisOrderForOwnersSetup() {                               // Review Focus 1
-        #expect(c(URLError(.cannotFindHost), homebox, .denied) == .nameNotFound("homeserver"))
-        #expect(c(URLError(.cannotFindHost), URL(string: "http://nas.local:4533")!, .denied) == .localNetworkDenied)
+        #expect(c(URLError(.cannotFindHost), homebox, denied: true) == .nameNotFound("homeserver"))
+        #expect(c(URLError(.cannotFindHost), URL(string: "http://nas.local:4533")!, denied: true) == .localNetworkDenied)
         #expect(c(URLError(.timedOut), URL(string: "http://192.168.1.20:4533")!, denied: true) == .localNetworkDenied)
         #expect(c(URLError(.timedOut), URL(string: "http://192.168.1.20:4533")!) == .timedOut("192.168.1.20:4533"))
-        #expect(c(URLError(.timedOut), URL(string: "http://100.64.10.20:4533")!, .denied) == .timedOut("100.64.10.20:4533"))
+        #expect(c(URLError(.timedOut), URL(string: "http://100.64.10.20:4533")!, denied: true) == .timedOut("100.64.10.20:4533"))
     }
 
     /// The rest of the copy, and how Connect picks one failure: certificate and https-answer trouble first, then the

@@ -69,7 +69,9 @@ enum LocalNetworkState: String, Equatable, Sendable {
         case .granted, .notNeeded:
             return .granted
         case .denied:
-            if !(await checkDenied(for: first)) { store(.granted) }
+            // Fix M1: only an address whose reachability proves the setting (an IP literal or `.local`) turns it back on.
+            let check = urls.first(where: ServerAddress.provesLocalNetworkAccess) ?? first
+            if !(await checkDenied(for: check)), ServerAddress.provesLocalNetworkAccess(check) { store(.granted) }
             return state
         case .unknown:
             let answer = await prober.requestAccess()
