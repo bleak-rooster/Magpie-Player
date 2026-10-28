@@ -49,6 +49,9 @@ final class AppModel {
     private(set) var session: Session?
     let player: Player
     var theme: Theme
+    /// Layout, playback, downloads, scrobbling and genres; change it through `updatePreferences`.
+    var preferences: Preferences
+    @ObservationIgnored let preferencesStore: PreferencesStore
     /// Star changes made this session, by song id (the queue's copies of songs are not edited).
     private(set) var starOverrides: [String: Bool] = [:]
     /// OpenSubsonic extensions the server advertises (A13), fetched once per session.
@@ -194,6 +197,9 @@ final class AppModel {
         self.probeTransport = probeTransport
         self.box = box
         self.theme = theme
+        let preferencesStore = PreferencesStore(defaults: defaults)
+        self.preferencesStore = preferencesStore
+        self.preferences = preferencesStore.load()
         self.notifications = notifications
         let data = dataDirectory ?? FileManager.default.temporaryDirectory.appending(path: "magpie-\(UUID().uuidString)")
         self.dataDirectory = data
