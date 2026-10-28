@@ -29,7 +29,7 @@ enum ConnectErrorCopy {
     static let notEncrypted = "Not encrypted"
 
     /// T2 fix C1: the saved address isn't encrypted and has no consent yet (build 1, or a reinstall).
-    static let savedSessionNeedsConsent = "This saved address isn't encrypted, so Magpie asks before sending your password to it. Enter your password and tap Continue."
+    static let savedSessionNeedsConsent = "This saved address isn't encrypted. Allow it to carry on, or sign in again."
 
     /// Connect's advice under the addresses.
     static let httpsAdvice = "Use an https:// address for anything outside your home. Plain http:// sends your password unencrypted."

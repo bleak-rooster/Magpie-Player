@@ -36,4 +36,18 @@ extension AppModel {
     func declineSavedSession() {
         savedSessionAwaitingConsent?.unencrypted = []
     }
+
+    /// T2 fix round 2: the saved Lidarr is plain http to a public host without consent (a reinstall kept the
+    /// Keychain, not the consent). `lidarrClient` is nil until the owner allows it in Settings › Lidarr.
+    var lidarrAwaitingConsent: Bool {
+        _ = plainHTTPConsentRevision   // observed: allowing it updates Settings
+        return lidarr.map { !plainHTTPConsent.allows($0.base) } ?? false
+    }
+
+    /// The owner allowed the saved Lidarr's address: start using it.
+    func allowLidarrAddress() {
+        guard let base = lidarr?.base else { return }
+        allowPlainHTTP([base])
+        rebuildRunner()
+    }
 }

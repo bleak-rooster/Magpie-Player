@@ -21,6 +21,7 @@ private let loginJSON = Data(#"""
     let transport = HostSwitchTransport()
     let store = SessionStore(keychain: KeychainStore(service: "com.bleak-rooster.magpie.tests.\(UUID().uuidString)"))
     let defaults = UserDefaults(suiteName: "magpie-tests-consent-\(UUID().uuidString)")!
+    let lidarrStore = MemoryLidarrStore()
 
     init() {
         let t = transport.inner
@@ -33,7 +34,7 @@ private let loginJSON = Data(#"""
 
     /// A model that behaves like a Release build now: arbitrary loads, so nothing is pre-refused.
     func makeModel() -> AppModel {
-        let model = AppModel(store: store, lidarrStore: MemoryLidarrStore(), tokenStore: MemoryTokenStore(),
+        let model = AppModel(store: store, lidarrStore: lidarrStore, tokenStore: MemoryTokenStore(),
                              matchIndexDirectory: nil, dataDirectory: nil, transport: transport, probeTransport: transport,
                              engine: FakeEngine(), defaults: defaults, systemNowPlaying: false, notifications: false)
         model.atsAllowsArbitraryLoads = true
@@ -216,7 +217,7 @@ private let loginJSON = Data(#"""
         #expect(pending.bases == [Self.publicHTTP])
         #expect(pending.username == "admin")
         #expect(transport.inner.requests.isEmpty)
-        #expect(ConnectErrorCopy.savedSessionNeedsConsent.contains("isn't encrypted"))
+        #expect(ConnectErrorCopy.savedSessionNeedsConsent == "This saved address isn't encrypted. Allow it to carry on, or sign in again.")
 
         model.allowSavedSession()
         #expect(model.savedSessionAwaitingConsent == nil)
@@ -247,6 +248,65 @@ private let loginJSON = Data(#"""
             try await model.signIn(urls: [Self.lan, Self.publicHTTP], username: "admin", password: "pw")
         }
         #expect(transport.inner.requests.isEmpty)
+    }
+
+    // MARK: - Fix round 2 (C1, Lidarr): a saved Lidarr never gets the API key without consent
+
+    private static let publicLidarr = URL(string: "http://lidarr.example.com")!
+
+    private var apiKeyRequests: [URLRequest] {
+        transport.inner.requests.filter { $0.value(forHTTPHeaderField: "X-Api-Key") != nil }
+    }
+
+    /// Exercises every path that talks to Lidarr: the runner (and its gate), merged search, the artist's
+    /// not-yet albums and the setup audit.
+    private func useLidarr(_ model: AppModel) async {
+        model.reloadKeychainItems()
+        model.rebuildRunner()
+        _ = await model.mergedSearch().run("abba")
+        _ = await model.artistNotYetAlbums(Artist(id: "ar1", name: "ABBA", albumCount: 1), library: [])
+        _ = await model.lidarrAudit()
+    }
+
+    /// Reinstall: the Keychain kept `http://lidarr.example.com`, the consent didn't. No request carries the key;
+    /// Settings still knows the address and can ask.
+    @Test func savedPublicLidarrWithoutConsentGetsNoKey() async throws {
+        try lidarrStore.save(LidarrConnection(base: Self.publicLidarr, apiKey: "key-secret"))
+        let model = makeModel()
+        try await model.signIn(urls: [Self.lan], username: "admin", password: "pw")
+        await useLidarr(model)
+        #expect(model.lidarrClient == nil)
+        #expect(model.gate == nil, "no runner, no write gate")
+        #expect(model.lidarr?.base == Self.publicLidarr, "still shown in Settings")
+        #expect(model.lidarrAwaitingConsent)
+        #expect(model.lidarrScope != nil, "its setup and write switch stay readable")
+        #expect(apiKeyRequests.isEmpty)
+        #expect(!carriesSecret("key-secret"))
+        #expect(!transport.inner.requests.contains { $0.url?.host == "lidarr.example.com" })
+        model.signOut()
+    }
+
+    /// With consent (given in Settings), the same saved Lidarr is used as before.
+    @Test func savedPublicLidarrWithConsentIsUsed() async throws {
+        try lidarrStore.save(LidarrConnection(base: Self.publicLidarr, apiKey: "key-secret"))
+        let model = makeModel()
+        try await model.signIn(urls: [Self.lan], username: "admin", password: "pw")
+        #expect(model.lidarrAwaitingConsent)
+        model.allowLidarrAddress()
+        #expect(!model.lidarrAwaitingConsent)
+        await useLidarr(model)
+        #expect(model.lidarrClient != nil)
+        #expect(model.gate != nil)
+        #expect(apiKeyRequests.contains { $0.url?.host == "lidarr.example.com" })
+        model.signOut()
+    }
+
+    /// Home and Tailscale Lidarr addresses never ask, as before.
+    @Test func homeLidarrNeedsNoConsent() async throws {
+        try lidarrStore.save(LidarrConnection(base: URL(string: "http://nas:8686")!, apiKey: "key"))
+        let model = makeModel()
+        #expect(!model.lidarrAwaitingConsent)
+        #expect(model.lidarrClient != nil)
     }
 
     @Test func settingsLabelsPublicPlainHTTP() {

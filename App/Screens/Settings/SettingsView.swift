@@ -14,6 +14,7 @@ struct SettingsView: View {
     @State private var token = ""
     @State private var tokenError: String?
     @State private var checkingToken = false
+    @State private var asksLidarrConsent = false
 
     var body: some View {
         NavigationStack {
@@ -40,6 +41,16 @@ struct SettingsView: View {
                 }
             }
             .sheet(isPresented: $showsConnect) { ConnectLidarrView() }
+            .alert(LidarrConnectCopy.plainHTTPTitle, isPresented: $asksLidarrConsent) {
+                Button(LidarrConnectCopy.plainHTTPConfirm, role: .destructive) {
+                    model.allowLidarrAddress()
+                    Task { _ = await model.lidarrAudit() }
+                }
+                .accessibilityIdentifier("settings-lidarr-allow-confirm")
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text(LidarrConnectCopy.plainHTTPMessage + "\n\n" + (model.lidarr.map { $0.base.host ?? $0.base.absoluteString } ?? ""))
+            }
             .task(id: model.lidarr) { if model.lidarr != nil { _ = await model.lidarrAudit() } }
         }
     }
@@ -107,6 +118,18 @@ struct SettingsView: View {
                 Text(model.speedTier == .patient
                      ? "Patient: plain Lidarr can take a few hours, so Try becomes \u{201C}Ask for it\u{201D}."
                      : "Standard: Tubifarry found, so most songs arrive in a few minutes.")
+            }
+            if model.lidarrAwaitingConsent {   // T2 fix round 2: nothing goes to Lidarr until allowed
+                Section {
+                    Button {
+                        asksLidarrConsent = true
+                    } label: {
+                        Label(LidarrConnectCopy.allowAddress, systemImage: "lock.open")
+                    }
+                    .accessibilityIdentifier("settings-lidarr-allow")
+                } footer: {
+                    Text(LidarrConnectCopy.needsConsent)
+                }
             }
             Section {
                 Toggle("Allow Magpie to change Lidarr", isOn: Binding(

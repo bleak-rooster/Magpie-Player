@@ -210,6 +210,9 @@ enum LidarrConnectCopy {
     static let plainHTTPTitle = "This address isn't encrypted."
     static let plainHTTPMessage = "Your Lidarr API key will be sent in the clear, and it gives full control of Lidarr. Use an https:// address when you can."
     static let plainHTTPConfirm = "Send Anyway"
+    /// T2 fix round 2: Settings › Lidarr, a saved address that isn't encrypted and has no consent yet (a reinstall).
+    static let needsConsent = "This Lidarr address isn't encrypted, so Magpie waits for your OK before sending its API key."
+    static let allowAddress = "Allow This Address"
 
     static func invalidAddress(_ text: String) -> String {
         "\u{201C}\(text.trimmingCharacters(in: .whitespaces))\u{201D} doesn't look like a web address."

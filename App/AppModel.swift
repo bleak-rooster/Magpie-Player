@@ -56,6 +56,8 @@ final class AppModel {
     private(set) var isWaitingForUnlock = false
     /// T2 fix C1: a saved session none of whose addresses may get the password yet (see AppModel+Consent).
     var savedSessionAwaitingConsent: SavedSessionAwaitingConsent?
+    /// Bumped when consent is given, so views that depend on it (Settings › Lidarr) update.
+    var plainHTTPConsentRevision = 0
     // The request/settings state below is set from AppModel+Requests.swift (internal setters); views only read it.
 
     /// The owner's Lidarr, when connected. Kept in the Keychain next to the session.
@@ -284,12 +286,12 @@ final class AppModel {
         stopObservingUnlock()
         guard session == nil else { return }
         // T2 fix C1: a saved address may predate consent (build 1, a reinstall); none usable → ask, send nothing.
-        guard let first = sendableBases(saved.endpoint).first else { return awaitConsent(for: saved) }
+        guard let made = makeClient(saved.endpoint, saved.credentials) else { return awaitConsent(for: saved) }
         savedSessionAwaitingConsent = nil
         sessionGeneration += 1
-        let client = makeClient(saved.endpoint, saved.credentials)
+        let client = made.client
         session = Session(client: client, endpoint: saved.endpoint, credentials: saved.credentials,
-                          activeBase: first, isAdmin: false)
+                          activeBase: made.first, isAdmin: false)
         box.set(client)
         // O3: started now, so every call made meanwhile waits for it (`request`): one login per launch.
         startReconnect(rebuildAlways: true)
@@ -353,7 +355,9 @@ final class AppModel {
         }
         guard let base = reached else { throw SignInError.unreachable(failures) }
         let credentials = NavidromeCredentials(username: username, password: password)
-        let client = makeClient(Self.preferring(base, in: endpoint), credentials)
+        guard let client = makeClient(Self.preferring(base, in: endpoint), credentials)?.client else {
+            throw PlainHTTPConsentRequired(urls: urls.filter { !plainHTTPConsent.allows($0) })
+        }
         let login = try await client.connect()
         try store.save(endpoint: endpoint, credentials: credentials)
         savedSessionAwaitingConsent = nil
@@ -482,8 +486,8 @@ final class AppModel {
         }
         guard let base = reached else { return false }
         if base == old.activeBase, !rebuildAlways { return true }   // a blip; the same address answers again
-        let client = makeClient(Self.preferring(base, in: old.endpoint), old.credentials)
-        guard let login = try? await client.connect() else { return false }
+        guard let client = makeClient(Self.preferring(base, in: old.endpoint), old.credentials)?.client,
+              let login = try? await client.connect() else { return false }
         guard let current = session, current.client === old.client else { return false }   // signed out/in meanwhile
         session = Session(client: client, endpoint: old.endpoint, credentials: old.credentials,
                           activeBase: base, isAdmin: login.isAdmin)
@@ -525,9 +529,11 @@ final class AppModel {
     }
 
     /// T2 fix C1: the client only ever knows the addresses credentials may go to, so its login, failover, stream
-    /// and artwork URLs can't reach any other. Callers make sure at least one remains.
-    private func makeClient(_ endpoint: ServerEndpoint, _ credentials: NavidromeCredentials) -> NavidromeClient {
-        NavidromeClient(endpoint: ServerEndpoint(bases: sendableBases(endpoint)), credentials: credentials, transport: transport)
+    /// and artwork URLs can't reach any other. Nil when none remains; otherwise the client and its first address.
+    private func makeClient(_ endpoint: ServerEndpoint, _ credentials: NavidromeCredentials) -> (client: NavidromeClient, first: URL)? {
+        let bases = sendableBases(endpoint)
+        guard let first = bases.first else { return nil }
+        return (NavidromeClient(endpoint: ServerEndpoint(bases: bases), credentials: credentials, transport: transport), first)
     }
 
     /// The same addresses with `base` first, so the client tries the one that just answered.
@@ -593,7 +599,8 @@ final class AppModel {
     // MARK: - Lidarr
 
     /// The connected Lidarr's instance (`LidarrClient.instanceScope`: address + API key), if any.
-    var lidarrScope: String? { lidarrClient?.instanceScope }
+    /// Read from the saved connection, not `lidarrClient`: nothing is sent, and it stays known while consent is pending.
+    var lidarrScope: String? { lidarr.map { LidarrClient(base: $0.base, apiKey: $0.apiKey, transport: transport).instanceScope } }
 
     /// Security M3: the write switch and the setup belong to one Lidarr. Disconnect and sign-out forget both,
     /// so the next Lidarr starts with writes off and is set up afresh.
@@ -634,11 +641,16 @@ final class AppModel {
     var plainHTTPConsent: PlainHTTPConsent { PlainHTTPConsent(defaults: appDefaults) }
 
     /// The owner said yes to sending credentials unencrypted to these addresses.
-    func allowPlainHTTP(_ urls: [URL]) { plainHTTPConsent.grant(urls) }
+    func allowPlainHTTP(_ urls: [URL]) {
+        plainHTTPConsent.grant(urls)
+        plainHTTPConsentRevision += 1
+    }
 
-    /// A client for the connected Lidarr, if any.
+    /// A client for the connected Lidarr, if any. T2 fix round 2: nil while its address is plain http to a public
+    /// host without consent (a reinstall), so no path can send the API key there (`lidarrAwaitingConsent`).
     var lidarrClient: LidarrClient? {
-        lidarr.map { LidarrClient(base: $0.base, apiKey: $0.apiKey, transport: transport) }
+        guard let lidarr, plainHTTPConsent.allows(lidarr.base) else { return nil }
+        return LidarrClient(base: lidarr.base, apiKey: lidarr.apiKey, transport: transport)
     }
 
     /// Checks the address and key (`/system/status`), reads the setup (audit, no writes) and saves the
