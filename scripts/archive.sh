@@ -71,10 +71,16 @@ command -v xcodegen >/dev/null || die "xcodegen not found (brew install xcodegen
 # testflight-carplay: App/Magpie.entitlements.
 settings=(CURRENT_PROJECT_VERSION="$build")
 if [ "$carplay" = yes ]; then settings+=(MAGPIE_CARPLAY=YES); else settings+=(MAGPIE_CARPLAY=NO); fi
+# Signed builds: the default variant is archived unsigned and signed once, for App Store Connect, by the export
+# (automatic signing makes the App Store profile; no registered device needed; its entitlements file is empty).
+# The CarPlay variant is signed while archiving so its entitlement is carried, which needs a development profile,
+# so at least one device registered to the team (docs/TESTFLIGHT.md step 3).
 if [ "$unsigned" = yes ]; then
   settings+=(CODE_SIGNING_ALLOWED=NO)
-else
+elif [ "$carplay" = yes ]; then
   settings+=(DEVELOPMENT_TEAM="$team" CODE_SIGN_STYLE=Automatic)
+else
+  settings+=(DEVELOPMENT_TEAM="$team" CODE_SIGNING_ALLOWED=NO)
 fi
 
 archive="$out/Magpie.xcarchive"
@@ -87,11 +93,11 @@ xcodebuild -project Magpie.xcodeproj -target Magpie -configuration Release -sdk 
 echo "archive.sh: Release, build $build, CarPlay $carplay, entitlements $(cat "$out/entitlements-path")"
 
 provisioning=()
-[ "$unsigned" = yes ] || provisioning=(-allowProvisioningUpdates)
+[ "$unsigned" = yes ] || [ "$carplay" = no ] || provisioning=(-allowProvisioningUpdates)
 xcodebuild archive -project Magpie.xcodeproj -scheme Magpie -configuration Release \
   -destination 'generic/platform=iOS' -archivePath "$archive" ${provisioning[@]+"${provisioning[@]}"} \
   "${settings[@]}" -quiet || {
-  [ "$unsigned" = yes ] || echo "archive.sh: archive failed. If it says \"Your team has no devices\", register your iPhone first (docs/TESTFLIGHT.md step 3)." >&2
+  [ "$carplay" = no ] || echo "archive.sh: archive failed. If it says \"Your team has no devices\", register your iPhone first (docs/TESTFLIGHT.md step 3)." >&2
   exit 1
 }
 echo "archive.sh: archived to $archive"
