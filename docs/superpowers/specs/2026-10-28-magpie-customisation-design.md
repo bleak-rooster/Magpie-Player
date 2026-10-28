@@ -103,8 +103,8 @@ Settings gains four sections. Each opens its own screen file.
 **Views.** The Library › Genres row has a segmented control: **Grouped** (default) | **All genres**.
 - **All genres:** a flat A–Z list with album counts. Genres with zero albums and songs are hidden.
 - **Grouped:** parent groups (e.g. Rock) expand to show their subgenres (Indie Rock, Alt Rock…), each with counts.
-  - Tapping a **group** opens a group page: all albums whose genre is in the group (merged and de-duplicated), plus Play/Shuffle of the group's songs (capped at 500 songs, shuffled; the cap is a *(call)*).
-  - Tapping a **subgenre** opens the genre page: albums plus Play/Shuffle.
+  - Tapping a **group** opens a group page: all albums whose genre is in the group (merged and de-duplicated), plus **Shuffle** of the group's songs (capped at 500 songs; the cap is a *(call)*). A group offers Shuffle only, since playing a mix of genres in order means nothing *(call)*.
+  - Tapping a **subgenre** opens the genre page: albums plus **Play** and **Shuffle**.
 
 **Grouping** *(call: no bundled third-party taxonomy)*. The beets tree derives from a Wikipedia scrape (CC BY-SA provenance) and Every Noise has no licence. Magpie instead ships its own small, hand-written rule table, `GenreGroups.swift`:
 - About 16 parent groups: Rock, Pop, Electronic, Hip-Hop & Rap, R&B & Soul, Jazz, Blues, Classical, Country & Folk, Metal, Punk, Reggae & Ska, Latin, World, Soundtrack & Stage, Other.
@@ -114,7 +114,7 @@ Settings gains four sections. Each opens its own screen file.
 
 **Owner overrides:** on a genre's page, "Move to group…" lets the owner reassign it to any group, or to a new group they name. Groups can be renamed and hidden. Overrides are stored in Preferences and survive refreshes.
 
-**CarPlay:** Library › Genres shows the groups, then the subgenres, then Play/Shuffle (D12 depth limits).
+**CarPlay:** Library › Genres shows the groups. A group page shows "Shuffle" for the group, then one row per subgenre that plays it in order. A subgenre's Shuffle is Now Playing's shuffle button, because a leaf at depth 3 can't push (D12 depth limits).
 
 ## 5. Playback quality, ReplayGain, sleep timer
 
@@ -123,7 +123,6 @@ Settings gains four sections. Each opens its own screen file.
 - High: AAC 256 kbps.
 - Medium: AAC 160 kbps.
 - Low: AAC 96 kbps.
-- Opus variants: High 192, Medium 128, Low 64.
 - MP3 320 and MP3 192, for older servers.
 
 Defaults: Wi-Fi Original, Mobile data AAC 160, Downloads Original.
@@ -132,7 +131,8 @@ These map to `stream?format=&maxBitRate=`.
 - **Network** comes from `NWPathMonitor` (`usesInterfaceType(.cellular)`, or `isExpensive`).
 - **When the network changes during playback,** the next songs use the new quality via `urlsInvalidated()`. The current song continues.
 - **Format support.** The server's transcoding config decides what's possible. If a transcoded stream fails (HTTP error, or AVPlayer can't open it), Magpie falls back to Original for that song. It shows the hint "Your server couldn't convert this song; playing the original" once per session, in §5 voice.
-- **Dev stack.** The Navidrome dev stack ITs verify that AAC, Opus and MP3 transcoding produce playable audio. If the dev image lacks ffmpeg for a format, the IT records the fallback path instead.
+- **No Opus** *(call, pre-flight 2026-10-28)*. AVFoundation can't play Ogg Opus, so an Opus preset would always fall back when streamed and would leave unplayable downloads. The presets are Original, AAC 256/160/96 and MP3 320/192.
+- **Dev stack.** The Navidrome dev stack ITs verify that AAC and MP3 transcoding produce audio AVFoundation can play. A preset format the dev image can't produce is a failure to fix, not a skipped test.
 - "Low Data Mode" on: Mobile data quality is used even on Wi-Fi *(call)*.
 - **Transcoded streams** *(call: accepted and documented)*.
   - Gapless is exact only for Original (encoder-delay metadata). Transcoded streams may have a tiny gap between songs.
@@ -289,7 +289,7 @@ Verification:
 
 ## 10. Version
 - `MARKETING_VERSION` becomes **0.0.1**.
-- The build number keeps increasing (`archive.sh --build N`, next N = 2, since build 1 was uploaded as 1.0) *(call)*. App Store Connect accepts a new, lower version train while no version has been approved. Build 1 (1.0) went to internal TestFlight testing only: no beta review, no approval. If the upload is still refused, report it to the owner. Never silently pick another version.
+- The build number keeps increasing (`archive.sh --build N`; build 1 was uploaded as 1.0). **Build 2** is an interim TestFlight build carrying the network fix (§8 and the Local Network task) ahead of the rest of the round. **Build 3** is the full 0.0.1 *(call)*. App Store Connect accepts a new, lower version train while no version has been approved. Build 1 (1.0) went to internal TestFlight testing only: no beta review, no approval. If the upload is still refused, report it to the owner. Never silently pick another version.
 - `check-release.sh`, the `SettingsView` fallback, `TESTFLIGHT.md` and the MusicBrainz user agent (`Magpie/0.0.1`, derived from the bundle version) are updated.
 - Tag: `v0.0.1`.
 
@@ -324,7 +324,7 @@ Verification:
    - `MAGPIE_IT=1 scripts/test-all.sh` twice green;
    - `check-release.sh` OK;
    - CarPlay simulator captures.
-8. Merge to main, tag `v0.0.1`, archive with `--build 2` (`--carplay` if signing allows), and upload to TestFlight.
+8. Interim: after the version, ATS and Local Network work, archive and upload **build 2** (no tag). Final: archive with `--build 3` (`--carplay` if signing allows) and upload to TestFlight. Only after a successful upload, merge to main and tag `v0.0.1`.
 9. Report to the owner: the calls made, and the manual checks.
 
 Guards unchanged:
