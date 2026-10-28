@@ -90,7 +90,10 @@ provisioning=()
 [ "$unsigned" = yes ] || provisioning=(-allowProvisioningUpdates)
 xcodebuild archive -project Magpie.xcodeproj -scheme Magpie -configuration Release \
   -destination 'generic/platform=iOS' -archivePath "$archive" ${provisioning[@]+"${provisioning[@]}"} \
-  "${settings[@]}" -quiet
+  "${settings[@]}" -quiet || {
+  [ "$unsigned" = yes ] || echo "archive.sh: archive failed. If it says \"Your team has no devices\", register your iPhone first (docs/TESTFLIGHT.md step 3)." >&2
+  exit 1
+}
 echo "archive.sh: archived to $archive"
 [ "$unsigned" = no ] || exit 0
 
