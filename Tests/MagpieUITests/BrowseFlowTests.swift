@@ -86,6 +86,39 @@ final class BrowseFlowTests: XCTestCase {
         XCTAssertTrue(mini.waitForExistence(timeout: 15), "mini player did not show \(title)")
     }
 
+    /// T12: the album's Download control is one button to VoiceOver, labelled "Download" with the status as its
+    /// value, and activating it by that label downloads the album; its menu then removes the download.
+    @MainActor func testAlbumDownloadButtonActivatesByLabel() throws {
+        let app = try launchSignedIn()
+        let library = app.tabBars.buttons["Library"]
+        let albums = app.buttons["library-albums"]
+        for _ in 0..<3 where !albums.exists {
+            library.tap()
+            _ = albums.waitForExistence(timeout: 5)
+        }
+        albums.tap()
+        let firstAlbum = app.buttons["album-0"]
+        XCTAssertTrue(firstAlbum.waitForExistence(timeout: 15))
+        firstAlbum.tap()
+
+        let download = app.buttons.matching(NSPredicate(format: "label == %@ AND identifier == %@", "Download", "download")).firstMatch
+        XCTAssertTrue(download.waitForExistence(timeout: 15), "no button labelled Download")
+        XCTAssertEqual(download.value as? String ?? "", "")
+        download.tap()
+        // The status keeps the button trait (it is still found among buttons) and reads as the value.
+        expectation(for: NSPredicate(format: "value == 'Downloaded'"), evaluatedWith: download)
+        waitForExpectations(timeout: 60)
+        XCTAssertEqual(download.elementType, .button)
+
+        // Clean up: the menu's Remove download takes the album off the simulator again.
+        download.tap()
+        let remove = app.buttons["Remove download"]
+        XCTAssertTrue(remove.waitForExistence(timeout: 5))
+        remove.tap()
+        expectation(for: NSPredicate(format: "value == ''"), evaluatedWith: download)
+        waitForExpectations(timeout: 15)
+    }
+
     /// Queue crash hunt (owner report, build 3): open and close the queue again and again, from the Queue button and the Up next row,
     /// with lyrics on when the server has them, and a quick double tap.
     @MainActor func testQueueReopensRepeatedly() throws {

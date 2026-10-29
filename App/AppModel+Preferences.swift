@@ -25,7 +25,9 @@ extension AppModel {
             player.upcomingURLsChanged()
         }
         // Downloads: a setting may let waiting downloads go (mobile data, a bigger limit); favourites follow the toggle.
-        if preferences.downloads != old.downloads { downloads?.retryWaiting() }
+        let new = preferences.downloads, was = old.downloads
+        if new.overMobileData != was.overMobileData || new.downloadsLimit != was.downloadsLimit
+            || new.concurrent != was.concurrent || new.quality != was.quality { downloads?.retryWaiting() }
         if preferences.downloads.keepFavourites != old.downloads.keepFavourites { keepFavouritesChanged() }
     }
 }

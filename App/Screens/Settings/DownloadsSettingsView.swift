@@ -9,6 +9,10 @@ struct DownloadsSettingsView: View {
     @State private var usage: AudioUsage?
     @State private var confirmsRemoveAll = false
     @State private var confirmsClearCache = false
+    @State private var redownloading = false
+
+    static let originalTitle = "Original file (no conversion)"
+    static let formatFooter = "Original saves each song exactly as it is on your server. The other choices convert it on your server first, which uses less space."
 
     private func binding<V>(_ keyPath: WritableKeyPath<DownloadPreferences, V>) -> Binding<V> {
         Binding(get: { model.preferences.downloads[keyPath: keyPath] },
@@ -18,9 +22,13 @@ struct DownloadsSettingsView: View {
     var body: some View {
         Form {
             Section {
-                Picker("Download quality", selection: binding(\.quality)) {
-                    StreamQualityOptions()
+                Picker("Download format", selection: binding(\.quality)) {
+                    StreamQualityOptions(originalTitle: Self.originalTitle)
                 }
+            } footer: {
+                Text(Self.formatFooter)
+            }
+            Section {
                 Toggle("Download on mobile data", isOn: binding(\.overMobileData))
                 Picker("Downloads at the same time", selection: binding(\.concurrent)) {
                     ForEach(1...4, id: \.self) { Text("\($0)").tag($0) }
@@ -47,9 +55,16 @@ struct DownloadsSettingsView: View {
             Section("Storage") {
                 LabeledContent("Used", value: usage.map(Self.usageText) ?? "…")
                     .accessibilityIdentifier("storage-used")
-                Button("Re-download at new quality") {
-                    Task { await model.redownloadAtCurrentQuality() }
+                Button(redownloading ? "Re-downloading…" : "Re-download in this format") {
+                    redownloading = true
+                    Task {
+                        await model.redownloadAtCurrentQuality()
+                        await model.downloads?.settled()
+                        await readUsage()
+                        redownloading = false
+                    }
                 }
+                .disabled(redownloading)
                 Button("Remove all downloads", role: .destructive) { confirmsRemoveAll = true }
                     .confirmationDialog("Remove all downloads?", isPresented: $confirmsRemoveAll, titleVisibility: .visible) {
                         Button("Remove all downloads", role: .destructive) {
@@ -57,7 +72,7 @@ struct DownloadsSettingsView: View {
                         }
                         Button("Cancel", role: .cancel) {}
                     } message: {
-                        Text("Downloaded songs leave this phone. They stay on your server.")
+                        Text("Downloaded songs leave this phone, and Keep favourites downloaded turns off. They stay on your server.")
                     }
                 Button("Clear cache", role: .destructive) { confirmsClearCache = true }
                     .confirmationDialog("Clear cache?", isPresented: $confirmsClearCache, titleVisibility: .visible) {
@@ -79,9 +94,14 @@ struct DownloadsSettingsView: View {
 
     // MARK: - Copy
 
-    /// The one-line summary on the Settings row, e.g. "2 GB cache · 3 ahead".
+    /// The one-line summary on the Settings row, e.g. "Original · 2 GB cache · 3 ahead".
     static func summary(_ prefs: DownloadPreferences) -> String {
-        "\(title(prefs.cacheLimit)) cache · \(prefs.preDownload == 0 ? "none" : String(prefs.preDownload)) ahead"
+        "\(formatTitle(prefs.quality)) · \(title(prefs.cacheLimit)) cache · \(prefs.preDownload == 0 ? "none" : String(prefs.preDownload)) ahead"
+    }
+
+    /// "Original", or the codec and bitrate ("AAC 256 kbps").
+    static func formatTitle(_ quality: StreamQuality) -> String {
+        quality.title.components(separatedBy: " · ").last ?? quality.title
     }
 
     /// "Downloads 1.2 GB · Cache 340 MB".

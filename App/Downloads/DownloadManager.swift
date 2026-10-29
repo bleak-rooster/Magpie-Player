@@ -35,11 +35,11 @@ final class DownloadManager {
         var full: Bool?
     }
 
-    private enum Kind: Equatable { case download(DownloadReason), cache, replace }
+    enum Kind: Equatable { case download(DownloadReason), cache, replace }
     /// `blocked`: the store isn't ready to be written (before first unlock); not a failure, and not Wi-Fi.
-    private enum State: Equatable { case queued, running(UUID), waiting, blocked }
+    enum State: Equatable { case queued, running(UUID), waiting, blocked }
 
-    private struct Job {
+    struct Job {
         let id = UUID()
         var kind: Kind
         var metadata: AudioMetadata
@@ -66,12 +66,14 @@ final class DownloadManager {
     @ObservationIgnored var beforeStoreForTesting: (@MainActor (_ songId: String) async -> Void)?
     #endif
 
-    /// Mirror of the store's kinds, so `status` can answer synchronously.
+    // Internal (not private) where DownloadManager+Removal.swift needs it.
+    /// Mirror of the store's kinds and reasons, so `status` can answer synchronously.
     private var kinds: [String: AudioKind] = [:]
-    private var jobs: [Job] = []
+    private var reasons: [String: Set<DownloadReason>] = [:]
+    var jobs: [Job] = []
     /// Manual downloads stopped by "Downloads are full", and ones that failed: `retryWaiting` queues them again.
-    private var stoppedByFull: [Job] = []
-    private var failed: [Job] = []
+    var stoppedByFull: [Job] = []
+    var failed: [Job] = []
 
     @ObservationIgnored private let fetcher: any AudioFetching
     @ObservationIgnored private let network: any NetworkStatusProviding
@@ -80,29 +82,29 @@ final class DownloadManager {
     @ObservationIgnored private let coverArtURL: @MainActor (String) -> URL?
     @ObservationIgnored private let limitBytes: (DownloadPreferences) -> Int64?
     /// Job runs and short store tasks; `settled()` waits for all of them.
-    @ObservationIgnored private var tasks: [UUID: Task<Void, Never>] = [:]
+    @ObservationIgnored var tasks: [UUID: Task<Void, Never>] = [:]
     /// Job runs still unwinding, cancelled or not (run id → song id): these hold the concurrency slots.
     @ObservationIgnored private var activeRuns: [UUID: String] = [:]
     @ObservationIgnored private var generation = 0
     @ObservationIgnored private var networkWatch: Task<Void, Never>?
     /// Covers to fetch once manual downloads may use the network.
-    @ObservationIgnored private var pendingCovers: [String] = []
-    @ObservationIgnored private var savedPending: [PendingJob] = []
+    @ObservationIgnored var pendingCovers: [String] = []
+    @ObservationIgnored var savedPending: [PendingJob] = []
     /// Store writes refused with `notReady`, done once the store is ready.
-    @ObservationIgnored private var deferredRemovals: [Removal] = []
-    @ObservationIgnored private var deferredPlaylists: [DownloadedPlaylist] = []
+    @ObservationIgnored var deferredRemovals: [Removal] = []
+    @ObservationIgnored var deferredPlaylists: [DownloadedPlaylist] = []
     @ObservationIgnored private let notifications: NotificationCenter
     @ObservationIgnored private let storeRetryInterval: Duration
     @ObservationIgnored private var protectedDataWatch: Task<Void, Never>?
     @ObservationIgnored private var storeRetry: Task<Void, Never>?
     /// Nothing is scheduled until `start` has loaded the store (and, through `begin(after:)`, a sign-out's erase of
     /// this scope has finished).
-    @ObservationIgnored private var isStarted = false
+    @ObservationIgnored var isStarted = false
     /// Pre-downloads that came back as something the store can't keep (`songId|quality`): not tried again.
     @ObservationIgnored private var invalidPreDownloads: Set<String> = []
 
     /// A removal the store refused with `notReady`: `reason` off `songIds` (nil: every song).
-    private struct Removal: Equatable {
+    struct Removal: Equatable {
         var reason: DownloadReason
         var songIds: [String]?
     }
@@ -211,7 +213,7 @@ final class DownloadManager {
         pump()
     }
 
-    /// "Re-download at new quality": each stored song is fetched again and swapped in by `AudioStore.replace`.
+    /// "Re-download in this format": each stored song is fetched again and swapped in by `AudioStore.replace`.
     func redownload(songIds: [String], quality: StreamQuality) {
         track { [weak self, store] gen in
             for id in songIds {
@@ -221,92 +223,6 @@ final class DownloadManager {
             }
             self?.pump()
         }
-    }
-
-    /// Drops `reason` (and its queued downloads); songs left with no reason are deleted. Clears "Downloads are full".
-    func remove(_ reason: DownloadReason) async {
-        await remove(Removal(reason: reason, songIds: nil))
-    }
-
-    /// Drops `reason` from `songIds` only (a song gone from a downloaded playlist, or no longer a favourite).
-    func remove(_ reason: DownloadReason, songIds: [String]) async {
-        guard !songIds.isEmpty else { return }
-        await remove(Removal(reason: reason, songIds: songIds))
-    }
-
-    /// "Remove download" on a song: every reason it's kept for goes, so it leaves the phone.
-    func remove(songIds: Set<String>) async {
-        var reasons: [DownloadReason] = []
-        for id in songIds {
-            for reason in await store.entry(songId: id)?.reasons ?? [] where !reasons.contains(reason) { reasons.append(reason) }
-        }
-        for job in jobs where songIds.contains(job.songId) {
-            if case let .download(reason) = job.kind, !reasons.contains(reason) { reasons.append(reason) }
-        }
-        for reason in reasons { await remove(reason, songIds: Array(songIds)) }
-    }
-
-    private func remove(_ removal: Removal) async {
-        let only = removal.songIds.map(Set.init)
-        func matches(_ job: Job) -> Bool { job.kind == .download(removal.reason) && only?.contains(job.songId) != false }
-        for job in jobs where matches(job) {
-            if case let .running(run) = job.state { tasks[run]?.cancel() }
-        }
-        jobs.removeAll(where: matches)
-        failed.removeAll(where: matches)
-        stoppedByFull = []
-        if removal.songIds == nil, case let .playlist(id) = removal.reason { deferredPlaylists.removeAll { $0.id == id } }
-        savePending()
-        await applyRemoval(removal)
-        await refresh()
-        pump()
-    }
-
-    private func applyRemoval(_ removal: Removal) async {
-        do {
-            try await store.removeReason(removal.reason, songIds: removal.songIds)
-            if removal.songIds == nil, case let .playlist(id) = removal.reason { try await store.removePlaylist(id: id) }
-        } catch {
-            if !deferredRemovals.contains(removal) { deferredRemovals.append(removal) }
-            blockedOnStore()
-        }
-    }
-
-    /// "Remove all downloads": every download (and re-download) stops, and every download goes with its playlists
-    /// and covers. The cache stays. A store that isn't ready yet keeps them (the owner can try again).
-    func removeAllDownloads() async {
-        for job in jobs where job.kind != .cache {
-            if case let .running(run) = job.state { tasks[run]?.cancel() }
-        }
-        jobs.removeAll { $0.kind != .cache }
-        failed = []
-        stoppedByFull = []
-        pendingCovers = []
-        deferredRemovals = []
-        deferredPlaylists = []
-        savePending()
-        do {
-            try await store.removeAll(kind: .download)
-        } catch {
-            Log.logger("downloads").error("remove all failed: \(Log.category(of: error), privacy: .public)")
-        }
-        await refresh()
-        pump()
-    }
-
-    /// "Clear cache": pre-downloads stop and every cached song goes. Downloads stay.
-    func clearCache() async {
-        for job in jobs where job.kind == .cache {
-            if case let .running(run) = job.state { tasks[run]?.cancel() }
-        }
-        jobs.removeAll { $0.kind == .cache }
-        do {
-            try await store.removeAll(kind: .cache)
-        } catch {
-            Log.logger("downloads").error("clear cache failed: \(Log.category(of: error), privacy: .public)")
-        }
-        await refresh()
-        pump()
     }
 
     private func savePlaylist(_ playlist: DownloadedPlaylist, _ gen: Int) async {
@@ -322,7 +238,7 @@ final class DownloadManager {
 
     /// Something was refused with `notReady`: try again after `storeRetryInterval` (protected data arriving
     /// resumes sooner).
-    private func blockedOnStore() {
+    func blockedOnStore() {
         guard storeRetry == nil else { return }
         storeRetry = Task { [weak self, storeRetryInterval] in
             try? await Task.sleep(for: storeRetryInterval)
@@ -356,12 +272,12 @@ final class DownloadManager {
 
     /// Queues again what waits for Wi-Fi, what failed and what "Downloads are full" stopped.
     func retryWaiting() {
-        for var job in stoppedByFull + failed {
+        requeueStoppedByFull()
+        for var job in failed {
             job.state = .queued
             job.needsNetwork = true
             jobs.append(job)
         }
-        stoppedByFull = []
         failed = []
         for i in jobs.indices where jobs[i].state == .waiting { jobs[i].state = .queued }
         savePending()
@@ -406,6 +322,30 @@ final class DownloadManager {
         return .none
     }
 
+    /// An album's or playlist's status: only songs and jobs carrying `reason` count, so its "Remove download" is
+    /// never a no-op. Songs on the phone for other reasons show as "Download" (see `onPhoneForOtherReasons`).
+    func status(for songIds: [String], reason: DownloadReason) -> DownloadStatus {
+        guard !songIds.isEmpty else { return .none }
+        let ids = Set(songIds)
+        func mine(_ job: Job) -> Bool { job.kind == .download(reason) && ids.contains(job.songId) }
+        let done = songIds.filter { reasons[$0]?.contains(reason) == true }.count
+        if done == songIds.count { return .downloaded }
+        if stoppedByFull.contains(where: mine) { return .full }
+        let active = jobs.filter(mine)
+        if active.contains(where: { $0.state == .waiting }) { return .waitingForWiFi }
+        if !active.isEmpty { return .downloading(done: done, total: songIds.count) }
+        if failed.contains(where: mine) { return .failed }
+        return .none
+    }
+
+    /// How many of `songIds` are downloaded for some reason other than `reason`.
+    func onPhoneForOtherReasons(_ songIds: [String], reason: DownloadReason) -> Int {
+        songIds.filter { kinds[$0] == .download && reasons[$0]?.contains(reason) != true }.count
+    }
+
+    /// Why a song is kept (empty when it isn't downloaded).
+    func reasons(for songId: String) -> Set<DownloadReason> { reasons[songId] ?? [] }
+
     /// Returns once every queued job has finished, failed or is waiting, and no task is left running.
     func settled() async {
         while let task = tasks.values.first { await task.value }
@@ -413,7 +353,7 @@ final class DownloadManager {
 
     // MARK: - Scheduling
 
-    private var pendingURL: URL { storeDirectory.appending(path: Self.pendingName) }
+    var pendingURL: URL { storeDirectory.appending(path: Self.pendingName) }
 
     static func isAudio(_ mimeType: String?) -> Bool {
         guard let mime = mimeType?.lowercased() else { return false }
@@ -449,7 +389,7 @@ final class DownloadManager {
 
     /// Starts queued jobs while there's room; manual ones that may not use the network wait instead. A song
     /// already in the store needs no network, so its job never waits. One run per song at a time.
-    private func pump() {
+    func pump() {
         guard isStarted else { return }
         let prefs = preferences().normalised()
         let allowed = manualAllowed(prefs)
@@ -651,41 +591,14 @@ final class DownloadManager {
 
     // MARK: - Mirrors and persistence
 
-    private func refresh() async {
+    func refresh() async {
         let entries = await store.entries()
         let files = await store.localFiles()
         kinds = Dictionary(uniqueKeysWithValues: entries.map { ($0.songId, $0.kind) })
+        reasons = Dictionary(uniqueKeysWithValues: entries.map { ($0.songId, $0.reasons) })
         if files != localFiles {
             localFiles = files
             onLocalFilesChanged?()
-        }
-    }
-
-    /// Writes the queued manual downloads (ids, reason and quality: never a URL), or removes the file when none.
-    private func savePending() {
-        guard isStarted else { return }   // the scope may still be being erased: `start` saves them
-        func pendingJob(_ job: Job, full: Bool) -> PendingJob? {
-            guard case let .download(reason) = job.kind else { return nil }
-            return PendingJob(metadata: job.metadata, reason: reason, quality: job.quality, playlistId: job.playlistId,
-                              full: full ? true : nil)
-        }
-        let pending = jobs.compactMap { pendingJob($0, full: false) } + stoppedByFull.compactMap { pendingJob($0, full: true) }
-        guard pending != savedPending else { return }
-        savedPending = pending
-        let url = pendingURL
-        if pending.isEmpty {
-            try? FileManager.default.removeItem(at: url)
-            return
-        }
-        do {
-            try AtomicFile.write(pending, to: url)
-            var values = URLResourceValues()
-            values.isExcludedFromBackup = true
-            var file = url, directory = storeDirectory
-            try file.setResourceValues(values)
-            try directory.setResourceValues(values)
-        } catch {
-            Log.logger("downloads").error("cannot save queued downloads: \(Log.category(of: error), privacy: .public)")
         }
     }
 }

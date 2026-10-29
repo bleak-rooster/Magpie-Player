@@ -115,6 +115,7 @@ private struct TrackList: View {
     @Environment(AppModel.self) private var model
     @Environment(\.magpieTheme) private var theme
     let songs: [Song]
+    @State private var removing: Song?
     private let themed = Themed()
 
     var body: some View {
@@ -133,6 +134,7 @@ private struct TrackList: View {
                 Divider().overlay(p.sepColor).padding(.leading, 52)
             }
         }
+        .songRemovalDialog($removing)
     }
 
     private func row(_ index: Int, _ song: Song) -> some View {
@@ -167,6 +169,6 @@ private struct TrackList: View {
         .accessibilityValue(isCurrent ? "Now playing, \(DurationText.spoken(song.duration))" : DurationText.spoken(song.duration))
         .accessibilityAddTraits(.isButton)
         .accessibilityIdentifier("track-\(index)")
-        .contextMenu { SongDownloadMenuItem(song: song) }
+        .contextMenu { SongDownloadMenuItem(song: song, removing: $removing) }
     }
 }

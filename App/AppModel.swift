@@ -184,6 +184,8 @@ final class AppModel {
     /// The last stopped manager's cancel-settle-erase; the next manager starts after it.
     @ObservationIgnored var downloadsTeardown: Task<Void, Never>?
     @ObservationIgnored var favouritesSync: Task<Void, Never>?
+    /// How long starring pauses before "Keep favourites downloaded" syncs (tests shorten it).
+    @ObservationIgnored var favouritesDebounce: Duration = .seconds(2)
     #if os(iOS)
     @ObservationIgnored private var nowPlaying: NowPlayingBridge?
     #endif
@@ -847,6 +849,7 @@ final class AppModel {
             try await request { client in
                 target ? try await client.star(id: song.id) : try await client.unstar(id: song.id)
             }
+            favouriteStarChanged()
         } catch {
             starOverrides[song.id] = !target
             Log.logger("session").error("star failed: \(Log.category(of: error), privacy: .public)")

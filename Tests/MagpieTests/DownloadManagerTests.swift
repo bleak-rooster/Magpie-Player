@@ -560,4 +560,40 @@ private let cell = NetworkStatus(isConnected: true, isCellular: true, isConstrai
         #expect(await store.playlists().map(\.id) == ["p1"])
         #expect(await store.coverURL(coverArtId: "pl-1") != nil)
     }
+
+    // MARK: - Fix round 1: "Downloads are full" and partial removals
+
+    @Test func partialRemovalKeepsOtherFullJobs() async {
+        var prefs = DownloadPreferences.defaultValue; prefs.concurrent = 1
+        let (m, _, _) = await makeManager(prefs, limit: 1500)
+        m.download(songs("f1"), reason: .favourites); await m.settled()
+        m.download(songs("s1", "s2"), reason: .album("a1")); await m.settled()
+        #expect(m.status(for: ["s1", "s2"], reason: .album("a1")) == .full)
+        await m.remove(.favourites, songIds: ["gone"])   // a favourites sync that frees nothing
+        #expect(m.status(for: ["s1", "s2"], reason: .album("a1")) == .full)
+        let (again, _, _) = await makeManager(prefs, limit: 1500)
+        await again.settled()
+        #expect(again.status(for: ["s1", "s2"], reason: .album("a1")) == .full, "and after a relaunch")
+    }
+
+    @Test func removalThatFreesRoomRequeuesFullJobs() async {
+        var prefs = DownloadPreferences.defaultValue; prefs.concurrent = 1
+        let (m, _, _) = await makeManager(prefs, limit: 1500)
+        m.download(songs("f1"), reason: .favourites); await m.settled()
+        m.download(songs("s1", "s2"), reason: .album("a1")); await m.settled()
+        await m.remove(.favourites, songIds: ["f1"]); await m.settled()
+        #expect(await m.store.entry(songId: "s1") != nil, "the freed room is used")
+        #expect(m.status(for: ["s1", "s2"], reason: .album("a1")) == .full, "s2 still doesn't fit")
+    }
+
+    @Test func removingTheFullAlbumClearsItsFullJobsOnly() async {
+        var prefs = DownloadPreferences.defaultValue; prefs.concurrent = 1
+        let (m, _, _) = await makeManager(prefs, limit: 1000)
+        m.download(songs("s1"), reason: .song); await m.settled()
+        m.download(songs("a"), reason: .album("a1")); await m.settled()
+        m.download(songs("b"), reason: .album("b1")); await m.settled()
+        await m.remove(.album("a1"))
+        #expect(m.status(for: ["a"], reason: .album("a1")) == .none)
+        #expect(m.status(for: ["b"], reason: .album("b1")) == .full)
+    }
 }

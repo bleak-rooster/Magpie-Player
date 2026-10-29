@@ -9,6 +9,7 @@ struct PlaylistView: View {
     @Environment(\.magpieTheme) private var theme
     let playlistId: String
     @State private var page: Loadable<Page> = .loading
+    @State private var removing: Song?
     private let themed = Themed()
 
     struct Page {
@@ -25,6 +26,7 @@ struct PlaylistView: View {
         .navigationTitle(page.value?.playlist.name ?? "")
         .navigationBarTitleDisplayMode(.inline)
         .magpieScreen()
+        .songRemovalDialog($removing)
         .task { if page.value == nil { await load() } }
     }
 
@@ -62,7 +64,7 @@ struct PlaylistView: View {
                     .buttonStyle(.plain)
                     .accessibilityAddTraits(.isButton)
                     .accessibilityIdentifier("track-\(index)")
-                    .contextMenu { SongDownloadMenuItem(song: song) }
+                    .contextMenu { SongDownloadMenuItem(song: song, removing: $removing) }
                     Divider().overlay(p.sepColor).padding(.leading, 76)
                 }
             }

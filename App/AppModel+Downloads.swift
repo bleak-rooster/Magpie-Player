@@ -11,6 +11,10 @@ import UIKit
 extension AppModel {
     /// Builds the store and manager for this session's scope (the app's own hex id, never a server string). A
     /// manager stopped just before (a sign-out, a sign-in over a session) finishes its teardown first.
+    ///
+    /// `stopDownloads(erase: false)` keeps the old scope's files: signing in over a session to the same account
+    /// keeps its downloads. Another scope left on disk (a sign-out cut short by the app being killed, an earlier
+    /// account) is removed by the sweep here, before the new manager starts.
     func startDownloads() {
         stopDownloads(erase: false)
         guard let scope = navidromeScope else { return }
@@ -24,7 +28,13 @@ extension AppModel {
             },
             coverURL: { [weak self] id in self?.coverArtURL(id, size: DownloadManager.coverSize) })
         downloads = manager
-        manager.begin(after: downloadsTeardown)
+        let previous = downloadsTeardown, root = dataDirectory
+        let ready = Task {
+            await previous?.value
+            await Task.detached { AppModel.sweepAudioScopes(root: root, keeping: scope) }.value
+        }
+        downloadsTeardown = ready
+        manager.begin(after: ready)
         if preferences.downloads.keepFavourites { keepFavouritesChanged() }
     }
 
@@ -53,7 +63,26 @@ extension AppModel {
         await downloads?.remove(reason)
     }
 
-    /// A song's "Remove download": it leaves the phone, whatever it was downloaded with.
+    /// Removes every audio scope folder under `<root>/Magpie/Audio` but `scope`. Only names a scope can have are
+    /// touched, and symbolic links (to or below the folder) are never followed or removed.
+    nonisolated static func sweepAudioScopes(root: URL, keeping scope: String) {
+        let fm = FileManager.default
+        let magpie = root.appending(path: "Magpie", directoryHint: .isDirectory)
+        let audio = magpie.appending(path: "Audio", directoryHint: .isDirectory)
+        func isRealDirectory(_ url: URL) -> Bool {
+            guard let values = try? url.resourceValues(forKeys: [.isSymbolicLinkKey, .isDirectoryKey]) else { return false }
+            return values.isSymbolicLink != true && values.isDirectory == true
+        }
+        guard isRealDirectory(magpie), isRealDirectory(audio),
+              let names = try? fm.contentsOfDirectory(atPath: audio.path) else { return }
+        for name in names where name != scope && name.wholeMatch(of: /[A-Za-z0-9_-]{1,64}/) != nil {
+            let folder = audio.appending(path: name, directoryHint: .isDirectory)
+            guard isRealDirectory(folder) else { continue }
+            try? fm.removeItem(at: folder)   // removes links inside it, never what they point to
+        }
+    }
+
+    /// A song's "Remove from this phone": it leaves the phone, whatever it was downloaded with.
     func removeSongDownload(_ songId: String) async {
         await downloads?.remove(songIds: [songId])
     }
@@ -63,6 +92,33 @@ extension AppModel {
 
     func downloadStatus(_ songIds: [String]) -> DownloadStatus {
         downloads?.status(for: songIds) ?? .none
+    }
+
+    /// An album's or playlist's status: only songs downloaded with `reason` count.
+    func downloadStatus(_ songIds: [String], reason: DownloadReason) -> DownloadStatus {
+        downloads?.status(for: songIds, reason: reason) ?? .none
+    }
+
+    /// "3 of 12 songs are already on this phone" under an album or playlist not downloaded as such; nil when none.
+    func alreadyOnPhoneNote(_ songIds: [String], reason: DownloadReason) -> String? {
+        let count = downloads?.onPhoneForOtherReasons(songIds, reason: reason) ?? 0
+        guard count > 0, downloadStatus(songIds, reason: reason) == .none else { return nil }
+        return "\(count) of \(songIds.count) songs are already on this phone"
+    }
+
+    /// What "Remove from this phone" confirms about a song kept for more than itself; nil when nothing to add.
+    func songRemovalNote(_ songId: String) -> String? {
+        let reasons = downloads?.reasons(for: songId) ?? []
+        if reasons.contains(.favourites), preferences.downloads.keepFavourites {
+            return "It's a favourite, so it'll come back while Keep favourites downloaded is on."
+        }
+        if reasons.contains(where: { if case .album = $0 { true } else { false } }) {
+            return "It's also part of a downloaded album; removing it here takes it off this phone."
+        }
+        if reasons.contains(where: { if case .playlist = $0 { true } else { false } }) {
+            return "It's also part of a downloaded playlist; removing it here takes it off this phone."
+        }
+        return nil
     }
 
     /// A downloaded playlist opened with a connection: songs added since are downloaded, songs taken out lose the
@@ -110,7 +166,20 @@ extension AppModel {
         favouritesSync = Task { [weak self] in await self?.setKeepFavourites(on) }
     }
 
-    /// "Re-download at new quality": every download not at the download quality is fetched again and swapped in.
+    /// A song was starred or unstarred: with "Keep favourites downloaded" on, the favourites sync runs once the
+    /// starring has paused for `favouritesDebounce` (a run of stars costs one sync).
+    func favouriteStarChanged() {
+        guard preferences.downloads.keepFavourites, downloads != nil else { return }
+        favouritesSync?.cancel()
+        let delay = favouritesDebounce
+        favouritesSync = Task { [weak self] in
+            try? await Task.sleep(for: delay)
+            guard !Task.isCancelled, self?.preferences.downloads.keepFavourites == true else { return }
+            await self?.setKeepFavourites(true)
+        }
+    }
+
+    /// "Re-download in this format": every download not at the download quality is fetched again and swapped in.
     func redownloadAtCurrentQuality() async {
         guard let downloads else { return }
         let quality = preferences.downloads.quality
@@ -119,7 +188,13 @@ extension AppModel {
         downloads.redownload(songIds: ids, quality: quality)
     }
 
-    func removeAllDownloads() async { await downloads?.removeAllDownloads() }
+    /// Also turns off "Keep favourites downloaded", or the favourites would come straight back.
+    func removeAllDownloads() async {
+        if preferences.downloads.keepFavourites { updatePreferences { $0.downloads.keepFavourites = false } }
+        favouritesSync?.cancel()
+        favouritesSync = nil
+        await downloads?.removeAllDownloads()
+    }
 
     func clearCache() async { await downloads?.clearCache() }
 
@@ -131,22 +206,29 @@ extension AppModel {
 /// UIApplication's `isProtectedDataAvailable`, readable from any thread: the audio store asks from its own actor.
 /// Kept current from the protected-data notifications.
 final class ProtectedDataSnapshot: Sendable {
-    @MainActor static let shared = ProtectedDataSnapshot()
+    #if os(iOS)
+    @MainActor static let shared = ProtectedDataSnapshot(notifications: .default,
+                                                         initial: UIApplication.shared.isProtectedDataAvailable)
+    #endif
 
     private let available: Mutex<Bool>
+    private let center: NotificationCenter
+    nonisolated(unsafe) private var observers: [NSObjectProtocol] = []
 
-    @MainActor private init() {
+    init(notifications center: NotificationCenter, initial: Bool) {
+        available = Mutex(initial)
+        self.center = center
         #if os(iOS)
-        available = Mutex(UIApplication.shared.isProtectedDataAvailable)
-        let center = NotificationCenter.default
-        _ = center.addObserver(forName: UIApplication.protectedDataDidBecomeAvailableNotification, object: nil,
-                               queue: nil) { [weak self] _ in self?.set(true) }
-        _ = center.addObserver(forName: UIApplication.protectedDataWillBecomeUnavailableNotification, object: nil,
-                               queue: nil) { [weak self] _ in self?.set(false) }
-        #else
-        available = Mutex(true)
+        observers = [
+            center.addObserver(forName: UIApplication.protectedDataDidBecomeAvailableNotification, object: nil,
+                               queue: nil) { [weak self] _ in self?.set(true) },
+            center.addObserver(forName: UIApplication.protectedDataWillBecomeUnavailableNotification, object: nil,
+                               queue: nil) { [weak self] _ in self?.set(false) },
+        ]
         #endif
     }
+
+    deinit { observers.forEach(center.removeObserver) }
 
     /// For `AudioStore(isProtectedDataAvailable:)`.
     var isAvailable: @Sendable () -> Bool { { [self] in available.withLock { $0 } } }

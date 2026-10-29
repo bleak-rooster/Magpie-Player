@@ -51,6 +51,7 @@ private struct SearchContent: View {
     let scope: SearchScope
     @State private var recents = RecentSearches().items
     @State private var trying: TryTarget?
+    @State private var removing: Song?
     private let themed = Themed()
 
     var body: some View {
@@ -87,6 +88,7 @@ private struct SearchContent: View {
         .magpieScreen()
         .scrollDismissesKeyboard(.interactively)
         .sheet(item: $trying) { TrySheet(recording: $0.recording) }
+        .songRemovalDialog($removing)
     }
 
     // MARK: - Start
@@ -263,7 +265,7 @@ private struct SearchContent: View {
         .contextMenu {
             Button("Play Next", systemImage: "text.line.first.and.arrowtriangle.forward") { app.player.playNext([song]) }
             Button("Add to Queue", systemImage: "text.line.last.and.arrowtriangle.forward") { app.player.addToEnd([song]) }
-            SongDownloadMenuItem(song: song)
+            SongDownloadMenuItem(song: song, removing: $removing)
         }
         .listRowInsets(EdgeInsets())
         .listRowBackground(Color.clear)

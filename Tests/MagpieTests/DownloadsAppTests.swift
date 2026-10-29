@@ -3,7 +3,9 @@ import MagpieCore
 import MagpieTestSupport
 import NavidromeKit
 import Playback
+import Synchronization
 import Testing
+import UIKit
 @testable import Magpie
 
 private let ok = Data(#"{"subsonic-response":{"status":"ok","version":"1.16.1"}}"#.utf8)
@@ -175,9 +177,12 @@ extension AppModel {
         let model = try await signedInModel(fetcher: FakeFetcher())
         model.download([song("s1"), song("s2")], reason: .album("a1")); await model.downloads!.settled()
         #expect(model.downloadStatus(["s1", "s2"]) == .downloaded)
+        #expect(model.songRemovalNote("s1") == "It's also part of a downloaded album; removing it here takes it off this phone.")
         await model.removeSongDownload("s1")
         #expect(Set(model.downloads!.localFiles.keys) == ["s2"])
         #expect(model.downloadStatus(["s1"]) == .none)
+        #expect(model.downloadStatus(["s1", "s2"], reason: .album("a1")) == .none, "the header offers Download again")
+        #expect(model.alreadyOnPhoneNote(["s1", "s2"], reason: .album("a1")) == nil)
         await model.removeDownload(.album("a1"))
         #expect(model.downloads!.localFiles.isEmpty)
         #expect(model.downloadStatus(["s1", "s2"]) == .none)
@@ -191,7 +196,9 @@ extension AppModel {
         await model.downloads!.settled()
         var usage = await model.storageUsage
         #expect(usage == AudioUsage(downloadBytes: 1000, cacheBytes: 1000))
+        model.updatePreferences { $0.downloads.keepFavourites = true }
         await model.removeAllDownloads()
+        #expect(!model.preferences.downloads.keepFavourites, "or the favourites would come straight back")
         usage = await model.storageUsage
         #expect(usage == AudioUsage(downloadBytes: 0, cacheBytes: 1000))
         #expect(Set(model.downloads!.localFiles.keys) == ["c1"])
@@ -212,10 +219,12 @@ extension AppModel {
     }
 
     @Test func storageSummaryAndUsageText() {
-        #expect(DownloadsSettingsView.summary(.defaultValue) == "2 GB cache · 3 ahead")
+        #expect(DownloadsSettingsView.summary(.defaultValue) == "Original · 2 GB cache · 3 ahead")
         var prefs = DownloadPreferences.defaultValue
-        prefs.cacheLimit = .mb500; prefs.preDownload = 0
-        #expect(DownloadsSettingsView.summary(prefs) == "500 MB cache · none ahead")
+        prefs.cacheLimit = .mb500; prefs.preDownload = 0; prefs.quality = .aac256
+        #expect(DownloadsSettingsView.summary(prefs) == "AAC 256 kbps · 500 MB cache · none ahead")
+        prefs.quality = .mp3_320
+        #expect(DownloadsSettingsView.summary(prefs).hasPrefix("MP3 320 kbps · "))
         let text = DownloadsSettingsView.usageText(AudioUsage(downloadBytes: 1_200_000_000, cacheBytes: 340_000_000))
         #expect(text == "Downloads 1.2 GB · Cache 340 MB")
     }
@@ -229,5 +238,109 @@ extension AppModel {
         #expect(model.downloads == nil)
         #expect(model.downloadStatus(["s1"]) == .none)
         #expect(await model.storageUsage == AudioUsage(downloadBytes: 0, cacheBytes: 0))
+    }
+
+    // MARK: - Fix round 1
+
+    @Test func albumAndFavouritesOverlap() async throws {
+        let model = try await signedInModel(fetcher: FakeFetcher())
+        model.download([song("s1")], reason: .favourites); await model.downloads!.settled()
+        let album = ["s1", "s2"]
+        #expect(model.downloadStatus(album, reason: .album("a1")) == .none)
+        #expect(model.alreadyOnPhoneNote(album, reason: .album("a1")) == "1 of 2 songs are already on this phone")
+        model.download([song("s1"), song("s2")], reason: .album("a1")); await model.downloads!.settled()
+        #expect(model.downloadStatus(album, reason: .album("a1")) == .downloaded)
+        #expect(model.alreadyOnPhoneNote(album, reason: .album("a1")) == nil)
+        await model.removeDownload(.album("a1"))
+        #expect(model.downloadStatus(album, reason: .album("a1")) == .none, "the header's remove is never a no-op")
+        #expect(Set(model.downloads!.localFiles.keys) == ["s1"], "the favourite stays")
+        model.updatePreferences { $0.downloads.keepFavourites = true }
+        #expect(model.songRemovalNote("s1") == "It's a favourite, so it'll come back while Keep favourites downloaded is on.")
+    }
+
+    @Test func headerReadsCancelWhileDownloading() {
+        #expect(DownloadButton.removeTitle(.downloading(done: 1, total: 3)) == "Cancel download")
+        #expect(DownloadButton.removeTitle(.waitingForWiFi) == "Cancel download")
+        #expect(DownloadButton.removeTitle(.downloaded) == "Remove download")
+        #expect(DownloadButton.removeTitle(.full) == "Remove download")
+    }
+
+    @Test func starringSyncsFavouritesAfterAPause() async throws {
+        let model = try await signedInModel(fetcher: FakeFetcher())
+        model.favouritesDebounce = .milliseconds(50)
+        let starred = Mutex("[]")
+        let transport = try #require(model.transport as? HostSwitchTransport)
+        transport.inner.stub(pathSuffix: "/rest/getStarred2") { _ in
+            let songs = starred.withLock { $0 }
+            let body = #"{"subsonic-response":{"status":"ok","version":"1.16.1","starred2":{"song":"# + songs + "}}}"
+            return MockTransport.Response(status: 200, body: Data(body.utf8))
+        }
+        transport.inner.stub(pathSuffix: "/rest/star", body: ok)
+        transport.inner.stub(pathSuffix: "/rest/unstar", body: ok)
+        model.updatePreferences { $0.downloads.keepFavourites = true }
+        await model.favouritesSync?.value; await model.downloads!.settled()
+        #expect(model.downloads!.localFiles.isEmpty)
+        starred.withLock { $0 = #"[{"id":"s7","title":"Seven"}]"# }
+        await model.toggleStar(song("s7"))
+        #expect(await eventually { model.downloads!.localFiles.keys.contains("s7") })
+        starred.withLock { $0 = "[]" }
+        await model.toggleStar(song("s7"))
+        #expect(await eventually { model.downloads!.localFiles.isEmpty })
+    }
+
+    @Test func signInSweepsOtherScopesOnly() async throws {
+        let fm = FileManager.default
+        let audio = tmp.appending(path: "Magpie/Audio")
+        let stale = audio.appending(path: "0123456789abcdef01234567")
+        let oddName = audio.appending(path: "not a scope")
+        let outside = tmp.appending(path: "outside")
+        for dir in [stale, oddName, outside] { try fm.createDirectory(at: dir, withIntermediateDirectories: true) }
+        try Data("x".utf8).write(to: stale.appending(path: "a.mp3"))
+        try Data("keep".utf8).write(to: outside.appending(path: "keep.txt"))
+        try fm.createSymbolicLink(at: audio.appending(path: "linkscope"), withDestinationURL: outside)
+        try fm.createSymbolicLink(at: stale.appending(path: "inner"), withDestinationURL: outside)
+
+        let model = try await signedInModel(fetcher: FakeFetcher())
+        await model.downloads!.settled()
+        #expect(!fm.fileExists(atPath: stale.path), "an earlier account's audio is gone")
+        #expect(fm.fileExists(atPath: oddName.path), "only scope-shaped names are touched")
+        #expect((try? fm.destinationOfSymbolicLink(atPath: audio.appending(path: "linkscope").path)) != nil, "links are left")
+        #expect(fm.fileExists(atPath: outside.appending(path: "keep.txt").path), "nothing behind a link is removed")
+        model.download([song("s1")], reason: .song); await model.downloads!.settled()
+        #expect(fm.fileExists(atPath: model.downloads!.storeDirectory.path), "the signed-in scope stays")
+    }
+
+    @Test func protectedDataSnapshotFollowsNotifications() {
+        let center = NotificationCenter()
+        let snapshot = ProtectedDataSnapshot(notifications: center, initial: false)
+        let read = snapshot.isAvailable
+        #expect(read() == false)
+        center.post(name: UIApplication.protectedDataDidBecomeAvailableNotification, object: nil)
+        #expect(read() == true)
+        center.post(name: UIApplication.protectedDataWillBecomeUnavailableNotification, object: nil)
+        #expect(read() == false)
+    }
+
+    @Test func onlyDownloadSettingsThatCanUnblockRetry() async throws {
+        let f = FakeFetcher()
+        let model = try await signedInModel(fetcher: f)
+        f.failWith(URLError(.timedOut))
+        model.download([song("s1")], reason: .song); await model.downloads!.settled()
+        #expect(model.downloadStatus(["s1"]) == .failed)
+        f.failWith(nil)
+        model.updatePreferences { $0.downloads.keepRecentlyPlayed = false }
+        await model.downloads!.settled()
+        #expect(model.downloadStatus(["s1"]) == .failed, "a cache setting doesn't retry")
+        model.updatePreferences { $0.downloads.concurrent = 3 }
+        await model.downloads!.settled()
+        #expect(model.downloadStatus(["s1"]) == .downloaded)
+    }
+
+    @Test func downloadFormatCopy() {
+        #expect(DownloadsSettingsView.originalTitle == "Original file (no conversion)")
+        #expect(DownloadsSettingsView.formatFooter
+            == "Original saves each song exactly as it is on your server. The other choices convert it on your server first, which uses less space.")
+        #expect(StreamQualityOptions(originalTitle: DownloadsSettingsView.originalTitle).originalTitle == "Original file (no conversion)")
+        #expect(StreamQualityOptions().originalTitle == "Original", "Playback's pickers are unchanged")
     }
 }
