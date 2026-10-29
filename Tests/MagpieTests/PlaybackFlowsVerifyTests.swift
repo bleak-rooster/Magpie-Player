@@ -196,13 +196,15 @@ private let away = URL(string: "https://music.example.com/navidrome")!
         #expect(player.items().count == 2, "length unknown at load: the next is appended at once, no more")
 
         try await Self.waitReady(player)
-        engine.setItems(longList, startAt: 0)   // same current item: followers dropped, top-up re-evaluated
+        // Same current item with a different next: the enqueued follower is dropped (one that is still next is
+        // kept, Task 7) and top-up is re-evaluated.
+        engine.setItems([(ids[0], long), (ids[2], long), (ids[3], long)], startAt: 0)
         #expect(player.items().count == 1, "60 s left (> 20 s): nothing appended yet")
 
         let shortList = [(ids[0], short), (ids[1], long), (ids[2], long)]
         engine.setItems(shortList, startAt: 0)
         try await Self.waitReady(player)
-        engine.setItems(shortList, startAt: 0)
+        engine.setItems([(ids[0], short), (ids[2], long)], startAt: 0)
         #expect(player.items().count == 2, "2 s left (<= 20 s): the next is appended")
         #expect(player.items().count <= 2)
     }

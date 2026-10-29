@@ -28,6 +28,15 @@ public protocol PlaybackEngine: AnyObject {
     func pause()
     func seek(to: TimeInterval)
     func next()
+    /// Per-entry volume (ReplayGain), keyed by entry id; applied when an item is enqueued.
+    func setVolumes(_ volumes: [UUID: Float])
+    /// Overall volume (the sleep timer's fade), on top of the per-entry volumes.
+    func setVolume(_ volume: Float)
+}
+
+public extension PlaybackEngine {
+    func setVolumes(_ volumes: [UUID: Float]) {}
+    func setVolume(_ volume: Float) {}
 }
 
 /// Records a play with the server. Sendable so `Player` can call it off the main actor.
@@ -39,4 +48,11 @@ public protocol Scrobbler: Sendable {
 @MainActor
 public protocol StreamURLProvider: AnyObject {
     func streamURL(for song: Song) -> URL
+    /// The song untranscoded, for when the server fails to convert it; nil when the stream already is the
+    /// original (or there is nothing to fall back to).
+    func originalURL(for song: Song) -> URL?
+}
+
+public extension StreamURLProvider {
+    func originalURL(for song: Song) -> URL? { nil }
 }

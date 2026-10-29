@@ -18,8 +18,9 @@ public enum RepeatMode: String, Sendable, Hashable, Codable, CaseIterable {
 
 /// The app's single player: owns the queue, drives a `PlaybackEngine`, and scrobbles.
 ///
-/// The engine always holds `[current] + upcoming`, starting at index 0. Any queue edit re-sends
-/// that list; the engine keeps the current item playing when its id and URL are unchanged.
+/// The engine always holds `[current] + upcoming` (the upcoming entries that are playable), starting at
+/// index 0. Any queue edit re-sends that list; the current entry keeps the URL it was loaded with, so the
+/// engine keeps it playing (only a failover or a fallback rebuilds it).
 @MainActor @Observable
 public final class Player {
     public private(set) var queue = PlayQueue()
@@ -38,6 +39,23 @@ public final class Player {
     /// The current song played to its end and nothing followed (final fix 2 B-M3): it was heard, so whatever jumps
     /// past it doesn't put it back. Cleared when it plays again, is sought or another song starts.
     public private(set) var hasEnded = false
+    /// The last song that failed to transcode and fell back to its original (Task 7).
+    public private(set) var lastFallbackSongId: String?
+    /// Overall volume (the sleep timer's fade), forwarded to the engine.
+    public var volume: Float = 1 {
+        didSet { engine.setVolume(volume) }
+    }
+    /// Whether a song can play right now (offline: only songs on the phone). Upcoming songs that can't are
+    /// left out of the engine's list, and are skipped over; call `upcomingURLsChanged()` after changing it.
+    @ObservationIgnored public var isPlayable: (Song) -> Bool = { _ in true }
+    /// Pause once the current song ends, on the next song. Holds back the upcoming items like repeat one,
+    /// and switches itself off when it fires.
+    public var stopsAfterCurrent = false {
+        didSet {
+            // While the engine is stopped (`needsReload`) the next load sends the list anyway.
+            if oldValue != stopsAfterCurrent, queue.current != nil, !needsReload { syncEngine() }
+        }
+    }
 
     /// Scrobble at 50 % of the track or this many seconds, whichever comes first.
     static let scrobbleCap: TimeInterval = 240
@@ -49,6 +67,7 @@ public final class Player {
     @ObservationIgnored private let urls: any StreamURLProvider
     @ObservationIgnored private let isFind: (Song) -> Bool
     @ObservationIgnored private let now: () -> Date
+    @ObservationIgnored private let gain: (Song) -> Float
     @ObservationIgnored private var playback: TrackPlayback?
     /// The engine stopped on its own (end of list, or the current entry failed); resuming or
     /// skipping reloads the engine instead of relying on what it still holds.
@@ -58,6 +77,11 @@ public final class Player {
     /// `main` order before shuffle was switched on, so switching it off can put it back.
     @ObservationIgnored private var unshuffledOrder: [UUID]?
     @ObservationIgnored private var pendingScrobbles: [UUID: Task<Void, Never>] = [:]
+    /// What the engine was last handed as current; reused so a refresh of the upcoming URLs (quality,
+    /// network) never makes the engine reload the song that is playing.
+    @ObservationIgnored private var loaded: (entryId: UUID, url: URL)?
+    /// Entries that failed and were rebuilt on their original URL; a second failure is final.
+    @ObservationIgnored private var fellBack: Set<UUID> = []
 
     /// Scrobble bookkeeping for the entry that is playing.
     private struct TrackPlayback {
@@ -68,12 +92,14 @@ public final class Player {
 
     public init(engine: any PlaybackEngine, scrobbler: any Scrobbler, urls: any StreamURLProvider,
                 isFind: @escaping (Song) -> Bool = { _ in false },
-                now: @escaping () -> Date = { Date() }) {
+                now: @escaping () -> Date = { Date() },
+                gain: @escaping (Song) -> Float = { _ in 1 }) {
         self.engine = engine
         self.scrobbler = scrobbler
         self.urls = urls
         self.isFind = isFind
         self.now = now
+        self.gain = gain
         let events = engine.events
         Task { [weak self] in
             for await event in events {
@@ -213,8 +239,15 @@ public final class Player {
     public func urlsInvalidated() {
         guard queue.current != nil else { return }
         let resumeAt = position
-        syncEngine()
+        syncEngine(rebuildCurrent: true)
         engine.seek(to: resumeAt)
+    }
+
+    /// What the upcoming songs stream from changed (quality, network, a download landed, playability):
+    /// re-send them with fresh URLs and volumes. The current song keeps playing on the URL it has.
+    public func upcomingURLsChanged() {
+        guard queue.current != nil, !needsReload else { return }
+        syncEngine()
     }
 
     // MARK: - Engine events
@@ -245,7 +278,19 @@ public final class Player {
         case .failed(let id, let message):
             // Only the current entry matters; the engine retries a failed upcoming item when it
             // is reached. Stop the engine too, so a dead server can't race through the queue.
-            guard id == queue.current?.id else { return }
+            guard let current = queue.current, id == current.id else { return }
+            if !fellBack.contains(id), urls.originalURL(for: current.song) != nil {
+                // The server couldn't convert it: play the original instead, once.
+                fellBack.insert(id)
+                lastFallbackSongId = current.song.id
+                let resumeAt = position
+                syncEngine(rebuildCurrent: true)
+                if resumeAt > 0 { engine.seek(to: resumeAt) }
+                engine.play()
+                isPlaying = true
+                return
+            }
+            if !isPlayable(current.song), skipToNextPlayable() { return }
             lastError = message
             failedEntryId = id
             needsReload = true
@@ -254,6 +299,11 @@ public final class Player {
         case .ended:
             isPlaying = false
             needsReload = true
+            if stopsAfterCurrent {
+                stopsAfterCurrent = false
+                stopOnNext()
+                return
+            }
             switch repeatMode {
             case .off: hasEnded = true
             case .one: resume()
@@ -283,23 +333,63 @@ public final class Player {
         isPlaying = true
     }
 
-    /// Sends `[current] + upcoming` with fresh URLs; an idle queue empties and stops the engine.
-    private func syncEngine() {
+    /// Sends `[current] + upcoming` (playable ones only) with their volumes and fresh URLs, except that the
+    /// current entry keeps the URL it was loaded with unless `rebuildCurrent`. An idle queue empties and
+    /// stops the engine.
+    private func syncEngine(rebuildCurrent: Bool = false) {
         guard let current = queue.current else {
+            loaded = nil
             engine.setItems([], startAt: 0)
             engine.pause()
             isPlaying = false
             return
         }
-        let following = repeatMode == .one ? [] : queue.upcoming
-        let items = ([current] + following).map { ($0.id, urls.streamURL(for: $0.song)) }
+        let currentURL: URL
+        if !rebuildCurrent, let loaded, loaded.entryId == current.id {
+            currentURL = loaded.url
+        } else if fellBack.contains(current.id), let original = urls.originalURL(for: current.song) {
+            currentURL = original
+        } else {
+            currentURL = urls.streamURL(for: current.song)
+        }
+        loaded = (current.id, currentURL)
+        let following = repeatMode == .one || stopsAfterCurrent ? [] : queue.upcoming.filter { isPlayable($0.song) }
+        let entries = [current] + following
+        // Volumes first: the engine applies them as it enqueues.
+        engine.setVolumes(Dictionary(entries.map { ($0.id, gain($0.song)) }, uniquingKeysWith: { a, _ in a }))
+        let items = [(current.id, currentURL)] + following.map { ($0.id, urls.streamURL(for: $0.song)) }
         engine.setItems(items, startAt: 0)
     }
 
-    /// Loads the current entry from the start (the engine sees a different current item).
+    /// Loads the current entry from the start. The engine reloads it either way, so its URL is built afresh.
     private func loadCurrent() {
+        loaded = nil
         syncEngine()
         beginEntry()
+    }
+
+    /// The current song failed and can't play right now (offline, not on the phone): move on to the next
+    /// song that can and keep playing. False when none is left.
+    private func skipToNextPlayable() -> Bool {
+        guard let target = queue.upcoming.first(where: { isPlayable($0.song) }) else { return false }
+        while queue.current?.id != target.id, queue.advance() != nil {}
+        loadCurrent()
+        engine.play()
+        isPlaying = true
+        return true
+    }
+
+    /// Stop after current fired: the next song becomes current without loading or playing, so play starts
+    /// it from the top. Nothing next: the end of the queue, as usual.
+    private func stopOnNext() {
+        guard queue.advance() != nil else {
+            hasEnded = true
+            return
+        }
+        position = 0
+        duration = queue.current.flatMap { $0.song.duration > 0 ? $0.song.duration : nil }
+        lastError = nil
+        playback = nil
     }
 
     /// A new entry became current: reset position and scrobble state, send "now playing".

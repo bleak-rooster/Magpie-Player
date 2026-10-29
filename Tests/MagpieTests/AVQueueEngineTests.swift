@@ -54,4 +54,26 @@ import Playback
         collector.cancel()
         #expect(events.contains(.itemChanged(goodId)), "\(events)")
     }
+
+    /// Polls every 20 ms for up to 5 s.
+    static func waitUntil(_ condition: () -> Bool) async throws {
+        let deadline = Date().addingTimeInterval(5)
+        while !condition(), Date() < deadline { try await Task.sleep(for: .milliseconds(20)) }
+        #expect(condition(), "timed out waiting")
+    }
+
+    @Test func setItemsKeepsEnqueuedNext() async throws {
+        let w1 = try Self.silentWAV(), w2 = try Self.silentWAV(), w3 = try Self.silentWAV()
+        defer { for w in [w1, w2, w3] { try? FileManager.default.removeItem(at: w) } }
+        let a = UUID(), b = UUID(), c = UUID()
+        let engine = AVQueueEngine()
+        engine.setItems([(a, w1), (b, w2)], startAt: 0)
+        engine.play()
+        try await Self.waitUntil { engine.enqueuedItems.count == 2 }   // 2-s items: topUp enqueues at once
+        engine.setItems([(a, w1), (b, w3)], startAt: 0)
+        #expect(engine.enqueuedItems.map(\.url) == [w1, w2])
+        engine.setItems([(a, w1), (c, w3)], startAt: 0)
+        try await Self.waitUntil { engine.enqueuedItems.count == 2 }
+        #expect(engine.enqueuedItems.map(\.url) == [w1, w3])
+    }
 }

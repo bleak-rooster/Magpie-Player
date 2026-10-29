@@ -14,6 +14,10 @@ final class FakeEngine: PlaybackEngine {
     private(set) var playCount = 0
     private(set) var pauseCount = 0
     private(set) var nextCount = 0
+    /// One entry per `setVolumes` call.
+    private(set) var setVolumesCalls: [[UUID: Float]] = []
+    /// One entry per `setVolume` call.
+    private(set) var setVolumeCalls: [Float] = []
 
     init() { (events, continuation) = AsyncStream.makeStream() }
 
@@ -22,6 +26,8 @@ final class FakeEngine: PlaybackEngine {
     func pause() { pauseCount += 1 }
     func seek(to t: TimeInterval) { seeks.append(t) }
     func next() { nextCount += 1 }
+    func setVolumes(_ volumes: [UUID: Float]) { setVolumesCalls.append(volumes) }
+    func setVolume(_ volume: Float) { setVolumeCalls.append(volume) }
 }
 
 actor FakeScrobbler: Scrobbler {
@@ -35,9 +41,11 @@ actor FakeScrobbler: Scrobbler {
 @MainActor
 final class FakeURLs: StreamURLProvider {
     var base = URL(string: "http://192.168.1.2:4533")!
+    var original: ((Song) -> URL?)?
     func streamURL(for song: Song) -> URL {
         base.appending(path: "rest/stream").appending(queryItems: [URLQueryItem(name: "id", value: song.id)])
     }
+    func originalURL(for song: Song) -> URL? { original?(song) }
 }
 
 @MainActor
@@ -403,6 +411,100 @@ extension PlayerTests {
         player.repeatMode = .off
         #expect(engine.setItemsCalls.last!.items.map(\.0) == [current] + player.queue.upcoming.map(\.id))
         #expect(engine.setItemsCalls.last!.items.count == 4)
+    }
+}
+
+/// Task 7: the current URL stays put, upcoming refresh, transcode fallback, volumes, playability,
+/// stop after current.
+extension PlayerTests {
+    @Test func currentKeepsItsURLWhenUpcomingChange() {
+        let player = makePlayer()
+        player.play([Self.song("1"), Self.song("2")], startAt: 0)
+        let before = engine.setItemsCalls.last!.items
+        urls.base = URL(string: "http://10.0.0.9:4533")!
+        player.upcomingURLsChanged()
+        let after = engine.setItemsCalls.last!.items
+        #expect(after[0].1 == before[0].1)
+        #expect(after[1].1.host == "10.0.0.9")
+        #expect(engine.seeks.isEmpty)
+    }
+
+    @Test func failoverStillRebuildsCurrent() {
+        let player = makePlayer()
+        player.play([Self.song("1")], startAt: 0)
+        urls.base = URL(string: "http://10.0.0.9:4533")!
+        player.urlsInvalidated()
+        #expect(engine.setItemsCalls.last!.items[0].1.host == "10.0.0.9")
+    }
+
+    @Test func transcodedFailureFallsBackOnce() {
+        urls.original = { URL(string: "http://192.168.1.2:4533/rest/stream?id=\($0.id)&format=raw")! }
+        let player = makePlayer()
+        player.play([Self.song("1")], startAt: 0)
+        let id = player.queue.current!.id
+        player.handle(.failed(id, "cannot open"))
+        #expect(engine.setItemsCalls.last!.items[0].1.query?.contains("format=raw") == true)
+        #expect(player.lastError == nil && player.lastFallbackSongId == "1" && player.isPlaying)
+        player.handle(.failed(id, "still broken"))
+        #expect(player.lastError == "still broken" && !player.isPlaying)
+    }
+
+    @Test func noFallbackWithoutOriginal() {
+        let player = makePlayer()
+        player.play([Self.song("1")], startAt: 0)
+        player.handle(.failed(player.queue.current!.id, "x"))
+        #expect(player.lastError == "x" && player.lastFallbackSongId == nil)
+    }
+
+    @Test func failedUnplayableCurrentSkipsToNextPlayable() {
+        let player = makePlayer()
+        player.play([Self.song("1"), Self.song("2"), Self.song("3")], startAt: 0)
+        player.isPlayable = { $0.id == "3" }   // went offline; only 3 is on the phone
+        player.upcomingURLsChanged()
+        player.handle(.failed(player.queue.current!.id, "offline"))
+        #expect(player.queue.current?.song.id == "3" && player.isPlaying && player.lastError == nil)
+        #expect(engine.setItemsCalls.last!.items.count == 1)
+    }
+
+    @Test func failedUnplayableCurrentWithNothingLeftStops() {
+        let player = makePlayer()
+        player.play([Self.song("1"), Self.song("2")], startAt: 0)
+        player.isPlayable = { _ in false }
+        player.handle(.failed(player.queue.current!.id, "offline"))
+        #expect(player.lastError == "offline" && !player.isPlaying)
+    }
+
+    @Test func gainsSentWithItems() {
+        let player = Player(engine: engine, scrobbler: scrobbler, urls: urls, gain: { $0.id == "1" ? 0.5 : 1 })
+        player.play([Self.song("1"), Self.song("2")], startAt: 0)
+        let current = player.queue.current!.id, next = player.queue.upcoming[0].id
+        #expect(engine.setVolumesCalls.last == [current: 0.5, next: 1])
+    }
+
+    @Test func volumeForwardsToEngine() {
+        let player = makePlayer()
+        player.volume = 0.3
+        #expect(engine.setVolumeCalls == [0.3])
+    }
+
+    @Test func unplayableUpcomingSkipped() {
+        let player = makePlayer()
+        player.isPlayable = { $0.id != "2" }
+        player.play([Self.song("1"), Self.song("2"), Self.song("3")], startAt: 0)
+        #expect(engine.setItemsCalls.last!.items.count == 2)
+        player.handle(.itemChanged(player.queue.upcoming[1].id))
+        #expect(player.queue.current?.song.id == "3")
+    }
+
+    @Test func stopsAfterCurrentPausesOnNextSong() {
+        let player = makePlayer()
+        player.play([Self.song("1"), Self.song("2")], startAt: 0)
+        player.stopsAfterCurrent = true
+        #expect(engine.setItemsCalls.last!.items.count == 1)
+        let plays = engine.playCount
+        player.handle(.ended)
+        #expect(!player.isPlaying && player.queue.current?.song.id == "2" && !player.stopsAfterCurrent)
+        #expect(engine.playCount == plays)
     }
 }
 

@@ -34,6 +34,10 @@ public final class AVQueueEngine: PlaybackEngine {
     /// Set when the current entry failed and playback was halted on it.
     private var haltedId: UUID?
     private var lastTime: TimeInterval = 0
+    /// Per-entry volumes from `setVolumes`, applied as items are enqueued.
+    private var volumes: [UUID: Float] = [:]
+    /// Overall volume from `setVolume`; survives a media-services rebuild.
+    private var volume: Float = 1
     /// What the user asked for; survives interruptions so we know whether to resume.
     private var wantsToPlay = false
     private var playerObservers: [Any] = []
@@ -41,6 +45,11 @@ public final class AVQueueEngine: PlaybackEngine {
     #if os(iOS)
     private var sessionActivated = false
     #endif
+
+    /// What the AVQueuePlayer holds right now, current first.
+    public var enqueuedItems: [(id: UUID, url: URL)] {
+        player.items().compactMap { item in enqueued[ObjectIdentifier(item)].map { (id: $0.id, url: $0.url) } }
+    }
 
     public init() {
         (events, continuation) = AsyncStream.makeStream(bufferingPolicy: .bufferingNewest(64))
@@ -63,7 +72,11 @@ public final class AVQueueEngine: PlaybackEngine {
         let target = list[startAt]
         if let current = player.currentItem, let info = enqueued[ObjectIdentifier(current)],
            info.id == target.id, info.url == target.url {
-            for item in player.items().dropFirst() {
+            // Keep the item already enqueued right after it when it is still next, even on another URL:
+            // swapping it would cost the gapless join.
+            let nextId = list.indices.contains(startAt + 1) ? list[startAt + 1].id : nil
+            for (offset, item) in player.items().dropFirst().enumerated() {
+                if offset == 0, let nextId, enqueued[ObjectIdentifier(item)]?.id == nextId { continue }
                 player.remove(item)
                 forget(item)
             }
@@ -100,6 +113,15 @@ public final class AVQueueEngine: PlaybackEngine {
     public func seek(to t: TimeInterval) {
         lastTime = t
         player.seek(to: CMTime(seconds: t, preferredTimescale: 600))
+    }
+
+    public func setVolumes(_ volumes: [UUID: Float]) {
+        self.volumes = volumes
+    }
+
+    public func setVolume(_ volume: Float) {
+        self.volume = volume
+        player.volume = volume
     }
 
     public func next() {
@@ -150,8 +172,12 @@ public final class AVQueueEngine: PlaybackEngine {
             Task { @MainActor [weak self] in self?.itemFailed(oid, message) }
         }
         enqueued[oid] = Enqueued(item: item, id: entry.id, url: entry.url, statusObservation: observation)
+        apply(volumes[entry.id] ?? 1, to: item)
         player.insert(item, after: nil)
     }
+
+    /// Sets an item's own volume (ReplayGain). Task 9 builds the audio mix that carries it.
+    private func apply(_ volume: Float, to item: AVPlayerItem) {}
 
     private func forget(_ item: AVPlayerItem) {
         enqueued.removeValue(forKey: ObjectIdentifier(item))?.statusObservation.invalidate()
@@ -357,6 +383,7 @@ public final class AVQueueEngine: PlaybackEngine {
         detach(player)
         clearPlayer()
         player = AVQueuePlayer()
+        player.volume = volume
         attach(player)
         sessionActivated = false
         configureSession()
