@@ -36,8 +36,8 @@ public actor AudioStore {
     static let originalSuffixes: Set<String> = ["mp3", "flac", "m4a", "mp4", "aac", "wav", "aif", "aiff", "alac", "caf"]
     static let mimeExtensions = ["audio/mpeg": "mp3", "audio/mp3": "mp3", "audio/flac": "flac", "audio/x-flac": "flac",
                                  "audio/mp4": "m4a", "audio/x-m4a": "m4a", "audio/aac": "aac", "audio/wav": "wav",
-                                 "audio/x-wav": "wav", "audio/aiff": "aiff", "audio/x-aiff": "aiff",
-                                 "audio/ogg": "ogg", "audio/opus": "ogg"]
+                                 "audio/x-wav": "wav", "audio/aiff": "aiff", "audio/x-aiff": "aiff"]
+    static let oggMimeTypes: Set<String> = ["audio/ogg", "audio/opus"]
     /// Every extension the store accepts: the Original allowlist plus the transcode formats.
     static let allowedExtensions = originalSuffixes.union(["mp3", "aac", "ogg"])
     /// `<64 hex>.<ext>`: the only names the store writes for audio.
@@ -79,6 +79,11 @@ public actor AudioStore {
         case "opus": return "ogg"   // Navidrome serves Ogg Opus (D45)
         default: break
         }
+        // Ogg may hold Vorbis or FLAC, which AVFoundation may not play: Original accepts it only as a `.opus` source (D45).
+        if let mime = mimeType?.lowercased(), oggMimeTypes.contains(mime) {
+            return suffix?.lowercased() == "opus" ? "ogg" : nil
+        }
+        if suffix?.lowercased() == "opus" { return "ogg" }
         if let suffix = suffix?.lowercased(), originalSuffixes.contains(suffix) { return suffix }
         if let mime = mimeType?.lowercased(), let ext = mimeExtensions[mime] { return ext }
         return nil

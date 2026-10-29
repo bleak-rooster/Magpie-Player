@@ -208,6 +208,16 @@ private func eventually(_ seconds: Double = 5, _ condition: () -> Bool) async ->
         #expect(submissions.count == 1, "the threshold is half of the API's 200 s")
     }
 
+    /// With no API duration the engine's is all there is, so it shows.
+    @Test func engineDurationFillsInWhenTheAPIHasNone() async throws {
+        let (model, _, _) = try await signedIn(.wifi)
+        defer { tearDown(model) }
+        model.play([PlayerTests.song("s1", duration: 0)], startAt: 0)
+        let entry = try #require(model.player.queue.current?.id)
+        model.player.handle(.time(entry, 5, duration: 187.5))
+        #expect(model.player.duration == 187.5)
+    }
+
     /// The pickers list the qualities by codec, in enum order.
     @Test func pickerGroupsFollowCodecOrder() {
         #expect(StreamQuality.groups.map { StreamQualityOptions.heading(forFormat: $0.format) } == ["Original", "AAC", "Opus", "MP3"])

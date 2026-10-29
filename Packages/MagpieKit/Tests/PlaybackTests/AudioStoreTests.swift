@@ -56,9 +56,14 @@ private final class TestClock: @unchecked Sendable {
             #expect(AudioStore.fileExtension(quality: q, suffix: "flac", mimeType: "audio/ogg") == "ogg")
             #expect(AudioStore.fileExtension(quality: q, suffix: nil, mimeType: nil) == "ogg")
         }
-        #expect(AudioStore.fileExtension(quality: .original, suffix: nil, mimeType: "audio/ogg") == "ogg")
-        #expect(AudioStore.fileExtension(quality: .original, suffix: nil, mimeType: "audio/opus") == "ogg")
-        #expect(AudioStore.fileExtension(quality: .original, suffix: "opus", mimeType: nil) == nil)
+        // Original takes Ogg only from a `.opus` source; Vorbis or FLAC in Ogg is refused.
+        #expect(AudioStore.fileExtension(quality: .original, suffix: "opus", mimeType: "audio/ogg") == "ogg")
+        #expect(AudioStore.fileExtension(quality: .original, suffix: "opus", mimeType: "audio/opus") == "ogg")
+        #expect(AudioStore.fileExtension(quality: .original, suffix: "opus", mimeType: nil) == "ogg")
+        for suffix in ["ogg", "oga", "flac", nil] as [String?] {
+            #expect(AudioStore.fileExtension(quality: .original, suffix: suffix, mimeType: "audio/ogg") == nil, "\(suffix ?? "nil")")
+            #expect(AudioStore.fileExtension(quality: .original, suffix: suffix, mimeType: "audio/opus") == nil, "\(suffix ?? "nil")")
+        }
     }
 
     @Test func oggOpusBodyIsStoredAndKeepsItsName() async throws {

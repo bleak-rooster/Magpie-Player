@@ -2,14 +2,15 @@ import MagpieCore
 import SwiftUI
 
 /// The options of a quality picker, grouped by codec in enum order: Original, AAC, Opus, MP3. Settings › Playback
-/// (Wi-Fi, Mobile data) and the Downloads quality picker share it, so they always list the same choices.
+/// (Wi-Fi, Mobile data) uses it, and any other quality picker should, so they list the same choices.
 struct StreamQualityOptions: View {
     static func heading(forFormat format: String) -> String {
         switch format {
         case "raw": "Original"
         case "aac": "AAC"
         case "opus": "Opus"
-        default: "MP3"
+        case "mp3": "MP3"
+        default: format.uppercased()
         }
     }
 
