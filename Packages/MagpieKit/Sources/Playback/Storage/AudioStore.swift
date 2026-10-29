@@ -225,9 +225,12 @@ public actor AudioStore {
 
     /// Adds `reason` to a stored song in one step; a cached song becomes a download only if it fits the downloads
     /// limit (nothing is evicted).
-    public func promote(songId: String, reason: DownloadReason, downloadsLimit: Int64?) throws {
+    /// `albumCoverArtId`: the album's cover, recorded when the song is downloaded with its album (Task 14).
+    public func promote(songId: String, reason: DownloadReason, downloadsLimit: Int64?,
+                        albumCoverArtId: String? = nil) throws {
         try ensureReady()
         guard var entry = index.entries[songId] else { throw AudioStoreError.unknownSong }
+        if let albumCoverArtId { entry.metadata.albumCoverArtId = albumCoverArtId }
         if entry.kind == .cache {
             try checkLimit(adding: entry.size, limit: downloadsLimit)
             entry.kind = .download
@@ -376,13 +379,14 @@ public actor AudioStore {
         #endif
     }
 
-    public func coverURL(coverArtId: String) -> URL? { savedCoverURL(coverArtId: coverArtId) }
-
-    /// `coverURL` from any context (offline artwork reads it on the main actor): the saved cover, nil when none.
-    public nonisolated func savedCoverURL(coverArtId: String) -> URL? {
+    public func coverURL(coverArtId: String) -> URL? {
         let url = coverFileURL(coverArtId)
         return FileManager.default.fileExists(atPath: url.path) ? url : nil
     }
+
+    /// Where the cover for `coverArtId` is saved when it is, from any context and without touching the disk (the
+    /// caller reads it off the main actor; a missing file reads as no image).
+    public nonisolated func coverPath(coverArtId: String) -> URL { coverFileURL(coverArtId) }
 
     // MARK: - Private
 

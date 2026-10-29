@@ -24,6 +24,9 @@ public struct AudioMetadata: Codable, Hashable, Sendable {
     public var coverArtId: String?
     public var suffix: String?
     public var replayGain: ReplayGain?
+    /// The cover of the album the song was downloaded with (Task 14), whose image is saved beside the downloads. Songs
+    /// carry their own cover id (`mf-…`); the saved one is the album's (`al-…`). Nil when not downloaded with an album.
+    public var albumCoverArtId: String?
 
     public init(_ song: Song) {
         songId = song.id; title = song.title; artist = song.artist; artistId = song.artistId
@@ -121,5 +124,6 @@ extension AudioMetadata {
         coverArtId = try? c.decodeIfPresent(String.self, forKey: .coverArtId)
         suffix = try? c.decodeIfPresent(String.self, forKey: .suffix)
         replayGain = try? c.decodeIfPresent(ReplayGain.self, forKey: .replayGain)
+        albumCoverArtId = try? c.decodeIfPresent(String.self, forKey: .albumCoverArtId)
     }
 }

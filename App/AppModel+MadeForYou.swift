@@ -26,6 +26,7 @@ extension AppModel {
     /// or finds nothing keeps what's shown; a read that was cancelled, or outlived the token it was made with (saved
     /// again, replaced or removed meanwhile), is dropped, so another account's playlists never show.
     func refreshMadeForYou() async {
+        guard !isOffline else { return }   // Task 14: read again once back online
         guard let token = tokenStore.load() else {
             madeForYouShelf = []
             return

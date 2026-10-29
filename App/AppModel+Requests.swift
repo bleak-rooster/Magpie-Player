@@ -122,7 +122,7 @@ extension AppModel {
                 let wasWaiting = self.hasUnavailableWait
                 self.requests = list
                 // I4: a request just started waiting: re-check the connection so a rejected key is named.
-                if !wasWaiting, self.hasUnavailableWait { Task { _ = await self.lidarrAudit() } }
+                if !wasWaiting, self.hasUnavailableWait, !self.isOffline { Task { _ = await self.lidarrAudit() } }
             }
         })
         runnerTasks.append(Task { [weak self] in
@@ -130,7 +130,7 @@ extension AppModel {
             await runner.load()
             self?.pollRequests()
         })
-        if lidarrStatus == nil { Task { _ = await lidarrAudit() } }
+        if lidarrStatus == nil, !isOffline { Task { _ = await lidarrAudit() } }   // offline: on reconnect (Task 14)
     }
 
     /// FM1: what the write gate confines deletes and moves to: the main root, the confirmed Finds root and the

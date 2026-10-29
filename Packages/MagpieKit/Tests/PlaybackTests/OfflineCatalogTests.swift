@@ -75,4 +75,16 @@ private func entry(_ id: String, title: String = "T", album: String, albumId: St
         #expect(OfflineCatalog.isLocalId(alpha) && c.albums(byArtist: alpha).map(\.name) == ["Two"])
         #expect(c.songs().map(\.id) == ["s1", "s2", "s3"])
     }
+
+    /// Real-style ids: songs carry their own covers (`mf-…`), the saved cover is the album's (`al-…`).
+    @Test func albumPrefersTheSavedAlbumCover() {
+        var a = entry("s1", album: "x", albumId: "x", track: 1), b = entry("s2", album: "x", albumId: "x", track: 2)
+        a.metadata.coverArtId = "mf-s1"; b.metadata.coverArtId = "mf-s2"
+        b.metadata.albumCoverArtId = "al-x"
+        let c = OfflineCatalog(entries: [a, b], playlists: [])
+        #expect(c.albums()[0].coverArtId == "al-x")
+        #expect(c.album(id: "x")?.songs?.map(\.coverArtId) == ["mf-s1", "al-x"])
+        var loose = entry("s3", album: "y", albumId: "y"); loose.metadata.coverArtId = "mf-s3"
+        #expect(OfflineCatalog(entries: [loose], playlists: []).albums()[0].coverArtId == "mf-s3", "no album cover: the song's")
+    }
 }

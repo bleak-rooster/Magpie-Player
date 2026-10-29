@@ -63,7 +63,7 @@ struct DownloadButton: View {
     /// "Cancel download" while songs are still on their way; "Remove download" otherwise.
     static func removeTitle(_ status: DownloadStatus) -> String {
         switch status {
-        case .downloading, .waitingForWiFi: "Cancel download"
+        case .downloading, .waitingForWiFi, .waitingForConnection: "Cancel download"
         default: "Remove download"
         }
     }

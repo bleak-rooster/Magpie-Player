@@ -171,6 +171,7 @@ extension AppModel {
     /// Reads the Finds library's songs again. A failure keeps what was read before. The finds identity reads the
     /// remembered Finds library even without a Lidarr (FM2); the shelf shows it only with a Finds setup.
     func refreshFinds() async {
+        guard !isOffline else { return }   // Task 14: read again once back online (the saved ids stand meanwhile)
         guard let libraryId = findsLibraryId else {
             if !findSongs.isEmpty { findSongs = [] }
             return

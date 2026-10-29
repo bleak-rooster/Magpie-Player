@@ -370,6 +370,20 @@ public final class Player {
         }
     }
 
+    /// The server may be back, or offline mode changed (Task 14): a current song that failed plays again from where it
+    /// was when it can play now, otherwise the next song that can does. Nothing happens unless the current one failed.
+    public func retryAfterFailure() {
+        guard let current = queue.current, failedEntryId == current.id else { return }
+        guard isPlayable(current.song) else {
+            _ = skipToNextPlayable()
+            return
+        }
+        failedEntryId = nil
+        lastError = nil
+        needsReload = false
+        restartCurrent(rebuild: true)
+    }
+
     /// Waits for scrobble requests already started (tests; app suspension).
     public func waitForPendingScrobbles() async {
         while let task = pendingScrobbles.values.first {

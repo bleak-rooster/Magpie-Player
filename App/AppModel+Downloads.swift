@@ -27,7 +27,8 @@ extension AppModel {
                 self?.session?.client.streamURL(songId: song.id, maxBitRate: quality.maxBitRate, format: quality.format)
             },
             coverURL: { [weak self] id in self?.coverArtURL(id, size: DownloadManager.coverSize) },
-            isOffline: { [weak self] in self?.isOffline ?? false })
+            // Manual downloads also wait while the server is suspect (Task 14): they'd only fail.
+            isOffline: { [weak self] in self.map { $0.isOffline || $0.reachability.isSuspect } ?? false })
         downloads = manager
         // Task 13: songs on the phone play from it; one that lands or leaves re-sends the songs after the current one.
         manager.onLocalFilesChanged = { [weak self, weak manager] in
@@ -36,6 +37,7 @@ extension AppModel {
             self.player.upcomingURLsChanged()
             self.preDownloadLanded()
         }
+        manager.onUnreachable = { [weak self] in self?.noteUnreachable() }
         let previous = downloadsTeardown, root = dataDirectory
         let ready = Task {
             await previous?.value

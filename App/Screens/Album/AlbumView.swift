@@ -22,8 +22,11 @@ struct AlbumView: View {
         .navigationBarTitleDisplayMode(.inline)
         .background { ArtBackdrop(coverArtId: album.value?.coverArtId) }
         .magpieScreen()
-        // Again when offline mode changes: the phone's copy offline, the server's online.
-        .task(id: model.isOffline) { if album.value == nil || loadedOffline != model.isOffline { await load() } }
+        // Again when offline mode changes, and offline when songs land on or leave the phone (the store may be
+        // unreadable before first unlock): the phone's copy offline, the server's online.
+        .task(id: model.offlinePageKey) {
+            if album.value == nil || loadedOffline != model.isOffline || model.isOffline { await load() }
+        }
     }
 
     private func content(_ album: Album) -> some View {

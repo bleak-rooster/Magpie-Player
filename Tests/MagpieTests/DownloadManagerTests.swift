@@ -308,10 +308,11 @@ private let cell = NetworkStatus(isConnected: true, isCellular: true, isConstrai
         #expect(!f.written.contains { FileManager.default.fileExists(atPath: $0.path) })
     }
 
-    /// Minor 9/10: a failed fetch is visible, and a retry brings it in.
+    /// Minor 9/10: a failed fetch is visible, and a retry brings it in. (Not a connection error: since Task 14 those
+    /// wait for the server instead.)
     @Test func fetchFailureShowsFailedAndRetries() async {
         let (m, f, _) = await makeManager()
-        f.failWith(URLError(.timedOut))
+        f.failWith(URLError(.badServerResponse))
         m.download(songs("s1"), reason: .song); await m.settled()
         let stored = await m.store.entries()
         #expect(m.status(for: ["s1"]) == .failed && stored.isEmpty)

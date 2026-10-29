@@ -180,12 +180,9 @@ final class AppModel {
     var playbackHint: String?
     /// Whether the server answered last time it was tried (Task 14): Automatic offline mode follows it.
     var serverReachable = true { didSet { offlineInputsChanged() } }
-    /// Offline as last applied to playback and downloads (AppModel+Offline.swift), and the URLs' copy of it.
-    @ObservationIgnored var appliedOffline = false
+    /// Offline as the URLs and the scrobbler read it, and Automatic mode's bookkeeping (AppModel+Offline.swift).
     @ObservationIgnored let offlineBox = OfflineBox()
-    /// The probes that run while the server is unreachable (`noteUnreachable`), and how often they repeat.
-    @ObservationIgnored var reachabilityProbes: [Task<Void, Never>] = []
-    @ObservationIgnored var reachabilityInterval: Duration = .seconds(30)
+    @ObservationIgnored let reachability = ReachabilityState()
     /// Downloads for the signed-in scope (AppModel+Downloads.swift); nil when signed out.
     @ObservationIgnored var downloads: DownloadManager?
     /// What the player plays from the phone (Task 13); set from `downloads.localFiles`, built before `player`.
@@ -271,13 +268,14 @@ final class AppModel {
         self.network = network
         let findsIdentity = self.findsIdentity
         self.player = Player(engine: engine ?? AVQueueEngine(),
-                             scrobbler: NavidromeScrobbler(box: box, counting: counting),
+                             scrobbler: NavidromeScrobbler(box: box, counting: counting, offline: offlineBox),
                              urls: NavidromeStreamURLs(box: box, quality: self.qualityBox,
                                                        localURL: { [localFiles, offlineBox] in
                                                            localFiles.url(for: $0, includingFailed: offlineBox.isOffline)
                                                        },
                                                        localFailed: { [localFiles] in localFiles.markFailed($0, damaged: $1) },
-                                                       isOnline: { [offlineBox] in network.status.isConnected && !offlineBox.isOffline }),
+                                                       isOnline: { [offlineBox] in network.status.isConnected && !offlineBox.isOffline },
+                                                       isOffline: { [offlineBox] in offlineBox.isOffline }),
                              isFind: { findsIdentity.isFind($0) },
                              gain: { replayGain.mode.volume(for: $0.replayGain) })
         self.sleepTimer = SleepTimer(player: player)
@@ -288,7 +286,7 @@ final class AppModel {
         if systemNowPlaying {
             nowPlaying = NowPlayingBridge(
                 player: player,
-                artworkURL: { [weak self] song in self?.coverArtURL(song.coverArtId, size: 600) },
+                artworkURL: { [weak self] song in self?.nowPlayingArtworkURL(song) },
                 onLike: { [weak self] song in Task { await self?.toggleStar(song) } },
                 isLiked: { [weak self] song in self?.isStarred(song) ?? song.starred })
         }
@@ -534,13 +532,14 @@ final class AppModel {
     func request<T: Sendable>(_ op: @Sendable (NavidromeClient) async throws -> T) async throws -> T {
         // A reconnect under way (a resumed launch, a failover) is about to replace the client: use its result, so
         // the client it retires never logs in on its own (O3).
+        try requireNotForcedOffline()   // Task 14: Offline mode On sends nothing
         if let pending = reconnectTask { _ = await pending.value }
         guard let client = session?.client else { throw NavidromeError.noReachableServer }
         do {
             return try noteLocalSuccess(await op(client))
         } catch where Self.isConnectionError(error) {
             guard await reconnect(rebuildAlways: false), let retry = session?.client else {
-                noteUnreachable()
+                if session?.client === client { noteUnreachable() }   // not a session that has since changed
                 throw error
             }
             return try noteLocalSuccess(await op(retry))
@@ -585,14 +584,14 @@ final class AppModel {
     }
 
     private func performReconnect(rebuildAlways: Bool) async -> Bool {
-        guard let old = session else { return false }
+        guard let old = session, !isForcedOffline else { return false }   // Offline mode On: no probe, no login
         var reached: URL?
         for base in sendableBases(old.endpoint) where await probe(base) == nil {   // T2 fix C1
             reached = base
             break
         }
         guard let base = reached else {
-            if session?.client === old.client { noteUnreachable() }   // a cold launch with no network goes offline here
+            if session?.client === old.client { reconnectFailed() }   // counts towards Automatic going offline
             return false
         }
         if base == old.activeBase, !rebuildAlways {   // a blip; the same address answers again
@@ -861,7 +860,7 @@ final class AppModel {
     }
 
     func coverArtURL(_ id: String?, size: Int) -> URL? {
-        guard let id, let client = session?.client else { return nil }
+        guard let id, !isOffline, let client = session?.client else { return nil }   // offline: no artwork request
         return client.coverArtURL(id: id, size: size)
     }
 

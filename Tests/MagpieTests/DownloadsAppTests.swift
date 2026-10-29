@@ -318,7 +318,7 @@ extension AppModel {
     @Test func onlyDownloadSettingsThatCanUnblockRetry() async throws {
         let f = FakeFetcher()
         let model = try await signedInModel(fetcher: f)
-        f.failWith(URLError(.timedOut))
+        f.failWith(URLError(.badServerResponse))   // not a connection error: those wait for the server (Task 14)
         model.download([song("s1")], reason: .song); await model.downloads!.settled()
         #expect(model.downloadStatus(["s1"]) == .failed)
         f.failWith(nil)

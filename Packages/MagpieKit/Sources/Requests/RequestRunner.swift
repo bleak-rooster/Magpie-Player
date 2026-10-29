@@ -283,7 +283,11 @@ public actor RequestRunner {
     private func finished(_ id: RequestID) { inFlight[id] = nil }
 
     /// One pass: resume interrupted steps, retry what is due, poll Lidarr, scan and check the library.
+    /// How many ticks have started (tests: whether polling ran).
+    public private(set) var tickCount = 0
+
     public func tick() async {
+        tickCount += 1
         guard !ticking, !stopped, await load() else { return }
         ticking = true
         defer { ticking = false }

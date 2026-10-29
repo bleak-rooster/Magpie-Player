@@ -97,9 +97,11 @@ final class FindsIdentity: Sendable {
 struct NavidromeScrobbler: Scrobbler {
     let box: ClientBox
     var counting = PlayCounting(on: true)
+    /// Offline (Task 14) nothing is sent.
+    var offline = OfflineBox()
 
     func scrobble(songId: String, submission: Bool, at: Date?) async throws {
-        guard counting.isOn else { return }
+        guard counting.isOn, !offline.isOffline else { return }   // offline: dropped for now (T17 queues them)
         guard let client = box.client else { return }   // signed out meanwhile
         try await client.scrobble(songId: songId, submission: submission, at: at)
     }
@@ -181,16 +183,19 @@ final class NavidromeStreamURLs: StreamURLProvider {
     /// Whether the server can be reached right now (a connection, and not offline, Task 14); offline a failed file
     /// is kept and the song skipped, and no original is tried.
     let isOnline: @MainActor () -> Bool
+    /// Offline (Task 14): a song not on the phone gets no server URL, so nothing is streamed; it fails and is skipped.
+    let isOffline: @MainActor () -> Bool
 
     init(box: ClientBox, quality: QualityBox, localURL: @escaping @MainActor (String) -> URL? = { _ in nil },
          localFailed: @escaping @MainActor (String, Bool) -> Void = { _, _ in },
-         isOnline: @escaping @MainActor () -> Bool = { true }) {
+         isOnline: @escaping @MainActor () -> Bool = { true }, isOffline: @escaping @MainActor () -> Bool = { false }) {
         self.box = box; self.quality = quality; self.localURL = localURL; self.localFailed = localFailed
-        self.isOnline = isOnline
+        self.isOnline = isOnline; self.isOffline = isOffline
     }
 
     func streamURL(for song: Song) -> URL {
         if let local = localURL(song.id) { return local }
+        if isOffline() { return URL(string: "about:blank")! }
         // The queue is emptied on sign-out, so a missing client only happens in a race; the item fails.
         return remoteURL(for: song) ?? URL(string: "about:blank")!
     }

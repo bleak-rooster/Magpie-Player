@@ -62,6 +62,8 @@ final class DownloadManager {
     /// Every stored song (downloads and cache), for playback to prefer over a stream.
     private(set) var localFiles: [String: URL] = [:]
     @ObservationIgnored var onLocalFilesChanged: (@MainActor () -> Void)?
+    /// A manual download failed to reach the server (Task 14, I3): it waits, and the app checks the server.
+    @ObservationIgnored var onUnreachable: (@MainActor () -> Void)?
     #if DEBUG
     /// Tests: runs after a song's bytes have arrived and before they are written to the store.
     @ObservationIgnored var beforeStoreForTesting: (@MainActor (_ songId: String) async -> Void)?
@@ -205,8 +207,9 @@ final class DownloadManager {
         for song in songs {
             failed.removeAll { $0.songId == song.id && $0.kind == .download(reason) }
             guard !jobs.contains(where: { $0.songId == song.id && $0.kind == .download(reason) }) else { continue }
-            jobs.append(Job(kind: .download(reason), metadata: AudioMetadata(song), quality: quality,
-                            playlistId: playlist?.id))
+            var metadata = AudioMetadata(song)
+            if case .album = reason { metadata.albumCoverArtId = coverArtId }   // its saved cover, for offline (I2)
+            jobs.append(Job(kind: .download(reason), metadata: metadata, quality: quality, playlistId: playlist?.id))
         }
         savePending()
         fetchCovers()
@@ -386,7 +389,7 @@ final class DownloadManager {
         if done == songIds.count { return .downloaded }
         if stoppedByFull.contains(where: { ids.contains($0.songId) }) { return .full }
         let active = jobs.filter { $0.isManual && ids.contains($0.songId) }
-        if active.contains(where: { $0.state == .waiting }) { return .waitingForWiFi }
+        if active.contains(where: { $0.state == .waiting }) { return waitingStatus }
         if !active.isEmpty { return .downloading(done: done, total: songIds.count) }
         if failed.contains(where: { ids.contains($0.songId) }) { return .failed }
         return .none
@@ -402,12 +405,15 @@ final class DownloadManager {
         if done == songIds.count { return .downloaded }
         if stoppedByFull.contains(where: mine) { return .full }
         let active = jobs.filter(mine)
-        if active.contains(where: { $0.state == .waiting }) { return .waitingForWiFi }
+        if active.contains(where: { $0.state == .waiting }) { return waitingStatus }
         if !active.isEmpty { return .downloading(done: done, total: songIds.count) }
         if failed.contains(where: mine) { return .failed }
         if done > 0 { return .partial(done: done, total: songIds.count) }   // e.g. a song removed on its own
         return .none
     }
+
+    /// Why manual downloads wait: for the server while offline (ruling b), for Wi-Fi otherwise.
+    private var waitingStatus: DownloadStatus { isOffline() ? .waitingForConnection : .waitingForWiFi }
 
     /// How many of `songIds` are downloaded for some reason other than `reason`.
     func onPhoneForOtherReasons(_ songIds: [String], reason: DownloadReason) -> Int {
@@ -455,6 +461,12 @@ final class DownloadManager {
                 jobs[i].state = .waiting
                 tasks[run]?.cancel()
             }
+        }
+        if isOffline() {   // Task 14: pre-downloads still fetching stop (one whose bytes are here is stored)
+            for job in jobs where job.kind == .cache && job.needsNetwork {
+                if case let .running(run) = job.state { tasks[run]?.cancel() }
+            }
+            jobs.removeAll { $0.kind == .cache && $0.needsNetwork }
         }
         pump()
     }
@@ -518,7 +530,8 @@ final class DownloadManager {
             guard isLive(gen), isCurrent(id, run) else { return }
             if case let .download(reason) = job.kind {
                 do {
-                    try await store.promote(songId: job.songId, reason: reason, downloadsLimit: limitBytes(prefs))
+                    try await store.promote(songId: job.songId, reason: reason, downloadsLimit: limitBytes(prefs),
+                                            albumCoverArtId: job.metadata.albumCoverArtId)
                 } catch AudioStoreError.downloadsFull {
                     if isLive(gen) { stopForFull(id) }
                     return
@@ -616,6 +629,13 @@ final class DownloadManager {
     private func fail(_ id: UUID, _ error: Error) {
         Log.logger("downloads").error("download failed: \(Log.category(of: error), privacy: .public)")
         guard let i = jobs.firstIndex(where: { $0.id == id }) else { return }
+        if jobs[i].isManual, AppModel.isConnectionError(error) {
+            // The server dropped (I3): never "Couldn't download"; it waits and goes again once the server answers.
+            jobs[i].state = .waiting
+            jobs[i].needsNetwork = true
+            onUnreachable?()
+            return
+        }
         let job = jobs.remove(at: i)
         if job.isManual {
             failed.append(job)

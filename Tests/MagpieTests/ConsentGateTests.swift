@@ -185,7 +185,9 @@ private let loginJSON = Data(#"""
         #expect(await model.reconnect(rebuildAlways: true) == false)
         #expect(await model.reconnect(rebuildAlways: false) == false)
         #expect(model.session?.client.streamURL(songId: "s1", maxBitRate: nil, format: nil)?.host == "nas")
-        #expect(model.coverArtURL("c1", size: 100)?.host == "nas")
+        // Two failed reconnects: the app is offline (Task 14) and asks for no artwork; the client's URL stays home.
+        #expect(model.isOffline && model.coverArtURL("c1", size: 100) == nil)
+        #expect(model.session?.client.coverArtURL(id: "c1", size: 100)?.host == "nas")
         #expect(publicRequests.isEmpty, "nothing at all reaches the public address")
         #expect(!carriesSecret("pw-secret"))
         model.signOut()

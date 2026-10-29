@@ -73,12 +73,12 @@ public struct OfflineCatalog: Sendable {
     public func songs(inPlaylist id: String) -> [Song] {
         guard let saved = savedPlaylists.first(where: { $0.id == id }) else { return [] }
         let byId = Dictionary(downloads.map { ($0.songId, $0.metadata) }, uniquingKeysWith: { a, _ in a })
-        return saved.songIds.compactMap { byId[$0]?.song }
+        return saved.songIds.compactMap { byId[$0].map(Self.song) }
     }
 
     /// Every download, sorted by title.
     public func songs() -> [Song] {
-        downloads.map(\.metadata.song).sorted { Self.ordered($0.title, $0.id, $1.title, $1.id) }
+        downloads.map { Self.song($0.metadata) }.sorted { Self.ordered($0.title, $0.id, $1.title, $1.id) }
     }
 
     /// The genres of the downloads, from their snapshots, sorted by name.
@@ -111,7 +111,7 @@ public struct OfflineCatalog: Sendable {
         func has(_ text: String) -> Bool { Self.fold(text).contains(q) }
         return cache.filter { $0.lastPlayed != nil }
             .sorted { ($0.lastPlayed!, $1.songId) > ($1.lastPlayed!, $0.songId) }
-            .map(\.metadata.song)
+            .map { Self.song($0.metadata) }
             .filter { q.isEmpty || has($0.title) || has($0.artist) || has($0.album) }
     }
 
@@ -130,9 +130,18 @@ public struct OfflineCatalog: Sendable {
             ($0.disc ?? 1, $0.track ?? Int.max, $0.title, $0.songId) < ($1.disc ?? 1, $1.track ?? Int.max, $1.title, $1.songId)
         }
         let first = ordered[0]
+        let cover = ordered.lazy.compactMap(\.albumCoverArtId).first ?? ordered.lazy.compactMap(\.coverArtId).first
         return Album(id: id, name: first.album, artist: first.artist, artistId: first.artistId,
                      songCount: ordered.count, duration: ordered.reduce(0) { $0 + $1.duration },
-                     coverArtId: ordered.lazy.compactMap(\.coverArtId).first, songs: ordered.map(\.song))
+                     coverArtId: cover, songs: ordered.map(Self.song))
+    }
+
+    /// The snapshot's song, showing the saved album cover when it was downloaded with its album (the song's own cover
+    /// isn't saved).
+    private static func song(_ meta: AudioMetadata) -> Song {
+        var song = meta.song
+        if let cover = meta.albumCoverArtId { song.coverArtId = cover }
+        return song
     }
 
     /// By name ignoring case, then by id, so equal names keep a stable order.

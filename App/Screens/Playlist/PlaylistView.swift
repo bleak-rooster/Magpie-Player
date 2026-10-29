@@ -29,8 +29,11 @@ struct PlaylistView: View {
         .navigationBarTitleDisplayMode(.inline)
         .magpieScreen()
         .songRemovalDialog($removing)
-        // Again when offline mode changes: the downloaded songs offline, the server's online.
-        .task(id: model.isOffline) { if page.value == nil || loadedOffline != model.isOffline { await load() } }
+        // Again when offline mode changes, and offline when songs land on or leave the phone (the store may be
+        // unreadable before first unlock): the downloaded songs offline, the server's online.
+        .task(id: model.offlinePageKey) {
+            if page.value == nil || loadedOffline != model.isOffline || model.isOffline { await load() }
+        }
     }
 
     private func content(_ page: Page) -> some View {

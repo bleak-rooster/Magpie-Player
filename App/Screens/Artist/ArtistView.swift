@@ -33,8 +33,11 @@ struct ArtistView: View {
         .navigationTitle(page.value?.artist.name ?? "")
         .navigationBarTitleDisplayMode(.inline)
         .magpieScreen()
-        // Again when offline mode changes: the downloaded albums offline, the server's online.
-        .task(id: model.isOffline) { if page.value == nil || loadedOffline != model.isOffline { await load() } }
+        // Again when offline mode changes, and offline when songs land on or leave the phone (the store may be
+        // unreadable before first unlock): the downloaded albums offline, the server's online.
+        .task(id: model.offlinePageKey) {
+            if page.value == nil || loadedOffline != model.isOffline || model.isOffline { await load() }
+        }
     }
 
     private func content(_ page: Page) -> some View {

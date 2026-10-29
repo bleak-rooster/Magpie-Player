@@ -74,7 +74,8 @@ extension AppModel {
         let currentChanged = snapshot.current?.id != previous?.current?.id
         let protecting = Set([current].compactMap { $0 } + snapshot.upcoming.map(\.song.id))
         let played = previous.map { Self.songsPlayed(from: $0, to: snapshot) } ?? []
-        let gone = snapshot.keepRecentlyPlayed ? [] : played.subtracting(protecting)
+        // Offline nothing leaves the cache: it can't come back until the server does.
+        let gone = snapshot.keepRecentlyPlayed || isOffline ? [] : played.subtracting(protecting)
         runCacheUpkeep(manager: manager, markPlayed: currentChanged ? current : nil, gone: gone, protecting: protecting)
     }
 
