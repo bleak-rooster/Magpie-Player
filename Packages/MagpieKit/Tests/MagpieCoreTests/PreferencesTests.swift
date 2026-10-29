@@ -56,7 +56,7 @@ import Testing
     @Test func neverRoundTrips() {
         var s = ScrobblePreferences.defaultValue
         s.rule = ScrobbleRule(percent: 90, minutes: nil)
-        #expect(String(data: s.encoded(), encoding: .utf8)!.contains(#""minutesCap":0"#))
+        #expect(String(data: s.encoded()!, encoding: .utf8)!.contains(#""minutesCap":0"#))
         #expect(ScrobblePreferences.decode(s.encoded()).rule == ScrobbleRule(percent: 90, minutes: nil))
     }
 
@@ -90,7 +90,7 @@ import Testing
         #expect(v.visibleItems == [.mostPlayed, .jumpBackIn, .madeForYou, .recentlyAdded])
         v.moveDown(.mostPlayed); #expect(v.entries.map(\.item).prefix(2) == [.jumpBackIn, .mostPlayed])
         v.moveUp(.jumpBackIn); #expect(v.entries.first?.item == .jumpBackIn, "moveUp at the top is a no-op")
-        let shown = v.set(.favourites, visible: true)
+        let shown = v.set(.favourites, visible: true, keepingOneOf: [])
         #expect(shown && v.visibleItems.contains(.favourites))
     }
 
@@ -125,5 +125,27 @@ import Testing
         #expect(StreamQuality.original.format == "raw" && StreamQuality.original.maxBitRate == nil)
         #expect(StreamQuality.aac160.format == "aac" && StreamQuality.aac160.maxBitRate == 160)
         #expect(StreamQuality.mp3_320.format == "mp3" && StreamQuality.mp3_320.maxBitRate == 320)
+    }
+
+    @Test func extremeIntegersNeverTrapAndClamp() {
+        for big in [Int.max, Int.min] {
+            let rule = ScrobbleRule(percent: big, minutes: big).normalised()
+            #expect(rule.percent == (big > 0 ? 90 : 10) && rule.minutes == (big > 0 ? 10 : 1))
+            let d = DownloadPreferences.decode(Data(#"{"concurrent":\#(big),"preDownload":\#(big)}"#.utf8))
+            #expect(d.concurrent == (big > 0 ? 4 : 1) && d.preDownload == (big > 0 ? 10 : 0))
+            let s = ScrobblePreferences.decode(Data(#"{"rule":{"percent":\#(big),"minutesCap":\#(big)}}"#.utf8))
+            #expect(s.rule == ScrobbleRule(percent: big > 0 ? 90 : 10, minutes: big > 0 ? 10 : 1))
+        }
+    }
+
+    @Test func allHiddenStoredLibraryRestoresDefaults() {
+        let rows = LibraryRow.allCases.map { #"{"id":"\#($0.rawValue)","visible":false}"# }.joined(separator: ",")
+        let layout = LayoutPreferences.decode(Data(#"{"library":[\#(rows)]}"#.utf8))
+        #expect(layout.library.visibleItems.contains { LayoutPreferences.alwaysAvailableRows.contains($0) })
+        #expect(Set(layout.library.visibleItems) == LayoutPreferences.alwaysAvailableRows)
+        var l = LayoutPreferences.defaultValue
+        for row in [LibraryRow.playlists, .artists, .albums, .songs, .genres, .favourites] { l.setLibraryRow(row, visible: false) }
+        let refused = l.setLibraryRow(.downloads, visible: false)
+        #expect(!refused)
     }
 }

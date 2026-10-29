@@ -24,6 +24,7 @@ struct PreferencesStore {
 
     private func write<A: PreferenceArea>(_ new: A, _ previous: A) {
         guard new != previous else { return }
-        defaults.set(new.encoded(), forKey: A.key)
+        guard let data = new.encoded() else { return }   // logged by `encoded()`; the old value stays
+        defaults.set(data, forKey: A.key)
     }
 }

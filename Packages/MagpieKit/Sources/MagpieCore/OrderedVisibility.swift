@@ -17,7 +17,7 @@ public struct OrderedVisibility<Item: CaseIterable & RawRepresentable & Hashable
 
     /// false (and no change) when hiding `item` would leave no visible item among `keepingOneOf`.
     @discardableResult
-    public mutating func set(_ item: Item, visible: Bool, keepingOneOf required: Set<Item> = []) -> Bool {
+    public mutating func set(_ item: Item, visible: Bool, keepingOneOf required: Set<Item>) -> Bool {
         guard let index = entries.firstIndex(where: { $0.item == item }) else { return false }
         if !visible, required.contains(item) {
             let others = entries.contains { $0.item != item && $0.visible && required.contains($0.item) }

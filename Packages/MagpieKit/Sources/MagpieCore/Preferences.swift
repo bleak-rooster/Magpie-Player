@@ -160,24 +160,28 @@ extension PreferenceArea {
         for (key, value) in stored where key != "version" {
             let before = merged[key]
             merged[key] = value
-            if !decodes(merged) { merged[key] = before }
+            if decoded(merged) == nil { merged[key] = before }
         }
-        guard let object = try? JSONSerialization.data(withJSONObject: merged),
-              let value = try? JSONDecoder().decode(Self.self, from: object) else { return defaultValue }
-        return value.normalised()
+        return (decoded(merged) ?? defaultValue).normalised()
     }
 
-    private static func decodes(_ object: [String: Any]) -> Bool {
-        guard let data = try? JSONSerialization.data(withJSONObject: object) else { return false }
-        return (try? JSONDecoder().decode(Self.self, from: data)) != nil
+    /// Serialises a JSON object and decodes it as this area; nil when either step fails.
+    private static func decoded(_ object: [String: Any]) -> Self? {
+        guard let data = try? JSONSerialization.data(withJSONObject: object) else { return nil }
+        return try? JSONDecoder().decode(Self.self, from: data)
     }
 
-    /// The JSON to store, with `"version": 1`.
-    public func encoded() -> Data {
-        let base = (try? JSONEncoder().encode(self)).flatMap { try? JSONSerialization.jsonObject(with: $0) } as? [String: Any] ?? [:]
-        var object = base
-        object["version"] = 1
-        return (try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])) ?? Data()
+    /// The JSON to store, with `"version": 1`. nil (logged, nothing to write) when encoding fails.
+    public func encoded() -> Data? {
+        do {
+            let data = try JSONEncoder().encode(self)
+            guard var object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+            object["version"] = 1
+            return try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        } catch {
+            Log.logger("preferences").error("encoding \(Self.key, privacy: .public) failed: \(Log.category(of: error), privacy: .public)")
+            return nil
+        }
     }
 }
 
@@ -201,10 +205,23 @@ public struct LayoutPreferences: PreferenceArea {
         self.showsRecentlyAdded = showsRecentlyAdded
     }
 
+    /// Hides or shows a Library row; false (no change) when it would leave none of the always-available rows visible.
+    @discardableResult
+    public mutating func setLibraryRow(_ row: LibraryRow, visible: Bool) -> Bool {
+        library.set(row, visible: visible, keepingOneOf: Self.alwaysAvailableRows)
+    }
+
+    /// Stored data keeps the "one Library row stays visible" rule too: with none showing, the defaults come back.
     public func normalised() -> LayoutPreferences {
-        LayoutPreferences(home: home.normalised(against: Self.defaultValue.home),
-                          library: library.normalised(against: Self.defaultValue.library),
-                          showsRecentlyAdded: showsRecentlyAdded)
+        var library = library.normalised(against: Self.defaultValue.library)
+        let required = Self.alwaysAvailableRows
+        if !library.entries.contains(where: { required.contains($0.item) && $0.visible }) {
+            for entry in Self.defaultValue.library.entries where entry.visible && required.contains(entry.item) {
+                library.set(entry.item, visible: true, keepingOneOf: [])
+            }
+        }
+        return LayoutPreferences(home: home.normalised(against: Self.defaultValue.home), library: library,
+                                 showsRecentlyAdded: showsRecentlyAdded)
     }
 
     public func visibleHomeSections(offline: Bool, hasListenBrainzToken: Bool, carPlay: Bool) -> [HomeSection] {
@@ -288,7 +305,7 @@ public struct ScrobbleRule: Codable, Hashable, Sendable {
 
     /// Percent 10…90 rounded to the nearest 5 (half up); minutes 1…10 or nil.
     public func normalised() -> ScrobbleRule {
-        ScrobbleRule(percent: clamp((percent + 2) / 5 * 5, 10...90), minutes: minutes.map { clamp($0, 1...10) })
+        ScrobbleRule(percent: (clamp(percent, 10...90) + 2) / 5 * 5, minutes: minutes.map { clamp($0, 1...10) })
     }
 
     /// Seconds of listening after which the play counts; nil when it never does (under 30 s).
