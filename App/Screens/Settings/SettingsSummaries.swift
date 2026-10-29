@@ -29,15 +29,18 @@ enum SettingsSummaries {
                 localNetworkDenied: model.localNetwork.state == .denied)
     }
 
-    /// "Connected · Finds on", "Not connected", or the address waiting for the owner's OK (T2).
-    static func requests(connected: Bool, awaitingConsent: Bool, finds: FindsStatus) -> SettingsSummary {
+    /// "Connected · Finds on", "Not connected", the address waiting for the owner's OK (T2), or "You're offline"
+    /// while offline (Task 14 disables the page).
+    static func requests(connected: Bool, awaitingConsent: Bool, finds: FindsStatus, offline: Bool = false) -> SettingsSummary {
+        if offline { return SettingsSummary(AppModel.offlineCopy, symbol: "wifi.slash") }
         guard connected else { return SettingsSummary("Not connected") }
         if awaitingConsent { return SettingsSummary("\(LidarrConnectCopy.allowAddress) needed", symbol: "lock.open") }
         return SettingsSummary("Connected · Finds \(finds.summary.lowercased())")
     }
 
     @MainActor static func requests(_ model: AppModel) -> SettingsSummary {
-        requests(connected: model.lidarr != nil, awaitingConsent: model.lidarrAwaitingConsent, finds: model.findsStatus)
+        requests(connected: model.lidarr != nil, awaitingConsent: model.lidarrAwaitingConsent, finds: model.findsStatus,
+                 offline: model.isOffline)
     }
 
     /// The character and the accent, "Signature · Sheen".
@@ -58,13 +61,19 @@ struct SettingsRow: View {
                 Text(title)
                 Group {
                     if let warning = summary.symbol {
-                        Label(summary.text, systemImage: warning)
+                        // Not a Label: inside the row's Label it would take the row's wide icon column.
+                        HStack(spacing: 4) {
+                            Image(systemName: warning).accessibilityHidden(true)
+                            Text(summary.text)
+                        }
                     } else {
                         Text(summary.text)
                     }
                 }
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
+                .lineLimit(1)   // never wraps, so the top level keeps its height (controller ruling)
+                .truncationMode(.tail)
             }
         } icon: {
             Image(systemName: symbol)

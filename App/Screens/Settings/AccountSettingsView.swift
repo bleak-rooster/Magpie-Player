@@ -6,6 +6,7 @@ struct AccountSettingsView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.openURL) private var openURL
     @State private var askingLocalNetwork = false
+    @State private var confirmsSignOut = false
     /// Closes the Settings sheet (this page's own `dismiss` would only go back).
     let dismissSettings: () -> Void
 
@@ -21,16 +22,24 @@ struct AccountSettingsView: View {
                     }
                     LabeledContent("Signed in as", value: session.username)
                     localNetworkRows
-                    Button("Sign out", role: .destructive) {
-                        dismissSettings()
-                        model.signOut()
-                    }
-                    .accessibilityIdentifier("settings-sign-out")
+                    Button("Sign out", role: .destructive) { confirmsSignOut = true }
+                        .accessibilityIdentifier("settings-sign-out")
                 }
             }
         }
         .navigationTitle("Account & Server")
         .navigationBarTitleDisplayMode(.inline)
+        // Signing out erases this account's downloads (Task 12), so it asks first (T21b fix round).
+        .confirmationDialog(AccountCopy.signOutTitle, isPresented: $confirmsSignOut, titleVisibility: .visible) {
+            Button(AccountCopy.signOutConfirm, role: .destructive) {
+                dismissSettings()
+                model.signOut()
+            }
+            .accessibilityIdentifier("settings-sign-out-confirm")
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(AccountCopy.signOutMessage)
+        }
     }
 
     /// T3: Connect's Local Network message and buttons: the message and Open Settings while it is off, and the
@@ -61,4 +70,10 @@ struct AccountSettingsView: View {
             .accessibilityIdentifier("settings-allow-local-network")
         }
     }
+}
+
+enum AccountCopy {
+    static let signOutTitle = "Sign out?"
+    static let signOutMessage = "Songs downloaded to this phone will be removed."
+    static let signOutConfirm = "Sign Out"
 }

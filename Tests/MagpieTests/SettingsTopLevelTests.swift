@@ -1,6 +1,7 @@
 import DesignSystem
 import Foundation
 import MagpieCore
+import MagpieTestSupport
 import SwiftUI
 import Testing
 import UIKit
@@ -32,6 +33,16 @@ import UIKit
             == SettingsSummary("Connected · Finds not finished"))
         #expect(SettingsSummaries.requests(connected: true, awaitingConsent: true, finds: .on)
             == SettingsSummary("Allow This Address needed", symbol: "lock.open"))
+        // Offline every Lidarr action is disabled (Task 14); the row says so, with its symbol (D3).
+        #expect(SettingsSummaries.requests(connected: true, awaitingConsent: false, finds: .on, offline: true)
+            == SettingsSummary("You're offline", symbol: "wifi.slash"))
+    }
+
+    /// Fix round: sign-out erases this account's downloads, so it asks first.
+    @Test func signOutAsksFirst() {
+        #expect(AccountCopy.signOutTitle == "Sign out?")
+        #expect(AccountCopy.signOutMessage == "Songs downloaded to this phone will be removed.")
+        #expect(AccountCopy.signOutConfirm == "Sign Out")
     }
 
     @Test func otherSummaries() {
@@ -53,42 +64,70 @@ import UIKit
         #expect(SettingsPage.topLevel == [.account, .playback, .downloads, .scrobbling, .homeAndLibrary, .appearance, .requests, .about])
     }
 
+    /// Signed in to a long plain-http public address (the "Not encrypted" warning row) with Lidarr connected, and
+    /// measured inside a real page-sheet presentation, as the app shows Settings.
     @Test func topLevelFitsSmallestPhone() async throws {
         let name = "settings-small-\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: name)!
-        defer { defaults.removePersistentDomain(forName: name) }
+        let gateSuite = "settings-small-gate-\(UUID().uuidString)"
+        defer {
+            defaults.removePersistentDomain(forName: name)
+            UserDefaults(suiteName: gateSuite)?.removePersistentDomain(forName: gateSuite)
+        }
+        let transport = HostSwitchTransport()
+        transport.inner.stub(pathSuffix: "/rest/ping", body: Data(#"{"subsonic-response":{"status":"ok","version":"1.16.1"}}"#.utf8))
+        transport.inner.stub(method: "POST", pathSuffix: "/auth/login", body: Data(#"""
+        {"id":"u1","isAdmin":true,"name":"Admin","subsonicSalt":"salt","subsonicToken":"tok","token":"jwt","username":"a-rather-long-username"}
+        """#.utf8))
+        transport.inner.stub(pathSuffix: "/api/song", body: Data("[]".utf8), headers: ["X-Total-Count": "0"])
+        transport.inner.stub(pathSuffix: "/api/v1/system/status", body: Data(#"{"version":"3.2.0","instanceName":"Lidarr","authentication":"forms"}"#.utf8))
+        transport.inner.stub(pathSuffix: "/api/v1/rootfolder", body: Data(#"[{"id":1,"path":"/music"}]"#.utf8))
         let model = AppModel(store: SessionStore(keychain: KeychainStore(service: "com.bleak-rooster.magpie.tests.\(UUID().uuidString)")),
-                             matchIndexDirectory: nil, dataDirectory: nil, engine: FakeEngine(), defaults: defaults,
-                             systemNowPlaying: false, notifications: false)
+                             lidarrStore: MemoryLidarrStore(), tokenStore: MemoryTokenStore(), matchIndexDirectory: nil,
+                             dataDirectory: nil, gateDefaultsSuite: gateSuite, transport: transport, probeTransport: transport,
+                             engine: FakeEngine(), defaults: defaults, systemNowPlaying: false, notifications: false)
+        let server = URL(string: "http://a-very-long-music-server-name.example.com:4533")!
+        model.allowPlainHTTP([server])
+        try await model.signIn(urls: [server], username: "a-rather-long-username", password: "pw")
+        _ = try await model.connectLidarr(base: URL(string: "http://192.168.1.2:8686")!, apiKey: "key")
+        defer { model.signOut() }
+        #expect(SettingsSummaries.account(model) == SettingsSummary("Not encrypted", symbol: "lock.open"))
+        #expect(SettingsSummaries.requests(model).text.hasPrefix("Connected · Finds "))
 
-        let window = try await Self.host(model)
+        let (window, sheet) = try await Self.host(model)
         defer { window.isHidden = true }
-        let list = try #require(Self.scrollView(in: window), "the top level is a list")
+        let list = try #require(Self.scrollView(in: sheet.view), "the top level is a list")
         let rows = (0..<list.numberOfSections).reduce(0) { $0 + list.numberOfItems(inSection: $1) }
         #expect(rows == 8, "eight pages")
         let visible = list.bounds.height - list.adjustedContentInset.top - list.adjustedContentInset.bottom
-        print("T21b settings: content \(list.contentSize.height) pt in \(visible) pt visible")
+        print("T21b settings: content \(list.contentSize.height) pt in \(visible) pt visible (sheet \(sheet.view.frame))")
+        #expect(sheet.view.frame.height < 667, "measured inside the sheet, not the whole window")
         #expect(list.contentSize.height <= visible, "the top level scrolls at the default text size")
         try Self.render(window, "settings-375x667.png")
 
-        let axWindow = try await Self.host(model, typeSize: .accessibility2)
+        let (axWindow, _) = try await Self.host(model, typeSize: .accessibility2)
         defer { axWindow.isHidden = true }
         try Self.render(axWindow, "settings-375x667-ax2.png")
     }
 
-    private static func host(_ model: AppModel, typeSize: DynamicTypeSize = .large) async throws -> UIWindow {
+    /// Settings presented as a page sheet over a 375 × 667 window, as Library and Home present it.
+    private static func host(_ model: AppModel, typeSize: DynamicTypeSize = .large) async throws -> (UIWindow, UIViewController) {
         let scene = try #require(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
         let window = UIWindow(windowScene: scene)
         window.frame = CGRect(x: 0, y: 0, width: 375, height: 667)
-        let view = SettingsView().environment(model).magpieTheme(model.theme).environment(\.dynamicTypeSize, typeSize)
-        let host = UIHostingController(rootView: view)
-        window.rootViewController = host
+        let root = UIViewController()
+        root.view.backgroundColor = .systemBackground
+        window.rootViewController = root
         window.isHidden = false
+        let view = SettingsView().environment(model).magpieTheme(model.theme).environment(\.dynamicTypeSize, typeSize)
+        let sheet = UIHostingController(rootView: view)
+        sheet.modalPresentationStyle = .pageSheet
+        root.present(sheet, animated: false)
         for _ in 0..<10 {
             try await Task.sleep(for: .milliseconds(100))
-            host.view.layoutIfNeeded()
+            sheet.view.layoutIfNeeded()
         }
-        return window
+        return (window, sheet)
     }
 
     private static func scrollView(in view: UIView) -> UICollectionView? {

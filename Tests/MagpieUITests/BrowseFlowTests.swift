@@ -467,6 +467,19 @@ final class BrowseFlowTests: XCTestCase {
         XCTAssertTrue(done.waitForExistence(timeout: 10))
         done.tap()
         XCTAssertTrue(app.buttons["library-requests"].waitForExistence(timeout: 10), "Requests shows once Lidarr is connected")
+
+        // T21b: Home's Finish setting up › Review opens Settings on the Requests page (changes are still off).
+        let card = app.buttons["finish-setting-up"]
+        for _ in 0..<3 where !card.exists {
+            app.tabBars.buttons["Home"].tap()
+            _ = card.waitForExistence(timeout: 5)
+        }
+        card.tap()
+        XCTAssertTrue(app.switches["settings-allow-changes"].waitForExistence(timeout: 10), "Review lands on Requests")
+        XCTAssertTrue(app.navigationBars["Requests"].exists)
+        app.navigationBars.buttons.firstMatch.tap()   // › Settings
+        XCTAssertTrue(app.buttons["settings-account"].waitForExistence(timeout: 10), "Settings lies under Requests")
+        app.buttons["settings-done"].tap()
     }
 
     /// T20: Home in its default order, then Edit Home: Jump back in off, Random albums and Genres on, Most played
