@@ -11,6 +11,8 @@ public final class SleepTimer {
 
     public private(set) var mode: Mode = .off
 
+    /// Chosen behaviour: once the fade starts it runs to the end whatever the listener does. Skipping a song or
+    /// pausing and resuming doesn't stop or restart it; only `cancel()` does (the Off menu item, sign out).
     /// 10 steps of 0.5 s: 0.9 … 0.0 (5 s).
     static let fadeSteps = 10
     static let fadeStep: Duration = .milliseconds(500)
@@ -47,9 +49,13 @@ public final class SleepTimer {
         }
         player.stopsAfterCurrent = false
         mode = .at(now().addingTimeInterval(seconds))
-        timerTask = Task { [weak self, sleep] in
+        timerTask = Task { [weak self, sleep, now] in
             do {
                 try await sleep(.seconds(seconds))
+                // The sleep can end early or late (backgrounding); fire at the displayed deadline.
+                while let self, let left = self.remaining(at: now()), left > 0 {
+                    try await sleep(.seconds(left))
+                }
                 for step in 1...Self.fadeSteps {
                     try Task.checkCancellation()
                     guard let self else { return }

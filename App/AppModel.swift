@@ -427,6 +427,7 @@ final class AppModel {
     /// ledgers with nothing open (`Ledger.forgetFinished`). Keeps the change log.
     func signOut() {
         let retiring = runner, doomed = requestStore
+        sleepTimer.cancel()
         player.play([], startAt: 0)
         playbackHint = nil
         if let navidromeScope {

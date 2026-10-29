@@ -68,6 +68,18 @@ private func eventually(_ seconds: Double = 5, _ condition: () -> Bool) async ->
 
     func song(_ id: String) -> Song { PlayerTests.song(id) }
 
+    @Test func signOutCancelsTheSleepTimer() async throws {
+        let (model, engine, _) = try await signedIn(.wifi)
+        model.play([song("s1"), song("s2")], startAt: 0)
+        model.sleepTimer.start(.m15)
+        #expect(model.sleepTimer.mode != .off)
+        model.sleepTimer.start(.endOfSong)
+        model.signOut(); store.clear()
+        await model.sleepTimer.settled()
+        #expect(model.sleepTimer.mode == .off && !model.player.stopsAfterCurrent && model.player.volume == 1)
+        #expect(engine.setVolumeCalls.isEmpty || engine.setVolumeCalls.last == 1)
+    }
+
     @Test func wifiUsesOriginalRaw() async throws {
         let (model, engine, _) = try await signedIn(.wifi)
         defer { tearDown(model) }
