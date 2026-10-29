@@ -6,7 +6,9 @@ import Testing
 /// iOS only: the file protection class lets the car play downloads while the phone is locked (spec §6, §11).
 @Suite struct AudioStoreAppTests {
     @Test func fileProtectionLetsTheCarPlayWhileLocked() async throws {
-        let store = AudioStore(root: FileManager.default.temporaryDirectory.appending(path: UUID().uuidString), scope: "abc")
+        let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = AudioStore(root: root, scope: "abc")
         await store.load()
         let temp = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
         try Data(count: 100).write(to: temp)

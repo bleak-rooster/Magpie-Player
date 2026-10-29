@@ -17,30 +17,40 @@ public actor AudioStore {
     private let now: @Sendable () -> Date
     private var index = Index()
 
-    private struct Index: Codable {
+    private struct Index: Codable, Equatable {
         var entries: [String: AudioEntry] = [:]
         var playlists: [String: DownloadedPlaylist] = [:]
     }
 
     static let indexName = "index.json"
     static let originalSuffixes: Set<String> = ["mp3", "flac", "m4a", "mp4", "aac", "wav", "aif", "aiff", "alac", "caf"]
-    static let mimeExtensions = ["audio/mpeg": "mp3", "audio/flac": "flac", "audio/mp4": "m4a", "audio/aac": "aac"]
+    static let mimeExtensions = ["audio/mpeg": "mp3", "audio/mp3": "mp3", "audio/flac": "flac", "audio/x-flac": "flac",
+                                 "audio/mp4": "m4a", "audio/x-m4a": "m4a", "audio/aac": "aac", "audio/wav": "wav",
+                                 "audio/x-wav": "wav", "audio/aiff": "aiff", "audio/x-aiff": "aiff"]
+    /// Every extension the store accepts: the Original allowlist plus the transcode formats.
+    static let allowedExtensions = originalSuffixes.union(["mp3", "aac"])
     /// `<64 hex>.<ext>`: the only names the store writes for audio.
     static func isHashedName(_ name: String) -> Bool { name.wholeMatch(of: /[0-9a-f]{64}\.[a-z0-9]+/) != nil }
 
+    /// `scope` must match `[A-Za-z0-9_-]{1,64}` (the app passes a hex digest); anything else is a programming
+    /// error and stops here rather than writing outside `Magpie/Audio`.
     public init(root: URL, scope: String, now: @escaping @Sendable () -> Date = { Date() }) {
+        precondition(Self.isValidScope(scope), "AudioStore scope must match [A-Za-z0-9_-]{1,64}")
         directory = root.appending(path: "Magpie/Audio").appending(path: scope, directoryHint: .isDirectory)
         self.now = now
     }
 
     // MARK: - Names
 
+    static func isValidScope(_ scope: String) -> Bool { scope.wholeMatch(of: /[A-Za-z0-9_-]{1,64}/) != nil }
+
     public static func fileName(songId: String, quality: StreamQuality, fileExtension: String) -> String {
         sha256(songId + "|" + quality.rawValue) + "." + fileExtension
     }
 
-    /// Only extensions AVFoundation plays; nothing from the server is used unless it is on the allowlist.
-    public static func fileExtension(quality: StreamQuality, suffix: String?, mimeType: String?) -> String {
+    /// Only extensions AVFoundation plays; nothing from the server is used unless it is on the allowlist. nil: a
+    /// format Magpie can't play (or can't tell), which is refused rather than guessed.
+    public static func fileExtension(quality: StreamQuality, suffix: String?, mimeType: String?) -> String? {
         switch quality.format {
         case "aac": return "aac"
         case "mp3": return "mp3"
@@ -48,7 +58,15 @@ public actor AudioStore {
         }
         if let suffix = suffix?.lowercased(), originalSuffixes.contains(suffix) { return suffix }
         if let mime = mimeType?.lowercased(), let ext = mimeExtensions[mime] { return ext }
-        return "mp3"
+        return nil
+    }
+
+    /// An entry may only name the file its own song id and quality hash to, with an allowed extension.
+    static func isValid(_ entry: AudioEntry) -> Bool {
+        guard let dot = entry.fileName.lastIndex(of: ".") else { return false }
+        let ext = String(entry.fileName[entry.fileName.index(after: dot)...])
+        return allowedExtensions.contains(ext)
+            && entry.fileName == fileName(songId: entry.songId, quality: entry.quality, fileExtension: ext)
     }
 
     static func sha256(_ text: String) -> String {
@@ -57,21 +75,11 @@ public actor AudioStore {
 
     // MARK: - Reading
 
-    /// Reads the index; when it is missing or damaged, rebuilds it from the sidecars. Never throws.
+    /// Reads the index and reconciles it with the files on disk (a damaged or stale index is repaired from the
+    /// sidecars). Never throws.
     public func load() {
-        let fm = FileManager.default
-        guard fm.fileExists(atPath: directory.path) else { index = Index(); return }
-        if let loaded = try? AtomicFile.read(Index.self, from: indexURL) {
-            index = loaded
-            // An entry whose file has gone is dropped rather than offered as playable.
-            var dropped = false
-            for entry in index.entries.values where !fm.fileExists(atPath: url(for: entry).path) {
-                remove(entry); dropped = true
-            }
-            if dropped { saveIndex() }
-            return
-        }
-        rebuild()
+        guard FileManager.default.fileExists(atPath: directory.path) else { index = Index(); return }
+        reconcile(with: try? AtomicFile.read(Index.self, from: indexURL))
     }
 
     public func entry(songId: String) -> AudioEntry? { index.entries[songId] }
@@ -100,6 +108,7 @@ public actor AudioStore {
                     reason: DownloadReason?, fileExtension: String, downloadsLimit: Int64?) throws -> AudioEntry {
         let fm = FileManager.default
         defer { try? fm.removeItem(at: temporaryFile) }   // moved in, or not wanted
+        guard Self.allowedExtensions.contains(fileExtension) else { throw AudioStoreError.invalidFile }
         let reasons: Set<DownloadReason> = kind == .download ? Set([reason].compactMap { $0 }) : []
 
         if var existing = index.entries[metadata.songId] {
@@ -121,7 +130,7 @@ public actor AudioStore {
         let destination = directory.appending(path: name)
         try? fm.removeItem(at: destination)   // a leftover with no entry
         try fm.moveItem(at: temporaryFile, to: destination)
-        try protect(destination)
+        do { try protect(destination) } catch { try? fm.removeItem(at: destination); throw error }
         let entry = AudioEntry(songId: metadata.songId, quality: quality, fileName: name, size: size, kind: kind,
                                reasons: reasons, downloadedAt: now(), lastPlayed: nil, metadata: metadata)
         do { try store(entry) } catch { try? fm.removeItem(at: destination); throw error }
@@ -133,6 +142,7 @@ public actor AudioStore {
     public func replace(songId: String, with temporaryFile: URL, quality: StreamQuality, fileExtension: String) throws -> AudioEntry {
         let fm = FileManager.default
         defer { try? fm.removeItem(at: temporaryFile) }
+        guard Self.allowedExtensions.contains(fileExtension) else { throw AudioStoreError.invalidFile }
         guard let old = index.entries[songId] else { throw AudioStoreError.unknownSong }
         let size = try fileSize(temporaryFile)
         try prepareDirectory()
@@ -144,7 +154,14 @@ public actor AudioStore {
             try? fm.removeItem(at: destination)
             try fm.moveItem(at: temporaryFile, to: destination)
         }
-        try protect(destination)
+        do {
+            try protect(destination)
+        } catch {
+            // Same name: the old file is already gone, so the entry goes too. Otherwise the old one stays.
+            try? fm.removeItem(at: destination)
+            if name == old.fileName { remove(old); saveIndex() }
+            throw error
+        }
         var entry = old
         entry.quality = quality; entry.fileName = name; entry.size = size; entry.downloadedAt = now()
         try store(entry)
@@ -153,6 +170,18 @@ public actor AudioStore {
     }
 
     // MARK: - Reasons, plays and removal
+
+    /// Adds `reason` to a stored song in one step; a cached song becomes a download only if it fits the downloads
+    /// limit (nothing is evicted).
+    public func promote(songId: String, reason: DownloadReason, downloadsLimit: Int64?) throws {
+        guard var entry = index.entries[songId] else { throw AudioStoreError.unknownSong }
+        if entry.kind == .cache {
+            try checkLimit(adding: entry.size, limit: downloadsLimit)
+            entry.kind = .download
+        }
+        entry.reasons.insert(reason)
+        try store(entry)
+    }
 
     /// Adds `reason` to stored songs; a cached song becomes a download.
     public func addReason(_ reason: DownloadReason, songIds: [String]) {
@@ -330,37 +359,57 @@ public actor AudioStore {
         }
     }
 
-    /// Rebuilds the index from the sidecars, deleting audio without a sidecar and sidecars without audio.
-    private func rebuild() {
+    /// Makes the index agree with the disk. The sidecar is written before the index, so a valid sidecar with its
+    /// audio wins; an index entry without a sidecar is kept (and its sidecar rewritten) when its audio is there.
+    /// Audio, sidecars and playlists with no valid entry are deleted, as are leftover `.tmp` files.
+    private func reconcile(with loaded: Index?) {
         let fm = FileManager.default
         let names = (try? fm.contentsOfDirectory(atPath: directory.path)) ?? []
+        for name in names where name.hasSuffix(".tmp") { try? fm.removeItem(at: directory.appending(path: name)) }
         let audio = Set(names.filter { Self.isHashedName($0) })
-        let sidecars = names.filter { $0.hasSuffix(".json") && Self.isHashedName(String($0.dropLast(5))) }
-        var rebuilt = Index()
-        var kept = Set<String>()
-        for sidecar in sidecars {
+        var entries: [String: AudioEntry] = [:]
+        for sidecar in names where sidecar.hasSuffix(".json") && Self.isHashedName(String(sidecar.dropLast(5))) {
             let fileName = String(sidecar.dropLast(5))
             guard audio.contains(fileName),
                   let entry = try? AtomicFile.read(AudioEntry.self, from: directory.appending(path: sidecar)),
-                  entry.fileName == fileName, rebuilt.entries[entry.songId] == nil else {
+                  entry.fileName == fileName, Self.isValid(entry) else {
                 try? fm.removeItem(at: directory.appending(path: sidecar))
                 continue
             }
-            rebuilt.entries[entry.songId] = entry
-            kept.insert(fileName)
+            // Two files for one song (a re-download cut short): the newer one wins; the other is deleted below.
+            if let other = entries[entry.songId], other.downloadedAt >= entry.downloadedAt {
+                try? fm.removeItem(at: directory.appending(path: sidecar))
+                continue
+            }
+            if let other = entries[entry.songId] { try? fm.removeItem(at: sidecarURL(other.fileName)) }
+            entries[entry.songId] = entry
         }
+        for (key, entry) in loaded?.entries ?? [:]
+        where entries[key] == nil && key == entry.songId && Self.isValid(entry) && audio.contains(entry.fileName) {
+            entries[key] = entry
+            try? AtomicFile.write(entry, to: sidecarURL(entry.fileName))
+        }
+        let kept = Set(entries.values.map(\.fileName))
         for name in audio.subtracting(kept) { try? fm.removeItem(at: directory.appending(path: name)) }
+
+        var playlists: [String: DownloadedPlaylist] = [:]
         for name in (try? fm.contentsOfDirectory(atPath: playlistsDirectory.path)) ?? [] {
             let url = playlistsDirectory.appending(path: name)
             if let playlist = try? AtomicFile.read(DownloadedPlaylist.self, from: url),
                name == Self.sha256(playlist.id) + ".json" {
-                rebuilt.playlists[playlist.id] = playlist
+                playlists[playlist.id] = playlist
             } else {
                 try? fm.removeItem(at: url)
             }
         }
-        index = rebuilt
-        Log.logger("audio").error("audio index missing or unreadable; rebuilt \(rebuilt.entries.count, privacy: .public) entries")
+        for (key, playlist) in loaded?.playlists ?? [:] where playlists[key] == nil && key == playlist.id {
+            playlists[key] = playlist
+            try? AtomicFile.write(playlist, to: playlistURL(key))
+        }
+
+        index = Index(entries: entries, playlists: playlists)
+        guard index != loaded else { return }
+        Log.logger("audio").error("audio index repaired from disk: \(entries.count, privacy: .public) entries")
         saveIndex()
     }
 }
