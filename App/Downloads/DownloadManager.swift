@@ -66,14 +66,15 @@ final class DownloadManager {
     @ObservationIgnored var beforeStoreForTesting: (@MainActor (_ songId: String) async -> Void)?
     #endif
 
-    // Internal (not private) where DownloadManager+Removal.swift needs it.
+    // Members below marked "(+Removal)" are internal, not private, only because DownloadManager+Removal.swift
+    // reads or changes them; nothing outside the manager's two files uses them.
     /// Mirror of the store's kinds and reasons, so `status` can answer synchronously.
     private var kinds: [String: AudioKind] = [:]
     private var reasons: [String: Set<DownloadReason>] = [:]
-    var jobs: [Job] = []
+    var jobs: [Job] = []   // (+Removal)
     /// Manual downloads stopped by "Downloads are full", and ones that failed: `retryWaiting` queues them again.
-    var stoppedByFull: [Job] = []
-    var failed: [Job] = []
+    var stoppedByFull: [Job] = []   // (+Removal)
+    var failed: [Job] = []   // (+Removal)
 
     @ObservationIgnored private let fetcher: any AudioFetching
     @ObservationIgnored private let network: any NetworkStatusProviding
@@ -82,24 +83,25 @@ final class DownloadManager {
     @ObservationIgnored private let coverArtURL: @MainActor (String) -> URL?
     @ObservationIgnored private let limitBytes: (DownloadPreferences) -> Int64?
     /// Job runs and short store tasks; `settled()` waits for all of them.
-    @ObservationIgnored var tasks: [UUID: Task<Void, Never>] = [:]
+    /// (+Removal, read only)
+    @ObservationIgnored private(set) var tasks: [UUID: Task<Void, Never>] = [:]
     /// Job runs still unwinding, cancelled or not (run id → song id): these hold the concurrency slots.
     @ObservationIgnored private var activeRuns: [UUID: String] = [:]
     @ObservationIgnored private var generation = 0
     @ObservationIgnored private var networkWatch: Task<Void, Never>?
     /// Covers to fetch once manual downloads may use the network.
-    @ObservationIgnored var pendingCovers: [String] = []
-    @ObservationIgnored var savedPending: [PendingJob] = []
+    @ObservationIgnored var pendingCovers: [String] = []   // (+Removal)
+    @ObservationIgnored var savedPending: [PendingJob] = []   // (+Removal)
     /// Store writes refused with `notReady`, done once the store is ready.
-    @ObservationIgnored var deferredRemovals: [Removal] = []
-    @ObservationIgnored var deferredPlaylists: [DownloadedPlaylist] = []
+    @ObservationIgnored var deferredRemovals: [Removal] = []   // (+Removal)
+    @ObservationIgnored var deferredPlaylists: [DownloadedPlaylist] = []   // (+Removal)
     @ObservationIgnored private let notifications: NotificationCenter
     @ObservationIgnored private let storeRetryInterval: Duration
     @ObservationIgnored private var protectedDataWatch: Task<Void, Never>?
     @ObservationIgnored private var storeRetry: Task<Void, Never>?
     /// Nothing is scheduled until `start` has loaded the store (and, through `begin(after:)`, a sign-out's erase of
     /// this scope has finished).
-    @ObservationIgnored var isStarted = false
+    @ObservationIgnored private(set) var isStarted = false   // (+Removal, read only)
     /// Pre-downloads that came back as something the store can't keep (`songId|quality`): not tried again.
     @ObservationIgnored private var invalidPreDownloads: Set<String> = []
 
@@ -335,6 +337,7 @@ final class DownloadManager {
         if active.contains(where: { $0.state == .waiting }) { return .waitingForWiFi }
         if !active.isEmpty { return .downloading(done: done, total: songIds.count) }
         if failed.contains(where: mine) { return .failed }
+        if done > 0 { return .partial(done: done, total: songIds.count) }   // e.g. a song removed on its own
         return .none
     }
 

@@ -102,7 +102,11 @@ extension AppModel {
     /// "3 of 12 songs are already on this phone" under an album or playlist not downloaded as such; nil when none.
     func alreadyOnPhoneNote(_ songIds: [String], reason: DownloadReason) -> String? {
         let count = downloads?.onPhoneForOtherReasons(songIds, reason: reason) ?? 0
-        guard count > 0, downloadStatus(songIds, reason: reason) == .none else { return nil }
+        guard count > 0 else { return nil }
+        switch downloadStatus(songIds, reason: reason) {
+        case .none, .partial: break
+        default: return nil
+        }
         return "\(count) of \(songIds.count) songs are already on this phone"
     }
 
@@ -112,11 +116,13 @@ extension AppModel {
         if reasons.contains(.favourites), preferences.downloads.keepFavourites {
             return "It's a favourite, so it'll come back while Keep favourites downloaded is on."
         }
+        // "also" only when the song was downloaded on its own too.
+        let also = reasons.contains(.song) ? "also " : ""
         if reasons.contains(where: { if case .album = $0 { true } else { false } }) {
-            return "It's also part of a downloaded album; removing it here takes it off this phone."
+            return "It's \(also)part of a downloaded album; removing it here takes it off this phone."
         }
         if reasons.contains(where: { if case .playlist = $0 { true } else { false } }) {
-            return "It's also part of a downloaded playlist; removing it here takes it off this phone."
+            return "It's \(also)part of a downloaded playlist; removing it here takes it off this phone."
         }
         return nil
     }

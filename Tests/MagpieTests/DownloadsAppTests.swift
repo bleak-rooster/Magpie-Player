@@ -177,12 +177,14 @@ extension AppModel {
         let model = try await signedInModel(fetcher: FakeFetcher())
         model.download([song("s1"), song("s2")], reason: .album("a1")); await model.downloads!.settled()
         #expect(model.downloadStatus(["s1", "s2"]) == .downloaded)
-        #expect(model.songRemovalNote("s1") == "It's also part of a downloaded album; removing it here takes it off this phone.")
+        #expect(model.songRemovalNote("s1") == "It's part of a downloaded album; removing it here takes it off this phone.")
         await model.removeSongDownload("s1")
         #expect(Set(model.downloads!.localFiles.keys) == ["s2"])
         #expect(model.downloadStatus(["s1"]) == .none)
-        #expect(model.downloadStatus(["s1", "s2"], reason: .album("a1")) == .none, "the header offers Download again")
-        #expect(model.alreadyOnPhoneNote(["s1", "s2"], reason: .album("a1")) == nil)
+        let header = model.downloadStatus(["s1", "s2"], reason: .album("a1"))
+        #expect(header == .partial(done: 1, total: 2))
+        #expect(header.text == "1 of 2 downloaded" && header.symbol == "arrow.down.circle")
+        #expect(model.alreadyOnPhoneNote(["s1", "s2"], reason: .album("a1")) == nil, "s2 is the album's own")
         await model.removeDownload(.album("a1"))
         #expect(model.downloads!.localFiles.isEmpty)
         #expect(model.downloadStatus(["s1", "s2"]) == .none)
@@ -342,5 +344,68 @@ extension AppModel {
             == "Original saves each song exactly as it is on your server. The other choices convert it on your server first, which uses less space.")
         #expect(StreamQualityOptions(originalTitle: DownloadsSettingsView.originalTitle).originalTitle == "Original file (no conversion)")
         #expect(StreamQualityOptions().originalTitle == "Original", "Playback's pickers are unchanged")
+    }
+
+    // MARK: - Fix round 2: partly downloaded
+
+    @Test func albumPartlyDownloadedOffersTheRest() async throws {
+        let model = try await signedInModel(fetcher: FakeFetcher())
+        model.download([song("s1"), song("s2"), song("s3")], reason: .album("a1"))
+        model.download([song("s1")], reason: .song)
+        model.download([song("s9")], reason: .favourites); await model.downloads!.settled()
+        #expect(model.songRemovalNote("s1") == "It's also part of a downloaded album; removing it here takes it off this phone.")
+        await model.removeSongDownload("s1")
+        let ids = ["s1", "s2", "s3", "s9"]   // s9: on the phone as a favourite only
+        #expect(model.downloadStatus(ids, reason: .album("a1")) == .partial(done: 2, total: 4))
+        #expect(model.alreadyOnPhoneNote(ids, reason: .album("a1")) == "1 of 4 songs are already on this phone",
+                "only the favourite counts, not the album's own songs")
+        model.download([song("s1"), song("s2"), song("s3"), song("s9")], reason: .album("a1"))   // Download the rest
+        await model.downloads!.settled()
+        #expect(model.downloadStatus(ids, reason: .album("a1")) == .downloaded)
+        #expect(model.alreadyOnPhoneNote(ids, reason: .album("a1")) == nil)
+    }
+
+    @Test func playlistPartlyDownloaded() async throws {
+        let model = try await signedInModel(fetcher: FakeFetcher())
+        model.download([song("s1"), song("s2")], reason: .playlist("p1"),
+                       playlist: DownloadedPlaylist(id: "p1", name: "Mix", coverArtId: nil, songIds: ["s1", "s2"], savedAt: .now))
+        await model.downloads!.settled()
+        #expect(model.songRemovalNote("s2") == "It's part of a downloaded playlist; removing it here takes it off this phone.")
+        await model.removeSongDownload("s2")
+        #expect(model.downloadStatus(["s1", "s2"], reason: .playlist("p1")) == .partial(done: 1, total: 2))
+        await model.removeDownload(.playlist("p1"))
+        #expect(model.downloadStatus(["s1", "s2"], reason: .playlist("p1")) == .none)
+        #expect(model.downloads!.localFiles.isEmpty)
+    }
+
+    @Test func songOnItsWayCanBeCancelled() async throws {
+        let f = FakeFetcher(); f.hold(after: 0)
+        let model = try await signedInModel(fetcher: f)
+        model.download([song("s1")], reason: .song)
+        #expect(await eventually { f.inFlight == 1 })
+        #expect(model.downloadStatus(["s1"]) == .downloading(done: 0, total: 1), "the menu reads Cancel download")
+        await model.removeSongDownload("s1")
+        f.release(); await model.downloads!.settled()
+        #expect(model.downloadStatus(["s1"]) == .none)
+        #expect(model.downloads!.localFiles.isEmpty)
+    }
+
+    @Test func sweepLeavesSymlinkedFoldersAlone() throws {
+        let fm = FileManager.default
+        let outside = tmp.appending(path: "outside")
+        let stale = outside.appending(path: "Audio/0123456789abcdef01234567")
+        try fm.createDirectory(at: stale, withIntermediateDirectories: true)
+        // Magpie itself a link
+        let rootA = tmp.appending(path: "rootA")
+        try fm.createDirectory(at: rootA, withIntermediateDirectories: true)
+        try fm.createSymbolicLink(at: rootA.appending(path: "Magpie"), withDestinationURL: outside)
+        AppModel.sweepAudioScopes(root: rootA, keeping: "abc")
+        #expect(fm.fileExists(atPath: stale.path))
+        // Audio a link
+        let rootB = tmp.appending(path: "rootB")
+        try fm.createDirectory(at: rootB.appending(path: "Magpie"), withIntermediateDirectories: true)
+        try fm.createSymbolicLink(at: rootB.appending(path: "Magpie/Audio"), withDestinationURL: outside.appending(path: "Audio"))
+        AppModel.sweepAudioScopes(root: rootB, keeping: "abc")
+        #expect(fm.fileExists(atPath: stale.path), "nothing behind a linked Magpie or Audio is deleted")
     }
 }

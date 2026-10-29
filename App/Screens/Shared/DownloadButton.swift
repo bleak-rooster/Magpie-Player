@@ -41,6 +41,9 @@ struct DownloadButton: View {
                 if status == .failed || status == .full {
                     Button("Try again", systemImage: "arrow.clockwise") { model.retryDownloads() }
                 }
+                if case .partial = status {
+                    Button("Download the rest", systemImage: "arrow.down.to.line") { start() }
+                }
                 Button(Self.removeTitle(status), systemImage: "trash", role: .destructive) {
                     Task { await model.removeDownload(reason) }
                 }
@@ -57,7 +60,7 @@ struct DownloadButton: View {
         }
     }
 
-    /// "Cancel download" while songs are still on their way; "Remove download" once any have arrived or stopped.
+    /// "Cancel download" while songs are still on their way; "Remove download" otherwise.
     static func removeTitle(_ status: DownloadStatus) -> String {
         switch status {
         case .downloading, .waitingForWiFi: "Cancel download"
@@ -79,10 +82,13 @@ struct SongDownloadMenuItem: View {
     @Binding var removing: Song?
 
     var body: some View {
-        if model.downloadStatus([song.id]) == .none {
+        switch model.downloadStatus([song.id]) {
+        case .none:
             Button("Download", systemImage: "arrow.down.to.line") { model.download([song], reason: .song) }
-        } else {
+        case .downloaded:
             Button("Remove from this phone", systemImage: "trash", role: .destructive) { removing = song }
+        default:   // not on the phone, but on its way, waiting, full or failed
+            Button("Cancel download", systemImage: "xmark") { Task { await model.removeSongDownload(song.id) } }
         }
     }
 }
