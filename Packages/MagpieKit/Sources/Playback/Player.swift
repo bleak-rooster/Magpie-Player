@@ -329,6 +329,7 @@ public final class Player {
         case .ended:
             isPlaying = false
             needsReload = true
+            if continueAfterWindow() { return }
             if stopsAfterCurrent {
                 stopsAfterCurrent = false
                 stopOnNext()
@@ -422,6 +423,21 @@ public final class Player {
         loaded = nil
         syncEngine()
         beginEntry()
+    }
+
+    /// The engine ran out of its window while playable songs remain after it (an `.itemChanged` went missing, so
+    /// the window wasn't topped up): carry on with the first playable song after what the engine was last sent,
+    /// instead of ending. Not under repeat one or stop after current, whose window is the current song alone.
+    private func continueAfterWindow() -> Bool {
+        guard repeatMode != .one, !stopsAfterCurrent else { return false }
+        let upcoming = queue.upcoming
+        let start = sent.last.flatMap { last in upcoming.firstIndex { $0.id == last.id } }.map { $0 + 1 } ?? 0
+        guard let target = upcoming[start...].first(where: { isPlayable($0.song) }) else { return false }
+        while queue.current?.id != target.id, queue.advance() != nil {}
+        loadCurrent()
+        engine.play()
+        isPlaying = true
+        return true
     }
 
     /// The current song failed and can't play right now (offline, not on the phone): move on to the next

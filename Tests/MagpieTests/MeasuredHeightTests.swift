@@ -21,6 +21,17 @@ import Testing
         #expect(MeasuredHeight.toStore(45.406301824212164, over: scrubber, scale: 3) == nil)
     }
 
+    /// At 2x the same holds: a re-measure a float apart, or across a pixel edge, keeps what is stored.
+    @Test func jitterAtScaleTwoIsNotStored() {
+        let stored = MeasuredHeight.toStore(52.25, over: nil, scale: 2)
+        #expect(stored == 52.5)
+        #expect(MeasuredHeight.toStore(52.250000000001, over: stored, scale: 2) == nil)
+        let edge = MeasuredHeight.toStore(52.0, over: nil, scale: 2)
+        #expect(edge == 52)
+        #expect(MeasuredHeight.toStore(52.000000001, over: edge, scale: 2) == nil)
+        #expect(MeasuredHeight.toStore(51.999999999, over: edge, scale: 2) == nil)
+    }
+
     /// Noise either side of a pixel edge rounds to the same pixel.
     @Test func noiseAtAPixelEdgeRoundsTheSameWay() {
         #expect(MeasuredHeight.pixelRounded(52.000000001, scale: 2) == 52)

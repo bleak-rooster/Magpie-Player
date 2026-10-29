@@ -1,4 +1,6 @@
+import AVFoundation
 import Foundation
+import MagpieCore
 import os
 import Playback
 import Testing
@@ -59,6 +61,31 @@ import Testing
         try await AVQueueEngineTests.waitUntil { activation.calls == 1 }
         try await Task.sleep(for: .milliseconds(600))
         #expect(engine.playerRate == 0, "the pause wins")
+    }
+
+    /// Streams every song from one local file.
+    @MainActor final class FileURLs: StreamURLProvider {
+        let file: URL
+        init(_ file: URL) { self.file = file }
+        func streamURL(for song: Song) -> URL { file }
+    }
+
+    /// QC fix 1: an interruption while the activation is in flight wins. When the activation completes nothing plays,
+    /// and the player shows paused.
+    @Test func interruptionDuringActivationWins() async throws {
+        let wav = try AVQueueEngineTests.silentWAV(seconds: 10)
+        defer { try? FileManager.default.removeItem(at: wav) }
+        let activation = Activation(delay: 0.3)
+        let engine = AVQueueEngine(activateSession: { try activation.activate() })
+        let player = Player(engine: engine, scrobbler: FakeScrobbler(), urls: FileURLs(wav))
+        player.play([Song(id: "s1", title: "T", artist: "A", album: "B", duration: 10)], startAt: 0)
+        #expect(player.isPlaying)
+        try await AVQueueEngineTests.waitUntil { activation.calls == 1 }
+        NotificationCenter.default.post(name: AVAudioSession.didBecomeInactiveNotification,
+                                        object: AVAudioSession.sharedInstance())
+        try await Task.sleep(for: .milliseconds(700))      // the activation has completed by now
+        #expect(engine.playerRate == 0, "no play after the interruption")
+        #expect(!player.isPlaying)
     }
 
     @Test func failedActivationStillPlaysAndIsTriedAgain() async throws {

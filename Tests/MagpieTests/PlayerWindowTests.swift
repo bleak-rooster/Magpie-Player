@@ -101,6 +101,20 @@ final class CountingURLs: StreamURLProvider {
         expectWindow(player, "after a skip")
     }
 
+    /// QC fix 1: the engine ran out of its window because an `.itemChanged` went missing. With songs still to come,
+    /// playback carries on with the first one after the window instead of ending.
+    @Test func endedWithSongsBeyondTheWindowCarriesOn() {
+        let player = makePlayer()
+        player.play(Self.songs(10), startAt: 0)
+        let plays = engine.playCount
+        #expect(engine.setItemsCalls.last!.items.map(\.1.query) == ["id=s0", "id=s1", "id=s2", "id=s3"])
+        player.handle(.ended)                               // s1 to s3 played, their item changes were lost
+        #expect(player.queue.current?.song.id == "s4")
+        #expect(player.isPlaying && !player.hasEnded)
+        #expect(engine.playCount == plays + 1)
+        expectWindow(player, "after a missed advance")
+    }
+
     /// Only playable songs fill the window (offline); one far down the queue is still found.
     @Test func windowSkipsUnplayableSongs() {
         let player = makePlayer()

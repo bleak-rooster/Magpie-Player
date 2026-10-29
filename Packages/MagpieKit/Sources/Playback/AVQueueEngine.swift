@@ -53,6 +53,9 @@ public final class AVQueueEngine: PlaybackEngine {
     #if os(iOS)
     private enum SessionState { case inactive, activating, active }
     private var session = SessionState.inactive
+    /// Bumped by each activation and by anything that drops the session (interruption, media-services reset):
+    /// only the latest activation's completion applies.
+    private var sessionGeneration = 0
     private static let sessionQueue = DispatchQueue(label: "com.bleak-rooster.magpie.audio-session", qos: .userInitiated)
     #endif
     /// `AVAudioSession.setActive(true)`; tests pass a stand-in.
@@ -421,24 +424,35 @@ public final class AVQueueEngine: PlaybackEngine {
 
     /// Activates the session on `sessionQueue`, then back on the main actor starts playback if still wanted.
     private func activateSession() {
+        sessionGeneration += 1
+        let generation = sessionGeneration
         session = .activating
         let activate = self.activate
         Self.sessionQueue.async { [weak self] in
             var failure: (any Error)?
             do { try activate() } catch { failure = error }
-            Task { @MainActor [weak self, failure] in self?.sessionActivationFinished(failure) }
+            Task { @MainActor [weak self, failure] in self?.sessionActivationFinished(failure, generation: generation) }
         }
     }
 
-    /// A failed activation is logged and playback goes ahead anyway (as before); the next play tries again.
-    private func sessionActivationFinished(_ failure: (any Error)?) {
+    /// Applies only while this activation is still the latest and still in flight: an interruption or a reset
+    /// meanwhile wins (no play). A failed activation is logged and playback goes ahead anyway (as before); the
+    /// next play tries again.
+    private func sessionActivationFinished(_ failure: (any Error)?, generation: Int) {
+        guard generation == sessionGeneration, session == .activating else { return }
         if let failure {
             Log.logger("playback").error("audio session activation failed: \(Log.category(of: failure), privacy: .public)")
             session = .inactive
-        } else if session == .activating {
+        } else {
             session = .active
         }
         if wantsToPlay { player.play() }
+    }
+
+    /// The session is gone (interruption, media-services reset): an activation still in flight no longer applies.
+    private func dropSession() {
+        sessionGeneration += 1
+        session = .inactive
     }
 
     private func observeSession() {
@@ -474,7 +488,7 @@ public final class AVQueueEngine: PlaybackEngine {
 
     /// The system has paused us. Keep `wantsToPlay` so a later recommendation can resume.
     private func sessionBecameInactive() {
-        session = .inactive
+        dropSession()
         continuation.yield(.playing(false))
     }
 
@@ -497,7 +511,7 @@ public final class AVQueueEngine: PlaybackEngine {
         player = AVQueuePlayer()
         player.volume = volume
         attach(player)
-        session = .inactive
+        dropSession()
         configureSession()
         guard let id = resumeId, let start = list.firstIndex(where: { $0.id == id }) else { return }
         setItems(list.map { ($0.id, $0.url) }, startAt: start)
