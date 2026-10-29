@@ -17,9 +17,15 @@ public actor AudioStore {
     private let now: @Sendable () -> Date
     /// Reads a file; tests inject one that fails like protected data before first unlock.
     private let reader: @Sendable (URL) throws -> Data
+    /// Whether protected data can be read now (the app passes UIApplication's answer; false before first unlock).
+    private let isProtectedDataAvailable: @Sendable () -> Bool
+    /// The shortest gap between two retries of a reconcile that couldn't read its files.
+    private let retryInterval: TimeInterval
     private var index = Index()
-    /// The last reconcile met a file it could not read (protected data before first unlock): retried on next use.
+    /// The last reconcile met a file it could not read yet (protected data before first unlock). Until a retry
+    /// succeeds the store is read-only: reads serve the stand-in index, every write throws `notReady`.
     private var reconcilePending = false
+    private var lastAttempt: Date?
 
     private struct Index: Codable, Equatable {
         var entries: [String: AudioEntry] = [:]
@@ -38,15 +44,20 @@ public actor AudioStore {
 
     /// `scope` must match `[A-Za-z0-9_-]{1,64}` (the app passes a hex digest); anything else is a programming
     /// error and stops here rather than writing outside `Magpie/Audio`.
-    public init(root: URL, scope: String, now: @escaping @Sendable () -> Date = { Date() }) {
-        self.init(root: root, scope: scope, now: now, read: { try Data(contentsOf: $0) })
+    public init(root: URL, scope: String, now: @escaping @Sendable () -> Date = { Date() },
+                isProtectedDataAvailable: @escaping @Sendable () -> Bool = { true }) {
+        self.init(root: root, scope: scope, now: now, isProtectedDataAvailable: isProtectedDataAvailable,
+                  read: { try Data(contentsOf: $0) })
     }
 
     init(root: URL, scope: String, now: @escaping @Sendable () -> Date = { Date() },
+         isProtectedDataAvailable: @escaping @Sendable () -> Bool = { true }, retryInterval: TimeInterval = 30,
          read: @escaping @Sendable (URL) throws -> Data) {
         precondition(Self.isValidScope(scope), "AudioStore scope must match [A-Za-z0-9_-]{1,64}")
         directory = root.appending(path: "Magpie/Audio").appending(path: scope, directoryHint: .isDirectory)
         self.now = now
+        self.isProtectedDataAvailable = isProtectedDataAvailable
+        self.retryInterval = retryInterval
         self.reader = read
     }
 
@@ -89,9 +100,22 @@ public actor AudioStore {
     /// sidecars). Never throws. When a file can't be read yet (before first unlock) nothing on disk is touched, and
     /// the store tries again on its next use.
     public func load() {
+        let wasPending = reconcilePending
         reconcilePending = false
+        lastAttempt = now()
         guard FileManager.default.fileExists(atPath: directory.path) else { index = Index(); return }
         reconcile()
+        if reconcilePending, !wasPending {
+            Log.logger("audio").error("audio files not readable yet; read-only until they are")
+        }
+    }
+
+    /// Whether writes are accepted (false until a reconcile has read every file).
+    public func isReady() -> Bool { retryLoad(); return !reconcilePending }
+
+    /// The app calls this on `protectedDataDidBecomeAvailableNotification`: retries at once.
+    public func protectedDataDidBecomeAvailable() {
+        if reconcilePending { load() }
     }
 
     public func entry(songId: String) -> AudioEntry? { retryLoad(); return index.entries[songId] }
@@ -119,9 +143,9 @@ public actor AudioStore {
     @discardableResult
     public func add(_ temporaryFile: URL, metadata: AudioMetadata, quality: StreamQuality, kind: AudioKind,
                     reason: DownloadReason?, fileExtension: String, downloadsLimit: Int64?) throws -> AudioEntry {
-        retryLoad()
         let fm = FileManager.default
         defer { try? fm.removeItem(at: temporaryFile) }   // moved in, or not wanted
+        try ensureReady()
         guard Self.allowedExtensions.contains(fileExtension) else { throw AudioStoreError.invalidFile }
         let reasons: Set<DownloadReason> = kind == .download ? Set([reason].compactMap { $0 }) : []
 
@@ -142,7 +166,13 @@ public actor AudioStore {
         try prepareDirectory()
         let name = Self.fileName(songId: metadata.songId, quality: quality, fileExtension: fileExtension)
         let destination = directory.appending(path: name)
-        try? fm.removeItem(at: destination)   // a leftover with no entry
+        let sidecar = sidecarURL(name)
+        if fm.fileExists(atPath: destination.path) || fm.fileExists(atPath: sidecar.path) {
+            // Files reconcile kept but couldn't use (a sidecar it couldn't read or decode). Never demote them to
+            // cache; a download replaces them with fresh bytes of the same song and quality.
+            guard kind == .download else { throw AudioStoreError.invalidFile }
+            try? fm.removeItem(at: destination)
+        }
         try fm.moveItem(at: temporaryFile, to: destination)
         do { try protect(destination) } catch { try? fm.removeItem(at: destination); throw error }
         let entry = AudioEntry(songId: metadata.songId, quality: quality, fileName: name, size: size, kind: kind,
@@ -154,9 +184,9 @@ public actor AudioStore {
     /// Re-download: stores the new file first, then deletes the old one; kind, reasons and lastPlayed carry over.
     @discardableResult
     public func replace(songId: String, with temporaryFile: URL, quality: StreamQuality, fileExtension: String) throws -> AudioEntry {
-        retryLoad()
         let fm = FileManager.default
         defer { try? fm.removeItem(at: temporaryFile) }
+        try ensureReady()
         guard Self.allowedExtensions.contains(fileExtension) else { throw AudioStoreError.invalidFile }
         guard let old = index.entries[songId] else { throw AudioStoreError.unknownSong }
         let size = try fileSize(temporaryFile)
@@ -189,7 +219,7 @@ public actor AudioStore {
     /// Adds `reason` to a stored song in one step; a cached song becomes a download only if it fits the downloads
     /// limit (nothing is evicted).
     public func promote(songId: String, reason: DownloadReason, downloadsLimit: Int64?) throws {
-        retryLoad()
+        try ensureReady()
         guard var entry = index.entries[songId] else { throw AudioStoreError.unknownSong }
         if entry.kind == .cache {
             try checkLimit(adding: entry.size, limit: downloadsLimit)
@@ -200,8 +230,8 @@ public actor AudioStore {
     }
 
     /// Adds `reason` to stored songs; a cached song becomes a download.
-    public func addReason(_ reason: DownloadReason, songIds: [String]) {
-        retryLoad()
+    public func addReason(_ reason: DownloadReason, songIds: [String]) throws {
+        try ensureReady()
         for id in songIds {
             guard var entry = index.entries[id] else { continue }
             entry.kind = .download
@@ -212,14 +242,14 @@ public actor AudioStore {
 
     /// Drops `reason` from every download and deletes the ones left with none. Returns the deleted song ids.
     @discardableResult
-    public func removeReason(_ reason: DownloadReason) -> [String] {
-        removeReason(reason, songIds: nil)
+    public func removeReason(_ reason: DownloadReason) throws -> [String] {
+        try removeReason(reason, songIds: nil)
     }
 
     /// The same, for `songIds` only (nil: every song).
     @discardableResult
-    public func removeReason(_ reason: DownloadReason, songIds: [String]?) -> [String] {
-        retryLoad()
+    public func removeReason(_ reason: DownloadReason, songIds: [String]?) throws -> [String] {
+        try ensureReady()
         let only = songIds.map(Set.init)
         var removed: [String] = []
         for var entry in index.entries.values
@@ -235,8 +265,8 @@ public actor AudioStore {
         return removed.sorted()
     }
 
-    public func markPlayed(songId: String) {
-        retryLoad()
+    public func markPlayed(songId: String) throws {
+        try ensureReady()
         guard var entry = index.entries[songId] else { return }
         entry.lastPlayed = now()
         try? store(entry)
@@ -244,8 +274,8 @@ public actor AudioStore {
 
     /// Removes the cache entries among `songIds` (downloads are left alone). Returns the removed ids.
     @discardableResult
-    public func removeCache(songIds: Set<String>) -> [String] {
-        retryLoad()
+    public func removeCache(songIds: Set<String>) throws -> [String] {
+        try ensureReady()
         let victims = index.entries.values.filter { $0.kind == .cache && songIds.contains($0.songId) }
         for entry in victims { remove(entry) }
         saveIndex()
@@ -253,8 +283,8 @@ public actor AudioStore {
     }
 
     /// Removing all downloads also drops the saved playlists and covers that went with them.
-    public func removeAll(kind: AudioKind) {
-        retryLoad()
+    public func removeAll(kind: AudioKind) throws {
+        try ensureReady()
         for entry in index.entries.values where entry.kind == kind { remove(entry) }
         if kind == .download {
             index.playlists = [:]
@@ -274,8 +304,8 @@ public actor AudioStore {
     /// Removes cache entries, least recently played (or downloaded) first, skipping `protecting`, until the cache
     /// fits `limit`. Downloads are never evicted. Returns the evicted ids in order.
     @discardableResult
-    public func evictCache(limit: Int64, protecting: Set<String>) -> [String] {
-        retryLoad()
+    public func evictCache(limit: Int64, protecting: Set<String>) throws -> [String] {
+        try ensureReady()
         var total = usage().cacheBytes
         guard total > limit else { return [] }
         let candidates = index.entries.values
@@ -293,8 +323,8 @@ public actor AudioStore {
 
     // MARK: - Playlists and covers
 
-    public func savePlaylist(_ playlist: DownloadedPlaylist) {
-        retryLoad()
+    public func savePlaylist(_ playlist: DownloadedPlaylist) throws {
+        try ensureReady()
         index.playlists[playlist.id] = playlist
         try? prepareDirectory()
         try? AtomicFile.write(playlist, to: playlistURL(playlist.id))
@@ -303,14 +333,15 @@ public actor AudioStore {
 
     public func playlists() -> [DownloadedPlaylist] { retryLoad(); return Array(index.playlists.values) }
 
-    public func removePlaylist(id: String) {
-        retryLoad()
+    public func removePlaylist(id: String) throws {
+        try ensureReady()
         index.playlists[id] = nil
         try? FileManager.default.removeItem(at: playlistURL(id))
         saveIndex()
     }
 
     public func saveCover(_ data: Data, coverArtId: String) throws {
+        try ensureReady()
         try prepareDirectory()
         try FileManager.default.createDirectory(at: coversDirectory, withIntermediateDirectories: true)
         let url = coverFileURL(coverArtId)
@@ -392,15 +423,40 @@ public actor AudioStore {
         }
     }
 
-    private func retryLoad() { if reconcilePending { load() } }
+    /// Retries a pending reconcile at most once per `retryInterval` (and at once when protected data arrives).
+    private func retryLoad() {
+        guard reconcilePending else { return }
+        if let lastAttempt, now().timeIntervalSince(lastAttempt) < retryInterval { return }
+        load()
+    }
 
-    private enum ReadResult<T> { case value(T), undecodable, unreadable }
+    private func ensureReady() throws {
+        retryLoad()
+        if reconcilePending { throw AudioStoreError.notReady }
+    }
 
-    /// Tells "can't read it" (protected data, permissions) from "read it, but it isn't ours to decode".
+    /// `unreadable`: protected data isn't available yet, so try again later. `unusable`: it can't be read for any
+    /// other reason (EIO, a directory where a file should be). `undecodable`: it read but isn't a valid record.
+    /// Unusable and undecodable files are kept, never adopted, and don't hold up the rest.
+    private enum ReadResult<T> { case value(T), undecodable, unusable, unreadable }
+
     private func read<T: Decodable>(_ type: T.Type, from url: URL) -> ReadResult<T> {
         let data: Data
-        do { data = try reader(url) } catch { return .unreadable }
+        do {
+            data = try reader(url)
+        } catch {
+            return Self.isPermissionError(error) && !isProtectedDataAvailable() ? .unreadable : .unusable
+        }
         do { return .value(try JSONDecoder().decode(type, from: data)) } catch { return .undecodable }
+    }
+
+    /// The error a protected file gives before first unlock (Foundation's, or the POSIX one beneath it).
+    static func isPermissionError(_ error: Error) -> Bool {
+        let ns = error as NSError
+        if ns.domain == NSCocoaErrorDomain, ns.code == NSFileReadNoPermissionError { return true }
+        if ns.domain == NSPOSIXErrorDomain, ns.code == Int(EPERM) || ns.code == Int(EACCES) { return true }
+        if let underlying = ns.userInfo[NSUnderlyingErrorKey] as? Error { return isPermissionError(underlying) }
+        return false
     }
 
     /// A temporary file `AtomicFile` leaves when the store's own write was cut short (never `pending.json`'s).
@@ -424,7 +480,7 @@ public actor AudioStore {
         if names.contains(Self.indexName) {
             switch read(Index.self, from: indexURL) {
             case .unreadable: return abort(nil, audio: audio)
-            case .undecodable: loaded = nil
+            case .unusable, .undecodable: loaded = nil
             case let .value(value): loaded = value
             }
         }
@@ -432,14 +488,18 @@ public actor AudioStore {
         var deletions: [URL] = names.filter(Self.isStoreTemp).map { directory.appending(path: $0) }
         var sidecarWrites: [String: AudioEntry] = [:]
         var entries: [String: AudioEntry] = [:]
+        var unusable = Set<String>()   // sidecars that read or decode badly: never rewritten here
         let sidecars = names.filter { $0.hasSuffix(".json") && Self.isHashedName(String($0.dropLast(5))) }
         for sidecar in sidecars.sorted() {
             let fileName = String(sidecar.dropLast(5))
             switch read(AudioEntry.self, from: directory.appending(path: sidecar)) {
             case .unreadable:
                 return abort(loaded, audio: audio)
+            case .unusable:
+                unusable.insert(fileName)   // not even rewritten: the file system had trouble with it
+                continue
             case .undecodable:
-                continue   // kept, with its audio: no evidence either way
+                continue   // kept, with its audio: no evidence either way (a valid index entry heals it)
             case let .value(entry):
                 guard entry.fileName == fileName, Self.isValid(entry) else { continue }
                 guard audio.contains(fileName) else { deletions.append(sidecarURL(fileName)); continue }
@@ -460,6 +520,7 @@ public actor AudioStore {
             entries[key] = entry
             sidecarWrites[key] = entry
         }
+        for name in unusable { if let key = sidecarWrites.first(where: { $0.value.fileName == name })?.key { sidecarWrites[key] = nil } }
         let kept = Set(entries.values.map(\.fileName))
         for name in audio where !kept.contains(name) && !names.contains(name + ".json") {
             deletions.append(directory.appending(path: name))   // audio with no sidecar at all, and no index entry
@@ -485,7 +546,7 @@ public actor AudioStore {
                 guard name.wholeMatch(of: /[0-9a-f]{64}\.json/) != nil else { continue }
                 switch read(DownloadedPlaylist.self, from: url) {
                 case .unreadable: return abort(loaded, audio: audio)
-                case .undecodable: continue
+                case .unusable, .undecodable: continue
                 case let .value(playlist): if name == Self.sha256(playlist.id) + ".json" { playlists[playlist.id] = playlist }
                 }
             }
@@ -506,11 +567,11 @@ public actor AudioStore {
     }
 
     /// Nothing could be checked: serve what the index (if it read) says is there, change nothing, retry later.
+    /// The store is read-only meanwhile, so nothing is decided from this stand-in.
     private func abort(_ loaded: Index?, audio: Set<String>?) {
         reconcilePending = true
         index = Index(entries: (loaded?.entries ?? [:]).filter { key, entry in
             key == entry.songId && Self.isValid(entry) && audio?.contains(entry.fileName) != false
         }, playlists: loaded?.playlists ?? [:])
-        Log.logger("audio").error("audio files not readable yet; will check again")
     }
 }

@@ -1,7 +1,9 @@
 import Foundation
 import MagpieCore
 import Playback
+import Synchronization
 import Testing
+import UIKit
 @testable import Magpie
 
 /// A fetcher that writes `bytes` zero bytes per fetch under `directory`. `hold(after:)` makes every fetch past the
@@ -112,10 +114,11 @@ private let cell = NetworkStatus(isConnected: true, isCellular: true, isConstrai
     deinit { try? FileManager.default.removeItem(at: tmp) }
 
     func makeManager(_ prefs: DownloadPreferences = .defaultValue, network: NetworkStatus = .wifi,
-                     limit: Int64? = nil) async -> (DownloadManager, FakeFetcher, FakeNetwork) {
+                     limit: Int64? = nil, store: AudioStore? = nil,
+                     notifications: NotificationCenter = NotificationCenter()) async -> (DownloadManager, FakeFetcher, FakeNetwork) {
         let fetcher = FakeFetcher(directory: tmp.appending(path: "fetched"))
         let net = FakeNetwork(network)
-        let store = AudioStore(root: tmp, scope: "abc")
+        let store = store ?? AudioStore(root: tmp, scope: "abc")
         let url: @MainActor (Song, StreamQuality) -> URL? = { song, q in
             URL(string: "http://192.168.1.2:4533/rest/stream?id=\(song.id)&format=\(q.format)"
                 + (q.maxBitRate.map { "&maxBitRate=\($0)" } ?? ""))!
@@ -123,9 +126,10 @@ private let cell = NetworkStatus(isConnected: true, isCellular: true, isConstrai
         let cover: @MainActor (String) -> URL? = { URL(string: "http://192.168.1.2:4533/rest/getCoverArt?id=\($0)&size=600")! }
         let manager = if let limit {
             DownloadManager(store: store, fetcher: fetcher, network: net, preferences: { prefs }, url: url,
-                            coverURL: cover, limitBytes: { _ in limit })
+                            coverURL: cover, limitBytes: { _ in limit }, notifications: notifications)
         } else {
-            DownloadManager(store: store, fetcher: fetcher, network: net, preferences: { prefs }, url: url, coverURL: cover)
+            DownloadManager(store: store, fetcher: fetcher, network: net, preferences: { prefs }, url: url,
+                            coverURL: cover, notifications: notifications)
         }
         await manager.start()
         return (manager, fetcher, net)
@@ -373,13 +377,13 @@ private let cell = NetworkStatus(isConnected: true, isCellular: true, isConstrai
     }
 
     /// Remove while one song is being written, and nothing asks for it again: no orphan reason, other songs untouched.
-    @Test func lateWriteAfterRemoveIsUndoneForThatSongOnly() async {
+    @Test func lateWriteAfterRemoveIsUndoneForThatSongOnly() async throws {
         let (m, _, _) = await makeManager()
         let gate = StoreGate(["s1"])
         m.beforeStoreForTesting = { await gate.pass($0) }
         m.download(songs("t1"), reason: .album("a1"))
         await m.settled()
-        await m.store.addReason(.playlist("p1"), songIds: ["t1"])   // t1 is also held by a playlist
+        try await m.store.addReason(.playlist("p1"), songIds: ["t1"])   // t1 is also held by a playlist
         m.download(songs("s1"), reason: .album("a1"))
         #expect(await eventually { gate.isWaiting("s1") })
         await m.remove(.album("a1"))
@@ -400,5 +404,42 @@ private let cell = NetworkStatus(isConnected: true, isCellular: true, isConstrai
         gate.release("s1"); await m.settled()
         #expect(m.status(for: ["s1"]) == .downloaded)
         #expect(await m.store.entry(songId: "s1")?.reasons == [.album("a1")])
+    }
+
+    // MARK: - Fix round 3: a store that can't read its files yet is read-only
+
+    /// Before first unlock the store refuses writes: a download waits (not failed, no bandwidth spent), a removal
+    /// is held back, and both happen once protected data becomes available. The stored song is never touched.
+    @Test func lockedStoreHoldsWorkUntilUnlock() async throws {
+        let (first, _, _) = await makeManager()
+        first.download(songs("s1"), reason: .song); await first.settled()
+        let s1 = try #require(await first.store.entry(songId: "s1"))
+        let dir = first.storeDirectory
+        try Data("garbage".utf8).write(to: dir.appending(path: "index.json"))
+        let sidecar = dir.appending(path: s1.fileName + ".json")
+        let fm = FileManager.default
+        try fm.setAttributes([.posixPermissions: 0], ofItemAtPath: sidecar.path)   // unreadable, like before unlock
+        defer { try? fm.setAttributes([.posixPermissions: 0o644], ofItemAtPath: sidecar.path) }
+        let unlocked = Mutex(false)
+        let store = AudioStore(root: tmp, scope: "abc", isProtectedDataAvailable: { unlocked.withLock { $0 } })
+        let center = NotificationCenter()
+        let (m, f, _) = await makeManager(store: store, notifications: center)
+        #expect(await store.isReady() == false)
+
+        m.download(songs("s2"), reason: .album("a1")); await m.settled()
+        #expect(m.status(for: ["s2"]) == .downloading(done: 0, total: 1), "waiting on the store, not failed")
+        #expect(f.urls.isEmpty, "no bandwidth spent before the store can take it")
+        await m.remove(.song)
+        #expect(fm.fileExists(atPath: dir.appending(path: s1.fileName).path), "nothing deleted while locked")
+
+        try fm.setAttributes([.posixPermissions: 0o644], ofItemAtPath: sidecar.path)
+        unlocked.withLock { $0 = true }
+        #expect(await eventually {
+            center.post(name: UIApplication.protectedDataDidBecomeAvailableNotification, object: nil)
+            return m.status(for: ["s2"]) == .downloaded
+        })
+        await m.settled()
+        #expect(await eventually { await m.store.entry(songId: "s1") == nil }, "the held-back removal ran")
+        #expect(await m.store.entry(songId: "s2")?.reasons == [.album("a1")])
     }
 }

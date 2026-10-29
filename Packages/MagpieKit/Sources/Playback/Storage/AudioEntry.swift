@@ -4,8 +4,10 @@ import MagpieCore
 /// Downloads are kept until the owner removes them; the cache holds pre-downloaded songs, evicted LRU (spec §6).
 public enum AudioKind: String, Codable, Sendable { case download, cache }
 
-/// Why a download is kept. A song stays while any reason holds it.
-public enum DownloadReason: Codable, Hashable, Sendable { case song, album(String), playlist(String), favourites }
+/// Why a download is kept. A song stays while any reason holds it. `unknown` stands in for reasons a sidecar no
+/// longer decodes (a later schema), so such a download is never stranded: removing `.unknown` (or all downloads)
+/// clears it.
+public enum DownloadReason: Codable, Hashable, Sendable { case song, album(String), playlist(String), favourites, unknown }
 
 /// The snapshot of a song kept beside its file: enough to browse and play what's on the phone offline.
 public struct AudioMetadata: Codable, Hashable, Sendable {
@@ -74,7 +76,11 @@ public struct AudioUsage: Sendable, Equatable {
     }
 }
 
-public enum AudioStoreError: Error, Equatable { case downloadsFull, invalidFile, unknownSong }
+public enum AudioStoreError: Error, Equatable {
+    case downloadsFull, invalidFile, unknownSong
+    /// The store couldn't read its files yet (before first unlock): it is read-only until a retry succeeds.
+    case notReady
+}
 
 // MARK: - Tolerant decoding
 //
@@ -90,7 +96,8 @@ extension AudioEntry {
         fileName = try c.decode(String.self, forKey: .fileName)
         size = (try? c.decodeIfPresent(Int64.self, forKey: .size)) ?? 0
         kind = (try? c.decodeIfPresent(AudioKind.self, forKey: .kind)) ?? .download
-        reasons = (try? c.decodeIfPresent(Set<DownloadReason>.self, forKey: .reasons)) ?? []
+        let decoded = (try? c.decodeIfPresent(Set<DownloadReason>.self, forKey: .reasons)) ?? nil
+        reasons = decoded ?? (kind == .download ? [.unknown] : [])
         downloadedAt = (try? c.decodeIfPresent(Date.self, forKey: .downloadedAt)) ?? Date(timeIntervalSinceReferenceDate: 0)
         lastPlayed = try? c.decodeIfPresent(Date.self, forKey: .lastPlayed)
         metadata = (try? c.decodeIfPresent(AudioMetadata.self, forKey: .metadata))

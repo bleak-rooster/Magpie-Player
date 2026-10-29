@@ -72,7 +72,7 @@ private final class TestClock: @unchecked Sendable {
         try await add(store, "s1", bytes: 400, kind: .cache, reason: nil, limit: nil)
         try await add(store, "s1", bytes: 400, kind: .cache, reason: nil, limit: nil)
         #expect(await store.entries().count == 1)
-        await store.addReason(.album("a1"), songIds: ["s1"])
+        try await store.addReason(.album("a1"), songIds: ["s1"])
         let kind = await store.entry(songId: "s1")?.kind, usage = await store.usage()
         #expect(kind == .download && usage == AudioUsage(downloadBytes: 400, cacheBytes: 0))
     }
@@ -94,8 +94,8 @@ private final class TestClock: @unchecked Sendable {
         let clock = TestClock()
         let store = AudioStore(root: tmp, scope: "abc", now: clock.now); await store.load()
         for id in ["s1", "s2", "s3"] { try await add(store, id, bytes: 400, kind: .cache, reason: nil, limit: nil) }
-        for id in ["s1", "s2", "s3"] { clock.advance(10); await store.markPlayed(songId: id) }
-        #expect(await store.evictCache(limit: 800, protecting: []) == ["s1"])
+        for id in ["s1", "s2", "s3"] { clock.advance(10); try await store.markPlayed(songId: id) }
+        #expect(try await store.evictCache(limit: 800, protecting: []) == ["s1"])
         #expect(await store.usage().cacheBytes == 800)
     }
 
@@ -104,7 +104,7 @@ private final class TestClock: @unchecked Sendable {
         let store = AudioStore(root: tmp, scope: "abc", now: clock.now); await store.load()
         try await add(store, "d1", bytes: 400, kind: .download, reason: .song, limit: nil)
         for id in ["s1", "s2", "s3"] { clock.advance(10); try await add(store, id, bytes: 400, kind: .cache, reason: nil, limit: nil) }
-        #expect(await store.evictCache(limit: 800, protecting: ["s1"]) == ["s2"])
+        #expect(try await store.evictCache(limit: 800, protecting: ["s1"]) == ["s2"])
         let d1 = await store.entry(songId: "d1"), s1 = await store.entry(songId: "s1")
         #expect(d1 != nil && s1 != nil)
     }
@@ -124,9 +124,9 @@ private final class TestClock: @unchecked Sendable {
     @Test func reasonsRemoveDownloadOnlyWhenEmpty() async throws {
         let store = AudioStore(root: tmp, scope: "abc"); await store.load()
         let e = try await add(store, "s1", bytes: 100, kind: .download, reason: .album("a1"), limit: nil)
-        await store.addReason(.playlist("p1"), songIds: ["s1"])
-        #expect(await store.removeReason(.album("a1")) == [])
-        #expect(await store.removeReason(.playlist("p1")) == ["s1"])
+        try await store.addReason(.playlist("p1"), songIds: ["s1"])
+        #expect(try await store.removeReason(.album("a1")) == [])
+        #expect(try await store.removeReason(.playlist("p1")) == ["s1"])
         #expect(!FileManager.default.fileExists(atPath: store.directory.appending(path: e.fileName).path))
     }
 
@@ -190,7 +190,7 @@ private final class TestClock: @unchecked Sendable {
         let indexURL = store.directory.appending(path: "index.json")
         let stale = try Data(contentsOf: indexURL)
         try await add(store, "s2", bytes: 100, kind: .download, reason: .album("a1"), limit: nil)
-        await store.addReason(.playlist("p1"), songIds: ["s1"])
+        try await store.addReason(.playlist("p1"), songIds: ["s1"])
         try stale.write(to: indexURL)
         let again = AudioStore(root: tmp, scope: "abc"); await again.load()
         #expect(await again.entry(songId: "s2")?.reasons == [.album("a1")])
@@ -273,40 +273,154 @@ private final class TestClock: @unchecked Sendable {
         let store = AudioStore(root: tmp, scope: "abc"); await store.load()
         try await add(store, "s1", bytes: 100, kind: .download, reason: .song, limit: nil)
         try await add(store, "s2", bytes: 100, kind: .cache, reason: nil, limit: nil)
-        await store.savePlaylist(DownloadedPlaylist(id: "p1", name: "P", coverArtId: nil, songIds: ["s1"], savedAt: Date()))
+        try await store.savePlaylist(DownloadedPlaylist(id: "p1", name: "P", coverArtId: nil, songIds: ["s1"], savedAt: Date()))
         return store
     }
 
-    /// Before first unlock (a CarPlay cold start) protected files list and unlink but can't be opened: nothing may go.
+    /// Before first unlock: protected files list and unlink but can't be opened, and protected data is unavailable.
+    final class Lock: Sendable {
+        let locked = Mutex(true)
+        let reads = Mutex(0)
+        /// Fails `matching` files (default: all) with the error protected data gives before first unlock.
+        func reader(_ matching: @escaping @Sendable (URL) -> Bool = { _ in true }) -> @Sendable (URL) throws -> Data {
+            { [self] url in
+                reads.withLock { $0 += 1 }
+                if locked.withLock({ $0 }), matching(url) { throw CocoaError(.fileReadNoPermission) }
+                return try Data(contentsOf: url)
+            }
+        }
+        var isAvailable: @Sendable () -> Bool { { [self] in !locked.withLock { $0 } } }
+        func unlock() { locked.withLock { $0 = false } }
+    }
+
     @Test func unreadableFilesChangeNothingAndAreRetried() async throws {
         let store = try await populated()
         try Data("garbage".utf8).write(to: store.directory.appending(path: "index.json"))   // forces the sidecar pass
         let before = snapshot(store)
-        let locked = Mutex(true)
-        let read: @Sendable (URL) throws -> Data = { url in
-            if locked.withLock({ $0 }) { throw CocoaError(.fileReadNoPermission) }
-            return try Data(contentsOf: url)
-        }
-        let early = AudioStore(root: tmp, scope: "abc", read: read); await early.load()
+        let lock = Lock()
+        let early = AudioStore(root: tmp, scope: "abc", isProtectedDataAvailable: lock.isAvailable, read: lock.reader())
+        await early.load()
         #expect(await early.entries().isEmpty)
         #expect(await early.usage() == AudioUsage(downloadBytes: 0, cacheBytes: 0))
+        #expect(await early.isReady() == false)
         #expect(snapshot(early) == before, "zero deletions, zero writes")
-        locked.withLock { $0 = false }   // first unlock
-        #expect(await early.entries().map(\.songId).sorted() == ["s1", "s2"], "retried on next use")
+        lock.unlock()
+        await early.protectedDataDidBecomeAvailable()
+        #expect(await early.entries().map(\.songId).sorted() == ["s1", "s2"])
         #expect(await early.playlists().map(\.id) == ["p1"])
+        #expect(await early.isReady())
     }
 
     /// The index reads but the sidecars can't: serve the index, touch nothing.
     @Test func unreadableSidecarsKeepTheIndexAndTouchNothing() async throws {
         let store = try await populated()
         let before = snapshot(store)
-        let read: @Sendable (URL) throws -> Data = { url in
-            if url.lastPathComponent.hasSuffix(".mp3.json") { throw CocoaError(.fileReadNoPermission) }
-            return try Data(contentsOf: url)
-        }
-        let early = AudioStore(root: tmp, scope: "abc", read: read); await early.load()
+        let lock = Lock()
+        let early = AudioStore(root: tmp, scope: "abc", isProtectedDataAvailable: lock.isAvailable,
+                               read: lock.reader { $0.lastPathComponent.hasSuffix(".mp3.json") })
+        await early.load()
         #expect(await early.entries().map(\.songId).sorted() == ["s1", "s2"])
         #expect(snapshot(early) == before)
+    }
+
+    /// Fix round 3 (N2b): the stand-in index is stale (one sidecar unreadable). Nothing may be decided from it: no
+    /// eviction of what is really a download, no demotion of a stored song, and every write says `notReady`.
+    @Test func staleStandInIsReadOnly() async throws {
+        let store = AudioStore(root: tmp, scope: "abc"); await store.load()
+        let s1 = try await add(store, "s1", bytes: 100, kind: .download, reason: .song, limit: nil)
+        try await add(store, "s3", bytes: 100, kind: .cache, reason: nil, limit: nil)
+        let indexURL = store.directory.appending(path: "index.json")
+        let stale = try Data(contentsOf: indexURL)            // says s3 is cache
+        try await store.promote(songId: "s3", reason: .album("a1"), downloadsLimit: nil)   // s3 is a download now
+        try stale.write(to: indexURL)
+        let before = snapshot(store)
+
+        let lock = Lock()
+        let early = AudioStore(root: tmp, scope: "abc", isProtectedDataAvailable: lock.isAvailable,
+                               read: lock.reader { $0.lastPathComponent == s1.fileName + ".json" })
+        await early.load()
+        #expect(await early.entry(songId: "s3")?.kind == .cache, "the stand-in is stale")
+        await #expect(throws: AudioStoreError.notReady) { try await early.evictCache(limit: 0, protecting: []) }
+        let again = tempFile(bytes: 50)
+        await #expect(throws: AudioStoreError.notReady) {
+            try await early.add(again, metadata: self.meta("s1"), quality: .original, kind: .cache, reason: nil,
+                                fileExtension: "mp3", downloadsLimit: nil)
+        }
+        await #expect(throws: AudioStoreError.notReady) {
+            try await early.add(self.tempFile(bytes: 50), metadata: self.meta("s1"), quality: .original, kind: .download,
+                                reason: .song, fileExtension: "mp3", downloadsLimit: nil)
+        }
+        await #expect(throws: AudioStoreError.notReady) { try await early.markPlayed(songId: "s3") }
+        await #expect(throws: AudioStoreError.notReady) { try await early.removeAll(kind: .cache) }
+        await #expect(throws: AudioStoreError.notReady) { try await early.saveCover(Data([1]), coverArtId: "c") }
+        #expect(snapshot(early) == before, "nothing deleted, demoted or written")
+
+        lock.unlock()
+        await early.protectedDataDidBecomeAvailable()
+        #expect(await early.entry(songId: "s3")?.kind == .download, "the sidecar wins once readable")
+        #expect(try await early.evictCache(limit: 0, protecting: []).isEmpty)
+    }
+
+    /// Any other read error (here EIO) is not "try later": that file is kept and skipped, the rest reconciles.
+    @Test func otherReadErrorsDoNotStallReconcile() async throws {
+        let store = try await populated()
+        let s1 = try #require(await store.entry(songId: "s1"))
+        try Data("garbage".utf8).write(to: store.directory.appending(path: "index.json"))
+        let sidecar = store.directory.appending(path: s1.fileName + ".json")
+        let sidecarBytes = try Data(contentsOf: sidecar)
+        let read: @Sendable (URL) throws -> Data = { url in
+            if url.lastPathComponent == s1.fileName + ".json" { throw CocoaError(.fileReadUnknown, userInfo: [NSUnderlyingErrorKey: POSIXError(.EIO)]) }
+            return try Data(contentsOf: url)
+        }
+        let again = AudioStore(root: tmp, scope: "abc", isProtectedDataAvailable: { false }, read: read)
+        await again.load()
+        #expect(await again.isReady(), "not stalled")
+        #expect(await again.entries().map(\.songId) == ["s2"])
+        #expect(try Data(contentsOf: sidecar) == sidecarBytes, "kept, not rewritten")
+        #expect(FileManager.default.fileExists(atPath: again.directory.appending(path: s1.fileName).path), "audio kept")
+        // A cache add can't demote it; a download replaces it with fresh bytes.
+        await #expect(throws: AudioStoreError.invalidFile) {
+            try await again.add(self.tempFile(bytes: 10), metadata: self.meta("s1"), quality: .original, kind: .cache,
+                                reason: nil, fileExtension: "mp3", downloadsLimit: nil)
+        }
+        #expect(FileManager.default.fileExists(atPath: again.directory.appending(path: s1.fileName).path))
+    }
+
+    @Test func pendingRetriesAreThrottled() async throws {
+        let store = try await populated()
+        try Data("garbage".utf8).write(to: store.directory.appending(path: "index.json"))
+        let clock = TestClock()
+        let lock = Lock()
+        let early = AudioStore(root: tmp, scope: "abc", now: clock.now, isProtectedDataAvailable: lock.isAvailable,
+                               retryInterval: 30, read: lock.reader())
+        await early.load()
+        let afterLoad = lock.reads.withLock { $0 }
+        for _ in 0..<5 { _ = await early.entries(); _ = try? await early.markPlayed(songId: "s1") }
+        clock.advance(29)
+        _ = await early.entries()
+        #expect(lock.reads.withLock { $0 } == afterLoad, "no retry inside 30 s")
+        clock.advance(1)
+        _ = await early.entries()
+        #expect(lock.reads.withLock { $0 } > afterLoad, "one retry after 30 s")
+        let afterRetry = lock.reads.withLock { $0 }
+        _ = await early.entries()
+        #expect(lock.reads.withLock { $0 } == afterRetry)
+        lock.unlock()
+        await early.protectedDataDidBecomeAvailable()   // no wait when protected data arrives
+        #expect(await early.isReady())
+    }
+
+    @Test func undecodableReasonsBecomeUnknownAndCanBeCleared() async throws {
+        let store = AudioStore(root: tmp, scope: "abc"); await store.load()
+        let e = try await add(store, "s1", bytes: 100, kind: .download, reason: .song, limit: nil)
+        let dir = store.directory
+        var json = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: dir.appending(path: e.fileName + ".json"))) as? [String: Any])
+        json["reasons"] = [["someFutureReason": ["_0": "x"]]]
+        try JSONSerialization.data(withJSONObject: json).write(to: dir.appending(path: e.fileName + ".json"))
+        try Data("garbage".utf8).write(to: dir.appending(path: "index.json"))
+        let again = AudioStore(root: tmp, scope: "abc"); await again.load()
+        #expect(await again.entry(songId: "s1")?.reasons == [.unknown])
+        #expect(try await again.removeReason(.unknown) == ["s1"])
     }
 
     @Test func undecodableSidecarKeepsItsAudio() async throws {

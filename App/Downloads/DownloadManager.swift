@@ -2,6 +2,7 @@ import Foundation
 import MagpieCore
 import Observation
 import Playback
+import UIKit
 
 /// Runs downloads (kept until removed) and pre-downloads (cache) into the `AudioStore` (spec §6).
 ///
@@ -14,6 +15,8 @@ import Playback
 ///   or XML body, and is refused.
 /// - "Downloads are full" stops every queued manual download; nothing is evicted.
 /// - `cancelAll` bumps a generation: work that resumes after it drops its result instead of touching the store.
+/// - While the store can't read its files yet (before first unlock) it refuses writes with `notReady`: jobs then
+///   wait, and resume when protected data becomes available (or on the next retry).
 @MainActor @Observable
 final class DownloadManager {
     static let coverSize = 600
@@ -31,7 +34,8 @@ final class DownloadManager {
     }
 
     private enum Kind: Equatable { case download(DownloadReason), cache, replace }
-    private enum State: Equatable { case queued, running(UUID), waiting }
+    /// `blocked`: the store isn't ready to be written (before first unlock); not a failure, and not Wi-Fi.
+    private enum State: Equatable { case queued, running(UUID), waiting, blocked }
 
     private struct Job {
         let id = UUID()
@@ -55,8 +59,10 @@ final class DownloadManager {
     /// Every stored song (downloads and cache), for playback to prefer over a stream.
     private(set) var localFiles: [String: URL] = [:]
     @ObservationIgnored var onLocalFilesChanged: (@MainActor () -> Void)?
+    #if DEBUG
     /// Tests: runs after a song's bytes have arrived and before they are written to the store.
     @ObservationIgnored var beforeStoreForTesting: (@MainActor (_ songId: String) async -> Void)?
+    #endif
 
     /// Mirror of the store's kinds, so `status` can answer synchronously.
     private var kinds: [String: AudioKind] = [:]
@@ -80,12 +86,20 @@ final class DownloadManager {
     /// Covers to fetch once manual downloads may use the network.
     @ObservationIgnored private var pendingCovers: [String] = []
     @ObservationIgnored private var savedPending: [PendingJob] = []
+    /// Store writes refused with `notReady`, done once the store is ready.
+    @ObservationIgnored private var deferredRemovals: [DownloadReason] = []
+    @ObservationIgnored private var deferredPlaylists: [DownloadedPlaylist] = []
+    @ObservationIgnored private let notifications: NotificationCenter
+    @ObservationIgnored private let storeRetryInterval: Duration
+    @ObservationIgnored private var protectedDataWatch: Task<Void, Never>?
+    @ObservationIgnored private var storeRetry: Task<Void, Never>?
 
     init(store: AudioStore, fetcher: any AudioFetching, network: any NetworkStatusProviding,
          preferences: @escaping @MainActor () -> DownloadPreferences,
          url: @escaping @MainActor (Song, StreamQuality) -> URL?,
          coverURL: @escaping @MainActor (String) -> URL?,
-         limitBytes: @escaping (DownloadPreferences) -> Int64? = { $0.downloadsLimit.bytes }) {
+         limitBytes: @escaping (DownloadPreferences) -> Int64? = { $0.downloadsLimit.bytes },
+         notifications: NotificationCenter = .default, storeRetryInterval: Duration = .seconds(30)) {
         self.store = store
         self.fetcher = fetcher
         self.network = network
@@ -93,9 +107,15 @@ final class DownloadManager {
         self.streamURL = url
         self.coverArtURL = coverURL
         self.limitBytes = limitBytes
+        self.notifications = notifications
+        self.storeRetryInterval = storeRetryInterval
     }
 
-    deinit { networkWatch?.cancel() }
+    deinit {
+        networkWatch?.cancel()
+        protectedDataWatch?.cancel()
+        storeRetry?.cancel()
+    }
 
     /// Loads the store, mirrors its files and queues the manual downloads left from the last run.
     func start() async {
@@ -116,17 +136,26 @@ final class DownloadManager {
                 self.networkChanged()
             }
         }
+        protectedDataWatch?.cancel()
+        protectedDataWatch = Task { [weak self, notifications] in
+            for await _ in notifications.notifications(named: UIApplication.protectedDataDidBecomeAvailableNotification) {
+                await self?.protectedDataBecameAvailable()
+            }
+        }
         pump()
+    }
+
+    /// The phone was unlocked for the first time since boot: the store can read its files now.
+    func protectedDataBecameAvailable() async {
+        await store.protectedDataDidBecomeAvailable()
+        await resumeStoreWork()
     }
 
     // MARK: - Requests
 
     func download(_ songs: [Song], reason: DownloadReason, playlist: DownloadedPlaylist? = nil, coverArtId: String? = nil) {
         if let playlist {
-            track { [weak self, store] gen in
-                guard self?.isLive(gen) == true else { return }
-                await store.savePlaylist(playlist)
-            }
+            track { [weak self] gen in await self?.savePlaylist(playlist, gen) }
         }
         if let coverArtId, !pendingCovers.contains(coverArtId) { pendingCovers.append(coverArtId) }
         let quality = preferences().normalised().quality
@@ -171,10 +200,64 @@ final class DownloadManager {
         failed.removeAll { $0.kind == .download(reason) }
         stoppedByFull = []
         savePending()
-        await store.removeReason(reason)
-        if case let .playlist(id) = reason { await store.removePlaylist(id: id) }
+        await applyRemoval(reason)
         await refresh()
         pump()
+    }
+
+    private func applyRemoval(_ reason: DownloadReason) async {
+        do {
+            try await store.removeReason(reason)
+            if case let .playlist(id) = reason { try await store.removePlaylist(id: id) }
+        } catch {
+            if !deferredRemovals.contains(reason) { deferredRemovals.append(reason) }
+            blockedOnStore()
+        }
+    }
+
+    private func savePlaylist(_ playlist: DownloadedPlaylist, _ gen: Int) async {
+        guard isLive(gen) else { return }
+        do {
+            try await store.savePlaylist(playlist)
+        } catch {
+            deferredPlaylists.removeAll { $0.id == playlist.id }
+            deferredPlaylists.append(playlist)
+            blockedOnStore()
+        }
+    }
+
+    /// Something was refused with `notReady`: try again after `storeRetryInterval` (protected data arriving
+    /// resumes sooner).
+    private func blockedOnStore() {
+        guard storeRetry == nil else { return }
+        storeRetry = Task { [weak self, storeRetryInterval] in
+            try? await Task.sleep(for: storeRetryInterval)
+            guard !Task.isCancelled else { return }
+            self?.storeRetry = nil
+            await self?.resumeStoreWork()
+        }
+    }
+
+    /// Runs what the store refused, now that it may be ready; anything still refused waits for the next retry.
+    private func resumeStoreWork() async {
+        let gen = generation
+        let removals = deferredRemovals, playlists = deferredPlaylists
+        deferredRemovals = []; deferredPlaylists = []
+        for reason in removals { await applyRemoval(reason) }
+        for playlist in playlists { await savePlaylist(playlist, gen) }
+        for i in jobs.indices where jobs[i].state == .blocked { jobs[i].state = .queued }
+        await refresh()
+        fetchCovers()
+        pump()
+    }
+
+    /// The store refused this job's write: it waits (it hasn't failed) and runs again once the store is ready.
+    private func block(_ id: UUID) {
+        if let i = jobs.firstIndex(where: { $0.id == id }) {
+            jobs[i].state = .blocked
+            jobs[i].needsNetwork = true
+        }
+        blockedOnStore()
     }
 
     /// Queues again what waits for Wi-Fi, what failed and what "Downloads are full" stopped.
@@ -201,6 +284,10 @@ final class DownloadManager {
         stoppedByFull = []
         failed = []
         pendingCovers = []
+        deferredRemovals = []
+        deferredPlaylists = []
+        storeRetry?.cancel()
+        storeRetry = nil
         savePending()
     }
 
@@ -320,18 +407,27 @@ final class DownloadManager {
                 } catch AudioStoreError.downloadsFull {
                     if isLive(gen) { stopForFull(id) }
                     return
+                } catch AudioStoreError.notReady {
+                    if isLive(gen) { block(id) }
+                    return
                 } catch {
                     if isLive(gen) { fail(id, error) }   // evicted in between
                     return
                 }
                 guard isLive(gen) else { return }
-                await undoIfRemoved(id, reason, job.songId)
+                await undoIfRemoved(id, reason, job.songId, gen)
                 await refresh()
             }
             complete(id)
             return
         }
 
+        // Don't spend the bandwidth on a song the store can't take yet.
+        guard await store.isReady() else {
+            if isLive(gen), isCurrent(id, run) { block(id) }
+            return
+        }
+        guard isLive(gen), isCurrent(id, run) else { return }
         guard let source = streamURL(job.metadata.song, job.quality) else { fail(id, URLError(.badURL)); return }
         let fetched: (file: URL, mimeType: String?)
         do {
@@ -351,7 +447,9 @@ final class DownloadManager {
             return
         }
         setNeedsNetwork(id, false)   // the bytes are here: a network flip no longer stops this job
+        #if DEBUG
         if let beforeStoreForTesting { await beforeStoreForTesting(job.songId) }
+        #endif
         do {
             switch job.kind {
             case let .download(reason):
@@ -366,22 +464,25 @@ final class DownloadManager {
         } catch AudioStoreError.downloadsFull {
             if isLive(gen) { stopForFull(id) }
             return
+        } catch AudioStoreError.notReady {
+            if isLive(gen) { block(id) }
+            return
         } catch {
             if isLive(gen) { fail(id, error) }
             return
         }
         guard isLive(gen) else { return }
-        if case let .download(reason) = job.kind { await undoIfRemoved(id, reason, job.songId) }
+        if case let .download(reason) = job.kind { await undoIfRemoved(id, reason, job.songId, gen) }
         await refresh()
         complete(id)
     }
 
     /// `remove(reason)` dropped this job while its song was being written: take the reason back off this song,
     /// unless the song has been asked for again with the same reason since.
-    private func undoIfRemoved(_ id: UUID, _ reason: DownloadReason, _ songId: String) async {
-        guard job(id) == nil, isLive(generation),
+    private func undoIfRemoved(_ id: UUID, _ reason: DownloadReason, _ songId: String, _ gen: Int) async {
+        guard job(id) == nil, isLive(gen),
               !jobs.contains(where: { $0.songId == songId && $0.kind == .download(reason) }) else { return }
-        await store.removeReason(reason, songIds: [songId])
+        _ = try? await store.removeReason(reason, songIds: [songId])   // the store just took a write: it is ready
     }
 
     private func setNeedsNetwork(_ id: UUID, _ value: Bool) {
@@ -428,6 +529,11 @@ final class DownloadManager {
                     guard self?.isLive(gen) == true else { return }
                     guard Self.isImage(fetched.mimeType) else { throw DownloadError.unexpectedContent }
                     try await store.saveCover(Data(contentsOf: fetched.file), coverArtId: id)
+                } catch AudioStoreError.notReady {
+                    if self?.isLive(gen) == true, self?.pendingCovers.contains(id) == false {
+                        self?.pendingCovers.append(id)
+                        self?.blockedOnStore()
+                    }
                 } catch {
                     // A missing cover never fails the download.
                     Log.logger("downloads").error("cover failed: \(Log.category(of: error), privacy: .public)")
