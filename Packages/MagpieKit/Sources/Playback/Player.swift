@@ -149,7 +149,11 @@ public final class Player {
             }
             return
         }
-        let engineHasItNext = !needsReload && sent.count > 1 && sent[1].id == target.id
+        // The engine holds the entry right after the current one in the list last sent. After a gapless
+        // advance the current entry is no longer first there, so look it up rather than read `sent[1]`.
+        let currentIndex = queue.current.flatMap { current in sent.firstIndex { $0.id == current.id } }
+        let engineHasItNext = !needsReload
+            && currentIndex.map { sent.indices.contains($0 + 1) && sent[$0 + 1].id == target.id } ?? false
         while queue.current?.id != target.id, queue.advance() != nil {}
         guard engineHasItNext else {
             loadCurrent()

@@ -114,6 +114,15 @@ final class QualityBox: Sendable {
     func set(_ quality: StreamQuality) { lock.withLock { $0 = quality } }
 }
 
+/// The ReplayGain mode songs are levelled with. Written on the main actor when the preference changes, read
+/// for every song sent to the engine.
+final class ReplayGainBox: Sendable {
+    private let lock: OSAllocatedUnfairLock<ReplayGainMode>
+    init(_ mode: ReplayGainMode) { lock = OSAllocatedUnfairLock(initialState: mode) }
+    var mode: ReplayGainMode { lock.withLock { $0 } }
+    func set(_ mode: ReplayGainMode) { lock.withLock { $0 = mode } }
+}
+
 /// Stream URLs built against the client's active base address and the current quality. After a failover the app
 /// calls `Player.urlsInvalidated()` so queued items pick up the new base.
 @MainActor

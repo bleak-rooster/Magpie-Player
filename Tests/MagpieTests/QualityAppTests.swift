@@ -101,6 +101,20 @@ private func eventually(_ seconds: Double = 5, _ condition: () -> Bool) async ->
         #expect(query(items[0].1)["format"] == "raw" && query(items[1].1)["format"] == "mp3" && query(items[1].1)["maxBitRate"] == "320")
     }
 
+    @Test func replayGainFollowsThePreference() async throws {
+        let (model, engine, _) = try await signedIn(.wifi)
+        defer { tearDown(model) }
+        var loud = song("s1")
+        loud.replayGain = ReplayGain(trackGain: -6, albumGain: -9)
+        model.play([loud], startAt: 0)
+        let id = model.player.queue.current!.id
+        #expect(abs((engine.setVolumesCalls.last?[id] ?? 1) - 0.501187) < 0.0001, "Track by default")
+        model.updatePreferences { $0.playback.replayGain = .album }
+        #expect(abs((engine.setVolumesCalls.last?[id] ?? 1) - 0.354813) < 0.0001)
+        model.updatePreferences { $0.playback.replayGain = .off }
+        #expect(engine.setVolumesCalls.last?[id] == 1, "the playing song is re-levelled too")
+    }
+
     @Test func networkChangeRebuildsUpcomingOnly() async throws {
         let (model, engine, network) = try await signedIn(.wifi)
         defer { tearDown(model) }

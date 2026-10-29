@@ -537,8 +537,20 @@ extension PlayerTests {
         player.next()
         #expect(player.queue.current?.song.id == "2" && !player.stopsAfterCurrent)
         let items = engine.setItemsCalls.last!.items.map(\.0)
-        #expect(items.first == second || (engine.nextCount == 1 && items.dropFirst().first == second),
-                "the engine lands on song 2: \(items), next() x\(engine.nextCount)")
+        #expect(engine.nextCount == 1)
+        #expect(items.dropFirst().first == second, "the engine lands on song 2: \(items)")
+    }
+
+    @Test func skipAfterANaturalAdvanceUsesEngineNext() {
+        let player = makePlayer()
+        player.play([Self.song("1"), Self.song("2"), Self.song("3")], startAt: 0)
+        let second = player.queue.upcoming[0].id, third = player.queue.upcoming[1].id
+        let calls = engine.setItemsCalls.count
+        player.handle(.itemChanged(second))   // gapless advance: the engine already holds song 3 next
+        player.next()
+        #expect(player.queue.current?.id == third)
+        #expect(engine.nextCount == 1)
+        #expect(engine.setItemsCalls.count == calls, "no rebuffer: the list is not re-sent")
     }
 
     @Test func nextSkipsUnplayableWithoutNowPlaying() async {

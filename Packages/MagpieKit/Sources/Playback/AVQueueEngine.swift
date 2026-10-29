@@ -23,6 +23,8 @@ public final class AVQueueEngine: PlaybackEngine {
         let id: UUID
         let url: URL
         let statusObservation: NSKeyValueObservation
+        /// The ReplayGain volume asked for last; an audio-mix load that finishes after a newer one is dropped.
+        var volume: Float = 1
     }
 
     private var player = AVQueuePlayer()
@@ -34,7 +36,7 @@ public final class AVQueueEngine: PlaybackEngine {
     /// Set when the current entry failed and playback was halted on it.
     private var haltedId: UUID?
     private var lastTime: TimeInterval = 0
-    /// Per-entry volumes from `setVolumes`, applied as items are enqueued.
+    /// Per-entry volumes from `setVolumes`, applied as items are enqueued (and to items already enqueued).
     private var volumes: [UUID: Float] = [:]
     /// Overall volume from `setVolume`; survives a media-services rebuild.
     private var volume: Float = 1
@@ -49,6 +51,15 @@ public final class AVQueueEngine: PlaybackEngine {
     /// What the AVQueuePlayer holds right now, current first.
     public var enqueuedItems: [(id: UUID, url: URL)] {
         player.items().compactMap { item in enqueued[ObjectIdentifier(item)].map { (id: $0.id, url: $0.url) } }
+    }
+
+    /// Diagnostics: the current item's ReplayGain volume as its audio mix carries it; nil without a mix.
+    public var currentItemMixVolume: Float? {
+        guard let params = player.currentItem?.audioMix?.inputParameters.first else { return nil }
+        var start: Float = 0, end: Float = 0
+        var range = CMTimeRange.zero
+        guard params.getVolumeRamp(for: .zero, startVolume: &start, endVolume: &end, timeRange: &range) else { return nil }
+        return start
     }
 
     public init() {
@@ -117,6 +128,11 @@ public final class AVQueueEngine: PlaybackEngine {
 
     public func setVolumes(_ volumes: [UUID: Float]) {
         self.volumes = volumes
+        // Items already enqueued (the current one, a kept next one) take the new volume too.
+        for item in player.items() {
+            guard let id = enqueued[ObjectIdentifier(item)]?.id else { continue }
+            apply(volumes[id] ?? 1, to: item)
+        }
     }
 
     public func enqueuedURL(for id: UUID) -> URL? {
@@ -176,12 +192,40 @@ public final class AVQueueEngine: PlaybackEngine {
             Task { @MainActor [weak self] in self?.itemFailed(oid, message) }
         }
         enqueued[oid] = Enqueued(item: item, id: entry.id, url: entry.url, statusObservation: observation)
-        apply(volumes[entry.id] ?? 1, to: item)
+        apply(volumes[entry.id] ?? 1, to: item, force: true)
         player.insert(item, after: nil)
     }
 
-    /// Sets an item's own volume (ReplayGain). Task 9 builds the audio mix that carries it.
-    private func apply(_ volume: Float, to item: AVPlayerItem) {}
+    /// Sets an item's own volume (ReplayGain) as an audio mix: one input parameter per audio track, which
+    /// needs the tracks loaded first. A volume of 1 (or more) plays without a mix. Unchanged volumes are left
+    /// alone unless `force` (a fresh item).
+    private func apply(_ volume: Float, to item: AVPlayerItem, force: Bool = false) {
+        let oid = ObjectIdentifier(item)
+        guard let info = enqueued[oid], force || info.volume != volume else { return }
+        enqueued[oid]?.volume = volume
+        guard volume < 1 else {
+            item.audioMix = nil
+            return
+        }
+        Task { @MainActor [weak self] in
+            let tracks: [AVAssetTrack]
+            do {
+                tracks = try await item.asset.loadTracks(withMediaType: .audio)
+            } catch {
+                Log.logger("playback").error("audio tracks failed to load: \(Log.category(of: error), privacy: .public)")
+                return
+            }
+            // Dropped meanwhile, or a newer volume asked for: that one wins.
+            guard let self, self.enqueued[oid]?.volume == volume else { return }
+            let mix = AVMutableAudioMix()
+            mix.inputParameters = tracks.map { track in
+                let params = AVMutableAudioMixInputParameters(track: track)
+                params.setVolume(volume, at: .zero)
+                return params
+            }
+            item.audioMix = mix
+        }
+    }
 
     private func forget(_ item: AVPlayerItem) {
         enqueued.removeValue(forKey: ObjectIdentifier(item))?.statusObservation.invalidate()

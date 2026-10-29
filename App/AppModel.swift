@@ -138,6 +138,8 @@ final class AppModel {
     @ObservationIgnored var pollTask: Task<Void, Never>?
     @ObservationIgnored var pollGeneration = 0
     @ObservationIgnored let playCounting: PlayCounting
+    /// The ReplayGain mode the player levels songs with; kept in step with `preferences.playback.replayGain`.
+    @ObservationIgnored let replayGainBox: ReplayGainBox
     /// D29: what the player treats as a find (never scrobbled). Kept in step with `findsSetup` and `findSongs`.
     @ObservationIgnored let findsIdentity = FindsIdentity()
     @ObservationIgnored var findPlaysWatch: Task<Void, Never>?
@@ -210,7 +212,8 @@ final class AppModel {
         self.theme = theme
         let preferencesStore = PreferencesStore(defaults: defaults)
         self.preferencesStore = preferencesStore
-        self.preferences = preferencesStore.load()
+        let preferences = preferencesStore.load()
+        self.preferences = preferences
         self.notifications = notifications
         let data = dataDirectory ?? FileManager.default.temporaryDirectory.appending(path: "magpie-\(UUID().uuidString)")
         self.dataDirectory = data
@@ -227,13 +230,16 @@ final class AppModel {
         self.hasListenBrainzToken = tokenStore.load() != nil
         let counting = PlayCounting(on: defaults.object(forKey: Self.countPlaysKey) as? Bool ?? true)
         self.playCounting = counting
+        let replayGain = ReplayGainBox(preferences.playback.replayGain)
+        self.replayGainBox = replayGain
         let network = network ?? (Self.isHostedTest ? FixedNetwork() : NetworkMonitor())
         self.network = network
         let findsIdentity = self.findsIdentity
         self.player = Player(engine: engine ?? AVQueueEngine(),
                              scrobbler: NavidromeScrobbler(box: box, counting: counting),
                              urls: NavidromeStreamURLs(box: box, quality: self.qualityBox),
-                             isFind: { findsIdentity.isFind($0) })
+                             isFind: { findsIdentity.isFind($0) },
+                             gain: { replayGain.mode.volume(for: $0.replayGain) })
         #if os(iOS)
         if systemNowPlaying {
             nowPlaying = NowPlayingBridge(

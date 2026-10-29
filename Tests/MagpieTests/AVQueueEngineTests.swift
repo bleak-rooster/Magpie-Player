@@ -76,4 +76,19 @@ import Playback
         try await Self.waitUntil { engine.enqueuedItems.count == 2 }
         #expect(engine.enqueuedItems.map(\.url) == [w1, w3])
     }
+
+    @Test func volumeBelowOneAppliesAnAudioMix() async throws {
+        let w = try Self.silentWAV(), w2 = try Self.silentWAV(), a = UUID(), b = UUID()
+        defer { for f in [w, w2] { try? FileManager.default.removeItem(at: f) } }
+        let engine = AVQueueEngine()
+        engine.setVolumes([a: 0.5])
+        engine.setItems([(a, w)], startAt: 0)
+        try await Self.waitUntil { engine.currentItemMixVolume != nil }
+        #expect(abs(engine.currentItemMixVolume! - 0.5) < 0.001)
+        engine.setVolumes([a: 0.25])
+        try await Self.waitUntil { abs((engine.currentItemMixVolume ?? 0) - 0.25) < 0.001 }
+        engine.setItems([(b, w2)], startAt: 0)
+        try await Self.waitUntil { engine.enqueuedItems.first?.id == b }
+        #expect(engine.currentItemMixVolume == nil, "unity gain: no mix")
+    }
 }

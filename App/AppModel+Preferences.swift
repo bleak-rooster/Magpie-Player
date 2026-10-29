@@ -21,6 +21,7 @@ extension AppModel {
         let oldQuality = old.playback.quality(for: network.status)
         if currentStreamQuality != oldQuality || preferences.playback.replayGain != old.playback.replayGain {
             qualityBox.set(currentStreamQuality)
+            replayGainBox.set(preferences.playback.replayGain)
             player.upcomingURLsChanged()
         }
     }
