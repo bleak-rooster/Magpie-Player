@@ -396,6 +396,7 @@ final class AppModel {
         box.set(client)
         // O3: started now, so every call made meanwhile waits for it (`request`): one login per launch.
         let reconnecting = startReconnect(rebuildAlways: true)
+        scrobbleQueueBelongs(to: navidromeScope)
         drainScrobblesSoon(after: reconnecting)   // plays queued last time (T17)
         startMatchIndex()
         startDownloads()
@@ -405,6 +406,7 @@ final class AppModel {
 
     /// Protected data (the Keychain) became readable: retry the restore.
     func protectedDataBecameAvailable() {
+        reloadScrobbleQueue()   // a launch before first unlock couldn't read it (T17 fix round 1)
         guard isWaitingForUnlock else { return }
         resumeSavedSession()
     }
@@ -480,6 +482,7 @@ final class AppModel {
         session = Session(client: client, endpoint: endpoint, credentials: credentials,
                           activeBase: base, isAdmin: login.isAdmin)
         box.set(client)
+        scrobbleQueueBelongs(to: navidromeScope)   // another account's queued plays never go to this one
         noteReachable()
         startMatchIndex()
         startDownloads()
@@ -504,12 +507,13 @@ final class AppModel {
         }
         startsWhenLanded = []
         findIdsCache = nil
+        scrobbles.clearQueue()   // before the finds are forgotten: nothing queued is judged without them (D29)
+        forgetScrobbleQueueAccount()
         findsIdentity.forgetAccount()
         findSongs = []
         lettingGoSongIds = []
         playedFinds = []
         stopDownloads(erase: true)
-        scrobbles.clearQueue()
         store.clear()
         session = nil
         starOverrides = [:]

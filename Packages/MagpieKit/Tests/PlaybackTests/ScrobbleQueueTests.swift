@@ -1,4 +1,5 @@
 import Foundation
+import os
 import Testing
 import MagpieCore
 @testable import Playback
@@ -56,5 +57,37 @@ private func item(_ id: String, _ d: ScrobbleDestination, at: Double = 0) -> Que
         await ScrobbleQueue(fileURL: url).enqueue(QueuedScrobble(destination: .navidrome, song: song, listenedAt: .now))
         let back = try #require(await ScrobbleQueue(fileURL: url).pending(.navidrome).first)
         #expect(back.libraryId == 7 && back.playedSong.libraryId == 7 && back.playedSong.id == "s1")
+    }
+
+    /// Fix round 1, I1: a launch before first unlock can't read the file. It is never written over: plays queued
+    /// meanwhile stay in memory and are merged once a read works.
+    @Test func unreadableFileIsNeverOverwritten() async throws {
+        let url = FileManager.default.temporaryDirectory.appending(path: "\(UUID())/scrobble-queue.json")
+        await ScrobbleQueue(fileURL: url).enqueue(item("a", .navidrome))
+        let failures = OSAllocatedUnfairLock(initialState: 2)   // the init's read and the enqueue's retry fail
+        let flaky: ScrobbleQueue.Reader = { url in
+            if failures.withLock({ n in defer { n -= 1 }; return n > 0 }) { throw CocoaError(.fileReadNoPermission) }
+            return try ScrobbleQueue.fileReader(url)
+        }
+        let q = ScrobbleQueue(fileURL: url, reader: flaky)
+        await q.enqueue(item("b", .navidrome))
+        #expect(await ScrobbleQueue(fileURL: url).pending(.navidrome).map(\.song.songId) == ["a"], "file untouched")
+        #expect(await q.pending(.navidrome).map(\.song.songId) == ["a", "b"], "merged once readable")
+        #expect(await ScrobbleQueue(fileURL: url).pending(.navidrome).map(\.song.songId) == ["a", "b"], "and saved")
+    }
+
+    @Test func reloadMergesAfterUnlock() async throws {
+        let url = FileManager.default.temporaryDirectory.appending(path: "\(UUID())/scrobble-queue.json")
+        await ScrobbleQueue(fileURL: url).enqueue(item("a", .listenBrainz))
+        let locked = OSAllocatedUnfairLock(initialState: true)
+        let q = ScrobbleQueue(fileURL: url) { url in
+            if locked.withLock({ $0 }) { throw CocoaError(.fileReadNoPermission) }
+            return try ScrobbleQueue.fileReader(url)
+        }
+        await q.enqueue(item("b", .listenBrainz))
+        #expect(await q.pending(.listenBrainz).map(\.song.songId) == ["b"], "locked: only what was queued meanwhile")
+        locked.withLock { $0 = false }
+        await q.reload()
+        #expect(await ScrobbleQueue(fileURL: url).pending(.listenBrainz).map(\.song.songId) == ["a", "b"])
     }
 }

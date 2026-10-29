@@ -11,7 +11,7 @@ struct ScrobblingSettingsView: View {
     @State private var checkingToken = false
 
     static let countPlaysFooter = "When on, songs you play are added to your listening history. Turn off while you're trying things out."
-    static let needsTokenFooter = "Save a ListenBrainz token in Settings first."
+    static let needsTokenFooter = "Add your ListenBrainz token below to send plays there directly."
     static let doubleCountNote = "If your Navidrome also sends plays to ListenBrainz, they'll be counted twice."
     static let rejectedCopy = "ListenBrainz didn't accept your token. Save a new one to send plays there again."
 
@@ -41,19 +41,28 @@ struct ScrobblingSettingsView: View {
 
     // MARK: - Where plays go
 
+    /// Without a token nothing goes to ListenBrainz, so its switch reads Off (and is disabled) whatever is stored.
+    static func listenBrainzShowsOn(_ p: ScrobblePreferences, hasToken: Bool) -> Bool { p.viaListenBrainz && hasToken }
+
+    /// The footer under the destinations: how to turn ListenBrainz on, or the double-count note when both are on.
+    static func destinationsFooter(_ p: ScrobblePreferences, hasToken: Bool) -> String? {
+        if !hasToken { return needsTokenFooter }
+        return p.viaNavidrome && p.viaListenBrainz ? doubleCountNote : nil
+    }
+
     @ViewBuilder private var destinations: some View {
-        let p = model.preferences.scrobbling
+        let p = model.preferences.scrobbling, hasToken = model.hasListenBrainzToken
         Section {
             Toggle("Send plays through Navidrome", isOn: binding(\.viaNavidrome))
                 .accessibilityIdentifier("scrobbling-via-navidrome")
-            Toggle("Send plays directly to ListenBrainz", isOn: binding(\.viaListenBrainz))
-                .disabled(!model.hasListenBrainzToken)
+            Toggle("Send plays directly to ListenBrainz", isOn: Binding(
+                get: { Self.listenBrainzShowsOn(model.preferences.scrobbling, hasToken: model.hasListenBrainzToken) },
+                set: { on in model.updatePreferences { $0.scrobbling.viaListenBrainz = on } }))
+                .disabled(!hasToken)
                 .accessibilityIdentifier("scrobbling-via-listenbrainz")
         } footer: {
-            if !model.hasListenBrainzToken {
-                Text(Self.needsTokenFooter)
-            } else if p.viaNavidrome, p.viaListenBrainz {
-                Text(Self.doubleCountNote).accessibilityIdentifier("scrobbling-double-count")
+            if let footer = Self.destinationsFooter(p, hasToken: hasToken) {
+                Text(footer).accessibilityIdentifier("scrobbling-destinations-footer")
             }
         }
     }

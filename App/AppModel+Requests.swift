@@ -253,6 +253,7 @@ extension AppModel {
         countPlays = on
         playCounting.set(on)
         appDefaults.set(on, forKey: Self.countPlaysKey)
+        if on { drainScrobblesSoon() }   // plays queued before it was turned off (T17)
     }
 
     /// Settings' Save token (final fix 2 B-M8): the token is checked with ListenBrainz first (`validate-token`, the
