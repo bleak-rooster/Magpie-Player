@@ -249,7 +249,10 @@ extension AppModel {
                 group.addTask { (index, try await op(item)) }
             }
             for try await (done, value) in group { results[done] = value }
-            return results.compactMap { $0 }
+            // Positions must line up with `items` (callers zip them): a gap means the read was cut short, so stop
+            // rather than shift later results onto the wrong genre (same failure as the build 8 Home crash).
+            guard results.allSatisfy({ $0 != nil }) else { throw CancellationError() }
+            return results.map { $0! }
         }
     }
 
