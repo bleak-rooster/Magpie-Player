@@ -61,9 +61,13 @@ public protocol StreamURLProvider: AnyObject {
     /// loaded with isn't original, so a session re-login (new auth salt in the URL) doesn't cause a pointless
     /// fallback and a false hint (an `originalURL` equal to the loaded URL is never a fallback either).
     func isOriginal(_ url: URL) -> Bool
+    /// The song's file on the phone failed to play: forget the file, and answer the server stream to play instead
+    /// (nil when there is none right now, e.g. offline). `Player` asks once per entry.
+    func localFileFailed(_ song: Song) -> URL?
 }
 
 public extension StreamURLProvider {
     func originalURL(for song: Song) -> URL? { nil }
     func isOriginal(_ url: URL) -> Bool { false }
+    func localFileFailed(_ song: Song) -> URL? { nil }
 }

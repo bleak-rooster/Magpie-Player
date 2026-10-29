@@ -20,18 +20,6 @@ final class FakeNetwork: NetworkStatusProviding {
     init(_ status: NetworkStatus = .wifi) { self.status = status }
 }
 
-/// Polls `condition` until it holds or the deadline passes (no fixed sleeps).
-@MainActor
-private func eventually(_ seconds: Double = 5, _ condition: () -> Bool) async -> Bool {
-    let deadline = Date().addingTimeInterval(seconds)
-    while Date() < deadline {
-        if condition() { return true }
-        await Task.yield()
-        try? await Task.sleep(for: .milliseconds(5))
-    }
-    return condition()
-}
-
 @MainActor
 @Suite(.serialized) struct QualityAppTests {
     let transport = HostSwitchTransport()

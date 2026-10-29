@@ -128,6 +128,17 @@ final class CountingURLs: StreamURLProvider {
         #expect(player.queue.upcoming.first?.song.id == "s101")
     }
 
+    /// Minor 3: after a top-up re-sent the window, an end about the old list's last item (no longer last) is stale.
+    @Test func staleEndAboutANonLastItemIsIgnored() {
+        let player = makePlayer()
+        player.play(Self.songs(10), startAt: 0)
+        let oldLast = engine.setItemsCalls.last!.items.last!.0   // s3
+        player.handle(.itemChanged(player.queue.upcoming[0].id))  // s1; the window is topped up to s4
+        #expect(engine.setItemsCalls.last!.items.last!.0 != oldLast)
+        player.handle(.ended(oldLast))
+        #expect(player.queue.current?.song.id == "s1" && player.isPlaying && !player.hasEnded)
+    }
+
     /// The true end of the queue: nothing to carry on with, so the queue ends on the last song.
     @Test func endAtTheTrueEndDoesNotCarryOn() {
         let player = makePlayer()

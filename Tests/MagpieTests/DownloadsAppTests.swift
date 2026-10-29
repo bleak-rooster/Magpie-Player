@@ -14,17 +14,6 @@ private let loginJSON = Data(#"""
 """#.utf8)
 private let home = URL(string: "http://192.168.1.2:4533")!
 
-/// Polls `condition` until it holds or the deadline passes (no fixed sleeps).
-@MainActor
-private func eventually(_ seconds: Double = 5, _ condition: () async -> Bool) async -> Bool {
-    let deadline = Date().addingTimeInterval(seconds)
-    while Date() < deadline {
-        if await condition() { return true }
-        try? await Task.sleep(for: .milliseconds(5))
-    }
-    return await condition()
-}
-
 extension AppModel {
     /// Tests: answers `path` with a Subsonic `ok` body holding `fragment` (the fixture's `HostSwitchTransport`).
     func transport(stub path: String, _ fragment: String) {
@@ -194,7 +183,10 @@ extension AppModel {
         let f = FakeFetcher()
         let model = try await signedInModel(fetcher: f)
         model.download([song("s1")], reason: .song)
-        model.downloads!.preDownload([song("c1")], quality: .original)
+        // c1 is pre-downloaded as the next song (the plan is the queue's, so it can't be asked for on its own).
+        model.updatePreferences { $0.downloads.preDownload = 1 }
+        model.play([song("p1"), song("c1")], startAt: 0)
+        #expect(await eventually { await model.downloads!.store.entry(songId: "c1") != nil })
         await model.downloads!.settled()
         var usage = await model.storageUsage
         #expect(usage == AudioUsage(downloadBytes: 1000, cacheBytes: 1000))

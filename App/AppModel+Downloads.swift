@@ -33,6 +33,7 @@ extension AppModel {
             guard let self, let manager, self.downloads === manager else { return }
             self.localFiles.set(manager.localFiles)
             self.player.upcomingURLsChanged()
+            self.preDownloadLanded()
         }
         let previous = downloadsTeardown, root = dataDirectory
         let ready = Task {
@@ -53,6 +54,9 @@ extension AppModel {
         favouritesSync = nil
         preDownloadWatch?.cancel()
         preDownloadWatch = nil
+        preDownloadSnapshot = nil
+        cacheEviction?.cancel()
+        cacheEviction = nil
         let upkeep = cacheUpkeep
         upkeep?.cancel()
         cacheUpkeep = nil

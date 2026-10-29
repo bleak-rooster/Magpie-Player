@@ -53,6 +53,13 @@ final class FakeURLs: StreamURLProvider {
     }
     func originalURL(for song: Song) -> URL? { original?(song) }
     func isOriginal(_ url: URL) -> Bool { isOriginalURL?(url) ?? false }
+    /// What `localFileFailed` answers; the songs it was asked about.
+    var streamInstead: URL?
+    var failedLocal: [String] = []
+    func localFileFailed(_ song: Song) -> URL? {
+        failedLocal.append(song.id)
+        return streamInstead
+    }
 }
 
 @MainActor
@@ -470,6 +477,35 @@ extension PlayerTests {
         player.handle(.failed(player.queue.current!.id, "cannot open"))
         #expect(player.lastFallbackSongId == nil && player.lastError == "cannot open")
         #expect(engine.setItemsCalls.count == loads)
+    }
+
+    /// Ruling (a): a song playing from a damaged file restarts on the stream where it was, once; the hint isn't
+    /// shown (nothing failed to convert), and a second failure is final.
+    @Test func damagedLocalFileStreamsInsteadOnce() {
+        let file = URL(filePath: "/tmp/s1.mp3")
+        urls.stream = { _ in file }
+        urls.streamInstead = URL(string: "http://192.168.1.2:4533/rest/stream?id=1&format=raw")!
+        urls.original = { _ in URL(string: "http://192.168.1.2:4533/rest/stream?id=1&format=raw")! }
+        let player = makePlayer()
+        player.play([Self.song("1")], startAt: 0)
+        let id = player.queue.current!.id
+        player.handle(.time(id, 30, duration: 200))
+        player.handle(.failed(id, "cannot decode"))
+        #expect(urls.failedLocal == ["1"])
+        #expect(engine.setItemsCalls.last!.items[0].1 == urls.streamInstead)
+        #expect(engine.seeks.last == 30 && player.isPlaying && player.lastFallbackSongId == nil)
+        player.handle(.failed(id, "still broken"))
+        #expect(urls.failedLocal == ["1"] && player.lastError == "still broken" && !player.isPlaying)
+    }
+
+    /// Ruling (a), offline: no stream to fall back to; the song fails like any that can't play.
+    @Test func damagedLocalFileWithoutStreamFails() {
+        urls.stream = { _ in URL(filePath: "/tmp/s1.mp3") }
+        urls.original = { _ in URL(string: "http://192.168.1.2:4533/rest/stream?id=1&format=raw")! }
+        let player = makePlayer()
+        player.play([Self.song("1")], startAt: 0)
+        player.handle(.failed(player.queue.current!.id, "cannot decode"))
+        #expect(urls.failedLocal == ["1"] && player.lastError == "cannot decode" && player.lastFallbackSongId == nil)
     }
 
     @Test func noFallbackWithoutOriginal() {

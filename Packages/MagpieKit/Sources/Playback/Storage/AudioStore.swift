@@ -308,6 +308,23 @@ public actor AudioStore {
         reconcilePending = false
     }
 
+    /// `removeCache`, sparing the songs `sparing` answers at removal time: what playback holds can change while the
+    /// call waits its turn.
+    @discardableResult
+    public func removeCache(songIds: Set<String>, sparing: @Sendable () async -> Set<String>) async throws -> [String] {
+        try ensureReady()
+        let spared = await sparing()
+        return try removeCache(songIds: songIds.subtracting(spared))
+    }
+
+    /// `evictCache`, with the protected songs read at removal time.
+    @discardableResult
+    public func evictCache(limit: Int64, protecting: @Sendable () async -> Set<String>) async throws -> [String] {
+        try ensureReady()
+        let protected = await protecting()
+        return try evictCache(limit: limit, protecting: protected)
+    }
+
     /// Removes cache entries, least recently played (or downloaded) first, skipping `protecting`, until the cache
     /// fits `limit`. Downloads are never evicted. Returns the evicted ids in order.
     @discardableResult

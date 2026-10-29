@@ -19,18 +19,6 @@ private let home = URL(string: "http://192.168.1.2:4533")!
 private let away = URL(string: "https://music.example.com/navidrome")!
 private let lidarrBase = URL(string: "http://192.168.1.2:8686")!
 
-/// Polls `condition` until it holds or the deadline passes (no fixed sleeps).
-@MainActor
-private func eventually(_ seconds: Double = 5, _ condition: () -> Bool) async -> Bool {
-    let deadline = Date().addingTimeInterval(seconds)
-    while Date() < deadline {
-        if condition() { return true }
-        await Task.yield()
-        try? await Task.sleep(for: .milliseconds(5))
-    }
-    return condition()
-}
-
 @MainActor
 @Suite(.serialized) struct V1FlowsDocAppTests {
     let transport = HostSwitchTransport()

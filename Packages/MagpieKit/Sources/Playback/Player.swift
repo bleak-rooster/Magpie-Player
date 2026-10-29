@@ -269,6 +269,13 @@ public final class Player {
         engine.seek(to: resumeAt)
     }
 
+    /// The songs the engine holds or is about to: the current one and the window after it. Cache upkeep never
+    /// removes these files.
+    public var windowSongIds: Set<String> {
+        guard let current = queue.current else { return [] }
+        return Set([current.song.id] + followingWindow().map(\.song.id))
+    }
+
     /// What the upcoming songs stream from changed (quality, network, a download landed, playability):
     /// re-send them with fresh URLs and volumes. The current song keeps playing on the URL it has.
     public func upcomingURLsChanged() {
@@ -313,16 +320,22 @@ public final class Player {
             // is reached. Stop the engine too, so a dead server can't race through the queue.
             guard let current = queue.current, id == current.id else { return }
             let key = FallbackKey(entryId: id, songId: current.song.id)
-            if !fellBack.contains(key), let original = urls.originalURL(for: current.song),
-               let loadedURL = loaded?.url, original != loadedURL, !urls.isOriginal(loadedURL) {
+            let loadedURL = loaded?.url
+            if !fellBack.contains(key), let loadedURL, loadedURL.isFileURL {
+                // The song's file on the phone is damaged: the app drops it and the song streams instead, once.
+                // Without a connection there is no stream, and it is skipped like any song that can't play.
+                fellBack.insert(key)
+                if let stream = urls.localFileFailed(current.song) {
+                    loaded = (current.id, stream)
+                    restartCurrent(rebuild: false)
+                    return
+                }
+            } else if !fellBack.contains(key), let original = urls.originalURL(for: current.song),
+                      let loadedURL, original != loadedURL, !urls.isOriginal(loadedURL) {
                 // The server couldn't convert it: play the original instead, once.
                 fellBack.insert(key)
                 lastFallbackSongId = current.song.id
-                let resumeAt = position
-                syncEngine(rebuildCurrent: true)
-                if resumeAt > 0 { engine.seek(to: resumeAt) }
-                engine.play()
-                isPlaying = true
+                restartCurrent(rebuild: true)
                 return
             }
             if !isPlayable(current.song), skipToNextPlayable() { return }
@@ -332,8 +345,9 @@ public final class Player {
             engine.pause()
             isPlaying = false
         case .ended(let id):
-            // An end about a list replaced since (the event was queued before `play`) would skip songs: drop it.
-            guard sent.contains(where: { $0.id == id }) else { return }
+            // Only the end of the list last sent counts: one about a list replaced since (queued before `play`, or
+            // before a top-up re-sent the window) would skip songs.
+            guard id == sent.last?.id else { return }
             isPlaying = false
             needsReload = true
             if continueAfterWindow() { return }
@@ -423,6 +437,15 @@ public final class Player {
     private func adoptLoaded(_ id: UUID) {
         guard let url = engine.enqueuedURL(for: id) ?? sent.first(where: { $0.id == id })?.url else { return }
         loaded = (id, url)
+    }
+
+    /// Puts the current entry back on where it was, on a new URL (`loaded` already holds it unless `rebuild`).
+    private func restartCurrent(rebuild: Bool) {
+        let resumeAt = position
+        syncEngine(rebuildCurrent: rebuild)
+        if resumeAt > 0 { engine.seek(to: resumeAt) }
+        engine.play()
+        isPlaying = true
     }
 
     /// Loads the current entry from the start. The engine reloads it either way, so its URL is built afresh.

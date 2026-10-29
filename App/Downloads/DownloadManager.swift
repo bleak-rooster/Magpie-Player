@@ -206,13 +206,40 @@ final class DownloadManager {
         pump()
     }
 
-    /// Upcoming songs into the cache at the current network's quality; songs already stored are skipped.
+    /// Upcoming songs into the cache at the current network's quality; songs already stored are skipped. This is the
+    /// whole plan: a pre-download still queued (not started) for a song no longer in it is dropped.
     func preDownload(_ songs: [Song], quality: StreamQuality) {
+        let planned = Set(songs.map(\.id))
+        jobs.removeAll { $0.kind == .cache && !$0.isRunning && !planned.contains($0.songId) }
         for song in songs where kinds[song.id] == nil && !jobs.contains(where: { $0.songId == song.id })
             && !invalidPreDownloads.contains(Self.key(song.id, quality)) {
             jobs.append(Job(kind: .cache, metadata: AudioMetadata(song), quality: quality))
         }
         pump()
+    }
+
+    /// The song's file failed to play (damaged): it leaves the store. A download is fetched again, for each reason it
+    /// was kept; a cached song just goes.
+    func dropBadFile(songId: String) {
+        track { [weak self, store] gen in
+            guard let entry = await store.entry(songId: songId), let self, self.isLive(gen) else { return }
+            do {
+                if entry.kind == .cache {
+                    try await store.removeCache(songIds: [songId])
+                } else {
+                    for reason in entry.reasons { try await store.removeReason(reason, songIds: [songId]) }
+                }
+            } catch {
+                Log.logger("downloads").error("bad file removal failed: \(Log.category(of: error), privacy: .public)")
+                return
+            }
+            guard self.isLive(gen) else { return }
+            await self.refresh()
+            guard entry.kind == .download else { return }
+            for reason in entry.reasons.sorted(by: { "\($0)" < "\($1)" }) {
+                self.download([entry.metadata.song], reason: reason)
+            }
+        }
     }
 
     /// "Re-download in this format": each stored song is fetched again and swapped in by `AudioStore.replace`.

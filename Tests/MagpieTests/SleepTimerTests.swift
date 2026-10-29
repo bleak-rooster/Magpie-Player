@@ -39,17 +39,6 @@ private func close(_ a: [Float], _ b: [Float]) -> Bool {
     a.count == b.count && zip(a, b).allSatisfy { abs($0 - $1) < 0.001 }
 }
 
-@MainActor
-private func eventually(_ seconds: Double = 5, _ condition: () -> Bool) async -> Bool {
-    let deadline = Date().addingTimeInterval(seconds)
-    while Date() < deadline {
-        if condition() { return true }
-        await Task.yield()
-        try? await Task.sleep(for: .milliseconds(5))
-    }
-    return condition()
-}
-
 @MainActor @Suite struct SleepTimerTests {
     let engine = FakeEngine()
     func player() -> Player {

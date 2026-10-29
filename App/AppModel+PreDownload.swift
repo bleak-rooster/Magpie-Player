@@ -47,7 +47,21 @@ extension AppModel {
                 guard let self, self.downloads === manager else { return }
                 self.queueChanged(snapshot, previous: previous, manager: manager)
                 previous = snapshot
+                self.preDownloadSnapshot = snapshot
             }
+        }
+    }
+
+    /// A pre-download landed: once they pause for `cacheEvictionDebounce`, evict the cache down to its limit, so it
+    /// can't stay over it until the next song change.
+    func preDownloadLanded() {
+        guard let manager = downloads else { return }
+        cacheEviction?.cancel()
+        let delay = cacheEvictionDebounce
+        cacheEviction = Task { [weak self] in
+            try? await Task.sleep(for: delay)
+            guard !Task.isCancelled, let self, self.downloads === manager else { return }
+            self.runCacheUpkeep(manager: manager, markPlayed: nil, gone: [], protecting: [])
         }
     }
 
@@ -61,20 +75,31 @@ extension AppModel {
         let protecting = Set([current].compactMap { $0 } + snapshot.upcoming.map(\.song.id))
         let played = previous.map { Self.songsPlayed(from: $0, to: snapshot) } ?? []
         let gone = snapshot.keepRecentlyPlayed ? [] : played.subtracting(protecting)
-        let limit = cacheLimitBytes
+        runCacheUpkeep(manager: manager, markPlayed: currentChanged ? current : nil, gone: gone, protecting: protecting)
+    }
+
+    /// Marks `markPlayed` played, drops `gone` from the cache, and evicts the cache to its limit. Upkeeps run one after
+    /// another; each removal spares `protecting` and what playback holds at that moment (the current song and the
+    /// engine's window), since a new queue may have started while this one waited. Store writes throw `notReady`
+    /// before first unlock: upkeep then waits for the next change.
+    private func runCacheUpkeep(manager: DownloadManager, markPlayed: String?, gone: Set<String>, protecting: Set<String>) {
         let prior = cacheUpkeep
-        // Store writes throw `notReady` before first unlock: upkeep then waits for the next change.
-        cacheUpkeep = Task { [weak self, store = manager.store] in
+        cacheUpkeep = Task { [weak self, player, store = manager.store] in
             await prior?.value
             @MainActor func live() -> Bool {
                 guard !Task.isCancelled, let self else { return false }
                 return self.downloads === manager
             }
+            #if DEBUG
+            if let hook = self?.beforeCacheUpkeepForTesting { await hook() }
+            #endif
             guard live() else { return }
-            if currentChanged, let current { try? await store.markPlayed(songId: current) }
+            let spared: @Sendable () async -> Set<String> = { @MainActor in protecting.union(player.windowSongIds) }
+            if let markPlayed { try? await store.markPlayed(songId: markPlayed) }
             var removed: [String] = []
-            if !gone.isEmpty, live() { removed += (try? await store.removeCache(songIds: gone)) ?? [] }
-            if live() { removed += (try? await store.evictCache(limit: limit, protecting: protecting)) ?? [] }
+            if !gone.isEmpty, live() { removed += (try? await store.removeCache(songIds: gone, sparing: spared)) ?? [] }
+            let limit = self?.cacheLimitBytes ?? 0
+            if live() { removed += (try? await store.evictCache(limit: limit, protecting: spared)) ?? [] }
             if !removed.isEmpty, live() { await manager.refresh() }
         }
     }

@@ -134,6 +134,15 @@ private final class TestClock: @unchecked Sendable {
         #expect(d1 != nil && s1 != nil)
     }
 
+    /// Task 13 fix I1: the protected songs are read when the removal runs, not when it was asked for.
+    @Test func liveProtectionIsReadAtRemovalTime() async throws {
+        let store = AudioStore(root: tmp, scope: "abc"); await store.load()
+        for id in ["s1", "s2", "s3"] { try await add(store, id, bytes: 400, kind: .cache, reason: nil, limit: nil) }
+        #expect(try await store.removeCache(songIds: ["s1", "s2"], sparing: { ["s1"] }) == ["s2"])
+        #expect(try await store.evictCache(limit: 0, protecting: { ["s3"] }) == ["s1"])
+        #expect(await store.entries().map(\.songId) == ["s3"])
+    }
+
     @Test func corruptIndexRebuildsFromSidecars() async throws {
         let store = AudioStore(root: tmp, scope: "abc"); await store.load()
         try await add(store, "s1", bytes: 100, kind: .download, reason: .song, limit: nil)

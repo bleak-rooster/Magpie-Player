@@ -186,6 +186,15 @@ final class AppModel {
     @ObservationIgnored var cacheUpkeep: Task<Void, Never>?
     /// Tests: the cache limit in bytes instead of the preference's.
     @ObservationIgnored var cacheLimitOverride: Int64?
+    /// The last queue state the pre-download watcher acted on (tests wait for it).
+    @ObservationIgnored var preDownloadSnapshot: PreDownloadSnapshot?
+    /// How long eviction waits after a pre-download lands, so a run of them costs one pass (tests shorten it).
+    @ObservationIgnored var cacheEvictionDebounce: Duration = .milliseconds(500)
+    @ObservationIgnored var cacheEviction: Task<Void, Never>?
+    #if DEBUG
+    /// Tests: runs at the start of each cache upkeep, before anything is removed.
+    @ObservationIgnored var beforeCacheUpkeepForTesting: (@MainActor () async -> Void)?
+    #endif
     @ObservationIgnored let audioFetcher: any AudioFetching
     /// The last stopped manager's cancel-settle-erase; the next manager starts after it.
     @ObservationIgnored var downloadsTeardown: Task<Void, Never>?
@@ -256,11 +265,13 @@ final class AppModel {
         self.player = Player(engine: engine ?? AVQueueEngine(),
                              scrobbler: NavidromeScrobbler(box: box, counting: counting),
                              urls: NavidromeStreamURLs(box: box, quality: self.qualityBox,
-                                                       localURL: { [localFiles] in localFiles.url(for: $0) }),
+                                                       localURL: { [localFiles] in localFiles.url(for: $0) },
+                                                       localFailed: { [localFiles] in localFiles.markFailed($0) }),
                              isFind: { findsIdentity.isFind($0) },
                              gain: { replayGain.mode.volume(for: $0.replayGain) })
         self.sleepTimer = SleepTimer(player: player)
         applyEngineWindow()
+        localFiles.setOnFailed { [weak self] in self?.downloads?.dropBadFile(songId: $0) }
         #if os(iOS)
         if systemNowPlaying {
             nowPlaying = NowPlayingBridge(

@@ -125,10 +125,37 @@ final class ReplayGainBox: Sendable {
 
 /// The songs on the phone (downloads and cache), by song id: what `DownloadManager.localFiles` last said. The player
 /// is built before the model (and its manager) exist, so stream URLs read the files from here; empty when signed out.
+///
+/// A file that failed to play is left out from then on, until the store no longer lists it (it was dropped; a
+/// fresh download of it counts again), and `onFailed` tells the app.
 final class LocalFilesBox: Sendable {
-    private let lock = OSAllocatedUnfairLock<[String: URL]>(initialState: [:])
-    func url(for songId: String) -> URL? { lock.withLock { $0[songId] } }
-    func set(_ files: [String: URL]) { lock.withLock { $0 = files } }
+    private struct State {
+        var files: [String: URL] = [:]
+        var bad: Set<String> = []
+        var onFailed: (@MainActor @Sendable (String) -> Void)?
+    }
+
+    private let lock = OSAllocatedUnfairLock(initialState: State())
+
+    func url(for songId: String) -> URL? { lock.withLock { $0.bad.contains(songId) ? nil : $0.files[songId] } }
+
+    func set(_ files: [String: URL]) {
+        lock.withLock {
+            $0.files = files
+            $0.bad = $0.bad.filter { files[$0] != nil }
+        }
+    }
+
+    func setOnFailed(_ handler: (@MainActor @Sendable (String) -> Void)?) { lock.withLock { $0.onFailed = handler } }
+
+    /// The file of `songId` failed to play.
+    @MainActor func markFailed(_ songId: String) {
+        let handler = lock.withLock { s -> (@MainActor @Sendable (String) -> Void)? in
+            s.bad.insert(songId)
+            return s.onFailed
+        }
+        handler?(songId)
+    }
 }
 
 /// Stream URLs built against the client's active base address and the current quality. After a failover the app
@@ -140,16 +167,29 @@ final class NavidromeStreamURLs: StreamURLProvider {
     /// The song's file on the phone, preferred over streaming (Task 13): it plays with no network.
     let localURL: @MainActor (String) -> URL?
 
-    init(box: ClientBox, quality: QualityBox, localURL: @escaping @MainActor (String) -> URL? = { _ in nil }) {
-        self.box = box; self.quality = quality; self.localURL = localURL
+    /// The song's file failed to play (Task 13 fix): the app drops it.
+    let localFailed: @MainActor (String) -> Void
+
+    init(box: ClientBox, quality: QualityBox, localURL: @escaping @MainActor (String) -> URL? = { _ in nil },
+         localFailed: @escaping @MainActor (String) -> Void = { _ in }) {
+        self.box = box; self.quality = quality; self.localURL = localURL; self.localFailed = localFailed
     }
 
     func streamURL(for song: Song) -> URL {
         if let local = localURL(song.id) { return local }
-        let q = quality.value
         // The queue is emptied on sign-out, so a missing client only happens in a race; the item fails.
+        return remoteURL(for: song) ?? URL(string: "about:blank")!
+    }
+
+    private func remoteURL(for song: Song) -> URL? {
+        let q = quality.value
         return box.client?.streamURL(songId: song.id, maxBitRate: q.maxBitRate, format: q.format)
-            ?? URL(string: "about:blank")!
+    }
+
+    /// The file is dropped; the song streams at the current quality instead. (Offline is Task 14's to answer nil.)
+    func localFileFailed(_ song: Song) -> URL? {
+        localFailed(song.id)
+        return remoteURL(for: song)
     }
 
     /// The untranscoded stream, nil for a local file. Whether it is a fallback is the player's call (it compares

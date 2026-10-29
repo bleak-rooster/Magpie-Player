@@ -76,17 +76,6 @@ final class FakeFetcher: AudioFetching, @unchecked Sendable {
     }
 }
 
-/// Polls `condition` until it holds or the deadline passes (no fixed sleeps).
-@MainActor
-private func eventually(_ seconds: Double = 5, _ condition: () async -> Bool) async -> Bool {
-    let deadline = Date().addingTimeInterval(seconds)
-    while Date() < deadline {
-        if await condition() { return true }
-        try? await Task.sleep(for: .milliseconds(5))
-    }
-    return await condition()
-}
-
 /// Holds chosen songs between "bytes arrived" and "written to the store" (`beforeStoreForTesting`).
 @MainActor
 final class StoreGate {
