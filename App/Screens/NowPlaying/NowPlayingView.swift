@@ -92,7 +92,7 @@ struct NowPlayingView: View {
             }
             .accessibilityElement(children: .combine)
             Spacer()
-            Color.clear.frame(width: Tokens.minHitSize, height: Tokens.minHitSize)
+            SleepTimerMenu()
         }
         .buttonStyle(.plain)
     }

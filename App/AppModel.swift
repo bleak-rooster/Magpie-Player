@@ -48,6 +48,8 @@ final class AppModel {
 
     private(set) var session: Session?
     let player: Player
+    /// Sleep timer (fade out, then pause, or stop after the current song).
+    let sleepTimer: SleepTimer
     var theme: Theme
     /// Layout, playback, downloads, scrobbling and genres; change it through `updatePreferences`.
     var preferences: Preferences
@@ -240,6 +242,7 @@ final class AppModel {
                              urls: NavidromeStreamURLs(box: box, quality: self.qualityBox),
                              isFind: { findsIdentity.isFind($0) },
                              gain: { replayGain.mode.volume(for: $0.replayGain) })
+        self.sleepTimer = SleepTimer(player: player)
         #if os(iOS)
         if systemNowPlaying {
             nowPlaying = NowPlayingBridge(
