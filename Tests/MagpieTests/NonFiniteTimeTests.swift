@@ -37,14 +37,14 @@ import Testing
         #expect(player.position == 0)
     }
 
-    @Test(arguments: [Double.nan, .infinity, -.infinity, 1e300])
+    @Test(arguments: [Double.nan, .infinity, -.infinity, 1e300, -1e300])
     func lockScreenSecondsNeverTrap(_ bad: Double) {
         _ = NowPlayingBridge.wholeSeconds(bad)
         #expect(NowPlayingBridge.wholeSeconds(.nan) == 0)
         #expect(NowPlayingBridge.wholeSeconds(61.9) == 61)
     }
 
-    @Test(arguments: [Double.nan, .infinity, -.infinity, 1e300])
+    @Test(arguments: [Double.nan, .infinity, -.infinity, 1e300, -1e300])
     func clocksNeverTrap(_ bad: Double) {
         #expect(!DurationText.clock(bad).isEmpty)
         _ = DurationText.minutes(bad)

@@ -83,6 +83,7 @@ import UIKit
         try await Task.sleep(for: .seconds(1))
 
         // The error line and the Up next row may each be measured once; nothing else changes height.
+        // Cap 6: each part (error line, hint, Up next) may legitimately settle once per flap phase; a feedback loop blows far past it.
         #expect(flapping.count <= 6, "stores while flapping: \(flapping.map { "\($0.0)=\($0.1)" })")
         #expect(writes.log.count == settled, "still storing after the flapping stopped: \(writes.log.dropFirst(settled).map { "\($0.0)=\($0.1)" })")
         queue?.dismiss(animated: false)

@@ -121,7 +121,7 @@ enum DurationText {
     /// `3:58`, `1:02:03`.
     static func clock(_ t: TimeInterval) -> String {
         // NaN or infinity shows 0:00 rather than trap in Int(_:).
-        let s = t.isFinite ? max(0, Int(min(t, 1e9).rounded(.down))) : 0
+        let s = t.isFinite ? Int(min(max(t, 0), 1e9).rounded(.down)) : 0
         return s >= 3600 ? String(format: "%d:%02d:%02d", s / 3600, s / 60 % 60, s % 60)
                          : String(format: "%d:%02d", s / 60, s % 60)
     }
