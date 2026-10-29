@@ -22,10 +22,16 @@ private let noNetwork = NetworkStatus(isConnected: false, isCellular: false, isC
     let defaults = UserDefaults(suiteName: "OfflineAppTests.\(UUID().uuidString)")!
     let transport = HostSwitchTransport()
     let engine = FakeEngine()
+    /// What `/auth/login` answers (tests make it fail while `/rest/ping` still answers).
+    let loginStatus = OSAllocatedUnfairLock(initialState: 200)
 
     init() {
         transport.inner.stub(pathSuffix: "/rest/ping", body: ok)
-        transport.inner.stub(method: "POST", pathSuffix: "/auth/login", body: loginJSON)
+        let status = loginStatus
+        transport.inner.stub(method: "POST", pathSuffix: "/auth/login") { _ in
+            let code = status.withLock { $0 }
+            return MockTransport.Response(status: code, body: code == 200 ? loginJSON : Data())
+        }
         transport.inner.stub(pathSuffix: "/api/song", body: Data("[]".utf8), headers: ["X-Total-Count": "0"])
         transport.inner.stub(pathSuffix: "/rest/getAlbumList2", body: Data(#"{"subsonic-response":{"status":"ok","version":"1.16.1","albumList2":{"album":[]}}}"#.utf8))
     }
@@ -105,13 +111,31 @@ private let noNetwork = NetworkStatus(isConnected: false, isCellular: false, isC
         #expect(await eventually { self.engine.setItemsCalls.last!.items.count == 3 })
     }
 
+    /// Automatic offline (the server went away): the stream that fails gives way to the next song on the phone.
+    /// (Fix round 2: Offline mode On doesn't wait for the failure; see `forcedOnStopsTheStreamingSong`.)
     @Test func offlineCurrentStreamFailureSkipsToNextLocal() async throws {
         let model = try await signedInModel(fetcher: FakeFetcher())
         model.download([song("s3")], reason: .song); await model.downloads!.settled()
         model.play([song("s1"), song("s2"), song("s3")], startAt: 0)      // s1 streams
-        model.updatePreferences { $0.downloads.offlineMode = .on }
+        transport.setDown(["192.168.1.2"])
+        await model.checkReachability(); await model.checkReachability()   // two failed reconnects: offline
+        #expect(model.isOffline && model.player.queue.current?.song.id == "s1")
         model.player.handle(.failed(model.player.queue.current!.id, "offline"))
         #expect(model.player.queue.current?.song.id == "s3" && model.player.isPlaying && model.player.lastError == nil)
+    }
+
+    /// Offline mode On: a song still streaming stops at once, for the next song on the phone, or pauses.
+    @Test func forcedOnStopsTheStreamingSong() async throws {
+        let model = try await signedInModel(fetcher: FakeFetcher())
+        model.download([song("s3")], reason: .song); await model.downloads!.settled()
+        model.play([song("s1"), song("s2"), song("s3")], startAt: 0)      // s1 streams
+        model.updatePreferences { $0.downloads.offlineMode = .on }
+        #expect(model.player.queue.current?.song.id == "s3" && model.player.isPlaying)
+        #expect(engine.setItemsCalls.last!.items.allSatisfy { $0.1.isFileURL })
+        model.updatePreferences { $0.downloads.offlineMode = .automatic }
+        model.play([song("s1")], startAt: 0)
+        model.updatePreferences { $0.downloads.offlineMode = .on }
+        #expect(!model.player.isPlaying && model.player.lastError == "You're offline")
     }
 
     @Test func lidarrActionsDisabledOffline() async throws {
@@ -245,18 +269,30 @@ private let noNetwork = NetworkStatus(isConnected: false, isCellular: false, isC
     /// pull to refresh and coming to the foreground.
     @Test func forcedOnSendsNothing() async throws {
         let lidarr = try connectedLidarr()
-        let online = makeModel(fetcher: FakeFetcher(), lidarrStore: lidarr)
+        let tokens = MemoryTokenStore(); try tokens.save("lb-token")
+        let onlineFetcher = FakeFetcher()
+        let online = makeModel(fetcher: onlineFetcher, lidarrStore: lidarr, tokenStore: tokens)
         try await online.signIn(urls: [home], username: "admin", password: "pw")
         online.download([coverSong("s1")], reason: .album("al-1"), coverArtId: "al-1")
         await online.downloads!.settled()
+        try await Task.sleep(for: .milliseconds(300))   // the signed-in model's own start-up work is done
+        // A pre-download in flight when On is chosen is cancelled, and nothing more is fetched.
+        online.updatePreferences { $0.downloads.preDownload = 1 }
+        onlineFetcher.hold(after: onlineFetcher.urls.count)
+        online.play([coverSong("s1"), song("s3")], startAt: 0)
+        #expect(await eventually { onlineFetcher.inFlight == 1 })
+        let fetched = onlineFetcher.urls.count
+        let seen = recordRequests()
         online.updatePreferences { $0.downloads.offlineMode = .on }
+        #expect(await eventually { onlineFetcher.inFlight == 0 }, "the pre-download in flight is cancelled")
+        onlineFetcher.release()
+        await online.downloads!.settled()
+        #expect(onlineFetcher.urls.count == fetched && online.downloads!.localFiles["s3"] == nil)
         online.stopDownloads(erase: false)
         await online.downloadsTeardown?.value
-        try await Task.sleep(for: .milliseconds(300))   // the signed-in model's own start-up work is done
 
-        let seen = recordRequests()
         let f = FakeFetcher()
-        let model = makeModel(fetcher: f, lidarrStore: lidarr)                 // launch
+        let model = makeModel(fetcher: f, lidarrStore: lidarr, tokenStore: tokens)   // launch
         #expect(model.isOffline && model.serverReachable)
         model.resumeSavedSession()                                             // resume
         await model.downloads!.settled()
@@ -268,6 +304,12 @@ private let noNetwork = NetworkStatus(isConnected: false, isCellular: false, isC
         await model.checkReachability()                                        // pull to refresh, offline
         model.isForeground = false; model.isForeground = true                  // foreground
         _ = try? await model.request { try await $0.albumList(.newest, size: 1, offset: 0) }
+        let found = try await model.carPlaySearch("t")                         // CarPlay search
+        #expect(found.library.songs.map(\.id) == ["s1"] && found.notYet.isEmpty)
+        _ = try? await model.mergedSearch().runReportingLibraryFailure("t")    // the phone's search, called directly
+        #expect(await model.madeForYouTracks(MBID("2b9a3b3a-1f8e-4b55-9a0e-6f1f7c1c2d3e")!) == nil)   // Made for you tracks
+        await #expect(throws: ListenBrainzTokenError.self) { try await model.saveListenBrainzToken("other") }
+        #expect(await model.artistNotYetAlbums(Artist(id: "ar", name: "A", albumCount: 1), library: []).isEmpty)
         try await Task.sleep(for: .milliseconds(300))
         #expect(seen.urls.isEmpty, "sent: \(seen.urls.map(\.path))")
         #expect(f.urls.isEmpty)
@@ -296,6 +338,8 @@ private let noNetwork = NetworkStatus(isConnected: false, isCellular: false, isC
         let songs = [song("s1"), song("s2"), song("s3")]
         transport.setDown(["192.168.1.2"])
         model.download(songs, reason: .album("a1")); await model.downloads!.settled()
+        #expect(await eventually { model.reachability.failures >= 1 }, "the probe after the failure fails too: a drop")
+        await model.downloads!.settled()
         #expect(model.downloads!.failed.isEmpty)
         #expect(model.downloads!.localFiles.count == 1)
         #expect(model.downloadStatus(songs.map(\.id), reason: .album("a1")) == .waitingForConnection)
@@ -359,6 +403,34 @@ private let noNetwork = NetworkStatus(isConnected: false, isCellular: false, isC
         #expect(await eventually { model.preDownloadSnapshot?.current?.song.id == "s3" })
         await model.cacheUpkeep?.value
         #expect(model.downloads!.localFiles["s2"] != nil, "nothing leaves the cache offline")
+    }
+
+    // MARK: - Fix round 2
+
+    /// B: the server answers ping but every login fails: suspect ends offline within two probes, with the stream
+    /// that failed moving on to the song on the phone instead of waiting for ever.
+    @Test func loginFailuresEndOffline() async throws {
+        let model = try await signedInModel(fetcher: FakeFetcher())
+        model.download([song("s2")], reason: .song); await model.downloads!.settled()
+        model.reachability.suspectInterval = .milliseconds(50)
+        model.reachability.interval = .milliseconds(50)
+        model.play([song("s1"), song("s2")], startAt: 0)
+        loginStatus.withLock { $0 = 500 }
+        model.player.handle(.failed(model.player.queue.current!.id, "The network connection was lost."))
+        model.noteUnreachable()
+        #expect(await eventually(3) { model.isOffline })
+        #expect(await eventually { model.player.queue.current?.song.id == "s2" && model.player.isPlaying })
+    }
+
+    /// B: a refused login (401) means the server answers: not offline, not suspect, and the sign-in error shows.
+    @Test func refusedLoginIsNotOffline() async throws {
+        let model = try await signedInModel(fetcher: FakeFetcher())
+        loginStatus.withLock { $0 = 401 }
+        model.noteUnreachable()
+        await model.checkReachability()
+        #expect(!model.isOffline && !model.reachability.isSuspect && model.reachability.authRejected)
+        #expect(throws: NavidromeError.badCredentials) { try model.rethrowAuthRejection() }
+        #expect(BrowseErrorCopy.message(for: NavidromeError.badCredentials) == ConnectErrorCopy.badCredentials)
     }
 
     func coverSong(_ id: String) -> Song {

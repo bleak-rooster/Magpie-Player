@@ -384,6 +384,18 @@ public final class Player {
         restartCurrent(rebuild: true)
     }
 
+    /// The current song can't play right now and mustn't go on streaming (Offline mode On): the next song that can
+    /// plays, or the player pauses showing `message`. A song playing from the phone is left alone.
+    public func stopUnplayableCurrent(message: String) {
+        guard let current = queue.current, !isPlayable(current.song), loaded?.url.isFileURL != true else { return }
+        if skipToNextPlayable() { return }
+        engine.pause()
+        isPlaying = false
+        lastError = message
+        failedEntryId = current.id
+        needsReload = true
+    }
+
     /// Waits for scrobble requests already started (tests; app suspension).
     public func waitForPendingScrobbles() async {
         while let task = pendingScrobbles.values.first {

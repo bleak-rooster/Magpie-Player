@@ -1,5 +1,6 @@
 import Foundation
 import MagpieCore
+import NavidromeKit
 import Observation
 import os
 import Playback
@@ -27,6 +28,8 @@ final class OfflineBox: Sendable {
     var interval: Duration = .seconds(30)
     /// Controller ruling (a): a suspect server counts as unreachable after this long, or after 2 failed reconnects.
     var offlineAfter: TimeInterval = 10
+    /// The last reconnect's login was refused (401/403): the server answers, the password doesn't work.
+    var authRejected = false
 
     var isSuspect: Bool { since != nil }
 }
@@ -66,6 +69,7 @@ extension AppModel {
     func reconnectFailed() {
         guard !isForcedOffline else { return }
         reachability.failures += 1
+        downloads?.serverDropConfirmed()
         noteUnreachable()
     }
 
@@ -123,10 +127,43 @@ extension AppModel {
         stopProbes()
         r.failures = 0
         r.since = nil
+        r.authRejected = false
         if !serverReachable { serverReachable = true }
         guard wasDown else { return }
-        downloads?.networkChanged()
+        downloads?.serverAnswered()   // downloads that failed meanwhile count as attempts, and the rest go again
         player.retryAfterFailure()
+    }
+
+    /// A reconnect's login (fix round 2, B). A refusal (401/403) means the server answered: it is reachable, and
+    /// `request` throws the sign-in error instead of going offline. Any other failure counts as a failed reconnect.
+    func reconnectLogin(_ client: NavidromeClient, replacing old: NavidromeClient) async -> LoginResult? {
+        do {
+            let login = try await client.connect()
+            reachability.authRejected = false
+            return login
+        } catch {
+            guard session?.client === old else { return nil }   // signed out or in meanwhile
+            if Self.isAuthRejection(error) {
+                noteReachable()
+                reachability.authRejected = true
+            } else {
+                reconnectFailed()
+            }
+            return nil
+        }
+    }
+
+    nonisolated static func isAuthRejection(_ error: Error) -> Bool {
+        switch error as? NavidromeError {
+        case .badCredentials?: true
+        case .http(let status)?: status == 401 || status == 403
+        default: false
+        }
+    }
+
+    /// `request` after a failed reconnect whose login was refused: the sign-in error, not the connection one.
+    func rethrowAuthRejection() throws {
+        if reachability.authRejected { throw NavidromeError.badCredentials }
     }
 
     /// Probes the session's addresses once. One that answers is moved to and logged in to afresh (a launch with no
@@ -155,6 +192,10 @@ extension AppModel {
         player.isPlayable = offline ? { [localFiles] in localFiles.hasFile($0.id) } : { _ in true }
         player.upcomingURLsChanged()
         downloads?.networkChanged()   // manual downloads wait while offline, pre-downloads stop; both go again after
+        if forced {
+            // On sends nothing: a song still streaming gives way to the next one on the phone, or pauses.
+            player.stopUnplayableCurrent(message: Self.offlineCopy)
+        }
         if offline {
             player.retryAfterFailure()   // a song that failed while the server was suspect: on to the next one here
         } else {

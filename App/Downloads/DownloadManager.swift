@@ -50,6 +50,11 @@ final class DownloadManager {
         /// False for a song already stored (it only gains a reason) and once the bytes have arrived: a network
         /// flip then leaves the job alone.
         var needsNetwork = true
+        /// Connection failures while the server still answered (fix round 2, C): the third is "Couldn't download".
+        var connectionAttempts = 0
+        /// It failed to connect and waits for the next probe to say whether the server dropped (`serverAnswered`,
+        /// `serverDropConfirmed`).
+        var awaitingVerdict = false
 
         var songId: String { metadata.songId }
         /// Pre-downloads are the only jobs that never wait for Wi-Fi.
@@ -343,12 +348,35 @@ final class DownloadManager {
         blockedOnStore()
     }
 
+    /// How many connection failures, with the server answering each time, make a download "Couldn't download".
+    static let maxConnectionAttempts = 3
+
+    /// The server answered the probe after connection failures: those were real attempts (a song that times out on
+    /// a server that answers). The third makes the download "Couldn't download"; the others go again now.
+    func serverAnswered() {
+        for i in jobs.indices where jobs[i].awaitingVerdict {
+            jobs[i].awaitingVerdict = false
+            jobs[i].connectionAttempts += 1
+        }
+        let spent = jobs.filter { $0.connectionAttempts >= Self.maxConnectionAttempts && !$0.isRunning }
+        jobs.removeAll { job in spent.contains { $0.id == job.id } }
+        failed += spent
+        savePending()
+        networkChanged()
+    }
+
+    /// The probe after connection failures failed too: the server dropped, so those failures don't count.
+    func serverDropConfirmed() {
+        for i in jobs.indices { jobs[i].awaitingVerdict = false }
+    }
+
     /// Queues again what waits for Wi-Fi, what failed and what "Downloads are full" stopped.
     func retryWaiting() {
         requeueStoppedByFull()
         for var job in failed {
             job.state = .queued
             job.needsNetwork = true
+            job.connectionAttempts = 0
             jobs.append(job)
         }
         failed = []
@@ -630,9 +658,11 @@ final class DownloadManager {
         Log.logger("downloads").error("download failed: \(Log.category(of: error), privacy: .public)")
         guard let i = jobs.firstIndex(where: { $0.id == id }) else { return }
         if jobs[i].isManual, AppModel.isConnectionError(error) {
-            // The server dropped (I3): never "Couldn't download"; it waits and goes again once the server answers.
+            // Maybe the server dropped (I3): it waits while the app probes the server. A drop it confirms costs
+            // nothing; a server that answers makes this a real attempt (`serverAnswered`).
             jobs[i].state = .waiting
             jobs[i].needsNetwork = true
+            jobs[i].awaitingVerdict = true
             onUnreachable?()
             return
         }

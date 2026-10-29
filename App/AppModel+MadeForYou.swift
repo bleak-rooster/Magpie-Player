@@ -49,6 +49,7 @@ extension AppModel {
     /// is missing songs, so it is never kept).
     /// A read that outlived the token it was made with (saved again, replaced or removed) is dropped too (B-M8).
     func madeForYouTracks(_ id: MBID) async -> [MadeForYouRow]? {
+        guard !isOffline else { return nil }   // Task 14
         guard let token = tokenStore.load(), let made = madeForYou() else { return nil }
         let generation = listenBrainzTokenGeneration
         let index = await matchIndex?.index ?? .empty
@@ -91,7 +92,7 @@ extension AppModel {
     /// The artist's albums Lidarr knows that the library doesn't have (`library`: the albums the page shows).
     /// Empty when Lidarr isn't connected or can't be read. Read-only.
     func artistNotYetAlbums(_ artist: Artist, library: [Album]) async -> [NotYetAlbum] {
-        guard let lidarr = lidarrClient else { return [] }
+        guard !isOffline, let lidarr = lidarrClient else { return [] }   // offline: nothing asked of Lidarr
         return await ArtistNotYet.albums(artist: artist.name, mbid: artist.mbid, library: library, lidarr: lidarr)
     }
 }

@@ -2,6 +2,7 @@ import CarPlayUI
 import Foundation
 import MagpieCore
 import MatchIndex
+import Playback
 import Requests
 import Search
 
@@ -67,6 +68,11 @@ extension AppModel {
     /// The phone's merged search with a short deadline for outside sources: library songs and albums, then songs not
     /// in the library (albums and artists from outside aren't offered in the car).
     func carPlaySearch(_ query: String) async throws -> CarPlaySearchResult {
+        if isOffline {   // Task 14: what's on the phone, nothing from the server or outside
+            let found = await OfflineSearch(catalog: offlineCatalog).sections(query)
+            return CarPlaySearchResult(library: LibrarySearchResult(songs: found.songs + found.recentlyPlayed,
+                                                                    albums: found.albums), notYet: [])
+        }
         let sections = try await mergedSearch(libraryTimeout: Self.carPlayLibraryTimeout,
                                                 sourceTimeout: Self.carPlaySourceTimeout).runReportingLibraryFailure(query)
         return CarPlaySearchResult(library: LibrarySearchResult(songs: sections.songs, albums: sections.albums),

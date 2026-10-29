@@ -539,6 +539,7 @@ final class AppModel {
             return try noteLocalSuccess(await op(client))
         } catch where Self.isConnectionError(error) {
             guard await reconnect(rebuildAlways: false), let retry = session?.client else {
+                try rethrowAuthRejection()   // the server answered and refused the login: say so, don't go offline
                 if session?.client === client { noteUnreachable() }   // not a session that has since changed
                 throw error
             }
@@ -594,12 +595,13 @@ final class AppModel {
             if session?.client === old.client { reconnectFailed() }   // counts towards Automatic going offline
             return false
         }
-        if base == old.activeBase, !rebuildAlways {   // a blip; the same address answers again
+        // A blip; the same address answers again. While suspect, a ping isn't enough: the login must work too (B).
+        if base == old.activeBase, !rebuildAlways, !reachability.isSuspect {
             noteReachable()
             return true
         }
         guard let client = makeClient(Self.preferring(base, in: old.endpoint), old.credentials)?.client,
-              let login = try? await client.connect() else { return false }
+              let login = await reconnectLogin(client, replacing: old.client) else { return false }
         guard let current = session, current.client === old.client else { return false }   // signed out/in meanwhile
         session = Session(client: client, endpoint: old.endpoint, credentials: old.credentials,
                           activeBase: base, isAdmin: login.isAdmin)
@@ -827,9 +829,9 @@ final class AppModel {
     func mergedSearch(libraryTimeout: Duration = MergedSearch.libraryTimeout,
                       sourceTimeout: Duration = MergedSearch.sourceTimeout) -> MergedSearch {
         // A9: the token only ever goes to api.listenbrainz.org; the client never sends it to labs.
-        var sources: [MergedSearch.Source] = [.listenBrainz(ListenBrainzClient(transport: transport, token: tokenStore.load()),
-                                                            timeout: sourceTimeout)]
-        if let lidarr = lidarrClient { sources.append(.lidarr(lidarr, timeout: sourceTimeout)) }
+        var sources: [MergedSearch.Source] = isOffline ? [] : [   // offline: no outside source (Task 14)
+            .listenBrainz(ListenBrainzClient(transport: transport, token: tokenStore.load()), timeout: sourceTimeout)]
+        if !isOffline, let lidarr = lidarrClient { sources.append(.lidarr(lidarr, timeout: sourceTimeout)) }
         let index = matchIndex
         return MergedSearch(
             library: { [weak self] q in

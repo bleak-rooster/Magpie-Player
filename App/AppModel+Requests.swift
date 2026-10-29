@@ -260,6 +260,7 @@ extension AppModel {
     func saveListenBrainzToken(_ token: String) async throws {
         let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return try setListenBrainzToken(nil) }
+        guard !isForcedOffline else { throw ListenBrainzTokenError.unreachable }   // Offline mode On: nothing is sent
         do {
             _ = try await ListenBrainzClient(transport: transport, token: trimmed, limiter: listenBrainzLimiter).tokenUser()
         } catch ListenBrainzError.unauthorized {

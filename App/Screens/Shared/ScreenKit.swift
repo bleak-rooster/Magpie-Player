@@ -114,6 +114,8 @@ enum BrowseErrorCopy {
     static func message(for error: Error) -> String {
         if case NavidromeError.unexpectedResponse = error { return unexpectedResponse }
         if case NavidromeError.unexpectedData = error { return unexpectedData }
+        // The server answered and refused the saved password (T14: a refused reconnect isn't "offline").
+        if case NavidromeError.badCredentials = error { return ConnectErrorCopy.badCredentials }
         return AppModel.isConnectionError(error)
             ? "Your music server isn't answering right now."
             : "Something went wrong. Try again in a moment."
