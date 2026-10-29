@@ -84,6 +84,28 @@ public final class AVQueueEngine: PlaybackEngine {
     /// Diagnostics: the AVQueuePlayer's rate (0 while paused or waiting for the audio session).
     public var playerRate: Float { player.rate }
 
+    /// Diagnostics: the current item's status (nil with nothing loaded).
+    public var currentItemStatus: AVPlayerItem.Status? { player.currentItem?.status }
+
+    /// OSStatus codes that mean the bytes aren't audio this phone can decode: 'typ?' (unsupported file type),
+    /// 'dta?' (invalid file), 'fmt?' (unsupported data format), and -12873, which iOS 27 puts under
+    /// `failedToLoadMediaData` (-11849) for a local file whose bytes aren't audio (measured; `-11849` alone can also
+    /// be I/O, so only this underlying status counts).
+    nonisolated static let undecodableStatuses: Set<Int> = [1954115647, 1685348671, 1718449215, -12873]
+
+    /// Whether `error` says the file itself is damaged or not audio (format, parse or decode), as opposed to a failure
+    /// that may pass (an interruption, a media-services reset, the network). Looks through underlying errors.
+    public nonisolated static func isUndecodable(_ error: (any Error)?) -> Bool {
+        guard let error else { return false }
+        let ns = error as NSError
+        if ns.domain == AVFoundationErrorDomain,
+           [AVError.Code.fileFormatNotRecognized, .decodeFailed, .failedToParse].map(\.rawValue).contains(ns.code) {
+            return true
+        }
+        if ns.domain == NSOSStatusErrorDomain, undecodableStatuses.contains(ns.code) { return true }
+        return isUndecodable(ns.userInfo[NSUnderlyingErrorKey] as? Error)
+    }
+
     public init(activateSession: @escaping @Sendable () throws -> Void = AVQueueEngine.activateSharedSession) {
         activate = activateSession
         (events, continuation) = AsyncStream.makeStream(bufferingPolicy: .bufferingNewest(64))
@@ -226,7 +248,8 @@ public final class AVQueueEngine: PlaybackEngine {
         let observation = item.observe(\.status, options: [.new]) { [weak self] item, _ in
             guard item.status == .failed else { return }
             let message = item.error?.localizedDescription ?? "Playback failed"
-            Task { @MainActor [weak self] in self?.itemFailed(oid, message) }
+            let undecodable = AVQueueEngine.isUndecodable(item.error)
+            Task { @MainActor [weak self] in self?.itemFailed(oid, message, undecodable: undecodable) }
         }
         enqueued[oid] = Enqueued(item: item, id: entry.id, url: entry.url, statusObservation: observation)
         apply(volumes[entry.id] ?? 1, to: item, force: true)
@@ -298,7 +321,8 @@ public final class AVQueueEngine: PlaybackEngine {
         // reported as current and it failed, halt on it instead of reporting the next one.
         if let dropped = enqueued.values.first(where: { !live.contains(ObjectIdentifier($0.item)) && $0.id == reportedId }),
            dropped.item.status == .failed {
-            haltOnFailure(dropped.id, dropped.item.error?.localizedDescription ?? "Playback failed")
+            haltOnFailure(dropped.id, dropped.item.error?.localizedDescription ?? "Playback failed",
+                          undecodable: Self.isUndecodable(dropped.item.error))
             return
         }
         for (oid, e) in enqueued where !live.contains(oid) {
@@ -313,29 +337,29 @@ public final class AVQueueEngine: PlaybackEngine {
 
     /// A failed current item stops playback (no auto-advance past it). A failed upcoming item is
     /// dropped from the AVQueuePlayer; `itemEnded` enqueues a fresh copy when it is reached.
-    private func itemFailed(_ oid: ObjectIdentifier, _ message: String) {
+    private func itemFailed(_ oid: ObjectIdentifier, _ message: String, undecodable: Bool) {
         guard let info = enqueued[oid] else { return }
         if info.id == reportedId {
-            haltOnFailure(info.id, message)
+            haltOnFailure(info.id, message, undecodable: undecodable)
             return
         }
         if let item = player.items().first(where: { ObjectIdentifier($0) == oid }) {
             player.remove(item)
             forget(item)
         }
-        continuation.yield(.failed(info.id, message))
+        continuation.yield(.failed(info.id, message, undecodable: undecodable))
     }
 
     /// Stops on the failed current entry: pause, empty the AVQueuePlayer (it may already sit on the
     /// next song), keep `reportedId` on the failed entry, and report the failure once.
-    private func haltOnFailure(_ id: UUID, _ message: String) {
+    private func haltOnFailure(_ id: UUID, _ message: String, undecodable: Bool) {
         guard haltedId != id else { return }
         wantsToPlay = false
         player.pause()
         clearPlayer()
         reportedId = id
         haltedId = id
-        continuation.yield(.failed(id, message))
+        continuation.yield(.failed(id, message, undecodable: undecodable))
     }
 
     private func tick(_ time: CMTime) {
@@ -385,11 +409,12 @@ public final class AVQueueEngine: PlaybackEngine {
         notificationTokens.append(center.addObserver(forName: AVPlayerItem.failedToPlayToEndTimeNotification,
                                                      object: nil, queue: .main) { [weak self] note in
             let oid = (note.object as AnyObject?).map(ObjectIdentifier.init)
-            let message = (note.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? Error)?
-                .localizedDescription ?? "Playback failed"
+            let error = note.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? Error
+            let message = error?.localizedDescription ?? "Playback failed"
+            let undecodable = AVQueueEngine.isUndecodable(error)
             MainActor.assumeIsolated {
                 guard let oid else { return }
-                self?.itemFailed(oid, message)
+                self?.itemFailed(oid, message, undecodable: undecodable)
             }
         })
     }

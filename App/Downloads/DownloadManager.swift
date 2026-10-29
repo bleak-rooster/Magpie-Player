@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 import MagpieCore
 import Observation
@@ -218,11 +219,15 @@ final class DownloadManager {
         pump()
     }
 
-    /// The song's file failed to play (damaged): it leaves the store. A download is fetched again, for each reason it
-    /// was kept; a cached song just goes.
+    /// The song's file failed to decode: checked again first (the store's own size check, and AVFoundation opening
+    /// it); a file that passes is kept (the song streams this session). One that fails leaves the store: a download is
+    /// fetched again with every reason it had (a playlist's included); a cached song just goes.
     func dropBadFile(songId: String) {
         track { [weak self, store] gen in
-            guard let entry = await store.entry(songId: songId), let self, self.isLive(gen) else { return }
+            guard await store.isReady(), let entry = await store.entry(songId: songId),
+                  let file = await store.localFiles()[songId] else { return }
+            guard !(await Self.isPlayableFile(file)) else { return }   // it opens: a failure that passed
+            guard let self, self.isLive(gen) else { return }
             do {
                 if entry.kind == .cache {
                     try await store.removeCache(songIds: [songId])
@@ -236,10 +241,27 @@ final class DownloadManager {
             guard self.isLive(gen) else { return }
             await self.refresh()
             guard entry.kind == .download else { return }
-            for reason in entry.reasons.sorted(by: { "\($0)" < "\($1)" }) {
-                self.download([entry.metadata.song], reason: reason)
+            let quality = self.preferences().normalised().quality
+            for reason in entry.reasons.sorted(by: { "\($0)" < "\($1)" })
+            where !self.jobs.contains(where: { $0.songId == songId && $0.kind == .download(reason) }) {
+                let playlistId: String? = if case let .playlist(id) = reason { id } else { nil }
+                self.jobs.append(Job(kind: .download(reason), metadata: entry.metadata, quality: quality,
+                                     playlistId: playlistId))
             }
+            self.savePending()
+            self.pump()
         }
+    }
+
+    /// A stored file the store would take (not empty) and AVFoundation can open as playable audio. A file that can't
+    /// be read right now (before first unlock) counts as playable: nothing is dropped for a failure that may pass.
+    nonisolated static func isPlayableFile(_ url: URL) async -> Bool {
+        guard let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize, size > 0 else { return false }
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return true }
+        let head = try? handle.read(upToCount: 16)
+        try? handle.close()
+        guard head?.isEmpty == false else { return true }
+        return (try? await AVURLAsset(url: url).load(.isPlayable)) ?? false
     }
 
     /// "Re-download in this format": each stored song is fetched again and swapped in by `AudioStore.replace`.

@@ -266,12 +266,13 @@ final class AppModel {
                              scrobbler: NavidromeScrobbler(box: box, counting: counting),
                              urls: NavidromeStreamURLs(box: box, quality: self.qualityBox,
                                                        localURL: { [localFiles] in localFiles.url(for: $0) },
-                                                       localFailed: { [localFiles] in localFiles.markFailed($0) }),
+                                                       localFailed: { [localFiles] in localFiles.markFailed($0, damaged: $1) },
+                                                       isOnline: { network.status.isConnected }),
                              isFind: { findsIdentity.isFind($0) },
                              gain: { replayGain.mode.volume(for: $0.replayGain) })
         self.sleepTimer = SleepTimer(player: player)
         applyEngineWindow()
-        localFiles.setOnFailed { [weak self] in self?.downloads?.dropBadFile(songId: $0) }
+        localFiles.setOnDamaged { [weak self] in self?.downloads?.dropBadFile(songId: $0) }
         #if os(iOS)
         if systemNowPlaying {
             nowPlaying = NowPlayingBridge(

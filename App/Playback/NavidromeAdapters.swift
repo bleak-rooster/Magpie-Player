@@ -126,13 +126,14 @@ final class ReplayGainBox: Sendable {
 /// The songs on the phone (downloads and cache), by song id: what `DownloadManager.localFiles` last said. The player
 /// is built before the model (and its manager) exist, so stream URLs read the files from here; empty when signed out.
 ///
-/// A file that failed to play is left out from then on, until the store no longer lists it (it was dropped; a
-/// fresh download of it counts again), and `onFailed` tells the app.
+/// A file that failed to play is left out for the rest of the session (it streams instead), until the store no longer
+/// lists it (it was dropped; a fresh download of it counts again). Only a damaged one is handed to `onDamaged`, which
+/// checks it and may drop it; any other failure keeps the file.
 final class LocalFilesBox: Sendable {
     private struct State {
         var files: [String: URL] = [:]
         var bad: Set<String> = []
-        var onFailed: (@MainActor @Sendable (String) -> Void)?
+        var onDamaged: (@MainActor @Sendable (String) -> Void)?
     }
 
     private let lock = OSAllocatedUnfairLock(initialState: State())
@@ -146,13 +147,13 @@ final class LocalFilesBox: Sendable {
         }
     }
 
-    func setOnFailed(_ handler: (@MainActor @Sendable (String) -> Void)?) { lock.withLock { $0.onFailed = handler } }
+    func setOnDamaged(_ handler: (@MainActor @Sendable (String) -> Void)?) { lock.withLock { $0.onDamaged = handler } }
 
-    /// The file of `songId` failed to play.
-    @MainActor func markFailed(_ songId: String) {
+    /// The file of `songId` failed to play (`damaged`: a format or decode error).
+    @MainActor func markFailed(_ songId: String, damaged: Bool) {
         let handler = lock.withLock { s -> (@MainActor @Sendable (String) -> Void)? in
             s.bad.insert(songId)
-            return s.onFailed
+            return damaged ? s.onDamaged : nil
         }
         handler?(songId)
     }
@@ -167,12 +168,17 @@ final class NavidromeStreamURLs: StreamURLProvider {
     /// The song's file on the phone, preferred over streaming (Task 13): it plays with no network.
     let localURL: @MainActor (String) -> URL?
 
-    /// The song's file failed to play (Task 13 fix): the app drops it.
-    let localFailed: @MainActor (String) -> Void
+    /// The song's file failed to play (`damaged`: a decode error), online: the app streams it this session, and
+    /// checks a damaged file (dropping it if it really is).
+    let localFailed: @MainActor (_ songId: String, _ damaged: Bool) -> Void
+    /// Whether there is a connection right now; offline a failed file is kept and the song skipped.
+    let isOnline: @MainActor () -> Bool
 
     init(box: ClientBox, quality: QualityBox, localURL: @escaping @MainActor (String) -> URL? = { _ in nil },
-         localFailed: @escaping @MainActor (String) -> Void = { _ in }) {
+         localFailed: @escaping @MainActor (String, Bool) -> Void = { _, _ in },
+         isOnline: @escaping @MainActor () -> Bool = { true }) {
         self.box = box; self.quality = quality; self.localURL = localURL; self.localFailed = localFailed
+        self.isOnline = isOnline
     }
 
     func streamURL(for song: Song) -> URL {
@@ -186,10 +192,12 @@ final class NavidromeStreamURLs: StreamURLProvider {
         return box.client?.streamURL(songId: song.id, maxBitRate: q.maxBitRate, format: q.format)
     }
 
-    /// The file is dropped; the song streams at the current quality instead. (Offline is Task 14's to answer nil.)
-    func localFileFailed(_ song: Song) -> URL? {
-        localFailed(song.id)
-        return remoteURL(for: song)
+    /// Online: the song streams at the current quality instead (and a damaged file is checked). Offline: nil, and
+    /// nothing is marked or dropped, so a good download is never lost to a failure that may pass.
+    func localFileFailed(_ song: Song, undecodable: Bool) -> URL? {
+        guard isOnline(), let remote = remoteURL(for: song) else { return nil }
+        localFailed(song.id, undecodable)
+        return remote
     }
 
     /// The untranscoded stream, nil for a local file. Whether it is a fallback is the player's call (it compares

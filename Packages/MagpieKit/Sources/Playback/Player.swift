@@ -315,17 +315,17 @@ public final class Player {
             maybeSubmitScrobble()
         case .stalled:
             break
-        case .failed(let id, let message):
+        case .failed(let id, let message, let undecodable):
             // Only the current entry matters; the engine retries a failed upcoming item when it
             // is reached. Stop the engine too, so a dead server can't race through the queue.
             guard let current = queue.current, id == current.id else { return }
             let key = FallbackKey(entryId: id, songId: current.song.id)
             let loadedURL = loaded?.url
             if !fellBack.contains(key), let loadedURL, loadedURL.isFileURL {
-                // The song's file on the phone is damaged: the app drops it and the song streams instead, once.
-                // Without a connection there is no stream, and it is skipped like any song that can't play.
+                // The song's file on the phone failed: it streams instead, once (the app drops the file only when it
+                // is damaged). Without a connection there is no stream, and it is skipped like any song that can't play.
                 fellBack.insert(key)
-                if let stream = urls.localFileFailed(current.song) {
+                if let stream = urls.localFileFailed(current.song, undecodable: undecodable) {
                     loaded = (current.id, stream)
                     restartCurrent(rebuild: false)
                     return

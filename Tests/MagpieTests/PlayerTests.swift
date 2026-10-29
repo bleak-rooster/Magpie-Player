@@ -56,8 +56,10 @@ final class FakeURLs: StreamURLProvider {
     /// What `localFileFailed` answers; the songs it was asked about.
     var streamInstead: URL?
     var failedLocal: [String] = []
-    func localFileFailed(_ song: Song) -> URL? {
+    var failedUndecodable: [Bool] = []
+    func localFileFailed(_ song: Song, undecodable: Bool) -> URL? {
         failedLocal.append(song.id)
+        failedUndecodable.append(undecodable)
         return streamInstead
     }
 }
@@ -490,8 +492,8 @@ extension PlayerTests {
         player.play([Self.song("1")], startAt: 0)
         let id = player.queue.current!.id
         player.handle(.time(id, 30, duration: 200))
-        player.handle(.failed(id, "cannot decode"))
-        #expect(urls.failedLocal == ["1"])
+        player.handle(.failed(id, "cannot decode", undecodable: true))
+        #expect(urls.failedLocal == ["1"] && urls.failedUndecodable == [true])
         #expect(engine.setItemsCalls.last!.items[0].1 == urls.streamInstead)
         #expect(engine.seeks.last == 30 && player.isPlaying && player.lastFallbackSongId == nil)
         player.handle(.failed(id, "still broken"))

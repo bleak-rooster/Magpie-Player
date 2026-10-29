@@ -3,6 +3,7 @@ import MagpieCore
 import MagpieTestSupport
 import NavidromeKit
 import Playback
+import Synchronization
 import Testing
 @testable import Magpie
 
@@ -228,7 +229,8 @@ private let home = URL(string: "http://192.168.1.2:4533")!
         await model.cacheUpkeep?.value
     }
 
-    /// Ruling (a): a damaged download, online, streams instead; its file is dropped and it is downloaded again.
+    /// Ruling (a): a download that fails to decode, online, streams instead; its file fails the check again, so it is
+    /// dropped and downloaded again (FakeFetcher's files are zeros, not audio).
     /// One retry: a failure of the stream is final.
     @Test func corruptDownloadStreamsAndIsFetchedAgain() async throws {
         let f = FakeFetcher()
@@ -239,7 +241,7 @@ private let home = URL(string: "http://192.168.1.2:4533")!
         model.play([song("s1")], startAt: 0)
         #expect(engine.setItemsCalls.last!.items[0].1 == file)
         let id = model.player.queue.current!.id
-        model.player.handle(.failed(id, "cannot decode"))
+        model.player.handle(.failed(id, "cannot decode", undecodable: true))
         let now = engine.setItemsCalls.last!.items[0].1
         #expect(!now.isFileURL && now.query?.contains("id=s1") == true)
         #expect(model.player.isPlaying && model.player.lastError == nil && model.player.lastFallbackSongId == nil)
@@ -260,7 +262,7 @@ private let home = URL(string: "http://192.168.1.2:4533")!
         #expect(await eventually { self.engine.setItemsCalls.last!.items.count == 2
             && self.engine.setItemsCalls.last!.items[1].1.isFileURL })
         model.player.handle(.itemChanged(model.player.queue.upcoming[0].id))   // s2 plays from its cached file
-        model.player.handle(.failed(model.player.queue.current!.id, "cannot decode"))
+        model.player.handle(.failed(model.player.queue.current!.id, "cannot decode", undecodable: true))
         #expect(!engine.setItemsCalls.last!.items[0].1.isFileURL && model.player.isPlaying)
         #expect(await eventually { await model.downloads!.store.entry(songId: "s2") == nil })
         await model.downloads!.settled()
@@ -293,10 +295,12 @@ private let home = URL(string: "http://192.168.1.2:4533")!
         model.updatePreferences { $0.downloads.preDownload = 3; $0.downloads.concurrent = 1 }
         model.play((1...5).map { song("s\($0)") }, startAt: 0)
         #expect(await eventually { f.inFlight == 1 })
+        model.download([song("m1")], reason: .song)                 // a manual download queued beside them
         model.play([song("t1"), song("t2")], startAt: 0)
         #expect(await eventually { model.preDownloadSnapshot?.current?.song.id == "t1" })
         f.release(); await model.downloads!.settled()
-        #expect(fetchedIds(f) == ["s2", "t2"])
+        #expect(fetchedIds(f) == ["s2", "m1", "t2"], "the manual download survives the new plan")
+        #expect(await model.downloads!.store.entry(songId: "m1")?.kind == .download)
     }
 
     /// Minor 4: on mobile data pre-downloads still run, at the mobile quality.
@@ -338,9 +342,79 @@ private let home = URL(string: "http://192.168.1.2:4533")!
         #expect(file.pathExtension == "ogg")
         model.play([opus], startAt: 0)
         #expect(avEngine.enqueuedItems.first?.url == file)
-        #expect(await eventually(10) { model.player.position > 0.3 }, "it plays")
+        #expect(await eventually(10) { avEngine.currentItemStatus == .readyToPlay }, "AVPlayer opens the stored .ogg")
         #expect(model.player.lastError == nil)
         model.player.toggle()
+    }
+
+    // MARK: - Fix round 2: which failures drop a file
+
+    /// A failure that may pass (an interruption, a media-services reset) streams the song this session and keeps the file.
+    @Test func transientFailureKeepsTheFile() async throws {
+        let f = FakeFetcher()
+        let model = try await signedInModel(fetcher: f)
+        model.updatePreferences { $0.downloads.preDownload = 0 }
+        model.download([song("s1")], reason: .song); await model.downloads!.settled()
+        let file = try #require(model.downloads!.localFiles["s1"])
+        model.play([song("s1")], startAt: 0)
+        model.player.handle(.failed(model.player.queue.current!.id, "media services were reset"))
+        #expect(!engine.setItemsCalls.last!.items[0].1.isFileURL && model.player.isPlaying)
+        await model.downloads!.settled()
+        #expect(await model.downloads!.store.entry(songId: "s1")?.kind == .download)
+        #expect(FileManager.default.fileExists(atPath: file.path) && model.downloads!.localFiles["s1"] == file)
+        #expect(model.localFiles.url(for: "s1") == nil, "streamed for the rest of the session")
+        #expect(fetchedIds(f) == ["s1"])
+    }
+
+    /// A decode failure whose file opens fine when checked again keeps the file (the song streams this session).
+    @Test func decodeFailureThatRevalidatesKeepsTheFile() async throws {
+        let fetcher = OggFetcher()
+        let model = try await signedInModel(fetcher: fetcher)
+        model.updatePreferences { $0.downloads.preDownload = 0; $0.downloads.quality = .opus128 }
+        let opus = Song(id: "o1", title: "T", artist: "A", album: "B", duration: 1.5)
+        model.download([opus], reason: .song); await model.downloads!.settled()
+        let file = try #require(model.downloads!.localFiles["o1"])
+        let stored = try Data(contentsOf: file)
+        model.play([opus], startAt: 0)
+        model.player.handle(.failed(model.player.queue.current!.id, "cannot decode", undecodable: true))
+        #expect(!engine.setItemsCalls.last!.items[0].1.isFileURL)
+        await model.downloads!.settled()
+        #expect(await model.downloads!.store.entry(songId: "o1") != nil)
+        #expect(FileManager.default.fileExists(atPath: file.path))
+        #expect(fetcher.count == 1, "kept, not dropped and fetched again")
+        #expect(try Data(contentsOf: file) == stored)
+    }
+
+    /// Offline a failed download is never dropped or marked: no stream, so the song is skipped and the file kept.
+    @Test func offlineFailureNeverDropsADownload() async throws {
+        let f = FakeFetcher()
+        let model = try await signedInModel(fetcher: f)
+        model.updatePreferences { $0.downloads.preDownload = 0 }
+        model.download([song("s1")], reason: .song); await model.downloads!.settled()
+        let file = try #require(model.downloads!.localFiles["s1"])
+        (model.network as? FakeNetwork)?.status = NetworkStatus(isConnected: false, isCellular: false, isConstrained: false)
+        model.play([song("s1")], startAt: 0)
+        model.player.handle(.failed(model.player.queue.current!.id, "cannot decode", undecodable: true))
+        #expect(model.player.lastError == "cannot decode" && !model.player.isPlaying)
+        await model.downloads!.settled()
+        #expect(await model.downloads!.store.entry(songId: "s1")?.kind == .download)
+        #expect(model.localFiles.url(for: "s1") == file, "still the phone's copy")
+        #expect(fetchedIds(f) == ["s1"])
+    }
+
+    /// Minor 1: a damaged song of a downloaded playlist is downloaded again for that playlist.
+    @Test func reQueuedSongKeepsItsPlaylist() async throws {
+        let f = FakeFetcher()
+        let model = try await signedInModel(fetcher: f)
+        model.updatePreferences { $0.downloads.preDownload = 0 }
+        let list = DownloadedPlaylist(id: "p1", name: "Mix", coverArtId: nil, songIds: ["s1"], savedAt: .now)
+        model.download([song("s1")], reason: .playlist("p1"), playlist: list); await model.downloads!.settled()
+        model.play([song("s1")], startAt: 0)
+        model.player.handle(.failed(model.player.queue.current!.id, "cannot decode", undecodable: true))
+        #expect(await eventually { self.fetchedIds(f).filter { $0 == "s1" }.count == 2 })
+        await model.downloads!.settled()
+        #expect(await model.downloads!.store.entry(songId: "s1")?.reasons == [.playlist("p1")])
+        #expect(model.downloadStatus(["s1"], reason: .playlist("p1")) == .downloaded)
     }
 }
 
@@ -351,7 +425,11 @@ private let home = URL(string: "http://192.168.1.2:4533")!
 
 /// Answers every fetch with the Ogg Opus fixture, as Navidrome's `format=opus` stream.
 final class OggFetcher: AudioFetching, Sendable {
+    private let calls = Mutex(0)
+    var count: Int { calls.withLock { $0 } }
+
     func fetch(_ url: URL, allowsCellular: Bool) async throws -> (file: URL, mimeType: String?) {
+        calls.withLock { $0 += 1 }
         let file = FileManager.default.temporaryDirectory.appending(path: "ogg-\(UUID().uuidString).tmp")
         try OggOpusFixture.data.write(to: file)
         return (file, "audio/ogg")

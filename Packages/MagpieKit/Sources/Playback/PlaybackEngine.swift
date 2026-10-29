@@ -9,7 +9,9 @@ public enum EngineEvent: Sendable, Equatable {
     /// transcodes). Carries the id so a tick buffered from the previous item can be dropped.
     case time(UUID, TimeInterval, duration: TimeInterval?)
     case stalled
-    case failed(UUID, String)
+    /// The item with this id can't play. `undecodable`: the file itself is damaged or not audio (a format or decode
+    /// error), as opposed to a failure that may pass (an interruption, a media-services reset, the network).
+    case failed(UUID, String, undecodable: Bool = false)
     /// The last item the engine holds finished: the entry with this id. `Player` drops one about a list it has since
     /// replaced (a stale end that would otherwise skip songs).
     case ended(UUID)
@@ -61,13 +63,14 @@ public protocol StreamURLProvider: AnyObject {
     /// loaded with isn't original, so a session re-login (new auth salt in the URL) doesn't cause a pointless
     /// fallback and a false hint (an `originalURL` equal to the loaded URL is never a fallback either).
     func isOriginal(_ url: URL) -> Bool
-    /// The song's file on the phone failed to play: forget the file, and answer the server stream to play instead
-    /// (nil when there is none right now, e.g. offline). `Player` asks once per entry.
-    func localFileFailed(_ song: Song) -> URL?
+    /// The song's file on the phone failed to play (`undecodable`: the file itself looks damaged). Answers the server
+    /// stream to play instead, nil when there is none right now (offline: the song is skipped and its file kept).
+    /// `Player` asks once per entry.
+    func localFileFailed(_ song: Song, undecodable: Bool) -> URL?
 }
 
 public extension StreamURLProvider {
     func originalURL(for song: Song) -> URL? { nil }
     func isOriginal(_ url: URL) -> Bool { false }
-    func localFileFailed(_ song: Song) -> URL? { nil }
+    func localFileFailed(_ song: Song, undecodable: Bool) -> URL? { nil }
 }

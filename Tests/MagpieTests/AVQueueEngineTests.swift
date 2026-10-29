@@ -40,12 +40,12 @@ import Playback
         if !playFirst { engine.play() }
 
         let deadline = Date().addingTimeInterval(10)
-        while Date() < deadline, !events.contains(where: { if case .failed(badId, _) = $0 { true } else { false } }) {
+        while Date() < deadline, !events.contains(where: { if case .failed(badId, _, _) = $0 { true } else { false } }) {
             try await Task.sleep(for: .milliseconds(50))
         }
         try await Task.sleep(for: .seconds(1.5))   // give any auto-advance time to surface
 
-        #expect(events.contains { if case .failed(badId, _) = $0 { true } else { false } }, "\(events)")
+        #expect(events.contains { if case .failed(badId, _, _) = $0 { true } else { false } }, "\(events)")
         #expect(!events.contains(.itemChanged(goodId)), "must not move on to the next song: \(events)")
 
         // The user skips: the engine loads the next song even though it holds nothing after the halt.
@@ -53,6 +53,39 @@ import Playback
         try await Task.sleep(for: .milliseconds(300))
         collector.cancel()
         #expect(events.contains(.itemChanged(goodId)), "\(events)")
+    }
+
+    /// Task 13: only format, parse and decode errors mean a damaged file; a failure that may pass doesn't.
+    @Test func undecodableClassification() {
+        #expect(AVQueueEngine.isUndecodable(AVError(.fileFormatNotRecognized)))
+        #expect(AVQueueEngine.isUndecodable(AVError(.decodeFailed)))
+        #expect(AVQueueEngine.isUndecodable(AVError(.failedToParse)))
+        let typ = NSError(domain: NSOSStatusErrorDomain, code: 1954115647)
+        #expect(AVQueueEngine.isUndecodable(NSError(domain: AVFoundationErrorDomain, code: AVError.Code.unknown.rawValue,
+                                                    userInfo: [NSUnderlyingErrorKey: typ])), "through the underlying error")
+        let notAudio = NSError(domain: NSOSStatusErrorDomain, code: -12873)
+        #expect(AVQueueEngine.isUndecodable(NSError(domain: AVFoundationErrorDomain, code: -11849,
+                                                    userInfo: [NSUnderlyingErrorKey: notAudio])), "measured for non-audio bytes")
+        #expect(!AVQueueEngine.isUndecodable(AVError(.failedToLoadMediaData)), "on its own it can be I/O")
+        #expect(!AVQueueEngine.isUndecodable(AVError(.mediaServicesWereReset)))
+        #expect(!AVQueueEngine.isUndecodable(URLError(.notConnectedToInternet)))
+        #expect(!AVQueueEngine.isUndecodable(nil))
+    }
+
+    /// A file of bytes that aren't audio fails as undecodable through the real engine.
+    @Test func garbageFileFailsAsUndecodable() async throws {
+        let bad = FileManager.default.temporaryDirectory.appending(path: "garbage-\(UUID().uuidString).mp3")
+        try Data((0..<4096).map { UInt8(truncatingIfNeeded: $0 &* 31) }).write(to: bad)
+        defer { try? FileManager.default.removeItem(at: bad) }
+        let engine = AVQueueEngine(activateSession: {})
+        var events: [EngineEvent] = []
+        let collector = Task { for await e in engine.events { events.append(e) } }
+        let id = UUID()
+        engine.setItems([(id, bad)], startAt: 0)
+        engine.play()
+        try await Self.waitUntil { events.contains { if case .failed(id, _, _) = $0 { true } else { false } } }
+        collector.cancel()
+        #expect(events.contains { if case .failed(id, _, true) = $0 { true } else { false } }, "\(events)")
     }
 
     /// Polls every 20 ms for up to 5 s.
