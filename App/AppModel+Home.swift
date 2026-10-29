@@ -33,8 +33,11 @@ extension AppModel {
     static let homeShelfSize = 12
 
     /// The sections Home shows now: the owner's order and switches; Made for you only with a token; offline, Downloaded.
-    var homeSections: [HomeSection] {
-        preferences.layout.visibleHomeSections(offline: isOffline, hasListenBrainzToken: hasListenBrainzToken, carPlay: false)
+    var homeSections: [HomeSection] { homeSections(carPlay: false) }
+
+    /// The phone's sections, or the car's (no Made for you: the car has no screen for it).
+    func homeSections(carPlay: Bool) -> [HomeSection] {
+        preferences.layout.visibleHomeSections(offline: isOffline, hasListenBrainzToken: hasListenBrainzToken, carPlay: carPlay)
     }
 
     /// A read of Home's sections: the shelves with something in them, in the order asked, and the sections that
@@ -119,13 +122,12 @@ extension AppModel {
     /// The rows the Library shows now. Online: the owner's order and switches, Finds only once set up, Requests only
     /// with Lidarr connected. Offline (Task 14): Downloads, which always shows, and Genres (read from the phone) when
     /// switched on, in the owner's order.
-    var libraryRows: [LibraryRow] {
-        let layout = preferences.layout
-        guard isOffline else {
-            return layout.visibleLibraryRows(offline: false, findsSetUp: findsSetup?.library != nil,
-                                             lidarrConnected: lidarr != nil, carPlay: false)
-        }
-        return layout.library.entries.filter { $0.item == .downloads || ($0.item == .genres && $0.visible) }.map(\.item)
+    var libraryRows: [LibraryRow] { libraryRows(carPlay: false) }
+
+    /// The phone's rows, or the car's (no Songs, no Requests): one rule for both (`visibleLibraryRows`).
+    func libraryRows(carPlay: Bool) -> [LibraryRow] {
+        preferences.layout.visibleLibraryRows(offline: isOffline, findsSetUp: findsSetup?.library != nil,
+                                              lidarrConnected: lidarr != nil, carPlay: carPlay)
     }
 
     /// The Recently added grid at the bottom of the Library: its own switch, and never offline.

@@ -8,6 +8,11 @@ import MagpieCore
 /// A screen that a row pushes.
 public enum CPDestination: Sendable, Hashable {
     case playlists, artists, albums
+    /// Library rows from the owner's layout (Task 22); their screens are built in Task 23.
+    case genres, favourites, downloads, finds
+    case genreGroup(id: String, name: String)
+    /// An album on the phone (Downloads, or Home's Downloaded shelf): it opens with no server.
+    case downloadedAlbum(id: String, title: String)
     case album(id: String, title: String)
     case playlist(id: String, title: String)
     case artist(id: String, name: String)
@@ -21,8 +26,12 @@ public enum CPDestination: Sendable, Hashable {
         case .playlists: "Playlists"
         case .artists: "Artists"
         case .albums: "Albums"
-        case .album(_, let title), .playlist(_, let title): title
-        case .artist(_, let name): name
+        case .genres: "Genres"
+        case .favourites: "Favourites"
+        case .downloads: "Downloads"
+        case .finds: "Finds"
+        case .album(_, let title), .playlist(_, let title), .downloadedAlbum(_, let title): title
+        case .artist(_, let name), .genreGroup(_, let name): name
         case .searchResults(let query): query
         case .search: "Search"
         }
@@ -34,6 +43,9 @@ public enum CPPlayRequest: Sendable, Hashable {
     case songs([Song], startAt: Int)
     case album(id: String, shuffled: Bool)
     case artistShuffle(id: String)
+    /// A subgenre's songs, and a genre group's (Task 23).
+    case genre(name: String, shuffled: Bool)
+    case genreGroup(id: String, shuffled: Bool)
 }
 
 /// What tapping a row does. `.none` rows are shown disabled.
@@ -140,9 +152,6 @@ public enum CPLocalNetwork: Sendable, Hashable { case fine, pending, denied }
 
 /// Builds the row models for each CarPlay screen. All functions are pure.
 public enum CarPlayRows {
-    /// Albums per Home shelf: three shelves fit the 12-item limit some cars impose.
-    public static let homeShelfSize = 4
-
     public static func state(_ state: CarPlayState) -> [CPSectionModel] {
         let (id, title): (String, String) = switch state {
         case .locked: ("state.locked", "Locked until this iPhone is unlocked")
@@ -165,28 +174,6 @@ public enum CarPlayRows {
     }
 
     // MARK: Tab roots (depth 1)
-
-    public static func home(recent: [Album], newest: [Album], frequent: [Album]) -> [CPSectionModel] {
-        func shelf(_ key: String, _ header: String, _ albums: [Album]) -> CPSectionModel {
-            CPSectionModel(header: header, rows: unique(albums, \.id).prefix(homeShelfSize).map {
-                albumRow($0, id: "home.\(key).\($0.id)")
-            })
-        }
-        let sections = [
-            shelf("recent", "Jump back in", recent),
-            shelf("newest", "Recently added", newest),
-            shelf("frequent", "Most played", frequent),
-        ].filter { !$0.rows.isEmpty }
-        return sections.isEmpty ? state(.empty) : sections
-    }
-
-    public static func libraryRoot() -> [CPSectionModel] {
-        [CPSectionModel(header: nil, rows: [
-            CPRowModel(id: "library.playlists", title: "Playlists", action: .open(.playlists)),
-            CPRowModel(id: "library.artists", title: "Artists", action: .open(.artists)),
-            CPRowModel(id: "library.albums", title: "Albums", action: .open(.albums)),
-        ])]
-    }
 
     /// "Type a search" pushes the keyboard search; while driving the car may withhold the
     /// keyboard, and the row says so (same id either way, so the change is made in place).
@@ -340,7 +327,7 @@ public enum CarPlayRows {
 
     // MARK: Helpers
 
-    private static func albumRow(_ album: Album, id: String) -> CPRowModel {
+    static func albumRow(_ album: Album, id: String) -> CPRowModel {
         let name = display(album.name, untitledAlbum)
         return CPRowModel(id: id, title: name, detail: album.artist, artworkKey: album.coverArtId,
                           action: .open(.album(id: album.id, title: name)))
@@ -356,16 +343,16 @@ public enum CarPlayRows {
     }
 
     /// Rows are matched by id (in-place updates, artwork): an id a server page repeats is shown once.
-    private static func unique<T>(_ items: some Sequence<T>, _ id: KeyPath<T, String>) -> [T] {
+    static func unique<T>(_ items: some Sequence<T>, _ id: KeyPath<T, String>) -> [T] {
         var seen = Set<String>()
         return items.filter { seen.insert($0[keyPath: id]).inserted }
     }
 
-    private static func nonEmpty(_ rows: [CPRowModel]) -> [CPSectionModel] {
+    static func nonEmpty(_ rows: [CPRowModel]) -> [CPSectionModel] {
         rows.isEmpty ? state(.empty) : [CPSectionModel(header: nil, rows: rows)]
     }
 
-    private static func songCount(_ n: Int) -> String { n == 1 ? "1 song" : "\(n) songs" }
+    static func songCount(_ n: Int) -> String { n == 1 ? "1 song" : "\(n) songs" }
 
     static func duration(_ seconds: TimeInterval) -> String? {
         guard seconds.isFinite, seconds > 0, seconds < 1e9 else { return nil }   // Int(_:) traps on NaN and infinity

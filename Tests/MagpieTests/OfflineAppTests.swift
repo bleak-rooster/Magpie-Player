@@ -1,3 +1,4 @@
+import CarPlayUI
 import Foundation
 import MagpieCore
 import MagpieTestSupport
@@ -329,6 +330,16 @@ private let noNetwork = NetworkStatus(isConnected: false, isCellular: false, isC
             $0.layout.showsRecentlyAdded = true
         }
         #expect(model.libraryRows == [.genres, .downloads] && !model.showsRecentlyAddedGrid)
+        // The car (T22) mirrors it: Home is the Downloaded shelf, opened from the phone, and the Library the offline rows.
+        let car = CarPlayLibraryAdapter(model: model)
+        #expect(car.homeSections == [.downloaded] && car.libraryRows == [.genres, .downloads])
+        let carHome = CarPlayRows.home(try await car.homeShelves(car.homeSections,
+                                                                size: CarPlayRows.homeShelfSize(sectionCount: 1)))
+        #expect(carHome.map(\.header) == ["Downloaded"])
+        let carRows = carHome.flatMap(\.rows)
+        #expect(carRows.map(\.id) == ["home.downloaded.al-1"])
+        #expect(carRows.first?.action == .open(.downloadedAlbum(id: "al-1", title: carRows.first?.title ?? "")))
+        #expect(CarPlayRows.libraryRoot(car.libraryRows, hasFindsTab: true).flatMap(\.rows).map(\.title) == ["Genres", "Downloads"])
         await #expect(throws: (any Error).self) { try await model.songsPage(0) }
         await #expect(throws: (any Error).self) { try await model.favourites() }
         try await Task.sleep(for: .milliseconds(300))

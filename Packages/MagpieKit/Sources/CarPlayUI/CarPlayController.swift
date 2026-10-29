@@ -41,6 +41,15 @@ public protocol CarPlayLibrary: AnyObject, Sendable {
     var tryOffer: CPTryOffer { get }
     /// "Try it next" (D6): the phone's Try; with nothing playing, a library mix seeded by the artist starts first.
     func tryNext(_ recording: ExternalRecording) async -> CPTryResult
+
+    // Home and Library from the owner's layout (Task 22). Both lists are observable.
+
+    /// Home's sections, in the owner's order, that the car can show (offline: Downloaded).
+    var homeSections: [HomeSection] { get }
+    /// The Library's rows, in the owner's order, without Songs and Requests (offline: Downloads, and Genres if shown).
+    var libraryRows: [LibraryRow] { get }
+    /// The shelves for `sections` that have something in them, in that order, each at most `size` tiles.
+    func homeShelves(_ sections: [HomeSection], size: Int) async throws -> [CPHomeShelf]
 }
 
 /// What the car can show right now.
@@ -61,19 +70,21 @@ public enum CarPlayAvailability: Sendable, Hashable {
 @MainActor
 public final class CarPlayController: NSObject {
     private let interface: CPInterfaceController
-    private let library: any CarPlayLibrary
+    let library: any CarPlayLibrary
     private let player: Player
     private var sessionConfiguration: CPSessionConfiguration?
     private var keyboardLimited = false
 
     private var availability: CarPlayAvailability?
     private var tabBar: CPTabBarTemplate?
-    private var home: ListBinding?
-    private var libraryRoot: ListBinding?
-    private var findsRoot: ListBinding?
+    var home: ListBinding?
+    var libraryRoot: ListBinding?
+    var findsRoot: ListBinding?
     private var searchRoot: ListBinding?
-    private var bindings: [ObjectIdentifier: ListBinding] = [:]
-    private var watches: [Task<Void, Never>] = []
+    var bindings: [ObjectIdentifier: ListBinding] = [:]
+    var watches: [Task<Void, Never>] = []
+    /// Follows the owner's Home and Library layout for the tabs shown now (Task 22).
+    var layoutWatch: Task<Void, Never>?
 
     private var searchResults = LatestResults<CPListItem>()
     private var searchTask: Task<Void, Never>?
@@ -86,8 +97,6 @@ public final class CarPlayController: NSObject {
     /// The plain record shown for a not-yet row (no cover to put on its label).
     private var blankRecord: UIImage?
 
-    /// Home shelves ask for this many albums each (the rows are capped by `CarPlayRows`).
-    private static let homeFetchSize = CarPlayRows.homeShelfSize
     /// Navidrome's largest album-list page.
     private static let albumListSize = 500
     /// Artwork requests in flight per list.
@@ -154,10 +163,13 @@ public final class CarPlayController: NSObject {
         libraryRoot = bind(libraryList)
         findsRoot = findsList.map(bind)
         searchRoot = bind(searchList)
-        if let libraryRoot { apply(CarPlayRows.libraryRoot(), to: libraryRoot, placeholder: false) }
+        if let libraryRoot {
+            apply(CarPlayRows.libraryRoot(library.libraryRows, hasFindsTab: findsList != nil), to: libraryRoot, placeholder: false)
+        }
         refreshFindsRoot()
         refreshSearchRoot()
         loadHome()
+        watchLayout()
         interface.setRootTemplate(tabs, animated: false, completion: nil)
     }
 
@@ -170,16 +182,7 @@ public final class CarPlayController: NSObject {
     }
 
     private func loadHome() {
-        guard let home else { return }
-        let library = library
-        let size = Self.homeFetchSize
-        load(home) {
-            async let recent = library.albumList(.recent, size: size)
-            async let newest = library.albumList(.newest, size: size)
-            async let frequent = library.albumList(.frequent, size: size)
-            let (r, n, f) = try await (recent, newest, frequent)
-            return { _ in CarPlayRows.home(recent: r, newest: n, frequent: f) }
-        }
+        loadCustomHome()
     }
 
     /// The Finds tab shows the phone's shelf as it is now (days left are counted again on each refresh).
@@ -223,7 +226,7 @@ public final class CarPlayController: NSObject {
         return 1 + pushed.count
     }
 
-    private func perform(_ action: RowAction) {
+    func perform(_ action: RowAction) {
         switch action {
         case .none: break
         case .open(let destination): open(destination)
@@ -250,7 +253,7 @@ public final class CarPlayController: NSObject {
         load(binding, fetcher(for: destination))
     }
 
-    private typealias Content = @Sendable (String?) -> [CPSectionModel]
+    typealias Content = @Sendable (String?) -> [CPSectionModel]
 
     private func fetcher(for destination: CPDestination) -> @MainActor () async throws -> Content {
         let library = library
@@ -285,6 +288,8 @@ public final class CarPlayController: NSObject {
             }
         case .search:
             return { { _ in [] } }
+        default:
+            return customFetcher(for: destination)
         }
     }
 
@@ -319,6 +324,8 @@ public final class CarPlayController: NSObject {
                     showUnavailable(error)
                 }
             }
+        default:
+            playCustom(request)
         }
     }
 
@@ -501,7 +508,7 @@ public final class CarPlayController: NSObject {
 
     /// Fetches on the caller's behalf, then builds the rows off the main thread. A failure shows a
     /// state row only when the list has nothing real yet; otherwise what's shown stays.
-    private func load(_ binding: ListBinding, _ fetch: @escaping @MainActor () async throws -> Content) {
+    func load(_ binding: ListBinding, _ fetch: @escaping @MainActor () async throws -> Content) {
         binding.loadTask?.cancel()
         binding.loadTask = Task { [weak self] in
             do {
@@ -520,7 +527,7 @@ public final class CarPlayController: NSObject {
 
     /// Rebuilds the binding's rows (off main) for the song playing now and applies them. A build that finishes after
     /// a newer one started is dropped. Rows that only describe a state stay placeholders, so real rows replace them.
-    private func refresh(_ binding: ListBinding) async {
+    func refresh(_ binding: ListBinding) async {
         guard let content = binding.content else { return }
         binding.generation += 1
         let generation = binding.generation
@@ -530,7 +537,7 @@ public final class CarPlayController: NSObject {
         apply(sections, to: binding, placeholder: CarPlayRows.isPlaceholder(sections))
     }
 
-    private func apply(_ sections: [CPSectionModel], to binding: ListBinding, placeholder: Bool) {
+    func apply(_ sections: [CPSectionModel], to binding: ListBinding, placeholder: Bool) {
         let fitted = clamp(sections, maxItems: Int(CPListTemplate.maximumItemCount),
                            maxSections: Int(CPListTemplate.maximumSectionCount))
         if !binding.shown.isEmpty, !needsRebuild(old: binding.shown, new: fitted) {

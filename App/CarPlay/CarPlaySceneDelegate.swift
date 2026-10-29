@@ -51,7 +51,7 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
 /// The app's session, artwork cache and recent searches, as CarPlay reads them.
 @MainActor
 final class CarPlayLibraryAdapter: CarPlayLibrary {
-    private let model: AppModel
+    let model: AppModel
     private let recents: RecentSearches
 
     init(model: AppModel, recents: RecentSearches = RecentSearches()) {

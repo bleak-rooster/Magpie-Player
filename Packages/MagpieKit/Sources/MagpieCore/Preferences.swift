@@ -248,8 +248,12 @@ public struct LayoutPreferences: PreferenceArea {
         return home.visibleItems.filter { $0 != .madeForYou || (hasListenBrainzToken && !carPlay) }
     }
 
+    /// The Library rows to show, in the owner's order. Offline (the phone and the car alike): Downloads, which always
+    /// shows, and Genres (read from the phone) when switched on. The car never shows Songs or Requests (spec §3).
     public func visibleLibraryRows(offline: Bool, findsSetUp: Bool, lidarrConnected: Bool, carPlay: Bool) -> [LibraryRow] {
-        if offline { return [.downloads] }
+        if offline {
+            return library.entries.filter { $0.item == .downloads || ($0.item == .genres && $0.visible) }.map(\.item)
+        }
         return library.visibleItems.filter { row in
             switch row {
             case .finds: findsSetUp

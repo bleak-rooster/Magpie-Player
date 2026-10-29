@@ -199,7 +199,7 @@ private let lidarrScope = LidarrClient(base: lidarrBase, apiKey: "key", transpor
         let albums = try await model.request { try await $0.albumList(.newest, size: 24, offset: 0) }
         let artists = try await model.request { try await $0.artists() }
         let playlists = try await model.request { try await $0.playlists() }
-        #expect(CarPlayRows.home(recent: albums, newest: albums, frequent: albums) == CarPlayRows.state(.empty))
+        #expect(CarPlayRows.home([.jumpBackIn, .recentlyAdded, .mostPlayed].map { CPHomeShelf(section: $0, items: albums.map(CPHomeShelf.Item.album)) }) == CarPlayRows.state(.empty))
         #expect(CarPlayRows.artists(artists) == CarPlayRows.state(.empty))
         #expect(CarPlayRows.playlists(playlists) == CarPlayRows.state(.empty))
         model.play([], startAt: 0)
@@ -294,7 +294,7 @@ private let lidarrScope = LidarrClient(base: lidarrBase, apiKey: "key", transpor
         let albums = Self.names.enumerated().map { Self.album($0.offset, name: $0.element) }
         let screens: [[CPSectionModel]] = [
             CarPlayRows.albums(albums),
-            CarPlayRows.home(recent: albums, newest: albums, frequent: albums),
+            CarPlayRows.home([.jumpBackIn, .recentlyAdded, .mostPlayed].map { CPHomeShelf(section: $0, items: albums.map(CPHomeShelf.Item.album)) }),
             CarPlayRows.album(albums[0], playingId: nil),
             CarPlayRows.artists(albums.map { Artist(id: $0.id, name: $0.name, albumCount: 1) }),
             CarPlayRows.searchResults(LibrarySearchResult(songs: albums.flatMap { $0.songs ?? [] }, albums: albums, artists: []),
@@ -317,7 +317,7 @@ private let lidarrScope = LidarrClient(base: lidarrBase, apiKey: "key", transpor
         let album = Self.album(1, name: "")
         let rows = [
             CarPlayRows.albums([album]),
-            CarPlayRows.home(recent: [album], newest: [], frequent: []),
+            CarPlayRows.home([CPHomeShelf(section: .jumpBackIn, items: [.album(album)]), CPHomeShelf(section: .genres, items: [.genreGroup(id: "g", name: "", albumCount: 1)])]),
             CarPlayRows.artists([Artist(id: "ar1", name: "", albumCount: 1)]),
             CarPlayRows.playlists([Playlist(id: "p1", name: "", songCount: 1, duration: 1)]),
             CarPlayRows.album(album, playingId: nil),
@@ -339,7 +339,7 @@ private let lidarrScope = LidarrClient(base: lidarrBase, apiKey: "key", transpor
         let song = Song(id: "dup", title: "Song", artist: "A", album: "B", duration: 100)
         let screens: [[CPSectionModel]] = [
             CarPlayRows.albums([a, b]),
-            CarPlayRows.home(recent: [a, b], newest: [a, b], frequent: []),
+            CarPlayRows.home([CPHomeShelf(section: .jumpBackIn, items: [.album(a), .album(b)]), CPHomeShelf(section: .recentlyAdded, items: [.album(a), .album(b)])]),
             CarPlayRows.artists([Artist(id: "dup", name: "One", albumCount: 1), Artist(id: "dup", name: "Two", albumCount: 1)]),
             CarPlayRows.playlists([Playlist(id: "dup", name: "One", songCount: 1, duration: 1),
                                    Playlist(id: "dup", name: "Two", songCount: 1, duration: 1)]),

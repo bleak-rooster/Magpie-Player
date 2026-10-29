@@ -140,7 +140,21 @@ import Testing
                 == [.playlists, .artists, .albums, .genres, .favourites, .downloads])
         #expect(l.visibleLibraryRows(offline: false, findsSetUp: true, lidarrConnected: false, carPlay: false)
                 == [.playlists, .artists, .albums, .songs, .genres, .favourites, .downloads, .finds])
-        #expect(l.visibleLibraryRows(offline: true, findsSetUp: true, lidarrConnected: true, carPlay: false) == [.downloads])
+        #expect(l.visibleLibraryRows(offline: true, findsSetUp: true, lidarrConnected: true, carPlay: false) == [.genres, .downloads])
+    }
+
+    /// Offline (one rule for the phone and the car): Downloads, which always shows, and Genres (read from the phone)
+    /// when it is switched on, in the owner's order.
+    @Test func offlineLibraryRows() {
+        var l = LayoutPreferences.defaultValue
+        l.library.move(fromOffsets: IndexSet(integer: 6), toOffset: 0)   // Downloads first
+        for carPlay in [false, true] {
+            #expect(l.visibleLibraryRows(offline: true, findsSetUp: true, lidarrConnected: true, carPlay: carPlay) == [.downloads, .genres])
+        }
+        l.setLibraryRow(.genres, visible: false)
+        l.setLibraryRow(.downloads, visible: false)
+        #expect(l.visibleLibraryRows(offline: true, findsSetUp: false, lidarrConnected: false, carPlay: true) == [.downloads],
+                "Downloads shows offline even when switched off; Genres doesn't")
     }
 
     @Test func qualityStreamParameters() {

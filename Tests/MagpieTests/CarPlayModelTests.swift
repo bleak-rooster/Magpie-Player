@@ -127,6 +127,11 @@ import UIKit
             case .artist: CarPlayRows.artist(Artist(id: "r", name: "R", albumCount: 1), albums: [a])
             case .searchResults: CarPlayRows.searchResults(found, playingId: nil)
             case .search: [CPSectionModel(header: nil, rows: CarPlayRows.searchItems(found))]
+            case .downloadedAlbum: CarPlayRows.album(a, playingId: nil)
+            case .finds: CarPlayRows.finds(CPFindsShelf(newFinds: [CPFind(song: song("n"), daysLeft: 7, isNew: true)], finds: []),
+                                           playingId: nil)
+            // Task 23 builds these screens; until then they show a state row.
+            case .genres, .genreGroup, .favourites, .downloads: CarPlayRows.state(.empty)
             }
         }
         func walk(_ sections: [CPSectionModel], depth: Int) {
@@ -136,9 +141,12 @@ import UIKit
                 walk(screen(destination), depth: depth + 1)
             }
         }
-        let home = CarPlayRows.home(recent: [a], newest: [a], frequent: [a])
+        let home = CarPlayRows.home(HomeSection.allCases.map { section in
+            CPHomeShelf(section: section, items: [.album(a), .playlist(Playlist(id: "p", name: "P", songCount: 1, duration: 9)),
+                                                  .genreGroup(id: "rock", name: "Rock", albumCount: 1)])
+        })
         walk(home, depth: 1)
-        walk(CarPlayRows.libraryRoot(), depth: 1)
+        walk(CarPlayRows.libraryRoot(LibraryRow.allCases, hasFindsTab: false), depth: 1)
         walk(CarPlayRows.searchRoot(recents: ["glass"], keyboardLimited: false), depth: 1)
         // Finds (D12): a find plays; a not-yet song offers Try in a modal sheet. Neither pushes.
         let finds = CPFindsShelf(newFinds: [CPFind(song: song("n"), daysLeft: 7, isNew: true)],
@@ -346,7 +354,7 @@ import UIKit
         for state in [CarPlayState.locked, .notSetUp, .outOfReach, .failed, .empty, .findsOff] {
             #expect(CarPlayRows.isPlaceholder(CarPlayRows.state(state)))
         }
-        #expect(!CarPlayRows.isPlaceholder(CarPlayRows.libraryRoot()))
+        #expect(!CarPlayRows.isPlaceholder(CarPlayRows.libraryRoot(LibraryRow.allCases, hasFindsTab: true)))
         #expect(!CarPlayRows.isPlaceholder([]))
     }
 
