@@ -43,7 +43,7 @@ public final class NowPlayingBridge {
             var last: Snapshot?
             let snapshots = Observations { @MainActor in
                 Snapshot(entryId: player.queue.current?.id, isPlaying: player.isPlaying, duration: player.duration,
-                         second: Int(player.position), upcomingCount: player.queue.upcomingCount,
+                         second: NowPlayingBridge.wholeSeconds(player.position), upcomingCount: player.queue.upcomingCount,
                          isShuffled: player.isShuffled, repeatMode: player.repeatMode,
                          liked: player.queue.current.map { isLiked($0.song) } ?? false)
             }
@@ -54,6 +54,12 @@ public final class NowPlayingBridge {
                 self.publish(loadArtwork: entryChanged)
             }
         }
+    }
+
+    /// Whole seconds of a position, for the republish check; 0 for NaN or infinity, which `Int(_:)` traps on.
+    public nonisolated static func wholeSeconds(_ t: TimeInterval) -> Int {
+        guard t.isFinite else { return 0 }
+        return Int(min(max(t, -1e9), 1e9))
     }
 
     /// Removes remote-command handlers and clears Now Playing.
@@ -79,7 +85,7 @@ public final class NowPlayingBridge {
             MPMediaItemPropertyTitle: song.title,
             MPMediaItemPropertyArtist: song.artist,
             MPMediaItemPropertyAlbumTitle: song.album,
-            MPNowPlayingInfoPropertyElapsedPlaybackTime: player.position,
+            MPNowPlayingInfoPropertyElapsedPlaybackTime: player.position.isFinite ? player.position : 0,
             MPNowPlayingInfoPropertyPlaybackRate: player.isPlaying ? 1.0 : 0.0,
             MPNowPlayingInfoPropertyDefaultPlaybackRate: 1.0,
             MPNowPlayingInfoPropertyMediaType: MPNowPlayingInfoMediaType.audio.rawValue,

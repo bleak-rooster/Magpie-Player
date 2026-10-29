@@ -179,6 +179,7 @@ public final class Player {
     }
 
     public func seek(_ t: TimeInterval) {
+        guard t.isFinite else { return }   // NaN or infinity would trap where the position becomes whole seconds
         hasEnded = false
         engine.seek(to: t)
         position = t
@@ -297,10 +298,13 @@ public final class Player {
             topUpWindow()
         case .time(let id, let t, let d):
             guard id == queue.current?.id else { return }   // stale tick from the previous item
-            position = t
+            // A time that isn't a number (a stream that lost its clock) keeps the last position: NaN or infinity would
+            // trap where it becomes whole seconds (lock screen, the scrubber's clock).
+            guard t.isFinite else { return }
+            position = max(0, t)
             // The API's song duration wins (D45: Ogg and other transcoded lengths are estimates); the engine's only
             // fills in when the server gave none.
-            if let d, (queue.current?.song.duration ?? 0) <= 0 { duration = d }
+            if let d, d.isFinite, d > 0, (queue.current?.song.duration ?? 0) <= 0 { duration = d }
             maybeSubmitScrobble()
         case .stalled:
             break

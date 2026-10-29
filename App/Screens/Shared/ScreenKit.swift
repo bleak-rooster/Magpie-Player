@@ -120,7 +120,8 @@ enum BrowseErrorCopy {
 enum DurationText {
     /// `3:58`, `1:02:03`.
     static func clock(_ t: TimeInterval) -> String {
-        let s = max(0, Int(t.rounded(.down)))
+        // NaN or infinity shows 0:00 rather than trap in Int(_:).
+        let s = t.isFinite ? max(0, Int(min(t, 1e9).rounded(.down))) : 0
         return s >= 3600 ? String(format: "%d:%02d:%02d", s / 3600, s / 60 % 60, s % 60)
                          : String(format: "%d:%02d", s / 60, s % 60)
     }
@@ -134,5 +135,5 @@ enum DurationText {
     }
 
     /// Whole minutes for album footers ("28 minutes").
-    static func minutes(_ t: TimeInterval) -> Int { Int((t / 60).rounded()) }
+    static func minutes(_ t: TimeInterval) -> Int { t.isFinite ? Int((min(max(t, -1e9), 1e9) / 60).rounded()) : 0 }
 }
