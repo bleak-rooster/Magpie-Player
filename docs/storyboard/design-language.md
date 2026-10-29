@@ -78,4 +78,4 @@ The spec calls them Keepers and Listeners. Because the main action is **Keep**, 
 - **Pied neutrals:** black-and-white paper/ink is the magpie's plumage; Sheen is the iridescence.
 - **Voice:** fetch steps read "Looking → Spotted it → Bringing it home → Ready". The shelf of tried songs is **Finds**; songs that just landed are **New finds**. The main action stays **Keep**.
 - **Promise:** "Spots it. Brings it home. Keeps what you love."
-- **Icon:** the original mark: a record slipping out of its dark square sleeve on warm paper, with a Sheen label. The bird lives in the name and the voice, not the logo (owner decision 2026-10-26).
+- **Icon:** the green cover mark (owner decision 2026-10-29): the art-4 cover from Overview and Character dial, a forest-green diagonal field with a pale mint dome rising from the bottom centre. Light, dark and tinted variants. The bird lives in the name and the voice, not the logo (owner decision 2026-10-26).

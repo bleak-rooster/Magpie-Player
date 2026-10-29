@@ -1,77 +1,76 @@
-// Renders the app icon (docs/storyboard/canvas/Brand-Magpie.dc.html, "App icon"): a record slipping out of
-// its sleeve, in the light, dark and tinted variants, as 1024 × 1024 opaque PNGs into the asset catalog.
-//   DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcrun swift scripts/render-app-icon.swift
-// Geometry is the brand sheet's 100 × 100 SVG viewBox, scaled.
+// Renders the app icon: the storyboard's green "art-4" cover (Overview and Character dial,
+// docs/storyboard/canvas/Main.dc.html, Compare-Character.dc.html), a forest-green diagonal field with a pale mint
+// dome rising from the bottom centre (the beak). Light, dark and tinted variants, as 1024 x 1024 opaque PNGs into
+// the asset catalog. Brand sheet: docs/storyboard/canvas/Brand-Magpie.dc.html, "App icon".
+//   DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcrun swift scripts/render-app-icon.swift [output-dir]
+// art-4 CSS: radial-gradient(ellipse at 50% 110%, #B7E4C7 0 35%, transparent 36%), linear-gradient(135deg, #1B4332, #40916C)
 import CoreGraphics
 import Foundation
 import ImageIO
 import UniformTypeIdentifiers
 
-struct Palette {
-    var background: UInt32
-    var record: (UInt32, CGFloat)
-    var groove: (UInt32, CGFloat)
-    var label: (UInt32, CGFloat)
-    var spindle: UInt32
-    var sleeve: (UInt32, CGFloat)
-    var stripe: (UInt32, CGFloat)
+func rgb(_ v: UInt32, _ a: CGFloat = 1) -> CGColor {
+    CGColor(srgbRed: CGFloat((v >> 16) & 0xFF) / 255, green: CGFloat((v >> 8) & 0xFF) / 255,
+            blue: CGFloat(v & 0xFF) / 255, alpha: a)
 }
 
-let variants: [(file: String, palette: Palette)] = [
-    ("AppIcon.png", Palette(background: 0xF4EFE6, record: (0x1B1A19, 1), groove: (0x2C2A28, 1), label: (0x3CC4B8, 1),
-                            spindle: 0xF4EFE6, sleeve: (0x16130F, 1), stripe: (0x3CC4B8, 1))),
-    ("AppIcon-Dark.png", Palette(background: 0x16130F, record: (0x2E2A26, 1), groove: (0x3A3632, 1), label: (0x3CC4B8, 1),
-                                 spindle: 0x16130F, sleeve: (0xF4F1EA, 1), stripe: (0x3CC4B8, 1))),
-    ("AppIcon-Tinted.png", Palette(background: 0x151517, record: (0xF0F0F5, 0.22), groove: (0xF0F0F5, 0.30),
-                                   label: (0xF0F0F5, 0.62), spindle: 0x151517, sleeve: (0xF0F0F5, 0.92),
-                                   stripe: (0x151517, 0.55))),
+struct Variant {
+    var file: String
+    var fieldFrom: CGColor, fieldTo: CGColor
+    var domeTop: CGColor, domeBottom: CGColor
+    var glow: CGColor
+}
+
+let variants = [
+    Variant(file: "AppIcon.png", fieldFrom: rgb(0x1B4332), fieldTo: rgb(0x40916C),
+            domeTop: rgb(0xD8F3DC), domeBottom: rgb(0xB7E4C7), glow: rgb(0xB7E4C7, 0.22)),
+    Variant(file: "AppIcon-Dark.png", fieldFrom: rgb(0x0B1F17), fieldTo: rgb(0x1B4332),
+            domeTop: rgb(0xB7E4C7), domeBottom: rgb(0x74C69D), glow: rgb(0x74C69D, 0.18)),
+    Variant(file: "AppIcon-Tinted.png", fieldFrom: rgb(0x151517), fieldTo: rgb(0x2A2A2E),
+            domeTop: rgb(0xF0F0F5, 0.95), domeBottom: rgb(0xF0F0F5, 0.70), glow: rgb(0xF0F0F5, 0.10)),
 ]
 
-func color(_ rgb: UInt32, _ alpha: CGFloat = 1) -> CGColor {
-    CGColor(srgbRed: CGFloat((rgb >> 16) & 0xFF) / 255, green: CGFloat((rgb >> 8) & 0xFF) / 255,
-            blue: CGFloat(rgb & 0xFF) / 255, alpha: alpha)
-}
-
 let size = 1024
+let s = CGFloat(size)
+let space = CGColorSpace(name: CGColorSpace.sRGB)!
 let out = URL(fileURLWithPath: CommandLine.arguments.count > 1 ? CommandLine.arguments[1]
               : "App/Resources/Assets.xcassets/AppIcon.appiconset")
 
-for (file, p) in variants {
+for v in variants {
     // No alpha channel: App Store icons must be opaque.
     guard let ctx = CGContext(data: nil, width: size, height: size, bitsPerComponent: 8, bytesPerRow: 0,
-                              space: CGColorSpace(name: CGColorSpace.sRGB)!,
-                              bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { fatalError("context") }
-    // SVG coordinates: origin top-left, 100 units across.
-    ctx.translateBy(x: 0, y: CGFloat(size))
-    ctx.scaleBy(x: CGFloat(size) / 100, y: -CGFloat(size) / 100)
+                              space: space, bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { fatalError("context") }
+    // Top-left origin, like CSS.
+    ctx.translateBy(x: 0, y: s)
+    ctx.scaleBy(x: 1, y: -1)
 
-    ctx.setFillColor(color(p.background))
-    ctx.fill(CGRect(x: 0, y: 0, width: 100, height: 100))
+    // Field: 135 degrees, top-left to bottom-right.
+    let field = CGGradient(colorsSpace: space, colors: [v.fieldFrom, v.fieldTo] as CFArray, locations: [0, 1])!
+    ctx.drawLinearGradient(field, start: .zero, end: CGPoint(x: s, y: s), options: [])
 
-    func circle(_ r: CGFloat) -> CGRect { CGRect(x: 62 - r, y: 50 - r, width: 2 * r, height: 2 * r) }
-    ctx.setFillColor(color(p.record.0, p.record.1))
-    ctx.fillEllipse(in: circle(30))
-    ctx.setStrokeColor(color(p.groove.0, p.groove.1))
-    ctx.setLineWidth(1)
-    for r: CGFloat in [27, 24, 21, 18, 15] { ctx.strokeEllipse(in: circle(r)) }
-    ctx.setFillColor(color(p.label.0, p.label.1))
-    ctx.fillEllipse(in: circle(10.2))
-    ctx.setFillColor(color(p.spindle))
-    ctx.fillEllipse(in: circle(1.8))
+    // Dome: ellipse centred at (50%, 110%), rx 26.5%, ry 58% of the side.
+    let cx = s * 0.5, cy = s * 1.10, rx = s * 0.265, ry = s * 0.58
+    let dome = CGRect(x: cx - rx, y: cy - ry, width: 2 * rx, height: 2 * ry)
 
-    ctx.setFillColor(color(p.sleeve.0, p.sleeve.1))
-    ctx.addPath(CGPath(roundedRect: CGRect(x: 12, y: 22, width: 56, height: 56), cornerWidth: 6.7, cornerHeight: 6.7,
-                       transform: nil))
-    ctx.fillPath()
-    ctx.setFillColor(color(p.stripe.0, p.stripe.1))
-    ctx.addPath(CGPath(roundedRect: CGRect(x: 22, y: 64.6, width: 36, height: 3.4), cornerWidth: 1, cornerHeight: 1,
-                       transform: nil))
-    ctx.fillPath()
+    // Soft glow behind the dome so it lifts off the field.
+    ctx.saveGState()
+    ctx.setShadow(offset: .zero, blur: s * 0.06, color: v.glow)
+    ctx.setFillColor(v.domeBottom)
+    ctx.fillEllipse(in: dome)
+    ctx.restoreGState()
+
+    // Dome fill: gentle vertical gradient, lighter at the crown.
+    ctx.saveGState()
+    ctx.addEllipse(in: dome)
+    ctx.clip()
+    let domeGrad = CGGradient(colorsSpace: space, colors: [v.domeTop, v.domeBottom] as CFArray, locations: [0, 1])!
+    ctx.drawLinearGradient(domeGrad, start: CGPoint(x: cx, y: cy - ry), end: CGPoint(x: cx, y: s), options: [])
+    ctx.restoreGState()
 
     guard let image = ctx.makeImage(),
-          let dest = CGImageDestinationCreateWithURL(out.appending(path: file) as CFURL, UTType.png.identifier as CFString,
-                                                     1, nil) else { fatalError("image \(file)") }
+          let dest = CGImageDestinationCreateWithURL(out.appending(path: v.file) as CFURL, UTType.png.identifier as CFString,
+                                                     1, nil) else { fatalError("image \(v.file)") }
     CGImageDestinationAddImage(dest, image, nil)
-    guard CGImageDestinationFinalize(dest) else { fatalError("write \(file)") }
-    print("wrote \(out.appending(path: file).path)")
+    guard CGImageDestinationFinalize(dest) else { fatalError("write \(v.file)") }
+    print("wrote \(out.appending(path: v.file).path)")
 }
