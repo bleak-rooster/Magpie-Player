@@ -25,6 +25,9 @@ public final class AVQueueEngine: PlaybackEngine {
         let statusObservation: NSKeyValueObservation
         /// The ReplayGain volume asked for last; an audio-mix load that finishes after a newer one is dropped.
         var volume: Float = 1
+        /// Whether the item's audio mix carries `volume` (always so at 1). Until it does, the player volume
+        /// carries it while the item is current, so a fresh song never starts with a loud burst.
+        var mixApplied = true
     }
 
     private var player = AVQueuePlayer()
@@ -51,6 +54,12 @@ public final class AVQueueEngine: PlaybackEngine {
     /// What the AVQueuePlayer holds right now, current first.
     public var enqueuedItems: [(id: UUID, url: URL)] {
         player.items().compactMap { item in enqueued[ObjectIdentifier(item)].map { (id: $0.id, url: $0.url) } }
+    }
+
+    /// Diagnostics: what the current item plays at, the player volume times its audio mix (whichever of the two
+    /// carries its ReplayGain right now).
+    public var currentItemEffectiveVolume: Float {
+        player.volume * (currentItemMixVolume ?? 1)
     }
 
     /// Diagnostics: the current item's ReplayGain volume as its audio mix carries it; nil without a mix.
@@ -141,7 +150,7 @@ public final class AVQueueEngine: PlaybackEngine {
 
     public func setVolume(_ volume: Float) {
         self.volume = volume
-        player.volume = volume
+        updatePlayerVolume()
     }
 
     public func next() {
@@ -201,18 +210,22 @@ public final class AVQueueEngine: PlaybackEngine {
     /// alone unless `force` (a fresh item).
     private func apply(_ volume: Float, to item: AVPlayerItem, force: Bool = false) {
         let oid = ObjectIdentifier(item)
-        guard let info = enqueued[oid], force || info.volume != volume else { return }
+        // A mix still missing (loading, or its load failed) is asked for again.
+        guard let info = enqueued[oid], force || info.volume != volume || !info.mixApplied else { return }
+        // Drop any old mix at once: until the new one lands the player volume carries the item's volume.
+        item.audioMix = nil
         enqueued[oid]?.volume = volume
-        guard volume < 1 else {
-            item.audioMix = nil
-            return
-        }
+        enqueued[oid]?.mixApplied = volume >= 1
+        updatePlayerVolume()
+        guard volume < 1 else { return }
         Task { @MainActor [weak self] in
             let tracks: [AVAssetTrack]
             do {
                 tracks = try await item.asset.loadTracks(withMediaType: .audio)
             } catch {
                 Log.logger("playback").error("audio tracks failed to load: \(Log.category(of: error), privacy: .public)")
+                // `mixApplied` stays false: the player volume keeps carrying it while current, and the next
+                // `apply` (any `setVolumes`) loads it again.
                 return
             }
             // Dropped meanwhile, or a newer volume asked for: that one wins.
@@ -224,7 +237,17 @@ public final class AVQueueEngine: PlaybackEngine {
                 return params
             }
             item.audioMix = mix
+            self.enqueued[oid]?.mixApplied = true
+            self.updatePlayerVolume()
         }
+    }
+
+    /// The overall volume, times the current item's ReplayGain volume while its audio mix doesn't carry it yet.
+    private func updatePlayerVolume() {
+        let pending = player.currentItem.flatMap { enqueued[ObjectIdentifier($0)] }.flatMap { info in
+            info.mixApplied ? nil : info.volume
+        }
+        player.volume = volume * (pending ?? 1)
     }
 
     private func forget(_ item: AVPlayerItem) {
@@ -241,6 +264,7 @@ public final class AVQueueEngine: PlaybackEngine {
     /// Emits `.itemChanged` when the current item differs from the last one reported, and drops
     /// bookkeeping for items AVQueuePlayer has already let go of.
     private func reportCurrent() {
+        defer { updatePlayerVolume() }
         let live = Set(player.items().map(ObjectIdentifier.init))
         // AVQueuePlayer skips past a failed item on its own. If the item it dropped is the one we
         // reported as current and it failed, halt on it instead of reporting the next one.

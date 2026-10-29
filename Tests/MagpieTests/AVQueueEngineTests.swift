@@ -91,4 +91,49 @@ import Playback
         try await Self.waitUntil { engine.enqueuedItems.first?.id == b }
         #expect(engine.currentItemMixVolume == nil, "unity gain: no mix")
     }
+
+    /// Before the audio mix lands, the player volume carries the item's volume: no loud start.
+    @Test func currentItemIsLevelledAtOnce() async throws {
+        let w1 = try Self.silentWAV(), w2 = try Self.silentWAV(), a = UUID(), b = UUID()
+        defer { for f in [w1, w2] { try? FileManager.default.removeItem(at: f) } }
+        let engine = AVQueueEngine()
+        engine.setVolumes([a: 0.5, b: 0.25])
+        engine.setItems([(a, w1), (b, w2)], startAt: 0)
+        #expect(abs(engine.currentItemEffectiveVolume - 0.5) < 0.001, "right after setItems")
+        try await Self.waitUntil { engine.currentItemMixVolume != nil }
+        #expect(abs(engine.currentItemEffectiveVolume - 0.5) < 0.001, "once the mix carries it")
+        engine.next()
+        #expect(engine.enqueuedItems.first?.id == b)
+        #expect(abs(engine.currentItemEffectiveVolume - 0.25) < 0.001, "right after an advance")
+        try await Self.waitUntil { engine.currentItemMixVolume != nil }
+        #expect(abs(engine.currentItemEffectiveVolume - 0.25) < 0.001)
+    }
+
+    @Test func unityAfterAPendingVolumeLeavesNoMix() async throws {
+        let w = try Self.silentWAV(), a = UUID()
+        defer { try? FileManager.default.removeItem(at: w) }
+        let engine = AVQueueEngine()
+        engine.setItems([(a, w)], startAt: 0)
+        engine.setVolumes([a: 0.5])
+        engine.setVolumes([a: 1])
+        try await Task.sleep(for: .milliseconds(500))   // let the 0.5 load finish: it must not land
+        #expect(engine.currentItemMixVolume == nil)
+        #expect(engine.currentItemEffectiveVolume == 1)
+    }
+
+    @Test func keptNextItemTakesANewVolume() async throws {
+        let w1 = try Self.silentWAV(), w2 = try Self.silentWAV(), a = UUID(), b = UUID()
+        defer { for f in [w1, w2] { try? FileManager.default.removeItem(at: f) } }
+        let engine = AVQueueEngine()
+        engine.setItems([(a, w1), (b, w2)], startAt: 0)
+        engine.play()
+        try await Self.waitUntil { engine.enqueuedItems.count == 2 }
+        engine.pause()
+        engine.setVolumes([b: 0.25])
+        engine.setItems([(a, w1), (b, w2)], startAt: 0)
+        #expect(engine.enqueuedItems.count == 2, "b is kept, not re-enqueued")
+        engine.next()
+        #expect(abs(engine.currentItemEffectiveVolume - 0.25) < 0.001)
+        try await Self.waitUntil { abs((engine.currentItemMixVolume ?? 0) - 0.25) < 0.001 }
+    }
 }
