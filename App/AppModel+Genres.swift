@@ -4,16 +4,18 @@ import NavidromeKit
 import Search
 
 /// Genres (spec §4, Task 19): the server's genres grouped by `GenreGroups`, a group's albums merged from its genres, a
-/// group's Shuffle (capped at `groupSongCap`), a genre's songs in server order, and the owner's overrides (move a genre,
-/// new groups, names, hidden groups) kept in Preferences.
+/// group's Shuffle (round-robin across its genres, capped at `groupSongCap`), a genre's songs in server order, and the
+/// owner's overrides (move a genre, new groups, names, hidden groups) kept in Preferences.
 ///
 /// Offline (spec §6) every answer comes from the downloads' snapshots instead, and nothing is sent: the genres are those
 /// of the songs on the phone, and Play and Shuffle use only those songs.
 extension AppModel {
     /// A group's Shuffle, and a genre's Play and Shuffle, take at most this many songs.
     static let groupSongCap = 500
-    /// Albums are asked for this many at a time (the most `getAlbumList2` gives).
-    private static let albumPage = 500
+    /// A genre page, and each genre of a group page, shows at most this many albums (one `getAlbumList2` page).
+    static let genreAlbumCap = 500
+    /// A group's genres are asked this many at a time.
+    static let fetchWidth = 4
 
     // MARK: - Lists
 
@@ -27,11 +29,6 @@ extension AppModel {
         var prefs = preferences.genres
         prefs.hidden = []
         return GenreGroups.grouped(try await rawGenres(), preferences: prefs)
-    }
-
-    /// One group, hidden or not; nil when it has no genres.
-    func genreSection(_ groupId: String) async throws -> GenreGroupSection? {
-        try await genreSectionsIncludingHidden().first { $0.group.id == groupId }
     }
 
     /// The flat "All genres" list, A–Z. Hiding a group doesn't hide its genres here.
@@ -50,51 +47,91 @@ extension AppModel {
     /// Whether another group fits (Preferences keeps at most `GenrePreferences.maxCustomGroups`).
     var canCreateGroup: Bool { preferences.genres.customGroups.count < GenrePreferences.maxCustomGroups }
 
-    // MARK: - Albums and songs
+    // MARK: - Groups
 
-    /// The albums of every genre in the group (in the server's genre order), merged and de-duplicated by id, in
-    /// first-seen order.
-    func groupAlbums(_ groupId: String) async throws -> [Album] {
-        let genres = try await groupGenres(groupId)
-        if isOffline { return await offlineAlbums(Set(genres.map(\.name))) }
-        var albums: [Album] = []
-        var seen = Set<String>()
-        for genre in genres {
-            for album in try await serverAlbums(genre.name) where seen.insert(album.id).inserted { albums.append(album) }
-        }
-        return albums
+    /// A group's page: its section, and its genres in the order the server lists them (from one `getGenres`).
+    struct GenreGroupPage: Sendable {
+        let section: GenreGroupSection
+        let genres: [Genre]
     }
 
-    /// A genre's albums.
+    /// One group, hidden or not, with its genres in server order; nil when it has no genres. Asks for the genres once.
+    func genreGroup(_ groupId: String) async throws -> GenreGroupPage? {
+        let raw = try await rawGenres()
+        var prefs = preferences.genres
+        prefs.hidden = []
+        guard let section = GenreGroups.grouped(raw, preferences: prefs).first(where: { $0.group.id == groupId }) else {
+            return nil
+        }
+        let names = Set(section.genres.map(\.name))
+        return GenreGroupPage(section: section, genres: raw.filter { names.contains($0.name) })
+    }
+
+    /// The albums of every genre in the group, merged and de-duplicated by id, in first-seen order (genres in server
+    /// order).
+    func groupAlbums(_ groupId: String) async throws -> [Album] {
+        try await groupAlbums(in: try await genreGroup(groupId)?.genres ?? [])
+    }
+
+    /// `groupAlbums` for a group's genres already in hand: at most `genreAlbumCap` albums from each genre, asked
+    /// `fetchWidth` genres at a time and merged in the genres' order, so the result doesn't depend on which answers first.
+    func groupAlbums(in genres: [Genre]) async throws -> [Album] {
+        if isOffline { return await offlineAlbums(Set(genres.map(\.name))) }
+        let pages = try await inOrder(genres.map(\.name)) { [weak self] name in try await self?.serverAlbums(name) ?? [] }
+        var seen = Set<String>()
+        return pages.joined().filter { seen.insert($0.id).inserted }
+    }
+
+    /// The group's songs for Shuffle (a group offers Shuffle only).
+    func groupSongs(_ groupId: String) async throws -> [Song] {
+        try await groupSongs(in: try await genreGroup(groupId)?.genres ?? [])
+    }
+
+    /// `groupSongs` for a group's genres already in hand: the songs of `groupSongsInFetchOrder`, shuffled.
+    func groupSongs(in genres: [Genre]) async throws -> [Song] {
+        try await groupSongsInFetchOrder(genres).shuffled()
+    }
+
+    /// Up to `groupSongCap` songs taken from each genre in turn (round-robin, so one big genre can't crowd out the
+    /// rest), before the shuffle. Each round asks every genre that may have more for an equal share of what is still
+    /// wanted; a genre that gives a short page, or nothing new (a server ignoring the offset), is done.
+    func groupSongsInFetchOrder(_ genres: [Genre]) async throws -> [Song] {
+        let cap = Self.groupSongCap
+        if isOffline {
+            var lists: [[Song]] = []
+            for genre in genres { lists.append(await offlineSongs([genre.name])) }
+            return Self.roundRobin(lists, cap: cap)
+        }
+        var lists = Array(repeating: [Song](), count: genres.count)
+        var offsets = Array(repeating: 0, count: genres.count)
+        var active = Array(genres.indices)
+        var seen = Set<String>()
+        var total = 0
+        while total < cap, !active.isEmpty {
+            let quota = (cap - total + active.count - 1) / active.count
+            let asks = active.map { SongAsk(genre: genres[$0].name, offset: offsets[$0]) }
+            let pages = try await inOrder(asks) { [weak self] ask in
+                try await self?.request { try await $0.songs(genre: ask.genre, count: quota, offset: ask.offset) } ?? []
+            }
+            var still: [Int] = []
+            for (index, page) in zip(active, pages) {
+                let fresh = page.filter { seen.insert($0.id).inserted }
+                lists[index] += fresh
+                offsets[index] += page.count
+                total += fresh.count
+                if page.count == quota, !fresh.isEmpty { still.append(index) }
+            }
+            active = still
+        }
+        return Self.roundRobin(lists, cap: cap)
+    }
+
+    // MARK: - Genres
+
+    /// A genre's albums, at most `genreAlbumCap`.
     func genreAlbums(_ name: String) async throws -> [Album] {
         if isOffline { return await offlineAlbums([name]) }
         return try await serverAlbums(name)
-    }
-
-    /// The group's songs for Shuffle: each genre asked a page of `groupSongCap` at a time until there are that many or
-    /// the genres run out, then shuffled. A group offers Shuffle only.
-    func groupSongs(_ groupId: String) async throws -> [Song] {
-        let genres = try await groupGenres(groupId)
-        let cap = Self.groupSongCap
-        if isOffline { return Array(await offlineSongs(Set(genres.map(\.name))).prefix(cap)).shuffled() }
-        var songs: [Song] = []
-        var seen = Set<String>()
-        outer: for genre in genres {
-            var offset = 0
-            while true {
-                let page = try await request { [name = genre.name, offset] in try await $0.songs(genre: name, count: cap, offset: offset) }
-                var added = 0
-                for song in page where seen.insert(song.id).inserted {
-                    songs.append(song)
-                    added += 1
-                    if songs.count == cap { break outer }
-                }
-                // A short page is the last; a page with nothing new (a server ignoring the offset) ends it too.
-                guard page.count == cap, added > 0 else { break }
-                offset += cap
-            }
-        }
-        return songs.shuffled()
     }
 
     /// A genre's first `groupSongCap` songs in server order (Play); Shuffle shuffles them.
@@ -105,20 +142,46 @@ extension AppModel {
 
     // MARK: - The owner's overrides
 
-    /// Puts the genre in `groupId`. Moving it to the group its rules already give clears the override, and a custom
-    /// group left with no genre is let go (with its name), so the capped lists stay small.
-    func moveGenre(_ name: String, toGroup groupId: String) {
+    /// Why a move can't be kept (§5 voice); shown instead of dropping it.
+    enum GenreMoveRefusal: Error, Equatable {
+        case tooManyMoves, nameTooLong
+
+        var message: String {
+            switch self {
+            case .tooManyMoves: "You've moved as many genres as Magpie can keep. Move some back first."
+            case .nameTooLong: "This genre's name is too long to move."
+            }
+        }
+    }
+
+    /// Whether moving `name` to `groupId` can't be kept: Preferences holds at most `GenrePreferences.maxAssignments`
+    /// moves, each named in at most `maxTextLength` characters. A move back to the rules' group always can be.
+    func moveRefusal(_ name: String, toGroup groupId: String) -> GenreMoveRefusal? {
+        guard !Self.isRuleGroup(name, groupId) else { return nil }
         let key = GenreGroups.key(name)
-        let ruleGroups = Set(GenreGroups.split(name).map(GenreGroups.groupId(for:)))
+        if key.count > GenrePreferences.maxTextLength { return .nameTooLong }
+        let assignments = preferences.genres.assignments
+        if assignments[key] == nil, assignments.count >= GenrePreferences.maxAssignments { return .tooManyMoves }
+        return nil
+    }
+
+    /// Puts the genre in `groupId`, or says why it can't (nothing changes then). Moving it to the group its rules
+    /// already give clears the override, and a custom group left with no genre is let go (with its name), so the capped
+    /// lists stay small.
+    @discardableResult func moveGenre(_ name: String, toGroup groupId: String) -> GenreMoveRefusal? {
+        if let refusal = moveRefusal(name, toGroup: groupId) { return refusal }
+        let key = GenreGroups.key(name)
+        let back = Self.isRuleGroup(name, groupId)
         updatePreferences { prefs in
             var g = prefs.genres
-            if ruleGroups == [groupId] { g.assignments[key] = nil } else { g.assignments[key] = groupId }
+            g.assignments[key] = back ? nil : groupId
             let used = Set(g.assignments.values).union([groupId])
             let unused = g.customGroups.filter { !used.contains($0) }
             g.customGroups.removeAll { unused.contains($0) }
             for id in unused { g.groupNames[id] = nil; g.hidden.remove(id) }
             prefs.genres = g
         }
+        return nil
     }
 
     /// A new, empty group named `name` (trimmed); it shows once a genre is moved into it.
@@ -148,20 +211,20 @@ extension AppModel {
 
     // MARK: - Private
 
+    private struct SongAsk: Sendable {
+        let genre: String
+        let offset: Int
+    }
+
     /// Trimmed and cut to what Preferences keeps; nil when blank.
     private static func groupTitle(_ name: String) -> String? {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : String(trimmed.prefix(GenrePreferences.maxTextLength))
     }
 
-    /// The group's genres (hidden or not) in the order the server lists them; empty for a group with none.
-    private func groupGenres(_ groupId: String) async throws -> [Genre] {
-        let raw = try await rawGenres()
-        var prefs = preferences.genres
-        prefs.hidden = []
-        guard let section = GenreGroups.grouped(raw, preferences: prefs).first(where: { $0.group.id == groupId }) else { return [] }
-        let names = Set(section.genres.map(\.name))
-        return raw.filter { names.contains($0.name) }
+    /// Whether `groupId` is the one group the genre's rules already give it.
+    private static func isRuleGroup(_ name: String, _ groupId: String) -> Bool {
+        Set(GenreGroups.split(name).map(GenreGroups.groupId(for:))) == [groupId]
     }
 
     /// The server's genres, or offline the downloads' genres.
@@ -170,18 +233,35 @@ extension AppModel {
         return try await request { try await $0.genres() }
     }
 
-    /// Every album of a genre, a page at a time.
+    /// A genre's first `genreAlbumCap` albums (one page).
     private func serverAlbums(_ name: String) async throws -> [Album] {
-        var albums: [Album] = []
-        var seen = Set<String>()
-        var offset = 0
-        while true {
-            let page = try await request { [size = Self.albumPage, offset] in try await $0.albums(genre: name, size: size, offset: offset) }
-            let fresh = page.filter { seen.insert($0.id).inserted }
-            albums += fresh
-            guard page.count == Self.albumPage, !fresh.isEmpty else { return albums }
-            offset += Self.albumPage
+        try await request { [cap = Self.genreAlbumCap] in try await $0.albums(genre: name, size: cap, offset: 0) }
+    }
+
+    /// `op` over `items`, at most `fetchWidth` at a time, with the results in the items' order.
+    private func inOrder<Item: Sendable, T: Sendable>(
+        _ items: [Item], _ op: @escaping @Sendable @MainActor (Item) async throws -> T
+    ) async throws -> [T] {
+        try await withThrowingTaskGroup(of: (Int, T).self) { group in
+            var results = [T?](repeating: nil, count: items.count)
+            for (index, item) in items.enumerated() {
+                if index >= Self.fetchWidth, let (done, value) = try await group.next() { results[done] = value }
+                group.addTask { (index, try await op(item)) }
+            }
+            for try await (done, value) in group { results[done] = value }
+            return results.compactMap { $0 }
         }
+    }
+
+    /// One song from each list in turn until `cap` or the lists run out.
+    private static func roundRobin(_ lists: [[Song]], cap: Int) -> [Song] {
+        var out: [Song] = []
+        var row = 0
+        while out.count < cap, lists.contains(where: { row < $0.count }) {
+            for list in lists where row < list.count && out.count < cap { out.append(list[row]) }
+            row += 1
+        }
+        return out
     }
 
     /// The downloaded albums with a song in one of `genres`, A–Z.

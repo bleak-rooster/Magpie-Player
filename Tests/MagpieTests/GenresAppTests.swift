@@ -3,6 +3,7 @@ import MagpieCore
 import MagpieTestSupport
 import NavidromeKit
 import Playback
+import os
 import Search
 import Testing
 @testable import Magpie
@@ -40,22 +41,25 @@ private func query(_ request: URLRequest, _ name: String) -> String? {
         {"value":"Ambient","songCount":12,"albumCount":2},{"value":"Chanson","songCount":6,"albumCount":1}]}
         """#))
         transport.inner.stub(pathSuffix: "/rest/getAlbumList2") { request in
+            let size = Int(query(request, "size") ?? "0") ?? 0, offset = Int(query(request, "offset") ?? "0") ?? 0
             let ids: [String] = switch query(request, "genre") {
             case "Indie Rock": ["a1", "a2"]
             case "Alt Rock": ["a2", "a3"]
+            case "Ambient": Array((0..<600).map { "am\($0)" }.dropFirst(offset).prefix(size))   // over the cap
             default: []
             }
             let albums = ids.map { #"{"id":"\#($0)","name":"\#($0)","artist":"A","songCount":1}"# }.joined(separator: ",")
             return MockTransport.Response(status: 200, body: subsonic(#""albumList2":{"album":[\#(albums)]}"#))
         }
         transport.inner.stub(pathSuffix: "/rest/getSongsByGenre") { request in
-            let prefix: String? = switch query(request, "genre") {
-            case "Indie Rock": "ir"
-            case "Alt Rock": "ar"
-            default: nil
+            let (prefix, total): (String, Int) = switch query(request, "genre") {
+            case "Indie Rock": ("ir", 300)
+            case "Alt Rock": ("ar", 300)
+            case "Ambient": ("am", 20)
+            default: ("", 0)
             }
             let offset = Int(query(request, "offset") ?? "0") ?? 0, count = Int(query(request, "count") ?? "0") ?? 0
-            let ids = prefix.map { p in (0..<300).map { "\(p)\($0)" } } ?? []
+            let ids = (0..<total).map { "\(prefix)\($0)" }
             let page = ids.dropFirst(offset).prefix(count)
             let songs = page.map { #"{"id":"\#($0)","title":"\#($0)","genre":"\#(query(request, "genre")!)"}"# }
                 .joined(separator: ",")
@@ -100,7 +104,13 @@ private func query(_ request: URLRequest, _ name: String) -> String? {
         let model = try await signedInModel(fetcher: FakeFetcher())
         let songs = try await model.groupSongs("rock")
         #expect(songs.count == 500 && Set(songs.map(\.id)).count == 500)
-        #expect(songs.map(\.id) != songs.map(\.id).sorted(), "shuffled")
+        // Fix round 1: round-robin across the genres (server order: Indie Rock, then Alt Rock), 250 from each, then
+        // shuffled: the order differs from the order fetched.
+        let fetched = (0..<250).flatMap { ["ir\($0)", "ar\($0)"] }
+        let page = try #require(try await model.genreGroup("rock"))
+        #expect(try await model.groupSongsInFetchOrder(page.genres).map(\.id) == fetched)
+        #expect(Set(songs.map(\.id)) == Set(fetched))
+        #expect(songs.map(\.id) != fetched, "shuffled")
     }
 
     @Test func genreSongsKeepServerOrder() async throws {
@@ -144,10 +154,10 @@ private func query(_ request: URLRequest, _ name: String) -> String? {
     @Test func genreAlbumsAndGroupLookup() async throws {
         let model = try await signedInModel(fetcher: FakeFetcher())
         #expect(try await model.genreAlbums("Alt Rock").map(\.id) == ["a2", "a3"])
-        let rock = try #require(try await model.genreSection("rock"))
+        let rock = try #require(try await model.genreGroup("rock")?.section)
         #expect(rock.group.name == "Rock" && rock.albumCount == 3 && rock.songCount == 30)
         model.setGroupHidden("rock", true)
-        #expect(try await model.genreSection("rock") != nil, "a hidden group's page still opens")
+        #expect(try await model.genreGroup("rock")?.section != nil, "a hidden group's page still opens")
     }
 
     /// Moving a genre back to the group its rules give stores nothing; an emptied custom group is let go.
@@ -166,9 +176,9 @@ private func query(_ request: URLRequest, _ name: String) -> String? {
     @Test func renameAndChoices() async throws {
         let model = try await signedInModel(fetcher: FakeFetcher())
         model.renameGroup("rock", to: "Guitars")
-        #expect(try await model.genreSection("rock")?.group.name == "Guitars")
+        #expect(try await model.genreGroup("rock")?.section.group.name == "Guitars")
         model.renameGroup("rock", to: "   ")
-        #expect(try await model.genreSection("rock")?.group.name == "Rock")
+        #expect(try await model.genreGroup("rock")?.section.group.name == "Rock")
         model.setGroupHidden("jazz", true)
         let choices = model.genreGroupChoices
         #expect(choices.count == GenreGroups.builtIn.count - 1 && !choices.contains { $0.id == "jazz" })
@@ -202,7 +212,68 @@ private func query(_ request: URLRequest, _ name: String) -> String? {
         #expect(Set(try await model.groupSongs("rock").map(\.id)) == ["s1", "s2", "s3"])
         #expect(try await model.groupAlbums("rock").map(\.id) == ["al1", "al2"])
         #expect(try await model.genreAlbums("Ambient").map(\.id) == ["al3"])
-        #expect(try await model.genreSection("rock")?.genres.count == 2)
+        #expect(try await model.genreGroup("rock")?.genres.count == 2)
         #expect(seen.urls.isEmpty, "sent: \(seen.urls.map(\.path))")
+    }
+
+    // MARK: - Fix round 1
+
+    /// I1: a genre gives at most one page of `genreAlbumCap` albums, on the genre page and the group page alike.
+    @Test func genreAlbumsCappedAtOnePage() async throws {
+        let model = try await signedInModel(fetcher: FakeFetcher())
+        let before = transport.inner.requests.count
+        #expect(try await model.genreAlbums("Ambient").count == AppModel.genreAlbumCap)
+        #expect(try await model.groupAlbums("electronic").count == AppModel.genreAlbumCap)
+        let asks = transport.inner.requests.dropFirst(before).filter { $0.url?.path.hasSuffix("/getAlbumList2") == true }
+        #expect(asks.count == 2 && asks.allSatisfy { query($0, "size") == "500" && query($0, "offset") == "0" })
+    }
+
+    /// I1: the group's genres are asked together, and the merge keeps the genres' order whichever answers first.
+    @Test func groupAlbumsMergeOrderUnderConcurrency() async throws {
+        let model = try await signedInModel(fetcher: FakeFetcher())
+        let altAskedMeanwhile = OSAllocatedUnfairLock(initialState: false)
+        let altSeen = OSAllocatedUnfairLock(initialState: false)
+        transport.setHook { request in
+            guard request.url?.path.hasSuffix("/getAlbumList2") == true else { return }
+            switch query(request, "genre") {
+            case "Indie Rock":   // the first genre answers last
+                try? await Task.sleep(for: .milliseconds(300))
+                altAskedMeanwhile.withLock { $0 = altSeen.withLock { $0 } }
+            case "Alt Rock": altSeen.withLock { $0 = true }
+            default: break
+            }
+        }
+        defer { transport.setHook(nil) }
+        #expect(try await model.groupAlbums("rock").map(\.id) == ["a1", "a2", "a3"])
+        #expect(altAskedMeanwhile.withLock { $0 }, "Alt Rock was asked while Indie Rock was still answering")
+    }
+
+    /// Ruling (b): a small genre gives what it has and the big ones share the rest.
+    @Test func groupShuffleRoundRobinUneven() async throws {
+        let model = try await signedInModel(fetcher: FakeFetcher())
+        model.moveGenre("Ambient", toGroup: "rock")
+        let songs = try await model.groupSongs("rock")
+        func count(_ prefix: String) -> Int { songs.filter { $0.id.hasPrefix(prefix) }.count }
+        #expect(songs.count == 500 && Set(songs.map(\.id)).count == 500)
+        #expect(count("am") == 20 && count("ir") == 240 && count("ar") == 240)
+    }
+
+    /// Ruling (c): the 65th move and a name too long to keep are refused with a message, and nothing changes.
+    @Test func movesThatCantBeKeptAreRefused() async throws {
+        let model = try await signedInModel(fetcher: FakeFetcher())
+        model.updatePreferences { prefs in
+            for i in 0..<GenrePreferences.maxAssignments { prefs.genres.assignments["genre \(i)"] = "rock" }
+        }
+        let before = model.preferences.genres
+        #expect(model.moveGenre("Chanson", toGroup: "rock") == .tooManyMoves)
+        #expect(AppModel.GenreMoveRefusal.tooManyMoves.message
+                == "You've moved as many genres as Magpie can keep. Move some back first.")
+        #expect(model.moveGenre("genre 3", toGroup: "jazz") == nil, "changing a kept move still works")
+        #expect(model.moveGenre("Chanson", toGroup: "world") == nil, "back to its own group needs no room")
+        let long = String(repeating: "x", count: GenrePreferences.maxTextLength + 1)
+        #expect(model.moveGenre(long, toGroup: "rock") == .nameTooLong)
+        #expect(AppModel.GenreMoveRefusal.nameTooLong.message == "This genre's name is too long to move.")
+        #expect(model.preferences.genres.assignments.count == before.assignments.count)
+        #expect(model.preferences.genres.assignments["genre 3"] == "jazz")
     }
 }

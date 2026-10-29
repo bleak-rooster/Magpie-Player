@@ -12,6 +12,8 @@ struct MoveGenreSheet: View {
     /// The groups the genre is in now (more than one for a multi-value genre).
     @State private var current: Set<String> = []
     @State private var newName = ""
+    /// Why the last move couldn't be kept (shown, never dropped silently).
+    @State private var refusal: AppModel.GenreMoveRefusal?
     private let themed = Themed()
 
     var body: some View {
@@ -20,15 +22,14 @@ struct MoveGenreSheet: View {
                 Section {
                     ForEach(model.genreGroupChoices, id: \.id) { group in
                         Button {
-                            model.moveGenre(genre, toGroup: group.id)
-                            dismiss()
+                            move(to: group.id)
                         } label: {
                             HStack {
                                 Text(group.name).foregroundStyle(themed.palette.inkColor)
                                 Spacer()
-                                if current.contains(group.id) {
-                                    Image(systemName: "checkmark").foregroundStyle(themed.palette.accentInkColor)
-                                        .accessibilityHidden(true)
+                                if current.contains(group.id) {   // D3: a symbol and text
+                                    Label("Current", systemImage: "checkmark")
+                                        .font(.subheadline).foregroundStyle(themed.palette.accentInkColor)
                                 }
                             }
                             .frame(minHeight: Tokens.minHitSize)
@@ -49,6 +50,13 @@ struct MoveGenreSheet: View {
                 } footer: {
                     if !model.canCreateGroup { Text("You have as many groups as Magpie keeps. Rename one instead.") }
                 }
+                if let refusal {
+                    Section {
+                        Label(refusal.message, systemImage: "exclamationmark.circle")
+                            .foregroundStyle(themed.palette.inkColor)
+                            .accessibilityIdentifier("move-refusal")
+                    }
+                }
             }
             .navigationTitle("Move \(genre)")
             .navigationBarTitleDisplayMode(.inline)
@@ -63,9 +71,18 @@ struct MoveGenreSheet: View {
         }
     }
 
+    private func move(to groupId: String) {
+        refusal = model.moveGenre(genre, toGroup: groupId)
+        if refusal == nil { dismiss() }
+    }
+
+    /// Checks the move can be kept before making the group, so a refused move leaves no empty group behind.
     private func createAndMove() {
         guard model.canCreateGroup, !newName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        model.moveGenre(genre, toGroup: model.createGroup(named: newName))
-        dismiss()
+        if let refused = model.moveRefusal(genre, toGroup: "custom.new") {
+            refusal = refused
+            return
+        }
+        move(to: model.createGroup(named: newName))
     }
 }

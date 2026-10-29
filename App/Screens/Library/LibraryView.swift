@@ -3,7 +3,7 @@ import MagpieCore
 import Requests
 import SwiftUI
 
-/// Library: Playlists, Artists, Albums, Finds (once a Finds library is chosen), Requests, then recently added albums.
+/// Library: Playlists, Artists, Albums, Genres, Finds (once a Finds library is chosen), Requests, then recently added albums.
 struct LibraryView: View {
     @Environment(AppModel.self) private var model
     @State private var recent: Loadable<[Album]> = .loading
@@ -50,6 +50,8 @@ struct LibraryView: View {
             row("Artists", symbol: "music.mic", route: .artists)
             Divider().overlay(p.sepColor).padding(.leading, 52)
             row("Albums", symbol: "square.stack", route: .albums)
+            Divider().overlay(p.sepColor).padding(.leading, 52)
+            row("Genres", symbol: "guitars", route: .genres)   // Task 19 (Task 21 makes the rows reorderable)
             Divider().overlay(p.sepColor).padding(.leading, 52)
             if model.findsSetup?.library != nil {
                 row("Finds", symbol: "record.circle", route: .finds, detail: findsDetail)

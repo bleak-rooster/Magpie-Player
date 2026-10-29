@@ -59,9 +59,10 @@ public enum GenreGroups {
         return best == Int.max ? "other" : rules[best].group
     }
 
-    /// Hides empty genres, groups the rest (a multi-value genre sits in each of its parts' groups), applies the owner's
-    /// overrides, names and custom groups, and drops hidden and empty groups. An override that points at a group that no
-    /// longer exists (capped or partial preferences) falls back to the rules.
+    /// Hides genres known to be empty (a row with missing counts stays), groups the rest (a multi-value genre sits in
+    /// each of its parts' groups), applies the owner's overrides, names and custom groups, and drops hidden and empty
+    /// groups. An override that points at a group that no longer exists (capped or partial preferences) falls back to
+    /// the rules.
     public static func grouped(_ genres: [Genre], preferences: GenrePreferences) -> [GenreGroupSection] {
         var seenGroups = Set(builtIn.map(\.id))
         let order = builtIn.map(\.id) + preferences.customGroups.filter { seenGroups.insert($0).inserted }
@@ -71,7 +72,7 @@ public enum GenreGroups {
             return groupId(for: part)
         }
         var members: [String: [Genre]] = [:]
-        for genre in genres where genre.albumCount > 0 || genre.songCount > 0 {
+        for genre in genres where !genre.isKnownEmpty {
             var ids: [String]
             if let whole = preferences.assignments[key(genre.name)], known.contains(whole) { ids = [whole] }
             else { ids = split(genre.name).map(target) }
@@ -87,9 +88,9 @@ public enum GenreGroups {
         }
     }
 
-    /// The flat "All genres" list: non-empty genres, A–Z.
+    /// The flat "All genres" list, A–Z: every genre but those known to be empty (a row with no counts is kept).
     public static func allGenres(_ genres: [Genre]) -> [Genre] {
-        sorted(genres.filter { $0.albumCount > 0 || $0.songCount > 0 })
+        sorted(genres.filter { !$0.isKnownEmpty })
     }
 
     // MARK: - Table

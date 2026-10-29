@@ -56,10 +56,15 @@ public struct Genre: Sendable, Hashable, Codable {
     public var name: String
     public var songCount: Int
     public var albumCount: Int
+    /// False when the server left a count out (it reads as 0): such a genre is shown, never dropped as empty.
+    public var countsKnown: Bool
 
-    public init(name: String, songCount: Int, albumCount: Int) {
-        self.name = name; self.songCount = songCount; self.albumCount = albumCount
+    public init(name: String, songCount: Int, albumCount: Int, countsKnown: Bool = true) {
+        self.name = name; self.songCount = songCount; self.albumCount = albumCount; self.countsKnown = countsKnown
     }
+
+    /// Known to have no albums and no songs (both counts given, both zero).
+    public var isKnownEmpty: Bool { countsKnown && songCount == 0 && albumCount == 0 }
 }
 
 /// The user's starred songs and albums.

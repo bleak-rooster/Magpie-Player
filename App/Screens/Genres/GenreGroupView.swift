@@ -4,7 +4,8 @@ import Search
 import SwiftUI
 
 /// A group's page (spec §4, Task 19): its albums, merged from every genre in it, and Shuffle. A group mixes many genres,
-/// so it offers Shuffle only (D41); its songs (at most `AppModel.groupSongCap`) are fetched when Shuffle is tapped.
+/// so it offers Shuffle only (D41); its songs (at most `AppModel.groupSongCap`, taken from each genre in turn) are
+/// fetched when Shuffle is tapped.
 struct GenreGroupView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.magpieTheme) private var theme
@@ -15,8 +16,9 @@ struct GenreGroupView: View {
     private let themed = Themed()
 
     struct Page {
-        let section: GenreGroupSection
+        let group: AppModel.GenreGroupPage
         let albums: [Album]
+        var section: GenreGroupSection { group.section }
     }
 
     var body: some View {
@@ -66,22 +68,24 @@ struct GenreGroupView: View {
 
     private func load() async {
         do {
-            guard let section = try await model.genreSection(groupId) else {
+            // One `getGenres` for the page: the albums and Shuffle use the genres in hand.
+            guard let group = try await model.genreGroup(groupId) else {
                 page = .failed("This group has no genres now.")
                 return
             }
-            page = .loaded(Page(section: section, albums: try await model.groupAlbums(groupId)))
+            page = .loaded(Page(group: group, albums: try await model.groupAlbums(in: group.genres)))
         } catch {
             if page.value == nil { page = .failed(BrowseErrorCopy.message(for: error)) }
         }
     }
 
     private func shuffle() async {
+        guard let genres = page.value?.group.genres else { return }
         shuffling = true
         shuffleError = nil
         defer { shuffling = false }
         do {
-            let songs = try await model.groupSongs(groupId)   // already shuffled
+            let songs = try await model.groupSongs(in: genres)   // already shuffled
             if songs.isEmpty { shuffleError = model.isOffline ? OfflineCopy.notOnPhone : "No songs in this group." }
             model.play(songs, startAt: 0)
         } catch {

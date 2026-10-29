@@ -126,6 +126,6 @@ private func ok(_ body: String) -> Data {
     @Test func genreRowWithoutCounts() async throws {
         let (client, t) = makeClient()
         t.stub(pathSuffix: "/rest/getGenres", body: ok(#""genres":{"genre":[{"value":"Chanson"}]}"#))
-        #expect(try await client.genres() == [Genre(name: "Chanson", songCount: 0, albumCount: 0)])
+        #expect(try await client.genres() == [Genre(name: "Chanson", songCount: 0, albumCount: 0, countsKnown: false)])
     }
 }

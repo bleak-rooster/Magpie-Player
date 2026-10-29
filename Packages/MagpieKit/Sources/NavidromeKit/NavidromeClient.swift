@@ -196,11 +196,13 @@ public actor NavidromeClient {
         return (body.songsByGenre?.song ?? []).map(Mapping.song)
     }
 
-    /// Every genre the server lists. A row with no name is dropped; missing counts read as 0.
+    /// Every genre the server lists. A row with no name is dropped; missing counts read as 0 and the genre is marked
+    /// `countsKnown == false`, so it is still shown.
     public func genres() async throws -> [Genre] {
         let body = try await subsonic("getGenres")
         return (body.genres?.genre ?? []).compactMap { g in
-            g.value.map { Genre(name: $0, songCount: g.songCount ?? 0, albumCount: g.albumCount ?? 0) }
+            g.value.map { Genre(name: $0, songCount: g.songCount ?? 0, albumCount: g.albumCount ?? 0,
+                                countsKnown: g.songCount != nil && g.albumCount != nil) }
         }
     }
 

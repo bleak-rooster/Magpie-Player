@@ -15,6 +15,7 @@ struct GenresView: View {
     @State private var editing = false
     @State private var renaming: GenreGroup?
     @State private var newName = ""
+    @Environment(\.dynamicTypeSize) private var typeSize
     private let themed = Themed()
 
     var body: some View {
@@ -111,23 +112,32 @@ struct GenresView: View {
         return LazyVStack(spacing: 0) {
             ForEach(everyGroup, id: \.group.id) { section in
                 let isHidden = hidden.contains(section.group.id)
-                HStack(spacing: Tokens.Spacing.m) {
+                // Stacked at accessibility sizes so the name and both buttons keep their full width (D15).
+                let layout = typeSize.isAccessibilitySize
+                    ? AnyLayout(VStackLayout(alignment: .leading, spacing: Tokens.Spacing.s))
+                    : AnyLayout(HStackLayout(spacing: Tokens.Spacing.m))
+                layout {
                     VStack(alignment: .leading, spacing: 1) {
                         Text(section.group.name).font(.body)
                             .foregroundStyle(isHidden ? p.ink2Color : p.inkColor)
-                        if isHidden { Text("Hidden").font(.footnote).foregroundStyle(p.ink2Color) }
+                        if isHidden {
+                            Label("Hidden", systemImage: "eye.slash").font(.footnote).foregroundStyle(p.ink2Color)
+                        }
                     }
-                    Spacer()
-                    Button("Rename") {
-                        newName = section.group.name
-                        renaming = section.group
+                    .accessibilityElement(children: .combine)
+                    if !typeSize.isAccessibilitySize { Spacer() }
+                    HStack(spacing: Tokens.Spacing.m) {
+                        Button("Rename") {
+                            newName = section.group.name
+                            renaming = section.group
+                        }
+                        .frame(minHeight: Tokens.minHitSize)
+                        .accessibilityLabel("Rename \(section.group.name)")
+                        Button(isHidden ? "Show" : "Hide") { model.setGroupHidden(section.group.id, !isHidden) }
+                            .frame(minWidth: Tokens.minHitSize, minHeight: Tokens.minHitSize)
+                            .accessibilityLabel("\(isHidden ? "Show" : "Hide") \(section.group.name)")
+                            .accessibilityIdentifier("genre-hide-\(section.group.id)")
                     }
-                    .frame(minHeight: Tokens.minHitSize)
-                    .accessibilityLabel("Rename \(section.group.name)")
-                    Button(isHidden ? "Show" : "Hide") { model.setGroupHidden(section.group.id, !isHidden) }
-                        .frame(minWidth: Tokens.minHitSize, minHeight: Tokens.minHitSize)
-                        .accessibilityLabel("\(isHidden ? "Show" : "Hide") \(section.group.name)")
-                        .accessibilityIdentifier("genre-hide-\(section.group.id)")
                 }
                 .buttonStyle(.borderless)
                 .tint(p.accentInkColor)
@@ -199,7 +209,8 @@ struct GenreRow: View {
 
     var body: some View {
         NavigationLink(value: Route.genre(name: genre.name)) {
-            GenreLabel(name: genre.name, albums: genre.albumCount, songs: genre.songCount, font: .body)
+            GenreLabel(name: genre.name, albums: genre.albumCount, songs: genre.songCount, font: .body,
+                       countsKnown: genre.countsKnown)
                 .padding(.horizontal, Tokens.Spacing.margin)
         }
         .buttonStyle(.plain)
@@ -214,6 +225,8 @@ struct GenreLabel: View {
     let albums: Int
     let songs: Int
     let font: Font
+    /// False when the server gave no counts: none are shown.
+    var countsKnown = true
     @Environment(\.magpieTheme) private var theme
     private let themed = Themed()
 
@@ -221,8 +234,10 @@ struct GenreLabel: View {
         HStack(spacing: Tokens.Spacing.m) {
             VStack(alignment: .leading, spacing: 1) {
                 Text(name).font(font).lineLimit(2)
-                Text(GenreLabel.counts(albums: albums, songs: songs))
-                    .font(theme.numberFont(.footnote)).foregroundStyle(themed.palette.ink2Color)
+                if countsKnown {
+                    Text(GenreLabel.counts(albums: albums, songs: songs))
+                        .font(theme.numberFont(.footnote)).foregroundStyle(themed.palette.ink2Color)
+                }
             }
             Spacer()
             Image(systemName: "chevron.right").font(.footnote.weight(.semibold))

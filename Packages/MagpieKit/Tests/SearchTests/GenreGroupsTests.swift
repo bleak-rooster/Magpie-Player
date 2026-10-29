@@ -122,4 +122,14 @@ struct GenreGroupsTests {
                                        Genre(name: "Empty", songCount: 0, albumCount: 0)])
         #expect(g.map(\.name) == ["Blues", "zouk"])
     }
+
+    /// T19 ruling: a row whose counts the server left out is shown (Grouped and All genres alike); only a genre known
+    /// to be empty is dropped.
+    @Test func missingCountsAreShown() {
+        let genres = [Genre(name: "Chanson", songCount: 0, albumCount: 0, countsKnown: false),
+                      Genre(name: "Empty Rock", songCount: 0, albumCount: 0)]
+        let s = GenreGroups.grouped(genres, preferences: .defaultValue)
+        #expect(s.map(\.group.id) == ["world"] && s[0].genres.map(\.name) == ["Chanson"])
+        #expect(GenreGroups.allGenres(genres).map(\.name) == ["Chanson"])
+    }
 }
