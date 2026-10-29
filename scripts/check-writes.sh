@@ -14,6 +14,9 @@
 #       Navidrome sign-in, not Lidarr.
 #   Packages/MagpieKit/Sources/MagpieTestSupport/SharedLoginTransport.swift  auth/login
 #       IT helper sharing that Navidrome sign-in (H1); refuses every non-local host (H2b G0).
+#   Packages/MagpieKit/Sources/ListenBrainzKit/ListenBrainzClient+Submit.swift  G1 allowlist: listenbrainz submit-listens
+#       The one non-Lidarr, non-Navidrome POST: the owner's own ListenBrainz scrobbles (D31). The router (not this
+#       client) enforces D29.
 #   Packages/MagpieKit/Tests/RequestsTests/FindsIT.swift  G1 allowlist: devLidarr
 #       Raw requests to the dev Lidarr for IT set-up and clean-up (manual import, removing the test artist), after
 #       TryDevStack verified the host is local and the dev marker matches (G0). Never product code.
@@ -38,6 +41,7 @@ gate="Packages/MagpieKit/Sources/LidarrKit/WriteGate.swift"
 allow=(
   "Packages/MagpieKit/Sources/NavidromeKit/NavidromeClient.swift|auth/login"
   "Packages/MagpieKit/Sources/MagpieTestSupport/SharedLoginTransport.swift|auth/login"
+  "Packages/MagpieKit/Sources/ListenBrainzKit/ListenBrainzClient+Submit.swift|G1 allowlist: listenbrainz submit-listens"
   "Packages/MagpieKit/Tests/RequestsTests/FindsIT.swift|G1 allowlist: devLidarr"
   "Packages/MagpieKit/Tests/MagpieCoreTests/HTTPTransportTests.swift|RedirectStub"
   "Packages/MagpieKit/Tests/MagpieCoreTests/SharedLoginTransportTests.swift|auth/login"
