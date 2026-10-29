@@ -75,3 +75,44 @@ public struct AudioUsage: Sendable, Equatable {
 }
 
 public enum AudioStoreError: Error, Equatable { case downloadsFull, invalidFile, unknownSong }
+
+// MARK: - Tolerant decoding
+//
+// Sidecars outlive app versions. Only the fields that name the file are required; anything else missing (an
+// older schema) takes a safe default, so a schema change never makes a stored song undecodable. A default kind of
+// `.download` means a song is never evicted because its kind was lost; the size is re-read from the file.
+
+extension AudioEntry {
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        songId = try c.decode(String.self, forKey: .songId)
+        quality = try c.decode(StreamQuality.self, forKey: .quality)
+        fileName = try c.decode(String.self, forKey: .fileName)
+        size = (try? c.decodeIfPresent(Int64.self, forKey: .size)) ?? 0
+        kind = (try? c.decodeIfPresent(AudioKind.self, forKey: .kind)) ?? .download
+        reasons = (try? c.decodeIfPresent(Set<DownloadReason>.self, forKey: .reasons)) ?? []
+        downloadedAt = (try? c.decodeIfPresent(Date.self, forKey: .downloadedAt)) ?? Date(timeIntervalSinceReferenceDate: 0)
+        lastPlayed = try? c.decodeIfPresent(Date.self, forKey: .lastPlayed)
+        metadata = (try? c.decodeIfPresent(AudioMetadata.self, forKey: .metadata))
+            ?? AudioMetadata(Song(id: songId, title: "", artist: "", album: "", duration: 0))
+    }
+}
+
+extension AudioMetadata {
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        songId = try c.decode(String.self, forKey: .songId)
+        title = (try? c.decodeIfPresent(String.self, forKey: .title)) ?? ""
+        artist = (try? c.decodeIfPresent(String.self, forKey: .artist)) ?? ""
+        artistId = try? c.decodeIfPresent(String.self, forKey: .artistId)
+        album = (try? c.decodeIfPresent(String.self, forKey: .album)) ?? ""
+        albumId = try? c.decodeIfPresent(String.self, forKey: .albumId)
+        track = try? c.decodeIfPresent(Int.self, forKey: .track)
+        disc = try? c.decodeIfPresent(Int.self, forKey: .disc)
+        duration = (try? c.decodeIfPresent(TimeInterval.self, forKey: .duration)) ?? 0
+        genre = try? c.decodeIfPresent(String.self, forKey: .genre)
+        coverArtId = try? c.decodeIfPresent(String.self, forKey: .coverArtId)
+        suffix = try? c.decodeIfPresent(String.self, forKey: .suffix)
+        replayGain = try? c.decodeIfPresent(ReplayGain.self, forKey: .replayGain)
+    }
+}

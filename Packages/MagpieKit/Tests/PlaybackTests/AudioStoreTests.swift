@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import Testing
 import MagpieCore
 @testable import Playback
@@ -204,15 +205,20 @@ private final class TestClock: @unchecked Sendable {
         let gone = try await add(store, "s2", bytes: 100, kind: .download, reason: .song, limit: nil)
         let dir = store.directory
         let orphanAudio = dir.appending(path: String(repeating: "f", count: 64) + ".mp3")
-        let orphanSidecar = dir.appending(path: String(repeating: "e", count: 64) + ".mp3.json")
         let leftover = dir.appending(path: ".index.json.\(UUID().uuidString).tmp")
+        let pendingWrite = dir.appending(path: ".pending.json.\(UUID().uuidString).tmp")   // the manager's, mid-write
         try Data(count: 10).write(to: orphanAudio)
-        try Data("{}".utf8).write(to: orphanSidecar)
         try Data(count: 10).write(to: leftover)
+        try Data(count: 10).write(to: pendingWrite)
+        // A valid sidecar whose audio is gone.
+        let lost = try await add(store, "s3", bytes: 100, kind: .download, reason: .song, limit: nil)
+        try FileManager.default.removeItem(at: dir.appending(path: lost.fileName))
+        let orphanSidecar = dir.appending(path: lost.fileName + ".json")
         try FileManager.default.removeItem(at: dir.appending(path: gone.fileName + ".json"))   // s2 audio, no sidecar...
         // ...and no index entry either: remove s2 from the index file.
         var json = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: dir.appending(path: "index.json"))) as? [String: Any])
-        var entries = try #require(json["entries"] as? [String: Any]); entries["s2"] = nil; json["entries"] = entries
+        var entries = try #require(json["entries"] as? [String: Any]); entries["s2"] = nil; entries["s3"] = nil
+        json["entries"] = entries
         try JSONSerialization.data(withJSONObject: json).write(to: dir.appending(path: "index.json"))
         let again = AudioStore(root: tmp, scope: "abc"); await again.load()
         #expect(await again.entries().map(\.songId) == ["s1"])
@@ -220,6 +226,7 @@ private final class TestClock: @unchecked Sendable {
             #expect(!FileManager.default.fileExists(atPath: url.path), "\(url.lastPathComponent)")
         }
         #expect(FileManager.default.fileExists(atPath: dir.appending(path: kept.fileName).path))
+        #expect(FileManager.default.fileExists(atPath: pendingWrite.path), "only the store's own temp files are swept")
     }
 
     @Test func indexEntryNamingAnotherPathIsDropped() async throws {
@@ -248,5 +255,91 @@ private final class TestClock: @unchecked Sendable {
         await #expect(processExitsWith: .failure) {
             _ = AudioStore(root: URL(filePath: NSTemporaryDirectory()), scope: "../escape")
         }
+    }
+
+    // MARK: - Fix round 2: fail safe
+
+    /// Every file under the store, relative, with its size: what "nothing changed on disk" compares.
+    func snapshot(_ store: AudioStore) -> [String: Int] {
+        let base = store.directory.path + "/"
+        var out: [String: Int] = [:]
+        for case let url as URL in FileManager.default.enumerator(at: store.directory, includingPropertiesForKeys: [.fileSizeKey])! {
+            out[String(url.path.dropFirst(base.count))] = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? -1
+        }
+        return out
+    }
+
+    func populated() async throws -> AudioStore {
+        let store = AudioStore(root: tmp, scope: "abc"); await store.load()
+        try await add(store, "s1", bytes: 100, kind: .download, reason: .song, limit: nil)
+        try await add(store, "s2", bytes: 100, kind: .cache, reason: nil, limit: nil)
+        await store.savePlaylist(DownloadedPlaylist(id: "p1", name: "P", coverArtId: nil, songIds: ["s1"], savedAt: Date()))
+        return store
+    }
+
+    /// Before first unlock (a CarPlay cold start) protected files list and unlink but can't be opened: nothing may go.
+    @Test func unreadableFilesChangeNothingAndAreRetried() async throws {
+        let store = try await populated()
+        try Data("garbage".utf8).write(to: store.directory.appending(path: "index.json"))   // forces the sidecar pass
+        let before = snapshot(store)
+        let locked = Mutex(true)
+        let read: @Sendable (URL) throws -> Data = { url in
+            if locked.withLock({ $0 }) { throw CocoaError(.fileReadNoPermission) }
+            return try Data(contentsOf: url)
+        }
+        let early = AudioStore(root: tmp, scope: "abc", read: read); await early.load()
+        #expect(await early.entries().isEmpty)
+        #expect(await early.usage() == AudioUsage(downloadBytes: 0, cacheBytes: 0))
+        #expect(snapshot(early) == before, "zero deletions, zero writes")
+        locked.withLock { $0 = false }   // first unlock
+        #expect(await early.entries().map(\.songId).sorted() == ["s1", "s2"], "retried on next use")
+        #expect(await early.playlists().map(\.id) == ["p1"])
+    }
+
+    /// The index reads but the sidecars can't: serve the index, touch nothing.
+    @Test func unreadableSidecarsKeepTheIndexAndTouchNothing() async throws {
+        let store = try await populated()
+        let before = snapshot(store)
+        let read: @Sendable (URL) throws -> Data = { url in
+            if url.lastPathComponent.hasSuffix(".mp3.json") { throw CocoaError(.fileReadNoPermission) }
+            return try Data(contentsOf: url)
+        }
+        let early = AudioStore(root: tmp, scope: "abc", read: read); await early.load()
+        #expect(await early.entries().map(\.songId).sorted() == ["s1", "s2"])
+        #expect(snapshot(early) == before)
+    }
+
+    @Test func undecodableSidecarKeepsItsAudio() async throws {
+        let store = try await populated()
+        let s1 = try #require(await store.entry(songId: "s1"))
+        let dir = store.directory
+        try Data("{not json".utf8).write(to: dir.appending(path: s1.fileName + ".json"))
+        let index = try Data(contentsOf: dir.appending(path: "index.json"))
+        try Data("garbage".utf8).write(to: dir.appending(path: "index.json"))
+        let again = AudioStore(root: tmp, scope: "abc"); await again.load()
+        let s1Again = await again.entry(songId: "s1"), s2Again = await again.entry(songId: "s2")
+        #expect(s1Again == nil && s2Again != nil)
+        #expect(FileManager.default.fileExists(atPath: dir.appending(path: s1.fileName).path), "audio kept")
+        #expect(FileManager.default.fileExists(atPath: dir.appending(path: s1.fileName + ".json").path), "sidecar kept")
+        // With a readable index the entry comes back and its sidecar is healed.
+        try index.write(to: dir.appending(path: "index.json"))
+        let healed = AudioStore(root: tmp, scope: "abc"); await healed.load()
+        #expect(await healed.entry(songId: "s1")?.reasons == [.song])
+        let sidecar = try JSONDecoder().decode(AudioEntry.self, from: Data(contentsOf: dir.appending(path: s1.fileName + ".json")))
+        #expect(sidecar.songId == "s1")
+    }
+
+    /// A sidecar from an older schema (fields missing) still decodes; its size comes from the file.
+    @Test func oldSchemaSidecarDecodesAndSizeComesFromDisk() async throws {
+        let store = AudioStore(root: tmp, scope: "abc"); await store.load()
+        let e = try await add(store, "s1", bytes: 100, kind: .download, reason: .song, limit: nil)
+        let dir = store.directory
+        let old = #"{"songId":"s1","quality":"original","fileName":"\#(e.fileName)","metadata":{"songId":"s1","title":"Ts1"}}"#
+        try Data(old.utf8).write(to: dir.appending(path: e.fileName + ".json"))
+        try Data("garbage".utf8).write(to: dir.appending(path: "index.json"))
+        let again = AudioStore(root: tmp, scope: "abc"); await again.load()
+        let entry = try #require(await again.entry(songId: "s1"))
+        #expect(entry.kind == .download && entry.size == 100 && entry.metadata.title == "Ts1")
+        #expect(await again.usage().downloadBytes == 100)
     }
 }

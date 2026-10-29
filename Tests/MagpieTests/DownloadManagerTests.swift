@@ -83,6 +83,27 @@ private func eventually(_ seconds: Double = 5, _ condition: () async -> Bool) as
     return await condition()
 }
 
+/// Holds chosen songs between "bytes arrived" and "written to the store" (`beforeStoreForTesting`).
+@MainActor
+final class StoreGate {
+    private var held: Set<String>
+    private var waiting: [String: CheckedContinuation<Void, Never>] = [:]
+
+    init(_ held: Set<String>) { self.held = held }
+
+    func pass(_ songId: String) async {
+        guard held.contains(songId) else { return }
+        await withCheckedContinuation { waiting[songId] = $0 }
+    }
+
+    func isWaiting(_ songId: String) -> Bool { waiting[songId] != nil }
+
+    func release(_ songId: String) {
+        held.remove(songId)
+        waiting.removeValue(forKey: songId)?.resume()
+    }
+}
+
 private let cell = NetworkStatus(isConnected: true, isCellular: true, isConstrained: false)
 
 @MainActor @Suite(.serialized) final class DownloadManagerTests {
@@ -329,5 +350,55 @@ private let cell = NetworkStatus(isConnected: true, isCellular: true, isConstrai
         let stored = await m.store.entries()
         #expect(m.status(for: ["s1"]) == .downloaded && stored.count == 1)
         #expect(f.written.filter { FileManager.default.fileExists(atPath: $0.path) }.isEmpty)
+    }
+
+    // MARK: - Fix round 2: undo only for a removed job, and only for its song
+
+    /// Remove an album while one song is being written, download the album again: the old run finishing must not
+    /// take the re-downloaded songs with it.
+    @Test func lateWriteAfterRemoveAndRedownloadKeepsTheAlbum() async {
+        let (m, f, _) = await makeManager()   // concurrent 2
+        let gate = StoreGate(["s1"])
+        m.beforeStoreForTesting = { await gate.pass($0) }
+        m.download(songs("s1", "s2"), reason: .album("a1"))
+        #expect(await eventually { gate.isWaiting("s1") && m.status(for: ["s2"]) == .downloaded })
+        await m.remove(.album("a1"))
+        m.download(songs("s1", "s2"), reason: .album("a1"))
+        #expect(await eventually { m.status(for: ["s2"]) == .downloaded })
+        gate.release("s1"); await m.settled()
+        #expect(m.status(for: ["s1", "s2"]) == .downloaded)
+        let reasons = await m.store.entries().map(\.reasons)
+        #expect(reasons.count == 2 && reasons.allSatisfy { $0 == [.album("a1")] })
+        #expect(f.urls.filter { $0.query?.contains("id=s1") == true }.count == 1, "the late write is kept, not refetched")
+    }
+
+    /// Remove while one song is being written, and nothing asks for it again: no orphan reason, other songs untouched.
+    @Test func lateWriteAfterRemoveIsUndoneForThatSongOnly() async {
+        let (m, _, _) = await makeManager()
+        let gate = StoreGate(["s1"])
+        m.beforeStoreForTesting = { await gate.pass($0) }
+        m.download(songs("t1"), reason: .album("a1"))
+        await m.settled()
+        await m.store.addReason(.playlist("p1"), songIds: ["t1"])   // t1 is also held by a playlist
+        m.download(songs("s1"), reason: .album("a1"))
+        #expect(await eventually { gate.isWaiting("s1") })
+        await m.remove(.album("a1"))
+        gate.release("s1"); await m.settled()
+        #expect(await m.store.entry(songId: "s1") == nil, "undone")
+        #expect(await m.store.entry(songId: "t1")?.reasons == [.playlist("p1")])
+    }
+
+    /// A network flip while a song is being written is not a removal: nothing is undone.
+    @Test func networkFlipDuringWriteUndoesNothing() async {
+        let (m, _, n) = await makeManager()
+        let gate = StoreGate(["s1"])
+        m.beforeStoreForTesting = { await gate.pass($0) }
+        m.download(songs("s1"), reason: .album("a1"))
+        #expect(await eventually { gate.isWaiting("s1") })
+        n.status = cell
+        try? await Task.sleep(for: .milliseconds(20))
+        gate.release("s1"); await m.settled()
+        #expect(m.status(for: ["s1"]) == .downloaded)
+        #expect(await m.store.entry(songId: "s1")?.reasons == [.album("a1")])
     }
 }

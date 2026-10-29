@@ -55,6 +55,8 @@ final class DownloadManager {
     /// Every stored song (downloads and cache), for playback to prefer over a stream.
     private(set) var localFiles: [String: URL] = [:]
     @ObservationIgnored var onLocalFilesChanged: (@MainActor () -> Void)?
+    /// Tests: runs after a song's bytes have arrived and before they are written to the store.
+    @ObservationIgnored var beforeStoreForTesting: (@MainActor (_ songId: String) async -> Void)?
 
     /// Mirror of the store's kinds, so `status` can answer synchronously.
     private var kinds: [String: AudioKind] = [:]
@@ -323,7 +325,7 @@ final class DownloadManager {
                     return
                 }
                 guard isLive(gen) else { return }
-                await undoIfRemoved(id, run, reason)
+                await undoIfRemoved(id, reason, job.songId)
                 await refresh()
             }
             complete(id)
@@ -349,6 +351,7 @@ final class DownloadManager {
             return
         }
         setNeedsNetwork(id, false)   // the bytes are here: a network flip no longer stops this job
+        if let beforeStoreForTesting { await beforeStoreForTesting(job.songId) }
         do {
             switch job.kind {
             case let .download(reason):
@@ -368,15 +371,17 @@ final class DownloadManager {
             return
         }
         guard isLive(gen) else { return }
-        if case let .download(reason) = job.kind { await undoIfRemoved(id, run, reason) }
+        if case let .download(reason) = job.kind { await undoIfRemoved(id, reason, job.songId) }
         await refresh()
         complete(id)
     }
 
-    /// `remove(reason)` ran while the store was being written: take the reason back off so nothing is orphaned.
-    private func undoIfRemoved(_ id: UUID, _ run: UUID, _ reason: DownloadReason) async {
-        guard !isCurrent(id, run) else { return }
-        await store.removeReason(reason)
+    /// `remove(reason)` dropped this job while its song was being written: take the reason back off this song,
+    /// unless the song has been asked for again with the same reason since.
+    private func undoIfRemoved(_ id: UUID, _ reason: DownloadReason, _ songId: String) async {
+        guard job(id) == nil, isLive(generation),
+              !jobs.contains(where: { $0.songId == songId && $0.kind == .download(reason) }) else { return }
+        await store.removeReason(reason, songIds: [songId])
     }
 
     private func setNeedsNetwork(_ id: UUID, _ value: Bool) {
