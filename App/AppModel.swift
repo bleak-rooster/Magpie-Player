@@ -572,10 +572,10 @@ final class AppModel {
     /// portal that answers 200 to anything never gets the password); otherwise the error (URLError, HTTP
     /// status, or `unexpectedResponse`).
     func probe(_ base: URL) async -> Error? {
-        let url = ServerEndpoint(bases: [base]).url(base, path: "rest/ping", query: [
+        guard let url = ServerEndpoint(bases: [base]).url(base, path: "rest/ping", query: [
             URLQueryItem(name: "v", value: "1.16.1"), URLQueryItem(name: "c", value: "Magpie"),
             URLQueryItem(name: "f", value: "json"),
-        ])
+        ]) else { return URLError(.badURL) }
         do {
             let (data, response) = try await probeTransport.send(URLRequest(url: url))
             guard (200..<300).contains(response.statusCode) else { return NavidromeError.http(status: response.statusCode) }

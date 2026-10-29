@@ -32,9 +32,20 @@ import os
         transport.stub(method: "POST", pathSuffix: "/auth/login", body: Fixtures.data("login"))
         let (client, _) = makeClient(bases: [dead, testBase], transport: transport)
         _ = try await client.connect()
-        #expect(client.streamURL(songId: "x", maxBitRate: nil, format: nil).host == "music.example")
+        #expect(client.streamURL(songId: "x", maxBitRate: nil, format: nil)?.host == "music.example")
         let login = try #require(transport.requests.first { $0.url?.path.hasSuffix("/auth/login") == true })
         #expect(login.url?.host == "music.example")
+    }
+
+    /// QC (crash report #4): a base no URL can be built on gives no stream or cover URL (callers skip them) and a
+    /// connect that fails, never a trap.
+    @Test func unbuildableBaseGivesNoURLsAndNoTrap() async throws {
+        let odd = try #require(URL(dataRepresentation: Data("://x:a".utf8), relativeTo: nil))
+        let (client, transport) = makeClient(bases: [odd])
+        #expect(client.streamURL(songId: "x", maxBitRate: nil, format: nil) == nil)
+        #expect(client.coverArtURL(id: "al-1", size: 300) == nil)
+        await #expect(throws: NavidromeError.self) { try await client.connect() }
+        #expect(transport.requests.isEmpty)
     }
 
     @Test func connectThrowsWhenNothingReachable() async {

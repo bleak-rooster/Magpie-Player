@@ -36,7 +36,8 @@ struct LidarrConnection: Sendable {
 
     fileprivate func send(_ method: String, path: String, query: [URLQueryItem], body: Data?) async throws
         -> (Data, HTTPURLResponse) {
-        var request = URLRequest(url: endpoint.url(base, path: "api/v1/" + path, query: query))
+        guard let url = endpoint.url(base, path: "api/v1/" + path, query: query) else { throw URLError(.badURL) }
+        var request = URLRequest(url: url)
         request.httpMethod = method
         request.setValue(apiKey, forHTTPHeaderField: "X-Api-Key")
         request.setValue("application/json", forHTTPHeaderField: "Accept")

@@ -77,10 +77,11 @@ public actor MusicBrainzClient {
 
     public func recording(_ mbid: MBID) async throws -> MBRecording {
         try await limiter.wait()
-        var request = URLRequest(url: ServerEndpoint(bases: [Self.base]).url(
+        guard let url = ServerEndpoint(bases: [Self.base]).url(
             Self.base, path: "ws/2/recording/\(mbid.rawValue)",
             query: [URLQueryItem(name: "inc", value: "releases+release-groups+isrcs+artist-credits"),
-                    URLQueryItem(name: "fmt", value: "json")]))
+                    URLQueryItem(name: "fmt", value: "json")]) else { throw URLError(.badURL) }
+        var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
         request.setValue("application/json", forHTTPHeaderField: "Accept")

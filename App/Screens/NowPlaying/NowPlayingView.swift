@@ -42,7 +42,7 @@ struct NowPlayingView: View {
                             (key != "hint" || model.playbackHint != nil) && (key != "error" || player.lastError != nil)
                         }
                         let parts = shown.values.reduce(2 * Tokens.Spacing.l, +)   // vertical padding included
-                        let next = player.queue.upcoming.first?.song
+                        let next = player.queue.nextUp?.song
                         let plan = NowPlayingLayout.plan(available: CGSize(width: width, height: geo.size.height),
                                                          parts: parts, gaps: shown.count,
                                                          upNext: next == nil ? nil : upNextHeight)
@@ -103,10 +103,10 @@ struct NowPlayingView: View {
                         .nowPlayingPart("error", into: $partHeights)
                 }
                 transport(player).nowPlayingPart("transport", into: $partHeights)
-                if showsUpNext, let next = player.queue.upcoming.first?.song {
+                if showsUpNext, let next = player.queue.nextUp?.song {
                     upNext(next)
                         .fixedSize(horizontal: false, vertical: true)
-                        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { upNextHeight = $0 }
+                        .nowPlayingHeight("upNext", into: $upNextHeight)
                         .nowPlayingProbe("upNext")
                 }
                 bottomBar.nowPlayingPart("bottom", into: $partHeights)

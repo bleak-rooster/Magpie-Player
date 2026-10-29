@@ -65,11 +65,11 @@ public actor NavidromeClient {
             let endpoint = self.endpoint
             let clientName = self.clientName
             base = await firstReachable(endpoint) { candidate in
-                let url = endpoint.url(candidate, path: "rest/ping", query: [
+                guard let url = endpoint.url(candidate, path: "rest/ping", query: [
                     URLQueryItem(name: "v", value: SubsonicAuth.apiVersion),
                     URLQueryItem(name: "c", value: clientName),
                     URLQueryItem(name: "f", value: "json"),
-                ])
+                ]) else { return false }
                 guard let (data, response) = try? await transport.send(URLRequest(url: url)) else { return false }
                 // Security H2: a 200 from a router or captive portal is not a server; the password stays home.
                 return (200..<300).contains(response.statusCode) && SubsonicPing.isServerAnswer(data)
@@ -77,7 +77,8 @@ public actor NavidromeClient {
         }
         guard let base else { throw NavidromeError.noReachableServer }
 
-        var request = URLRequest(url: endpoint.url(base, path: "auth/login"))
+        guard let loginURL = endpoint.url(base, path: "auth/login") else { throw URLError(.badURL) }
+        var request = URLRequest(url: loginURL)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONEncoder().encode(["username": credentials.username,
@@ -104,11 +105,11 @@ public actor NavidromeClient {
     // MARK: - Request plumbing
 
     /// Sends with the current session; on an auth failure re-logs in (single-flight) and retries once.
-    private func authorized(_ make: @Sendable (Session) -> URLRequest,
+    private func authorized(_ make: @Sendable (Session) throws -> URLRequest,
                             isExpired: @Sendable (Data, HTTPURLResponse) -> Bool) async throws -> (Data, HTTPURLResponse) {
         var current = try await currentSession()
         for attempt in 0..<2 {
-            let request = make(current)
+            let request = try make(current)
             Log.request(request)
             let result = try await transport.send(request)
             if attempt == 0, isExpired(result.0, result.1) {
@@ -126,13 +127,13 @@ public actor NavidromeClient {
         return code == 40 || code == 44
     }
 
-    private nonisolated func subsonicURL(_ method: String, _ s: Session, _ extra: [URLQueryItem]) -> URL {
+    private nonisolated func subsonicURL(_ method: String, _ s: Session, _ extra: [URLQueryItem]) -> URL? {
         Self.subsonicURL(endpoint: endpoint, session: s, method: method, extra: extra,
                          password: credentials.password, clientName: clientName)
     }
 
     private static func subsonicURL(endpoint: ServerEndpoint, session s: Session, method: String,
-                                    extra: [URLQueryItem], password: String, clientName: String) -> URL {
+                                    extra: [URLQueryItem], password: String, clientName: String) -> URL? {
         let base = s.base ?? endpoint.bases[0]
         let auth = s.login.map { SubsonicAuth.queryItems(login: $0, password: password, clientName: clientName) } ?? []
         return endpoint.url(base, path: "rest/\(method)", query: auth + extra)
@@ -140,7 +141,8 @@ public actor NavidromeClient {
 
     private func subsonic(_ method: String, _ extra: [URLQueryItem] = []) async throws -> SubsonicBody {
         let (data, response) = try await authorized({ s in
-            URLRequest(url: self.subsonicURL(method, s, extra))
+            guard let url = self.subsonicURL(method, s, extra) else { throw URLError(.badURL) }
+            return URLRequest(url: url)
         }, isExpired: Self.subsonicAuthFailure)
         guard (200..<300).contains(response.statusCode) else {
             throw response.statusCode == 401 ? NavidromeError.badCredentials : NavidromeError.http(status: response.statusCode)
@@ -273,7 +275,8 @@ public actor NavidromeClient {
 
     // MARK: - URLs (usable from any context; auth comes from the latest session)
 
-    public nonisolated func streamURL(songId: String, maxBitRate: Int?, format: String?) -> URL {
+    /// Nil when no URL can be built on the active address (QC); the song then fails like any unreachable stream.
+    public nonisolated func streamURL(songId: String, maxBitRate: Int?, format: String?) -> URL? {
         var extra = [URLQueryItem(name: "id", value: songId)]
         if let maxBitRate { extra.append(URLQueryItem(name: "maxBitRate", value: String(maxBitRate))) }
         if let format { extra.append(URLQueryItem(name: "format", value: format)) }
@@ -285,7 +288,8 @@ public actor NavidromeClient {
                                 extra: extra, password: credentials.password, clientName: clientName)
     }
 
-    public nonisolated func coverArtURL(id: String, size: Int) -> URL {
+    /// Nil when no URL can be built on the active address (QC); the art is skipped.
+    public nonisolated func coverArtURL(id: String, size: Int) -> URL? {
         Self.subsonicURL(endpoint: endpoint, session: session.withLock { $0 }, method: "getCoverArt",
                          extra: [URLQueryItem(name: "id", value: id), URLQueryItem(name: "size", value: String(size))],
                          password: credentials.password, clientName: clientName)
@@ -419,7 +423,10 @@ public actor NavidromeClient {
     /// A GET on the native API with the session's JWT; keeps a refreshed token. Throws for a non-2xx answer.
     private func native(_ path: String, _ query: [URLQueryItem]) async throws -> (Data, HTTPURLResponse) {
         let (data, response) = try await authorized({ s in
-            var request = URLRequest(url: self.endpoint.url(s.base ?? self.endpoint.bases[0], path: path, query: query))
+            guard let url = self.endpoint.url(s.base ?? self.endpoint.bases[0], path: path, query: query) else {
+                throw URLError(.badURL)
+            }
+            var request = URLRequest(url: url)
             request.setValue("Bearer \(s.login?.jwt ?? "")", forHTTPHeaderField: "X-ND-Authorization")
             return request
         }, isExpired: { _, r in r.statusCode == 401 })

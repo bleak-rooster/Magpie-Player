@@ -223,7 +223,7 @@ private let away = URL(string: "https://music.example.com/navidrome")!
         defer { collector.cancel() }
         engine.setItems([(UUID(), wav)], startAt: 0)
         engine.play()
-        #expect(player.rate > 0)
+        try await AVQueueEngineTests.waitUntil { player.rate > 0 }   // QC: starts once the session is active
 
         let session = AVAudioSession.sharedInstance()
         NotificationCenter.default.post(name: AVAudioSession.routeChangeNotification, object: session, userInfo: [
@@ -264,6 +264,9 @@ private let away = URL(string: "https://music.example.com/navidrome")!
         let after = try Self.queuePlayer(engine)
         #expect(after !== before, "a new AVQueuePlayer")
         #expect((after.currentItem?.asset as? AVURLAsset)?.url == wav, "the same entry is loaded again")
+        // QC: the session is activated again off the main thread first, then it plays on.
+        let playDeadline = Date().addingTimeInterval(5)
+        while Date() < playDeadline, after.rate == 0 { try await Task.sleep(for: .milliseconds(20)) }
         #expect(after.rate > 0, "it was playing, so it plays on")
         let deadline = Date().addingTimeInterval(5)
         while Date() < deadline, events.filter({ $0 == .itemChanged(id) }).count < 2 { try await Task.sleep(for: .milliseconds(20)) }

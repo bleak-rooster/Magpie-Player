@@ -49,8 +49,11 @@ public struct ListenBrainzClient: Sendable {
     public func searchRecordings(_ q: String, limit: Int = 15) async throws -> [ExternalRecording] {
         let query = q.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty, limit > 0 else { return [] }
-        var request = URLRequest(url: ServerEndpoint(bases: [Self.labsBase])
-            .url(Self.labsBase, path: "recording-search/json", query: [URLQueryItem(name: "query", value: query)]))
+        guard let url = ServerEndpoint(bases: [Self.labsBase])
+            .url(Self.labsBase, path: "recording-search/json", query: [URLQueryItem(name: "query", value: query)]) else {
+            throw URLError(.badURL)
+        }
+        var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.timeoutInterval = labsTimeout
@@ -93,7 +96,10 @@ public struct ListenBrainzClient: Sendable {
 
     /// A GET to `api.listenbrainz.org` with the token (when set), spaced by the limiter, within `apiTimeout`.
     private func api(_ path: String, query: [URLQueryItem] = []) async throws -> Data {
-        var request = URLRequest(url: ServerEndpoint(bases: [Self.apiBase]).url(Self.apiBase, path: path, query: query))
+        guard let url = ServerEndpoint(bases: [Self.apiBase]).url(Self.apiBase, path: path, query: query) else {
+            throw URLError(.badURL)
+        }
+        var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.timeoutInterval = apiTimeout

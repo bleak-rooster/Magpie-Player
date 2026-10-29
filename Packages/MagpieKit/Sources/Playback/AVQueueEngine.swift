@@ -4,18 +4,21 @@ import MagpieCore
 
 /// `PlaybackEngine` on `AVQueuePlayer` (gapless when the files carry encoder delay/padding info).
 ///
-/// Holds the full list from `Player` but keeps at most `maxEnqueued` items in the AVQueuePlayer:
+/// Holds the list from `Player` (the current entry and a window after it) but keeps at most `maxEnqueued`
+/// items in the AVQueuePlayer:
 /// the next item is appended once the current one has `prefetchLead` seconds or less left
 /// (immediately when the current item's length is unknown, e.g. a live transcode).
 ///
 /// On iOS the audio session is configured `.playback` / `.longFormAudio` at init but activated
 /// only on the first `play()` — activating early cuts off the car's own audio (FM radio) in CarPlay.
+/// Activation runs on a serial queue of its own, not the main thread (it can block on a route change or an
+/// interruption; QC), and playback starts once it is done.
 @MainActor
 public final class AVQueueEngine: PlaybackEngine {
     public let events: AsyncStream<EngineEvent>
     private let continuation: AsyncStream<EngineEvent>.Continuation
 
-    static let maxEnqueued = 3
+    nonisolated static let maxEnqueued = 3
     static let prefetchLead: TimeInterval = 20
 
     private struct Enqueued {
@@ -48,8 +51,12 @@ public final class AVQueueEngine: PlaybackEngine {
     private var playerObservers: [Any] = []
     private var notificationTokens: [NSObjectProtocol] = []
     #if os(iOS)
-    private var sessionActivated = false
+    private enum SessionState { case inactive, activating, active }
+    private var session = SessionState.inactive
+    private static let sessionQueue = DispatchQueue(label: "com.bleak-rooster.magpie.audio-session", qos: .userInitiated)
     #endif
+    /// `AVAudioSession.setActive(true)`; tests pass a stand-in.
+    private let activate: @Sendable () throws -> Void
 
     /// What the AVQueuePlayer holds right now, current first.
     public var enqueuedItems: [(id: UUID, url: URL)] {
@@ -71,7 +78,11 @@ public final class AVQueueEngine: PlaybackEngine {
         return start
     }
 
-    public init() {
+    /// Diagnostics: the AVQueuePlayer's rate (0 while paused or waiting for the audio session).
+    public var playerRate: Float { player.rate }
+
+    public init(activateSession: @escaping @Sendable () throws -> Void = AVQueueEngine.activateSharedSession) {
+        activate = activateSession
         (events, continuation) = AsyncStream.makeStream(bufferingPolicy: .bufferingNewest(64))
         #if os(iOS)
         configureSession()
@@ -106,23 +117,20 @@ public final class AVQueueEngine: PlaybackEngine {
             enqueue(target)
             lastTime = 0
             reportCurrent()
-            if wantsToPlay { player.play() }
+            startIfWanted()
         }
         topUp()
     }
 
     public func play() {
         wantsToPlay = true
-        #if os(iOS)
-        activateSessionIfNeeded()
-        #endif
         if player.currentItem == nil, let first = list.first {
             // Finished the list or halted on a failure: (re)load the first item.
             haltedId = nil
             enqueue(first)
             reportCurrent()
         }
-        player.play()
+        startIfWanted()
     }
 
     public func pause() {
@@ -165,11 +173,26 @@ public final class AVQueueEngine: PlaybackEngine {
         } else {
             clearPlayer()
             enqueue(list[nextIndex])
-            if wantsToPlay { player.play() }
+            startIfWanted()
         }
         lastTime = 0
         reportCurrent()
         topUp()
+    }
+
+    /// Plays when asked to and the audio session is active; on iOS the first time starts the activation, and
+    /// playback starts when it is done.
+    private func startIfWanted() {
+        guard wantsToPlay else { return }
+        #if os(iOS)
+        switch session {
+        case .active: player.play()
+        case .activating: break
+        case .inactive: activateSession()
+        }
+        #else
+        player.play()
+        #endif
     }
 
     // MARK: - Queue upkeep
@@ -381,6 +404,12 @@ public final class AVQueueEngine: PlaybackEngine {
 
     // MARK: - Audio session (iOS)
 
+    public nonisolated static let activateSharedSession: @Sendable () throws -> Void = {
+        #if os(iOS)
+        try AVAudioSession.sharedInstance().setActive(true)
+        #endif
+    }
+
     #if os(iOS)
     private func configureSession() {
         do {
@@ -390,14 +419,26 @@ public final class AVQueueEngine: PlaybackEngine {
         }
     }
 
-    private func activateSessionIfNeeded() {
-        guard !sessionActivated else { return }
-        do {
-            try AVAudioSession.sharedInstance().setActive(true)
-            sessionActivated = true
-        } catch {
-            Log.logger("playback").error("audio session activation failed: \(Log.category(of: error), privacy: .public)")
+    /// Activates the session on `sessionQueue`, then back on the main actor starts playback if still wanted.
+    private func activateSession() {
+        session = .activating
+        let activate = self.activate
+        Self.sessionQueue.async { [weak self] in
+            var failure: (any Error)?
+            do { try activate() } catch { failure = error }
+            Task { @MainActor [weak self, failure] in self?.sessionActivationFinished(failure) }
         }
+    }
+
+    /// A failed activation is logged and playback goes ahead anyway (as before); the next play tries again.
+    private func sessionActivationFinished(_ failure: (any Error)?) {
+        if let failure {
+            Log.logger("playback").error("audio session activation failed: \(Log.category(of: failure), privacy: .public)")
+            session = .inactive
+        } else if session == .activating {
+            session = .active
+        }
+        if wantsToPlay { player.play() }
     }
 
     private func observeSession() {
@@ -433,7 +474,7 @@ public final class AVQueueEngine: PlaybackEngine {
 
     /// The system has paused us. Keep `wantsToPlay` so a later recommendation can resume.
     private func sessionBecameInactive() {
-        sessionActivated = false
+        session = .inactive
         continuation.yield(.playing(false))
     }
 
@@ -442,8 +483,7 @@ public final class AVQueueEngine: PlaybackEngine {
             wantsToPlay = false
             return
         }
-        activateSessionIfNeeded()
-        player.play()
+        startIfWanted()
         continuation.yield(.playing(true))
     }
 
@@ -457,7 +497,7 @@ public final class AVQueueEngine: PlaybackEngine {
         player = AVQueuePlayer()
         player.volume = volume
         attach(player)
-        sessionActivated = false
+        session = .inactive
         configureSession()
         guard let id = resumeId, let start = list.firstIndex(where: { $0.id == id }) else { return }
         setItems(list.map { ($0.id, $0.url) }, startAt: start)

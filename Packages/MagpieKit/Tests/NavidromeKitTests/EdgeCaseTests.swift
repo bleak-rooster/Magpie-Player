@@ -146,10 +146,10 @@ private func logins(_ t: MockTransport) -> Int {
     @Test func unicodeIdsInStreamAndCoverURLs() async throws {
         let (client, _) = makeClient()
         _ = try await client.connect()
-        let stream = client.streamURL(songId: "ñ/東?&=", maxBitRate: nil, format: nil)
+        let stream = client.streamURL(songId: "ñ/東?&=", maxBitRate: nil, format: nil)!
         #expect(URLComponents(url: stream, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "id" }?.value == "ñ/東?&=")
         #expect(stream.path == "/navidrome/rest/stream")
-        let cover = client.coverArtURL(id: "al-ü", size: 300)
+        let cover = client.coverArtURL(id: "al-ü", size: 300)!
         #expect(cover.path == "/navidrome/rest/getCoverArt")
     }
 

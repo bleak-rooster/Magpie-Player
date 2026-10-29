@@ -43,7 +43,7 @@ public final class NowPlayingBridge {
             var last: Snapshot?
             let snapshots = Observations { @MainActor in
                 Snapshot(entryId: player.queue.current?.id, isPlaying: player.isPlaying, duration: player.duration,
-                         second: Int(player.position), upcomingCount: player.queue.upcoming.count,
+                         second: Int(player.position), upcomingCount: player.queue.upcomingCount,
                          isShuffled: player.isShuffled, repeatMode: player.repeatMode,
                          liked: player.queue.current.map { isLiked($0.song) } ?? false)
             }
@@ -89,7 +89,7 @@ public final class NowPlayingBridge {
         }
         if let index = player.queue.currentIndex {
             info[MPNowPlayingInfoPropertyPlaybackQueueIndex] = index
-            info[MPNowPlayingInfoPropertyPlaybackQueueCount] = index + 1 + player.queue.upcoming.count
+            info[MPNowPlayingInfoPropertyPlaybackQueueCount] = index + 1 + player.queue.upcomingCount
         }
         if let art = artwork, art.coverArtId == song.coverArtId {
             info[MPMediaItemPropertyArtwork] = art.artwork

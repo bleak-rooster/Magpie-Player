@@ -29,7 +29,7 @@ struct TranscodeIT {
         let client = try client(); _ = try await client.connect()
         let album = try await client.album(id: try await client.albumList(.newest, size: 1, offset: 0)[0].id)
         let song = try #require(album.songs?.first)
-        let (data, response) = try await URLSessionTransport().send(URLRequest(url: client.streamURL(songId: song.id, maxBitRate: rate, format: format)))
+        let (data, response) = try await URLSessionTransport().send(URLRequest(url: client.streamURL(songId: song.id, maxBitRate: rate, format: format)!))
         #expect(response.statusCode == 200 && data.count > 1024)
         let (ok, seconds) = try await playable(data, ext: ext)
         #expect(ok, "\(format) \(rate) kbps is playable")
@@ -44,7 +44,7 @@ struct TranscodeIT {
         let client = try client(); _ = try await client.connect()
         let album = try await client.album(id: try await client.albumList(.newest, size: 1, offset: 0)[0].id)
         let song = try #require(album.songs?.first)
-        let url = client.streamURL(songId: song.id, maxBitRate: rate, format: "opus")
+        let url = client.streamURL(songId: song.id, maxBitRate: rate, format: "opus")!
         #expect(!url.absoluteString.contains("estimateContentLength"))
         let (data, response) = try await URLSessionTransport().send(URLRequest(url: url))
         #expect(response.statusCode == 200 && data.count > 1024)
@@ -55,7 +55,7 @@ struct TranscodeIT {
         let client = try client(); _ = try await client.connect()
         let album = try await client.album(id: try await client.albumList(.newest, size: 1, offset: 0)[0].id)
         let song = try #require(album.songs?.first)
-        let (data, response) = try await URLSessionTransport().send(URLRequest(url: client.streamURL(songId: song.id, maxBitRate: nil, format: "raw")))
+        let (data, response) = try await URLSessionTransport().send(URLRequest(url: client.streamURL(songId: song.id, maxBitRate: nil, format: "raw")!))
         #expect(response.statusCode == 200)
         #expect(try await playable(data, ext: song.suffix ?? "mp3").0)
     }

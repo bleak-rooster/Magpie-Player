@@ -15,6 +15,8 @@ struct QueueView: View {
         let player = model.player
         let queue = player.queue
         let rest = Array(queue.upcoming.dropFirst(queue.upNext.count))
+        // The rows as drawn: swipes and drags act on these entries, looked up in the live queue (QueueRowEdits).
+        let upNextRows = queue.upNext.map(\.id), restRows = rest.map(\.id)
         NavigationStack {
             List {
                 if let current = queue.current?.song {
@@ -37,8 +39,8 @@ struct QueueView: View {
                             .moveDisabled(true)
                     }
                     ForEach(queue.upNext) { row($0) }
-                        .onMove { from, to in move(from, to, in: queue.upNext, offset: 0) }
-                        .onDelete { remove($0, from: queue.upNext) }
+                        .onMove { QueueRowEdits.move($0, to: $1, in: upNextRows, player: player) }
+                        .onDelete { QueueRowEdits.remove($0, of: upNextRows, player: player) }
                 } header: {
                     VStack(alignment: .leading, spacing: 2) {
                         header("Up Next")
@@ -49,8 +51,8 @@ struct QueueView: View {
                 if !rest.isEmpty {
                     Section {
                         ForEach(rest) { row($0) }
-                            .onMove { from, to in move(from, to, in: rest, offset: queue.upNext.count) }
-                            .onDelete { remove($0, from: rest) }
+                            .onMove { QueueRowEdits.move($0, to: $1, in: restRows, player: player) }
+                            .onDelete { QueueRowEdits.remove($0, of: restRows, player: player) }
                     } header: { header("Playing next") }
                 }
                 if queue.current == nil {
@@ -65,7 +67,7 @@ struct QueueView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button("Clear") { confirmClear = true }
-                        .disabled(queue.upcoming.isEmpty)
+                        .disabled(queue.upcomingCount == 0)
                         .accessibilityIdentifier("queue-clear")
                 }
                 ToolbarItem(placement: .topBarTrailing) { EditButton() }
@@ -90,7 +92,7 @@ struct QueueView: View {
         Artwork(entry.song.coverArtId, side: 48) { SongRow(song: entry.song, state: .library, artwork: $0) }
             .listRowInsets(EdgeInsets())
             .listRowBackground(Color.clear)
-            .accessibilityAction(named: "Remove") { model.player.remove(id: entry.id) }
+            .accessibilityAction(named: "Remove") { QueueRowEdits.remove(entry.id, player: model.player) }
     }
 
     private func modes(_ player: Player) -> some View {
@@ -131,20 +133,5 @@ struct QueueView: View {
         case .all: "All"
         case .one: "One song"
         }
-    }
-
-    /// `onMove` reports "insert before `to`" within a section; `Player.move` wants the final
-    /// position within the whole upcoming list.
-    private func move(_ from: IndexSet, _ to: Int, in entries: [QueueEntry], offset: Int) {
-        guard let i = from.first, entries.indices.contains(i) else { return }
-        model.player.move(id: entries[i].id, to: Self.finalPosition(from: i, insertBefore: to, offset: offset))
-    }
-
-    static func finalPosition(from i: Int, insertBefore to: Int, offset: Int) -> Int {
-        offset + (to > i ? to - 1 : to)
-    }
-
-    private func remove(_ at: IndexSet, from entries: [QueueEntry]) {
-        for i in at where entries.indices.contains(i) { model.player.remove(id: entries[i].id) }
     }
 }

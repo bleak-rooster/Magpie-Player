@@ -125,10 +125,10 @@ import os
     @Test func aacStreamURLHasNoEstimateContentLength() async throws {
         let (client, _) = try await connected { _ in }
         let items = Dictionary(uniqueKeysWithValues: URLComponents(
-            url: client.streamURL(songId: "a", maxBitRate: 160, format: "aac"), resolvingAgainstBaseURL: false)!
+            url: client.streamURL(songId: "a", maxBitRate: 160, format: "aac")!, resolvingAgainstBaseURL: false)!
             .queryItems!.map { ($0.name, $0.value ?? "") })
         #expect(items["estimateContentLength"] == nil && items["format"] == "aac" && items["maxBitRate"] == "160")
-        let raw = client.streamURL(songId: "a", maxBitRate: nil, format: "raw")
+        let raw = client.streamURL(songId: "a", maxBitRate: nil, format: "raw")!
         #expect(raw.absoluteString.contains("estimateContentLength=true"))
     }
 
@@ -136,7 +136,7 @@ import os
         let (client, _) = try await connected { _ in }
         for rate in [192, 128, 96, 64] {
             let items = Dictionary(uniqueKeysWithValues: URLComponents(
-                url: client.streamURL(songId: "a", maxBitRate: rate, format: "opus"), resolvingAgainstBaseURL: false)!
+                url: client.streamURL(songId: "a", maxBitRate: rate, format: "opus")!, resolvingAgainstBaseURL: false)!
                 .queryItems!.map { ($0.name, $0.value ?? "") })
             #expect(items["estimateContentLength"] == nil && items["format"] == "opus" && items["maxBitRate"] == String(rate))
         }
@@ -144,7 +144,7 @@ import os
 
     @Test func streamURLHasEstimateContentLength() async throws {
         let (client, _) = try await connected { _ in }
-        let url = client.streamURL(songId: "abc 123", maxBitRate: 320, format: "mp3")
+        let url = client.streamURL(songId: "abc 123", maxBitRate: 320, format: "mp3")!
         let comps = URLComponents(url: url, resolvingAgainstBaseURL: false)!
         let items = Dictionary(uniqueKeysWithValues: comps.queryItems!.map { ($0.name, $0.value ?? "") })
         #expect(comps.path == "/navidrome/rest/stream")
@@ -153,13 +153,13 @@ import os
         #expect(items["maxBitRate"] == "320")
         #expect(items["format"] == "mp3")
         #expect(items["u"] == "admin" && items["s"] == "fakesalt" && items["p"] == nil)
-        let plain = client.streamURL(songId: "a", maxBitRate: nil, format: nil)
+        let plain = client.streamURL(songId: "a", maxBitRate: nil, format: nil)!
         #expect(!plain.absoluteString.contains("maxBitRate") && !plain.absoluteString.contains("format"))
     }
 
     @Test func coverArtURLKeepsBasePath() async throws {
         let (client, _) = try await connected { _ in }
-        let url = client.coverArtURL(id: "al-1_abc", size: 600)
+        let url = client.coverArtURL(id: "al-1_abc", size: 600)!
         #expect(url.path == "/navidrome/rest/getCoverArt")
         let items = URLComponents(url: url, resolvingAgainstBaseURL: false)!.queryItems!
         #expect(items.first { $0.name == "id" }?.value == "al-1_abc")

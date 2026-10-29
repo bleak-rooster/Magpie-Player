@@ -29,6 +29,32 @@ import MagpieCore
         #expect(!unchanged)
     }
 
+    /// QC (crash report #1): the count, the next entry and the first few playable ones come without building the
+    /// whole upcoming list, and agree with it.
+    @Test func upcomingCountAndWindowAgreeWithUpcoming() {
+        var q = PlayQueue()
+        #expect(q.upcomingCount == 0 && q.nextUp == nil && q.upcoming(limit: 3).isEmpty)
+        q.replace(with: Self.songs("1", "2", "3", "4", "5"), startAt: 1)
+        q.playNext(Self.songs("x", "y"))
+        #expect(q.upcomingCount == 5 && q.upcomingCount == q.upcoming.count)
+        #expect(q.nextUp?.song.id == "x")
+        #expect(ids(q.upcoming(limit: 3)) == ["x", "y", "3"])
+        #expect(ids(q.upcoming(limit: 3, where: { $0.song.id != "y" })) == ["x", "3", "4"])
+        #expect(ids(q.upcoming(limit: 10)) == ids(q.upcoming))
+        #expect(q.upcoming(limit: 0).isEmpty)
+        q.clearUpcoming()
+        #expect(q.upcomingCount == 0 && q.nextUp == nil)
+    }
+
+    /// QC: the engine gets the current entry plus K: the engine's own enqueue depth or the pre-download count,
+    /// whichever is more; 3 by default, never more than 10.
+    @Test func engineWindowSize() {
+        #expect(EngineWindow.size() == 3)
+        #expect(EngineWindow.size(engineMax: 3, preDownload: 6) == 6)
+        #expect(EngineWindow.size(engineMax: 3, preDownload: 40) == 10)
+        #expect(EngineWindow.size(engineMax: 0, preDownload: 0) == 1)
+    }
+
     @Test func upNextPlaysBeforeMain() {
         var q = PlayQueue()
         q.replace(with: Self.songs("1", "2", "3"), startAt: 0)

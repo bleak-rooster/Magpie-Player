@@ -10,8 +10,9 @@ public struct ServerEndpoint: Codable, Sendable, Hashable {
     }
 
     /// Appends `path` to `base`'s own path (never `URL(string:relativeTo:)`, which drops the base path).
-    public func url(_ base: URL, path: String, query: [URLQueryItem] = []) -> URL {
-        guard var components = URLComponents(url: base, resolvingAgainstBaseURL: false) else { return base }
+    /// Nil when no URL can be built from them (QC: never a trap in Release); callers skip it or fail the request.
+    public func url(_ base: URL, path: String, query: [URLQueryItem] = []) -> URL? {
+        guard var components = URLComponents(url: base, resolvingAgainstBaseURL: false) else { return nil }
         let basePath = components.percentEncodedPath.trimmingSuffix("/")
         let extra = path.split(separator: "/", omittingEmptySubsequences: true)
             .map { Self.encodeSegment(String($0)) }
@@ -22,10 +23,7 @@ public struct ServerEndpoint: Codable, Sendable, Hashable {
             guard let value = item.value else { return name }
             return name + "=" + Self.encode(value)
         }.joined(separator: "&")
-        guard let url = components.url else {
-            preconditionFailure("ServerEndpoint.url: could not build URL from base \(base) and path \(path)")
-        }
-        return url
+        return components.url
     }
 
     private static let segmentAllowed: CharacterSet = {

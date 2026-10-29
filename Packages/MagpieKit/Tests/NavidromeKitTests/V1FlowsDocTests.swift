@@ -91,7 +91,7 @@ import Testing
     @Test func streamAndCoverURLsCarryTokenAndSaltNotThePassword() async throws {
         let (client, _) = makeClient()
         _ = try await client.connect()
-        for url in [client.streamURL(songId: "s1", maxBitRate: nil, format: nil), client.coverArtURL(id: "al-1", size: 300)] {
+        for url in [client.streamURL(songId: "s1", maxBitRate: nil, format: nil)!, client.coverArtURL(id: "al-1", size: 300)!] {
             let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
             let names = Set(items.map(\.name))
             #expect(names.isSuperset(of: ["u", "t", "s", "v", "c", "f"]), "\(url)")

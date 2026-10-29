@@ -66,7 +66,7 @@ struct NavidromeIT {
         let songs = try #require(album.songs)
         #expect(!songs.isEmpty)
 
-        var request = URLRequest(url: client.streamURL(songId: songs[0].id, maxBitRate: nil, format: nil))
+        var request = URLRequest(url: client.streamURL(songId: songs[0].id, maxBitRate: nil, format: nil)!)
         request.httpMethod = "HEAD"
         let (_, response) = try await URLSessionTransport().send(request)
         #expect(response.statusCode == 200)

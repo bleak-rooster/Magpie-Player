@@ -22,15 +22,6 @@ import Testing
     }
 }
 
-@Suite struct QueueMoveMathTests {
-    @Test func dragDownLandsBeforeTheInsertionPoint() {
-        #expect(QueueView.finalPosition(from: 0, insertBefore: 3, offset: 0) == 2)
-        #expect(QueueView.finalPosition(from: 2, insertBefore: 0, offset: 0) == 0)
-        #expect(QueueView.finalPosition(from: 1, insertBefore: 2, offset: 0) == 1, "no-op drop")
-        #expect(QueueView.finalPosition(from: 0, insertBefore: 2, offset: 4) == 5, "second section is offset")
-    }
-}
-
 /// T10b fix 1: skipping with lyrics on never flashes an error. A cancelled load's late failure, or a stale song's
 /// late answer, doesn't overwrite the new song's lyrics.
 @MainActor @Suite struct LyricsLoaderTests {

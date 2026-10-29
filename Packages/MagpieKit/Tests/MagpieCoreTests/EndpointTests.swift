@@ -7,36 +7,44 @@ import MagpieTestSupport
     @Test func keepsBasePath() {
         let base = URL(string: "https://h/navidrome")!
         let endpoint = ServerEndpoint(bases: [base])
-        #expect(endpoint.url(base, path: "rest/ping").absoluteString == "https://h/navidrome/rest/ping")
-        #expect(endpoint.url(base, path: "/rest/ping").absoluteString == "https://h/navidrome/rest/ping")
+        #expect(endpoint.url(base, path: "rest/ping")?.absoluteString == "https://h/navidrome/rest/ping")
+        #expect(endpoint.url(base, path: "/rest/ping")?.absoluteString == "https://h/navidrome/rest/ping")
         let slashBase = URL(string: "https://h/navidrome/")!
-        #expect(endpoint.url(slashBase, path: "rest/ping").absoluteString == "https://h/navidrome/rest/ping")
+        #expect(endpoint.url(slashBase, path: "rest/ping")?.absoluteString == "https://h/navidrome/rest/ping")
     }
 
     @Test func encodesPathSegments() {
         let base = URL(string: "https://h/navidrome")!
         let endpoint = ServerEndpoint(bases: [base])
-        #expect(endpoint.url(base, path: "rest/my song.mp3").absoluteString == "https://h/navidrome/rest/my%20song.mp3")
-        #expect(endpoint.url(base, path: "a?b#c/d").absoluteString == "https://h/navidrome/a%3Fb%23c/d")
-        #expect(endpoint.url(base, path: "Beyoncé/日本").absoluteString
+        #expect(endpoint.url(base, path: "rest/my song.mp3")?.absoluteString == "https://h/navidrome/rest/my%20song.mp3")
+        #expect(endpoint.url(base, path: "a?b#c/d")?.absoluteString == "https://h/navidrome/a%3Fb%23c/d")
+        #expect(endpoint.url(base, path: "Beyoncé/日本")?.absoluteString
             == "https://h/navidrome/Beyonc%C3%A9/%E6%97%A5%E6%9C%AC")
-        #expect(endpoint.url(base, path: "x", query: [URLQueryItem(name: "q", value: "1")]).absoluteString
+        #expect(endpoint.url(base, path: "x", query: [URLQueryItem(name: "q", value: "1")])?.absoluteString
             == "https://h/navidrome/x?q=1")
     }
 
     @Test func keepsPortAndRootBase() {
         let base = URL(string: "http://192.168.1.5:4533")!
         let endpoint = ServerEndpoint(bases: [base])
-        #expect(endpoint.url(base, path: "rest/ping").absoluteString == "http://192.168.1.5:4533/rest/ping")
+        #expect(endpoint.url(base, path: "rest/ping")?.absoluteString == "http://192.168.1.5:4533/rest/ping")
     }
 
     @Test func encodesQuery() {
         let base = URL(string: "https://h/navidrome")!
         let endpoint = ServerEndpoint(bases: [base])
         let url = endpoint.url(base, path: "rest/search3", query: [URLQueryItem(name: "query", value: "a&b")])
-        #expect(url.absoluteString == "https://h/navidrome/rest/search3?query=a%26b")
+        #expect(url?.absoluteString == "https://h/navidrome/rest/search3?query=a%26b")
         let plus = endpoint.url(base, path: "x", query: [URLQueryItem(name: "q", value: "a+b c=d")])
-        #expect(plus.absoluteString == "https://h/navidrome/x?q=a%2Bb%20c%3Dd")
+        #expect(plus?.absoluteString == "https://h/navidrome/x?q=a%2Bb%20c%3Dd")
+    }
+
+    /// QC (crash report #4): a base and path URLComponents can't make a URL from give nil, never a trap.
+    @Test func unbuildableURLIsNil() throws {
+        let base = try #require(URL(dataRepresentation: Data("://x:a".utf8), relativeTo: nil))
+        let endpoint = ServerEndpoint(bases: [base])
+        #expect(endpoint.url(base, path: "rest/getCoverArt", query: [URLQueryItem(name: "id", value: "al-1")]) == nil)
+        #expect(endpoint.url(base, path: "") == nil)
     }
 
     @Test func failoverOrder() async {

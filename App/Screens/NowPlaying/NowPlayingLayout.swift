@@ -39,6 +39,8 @@ enum NowPlayingLayout {
 extension EnvironmentValues {
     /// Tests only: told each Now Playing part's frame in window coordinates as it lays out.
     @Entry var nowPlayingFrameProbe: (@MainActor (String, CGRect) -> Void)?
+    /// Tests only: told each height Now Playing stores for its plan (a store lays the page out again).
+    @Entry var nowPlayingHeightProbe: (@MainActor (String, CGFloat) -> Void)?
 }
 
 extension View {
@@ -46,6 +48,11 @@ extension View {
     /// error) keeps its last height; the caller counts it only while it shows.
     func nowPlayingPart(_ key: String, into heights: Binding<[String: CGFloat]>) -> some View {
         fixedSize(horizontal: false, vertical: true).modifier(NowPlayingPartReport(key: key, heights: heights))
+    }
+
+    /// Reports this view's height into `height`, the way `nowPlayingPart` does (Up next, which isn't summed).
+    func nowPlayingHeight(_ key: String, into height: Binding<CGFloat>) -> some View {
+        modifier(NowPlayingHeightReport(key: key, height: height))
     }
 
     /// Reports only the frame, to the test probe.
@@ -58,11 +65,38 @@ private struct NowPlayingPartReport: ViewModifier {
     let key: String
     let heights: Binding<[String: CGFloat]>?
     @Environment(\.nowPlayingFrameProbe) private var probe
+    @Environment(\.nowPlayingHeightProbe) private var heightProbe
+    @Environment(\.displayScale) private var scale
 
     func body(content: Content) -> some View {
-        content.onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame in
-            if let heights, heights.wrappedValue[key] != frame.height { heights.wrappedValue[key] = frame.height }
-            probe?(key, frame)
+        // The laid-out height, not the window frame's: under the Queue sheet the page is scaled down, and its scaled
+        // heights came back a float apart on every pass (QC). The probe still gets the window frame.
+        content.onGeometryChange(for: Measure.self) { Measure(height: $0.size.height, frame: $0.frame(in: .global)) } action: { m in
+            if let heights, let h = MeasuredHeight.toStore(m.height, over: heights.wrappedValue[key], scale: scale) {
+                heights.wrappedValue[key] = h
+                heightProbe?(key, h)
+            }
+            probe?(key, m.frame)
+        }
+    }
+
+    private struct Measure: Equatable {
+        var height: CGFloat
+        var frame: CGRect
+    }
+}
+
+private struct NowPlayingHeightReport: ViewModifier {
+    let key: String
+    let height: Binding<CGFloat>
+    @Environment(\.nowPlayingHeightProbe) private var heightProbe
+    @Environment(\.displayScale) private var scale
+
+    func body(content: Content) -> some View {
+        content.onGeometryChange(for: CGFloat.self) { $0.size.height } action: { new in
+            guard let h = MeasuredHeight.toStore(new, over: height.wrappedValue, scale: scale) else { return }
+            height.wrappedValue = h
+            heightProbe?(key, h)
         }
     }
 }

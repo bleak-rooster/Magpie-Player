@@ -18,9 +18,10 @@ public enum RepeatMode: String, Sendable, Hashable, Codable, CaseIterable {
 
 /// The app's single player: owns the queue, drives a `PlaybackEngine`, and scrobbles.
 ///
-/// The engine always holds `[current] + upcoming` (the upcoming entries that are playable), starting at
-/// index 0. Any queue edit re-sends that list; the current entry keeps the URL it was loaded with, so the
-/// engine keeps it playing (only a failover or a fallback rebuilds it).
+/// The engine holds `[current]` plus the next `lookahead` playable upcoming entries (QC: only that window gets URLs
+/// and volumes, so a library-sized queue costs no more than a short one), starting at index 0. Any queue edit
+/// re-sends that list, and it is topped back up as the engine moves on; the current entry keeps the URL it was
+/// loaded with, so the engine keeps it playing (only a failover or a fallback rebuilds it).
 @MainActor @Observable
 public final class Player {
     public private(set) var queue = PlayQueue()
@@ -56,6 +57,10 @@ public final class Player {
             if oldValue != stopsAfterCurrent, queue.current != nil, !needsReload { syncEngine() }
         }
     }
+
+    /// How many upcoming entries the engine is handed after the current one (`EngineWindow`, 1 to 10). Call
+    /// `upcomingURLsChanged()` after changing it.
+    @ObservationIgnored public var lookahead = EngineWindow.size(engineMax: AVQueueEngine.maxEnqueued)
 
     /// Scrobble at 50 % of the track or this many seconds, whichever comes first.
     static let scrobbleCap: TimeInterval = 240
@@ -142,7 +147,7 @@ public final class Player {
         // A manual skip is not the song ending: stop after current no longer applies. Turning it off
         // re-sends the upcoming list, so the engine has the next song again.
         stopsAfterCurrent = false
-        guard let target = queue.upcoming.first(where: { isPlayable($0.song) }) else {
+        guard let target = queue.upcoming(limit: 1, where: { isPlayable($0.song) }).first else {
             if repeatMode == .all, queue.wrapToStart() != nil {
                 needsReload = true
                 resume()
@@ -162,6 +167,7 @@ public final class Player {
         engine.next()
         adoptLoaded(target.id)
         beginEntry()
+        topUpWindow()
     }
 
     public func previous() {
@@ -288,6 +294,7 @@ public final class Player {
             while queue.current?.id != id, queue.advance() != nil {}
             adoptLoaded(id)
             beginEntry()
+            topUpWindow()
         case .time(let id, let t, let d):
             guard id == queue.current?.id else { return }   // stale tick from the previous item
             position = t
@@ -356,7 +363,7 @@ public final class Player {
         isPlaying = true
     }
 
-    /// Sends `[current] + upcoming` (playable ones only) with their volumes and fresh URLs, except that the
+    /// Sends `[current]` plus the window of playable upcoming entries with their volumes and fresh URLs, except that the
     /// current entry keeps the URL it was loaded with unless `rebuildCurrent`. An idle queue empties and
     /// stops the engine.
     private func syncEngine(rebuildCurrent: Bool = false) {
@@ -377,13 +384,29 @@ public final class Player {
             currentURL = urls.streamURL(for: current.song)
         }
         loaded = (current.id, currentURL)
-        let following = repeatMode == .one || stopsAfterCurrent ? [] : queue.upcoming.filter { isPlayable($0.song) }
+        let following = followingWindow()
         let entries = [current] + following
         // Volumes first: the engine applies them as it enqueues.
         engine.setVolumes(Dictionary(entries.map { ($0.id, gain($0.song)) }, uniquingKeysWith: { a, _ in a }))
         let items = [(current.id, currentURL)] + following.map { ($0.id, urls.streamURL(for: $0.song)) }
         sent = items.map { (id: $0.0, url: $0.1) }
         engine.setItems(items, startAt: 0)
+    }
+
+    /// The playable upcoming entries the engine gets after the current one: none under repeat one or stop after
+    /// current (no gapless prefetch), otherwise the first `lookahead` of them.
+    private func followingWindow() -> [QueueEntry] {
+        guard repeatMode != .one, !stopsAfterCurrent else { return [] }
+        let k = min(max(lookahead, 1), EngineWindow.maxSize)
+        return queue.upcoming(limit: k, where: { isPlayable($0.song) })
+    }
+
+    /// The engine moved on: what it holds after the new current entry is one short of the window. Re-send the
+    /// list when the window has more to give (the engine keeps the playing item and its enqueued next one).
+    private func topUpWindow() {
+        guard let current = queue.current, let i = sent.firstIndex(where: { $0.id == current.id }) else { return }
+        guard sent[(i + 1)...].map(\.id) != followingWindow().map(\.id) else { return }
+        syncEngine()
     }
 
     /// The engine moved on to entry `id` by itself or by `engine.next()`: it plays the URL it enqueued, which
@@ -404,7 +427,7 @@ public final class Player {
     /// The current song failed and can't play right now (offline, not on the phone): move on to the next
     /// song that can and keep playing. False when none is left.
     private func skipToNextPlayable() -> Bool {
-        guard let target = queue.upcoming.first(where: { isPlayable($0.song) }) else { return false }
+        guard let target = queue.upcoming(limit: 1, where: { isPlayable($0.song) }).first else { return false }
         while queue.current?.id != target.id, queue.advance() != nil {}
         loadCurrent()
         engine.play()
