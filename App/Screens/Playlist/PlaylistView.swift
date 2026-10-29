@@ -1,5 +1,6 @@
 import DesignSystem
 import MagpieCore
+import Playback
 import SwiftUI
 
 /// Playlist: cover, name in the display face, song count and length, Play / Shuffle, songs.
@@ -45,6 +46,11 @@ struct PlaylistView: View {
             .padding(.horizontal, Tokens.Spacing.largeTitleMargin)
 
             PlayShuffleButtons(songs: songs)
+            DownloadButton(reason: .playlist(page.playlist.id), songs: songs,
+                           playlist: DownloadedPlaylist(id: page.playlist.id, name: page.playlist.name,
+                                                        coverArtId: page.playlist.coverArtId,
+                                                        songIds: songs.map(\.id), savedAt: .now),
+                           coverArtId: page.playlist.coverArtId)
 
             LazyVStack(spacing: 0) {
                 ForEach(Array(songs.enumerated()), id: \.offset) { index, song in
@@ -56,6 +62,7 @@ struct PlaylistView: View {
                     .buttonStyle(.plain)
                     .accessibilityAddTraits(.isButton)
                     .accessibilityIdentifier("track-\(index)")
+                    .contextMenu { SongDownloadMenuItem(song: song) }
                     Divider().overlay(p.sepColor).padding(.leading, 76)
                 }
             }
@@ -68,6 +75,8 @@ struct PlaylistView: View {
         do {
             let (playlist, songs) = try await model.request { [playlistId] in try await $0.playlist(id: playlistId) }
             page = .loaded(Page(playlist: playlist, songs: songs))
+            // Loaded with a connection: a downloaded playlist follows the server's version.
+            await model.refreshDownloadedPlaylist(playlist, songs: songs)
         } catch {
             page = .failed(BrowseErrorCopy.message(for: error))
         }

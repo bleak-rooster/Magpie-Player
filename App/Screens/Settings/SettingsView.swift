@@ -31,8 +31,15 @@ struct SettingsView: View {
                 servers
                 lidarr
                 listening
-                Section("Playback") {
+                // One row per area, each opening its own page (T21b collates the rest the same way).
+                Section {
                     NavigationLink("Playback") { PlaybackSettingsView() }
+                    NavigationLink {
+                        DownloadsSettingsView()
+                    } label: {
+                        LabeledContent("Downloads & Storage", value: DownloadsSettingsView.summary(model.preferences.downloads))
+                    }
+                    .accessibilityIdentifier("settings-downloads")
                 }
                 Section("About") {
                     LabeledContent("Magpie", value: Self.version)

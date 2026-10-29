@@ -24,5 +24,8 @@ extension AppModel {
             replayGainBox.set(preferences.playback.replayGain)
             player.upcomingURLsChanged()
         }
+        // Downloads: a setting may let waiting downloads go (mobile data, a bigger limit); favourites follow the toggle.
+        if preferences.downloads != old.downloads { downloads?.retryWaiting() }
+        if preferences.downloads.keepFavourites != old.downloads.keepFavourites { keepFavouritesChanged() }
     }
 }

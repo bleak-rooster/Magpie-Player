@@ -263,6 +263,7 @@ private struct SearchContent: View {
         .contextMenu {
             Button("Play Next", systemImage: "text.line.first.and.arrowtriangle.forward") { app.player.playNext([song]) }
             Button("Add to Queue", systemImage: "text.line.last.and.arrowtriangle.forward") { app.player.addToEnd([song]) }
+            SongDownloadMenuItem(song: song)
         }
         .listRowInsets(EdgeInsets())
         .listRowBackground(Color.clear)

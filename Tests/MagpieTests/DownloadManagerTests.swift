@@ -24,7 +24,9 @@ final class FakeFetcher: AudioFetching, @unchecked Sendable {
     private var calls = 0
     private var error: Error?
 
-    init(directory: URL) { self.directory = directory }
+    init(directory: URL = FileManager.default.temporaryDirectory.appending(path: "FakeFetcher-\(UUID().uuidString)")) {
+        self.directory = directory
+    }
 
     var urls: [URL] { lock.withLock { _urls } }
     /// Every file the fetcher handed out.
@@ -454,5 +456,108 @@ private let cell = NetworkStatus(isConnected: true, isCellular: true, isConstrai
         await m.settled()
         #expect(await eventually { await m.store.entry(songId: "s1") == nil }, "the held-back removal ran")
         #expect(await m.store.entry(songId: "s2")?.reasons == [.album("a1")])
+    }
+
+    // MARK: - T12: parked T11 minors
+
+    @Test func removingAPlaylistDropsItsHeldBackSave() async throws {
+        let unlocked = Mutex(false)
+        let store = AudioStore(root: tmp, scope: "abc", isProtectedDataAvailable: { unlocked.withLock { $0 } })
+        let fm = FileManager.default
+        try fm.createDirectory(at: store.directory, withIntermediateDirectories: true)
+        try Data("garbage".utf8).write(to: store.directory.appending(path: "index.json"))
+        let held = store.directory.appending(path: String(repeating: "a", count: 64) + ".mp3.json")
+        try Data("{}".utf8).write(to: held)
+        try fm.setAttributes([.posixPermissions: 0], ofItemAtPath: held.path)   // unreadable, like before unlock
+        defer { try? fm.setAttributes([.posixPermissions: 0o644], ofItemAtPath: held.path) }
+        let center = NotificationCenter()
+        let (m, _, _) = await makeManager(store: store, notifications: center)
+        #expect(await store.isReady() == false)
+        let playlist = DownloadedPlaylist(id: "p1", name: "Mix", coverArtId: nil, songIds: ["s1"], savedAt: .now)
+        m.download(songs("s1"), reason: .playlist("p1"), playlist: playlist); await m.settled()
+        await m.remove(.playlist("p1"))
+        try fm.setAttributes([.posixPermissions: 0o644], ofItemAtPath: held.path)
+        unlocked.withLock { $0 = true }
+        await m.protectedDataBecameAvailable(); await m.settled()
+        #expect(await store.isReady())
+        #expect(await store.playlists().isEmpty, "the removed playlist is not saved after all")
+        #expect(await store.entry(songId: "s1") == nil)
+    }
+
+    @Test func heldBackRemovalRunsBeforeTheNextWrite() async throws {
+        let (first, _, _) = await makeManager()
+        first.download(songs("s1"), reason: .song); await first.settled()
+        let s1 = try #require(await first.store.entry(songId: "s1"))
+        let dir = first.storeDirectory
+        try Data("garbage".utf8).write(to: dir.appending(path: "index.json"))
+        let sidecar = dir.appending(path: s1.fileName + ".json")
+        let fm = FileManager.default
+        try fm.setAttributes([.posixPermissions: 0], ofItemAtPath: sidecar.path)
+        defer { try? fm.setAttributes([.posixPermissions: 0o644], ofItemAtPath: sidecar.path) }
+        let unlocked = Mutex(false)
+        let clock = Mutex(Date())
+        let store = AudioStore(root: tmp, scope: "abc", now: { clock.withLock { $0 } },
+                               isProtectedDataAvailable: { unlocked.withLock { $0 } })
+        let (m, _, _) = await makeManager(store: store)   // the manager's 30 s retry won't come during the test
+        await m.remove(.song)
+        #expect(fm.fileExists(atPath: dir.appending(path: s1.fileName).path), "nothing deleted while locked")
+        try fm.setAttributes([.posixPermissions: 0o644], ofItemAtPath: sidecar.path)
+        unlocked.withLock { $0 = true }
+        clock.withLock { $0 += 60 }   // the store's own read retry is due
+        m.download(songs("s2"), reason: .album("a1")); await m.settled()   // no unlock notification
+        #expect(await store.entry(songId: "s1") == nil, "the held-back removal ran first")
+        #expect(await store.entry(songId: "s2")?.reasons == [.album("a1")])
+    }
+
+    @Test func fullStatusSurvivesRelaunch() async {
+        var prefs = DownloadPreferences.defaultValue; prefs.concurrent = 1
+        let (m, _, _) = await makeManager(prefs, limit: 1500)
+        m.download(songs("s1", "s2"), reason: .album("a1")); await m.settled()
+        #expect(m.status(for: ["s1", "s2"]) == .full)
+        let (again, f, _) = await makeManager(prefs, limit: 1500)   // same tmp root and scope
+        await again.settled()
+        #expect(again.status(for: ["s1", "s2"]) == .full)
+        #expect(f.urls.isEmpty, "stopped jobs stay stopped until retried")
+        again.retryWaiting(); await again.settled()
+        #expect(again.status(for: ["s1", "s2"]) == .full, "still no room")
+    }
+
+    @Test func invalidPreDownloadIsNotTriedAgain() async {
+        let (m, f, _) = await makeManager()
+        f.mimeType { _ in "text/html" }
+        m.preDownload(songs("c1"), quality: .original); await m.settled()
+        m.preDownload(songs("c1"), quality: .original); await m.settled()
+        #expect(f.urls.count == 1)
+        m.preDownload(songs("c1"), quality: .mp3_320); await m.settled()
+        #expect(f.urls.count == 2, "another quality may work")
+    }
+
+    @Test func removeSongsDropsEveryReason() async {
+        let (m, _, _) = await makeManager()
+        m.download(songs("s1", "s2"), reason: .album("a1"))
+        m.download(songs("s1"), reason: .song); await m.settled()
+        await m.remove(songIds: ["s1"])
+        #expect(await m.store.entry(songId: "s1") == nil)
+        #expect(await m.store.entry(songId: "s2")?.reasons == [.album("a1")])
+        #expect(Set(m.localFiles.keys) == ["s2"])
+    }
+
+    @Test func nothingIsWrittenBeforeStart() async throws {
+        let store = AudioStore(root: tmp, scope: "abc")
+        let fetcher = FakeFetcher(directory: tmp.appending(path: "fetched"))
+        let m = DownloadManager(store: store, fetcher: fetcher, network: FakeNetwork(.wifi),
+                                preferences: { .defaultValue },
+                                url: { song, _ in URL(string: "http://192.168.1.2:4533/rest/stream?id=\(song.id)")! },
+                                coverURL: { URL(string: "http://192.168.1.2:4533/rest/getCoverArt?id=\($0)&size=600")! })
+        let playlist = DownloadedPlaylist(id: "p1", name: "Mix", coverArtId: "pl-1", songIds: ["s1"], savedAt: .now)
+        m.download(songs("s1"), reason: .playlist("p1"), playlist: playlist, coverArtId: "pl-1")
+        await m.settled()
+        #expect(fetcher.urls.isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: store.directory.path), "e.g. a sign-out's erase may still be running")
+        let gate = Task<Void, Never> {}
+        m.begin(after: gate); await m.settled()
+        #expect(m.status(for: ["s1"]) == .downloaded)
+        #expect(await store.playlists().map(\.id) == ["p1"])
+        #expect(await store.coverURL(coverArtId: "pl-1") != nil)
     }
 }

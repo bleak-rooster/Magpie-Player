@@ -178,6 +178,12 @@ final class AppModel {
     @ObservationIgnored var shownTranscodeHint = false
     /// A footnote under the Now Playing scrubber (the transcode fallback); nil when none.
     var playbackHint: String?
+    /// Downloads for the signed-in scope (AppModel+Downloads.swift); nil when signed out.
+    @ObservationIgnored var downloads: DownloadManager?
+    @ObservationIgnored let audioFetcher: any AudioFetching
+    /// The last stopped manager's cancel-settle-erase; the next manager starts after it.
+    @ObservationIgnored var downloadsTeardown: Task<Void, Never>?
+    @ObservationIgnored var favouritesSync: Task<Void, Never>?
     #if os(iOS)
     @ObservationIgnored private var nowPlaying: NowPlayingBridge?
     #endif
@@ -201,8 +207,10 @@ final class AppModel {
          systemNowPlaying: Bool = true,
          notifications: Bool = true,
          localNetworkProber: (any LocalNetworkProbing)? = nil,
-         network: (any NetworkStatusProviding)? = nil) {
+         network: (any NetworkStatusProviding)? = nil,
+         audioFetcher: (any AudioFetching)? = nil) {
         let box = ClientBox()
+        self.audioFetcher = audioFetcher ?? URLSessionAudioFetcher()
         self.store = store
         self.lidarrStore = lidarrStore
         self.tokenStore = tokenStore
@@ -338,6 +346,7 @@ final class AppModel {
         // O3: started now, so every call made meanwhile waits for it (`request`): one login per launch.
         startReconnect(rebuildAlways: true)
         startMatchIndex()
+        startDownloads()
         reloadKeychainItems()
         rebuildRunner()
     }
@@ -420,6 +429,7 @@ final class AppModel {
                           activeBase: base, isAdmin: login.isAdmin)
         box.set(client)
         startMatchIndex()
+        startDownloads()
         rebuildRunner()
     }
 
@@ -445,6 +455,7 @@ final class AppModel {
         findSongs = []
         lettingGoSongIds = []
         playedFinds = []
+        stopDownloads(erase: true)
         store.clear()
         session = nil
         starOverrides = [:]

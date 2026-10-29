@@ -1,5 +1,6 @@
 import DesignSystem
 import MagpieCore
+import Playback
 import SwiftUI
 
 /// Album: sleeve art, title in the display face, artist, year and hallmark, Play / Shuffle, tracks.
@@ -52,6 +53,7 @@ struct AlbumView: View {
             .padding(.horizontal, Tokens.Spacing.largeTitleMargin)
 
             PlayShuffleButtons(songs: songs)
+            DownloadButton(reason: .album(album.id), songs: songs, coverArtId: album.coverArtId)
 
             TrackList(songs: songs)
 
@@ -165,5 +167,6 @@ private struct TrackList: View {
         .accessibilityValue(isCurrent ? "Now playing, \(DurationText.spoken(song.duration))" : DurationText.spoken(song.duration))
         .accessibilityAddTraits(.isButton)
         .accessibilityIdentifier("track-\(index)")
+        .contextMenu { SongDownloadMenuItem(song: song) }
     }
 }
