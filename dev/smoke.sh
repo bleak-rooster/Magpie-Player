@@ -93,6 +93,21 @@ sub getAlbumList2 "type=newest&size=100&musicFolderId=$NAVIDROME_MAIN_LIBRARY_ID
 n=$(jb '."subsonic-response".albumList2.album | length')
 subok && (( n == 6 )) && result PASS "getAlbumList2 musicFolderId=main" "$n albums" || result FAIL "getAlbumList2 musicFolderId=main" "$n albums (want 6)"
 
+sub getGenres
+n=$(jb '."subsonic-response".genres.genre | length')
+subok && (( n >= 2 )) && result PASS "getGenres" "$n genres" || result FAIL "getGenres" "$n genres (want >= 2)"
+
+sub getAlbumList2 "type=byGenre&genre=Ambient&size=50"
+n=$(jb '."subsonic-response".albumList2.album | length')
+subok && [[ $n == 2 ]] && result PASS "getAlbumList2 byGenre=Ambient" "$n albums" || result FAIL "getAlbumList2 byGenre=Ambient" "$n albums (want 2)"
+
+sub getSongsByGenre "genre=Ambient&count=500"
+n=$(jb '."subsonic-response".songsByGenre.song | length')
+subok && [[ $n == 12 ]] && result PASS "getSongsByGenre genre=Ambient" "$n songs" || result FAIL "getSongsByGenre genre=Ambient" "$n songs (want 12)"
+
+sub getStarred2
+subok && result PASS "getStarred2" "ok" || result FAIL "getStarred2" "HTTP $CODE"
+
 sub getAlbum "id=$MULTI"
 d=$(jb '[."subsonic-response".album.song[].discNumber] | unique | length'); n=$(jb '."subsonic-response".album.songCount')
 subok && [[ $d == 2 && $n == 10 ]] && result PASS "getAlbum multi-disc (CD1/CD2 folders)" "$n songs, $d discs, discTitles=$(jb '."subsonic-response".album.discTitles|length')" \

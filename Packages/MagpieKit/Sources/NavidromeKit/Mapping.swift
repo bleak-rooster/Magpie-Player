@@ -7,12 +7,20 @@ enum Mapping {
 
     static func mbid(_ s: String?) -> MBID? { s.flatMap { MBID($0) } }
 
+    /// Nil when the file carries none of the four values.
+    static func replayGain(_ trackGain: Double?, _ albumGain: Double?, _ trackPeak: Double?, _ albumPeak: Double?) -> ReplayGain? {
+        guard trackGain != nil || albumGain != nil || trackPeak != nil || albumPeak != nil else { return nil }
+        return ReplayGain(trackGain: trackGain, albumGain: albumGain, trackPeak: trackPeak, albumPeak: albumPeak)
+    }
+
     static func song(_ d: SubsonicSong) -> Song {
         Song(id: d.id, title: d.title ?? "", artist: d.artist ?? "", artistId: d.artistId,
              album: d.album ?? "", albumId: d.albumId, track: d.track, disc: d.discNumber,
              duration: d.duration ?? 0, suffix: d.suffix, bitRate: d.bitRate, coverArtId: d.coverArt,
              recordingMBID: mbid(d.musicBrainzId), isrcs: d.isrc ?? [], libraryId: nil,
-             starred: d.starred != nil)
+             starred: d.starred != nil, genre: d.genre,
+             replayGain: replayGain(d.replayGain?.trackGain, d.replayGain?.albumGain,
+                                    d.replayGain?.trackPeak, d.replayGain?.albumPeak))
     }
 
     static func song(_ d: NativeSong) -> Song {
@@ -23,7 +31,8 @@ enum Mapping {
              recordingMBID: mbid(d.mbzRecordingID),
              artistMBID: mbid(d.mbzArtistId) ?? mbid(d.participants?.artist?.first?.mbzArtistId),
              isrcs: d.tags?.isrc ?? [], libraryId: d.libraryId,
-             starred: d.starred ?? false, createdAt: date(d.createdAt))
+             starred: d.starred ?? false, createdAt: date(d.createdAt), genre: d.genre,
+             replayGain: replayGain(d.rgTrackGain, d.rgAlbumGain, d.rgTrackPeak, d.rgAlbumPeak))
     }
 
     /// Shared: creating a formatter per song is slow. `ISO8601DateFormatter` is thread-safe.

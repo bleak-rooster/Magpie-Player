@@ -175,6 +175,36 @@ public actor NavidromeClient {
         return (body.albumList2?.album ?? []).map { Mapping.album($0) }
     }
 
+    public func albums(genre: String, size: Int, offset: Int) async throws -> [Album] {
+        let body = try await subsonic("getAlbumList2", [
+            URLQueryItem(name: "type", value: "byGenre"), URLQueryItem(name: "genre", value: genre),
+            int("size", size), int("offset", offset),
+        ])
+        return (body.albumList2?.album ?? []).map { Mapping.album($0) }
+    }
+
+    /// A genre's songs, `count` at a time from `offset`.
+    public func songs(genre: String, count: Int, offset: Int) async throws -> [Song] {
+        let body = try await subsonic("getSongsByGenre", [
+            URLQueryItem(name: "genre", value: genre), int("count", count), int("offset", offset),
+        ])
+        return (body.songsByGenre?.song ?? []).map(Mapping.song)
+    }
+
+    /// Every genre the server lists. A row with no name is dropped; missing counts read as 0.
+    public func genres() async throws -> [Genre] {
+        let body = try await subsonic("getGenres")
+        return (body.genres?.genre ?? []).compactMap { g in
+            g.value.map { Genre(name: $0, songCount: g.songCount ?? 0, albumCount: g.albumCount ?? 0) }
+        }
+    }
+
+    public func starred() async throws -> Starred {
+        let body = try await subsonic("getStarred2")
+        return Starred(songs: (body.starred2?.song ?? []).map(Mapping.song),
+                       albums: (body.starred2?.album ?? []).map { Mapping.album($0) })
+    }
+
     public func album(id: String) async throws -> Album {
         let body = try await subsonic("getAlbum", [URLQueryItem(name: "id", value: id)])
         guard let album = body.album else { throw NavidromeError.api(code: 70, message: "album missing from response") }
@@ -303,9 +333,9 @@ public actor NavidromeClient {
     // MARK: - Native API
 
     /// One page of the whole library via `/api/song`; `end` is exclusive. Songs flagged `missing` are skipped.
-    public func songsPage(start: Int, end: Int) async throws -> (songs: [Song], total: Int) {
+    public func songsPage(start: Int, end: Int, sort: String = "id") async throws -> (songs: [Song], total: Int) {
         let query = [int("_start", start), int("_end", end),
-                     URLQueryItem(name: "_sort", value: "id"), URLQueryItem(name: "_order", value: "ASC")]
+                     URLQueryItem(name: "_sort", value: sort), URLQueryItem(name: "_order", value: "ASC")]
         let (data, response) = try await native("api/song", query)
         let rows = try Self.decode([NativeSong].self, data)
         let songs = rows.filter { $0.missing != true }.map(Mapping.song)

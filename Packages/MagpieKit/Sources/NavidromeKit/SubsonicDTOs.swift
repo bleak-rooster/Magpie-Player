@@ -20,6 +20,7 @@ struct SubsonicBody: Decodable {
         let song: [SubsonicSong]?
     }
     struct TopSongs: Decodable { let song: [SubsonicSong]? }
+    struct Genres: Decodable { let genre: [SubsonicGenre]? }
     struct Extension: Decodable { let name: String }
     struct LyricsList: Decodable { let structuredLyrics: [StructuredLyrics]? }
     struct StructuredLyrics: Decodable {
@@ -40,6 +41,9 @@ struct SubsonicBody: Decodable {
     let playlist: SubsonicPlaylist?
     let searchResult3: SearchResult?
     let topSongs: TopSongs?
+    let genres: Genres?
+    let songsByGenre: TopSongs?
+    let starred2: SearchResult?
     let openSubsonicExtensions: [Extension]?
     let lyricsList: LyricsList?
     let scanStatus: ScanStatus?
@@ -61,6 +65,21 @@ struct SubsonicSong: Decodable {
     let musicBrainzId: String?   // recording MBID; kept as String, validated in mapping
     let isrc: [String]?
     let starred: String?
+    let genre: String?
+    let replayGain: SubsonicReplayGain?
+}
+
+struct SubsonicReplayGain: Decodable {
+    let trackGain: Double?
+    let albumGain: Double?
+    let trackPeak: Double?
+    let albumPeak: Double?
+}
+
+struct SubsonicGenre: Decodable {
+    let value: String?
+    let songCount: Int?
+    let albumCount: Int?
 }
 
 struct SubsonicAlbum: Decodable {

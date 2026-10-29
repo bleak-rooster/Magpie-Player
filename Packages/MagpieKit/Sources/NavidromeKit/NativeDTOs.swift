@@ -37,6 +37,11 @@ struct NativeSong: Decodable {
     let missing: Bool?
     let starred: Bool?
     let createdAt: String?   // parsed in mapping (nine fraction digits on 0.64.2)
+    let genre: String?
+    let rgTrackGain: Double?
+    let rgAlbumGain: Double?
+    let rgTrackPeak: Double?
+    let rgAlbumPeak: Double?
 }
 
 /// `/api/library` row (Navidrome 0.58+; verified against 0.64.2).
