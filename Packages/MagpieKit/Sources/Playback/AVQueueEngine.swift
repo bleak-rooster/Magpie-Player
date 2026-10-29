@@ -142,6 +142,7 @@ public final class AVQueueEngine: PlaybackEngine {
     }
 
     public func seek(to t: TimeInterval) {
+        guard t.isFinite else { return }
         lastTime = t
         player.seek(to: CMTime(seconds: t, preferredTimescale: 600))
     }
@@ -338,6 +339,7 @@ public final class AVQueueEngine: PlaybackEngine {
 
     private func tick(_ time: CMTime) {
         guard let current = player.currentItem, let info = enqueued[ObjectIdentifier(current)] else { return }
+        guard time.isNumeric, time.seconds.isFinite else { return }   // an invalid or indefinite time is no tick
         lastTime = time.seconds
         let d = current.duration.seconds
         continuation.yield(.time(info.id, time.seconds, duration: d.isFinite && d > 0 ? d : nil))

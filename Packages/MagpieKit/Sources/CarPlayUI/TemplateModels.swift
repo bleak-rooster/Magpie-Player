@@ -368,7 +368,7 @@ public enum CarPlayRows {
     private static func songCount(_ n: Int) -> String { n == 1 ? "1 song" : "\(n) songs" }
 
     static func duration(_ seconds: TimeInterval) -> String? {
-        guard seconds > 0 else { return nil }
+        guard seconds.isFinite, seconds > 0, seconds < 1e9 else { return nil }   // Int(_:) traps on NaN and infinity
         let s = Int(seconds.rounded())
         return String(format: "%d:%02d", s / 60, s % 60)
     }
