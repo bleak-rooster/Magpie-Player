@@ -36,9 +36,10 @@ public actor AudioStore {
     static let originalSuffixes: Set<String> = ["mp3", "flac", "m4a", "mp4", "aac", "wav", "aif", "aiff", "alac", "caf"]
     static let mimeExtensions = ["audio/mpeg": "mp3", "audio/mp3": "mp3", "audio/flac": "flac", "audio/x-flac": "flac",
                                  "audio/mp4": "m4a", "audio/x-m4a": "m4a", "audio/aac": "aac", "audio/wav": "wav",
-                                 "audio/x-wav": "wav", "audio/aiff": "aiff", "audio/x-aiff": "aiff"]
+                                 "audio/x-wav": "wav", "audio/aiff": "aiff", "audio/x-aiff": "aiff",
+                                 "audio/ogg": "ogg", "audio/opus": "ogg"]
     /// Every extension the store accepts: the Original allowlist plus the transcode formats.
-    static let allowedExtensions = originalSuffixes.union(["mp3", "aac"])
+    static let allowedExtensions = originalSuffixes.union(["mp3", "aac", "ogg"])
     /// `<64 hex>.<ext>`: the only names the store writes for audio.
     static func isHashedName(_ name: String) -> Bool { name.wholeMatch(of: /[0-9a-f]{64}\.[a-z0-9]+/) != nil }
 
@@ -75,6 +76,7 @@ public actor AudioStore {
         switch quality.format {
         case "aac": return "aac"
         case "mp3": return "mp3"
+        case "opus": return "ogg"   // Navidrome serves Ogg Opus (D45)
         default: break
         }
         if let suffix = suffix?.lowercased(), originalSuffixes.contains(suffix) { return suffix }

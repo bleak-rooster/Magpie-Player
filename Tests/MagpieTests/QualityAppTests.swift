@@ -179,6 +179,54 @@ private func eventually(_ seconds: Double = 5, _ condition: () -> Bool) async ->
         #expect(model.player.lastError == nil)
     }
 
+    /// D45: Opus streams are asked for chunked (no estimate) at the preset's bit rate.
+    @Test func opusPresetStreamsAsOggOpus() async throws {
+        let (model, engine, _) = try await signedIn(.wifi)
+        defer { tearDown(model) }
+        model.updatePreferences { $0.playback.wifi = .opus96 }
+        model.play([song("s1")], startAt: 0)
+        let q = query(engine.setItemsCalls.last!.items[0].1)
+        #expect(q["format"] == "opus" && q["maxBitRate"] == "96" && q["estimateContentLength"] == nil)
+    }
+
+    /// D45: Ogg engine durations are estimates, so the scrubber, the remaining time and the scrobble threshold keep
+    /// the API's song duration (200 s here) when the engine reports another.
+    @Test func opusEngineDurationDoesNotReplaceTheAPIDuration() async throws {
+        let (model, engine, _) = try await signedIn(.wifi)
+        defer { tearDown(model) }
+        model.updatePreferences { $0.playback.wifi = .opus128 }
+        model.play([song("s1"), song("s2")], startAt: 0)
+        #expect(query(engine.setItemsCalls.last!.items[0].1)["format"] == "opus")
+        let entry = try #require(model.player.queue.current?.id)
+        model.player.handle(.time(entry, 10, duration: 207.4))
+        #expect(model.player.duration == 200, "the API duration, not the Ogg estimate")
+        model.player.handle(.time(entry, 101, duration: 207.4))   // past 50 % of 200, short of 50 % of 207.4
+        await model.player.waitForPendingScrobbles()
+        let submissions = transport.inner.requests.compactMap(\.url).filter {
+            $0.path.hasSuffix("/rest/scrobble") && $0.absoluteString.contains("submission=true")
+        }
+        #expect(submissions.count == 1, "the threshold is half of the API's 200 s")
+    }
+
+    /// The pickers list the qualities by codec, in enum order.
+    @Test func pickerGroupsFollowCodecOrder() {
+        #expect(StreamQuality.groups.map { StreamQualityOptions.heading(forFormat: $0.format) } == ["Original", "AAC", "Opus", "MP3"])
+        #expect(StreamQuality.groups[2].qualities.map(\.title) == [
+            "High · Opus 192 kbps", "Medium · Opus 128 kbps", "Low · Opus 96 kbps", "Very low · Opus 64 kbps"])
+    }
+
+    /// Opus falls back to Original like AAC.
+    @Test func opusStreamFailingFallsBackToOriginal() async throws {
+        let (model, engine, _) = try await signedIn(.wifi)
+        defer { tearDown(model) }
+        model.updatePreferences { $0.playback.wifi = .opus64 }
+        model.play([song("s1"), song("s2")], startAt: 0)
+        model.player.handle(.failed(model.player.queue.current!.id, "cannot open"))
+        #expect(await eventually { model.playbackHint == AppModel.transcodeHint })
+        #expect(query(engine.setItemsCalls.last!.items[0].1)["format"] == "raw")
+        #expect(model.player.lastError == nil)
+    }
+
     @Test func networkStatusPicksQuality() {
         let prefs = PlaybackPreferences.defaultValue
         #expect(prefs.quality(for: .wifi) == .original)

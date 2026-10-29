@@ -123,6 +123,7 @@ Settings gains four sections. Each opens its own screen file.
 - High: AAC 256 kbps.
 - Medium: AAC 160 kbps.
 - Low: AAC 96 kbps.
+- Opus 192 (High), 128 (Medium), 96 (Low) and 64 (Very low) kbps *(owner request 2026-10-29, D45; Navidrome's Ogg Opus plays in AVFoundation per the spike)*.
 - MP3 320 and MP3 192, for older servers.
 
 Defaults: Wi-Fi Original, Mobile data AAC 160, Downloads Original.
@@ -131,12 +132,12 @@ These map to `stream?format=&maxBitRate=`.
 - **Network** comes from `NWPathMonitor` (`usesInterfaceType(.cellular)`, or `isExpensive`).
 - **When the network changes during playback,** the next songs use the new quality via `urlsInvalidated()`. The current song continues.
 - **Format support.** The server's transcoding config decides what's possible. If a transcoded stream fails (HTTP error, or AVPlayer can't open it), Magpie falls back to Original for that song. It shows the hint "Your server couldn't convert this song; playing the original" once per session, in §5 voice.
-- **No Opus** *(call, pre-flight 2026-10-28)*. AVFoundation can't play Ogg Opus, so an Opus preset would always fall back when streamed and would leave unplayable downloads. The presets are Original, AAC 256/160/96 and MP3 320/192.
-- **Dev stack.** The Navidrome dev stack ITs verify that AAC and MP3 transcoding produce audio AVFoundation can play. A preset format the dev image can't produce is a failure to fix, not a skipped test.
+- **Opus presets** *(owner request 2026-10-29; supersedes the pre-flight 2026-10-28 "No Opus" call, D45)*. A spike showed iOS 27 AVFoundation plays Navidrome's Ogg Opus stream, live and as a local file. The presets are Original, AAC 256/160/96, Opus 192/128/96/64 and MP3 320/192, listed by codec in that order. Ogg engine durations are estimates and seeking is approximate, so durations stay the API's (see Transcoded streams). Opus downloads are stored as `.ogg`.
+- **Dev stack.** The Navidrome dev stack ITs verify that AAC, Opus and MP3 transcoding produce audio AVFoundation can play. A preset format the dev image can't produce is a failure to fix, not a skipped test.
 - "Low Data Mode" on: Mobile data quality is used even on Wi-Fi *(call)*.
 - **Transcoded streams** *(call: accepted and documented)*.
   - Gapless is exact only for Original (encoder-delay metadata). Transcoded streams may have a tiny gap between songs.
-  - Seeking uses `estimateContentLength=true`. Durations and the scrobble threshold use the API's song `duration`, never the stream's.
+  - Seeking uses `estimateContentLength=true` for Original and MP3 only; AAC and Opus go out chunked, so seeking on them is approximate (D42, D45). Durations and the scrobble threshold use the API's song `duration`, never the stream's.
   - Downloads default to Original, so offline and car playback of downloads stays gapless.
   - Settings shows "Gapless works best with Original" under the quality pickers.
 

@@ -14,10 +14,10 @@ struct PlaybackSettingsView: View {
         Form {
             Section {
                 Picker("Wi-Fi", selection: binding(\.wifi)) {
-                    ForEach(StreamQuality.allCases, id: \.self) { Text($0.title).tag($0) }
+                    StreamQualityOptions()
                 }
                 Picker("Mobile data", selection: binding(\.cellular)) {
-                    ForEach(StreamQuality.allCases, id: \.self) { Text($0.title).tag($0) }
+                    StreamQualityOptions()
                 }
             } header: {
                 Text("Streaming")

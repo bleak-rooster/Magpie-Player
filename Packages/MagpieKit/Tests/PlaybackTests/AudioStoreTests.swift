@@ -47,11 +47,31 @@ private final class TestClock: @unchecked Sendable {
         #expect(AudioStore.fileExtension(quality: .original, suffix: "flac", mimeType: nil) == "flac")
         #expect(AudioStore.fileExtension(quality: .original, suffix: "../x", mimeType: "audio/mpeg") == "mp3")
         // Unknown formats are refused, never guessed.
-        #expect(AudioStore.fileExtension(quality: .original, suffix: "opus", mimeType: "audio/ogg") == nil)
         #expect(AudioStore.fileExtension(quality: .original, suffix: nil, mimeType: "text/html") == nil)
         #expect(AudioStore.fileExtension(quality: .original, suffix: nil, mimeType: "application/octet-stream") == nil)
         #expect(AudioStore.fileExtension(quality: .aac160, suffix: "flac", mimeType: nil) == "aac")
         #expect(AudioStore.fileExtension(quality: .mp3_192, suffix: "flac", mimeType: nil) == "mp3")
+        // D45: an Opus preset is an Ogg file whatever the source suffix was.
+        for q in [StreamQuality.opus192, .opus128, .opus96, .opus64] {
+            #expect(AudioStore.fileExtension(quality: q, suffix: "flac", mimeType: "audio/ogg") == "ogg")
+            #expect(AudioStore.fileExtension(quality: q, suffix: nil, mimeType: nil) == "ogg")
+        }
+        #expect(AudioStore.fileExtension(quality: .original, suffix: nil, mimeType: "audio/ogg") == "ogg")
+        #expect(AudioStore.fileExtension(quality: .original, suffix: nil, mimeType: "audio/opus") == "ogg")
+        #expect(AudioStore.fileExtension(quality: .original, suffix: "opus", mimeType: nil) == nil)
+    }
+
+    @Test func oggOpusBodyIsStoredAndKeepsItsName() async throws {
+        let store = AudioStore(root: tmp, scope: "abc")
+        await store.load()
+        let e = try await store.add(tempFile(bytes: 300), metadata: meta("o1"), quality: .opus128, kind: .download,
+                                    reason: .song, fileExtension: "ogg", downloadsLimit: nil)
+        #expect(e.fileName == AudioStore.fileName(songId: "o1", quality: .opus128, fileExtension: "ogg"))
+        #expect(e.quality == .opus128)
+        #expect(FileManager.default.fileExists(atPath: store.directory.appending(path: e.fileName).path))
+        let reloaded = AudioStore(root: tmp, scope: "abc")
+        await reloaded.load()
+        #expect(await reloaded.entry(songId: "o1")?.fileName == e.fileName)
     }
 
     @Test func addMovesFileAndExcludesFromBackup() async throws {

@@ -194,6 +194,19 @@ private let cell = NetworkStatus(isConnected: true, isCellular: true, isConstrai
         #expect(await m.store.entry(songId: "s1")?.quality == .mp3_320)
     }
 
+    /// D45: an Opus download asks for `format=opus` and is stored as `.ogg` from Navidrome's `audio/ogg`.
+    @Test func opusDownloadIsStoredAsOgg() async {
+        var prefs = DownloadPreferences.defaultValue; prefs.quality = .opus64
+        let (m, f, _) = await makeManager(prefs)
+        f.mimeType { $0.path.hasSuffix("/rest/getCoverArt") ? "image/jpeg" : "audio/ogg" }
+        m.download(songs("s1"), reason: .song); await m.settled()
+        let q = URLComponents(url: f.urls[0], resolvingAgainstBaseURL: false)!.queryItems!
+        #expect(q.first { $0.name == "format" }?.value == "opus" && q.first { $0.name == "maxBitRate" }?.value == "64")
+        let entry = await m.store.entry(songId: "s1")
+        #expect(entry?.quality == .opus64 && entry?.fileName.hasSuffix(".ogg") == true)
+        #expect(m.status(for: ["s1"]) == .downloaded)
+    }
+
     @Test func coverFetchedOnceWhenAlbumDownloadStarts() async {
         let (m, f, _) = await makeManager()
         m.download(songs("s1", "s2"), reason: .album("a1"), coverArtId: "al-1"); await m.settled()

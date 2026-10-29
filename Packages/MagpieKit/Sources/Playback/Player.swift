@@ -291,7 +291,9 @@ public final class Player {
         case .time(let id, let t, let d):
             guard id == queue.current?.id else { return }   // stale tick from the previous item
             position = t
-            if let d { duration = d }
+            // The API's song duration wins (D45: Ogg and other transcoded lengths are estimates); the engine's only
+            // fills in when the server gave none.
+            if let d, (queue.current?.song.duration ?? 0) <= 0 { duration = d }
             maybeSubmitScrobble()
         case .stalled:
             break

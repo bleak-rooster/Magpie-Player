@@ -20,9 +20,24 @@ import Testing
         #expect(p.genres.mode == .grouped)
     }
 
-    @Test func noOpusPresets() {
-        #expect(StreamQuality.allCases == [.original, .aac256, .aac160, .aac96, .mp3_320, .mp3_192])
-        #expect(Set(StreamQuality.allCases.map(\.format)) == ["raw", "aac", "mp3"])
+    @Test func opusPresetsSitBetweenAACAndMP3() {
+        #expect(StreamQuality.allCases == [.original, .aac256, .aac160, .aac96, .opus192, .opus128, .opus96, .opus64,
+                                           .mp3_320, .mp3_192])
+        #expect(Set(StreamQuality.allCases.map(\.format)) == ["raw", "aac", "opus", "mp3"])
+        #expect(StreamQuality.allCases.map(\.rawValue) == ["original", "aac256", "aac160", "aac96", "opus192", "opus128",
+                                                           "opus96", "opus64", "mp3_320", "mp3_192"])
+        #expect([StreamQuality.opus192, .opus128, .opus96, .opus64].map(\.maxBitRate) == [192, 128, 96, 64])
+        #expect([StreamQuality.opus192, .opus128, .opus96, .opus64].map(\.title) == [
+            "High · Opus 192 kbps", "Medium · Opus 128 kbps", "Low · Opus 96 kbps", "Very low · Opus 64 kbps"])
+        #expect(StreamQuality.groups.map(\.format) == ["raw", "aac", "opus", "mp3"])
+        #expect(StreamQuality.groups.flatMap(\.qualities) == StreamQuality.allCases)
+    }
+
+    @Test func opusAndOlderQualitiesDecode() throws {
+        let decoded = PlaybackPreferences.decode(Data(#"{"wifi":"opus128","cellular":"aac160","replayGain":"track","sleepTimer":"m30"}"#.utf8))
+        #expect(decoded.wifi == .opus128 && decoded.cellular == .aac160)
+        let unknown = PlaybackPreferences.decode(Data(#"{"wifi":"opus999","cellular":"mp3_192","replayGain":"track","sleepTimer":"m30"}"#.utf8))
+        #expect(unknown.wifi == PlaybackPreferences.defaultValue.wifi && unknown.cellular == .mp3_192)
     }
 
     @Test func corruptDataFallsBackToDefault() {
@@ -33,7 +48,7 @@ import Testing
     @Test func oneBadFieldKeepsTheOthers() {
         let p = PlaybackPreferences.decode(Data(#"{"version":1,"wifi":"lossless-ultra","cellular":"mp3_192","replayGain":7}"#.utf8))
         #expect(p.wifi == .original && p.cellular == .mp3_192 && p.replayGain == .track)
-        #expect(PlaybackPreferences.decode(Data(#"{"cellular":"opus64"}"#.utf8)).cellular == .aac160, "old Opus value falls back")
+        #expect(PlaybackPreferences.decode(Data(#"{"cellular":"vorbis96"}"#.utf8)).cellular == .aac160, "an unknown value falls back")
     }
 
     @Test func unknownAndDuplicateSectionsDropped() {

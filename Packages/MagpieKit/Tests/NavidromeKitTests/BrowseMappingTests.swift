@@ -132,6 +132,16 @@ import os
         #expect(raw.absoluteString.contains("estimateContentLength=true"))
     }
 
+    @Test func opusStreamURLHasNoEstimateContentLength() async throws {
+        let (client, _) = try await connected { _ in }
+        for rate in [192, 128, 96, 64] {
+            let items = Dictionary(uniqueKeysWithValues: URLComponents(
+                url: client.streamURL(songId: "a", maxBitRate: rate, format: "opus"), resolvingAgainstBaseURL: false)!
+                .queryItems!.map { ($0.name, $0.value ?? "") })
+            #expect(items["estimateContentLength"] == nil && items["format"] == "opus" && items["maxBitRate"] == String(rate))
+        }
+    }
+
     @Test func streamURLHasEstimateContentLength() async throws {
         let (client, _) = try await connected { _ in }
         let url = client.streamURL(songId: "abc 123", maxBitRate: 320, format: "mp3")
