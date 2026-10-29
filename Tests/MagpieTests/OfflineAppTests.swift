@@ -431,6 +431,34 @@ private let noNetwork = NetworkStatus(isConnected: false, isCellular: false, isC
         #expect(!model.isOffline && !model.reachability.isSuspect && model.reachability.authRejected)
         #expect(throws: NavidromeError.badCredentials) { try model.rethrowAuthRejection() }
         #expect(BrowseErrorCopy.message(for: NavidromeError.badCredentials) == ConnectErrorCopy.badCredentials)
+        // Later a real outage: the sign-in error gives way to "isn't answering".
+        transport.setDown(["192.168.1.2"])
+        await model.checkReachability()
+        #expect(!model.reachability.authRejected)
+        #expect(throws: Never.self) { try model.rethrowAuthRejection() }
+    }
+
+    /// Fix round 3: downloads refused by a server that answers ping probe it sparingly (at most one probe per 5 s,
+    /// logging in at most twice), and each song ends at "Couldn't download" after 3 attempts, with no tight loop.
+    @Test func fastFailingDownloadsProbeSparingly() async throws {
+        let f = FakeFetcher()
+        let model = try await signedInModel(fetcher: f)
+        model.updatePreferences { $0.downloads.concurrent = 2 }
+        let seen = recordRequests()
+        f.failWith(URLError(.timedOut))
+        let songs = [song("s1"), song("s2"), song("s3")]
+        model.download(songs, reason: .album("a1"))
+        try await Task.sleep(for: .seconds(4.5))
+        #expect(seen.urls.filter { $0.path.hasSuffix("/auth/login") }.count <= 2, "few logins within 5 s")
+        #expect(seen.urls.filter { $0.path.hasSuffix("/rest/ping") }.count <= 3, "few probes within 5 s")
+        #expect(await eventually(15) { model.downloadStatus(songs.map(\.id), reason: .album("a1")) == .failed })
+        #expect(model.downloadStatus(songs.map(\.id), reason: .album("a1")).text == "Couldn't download")
+        let fetched = f.urls.compactMap { URLComponents(url: $0, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "id" }?.value }
+        // 3 attempts a song; a fetch cancelled when the server turned suspect (not an attempt) may add one more.
+        for id in songs.map(\.id) {
+            #expect(fetched.filter { $0 == id }.count <= DownloadManager.maxConnectionAttempts + 1, "no loop: \(fetched)")
+        }
+        #expect(!model.isOffline)
     }
 
     func coverSong(_ id: String) -> Song {

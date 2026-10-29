@@ -37,11 +37,8 @@ extension AppModel {
             self.player.upcomingURLsChanged()
             self.preDownloadLanded()
         }
-        // A download couldn't connect: probe the server now, so the failure counts as a drop or as an attempt.
-        manager.onUnreachable = { [weak self] in
-            self?.noteUnreachable()
-            Task { await self?.checkReachability() }
-        }
+        // A download couldn't connect: probe the server, so the failure counts as a drop or as an attempt.
+        manager.onUnreachable = { [weak self] in self?.downloadCouldNotConnect() }
         let previous = downloadsTeardown, root = dataDirectory
         let ready = Task {
             await previous?.value

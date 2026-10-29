@@ -321,7 +321,7 @@ extension AppModel {
         f.failWith(URLError(.timedOut))
         model.download([song("s1")], reason: .song)
         // The server answers each probe, so each time-out is an attempt; the third is "Couldn't download" (T14).
-        #expect(await eventually { model.downloadStatus(["s1"]) == .failed })
+        #expect(await eventually(15) { model.downloadStatus(["s1"]) == .failed })
         #expect(model.downloadStatus(["s1"]).text == "Couldn't download")
         f.failWith(nil)
         model.updatePreferences { $0.downloads.keepRecentlyPlayed = false }

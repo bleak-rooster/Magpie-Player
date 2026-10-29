@@ -365,6 +365,9 @@ final class DownloadManager {
         networkChanged()
     }
 
+    /// Some download failed to connect and waits for a probe's verdict.
+    var hasAwaitingVerdict: Bool { jobs.contains { $0.awaitingVerdict } }
+
     /// The probe after connection failures failed too: the server dropped, so those failures don't count.
     func serverDropConfirmed() {
         for i in jobs.indices { jobs[i].awaitingVerdict = false }

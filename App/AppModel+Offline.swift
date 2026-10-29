@@ -30,6 +30,8 @@ final class OfflineBox: Sendable {
     var offlineAfter: TimeInterval = 10
     /// The last reconnect's login was refused (401/403): the server answers, the password doesn't work.
     var authRejected = false
+    /// When a failed download last probed the server (fix round 3): at most one such probe per `suspectInterval`.
+    var lastDownloadProbe: Date?
 
     var isSuspect: Bool { since != nil }
 }
@@ -69,6 +71,7 @@ extension AppModel {
     func reconnectFailed() {
         guard !isForcedOffline else { return }
         reachability.failures += 1
+        reachability.authRejected = false   // a real outage now: "isn't answering", not the sign-in error
         downloads?.serverDropConfirmed()
         noteUnreachable()
     }
@@ -129,8 +132,9 @@ extension AppModel {
         r.since = nil
         r.authRejected = false
         if !serverReachable { serverReachable = true }
+        // Downloads that failed meanwhile count as attempts, and the rest go again.
+        if wasDown || downloads?.hasAwaitingVerdict == true { downloads?.serverAnswered() }
         guard wasDown else { return }
-        downloads?.serverAnswered()   // downloads that failed meanwhile count as attempts, and the rest go again
         player.retryAfterFailure()
     }
 
@@ -164,6 +168,21 @@ extension AppModel {
     /// `request` after a failed reconnect whose login was refused: the sign-in error, not the connection one.
     func rethrowAuthRejection() throws {
         if reachability.authRejected { throw NavidromeError.badCredentials }
+    }
+
+    /// A download couldn't connect (fix round 3): probe the server, at most once per `suspectInterval` and without
+    /// logging in again while the session works. A failure inside that window marks the server suspect and waits for
+    /// that probe's verdict, or the probe loop's.
+    func downloadCouldNotConnect() {
+        guard session != nil, !isForcedOffline else { return }
+        let r = reachability
+        let window = Double(r.suspectInterval.components.seconds) + Double(r.suspectInterval.components.attoseconds) / 1e18
+        if let last = r.lastDownloadProbe, Date.now.timeIntervalSince(last) < window {
+            noteUnreachable()
+            return
+        }
+        r.lastDownloadProbe = .now
+        Task { [weak self] in await self?.reconnect(rebuildAlways: false) }
     }
 
     /// Probes the session's addresses once. One that answers is moved to and logged in to afresh (a launch with no
