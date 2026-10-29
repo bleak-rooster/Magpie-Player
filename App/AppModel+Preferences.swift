@@ -17,7 +17,9 @@ extension AppModel {
 
     /// The fan-out: one line per feature that reacts to a changed preference (later tasks add theirs here).
     func preferencesDidChange(from old: Preferences) {
-        if preferences.playback != old.playback {
+        // Only what the upcoming songs are built from: the stream quality now, and ReplayGain.
+        let oldQuality = old.playback.quality(for: network.status)
+        if currentStreamQuality != oldQuality || preferences.playback.replayGain != old.playback.replayGain {
             qualityBox.set(currentStreamQuality)
             player.upcomingURLsChanged()
         }

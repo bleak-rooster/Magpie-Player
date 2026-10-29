@@ -296,7 +296,7 @@ public final class Player {
             // is reached. Stop the engine too, so a dead server can't race through the queue.
             guard let current = queue.current, id == current.id else { return }
             let key = FallbackKey(entryId: id, songId: current.song.id)
-            if !fellBack.contains(key), urls.originalURL(for: current.song) != nil {
+            if !fellBack.contains(key), let original = urls.originalURL(for: current.song), original != loaded?.url {
                 // The server couldn't convert it: play the original instead, once.
                 fellBack.insert(key)
                 lastFallbackSongId = current.song.id

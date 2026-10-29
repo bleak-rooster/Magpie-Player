@@ -11,17 +11,21 @@ protocol NetworkStatusProviding: AnyObject {
 /// Wraps `NWPathMonitor`: connected, mobile data (or an expensive path) and Low Data Mode.
 @MainActor @Observable
 final class NetworkMonitor: NetworkStatusProviding {
+    /// `NWPathMonitor` has no synchronous read, so this is Wi-Fi until the first path arrives (a moment after
+    /// launch, on the main queue); a song started in that gap streams at the Wi-Fi quality.
     private(set) var status = NetworkStatus.wifi
     @ObservationIgnored private let monitor = NWPathMonitor()
 
     init() {
+        // Updates arrive on the main queue in order, so none is overtaken by a later one.
         monitor.pathUpdateHandler = { [weak self] path in
-            let status = NetworkStatus(isConnected: path.status == .satisfied,
-                                       isCellular: path.usesInterfaceType(.cellular) || path.isExpensive,
-                                       isConstrained: path.isConstrained)
-            Task { @MainActor in self?.status = status }
+            MainActor.assumeIsolated {
+                self?.status = NetworkStatus(isConnected: path.status == .satisfied,
+                                             isCellular: path.usesInterfaceType(.cellular) || path.isExpensive,
+                                             isConstrained: path.isConstrained)
+            }
         }
-        monitor.start(queue: DispatchQueue(label: "magpie.network"))
+        monitor.start(queue: .main)
     }
 
     deinit { monitor.cancel() }

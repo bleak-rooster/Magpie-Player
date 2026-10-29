@@ -135,9 +135,10 @@ final class NavidromeStreamURLs: StreamURLProvider {
             ?? URL(string: "about:blank")!
     }
 
-    /// The untranscoded stream, only when this one is transcoded and the song isn't a local file.
+    /// The untranscoded stream, nil for a local file. Whether it is a fallback is the player's call (it compares
+    /// with the URL the song loaded with, which the quality may have changed from since).
     func originalURL(for song: Song) -> URL? {
-        guard quality.value != .original, localURL(song.id) == nil else { return nil }
+        guard localURL(song.id) == nil else { return nil }
         return box.client?.streamURL(songId: song.id, maxBitRate: nil, format: StreamQuality.original.format)
     }
 }

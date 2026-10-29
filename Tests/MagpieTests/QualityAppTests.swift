@@ -56,6 +56,11 @@ private func eventually(_ seconds: Double = 5, _ condition: () -> Bool) async ->
         return (model, engine, network)
     }
 
+    func tearDown(_ model: AppModel) {
+        model.signOut()
+        store.clear()
+    }
+
     func query(_ url: URL) -> [String: String] {
         let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
         return Dictionary(items.map { ($0.name, $0.value ?? "") }, uniquingKeysWith: { a, _ in a })
@@ -65,6 +70,7 @@ private func eventually(_ seconds: Double = 5, _ condition: () -> Bool) async ->
 
     @Test func wifiUsesOriginalRaw() async throws {
         let (model, engine, _) = try await signedIn(.wifi)
+        defer { tearDown(model) }
         model.play([song("s1")], startAt: 0)
         let q = query(engine.setItemsCalls.last!.items[0].1)
         #expect(q["format"] == "raw" && q["maxBitRate"] == nil)
@@ -72,6 +78,7 @@ private func eventually(_ seconds: Double = 5, _ condition: () -> Bool) async ->
 
     @Test func cellularUsesAAC160() async throws {
         let (model, engine, _) = try await signedIn(cellular)
+        defer { tearDown(model) }
         model.play([song("s1")], startAt: 0)
         let q = query(engine.setItemsCalls.last!.items[0].1)
         #expect(q["format"] == "aac" && q["maxBitRate"] == "160")
@@ -79,6 +86,7 @@ private func eventually(_ seconds: Double = 5, _ condition: () -> Bool) async ->
 
     @Test func lowDataModeOnWifiUsesMobileQuality() async throws {
         let (model, engine, _) = try await signedIn(NetworkStatus(isConnected: true, isCellular: false, isConstrained: true))
+        defer { tearDown(model) }
         model.play([song("s1")], startAt: 0)
         let q = query(engine.setItemsCalls.last!.items[0].1)
         #expect(q["format"] == "aac" && q["maxBitRate"] == "160")
@@ -86,6 +94,7 @@ private func eventually(_ seconds: Double = 5, _ condition: () -> Bool) async ->
 
     @Test func preferenceChangeAppliesToUpcoming() async throws {
         let (model, engine, _) = try await signedIn(.wifi)
+        defer { tearDown(model) }
         model.play([song("s1"), song("s2")], startAt: 0)
         model.updatePreferences { $0.playback.wifi = .mp3_320 }
         let items = engine.setItemsCalls.last!.items
@@ -94,6 +103,7 @@ private func eventually(_ seconds: Double = 5, _ condition: () -> Bool) async ->
 
     @Test func networkChangeRebuildsUpcomingOnly() async throws {
         let (model, engine, network) = try await signedIn(.wifi)
+        defer { tearDown(model) }
         model.play([song("s1"), song("s2")], startAt: 0)
         network.status = cellular
         #expect(await eventually { query(engine.setItemsCalls.last!.items[1].1)["format"] == "aac" })
@@ -103,6 +113,7 @@ private func eventually(_ seconds: Double = 5, _ condition: () -> Bool) async ->
 
     @Test func transcodeHintShownOncePerSession() async throws {
         let (model, engine, _) = try await signedIn(cellular)
+        defer { tearDown(model) }
         model.play([song("s1"), song("s2")], startAt: 0)
         model.player.handle(.failed(model.player.queue.current!.id, "cannot open"))
         #expect(await eventually { model.playbackHint == AppModel.transcodeHint })
@@ -113,6 +124,33 @@ private func eventually(_ seconds: Double = 5, _ condition: () -> Bool) async ->
         #expect(model.player.lastFallbackSongId == "s2")
         try await Task.sleep(for: .milliseconds(100))
         #expect(model.playbackHint == nil, "once per session")
+    }
+
+    /// Loaded on Wi-Fi Original, then the network turns cellular: the playing stream is raw already, so a failure is
+    /// no transcode failure. No fallback, no hint; the player pauses with its error.
+    @Test func rawStreamFailingAfterNetworkTurnsCellularIsNotAFallback() async throws {
+        let (model, engine, network) = try await signedIn(.wifi)
+        defer { tearDown(model) }
+        model.play([song("s1"), song("s2")], startAt: 0)
+        network.status = cellular
+        #expect(await eventually { model.currentStreamQuality == .aac160 && self.query(engine.setItemsCalls.last!.items[1].1)["format"] == "aac" })
+        model.player.handle(.failed(model.player.queue.current!.id, "cannot open"))
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(model.playbackHint == nil && model.player.lastFallbackSongId == nil)
+        #expect(!model.player.isPlaying && model.player.lastError != nil)
+    }
+
+    /// Loaded on cellular AAC, then Wi-Fi Original: the playing stream is a transcode, so its failure falls back.
+    @Test func aacStreamFailingAfterNetworkTurnsWifiFallsBack() async throws {
+        let (model, engine, network) = try await signedIn(cellular)
+        defer { tearDown(model) }
+        model.play([song("s1"), song("s2")], startAt: 0)
+        network.status = .wifi
+        #expect(await eventually { model.currentStreamQuality == .original })
+        model.player.handle(.failed(model.player.queue.current!.id, "cannot open"))
+        #expect(await eventually { model.playbackHint == AppModel.transcodeHint })
+        #expect(query(engine.setItemsCalls.last!.items[0].1)["format"] == "raw")
+        #expect(model.player.lastError == nil)
     }
 
     @Test func networkStatusPicksQuality() {

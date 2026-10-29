@@ -23,7 +23,7 @@ struct TranscodeIT {
         return (ok, duration.seconds)
     }
 
-    @Test(arguments: [("aac", 160, "aac"), ("aac", 96, "aac"), ("mp3", 320, "mp3"), ("mp3", 192, "mp3")])
+    @Test(arguments: [("aac", 256, "aac"), ("aac", 160, "aac"), ("aac", 96, "aac"), ("mp3", 320, "mp3"), ("mp3", 192, "mp3")])
     func presetFormatsPlay(_ format: String, _ rate: Int, _ ext: String) async throws {
         let client = try client(); _ = try await client.connect()
         let album = try await client.album(id: try await client.albumList(.newest, size: 1, offset: 0)[0].id)

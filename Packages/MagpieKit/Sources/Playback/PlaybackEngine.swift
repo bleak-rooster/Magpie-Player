@@ -52,8 +52,8 @@ public protocol Scrobbler: Sendable {
 @MainActor
 public protocol StreamURLProvider: AnyObject {
     func streamURL(for song: Song) -> URL
-    /// The song untranscoded, for when the server fails to convert it. Nil when the stream already is the
-    /// original, and nil whenever the song can't be fetched from the server right now (offline): `Player`
+    /// The song untranscoded, for when the server fails to convert it. `Player` takes the fallback only when this
+    /// differs from the URL the song loaded with, so an answer equal to the current stream is harmless. Nil whenever the song can't be fetched from the server right now (offline): `Player`
     /// tries this fallback before skipping an unplayable song, so a non-nil answer offline wastes a try.
     func originalURL(for song: Song) -> URL?
 }

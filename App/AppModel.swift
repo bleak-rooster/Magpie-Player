@@ -164,6 +164,8 @@ final class AppModel {
     /// a build without arbitrary loads, where `atsBlocksPlainHTTP` pre-refuses.
     @ObservationIgnored var atsAllowsArbitraryLoads = AppModel.bundleAllowsArbitraryLoads()
     @ObservationIgnored private var errorWatch: Task<Void, Never>?
+    /// Hosted tests never meet the system prompt or the host's real connection.
+    static let isHostedTest = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
     @ObservationIgnored let network: any NetworkStatusProviding
     /// The quality stream URLs are built with; set before `player`, which is built before `self` is usable.
     @ObservationIgnored let qualityBox = QualityBox(.original)
@@ -217,8 +219,7 @@ final class AppModel {
         self.changesAllowed = false
         self.appDefaults = defaults
         // Hosted tests never meet the system prompt (C-I1's environment check).
-        let prober = localNetworkProber ?? (ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil
-                                            ? NWBrowserLocalNetworkProber() : NotNeededProber())
+        let prober = localNetworkProber ?? (Self.isHostedTest ? NotNeededProber() : NWBrowserLocalNetworkProber())
         self.localNetwork = LocalNetworkAccess(prober: prober, defaults: defaults)
         self.setupStore = LidarrSetupStore(defaults: defaults)
         self.findsStore = FindsSetupStore(defaults: defaults)
@@ -226,8 +227,7 @@ final class AppModel {
         self.hasListenBrainzToken = tokenStore.load() != nil
         let counting = PlayCounting(on: defaults.object(forKey: Self.countPlaysKey) as? Bool ?? true)
         self.playCounting = counting
-        let network = network ?? (ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil
-                                  ? NetworkMonitor() : FixedNetwork())
+        let network = network ?? (Self.isHostedTest ? FixedNetwork() : NetworkMonitor())
         self.network = network
         let findsIdentity = self.findsIdentity
         self.player = Player(engine: engine ?? AVQueueEngine(),
@@ -248,6 +248,11 @@ final class AppModel {
         watchFindPlays()
         watchBanner()
         readLidarrPermissions()
+    }
+
+    isolated deinit {
+        qualityWatch?.cancel()
+        hintWatch?.cancel()
     }
 
     /// The write switch and setup of the connected Lidarr (both are kept per instance).
@@ -414,6 +419,7 @@ final class AppModel {
     func signOut() {
         let retiring = runner, doomed = requestStore
         player.play([], startAt: 0)
+        playbackHint = nil
         if let navidromeScope {
             findsStore.clear(navidromeScope: navidromeScope)
             appDefaults.removeObject(forKey: Self.playedFindsKey(navidromeScope))
