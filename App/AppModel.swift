@@ -180,6 +180,12 @@ final class AppModel {
     var playbackHint: String?
     /// Downloads for the signed-in scope (AppModel+Downloads.swift); nil when signed out.
     @ObservationIgnored var downloads: DownloadManager?
+    /// What the player plays from the phone (Task 13); set from `downloads.localFiles`, built before `player`.
+    @ObservationIgnored let localFiles = LocalFilesBox()
+    @ObservationIgnored var preDownloadWatch: Task<Void, Never>?
+    @ObservationIgnored var cacheUpkeep: Task<Void, Never>?
+    /// Tests: the cache limit in bytes instead of the preference's.
+    @ObservationIgnored var cacheLimitOverride: Int64?
     @ObservationIgnored let audioFetcher: any AudioFetching
     /// The last stopped manager's cancel-settle-erase; the next manager starts after it.
     @ObservationIgnored var downloadsTeardown: Task<Void, Never>?
@@ -249,10 +255,12 @@ final class AppModel {
         let findsIdentity = self.findsIdentity
         self.player = Player(engine: engine ?? AVQueueEngine(),
                              scrobbler: NavidromeScrobbler(box: box, counting: counting),
-                             urls: NavidromeStreamURLs(box: box, quality: self.qualityBox),
+                             urls: NavidromeStreamURLs(box: box, quality: self.qualityBox,
+                                                       localURL: { [localFiles] in localFiles.url(for: $0) }),
                              isFind: { findsIdentity.isFind($0) },
                              gain: { replayGain.mode.volume(for: $0.replayGain) })
         self.sleepTimer = SleepTimer(player: player)
+        applyEngineWindow()
         #if os(iOS)
         if systemNowPlaying {
             nowPlaying = NowPlayingBridge(
@@ -272,6 +280,7 @@ final class AppModel {
     isolated deinit {
         qualityWatch?.cancel()
         hintWatch?.cancel()
+        preDownloadWatch?.cancel()
     }
 
     /// The write switch and setup of the connected Lidarr (both are kept per instance).

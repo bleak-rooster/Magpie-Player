@@ -45,10 +45,14 @@ actor FakeScrobbler: Scrobbler {
 final class FakeURLs: StreamURLProvider {
     var base = URL(string: "http://192.168.1.2:4533")!
     var original: ((Song) -> URL?)?
+    /// Replaces the stream URL (nil: `base` plus the song id).
+    var stream: ((Song) -> URL)?
+    var isOriginalURL: ((URL) -> Bool)?
     func streamURL(for song: Song) -> URL {
-        base.appending(path: "rest/stream").appending(queryItems: [URLQueryItem(name: "id", value: song.id)])
+        stream?(song) ?? base.appending(path: "rest/stream").appending(queryItems: [URLQueryItem(name: "id", value: song.id)])
     }
     func originalURL(for song: Song) -> URL? { original?(song) }
+    func isOriginal(_ url: URL) -> Bool { isOriginalURL?(url) ?? false }
 }
 
 @MainActor
@@ -199,7 +203,7 @@ extension PlayerTests {
         let player = makePlayer()
         player.play([Self.song("1")], startAt: 0)
         player.handle(.time(player.queue.current!.id, 150, duration: 200))
-        player.handle(.ended)
+        player.handle(.ended(player.queue.current!.id))
         #expect(!player.isPlaying)
         let loads = engine.setItemsCalls.count
         player.toggle()
@@ -321,7 +325,7 @@ extension PlayerTests {
         let player = makePlayer()
         player.repeatMode = .all
         player.play([Self.song("1"), Self.song("2")], startAt: 1)
-        player.handle(.ended)
+        player.handle(.ended(player.queue.current!.id))
         #expect(player.queue.current?.song.id == "1")
         #expect(player.isPlaying)
         #expect(engine.setItemsCalls.last!.items.first!.0 == player.queue.current!.id)
@@ -342,7 +346,7 @@ extension PlayerTests {
         player.play([Self.song("1"), Self.song("2")], startAt: 1)
         player.next()
         #expect(player.queue.current?.song.id == "2")
-        player.handle(.ended)
+        player.handle(.ended(player.queue.current!.id))
         #expect(!player.isPlaying)
         #expect(player.queue.current?.song.id == "2")
     }
@@ -364,7 +368,7 @@ extension PlayerTests {
         let player = makePlayer()
         player.repeatMode = .one
         player.play([Self.song("1")], startAt: 0)
-        player.handle(.ended)
+        player.handle(.ended(player.queue.current!.id))
         #expect(player.isPlaying)
         #expect(player.queue.current?.song.id == "1")
     }
@@ -452,6 +456,22 @@ extension PlayerTests {
         #expect(player.lastError == "still broken" && !player.isPlaying)
     }
 
+    /// T7/T8 contract: a song already loaded untranscoded doesn't fall back, even when the original URL built now
+    /// differs (a re-login signs it with a new salt): no pointless reload, no false hint.
+    @Test func noFallbackWhenLoadedIsOriginalUnderNewAuth() {
+        var salt = "a"
+        urls.stream = { URL(string: "http://192.168.1.2:4533/rest/stream?id=\($0.id)&format=raw&s=\(salt)")! }
+        urls.original = { URL(string: "http://192.168.1.2:4533/rest/stream?id=\($0.id)&format=raw&s=\(salt)")! }
+        urls.isOriginalURL = { $0.query?.contains("format=raw") == true }
+        let player = makePlayer()
+        player.play([Self.song("1")], startAt: 0)
+        let loads = engine.setItemsCalls.count
+        salt = "b"   // the session logged in again
+        player.handle(.failed(player.queue.current!.id, "cannot open"))
+        #expect(player.lastFallbackSongId == nil && player.lastError == "cannot open")
+        #expect(engine.setItemsCalls.count == loads)
+    }
+
     @Test func noFallbackWithoutOriginal() {
         let player = makePlayer()
         player.play([Self.song("1")], startAt: 0)
@@ -505,7 +525,7 @@ extension PlayerTests {
         player.stopsAfterCurrent = true
         #expect(engine.setItemsCalls.last!.items.count == 1)
         let plays = engine.playCount
-        player.handle(.ended)
+        player.handle(.ended(player.queue.current!.id))
         #expect(!player.isPlaying && player.queue.current?.song.id == "2" && !player.stopsAfterCurrent)
         #expect(engine.playCount == plays)
     }

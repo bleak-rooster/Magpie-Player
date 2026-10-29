@@ -10,8 +10,9 @@ public enum EngineEvent: Sendable, Equatable {
     case time(UUID, TimeInterval, duration: TimeInterval?)
     case stalled
     case failed(UUID, String)
-    /// The last item finished.
-    case ended
+    /// The last item the engine holds finished: the entry with this id. `Player` drops one about a list it has since
+    /// replaced (a stale end that would otherwise skip songs).
+    case ended(UUID)
     /// The engine started or stopped on its own (audio interruption, headphones unplugged).
     case playing(Bool)
 }
@@ -52,12 +53,17 @@ public protocol Scrobbler: Sendable {
 @MainActor
 public protocol StreamURLProvider: AnyObject {
     func streamURL(for song: Song) -> URL
-    /// The song untranscoded, for when the server fails to convert it. `Player` takes the fallback only when this
-    /// differs from the URL the song loaded with, so an answer equal to the current stream is harmless. Nil whenever the song can't be fetched from the server right now (offline): `Player`
-    /// tries this fallback before skipping an unplayable song, so a non-nil answer offline wastes a try.
+    /// The song untranscoded, for when the server fails to convert it. Nil whenever the song can't be fetched from
+    /// the server right now (a local file; offline from Task 14): `Player` tries this fallback before skipping an
+    /// unplayable song, so a non-nil answer offline wastes a try.
     func originalURL(for song: Song) -> URL?
+    /// Whether `url` already streams the song untranscoded. `Player` takes the fallback only when the URL the song
+    /// loaded with isn't original, so a session re-login (new auth salt in the URL) doesn't cause a pointless
+    /// fallback and a false hint (an `originalURL` equal to the loaded URL is never a fallback either).
+    func isOriginal(_ url: URL) -> Bool
 }
 
 public extension StreamURLProvider {
     func originalURL(for song: Song) -> URL? { nil }
+    func isOriginal(_ url: URL) -> Bool { false }
 }

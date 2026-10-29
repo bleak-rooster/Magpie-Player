@@ -56,7 +56,7 @@ import Testing
     @Test func playingNowDropsASongThatEnded() {
         let model = makeModel()
         model.play([Self.song("a")], startAt: 0)
-        model.player.handle(.ended)
+        model.player.handle(.ended(model.player.queue.current!.id))
         #expect(!model.player.isPlaying && model.player.hasEnded)
         model.waitScreenAppeared(request)
         model.land(Self.find, request: request)

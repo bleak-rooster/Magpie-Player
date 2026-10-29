@@ -167,8 +167,9 @@ public final class AVQueueEngine: PlaybackEngine {
 
     public func next() {
         guard let nextIndex = indexAfterCurrent() else {
+            let finished = reportedId ?? list.last?.id
             clearPlayer()
-            continuation.yield(.ended)
+            if let finished { continuation.yield(.ended(finished)) }
             return
         }
         haltedId = nil
@@ -397,7 +398,7 @@ public final class AVQueueEngine: PlaybackEngine {
         guard let oid, let info = enqueued[oid] else { return }
         if list.last?.id == info.id {
             wantsToPlay = false
-            continuation.yield(.ended)
+            continuation.yield(.ended(info.id))
             return
         }
         // Nothing queued behind the finished item (the next one failed earlier and was dropped):

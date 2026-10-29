@@ -71,7 +71,7 @@ import UIKit
         }
         player.clearUpcoming()
         try await settle(host)
-        player.handle(.ended)
+        if let c = player.queue.current { player.handle(.ended(c.id)) }
         try await settle(host)
     }
 }

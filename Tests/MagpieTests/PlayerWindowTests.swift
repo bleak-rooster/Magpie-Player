@@ -108,11 +108,54 @@ final class CountingURLs: StreamURLProvider {
         player.play(Self.songs(10), startAt: 0)
         let plays = engine.playCount
         #expect(engine.setItemsCalls.last!.items.map(\.1.query) == ["id=s0", "id=s1", "id=s2", "id=s3"])
-        player.handle(.ended)                               // s1 to s3 played, their item changes were lost
+        player.handle(.ended(engine.setItemsCalls.last!.items.last!.0))   // s1 to s3 played, their item changes were lost
         #expect(player.queue.current?.song.id == "s4")
         #expect(player.isPlaying && !player.hasEnded)
         #expect(engine.playCount == plays + 1)
         expectWindow(player, "after a missed advance")
+    }
+
+    /// Parked QC minor: an end the engine reported about the list `play` has since replaced is dropped, so no song of
+    /// the new queue is skipped.
+    @Test func staleEndAfterPlayIsIgnored() {
+        let player = makePlayer()
+        player.play(Self.songs(10), startAt: 0)
+        let oldLast = engine.setItemsCalls.last!.items.last!.0
+        player.play(Self.songs(10, from: 100), startAt: 0)
+        player.handle(.ended(oldLast))
+        #expect(player.queue.current?.song.id == "s100")
+        #expect(player.isPlaying && !player.hasEnded)
+        #expect(player.queue.upcoming.first?.song.id == "s101")
+    }
+
+    /// The true end of the queue: nothing to carry on with, so the queue ends on the last song.
+    @Test func endAtTheTrueEndDoesNotCarryOn() {
+        let player = makePlayer()
+        player.play(Self.songs(3), startAt: 0)
+        player.handle(.itemChanged(player.queue.upcoming[0].id))
+        player.handle(.itemChanged(player.queue.upcoming[0].id))
+        let loads = engine.setItemsCalls.count
+        player.handle(.ended(player.queue.current!.id))
+        #expect(player.queue.current?.song.id == "s2" && player.hasEnded && !player.isPlaying)
+        #expect(engine.setItemsCalls.count == loads)
+    }
+
+    /// Repeat all at the true end wraps to the first song (it isn't mistaken for a missed advance).
+    @Test func endAtTheTrueEndWithRepeatAllWraps() {
+        let player = makePlayer()
+        player.repeatMode = .all
+        player.play(Self.songs(3), startAt: 2)
+        player.handle(.ended(player.queue.current!.id))
+        #expect(player.queue.current?.song.id == "s0" && player.isPlaying)
+    }
+
+    /// Repeat all with songs still beyond the window: carry on with the next one, not back to the start.
+    @Test func endBeforeTheTrueEndWithRepeatAllCarriesOn() {
+        let player = makePlayer()
+        player.repeatMode = .all
+        player.play(Self.songs(10), startAt: 0)
+        player.handle(.ended(engine.setItemsCalls.last!.items.last!.0))
+        #expect(player.queue.current?.song.id == "s4" && player.isPlaying)
     }
 
     /// Only playable songs fill the window (offline); one far down the queue is still found.

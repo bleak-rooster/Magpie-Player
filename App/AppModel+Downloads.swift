@@ -28,6 +28,12 @@ extension AppModel {
             },
             coverURL: { [weak self] id in self?.coverArtURL(id, size: DownloadManager.coverSize) })
         downloads = manager
+        // Task 13: songs on the phone play from it; one that lands or leaves re-sends the songs after the current one.
+        manager.onLocalFilesChanged = { [weak self, weak manager] in
+            guard let self, let manager, self.downloads === manager else { return }
+            self.localFiles.set(manager.localFiles)
+            self.player.upcomingURLsChanged()
+        }
         let previous = downloadsTeardown, root = dataDirectory
         let ready = Task {
             await previous?.value
@@ -35,6 +41,7 @@ extension AppModel {
         }
         downloadsTeardown = ready
         manager.begin(after: ready)
+        watchQueueForPreDownload()
         if preferences.downloads.keepFavourites { keepFavouritesChanged() }
     }
 
@@ -44,12 +51,19 @@ extension AppModel {
     func stopDownloads(erase: Bool) {
         favouritesSync?.cancel()
         favouritesSync = nil
+        preDownloadWatch?.cancel()
+        preDownloadWatch = nil
+        let upkeep = cacheUpkeep
+        upkeep?.cancel()
+        cacheUpkeep = nil
         guard let old = downloads else { return }
         downloads = nil
+        localFiles.set([:])
         old.cancelAll()
         let previous = downloadsTeardown
         downloadsTeardown = Task {
             await previous?.value
+            await upkeep?.value
             await old.cancelAllAndSettle()
             if erase { await old.store.eraseScope() }
         }

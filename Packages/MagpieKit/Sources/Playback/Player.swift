@@ -313,7 +313,8 @@ public final class Player {
             // is reached. Stop the engine too, so a dead server can't race through the queue.
             guard let current = queue.current, id == current.id else { return }
             let key = FallbackKey(entryId: id, songId: current.song.id)
-            if !fellBack.contains(key), let original = urls.originalURL(for: current.song), original != loaded?.url {
+            if !fellBack.contains(key), let original = urls.originalURL(for: current.song),
+               let loadedURL = loaded?.url, original != loadedURL, !urls.isOriginal(loadedURL) {
                 // The server couldn't convert it: play the original instead, once.
                 fellBack.insert(key)
                 lastFallbackSongId = current.song.id
@@ -330,7 +331,9 @@ public final class Player {
             needsReload = true
             engine.pause()
             isPlaying = false
-        case .ended:
+        case .ended(let id):
+            // An end about a list replaced since (the event was queued before `play`) would skip songs: drop it.
+            guard sent.contains(where: { $0.id == id }) else { return }
             isPlaying = false
             needsReload = true
             if continueAfterWindow() { return }

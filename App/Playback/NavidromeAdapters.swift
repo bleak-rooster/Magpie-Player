@@ -123,13 +123,21 @@ final class ReplayGainBox: Sendable {
     func set(_ mode: ReplayGainMode) { lock.withLock { $0 = mode } }
 }
 
+/// The songs on the phone (downloads and cache), by song id: what `DownloadManager.localFiles` last said. The player
+/// is built before the model (and its manager) exist, so stream URLs read the files from here; empty when signed out.
+final class LocalFilesBox: Sendable {
+    private let lock = OSAllocatedUnfairLock<[String: URL]>(initialState: [:])
+    func url(for songId: String) -> URL? { lock.withLock { $0[songId] } }
+    func set(_ files: [String: URL]) { lock.withLock { $0 = files } }
+}
+
 /// Stream URLs built against the client's active base address and the current quality. After a failover the app
 /// calls `Player.urlsInvalidated()` so queued items pick up the new base.
 @MainActor
 final class NavidromeStreamURLs: StreamURLProvider {
     let box: ClientBox
     let quality: QualityBox
-    /// A downloaded copy of the song, preferred over streaming (Task 13 fills it in).
+    /// The song's file on the phone, preferred over streaming (Task 13): it plays with no network.
     let localURL: @MainActor (String) -> URL?
 
     init(box: ClientBox, quality: QualityBox, localURL: @escaping @MainActor (String) -> URL? = { _ in nil }) {
@@ -149,5 +157,13 @@ final class NavidromeStreamURLs: StreamURLProvider {
     func originalURL(for song: Song) -> URL? {
         guard localURL(song.id) == nil else { return nil }
         return box.client?.streamURL(songId: song.id, maxBitRate: nil, format: StreamQuality.original.format)
+    }
+
+    /// A server stream of the file as it is (`format=raw`, no bit-rate cap), whatever auth it was signed with.
+    func isOriginal(_ url: URL) -> Bool {
+        guard !url.isFileURL, url.path.hasSuffix("/rest/stream"),
+              let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems else { return false }
+        return query.first { $0.name == "format" }?.value == StreamQuality.original.format
+            && !query.contains { $0.name == "maxBitRate" }
     }
 }

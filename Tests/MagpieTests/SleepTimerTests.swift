@@ -84,7 +84,7 @@ private func eventually(_ seconds: Double = 5, _ condition: () -> Bool) async ->
         let p = player(); let timer = SleepTimer(player: p, sleep: SuspendingSleep().sleep)
         timer.start(.endOfSong)
         #expect(p.stopsAfterCurrent && timer.mode == .endOfSong)
-        p.handle(.ended)                       // the song finished; Player clears the flag
+        p.handle(.ended(p.queue.current!.id))                     // the song finished; Player clears the flag
         #expect(!p.stopsAfterCurrent && !p.isPlaying)
         #expect(await eventually { timer.mode == .off })
     }
