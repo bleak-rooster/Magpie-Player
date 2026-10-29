@@ -86,6 +86,79 @@ final class BrowseFlowTests: XCTestCase {
         XCTAssertTrue(mini.waitForExistence(timeout: 15), "mini player did not show \(title)")
     }
 
+    /// Queue crash hunt (owner report, build 3): open and close the queue again and again, from the Queue button and the Up next row,
+    /// with lyrics on when the server has them, and a quick double tap.
+    @MainActor func testQueueReopensRepeatedly() throws {
+        let app = try launchSignedIn()
+        let nowPlaying = openNowPlaying(app)
+        let lyrics = nowPlaying.buttons["Lyrics"]
+        if lyrics.waitForExistence(timeout: 5) { lyrics.tap() }
+        for i in 0..<8 {
+            let opener = i % 2 == 0 ? nowPlaying.buttons["Queue"]
+                : app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Up next'")).firstMatch
+            guard opener.waitForExistence(timeout: 5) else { continue }
+            if i == 4 { opener.doubleTap() } else { opener.tap() }
+            XCTAssertTrue(app.navigationBars["Queue"].waitForExistence(timeout: 10), "open \(i)")
+            Thread.sleep(forTimeInterval: 1.5)
+            XCTAssertEqual(app.state, .runningForeground, "the app quit on open \(i)")
+            app.navigationBars["Queue"].swipeDown(velocity: .fast)
+            if app.navigationBars["Queue"].exists { app.swipeDown(velocity: .fast) }
+            _ = app.navigationBars["Queue"].waitForNonExistence(timeout: 5)
+            XCTAssertEqual(app.state, .runningForeground, "the app quit on close \(i)")
+        }
+    }
+
+    /// Queue crash hunt (owner report, build 3): Play Next / Add to Queue from Search, then the queue's own controls.
+    @MainActor func testQueueAfterPlayNextAndModes() throws {
+        let app = try launchSignedIn()
+        _ = openNowPlaying(app)
+        app.buttons["Close Now Playing"].tap()
+        let field = app.searchFields.firstMatch
+        for _ in 0..<3 where !field.exists {
+            app.tabBars.buttons["Search"].tap()
+            _ = field.waitForExistence(timeout: 5)
+        }
+        field.tap()
+        field.typeText("Paper Planes")
+        let song = app.buttons["search-song-0"]
+        XCTAssertTrue(song.waitForExistence(timeout: 15))
+        app.keyboards.buttons["search"].tap()
+        for action in ["Play Next", "Add to Queue", "Play Next"] {
+            song.press(forDuration: 1.5)
+            let item = app.buttons[action]
+            XCTAssertTrue(item.waitForExistence(timeout: 5), action)
+            item.tap()
+            Thread.sleep(forTimeInterval: 1)
+        }
+        attachScreenshot(app, "after-context")
+        let mini = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Now playing:")).firstMatch
+        XCTAssertTrue(mini.waitForExistence(timeout: 10))
+        for _ in 0..<3 where !app.buttons["np-play-pause"].exists {
+            mini.tap()
+            _ = app.buttons["np-play-pause"].waitForExistence(timeout: 5)
+        }
+        app.otherElements["now-playing"].buttons["Queue"].tap()
+        XCTAssertTrue(app.navigationBars["Queue"].waitForExistence(timeout: 10))
+        attachScreenshot(app, "queue-upnext")
+        // Songs end with Up Next filled while the queue stays open.
+        for i in 0..<12 {
+            Thread.sleep(forTimeInterval: 4)
+            XCTAssertEqual(app.state, .runningForeground, "the app quit with Up Next after \((i + 1) * 4) s")
+        }
+        attachScreenshot(app, "queue-upnext-later")
+        for id in ["queue-shuffle", "queue-repeat", "queue-repeat", "queue-shuffle", "queue-repeat"] {
+            let b = app.buttons[id]
+            if b.waitForExistence(timeout: 3) { b.tap() }
+            Thread.sleep(forTimeInterval: 0.5)
+            XCTAssertEqual(app.state, .runningForeground, "after \(id)")
+        }
+        app.buttons["queue-clear"].tap()
+        let clear = app.buttons.matching(identifier: "Clear")
+        if clear.count > 1 { clear.element(boundBy: clear.count - 1).tap() }
+        Thread.sleep(forTimeInterval: 2)
+        XCTAssertEqual(app.state, .runningForeground, "after clear")
+    }
+
     /// T10b (D43): Now Playing fits one screen at the default text size, with no page scrolling; Lyrics swaps the
     /// art for the lyrics in the same slot and back.
     @MainActor func testNowPlayingFitsOneScreenAndTogglesLyrics() throws {
@@ -148,6 +221,56 @@ final class BrowseFlowTests: XCTestCase {
         XCTAssertTrue(nowPlaying.buttons["Sleep timer"].isHittable, "sleep timer")
         XCTAssertEqual(nowPlaying.scrollViews.count, 0, "Now Playing scrolls at the default text size")
         attachScreenshot(app, "now-playing-immersive")
+    }
+
+    /// Owner report (TestFlight 0.0.1 build 3): opening Queue from Now Playing while music plays crashed the app.
+    /// Each look opens the queue sheet while a song plays, and the queue lists what's playing and what's next.
+    @MainActor func testQueueOpensWhilePlayingInEveryLook() throws {
+        for character in ["signature", "classic", "immersive"] {
+            try XCTContext.runActivity(named: character) { _ in
+                let app = try launchSignedIn(["-MagpieCharacter", character])
+                let nowPlaying = openNowPlaying(app)
+                let queue = nowPlaying.buttons["Queue"]
+                XCTAssertTrue(queue.waitForExistence(timeout: 5))
+                queue.tap()
+                XCTAssertTrue(app.navigationBars["Queue"].waitForExistence(timeout: 10), "the queue did not open (\(character))")
+                XCTAssertTrue(app.staticTexts["Now playing"].waitForExistence(timeout: 5))
+                XCTAssertTrue(app.staticTexts["Playing next"].waitForExistence(timeout: 5))
+                // Let it play on with the queue open: the time ticks and Up next refreshes.
+                Thread.sleep(forTimeInterval: 3)
+                XCTAssertEqual(app.state, .runningForeground, "the app quit with the queue open (\(character))")
+                attachScreenshot(app, "queue-\(character)")
+                app.terminate()
+            }
+        }
+    }
+
+    /// Queue crash hunt (owner report, build 3): queue open through several song changes, then Edit, move and swipe-delete.
+    @MainActor func testQueueStaysUpThroughSongChangesAndEdits() throws {
+        let app = try launchSignedIn()
+        // Search › Paper Planes › Play Next lands in Up Next once an album plays.
+        let nowPlaying = openNowPlaying(app)
+        nowPlaying.buttons["Queue"].tap()
+        XCTAssertTrue(app.navigationBars["Queue"].waitForExistence(timeout: 10))
+        for i in 0..<10 {
+            Thread.sleep(forTimeInterval: 4)
+            XCTAssertEqual(app.state, .runningForeground, "the app quit with the queue open after \((i + 1) * 4) s")
+        }
+        app.buttons["Edit"].tap()
+        Thread.sleep(forTimeInterval: 1)
+        let cells = app.cells
+        if cells.count > 4 {
+            let handle = cells.element(boundBy: cells.count - 1).buttons.matching(NSPredicate(format: "label BEGINSWITH 'Reorder'")).firstMatch
+            if handle.exists { handle.press(forDuration: 0.5, thenDragTo: cells.element(boundBy: 2)) }
+        }
+        XCTAssertEqual(app.state, .runningForeground, "the app quit after a move")
+        app.buttons["Done"].tap()
+        let last = cells.element(boundBy: cells.count - 1)
+        last.swipeLeft()
+        if app.buttons["Delete"].waitForExistence(timeout: 2) { app.buttons["Delete"].tap() }
+        Thread.sleep(forTimeInterval: 2)
+        XCTAssertEqual(app.state, .runningForeground, "the app quit after a delete")
+        attachScreenshot(app, "queue-after-edits")
     }
 
     /// Library › Albums › first album › first track, then the mini player opens Now Playing.
