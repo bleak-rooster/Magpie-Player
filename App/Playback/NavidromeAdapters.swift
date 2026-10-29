@@ -93,20 +93,6 @@ final class FindsIdentity: Sendable {
     }
 }
 
-/// Scrobbles through Navidrome (which forwards to the owner's ListenBrainz/Last.fm), unless Count plays is off.
-struct NavidromeScrobbler: Scrobbler {
-    let box: ClientBox
-    var counting = PlayCounting(on: true)
-    /// Offline (Task 14) nothing is sent.
-    var offline = OfflineBox()
-
-    func scrobble(_ song: Song, submission: Bool, at: Date?) async throws {
-        guard counting.isOn, !offline.isOffline else { return }   // offline: dropped for now (T17 queues them)
-        guard let client = box.client else { return }   // signed out meanwhile
-        try await client.scrobble(songId: song.id, submission: submission, at: at)
-    }
-}
-
 /// The streaming quality the next stream URL is built with. Written on the main actor when the network or the
 /// preference changes, read on every URL build.
 final class QualityBox: Sendable {

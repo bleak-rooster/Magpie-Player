@@ -99,4 +99,37 @@ import MagpieTestSupport
         try await ListenBrainzClient(transport: t, token: "tok").submitListens([Self.listen(1)], type: .single)
         #expect(t.requests.allSatisfy { $0.url?.host == "api.listenbrainz.org" })
     }
+
+    /// T16 review: 429 and 5xx pass through as `.http` and are retried; 400, 413 and other 4xx are permanent.
+    @Test(arguments: [(429, ListenBrainzError.Disposition.retry), (503, .retry), (400, .permanent)])
+    func statusPassesThroughAndIsClassified(status: Int, disposition: ListenBrainzError.Disposition) async {
+        let t = MockTransport(); t.stub(method: "POST", pathSuffix: "/1/submit-listens", status: status)
+        await #expect(throws: ListenBrainzError.http(status: status)) {
+            try await ListenBrainzClient(transport: t, token: "tok").submitListens([Self.listen(1)], type: .single)
+        }
+        #expect(ListenBrainzError.http(status: status).disposition == disposition)
+    }
+
+    @Test func classifier() {
+        #expect(ListenBrainzError.unauthorized.disposition == .invalidToken)
+        #expect(ListenBrainzError.http(status: 413).disposition == .permanent)
+        #expect(ListenBrainzError.http(status: 404).disposition == .permanent)
+        #expect(ListenBrainzError.http(status: 500).disposition == .retry)
+        #expect(ListenBrainzError.timedOut.disposition == .retry)
+        #expect(ListenBrainzError.invalidListen.disposition == .permanent)
+    }
+
+    /// T16 review: a single or import listen without `listened_at` is refused before anything is sent.
+    @Test func missingListenedAtIsInvalid() async {
+        let t = Self.okTransport()
+        let client = ListenBrainzClient(transport: t, token: "tok")
+        let bare = Listen(listenedAt: nil, trackName: "T", artistName: "A")
+        await #expect(throws: ListenBrainzError.invalidListen) { try await client.submitListens([bare], type: .single) }
+        await #expect(throws: ListenBrainzError.invalidListen) {
+            try await client.submitListens([Self.listen(1), bare], type: .importBatch)
+        }
+        #expect(t.requests.isEmpty)
+        try? await client.submitListens([bare], type: .playingNow)
+        #expect(t.requests.count == 1, "playing_now needs no timestamp")
+    }
 }

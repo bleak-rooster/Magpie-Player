@@ -6,6 +6,8 @@ public enum ListenBrainzError: Error, Sendable, Equatable {
     case unauthorized
     case timedOut
     case decoding
+    /// A `single` or `import` listen without `listened_at` (nothing was sent).
+    case invalidListen
 }
 
 public struct LBPlaylistRef: Sendable, Hashable {

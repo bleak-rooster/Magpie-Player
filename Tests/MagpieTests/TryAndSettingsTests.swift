@@ -22,7 +22,8 @@ private let recordingMBID = MBID("c2272a15-8f3a-4cdc-8f32-7e723352d44d")!
 private let rg = "01a340b4-1d99-4083-ad92-fa2803368bed"
 
 final class MemoryTokenStore: ListenBrainzTokenStoring, @unchecked Sendable {
-    private let saved = OSAllocatedUnfairLock<String?>(initialState: nil)
+    private let saved: OSAllocatedUnfairLock<String?>
+    init(_ token: String? = nil) { saved = OSAllocatedUnfairLock(initialState: token) }
     func save(_ token: String) throws { saved.withLock { $0 = token } }
     func load() -> String? { saved.withLock { $0 } }
     func clear() { saved.withLock { $0 = nil } }
@@ -202,23 +203,8 @@ final class LockableTokenStore: ListenBrainzTokenStoring, @unchecked Sendable {
         UserDefaults(suiteName: gateSuite)?.removePersistentDomain(forName: gateSuite)
     }
 
+    /// The router's half of this moved to `ScrobbleRouterTests.countPlaysBackOnCountsAgain` (T17).
     @Test func countPlaysOffSendsNoScrobbles() async throws {
-        let t = MockTransport()
-        t.stub(pathSuffix: "/rest/ping", body: ok)
-        t.stub(method: "POST", pathSuffix: "/auth/login", body: loginJSON)
-        t.stub(pathSuffix: "/rest/scrobble", body: ok)
-        let client = NavidromeClient(endpoint: ServerEndpoint(bases: [home]),
-                                     credentials: NavidromeCredentials(username: "a", password: "b"), transport: t)
-        let box = ClientBox()
-        box.set(client)
-        let counting = PlayCounting(on: false)
-        let scrobbler = NavidromeScrobbler(box: box, counting: counting)
-        try await scrobbler.scrobble(PlayerTests.song("s1"), submission: true, at: nil)
-        #expect(!t.requests.contains { $0.url?.path.hasSuffix("/rest/scrobble") == true })
-        counting.set(true)
-        try await scrobbler.scrobble(PlayerTests.song("s1"), submission: true, at: nil)
-        #expect(t.requests.contains { $0.url?.path.hasSuffix("/rest/scrobble") == true })
-
         let model = makeModel()
         #expect(model.countPlays, "G8: on by default")
         model.setCountPlays(false)

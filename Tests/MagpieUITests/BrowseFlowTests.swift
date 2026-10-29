@@ -444,9 +444,10 @@ final class BrowseFlowTests: XCTestCase {
         log.tap()
         XCTAssertTrue(app.navigationBars["Lidarr change log"].waitForExistence(timeout: 10))
         app.navigationBars.buttons.firstMatch.tap()
-        let countPlays = app.switches["settings-count-plays"]
-        for _ in 0..<4 where !countPlays.isHittable { app.swipeUp() }
-        XCTAssertTrue(countPlays.exists)
+        let scrobbling = app.buttons["settings-scrobbling"]   // T17: Count plays lives in Settings › Scrobbling
+        for _ in 0..<4 where !scrobbling.isHittable { app.swipeUp() }
+        scrobbling.tap()
+        XCTAssertTrue(app.switches["settings-count-plays"].waitForExistence(timeout: 10))
     }
 
     @MainActor private func errorText(_ app: XCUIApplication) -> String {

@@ -5,10 +5,11 @@ import Observation
 import os
 import Playback
 
-/// Whether the app is offline, readable from any context: the stream URLs and the scrobbler ask on every use.
+/// Whether the app is offline, readable from any context: the stream URLs and the scrobble router ask on every use.
 /// Written on the main actor when offline mode is applied.
 final class OfflineBox: Sendable {
-    private let lock = OSAllocatedUnfairLock(initialState: false)
+    private let lock: OSAllocatedUnfairLock<Bool>
+    init(_ offline: Bool = false) { lock = OSAllocatedUnfairLock(initialState: offline) }
     var isOffline: Bool { lock.withLock { $0 } }
     func set(_ offline: Bool) { lock.withLock { $0 = offline } }
 }
@@ -136,6 +137,7 @@ extension AppModel {
         if wasDown || downloads?.hasAwaitingVerdict == true { downloads?.serverAnswered() }
         guard wasDown else { return }
         player.retryAfterFailure()
+        drainScrobblesSoon()   // plays queued while it was down (T17)
     }
 
     /// A reconnect's login (fix round 2, B). A refusal (401/403) means the server answered: it is reachable, and
@@ -227,6 +229,7 @@ extension AppModel {
         Task { [weak self] in
             if reconnecting { await self?.checkReachability() }
             guard let self, !self.isOffline else { return }
+            self.drainScrobblesSoon()
             self.pollRequests()
             Task { await self.refreshFinds() }
             Task { try? await self.refreshMatchIndex() }

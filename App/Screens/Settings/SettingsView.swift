@@ -4,7 +4,8 @@ import Requests
 import SwiftUI
 
 /// Settings (replaces the Library account menu): Appearance, Servers, Lidarr (connect, set up, the G1 switch,
-/// the main root folder, Finds, the change log), ListenBrainz, Count plays (G8), About.
+/// the main root folder, Finds, the change log), one row per area (Playback, Downloads & Storage, Scrobbling, which
+/// holds Count plays and the ListenBrainz token), About.
 struct SettingsView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
@@ -12,9 +13,6 @@ struct SettingsView: View {
     @State private var showsConnect = false
     @State private var provisioning = false
     @State private var provisionMessage: String?
-    @State private var token = ""
-    @State private var tokenError: String?
-    @State private var checkingToken = false
     @State private var asksLidarrConsent = false
     @State private var askingLocalNetwork = false
 
@@ -30,7 +28,6 @@ struct SettingsView: View {
                 }
                 servers
                 lidarr
-                listening
                 // One row per area, each opening its own page (T21b collates the rest the same way).
                 Section {
                     NavigationLink("Playback") { PlaybackSettingsView() }
@@ -40,6 +37,13 @@ struct SettingsView: View {
                         LabeledContent("Downloads & Storage", value: DownloadsSettingsView.summary(model.preferences.downloads))
                     }
                     .accessibilityIdentifier("settings-downloads")
+                    NavigationLink {
+                        ScrobblingSettingsView()
+                    } label: {
+                        LabeledContent("Scrobbling", value: AppModel.scrobblingSummary(
+                            model.preferences.scrobbling, countPlays: model.countPlays, hasToken: model.hasListenBrainzToken))
+                    }
+                    .accessibilityIdentifier("settings-scrobbling")
                 }
                 Section("About") {
                     LabeledContent("Magpie", value: Self.version)
@@ -273,50 +277,6 @@ struct SettingsView: View {
         case ProvisionError.schemaMissing(let what): "This Lidarr doesn't offer \(what), which Magpie needs."
         case LidarrError.unauthorized: LidarrConnectCopy.badKey
         default: "Couldn't reach Lidarr. Try again in a moment."
-        }
-    }
-
-    // MARK: - Listening
-
-    @ViewBuilder private var listening: some View {
-        Section {
-            if model.hasListenBrainzToken {
-                LabeledContent("ListenBrainz token", value: "Saved")
-                Button("Remove token", role: .destructive) { try? model.setListenBrainzToken(nil) }
-            } else {
-                SecureField("ListenBrainz token (optional)", text: $token)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .accessibilityIdentifier("settings-lb-token")
-                Button(checkingToken ? "Checking…" : "Save token") {
-                    // B-M8: checked with ListenBrainz before it is saved.
-                    checkingToken = true
-                    Task {
-                        do {
-                            try await model.saveListenBrainzToken(token)
-                            token = ""
-                            tokenError = nil
-                        } catch let error as ListenBrainzTokenError {
-                            tokenError = error.message
-                        } catch {
-                            tokenError = "Couldn't save the token. Try again."
-                        }
-                        checkingToken = false
-                    }
-                }
-                .disabled(checkingToken || token.trimmingCharacters(in: .whitespaces).isEmpty)
-                if let tokenError { Text(tokenError).font(.footnote) }
-            }
-        } header: {
-            Text("ListenBrainz")
-        } footer: {
-            Text("Optional. Kept in your Keychain and only sent to ListenBrainz.")
-        }
-        Section {
-            Toggle("Count plays", isOn: Binding(get: { model.countPlays }, set: { model.setCountPlays($0) }))
-                .accessibilityIdentifier("settings-count-plays")
-        } footer: {
-            Text("When on, songs you play are added to your listening history. Turn off while you're trying things out.")
         }
     }
 }

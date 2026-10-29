@@ -19,6 +19,24 @@ public struct Listen: Sendable, Hashable, Codable {
     }
 }
 
+extension ListenBrainzError {
+    /// What a failed send means for the play (T16 review): send it again later, give up on it, or stop sending
+    /// until a new token is saved.
+    public enum Disposition: Sendable, Equatable { case retry, permanent, invalidToken }
+
+    /// 429, 5xx, timeouts and anything else unexpected are retried; 400, 413 and the other 4xx are permanent (the
+    /// same listens would be refused again); 401/403 mean the token is no longer valid.
+    public var disposition: Disposition {
+        switch self {
+        case .unauthorized: .invalidToken
+        case .invalidListen: .permanent
+        case .http(let status) where status == 429: .retry
+        case .http(let status) where (400..<500).contains(status): .permanent
+        case .http, .timedOut, .decoding: .retry
+        }
+    }
+}
+
 extension ListenBrainzClient {
     public static let maxListensPerCall = 100
 
@@ -29,6 +47,8 @@ extension ListenBrainzClient {
         let tooMany = listens.count > Self.maxListensPerCall
         let wrongCount = type != .importBatch && listens.count != 1
         guard !listens.isEmpty, !tooMany, !wrongCount else { throw ListenBrainzError.http(status: 413) }
+        // `single` and `import` must say when each listen happened; the router always does, this is the backstop.
+        if type != .playingNow, listens.contains(where: { $0.listenedAt == nil }) { throw ListenBrainzError.invalidListen }
         guard let url = ServerEndpoint(bases: [Self.apiBase]).url(Self.apiBase, path: "1/submit-listens") else {
             throw URLError(.badURL)
         }

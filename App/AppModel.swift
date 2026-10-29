@@ -106,6 +106,8 @@ final class AppModel {
     var countPlays: Bool
     /// Whether an optional ListenBrainz token is saved.
     var hasListenBrainzToken = false
+    /// ListenBrainz refused the saved token (401) when plays were sent to it (T17); cleared when one is saved again.
+    var listenBrainzRejected = false
     /// Changes whenever the token is saved, replaced or removed: Home's "Made for you" reads again (Task 7.1c).
     var listenBrainzTokenGeneration = 0
     /// Home's "Made for you" shelf for the saved token (AppModel+MadeForYou.swift). Empty without a token.
@@ -144,6 +146,8 @@ final class AppModel {
     @ObservationIgnored let replayGainBox: ReplayGainBox
     /// The scrobbling preferences the player reads at every check (Task 15); built before `player`.
     @ObservationIgnored let scrobbleSettings: ScrobbleSettings
+    /// Where plays go (Navidrome and/or ListenBrainz) and the queue of those not sent yet (T17).
+    @ObservationIgnored let scrobbles: ScrobbleRouter
     /// D29: what the player treats as a find (never scrobbled). Kept in step with `findsSetup` and `findSongs`.
     @ObservationIgnored let findsIdentity = FindsIdentity()
     @ObservationIgnored var findPlaysWatch: Task<Void, Never>?
@@ -271,8 +275,17 @@ final class AppModel {
         let network = network ?? (Self.isHostedTest ? FixedNetwork() : NetworkMonitor())
         self.network = network
         let findsIdentity = self.findsIdentity
+        let scrobbles = ScrobbleRouter(
+            box: box, counting: counting, findsIdentity: findsIdentity, settings: scrobbleSettings,
+            queue: ScrobbleQueue(fileURL: ScrobbleQueue.defaultURL(in: data)),
+            listenBrainz: { [tokenStore, transport, listenBrainzLimiter] in   // the token is read at send time
+                tokenStore.load().map { ListenBrainzClient(transport: transport, token: $0, limiter: listenBrainzLimiter,
+                                                           clientVersion: Self.marketingVersion) }
+            },
+            isOffline: { [offlineBox] in offlineBox.isOffline })
+        self.scrobbles = scrobbles
         self.player = Player(engine: engine ?? AVQueueEngine(),
-                             scrobbler: NavidromeScrobbler(box: box, counting: counting, offline: offlineBox),
+                             scrobbler: scrobbles,
                              urls: NavidromeStreamURLs(box: box, quality: self.qualityBox,
                                                        localURL: { [localFiles, offlineBox] in
                                                            localFiles.url(for: $0, includingFailed: offlineBox.isOffline)
@@ -286,6 +299,7 @@ final class AppModel {
         self.sleepTimer = SleepTimer(player: player)
         applyEngineWindow()
         localFiles.setOnDamaged { [weak self] in self?.downloads?.dropBadFile(songId: $0) }
+        scrobbles.setOnListenBrainzRejected { [weak self] in Task { @MainActor in self?.listenBrainzRejected = true } }
         offlineInputsChanged()   // Offline mode On from the last run
         #if os(iOS)
         if systemNowPlaying {
@@ -381,7 +395,8 @@ final class AppModel {
                           activeBase: made.first, isAdmin: false)
         box.set(client)
         // O3: started now, so every call made meanwhile waits for it (`request`): one login per launch.
-        startReconnect(rebuildAlways: true)
+        let reconnecting = startReconnect(rebuildAlways: true)
+        drainScrobblesSoon(after: reconnecting)   // plays queued last time (T17)
         startMatchIndex()
         startDownloads()
         reloadKeychainItems()
@@ -494,6 +509,7 @@ final class AppModel {
         lettingGoSongIds = []
         playedFinds = []
         stopDownloads(erase: true)
+        scrobbles.clearQueue()
         store.clear()
         session = nil
         starOverrides = [:]
@@ -835,7 +851,8 @@ final class AppModel {
                       sourceTimeout: Duration = MergedSearch.sourceTimeout) -> MergedSearch {
         // A9: the token only ever goes to api.listenbrainz.org; the client never sends it to labs.
         var sources: [MergedSearch.Source] = isOffline ? [] : [   // offline: no outside source (Task 14)
-            .listenBrainz(ListenBrainzClient(transport: transport, token: tokenStore.load()), timeout: sourceTimeout)]
+            .listenBrainz(ListenBrainzClient(transport: transport, token: tokenStore.load(), clientVersion: Self.marketingVersion),
+                          timeout: sourceTimeout)]
         if !isOffline, let lidarr = lidarrClient { sources.append(.lidarr(lidarr, timeout: sourceTimeout)) }
         let index = matchIndex
         return MergedSearch(

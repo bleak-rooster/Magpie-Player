@@ -33,6 +33,13 @@ import Testing
         #expect(out["Accept"] == "application/json")
     }
 
+    /// T16 review: the ListenBrainz token (`Authorization: Token …`) never reaches a log.
+    @Test func redactsListenBrainzTokenHeader() {
+        let out = Redactor.sanitize(headers: ["Authorization": "Token tok-secret", "Content-Type": "application/json"])
+        #expect(out["Authorization"] == "•••" && out["Content-Type"] == "application/json")
+        #expect(!out.values.contains { $0.contains("tok-secret") })
+    }
+
     @Test func redactsHeadersCaseInsensitively() {
         #expect(Redactor.sanitize(headers: ["authorization": "x"])["authorization"] == "•••")
     }

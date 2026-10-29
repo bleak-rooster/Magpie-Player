@@ -276,6 +276,9 @@ extension AppModel {
         if trimmed.isEmpty { tokenStore.clear() } else { try tokenStore.save(trimmed) }
         hasListenBrainzToken = !trimmed.isEmpty
         listenBrainzTokenChanged()
+        scrobbles.listenBrainzTokenReplaced()   // T17: a new token may be tried; the plays it missed go now
+        listenBrainzRejected = false
+        drainScrobblesSoon()
     }
 
     // MARK: - Try
