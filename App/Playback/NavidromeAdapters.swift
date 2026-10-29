@@ -138,7 +138,14 @@ final class LocalFilesBox: Sendable {
 
     private let lock = OSAllocatedUnfairLock(initialState: State())
 
-    func url(for songId: String) -> URL? { lock.withLock { $0.bad.contains(songId) ? nil : $0.files[songId] } }
+    /// The file to play `songId` from. One that failed this session is left out (it streams instead), except
+    /// `includingFailed` (offline: there is nothing to stream, so every file on the phone is tried).
+    func url(for songId: String, includingFailed: Bool = false) -> URL? {
+        lock.withLock { !includingFailed && $0.bad.contains(songId) ? nil : $0.files[songId] }
+    }
+
+    /// Whether `songId` is on the phone (a download or in the cache), whether or not its file failed this session.
+    func hasFile(_ songId: String) -> Bool { lock.withLock { $0.files[songId] != nil } }
 
     func set(_ files: [String: URL]) {
         lock.withLock {
@@ -171,7 +178,8 @@ final class NavidromeStreamURLs: StreamURLProvider {
     /// The song's file failed to play (`damaged`: a decode error), online: the app streams it this session, and
     /// checks a damaged file (dropping it if it really is).
     let localFailed: @MainActor (_ songId: String, _ damaged: Bool) -> Void
-    /// Whether there is a connection right now; offline a failed file is kept and the song skipped.
+    /// Whether the server can be reached right now (a connection, and not offline, Task 14); offline a failed file
+    /// is kept and the song skipped, and no original is tried.
     let isOnline: @MainActor () -> Bool
 
     init(box: ClientBox, quality: QualityBox, localURL: @escaping @MainActor (String) -> URL? = { _ in nil },
@@ -200,10 +208,11 @@ final class NavidromeStreamURLs: StreamURLProvider {
         return remote
     }
 
-    /// The untranscoded stream, nil for a local file. Whether it is a fallback is the player's call (it compares
-    /// with the URL the song loaded with, which the quality may have changed from since).
+    /// The untranscoded stream, nil for a local file and offline (no server to ask, so no fallback is tried).
+    /// Whether it is a fallback is the player's call (it compares with the URL the song loaded with, which the
+    /// quality may have changed from since).
     func originalURL(for song: Song) -> URL? {
-        guard localURL(song.id) == nil else { return nil }
+        guard isOnline(), localURL(song.id) == nil else { return nil }
         return box.client?.streamURL(songId: song.id, maxBitRate: nil, format: StreamQuality.original.format)
     }
 

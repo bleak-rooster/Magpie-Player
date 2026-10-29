@@ -83,6 +83,8 @@ final class DownloadManager {
     @ObservationIgnored private let streamURL: @MainActor (Song, StreamQuality) -> URL?
     @ObservationIgnored private let coverArtURL: @MainActor (String) -> URL?
     @ObservationIgnored private let limitBytes: (DownloadPreferences) -> Int64?
+    /// Offline (Task 14): manual downloads and covers wait, as for Wi-Fi, and go when the server is back.
+    @ObservationIgnored private let isOffline: @MainActor () -> Bool
     /// Job runs and short store tasks; `settled()` waits for all of them.
     /// (+Removal, read only)
     @ObservationIgnored private(set) var tasks: [UUID: Task<Void, Never>] = [:]
@@ -103,6 +105,8 @@ final class DownloadManager {
     /// Nothing is scheduled until `start` has loaded the store (and, through `begin(after:)`, a sign-out's erase of
     /// this scope has finished).
     @ObservationIgnored private(set) var isStarted = false   // (+Removal, read only)
+    /// AVFoundation's playable check `dropBadFile` re-checks a file with (tests inject a failing one).
+    @ObservationIgnored var loadPlayableForCheck: @Sendable (URL) async throws -> Bool = DownloadManager.loadIsPlayable
     /// Pre-downloads that came back as something the store can't keep (`songId|quality`): not tried again.
     @ObservationIgnored private var invalidPreDownloads: Set<String> = []
 
@@ -117,6 +121,7 @@ final class DownloadManager {
          url: @escaping @MainActor (Song, StreamQuality) -> URL?,
          coverURL: @escaping @MainActor (String) -> URL?,
          limitBytes: @escaping (DownloadPreferences) -> Int64? = { $0.downloadsLimit.bytes },
+         isOffline: @escaping @MainActor () -> Bool = { false },
          notifications: NotificationCenter = .default, storeRetryInterval: Duration = .seconds(30)) {
         self.store = store
         self.fetcher = fetcher
@@ -125,6 +130,7 @@ final class DownloadManager {
         self.streamURL = url
         self.coverArtURL = coverURL
         self.limitBytes = limitBytes
+        self.isOffline = isOffline
         self.notifications = notifications
         self.storeRetryInterval = storeRetryInterval
     }
@@ -223,10 +229,10 @@ final class DownloadManager {
     /// it); a file that passes is kept (the song streams this session). One that fails leaves the store: a download is
     /// fetched again with every reason it had (a playlist's included); a cached song just goes.
     func dropBadFile(songId: String) {
-        track { [weak self, store] gen in
+        track { [weak self, store, load = loadPlayableForCheck] gen in
             guard await store.isReady(), let entry = await store.entry(songId: songId),
                   let file = await store.localFiles()[songId] else { return }
-            guard !(await Self.isPlayableFile(file)) else { return }   // it opens: a failure that passed
+            guard !(await Self.isPlayableFile(file, load: load)) else { return }   // it opens: a failure that passed
             guard let self, self.isLive(gen) else { return }
             do {
                 if entry.kind == .cache {
@@ -254,14 +260,27 @@ final class DownloadManager {
     }
 
     /// A stored file the store would take (not empty) and AVFoundation can open as playable audio. A file that can't
-    /// be read right now (before first unlock) counts as playable: nothing is dropped for a failure that may pass.
-    nonisolated static func isPlayableFile(_ url: URL) async -> Bool {
+    /// be read right now (before first unlock), or whose load fails with anything but a format or decode error, counts
+    /// as playable: nothing is dropped for a failure that may pass. `load` is AVFoundation's check (tests inject one).
+    nonisolated static func isPlayableFile(
+        _ url: URL,
+        load: @Sendable (URL) async throws -> Bool = DownloadManager.loadIsPlayable
+    ) async -> Bool {
         guard let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize, size > 0 else { return false }
         guard let handle = try? FileHandle(forReadingFrom: url) else { return true }
         let head = try? handle.read(upToCount: 16)
         try? handle.close()
         guard head?.isEmpty == false else { return true }
-        return (try? await AVURLAsset(url: url).load(.isPlayable)) ?? false
+        do {
+            return try await load(url)
+        } catch {
+            return !AVQueueEngine.isUndecodable(error)
+        }
+    }
+
+    /// AVFoundation's answer to whether the file opens as playable audio.
+    nonisolated static let loadIsPlayable: @Sendable (URL) async throws -> Bool = {
+        try await AVURLAsset(url: $0).load(.isPlayable)
     }
 
     /// "Re-download in this format": each stored song is fetched again and swapped in by `AudioStore.replace`.
@@ -418,13 +437,14 @@ final class DownloadManager {
 
     private func isLive(_ gen: Int) -> Bool { gen == generation }
 
-    /// Whether manual downloads may use the network right now.
+    /// Whether manual downloads may use the network right now (never offline).
     private func manualAllowed(_ prefs: DownloadPreferences) -> Bool {
         let status = network.status
-        return status.isConnected && (!status.isCellular || prefs.overMobileData)
+        return status.isConnected && !isOffline() && (!status.isCellular || prefs.overMobileData)
     }
 
-    private func networkChanged() {
+    /// The network or offline mode changed: what waits goes if it may now, and manual work that may not waits.
+    func networkChanged() {
         let prefs = preferences().normalised()
         if manualAllowed(prefs) {
             for i in jobs.indices where jobs[i].state == .waiting { jobs[i].state = .queued }

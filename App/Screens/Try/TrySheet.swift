@@ -89,6 +89,9 @@ struct TrySheet: View {
                     .buttonStyle(.borderedProminent)
                     .disabled(phase == .working)
                     .accessibilityIdentifier("try-start")
+                case .offline:   // Task 14: nothing to set; it works again once back online
+                    Label(availability.message ?? "", systemImage: "wifi.slash").font(.body)
+                        .accessibilityIdentifier("try-offline")
                 default:
                     Text(availability.message ?? "").font(.body).multilineTextAlignment(.center)
                         .accessibilityIdentifier("turn-on-changes-message")

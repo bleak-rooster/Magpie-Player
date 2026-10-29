@@ -20,28 +20,14 @@ struct HomeView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: Tokens.Spacing.xxl) {
-                if model.showsFinishSettingUp {   // final fix 2 B-M2: only while a step is left
-                    FinishSettingUpCard()
-                        .padding(.horizontal, Tokens.Spacing.margin)
-                }
-                LoadableView(state: shelves, retry: load) { s in
-                    if s.isEmpty {
-                        ContentUnavailableView("No music yet", systemImage: "music.note",
-                                               description: Text("Albums show up here once your server has some."))
-                    } else {
-                        VStack(alignment: .leading, spacing: Tokens.Spacing.xxl) {
-                            shelf("Jump back in", s.recent)
-                            madeForYouShelf
-                            shelf("Recently added", s.newest)
-                            shelf("Most played", s.frequent)
-                        }
-                    }
-                }
+            if model.isOffline {
+                OfflineHome()   // Task 14: only what's on the phone
+            } else {
+                online
             }
-            .padding(.vertical, Tokens.Spacing.l)
         }
         .refreshable {
+            guard !model.isOffline else { return await model.checkReachability() }
             async let made: Void = model.refreshMadeForYou()
             await load()
             await made
@@ -55,12 +41,36 @@ struct HomeView: View {
         // edge keeps the title on the page colour.
         .scrollEdgeEffectStyle(.hard, for: .top)
         .magpieScreen()
-        .task { if shelves.value == nil { await load() } }
+        // Again when back online: what failed while offline loads now.
+        .task(id: model.isOffline) { if !model.isOffline, shelves.value == nil { await load() } }
         // Its own task, so the library's shelves never wait for it. Read once (Refresh reads again), and again
         // whenever the token is saved, replaced or removed (which also clears the shelf).
         .task(id: model.listenBrainzTokenGeneration) {
-            if model.madeForYouShelf.isEmpty { await model.refreshMadeForYou() }
+            if model.madeForYouShelf.isEmpty, !model.isOffline { await model.refreshMadeForYou() }
         }
+    }
+
+    private var online: some View {
+        VStack(alignment: .leading, spacing: Tokens.Spacing.xxl) {
+            if model.showsFinishSettingUp {   // final fix 2 B-M2: only while a step is left
+                FinishSettingUpCard()
+                    .padding(.horizontal, Tokens.Spacing.margin)
+            }
+            LoadableView(state: shelves, retry: load) { s in
+                if s.isEmpty {
+                    ContentUnavailableView("No music yet", systemImage: "music.note",
+                                           description: Text("Albums show up here once your server has some."))
+                } else {
+                    VStack(alignment: .leading, spacing: Tokens.Spacing.xxl) {
+                        shelf("Jump back in", s.recent)
+                        madeForYouShelf
+                        shelf("Recently added", s.newest)
+                        shelf("Most played", s.frequent)
+                    }
+                }
+            }
+        }
+        .padding(.vertical, Tokens.Spacing.l)
     }
 
     @ViewBuilder private var madeForYouShelf: some View {
@@ -101,6 +111,39 @@ struct HomeView: View {
         } catch {
             if shelves.value == nil { shelves = .failed(BrowseErrorCopy.message(for: error)) }
         }
+    }
+}
+
+/// Home offline (Task 14): "You're offline", then the Downloaded shelf (albums on the phone, at most 12). Task 20
+/// keeps this line and this shelf's source.
+private struct OfflineHome: View {
+    @Environment(AppModel.self) private var model
+    @State private var albums: [Album]?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Tokens.Spacing.xxl) {
+            OfflineNotice()
+                .padding(.horizontal, Tokens.Spacing.margin)
+            if let albums {
+                if albums.isEmpty {
+                    ContentUnavailableView("Nothing downloaded yet", systemImage: "arrow.down.circle",
+                                           description: Text("Albums and playlists you download play here without a connection."))
+                } else {
+                    ShelfSection("Downloaded") {
+                        ForEach(albums, id: \.id) { album in
+                            NavigationLink(value: Route.album(id: album.id)) {
+                                AlbumTileView(album: album, subtitle: album.artist)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .accessibilityIdentifier("home-downloaded")
+                }
+            }
+        }
+        .padding(.vertical, Tokens.Spacing.l)
+        // Again whenever a song lands on or leaves the phone.
+        .task(id: model.downloads?.localFiles.count) { albums = Array(await model.offlineCatalog.albums().prefix(12)) }
     }
 }
 

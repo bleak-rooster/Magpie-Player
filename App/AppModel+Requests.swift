@@ -15,10 +15,13 @@ enum TryAvailability: Equatable {
     case changesOff
     case notSetUp
     case noRoot
+    /// Task 14: the server can't be reached, or Offline mode is On.
+    case offline
 
     var message: String? {
         switch self {
         case .available: nil
+        case .offline: AppModel.offlineCopy
         case .noLidarr: "Bringing songs home isn't set up yet. Set it up in Settings."
         case .addressNotAllowed:
             "Bringing songs home is waiting for your OK on an unencrypted address. Choose \u{201C}Allow This Address\u{201D} in Settings."
@@ -157,7 +160,7 @@ extension AppModel {
     /// Polls while any request is on its way: every 5 s in the foreground, 30 s otherwise. Stops by itself
     /// when nothing is left to poll.
     func pollRequests() {
-        guard pollTask == nil, let runner else { return }
+        guard pollTask == nil, !isOffline, let runner else { return }   // offline: resumes when back (Task 14)
         let generation = pollGeneration
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
@@ -280,6 +283,7 @@ extension AppModel {
     var speedTier: Tier { lidarrStatus?.tubifarry == true ? .standard : .patient }
 
     var tryAvailability: TryAvailability {
+        guard !isOffline else { return .offline }
         guard lidarr != nil else { return .noLidarr }
         guard !lidarrAwaitingConsent else { return .addressNotAllowed }   // no client yet: Try would fail with notSetUp
         guard changesAllowed else { return .changesOff }

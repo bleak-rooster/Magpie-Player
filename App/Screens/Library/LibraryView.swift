@@ -11,33 +11,22 @@ struct LibraryView: View {
     private let themed = Themed()
 
     var body: some View {
-        let p = themed.palette
         ScrollView {
             VStack(alignment: .leading, spacing: Tokens.Spacing.xxl) {
-                VStack(spacing: 0) {
-                    row("Playlists", symbol: "music.note.list", route: .playlists)
-                    Divider().overlay(p.sepColor).padding(.leading, 52)
-                    row("Artists", symbol: "music.mic", route: .artists)
-                    Divider().overlay(p.sepColor).padding(.leading, 52)
-                    row("Albums", symbol: "square.stack", route: .albums)
-                    Divider().overlay(p.sepColor).padding(.leading, 52)
-                    if model.findsSetup?.library != nil {
-                        row("Finds", symbol: "record.circle", route: .finds, detail: findsDetail)
-                        Divider().overlay(p.sepColor).padding(.leading, 52)
+                if model.isOffline {   // Task 14 (kept by Task 21): only what's on the phone
+                    VStack(alignment: .leading, spacing: Tokens.Spacing.m) {
+                        OfflineNotice().padding(.horizontal, Tokens.Spacing.largeTitleMargin)
+                        row("Downloads", symbol: "arrow.down.circle.fill", route: .downloads)
                     }
-                    row("Requests", symbol: "arrow.down.circle", route: .requests, detail: requestsDetail)
-                }
-                VStack(alignment: .leading, spacing: Tokens.Spacing.m) {
-                    Text("Recently added").magpieDisplay(.title2).accessibilityAddTraits(.isHeader)
-                        .padding(.horizontal, Tokens.Spacing.largeTitleMargin)
-                    LoadableView(state: recent, retry: load) { albums in
-                        AlbumGrid(albums: albums) { $0.artist }
-                    }
+                } else {
+                    online
                 }
             }
             .padding(.vertical, Tokens.Spacing.s)
         }
-        .refreshable { await load() }
+        .refreshable {
+            if model.isOffline { await model.checkReachability() } else { await load() }
+        }
         .magpieLargeTitle("Library")
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
@@ -50,7 +39,31 @@ struct LibraryView: View {
         }
         .sheet(isPresented: $showsSettings) { SettingsView() }
         .magpieScreen()
-        .task { if recent.value == nil { await load() } }
+        .task(id: model.isOffline) { if !model.isOffline, recent.value == nil { await load() } }
+    }
+
+    @ViewBuilder private var online: some View {
+        let p = themed.palette
+        VStack(spacing: 0) {
+            row("Playlists", symbol: "music.note.list", route: .playlists)
+            Divider().overlay(p.sepColor).padding(.leading, 52)
+            row("Artists", symbol: "music.mic", route: .artists)
+            Divider().overlay(p.sepColor).padding(.leading, 52)
+            row("Albums", symbol: "square.stack", route: .albums)
+            Divider().overlay(p.sepColor).padding(.leading, 52)
+            if model.findsSetup?.library != nil {
+                row("Finds", symbol: "record.circle", route: .finds, detail: findsDetail)
+                Divider().overlay(p.sepColor).padding(.leading, 52)
+            }
+            row("Requests", symbol: "arrow.down.circle", route: .requests, detail: requestsDetail)
+        }
+        VStack(alignment: .leading, spacing: Tokens.Spacing.m) {
+            Text("Recently added").magpieDisplay(.title2).accessibilityAddTraits(.isHeader)
+                .padding(.horizontal, Tokens.Spacing.largeTitleMargin)
+            LoadableView(state: recent, retry: load) { albums in
+                AlbumGrid(albums: albums) { $0.artist }
+            }
+        }
     }
 
     /// "2 new" while there are New finds.

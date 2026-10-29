@@ -178,6 +178,14 @@ final class AppModel {
     @ObservationIgnored var shownTranscodeHint = false
     /// A footnote under the Now Playing scrubber (the transcode fallback); nil when none.
     var playbackHint: String?
+    /// Whether the server answered last time it was tried (Task 14): Automatic offline mode follows it.
+    var serverReachable = true { didSet { offlineInputsChanged() } }
+    /// Offline as last applied to playback and downloads (AppModel+Offline.swift), and the URLs' copy of it.
+    @ObservationIgnored var appliedOffline = false
+    @ObservationIgnored let offlineBox = OfflineBox()
+    /// The probes that run while the server is unreachable (`noteUnreachable`), and how often they repeat.
+    @ObservationIgnored var reachabilityProbes: [Task<Void, Never>] = []
+    @ObservationIgnored var reachabilityInterval: Duration = .seconds(30)
     /// Downloads for the signed-in scope (AppModel+Downloads.swift); nil when signed out.
     @ObservationIgnored var downloads: DownloadManager?
     /// What the player plays from the phone (Task 13); set from `downloads.localFiles`, built before `player`.
@@ -265,14 +273,17 @@ final class AppModel {
         self.player = Player(engine: engine ?? AVQueueEngine(),
                              scrobbler: NavidromeScrobbler(box: box, counting: counting),
                              urls: NavidromeStreamURLs(box: box, quality: self.qualityBox,
-                                                       localURL: { [localFiles] in localFiles.url(for: $0) },
+                                                       localURL: { [localFiles, offlineBox] in
+                                                           localFiles.url(for: $0, includingFailed: offlineBox.isOffline)
+                                                       },
                                                        localFailed: { [localFiles] in localFiles.markFailed($0, damaged: $1) },
-                                                       isOnline: { network.status.isConnected }),
+                                                       isOnline: { [offlineBox] in network.status.isConnected && !offlineBox.isOffline }),
                              isFind: { findsIdentity.isFind($0) },
                              gain: { replayGain.mode.volume(for: $0.replayGain) })
         self.sleepTimer = SleepTimer(player: player)
         applyEngineWindow()
         localFiles.setOnDamaged { [weak self] in self?.downloads?.dropBadFile(songId: $0) }
+        offlineInputsChanged()   // Offline mode On from the last run
         #if os(iOS)
         if systemNowPlaying {
             nowPlaying = NowPlayingBridge(
@@ -451,6 +462,7 @@ final class AppModel {
         session = Session(client: client, endpoint: endpoint, credentials: credentials,
                           activeBase: base, isAdmin: login.isAdmin)
         box.set(client)
+        noteReachable()
         startMatchIndex()
         startDownloads()
         rebuildRunner()
@@ -484,6 +496,7 @@ final class AppModel {
         starOverrides = [:]
         advertisedExtensions = nil
         reconnectTask = nil
+        noteReachable()   // nothing to reach; the next session starts online
         isWaitingForUnlock = false
         stopObservingUnlock()
         box.set(nil)
@@ -526,7 +539,10 @@ final class AppModel {
         do {
             return try noteLocalSuccess(await op(client))
         } catch where Self.isConnectionError(error) {
-            guard await reconnect(rebuildAlways: false), let retry = session?.client else { throw error }
+            guard await reconnect(rebuildAlways: false), let retry = session?.client else {
+                noteUnreachable()
+                throw error
+            }
             return try noteLocalSuccess(await op(retry))
         }
     }
@@ -575,8 +591,14 @@ final class AppModel {
             reached = base
             break
         }
-        guard let base = reached else { return false }
-        if base == old.activeBase, !rebuildAlways { return true }   // a blip; the same address answers again
+        guard let base = reached else {
+            if session?.client === old.client { noteUnreachable() }   // a cold launch with no network goes offline here
+            return false
+        }
+        if base == old.activeBase, !rebuildAlways {   // a blip; the same address answers again
+            noteReachable()
+            return true
+        }
         guard let client = makeClient(Self.preferring(base, in: old.endpoint), old.credentials)?.client,
               let login = try? await client.connect() else { return false }
         guard let current = session, current.client === old.client else { return false }   // signed out/in meanwhile
@@ -587,6 +609,7 @@ final class AppModel {
             Log.logger("session").info("switched server address")
             player.urlsInvalidated()
         }
+        noteReachable()
         return true
     }
 

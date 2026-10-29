@@ -56,10 +56,13 @@ public struct SearchSections: Equatable, Sendable {
     public var artists: [Artist]
     public var albums: [Album]
     public var notYet: NotYetSections
+    /// Offline only (spec §6): cached songs that have played, "Recently played on this phone".
+    public var recentlyPlayed: [Song]
 
     public init(top: SearchItem? = nil, songs: [Song] = [], artists: [Artist] = [], albums: [Album] = [],
-                notYet: NotYetSections = NotYetSections()) {
+                notYet: NotYetSections = NotYetSections(), recentlyPlayed: [Song] = []) {
         self.top = top; self.songs = songs; self.artists = artists; self.albums = albums; self.notYet = notYet
+        self.recentlyPlayed = recentlyPlayed
     }
 
     public static let empty = SearchSections()
@@ -67,8 +70,8 @@ public struct SearchSections: Equatable, Sendable {
     /// Nothing from the library.
     public var libraryIsEmpty: Bool { top == nil && songs.isEmpty && artists.isEmpty && albums.isEmpty }
 
-    /// Nothing at all, in either band.
-    public var isEmpty: Bool { libraryIsEmpty && notYet.isEmpty }
+    /// Nothing at all, in either band (or among the songs recently played on this phone).
+    public var isEmpty: Bool { libraryIsEmpty && notYet.isEmpty && recentlyPlayed.isEmpty }
 
     /// Sections from a library search. The top result is the best match for `query`: an exact name
     /// (artist, then album, then song), else a name that starts with it, else the first song.

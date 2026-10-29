@@ -12,6 +12,9 @@ struct ActivityView: View {
     var body: some View {
         let groups = Dictionary(grouping: model.requests.reversed()) { RequestCopy.group($0) }
         List {
+            if model.isOffline {   // Task 14: requests wait, and nothing can be changed
+                OfflineNotice().listRowBackground(Color.clear).listRowSeparator(.hidden)
+            }
             ForEach(RequestCopy.Group.allCases, id: \.self) { group in
                 if let items = groups[group], !items.isEmpty {
                     Section {
@@ -45,14 +48,18 @@ struct ActivityView: View {
         .listRowBackground(Color.clear)
         .accessibilityIdentifier("request-\(request.recording.title)")
         .swipeActions {
-            if request.isNotListed {
-                Button("Check again") { Task { await model.checkAgain(request.id) } }
-            }
-            if RequestCopy.canCancel(request.state) {
-                Button("Stop looking", role: .destructive) { Task { await model.cancelRequest(request.id) } }
-            } else if request.canBeRemoved {
-                Button("Remove", role: .destructive) { Task { await model.forgetRequest(request.id) } }
-            }
+            if !model.isOffline { swipeActions(request) }
+        }
+    }
+
+    @ViewBuilder private func swipeActions(_ request: MagpieRequest) -> some View {
+        if request.isNotListed {
+            Button("Check again") { Task { await model.checkAgain(request.id) } }
+        }
+        if RequestCopy.canCancel(request.state) {
+            Button("Stop looking", role: .destructive) { Task { await model.cancelRequest(request.id) } }
+        } else if request.canBeRemoved {
+            Button("Remove", role: .destructive) { Task { await model.forgetRequest(request.id) } }
         }
     }
 }
@@ -121,7 +128,9 @@ struct RequestDetailView: View {
                     .multilineTextAlignment(.center).padding(.horizontal, Tokens.Spacing.largeTitleMargin)
                     .accessibilityIdentifier("request-finds-unavailable")
             }
+            if model.isOffline { OfflineNotice() }
             actions(request)
+                .disabled(model.isOffline)   // Task 14: nothing reaches Lidarr or the server offline
         }
         .padding(.bottom, Tokens.Spacing.l)
         .background(themed.palette.bgColor)

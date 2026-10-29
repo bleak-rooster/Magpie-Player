@@ -63,7 +63,7 @@ struct SettingsView: View {
             } message: {
                 Text(LidarrConnectCopy.plainHTTPMessage + "\n\n" + (model.lidarr.map { $0.base.host ?? $0.base.absoluteString } ?? ""))
             }
-            .task(id: model.lidarr) { if model.lidarr != nil { _ = await model.lidarrAudit() } }
+            .task(id: model.lidarr) { if model.lidarr != nil, !model.isOffline { _ = await model.lidarrAudit() } }
         }
     }
 
@@ -125,7 +125,15 @@ struct SettingsView: View {
 
     // MARK: - Lidarr
 
+    /// Offline (Task 14) every Lidarr action is disabled, under "You're offline".
     @ViewBuilder private var lidarr: some View {
+        if model.isOffline {
+            Section { OfflineNotice() }   // just above the Lidarr sections it disables
+        }
+        Group { lidarrSections }.disabled(model.isOffline)
+    }
+
+    @ViewBuilder private var lidarrSections: some View {
         if model.lidarr == nil {
             Section {
                 Button("Connect Lidarr") { showsConnect = true }

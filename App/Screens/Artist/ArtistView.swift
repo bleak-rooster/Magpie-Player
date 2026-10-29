@@ -1,5 +1,6 @@
 import DesignSystem
 import MagpieCore
+import Playback
 import Search
 import SwiftUI
 
@@ -10,6 +11,8 @@ struct ArtistView: View {
     @Environment(AppModel.self) private var model
     let artistId: String
     @State private var page: Loadable<Page> = .loading
+    /// Whether what is shown came from the phone (offline) or the server; a change of offline mode loads again.
+    @State private var loadedOffline: Bool?
     @State private var topSongs: [Song] = []
     @State private var notYetAlbums: [NotYetAlbum] = []
     @State private var gathering = false
@@ -30,7 +33,8 @@ struct ArtistView: View {
         .navigationTitle(page.value?.artist.name ?? "")
         .navigationBarTitleDisplayMode(.inline)
         .magpieScreen()
-        .task { if page.value == nil { await load() } }
+        // Again when offline mode changes: the downloaded albums offline, the server's online.
+        .task(id: model.isOffline) { if page.value == nil || loadedOffline != model.isOffline { await load() } }
     }
 
     private func content(_ page: Page) -> some View {
@@ -115,6 +119,19 @@ struct ArtistView: View {
     }
 
     private func load() async {
+        loadedOffline = model.isOffline
+        // Offline (Task 14), or an artist the catalog grouped itself: their downloaded albums, from the phone.
+        if model.isOffline || OfflineCatalog.isLocalId(artistId) {
+            let catalog = await model.offlineCatalog
+            topSongs = []
+            notYetAlbums = []
+            guard let artist = catalog.artists().first(where: { $0.id == artistId }) else {
+                page = .failed(OfflineCopy.notOnPhone)
+                return
+            }
+            page = .loaded(Page(artist: artist, albums: catalog.albums(byArtist: artistId)))
+            return
+        }
         do {
             let (artist, albums) = try await model.request { [artistId] in try await $0.artist(id: artistId) }
             page = .loaded(Page(artist: artist, albums: albums))

@@ -9,6 +9,8 @@ struct PlaylistView: View {
     @Environment(\.magpieTheme) private var theme
     let playlistId: String
     @State private var page: Loadable<Page> = .loading
+    /// Whether what is shown came from the phone (offline) or the server; a change of offline mode loads again.
+    @State private var loadedOffline: Bool?
     @State private var removing: Song?
     private let themed = Themed()
 
@@ -27,7 +29,8 @@ struct PlaylistView: View {
         .navigationBarTitleDisplayMode(.inline)
         .magpieScreen()
         .songRemovalDialog($removing)
-        .task { if page.value == nil { await load() } }
+        // Again when offline mode changes: the downloaded songs offline, the server's online.
+        .task(id: model.isOffline) { if page.value == nil || loadedOffline != model.isOffline { await load() } }
     }
 
     private func content(_ page: Page) -> some View {
@@ -74,6 +77,16 @@ struct PlaylistView: View {
     }
 
     private func load() async {
+        loadedOffline = model.isOffline
+        if model.isOffline {   // Task 14: the playlist as downloaded, its songs on the phone
+            let catalog = await model.offlineCatalog
+            guard let playlist = catalog.playlists().first(where: { $0.id == playlistId }) else {
+                page = .failed(OfflineCopy.notOnPhone)
+                return
+            }
+            page = .loaded(Page(playlist: playlist, songs: catalog.songs(inPlaylist: playlistId)))
+            return
+        }
         do {
             let (playlist, songs) = try await model.request { [playlistId] in try await $0.playlist(id: playlistId) }
             page = .loaded(Page(playlist: playlist, songs: songs))

@@ -330,6 +330,8 @@ public final class Player {
                     restartCurrent(rebuild: false)
                     return
                 }
+                // No stream (offline): the file is kept and the next song that can play does.
+                if skipToNextPlayable() { return }
             } else if !fellBack.contains(key), let original = urls.originalURL(for: current.song),
                       let loadedURL, original != loadedURL, !urls.isOriginal(loadedURL) {
                 // The server couldn't convert it: play the original instead, once.

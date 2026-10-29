@@ -82,6 +82,15 @@ struct Artwork<Content: View>: View {
                 guard let coverArtId, !scope.isEmpty else { image = nil; return }
                 let key = ArtworkCache.key(scope: scope, coverArtId: coverArtId, size: pixelSize)
                 if let hit = ArtworkCache.shared.cached(key) { image = hit; return }
+                // Task 14: the cover saved with a download first; it shows offline and costs no request.
+                if let file = model.localCoverURL(coverArtId),
+                   let saved = await Task.detached(priority: .utility, operation: {
+                       UIImage(contentsOfFile: file.path)?.preparingForDisplay()
+                   }).value {
+                    ArtworkCache.shared.store(saved, for: key)
+                    image = saved
+                    return
+                }
                 guard let url = model.coverArtURL(coverArtId, size: pixelSize) else { return }
                 image = await ArtworkCache.shared.image(key: key, url: url)
             }

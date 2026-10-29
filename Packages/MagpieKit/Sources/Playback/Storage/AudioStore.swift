@@ -376,7 +376,10 @@ public actor AudioStore {
         #endif
     }
 
-    public func coverURL(coverArtId: String) -> URL? {
+    public func coverURL(coverArtId: String) -> URL? { savedCoverURL(coverArtId: coverArtId) }
+
+    /// `coverURL` from any context (offline artwork reads it on the main actor): the saved cover, nil when none.
+    public nonisolated func savedCoverURL(coverArtId: String) -> URL? {
         let url = coverFileURL(coverArtId)
         return FileManager.default.fileExists(atPath: url.path) ? url : nil
     }
@@ -385,9 +388,9 @@ public actor AudioStore {
 
     private var indexURL: URL { directory.appending(path: Self.indexName) }
     private var playlistsDirectory: URL { directory.appending(path: "playlists", directoryHint: .isDirectory) }
-    private var coversDirectory: URL { directory.appending(path: "covers", directoryHint: .isDirectory) }
+    private nonisolated var coversDirectory: URL { directory.appending(path: "covers", directoryHint: .isDirectory) }
     private func playlistURL(_ id: String) -> URL { playlistsDirectory.appending(path: Self.sha256(id) + ".json") }
-    private func coverFileURL(_ id: String) -> URL { coversDirectory.appending(path: Self.sha256(id) + ".jpg") }
+    private nonisolated func coverFileURL(_ id: String) -> URL { coversDirectory.appending(path: Self.sha256(id) + ".jpg") }
     private func url(for entry: AudioEntry) -> URL { directory.appending(path: entry.fileName) }
     private func sidecarURL(_ fileName: String) -> URL { directory.appending(path: fileName + ".json") }
 

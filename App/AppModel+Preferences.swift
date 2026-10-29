@@ -30,5 +30,6 @@ extension AppModel {
             || new.concurrent != was.concurrent || new.quality != was.quality { downloads?.retryWaiting() }
         if preferences.downloads.keepFavourites != old.downloads.keepFavourites { keepFavouritesChanged() }
         if new.preDownload != was.preDownload { applyEngineWindow() }
+        if new.offlineMode != was.offlineMode { offlineInputsChanged() }
     }
 }

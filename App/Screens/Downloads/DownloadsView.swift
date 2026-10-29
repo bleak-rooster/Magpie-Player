@@ -1,0 +1,139 @@
+import DesignSystem
+import MagpieCore
+import Playback
+import SwiftUI
+
+/// Library › Downloads (spec §6, Task 14): what's on the phone, by Albums, Artists, Playlists or Songs, from the
+/// snapshots kept with the files, so it works with no server. Songs play from the phone. Task 19 adds Genres.
+struct DownloadsView: View {
+    @Environment(AppModel.self) private var model
+    @State private var catalog: OfflineCatalog?
+    @State private var kind = Kind.albums
+    @State private var removing: Song?
+    private let themed = Themed()
+
+    enum Kind: String, CaseIterable, Identifiable {
+        case albums = "Albums", artists = "Artists", playlists = "Playlists", songs = "Songs"
+        var id: String { rawValue }
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: Tokens.Spacing.l) {
+                Picker("Show", selection: $kind) {
+                    ForEach(Kind.allCases) { Text($0.rawValue).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .padding(.horizontal, Tokens.Spacing.largeTitleMargin)
+                .accessibilityIdentifier("downloads-kind")
+                if model.isOffline {
+                    OfflineNotice().padding(.horizontal, Tokens.Spacing.largeTitleMargin)
+                }
+                if let catalog {
+                    content(catalog)
+                } else {
+                    ProgressView().frame(maxWidth: .infinity, minHeight: 200)
+                }
+            }
+            .padding(.vertical, Tokens.Spacing.l)
+        }
+        .navigationTitle("Downloads")
+        .magpieScreen()
+        .songRemovalDialog($removing)
+        // Again whenever a song lands on or leaves the phone.
+        .task(id: model.downloads?.localFiles.count) { catalog = await model.offlineCatalog }
+    }
+
+    @ViewBuilder private func content(_ catalog: OfflineCatalog) -> some View {
+        switch kind {
+        case .albums:
+            let albums = catalog.albums()
+            if albums.isEmpty { empty } else { AlbumGrid(albums: albums) { $0.artist } }
+        case .artists:
+            let artists = catalog.artists()
+            if artists.isEmpty { empty } else { rows(artists, id: \.id) { artistRow($0) } }
+        case .playlists:
+            let playlists = catalog.playlists()
+            if playlists.isEmpty { empty } else { rows(playlists, id: \.id) { playlistRow($0) } }
+        case .songs:
+            let songs = catalog.songs()
+            if songs.isEmpty {
+                empty
+            } else {
+                rows(Array(songs.enumerated()), id: \.element.id) { index, song in songRow(song, index: index, in: songs) }
+            }
+        }
+    }
+
+    private var empty: some View {
+        ContentUnavailableView("Nothing downloaded yet", systemImage: "arrow.down.circle",
+                               description: Text("Albums and playlists you download play here without a connection."))
+            .accessibilityIdentifier("downloads-empty")
+    }
+
+    private func rows<Item, ID: Hashable, Row: View>(_ items: [Item], id: KeyPath<Item, ID>,
+                                                     @ViewBuilder row: @escaping (Item) -> Row) -> some View {
+        LazyVStack(spacing: 0) {
+            ForEach(items, id: id) { item in
+                row(item)
+                Divider().overlay(themed.palette.sepColor).padding(.leading, 76)
+            }
+        }
+    }
+
+    private func artistRow(_ artist: Artist) -> some View {
+        NavigationLink(value: Route.artist(id: artist.id)) {
+            HStack(spacing: Tokens.Spacing.m) {
+                Circle().fill(themed.palette.surfaceColor).frame(width: 48, height: 48)
+                    .overlay { Image(systemName: "person.fill").foregroundStyle(themed.palette.ink2Color) }
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(artist.name).font(.body)
+                    Text(artist.albumCount == 1 ? "1 album" : "\(artist.albumCount) albums")
+                        .font(.footnote).foregroundStyle(themed.palette.ink2Color)
+                }
+                Spacer()
+            }
+            .padding(.horizontal, Tokens.Spacing.margin)
+            .frame(minHeight: 60)
+            .contentShape(Rectangle())
+            .accessibilityElement(children: .combine)
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(themed.palette.inkColor)
+    }
+
+    private func playlistRow(_ playlist: Playlist) -> some View {
+        NavigationLink(value: Route.playlist(id: playlist.id)) {
+            HStack(spacing: Tokens.Spacing.m) {
+                Artwork(playlist.coverArtId, side: 48) { SleeveArt(image: $0, side: 48) }
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(playlist.name).font(.body).lineLimit(2)
+                    Text(playlist.songCount == 1 ? "1 song" : "\(playlist.songCount) songs")
+                        .font(.footnote).foregroundStyle(themed.palette.ink2Color)
+                }
+                Spacer()
+            }
+            .padding(.horizontal, Tokens.Spacing.margin)
+            .frame(minHeight: 60)
+            .contentShape(Rectangle())
+            .accessibilityElement(children: .combine)
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(themed.palette.inkColor)
+    }
+
+    private func songRow(_ song: Song, index: Int, in songs: [Song]) -> some View {
+        Button { model.play(songs, startAt: index) } label: {
+            Artwork(song.coverArtId, side: 48) { SongRow(song: song, state: .library, artwork: $0) }
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityIdentifier("downloads-song-\(index)")
+        .contextMenu {
+            Button("Play Next", systemImage: "text.line.first.and.arrowtriangle.forward") { model.player.playNext([song]) }
+            Button("Add to Queue", systemImage: "text.line.last.and.arrowtriangle.forward") { model.player.addToEnd([song]) }
+            SongDownloadMenuItem(song: song, removing: $removing)
+        }
+    }
+}

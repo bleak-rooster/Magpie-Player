@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 import MagpieCore
 import MagpieTestSupport
@@ -383,6 +384,24 @@ private let home = URL(string: "http://192.168.1.2:4533")!
         #expect(FileManager.default.fileExists(atPath: file.path))
         #expect(fetcher.count == 1, "kept, not dropped and fetched again")
         #expect(try Data(contentsOf: file) == stored)
+    }
+
+    /// T13 review: a re-check whose load throws something that may pass (not a format or decode error) keeps the file.
+    @Test func recheckLoadErrorThatMayPassKeepsTheFile() async throws {
+        let f = FakeFetcher()
+        let model = try await signedInModel(fetcher: f)
+        model.updatePreferences { $0.downloads.preDownload = 0 }
+        model.download([song("s1")], reason: .song); await model.downloads!.settled()
+        let file = try #require(model.downloads!.localFiles["s1"])
+        model.downloads!.loadPlayableForCheck = { _ in throw URLError(.timedOut) }
+        model.play([song("s1")], startAt: 0)
+        model.player.handle(.failed(model.player.queue.current!.id, "cannot decode", undecodable: true))
+        await model.downloads!.settled()
+        #expect(await model.downloads!.store.entry(songId: "s1")?.kind == .download)
+        #expect(FileManager.default.fileExists(atPath: file.path))
+        #expect(fetchedIds(f) == ["s1"], "kept, not fetched again")
+        let decodeError = NSError(domain: AVFoundationErrorDomain, code: AVError.Code.decodeFailed.rawValue)
+        #expect(await !DownloadManager.isPlayableFile(file, load: { _ in throw decodeError }), "a decode error still fails")
     }
 
     /// Offline a failed download is never dropped or marked: no stream, so the song is skipped and the file kept.

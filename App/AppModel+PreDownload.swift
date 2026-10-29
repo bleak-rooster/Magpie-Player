@@ -68,7 +68,7 @@ extension AppModel {
     private func queueChanged(_ snapshot: PreDownloadSnapshot, previous: PreDownloadSnapshot?, manager: DownloadManager) {
         let plan = PreDownloadPlan.songs(upcoming: snapshot.upcoming.map(\.song), count: snapshot.count,
                                          isLocal: { manager.localFiles[$0] != nil })
-        manager.preDownload(plan, quality: currentStreamQuality)
+        manager.preDownload(isOffline ? [] : plan, quality: currentStreamQuality)   // offline: nothing to fetch from
 
         let current = snapshot.current?.song.id
         let currentChanged = snapshot.current?.id != previous?.current?.id

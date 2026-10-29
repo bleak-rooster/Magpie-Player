@@ -18,6 +18,8 @@ enum Route: Hashable {
     case request(RequestID)
     /// Home › Made for you (Task 7.1c).
     case madeForYou(MadeForYou.Playlist)
+    /// Library › Downloads: what's on the phone (Task 14).
+    case downloads
 }
 
 extension View {
@@ -35,6 +37,7 @@ extension View {
             case .finds: FindsView()
             case .request(let id): RequestDetailView(requestId: id)
             case .madeForYou(let playlist): MadeForYouView(playlist: playlist)
+            case .downloads: DownloadsView()
             }
         }
     }

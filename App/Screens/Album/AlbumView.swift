@@ -8,6 +8,8 @@ struct AlbumView: View {
     @Environment(AppModel.self) private var model
     let albumId: String
     @State private var album: Loadable<Album> = .loading
+    /// Whether what is shown came from the phone (offline) or the server; a change of offline mode loads again.
+    @State private var loadedOffline: Bool?
     private let themed = Themed()
 
     var body: some View {
@@ -20,7 +22,8 @@ struct AlbumView: View {
         .navigationBarTitleDisplayMode(.inline)
         .background { ArtBackdrop(coverArtId: album.value?.coverArtId) }
         .magpieScreen()
-        .task { if album.value == nil { await load() } }
+        // Again when offline mode changes: the phone's copy offline, the server's online.
+        .task(id: model.isOffline) { if album.value == nil || loadedOffline != model.isOffline { await load() } }
     }
 
     private func content(_ album: Album) -> some View {
@@ -80,6 +83,16 @@ struct AlbumView: View {
     }
 
     private func load() async {
+        loadedOffline = model.isOffline
+        // Offline (Task 14), or an album the catalog grouped itself: the downloaded songs, from the phone.
+        if model.isOffline || OfflineCatalog.isLocalId(albumId) {
+            guard let local = await model.offlineCatalog.album(id: albumId) else {
+                album = .failed(OfflineCopy.notOnPhone)
+                return
+            }
+            album = .loaded(local)
+            return
+        }
         do {
             album = .loaded(try await model.request { [albumId] in try await $0.album(id: albumId) })
         } catch {

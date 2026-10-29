@@ -26,7 +26,8 @@ extension AppModel {
             url: { [weak self] song, quality in
                 self?.session?.client.streamURL(songId: song.id, maxBitRate: quality.maxBitRate, format: quality.format)
             },
-            coverURL: { [weak self] id in self?.coverArtURL(id, size: DownloadManager.coverSize) })
+            coverURL: { [weak self] id in self?.coverArtURL(id, size: DownloadManager.coverSize) },
+            isOffline: { [weak self] in self?.isOffline ?? false })
         downloads = manager
         // Task 13: songs on the phone play from it; one that lands or leaves re-sends the songs after the current one.
         manager.onLocalFilesChanged = { [weak self, weak manager] in

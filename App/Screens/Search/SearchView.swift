@@ -5,7 +5,8 @@ import Search
 import SwiftUI
 
 /// Search tab: type to search. Recent searches when the field is empty; otherwise the library's Top
-/// result, Songs, Artists and Albums, then a "Not in your library" band (D4: library first).
+/// result, Songs, Artists and Albums, then a "Not in your library" band (D4: library first). Offline (Task 14) it
+/// searches what's on the phone instead: "Downloads", then "Recently played on this phone".
 struct SearchView: View {
     @Environment(AppModel.self) private var app
     @State private var model: SearchModel?
@@ -33,10 +34,13 @@ struct SearchView: View {
             guard model == nil else { return }
             let app = app
             model = SearchModel(search: { q, early in
-                                    try await app.mergedSearch().runReportingLibraryFailure(q, libraryFirst: early)
+                                    if await app.isOffline { return await OfflineSearch(catalog: app.offlineCatalog).sections(q) }
+                                    return try await app.mergedSearch().runReportingLibraryFailure(q, libraryFirst: early)
                                 },
                                 errorMessage: BrowseErrorCopy.message(for:))
         }
+        // The same query again from the other source when offline mode changes.
+        .onChange(of: app.isOffline) { if let model { model.update(query: model.query) } }
     }
 }
 
@@ -57,6 +61,9 @@ private struct SearchContent: View {
     var body: some View {
         let sections = model.results
         List {
+            if app.isOffline {
+                OfflineNotice().listRowBackground(Color.clear).listRowSeparator(.hidden)
+            }
             switch model.phase {
             case .idle:
                 recentSection
@@ -73,13 +80,14 @@ private struct SearchContent: View {
                 }
                 .listRowBackground(Color.clear)
             case .done where sections.isEmpty:
-                ContentUnavailableView("Nothing in your library for \u{201C}\(model.query)\u{201D}",
+                ContentUnavailableView(app.isOffline ? "Nothing on this phone for \u{201C}\(model.query)\u{201D}"
+                                                     : "Nothing in your library for \u{201C}\(model.query)\u{201D}",
                                        systemImage: "magnifyingglass",
                                        description: Text("Check the spelling, or try an artist or album."))
                     .listRowBackground(Color.clear)
                     .accessibilityIdentifier("search-empty")
             default:
-                results(sections)
+                if app.isOffline { offlineResults(sections) } else { results(sections) }
             }
         }
         .listStyle(.plain)
@@ -154,6 +162,44 @@ private struct SearchContent: View {
             }
         }
         notYetBand(sections.notYet)
+    }
+
+    // MARK: - Offline
+
+    /// What's on the phone (Task 14): the downloads under one heading, by kind, then the cached songs that played.
+    @ViewBuilder private func offlineResults(_ sections: SearchSections) -> some View {
+        let songs = scope == .all || scope == .songs ? sections.songs : []
+        let artists = scope == .all || scope == .artists ? sections.artists : []
+        let albums = scope == .all || scope == .albums ? sections.albums : []
+        let kinds = [songs.isEmpty, artists.isEmpty, albums.isEmpty].filter { !$0 }.count
+        if kinds > 0 {
+            Section {
+                header("Downloads")
+                if !songs.isEmpty {
+                    if kinds > 1 { subheader("Songs") }
+                    ForEach(Array(songs.enumerated()), id: \.element.id) { index, song in
+                        songRow(song, index: index, in: songs)
+                    }
+                }
+                if !artists.isEmpty {
+                    if kinds > 1 { subheader("Artists") }
+                    ForEach(artists, id: \.id) { artistRow($0) }
+                }
+                if !albums.isEmpty {
+                    if kinds > 1 { subheader("Albums") }
+                    ForEach(albums, id: \.id) { albumRow($0) }
+                }
+            }
+        }
+        let recent = scope == .all || scope == .songs ? sections.recentlyPlayed : []
+        if !recent.isEmpty {
+            Section {
+                header("Recently played on this phone")
+                ForEach(Array(recent.enumerated()), id: \.element.id) { index, song in
+                    songRow(song, index: index, in: recent, id: "search-recent-\(index)")
+                }
+            }
+        }
     }
 
     // MARK: - Not in your library
