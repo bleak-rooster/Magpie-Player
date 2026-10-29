@@ -119,6 +119,10 @@ public final class AVQueueEngine: PlaybackEngine {
         self.volumes = volumes
     }
 
+    public func enqueuedURL(for id: UUID) -> URL? {
+        enqueuedItems.first { $0.id == id }?.url
+    }
+
     public func setVolume(_ volume: Float) {
         self.volume = volume
         player.volume = volume

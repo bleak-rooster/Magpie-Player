@@ -32,11 +32,15 @@ public protocol PlaybackEngine: AnyObject {
     func setVolumes(_ volumes: [UUID: Float])
     /// Overall volume (the sleep timer's fade), on top of the per-entry volumes.
     func setVolume(_ volume: Float)
+    /// The URL the engine actually holds for this entry, if it has it enqueued. An enqueued item is kept when
+    /// only its URL changed, so this can differ from the URL last sent; nil when unknown.
+    func enqueuedURL(for id: UUID) -> URL?
 }
 
 public extension PlaybackEngine {
     func setVolumes(_ volumes: [UUID: Float]) {}
     func setVolume(_ volume: Float) {}
+    func enqueuedURL(for id: UUID) -> URL? { nil }
 }
 
 /// Records a play with the server. Sendable so `Player` can call it off the main actor.
@@ -48,8 +52,9 @@ public protocol Scrobbler: Sendable {
 @MainActor
 public protocol StreamURLProvider: AnyObject {
     func streamURL(for song: Song) -> URL
-    /// The song untranscoded, for when the server fails to convert it; nil when the stream already is the
-    /// original (or there is nothing to fall back to).
+    /// The song untranscoded, for when the server fails to convert it. Nil when the stream already is the
+    /// original, and nil whenever the song can't be fetched from the server right now (offline): `Player`
+    /// tries this fallback before skipping an unplayable song, so a non-nil answer offline wastes a try.
     func originalURL(for song: Song) -> URL?
 }
 

@@ -18,6 +18,8 @@ final class FakeEngine: PlaybackEngine {
     private(set) var setVolumesCalls: [[UUID: Float]] = []
     /// One entry per `setVolume` call.
     private(set) var setVolumeCalls: [Float] = []
+    /// What a real engine would hold per entry (it keeps an enqueued item when only its URL changed).
+    var enqueuedURLs: [UUID: URL] = [:]
 
     init() { (events, continuation) = AsyncStream.makeStream() }
 
@@ -28,6 +30,7 @@ final class FakeEngine: PlaybackEngine {
     func next() { nextCount += 1 }
     func setVolumes(_ volumes: [UUID: Float]) { setVolumesCalls.append(volumes) }
     func setVolume(_ volume: Float) { setVolumeCalls.append(volume) }
+    func enqueuedURL(for id: UUID) -> URL? { enqueuedURLs[id] }
 }
 
 actor FakeScrobbler: Scrobbler {
@@ -505,6 +508,67 @@ extension PlayerTests {
         player.handle(.ended)
         #expect(!player.isPlaying && player.queue.current?.song.id == "2" && !player.stopsAfterCurrent)
         #expect(engine.playCount == plays)
+    }
+}
+
+/// T7 fix round 1: an entry reached by advance keeps the URL the engine holds; next() goes to the next
+/// playable entry and only trusts the engine's list when that entry is next in it.
+extension PlayerTests {
+    @Test(arguments: [false, true])
+    func advancedEntryKeepsTheURLTheEngineHolds(byNext: Bool) {
+        let player = makePlayer()
+        player.play([Self.song("1"), Self.song("2")], startAt: 0)
+        let second = player.queue.upcoming[0].id
+        let firstSent = engine.setItemsCalls.last!.items[1].1
+        engine.enqueuedURLs[second] = firstSent   // enqueued before the URLs changed; the engine keeps it
+        urls.base = URL(string: "http://10.0.0.9:4533")!
+        player.upcomingURLsChanged()
+        #expect(engine.setItemsCalls.last!.items[1].1.host == "10.0.0.9")
+        if byNext { player.next() } else { player.handle(.itemChanged(second)) }
+        player.playNext([Self.song("x")])
+        #expect(engine.setItemsCalls.last!.items[0].1 == firstSent, "no restart of song 2")
+    }
+
+    @Test func nextWithStopAfterCurrentGoesOneSong() {
+        let player = makePlayer()
+        player.play([Self.song("1"), Self.song("2"), Self.song("3")], startAt: 0)
+        let second = player.queue.upcoming[0].id
+        player.stopsAfterCurrent = true
+        player.next()
+        #expect(player.queue.current?.song.id == "2" && !player.stopsAfterCurrent)
+        let items = engine.setItemsCalls.last!.items.map(\.0)
+        #expect(items.first == second || (engine.nextCount == 1 && items.dropFirst().first == second),
+                "the engine lands on song 2: \(items), next() x\(engine.nextCount)")
+    }
+
+    @Test func nextSkipsUnplayableWithoutNowPlaying() async {
+        let player = makePlayer()
+        player.isPlayable = { $0.id != "2" }
+        player.play([Self.song("1"), Self.song("2"), Self.song("3")], startAt: 0)
+        player.next()
+        #expect(player.queue.current?.song.id == "3")
+        await player.waitForPendingScrobbles()
+        #expect(await !scrobbler.calls.contains { $0.songId == "2" })
+    }
+
+    @Test func nextWithNothingPlayableLeftStaysPut() {
+        let player = makePlayer()
+        player.isPlayable = { $0.id != "2" }
+        player.play([Self.song("1"), Self.song("2")], startAt: 0)
+        let calls = engine.setItemsCalls.count
+        player.next()
+        #expect(player.queue.current?.song.id == "1" && !player.hasEnded)
+        #expect(engine.setItemsCalls.count == calls && engine.nextCount == 0)
+    }
+
+    @Test func fallbackNoteClearsWhenTheNextSongBegins() {
+        urls.original = { URL(string: "http://192.168.1.2:4533/rest/stream?id=\($0.id)&format=raw")! }
+        let player = makePlayer()
+        player.play([Self.song("1"), Self.song("2")], startAt: 0)
+        player.handle(.failed(player.queue.current!.id, "cannot open"))
+        #expect(player.lastFallbackSongId == "1")
+        player.handle(.itemChanged(player.queue.upcoming[0].id))
+        #expect(player.lastFallbackSongId == nil)
     }
 }
 

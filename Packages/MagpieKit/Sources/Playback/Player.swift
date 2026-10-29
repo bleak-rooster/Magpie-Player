@@ -80,8 +80,17 @@ public final class Player {
     /// What the engine was last handed as current; reused so a refresh of the upcoming URLs (quality,
     /// network) never makes the engine reload the song that is playing.
     @ObservationIgnored private var loaded: (entryId: UUID, url: URL)?
-    /// Entries that failed and were rebuilt on their original URL; a second failure is final.
-    @ObservationIgnored private var fellBack: Set<UUID> = []
+    /// The list last sent to the engine, by entry id: an entry reached by advance plays the URL the engine
+    /// enqueued it on (`adoptLoaded`).
+    @ObservationIgnored private var sent: [(id: UUID, url: URL)] = []
+    /// Entries (with the song they held) that failed and were rebuilt on their original URL; a second
+    /// failure is final.
+    @ObservationIgnored private var fellBack: Set<FallbackKey> = []
+
+    private struct FallbackKey: Hashable {
+        var entryId: UUID
+        var songId: String
+    }
 
     /// Scrobble bookkeeping for the entry that is playing.
     private struct TrackPlayback {
@@ -115,6 +124,7 @@ public final class Player {
         queue.replace(with: songs, startAt: startAt)
         isShuffled = false
         unshuffledOrder = nil
+        fellBack = []
         loadCurrent()
         resume()
     }
@@ -129,19 +139,24 @@ public final class Player {
     }
 
     public func next() {
-        guard queue.advance() != nil else {
+        // A manual skip is not the song ending: stop after current no longer applies. Turning it off
+        // re-sends the upcoming list, so the engine has the next song again.
+        stopsAfterCurrent = false
+        guard let target = queue.upcoming.first(where: { isPlayable($0.song) }) else {
             if repeatMode == .all, queue.wrapToStart() != nil {
                 needsReload = true
                 resume()
             }
             return
         }
-        if needsReload {
+        let engineHasItNext = !needsReload && sent.count > 1 && sent[1].id == target.id
+        while queue.current?.id != target.id, queue.advance() != nil {}
+        guard engineHasItNext else {
             loadCurrent()
             return
         }
-        // The engine already holds the old upcoming list, whose head is the new current entry.
         engine.next()
+        adoptLoaded(target.id)
         beginEntry()
     }
 
@@ -267,6 +282,7 @@ public final class Player {
                 return
             }
             while queue.current?.id != id, queue.advance() != nil {}
+            adoptLoaded(id)
             beginEntry()
         case .time(let id, let t, let d):
             guard id == queue.current?.id else { return }   // stale tick from the previous item
@@ -279,9 +295,10 @@ public final class Player {
             // Only the current entry matters; the engine retries a failed upcoming item when it
             // is reached. Stop the engine too, so a dead server can't race through the queue.
             guard let current = queue.current, id == current.id else { return }
-            if !fellBack.contains(id), urls.originalURL(for: current.song) != nil {
+            let key = FallbackKey(entryId: id, songId: current.song.id)
+            if !fellBack.contains(key), urls.originalURL(for: current.song) != nil {
                 // The server couldn't convert it: play the original instead, once.
-                fellBack.insert(id)
+                fellBack.insert(key)
                 lastFallbackSongId = current.song.id
                 let resumeAt = position
                 syncEngine(rebuildCurrent: true)
@@ -339,6 +356,7 @@ public final class Player {
     private func syncEngine(rebuildCurrent: Bool = false) {
         guard let current = queue.current else {
             loaded = nil
+            sent = []
             engine.setItems([], startAt: 0)
             engine.pause()
             isPlaying = false
@@ -347,7 +365,7 @@ public final class Player {
         let currentURL: URL
         if !rebuildCurrent, let loaded, loaded.entryId == current.id {
             currentURL = loaded.url
-        } else if fellBack.contains(current.id), let original = urls.originalURL(for: current.song) {
+        } else if fellBack.contains(FallbackKey(entryId: current.id, songId: current.song.id)), let original = urls.originalURL(for: current.song) {
             currentURL = original
         } else {
             currentURL = urls.streamURL(for: current.song)
@@ -358,7 +376,16 @@ public final class Player {
         // Volumes first: the engine applies them as it enqueues.
         engine.setVolumes(Dictionary(entries.map { ($0.id, gain($0.song)) }, uniquingKeysWith: { a, _ in a }))
         let items = [(current.id, currentURL)] + following.map { ($0.id, urls.streamURL(for: $0.song)) }
+        sent = items.map { (id: $0.0, url: $0.1) }
         engine.setItems(items, startAt: 0)
+    }
+
+    /// The engine moved on to entry `id` by itself or by `engine.next()`: it plays the URL it enqueued, which
+    /// can be older than the last one sent (it keeps an enqueued item whose URL changed). Remember that one,
+    /// so the next queue edit doesn't restart the song.
+    private func adoptLoaded(_ id: UUID) {
+        guard let url = engine.enqueuedURL(for: id) ?? sent.first(where: { $0.id == id })?.url else { return }
+        loaded = (id, url)
     }
 
     /// Loads the current entry from the start. The engine reloads it either way, so its URL is built afresh.
@@ -394,6 +421,7 @@ public final class Player {
 
     /// A new entry became current: reset position and scrobble state, send "now playing".
     private func beginEntry() {
+        if playback?.entryId != queue.current?.id { lastFallbackSongId = nil }
         hasEnded = false
         needsReload = false
         failedEntryId = nil
