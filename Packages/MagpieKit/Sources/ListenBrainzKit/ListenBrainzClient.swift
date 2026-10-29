@@ -26,22 +26,25 @@ public struct ListenBrainzClient: Sendable {
     public static let apiBase = URL(string: "https://api.listenbrainz.org")!
 
     private let transport: HTTPTransport
-    private let token: String?
+    let token: String?
     private let labsTimeout: TimeInterval
-    private let apiTimeout: TimeInterval
-    private let limiter: RateLimiter?
+    let apiTimeout: TimeInterval
+    let limiter: RateLimiter?
+    /// Sent as `submission_client_version`. The app passes `AppModel.marketingVersion`; the package holds no literal.
+    public let clientVersion: String
 
     /// `token` is only ever attached to `api.listenbrainz.org` requests. Labs gets no credentials (A9).
     /// - Parameters:
     ///   - apiTimeout: the deadline of each `api.listenbrainz.org` call ("Made for you" degrades silently, like search).
     ///   - limiter: spaces the `api.listenbrainz.org` calls (shared app-wide). Labs search never waits on it.
     public init(transport: HTTPTransport, token: String?, labsTimeout: TimeInterval = 5, apiTimeout: TimeInterval = 5,
-                limiter: RateLimiter? = nil) {
+                limiter: RateLimiter? = nil, clientVersion: String = "unknown") {
         self.transport = transport
         self.token = (token?.isEmpty == false) ? token : nil
         self.labsTimeout = labsTimeout
         self.apiTimeout = apiTimeout
         self.limiter = limiter
+        self.clientVersion = clientVersion
     }
 
     // MARK: - Labs recording search (no token, 5 s)
@@ -121,7 +124,7 @@ public struct ListenBrainzClient: Sendable {
 
     /// The transport's own timeout may differ (URLSessionTransport applies its default), so the deadline is enforced here.
     /// `before` (the limiter's wait) runs inside the deadline.
-    private func sendWithDeadline(_ request: URLRequest, seconds: TimeInterval,
+    func sendWithDeadline(_ request: URLRequest, seconds: TimeInterval,
                                   before: @escaping @Sendable () async throws -> Void = {}) async throws -> Data {
         let transport = self.transport
         return try await withThrowingTaskGroup(of: Data.self) { group in

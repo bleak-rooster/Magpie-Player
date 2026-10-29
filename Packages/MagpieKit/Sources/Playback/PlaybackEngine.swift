@@ -38,12 +38,9 @@ public protocol PlaybackEngine: AnyObject {
     /// The URL the engine actually holds for this entry, if it has it enqueued. An enqueued item is kept when
     /// only its URL changed, so this can differ from the URL last sent; nil when unknown.
     func enqueuedURL(for id: UUID) -> URL?
-    /// Seconds between `.time` events while playing (default 0.5).
-    var tickInterval: TimeInterval { get }
 }
 
 public extension PlaybackEngine {
-    var tickInterval: TimeInterval { 0.5 }
     func setVolumes(_ volumes: [UUID: Float]) {}
     func setVolume(_ volume: Float) {}
     func enqueuedURL(for id: UUID) -> URL? { nil }

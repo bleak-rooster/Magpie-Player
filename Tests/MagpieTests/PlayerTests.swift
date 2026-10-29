@@ -189,9 +189,14 @@ extension Player {
         player.listen(id, from: 10, to: 11, duration: 300)
         await player.waitForPendingScrobbles()
         #expect(await scrobbler.calls == [.init(songId: "1", submission: false)])
-        player.listen(id, from: 11, to: 140, duration: 300)
+        // Heard so far: 9.5 s (0 to 10 after the stale ticks) and 0.5 s (10.5 to 11), so t seconds in is t - 1 heard.
+        player.listen(id, from: 11, to: 150.5, duration: 300)
         await player.waitForPendingScrobbles()
-        #expect(await scrobbler.calls == [.init(songId: "1", submission: false)], "about 140 s heard: not counted")
+        #expect(await scrobbler.calls == [.init(songId: "1", submission: false)], "149.5 s heard: not counted")
+        player.listen(id, from: 150.5, to: 151, duration: 300)
+        await player.waitForPendingScrobbles()
+        #expect(await scrobbler.calls.last == .init(songId: "1", submission: true), "150 s heard: counted")
+
     }
     @Test func seekForwardThenStaleLowTickCreditsNothing() async {
         let player = makePlayer()
@@ -240,6 +245,20 @@ extension Player {
         await player.waitForPendingScrobbles()
         #expect(await scrobbler.calls == [.init(songId: "1", submission: false), .init(songId: "1", submission: true),
                                           .init(songId: "1", submission: false), .init(songId: "1", submission: true)])
+    }
+    /// Background and locked-screen ticks come less often than every half second.
+    @Test(arguments: [2.0, 5.0]) func slowTicksStillCount(cadence: TimeInterval) async {
+        var clock = Date(timeIntervalSince1970: 1_700_000_000)
+        let player = Player(engine: engine, scrobbler: scrobbler, urls: urls, now: { clock })
+        player.play([Self.song("1", duration: 200)], startAt: 0)
+        let id = player.queue.current!.id
+        var t = 0.0
+        while t < 95 { t += cadence; clock = clock.addingTimeInterval(cadence); player.handle(.time(id, t, duration: 200)) }
+        await player.waitForPendingScrobbles()
+        #expect(await scrobbler.calls.count == 1, "under 100 s heard")
+        while t < 105 { t += cadence; clock = clock.addingTimeInterval(cadence); player.handle(.time(id, t, duration: 200)) }
+        await player.waitForPendingScrobbles()
+        #expect(await scrobbler.calls.last == .init(songId: "1", submission: true))
     }
     @Test func handBuiltExtremeRuleDoesNotCrash() async {
         let player = Player(engine: engine, scrobbler: scrobbler, urls: urls, scrobbleRule: { ScrobbleRule(percent: Int.max, minutes: Int.max) })

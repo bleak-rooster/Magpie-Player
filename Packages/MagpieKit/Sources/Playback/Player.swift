@@ -62,8 +62,9 @@ public final class Player {
     /// `upcomingURLsChanged()` after changing it.
     @ObservationIgnored public var lookahead = EngineWindow.size(engineMax: AVQueueEngine.maxEnqueued)
 
-    /// The most listening one `.time` tick can credit: three tick intervals (a late tick), never a seek's jump.
-    private var scrobbleStepCap: TimeInterval { 3 * engine.tickInterval }
+    /// Slack on top of the wall-clock time between two ticks, and the most one tick can ever credit.
+    private static let tickSlack: TimeInterval = 1
+    private static let maxTickCredit: TimeInterval = 30
     /// `previous()` restarts the current song once it has played longer than this.
     static let restartThreshold: TimeInterval = 3
 
@@ -108,6 +109,8 @@ public final class Player {
         var listened: TimeInterval = 0
         /// The position of the last tick, or where the last seek or resume landed.
         var lastTick: TimeInterval = 0
+        /// The wall-clock time of that position.
+        var lastTickAt: Date
     }
 
     public init(engine: any PlaybackEngine, scrobbler: any Scrobbler, urls: any StreamURLProvider,
@@ -191,7 +194,7 @@ public final class Player {
         hasEnded = false
         engine.seek(to: t)
         position = t
-        playback?.lastTick = t   // a jump is not listening
+        anchorTick(at: t)   // a jump is not listening
     }
 
     // MARK: - Queue edits
@@ -276,7 +279,7 @@ public final class Player {
         let resumeAt = position
         syncEngine(rebuildCurrent: true)
         engine.seek(to: resumeAt)
-        playback?.lastTick = resumeAt
+        anchorTick(at: resumeAt)
     }
 
     /// The songs the engine holds or is about to: the current one and the window after it. Cache upkeep never
@@ -320,11 +323,16 @@ public final class Player {
             guard t.isFinite else { return }
             position = max(0, t)
             if var p = playback, p.entryId == id {
-                // Only a step of a few ticks is listening. A bigger jump forward, or any step back, is a seek, or a
-                // stale tick from before one: it re-anchors and adds nothing.
+                // A step is listening only when the wall clock could have covered it (ticks come less often in the
+                // background). A bigger jump forward, or any step back, is a seek, or a stale tick from before one:
+                // it re-anchors and adds nothing.
+                let at = now()
                 let step = t - p.lastTick
-                if step > 0, step <= scrobbleStepCap { p.listened += step }
+                if step > 0, step <= at.timeIntervalSince(p.lastTickAt) + Self.tickSlack, step <= Self.maxTickCredit {
+                    p.listened += step
+                }
                 p.lastTick = t
+                p.lastTickAt = at
                 playback = p
             }
             // The API's song duration wins (D45: Ogg and other transcoded lengths are estimates); the engine's only
@@ -490,7 +498,7 @@ public final class Player {
         let resumeAt = position
         syncEngine(rebuildCurrent: rebuild)
         if resumeAt > 0 { engine.seek(to: resumeAt) }
-        playback?.lastTick = resumeAt
+        anchorTick(at: resumeAt)
         engine.play()
         isPlaying = true
     }
@@ -555,8 +563,15 @@ public final class Player {
             return
         }
         duration = entry.song.duration > 0 ? entry.song.duration : nil
-        playback = TrackPlayback(entryId: entry.id, startedAt: now())
+        let started = now()
+        playback = TrackPlayback(entryId: entry.id, startedAt: started, lastTickAt: started)
         scrobble(entry.song, submission: false, at: nil)
+    }
+
+    /// The song is now at `t` by a seek or a resume, not by playing: the next tick counts from here.
+    private func anchorTick(at t: TimeInterval) {
+        playback?.lastTick = t
+        playback?.lastTickAt = now()
     }
 
     private func maybeSubmitScrobble() {

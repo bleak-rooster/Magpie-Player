@@ -362,8 +362,6 @@ public final class AVQueueEngine: PlaybackEngine {
         continuation.yield(.failed(id, message, undecodable: undecodable))
     }
 
-    public var tickInterval: TimeInterval { 0.5 }
-
     private func tick(_ time: CMTime) {
         guard let current = player.currentItem, let info = enqueued[ObjectIdentifier(current)] else { return }
         guard time.isNumeric, time.seconds.isFinite else { return }   // an invalid or indefinite time is no tick
@@ -376,7 +374,7 @@ public final class AVQueueEngine: PlaybackEngine {
     // MARK: - Observation
 
     private func attach(_ player: AVQueuePlayer) {
-        let interval = CMTime(seconds: tickInterval, preferredTimescale: 600)
+        let interval = CMTime(seconds: 0.5, preferredTimescale: 600)
         let timeObserver = player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] time in
             MainActor.assumeIsolated { self?.tick(time) }
         }
