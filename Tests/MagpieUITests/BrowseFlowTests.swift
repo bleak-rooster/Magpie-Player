@@ -26,11 +26,11 @@ final class BrowseFlowTests: XCTestCase {
     }
 
     /// Launches signed out, signs in to the dev stack and waits for the tab bar.
-    @MainActor private func launchSignedIn() throws -> XCUIApplication {
+    @MainActor private func launchSignedIn(_ arguments: [String] = []) throws -> XCUIApplication {
         let stack = try devStack()
         continueAfterFailure = false
         let app = XCUIApplication()
-        app.launchArguments = ["-MagpieResetState", "YES"]
+        app.launchArguments = ["-MagpieResetState", "YES"] + arguments
         app.launch()
 
         let address = app.textFields["connect-address-0"]
@@ -84,6 +84,102 @@ final class BrowseFlowTests: XCTestCase {
         // The mini player shows that title.
         let mini = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Now playing: \(title),")).firstMatch
         XCTAssertTrue(mini.waitForExistence(timeout: 15), "mini player did not show \(title)")
+    }
+
+    /// T10b (D43): Now Playing fits one screen at the default text size, with no page scrolling; Lyrics swaps the
+    /// art for the lyrics in the same slot and back.
+    @MainActor func testNowPlayingFitsOneScreenAndTogglesLyrics() throws {
+        let app = try launchSignedIn()
+        let nowPlaying = openNowPlaying(app)
+        let playPause = app.buttons["np-play-pause"]
+        // Everything is reachable without a swipe, and nothing on the page scrolls.
+        XCTAssertTrue(playPause.isHittable, "play/pause")
+        XCTAssertTrue(nowPlaying.buttons["Next"].isHittable, "next")
+        XCTAssertTrue(nowPlaying.buttons["Queue"].isHittable, "queue")
+        XCTAssertTrue(nowPlaying.buttons["Sleep timer"].isHittable, "sleep timer")
+        XCTAssertEqual(nowPlaying.scrollViews.count, 0, "Now Playing scrolls at the default text size")
+        attachScreenshot(app, "now-playing-signature")
+
+        let lyricsButton = nowPlaying.buttons["Lyrics"]
+        // The server's songLyrics check runs as the sheet opens; give it a moment before deciding.
+        guard lyricsButton.waitForExistence(timeout: 5) else {
+            // Recorded reason: the dev stack doesn't advertise songLyrics, so the button is rightly hidden.
+            XCTAssertFalse(lyricsButton.exists, "Lyrics must stay hidden until the server advertises songLyrics")
+            XCTContext.runActivity(named: "Lyrics toggle not exercised: the dev stack doesn't advertise songLyrics") { _ in }
+            return
+        }
+        XCTAssertTrue(lyricsButton.isHittable, "lyrics")
+        XCTAssertFalse(lyricsButton.isSelected)
+        let titleTop = app.staticTexts.matching(identifier: "np-title").firstMatch.frame.minY
+
+        lyricsButton.tap()
+        let lyrics = app.descendants(matching: .any)["np-lyrics"]
+        XCTAssertTrue(lyrics.waitForExistence(timeout: 5), "lyrics did not appear in the art's place")
+        XCTAssertTrue(lyricsButton.isSelected, "the Lyrics button shows its on state")
+        // In the art's slot: square, above the title, and the only thing that scrolls is inside it.
+        XCTAssertEqual(lyrics.frame.width, lyrics.frame.height, accuracy: 2)
+        XCTAssertLessThanOrEqual(lyrics.frame.maxY, titleTop + 1)
+        XCTAssertEqual(nowPlaying.scrollViews.count, lyrics.scrollViews.count, "the page itself scrolls")
+        XCTAssertTrue(playPause.isHittable)
+        // Either lyrics or the "no lyrics" state shows, inside the slot.
+        let loaded = lyrics.staticTexts["Lyrics from your library"]
+        let empty = app.descendants(matching: .any)["lyrics-empty"]
+        XCTAssertTrue(loaded.waitForExistence(timeout: 10) || empty.exists, "the slot shows neither lyrics nor the empty state")
+        attachScreenshot(app, "now-playing-signature-lyrics")
+
+        // Lyrics again brings the art back; so does the slot's close button.
+        lyricsButton.tap()
+        XCTAssertTrue(lyrics.waitForNonExistence(timeout: 5), "the art did not come back")
+        XCTAssertFalse(lyricsButton.isSelected)
+        XCTAssertEqual(nowPlaying.scrollViews.count, 0)
+        lyricsButton.tap()
+        XCTAssertTrue(lyrics.waitForExistence(timeout: 5))
+        app.buttons["lyrics-close"].tap()
+        XCTAssertTrue(lyrics.waitForNonExistence(timeout: 5), "close did not bring the art back")
+    }
+
+    /// T10b (D43): Immersive fits one screen too.
+    @MainActor func testNowPlayingImmersiveFitsOneScreen() throws {
+        let app = try launchSignedIn(["-MagpieCharacter", "immersive"])
+        let nowPlaying = openNowPlaying(app)
+        XCTAssertTrue(app.buttons["np-play-pause"].isHittable, "play/pause")
+        XCTAssertTrue(nowPlaying.buttons["Next"].isHittable, "next")
+        XCTAssertTrue(nowPlaying.buttons["Queue"].isHittable, "queue")
+        XCTAssertTrue(nowPlaying.buttons["Sleep timer"].isHittable, "sleep timer")
+        XCTAssertEqual(nowPlaying.scrollViews.count, 0, "Now Playing scrolls at the default text size")
+        attachScreenshot(app, "now-playing-immersive")
+    }
+
+    /// Library › Albums › first album › first track, then the mini player opens Now Playing.
+    @MainActor private func openNowPlaying(_ app: XCUIApplication) -> XCUIElement {
+        let library = app.tabBars.buttons["Library"]
+        let albums = app.buttons["library-albums"]
+        for _ in 0..<3 where !albums.exists {
+            library.tap()
+            _ = albums.waitForExistence(timeout: 5)
+        }
+        albums.tap()
+        let firstAlbum = app.buttons["album-0"]
+        XCTAssertTrue(firstAlbum.waitForExistence(timeout: 15))
+        firstAlbum.tap()
+        let firstTrack = app.buttons["track-0"]
+        XCTAssertTrue(firstTrack.waitForExistence(timeout: 15))
+        let title = firstTrack.label
+        firstTrack.tap()
+        let mini = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Now playing: \(title),")).firstMatch
+        XCTAssertTrue(mini.waitForExistence(timeout: 15), "mini player did not show \(title)")
+        mini.tap()
+        XCTAssertTrue(app.buttons["np-play-pause"].waitForExistence(timeout: 10), "Now Playing did not open")
+        let nowPlaying = app.otherElements["now-playing"]
+        XCTAssertTrue(nowPlaying.exists)
+        return nowPlaying
+    }
+
+    @MainActor private func attachScreenshot(_ app: XCUIApplication, _ name: String) {
+        let shot = XCTAttachment(screenshot: app.screenshot())
+        shot.name = name
+        shot.lifetime = .keepAlways
+        add(shot)
     }
 
     /// Search tab: type a name from the dev library, tap the first song, see it in the mini player.

@@ -3,83 +3,138 @@ import MagpieCore
 import Playback
 import SwiftUI
 
-/// Now Playing sheet: art, title, artist, star, scrubber (rounded numerals, hallmark), transport,
-/// Up next, and Lyrics / Queue. Signature has a "Playing from" top bar; Classic a grabber and a close button.
-/// At accessibility sizes text wraps instead of truncating, and the times sit above the hallmark (D15).
+/// Now Playing sheet: art (or lyrics in its place), title, artist, star, scrubber (rounded numerals, hallmark),
+/// transport, Up next, and Lyrics / Sleep timer / Queue. Signature has a "Playing from" top bar; Classic a close button.
+/// At standard text sizes it fits one screen and never scrolls: the art takes the height the rest leaves (D43).
+/// At accessibility sizes the page scrolls, text wraps instead of truncating, and the times sit above the hallmark (D15).
 struct NowPlayingView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.magpieTheme) private var theme
     @Environment(\.dismiss) private var dismiss
     @Environment(\.dynamicTypeSize) private var typeSize
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var scrubbing: TimeInterval?
-    @State private var panel: Panel?
+    @State private var showsQueue = false
+    /// Lyrics in the art's place; stays on across songs.
+    @State private var showsLyrics = false
     /// The server advertises `songLyrics` (A13); the Lyrics button is hidden until it does.
     @State private var lyricsAvailable = false
+    /// Measured heights of everything but the art and Up next (D43).
+    @State private var partHeights: [String: CGFloat] = [:]
+    /// Up next's last measured height, kept while it is hidden so the plan doesn't flip back and forth.
+    @State private var upNextHeight: CGFloat = 0
     private let themed = Themed()
 
-    private enum Panel: String, Identifiable { case lyrics, queue; var id: String { rawValue } }
-
     var body: some View {
-        let p = themed.palette
         let player = model.player
         Group {
             if let song = player.queue.current?.song {
-                ScrollView {
-                    VStack(spacing: Tokens.Spacing.xl) {
-                        if theme.character != .classic {
-                            topBar(song)
-                        } else {
-                            // The grabber alone can't be reached by VoiceOver or Switch Control (H3 M11).
-                            HStack { closeButton; Spacer() }
+                GeometryReader { geo in
+                    let width = geo.size.width - 2 * Tokens.Spacing.xxl
+                    if typeSize.isAccessibilitySize {
+                        let side = NowPlayingLayout.artSide(available: CGSize(width: width, height: geo.size.height), reserved: 0)
+                        ScrollView {
+                            stack(song, player, side: side, spacing: Tokens.Spacing.xl, showsUpNext: true)
                         }
-                        Artwork(song.coverArtId, side: 340) { image in
-                            SleeveArt(image: image, side: nil)
-                                .aspectRatio(1, contentMode: .fit)
-                                .clipShape(RoundedRectangle(cornerRadius: Tokens.Radius.hero, style: .continuous))
-                                .frame(maxWidth: 360)
+                    } else {
+                        let shown = partHeights.filter { key, _ in
+                            (key != "hint" || model.playbackHint != nil) && (key != "error" || player.lastError != nil)
                         }
-                        .shadow(color: .black.opacity(0.22), radius: 24, y: 12)
-                        .scaleEffect(player.isPlaying ? 1 : 0.92)
-                        .animation(.spring(duration: 0.4), value: player.isPlaying)
-                        meta(song)
-                        scrubber(song, player)
-                        if let hint = model.playbackHint {
-                            HStack(alignment: .firstTextBaseline) {
-                                Label(hint, systemImage: "info.circle")
-                                    .font(.footnote).foregroundStyle(p.ink2Color)
-                                Spacer(minLength: Tokens.Spacing.s)
-                                Button { model.dismissPlaybackHint() } label: { Image(systemName: "xmark") }
-                                    .accessibilityLabel("Dismiss")
-                                    .frame(minWidth: 44, minHeight: 44)
-                            }
-                        }
-                        if let error = player.lastError {
-                            Label("This song didn't play. Try it again, or skip to the next one.",
-                                  systemImage: "exclamationmark.triangle")
-                                .font(.footnote).foregroundStyle(p.ink2Color)
-                                .accessibilityHint(error)
-                        }
-                        transport(player)
-                        if let next = player.queue.upcoming.first?.song { upNext(next) }
-                        bottomBar
+                        let parts = shown.values.reduce(2 * Tokens.Spacing.l, +)   // vertical padding included
+                        let next = player.queue.upcoming.first?.song
+                        let plan = NowPlayingLayout.plan(available: CGSize(width: width, height: geo.size.height),
+                                                         parts: parts, gaps: shown.count,
+                                                         upNext: next == nil ? nil : upNextHeight)
+                        stack(song, player, side: plan.side, spacing: plan.spacing, showsUpNext: plan.showsUpNext)
                     }
-                    .padding(.horizontal, Tokens.Spacing.xxl)
-                    .padding(.vertical, Tokens.Spacing.l)
                 }
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier("now-playing")
             } else {
                 ContentUnavailableView("Nothing playing", systemImage: "music.note")
             }
         }
-        .foregroundStyle(p.inkColor)
+        .foregroundStyle(themed.palette.inkColor)
         .background { ArtBackdrop(coverArtId: model.player.queue.current?.song.coverArtId) }
         .presentationDragIndicator(theme.character == .classic ? .visible : .hidden)
         .task { lyricsAvailable = (try? await model.serverAdvertises("songLyrics")) ?? false }
-        .sheet(item: $panel) { panel in
-            switch panel {
-            case .lyrics: LyricsView()
-            case .queue: QueueView()
+        .sheet(isPresented: $showsQueue) { QueueView() }
+    }
+
+    /// The top bar, then the art and the rest. Spare height (art capped at 360) goes under the top bar.
+    private func stack(_ song: Song, _ player: Player, side: CGFloat, spacing: CGFloat, showsUpNext: Bool) -> some View {
+        let p = themed.palette
+        return VStack(spacing: 0) {
+            Group {
+                if theme.character != .classic {
+                    topBar(song)
+                } else {
+                    // The grabber alone can't be reached by VoiceOver or Switch Control (H3 M11).
+                    HStack { closeButton; Spacer() }
+                }
+            }
+            .nowPlayingPart("top", into: $partHeights)
+            .padding(.bottom, spacing)
+            Spacer(minLength: 0)
+            VStack(spacing: spacing) {
+                artSlot(song, player, side: side)
+                meta(song).nowPlayingPart("meta", into: $partHeights)
+                scrubber(song, player).nowPlayingPart("scrubber", into: $partHeights)
+                if let hint = model.playbackHint {
+                    HStack(alignment: .firstTextBaseline) {
+                        Label(hint, systemImage: "info.circle")
+                            .font(.footnote).foregroundStyle(p.ink2Color)
+                        Spacer(minLength: Tokens.Spacing.s)
+                        Button { model.dismissPlaybackHint() } label: { Image(systemName: "xmark") }
+                            .accessibilityLabel("Dismiss")
+                            .frame(minWidth: 44, minHeight: 44)
+                    }
+                    .nowPlayingPart("hint", into: $partHeights)
+                }
+                if let error = player.lastError {
+                    Label("This song didn't play. Try it again, or skip to the next one.",
+                          systemImage: "exclamationmark.triangle")
+                        .font(.footnote).foregroundStyle(p.ink2Color)
+                        .accessibilityHint(error)
+                        .nowPlayingPart("error", into: $partHeights)
+                }
+                transport(player).nowPlayingPart("transport", into: $partHeights)
+                if showsUpNext, let next = player.queue.upcoming.first?.song {
+                    upNext(next)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { upNextHeight = $0 }
+                }
+                bottomBar.nowPlayingPart("bottom", into: $partHeights)
             }
         }
+        .padding(.horizontal, Tokens.Spacing.xxl)
+        .padding(.vertical, Tokens.Spacing.l)
+    }
+
+    /// The art, or the lyrics in its place at the same size (D43). A cross-fade, none under Reduce Motion (D15).
+    private func artSlot(_ song: Song, _ player: Player, side: CGFloat) -> some View {
+        ZStack {
+            if showsLyrics && lyricsAvailable {
+                LyricsContent { setLyrics(false) }
+                    .transition(.opacity)
+            } else {
+                Artwork(song.coverArtId, side: 340) { image in
+                    SleeveArt(image: image, side: nil)
+                        .aspectRatio(1, contentMode: .fit)
+                        .clipShape(RoundedRectangle(cornerRadius: Tokens.Radius.hero, style: .continuous))
+                }
+                .shadow(color: .black.opacity(0.22), radius: 24, y: 12)
+                .scaleEffect(player.isPlaying ? 1 : 0.92)
+                .animation(.spring(duration: 0.4), value: player.isPlaying)
+                .transition(.opacity)
+            }
+        }
+        .frame(width: side, height: side)
+    }
+
+    private func setLyrics(_ on: Bool) {
+        if reduceMotion { showsLyrics = on }
+        else { withAnimation(.easeInOut(duration: 0.25)) { showsLyrics = on } }
     }
 
     private func topBar(_ song: Song) -> some View {
@@ -92,7 +147,7 @@ struct NowPlayingView: View {
             }
             .accessibilityElement(children: .combine)
             Spacer()
-            SleepTimerMenu()
+            Color.clear.frame(width: Tokens.minHitSize, height: Tokens.minHitSize)   // balances the close button
         }
         .buttonStyle(.plain)
     }
@@ -205,7 +260,7 @@ struct NowPlayingView: View {
         let ax = typeSize.isAccessibilitySize
         let label = ax ? AnyLayout(VStackLayout(alignment: .leading, spacing: 2))
                        : AnyLayout(HStackLayout(spacing: Tokens.Spacing.m))
-        return Button { panel = .queue } label: {
+        return Button { showsQueue = true } label: {
             HStack(spacing: Tokens.Spacing.m) {
                 if !ax { Artwork(song.coverArtId, side: 36) { SleeveArt(image: $0, side: 36) } }
                 label {
@@ -225,16 +280,23 @@ struct NowPlayingView: View {
         .accessibilityAddTraits(.isButton)
     }
 
+    /// Lyrics | Sleep timer | Queue, evenly spaced. The moon stays centred while Lyrics is hidden.
     private var bottomBar: some View {
         HStack {
             if lyricsAvailable {
-                Button { panel = .lyrics } label: {
-                    Image(systemName: "quote.bubble").font(.title3).frame(width: Tokens.minHitSize, height: Tokens.minHitSize)
+                Button { setLyrics(!showsLyrics) } label: {
+                    Image(systemName: showsLyrics ? "quote.bubble.fill" : "quote.bubble")
+                        .font(.title3).frame(width: Tokens.minHitSize, height: Tokens.minHitSize)
                 }
                 .accessibilityLabel("Lyrics")
+                .accessibilityAddTraits(showsLyrics ? .isSelected : [])
+            } else {
+                Color.clear.frame(width: Tokens.minHitSize, height: Tokens.minHitSize).accessibilityHidden(true)
             }
             Spacer()
-            Button { panel = .queue } label: {
+            SleepTimerMenu()
+            Spacer()
+            Button { showsQueue = true } label: {
                 Image(systemName: "list.bullet").font(.title3).frame(width: Tokens.minHitSize, height: Tokens.minHitSize)
             }
             .accessibilityLabel("Queue")

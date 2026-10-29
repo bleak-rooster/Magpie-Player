@@ -100,7 +100,7 @@ Code: `MatchIndex/{MatchIndexStore,MatchIndex,Normalize}.swift`, `App/Screens/Sh
 - **Background audio** works through `UIBackgroundModes: audio`.
 - **Now Playing** (lock screen, Control Center, CarPlay) gets the title, artist, album, times, queue index and artwork. The artwork is a 600 px cover fetched with an ephemeral session that has no cache.
 - **Remote commands:** play, pause, toggle, next, previous, seek, shuffle, repeat and like (which toggles the star: it stars the song, or unstars one that is already starred). The like button's state follows the app's star state at once, including a like made a moment ago.
-- **Lyrics** use `getLyricsBySongId`. The button shows only when `getOpenSubsonicExtensions` lists `songLyrics`.
+- **Lyrics** use `getLyricsBySongId`. The button shows only when `getOpenSubsonicExtensions` lists `songLyrics`. It swaps the art for the lyrics in the same slot (they scroll there, the screen doesn't) and stays on across songs (D43).
 - **No audio is ever cached or stored on the device.** Streams use AVPlayer's normal network loading, and the app has no download code.
 
 Code: `Playback/{Player,AVQueueEngine,PlaybackEngine,Queue,NowPlayingBridge}.swift`, `App/Playback/NavidromeAdapters.swift`, `NavidromeClient.streamURL`, `LidarrKit/Provisioner.swift` (profiles), `project.yml` (background mode)

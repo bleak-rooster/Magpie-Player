@@ -17,35 +17,49 @@ enum LyricsTimeline {
     }
 }
 
-/// The current song's lyrics. Synced lyrics follow the playback position (the sung line is
-/// full-strength, the rest dimmed; tap a line to jump there); unsynced lyrics are plain text.
+/// The current song's lyrics, in place of the art on Now Playing (D43) and sized like it: long lyrics scroll
+/// inside this slot only. Synced lyrics follow the playback position (the sung line is full-strength, the rest
+/// dimmed; tap a line to jump there); unsynced lyrics are plain text. A new song loads its own lyrics.
 /// Only offered when the server advertises `songLyrics` (A13).
-struct LyricsView: View {
+struct LyricsContent: View {
     @Environment(AppModel.self) private var model
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var lyrics: Loadable<Lyrics?> = .loading
+    /// Brings the art back.
+    let onClose: () -> Void
     private let themed = Themed()
 
     var body: some View {
         let song = model.player.queue.current?.song
-        NavigationStack {
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LoadableView(state: lyrics, retry: { await load(song) }) { lyrics in
-                        if let lyrics, !lyrics.lines.isEmpty {
-                            content(lyrics, proxy: proxy)
-                        } else {
-                            ContentUnavailableView("No lyrics for this song", systemImage: "quote.bubble")
-                                .accessibilityIdentifier("lyrics-empty")
-                        }
+        let shape = RoundedRectangle(cornerRadius: Tokens.Radius.hero, style: .continuous)
+        ScrollViewReader { proxy in
+            ScrollView {
+                LoadableView(state: lyrics, retry: { await load(song) }) { lyrics in
+                    if let lyrics, !lyrics.lines.isEmpty {
+                        content(lyrics, proxy: proxy)
+                    } else {
+                        ContentUnavailableView("No lyrics for this song", systemImage: "quote.bubble")
+                            .accessibilityIdentifier("lyrics-empty")
                     }
                 }
             }
-            .navigationTitle(song?.title ?? "Lyrics")
-            .navigationBarTitleDisplayMode(.inline)
-            .magpieScreen()
         }
-        .presentationDetents([.medium, .large])
+        .background(themed.palette.solidSurfaceColor, in: shape)
+        .clipShape(shape)
+        .overlay(alignment: .topTrailing) {
+            Button(action: onClose) {
+                Image(systemName: "xmark").font(.footnote.weight(.semibold))
+                    .frame(width: 30, height: 30)
+                    .background(themed.palette.solidSurfaceColor, in: Circle())
+                    .frame(width: Tokens.minHitSize, height: Tokens.minHitSize)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Hide lyrics")
+            .accessibilityIdentifier("lyrics-close")
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("np-lyrics")
         .task(id: song?.id) { await load(song) }
     }
 
@@ -72,7 +86,8 @@ struct LyricsView: View {
                 .padding(.top, Tokens.Spacing.l)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(Tokens.Spacing.xxl)
+        .padding(Tokens.Spacing.l)
+        .padding(.trailing, Tokens.Spacing.l)   // clear of the close button
         .foregroundStyle(p.inkColor)
         .onChange(of: active) { _, new in
             guard let new else { return }
