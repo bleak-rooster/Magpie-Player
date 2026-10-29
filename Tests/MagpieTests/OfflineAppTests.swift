@@ -322,6 +322,15 @@ private let noNetwork = NetworkStatus(isConnected: false, isCellular: false, isC
         #expect(model.homeSections == [.downloaded])
         #expect(try await model.homeShelves(for: model.homeSections).map(\.section) == [.downloaded])
         #expect(try await model.homeShelves(for: HomeSection.allCases).map(\.section) == [.downloaded])
+        // Library (T21) with every row switched on: Genres (from the phone) and Downloads only, no Recently added
+        // grid, and Songs and Favourites ask nothing.
+        model.updatePreferences {
+            for row in LibraryRow.allCases { $0.layout.library.set(row, visible: true, keepingOneOf: []) }
+            $0.layout.showsRecentlyAdded = true
+        }
+        #expect(model.libraryRows == [.genres, .downloads] && !model.showsRecentlyAddedGrid)
+        await #expect(throws: (any Error).self) { try await model.songsPage(0) }
+        await #expect(throws: (any Error).self) { try await model.favourites() }
         try await Task.sleep(for: .milliseconds(300))
         #expect(seen.urls.isEmpty, "sent: \(seen.urls.map(\.path))")
         #expect(f.urls.isEmpty)

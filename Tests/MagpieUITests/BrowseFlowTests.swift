@@ -416,7 +416,7 @@ final class BrowseFlowTests: XCTestCase {
             libraryTab.tap()
             _ = settings.waitForExistence(timeout: 5)
         }
-        XCTAssertTrue(app.buttons["library-requests"].exists)
+        XCTAssertFalse(app.buttons["library-requests"].exists, "T21: Requests shows only with Lidarr connected")
         settings.tap()
 
         let connect = app.buttons["settings-connect-lidarr"]
@@ -448,6 +448,11 @@ final class BrowseFlowTests: XCTestCase {
         for _ in 0..<4 where !scrobbling.isHittable { app.swipeUp() }
         scrobbling.tap()
         XCTAssertTrue(app.switches["settings-count-plays"].waitForExistence(timeout: 10))
+        app.navigationBars.buttons.firstMatch.tap()
+        let done = app.buttons["settings-done"]
+        XCTAssertTrue(done.waitForExistence(timeout: 10))
+        done.tap()
+        XCTAssertTrue(app.buttons["library-requests"].waitForExistence(timeout: 10), "Requests shows once Lidarr is connected")
     }
 
     /// T20: Home in its default order, then Edit Home: Jump back in off, Random albums and Genres on, Most played
@@ -514,5 +519,89 @@ final class BrowseFlowTests: XCTestCase {
     @MainActor private func errorText(_ app: XCUIApplication) -> String {
         let error = app.staticTexts["connect-error"]
         return error.exists ? error.label : "none"
+    }
+
+    /// T21: Library › Songs and Favourites open; then Settings › Home & Library › Library: Songs off, Genres dragged to
+    /// the top, Recently added off; the Library follows. Screenshots of the editor and the reordered Library.
+    /// Preferences outlive a reset launch, so the test starts and ends at the defaults.
+    @MainActor func testLibraryLayoutEditor() throws {
+        let app = try launchSignedIn()
+        let libraryTab = app.tabBars.buttons["Library"]
+        let settings = app.buttons["open-settings"]
+        for _ in 0..<3 where !settings.exists {
+            libraryTab.tap()
+            _ = settings.waitForExistence(timeout: 5)
+        }
+        let reset = app.buttons["layout-reset"]
+        let recent = app.switches["layout-recently-added"]
+        func flip(_ s: XCUIElement) {
+            for _ in 0..<4 where !s.isHittable { app.swipeUp() }
+            s.switches.firstMatch.exists ? s.switches.firstMatch.tap() : s.tap()
+        }
+        func openEditor() {
+            XCTAssertTrue(settings.waitForExistence(timeout: 10))
+            settings.tap()
+            let hub = app.buttons["settings-home-library"]
+            XCTAssertTrue(hub.waitForExistence(timeout: 10))
+            for _ in 0..<4 where !hub.isHittable { app.swipeUp() }
+            hub.tap()
+            let library = app.buttons["settings-library-layout"]
+            XCTAssertTrue(library.waitForExistence(timeout: 10))
+            library.tap()
+            XCTAssertTrue(app.switches["layout-songs"].waitForExistence(timeout: 10))
+        }
+        func resetAndClose() {
+            for _ in 0..<4 where !reset.exists || !reset.isHittable { app.swipeUp() }
+            if reset.isEnabled { reset.tap() }
+            XCTAssertFalse(reset.isEnabled, "the default order")
+            if recent.value as? String == "0" { flip(recent) }
+            XCTAssertEqual(recent.value as? String, "1")
+            app.navigationBars.buttons.firstMatch.tap()   // › Home & Library
+            app.navigationBars.buttons.firstMatch.tap()   // › Settings
+            app.buttons["settings-done"].tap()
+        }
+        openEditor()
+        resetAndClose()
+
+        // Songs and Favourites, at the defaults.
+        let songs = app.buttons["library-songs"]
+        XCTAssertTrue(songs.waitForExistence(timeout: 10))
+        songs.tap()
+        XCTAssertTrue(app.buttons["song-0"].waitForExistence(timeout: 15), "Songs lists the dev library's songs")
+        app.navigationBars.buttons.firstMatch.tap()
+        let favourites = app.buttons["library-favourites"]
+        XCTAssertTrue(favourites.waitForExistence(timeout: 10))
+        favourites.tap()
+        XCTAssertTrue(app.navigationBars["Favourites"].waitForExistence(timeout: 10))
+        app.navigationBars.buttons.firstMatch.tap()
+
+        openEditor()
+        attachScreenshot(app, "library-editor")
+        flip(app.switches["layout-songs"])
+        XCTAssertEqual(app.switches["layout-songs"].value as? String, "0")
+        flip(recent)
+        XCTAssertEqual(recent.value as? String, "0")
+        for _ in 0..<4 { app.swipeDown() }
+        let handle = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Reorder' AND label CONTAINS 'Genres'")).firstMatch
+        XCTAssertTrue(handle.exists, "drag handle for Genres")
+        let top = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Reorder' AND label CONTAINS 'Playlists'")).firstMatch
+        handle.press(forDuration: 0.6, thenDragTo: top)
+        attachScreenshot(app, "library-editor-changed")
+        for _ in 0..<4 where !reset.exists || !reset.isHittable { app.swipeUp() }
+        XCTAssertTrue(reset.isEnabled, "Reset to default order is offered once the order changed")
+        app.navigationBars.buttons.firstMatch.tap()
+        app.navigationBars.buttons.firstMatch.tap()
+        app.buttons["settings-done"].tap()
+
+        let genres = app.buttons["library-genres"], playlists = app.buttons["library-playlists"]
+        XCTAssertTrue(genres.waitForExistence(timeout: 10))
+        XCTAssertFalse(app.buttons["library-songs"].exists, "Songs is hidden")
+        XCTAssertFalse(app.staticTexts["library-recently-added"].exists, "the Recently added grid is off")
+        XCTAssertLessThan(genres.frame.minY, playlists.frame.minY, "Genres moved above Playlists")
+        attachScreenshot(app, "library-reordered")
+
+        openEditor()
+        resetAndClose()
+        XCTAssertTrue(app.buttons["library-songs"].waitForExistence(timeout: 10))
     }
 }

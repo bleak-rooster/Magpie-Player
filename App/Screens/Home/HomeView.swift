@@ -9,24 +9,14 @@ import SwiftUI
 /// offline", then the Downloaded shelf (albums on the phone).
 struct HomeView: View {
     @Environment(AppModel.self) private var model
-    /// The shelves read so far, by section; a section read with nothing in it has no entry.
-    @State private var shelves: Loadable<[HomeSection: HomeShelf]> = .loading
-    /// What the shelves were read for: sections read (with or without tiles), offline or not, songs on the phone.
-    @State private var loaded = LoadKey(sections: [], offline: false, onPhone: nil)
+    /// What has been read so far (`HomeLoad`); failed until the first read answers.
+    @State private var shelves: Loadable<HomeLoad> = .loading
     @State private var editsHome = false
     private let themed = Themed()
 
-    /// What a load depends on. The songs on the phone count only while Downloaded shows.
-    struct LoadKey: Hashable {
-        var sections: [HomeSection]
-        var offline: Bool
-        var onPhone: Int?
-    }
-
-    private var key: LoadKey {
-        let sections = model.homeSections
-        return LoadKey(sections: sections, offline: model.isOffline,
-                       onPhone: sections.contains(.downloaded) ? model.downloads?.localFiles.count : nil)
+    private var key: HomeLoad.Key {
+        .make(sections: model.homeSections, offline: model.isOffline, onPhone: model.downloads?.localFiles.count,
+              genres: model.preferences.genres)
     }
 
     var body: some View {
@@ -48,8 +38,9 @@ struct HomeView: View {
         // edge keeps the title on the page colour.
         .scrollEdgeEffectStyle(.hard, for: .top)
         .magpieScreen()
-        // Reads what a change needs: a section turned on, offline or back online (everything again), a song that
-        // landed on or left the phone (Downloaded). A reorder or a section turned off reads nothing.
+        // Reads what a change needs: a section turned on or one that failed, offline or back online (everything
+        // again), a song that landed on or left the phone (Downloaded), the genre preferences (Genres). A reorder or a
+        // section turned off reads nothing.
         .task(id: key) { await load(fresh: false) }
         // Its own task, so the library's shelves never wait for it. Read once (Refresh reads again), and again
         // whenever the token is saved, replaced or removed (which also clears the shelf).
@@ -64,6 +55,7 @@ struct HomeView: View {
                             Button("Done") { editsHome = false }.accessibilityIdentifier("home-edit-done")
                         }
                     }
+                    .magpieScreen()   // Task 21: the app's theme in the sheet too
             }
         }
     }
@@ -77,8 +69,8 @@ struct HomeView: View {
                 FinishSettingUpCard()
                     .padding(.horizontal, Tokens.Spacing.margin)
             }
-            LoadableView(state: shelves, retry: { await load(fresh: true) }) { found in
-                let sections = model.homeSections.filter { shows($0, found) }
+            LoadableView(state: shelves, retry: { await load(fresh: true) }) { read in
+                let sections = model.homeSections.filter { shows($0, read) }
                 if sections.isEmpty {
                     empty
                 } else {
@@ -86,8 +78,10 @@ struct HomeView: View {
                         ForEach(sections, id: \.self) { section in
                             if section == .madeForYou {
                                 madeForYouShelf
-                            } else if let shelf = found[section] {
+                            } else if let shelf = read.found[section] {
                                 ShelfView(shelf: shelf)
+                            } else {
+                                failure(section)
                             }
                         }
                     }
@@ -107,8 +101,22 @@ struct HomeView: View {
         .padding(.vertical, Tokens.Spacing.l)
     }
 
-    private func shows(_ section: HomeSection, _ found: [HomeSection: HomeShelf]) -> Bool {
-        section == .madeForYou ? !model.madeForYouShelf.isEmpty : found[section] != nil
+    private func shows(_ section: HomeSection, _ read: HomeLoad) -> Bool {
+        section == .madeForYou ? !model.madeForYouShelf.isEmpty : read.found[section] != nil || read.showsFailure(section)
+    }
+
+    /// A section that couldn't be read: its title, and a line saying so.
+    private func failure(_ section: HomeSection) -> some View {
+        VStack(alignment: .leading, spacing: Tokens.Spacing.xs) {
+            Text(section.title).magpieDisplay(.title2).accessibilityAddTraits(.isHeader)
+                .foregroundStyle(themed.palette.inkColor)
+            Label(HomeCopy.couldNotLoad(section), systemImage: "wifi.exclamationmark")
+                .font(.footnote).foregroundStyle(themed.palette.ink2Color)
+        }
+        .padding(.horizontal, Tokens.Spacing.margin)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("home-failed-\(section.rawValue)")
     }
 
     @ViewBuilder private var empty: some View {
@@ -138,25 +146,26 @@ struct HomeView: View {
         .accessibilityIdentifier("home-made-for-you")
     }
 
-    /// Reads the sections not read yet (all of them when `fresh`, or after going offline or back online), and
-    /// Downloaded again when the songs on the phone changed. What was read stays on screen if a read fails.
+    /// Reads what `HomeLoad` says the change needs (everything when `fresh`). What was read stays on screen if a read
+    /// fails; a section that failed is read again on the next change, and says so until then.
     private func load(fresh: Bool) async {
         let want = key
-        let fresh = fresh || shelves.value == nil || want.offline != loaded.offline
-        var found = fresh ? [:] : (shelves.value ?? [:])
-        var done = fresh ? Set<HomeSection>() : Set(loaded.sections)
-        if want.onPhone != loaded.onPhone { done.remove(.downloaded) }
-        let missing = want.sections.filter { $0 != .madeForYou && !done.contains($0) }
+        var state = shelves.value ?? HomeLoad()
+        let read = state.read(for: want, fresh: fresh)
         do {
-            let read = missing.isEmpty ? [] : try await model.homeShelves(for: missing)
+            let result = read.sections.isEmpty ? AppModel.HomeRead(shelves: [], failed: [])
+                                               : try await model.homeRead(for: read.sections)
             guard !Task.isCancelled else { return }
-            for section in missing { found[section] = nil }
-            for shelf in read { found[shelf.section] = shelf }
-            loaded = LoadKey(sections: Array(done.union(missing)), offline: want.offline, onPhone: want.onPhone)
-            shelves = .loaded(found)
+            state.record(read, for: want, shelves: result.shelves, failed: result.failed)
+            shelves = .loaded(state)
         } catch {
             guard !Task.isCancelled else { return }
-            if shelves.value == nil { shelves = .failed(BrowseErrorCopy.message(for: error)) }
+            if shelves.value == nil {
+                shelves = .failed(BrowseErrorCopy.message(for: error))
+            } else {
+                state.record(read, for: want, shelves: [], failed: Set(read.sections))
+                shelves = .loaded(state)
+            }
         }
     }
 }
@@ -167,7 +176,7 @@ private struct ShelfView: View {
 
     var body: some View {
         ShelfSection(shelf.section.title) {
-            ForEach(Array(shelf.items.enumerated()), id: \.offset) { _, item in
+            ForEach(shelf.items) { item in
                 tile(item)
             }
         }
@@ -201,6 +210,9 @@ private struct ShelfView: View {
 
 /// What Home's "Finish setting up" card says. About the music; it points to Settings without naming a service (§5).
 enum HomeCopy {
+    /// Under a section's title when it couldn't be read (Task 21).
+    static func couldNotLoad(_ section: HomeSection) -> String { "Couldn't load \(section.title). Pull to refresh." }
+
     /// Try works; only Finds is left (B-M2).
     static let finishFinds = "Your Finds folder needs one more step in Settings."
 

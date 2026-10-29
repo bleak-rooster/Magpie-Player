@@ -182,10 +182,106 @@ private func queryValue(_ request: URLRequest, _ name: String) -> String? {
     /// Settings › Home & Library: the count of Home sections that show.
     @Test func homeAndLibrarySummary() async throws {
         let model = try await signedInModel(fetcher: FakeFetcher())
-        #expect(HomeAndLibraryView.summary(model) == "3 sections")
+        #expect(HomeAndLibraryView.homeSummary(model) == "3 sections")
         model.updatePreferences { $0.layout.home.set(.jumpBackIn, visible: false, keepingOneOf: []) }
         model.updatePreferences { for s in [HomeSection.recentlyAdded, .mostPlayed] { $0.layout.home.set(s, visible: false, keepingOneOf: []) } }
         model.updatePreferences { $0.layout.home.set(.genres, visible: true, keepingOneOf: []) }
-        #expect(HomeAndLibraryView.summary(model) == "1 section")
+        #expect(HomeAndLibraryView.homeSummary(model) == "1 section")
+    }
+
+    // MARK: - Task 21: the parked Task 20 minors
+
+    func key(_ sections: [HomeSection], offline: Bool = false, onPhone: Int? = nil,
+             genres: GenrePreferences? = nil) -> HomeLoad.Key {
+        HomeLoad.Key(sections: sections, offline: offline, onPhone: onPhone, genres: genres)
+    }
+
+    func shelf(_ section: HomeSection) -> HomeShelf { HomeShelf(section: section, items: [.album(album(section.rawValue))]) }
+
+    /// A section that fails during an incremental read isn't marked read: the next key change reads it again (with
+    /// the new section), and it shows "Couldn't load" until then. A reorder reads nothing; pull to refresh reads all.
+    @Test func incrementalLoadRetriesFailedSections() {
+        var load = HomeLoad()
+        let first = key([.jumpBackIn, .madeForYou, .recentlyAdded])
+        let read1 = load.read(for: first, fresh: false)
+        #expect(read1.sections == [.jumpBackIn, .recentlyAdded], "Made for you has its own shelf")
+        load.record(read1, for: first, shelves: [shelf(.jumpBackIn)], failed: [.recentlyAdded])
+        #expect(load.failed == [.recentlyAdded] && Set(load.found.keys) == [.jumpBackIn])
+        #expect(load.showsFailure(.recentlyAdded) && !load.showsFailure(.jumpBackIn))
+
+        let more = key([.jumpBackIn, .madeForYou, .recentlyAdded, .mostPlayed])
+        let read2 = load.read(for: more, fresh: false)
+        #expect(read2.sections == [.recentlyAdded, .mostPlayed], "the failed section is read again, with the new one")
+        load.record(read2, for: more, shelves: [shelf(.recentlyAdded), shelf(.mostPlayed)], failed: [])
+        #expect(load.failed.isEmpty && Set(load.found.keys) == [.jumpBackIn, .recentlyAdded, .mostPlayed])
+
+        let reordered = key([.mostPlayed, .jumpBackIn, .madeForYou, .recentlyAdded])
+        #expect(load.read(for: reordered, fresh: false).sections.isEmpty, "a reorder reads nothing")
+        #expect(load.read(for: reordered, fresh: true).sections == [.mostPlayed, .jumpBackIn, .recentlyAdded])
+
+        // A failed re-read keeps the shelf already on screen (no "Couldn't load" line over it), still not marked read.
+        let fresh = load.read(for: reordered, fresh: true)
+        load.record(fresh, for: reordered, shelves: [shelf(.jumpBackIn), shelf(.recentlyAdded)], failed: [.mostPlayed])
+        #expect(load.found[.mostPlayed] != nil && !load.showsFailure(.mostPlayed))
+        #expect(load.read(for: key([.mostPlayed, .jumpBackIn]), fresh: false).sections == [.mostPlayed])
+    }
+
+    /// Downloaded is read again when songs land; Genres when the genre preferences change (both only while they
+    /// show); everything when going offline or back online.
+    @Test func incrementalLoadFollowsWhatSectionsDependOn() {
+        var genres = GenrePreferences.defaultValue
+        var load = HomeLoad()
+        let first = key([.genres, .downloaded], onPhone: 1, genres: genres)
+        load.record(load.read(for: first, fresh: false), for: first, shelves: [shelf(.genres), shelf(.downloaded)], failed: [])
+        #expect(load.read(for: first, fresh: false).sections.isEmpty)
+        genres.hidden = ["rock"]
+        #expect(load.read(for: key([.genres, .downloaded], onPhone: 1, genres: genres), fresh: false).sections == [.genres])
+        #expect(load.read(for: key([.genres, .downloaded], onPhone: 2, genres: GenrePreferences.defaultValue),
+                          fresh: false).sections == [.downloaded])
+        let offline = key([.downloaded], offline: true, onPhone: 1)
+        let read = load.read(for: offline, fresh: false)
+        #expect(read.sections == [.downloaded] && read.fresh)
+        load.record(read, for: offline, shelves: [], failed: [])
+        #expect(load.found.isEmpty, "going offline drops the online shelves; an empty Downloaded is left out")
+    }
+
+    /// The key holds the songs on the phone only while Downloaded shows, and the genre preferences only while Genres
+    /// shows, so a change to either reads nothing when its section is off.
+    @Test func loadKeyHoldsOnlyWhatShownSectionsNeed() {
+        var genres = GenrePreferences.defaultValue
+        genres.hidden = ["jazz"]
+        #expect(HomeLoad.Key.make(sections: [.jumpBackIn], offline: false, onPhone: 3, genres: genres)
+                == key([.jumpBackIn]))
+        #expect(HomeLoad.Key.make(sections: [.genres, .downloaded], offline: false, onPhone: 3, genres: genres)
+                == key([.genres, .downloaded], onPhone: 3, genres: genres))
+    }
+
+    /// `homeRead(for:)` names the sections that couldn't be read, for the "Couldn't load" line.
+    @Test func homeReadReportsFailedSections() async throws {
+        let model = try await signedInModel(fetcher: FakeFetcher())
+        failing.withLock { $0 = ["newest"] }
+        let read = try await model.homeRead(for: [.jumpBackIn, .recentlyAdded])
+        #expect(read.shelves.map(\.section) == [.jumpBackIn] && read.failed == [.recentlyAdded])
+        #expect(HomeCopy.couldNotLoad(.recentlyAdded) == "Couldn't load Recently added. Pull to refresh.")
+    }
+
+    /// Shelf tiles are identified by what they are (album, playlist, group), not by position.
+    @Test func shelfItemIdsAreStable() throws {
+        let section = try #require(GenreGroups.grouped([Genre(name: "Rock", songCount: 1, albumCount: 1)],
+                                                       preferences: .defaultValue).first)
+        let playlist = Playlist(id: "p1", name: "Road", songCount: 1, duration: 0)
+        let items: [HomeShelf.Item] = [.album(album("a1")), .downloadedAlbum(album("a2")), .playlist(playlist),
+                                       .genreGroup(section)]
+        #expect(items.map(\.id) == ["album-a1", "album-a2", "playlist-p1", "group-rock"])
+    }
+
+    /// D15: a switch that can't turn off says why; a Move action says what it did.
+    @Test func editorAccessibilityCopy() {
+        var list = LayoutPreferences.defaultValue.library
+        for row in LibraryRow.allCases where row != .songs { list.set(row, visible: false, keepingOneOf: []) }
+        let keep = LayoutPreferences.alwaysAvailableRows
+        #expect(OrderedVisibilityEditor<LibraryRow>.hint(.songs, in: list, keepingOneOf: keep) == "At least one must stay on")
+        #expect(OrderedVisibilityEditor<LibraryRow>.hint(.albums, in: list, keepingOneOf: keep) == nil)
+        #expect(OrderedVisibilityEditor<LibraryRow>.movedUp == "Moved up" && OrderedVisibilityEditor<LibraryRow>.movedDown == "Moved down")
     }
 }

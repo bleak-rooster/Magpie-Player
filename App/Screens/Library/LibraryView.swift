@@ -3,7 +3,10 @@ import MagpieCore
 import Requests
 import SwiftUI
 
-/// Library: Playlists, Artists, Albums, Genres, Finds (once a Finds library is chosen), Requests, then recently added albums.
+/// Library (spec §3, Task 21): the owner's rows in the owner's order (Settings › Home & Library › Library): Playlists,
+/// Artists, Albums, Songs, Genres, Favourites, Downloads, Finds (once a Finds library is chosen), Requests (with Lidarr
+/// connected); then, when switched on, recently added albums. Offline (Task 14): "You're offline", then Downloads (and
+/// Genres, read from the phone).
 struct LibraryView: View {
     @Environment(AppModel.self) private var model
     @State private var recent: Loadable<[Album]> = .loading
@@ -13,19 +16,18 @@ struct LibraryView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Tokens.Spacing.xxl) {
-                if model.isOffline {   // Task 14 (kept by Task 21): only what's on the phone
-                    VStack(alignment: .leading, spacing: Tokens.Spacing.m) {
+                VStack(alignment: .leading, spacing: Tokens.Spacing.m) {
+                    if model.isOffline {   // Task 14 (kept by Task 21): only what's on the phone
                         OfflineNotice().padding(.horizontal, Tokens.Spacing.largeTitleMargin)
-                        row("Downloads", symbol: "arrow.down.circle.fill", route: .downloads)
                     }
-                } else {
-                    online
+                    rows
                 }
+                if model.showsRecentlyAddedGrid { recentlyAdded }
             }
             .padding(.vertical, Tokens.Spacing.s)
         }
         .refreshable {
-            if model.isOffline { await model.checkReachability() } else { await load() }
+            if model.isOffline { await model.checkReachability() } else if model.showsRecentlyAddedGrid { await load() }
         }
         .magpieLargeTitle("Library")
         .toolbar {
@@ -39,28 +41,50 @@ struct LibraryView: View {
         }
         .sheet(isPresented: $showsSettings) { SettingsView() }
         .magpieScreen()
-        .task(id: model.isOffline) { if !model.isOffline, recent.value == nil { await load() } }
+        .task(id: model.showsRecentlyAddedGrid) { if model.showsRecentlyAddedGrid, recent.value == nil { await load() } }
     }
 
-    @ViewBuilder private var online: some View {
-        let p = themed.palette
-        VStack(spacing: 0) {
-            row("Playlists", symbol: "music.note.list", route: .playlists)
-            Divider().overlay(p.sepColor).padding(.leading, 52)
-            row("Artists", symbol: "music.mic", route: .artists)
-            Divider().overlay(p.sepColor).padding(.leading, 52)
-            row("Albums", symbol: "square.stack", route: .albums)
-            Divider().overlay(p.sepColor).padding(.leading, 52)
-            row("Genres", symbol: "guitars", route: .genres)   // Task 19 (Task 21 makes the rows reorderable)
-            Divider().overlay(p.sepColor).padding(.leading, 52)
-            if model.findsSetup?.library != nil {
-                row("Finds", symbol: "record.circle", route: .finds, detail: findsDetail)
-                Divider().overlay(p.sepColor).padding(.leading, 52)
+    /// The rows `AppModel.libraryRows` names, in its order, with a separator between each.
+    private var rows: some View {
+        let rows = model.libraryRows
+        return VStack(spacing: 0) {
+            ForEach(Array(rows.enumerated()), id: \.element) { index, item in
+                if index > 0 { Divider().overlay(themed.palette.sepColor).padding(.leading, 52) }
+                row(item.title, symbol: Self.symbol(item), route: Self.route(item), detail: detail(item))
             }
-            row("Requests", symbol: "arrow.down.circle", route: .requests, detail: requestsDetail)
         }
+    }
+
+    /// Where a row goes.
+    static func route(_ row: LibraryRow) -> Route {
+        switch row {
+        case .playlists: .playlists
+        case .artists: .artists
+        case .albums: .albums
+        case .songs: .songs
+        case .genres: .genres
+        case .favourites: .favourites
+        case .downloads: .downloads
+        case .finds: .finds
+        case .requests: .requests
+        }
+    }
+
+    /// A row's symbol: the shared one (CarPlay uses it too), except Finds, which keeps the Finds tab's record.
+    static func symbol(_ row: LibraryRow) -> String { row == .finds ? "record.circle" : row.symbol }
+
+    private func detail(_ row: LibraryRow) -> String? {
+        switch row {
+        case .finds: findsDetail
+        case .requests: requestsDetail
+        default: nil
+        }
+    }
+
+    private var recentlyAdded: some View {
         VStack(alignment: .leading, spacing: Tokens.Spacing.m) {
             Text("Recently added").magpieDisplay(.title2).accessibilityAddTraits(.isHeader)
+                .accessibilityIdentifier("library-recently-added")
                 .padding(.horizontal, Tokens.Spacing.largeTitleMargin)
             LoadableView(state: recent, retry: load) { albums in
                 AlbumGrid(albums: albums) { $0.artist }

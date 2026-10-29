@@ -5,12 +5,21 @@ import Search
 
 /// One Home shelf: a section and its tiles. "Made for you" isn't one; it keeps its own shelf (`madeForYouShelf`).
 struct HomeShelf: Identifiable, Equatable, Sendable {
-    enum Item: Equatable, Sendable {
+    enum Item: Identifiable, Equatable, Sendable {
         case album(Album)
         case playlist(Playlist)
         case genreGroup(GenreGroupSection)
         /// An album on the phone (Downloaded): it opens offline too.
         case downloadedAlbum(Album)
+
+        /// What the tile is (Task 21): stable across reads, unlike its position.
+        var id: String {
+            switch self {
+            case .album(let album), .downloadedAlbum(let album): "album-\(album.id)"
+            case .playlist(let playlist): "playlist-\(playlist.id)"
+            case .genreGroup(let section): "group-\(section.group.id)"
+            }
+        }
     }
 
     var section: HomeSection
@@ -28,10 +37,22 @@ extension AppModel {
         preferences.layout.visibleHomeSections(offline: isOffline, hasListenBrainzToken: hasListenBrainzToken, carPlay: false)
     }
 
+    /// A read of Home's sections: the shelves with something in them, in the order asked, and the sections that
+    /// couldn't be read (Home says so under their titles, Task 21).
+    struct HomeRead: Sendable {
+        var shelves: [HomeShelf]
+        var failed: Set<HomeSection>
+    }
+
     /// The shelves for `sections`, in that order, fetched at the same time. Made for you is left out (its own shelf),
     /// and so is any section with nothing in it or that couldn't be read. Throws only when every section that asks the
     /// server failed. Offline, nothing is asked of the server: only Downloaded (and Genres, from the phone) fill in.
     func homeShelves(for sections: [HomeSection]) async throws -> [HomeShelf] {
+        try await homeRead(for: sections).shelves
+    }
+
+    /// `homeShelves(for:)`, naming the sections that couldn't be read.
+    func homeRead(for sections: [HomeSection]) async throws -> HomeRead {
         let wanted = sections.filter { $0 != .madeForYou }
         let results = await withTaskGroup(of: (Int, Result<[HomeShelf.Item], any Error>).self) { group in
             for (index, section) in wanted.enumerated() {
@@ -47,10 +68,14 @@ extension AppModel {
         let asksServer = wanted.indices.filter { Self.asksServer(wanted[$0]) }
         let failures = asksServer.compactMap { i -> (any Error)? in if case .failure(let e) = results[i] { e } else { nil } }
         if !asksServer.isEmpty, failures.count == asksServer.count, let first = failures.first { throw first }
-        return zip(wanted, results).compactMap { section, result in
+        let shelves = zip(wanted, results).compactMap { section, result -> HomeShelf? in
             guard case .success(let items) = result, !items.isEmpty else { return nil }
             return HomeShelf(section: section, items: items)
         }
+        let failed = zip(wanted, results).compactMap { section, result -> HomeSection? in
+            if case .failure = result { section } else { nil }
+        }
+        return HomeRead(shelves: shelves, failed: Set(failed))
     }
 
     /// Downloaded reads the phone only; every other section asks the server.
@@ -82,5 +107,38 @@ extension AppModel {
         guard !isOffline else { return [] }   // Task 14: nothing is asked of the server offline
         return try await request { [size = Self.homeShelfSize] in try await $0.albumList(type, size: size, offset: 0) }
             .map(HomeShelf.Item.album)
+    }
+}
+
+/// Library layout (spec §3, Task 21): the rows the owner shows, in the owner's order; the Recently added grid's switch;
+/// Songs a page at a time; Favourites.
+extension AppModel {
+    /// Songs per page of Library › Songs.
+    static let songsPageSize = 100
+
+    /// The rows the Library shows now. Online: the owner's order and switches, Finds only once set up, Requests only
+    /// with Lidarr connected. Offline (Task 14): Downloads, which always shows, and Genres (read from the phone) when
+    /// switched on, in the owner's order.
+    var libraryRows: [LibraryRow] {
+        let layout = preferences.layout
+        guard isOffline else {
+            return layout.visibleLibraryRows(offline: false, findsSetUp: findsSetup?.library != nil,
+                                             lidarrConnected: lidarr != nil, carPlay: false)
+        }
+        return layout.library.entries.filter { $0.item == .downloads || ($0.item == .genres && $0.visible) }.map(\.item)
+    }
+
+    /// The Recently added grid at the bottom of the Library: its own switch, and never offline.
+    var showsRecentlyAddedGrid: Bool { preferences.layout.showsRecentlyAdded && !isOffline }
+
+    /// One page of every song, A–Z by title (`page` from 0).
+    func songsPage(_ page: Int) async throws -> [Song] {
+        let size = Self.songsPageSize
+        return try await request { try await $0.songsPage(start: page * size, end: (page + 1) * size, sort: "title") }.songs
+    }
+
+    /// Library › Favourites: every starred song and album (`getStarred2`).
+    func favourites() async throws -> Starred {
+        try await request { try await $0.starred() }
     }
 }

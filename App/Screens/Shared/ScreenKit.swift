@@ -24,6 +24,9 @@ enum Route: Hashable {
     case genres
     case genreGroup(id: String)
     case genre(name: String)
+    /// Library › Songs and Library › Favourites (Task 21).
+    case songs
+    case favourites
 }
 
 extension View {
@@ -45,6 +48,8 @@ extension View {
             case .genres: GenresView()
             case .genreGroup(let id): GenreGroupView(groupId: id)
             case .genre(let name): GenreView(name: name)
+            case .songs: SongsListView()
+            case .favourites: FavouritesView()
             }
         }
     }

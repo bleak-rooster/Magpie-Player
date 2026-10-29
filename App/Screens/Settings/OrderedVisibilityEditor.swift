@@ -3,7 +3,8 @@ import SwiftUI
 
 /// One editor for any `OrderedVisibility` list (Home sections, Library rows): drag handles (always in edit mode), a
 /// switch per row, VoiceOver "Move up" and "Move down" actions (D15), a footer line per item, switches that are
-/// disabled when turning them off would leave none of `keepingOneOf` showing, and "Reset to default order".
+/// disabled when turning them off would leave none of `keepingOneOf` showing (with a VoiceOver hint saying why), and
+/// "Reset to default order". The Move actions announce what they did.
 struct OrderedVisibilityEditor<Item: CaseIterable & RawRepresentable & Hashable & Sendable>: View
     where Item.RawValue == String, Item.AllCases: Sendable {
     private let title: String
@@ -32,6 +33,15 @@ struct OrderedVisibilityEditor<Item: CaseIterable & RawRepresentable & Hashable 
         var copy = list
         return copy.set(item, visible: !entry.visible, keepingOneOf: keepingOneOf)
     }
+
+    /// VoiceOver's hint on a switch that can't change (Task 21); nil otherwise.
+    static func hint(_ item: Item, in list: OrderedVisibility<Item>, keepingOneOf: Set<Item>) -> String? {
+        canToggle(item, in: list, keepingOneOf: keepingOneOf) ? nil : "At least one must stay on"
+    }
+
+    /// What VoiceOver says after a Move action (Task 21).
+    static var movedUp: String { "Moved up" }
+    static var movedDown: String { "Moved down" }
 
     var body: some View {
         List {
@@ -74,10 +84,21 @@ struct OrderedVisibilityEditor<Item: CaseIterable & RawRepresentable & Hashable 
         }
         .disabled(!Self.canToggle(item, in: list, keepingOneOf: keepingOneOf))
         .frame(minHeight: 44)
+        .accessibilityHint(Self.hint(item, in: list, keepingOneOf: keepingOneOf) ?? "")
         .accessibilityIdentifier("layout-\(item.rawValue)")
         .accessibilityActions {
-            if index > 0 { Button("Move up") { list.moveUp(item) } }
-            if index < entries.count - 1 { Button("Move down") { list.moveDown(item) } }
+            if index > 0 {
+                Button("Move up") {
+                    list.moveUp(item)
+                    AccessibilityNotification.Announcement(Self.movedUp).post()
+                }
+            }
+            if index < entries.count - 1 {
+                Button("Move down") {
+                    list.moveDown(item)
+                    AccessibilityNotification.Announcement(Self.movedDown).post()
+                }
+            }
         }
     }
 }
