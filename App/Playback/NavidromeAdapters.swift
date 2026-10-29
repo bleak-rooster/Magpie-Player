@@ -105,21 +105,39 @@ struct NavidromeScrobbler: Scrobbler {
     }
 }
 
-/// Stream URLs built against the client's active base address. After a failover the app calls
-/// `Player.urlsInvalidated()` so queued items pick up the new base.
+/// The streaming quality the next stream URL is built with. Written on the main actor when the network or the
+/// preference changes, read on every URL build.
+final class QualityBox: Sendable {
+    private let lock: OSAllocatedUnfairLock<StreamQuality>
+    init(_ quality: StreamQuality) { lock = OSAllocatedUnfairLock(initialState: quality) }
+    var value: StreamQuality { lock.withLock { $0 } }
+    func set(_ quality: StreamQuality) { lock.withLock { $0 = quality } }
+}
+
+/// Stream URLs built against the client's active base address and the current quality. After a failover the app
+/// calls `Player.urlsInvalidated()` so queued items pick up the new base.
 @MainActor
 final class NavidromeStreamURLs: StreamURLProvider {
     let box: ClientBox
-    var maxBitRate: Int?
-    var format: String?
+    let quality: QualityBox
+    /// A downloaded copy of the song, preferred over streaming (Task 13 fills it in).
+    let localURL: @MainActor (String) -> URL?
 
-    init(box: ClientBox, maxBitRate: Int? = nil, format: String? = nil) {
-        self.box = box; self.maxBitRate = maxBitRate; self.format = format
+    init(box: ClientBox, quality: QualityBox, localURL: @escaping @MainActor (String) -> URL? = { _ in nil }) {
+        self.box = box; self.quality = quality; self.localURL = localURL
     }
 
     func streamURL(for song: Song) -> URL {
+        if let local = localURL(song.id) { return local }
+        let q = quality.value
         // The queue is emptied on sign-out, so a missing client only happens in a race; the item fails.
-        box.client?.streamURL(songId: song.id, maxBitRate: maxBitRate, format: format)
+        return box.client?.streamURL(songId: song.id, maxBitRate: q.maxBitRate, format: q.format)
             ?? URL(string: "about:blank")!
+    }
+
+    /// The untranscoded stream, only when this one is transcoded and the song isn't a local file.
+    func originalURL(for song: Song) -> URL? {
+        guard quality.value != .original, localURL(song.id) == nil else { return nil }
+        return box.client?.streamURL(songId: song.id, maxBitRate: nil, format: StreamQuality.original.format)
     }
 }

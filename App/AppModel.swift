@@ -164,6 +164,14 @@ final class AppModel {
     /// a build without arbitrary loads, where `atsBlocksPlainHTTP` pre-refuses.
     @ObservationIgnored var atsAllowsArbitraryLoads = AppModel.bundleAllowsArbitraryLoads()
     @ObservationIgnored private var errorWatch: Task<Void, Never>?
+    @ObservationIgnored let network: any NetworkStatusProviding
+    /// The quality stream URLs are built with; set before `player`, which is built before `self` is usable.
+    @ObservationIgnored let qualityBox = QualityBox(.original)
+    @ObservationIgnored var qualityWatch: Task<Void, Never>?
+    @ObservationIgnored var hintWatch: Task<Void, Never>?
+    @ObservationIgnored var shownTranscodeHint = false
+    /// A footnote under the Now Playing scrubber (the transcode fallback); nil when none.
+    var playbackHint: String?
     #if os(iOS)
     @ObservationIgnored private var nowPlaying: NowPlayingBridge?
     #endif
@@ -186,7 +194,8 @@ final class AppModel {
          theme: Theme = Theme(),
          systemNowPlaying: Bool = true,
          notifications: Bool = true,
-         localNetworkProber: (any LocalNetworkProbing)? = nil) {
+         localNetworkProber: (any LocalNetworkProbing)? = nil,
+         network: (any NetworkStatusProviding)? = nil) {
         let box = ClientBox()
         self.store = store
         self.lidarrStore = lidarrStore
@@ -217,10 +226,13 @@ final class AppModel {
         self.hasListenBrainzToken = tokenStore.load() != nil
         let counting = PlayCounting(on: defaults.object(forKey: Self.countPlaysKey) as? Bool ?? true)
         self.playCounting = counting
+        let network = network ?? (ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil
+                                  ? NetworkMonitor() : FixedNetwork())
+        self.network = network
         let findsIdentity = self.findsIdentity
         self.player = Player(engine: engine ?? AVQueueEngine(),
                              scrobbler: NavidromeScrobbler(box: box, counting: counting),
-                             urls: NavidromeStreamURLs(box: box),
+                             urls: NavidromeStreamURLs(box: box, quality: self.qualityBox),
                              isFind: { findsIdentity.isFind($0) })
         #if os(iOS)
         if systemNowPlaying {
@@ -232,6 +244,7 @@ final class AppModel {
         }
         #endif
         watchPlaybackErrors()
+        watchPlaybackQuality()
         watchFindPlays()
         watchBanner()
         readLidarrPermissions()

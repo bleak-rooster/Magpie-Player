@@ -122,6 +122,16 @@ import os
         #expect(songs[2].artistMBID?.rawValue == "75ab6ba6-9197-4f83-8a23-a1925a7ec5a2")
     }
 
+    @Test func aacStreamURLHasNoEstimateContentLength() async throws {
+        let (client, _) = try await connected { _ in }
+        let items = Dictionary(uniqueKeysWithValues: URLComponents(
+            url: client.streamURL(songId: "a", maxBitRate: 160, format: "aac"), resolvingAgainstBaseURL: false)!
+            .queryItems!.map { ($0.name, $0.value ?? "") })
+        #expect(items["estimateContentLength"] == nil && items["format"] == "aac" && items["maxBitRate"] == "160")
+        let raw = client.streamURL(songId: "a", maxBitRate: nil, format: "raw")
+        #expect(raw.absoluteString.contains("estimateContentLength=true"))
+    }
+
     @Test func streamURLHasEstimateContentLength() async throws {
         let (client, _) = try await connected { _ in }
         let url = client.streamURL(songId: "abc 123", maxBitRate: 320, format: "mp3")

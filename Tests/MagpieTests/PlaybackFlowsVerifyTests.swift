@@ -34,7 +34,7 @@ private let away = URL(string: "https://music.example.com/navidrome")!
     func makeModel() -> AppModel {
         AppModel(store: store, lidarrStore: MemoryLidarrStore(), tokenStore: MemoryTokenStore(), matchIndexDirectory: nil,
                  dataDirectory: nil, transport: transport, probeTransport: transport, engine: engine,
-                 defaults: defaults, systemNowPlaying: false, notifications: false)
+                 defaults: defaults, systemNowPlaying: false, notifications: false, network: FakeNetwork())
     }
 
     func tearDown(_ model: AppModel) {
@@ -55,9 +55,9 @@ private let away = URL(string: "https://music.example.com/navidrome")!
 
     // MARK: - §3c Stream URL
 
-    /// FLOWS §3c: the app's stream URL is `rest/stream` with `id`, `estimateContentLength=true` and the Subsonic token
-    /// auth only: no `format`, no `maxBitRate`, never the password.
-    @Test func docClaim_appStreamURLHasNoFormatOrMaxBitRate() async throws {
+    /// FLOWS §3c (0.0.1): on Wi-Fi with Original the app's stream URL is `rest/stream` with `id`, `format=raw`,
+    /// `estimateContentLength=true` and the Subsonic token auth only: no `maxBitRate`, never the password.
+    @Test func docClaim_appStreamURLOriginalIsRaw() async throws {
         let model = makeModel()
         try await model.signIn(urls: [home], username: "admin", password: "pw")
         model.play([Self.song("s1"), Self.song("s2")], startAt: 0)
@@ -67,7 +67,8 @@ private let away = URL(string: "https://music.example.com/navidrome")!
             let comps = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
             #expect(comps.host == "192.168.1.2" && comps.path == "/rest/stream")
             let names = Set((comps.queryItems ?? []).map(\.name))
-            #expect(names == ["u", "t", "s", "v", "c", "f", "id", "estimateContentLength"], "\(names)")
+            #expect(names == ["u", "t", "s", "v", "c", "f", "id", "format", "estimateContentLength"], "\(names)")
+            #expect(comps.queryItems?.first { $0.name == "format" }?.value == "raw")
             #expect(comps.queryItems?.first { $0.name == "estimateContentLength" }?.value == "true")
             #expect(!url.absoluteString.contains("pw"), "the password is never in a stream URL")
         }

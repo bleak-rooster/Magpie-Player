@@ -31,6 +31,9 @@ struct SettingsView: View {
                 servers
                 lidarr
                 listening
+                Section("Playback") {
+                    NavigationLink("Playback") { PlaybackSettingsView() }
+                }
                 Section("About") {
                     LabeledContent("Magpie", value: Self.version)
                 }

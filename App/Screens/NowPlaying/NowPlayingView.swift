@@ -43,6 +43,16 @@ struct NowPlayingView: View {
                         .animation(.spring(duration: 0.4), value: player.isPlaying)
                         meta(song)
                         scrubber(song, player)
+                        if let hint = model.playbackHint {
+                            HStack(alignment: .firstTextBaseline) {
+                                Label(hint, systemImage: "info.circle")
+                                    .font(.footnote).foregroundStyle(p.ink2Color)
+                                Spacer(minLength: Tokens.Spacing.s)
+                                Button { model.dismissPlaybackHint() } label: { Image(systemName: "xmark") }
+                                    .accessibilityLabel("Dismiss")
+                                    .frame(minWidth: 44, minHeight: 44)
+                            }
+                        }
                         if let error = player.lastError {
                             Label("This song didn't play. Try it again, or skip to the next one.",
                                   systemImage: "exclamationmark.triangle")

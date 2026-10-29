@@ -17,5 +17,9 @@ extension AppModel {
 
     /// The fan-out: one line per feature that reacts to a changed preference (later tasks add theirs here).
     func preferencesDidChange(from old: Preferences) {
+        if preferences.playback != old.playback {
+            qualityBox.set(currentStreamQuality)
+            player.upcomingURLsChanged()
+        }
     }
 }

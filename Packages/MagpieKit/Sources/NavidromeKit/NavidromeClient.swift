@@ -277,7 +277,9 @@ public actor NavidromeClient {
         var extra = [URLQueryItem(name: "id", value: songId)]
         if let maxBitRate { extra.append(URLQueryItem(name: "maxBitRate", value: String(maxBitRate))) }
         if let format { extra.append(URLQueryItem(name: "format", value: format)) }
-        extra.append(URLQueryItem(name: "estimateContentLength", value: "true"))
+        // Navidrome's estimate is exact for the original file and for CBR mp3, but ffmpeg's AAC runs past it and the
+        // server cuts the stream ("wrote more than the declared Content-Length"), so AAC goes out chunked (TranscodeIT).
+        if format != "aac" { extra.append(URLQueryItem(name: "estimateContentLength", value: "true")) }
         return Self.subsonicURL(endpoint: endpoint, session: session.withLock { $0 }, method: "stream",
                                 extra: extra, password: credentials.password, clientName: clientName)
     }
