@@ -3,33 +3,40 @@ import MagpieCore
 import Search
 import SwiftUI
 
-/// Home: the "Finish setting up" card, then Jump back in (recent), Made for you (only with a listening-history
-/// token, Task 7.1c; fills in after the library's shelves and is left out when it can't be read), Recently added
-/// (newest) and Most played (frequent). Empty shelves are left out.
+/// Home (spec §3, Task 20): the "Finish setting up" card pinned on top, then the owner's sections in the owner's order
+/// (Settings › Home & Library › Home, or Edit Home at the bottom). Made for you shows only with a listening-history
+/// token (Task 7.1c) and fills in after the library's shelves. Empty sections are left out. Offline (Task 14): "You're
+/// offline", then the Downloaded shelf (albums on the phone).
 struct HomeView: View {
     @Environment(AppModel.self) private var model
-    @State private var shelves: Loadable<Shelves> = .loading
+    /// The shelves read so far, by section; a section read with nothing in it has no entry.
+    @State private var shelves: Loadable<[HomeSection: HomeShelf]> = .loading
+    /// What the shelves were read for: sections read (with or without tiles), offline or not, songs on the phone.
+    @State private var loaded = LoadKey(sections: [], offline: false, onPhone: nil)
+    @State private var editsHome = false
     private let themed = Themed()
 
-    struct Shelves {
-        var recent: [Album]
-        var newest: [Album]
-        var frequent: [Album]
-        var isEmpty: Bool { recent.isEmpty && newest.isEmpty && frequent.isEmpty }
+    /// What a load depends on. The songs on the phone count only while Downloaded shows.
+    struct LoadKey: Hashable {
+        var sections: [HomeSection]
+        var offline: Bool
+        var onPhone: Int?
+    }
+
+    private var key: LoadKey {
+        let sections = model.homeSections
+        return LoadKey(sections: sections, offline: model.isOffline,
+                       onPhone: sections.contains(.downloaded) ? model.downloads?.localFiles.count : nil)
     }
 
     var body: some View {
         ScrollView {
-            if model.isOffline {
-                OfflineHome()   // Task 14: only what's on the phone
-            } else {
-                online
-            }
+            content
         }
         .refreshable {
             guard !model.isOffline else { return await model.checkReachability() }
             async let made: Void = model.refreshMadeForYou()
-            await load()
+            await load(fresh: true)
             await made
         }
         .magpieLargeTitle("Home")
@@ -41,109 +48,154 @@ struct HomeView: View {
         // edge keeps the title on the page colour.
         .scrollEdgeEffectStyle(.hard, for: .top)
         .magpieScreen()
-        // Again when back online: what failed while offline loads now.
-        .task(id: model.isOffline) { if !model.isOffline, shelves.value == nil { await load() } }
+        // Reads what a change needs: a section turned on, offline or back online (everything again), a song that
+        // landed on or left the phone (Downloaded). A reorder or a section turned off reads nothing.
+        .task(id: key) { await load(fresh: false) }
         // Its own task, so the library's shelves never wait for it. Read once (Refresh reads again), and again
         // whenever the token is saved, replaced or removed (which also clears the shelf).
         .task(id: model.listenBrainzTokenGeneration) {
             if model.madeForYouShelf.isEmpty, !model.isOffline { await model.refreshMadeForYou() }
         }
+        .sheet(isPresented: $editsHome) {
+            NavigationStack {
+                HomeLayoutView()
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Done") { editsHome = false }.accessibilityIdentifier("home-edit-done")
+                        }
+                    }
+            }
+        }
     }
 
-    private var online: some View {
+    private var content: some View {
         VStack(alignment: .leading, spacing: Tokens.Spacing.xxl) {
-            if model.showsFinishSettingUp {   // final fix 2 B-M2: only while a step is left
+            if model.isOffline {
+                OfflineNotice()
+                    .padding(.horizontal, Tokens.Spacing.margin)
+            } else if model.showsFinishSettingUp {   // final fix 2 B-M2: only while a step is left
                 FinishSettingUpCard()
                     .padding(.horizontal, Tokens.Spacing.margin)
             }
-            LoadableView(state: shelves, retry: load) { s in
-                if s.isEmpty {
-                    ContentUnavailableView("No music yet", systemImage: "music.note",
-                                           description: Text("Albums show up here once your server has some."))
+            LoadableView(state: shelves, retry: { await load(fresh: true) }) { found in
+                let sections = model.homeSections.filter { shows($0, found) }
+                if sections.isEmpty {
+                    empty
                 } else {
                     VStack(alignment: .leading, spacing: Tokens.Spacing.xxl) {
-                        shelf("Jump back in", s.recent)
-                        madeForYouShelf
-                        shelf("Recently added", s.newest)
-                        shelf("Most played", s.frequent)
+                        ForEach(sections, id: \.self) { section in
+                            if section == .madeForYou {
+                                madeForYouShelf
+                            } else if let shelf = found[section] {
+                                ShelfView(shelf: shelf)
+                            }
+                        }
                     }
                 }
             }
+            Button {
+                editsHome = true
+            } label: {
+                Label("Edit Home", systemImage: "slider.horizontal.3")
+                    .font(.subheadline.weight(.semibold))
+                    .frame(minHeight: Tokens.minHitSize)
+            }
+            .foregroundStyle(themed.palette.accentInkColor)
+            .frame(maxWidth: .infinity)
+            .accessibilityIdentifier("home-edit")
         }
         .padding(.vertical, Tokens.Spacing.l)
     }
 
+    private func shows(_ section: HomeSection, _ found: [HomeSection: HomeShelf]) -> Bool {
+        section == .madeForYou ? !model.madeForYouShelf.isEmpty : found[section] != nil
+    }
+
+    @ViewBuilder private var empty: some View {
+        if model.isOffline {
+            ContentUnavailableView("Nothing downloaded yet", systemImage: "arrow.down.circle",
+                                   description: Text("Albums and playlists you download play here without a connection."))
+        } else if model.homeSections.isEmpty {
+            ContentUnavailableView("Nothing on Home", systemImage: "square.grid.2x2",
+                                   description: Text("Choose what shows here with Edit Home."))
+        } else {
+            ContentUnavailableView("No music yet", systemImage: "music.note",
+                                   description: Text("Albums show up here once your server has some."))
+        }
+    }
+
     @ViewBuilder private var madeForYouShelf: some View {
-        if !model.madeForYouShelf.isEmpty {
-            ShelfSection("Made for you") {
-                ForEach(Array(model.madeForYouShelf.enumerated()), id: \.element.id) { index, playlist in
-                    NavigationLink(value: Route.madeForYou(playlist)) {
-                        AlbumTile(title: playlist.title,
-                                  subtitle: playlist.date.map { $0.formatted(.dateTime.month(.abbreviated).day()) } ?? "Playlist")
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityIdentifier("made-for-you-\(index)")
+        ShelfSection("Made for you") {
+            ForEach(Array(model.madeForYouShelf.enumerated()), id: \.element.id) { index, playlist in
+                NavigationLink(value: Route.madeForYou(playlist)) {
+                    AlbumTile(title: playlist.title,
+                              subtitle: playlist.date.map { $0.formatted(.dateTime.month(.abbreviated).day()) } ?? "Playlist")
                 }
-            }
-            .accessibilityIdentifier("home-made-for-you")
-        }
-    }
-
-    @ViewBuilder private func shelf(_ title: String, _ albums: [Album]) -> some View {
-        if !albums.isEmpty {
-            ShelfSection(title) {
-                ForEach(albums, id: \.id) { album in
-                    NavigationLink(value: Route.album(id: album.id)) {
-                        AlbumTileView(album: album, subtitle: album.artist)
-                    }
-                    .buttonStyle(.plain)
-                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("made-for-you-\(index)")
             }
         }
+        .accessibilityIdentifier("home-made-for-you")
     }
 
-    private func load() async {
+    /// Reads the sections not read yet (all of them when `fresh`, or after going offline or back online), and
+    /// Downloaded again when the songs on the phone changed. What was read stays on screen if a read fails.
+    private func load(fresh: Bool) async {
+        let want = key
+        let fresh = fresh || shelves.value == nil || want.offline != loaded.offline
+        var found = fresh ? [:] : (shelves.value ?? [:])
+        var done = fresh ? Set<HomeSection>() : Set(loaded.sections)
+        if want.onPhone != loaded.onPhone { done.remove(.downloaded) }
+        let missing = want.sections.filter { $0 != .madeForYou && !done.contains($0) }
         do {
-            async let recent = model.request { try await $0.albumList(.recent, size: 12, offset: 0) }
-            async let newest = model.request { try await $0.albumList(.newest, size: 12, offset: 0) }
-            async let frequent = model.request { try await $0.albumList(.frequent, size: 12, offset: 0) }
-            shelves = .loaded(Shelves(recent: try await recent, newest: try await newest, frequent: try await frequent))
+            let read = missing.isEmpty ? [] : try await model.homeShelves(for: missing)
+            guard !Task.isCancelled else { return }
+            for section in missing { found[section] = nil }
+            for shelf in read { found[shelf.section] = shelf }
+            loaded = LoadKey(sections: Array(done.union(missing)), offline: want.offline, onPhone: want.onPhone)
+            shelves = .loaded(found)
         } catch {
+            guard !Task.isCancelled else { return }
             if shelves.value == nil { shelves = .failed(BrowseErrorCopy.message(for: error)) }
         }
     }
 }
 
-/// Home offline (Task 14): "You're offline", then the Downloaded shelf (albums on the phone, at most 12). Task 20
-/// keeps this line and this shelf's source.
-private struct OfflineHome: View {
-    @Environment(AppModel.self) private var model
-    @State private var albums: [Album]?
+/// One shelf; each tile opens what it is (an album, a playlist, a genre group).
+private struct ShelfView: View {
+    let shelf: HomeShelf
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Tokens.Spacing.xxl) {
-            OfflineNotice()
-                .padding(.horizontal, Tokens.Spacing.margin)
-            if let albums {
-                if albums.isEmpty {
-                    ContentUnavailableView("Nothing downloaded yet", systemImage: "arrow.down.circle",
-                                           description: Text("Albums and playlists you download play here without a connection."))
-                } else {
-                    ShelfSection("Downloaded") {
-                        ForEach(albums, id: \.id) { album in
-                            NavigationLink(value: Route.album(id: album.id)) {
-                                AlbumTileView(album: album, subtitle: album.artist)
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-                    .accessibilityIdentifier("home-downloaded")
-                }
+        ShelfSection(shelf.section.title) {
+            ForEach(Array(shelf.items.enumerated()), id: \.offset) { _, item in
+                tile(item)
             }
         }
-        .padding(.vertical, Tokens.Spacing.l)
-        // Again whenever a song lands on or leaves the phone.
-        .task(id: model.downloads?.localFiles.count) { albums = Array(await model.offlineCatalog.albums().prefix(12)) }
+        .accessibilityIdentifier("home-\(shelf.section.rawValue)")
+    }
+
+    @ViewBuilder private func tile(_ item: HomeShelf.Item) -> some View {
+        switch item {
+        case .album(let album), .downloadedAlbum(let album):
+            NavigationLink(value: Route.album(id: album.id)) {
+                AlbumTileView(album: album, subtitle: album.artist)
+            }
+            .buttonStyle(.plain)
+        case .playlist(let playlist):
+            NavigationLink(value: Route.playlist(id: playlist.id)) {
+                Artwork(playlist.coverArtId, side: 140) { image in
+                    AlbumTile(title: playlist.name, subtitle: playlist.songCount == 1 ? "1 song" : "\(playlist.songCount) songs",
+                              artwork: image)
+                }
+            }
+            .buttonStyle(.plain)
+        case .genreGroup(let section):
+            NavigationLink(value: Route.genreGroup(id: section.group.id)) {
+                AlbumTile(title: section.group.name,
+                          subtitle: section.albumCount == 1 ? "1 album" : "\(section.albumCount) albums")
+            }
+            .buttonStyle(.plain)
+        }
     }
 }
 

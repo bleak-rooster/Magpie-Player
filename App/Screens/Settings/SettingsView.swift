@@ -4,8 +4,8 @@ import Requests
 import SwiftUI
 
 /// Settings (replaces the Library account menu): Appearance, Servers, Lidarr (connect, set up, the G1 switch,
-/// the main root folder, Finds, the change log), one row per area (Playback, Downloads & Storage, Scrobbling, which
-/// holds Count plays and the ListenBrainz token), About.
+/// the main root folder, Finds, the change log), one row per area (Home & Library, Playback, Downloads & Storage,
+/// Scrobbling, which holds Count plays and the ListenBrainz token), About.
 struct SettingsView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
@@ -30,6 +30,12 @@ struct SettingsView: View {
                 lidarr
                 // One row per area, each opening its own page (T21b collates the rest the same way).
                 Section {
+                    NavigationLink {
+                        HomeAndLibraryView()
+                    } label: {
+                        LabeledContent("Home & Library", value: HomeAndLibraryView.summary(model))
+                    }
+                    .accessibilityIdentifier("settings-home-library")
                     NavigationLink("Playback") { PlaybackSettingsView() }
                     NavigationLink {
                         DownloadsSettingsView()

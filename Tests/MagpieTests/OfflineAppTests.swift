@@ -317,6 +317,11 @@ private let noNetwork = NetworkStatus(isConnected: false, isCellular: false, isC
         #expect(try await model.groupSongs("rock").isEmpty)
         #expect(try await model.genreAlbums("Rock").isEmpty)
         #expect(try await model.genreSongs("Rock").isEmpty)
+        // Home (T20) with every section switched on: Downloaded only, and nothing asked even for every section.
+        model.updatePreferences { for s in HomeSection.allCases { $0.layout.home.set(s, visible: true, keepingOneOf: []) } }
+        #expect(model.homeSections == [.downloaded])
+        #expect(try await model.homeShelves(for: model.homeSections).map(\.section) == [.downloaded])
+        #expect(try await model.homeShelves(for: HomeSection.allCases).map(\.section) == [.downloaded])
         try await Task.sleep(for: .milliseconds(300))
         #expect(seen.urls.isEmpty, "sent: \(seen.urls.map(\.path))")
         #expect(f.urls.isEmpty)

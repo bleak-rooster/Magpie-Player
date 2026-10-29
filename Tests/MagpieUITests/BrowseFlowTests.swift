@@ -450,6 +450,67 @@ final class BrowseFlowTests: XCTestCase {
         XCTAssertTrue(app.switches["settings-count-plays"].waitForExistence(timeout: 10))
     }
 
+    /// T20: Home in its default order, then Edit Home: Jump back in off, Random albums and Genres on, Most played
+    /// dragged to the top; Home follows. Screenshots of each. Preferences outlive a reset launch, so the test starts
+    /// and ends with "Reset to default order".
+    @MainActor func testHomeLayoutEditor() throws {
+        let app = try launchSignedIn()
+        let edit = app.buttons["home-edit"]
+        let reset = app.buttons["layout-reset"]
+        func openEditor() {
+            XCTAssertTrue(edit.waitForExistence(timeout: 20))
+            for _ in 0..<6 where !edit.isHittable { app.swipeUp() }
+            edit.tap()
+            XCTAssertTrue(app.switches["layout-jumpBackIn"].waitForExistence(timeout: 10))
+        }
+        func resetAndClose() {
+            for _ in 0..<4 where !reset.exists || !reset.isHittable { app.swipeUp() }
+            if reset.isEnabled { reset.tap() }
+            XCTAssertFalse(reset.isEnabled, "the default order")
+            app.buttons["home-edit-done"].tap()
+        }
+        openEditor()
+        resetAndClose()
+        for _ in 0..<6 { app.swipeDown() }
+        XCTAssertTrue(app.staticTexts["home-jumpBackIn"].waitForExistence(timeout: 20), "Jump back in shows by default")
+        attachScreenshot(app, "home-default")
+
+        openEditor()
+        let jump = app.switches["layout-jumpBackIn"]
+        attachScreenshot(app, "home-editor")
+        func flip(_ id: String) {
+            let s = app.switches[id]
+            for _ in 0..<4 where !s.isHittable { app.swipeUp() }
+            s.switches.firstMatch.exists ? s.switches.firstMatch.tap() : s.tap()
+        }
+        flip("layout-jumpBackIn")
+        XCTAssertEqual(jump.value as? String, "0")
+        flip("layout-randomAlbums")
+        flip("layout-genres")
+        XCTAssertEqual(app.switches["layout-genres"].value as? String, "1")
+        // Most played to the top, by its drag handle.
+        for _ in 0..<4 where !jump.isHittable { app.swipeDown() }
+        let handle = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Reorder' AND label CONTAINS 'Most played'")).firstMatch
+        XCTAssertTrue(handle.exists, "drag handle for Most played")
+        let top = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Reorder' AND label CONTAINS 'Jump back in'")).firstMatch
+        handle.press(forDuration: 0.6, thenDragTo: top)
+        attachScreenshot(app, "home-editor-changed")
+        for _ in 0..<4 where !reset.exists || !reset.isHittable { app.swipeUp() }
+        XCTAssertTrue(reset.isEnabled, "Reset to default order is offered once the order changed")
+        app.buttons["home-edit-done"].tap()
+
+        for _ in 0..<6 { app.swipeDown() }
+        let most = app.staticTexts["home-mostPlayed"], recent = app.staticTexts["home-recentlyAdded"]
+        XCTAssertTrue(app.staticTexts["home-randomAlbums"].waitForExistence(timeout: 20), "Random albums shows")
+        XCTAssertFalse(app.staticTexts["home-jumpBackIn"].exists, "Jump back in is hidden")
+        XCTAssertTrue(most.exists && recent.exists)
+        XCTAssertLessThan(most.frame.minY, recent.frame.minY, "Most played moved above Recently added")
+        attachScreenshot(app, "home-reordered")
+
+        openEditor()
+        resetAndClose()
+    }
+
     @MainActor private func errorText(_ app: XCUIApplication) -> String {
         let error = app.staticTexts["connect-error"]
         return error.exists ? error.label : "none"
