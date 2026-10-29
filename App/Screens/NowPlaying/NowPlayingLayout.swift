@@ -36,11 +36,33 @@ enum NowPlayingLayout {
     }
 }
 
+extension EnvironmentValues {
+    /// Tests only: told each Now Playing part's frame in window coordinates as it lays out.
+    @Entry var nowPlayingFrameProbe: (@MainActor (String, CGRect) -> Void)?
+}
+
 extension View {
     /// Reports this part's natural height into `heights` under `key`. A part that comes and goes (the hint, the
     /// error) keeps its last height; the caller counts it only while it shows.
     func nowPlayingPart(_ key: String, into heights: Binding<[String: CGFloat]>) -> some View {
-        fixedSize(horizontal: false, vertical: true)
-            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { heights.wrappedValue[key] = $0 }
+        fixedSize(horizontal: false, vertical: true).modifier(NowPlayingPartReport(key: key, heights: heights))
+    }
+
+    /// Reports only the frame, to the test probe.
+    func nowPlayingProbe(_ key: String) -> some View {
+        modifier(NowPlayingPartReport(key: key, heights: nil))
+    }
+}
+
+private struct NowPlayingPartReport: ViewModifier {
+    let key: String
+    let heights: Binding<[String: CGFloat]>?
+    @Environment(\.nowPlayingFrameProbe) private var probe
+
+    func body(content: Content) -> some View {
+        content.onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame in
+            if let heights, heights.wrappedValue[key] != frame.height { heights.wrappedValue[key] = frame.height }
+            probe?(key, frame)
+        }
     }
 }

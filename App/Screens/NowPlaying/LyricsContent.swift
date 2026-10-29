@@ -17,6 +17,35 @@ enum LyricsTimeline {
     }
 }
 
+/// Loads one song's lyrics at a time. Skipping cancels the previous load: a cancelled or stale answer (failure
+/// included) never overwrites the new song's state, so a quick run of skips doesn't flash an error.
+@MainActor @Observable final class LyricsLoader {
+    private(set) var state: Loadable<Lyrics?> = .loading
+    /// The last few states written, oldest first (tests read it to prove no stale failure landed).
+    private(set) var history: [Loadable<Lyrics?>] = []
+
+    /// `current` is the song now playing, checked again when the answer arrives.
+    func load(_ id: String?, current: () -> String?, fetch: (String) async throws -> Lyrics?) async {
+        guard let id else { set(.loaded(nil)); return }
+        set(.loading)
+        let result: Loadable<Lyrics?>
+        do {
+            result = .loaded(try await fetch(id))
+        } catch is CancellationError {
+            return
+        } catch {
+            result = .failed(BrowseErrorCopy.message(for: error))
+        }
+        guard !Task.isCancelled, current() == id else { return }
+        set(result)
+    }
+
+    private func set(_ new: Loadable<Lyrics?>) {
+        state = new
+        history = Array((history + [new]).suffix(16))
+    }
+}
+
 /// The current song's lyrics, in place of the art on Now Playing (D43) and sized like it: long lyrics scroll
 /// inside this slot only. Synced lyrics follow the playback position (the sung line is full-strength, the rest
 /// dimmed; tap a line to jump there); unsynced lyrics are plain text. A new song loads its own lyrics.
@@ -24,7 +53,7 @@ enum LyricsTimeline {
 struct LyricsContent: View {
     @Environment(AppModel.self) private var model
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var lyrics: Loadable<Lyrics?> = .loading
+    @State private var loader = LyricsLoader()
     /// Brings the art back.
     let onClose: () -> Void
     private let themed = Themed()
@@ -34,7 +63,7 @@ struct LyricsContent: View {
         let shape = RoundedRectangle(cornerRadius: Tokens.Radius.hero, style: .continuous)
         ScrollViewReader { proxy in
             ScrollView {
-                LoadableView(state: lyrics, retry: { await load(song) }) { lyrics in
+                LoadableView(state: loader.state, retry: { await load(song) }) { lyrics in
                     if let lyrics, !lyrics.lines.isEmpty {
                         content(lyrics, proxy: proxy)
                     } else {
@@ -105,12 +134,8 @@ struct LyricsContent: View {
     }
 
     private func load(_ song: Song?) async {
-        guard let id = song?.id else { lyrics = .loaded(nil); return }
-        lyrics = .loading
-        do {
-            lyrics = .loaded(try await model.request { try await $0.lyrics(songId: id) })
-        } catch {
-            lyrics = .failed(BrowseErrorCopy.message(for: error))
+        await loader.load(song?.id, current: { model.player.queue.current?.song.id }) { id in
+            try await model.request { try await $0.lyrics(songId: id) }
         }
     }
 }

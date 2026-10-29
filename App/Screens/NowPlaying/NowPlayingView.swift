@@ -22,7 +22,8 @@ struct NowPlayingView: View {
     /// Measured heights of everything but the art and Up next (D43).
     @State private var partHeights: [String: CGFloat] = [:]
     /// Up next's last measured height, kept while it is hidden so the plan doesn't flip back and forth.
-    @State private var upNextHeight: CGFloat = 0
+    /// Seeded with the default-size row (36 pt art + 2 × 8 pt padding) so a small phone doesn't flash it on the first frame.
+    @State private var upNextHeight: CGFloat = 52
     private let themed = Themed()
 
     var body: some View {
@@ -45,7 +46,10 @@ struct NowPlayingView: View {
                         let plan = NowPlayingLayout.plan(available: CGSize(width: width, height: geo.size.height),
                                                          parts: parts, gaps: shown.count,
                                                          upNext: next == nil ? nil : upNextHeight)
+                        // Hidden until the always-present parts have measured, so the first frame isn't oversized art.
+                        let measured = ["top", "meta", "scrubber", "transport", "bottom"].allSatisfy { partHeights[$0] != nil }
                         stack(song, player, side: plan.side, spacing: plan.spacing, showsUpNext: plan.showsUpNext)
+                            .opacity(measured ? 1 : 0)
                     }
                 }
                 .accessibilityElement(children: .contain)
@@ -103,6 +107,7 @@ struct NowPlayingView: View {
                     upNext(next)
                         .fixedSize(horizontal: false, vertical: true)
                         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { upNextHeight = $0 }
+                        .nowPlayingProbe("upNext")
                 }
                 bottomBar.nowPlayingPart("bottom", into: $partHeights)
             }
@@ -130,6 +135,7 @@ struct NowPlayingView: View {
             }
         }
         .frame(width: side, height: side)
+        .nowPlayingProbe("art")
     }
 
     private func setLyrics(_ on: Bool) {
@@ -303,6 +309,5 @@ struct NowPlayingView: View {
         }
         .buttonStyle(.plain)
         .foregroundStyle(themed.palette.ink2Color)
-        .padding(.horizontal, Tokens.Spacing.xxl)
     }
 }
