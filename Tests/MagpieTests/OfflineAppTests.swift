@@ -297,7 +297,7 @@ private let noNetwork = NetworkStatus(isConnected: false, isCellular: false, isC
         model.resumeSavedSession()                                             // resume
         await model.downloads!.settled()
         model.play([coverSong("s1"), song("s2")], startAt: 0)                  // play
-        model.player.handle(.time(model.player.queue.current!.id, 150, duration: 200))   // past the scrobble point
+        model.player.listen(model.player.queue.current!.id, from: 0, to: 150, duration: 200)   // past the scrobble point
         await model.player.waitForPendingScrobbles()
         #expect(model.coverArtURL("al-1", size: 300) == nil)                   // artwork
         #expect(model.nowPlayingArtworkURL(coverSong("s1"))?.isFileURL ?? true)

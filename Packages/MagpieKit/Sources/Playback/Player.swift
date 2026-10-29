@@ -62,6 +62,8 @@ public final class Player {
     /// `upcomingURLsChanged()` after changing it.
     @ObservationIgnored public var lookahead = EngineWindow.size(engineMax: AVQueueEngine.maxEnqueued)
 
+    /// The most listening one `.time` tick can credit: three tick intervals (a late tick), never a seek's jump.
+    private var scrobbleStepCap: TimeInterval { 3 * engine.tickInterval }
     /// `previous()` restarts the current song once it has played longer than this.
     static let restartThreshold: TimeInterval = 3
 
@@ -318,7 +320,10 @@ public final class Player {
             guard t.isFinite else { return }
             position = max(0, t)
             if var p = playback, p.entryId == id {
-                if t > p.lastTick { p.listened += t - p.lastTick }
+                // Only a step of a few ticks is listening. A bigger jump forward, or any step back, is a seek, or a
+                // stale tick from before one: it re-anchors and adds nothing.
+                let step = t - p.lastTick
+                if step > 0, step <= scrobbleStepCap { p.listened += step }
                 p.lastTick = t
                 playback = p
             }
@@ -485,6 +490,7 @@ public final class Player {
         let resumeAt = position
         syncEngine(rebuildCurrent: rebuild)
         if resumeAt > 0 { engine.seek(to: resumeAt) }
+        playback?.lastTick = resumeAt
         engine.play()
         isPlaying = true
     }

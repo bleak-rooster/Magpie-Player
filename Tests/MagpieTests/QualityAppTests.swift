@@ -186,9 +186,9 @@ final class FakeNetwork: NetworkStatusProviding {
         model.play([song("s1"), song("s2")], startAt: 0)
         #expect(query(engine.setItemsCalls.last!.items[0].1)["format"] == "opus")
         let entry = try #require(model.player.queue.current?.id)
-        model.player.handle(.time(entry, 10, duration: 207.4))
+        model.player.listen(entry, from: 0, to: 10, duration: 207.4)
         #expect(model.player.duration == 200, "the API duration, not the Ogg estimate")
-        model.player.handle(.time(entry, 101, duration: 207.4))   // past 50 % of 200, short of 50 % of 207.4
+        model.player.listen(entry, from: 10, to: 101, duration: 207.4)   // past 50 % of 200, short of 50 % of 207.4
         await model.player.waitForPendingScrobbles()
         let submissions = transport.inner.requests.compactMap(\.url).filter {
             $0.path.hasSuffix("/rest/scrobble") && $0.absoluteString.contains("submission=true")

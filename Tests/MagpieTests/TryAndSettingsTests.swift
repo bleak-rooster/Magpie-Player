@@ -236,7 +236,7 @@ final class LockableTokenStore: ListenBrainzTokenStoring, @unchecked Sendable {
         model.setCountPlays(true)
         model.player.play([Song(id: "s1", title: "T", artist: "A", album: "B", duration: 200, libraryId: 1)], startAt: 0)
         let entry = try #require(model.player.queue.current?.id)
-        model.player.handle(.time(entry, 150, duration: 200))
+        model.player.listen(entry, from: 0, to: 150, duration: 200)
         await model.player.waitForPendingScrobbles()
         let scrobbles = transport.inner.requests.filter { $0.url?.path.hasSuffix("/rest/scrobble") == true }
         #expect(scrobbles.contains { $0.url?.query?.contains("submission=true") == true }, "the play is counted")

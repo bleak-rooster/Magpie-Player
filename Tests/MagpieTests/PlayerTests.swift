@@ -68,6 +68,14 @@ final class FakeURLs: StreamURLProvider {
     }
 }
 
+extension Player {
+    /// Plays on from `a` to `b` seconds the way the engine reports it: a tick every half second.
+    func listen(_ id: UUID, from a: TimeInterval, to b: TimeInterval, duration: TimeInterval? = nil) {
+        var t = a + 0.5
+        while t <= b + 0.001 { handle(.time(id, t, duration: duration)); t += 0.5 }
+    }
+}
+
 @MainActor
 @Suite struct PlayerTests {
     static func song(_ id: String, duration: TimeInterval = 200, libraryId: Int? = 1) -> Song {
@@ -85,13 +93,12 @@ final class FakeURLs: StreamURLProvider {
     @Test func scrobblesAtHalf() async {
         let player = makePlayer()
         player.play([Self.song("1", duration: 200), Self.song("2", duration: 1000)], startAt: 0)
-        player.handle(.time(player.queue.current!.id, 10, duration: 200))
-        player.handle(.time(player.queue.current!.id, 99, duration: 200))
+        let first = player.queue.current!.id
+        player.listen(first, from: 0, to: 99, duration: 200)
         await player.waitForPendingScrobbles()
         #expect(await scrobbler.calls == [.init(songId: "1", submission: false)])
 
-        player.handle(.time(player.queue.current!.id, 100, duration: 200))
-        player.handle(.time(player.queue.current!.id, 150, duration: 200))
+        player.listen(first, from: 99, to: 150, duration: 200)
         await player.waitForPendingScrobbles()
         #expect(await scrobbler.calls == [.init(songId: "1", submission: false),
                                           .init(songId: "1", submission: true)],
@@ -100,8 +107,10 @@ final class FakeURLs: StreamURLProvider {
         // Long track: 240 s cap comes before 50%.
         let second = player.queue.upcoming[0].id
         player.handle(.itemChanged(second))
-        player.handle(.time(player.queue.current!.id, 239, duration: 1000))
-        player.handle(.time(player.queue.current!.id, 240, duration: 1000))
+        player.listen(second, from: 0, to: 239, duration: 1000)
+        await player.waitForPendingScrobbles()
+        #expect(await scrobbler.calls.suffix(1) == [.init(songId: "2", submission: false)])
+        player.listen(second, from: 239, to: 240, duration: 1000)
         await player.waitForPendingScrobbles()
         #expect(await scrobbler.calls.suffix(2) == [.init(songId: "2", submission: false),
                                                     .init(songId: "2", submission: true)])
@@ -112,8 +121,8 @@ final class FakeURLs: StreamURLProvider {
         let player = makePlayer()
         player.play([Self.song("1", duration: 300)], startAt: 0)
         let id = player.queue.current!.id
-        player.handle(.time(id, 10, duration: 300)); player.seek(200)
-        player.handle(.time(id, 201, duration: 300)); player.handle(.time(id, 290, duration: 300))
+        player.listen(id, from: 0, to: 10, duration: 300); player.seek(200)
+        player.listen(id, from: 200, to: 290, duration: 300)
         await player.waitForPendingScrobbles()
         #expect(await scrobbler.calls == [.init(songId: "1", submission: false)])
     }
@@ -121,16 +130,16 @@ final class FakeURLs: StreamURLProvider {
         let player = Player(engine: engine, scrobbler: scrobbler, urls: urls, scrobbleRule: { ScrobbleRule(percent: 10, minutes: nil) })
         player.play([Self.song("1", duration: 600)], startAt: 0)
         let id = player.queue.current!.id
-        player.handle(.time(id, 59, duration: 600)); await player.waitForPendingScrobbles()
+        player.listen(id, from: 0, to: 59, duration: 600); await player.waitForPendingScrobbles()
         #expect(await scrobbler.calls.count == 1)
-        player.handle(.time(id, 60, duration: 600)); await player.waitForPendingScrobbles()
+        player.listen(id, from: 59, to: 60, duration: 600); await player.waitForPendingScrobbles()
         #expect(await scrobbler.calls.last == .init(songId: "1", submission: true))
     }
     @Test func shortSongNeverCounted() async {
         let player = makePlayer()
         player.play([Self.song("1", duration: 25)], startAt: 0)
         let id = player.queue.current!.id
-        for t in stride(from: 0.5, through: 25, by: 0.5) { player.handle(.time(id, t, duration: 25)) }
+        player.listen(id, from: 0, to: 25, duration: 25)
         await player.waitForPendingScrobbles()
         #expect(await scrobbler.calls == [.init(songId: "1", submission: false)])
     }
@@ -138,18 +147,18 @@ final class FakeURLs: StreamURLProvider {
         let player = makePlayer()
         player.play([Self.song("1", duration: 200)], startAt: 0)
         let id = player.queue.current!.id
-        player.handle(.time(id, 99, duration: 1000)); await player.waitForPendingScrobbles()
+        player.listen(id, from: 0, to: 99, duration: 1000); await player.waitForPendingScrobbles()
         #expect(await scrobbler.calls.count == 1)
-        player.handle(.time(id, 100, duration: 1000)); await player.waitForPendingScrobbles()
+        player.listen(id, from: 99, to: 100, duration: 1000); await player.waitForPendingScrobbles()
         #expect(await scrobbler.calls.last == .init(songId: "1", submission: true))
     }
     @Test func unknownDurationUsesMinutes() async {
         let player = makePlayer()
         player.play([Self.song("1", duration: 0)], startAt: 0)
         let id = player.queue.current!.id
-        player.handle(.time(id, 239, duration: nil)); await player.waitForPendingScrobbles()
+        player.listen(id, from: 0, to: 239); await player.waitForPendingScrobbles()
         #expect(await scrobbler.calls.count == 1)
-        player.handle(.time(id, 240, duration: nil)); await player.waitForPendingScrobbles()
+        player.listen(id, from: 239, to: 240); await player.waitForPendingScrobbles()
         #expect(await scrobbler.calls.last == .init(songId: "1", submission: true))
     }
     @Test func submissionCarriesPlayStartTime() async {
@@ -158,7 +167,7 @@ final class FakeURLs: StreamURLProvider {
         let player = Player(engine: engine, scrobbler: scrobbler, urls: urls, now: { clock })
         player.play([Self.song("1", duration: 200)], startAt: 0)
         clock = t0.addingTimeInterval(100)
-        player.handle(.time(player.queue.current!.id, 100, duration: 200)); await player.waitForPendingScrobbles()
+        player.listen(player.queue.current!.id, from: 0, to: 100, duration: 200); await player.waitForPendingScrobbles()
         #expect(await scrobbler.dates == [nil, t0], "now playing has no time; the play carries its start")
     }
     @Test func ruleChangeAppliesToTheNextCheck() async {
@@ -166,14 +175,84 @@ final class FakeURLs: StreamURLProvider {
         let player = Player(engine: engine, scrobbler: scrobbler, urls: urls, scrobbleRule: { settings.value.rule })
         player.play([Self.song("1", duration: 200)], startAt: 0)
         var p = ScrobblePreferences.defaultValue; p.rule = ScrobbleRule(percent: 10, minutes: nil); settings.set(p)
-        player.handle(.time(player.queue.current!.id, 20, duration: 200)); await player.waitForPendingScrobbles()
+        player.listen(player.queue.current!.id, from: 0, to: 20, duration: 200); await player.waitForPendingScrobbles()
         #expect(await scrobbler.calls.last == .init(songId: "1", submission: true))
+    }
+    @Test func seekBackThenStaleHighTickCreditsNothing() async {
+        let player = makePlayer()
+        player.play([Self.song("1", duration: 300)], startAt: 0)
+        let id = player.queue.current!.id
+        player.seek(200)
+        player.listen(id, from: 0, to: 10, duration: 300)   // stale ticks from before the seek, then the seek lands
+        player.seek(10)
+        player.handle(.time(id, 200, duration: 300))   // stale: from before the second seek
+        player.listen(id, from: 10, to: 11, duration: 300)
+        await player.waitForPendingScrobbles()
+        #expect(await scrobbler.calls == [.init(songId: "1", submission: false)])
+        player.listen(id, from: 11, to: 140, duration: 300)
+        await player.waitForPendingScrobbles()
+        #expect(await scrobbler.calls == [.init(songId: "1", submission: false)], "about 140 s heard: not counted")
+    }
+    @Test func seekForwardThenStaleLowTickCreditsNothing() async {
+        let player = makePlayer()
+        player.play([Self.song("1", duration: 300)], startAt: 0)
+        let id = player.queue.current!.id
+        player.listen(id, from: 0, to: 10, duration: 300)
+        player.seek(200)
+        player.handle(.time(id, 10.5, duration: 300))   // stale: from before the seek
+        player.listen(id, from: 200, to: 201, duration: 300)
+        player.listen(id, from: 201, to: 230, duration: 300)
+        await player.waitForPendingScrobbles()
+        #expect(await scrobbler.calls == [.init(songId: "1", submission: false)], "about 40 s heard in all")
+    }
+    @Test func failoverResumeIsNotListening() async {
+        let player = makePlayer()
+        player.play([Self.song("1", duration: 300)], startAt: 0)
+        let id = player.queue.current!.id
+        player.listen(id, from: 0, to: 140, duration: 300)
+        player.urlsInvalidated()
+        player.listen(id, from: 140, to: 149, duration: 300)
+        await player.waitForPendingScrobbles()
+        #expect(await scrobbler.calls == [.init(songId: "1", submission: false)], "149 s heard: under the 150 s threshold")
+        player.listen(id, from: 149, to: 151, duration: 300)
+        await player.waitForPendingScrobbles()
+        #expect(await scrobbler.calls.last == .init(songId: "1", submission: true))
+    }
+    @Test func pauseAndResumeAcrossTheThresholdSubmitsOnce() async {
+        let player = makePlayer()
+        player.play([Self.song("1", duration: 200)], startAt: 0)
+        let id = player.queue.current!.id
+        player.listen(id, from: 0, to: 99, duration: 200)
+        player.toggle()
+        player.toggle()
+        player.listen(id, from: 99, to: 140, duration: 200)
+        await player.waitForPendingScrobbles()
+        #expect(await scrobbler.calls == [.init(songId: "1", submission: false), .init(songId: "1", submission: true)])
+    }
+    @Test func repeatOneSubmitsOncePerPlay() async {
+        let player = makePlayer()
+        player.repeatMode = .one
+        player.play([Self.song("1", duration: 100)], startAt: 0)
+        let id = player.queue.current!.id
+        player.listen(id, from: 0, to: 60, duration: 100)
+        player.handle(.ended(id))   // repeat one plays it again from the start
+        player.listen(id, from: 0, to: 60, duration: 100)
+        await player.waitForPendingScrobbles()
+        #expect(await scrobbler.calls == [.init(songId: "1", submission: false), .init(songId: "1", submission: true),
+                                          .init(songId: "1", submission: false), .init(songId: "1", submission: true)])
+    }
+    @Test func handBuiltExtremeRuleDoesNotCrash() async {
+        let player = Player(engine: engine, scrobbler: scrobbler, urls: urls, scrobbleRule: { ScrobbleRule(percent: Int.max, minutes: Int.max) })
+        player.play([Self.song("1", duration: 0)], startAt: 0)
+        player.listen(player.queue.current!.id, from: 0, to: 5)
+        await player.waitForPendingScrobbles()
+        #expect(await scrobbler.calls == [.init(songId: "1", submission: false)], "10 min cap, not reached")
     }
     @Test func noScrobbleForFinds() async {
         let findsLibraryId = 2
         let player = makePlayer(isFind: { $0.libraryId == findsLibraryId })
         player.play([Self.song("f", libraryId: findsLibraryId), Self.song("k", libraryId: 1)], startAt: 0)
-        player.handle(.time(player.queue.current!.id, 150, duration: 200))
+        player.listen(player.queue.current!.id, from: 0, to: 150, duration: 200)
         await player.waitForPendingScrobbles()
         #expect(await scrobbler.calls.isEmpty)
 
@@ -208,12 +287,12 @@ final class FakeURLs: StreamURLProvider {
     @Test func replaceSongAfterKeep() async {
         let player = makePlayer(isFind: { $0.libraryId == 2 })
         player.play([Self.song("f", libraryId: 2), Self.song("g", libraryId: 2)], startAt: 0)
-        player.handle(.time(player.queue.current!.id, 30, duration: 200))
+        player.listen(player.queue.current!.id, from: 0, to: 30, duration: 200)
         let loads = engine.setItemsCalls.count
 
         player.replaceSong(id: "f", with: Self.song("f", libraryId: 1))
         #expect(engine.setItemsCalls.count == loads, "same id: nothing to reload")
-        player.handle(.time(player.queue.current!.id, 120, duration: 200))
+        player.listen(player.queue.current!.id, from: 30, to: 120, duration: 200)
         await player.waitForPendingScrobbles()
         #expect(await scrobbler.calls == [.init(songId: "f", submission: true)])
 
