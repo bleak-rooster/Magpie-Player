@@ -12,6 +12,47 @@ struct GenreGroupsTests {
                       ("Rhythm & Blues","rnb"),("Polka Noir","other"),("","other")])
     func groupIds(_ genre: String, _ expected: String) { #expect(GenreGroups.groupId(for: genre) == expected) }
 
+    @Test(arguments: [("Synthpop","electronic"),("Post-Rock","rock"),("Trip Hop","electronic"),("Trip-Hop","electronic"),
+                      ("Indie Folk","country"),("Alt-Country","country"),("HipHop","hiphop"),("Hip-Hop","hiphop"),
+                      ("Hardcore Hip Hop","hiphop"),("KPop","pop"),("JPop","pop"),("Alternative","rock"),("Indie","rock"),
+                      ("New Wave","rock"),("Post-Punk","rock"),("Disco","electronic"),("Dance","electronic"),("House","electronic"),
+                      ("EDM","electronic"),("Psychedelic","rock"),("Industrial","electronic"),("Dub Techno","electronic"),
+                      ("Electro Swing","electronic"),("Liquid Funk","electronic"),("Liquid Drum & Bass","electronic"),
+                      ("Drum 'n' Bass","electronic"),("Drum \u{2019}n\u{2019} Bass","electronic"),("Chamber Pop","pop"),
+                      ("Gospel","rnb"),("Rock'n'Roll","rock"),("Post\u{2011}Rock","rock")])
+    func moreGroupIds(_ genre: String, _ expected: String) { #expect(GenreGroups.groupId(for: genre) == expected) }
+
+    @Test func dashesAndSpacesNormalise() {
+        #expect(GenreGroups.key("Trip\u{2013}Hop") == "trip hop")
+        #expect(GenreGroups.split("Rock\u{00A0}&\u{00A0}  Pop") == ["Rock", "Pop"])
+        #expect(GenreGroups.split("Drum\u{00A0}&\u{00A0}Bass") == ["Drum & Bass"])
+    }
+
+    @Test func duplicateCustomGroupsGiveOneSection() {
+        var p = GenrePreferences.defaultValue
+        p.customGroups = ["custom.a", "custom.a", "rock"]
+        p.groupNames["custom.a"] = "A"
+        p.assignments[GenreGroups.key("Polka")] = "custom.a"
+        let s = GenreGroups.grouped([Genre(name: "Polka", songCount: 1, albumCount: 1)], preferences: p)
+        #expect(s.map(\.group.id) == ["custom.a"])
+    }
+
+    @Test func hiddenGroupKeepsOtherHalfOfMultiValue() {
+        var p = GenrePreferences.defaultValue
+        p.hidden = ["rock"]
+        let s = GenreGroups.grouped([Genre(name: "Rock; Electronic", songCount: 4, albumCount: 1)], preferences: p)
+        #expect(s.map(\.group.id) == ["electronic"] && s[0].genres.count == 1)
+    }
+
+    @Test func twoThousandGenresAreFast() {
+        let names = ["Rock", "Death Metal", "Hip Hop", "Drum & Bass", "Rock & Pop", "Polka", "Bossa Nova", "Synthpop"]
+        let genres = (0..<2000).map { Genre(name: "\(names[$0 % names.count]) \($0)", songCount: 1, albumCount: 1) }
+        let start = ContinuousClock.now
+        let s = GenreGroups.grouped(genres, preferences: .defaultValue)
+        #expect(ContinuousClock.now - start < .milliseconds(50))
+        #expect(!s.isEmpty)
+    }
+
     @Test func builtInOrderAndNames() {
         #expect(GenreGroups.builtIn.map(\.id) == ["rock", "pop", "electronic", "hiphop", "rnb", "jazz", "blues", "classical",
                                                   "country", "metal", "punk", "reggae", "latin", "world", "soundtrack", "other"])
