@@ -171,25 +171,28 @@ public actor NavidromeClient {
     // MARK: - Browse
 
     public func albumList(_ type: AlbumListType, size: Int, offset: Int) async throws -> [Album] {
-        let body = try await subsonic("getAlbumList2", [
-            URLQueryItem(name: "type", value: type.rawValue), int("size", size), int("offset", offset),
-        ])
-        return (body.albumList2?.album ?? []).map { Mapping.album($0) }
+        try await albumList2([URLQueryItem(name: "type", value: type.rawValue)], size: size, offset: offset)
     }
 
     public func albums(genre: String, size: Int, offset: Int) async throws -> [Album] {
-        let body = try await subsonic("getAlbumList2", [
-            URLQueryItem(name: "type", value: "byGenre"), URLQueryItem(name: "genre", value: genre),
-            int("size", size), int("offset", offset),
-        ])
+        try await albumList2([URLQueryItem(name: "type", value: "byGenre"), URLQueryItem(name: "genre", value: genre)],
+                             size: size, offset: offset)
+    }
+
+    /// `getAlbumList2` with `filter` (the list type and its arguments) and a clamped page.
+    private func albumList2(_ filter: [URLQueryItem], size: Int, offset: Int) async throws -> [Album] {
+        let body = try await subsonic("getAlbumList2", filter + page("size", size, offset))
         return (body.albumList2?.album ?? []).map { Mapping.album($0) }
+    }
+
+    /// A page's size and offset, never fewer than one item or before the start.
+    private func page(_ sizeName: String, _ size: Int, _ offset: Int) -> [URLQueryItem] {
+        [int(sizeName, max(1, size)), int("offset", max(0, offset))]
     }
 
     /// A genre's songs, `count` at a time from `offset`.
     public func songs(genre: String, count: Int, offset: Int) async throws -> [Song] {
-        let body = try await subsonic("getSongsByGenre", [
-            URLQueryItem(name: "genre", value: genre), int("count", count), int("offset", offset),
-        ])
+        let body = try await subsonic("getSongsByGenre", [URLQueryItem(name: "genre", value: genre)] + page("count", count, offset))
         return (body.songsByGenre?.song ?? []).map(Mapping.song)
     }
 

@@ -310,6 +310,13 @@ private let noNetwork = NetworkStatus(isConnected: false, isCellular: false, isC
         #expect(await model.madeForYouTracks(MBID("2b9a3b3a-1f8e-4b55-9a0e-6f1f7c1c2d3e")!) == nil)   // Made for you tracks
         await #expect(throws: ListenBrainzTokenError.self) { try await model.saveListenBrainzToken("other") }
         #expect(await model.artistNotYetAlbums(Artist(id: "ar", name: "A", albumCount: 1), library: []).isEmpty)
+        // Genres (T19): from the songs on the phone (s1 has no genre, so there are none), Play and Shuffle included.
+        #expect(try await model.genreSections().isEmpty)
+        #expect(try await model.allGenres().isEmpty)
+        #expect(try await model.groupAlbums("rock").isEmpty)
+        #expect(try await model.groupSongs("rock").isEmpty)
+        #expect(try await model.genreAlbums("Rock").isEmpty)
+        #expect(try await model.genreSongs("Rock").isEmpty)
         try await Task.sleep(for: .milliseconds(300))
         #expect(seen.urls.isEmpty, "sent: \(seen.urls.map(\.path))")
         #expect(f.urls.isEmpty)

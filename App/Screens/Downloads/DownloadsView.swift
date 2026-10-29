@@ -1,10 +1,12 @@
 import DesignSystem
 import MagpieCore
 import Playback
+import Search
 import SwiftUI
 
 /// Library › Downloads (spec §6, Task 14): what's on the phone, by Albums, Artists, Playlists or Songs, from the
-/// snapshots kept with the files, so it works with no server. Songs play from the phone. Task 19 adds Genres.
+/// snapshots kept with the files, so it works with no server. Songs play from the phone. Genres (Task 19) groups the
+/// downloads' genres like Library › Genres.
 struct DownloadsView: View {
     @Environment(AppModel.self) private var model
     @State private var catalog: OfflineCatalog?
@@ -13,7 +15,7 @@ struct DownloadsView: View {
     private let themed = Themed()
 
     enum Kind: String, CaseIterable, Identifiable {
-        case albums = "Albums", artists = "Artists", playlists = "Playlists", songs = "Songs"
+        case albums = "Albums", artists = "Artists", playlists = "Playlists", songs = "Songs", genres = "Genres"
         var id: String { rawValue }
     }
 
@@ -62,6 +64,9 @@ struct DownloadsView: View {
             } else {
                 rows(Array(songs.enumerated()), id: \.element.id) { index, song in songRow(song, index: index, in: songs) }
             }
+        case .genres:
+            let sections = GenreGroups.grouped(catalog.genres(), preferences: model.preferences.genres)
+            if sections.isEmpty { empty } else { GenreGroupRows(sections: sections) }
         }
     }
 

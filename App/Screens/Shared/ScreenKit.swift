@@ -20,6 +20,10 @@ enum Route: Hashable {
     case madeForYou(MadeForYou.Playlist)
     /// Library › Downloads: what's on the phone (Task 14).
     case downloads
+    /// Library › Genres, a group's page and a genre's page (Task 19).
+    case genres
+    case genreGroup(id: String)
+    case genre(name: String)
 }
 
 extension View {
@@ -38,6 +42,9 @@ extension View {
             case .request(let id): RequestDetailView(requestId: id)
             case .madeForYou(let playlist): MadeForYouView(playlist: playlist)
             case .downloads: DownloadsView()
+            case .genres: GenresView()
+            case .genreGroup(let id): GenreGroupView(groupId: id)
+            case .genre(let name): GenreView(name: name)
             }
         }
     }

@@ -76,4 +76,56 @@ private func ok(_ body: String) -> Data {
     }
 
     @Test func starredListType() { #expect(AlbumListType.starred.rawValue == "starred") }
+
+    // MARK: - Parked T6 minors (Task 19)
+
+    /// A genre with `&`, `/`, spaces and `+` reaches the server as itself: `&` and `+` can't be read as separators.
+    @Test func genreQueryEncoding() async throws {
+        let (client, t) = makeClient()
+        t.stub(pathSuffix: "/rest/getSongsByGenre", body: ok(#""songsByGenre":{}"#))
+        t.stub(pathSuffix: "/rest/getAlbumList2", body: ok(#""albumList2":{}"#))
+        _ = try await client.songs(genre: "R&B / Soul + Funk", count: 10, offset: 0)
+        _ = try await client.albums(genre: "R&B / Soul + Funk", size: 10, offset: 0)
+        let genreRequests = t.requests.filter { $0.url?.path.contains("/rest/get") == true }
+        #expect(genreRequests.count == 2)
+        for r in genreRequests {
+            let raw = try #require(r.url?.query(percentEncoded: true))
+            #expect(raw.contains("genre=R%26B%20/%20Soul%20%2B%20Funk"), "\(raw)")
+            #expect(queryValue(r, "genre") == "R&B / Soul + Funk")
+        }
+    }
+
+    /// Paging never asks for a negative offset or fewer than one item.
+    @Test func pagingClamped() async throws {
+        let (client, t) = makeClient()
+        t.stub(pathSuffix: "/rest/getSongsByGenre", body: ok(#""songsByGenre":{}"#))
+        t.stub(pathSuffix: "/rest/getAlbumList2", body: ok(#""albumList2":{}"#))
+        _ = try await client.songs(genre: "Ambient", count: 0, offset: -3)
+        #expect(queryValue(t.requests.last!, "count") == "1" && queryValue(t.requests.last!, "offset") == "0")
+        _ = try await client.albums(genre: "Ambient", size: -2, offset: -1)
+        #expect(queryValue(t.requests.last!, "size") == "1" && queryValue(t.requests.last!, "offset") == "0")
+        _ = try await client.albumList(.newest, size: 0, offset: -9)
+        #expect(queryValue(t.requests.last!, "size") == "1" && queryValue(t.requests.last!, "offset") == "0")
+        #expect(queryValue(t.requests.last!, "type") == "newest")
+    }
+
+    @Test func songWithoutReplayGain() async throws {
+        let (client, t) = makeClient()
+        t.stub(pathSuffix: "/rest/getSong", body: ok(#""song":{"id":"s1","title":"One"}"#))
+        let song = try await client.song(id: "s1")
+        #expect(song.replayGain == nil && song.genre == nil)
+    }
+
+    @Test func partialReplayGain() async throws {
+        let (client, t) = makeClient()
+        t.stub(pathSuffix: "/rest/getSong", body: ok(#""song":{"id":"s1","title":"One","replayGain":{"albumGain":-4.5}}"#))
+        let song = try await client.song(id: "s1")
+        #expect(song.replayGain == ReplayGain(trackGain: nil, albumGain: -4.5, trackPeak: nil, albumPeak: nil))
+    }
+
+    @Test func genreRowWithoutCounts() async throws {
+        let (client, t) = makeClient()
+        t.stub(pathSuffix: "/rest/getGenres", body: ok(#""genres":{"genre":[{"value":"Chanson"}]}"#))
+        #expect(try await client.genres() == [Genre(name: "Chanson", songCount: 0, albumCount: 0)])
+    }
 }
