@@ -224,7 +224,7 @@ enum HomeCopy {
 }
 
 /// D9: setup continues from Home. Opens the Lidarr connection sheet until one is connected; then Review opens
-/// Settings, where the steps left are (final fix 2 B-M2).
+/// Settings › Requests, where the steps left are, or Finds set-up when that is all that is left (final fix 2 B-M2, T21b).
 private struct FinishSettingUpCard: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dynamicTypeSize) private var typeSize
@@ -265,7 +265,7 @@ private struct FinishSettingUpCard: View {
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("finish-setting-up")
         .sheet(isPresented: $showsConnect) { ConnectLidarrView() }
-        .sheet(isPresented: $showsSettings) { SettingsView() }
+        .sheet(isPresented: $showsSettings) { SettingsView(opening: SettingsPage.finishSettingUp(model.tryAvailability)) }
     }
 }
 

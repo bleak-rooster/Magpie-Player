@@ -399,8 +399,8 @@ final class BrowseFlowTests: XCTestCase {
         XCTAssertTrue(app.textFields["lidarr-address"].waitForExistence(timeout: 10))
     }
 
-    /// Library › Settings with the dev Lidarr connected: the G1 switch (off), set-up, change log and Count
-    /// plays are there; Library has a Requests row. Reads only: nothing is switched on.
+    /// Library › Settings › Requests with the dev Lidarr connected: the G1 switch (off), set-up and change log;
+    /// Settings › Scrobbling has Count plays; Library has a Requests row. Reads only: nothing is switched on.
     @MainActor func testSettingsShowLidarrControlsAndRequests() throws {
         let env = ProcessInfo.processInfo.environment
         guard let lidarrURL = env["MAGPIE_IT_LIDARR_URL"], let key = env["MAGPIE_IT_LIDARR_KEY"],
@@ -418,6 +418,17 @@ final class BrowseFlowTests: XCTestCase {
         }
         XCTAssertFalse(app.buttons["library-requests"].exists, "T21: Requests shows only with Lidarr connected")
         settings.tap()
+        // T21b: the top level is a short list of pages; Account & Server, then Requests holds the Lidarr controls.
+        let account = app.buttons["settings-account"]
+        XCTAssertTrue(account.waitForExistence(timeout: 10))
+        attachScreenshot(app, "settings-top")
+        account.tap()
+        XCTAssertTrue(app.buttons["settings-sign-out"].waitForExistence(timeout: 10))
+        attachScreenshot(app, "settings-account")
+        app.navigationBars.buttons.firstMatch.tap()   // › Settings
+        let requests = app.buttons["settings-requests"]
+        XCTAssertTrue(requests.waitForExistence(timeout: 10))
+        requests.tap()
 
         let connect = app.buttons["settings-connect-lidarr"]
         XCTAssertTrue(connect.waitForExistence(timeout: 10))
@@ -439,11 +450,14 @@ final class BrowseFlowTests: XCTestCase {
         XCTAssertEqual(toggle.value as? String, "0", "G1: changes are off until the owner turns them on")
         XCTAssertTrue(app.buttons["settings-provision"].exists)
         XCTAssertFalse(app.buttons["settings-provision"].isEnabled, "set-up needs changes allowed")
+        attachScreenshot(app, "settings-requests")
         let log = app.buttons["settings-change-log"]
         for _ in 0..<4 where !log.isHittable { app.swipeUp() }
         log.tap()
         XCTAssertTrue(app.navigationBars["Lidarr change log"].waitForExistence(timeout: 10))
-        app.navigationBars.buttons.firstMatch.tap()
+        app.navigationBars.buttons.firstMatch.tap()   // › Requests
+        XCTAssertTrue(app.navigationBars["Requests"].waitForExistence(timeout: 10))
+        app.navigationBars.buttons.firstMatch.tap()   // › Settings
         let scrobbling = app.buttons["settings-scrobbling"]   // T17: Count plays lives in Settings › Scrobbling
         for _ in 0..<4 where !scrobbling.isHittable { app.swipeUp() }
         scrobbling.tap()

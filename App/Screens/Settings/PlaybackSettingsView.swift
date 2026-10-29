@@ -41,6 +41,12 @@ struct PlaybackSettingsView: View {
         .navigationBarTitleDisplayMode(.inline)
     }
 
+    /// The Settings row's value: the Wi-Fi quality, then mobile data's when it differs ("Original · AAC 160 kbps on mobile").
+    static func summary(_ prefs: PlaybackPreferences) -> String {
+        let wifi = DownloadsSettingsView.formatTitle(prefs.wifi)
+        return prefs.cellular == prefs.wifi ? wifi : "\(wifi) · \(DownloadsSettingsView.formatTitle(prefs.cellular)) on mobile"
+    }
+
     static func title(_ option: SleepTimerOption) -> String {
         switch option {
         case .m15: "15 min"

@@ -41,7 +41,7 @@ struct TrySheet: View {
                 }
             }
         }
-        .sheet(isPresented: $showsSettings) { SettingsView() }
+        .sheet(isPresented: $showsSettings) { SettingsView(opening: [.requests]) }   // T21b: every reason Try names is on Requests
     }
 
     /// The bare record; Classic draws it as a square with the not-yet badge (D3).

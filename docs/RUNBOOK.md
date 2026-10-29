@@ -25,7 +25,7 @@ In Xcode pick the **Magpie** scheme and the **iPhone 18 Pro** simulator (iOS 27.
   `xcrun simctl keychain booted add-root-cert /path/to/ca.pem`
 - Do not put `user:password@` in the address; it is refused.
 
-**Step 3. Browse and play.** Tap "Start listening". Open an album, play a track, try Search, the queue (from Now Playing) and lyrics. Nothing is written to your servers yet, except scrobbles (see warnings in section 3: switch **Count plays** off in Settings if you don't want test plays recorded).
+**Step 3. Browse and play.** Tap "Start listening". Open an album, play a track, try Search, the queue (from Now Playing) and lyrics. Nothing is written to your servers yet, except scrobbles (see warnings in section 3: switch **Count plays** off in Settings › Scrobbling if you don't want test plays recorded).
 
 **Step 4. Connect Lidarr (read-only first).** Home › "Finish setting up" › Connect Lidarr. Enter the address and API key (Lidarr › Settings › General). Magpie checks the key and shows a summary: version, root folders and free space, whether Tubifarry was found, recycle bin, and Lidarr's health messages. Nothing is written. Read it (and section 2).
 
@@ -33,7 +33,7 @@ In Xcode pick the **Magpie** scheme and the **iPhone 18 Pro** simulator (iOS 27.
 1. Library › gear › Lidarr: switch on **Allow Magpie to change Lidarr** (off by default; per Lidarr).
 2. Tap **Set up Magpie in Lidarr**. It creates only what is missing (section 3).
 3. Choose **New music goes to** (your root folder; Magpie never guesses if you have several).
-4. Search for a song you do not own. In the "Not in your library" band tap **Try** (or **Ask for it** if you have no Tubifarry). Watch Library › Requests. Then check **Settings › Lidarr change log** and Lidarr's own Activity page.
+4. Search for a song you do not own. In the "Not in your library" band tap **Try** (or **Ask for it** if you have no Tubifarry). Watch Library › Requests. Then check **Settings › Requests › Lidarr change log** and Lidarr's own Activity page.
 
 Start with one song by a small artist, preferably one you wouldn't mind seeing in Lidarr.
 
@@ -63,20 +63,20 @@ The whole write list, nothing else is ever sent:
 - **Try and Stop looking never delete.** **Stop looking** unmonitors an album only if Magpie was the one who monitored it. An artist Magpie added stays in Lidarr; remove it there yourself if you want it gone. The only deletes Magpie ever sends are **Not for me** on a find (Finds mode, section 3a).
 - **Finds mode (section 3a) adds:** **Keep** (`PUT /artist/editor`, moving a find's artist into your main root or only removing `magpie-find`, plus the restore writes when a move fails) and **Not for me** (deleting a find's release from the Finds folder). Both are spelled out in section 3a.
 - **Bring in more** (after a Keep that moved the find, M7): `PUT /album/monitor` for the releases you pick, one `AlbumSearch`, and with Follow new releases `PUT /artist/editor {monitorNewItems: "new"}`. Exactly as in the M7 reference at the bottom.
-- **Change log = undo map.** Every write (method, path, body, no secrets) is recorded on the phone before it is sent: Settings › Lidarr change log. Magpie also keeps an on-device ledger of albums it touched, per Lidarr (address + key).
+- **Change log = undo map.** Every write (method, path, body, no secrets) is recorded on the phone before it is sent: Settings › Requests › Lidarr change log. Magpie also keeps an on-device ledger of albums it touched, per Lidarr (address + key).
 
 **Warnings (B8, B9):**
 - Try causes **real indexer searches and downloads** on your Lidarr and adds artists to your library root. Look at the change log afterwards.
-- **Count plays** is on by default: plays are scrobbled by Navidrome to your ListenBrainz/Last.fm. Turn it off in Settings while testing if you don't want that.
+- **Count plays** is on by default: plays are scrobbled by Navidrome to your ListenBrainz/Last.fm. Turn it off in Settings › Scrobbling while testing if you don't want that.
 - With **Use a Finds folder** off (the default) Try goes straight into your library, and the Try sheet says so. With it on, a new artist goes into your Finds folder instead (section 3a).
 
 ## 3a. Finds mode (M6): set-up, Keep and Not for me, exactly
 
 Off by default. With it off nothing below happens, and finds already in the folder can still be kept or let go.
 
-**Set it up** (Settings › Lidarr › Finds; needs Lidarr connected, **Set up Magpie in Lidarr** run, and an admin Navidrome login so the libraries can be read):
+**Set it up** (Settings › Requests › Finds; needs Lidarr connected, **Set up Magpie in Lidarr** run, and an admin Navidrome login so the libraries can be read):
 1. In Lidarr, add a root folder for finds (for example `/music/samples`) that is **not** inside, and does not hold, your main music folder or any other root folder. In Navidrome, add a library for the same folder.
-2. Settings › Lidarr › Finds › **Finds folder**: pick that root folder and confirm "Use … for Finds? Magpie will only delete files it brought in here." Magpie never picks it for you, and refuses a folder that equals, holds or sits inside another root folder or the main root.
+2. Settings › Requests › Finds › **Finds folder**: pick that root folder and confirm "Use … for Finds? Magpie will only delete files it brought in here." Magpie never picks it for you, and refuses a folder that equals, holds or sits inside another root folder or the main root.
 3. **In Navidrome**: pick the library that is the same folder. If Lidarr and Navidrome see it under different paths (different container mounts), give the two path starts under **Paths**.
 4. Turn on **Use a Finds folder**. The footer says "Finds are set up." If it asks you to run set-up again, tap **Set up Magpie in Lidarr** (it adds the `magpie-find` tag).
 

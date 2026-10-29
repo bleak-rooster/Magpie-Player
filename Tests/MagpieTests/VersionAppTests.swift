@@ -11,6 +11,6 @@ import Testing
         let declared = line.split(separator: "\"")[1]
         #expect(declared == "0.0.1")
         #expect(AppModel.marketingVersion == String(declared))
-        #expect(SettingsView.version.hasPrefix("\(declared) ("))
+        #expect(AboutView.version.hasPrefix("\(declared) ("))
     }
 }

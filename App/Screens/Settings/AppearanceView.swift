@@ -110,7 +110,7 @@ private struct CharacterCard: View {
     }
 }
 
-private struct AccentSwatch: View {
+struct AccentSwatch: View {
     let accent: AccentChoice
     let selected: Bool
     let scheme: ColorScheme
