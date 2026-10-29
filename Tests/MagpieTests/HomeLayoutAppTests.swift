@@ -96,6 +96,35 @@ private func queryValue(_ request: URLRequest, _ name: String) -> String? {
         #expect(shelves[1].items == [.album(album("r1"))])
     }
 
+    /// Build 8 launch crash (Index out of range in `homeRead`): Home's load task is cancelled and restarted at
+    /// launch; a cancelled read must neither trap nor mislabel shelves. It reports cancellation instead.
+    @Test(arguments: 0..<25) func cancelledReadNeverTraps(_ round: Int) async throws {
+        let model = try await signedInModel(fetcher: FakeFetcher())
+        let all = HomeSection.allCases
+        let task = Task { try await model.homeRead(for: all) }
+        if round % 2 == 0 { await Task.yield() }
+        task.cancel()
+        switch await task.result {
+        case .success(let read):
+            // Finished before the cancel landed: every shelf still sits under its own section.
+            for shelf in read.shelves { #expect(all.contains(shelf.section)) }
+        case .failure(let error):
+            #expect(error is CancellationError)
+        }
+    }
+
+    /// The build 8 trap, deterministically: results with gaps (and a short array) never index out of range, and every
+    /// shelf stays under its own section; the gaps count as not read.
+    @Test func gapsInResultsNeverShiftOrTrap() throws {
+        let wanted: [HomeSection] = [.jumpBackIn, .recentlyAdded, .mostPlayed, .downloaded]
+        let items: [HomeShelf.Item] = [.album(album("x"))]
+        let read = try AppModel.assemble(wanted: wanted, results: [nil, .success(items), nil])
+        #expect(read.shelves.map(\.section) == [.recentlyAdded])
+        #expect(read.failed == [.jumpBackIn, .mostPlayed, .downloaded])
+        // Every server section missing: reported as a failed read, not a trap.
+        #expect(throws: CancellationError.self) { try AppModel.assemble(wanted: wanted, results: []) }
+    }
+
     @Test func emptySectionsSkipped() async throws {
         let model = try await signedInModel(fetcher: FakeFetcher(), starredEmpty: true)
         #expect(try await model.homeShelves(for: [.favourites, .jumpBackIn]).map(\.section) == [.jumpBackIn])

@@ -65,17 +65,29 @@ extension AppModel {
                 }
             }
             var results = [Result<[HomeShelf.Item], any Error>?](repeating: nil, count: wanted.count)
-            for await (index, result) in group { results[index] = result }
-            return results.compactMap { $0 }
+            for await (index, result) in group where results.indices.contains(index) { results[index] = result }
+            return results
+        }
+        // A cancelled read reports nothing rather than "every section failed".
+        try Task.checkCancellation()
+        return try Self.assemble(wanted: wanted, results: results)
+    }
+
+    /// Joins one result per wanted section, by position. A section with no result (a read cut short) counts as
+    /// not read, so Home retries it; dropping the gaps instead shifted every later index and trapped with
+    /// "Index out of range" at launch (TestFlight build 8). Throws only when every section that asks the server failed.
+    static func assemble(wanted: [HomeSection], results: [Result<[HomeShelf.Item], any Error>?]) throws -> HomeRead {
+        let filled = wanted.indices.map { i -> Result<[HomeShelf.Item], any Error> in
+            (results.indices.contains(i) ? results[i] : nil) ?? .failure(CancellationError())
         }
         let asksServer = wanted.indices.filter { Self.asksServer(wanted[$0]) }
-        let failures = asksServer.compactMap { i -> (any Error)? in if case .failure(let e) = results[i] { e } else { nil } }
+        let failures = asksServer.compactMap { i -> (any Error)? in if case .failure(let e) = filled[i] { e } else { nil } }
         if !asksServer.isEmpty, failures.count == asksServer.count, let first = failures.first { throw first }
-        let shelves = zip(wanted, results).compactMap { section, result -> HomeShelf? in
+        let shelves = zip(wanted, filled).compactMap { section, result -> HomeShelf? in
             guard case .success(let items) = result, !items.isEmpty else { return nil }
             return HomeShelf(section: section, items: items)
         }
-        let failed = zip(wanted, results).compactMap { section, result -> HomeSection? in
+        let failed = zip(wanted, filled).compactMap { section, result -> HomeSection? in
             if case .failure = result { section } else { nil }
         }
         return HomeRead(shelves: shelves, failed: Set(failed))
