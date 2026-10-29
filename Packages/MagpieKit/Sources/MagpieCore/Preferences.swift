@@ -327,14 +327,16 @@ public struct ScrobbleRule: Codable, Hashable, Sendable {
         ScrobbleRule(percent: (clamp(percent, 10...90) + 2) / 5 * 5, minutes: minutes.map { clamp($0, 1...10) })
     }
 
-    /// Seconds of listening after which the play counts; nil when it never does (under 30 s).
+    /// Seconds of listening after which the play counts; nil when it never does (under 30 s). A hand-built rule is
+    /// clamped to the ranges `normalised()` allows (without the rounding), so its minutes can't overflow.
     public func threshold(duration: TimeInterval) -> TimeInterval? {
+        let cap = minutes.map { Double(clamp($0, 1...10) * 60) }
         if duration >= 30 {
-            let share = duration * Double(percent) / 100
-            return minutes.map { min(share, Double($0 * 60)) } ?? share
+            let share = duration * Double(clamp(percent, 10...90)) / 100
+            return cap.map { min(share, $0) } ?? share
         }
         if duration > 0 { return nil }
-        return minutes.map { Double($0 * 60) }
+        return cap
     }
 }
 

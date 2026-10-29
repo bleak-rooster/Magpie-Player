@@ -142,6 +142,8 @@ final class AppModel {
     @ObservationIgnored let playCounting: PlayCounting
     /// The ReplayGain mode the player levels songs with; kept in step with `preferences.playback.replayGain`.
     @ObservationIgnored let replayGainBox: ReplayGainBox
+    /// The scrobbling preferences the player reads at every check (Task 15); built before `player`.
+    @ObservationIgnored let scrobbleSettings: ScrobbleSettings
     /// D29: what the player treats as a find (never scrobbled). Kept in step with `findsSetup` and `findSongs`.
     @ObservationIgnored let findsIdentity = FindsIdentity()
     @ObservationIgnored var findPlaysWatch: Task<Void, Never>?
@@ -264,6 +266,8 @@ final class AppModel {
         self.playCounting = counting
         let replayGain = ReplayGainBox(preferences.playback.replayGain)
         self.replayGainBox = replayGain
+        let scrobbleSettings = ScrobbleSettings(preferences.scrobbling)
+        self.scrobbleSettings = scrobbleSettings
         let network = network ?? (Self.isHostedTest ? FixedNetwork() : NetworkMonitor())
         self.network = network
         let findsIdentity = self.findsIdentity
@@ -277,7 +281,8 @@ final class AppModel {
                                                        isOnline: { [offlineBox] in network.status.isConnected && !offlineBox.isOffline },
                                                        isOffline: { [offlineBox] in offlineBox.isOffline }),
                              isFind: { findsIdentity.isFind($0) },
-                             gain: { replayGain.mode.volume(for: $0.replayGain) })
+                             gain: { replayGain.mode.volume(for: $0.replayGain) },
+                             scrobbleRule: { scrobbleSettings.value.rule })
         self.sleepTimer = SleepTimer(player: player)
         applyEngineWindow()
         localFiles.setOnDamaged { [weak self] in self?.downloads?.dropBadFile(songId: $0) }

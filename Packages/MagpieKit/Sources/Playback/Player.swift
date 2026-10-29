@@ -62,8 +62,6 @@ public final class Player {
     /// `upcomingURLsChanged()` after changing it.
     @ObservationIgnored public var lookahead = EngineWindow.size(engineMax: AVQueueEngine.maxEnqueued)
 
-    /// Scrobble at 50 % of the track or this many seconds, whichever comes first.
-    static let scrobbleCap: TimeInterval = 240
     /// `previous()` restarts the current song once it has played longer than this.
     static let restartThreshold: TimeInterval = 3
 
@@ -73,6 +71,8 @@ public final class Player {
     @ObservationIgnored private let isFind: (Song) -> Bool
     @ObservationIgnored private let now: () -> Date
     @ObservationIgnored private let gain: (Song) -> Float
+    /// When a play counts (Task 15); read at every check, so a changed setting applies to the song that is playing.
+    @ObservationIgnored private let scrobbleRule: () -> ScrobbleRule
     @ObservationIgnored private var playback: TrackPlayback?
     /// The engine stopped on its own (end of list, or the current entry failed); resuming or
     /// skipping reloads the engine instead of relying on what it still holds.
@@ -102,18 +102,24 @@ public final class Player {
         var entryId: UUID
         var startedAt: Date
         var submitted = false
+        /// Seconds actually listened to: ticks add their step, a seek or a resume elsewhere does not.
+        var listened: TimeInterval = 0
+        /// The position of the last tick, or where the last seek or resume landed.
+        var lastTick: TimeInterval = 0
     }
 
     public init(engine: any PlaybackEngine, scrobbler: any Scrobbler, urls: any StreamURLProvider,
                 isFind: @escaping (Song) -> Bool = { _ in false },
                 now: @escaping () -> Date = { Date() },
-                gain: @escaping (Song) -> Float = { _ in 1 }) {
+                gain: @escaping (Song) -> Float = { _ in 1 },
+                scrobbleRule: @escaping () -> ScrobbleRule = { .standard }) {
         self.engine = engine
         self.scrobbler = scrobbler
         self.urls = urls
         self.isFind = isFind
         self.now = now
         self.gain = gain
+        self.scrobbleRule = scrobbleRule
         let events = engine.events
         Task { [weak self] in
             for await event in events {
@@ -183,6 +189,7 @@ public final class Player {
         hasEnded = false
         engine.seek(to: t)
         position = t
+        playback?.lastTick = t   // a jump is not listening
     }
 
     // MARK: - Queue edits
@@ -267,6 +274,7 @@ public final class Player {
         let resumeAt = position
         syncEngine(rebuildCurrent: true)
         engine.seek(to: resumeAt)
+        playback?.lastTick = resumeAt
     }
 
     /// The songs the engine holds or is about to: the current one and the window after it. Cache upkeep never
@@ -309,6 +317,11 @@ public final class Player {
             // trap where it becomes whole seconds (lock screen, the scrubber's clock).
             guard t.isFinite else { return }
             position = max(0, t)
+            if var p = playback, p.entryId == id {
+                if t > p.lastTick { p.listened += t - p.lastTick }
+                p.lastTick = t
+                playback = p
+            }
             // The API's song duration wins (D45: Ogg and other transcoded lengths are estimates); the engine's only
             // fills in when the server gave none.
             if let d, d.isFinite, d > 0, (queue.current?.song.duration ?? 0) <= 0 { duration = d }
@@ -542,9 +555,8 @@ public final class Player {
 
     private func maybeSubmitScrobble() {
         guard var p = playback, !p.submitted, let entry = queue.current, entry.id == p.entryId else { return }
-        let length = duration ?? entry.song.duration
-        let threshold = length > 0 ? min(length / 2, Self.scrobbleCap) : Self.scrobbleCap
-        guard position >= threshold else { return }
+        // The API's duration only (D45): the engine's is an estimate for transcoded streams. Unknown (0): minutes only.
+        guard let threshold = scrobbleRule().threshold(duration: entry.song.duration), p.listened >= threshold else { return }
         p.submitted = true
         playback = p
         scrobble(entry.song, submission: true, at: p.startedAt)
@@ -555,10 +567,9 @@ public final class Player {
         guard !isFind(song) else { return }
         let key = UUID()
         let scrobbler = self.scrobbler
-        let songId = song.id
         pendingScrobbles[key] = Task { [weak self] in
             do {
-                try await scrobbler.scrobble(songId: songId, submission: submission, at: at)
+                try await scrobbler.scrobble(song, submission: submission, at: at)
             } catch {
                 Log.logger("playback").error("scrobble failed: \(error.localizedDescription, privacy: .private)")
             }

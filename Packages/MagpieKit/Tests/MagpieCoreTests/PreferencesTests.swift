@@ -99,6 +99,13 @@ import Testing
         #expect(ScrobbleRule(percent: 50, minutes: nil).threshold(duration: 0) == nil)
     }
 
+    @Test func scrobbleThresholdSurvivesAHandBuiltRule() {
+        let huge = ScrobbleRule(percent: Int.max, minutes: Int.max)
+        #expect(huge.threshold(duration: 0) == 600, "minutes clamp to 10 before they become seconds")
+        #expect(huge.threshold(duration: 100) == 90, "percent clamps to 90")
+        #expect(ScrobbleRule(percent: Int.min, minutes: Int.min).threshold(duration: 0) == 60)
+    }
+
     @Test func orderedVisibilityEditing() {
         var v = LayoutPreferences.defaultValue.home
         v.move(fromOffsets: IndexSet(integer: 3), toOffset: 0)

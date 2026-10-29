@@ -24,6 +24,7 @@ extension AppModel {
             replayGainBox.set(preferences.playback.replayGain)
             player.upcomingURLsChanged()
         }
+        if preferences.scrobbling != old.scrobbling { scrobbleSettings.set(preferences.scrobbling) }
         // Downloads: a setting may let waiting downloads go (mobile data, a bigger limit); favourites follow the toggle.
         let new = preferences.downloads, was = old.downloads
         if new.overMobileData != was.overMobileData || new.downloadsLimit != was.downloadsLimit

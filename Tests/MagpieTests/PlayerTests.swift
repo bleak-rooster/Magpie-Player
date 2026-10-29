@@ -4,6 +4,7 @@ import MagpieCore
 import Playback
 import MediaPlayer
 import UIKit
+@testable import Magpie
 
 @MainActor
 final class FakeEngine: PlaybackEngine {
@@ -36,8 +37,11 @@ final class FakeEngine: PlaybackEngine {
 actor FakeScrobbler: Scrobbler {
     struct Call: Equatable { var songId: String; var submission: Bool }
     private(set) var calls: [Call] = []
-    func scrobble(songId: String, submission: Bool, at: Date?) async throws {
-        calls.append(Call(songId: songId, submission: submission))
+    /// The `at` of each call, in step with `calls`.
+    private(set) var dates: [Date?] = []
+    func scrobble(_ song: Song, submission: Bool, at: Date?) async throws {
+        calls.append(Call(songId: song.id, submission: submission))
+        dates.append(at)
     }
 }
 
@@ -104,6 +108,67 @@ final class FakeURLs: StreamURLProvider {
         #expect(player.queue.current?.song.id == "2")
     }
 
+    @Test func seekForwardDoesNotCount() async {
+        let player = makePlayer()
+        player.play([Self.song("1", duration: 300)], startAt: 0)
+        let id = player.queue.current!.id
+        player.handle(.time(id, 10, duration: 300)); player.seek(200)
+        player.handle(.time(id, 201, duration: 300)); player.handle(.time(id, 290, duration: 300))
+        await player.waitForPendingScrobbles()
+        #expect(await scrobbler.calls == [.init(songId: "1", submission: false)])
+    }
+    @Test func customRuleTenPercent() async {
+        let player = Player(engine: engine, scrobbler: scrobbler, urls: urls, scrobbleRule: { ScrobbleRule(percent: 10, minutes: nil) })
+        player.play([Self.song("1", duration: 600)], startAt: 0)
+        let id = player.queue.current!.id
+        player.handle(.time(id, 59, duration: 600)); await player.waitForPendingScrobbles()
+        #expect(await scrobbler.calls.count == 1)
+        player.handle(.time(id, 60, duration: 600)); await player.waitForPendingScrobbles()
+        #expect(await scrobbler.calls.last == .init(songId: "1", submission: true))
+    }
+    @Test func shortSongNeverCounted() async {
+        let player = makePlayer()
+        player.play([Self.song("1", duration: 25)], startAt: 0)
+        let id = player.queue.current!.id
+        for t in stride(from: 0.5, through: 25, by: 0.5) { player.handle(.time(id, t, duration: 25)) }
+        await player.waitForPendingScrobbles()
+        #expect(await scrobbler.calls == [.init(songId: "1", submission: false)])
+    }
+    @Test func engineDurationIgnored() async {
+        let player = makePlayer()
+        player.play([Self.song("1", duration: 200)], startAt: 0)
+        let id = player.queue.current!.id
+        player.handle(.time(id, 99, duration: 1000)); await player.waitForPendingScrobbles()
+        #expect(await scrobbler.calls.count == 1)
+        player.handle(.time(id, 100, duration: 1000)); await player.waitForPendingScrobbles()
+        #expect(await scrobbler.calls.last == .init(songId: "1", submission: true))
+    }
+    @Test func unknownDurationUsesMinutes() async {
+        let player = makePlayer()
+        player.play([Self.song("1", duration: 0)], startAt: 0)
+        let id = player.queue.current!.id
+        player.handle(.time(id, 239, duration: nil)); await player.waitForPendingScrobbles()
+        #expect(await scrobbler.calls.count == 1)
+        player.handle(.time(id, 240, duration: nil)); await player.waitForPendingScrobbles()
+        #expect(await scrobbler.calls.last == .init(songId: "1", submission: true))
+    }
+    @Test func submissionCarriesPlayStartTime() async {
+        let t0 = Date(timeIntervalSince1970: 1_700_000_000)
+        var clock = t0
+        let player = Player(engine: engine, scrobbler: scrobbler, urls: urls, now: { clock })
+        player.play([Self.song("1", duration: 200)], startAt: 0)
+        clock = t0.addingTimeInterval(100)
+        player.handle(.time(player.queue.current!.id, 100, duration: 200)); await player.waitForPendingScrobbles()
+        #expect(await scrobbler.dates == [nil, t0], "now playing has no time; the play carries its start")
+    }
+    @Test func ruleChangeAppliesToTheNextCheck() async {
+        let settings = ScrobbleSettings(.defaultValue)
+        let player = Player(engine: engine, scrobbler: scrobbler, urls: urls, scrobbleRule: { settings.value.rule })
+        player.play([Self.song("1", duration: 200)], startAt: 0)
+        var p = ScrobblePreferences.defaultValue; p.rule = ScrobbleRule(percent: 10, minutes: nil); settings.set(p)
+        player.handle(.time(player.queue.current!.id, 20, duration: 200)); await player.waitForPendingScrobbles()
+        #expect(await scrobbler.calls.last == .init(songId: "1", submission: true))
+    }
     @Test func noScrobbleForFinds() async {
         let findsLibraryId = 2
         let player = makePlayer(isFind: { $0.libraryId == findsLibraryId })

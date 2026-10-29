@@ -48,7 +48,7 @@ public extension PlaybackEngine {
 
 /// Records a play with the server. Sendable so `Player` can call it off the main actor.
 public protocol Scrobbler: Sendable {
-    func scrobble(songId: String, submission: Bool, at: Date?) async throws
+    func scrobble(_ song: Song, submission: Bool, at: Date?) async throws
 }
 
 /// Builds the URL to stream a song from, against whichever server address is active right now.

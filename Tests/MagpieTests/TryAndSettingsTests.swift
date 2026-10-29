@@ -213,10 +213,10 @@ final class LockableTokenStore: ListenBrainzTokenStoring, @unchecked Sendable {
         box.set(client)
         let counting = PlayCounting(on: false)
         let scrobbler = NavidromeScrobbler(box: box, counting: counting)
-        try await scrobbler.scrobble(songId: "s1", submission: true, at: nil)
+        try await scrobbler.scrobble(PlayerTests.song("s1"), submission: true, at: nil)
         #expect(!t.requests.contains { $0.url?.path.hasSuffix("/rest/scrobble") == true })
         counting.set(true)
-        try await scrobbler.scrobble(songId: "s1", submission: true, at: nil)
+        try await scrobbler.scrobble(PlayerTests.song("s1"), submission: true, at: nil)
         #expect(t.requests.contains { $0.url?.path.hasSuffix("/rest/scrobble") == true })
 
         let model = makeModel()
