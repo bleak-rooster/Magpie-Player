@@ -49,7 +49,7 @@ struct GenreGroupsTests {
         let genres = (0..<2000).map { Genre(name: "\(names[$0 % names.count]) \($0)", songCount: 1, albumCount: 1) }
         let start = ContinuousClock.now
         let s = GenreGroups.grouped(genres, preferences: .defaultValue)
-        #expect(ContinuousClock.now - start < .milliseconds(50))
+        #expect(ContinuousClock.now - start < .milliseconds(250)) // debug builds ~45 ms; the old quadratic path took seconds, so 250 ms still catches it without flaking
         #expect(!s.isEmpty)
     }
 
