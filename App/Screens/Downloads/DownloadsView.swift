@@ -22,6 +22,7 @@ struct DownloadsView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Tokens.Spacing.l) {
+                DownloadingNowLink().padding(.horizontal, Tokens.Spacing.largeTitleMargin)   // P1, while anything downloads
                 Picker("Show", selection: $kind) {
                     ForEach(Kind.allCases) { Text($0.rawValue).tag($0) }
                 }
@@ -94,8 +95,11 @@ struct DownloadsView: View {
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(artist.name).font(.body)
-                    Text(artist.albumCount == 1 ? "1 album" : "\(artist.albumCount) albums")
-                        .font(.footnote).foregroundStyle(themed.palette.ink2Color)
+                    HStack(spacing: 4) {
+                        Text(artist.albumCount == 1 ? "1 album" : "\(artist.albumCount) albums")
+                            .font(.footnote).foregroundStyle(themed.palette.ink2Color)
+                        DownloadMarkView(model.downloadIndex.listMark(artist: artist))   // P1
+                    }
                 }
                 Spacer()
             }
@@ -114,8 +118,11 @@ struct DownloadsView: View {
                 Artwork(playlist.coverArtId, side: 48) { SleeveArt(image: $0, side: 48) }
                 VStack(alignment: .leading, spacing: 1) {
                     Text(playlist.name).font(.body).lineLimit(2)
-                    Text(playlist.songCount == 1 ? "1 song" : "\(playlist.songCount) songs")
-                        .font(.footnote).foregroundStyle(themed.palette.ink2Color)
+                    HStack(spacing: 4) {
+                        Text(playlist.songCount == 1 ? "1 song" : "\(playlist.songCount) songs")
+                            .font(.footnote).foregroundStyle(themed.palette.ink2Color)
+                        DownloadMarkView(model.downloadIndex.mark(playlistId: playlist.id))   // P1
+                    }
                 }
                 Spacer()
             }
@@ -126,6 +133,7 @@ struct DownloadsView: View {
         }
         .buttonStyle(.plain)
         .foregroundStyle(themed.palette.inkColor)
+        .reloadArtworkMenu(playlist.coverArtId)   // P4
     }
 
     private func songRow(_ song: Song, index: Int, in songs: [Song]) -> some View {

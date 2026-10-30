@@ -83,6 +83,16 @@ final class DownloadManager {
     /// Manual downloads stopped by "Downloads are full", and ones that failed: `retryWaiting` queues them again.
     var stoppedByFull: [Job] = []   // (+Removal)
     var failed: [Job] = []   // (+Removal)
+    /// P1: the downloads on the phone, for the Downloaded marks; rebuilt by `refresh`.
+    private(set) var index = DownloadIndex()
+    /// P1, Downloading now: bytes so far and expected, per running job id (+Activity).
+    var progress: [UUID: DownloadProgress] = [:]
+    /// P1: "Pause all" (+Activity). Work that needs the network stays queued while paused or in the background.
+    var isPaused = false
+    /// P1, foreground only: Magpie is in the background (+Activity); downloads and pre-downloads wait for its return.
+    var isInBackground = false
+    /// P1: the scene is active (+Activity); "Keep screen on while downloading" holds the idle timer only then.
+    var isAppActive = true
 
     @ObservationIgnored private let fetcher: any AudioFetching
     @ObservationIgnored private let network: any NetworkStatusProviding
@@ -121,6 +131,9 @@ final class DownloadManager {
     @ObservationIgnored var loadPlayableForCheck: @Sendable (URL) async throws -> Bool = DownloadManager.loadIsPlayable
     /// Pre-downloads that came back as something the store can't keep (`songId|quality`): not tried again.
     @ObservationIgnored private var invalidPreDownloads: Set<String> = []
+    /// P1: holds the idle timer off while downloads run with Magpie open (+Activity).
+    @ObservationIgnored var idleTimer = IdleTimerHold()
+    @ObservationIgnored var keepAwakeWatch: Task<Void, Never>?
 
     /// A removal the store refused with `notReady`: `reason` off `songIds` (nil: every song).
     struct Removal: Equatable {
@@ -151,6 +164,7 @@ final class DownloadManager {
         networkWatch?.cancel()
         protectedDataWatch?.cancel()
         storeRetry?.cancel()
+        keepAwakeWatch?.cancel()
     }
 
     /// Loads the store, mirrors its files and queues the manual downloads left from the last run.
@@ -173,6 +187,7 @@ final class DownloadManager {
             }
         }
         isStarted = true
+        watchKeepAwake()
         savePending()   // downloads asked for before the start
         await resumeStoreWork()   // what was asked for before the start: playlists, covers, jobs
     }
@@ -305,6 +320,7 @@ final class DownloadManager {
         guard isLive(gen) else { return }
         do {
             try await store.savePlaylist(playlist)
+            await refresh()   // P1: the playlist's mark counts over its snapshot
         } catch {
             deferredPlaylists.removeAll { $0.id == playlist.id }
             deferredPlaylists.append(playlist)
@@ -403,6 +419,7 @@ final class DownloadManager {
         storeRetry = nil
         discardUnreadPending()
         savePending()
+        releaseKeepAwake()
     }
 
     /// Sign-out: once this returns nothing is left that could write into the store, so the scope can be erased.
@@ -444,7 +461,10 @@ final class DownloadManager {
     }
 
     /// Why manual downloads wait: for the server while offline (ruling b), for Wi-Fi otherwise.
-    private var waitingStatus: DownloadStatus { isOffline() ? .waitingForConnection : .waitingForWiFi }
+    var waitingStatus: DownloadStatus { isOffline() ? .waitingForConnection : .waitingForWiFi }
+
+    /// The download preferences as they are now (normalised).
+    var preferencesNow: DownloadPreferences { preferences().normalised() }
 
     /// How many of `songIds` are downloaded for some reason other than `reason`.
     func onPhoneForOtherReasons(_ songIds: [String], reason: DownloadReason) -> Int {
@@ -512,6 +532,7 @@ final class DownloadManager {
             guard jobs[i].state == .queued else { continue }
             let needsNetwork = jobs[i].kind == .replace || kinds[jobs[i].songId] == nil
             if jobs[i].isManual, needsNetwork, !allowed { jobs[i].state = .waiting; continue }
+            if needsNetwork, isHeld { continue }   // P1: paused, or Magpie is in the background
             guard activeRuns.count < prefs.concurrent else { continue }
             let songId = jobs[i].songId
             guard !activeRuns.values.contains(songId) else { continue }
@@ -521,6 +542,7 @@ final class DownloadManager {
             activeRuns[run] = songId
             tasks[run] = Task { [weak self] in
                 await self?.perform(id: id, run: run)
+                self?.progress[id] = nil
                 self?.taskEnded(run)
             }
         }
@@ -543,7 +565,7 @@ final class DownloadManager {
     private func job(_ id: UUID) -> Job? { jobs.first { $0.id == id } }
 
     /// False once the job was removed, cancelled or sent back to wait: its result is then thrown away.
-    private func isCurrent(_ id: UUID, _ run: UUID) -> Bool { job(id)?.state == .running(run) }
+    func isCurrent(_ id: UUID, _ run: UUID) -> Bool { job(id)?.state == .running(run) }
 
     private func perform(id: UUID, run: UUID) async {
         guard let job = job(id) else { return }
@@ -590,7 +612,10 @@ final class DownloadManager {
         guard let source = streamURL(job.metadata.song, job.quality) else { fail(id, URLError(.badURL)); return }
         let fetched: (file: URL, mimeType: String?)
         do {
-            fetched = try await fetcher.fetch(source, allowsCellular: !job.isManual || prefs.overMobileData)
+            fetched = try await fetcher.fetch(source, allowsCellular: !job.isManual || prefs.overMobileData) {
+                [weak self] received, expected in
+                Task { @MainActor in self?.noteProgress(id, run, received: received, expected: expected) }
+            }
         } catch {
             guard isLive(gen), isCurrent(id, run) else { return }   // sent back to wait, removed or signed out
             fail(id, error)
@@ -720,6 +745,9 @@ final class DownloadManager {
     func refresh() async {
         let entries = await store.entries()
         let files = await store.localFiles()
+        let playlists = await store.playlists()
+        let index = DownloadIndex(entries: entries, playlists: playlists)
+        if index != self.index { self.index = index }
         kinds = Dictionary(uniqueKeysWithValues: entries.map { ($0.songId, $0.kind) })
         reasons = Dictionary(uniqueKeysWithValues: entries.map { ($0.songId, $0.reasons) })
         if files != localFiles {

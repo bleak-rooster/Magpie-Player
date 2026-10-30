@@ -30,6 +30,7 @@ extension AppModel {
             // Manual downloads also wait while the server is suspect (Task 14): they'd only fail.
             isOffline: { [weak self] in self.map { $0.isOffline || $0.reachability.isSuspect } ?? false })
         downloads = manager
+        applyLaunchPresence(to: manager)   // P1: a launch in the background starts held
         // Task 13: songs on the phone play from it; one that lands or leaves re-sends the songs after the current one.
         manager.onLocalFilesChanged = { [weak self, weak manager] in
             guard let self, let manager, self.downloads === manager else { return }

@@ -7,6 +7,8 @@ import SwiftUI
 struct DownloadsSettingsView: View {
     @Environment(AppModel.self) private var model
     @State private var usage: AudioUsage?
+    @State private var artworkBytes: Int64?
+    @State private var confirmsClearArtwork = false
     @State private var confirmsRemoveAll = false
     @State private var confirmsClearCache = false
     @State private var redownloading = false
@@ -21,6 +23,16 @@ struct DownloadsSettingsView: View {
 
     var body: some View {
         Form {
+            // P1: hidden when nothing is downloading.
+            let active = model.downloadActivity.count
+            if active > 0 {
+                Section {
+                    NavigationLink { DownloadingNowView() } label: {
+                        Label(DownloadActivityCopy.row(active), systemImage: "arrow.down.circle.dotted")
+                    }
+                    .accessibilityIdentifier("settings-downloading-now")
+                }
+            }
             Section {
                 Picker("Download format", selection: binding(\.quality)) {
                     StreamQualityOptions(originalTitle: Self.originalTitle)
@@ -31,11 +43,13 @@ struct DownloadsSettingsView: View {
             Section {
                 Toggle("Download on mobile data", isOn: binding(\.overMobileData))
                 Picker("Downloads at the same time", selection: binding(\.concurrent)) {
-                    ForEach(1...4, id: \.self) { Text("\($0)").tag($0) }
+                    ForEach(DownloadPreferences.concurrentRange, id: \.self) { Text("\($0)").tag($0) }
                 }
                 Picker("Pre-download upcoming songs", selection: binding(\.preDownload)) {
                     ForEach(0...10, id: \.self) { Text(Self.aheadTitle($0)).tag($0) }
                 }
+                Toggle("Keep screen on while downloading", isOn: binding(\.keepScreenOn))
+                    .accessibilityIdentifier("keep-screen-on")
                 Toggle("Keep recently played songs", isOn: binding(\.keepRecentlyPlayed))
                 Picker("Cache limit", selection: binding(\.cacheLimit)) {
                     ForEach(CacheLimit.allCases, id: \.self) { Text(Self.title($0)).tag($0) }
@@ -47,7 +61,7 @@ struct DownloadsSettingsView: View {
                     ForEach(OfflineMode.allCases, id: \.self) { Text(Self.title($0)).tag($0) }
                 }
             } footer: {
-                Text("Without mobile data, downloads wait for Wi-Fi. Upcoming songs are saved ahead on any network.")
+                Text("Without mobile data, downloads wait for Wi-Fi. Upcoming songs are saved ahead on any network. Downloads only go on while Magpie is open.")
             }
             Section {
                 Toggle("Keep favourites downloaded", isOn: binding(\.keepFavourites))
@@ -84,13 +98,34 @@ struct DownloadsSettingsView: View {
                         Text("Pre-downloaded and recently played songs leave this phone. Downloads stay.")
                     }
             }
+            Section {
+                Text(artworkBytes.map(Self.artworkText) ?? "Artwork \u{00B7} …")
+                    .accessibilityIdentifier("artwork-used")
+                Button("Clear artwork cache", role: .destructive) { confirmsClearArtwork = true }
+                    .accessibilityIdentifier("clear-artwork")
+                    .confirmationDialog("Clear artwork cache?", isPresented: $confirmsClearArtwork, titleVisibility: .visible) {
+                        Button("Clear artwork cache", role: .destructive) {
+                            Task { await model.clearArtworkCache(); await readUsage() }
+                        }
+                        Button("Cancel", role: .cancel) {}
+                    } message: {
+                        Text(Self.clearArtworkMessage)
+                    }
+            } footer: {
+                Text("Covers and artist pictures stay on this phone until you clear them.")
+            }
         }
         .navigationTitle("Downloads & Storage")
         .navigationBarTitleDisplayMode(.inline)
         .task { await readUsage() }
     }
 
-    private func readUsage() async { usage = await model.storageUsage }
+    private func readUsage() async {
+        usage = await model.storageUsage
+        artworkBytes = await model.artworkUsage
+    }
+
+    static let clearArtworkMessage = "Covers load again from your server when you next see them. Covers of downloaded albums stay."
 
     // MARK: - Copy
 
@@ -108,6 +143,9 @@ struct DownloadsSettingsView: View {
     static func usageText(_ usage: AudioUsage) -> String {
         "Downloads \(bytes(usage.downloadBytes)) · Cache \(bytes(usage.cacheBytes))"
     }
+
+    /// "Artwork · 84 MB".
+    static func artworkText(_ count: Int64) -> String { "Artwork \u{00B7} \(bytes(count))" }
 
     static func bytes(_ count: Int64) -> String {
         let formatter = ByteCountFormatter()

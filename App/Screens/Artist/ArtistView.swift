@@ -50,8 +50,10 @@ struct ArtistView: View {
                         .overlay { if image == nil { ArtistMonogram(name: page.artist.name) } }
                         .clipShape(Circle())
                 }
+                .reloadArtworkMenu(page.artist.coverArtId)
                 Text(page.artist.name).magpieDisplay(.largeTitle).multilineTextAlignment(.center)
                     .accessibilityAddTraits(.isHeader)
+                DownloadMarkLine(model.downloadIndex.mark(artistId: page.artist.id, albums: page.albums))
                 CapsuleRow {
                     CapsuleButton(gathering ? "Loading…" : "Play", symbol: "play.fill") {
                         Task { await playAll(albums, shuffled: false) }

@@ -35,6 +35,7 @@ struct AlbumView: View {
         return VStack(spacing: Tokens.Spacing.l) {
             VStack(spacing: Tokens.Spacing.s) {
                 Artwork(album.coverArtId, side: 260) { SleeveArt(image: $0, side: 260) }
+                    .reloadArtworkMenu(album.coverArtId)
                     .shadow(color: .black.opacity(0.18), radius: 16, y: 8)
                     .padding(.bottom, Tokens.Spacing.s)
                 Text(album.name)
@@ -55,6 +56,7 @@ struct AlbumView: View {
                     if let quality = Self.quality(of: songs) { Hallmark(quality) }
                 }
                 .foregroundStyle(p.ink2Color)
+                DownloadMarkLine(model.downloadIndex.mark(album: album))
             }
             .padding(.horizontal, Tokens.Spacing.largeTitleMargin)
 
@@ -156,6 +158,7 @@ private struct TrackList: View {
     private func row(_ index: Int, _ song: Song) -> some View {
         let p = themed.palette
         let isCurrent = model.player.queue.current?.song.id == song.id
+        let mark: DownloadMark = model.downloadIndex.isDownloaded(song.id) ? .downloaded : .none
         return Button {
             model.play(songs, startAt: index)
         } label: {
@@ -172,6 +175,7 @@ private struct TrackList: View {
                 .frame(width: 24)
                 Text(song.title).font(.body).lineLimit(2)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                DownloadMarkView(mark)
                 Text(DurationText.clock(song.duration)).font(theme.numberFont(.footnote))
                     .foregroundStyle(p.ink2Color)
             }
@@ -182,7 +186,8 @@ private struct TrackList: View {
         .buttonStyle(.plain)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(song.title)
-        .accessibilityValue(isCurrent ? "Now playing, \(DurationText.spoken(song.duration))" : DurationText.spoken(song.duration))
+        .accessibilityValue(mark.joined(to: isCurrent ? "Now playing, \(DurationText.spoken(song.duration))"
+                                                      : DurationText.spoken(song.duration)))
         .accessibilityAddTraits(.isButton)
         .accessibilityIdentifier("track-\(index)")
         .contextMenu { SongDownloadMenuItem(song: song, removing: $removing) }
