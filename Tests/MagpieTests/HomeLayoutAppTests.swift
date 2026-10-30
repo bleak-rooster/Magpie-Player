@@ -120,7 +120,8 @@ private func queryValue(_ request: URLRequest, _ name: String) -> String? {
         let items: [HomeShelf.Item] = [.album(album("x"))]
         let read = try AppModel.assemble(wanted: wanted, results: [nil, .success(items), nil])
         #expect(read.shelves.map(\.section) == [.recentlyAdded])
-        #expect(read.failed == [.jumpBackIn, .mostPlayed, .downloaded])
+        // P5: a gap was cut short, not failed; it is read again and never says "Couldn't load".
+        #expect(read.cancelled == [.jumpBackIn, .mostPlayed, .downloaded] && read.failed.isEmpty)
         // Every server section missing: reported as a failed read, not a trap.
         #expect(throws: CancellationError.self) { try AppModel.assemble(wanted: wanted, results: []) }
     }

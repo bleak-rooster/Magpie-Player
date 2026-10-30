@@ -112,6 +112,10 @@ final class AppModel {
     var listenBrainzTokenGeneration = 0
     /// Home's "Made for you" shelf for the saved token (AppModel+MadeForYou.swift). Empty without a token.
     var madeForYouShelf: [MadeForYou.Playlist] = []
+    /// Home's feed for the signed-in account (P5, HomeFeed.swift).
+    @ObservationIgnored var homeFeedSlot: HomeFeed?
+    /// Changes each time the server answers again after it didn't: Home reads what failed (P5).
+    var serverAnsweredGeneration = 0
     /// The scene is active: requests poll every 5 s, otherwise every 30 s.
     var isForeground = true {
         didSet {
@@ -530,6 +534,7 @@ final class AppModel {
         stopObservingUnlock()
         box.set(nil)
         ArtworkCache.shared.removeAll()
+        forgetHomeShelves()
         stopMatchIndex(erase: true)
         forgetLidarrPermissions()
         lidarrStore.clear()

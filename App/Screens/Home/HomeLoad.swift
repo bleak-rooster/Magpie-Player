@@ -34,6 +34,13 @@ struct HomeLoad: Equatable {
     private(set) var done: Set<HomeSection> = []
     private(set) var key: Key?
 
+    init() {}
+
+    /// Home's saved shelves (P5): on screen at once, none of them read yet, so the first read reads everything.
+    init(cached shelves: [HomeShelf]) {
+        for shelf in shelves { found[shelf.section] = shelf }
+    }
+
     /// What a read for `want` asks for: the sections not read yet (all of them when fresh), Downloaded again when the
     /// songs on the phone changed, Genres again when the genre preferences changed. Made for you has its own shelf.
     func read(for want: Key, fresh: Bool) -> Read {
@@ -44,18 +51,25 @@ struct HomeLoad: Equatable {
         return Read(sections: want.sections.filter { $0 != .madeForYou && !kept.contains($0) }, kept: kept, fresh: fresh)
     }
 
-    /// Records what `read` found. A failed section keeps any shelf already on screen and isn't marked read.
-    mutating func record(_ read: Read, for want: Key, shelves: [HomeShelf], failed newlyFailed: Set<HomeSection>) {
+    /// Records what `read` found. A failed section keeps any shelf already on screen and isn't marked read. An
+    /// `unread` section (its read was cut short, P5) is left as it was: its shelf stays, it isn't read, and it isn't
+    /// a failure.
+    mutating func record(_ read: Read, for want: Key, shelves: [HomeShelf], failed newlyFailed: Set<HomeSection>,
+                         unread: Set<HomeSection> = []) {
         if read.fresh {
             found = found.filter { want.sections.contains($0.key) }
             failed = []
         }
-        for section in read.sections where !newlyFailed.contains(section) { found[section] = nil }
+        let answered = read.sections.filter { !unread.contains($0) }
+        for section in answered where !newlyFailed.contains(section) { found[section] = nil }
         for shelf in shelves { found[shelf.section] = shelf }
-        failed = failed.subtracting(read.sections).union(newlyFailed)
-        done = read.kept.union(read.sections).subtracting(newlyFailed)
+        failed = failed.subtracting(answered).union(newlyFailed)
+        done = read.kept.union(answered).subtracting(newlyFailed)
         key = want
     }
+
+    /// Whether a read for `want` would still ask for something: a section that failed, or one not read yet (P5).
+    func needsRead(_ want: Key) -> Bool { !read(for: want, fresh: false).sections.isEmpty }
 
     /// Whether `section` shows "Couldn't load": its read failed and no earlier shelf of it is on screen.
     func showsFailure(_ section: HomeSection) -> Bool { failed.contains(section) && found[section] == nil }
