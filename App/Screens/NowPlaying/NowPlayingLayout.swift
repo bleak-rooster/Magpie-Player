@@ -34,6 +34,16 @@ enum NowPlayingLayout {
         let side = artSide(available: available, reserved: reserved(spacing, upNext: shows), maxSide: maxSide, minSide: minSide)
         return Plan(side: side, showsUpNext: shows, spacing: spacing)
     }
+
+    /// Lyrics mode (P6): the gap between parts. Tight, so the lyrics get the room.
+    static let lyricsSpacing = Tokens.Spacing.m
+
+    /// Lyrics mode (P6): the lyrics take everything between the top bar and the compact title line, full width.
+    /// `parts`: measured heights of everything else, vertical padding included; `gaps`: the spaces between them and
+    /// the lyrics. Never below `minHeight`.
+    static func lyricsHeight(available: CGSize, parts: CGFloat, gaps: Int, minHeight: CGFloat = 120) -> CGFloat {
+        max(minHeight, available.height - parts - CGFloat(gaps) * lyricsSpacing)
+    }
 }
 
 extension EnvironmentValues {
