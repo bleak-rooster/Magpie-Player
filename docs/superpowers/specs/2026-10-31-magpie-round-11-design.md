@@ -172,3 +172,24 @@ Workstreams *(parallel worktrees)*:
 Overlaps:
 - Now Playing: X2 owns the layout and adds the More button. X3 provides `AddToPlaylistSheet(songIds:)` and the favourite APIs. X2's More menu calls them by those exact names. If not merged yet, stub behind the same names; reconcile at merge.
 - Song rows: X2 adds swipe actions, X3 adds context-menu items.
+
+## R15. Artwork for search results outside the library (owner addendum)
+- **Search results not in the library** (songs and albums from MusicBrainz, artists) show artwork. Songs and albums use their release cover; artists use their picture.
+- **Sources** *(call)*:
+  - **Songs and albums:** Cover Art Archive (`https://coverartarchive.org/release-group/<rg-mbid>/front-250`, following its redirect, HTTPS only), keyed by the release-group MBID the search already resolves.
+  - **Artists:** when Lidarr is connected, the `images` from Lidarr's `artist/lookup?term=lidarr:<mbid>` (poster/headshot `remoteUrl`, HTTPS only), fetched only for the visible rows (at most about 8 lookups per search, cancelled when the query changes).
+  - **Without Lidarr, or with no image:** the existing placeholder (round record / monogram).
+- **Not cached** *(owner)*:
+  - outside images come from an ephemeral `URLSession` (no URLCache, no cookies);
+  - they're held only in memory for the current result set and dropped when the results change or the search closes;
+  - they're re-fetched on every new search;
+  - they're never written to disk, the artwork disk cache (P4) or the backup.
+- **In-library results** keep using the P4 persistent cache.
+- **Privacy and safety:**
+  - Requests carry the app's MusicBrainz User-Agent constant and no personal identifiers.
+  - Only HTTPS URLs from expected hosts are followed: coverartarchive.org, archive.org redirects, and image hosts Lidarr returns, with HTTPS required.
+  - Images are size-capped (≤ 2 MB) and decoded with downsampling.
+  - An outage, a 404 or offline means the placeholder, silently.
+  - Offline mode On sends nothing.
+- **CarPlay:** the car search's "Not in your library" rows show the same art (in-memory, same rules), within the CarPlay image limits.
+- **Workstream X5** (R15).
