@@ -26,6 +26,8 @@ public enum ArtistLidarrError: Error, Sendable, Equatable {
     case notMagpies
     /// Lidarr refused or didn't answer.
     case failed
+    /// R18: Lidarr has a metadata profile with the name Magpie would use, set up differently. Nothing was written.
+    case profileConflict(String)
 }
 
 /// An artist page's Lidarr line and its one action (P3): "Add to Lidarr and download" for an artist Lidarr doesn't
@@ -148,15 +150,18 @@ public enum ArtistLidarr {
 
     /// "Add to Lidarr and download": adds the artist through the gate and records it in the ledger as Magpie's.
     /// Refuses (writing nothing) when changes are off or Lidarr has the artist already. Returns its Lidarr id.
-    /// R18: `setup` carries the chosen quality and release-types profiles; `follow` false monitors nothing new.
+    /// R18: `setup` carries the chosen quality profile; `types` (when given) the release types, whose Magpie metadata
+    /// profile is made, if missing, only once Lidarr's lookup knows the artist; `follow` false monitors nothing new.
     public static func add(mbid: MBID, lidarr: LidarrClient, gate: LidarrWriteGate, ledger: Ledger,
-                           setup: RequestRunner.Setup, follow: Bool = true) async throws -> Int {
+                           setup: RequestRunner.Setup, follow: Bool = true, types: ReleaseTypes? = nil) async throws -> Int {
         guard await gate.enabled else { throw ArtistLidarrError.changesOff }
         // Fresh: never a second add, never a write to an artist the owner added meanwhile.
         guard try await !lidarr.artists().contains(where: { $0.foreignArtistId == mbid }) else {
             throw ArtistLidarrError.alreadyInLidarr
         }
         guard let lookup = try await lidarr.artistLookupJSON(mbid: mbid) else { throw ArtistLidarrError.notFound }
+        var setup = setup
+        if let types { setup.metadataProfileId = try await releaseTypesProfile(types, lidarr: lidarr, gate: gate) }
         let body = try addBody(lookup: lookup, setup: setup, follow: follow)
         let data: Data
         do {
@@ -178,6 +183,70 @@ public enum ArtistLidarr {
             Log.logger("requests").error("ledger not written for an added artist")
         }
         return id
+    }
+
+    /// Magpie's metadata profile for `types`, made through the gate if missing (R18). A same-named profile set up
+    /// differently stops here (`ArtistLidarrError.profileConflict`), before anything is written.
+    static func releaseTypesProfile(_ types: ReleaseTypes, lidarr: LidarrClient, gate: LidarrWriteGate) async throws -> Int {
+        do {
+            return try await Provisioner().ensureReleaseTypes(types, gate: gate, client: lidarr)
+        } catch ProvisionError.conflict(let name) {
+            throw ArtistLidarrError.profileConflict(name)
+        } catch WriteGateError.disabled {
+            throw ArtistLidarrError.changesOff
+        } catch is ProvisionError {
+            throw ArtistLidarrError.failed
+        }
+    }
+
+    /// R18 "Add more to your library", for an artist Magpie added (the ledger says so, for the same id and MBID, read
+    /// fresh): its release types (Magpie's metadata profile, made if missing), quality profile, Follow new releases
+    /// and monitoring, each sent only when it differs, then a search for its monitored albums. Any other artist is the
+    /// owner's: refused with nothing sent, not even a profile.
+    public static func addMore(lidarrId: Int, lidarr: LidarrClient, gate: LidarrWriteGate, ledger: Ledger,
+                               types: ReleaseTypes?, qualityProfileId: Int?, follow: Bool) async throws {
+        guard await gate.enabled else { throw ArtistLidarrError.changesOff }
+        let artist = try await lidarr.artist(id: lidarrId)
+        guard try await ledger.createdArtist(artist) else { throw ArtistLidarrError.notMagpies }
+        do {
+            if let types {
+                let profile = try await releaseTypesProfile(types, lidarr: lidarr, gate: gate)
+                if artist.metadataProfileId != profile {
+                    _ = try await gate.send("PUT", "artist/editor", body: MetadataProfileBody(artistIds: [lidarrId],
+                                                                                         metadataProfileId: profile))
+                }
+            }
+            if let qualityProfileId, artist.qualityProfileId != qualityProfileId {
+                _ = try await gate.send("PUT", "artist/editor", body: QualityProfileBody(artistIds: [lidarrId],
+                                                                                    qualityProfileId: qualityProfileId))
+            }
+            if follow, !RequestRunner.follows(artist) {
+                _ = try await gate.send("PUT", "artist/editor", body: FollowBody(artistIds: [lidarrId], monitorNewItems: "new"))
+            }
+            if !artist.monitored {
+                _ = try await gate.send("PUT", "artist/editor", body: MonitorBody(artistIds: [lidarrId], monitored: true))
+            }
+        } catch WriteGateError.disabled {
+            throw ArtistLidarrError.changesOff
+        } catch LidarrError.http(let status) where (400..<500).contains(status) {
+            throw ArtistLidarrError.failed
+        }
+        _ = try? await gate.send("POST", "command", body: SearchBody(name: "ArtistSearch", artistId: lidarrId))
+    }
+
+    private struct MetadataProfileBody: Encodable, Sendable {
+        var artistIds: [Int]
+        var metadataProfileId: Int
+    }
+
+    private struct QualityProfileBody: Encodable, Sendable {
+        var artistIds: [Int]
+        var qualityProfileId: Int
+    }
+
+    private struct FollowBody: Encodable, Sendable {
+        var artistIds: [Int]
+        var monitorNewItems: String
     }
 
     private struct MonitorBody: Encodable, Sendable {

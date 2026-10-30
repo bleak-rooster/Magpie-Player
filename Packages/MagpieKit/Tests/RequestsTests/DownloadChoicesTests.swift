@@ -208,4 +208,70 @@ import MagpieTestSupport
         })
         #expect(again["monitorNewItems"] as? String == "all")
     }
+
+    /// Release types on an add: the profile is made only after Lidarr's lookup knows the artist, and goes into the add.
+    @Test func addWithTypesProvisionsAfterTheLookup() async throws {
+        let fake = try await ArtistLidarrTests.Fake()
+        Self.stubProfiles(fake.transport, existing: [])
+        _ = try await ArtistLidarr.add(mbid: ArtistLidarrTests.newMBID, lidarr: fake.client, gate: fake.gate,
+                                       ledger: fake.ledger, setup: ArtistLidarrTests.setup, follow: false, types: .standard)
+        #expect(fake.writes.map { "\($0.httpMethod!) \($0.url!.path)" } == ["POST /api/v1/metadataprofile", "POST /api/v1/artist"])
+        let body = try #require(fake.writes.last?.httpBody.flatMap { try JSONSerialization.jsonObject(with: $0) as? [String: Any] })
+        #expect(body["metadataProfileId"] as? Int == 20)
+
+        // Lidarr's lookup doesn't know it: nothing at all is written, not even the profile.
+        let unknown = try await ArtistLidarrTests.Fake(lookup: Data("[]".utf8))
+        Self.stubProfiles(unknown.transport, existing: [])
+        await #expect(throws: ArtistLidarrError.notFound) {
+            _ = try await ArtistLidarr.add(mbid: ArtistLidarrTests.newMBID, lidarr: unknown.client, gate: unknown.gate,
+                                           ledger: unknown.ledger, setup: ArtistLidarrTests.setup, follow: false,
+                                           types: .standard)
+        }
+        #expect(unknown.writes.isEmpty)
+    }
+
+    /// "Add more to your library" for an artist Magpie added: its release types, quality, following, and monitoring,
+    /// each only when it differs, then a search.
+    @Test func addMoreForAMagpieArtist() async throws {
+        let fake = try await ArtistLidarrTests.Fake()
+        Self.stubProfiles(fake.transport, existing: [DownloadChoicesTests.profile(id: 12, .standard)])
+        try await ArtistLidarr.addMore(lidarrId: 30, lidarr: fake.client, gate: fake.gate, ledger: fake.ledger,
+                                       types: .standard, qualityProfileId: 9, follow: true)
+        let writes = fake.writes.map { req in
+            (req.httpBody.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:])
+        }
+        #expect(fake.writes.map { "\($0.httpMethod!) \($0.url!.path)" }
+                == ["PUT /api/v1/artist/editor", "PUT /api/v1/artist/editor", "PUT /api/v1/artist/editor",
+                    "PUT /api/v1/artist/editor", "POST /api/v1/command"])
+        #expect(writes[0]["metadataProfileId"] as? Int == 12 && writes[0].count == 2)
+        #expect(writes[1]["qualityProfileId"] as? Int == 9 && writes[1].count == 2)
+        #expect(writes[2]["monitorNewItems"] as? String == "new" && writes[2].count == 2)
+        #expect(writes[3]["monitored"] as? Bool == true && writes[3].count == 2)
+        #expect(writes[4]["name"] as? String == "ArtistSearch")
+    }
+
+    /// The owner's artist: refused before anything is written, the profile included.
+    @Test func addMoreRefusesTheOwnersArtist() async throws {
+        let fake = try await ArtistLidarrTests.Fake()
+        Self.stubProfiles(fake.transport, existing: [])
+        await #expect(throws: ArtistLidarrError.notMagpies) {
+            try await ArtistLidarr.addMore(lidarrId: 20, lidarr: fake.client, gate: fake.gate, ledger: fake.ledger,
+                                           types: .standard, qualityProfileId: 9, follow: true)
+        }
+        #expect(fake.writes.isEmpty)
+    }
+
+    static func stubProfiles(_ transport: MockTransport, existing: [[String: Any]]) {
+        let profiles = DownloadChoicesTests.Profiles()
+        profiles.list.withLockUnchecked { $0 = existing }
+        transport.stub(pathSuffix: "/api/v1/metadataprofile/schema") { _ in FakeLidarr.reply(DownloadChoicesTests.schema) }
+        transport.stub(pathSuffix: "/api/v1/metadataprofile") { _ in FakeLidarr.reply(profiles.list.withLockUnchecked { $0 }) }
+        transport.stub(method: "POST", pathSuffix: "/api/v1/metadataprofile") { req in
+            var body = try JSONSerialization.jsonObject(with: req.httpBody!) as! [String: Any]
+            let id = profiles.list.withLockUnchecked { $0.count + 20 }
+            body["id"] = id
+            profiles.list.withLockUnchecked { $0.append(body) }
+            return FakeLidarr.reply(body, status: 201)
+        }
+    }
 }
