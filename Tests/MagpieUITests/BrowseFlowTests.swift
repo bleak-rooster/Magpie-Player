@@ -60,6 +60,32 @@ final class BrowseFlowTests: XCTestCase {
         return app
     }
 
+    /// P2: Library › Songs has the right-edge letter index; touching T shows the dev library's T song, and the index
+    /// reads to VoiceOver as one "Letter index".
+    @MainActor func testSongsLetterIndexJumps() throws {
+        let app = try launchSignedIn()
+        let library = app.tabBars.buttons["Library"]
+        let songs = app.buttons["library-songs"]
+        for _ in 0..<3 where !songs.exists {
+            library.tap()
+            _ = songs.waitForExistence(timeout: 5)
+        }
+        songs.tap()
+        XCTAssertTrue(app.buttons["song-0"].waitForExistence(timeout: 15))
+        let index = app.otherElements["letter-index"].exists ? app.otherElements["letter-index"]
+                                                             : app.descendants(matching: .any)["letter-index"]
+        XCTAssertTrue(index.waitForExistence(timeout: 5), "the letter index")
+        XCTAssertEqual(index.label, "Letter index")
+        // 8 pt padding, then 13 pt a letter: "#", A … Z. T is the 21st.
+        index.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0))
+            .withOffset(CGVector(dx: 0, dy: 8 + 20.5 * 13)).tap()
+        let terra = app.buttons.matching(NSPredicate(format: "label CONTAINS 'Terra Incognita'")).firstMatch
+        XCTAssertTrue(terra.waitForExistence(timeout: 5))
+        XCTAssertTrue(terra.isHittable, "scrolled to T")
+        XCTAssertFalse(app.buttons["song-0"].isHittable, "the top of the list scrolled away")
+        attachScreenshot(app, "songs-letter-index")
+    }
+
     @MainActor func testSignInBrowsePlay() throws {
         let app = try launchSignedIn()
         let library = app.tabBars.buttons["Library"]
