@@ -28,8 +28,13 @@ extension AppModel {
             },
             coverURL: { [weak self] id in self?.coverArtURL(id, size: DownloadManager.coverSize) },
             // Manual downloads also wait while the server is suspect (Task 14): they'd only fail.
-            isOffline: { [weak self] in self.map { $0.isOffline || $0.reachability.isSuspect } ?? false })
+            isOffline: { [weak self] in self.map { $0.isOffline || $0.reachability.isSuspect } ?? false },
+            backgroundFetcher: backgroundAudioFetcher)
         downloads = manager
+        // R1: a launch for the background session's events stores what they delivered before the system is told.
+        (backgroundAudioFetcher as? BackgroundAudioFetcher)?.onEventsFinished = { @MainActor [weak self] in
+            await self?.downloads?.deliveriesSettled()
+        }
         applyLaunchPresence(to: manager)   // P1: a launch in the background starts held
         // Task 13: songs on the phone play from it; one that lands or leaves re-sends the songs after the current one.
         manager.onLocalFilesChanged = { [weak self, weak manager] in
@@ -65,6 +70,8 @@ extension AppModel {
         let upkeep = cacheUpkeep
         upkeep?.cancel()
         cacheUpkeep = nil
+        // R1, sign-out: the background session is invalidated (its tasks cancelled), and made again when next needed.
+        if erase { backgroundAudioFetcher?.invalidate() }
         guard let old = downloads else { return }
         downloads = nil
         localFiles.set([:])

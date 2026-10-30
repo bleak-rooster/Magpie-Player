@@ -32,12 +32,14 @@ struct DownloadActivityItem: Identifiable, Equatable {
     let metadata: AudioMetadata
     let reason: DownloadReason
     let phase: Phase
+    /// R1: what a stopped download already has, when it can resume from there.
+    var partial: DownloadProgress?
 
     var text: String {
         switch phase {
         case .running: "Downloading"
         case let .waiting(status): status.text
-        case .paused: "Paused"
+        case .paused: partial.map(DownloadActivityCopy.paused) ?? "Paused"
         case .queued: "Waiting to start"
         case .failed: DownloadStatus.failed.text
         }
@@ -86,10 +88,12 @@ final class IdleTimerHold {
 }
 
 /// Downloading now (P1): what is running, waiting and failed, with Cancel, Try again, Pause all and Cancel all, and
-/// the foreground-only rule (downloads wait while Magpie is in the background).
+/// the foreground-only rule (downloads wait while Magpie is in the background) when "Download in the background" is
+/// off (R1).
 extension DownloadManager {
-    /// Work that needs the network doesn't start: paused, or Magpie is in the background.
-    var isHeld: Bool { isPaused || isInBackground }
+    /// Work that needs the network doesn't start: paused, or Magpie is in the background with "Download in the
+    /// background" off.
+    var isHeld: Bool { isPaused || (isInBackground && !preferencesNow.downloadInBackground) }
 
     /// Running downloads first, then waiting ones, then failed ones. Pre-downloads and re-downloads aren't listed.
     var activity: [DownloadActivityItem] {
@@ -101,7 +105,8 @@ extension DownloadManager {
             case .waiting: .waiting(waitingStatus)
             case .queued, .blocked: isHeld ? .paused : .queued
             }
-            let item = DownloadActivityItem(id: job.id, metadata: job.metadata, reason: reason, phase: phase)
+            let item = DownloadActivityItem(id: job.id, metadata: job.metadata, reason: reason, phase: phase,
+                                            partial: partialProgress[job.id])
             if item.isRunning { running.append(item) } else { waiting.append(item) }
         }
         for job in stoppedByFull {
@@ -171,13 +176,14 @@ extension DownloadManager {
         pump()
     }
 
-    /// The scene phase (P1, foreground only): in the background, downloads and pre-downloads fetching go back to the
-    /// queue without counting an attempt; they start again on return. Playback is untouched.
+    /// The scene phase. With "Download in the background" on (R1) nothing stops, and every queued download is handed
+    /// to the background session. Off (P1, foreground only): in the background, downloads and pre-downloads fetching go
+    /// back to the queue without counting an attempt; they start again on return. Playback is untouched.
     func setPresence(active: Bool, background: Bool) {
         isAppActive = active
         guard background != isInBackground else { return }
         isInBackground = background
-        if background {
+        if background, isHeld {
             holdNetworkWork()
         } else {
             fetchCovers()

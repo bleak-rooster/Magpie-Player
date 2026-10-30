@@ -39,6 +39,7 @@ extension DownloadManager {
         stoppedByFull.removeAll(where: matches)
         if removal.songIds == nil, case let .playlist(id) = removal.reason { deferredPlaylists.removeAll { $0.id == id } }
         savePending()
+        prunePartials()   // R1: a cancelled download leaves nothing part-way behind
         let freed = await applyRemoval(removal)
         await refresh()
         if freed { requeueStoppedByFull() }
@@ -83,6 +84,7 @@ extension DownloadManager {
         deferredPlaylists = []
         discardUnreadPending()
         savePending()
+        prunePartials()
         do {
             try await store.removeAll(kind: .download)
         } catch {
@@ -96,6 +98,7 @@ extension DownloadManager {
     func clearCache() async {
         cancelRunning { $0.kind == .cache }
         jobs.removeAll { $0.kind == .cache }
+        prunePartials()
         do {
             try await store.removeAll(kind: .cache)
         } catch {
