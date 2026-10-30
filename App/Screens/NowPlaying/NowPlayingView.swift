@@ -48,29 +48,12 @@ struct NowPlayingView: View {
                         ScrollView {
                             stack(song, player, side: side, spacing: Tokens.Spacing.xl, showsUpNext: true)
                         }
-                    } else if lyricsMode {
-                        let shown = lyricsParts(player)
-                        let parts = shown.values.reduce(2 * Tokens.Spacing.l, +)   // vertical padding included
-                        let height = NowPlayingLayout.lyricsHeight(available: CGSize(width: width, height: geo.size.height),
-                                                                   parts: parts, gaps: shown.count)
-                        let measured = ["top", "scrubber", "transport", "bottom"].allSatisfy { partHeights[$0] != nil }
-                        stack(song, player, side: width, lyricsHeight: height, spacing: NowPlayingLayout.lyricsSpacing,
-                              showsUpNext: false)
-                            .opacity(measured ? 1 : 0)
                     } else {
-                        let shown = partHeights.filter { key, _ in
-                            key != "metaCompact"
-                                && (key != "hint" || model.playbackHint != nil) && (key != "error" || player.lastError != nil)
-                        }
-                        let parts = shown.values.reduce(2 * Tokens.Spacing.l, +)   // vertical padding included
-                        let next = player.queue.nextUp?.song
-                        let plan = NowPlayingLayout.plan(available: CGSize(width: width, height: geo.size.height),
-                                                         parts: parts, gaps: shown.count,
-                                                         upNext: next == nil ? nil : upNextHeight)
-                        // Hidden until the always-present parts have measured, so the first frame isn't oversized art.
-                        let measured = ["top", "meta", "scrubber", "transport", "bottom"].allSatisfy { partHeights[$0] != nil }
-                        stack(song, player, side: plan.side, spacing: plan.spacing, showsUpNext: plan.showsUpNext)
-                            .opacity(measured ? 1 : 0)
+                        // One branch for art and lyrics mode, so the toggle cross-fades the slot, not the page (P6).
+                        let page = pagePlan(player, available: CGSize(width: width, height: geo.size.height))
+                        stack(song, player, side: page.side, lyricsHeight: page.lyricsHeight, spacing: page.spacing,
+                              showsUpNext: page.showsUpNext)
+                            .opacity(page.measured ? 1 : 0)
                     }
                 }
                 .accessibilityElement(children: .contain)
@@ -84,6 +67,38 @@ struct NowPlayingView: View {
         .presentationDragIndicator(theme.character == .classic ? .visible : .hidden)
         .task { if !lyricsAvailable { lyricsAvailable = (try? await model.serverAdvertises("songLyrics")) ?? false } }
         .sheet(isPresented: $showsQueue) { QueueView() }
+    }
+
+    private struct PagePlan {
+        var side: CGFloat
+        var lyricsHeight: CGFloat?
+        var spacing: CGFloat
+        var showsUpNext: Bool
+        /// The always-present parts have measured; until then the page is hidden, so the first frame isn't oversized.
+        var measured: Bool
+    }
+
+    /// The default-size page: the art takes what the rest leaves (D43); in lyrics mode the lyrics do, full width (P6).
+    private func pagePlan(_ player: Player, available: CGSize) -> PagePlan {
+        if lyricsMode {
+            let shown = lyricsParts(player)
+            let parts = shown.values.reduce(2 * Tokens.Spacing.l, +)   // vertical padding included
+            let height = NowPlayingLayout.lyricsHeight(available: available, parts: parts, gaps: shown.count)
+            let measured = ["top", "scrubber", "transport", "bottom"].allSatisfy { partHeights[$0] != nil }
+            return PagePlan(side: available.width, lyricsHeight: height, spacing: NowPlayingLayout.lyricsSpacing,
+                            showsUpNext: false, measured: measured)
+        }
+        let shown = partHeights.filter { key, _ in
+            key != "metaCompact"
+                && (key != "hint" || model.playbackHint != nil) && (key != "error" || player.lastError != nil)
+        }
+        let parts = shown.values.reduce(2 * Tokens.Spacing.l, +)   // vertical padding included
+        let next = player.queue.nextUp?.song
+        let plan = NowPlayingLayout.plan(available: available, parts: parts, gaps: shown.count,
+                                         upNext: next == nil ? nil : upNextHeight)
+        let measured = ["top", "meta", "scrubber", "transport", "bottom"].allSatisfy { partHeights[$0] != nil }
+        return PagePlan(side: plan.side, lyricsHeight: nil, spacing: plan.spacing, showsUpNext: plan.showsUpNext,
+                        measured: measured)
     }
 
     /// Lyrics mode's measured parts (P6). The compact line stands in for the title; until it has measured, the full

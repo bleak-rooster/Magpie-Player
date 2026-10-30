@@ -193,7 +193,7 @@ final class BrowseFlowTests: XCTestCase {
     }
 
     /// T10b (D43): Now Playing fits one screen at the default text size, with no page scrolling; Lyrics swaps the
-    /// art for the lyrics in the same slot and back.
+    /// art for the lyrics and back. P6: the lyrics fill the page down to a compact title line above the scrubber.
     @MainActor func testNowPlayingFitsOneScreenAndTogglesLyrics() throws {
         let app = try launchSignedIn()
         let nowPlaying = openNowPlaying(app)
@@ -216,15 +216,18 @@ final class BrowseFlowTests: XCTestCase {
         }
         XCTAssertTrue(lyricsButton.isHittable, "lyrics")
         XCTAssertFalse(lyricsButton.isSelected)
-        let titleTop = app.staticTexts.matching(identifier: "np-title").firstMatch.frame.minY
 
         lyricsButton.tap()
         let lyrics = app.descendants(matching: .any)["np-lyrics"]
         XCTAssertTrue(lyrics.waitForExistence(timeout: 5), "lyrics did not appear in the art's place")
         XCTAssertTrue(lyricsButton.isSelected, "the Lyrics button shows its on state")
-        // In the art's slot: square, above the title, and the only thing that scrolls is inside it.
-        XCTAssertEqual(lyrics.frame.width, lyrics.frame.height, accuracy: 2)
-        XCTAssertLessThanOrEqual(lyrics.frame.maxY, titleTop + 1)
+        // P6: full width and taller than the art's square, above the compact title line; the only thing that
+        // scrolls is inside it.
+        XCTAssertGreaterThan(lyrics.frame.width, app.frame.width * 0.8, "lyrics not full width")
+        XCTAssertGreaterThan(lyrics.frame.height, lyrics.frame.width, "lyrics no bigger than the art")
+        let compact = app.descendants(matching: .any)["np-title-compact"]
+        XCTAssertTrue(compact.waitForExistence(timeout: 5), "the compact title line is missing")
+        XCTAssertLessThanOrEqual(lyrics.frame.maxY, compact.frame.minY + 1)
         XCTAssertEqual(nowPlaying.scrollViews.count, lyrics.scrollViews.count, "the page itself scrolls")
         XCTAssertTrue(playPause.isHittable)
         // Either lyrics or the "no lyrics" state shows, inside the slot.
