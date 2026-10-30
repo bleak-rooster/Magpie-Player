@@ -636,6 +636,11 @@ public final class CarPlayController: NSObject {
             let tag = "\(key)|\(row.round)"
             guard binding.artworkKeys[row.id] != tag else { continue }
             binding.artworkKeys[row.id] = tag
+            if row.round, OutsideArtKey(token: key) != nil {   // R15: the plain record until (or unless) its cover comes
+                let record = blankRecord ?? CarPlayArtwork.blankRecord(size: side, scale: scale)
+                blankRecord = record
+                binding.items[row.id]?.setImage(record)
+            }
             wanted.append((row.id, key, row.round))
         }
         guard !wanted.isEmpty else { return }

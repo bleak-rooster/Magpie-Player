@@ -67,6 +67,7 @@ extension AppModel {
     func eraseArtwork(scope: String?) {
         ArtworkCache.shared.removeAll()
         ArtworkReloads.shared.reset()
+        ReadyCovers.shared.ids = [:]   // R16: ready requests' cover ids belong to the account too
         guard let scope else { return }
         let disk = artworkDisk, generation = ArtworkCache.shared.generation
         Task { await disk.eraseScope(scope, generation: generation) }

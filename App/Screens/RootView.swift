@@ -109,8 +109,16 @@ private struct PlayNowBannerView: View {
             // V-fix: the title truncates; when even a short title wouldn't fit beside it, the record icon goes.
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 8) {
-                    Image(systemName: "record.circle").font(.title2).foregroundStyle(p.accentInkColor)
-                        .frame(width: 30, height: 36)
+                    // R16: the song's cover (it's in the library now: the P4 cache), the record symbol until then.
+                    Artwork(banner.song.coverArtId, side: 30) { art in
+                        if let art {
+                            SleeveArt(image: art, side: 30)
+                        } else {
+                            Image(systemName: "record.circle").font(.title2).foregroundStyle(p.accentInkColor)
+                        }
+                    }
+                    .frame(width: 30, height: 36)
+                    .accessibilityHidden(true)
                     titles.frame(minWidth: 0, idealWidth: 96, maxWidth: .infinity, alignment: .leading)
                 }
                 titles.frame(maxWidth: .infinity, alignment: .leading)

@@ -110,10 +110,18 @@ final class CarPlayLibraryAdapter: CarPlayLibrary {
         return (result.playlist, result.songs)
     }
 
-    func search(_ query: String) async throws -> CarPlaySearchResult { try await model.carPlaySearch(query) }
+    /// R15: the car search's own outside artwork, in memory for the current results only.
+    lazy var outsideArt = model.makeOutsideArt()
 
-    /// Server-side sizes match the phone's, so the memory and disk caches (P4) are shared.
+    func search(_ query: String) async throws -> CarPlaySearchResult {
+        outsideArt.reset()   // R15: a new search fetches its outside art again
+        return try await model.carPlaySearch(query)
+    }
+
+    /// Server-side sizes match the phone's, so the memory and disk caches (P4) are shared. Outside art (R15) never
+    /// touches them.
     func artwork(coverArtId: String, pixelSide: Int) async -> UIImage? {
+        if let key = OutsideArtKey(token: coverArtId) { return await outsideArt.image(key).map { UIImage(cgImage: $0) } }
         let size = [120, 300, 600].first { $0 >= pixelSide } ?? 600
         return await model.artworkImage(coverArtId, size: size)
     }

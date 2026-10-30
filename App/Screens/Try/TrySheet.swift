@@ -22,6 +22,8 @@ struct TrySheet: View {
     @State private var phase = Phase.choosing
     @State private var error: String?
     @State private var showsSettings = false
+    /// R16: the song's cover from outside while the sheet is open (R15 rules: memory only, fetched again next time).
+    @State private var outsideArt: OutsideArtLoader?
     private let themed = Themed()
 
     var body: some View {
@@ -42,12 +44,19 @@ struct TrySheet: View {
             }
         }
         .sheet(isPresented: $showsSettings) { SettingsView(opening: [.requests]) }   // T21b: every reason Try names is on Requests
+        .task { if outsideArt == nil { outsideArt = model.makeOutsideArt() } }
+        .onDisappear { outsideArt?.reset() }
     }
 
-    /// The bare record; Classic draws it as a square with the not-yet badge (D3).
+    /// The record, with the song's cover as its label once it's here (R16); Classic draws it as a square with the
+    /// not-yet badge (D3).
     private var record: some View {
-        RecordArt(side: 140).recordBadge(RowState.notYet.statusSymbol, size: 22)
-            .accessibilityHidden(true).padding(.top, Tokens.Spacing.xl)
+        let cover = model.requests.last { $0.recording.recordingMBID != nil && $0.recording.recordingMBID == recording.recordingMBID }?.cover
+            ?? MagpieRequestCover(songId: nil, outside: .cover(releaseGroup: nil, release: recording.releaseMBID))
+        return RequestArtwork(cover: cover, loader: outsideArt, side: 140) { art in
+            RecordArt(image: art, side: 140).recordBadge(RowState.notYet.statusSymbol, size: 22)
+        }
+        .accessibilityHidden(true).padding(.top, Tokens.Spacing.xl)
     }
 
     private var isWaiting: Bool { if case .waiting = phase { true } else { false } }

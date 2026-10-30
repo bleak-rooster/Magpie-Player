@@ -300,7 +300,10 @@ public enum CarPlayRows {
         return recordings.enumerated().map { i, recording in
             CPRowModel(id: "\(notYetPrefix)\(i).\(recording.recordingMBID?.rawValue ?? recording.title)",
                        title: display(recording.title, untitled),
-                       detail: "\(status) · \(display(recording.artist, unknownArtist))", round: true,
+                       detail: "\(status) · \(display(recording.artist, unknownArtist))",
+                       // R15: its release's cover from outside, in memory only (`OutsideArtKey`); a plain record without.
+                       artworkKey: OutsideArtKey.cover(releaseGroup: nil, release: recording.releaseMBID)?.token,
+                       round: true,
                        action: offer == .unavailable ? .none : .tryNext(recording), statusSymbol: state.statusSymbol)
         }
     }
