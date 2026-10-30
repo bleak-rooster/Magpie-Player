@@ -46,12 +46,14 @@ struct PlaylistView: View {
         return VStack(spacing: Tokens.Spacing.l) {
             VStack(spacing: Tokens.Spacing.s) {
                 Artwork(page.playlist.coverArtId, side: 220) { SleeveArt(image: $0, side: 220) }
+                    .reloadArtworkMenu(page.playlist.coverArtId)
                     .shadow(color: .black.opacity(0.18), radius: 16, y: 8)
                     .padding(.bottom, Tokens.Spacing.s)
                 Text(page.playlist.name).magpieDisplay(.title).multilineTextAlignment(.center)
                     .accessibilityAddTraits(.isHeader)
                 Text("\(songs.count) \(songs.count == 1 ? "song" : "songs") · \(minutes) min")
                     .font(theme.numberFont(.footnote)).foregroundStyle(p.ink2Color)
+                DownloadMarkLine(model.downloadIndex.mark(playlistId: page.playlist.id, songIds: songs.map(\.id)))
             }
             .padding(.horizontal, Tokens.Spacing.largeTitleMargin)
 

@@ -16,6 +16,7 @@ import Testing
         #expect(d.quality == .original && !d.overMobileData && d.concurrent == 2 && d.preDownload == 3)
         #expect(d.keepRecentlyPlayed && d.cacheLimit == .gb2 && d.downloadsLimit == .none && d.offlineMode == .automatic)
         #expect(!d.keepFavourites)
+        #expect(d.keepScreenOn, "P1: Keep screen on while downloading defaults on")
         #expect(p.scrobbling.viaNavidrome && !p.scrobbling.viaListenBrainz && p.scrobbling.rule == ScrobbleRule(percent: 50, minutes: 4))
         #expect(p.genres.mode == .grouped)
     }
@@ -62,7 +63,9 @@ import Testing
 
     @Test func outOfRangeValuesClamp() {
         let d = DownloadPreferences.decode(Data(#"{"version":1,"concurrent":9,"preDownload":-1}"#.utf8))
-        #expect(d.concurrent == 4 && d.preDownload == 0)
+        #expect(d.concurrent == 6 && d.preDownload == 0)
+        #expect(DownloadPreferences.decode(Data(#"{"concurrent":6}"#.utf8)).concurrent == 6, "P1: 1–6")
+        #expect(DownloadPreferences.decode(Data(#"{"concurrent":5,"keepScreenOn":false}"#.utf8)).keepScreenOn == false)
         #expect(ScrobbleRule(percent: 7, minutes: 0).normalised() == ScrobbleRule(percent: 10, minutes: 1))
         #expect(ScrobbleRule(percent: 52, minutes: 11).normalised() == ScrobbleRule(percent: 50, minutes: 10))
         #expect(ScrobbleRule(percent: 53, minutes: nil).normalised() == ScrobbleRule(percent: 55, minutes: nil))
@@ -168,7 +171,7 @@ import Testing
             let rule = ScrobbleRule(percent: big, minutes: big).normalised()
             #expect(rule.percent == (big > 0 ? 90 : 10) && rule.minutes == (big > 0 ? 10 : 1))
             let d = DownloadPreferences.decode(Data(#"{"concurrent":\#(big),"preDownload":\#(big)}"#.utf8))
-            #expect(d.concurrent == (big > 0 ? 4 : 1) && d.preDownload == (big > 0 ? 10 : 0))
+            #expect(d.concurrent == (big > 0 ? 6 : 1) && d.preDownload == (big > 0 ? 10 : 0))
             let s = ScrobblePreferences.decode(Data(#"{"rule":{"percent":\#(big),"minutesCap":\#(big)}}"#.utf8))
             #expect(s.rule == ScrobbleRule(percent: big > 0 ? 90 : 10, minutes: big > 0 ? 10 : 1))
         }

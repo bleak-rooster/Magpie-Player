@@ -17,6 +17,7 @@ struct RootView: View {
                 ConnectView()
             } else {
                 MainTabs()
+                    .environment(\.songIsDownloaded, model.songIsDownloaded)   // P1: every song row's mark
             }
         }
         .magpieTheme(theme)
@@ -27,6 +28,7 @@ struct RootView: View {
         }
         .onChange(of: scenePhase, initial: true) { _, phase in
             model.isForeground = phase == .active
+            model.scenePhaseChanged(phase)   // P1: downloads wait while Magpie is in the background
             // T3 fix round 2: each activation (cold launches too) while Local Network is off re-checks silently.
             if phase == .active { Task { await model.localNetwork.recheckIfDenied() } }
         }

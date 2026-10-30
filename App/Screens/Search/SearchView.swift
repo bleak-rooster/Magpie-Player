@@ -323,12 +323,16 @@ private struct SearchContent: View {
                 Artwork(artist.coverArtId, side: 48) { SleeveArt(image: $0, side: 48).clipShape(Circle()) }
                 VStack(alignment: .leading, spacing: 1) {
                     Text(artist.name).font(.body)
-                    Text(artist.albumCount == 1 ? "Artist \u{00B7} 1 album" : "Artist \u{00B7} \(artist.albumCount) albums")
-                        .font(.footnote).foregroundStyle(themed.palette.ink2Color)
+                    HStack(spacing: 4) {
+                        Text(artist.albumCount == 1 ? "Artist \u{00B7} 1 album" : "Artist \u{00B7} \(artist.albumCount) albums")
+                            .font(.footnote).foregroundStyle(themed.palette.ink2Color)
+                        DownloadMarkView(app.downloadIndex.listMark(artist: artist))   // P1
+                    }
                 }
             }
             .accessibilityElement(children: .combine)
         }
+        .reloadArtworkMenu(artist.coverArtId)   // P4
         .simultaneousGesture(TapGesture().onEnded { remember(model.query) })
         .listRowBackground(Color.clear)
     }
@@ -339,12 +343,16 @@ private struct SearchContent: View {
                 Artwork(album.coverArtId, side: 48) { SleeveArt(image: $0, side: 48) }
                 VStack(alignment: .leading, spacing: 1) {
                     Text(album.name).font(.body).lineLimit(2)
-                    Text(["Album", album.artist].joined(separator: " \u{00B7} "))
-                        .font(.footnote).foregroundStyle(themed.palette.ink2Color).lineLimit(1)
+                    HStack(spacing: 4) {
+                        Text(["Album", album.artist].joined(separator: " \u{00B7} "))
+                            .font(.footnote).foregroundStyle(themed.palette.ink2Color).lineLimit(1)
+                        DownloadMarkView(app.downloadIndex.mark(album: album))   // P1
+                    }
                 }
             }
             .accessibilityElement(children: .combine)
         }
+        .reloadArtworkMenu(album.coverArtId)   // P4
         .simultaneousGesture(TapGesture().onEnded { remember(model.query) })
         .listRowBackground(Color.clear)
     }

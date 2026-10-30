@@ -276,7 +276,11 @@ final class AppModel {
         self.replayGainBox = replayGain
         let scrobbleSettings = ScrobbleSettings(preferences.scrobbling)
         self.scrobbleSettings = scrobbleSettings
+        #if DEBUG
         let pinned = UITestNetworkPin.status(arguments: ProcessInfo.processInfo.arguments)   // UI tests only (T23)
+        #else
+        let pinned: NetworkStatus? = nil   // review M3: Release never honours the pin
+        #endif
         let network = network ?? (Self.isHostedTest ? FixedNetwork() : pinned.map(FixedNetwork.init) ?? NetworkMonitor())
         self.network = network
         let findsIdentity = self.findsIdentity
@@ -310,9 +314,10 @@ final class AppModel {
         if systemNowPlaying {
             nowPlaying = NowPlayingBridge(
                 player: player,
-                artworkURL: { [weak self] song in self?.nowPlayingArtworkURL(song) },
+                artworkURL: { _ in nil },   // superseded by `artworkImage` (P4)
                 onLike: { [weak self] song in Task { await self?.toggleStar(song) } },
-                isLiked: { [weak self] song in self?.isStarred(song) ?? song.starred })
+                isLiked: { [weak self] song in self?.isStarred(song) ?? song.starred },
+                artworkImage: { [weak self] song in await self?.nowPlayingArtwork(song) })   // P4
         }
         #endif
         watchPlaybackErrors()
@@ -485,6 +490,7 @@ final class AppModel {
         isWaitingForUnlock = false
         stopObservingUnlock()
         ArtworkCache.shared.removeAll()
+        ArtworkReloads.shared.reset()   // P4: nothing reloaded carries over to another sign-in
         session = Session(client: client, endpoint: endpoint, credentials: credentials,
                           activeBase: base, isAdmin: login.isAdmin)
         box.set(client)
@@ -519,6 +525,7 @@ final class AppModel {
         findSongs = []
         lettingGoSongIds = []
         playedFinds = []
+        eraseArtwork(scope: navidromeScope)   // P4
         stopDownloads(erase: true)
         store.clear()
         session = nil

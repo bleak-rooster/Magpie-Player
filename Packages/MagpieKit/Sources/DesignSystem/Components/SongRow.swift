@@ -15,6 +15,8 @@ public struct SongRow: View {
     private let onKeep: (() -> Void)?
     private let themed = ThemedPalette()
     @Environment(\.dynamicTypeSize) private var typeSize
+    /// P1: a song on the phone as a download shows the Downloaded mark (cached songs don't).
+    @Environment(\.songIsDownloaded) private var songIsDownloaded
     @ScaledMetric(relativeTo: .body) private var thumb: CGFloat = 48
 
     public init(song: Song, state: RowState, artwork: Image? = nil, quality: Quality? = nil,
@@ -26,6 +28,8 @@ public struct SongRow: View {
     public nonisolated static func accessibilityLabel(for song: Song) -> String { "\(song.title), \(song.artist)" }
 
     public var body: some View {
+        // The `.downloaded` state already says so.
+        let mark: DownloadMark = state != .downloaded && songIsDownloaded(song.id) ? .downloaded : .none
         let layout = typeSize.isAccessibilitySize
             ? AnyLayout(VStackLayout(alignment: .leading, spacing: Tokens.Spacing.m))
             : AnyLayout(HStackLayout(spacing: Tokens.Spacing.m))
@@ -37,6 +41,7 @@ public struct SongRow: View {
                     Text(song.artist).font(.footnote).foregroundStyle(themed.palette.ink2Color)
                         .lineLimit(typeSize.isAccessibilitySize ? nil : 1)
                     if let quality { Hallmark(quality) }
+                    DownloadMarkView(mark)
                 }
                 StatusLine(state)
             }
@@ -49,7 +54,7 @@ public struct SongRow: View {
         .contentShape(Rectangle())
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(Self.accessibilityLabel(for: song))
-        .accessibilityValue(state.voiceOverValue ?? "")
+        .accessibilityValue(mark.joined(to: state.voiceOverValue))
         .accessibilityHint(state.accessibilityHint ?? "")
         .modifier(RowActions(state: state, tryTitle: tryTitle, onTry: onTry, onKeep: onKeep))
     }

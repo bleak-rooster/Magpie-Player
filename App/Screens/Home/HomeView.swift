@@ -172,6 +172,7 @@ struct HomeView: View {
 
 /// One shelf; each tile opens what it is (an album, a playlist, a genre group).
 private struct ShelfView: View {
+    @Environment(AppModel.self) private var model
     let shelf: HomeShelf
 
     var body: some View {
@@ -194,8 +195,9 @@ private struct ShelfView: View {
             NavigationLink(value: Route.playlist(id: playlist.id)) {
                 Artwork(playlist.coverArtId, side: 140) { image in
                     AlbumTile(title: playlist.name, subtitle: playlist.songCount == 1 ? "1 song" : "\(playlist.songCount) songs",
-                              artwork: image)
+                              artwork: image, mark: model.downloadIndex.mark(playlistId: playlist.id))
                 }
+                .reloadArtworkMenu(playlist.coverArtId)
             }
             .buttonStyle(.plain)
         case .genreGroup(let section):
@@ -271,13 +273,16 @@ private struct FinishSettingUpCard: View {
 
 /// An `AlbumTile` with its cover loaded.
 struct AlbumTileView: View {
+    @Environment(AppModel.self) private var model
     let album: Album
     let subtitle: String
     var width: CGFloat = 140
 
     var body: some View {
         Artwork(album.coverArtId, side: width) { image in
-            AlbumTile(title: album.name, subtitle: subtitle, artwork: image, width: width)
+            AlbumTile(title: album.name, subtitle: subtitle, artwork: image, width: width,
+                      mark: model.downloadIndex.mark(album: album))   // P1
         }
+        .reloadArtworkMenu(album.coverArtId)   // P4
     }
 }

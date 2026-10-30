@@ -112,14 +112,10 @@ final class CarPlayLibraryAdapter: CarPlayLibrary {
 
     func search(_ query: String) async throws -> CarPlaySearchResult { try await model.carPlaySearch(query) }
 
-    /// Server-side sizes match the phone's, so the in-memory cache is shared.
+    /// Server-side sizes match the phone's, so the memory and disk caches (P4) are shared.
     func artwork(coverArtId: String, pixelSide: Int) async -> UIImage? {
-        guard let scope = model.artworkScope else { return nil }
         let size = [120, 300, 600].first { $0 >= pixelSide } ?? 600
-        let key = ArtworkCache.key(scope: scope, coverArtId: coverArtId, size: size)
-        if let hit = ArtworkCache.shared.cached(key) { return hit }
-        guard let url = model.coverArtURL(coverArtId, size: size) else { return nil }
-        return await ArtworkCache.shared.image(key: key, url: url)
+        return await model.artworkImage(coverArtId, size: size)
     }
 
     func isOutOfReach(_ error: Error) -> Bool { AppModel.isConnectionError(error) }

@@ -231,17 +231,36 @@ public actor AudioStore {
     /// Adds `reason` to a stored song in one step; a cached song becomes a download only if it fits the downloads
     /// limit (nothing is evicted).
     /// `albumCoverArtId`: the album's cover, recorded when the song is downloaded with its album (Task 14).
+    /// `albumSongCount`: the album's song count, recorded with it (P1 marks).
     public func promote(songId: String, reason: DownloadReason, downloadsLimit: Int64?,
-                        albumCoverArtId: String? = nil) throws {
+                        albumCoverArtId: String? = nil, albumSongCount: Int? = nil) throws {
         try ensureReady()
         guard var entry = index.entries[songId] else { throw AudioStoreError.unknownSong }
         if let albumCoverArtId { entry.metadata.albumCoverArtId = albumCoverArtId }
+        if let albumSongCount { entry.metadata.albumSongCount = albumSongCount }
         if entry.kind == .cache {
             try checkLimit(adding: entry.size, limit: downloadsLimit)
             entry.kind = .download
         }
         entry.reasons.insert(reason)
         try store(entry)
+    }
+
+    /// Saves an album's song count on its songs downloaded with it that don't have one yet (downloads from before the
+    /// count was kept, P1). A count already saved stays. Returns whether anything changed.
+    @discardableResult
+    public func recordAlbumSongCount(albumId: String, count: Int) throws -> Bool {
+        try ensureReady()
+        guard count > 0 else { return false }
+        var changed = false
+        for var entry in index.entries.values
+        where entry.reasons.contains(.album(albumId)) && entry.metadata.albumSongCount == nil {
+            entry.metadata.albumSongCount = count
+            try store(entry, writeIndex: false)
+            changed = true
+        }
+        if changed { saveIndex() }
+        return changed
     }
 
     /// Adds `reason` to stored songs; a cached song becomes a download.

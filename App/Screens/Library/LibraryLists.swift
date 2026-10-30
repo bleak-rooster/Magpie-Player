@@ -19,12 +19,16 @@ struct ArtistsListView: View {
                             }
                             VStack(alignment: .leading, spacing: 1) {
                                 Text(artist.name).font(.body)
-                                Text(artist.albumCount == 1 ? "1 album" : "\(artist.albumCount) albums")
-                                    .font(.footnote).foregroundStyle(themed.palette.ink2Color)
+                                HStack(spacing: 4) {
+                                    Text(artist.albumCount == 1 ? "1 album" : "\(artist.albumCount) albums")
+                                        .font(.footnote).foregroundStyle(themed.palette.ink2Color)
+                                    DownloadMarkView(model.downloadIndex.listMark(artist: artist))   // P1
+                                }
                             }
                         }
                         .accessibilityElement(children: .combine)
                     }
+                    .reloadArtworkMenu(artist.coverArtId)   // P4
                     .listRowBackground(Color.clear)
                 }
             }
@@ -123,12 +127,16 @@ struct PlaylistsListView: View {
                             Artwork(playlist.coverArtId, side: 56) { SleeveArt(image: $0, side: 56) }
                             VStack(alignment: .leading, spacing: 1) {
                                 Text(playlist.name).font(.body)
-                                Text(playlist.songCount == 1 ? "1 song" : "\(playlist.songCount) songs")
-                                    .font(.footnote).foregroundStyle(themed.palette.ink2Color)
+                                HStack(spacing: 4) {
+                                    Text(playlist.songCount == 1 ? "1 song" : "\(playlist.songCount) songs")
+                                        .font(.footnote).foregroundStyle(themed.palette.ink2Color)
+                                    DownloadMarkView(model.downloadIndex.mark(playlistId: playlist.id))   // P1
+                                }
                             }
                         }
                         .accessibilityElement(children: .combine)
                     }
+                    .reloadArtworkMenu(playlist.coverArtId)   // P4
                     .listRowBackground(Color.clear)
                 }
             }

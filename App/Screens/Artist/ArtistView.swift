@@ -50,8 +50,10 @@ struct ArtistView: View {
                         .overlay { if image == nil { ArtistMonogram(name: page.artist.name) } }
                         .clipShape(Circle())
                 }
+                .reloadArtworkMenu(page.artist.coverArtId)
                 Text(page.artist.name).magpieDisplay(.largeTitle).multilineTextAlignment(.center)
                     .accessibilityAddTraits(.isHeader)
+                DownloadMarkLine(model.downloadIndex.mark(artistId: page.artist.id, albums: page.albums))
                 CapsuleRow {
                     CapsuleButton(gathering ? "Loading…" : "Play", symbol: "play.fill") {
                         Task { await playAll(albums, shuffled: false) }
@@ -138,6 +140,7 @@ struct ArtistView: View {
         do {
             let (artist, albums) = try await model.request { [artistId] in try await $0.artist(id: artistId) }
             page = .loaded(Page(artist: artist, albums: albums))
+            model.noteAlbumSongCounts(albums)   // P1: backfills downloads saved without the album's count
             let name = artist.name
             // Both fill in after the page; neither waits for the other.
             async let popular: Void = loadTopSongs(name)

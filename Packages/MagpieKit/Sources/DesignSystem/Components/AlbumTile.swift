@@ -7,6 +7,8 @@ public struct AlbumTile: View {
     private let artwork: Image?
     private let state: RowState
     private let width: CGFloat
+    /// P1: whether its songs are on the phone as downloads.
+    private let mark: DownloadMark
     private let themed = ThemedPalette()
     @Environment(\.magpieTheme) private var theme
     @Environment(\.dynamicTypeSize) private var typeSize
@@ -14,8 +16,10 @@ public struct AlbumTile: View {
     /// Tiles widen at accessibility sizes so titles get whole words per line (D15).
     public nonisolated static let accessibilityWidth: CGFloat = 220
 
-    public init(title: String, subtitle: String, artwork: Image? = nil, state: RowState = .library, width: CGFloat = 140) {
+    public init(title: String, subtitle: String, artwork: Image? = nil, state: RowState = .library, width: CGFloat = 140,
+                mark: DownloadMark = .none) {
         self.title = title; self.subtitle = subtitle; self.artwork = artwork; self.state = state; self.width = width
+        self.mark = mark
     }
 
     public var body: some View {
@@ -33,7 +37,10 @@ public struct AlbumTile: View {
             }
             VStack(alignment: .leading, spacing: 2) {
                 Text(title).font(.subheadline.weight(.semibold)).lineLimit(ax ? 4 : 2)
-                Text(subtitle).font(.caption).foregroundStyle(themed.palette.ink2Color).lineLimit(ax ? 3 : 1)
+                HStack(spacing: 4) {
+                    Text(subtitle).font(.caption).foregroundStyle(themed.palette.ink2Color).lineLimit(ax ? 3 : 1)
+                    DownloadMarkView(mark)
+                }
                 StatusLine(state)
             }
         }
@@ -41,7 +48,7 @@ public struct AlbumTile: View {
         .foregroundStyle(themed.palette.inkColor)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(title), \(subtitle)")
-        .accessibilityValue(state.voiceOverValue ?? "")
+        .accessibilityValue(mark.joined(to: state.voiceOverValue))
     }
 }
 
