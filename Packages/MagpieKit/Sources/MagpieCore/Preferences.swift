@@ -184,9 +184,12 @@ extension PreferenceArea {
         return (decoded(merged) ?? defaultValue).normalised()
     }
 
-    /// Serialises a JSON object and decodes it as this area; nil when either step fails.
+    /// Serialises a JSON object and decodes it as this area; nil when either step fails. `JSONSerialization` reads
+    /// `-1e400` as -infinity, and writing that back raises an Objective-C exception no `try?` catches (crash hunt 4),
+    /// so an object it can't write is refused first.
     private static func decoded(_ object: [String: Any]) -> Self? {
-        guard let data = try? JSONSerialization.data(withJSONObject: object) else { return nil }
+        guard JSONSerialization.isValidJSONObject(object),
+              let data = try? JSONSerialization.data(withJSONObject: object) else { return nil }
         return try? JSONDecoder().decode(Self.self, from: data)
     }
 

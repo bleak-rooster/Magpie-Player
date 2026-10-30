@@ -43,7 +43,8 @@ public enum JSONValue: Sendable, Equatable, Codable {
     public var intValue: Int? {
         switch self {
         case .int(let i): i
-        case .double(let d) where d.isFinite && d == d.rounded(): Int(d)
+        // `Int(exactly:)`: an integral double beyond Int (`1e300`) is not an Int, where `Int(_:)` traps (crash hunt 4).
+        case .double(let d): Int(exactly: d)
         default: nil
         }
     }
