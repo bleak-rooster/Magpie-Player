@@ -19,6 +19,7 @@ struct GenresView: View {
     private let themed = Themed()
 
     var body: some View {
+        let indexSections = indexSections, indexIds = indexIds   // once per update
         ScrollViewReader { proxy in
         ScrollView {
             VStack(alignment: .leading, spacing: Tokens.Spacing.l) {

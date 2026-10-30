@@ -67,7 +67,8 @@ struct ArtistAddIT {
             }
             #expect(searched, "Lidarr searched for the artist's albums")
             let state = try await ArtistLidarr.read(name: "Judie Tzuke", mbid: artist, lidarr: client, ledger: ledger)
-            guard case .monitored(id, _) = state else { Issue.record("state: \(state)"); return }
+            // Never a `return` here: the clean-up below must run (review minor 1).
+            if case .monitored(id, _) = state {} else { Issue.record("state: \(state)") }
             // A second add writes nothing: the artist is there now.
             await #expect(throws: ArtistLidarrError.alreadyInLidarr) {
                 try await ArtistLidarr.add(mbid: artist, lidarr: client, gate: gate, ledger: ledger, setup: setup)

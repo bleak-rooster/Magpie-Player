@@ -82,6 +82,7 @@ public enum LetterIndex {
         guard wanted > 0 else { return 0 }
         var probes = 0
         func reaches(_ offset: Int) async throws -> Bool {
+            try Task.checkCancellation()   // the screen went away: stop reading
             probes += 1
             guard let name = try await nameAt(offset) else { return true }   // past the end
             return rank(name, articles) >= wanted

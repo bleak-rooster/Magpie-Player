@@ -12,8 +12,6 @@ struct ArtistLidarrPresentation: Equatable {
         case turnOnChanges(toAdd: Bool)
         /// Magpie's profiles or main root aren't set up yet.
         case setUpFirst
-        /// No MusicBrainz id: Magpie can't tell who to add.
-        case unknownArtist
     }
 
     var text: String
@@ -37,10 +35,11 @@ struct ArtistLidarrPresentation: Equatable {
             // Owner-data rule: only an artist Magpie added is offered "Monitor".
             if magpieAdded { changesAllowed ? (line.action = .monitor) : (line.hint = .turnOnChanges(toAdd: false)) }
             return line
-        case .notInLidarr(let mbid):
+        case .notInLidarr:
+            // Without the library's MBID the add asks Lidarr's search on the tap, and the owner confirms the exact
+            // artist (I3).
             var line = ArtistLidarrPresentation(text: "Not in Lidarr", symbol: "plus.circle")
-            if mbid == nil { line.hint = .unknownArtist }
-            else if !changesAllowed { line.hint = .turnOnChanges(toAdd: true) }
+            if !changesAllowed { line.hint = .turnOnChanges(toAdd: true) }
             else if !canAdd { line.hint = .setUpFirst }
             else { line.action = .add }
             return line
@@ -53,7 +52,6 @@ struct ArtistLidarrPresentation: Equatable {
             toAdd ? "Turn on Allow Magpie to change Lidarr in Settings \u{203A} Requests to add artists."
                    : "Turn on Allow Magpie to change Lidarr in Settings \u{203A} Requests to monitor this artist."
         case .setUpFirst: "Set up Magpie in Lidarr in Settings \u{203A} Requests to add artists."
-        case .unknownArtist: "Magpie can't tell which artist this is in MusicBrainz, so it can't add them."
         }
     }
 
@@ -61,6 +59,14 @@ struct ArtistLidarrPresentation: Equatable {
     static func confirmation(_ artist: String) -> String {
         "Adds \(artist) to Lidarr, monitors their albums and starts searching. This may download a lot of music."
     }
+
+    /// The confirmation when Lidarr's search has several artists of that exact name: the owner picks one.
+    static func pickConfirmation(_ artist: String) -> String {
+        "Lidarr knows more than one \(artist). Pick the one to add: Magpie adds them to Lidarr, monitors their albums and starts searching. This may download a lot of music."
+    }
+
+    /// Lidarr's search has no artist of that exact name: nothing is added.
+    static func notFound(_ artist: String) -> String { "Couldn't find \(artist) in Lidarr's search" }
 }
 
 /// The artist page's Lidarr line: reads the state (never offline), and asks before the add.
@@ -69,8 +75,24 @@ struct ArtistLidarrPresentation: Equatable {
     private(set) var justAdded = false
     private(set) var working = false
     private(set) var error: String?
-    /// The add waits for "Add to Lidarr and download" in the confirmation.
-    var confirmingAdd = false
+    /// The add waits for the owner's choice in the confirmation.
+    var confirmation: Confirmation?
+
+    enum Confirmation: Equatable {
+        /// One artist: the library's own MBID (named as the library names it), or the one exact search candidate
+        /// (named with its disambiguation and type).
+        case one(label: String, mbid: MBID)
+        /// Several artists of that exact name: the owner picks.
+        case pick([ArtistLidarr.Candidate])
+    }
+
+    /// Bound to the confirmation dialog.
+    var confirming: Bool {
+        get { confirmation != nil }
+        set { if !newValue { confirmation = nil } }
+    }
+    /// The MBID an add resolved to, so a refresh after "already in Lidarr" finds the artist by it.
+    private var resolvedMBID: MBID?
 
     @ObservationIgnored private let model: AppModel
     let name: String
@@ -90,23 +112,49 @@ struct ArtistLidarrPresentation: Equatable {
     func refresh() async {
         guard model.lidarr != nil, !model.isOffline else { return }
         do {
-            let fresh = try await model.artistLidarrState(name: name, mbid: mbid)
+            let fresh = try await model.artistLidarrState(name: name, mbid: mbid ?? resolvedMBID)
             state = fresh
-            if case .monitored(_, true)? = fresh { justAdded = false }   // Lidarr's own search shows now
+            // Lidarr's own state shows from now on, so "Searching…" never sticks after its search ended.
+            if case .monitored? = fresh { justAdded = false }
         } catch {
             // Lidarr didn't answer: the last state stays (none at first: no line).
         }
     }
 
-    /// The button: only asks. Nothing is written until `confirmAdd`.
-    func requestAdd() {
-        guard presentation?.action == .add else { return }
-        confirmingAdd = true
+    /// The button: only asks. With the library's MBID the confirmation names the artist; without, Lidarr's search is
+    /// read first (GETs) and the confirmation names the one exact match, or lists several to pick from; none: nothing
+    /// can be added. Nothing is written until `confirmAdd`.
+    func requestAdd() async {
+        guard presentation?.action == .add, case .notInLidarr? = state, !working else { return }
+        error = nil
+        if let mbid {
+            confirmation = .one(label: name, mbid: mbid)
+            return
+        }
+        working = true
+        defer { working = false }
+        do {
+            let found = try await model.artistCandidates(name: name)
+            switch found.count {
+            case 0: error = ArtistLidarrPresentation.notFound(name)
+            case 1: confirmation = .one(label: found[0].label, mbid: found[0].mbid)
+            default: confirmation = .pick(found)
+            }
+        } catch {
+            self.error = Self.message(for: error, artist: name)
+        }
     }
 
-    func confirmAdd() async {
-        confirmingAdd = false
-        guard presentation?.action == .add, case .notInLidarr(let mbid?)? = state, !working else { return }
+    /// The owner confirmed this artist (one of the confirmation's).
+    func confirmAdd(_ mbid: MBID) async {
+        let offered: [MBID] = switch confirmation {
+        case .one(_, let m)?: [m]
+        case .pick(let list)?: list.map(\.mbid)
+        case nil: []
+        }
+        confirmation = nil
+        guard offered.contains(mbid), presentation?.action == .add, case .notInLidarr? = state, !working else { return }
+        resolvedMBID = mbid
         working = true
         error = nil
         defer { working = false }
@@ -162,7 +210,7 @@ struct ArtistLidarrLine: View {
             switch presentation.action {
             case .add?:
                 CapsuleButton(line.working ? "Adding\u{2026}" : "Add to Lidarr and download", symbol: "plus") {
-                    line.requestAdd()
+                    Task { await line.requestAdd() }
                 }
                 .disabled(line.working)
                 .accessibilityIdentifier("artist-lidarr-add")
@@ -179,13 +227,11 @@ struct ArtistLidarrLine: View {
                 Text(ArtistLidarrPresentation.hintText(hint))
                     .font(.footnote).foregroundStyle(p.ink2Color).multilineTextAlignment(.center)
                     .accessibilityIdentifier("artist-lidarr-hint")
-                if hint != .unknownArtist {
-                    Button("Open Settings") { showsSettings = true }
-                        .font(.footnote)
-                        .frame(minHeight: Tokens.minHitSize)
-                        .tint(p.accentInkColor)
-                        .accessibilityIdentifier("artist-lidarr-settings")
-                }
+                Button("Open Settings") { showsSettings = true }
+                    .font(.footnote)
+                    .frame(minHeight: Tokens.minHitSize)
+                    .tint(p.accentInkColor)
+                    .accessibilityIdentifier("artist-lidarr-settings")
             }
             if let error = line.error {
                 Label(error, systemImage: "exclamationmark.triangle")
@@ -194,11 +240,22 @@ struct ArtistLidarrLine: View {
             }
         }
         .frame(maxWidth: .infinity)
-        .confirmationDialog("Add to Lidarr?", isPresented: $line.confirmingAdd, titleVisibility: .visible) {
-            Button("Add to Lidarr and download") { Task { await line.confirmAdd() } }
+        .confirmationDialog("Add to Lidarr?", isPresented: $line.confirming, titleVisibility: .visible,
+                            presenting: line.confirmation) { confirmation in
+            switch confirmation {
+            case .one(_, let mbid):
+                Button("Add to Lidarr and download") { Task { await line.confirmAdd(mbid) } }
+            case .pick(let candidates):
+                ForEach(candidates) { candidate in
+                    Button(candidate.label) { Task { await line.confirmAdd(candidate.mbid) } }
+                }
+            }
             Button("Cancel", role: .cancel) {}
-        } message: {
-            Text(ArtistLidarrPresentation.confirmation(line.name))
+        } message: { confirmation in
+            switch confirmation {
+            case .one(let label, _): Text(ArtistLidarrPresentation.confirmation(label))
+            case .pick: Text(ArtistLidarrPresentation.pickConfirmation(line.name))
+            }
         }
         .sheet(isPresented: $showsSettings) { SettingsView(opening: [.requests]) }
     }

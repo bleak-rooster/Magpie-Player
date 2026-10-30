@@ -50,9 +50,14 @@ struct PagedRead<Item> {
         self.name = name; self.id = id; self.read = read; self.seek = seek
     }
 
-    /// The loaded items' runs of one letter.
-    var sections: [LetterIndex.Section] {
-        LetterIndex.sections(items.value ?? [], ignoringArticles: articles, name: name)
+    /// The loaded items' runs of one letter, kept with the items (not refolded on every view update).
+    private(set) var sections: [LetterIndex.Section] = []
+    /// A letter picked while a seek runs: the latest one is jumped to when it ends (I2).
+    @ObservationIgnored private var pendingLetter: String?
+
+    private func setItems(_ list: [Item]) {
+        items = .loaded(list)
+        sections = LetterIndex.sections(list, ignoringArticles: articles, name: name)
     }
 
     /// Letters the index shows in full: all of them until the list is known to the end, then the ones it has.
@@ -67,11 +72,7 @@ struct PagedRead<Item> {
         do {
             let page = try await read(offset)
             guard mine == generation else { return }
-            windowStart = offset
-            windowEnd = page.next
-            exhausted = page.end
-            moreError = nil
-            items = .loaded(dedupe(page.items))
+            apply(page, at: offset)
         } catch {
             guard mine == generation else { return }
             if items.value == nil || offset == 0 { items = .failed(BrowseErrorCopy.message(for: error)) }
@@ -92,7 +93,7 @@ struct PagedRead<Item> {
             windowEnd = page.next
             exhausted = page.end
             let known = Set(current.map(id))
-            items = .loaded(current + page.items.filter { !known.contains(id($0)) })
+            setItems(current + page.items.filter { !known.contains(id($0)) })
         } catch {
             guard mine == generation else { return }
             moreError = BrowseErrorCopy.message(for: error)
@@ -111,19 +112,39 @@ struct PagedRead<Item> {
         // Only rows before the window: a page read from `start` can run past `windowStart`.
         let before = page.items.prefix(max(0, windowStart - start)).filter { !known.contains(id($0)) }
         windowStart = start
-        items = .loaded(Array(before) + current)
+        setItems(Array(before) + current)
         scroll(to: first)
     }
 
-    /// The letter index picked `letter`.
+    private func apply(_ page: PagedRead<Item>, at offset: Int) {
+        windowStart = offset
+        windowEnd = page.next
+        exhausted = page.end
+        moreError = nil
+        setItems(dedupe(page.items))
+    }
+
+    /// The letter index picked `letter`. One seek at a time: a letter picked meanwhile (the end of a drag, a VoiceOver
+    /// swipe) replaces any earlier one still waiting, and is jumped to when the running seek ends (I2).
     func jump(to letter: String) async {
-        guard let current = items.value, !current.isEmpty, !seeking else { return }
+        guard !seeking else { pendingLetter = letter; return }
+        seeking = true
+        defer { seeking = false }
+        var next: String? = letter
+        while let current = next, !Task.isCancelled {
+            pendingLetter = nil
+            await jumpOnce(to: current)
+            next = pendingLetter
+        }
+        pendingLetter = nil
+    }
+
+    private func jumpOnce(to letter: String) async {
+        guard let current = items.value, !current.isEmpty else { return }
         if let i = LetterIndex.loadedTarget(letter, sections: sections, windowStart: windowStart, complete: exhausted) {
             return scroll(to: current[i])
         }
-        seeking = true
-        defer { seeking = false }
-        guard let offset = try? await seek(letter) else { return }
+        guard let offset = try? await seek(letter), !Task.isCancelled else { return }
         switch LetterIndex.move(toOffset: offset, windowStart: windowStart, windowEnd: windowEnd,
                                 forwardLimit: pageSize * 3) {
         case .scroll(let n):
@@ -135,9 +156,28 @@ struct PagedRead<Item> {
             scrollNear(target - windowStart, letter: letter)
         case .restart(let target):
             if exhausted, windowStart == 0, target >= windowEnd, let last = current.last { return scroll(to: last) }
-            await load(from: target)
-            if let first = items.value?.first { scroll(to: first) }
+            await restart(at: target)
         }
+    }
+
+    /// Loads the window from `offset` and shows its first item. Past the end (a letter after the last name: the seek
+    /// gives the list's end) it loads the last page instead and shows the last item, so the list never empties (I1).
+    private func restart(at offset: Int) async {
+        generation += 1
+        let mine = generation
+        guard var page = try? await read(offset), mine == generation else { return }
+        var start = offset
+        if page.items.isEmpty, offset > 0 {
+            start = max(0, offset - pageSize)
+            guard let last = try? await read(start), mine == generation, !last.items.isEmpty else { return }
+            page = last
+            apply(page, at: start)
+            if let item = items.value?.last { scroll(to: item) }
+            return
+        }
+        guard !page.items.isEmpty else { return }
+        apply(page, at: start)
+        if let first = items.value?.first { scroll(to: first) }
     }
 
     /// The letter's first loaded run when it has one, else about `n` rows into the window.

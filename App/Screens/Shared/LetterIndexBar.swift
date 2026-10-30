@@ -14,21 +14,17 @@ struct LetterIndexBar: View {
     let onSelect: (String) -> Void
     @State private var current: String?
     @State private var height: CGFloat = 0
-    @Environment(\.dynamicTypeSize) private var typeSize
     private let themed = Themed()
 
     /// Below this a letter's slot is too small to read or hit.
     static let minSlot: CGFloat = 13
     static let letters = LetterIndex.letters
 
+    /// The height 27 letters need, with the bar's padding.
+    static let neededHeight = minSlot * CGFloat(letters.count) + 16
+
     var body: some View {
-        GeometryReader { geo in
-            let fits = geo.size.height >= Self.minSlot * CGFloat(Self.letters.count) + 16
-            if fits && !typeSize.isAccessibilitySize {
-                bar.frame(maxHeight: .infinity, alignment: .center)
-            }
-        }
-        .frame(width: 24)
+        bar.frame(width: 24).frame(maxHeight: .infinity, alignment: .center)
     }
 
     private var bar: some View {
@@ -47,7 +43,8 @@ struct LetterIndexBar: View {
         .gesture(DragGesture(minimumDistance: 0)
             .onChanged { pick(Self.letter(atY: $0.location.y - 8, height: height - 16)) }
             .onEnded { _ in current = nil })
-        .sensoryFeedback(.selection, trigger: current)
+        // A tick per letter, not when the finger lifts (`current` back to nil).
+        .sensoryFeedback(.selection, trigger: current) { _, new in new != nil }
         .accessibilityElement()
         .accessibilityLabel("Letter index")
         .accessibilityValue(current ?? "")
@@ -91,10 +88,13 @@ private struct LetterIndexOverlay: ViewModifier {
     let hidden: Bool
     let onSelect: (String) -> Void
     @Environment(\.dynamicTypeSize) private var typeSize
+    @State private var height: CGFloat = .infinity
 
     func body(content: Content) -> some View {
-        let shown = !hidden && !typeSize.isAccessibilitySize
+        // Hidden at accessibility sizes and when 27 letters don't fit (D15); then rows keep their full width too.
+        let shown = !hidden && !typeSize.isAccessibilitySize && height >= LetterIndexBar.neededHeight
         content
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height = $0 }
             .contentMargins(.trailing, shown ? 14 : 0, for: .scrollContent)
             .overlay(alignment: .trailing) {
                 if shown { LetterIndexBar(available: available, onSelect: onSelect).padding(.trailing, 2) }

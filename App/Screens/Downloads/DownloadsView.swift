@@ -20,6 +20,7 @@ struct DownloadsView: View {
     }
 
     var body: some View {
+        let index = index   // once per update (the catalog lists are rebuilt and folded)
         ScrollViewReader { proxy in
         ScrollView {
             VStack(alignment: .leading, spacing: Tokens.Spacing.l) {

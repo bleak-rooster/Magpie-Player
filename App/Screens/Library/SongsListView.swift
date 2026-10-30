@@ -9,6 +9,8 @@ struct SongsListView: View {
     @Environment(AppModel.self) private var model
     @State private var list: PagedLetterList<Song>?
     @State private var removing: Song?
+    /// The running letter jump (its seek reads the server), cancelled when the screen goes.
+    @State private var jumpTask: Task<Void, Never>?
     private let themed = Themed()
 
     var body: some View {
@@ -26,7 +28,7 @@ struct SongsListView: View {
                 }
             }
             .letterIndex(available: list?.availableLetters ?? [], hidden: list?.items.value?.isEmpty != false) { letter in
-                Task { await list?.jump(to: letter) }
+                pick(letter)
             }
             .overlay { if list?.seeking == true { ProgressView().accessibilityLabel("Finding songs") } }
             .onChange(of: list?.scrollRequest) { _, request in
@@ -37,6 +39,7 @@ struct SongsListView: View {
         .navigationBarTitleDisplayMode(.inline)
         .magpieScreen()
         .songRemovalDialog($removing)
+        .onDisappear { jumpTask?.cancel() }
         .task {
             if list == nil {
                 let model = model
@@ -46,6 +49,12 @@ struct SongsListView: View {
             }
             if list?.items.value == nil { await list?.load() }
         }
+    }
+
+    /// A letter picked while a jump runs joins it (the latest wins, `PagedLetterList.jump`); otherwise a new jump.
+    private func pick(_ letter: String) {
+        guard let list else { return }
+        if list.seeking { Task { await list.jump(to: letter) } } else { jumpTask = Task { await list.jump(to: letter) } }
     }
 
     private func rows(_ songs: [Song], _ list: PagedLetterList<Song>) -> some View {

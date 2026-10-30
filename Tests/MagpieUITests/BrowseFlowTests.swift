@@ -86,6 +86,35 @@ final class BrowseFlowTests: XCTestCase {
         attachScreenshot(app, "songs-letter-index")
     }
 
+    /// P2 (review ⚠️): the Albums grid's letter index lands: touching P scrolls the grid to "Paper Planes".
+    @MainActor func testAlbumsLetterIndexJumps() throws {
+        let app = try launchSignedIn()
+        let library = app.tabBars.buttons["Library"]
+        let albums = app.buttons["library-albums"]
+        for _ in 0..<3 where !albums.exists {
+            library.tap()
+            _ = albums.waitForExistence(timeout: 5)
+        }
+        albums.tap()
+        let first = app.buttons["album-0"]
+        XCTAssertTrue(first.waitForExistence(timeout: 15))
+        let firstTop = first.frame.minY
+        let paper = app.buttons.matching(NSPredicate(format: "label CONTAINS 'Paper Planes'")).firstMatch
+        XCTAssertTrue(paper.waitForExistence(timeout: 5))
+        let before = paper.frame.minY
+        let index = app.descendants(matching: .any)["letter-index"]
+        XCTAssertTrue(index.waitForExistence(timeout: 5), "the letter index")
+        // 8 pt padding, then 13 pt a letter: "#", A … Z. P is the 17th.
+        index.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0))
+            .withOffset(CGVector(dx: 0, dy: 8 + 16.5 * 13)).tap()
+        let moved = NSPredicate { _, _ in paper.frame.minY < before - 50 }
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: moved, object: nil)], timeout: 5), .completed,
+                       "the grid scrolled towards P")
+        XCTAssertTrue(paper.isHittable, "Paper Planes is in view")
+        XCTAssertLessThan(first.frame.minY, firstTop, "the top of the grid moved up")
+        attachScreenshot(app, "albums-letter-index")
+    }
+
     @MainActor func testSignInBrowsePlay() throws {
         let app = try launchSignedIn()
         let library = app.tabBars.buttons["Library"]

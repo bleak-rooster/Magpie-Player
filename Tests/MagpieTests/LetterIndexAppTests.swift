@@ -16,19 +16,70 @@ import Testing
         let lock = NSLock()
     }
 
-    func makeList(_ server: Server, pageSize: Int = 50) -> PagedLetterList<String> {
+    /// `albums`: like Library › Albums (no total: the seek gallops, a short page is the end); else like Songs.
+    /// `hold`: the first seek waits until it is released.
+    func makeList(_ server: Server, pageSize: Int = 50, albums: Bool = false, hold: Hold? = nil) -> PagedLetterList<String> {
         let titles = Self.titles
         return PagedLetterList(pageSize: pageSize, name: { $0 }, id: { $0 },
             read: { offset in
                 server.lock.withLock { server.reads.append(offset) }
                 let end = min(offset + pageSize, titles.count)
-                return PagedRead(items: Array(titles[min(offset, titles.count)..<end]), next: offset + pageSize,
-                                 end: end >= titles.count)
+                let page = Array(titles[min(offset, titles.count)..<max(end, min(offset, titles.count))])
+                return PagedRead(items: page, next: offset + pageSize,
+                                 end: albums ? page.count < pageSize : end >= titles.count)
             },
             seek: { letter in
-                server.lock.withLock { server.seeks.append(letter) }
-                return try await LetterIndex.seek(letter, total: titles.count) { titles.indices.contains($0) ? titles[$0] : nil }
+                let first = server.lock.withLock { server.seeks.append(letter); return server.seeks.count == 1 }
+                if first, let hold { await hold.wait() }
+                return try await LetterIndex.seek(letter, total: albums ? nil : titles.count) {
+                    titles.indices.contains($0) ? titles[$0] : nil
+                }
             })
+    }
+
+    /// Holds the first seek until released, and says when it has started.
+    actor Hold {
+        private var released = false
+        private var waiters: [CheckedContinuation<Void, Never>] = []
+        private(set) var started = false
+        func wait() async {
+            started = true
+            if released { return }
+            await withCheckedContinuation { waiters.append($0) }
+        }
+        func release() { released = true; waiters.forEach { $0.resume() }; waiters = [] }
+    }
+
+    /// I1: a letter after the last name (no "Z" titles) on a list not loaded to the end never empties it: the last page
+    /// shows, scrolled to the last item, and the index stays.
+    @Test(arguments: [false, true])
+    func aLetterPastTheEndShowsTheLastPage(albums: Bool) async {
+        let server = Server()
+        let list = makeList(server, albums: albums)
+        await list.load()
+        await list.jump(to: "Z")
+        #expect(list.items.value?.isEmpty == false)
+        #expect(list.items.value?.last == "j 999")
+        #expect(list.scrollRequest?.id == "j 999")
+        #expect(!list.availableLetters.isEmpty, "the index stays")
+        #expect(list.windowStart > 0)
+    }
+
+    /// I2: letters picked while a seek runs aren't dropped: the latest one wins, one seek at a time.
+    @Test func theLatestLetterPickedDuringASeekWins() async {
+        let server = Server()
+        let hold = Hold()
+        let list = makeList(server, hold: hold)
+        await list.load()
+        let first = Task { await list.jump(to: "D") }
+        while !(await hold.started) { await Task.yield() }
+        await list.jump(to: "F")   // replaced by H before the seek ends
+        await list.jump(to: "H")
+        await hold.release()
+        await first.value
+        #expect(server.seeks == ["D", "H"])
+        #expect(list.scrollRequest?.id == "h 700")
+        #expect(!list.seeking)
     }
 
     @Test func aLoadedLetterScrollsWithoutAskingTheServer() async {

@@ -15,6 +15,13 @@ extension AppModel {
     /// Magpie's profiles, tag and main root are ready (Settings › Requests › Set up Magpie in Lidarr, and a root).
     var canAddArtists: Bool { lidarrSetup?.runnerSetup != nil }
 
+    /// Lidarr's search for an artist without an MBID in the library: exact (case- and diacritic-folded) name matches.
+    func artistCandidates(name: String) async throws -> [ArtistLidarr.Candidate] {
+        try requireNotForcedOffline()
+        guard let client = lidarrClient else { throw ArtistLidarrError.failed }
+        return try await ArtistLidarr.candidates(name: name, lidarr: client)
+    }
+
     /// "Add to Lidarr and download". Returns the artist's Lidarr id.
     func addArtistToLidarr(mbid: MBID) async throws -> Int {
         try requireNotForcedOffline()
