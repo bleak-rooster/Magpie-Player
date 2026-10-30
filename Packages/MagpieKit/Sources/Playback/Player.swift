@@ -312,6 +312,10 @@ public final class Player {
                 isPlaying = true
                 return
             }
+            // The engine only moves on to an entry of the list it was last sent. One that list no longer holds is a
+            // late event about a list replaced since (the engine was told to play the current entry): following it
+            // would name a song that isn't playing and drop its ticks as stale (crash hunt 1).
+            guard sent.contains(where: { $0.id == id }) else { return }
             while queue.current?.id != id, queue.advance() != nil {}
             adoptLoaded(id)
             beginEntry()
