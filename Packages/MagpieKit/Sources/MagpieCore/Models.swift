@@ -128,11 +128,14 @@ public struct Playlist: Sendable, Hashable, Codable {
     public var owner: String?
     /// OpenSubsonic `readonly`: whether the signed-in user may not change it; nil from a server that doesn't say.
     public var readOnly: Bool?
+    /// When it last changed, when the server says (Add to playlist lists the latest first).
+    public var changed: Date?
 
     public init(id: String, name: String, songCount: Int, duration: TimeInterval, coverArtId: String? = nil,
-                owner: String? = nil, readOnly: Bool? = nil) {
+                owner: String? = nil, readOnly: Bool? = nil, changed: Date? = nil) {
         self.id = id; self.name = name; self.songCount = songCount
         self.duration = duration; self.coverArtId = coverArtId; self.owner = owner; self.readOnly = readOnly
+        self.changed = changed
     }
 
     /// Whether `username` may rename it, change its songs or delete it (spec R8: only the user's own): never when

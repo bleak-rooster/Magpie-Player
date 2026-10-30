@@ -88,7 +88,8 @@ enum Mapping {
 
     static func playlist(_ d: SubsonicPlaylist) -> Playlist {
         Playlist(id: d.id, name: d.name ?? "", songCount: d.songCount ?? d.entry?.count ?? 0,
-                 duration: d.duration ?? 0, coverArtId: d.coverArt, owner: d.owner, readOnly: d.readonly)
+                 duration: d.duration ?? 0, coverArtId: d.coverArt, owner: d.owner, readOnly: d.readonly,
+                 changed: date(d.changed))
     }
 
     /// Prefers synced lyrics; line starts arrive in milliseconds.

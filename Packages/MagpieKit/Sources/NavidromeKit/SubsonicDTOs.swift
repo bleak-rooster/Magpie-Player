@@ -115,4 +115,5 @@ struct SubsonicPlaylist: Decodable {
     let entry: [SubsonicSong]?
     let owner: String?
     let readonly: Bool?
+    let changed: String?
 }

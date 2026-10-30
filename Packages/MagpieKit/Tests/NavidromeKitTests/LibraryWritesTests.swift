@@ -40,10 +40,11 @@ private func ok(_ body: String = "") -> Data {
 
     @Test func playlistsCarryTheirOwnerAndWhetherTheyAreReadOnly() async throws {
         let (client, t) = makeClient()
-        t.stub(pathSuffix: "/rest/getPlaylists", body: ok(#""playlists":{"playlist":[{"id":"p1","name":"Mine","owner":"admin","readonly":false,"songCount":2},{"id":"p2","name":"Theirs","owner":"listener","readonly":true},{"id":"p3","name":"Old server","owner":"Admin"},{"id":"p4","name":"No owner"}]}"#))
+        t.stub(pathSuffix: "/rest/getPlaylists", body: ok(#""playlists":{"playlist":[{"id":"p1","name":"Mine","owner":"admin","readonly":false,"songCount":2,"changed":"2026-10-30T14:13:33.930667213Z"},{"id":"p2","name":"Theirs","owner":"listener","readonly":true},{"id":"p3","name":"Old server","owner":"Admin"},{"id":"p4","name":"No owner"}]}"#))
         let lists = try await client.playlists()
         #expect(lists.map(\.owner) == ["admin", "listener", "Admin", nil])
         #expect(lists.map(\.readOnly) == [false, true, nil, nil])
+        #expect(lists[0].changed.map { Int($0.timeIntervalSince1970) } == 1_793_369_613 && lists[1].changed == nil)
         // Editable: the server's `readonly` when it sends one; otherwise owned by the user (case aside).
         #expect(lists.map { $0.isEditable(by: "admin") } == [true, false, true, false])
     }
