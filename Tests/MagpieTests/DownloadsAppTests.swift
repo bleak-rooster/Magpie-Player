@@ -128,9 +128,9 @@ extension AppModel {
     @Test func reDownloadAtNewQuality() async throws {
         let model = try await signedInModel(fetcher: FakeFetcher())
         model.download([song("s1")], reason: .song); await model.downloads!.settled()
-        model.updatePreferences { $0.downloads.quality = .mp3_320 }
+        model.updatePreferences { $0.downloads.quality = .mp3High }
         await model.redownloadAtCurrentQuality(); await model.downloads!.settled()
-        #expect(await model.downloads!.store.entry(songId: "s1")?.quality == .mp3_320)
+        #expect(await model.downloads!.store.entry(songId: "s1")?.quality == .mp3High)
         let audio = try FileManager.default.contentsOfDirectory(atPath: model.downloads!.storeDirectory.path)
             .filter { $0.hasSuffix(".mp3") || $0.hasSuffix(".flac") }
         #expect(audio.count == 1)
@@ -215,9 +215,9 @@ extension AppModel {
     @Test func storageSummaryAndUsageText() {
         #expect(DownloadsSettingsView.summary(.defaultValue) == "Original · 2 GB cache · 3 ahead")
         var prefs = DownloadPreferences.defaultValue
-        prefs.cacheLimit = .mb500; prefs.preDownload = 0; prefs.quality = .aac256
+        prefs.cacheLimit = .mb500; prefs.preDownload = 0; prefs.quality = .aacHigh
         #expect(DownloadsSettingsView.summary(prefs) == "AAC 256 kbps · 500 MB cache · none ahead")
-        prefs.quality = .mp3_320
+        prefs.quality = .mp3High
         #expect(DownloadsSettingsView.summary(prefs).hasPrefix("MP3 320 kbps · "))
         let text = DownloadsSettingsView.usageText(AudioUsage(downloadBytes: 1_200_000_000, cacheBytes: 340_000_000))
         #expect(text == "Downloads 1.2 GB · Cache 340 MB")

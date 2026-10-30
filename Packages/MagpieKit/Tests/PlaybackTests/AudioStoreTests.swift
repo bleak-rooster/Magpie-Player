@@ -40,7 +40,7 @@ private final class TestClock: @unchecked Sendable {
         let name = AudioStore.fileName(songId: "../../etc/passwd", quality: .original, fileExtension: "mp3")
         #expect(name.wholeMatch(of: /[0-9a-f]{64}\.mp3/) != nil)
         #expect(AudioStore.fileName(songId: "s1", quality: .original, fileExtension: "mp3")
-                != AudioStore.fileName(songId: "s1", quality: .aac160, fileExtension: "mp3"))
+                != AudioStore.fileName(songId: "s1", quality: .aacMedium, fileExtension: "mp3"))
     }
 
     @Test func fileExtensionAllowlist() {
@@ -49,10 +49,10 @@ private final class TestClock: @unchecked Sendable {
         // Unknown formats are refused, never guessed.
         #expect(AudioStore.fileExtension(quality: .original, suffix: nil, mimeType: "text/html") == nil)
         #expect(AudioStore.fileExtension(quality: .original, suffix: nil, mimeType: "application/octet-stream") == nil)
-        #expect(AudioStore.fileExtension(quality: .aac160, suffix: "flac", mimeType: nil) == "aac")
-        #expect(AudioStore.fileExtension(quality: .mp3_192, suffix: "flac", mimeType: nil) == "mp3")
+        #expect(AudioStore.fileExtension(quality: .aacMedium, suffix: "flac", mimeType: nil) == "aac")
+        #expect(AudioStore.fileExtension(quality: .mp3Medium, suffix: "flac", mimeType: nil) == "mp3")
         // D45: an Opus preset is an Ogg file whatever the source suffix was.
-        for q in [StreamQuality.opus192, .opus128, .opus96, .opus64] {
+        for q in [StreamQuality.opusHigh, .opusMedium, .opusLow] {
             #expect(AudioStore.fileExtension(quality: q, suffix: "flac", mimeType: "audio/ogg") == "ogg")
             #expect(AudioStore.fileExtension(quality: q, suffix: nil, mimeType: nil) == "ogg")
         }
@@ -69,10 +69,10 @@ private final class TestClock: @unchecked Sendable {
     @Test func oggOpusBodyIsStoredAndKeepsItsName() async throws {
         let store = AudioStore(root: tmp, scope: "abc")
         await store.load()
-        let e = try await store.add(tempFile(bytes: 300), metadata: meta("o1"), quality: .opus128, kind: .download,
+        let e = try await store.add(tempFile(bytes: 300), metadata: meta("o1"), quality: .opusMedium, kind: .download,
                                     reason: .song, fileExtension: "ogg", downloadsLimit: nil)
-        #expect(e.fileName == AudioStore.fileName(songId: "o1", quality: .opus128, fileExtension: "ogg"))
-        #expect(e.quality == .opus128)
+        #expect(e.fileName == AudioStore.fileName(songId: "o1", quality: .opusMedium, fileExtension: "ogg"))
+        #expect(e.quality == .opusMedium)
         #expect(FileManager.default.fileExists(atPath: store.directory.appending(path: e.fileName).path))
         let reloaded = AudioStore(root: tmp, scope: "abc")
         await reloaded.load()
@@ -167,8 +167,8 @@ private final class TestClock: @unchecked Sendable {
     @Test func replaceStoresNewThenDeletesOld() async throws {
         let store = AudioStore(root: tmp, scope: "abc"); await store.load()
         let old = try await add(store, "s1", bytes: 100, kind: .download, reason: .song, limit: nil)
-        let new = try await store.replace(songId: "s1", with: tempFile(bytes: 50), quality: .mp3_320, fileExtension: "mp3")
-        #expect(new.quality == .mp3_320 && new.size == 50 && new.reasons == [.song] && new.kind == .download)
+        let new = try await store.replace(songId: "s1", with: tempFile(bytes: 50), quality: .mp3High, fileExtension: "mp3")
+        #expect(new.quality == .mp3High && new.size == 50 && new.reasons == [.song] && new.kind == .download)
         #expect(!FileManager.default.fileExists(atPath: store.directory.appending(path: old.fileName).path))
         #expect(FileManager.default.fileExists(atPath: store.directory.appending(path: new.fileName).path))
         await #expect(throws: AudioStoreError.unknownSong) {

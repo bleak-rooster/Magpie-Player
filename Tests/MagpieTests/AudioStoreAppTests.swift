@@ -28,9 +28,9 @@ import Testing
         let temp = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
         try OggOpusFixture.data.write(to: temp)
         #expect(OggOpusFixture.data.prefix(4) == Data("OggS".utf8))
-        let ext = try #require(AudioStore.fileExtension(quality: .opus128, suffix: "flac", mimeType: "audio/ogg"))
+        let ext = try #require(AudioStore.fileExtension(quality: .opusMedium, suffix: "flac", mimeType: "audio/ogg"))
         let e = try await store.add(temp, metadata: AudioMetadata(Song(id: "o1", title: "T", artist: "A", album: "B", duration: 2)),
-                                    quality: .opus128, kind: .download, reason: .song, fileExtension: ext, downloadsLimit: nil)
+                                    quality: .opusMedium, kind: .download, reason: .song, fileExtension: ext, downloadsLimit: nil)
         let stored = try #require(await store.localFiles()["o1"])
         #expect(stored.pathExtension == "ogg" && e.fileName == stored.lastPathComponent)
         let asset = AVURLAsset(url: stored)

@@ -84,6 +84,29 @@ final class FakeNetwork: NetworkStatusProviding {
         #expect(q["format"] == "aac" && q["maxBitRate"] == "160")
     }
 
+    /// R5: each preset's stream URL asks for its format at its bit rate, on Wi-Fi and on mobile data alike.
+    @Test func streamURLCarriesThePresetBitRate() async throws {
+        let (model, engine, network) = try await signedIn(.wifi)
+        defer { tearDown(model) }
+        let expected: [(StreamQuality, String, String)] = [
+            (.mp3High, "mp3", "320"), (.mp3Medium, "mp3", "192"), (.mp3Low, "mp3", "128"),
+            (.aacHigh, "aac", "256"), (.aacMedium, "aac", "160"), (.aacLow, "aac", "96"),
+            (.opusHigh, "opus", "320"), (.opusMedium, "opus", "160"), (.opusLow, "opus", "96"),
+        ]
+        for (quality, format, rate) in expected {
+            model.updatePreferences { $0.playback.wifi = quality }
+            model.play([song("s1")], startAt: 0)
+            let q = query(engine.setItemsCalls.last!.items[0].1)
+            #expect(q["format"] == format && q["maxBitRate"] == rate, "\(quality)")
+        }
+        network.status = cellular
+        model.updatePreferences { $0.playback.cellular = .mp3Low }
+        #expect(await eventually { model.currentStreamQuality == .mp3Low })
+        model.play([song("s2")], startAt: 0)
+        let q = query(engine.setItemsCalls.last!.items[0].1)
+        #expect(q["format"] == "mp3" && q["maxBitRate"] == "128")
+    }
+
     @Test func lowDataModeOnWifiUsesMobileQuality() async throws {
         let (model, engine, _) = try await signedIn(NetworkStatus(isConnected: true, isCellular: false, isConstrained: true))
         defer { tearDown(model) }
@@ -96,7 +119,7 @@ final class FakeNetwork: NetworkStatusProviding {
         let (model, engine, _) = try await signedIn(.wifi)
         defer { tearDown(model) }
         model.play([song("s1"), song("s2")], startAt: 0)
-        model.updatePreferences { $0.playback.wifi = .mp3_320 }
+        model.updatePreferences { $0.playback.wifi = .mp3High }
         let items = engine.setItemsCalls.last!.items
         #expect(query(items[0].1)["format"] == "raw" && query(items[1].1)["format"] == "mp3" && query(items[1].1)["maxBitRate"] == "320")
     }
@@ -147,7 +170,7 @@ final class FakeNetwork: NetworkStatusProviding {
         defer { tearDown(model) }
         model.play([song("s1"), song("s2")], startAt: 0)
         network.status = cellular
-        #expect(await eventually { model.currentStreamQuality == .aac160 && self.query(engine.setItemsCalls.last!.items[1].1)["format"] == "aac" })
+        #expect(await eventually { model.currentStreamQuality == .aacMedium && self.query(engine.setItemsCalls.last!.items[1].1)["format"] == "aac" })
         model.player.handle(.failed(model.player.queue.current!.id, "cannot open"))
         try await Task.sleep(for: .milliseconds(100))
         #expect(model.playbackHint == nil && model.player.lastFallbackSongId == nil)
@@ -171,7 +194,7 @@ final class FakeNetwork: NetworkStatusProviding {
     @Test func opusPresetStreamsAsOggOpus() async throws {
         let (model, engine, _) = try await signedIn(.wifi)
         defer { tearDown(model) }
-        model.updatePreferences { $0.playback.wifi = .opus96 }
+        model.updatePreferences { $0.playback.wifi = .opusLow }
         model.play([song("s1")], startAt: 0)
         let q = query(engine.setItemsCalls.last!.items[0].1)
         #expect(q["format"] == "opus" && q["maxBitRate"] == "96" && q["estimateContentLength"] == nil)
@@ -182,7 +205,7 @@ final class FakeNetwork: NetworkStatusProviding {
     @Test func opusEngineDurationDoesNotReplaceTheAPIDuration() async throws {
         let (model, engine, _) = try await signedIn(.wifi)
         defer { tearDown(model) }
-        model.updatePreferences { $0.playback.wifi = .opus128 }
+        model.updatePreferences { $0.playback.wifi = .opusMedium }
         model.play([song("s1"), song("s2")], startAt: 0)
         #expect(query(engine.setItemsCalls.last!.items[0].1)["format"] == "opus")
         let entry = try #require(model.player.queue.current?.id)
@@ -210,14 +233,14 @@ final class FakeNetwork: NetworkStatusProviding {
     @Test func pickerGroupsFollowCodecOrder() {
         #expect(StreamQuality.groups.map { StreamQualityOptions.heading(forFormat: $0.format) } == ["Original", "AAC", "Opus", "MP3"])
         #expect(StreamQuality.groups[2].qualities.map(\.title) == [
-            "High · Opus 192 kbps", "Medium · Opus 128 kbps", "Low · Opus 96 kbps", "Very low · Opus 64 kbps"])
+            "High · 320 kbps", "Medium · 160 kbps", "Low · 96 kbps"])
     }
 
     /// Opus falls back to Original like AAC.
     @Test func opusStreamFailingFallsBackToOriginal() async throws {
         let (model, engine, _) = try await signedIn(.wifi)
         defer { tearDown(model) }
-        model.updatePreferences { $0.playback.wifi = .opus64 }
+        model.updatePreferences { $0.playback.wifi = .opusLow }
         model.play([song("s1"), song("s2")], startAt: 0)
         model.player.handle(.failed(model.player.queue.current!.id, "cannot open"))
         #expect(await eventually { model.playbackHint == AppModel.transcodeHint })
@@ -228,6 +251,6 @@ final class FakeNetwork: NetworkStatusProviding {
     @Test func networkStatusPicksQuality() {
         let prefs = PlaybackPreferences.defaultValue
         #expect(prefs.quality(for: .wifi) == .original)
-        #expect(prefs.quality(for: cellular) == .aac160)
+        #expect(prefs.quality(for: cellular) == .aacMedium)
     }
 }

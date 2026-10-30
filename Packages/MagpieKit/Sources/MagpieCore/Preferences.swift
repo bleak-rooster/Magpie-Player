@@ -52,62 +52,6 @@ public enum LibraryRow: String, CaseIterable, Codable, Hashable, Sendable {
     }
 }
 
-/// Opus is offered (D45): iOS 27 AVFoundation plays Navidrome's Ogg Opus stream, though Ogg durations are estimates.
-public enum StreamQuality: String, CaseIterable, Codable, Hashable, Sendable {
-    case original, aac256, aac160, aac96, opus192, opus128, opus96, opus64, mp3_320, mp3_192
-
-    /// The `format` parameter of `stream`: "raw", "aac", "opus" or "mp3".
-    public var format: String {
-        switch self {
-        case .original: "raw"
-        case .aac256, .aac160, .aac96: "aac"
-        case .opus192, .opus128, .opus96, .opus64: "opus"
-        case .mp3_320, .mp3_192: "mp3"
-        }
-    }
-
-    /// The `maxBitRate` parameter in kbps; nil for Original.
-    public var maxBitRate: Int? {
-        switch self {
-        case .original: nil
-        case .aac256: 256
-        case .aac160: 160
-        case .aac96: 96
-        case .opus192: 192
-        case .opus128: 128
-        case .opus96: 96
-        case .opus64: 64
-        case .mp3_320: 320
-        case .mp3_192: 192
-        }
-    }
-
-    public var title: String {
-        switch self {
-        case .original: "Original"
-        case .aac256: "High · AAC 256 kbps"
-        case .aac160: "Medium · AAC 160 kbps"
-        case .aac96: "Low · AAC 96 kbps"
-        case .opus192: "High · Opus 192 kbps"
-        case .opus128: "Medium · Opus 128 kbps"
-        case .opus96: "Low · Opus 96 kbps"
-        case .opus64: "Very low · Opus 64 kbps"
-        case .mp3_320: "MP3 320 kbps"
-        case .mp3_192: "MP3 192 kbps"
-        }
-    }
-
-    /// The qualities by codec, in enum order: what the pickers list under each codec heading.
-    public static var groups: [(format: String, qualities: [StreamQuality])] {
-        var result: [(format: String, qualities: [StreamQuality])] = []
-        for quality in allCases {
-            if let i = result.firstIndex(where: { $0.format == quality.format }) { result[i].qualities.append(quality) }
-            else { result.append((quality.format, [quality])) }
-        }
-        return result
-    }
-}
-
 public enum ReplayGainMode: String, CaseIterable, Codable, Hashable, Sendable { case off, track, album }
 
 public enum SleepTimerOption: String, CaseIterable, Codable, Hashable, Sendable {
@@ -273,7 +217,7 @@ public struct LayoutPreferences: PreferenceArea {
 
 public struct PlaybackPreferences: PreferenceArea {
     public static let key = "magpie.prefs.playback"
-    public static let defaultValue = PlaybackPreferences(wifi: .original, cellular: .aac160, replayGain: .track, sleepTimer: .m30)
+    public static let defaultValue = PlaybackPreferences(wifi: .original, cellular: .aacMedium, replayGain: .track, sleepTimer: .m30)
 
     public var wifi: StreamQuality
     public var cellular: StreamQuality

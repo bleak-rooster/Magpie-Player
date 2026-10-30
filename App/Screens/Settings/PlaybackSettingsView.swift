@@ -13,12 +13,8 @@ struct PlaybackSettingsView: View {
     var body: some View {
         Form {
             Section {
-                Picker("Wi-Fi", selection: binding(\.wifi)) {
-                    StreamQualityOptions()
-                }
-                Picker("Mobile data", selection: binding(\.cellular)) {
-                    StreamQualityOptions()
-                }
+                StreamQualityPicker(title: "Wi-Fi", selection: binding(\.wifi))
+                StreamQualityPicker(title: "Mobile data", selection: binding(\.cellular))
             } header: {
                 Text("Streaming")
             } footer: {

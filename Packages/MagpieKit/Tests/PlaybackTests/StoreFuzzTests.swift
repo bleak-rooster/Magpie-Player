@@ -274,7 +274,7 @@ final class FaultyReader: Sendable {
                 case 1: _ = try? await store.promote(songId: "s1", reason: .favourites, downloadsLimit: nil)
                 case 2: _ = try? await store.evictCache(limit: 0, protecting: [])
                 case 3: try? await store.markPlayed(songId: "s\(Int.random(in: 0..<4, using: &rng))")
-                case 4: _ = try? await store.replace(songId: "s0", with: temp(70), quality: .aac160, fileExtension: "aac")
+                case 4: _ = try? await store.replace(songId: "s0", with: temp(70), quality: .aacMedium, fileExtension: "aac")
                 case 5: try? await store.savePlaylist(DownloadedPlaylist(id: "p", name: "P", coverArtId: nil, songIds: [], savedAt: Date()))
                 default: await store.load()
                 }
@@ -338,7 +338,7 @@ final class FaultyReader: Sendable {
                         case 5: _ = try? await store.evictCache(limit: 100, protecting: { [id] })
                         case 6: _ = try? await store.removeCache(songIds: [id], sparing: { [] })
                         case 7: if i % 40 == 7 { await store.eraseScope() } else { try? await store.markPlayed(songId: id) }
-                        case 8: if i % 30 == 8 { try? await store.removeAll(kind: .download) } else { _ = try? await store.replace(songId: id, with: file, quality: .aac160, fileExtension: "aac") }
+                        case 8: if i % 30 == 8 { try? await store.removeAll(kind: .download) } else { _ = try? await store.replace(songId: id, with: file, quality: .aacMedium, fileExtension: "aac") }
                         default: await store.load()
                         }
                     }
@@ -384,7 +384,7 @@ final class FaultyReader: Sendable {
         try await store.add(temp(500), metadata: Self.meta("c"), quality: .original, kind: .cache, reason: nil,
                             fileExtension: "mp3", downloadsLimit: nil)
         await #expect(throws: AudioStoreError.downloadsFull) {
-            try await store.replace(songId: "d", with: self.temp(1500), quality: .aac160, fileExtension: "aac",
+            try await store.replace(songId: "d", with: self.temp(1500), quality: .aacMedium, fileExtension: "aac",
                                     downloadsLimit: 1000)
         }
         let kept = try #require(await store.entry(songId: "d"))
@@ -392,8 +392,8 @@ final class FaultyReader: Sendable {
         #expect(FileManager.default.fileExists(atPath: store.directory.appending(path: kept.fileName).path))
         #expect(await store.usage().downloadBytes == 800)
         // Smaller fits; the cached song isn't counted against the downloads limit.
-        try await store.replace(songId: "d", with: temp(900), quality: .aac160, fileExtension: "aac", downloadsLimit: 1000)
-        try await store.replace(songId: "c", with: temp(5000), quality: .aac160, fileExtension: "aac", downloadsLimit: 1000)
+        try await store.replace(songId: "d", with: temp(900), quality: .aacMedium, fileExtension: "aac", downloadsLimit: 1000)
+        try await store.replace(songId: "c", with: temp(5000), quality: .aacMedium, fileExtension: "aac", downloadsLimit: 1000)
         #expect(await store.usage() == AudioUsage(downloadBytes: 900, cacheBytes: 5000))
     }
 

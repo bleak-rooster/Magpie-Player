@@ -95,7 +95,7 @@ private let cell = NetworkStatus(isConnected: true, isCellular: true, isConstrai
                         ? DownloadedPlaylist(id: "p1", name: "P", coverArtId: nil, songIds: some, savedAt: Date()) : nil
                     m.download(songs(some, album: albums.randomElement(using: &rng)!), reason: reason, playlist: playlist,
                                coverArtId: Bool.random(using: &rng) ? "al-1" : nil)
-                case 3, 4: m.preDownload(songs(some), quality: [.original, .aac160, .opus128].randomElement(using: &rng)!)
+                case 3, 4: m.preDownload(songs(some), quality: [.original, .aacMedium, .opusMedium].randomElement(using: &rng)!)
                 case 5: removedByUser.formUnion(ids); await m.remove(reason)   // whole reason: any song may go
                 case 6: removedByUser.formUnion(some); await m.remove(reason, songIds: some)
                 case 7: removedByUser.formUnion(some); await m.remove(songIds: Set(some))
@@ -105,7 +105,7 @@ private let cell = NetworkStatus(isConnected: true, isCellular: true, isConstrai
                 case 11: net.status = [.wifi, cell, NetworkStatus(isConnected: false, isCellular: false, isConstrained: false)]
                     .randomElement(using: &rng)!
                 case 12: offline.value.toggle(); m.networkChanged()
-                case 13: m.redownload(songIds: some, quality: .aac160)
+                case 13: m.redownload(songIds: some, quality: .aacMedium)
                 case 14: if step % 15 == 14 { m.cancelAll() }
                 default:
                     if step % 25 == 0 {   // relaunch on the same store

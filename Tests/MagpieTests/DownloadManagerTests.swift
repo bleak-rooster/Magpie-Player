@@ -162,7 +162,7 @@ private let cell = NetworkStatus(isConnected: true, isCellular: true, isConstrai
 
     @Test func preDownloadRunsOnMobileData() async {
         let (m, f, _) = await makeManager(network: cell)
-        m.preDownload(songs("s1"), quality: .aac160); await m.settled()
+        m.preDownload(songs("s1"), quality: .aacMedium); await m.settled()
         #expect(f.urls.count == 1 && f.urls[0].query?.contains("format=aac") == true)
         #expect(await m.store.entry(songId: "s1")?.kind == .cache)
     }
@@ -177,24 +177,24 @@ private let cell = NetworkStatus(isConnected: true, isCellular: true, isConstrai
     }
 
     @Test func downloadsUseDownloadQuality() async {
-        var prefs = DownloadPreferences.defaultValue; prefs.quality = .mp3_320
+        var prefs = DownloadPreferences.defaultValue; prefs.quality = .mp3High
         let (m, f, _) = await makeManager(prefs)
         m.download(songs("s1"), reason: .song); await m.settled()
         let q = URLComponents(url: f.urls[0], resolvingAgainstBaseURL: false)!.queryItems!
         #expect(q.first { $0.name == "format" }?.value == "mp3" && q.first { $0.name == "maxBitRate" }?.value == "320")
-        #expect(await m.store.entry(songId: "s1")?.quality == .mp3_320)
+        #expect(await m.store.entry(songId: "s1")?.quality == .mp3High)
     }
 
     /// D45: an Opus download asks for `format=opus` and is stored as `.ogg` from Navidrome's `audio/ogg`.
     @Test func opusDownloadIsStoredAsOgg() async {
-        var prefs = DownloadPreferences.defaultValue; prefs.quality = .opus64
+        var prefs = DownloadPreferences.defaultValue; prefs.quality = .opusLow
         let (m, f, _) = await makeManager(prefs)
         f.mimeType { $0.path.hasSuffix("/rest/getCoverArt") ? "image/jpeg" : "audio/ogg" }
         m.download(songs("s1"), reason: .song); await m.settled()
         let q = URLComponents(url: f.urls[0], resolvingAgainstBaseURL: false)!.queryItems!
-        #expect(q.first { $0.name == "format" }?.value == "opus" && q.first { $0.name == "maxBitRate" }?.value == "64")
+        #expect(q.first { $0.name == "format" }?.value == "opus" && q.first { $0.name == "maxBitRate" }?.value == "96")
         let entry = await m.store.entry(songId: "s1")
-        #expect(entry?.quality == .opus64 && entry?.fileName.hasSuffix(".ogg") == true)
+        #expect(entry?.quality == .opusLow && entry?.fileName.hasSuffix(".ogg") == true)
         #expect(m.status(for: ["s1"]) == .downloaded)
     }
 
@@ -286,7 +286,7 @@ private let cell = NetworkStatus(isConnected: true, isCellular: true, isConstrai
 
     /// Fix I2: a Subsonic error arrives as HTTP 200 with a JSON or XML body; it is never stored as audio.
     @Test func errorBodyIsNotStoredAsAudio() async throws {
-        var prefs = DownloadPreferences.defaultValue; prefs.quality = .mp3_320   // the extension alone can't tell
+        var prefs = DownloadPreferences.defaultValue; prefs.quality = .mp3High   // the extension alone can't tell
         let (m, f, _) = await makeManager(prefs)
         for mime in ["application/json", "text/xml"] {
             f.mimeType { _ in mime }
@@ -522,7 +522,7 @@ private let cell = NetworkStatus(isConnected: true, isCellular: true, isConstrai
         m.preDownload(songs("c1"), quality: .original); await m.settled()
         m.preDownload(songs("c1"), quality: .original); await m.settled()
         #expect(f.urls.count == 1)
-        m.preDownload(songs("c1"), quality: .mp3_320); await m.settled()
+        m.preDownload(songs("c1"), quality: .mp3High); await m.settled()
         #expect(f.urls.count == 2, "another quality may work")
     }
 

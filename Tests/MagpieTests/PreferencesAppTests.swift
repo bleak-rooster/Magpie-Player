@@ -17,10 +17,10 @@ import LidarrKit
 
     @Test func savesOneKeyPerChangedAreaAndReloads() {
         let model = makeModel()
-        model.updatePreferences { $0.playback.cellular = .mp3_192 }
+        model.updatePreferences { $0.playback.cellular = .mp3Medium }
         #expect(defaults.data(forKey: "magpie.prefs.playback") != nil)
         #expect(defaults.data(forKey: "magpie.prefs.layout") == nil, "unchanged areas aren't written")
-        #expect(makeModel().preferences.playback.cellular == .mp3_192)
+        #expect(makeModel().preferences.playback.cellular == .mp3Medium)
     }
 
     @Test func corruptStoredAreaFallsBackWithoutCrashing() {

@@ -34,9 +34,7 @@ struct DownloadsSettingsView: View {
                 }
             }
             Section {
-                Picker("Download format", selection: binding(\.quality)) {
-                    StreamQualityOptions(originalTitle: Self.originalTitle)
-                }
+                StreamQualityPicker(title: "Download format", selection: binding(\.quality), originalTitle: Self.originalTitle)
             } footer: {
                 Text(Self.formatFooter)
             }
@@ -135,9 +133,7 @@ struct DownloadsSettingsView: View {
     }
 
     /// "Original", or the codec and bitrate ("AAC 256 kbps").
-    static func formatTitle(_ quality: StreamQuality) -> String {
-        quality.title.components(separatedBy: " · ").last ?? quality.title
-    }
+    static func formatTitle(_ quality: StreamQuality) -> String { quality.shortTitle }
 
     /// "Downloads 1.2 GB · Cache 340 MB".
     static func usageText(_ usage: AudioUsage) -> String {
