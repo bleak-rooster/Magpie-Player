@@ -14,7 +14,9 @@ import MagpieCore
 ///   lie strictly inside both the Finds root and that artist's folder;
 /// - `PUT /album/monitor` (H2b fix 1): `monitored: true` only for albums the ledger has an entry for (Magpie records
 ///   each album before it monitors it: a Try, a Bring in more); `monitored: false` only for albums the ledger says
-///   Magpie monitored (not monitored before) and that aren't kept. Ledger only, no Lidarr read.
+///   Magpie monitored (not monitored before) and that aren't kept. Ledger only, no Lidarr read;
+/// - `DELETE /queue/{id}` (R17): only a download of a live Magpie request's own album, re-read from the queue
+///   (`queueDelete`).
 ///
 /// The gate runs confined writes one at a time, checks to answer (`LidarrWriteGate`), and reads the ledger's kept
 /// state once more right before sending a delete.
@@ -36,10 +38,15 @@ public struct WriteConfinement: Sendable {
 
     let ledger: Ledger
     let roots: @Sendable () async -> Roots
+    /// R17: the ids (`RequestID` text) of Magpie's requests on their way right now; nil while they can't be known.
+    /// Without it, queue deletes are refused.
+    let liveRequests: (@Sendable () async -> Set<String>?)?
 
-    public init(ledger: Ledger, roots: @escaping @Sendable () async -> Roots) {
+    public init(ledger: Ledger, roots: @escaping @Sendable () async -> Roots,
+                liveRequests: (@Sendable () async -> Set<String>?)? = nil) {
         self.ledger = ledger
         self.roots = roots
+        self.liveRequests = liveRequests
     }
 
     /// At most this many track files in one delete (each is read first).
@@ -66,10 +73,13 @@ public struct WriteConfinement: Sendable {
         case trackFileDelete([Int])
         /// `PUT /album/monitor`.
         case albumMonitor(albumIds: [Int], monitored: Bool)
+        /// `DELETE /queue/{id}` (R17).
+        case queueDelete(Int)
     }
 
     func check(_ write: Write, lidarr: LidarrClient) async -> Verdict {
         guard ledger.instance == lidarr.instanceScope else { return .refused("the ledger belongs to another Lidarr") }
+        if case .queueDelete(let id) = write { return await queueDelete(id, lidarr: lidarr) }
         do {
             let entries: [LedgerEntry]
             do { entries = try await ledger.entries } catch { throw Unreadable() }
@@ -86,12 +96,49 @@ public struct WriteConfinement: Sendable {
             case .albumMonitor(let ids, let monitored):
                 try context.albumMonitor(ids, monitored: monitored)
                 return .confined(artists: [])
+            case .queueDelete:
+                return .unknown   // handled above
             }
         } catch let refusal as Refusal {
             return .refused(refusal.reason)
         } catch {
             return .unknown
         }
+    }
+
+    /// R17: `DELETE /queue/{id}` only removes a download Magpie's own live request is waiting on. From the ledger, the
+    /// live requests and a fresh queue read (never from the caller):
+    /// - the queue lists item `id` now, with an album and an artist;
+    /// - the ledger has an open entry for that album and artist, for a request that is live right now, applied, not
+    ///   kept, and saying Magpie monitored the album (`wasMonitoredBefore == false`) or added its artist.
+    /// The queue only, before import: it never touches library files, and nothing of the owner's own downloads.
+    func queueDelete(_ id: Int, lidarr: LidarrClient) async -> Verdict {
+        guard let liveRequests else { return .refused("queue deletes need Magpie's live requests") }
+        guard let live = await liveRequests() else { return .unknown }
+        let entries: [LedgerEntry]
+        do { entries = try await ledger.entries } catch { return .unknown }
+        let mine = entries.filter { e in
+            e.isOpen && e.isApplied && e.keptAt == nil && e.albumId != nil
+                && (e.createdArtist || !e.wasMonitoredBefore) && e.requestId.map(live.contains) == true
+        }
+        guard !mine.isEmpty else { return .refused("no live request of Magpie's has a download") }
+        let items: [QueueItem]
+        do {
+            items = try await lidarr.queueDetails(albumIds: Array(Set(mine.compactMap(\.albumId))).sorted())
+        } catch {
+            return .unknown
+        }
+        guard let item = items.first(where: { $0.id == id }), let albumId = item.albumId, let artistId = item.artistId else {
+            return .refused("not one of Magpie's downloads in the queue now")
+        }
+        guard mine.contains(where: { $0.albumId == albumId && $0.lidarrArtistId == artistId }) else {
+            return .refused("not one of Magpie's downloads in the queue now")
+        }
+        // A plain album entry is the album's only one (`Ledger.record`); an owner's monitor before Magpie's never passes.
+        guard !entries.contains(where: { $0.albumId == albumId && ($0.wasMonitoredBefore && !$0.createdArtist) }) else {
+            return .refused("the owner monitored this album")
+        }
+        return .confined(artists: [])
     }
 
     /// Right before a delete is sent: none of `artists` is kept in the ledger now. Nil: the ledger can't be read.
