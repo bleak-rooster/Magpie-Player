@@ -75,6 +75,21 @@ private func ok(_ body: String) -> Data {
         #expect(queryValue(t.requests.last!, "_sort") == "id", "default unchanged")
     }
 
+    /// P2: the letter seek reads one row at an offset in title order, a missing file's title too (it holds its place
+    /// in the server's order).
+    @Test func songTitleAtOffsetKeepsMissingRows() async throws {
+        let (client, t) = makeClient()
+        t.stub(pathSuffix: "/api/song") { request in
+            let row = queryValue(request, "_start") == "13" ? #"{"id":"s1","title":"Harbour Lights","missing":true}"# : ""
+            return MockTransport.Response(status: 200, body: Data("[\(row)]".utf8), headers: ["X-Total-Count": "43"])
+        }
+        let row = try await client.songTitle(at: 13)
+        #expect(row.title == "Harbour Lights" && row.total == 43)
+        let r = try #require(t.requests.last)
+        #expect(queryValue(r, "_sort") == "title" && queryValue(r, "_start") == "13" && queryValue(r, "_end") == "14")
+        #expect(try await client.songTitle(at: 43) == SongTitleRow(title: nil, total: 43))
+    }
+
     @Test func starredListType() { #expect(AlbumListType.starred.rawValue == "starred") }
 
     // MARK: - Parked T6 minors (Task 19)

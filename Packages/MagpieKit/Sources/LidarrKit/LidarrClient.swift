@@ -108,6 +108,11 @@ public struct LidarrClient: Sendable {
         return hits.first { $0.foreignArtistId == mbid }
     }
 
+    /// Lidarr's artist search by name (`artist/lookup?term=`): MusicBrainz artists, with their disambiguation and type.
+    public func artistLookup(term: String) async throws -> [LidarrArtistLookup] {
+        try await list(LidarrArtistLookup.self, "artist/lookup", [URLQueryItem(name: "term", value: term)])
+    }
+
     /// The lookup row for `mbid` as raw JSON, the base of the single atomic `POST /artist` (A6). `nil` when
     /// Lidarr knows no artist with that MBID.
     public func artistLookupJSON(mbid: MBID) async throws -> JSONValue? {

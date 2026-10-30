@@ -328,12 +328,14 @@ enum ForbiddenWrites {
 
     /// The only fields Keep, its restore and Bring in more send (FM1). Never `monitored`, `metadataProfileId`…
     static let editorKeys: Set<String> = ["artistids", "rootfolderpath", "movefiles", "qualityprofileid", "tags",
-                                          "applytags", "monitornewitems"]
+                                          "applytags", "monitornewitems", "monitored"]
 
     /// Only `editorKeys`, exactly one artist id, no `deleteFiles` / `addImportListExclusion` key at any depth;
     /// `applyTags` (at most one) is add or remove and comes with `tags`; `moveFiles` is a boolean and comes with a
     /// `rootFolderPath` string. A body with `monitorNewItems` (Follow new releases) is exactly `{artistIds: [one id],
-    /// monitorNewItems: new}`. Where an artist may be moved, and which artist, the gate's confinement decides (FM1).
+    /// monitorNewItems: new}`. A body with `monitored` (P3 "Monitor", for an artist Magpie added) is exactly
+    /// `{artistIds: [one id], monitored: true}`: Magpie never unmonitors an artist. Where an artist may be moved, and
+    /// which artist, the gate's confinement decides (FM1).
     private static func editorReason(_ json: Any?) -> String? {
         guard let object = json as? [String: Any] else { return "artist editor needs a body" }
         if let flag = anyKey(falseOnlyFlags, in: object) { return "artist editor body must not carry \(flag)" }
@@ -353,6 +355,13 @@ enum ForbiddenWrites {
         guard apply.count <= 1 else { return "applyTags given twice" }
         if let value = apply.first?.value {
             guard let s = value as? String, allowedApplyTags.contains(s.lowercased()) else { return "applyTags must be add or remove" }
+        }
+        let monitoring = object.filter { $0.key.lowercased() == "monitored" }
+        if let monitored = monitoring.first?.value {
+            guard monitoring.count == 1, object.count == 2, isBoolean(monitored), (monitored as? NSNumber)?.boolValue == true,
+                  let ids = value("artistids") as? [Any], ids.count == 1, isPositiveInteger(ids[0]) else {
+                return "monitoring changes one artist to monitored and nothing else"
+            }
         }
         if let follow = object.first(where: { $0.key.lowercased() == "monitornewitems" })?.value {
             guard let s = follow as? String, allowedMonitorNewItems.contains(s.lowercased()) else {

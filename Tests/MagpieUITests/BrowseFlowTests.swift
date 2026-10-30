@@ -60,6 +60,61 @@ final class BrowseFlowTests: XCTestCase {
         return app
     }
 
+    /// P2: Library › Songs has the right-edge letter index; touching T shows the dev library's T song, and the index
+    /// reads to VoiceOver as one "Letter index".
+    @MainActor func testSongsLetterIndexJumps() throws {
+        let app = try launchSignedIn()
+        let library = app.tabBars.buttons["Library"]
+        let songs = app.buttons["library-songs"]
+        for _ in 0..<3 where !songs.exists {
+            library.tap()
+            _ = songs.waitForExistence(timeout: 5)
+        }
+        songs.tap()
+        XCTAssertTrue(app.buttons["song-0"].waitForExistence(timeout: 15))
+        let index = app.otherElements["letter-index"].exists ? app.otherElements["letter-index"]
+                                                             : app.descendants(matching: .any)["letter-index"]
+        XCTAssertTrue(index.waitForExistence(timeout: 5), "the letter index")
+        XCTAssertEqual(index.label, "Letter index")
+        // 8 pt padding, then 13 pt a letter: "#", A … Z. T is the 21st.
+        index.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0))
+            .withOffset(CGVector(dx: 0, dy: 8 + 20.5 * 13)).tap()
+        let terra = app.buttons.matching(NSPredicate(format: "label CONTAINS 'Terra Incognita'")).firstMatch
+        XCTAssertTrue(terra.waitForExistence(timeout: 5))
+        XCTAssertTrue(terra.isHittable, "scrolled to T")
+        XCTAssertFalse(app.buttons["song-0"].isHittable, "the top of the list scrolled away")
+        attachScreenshot(app, "songs-letter-index")
+    }
+
+    /// P2 (review ⚠️): the Albums grid's letter index lands: touching P scrolls the grid to "Paper Planes".
+    @MainActor func testAlbumsLetterIndexJumps() throws {
+        let app = try launchSignedIn()
+        let library = app.tabBars.buttons["Library"]
+        let albums = app.buttons["library-albums"]
+        for _ in 0..<3 where !albums.exists {
+            library.tap()
+            _ = albums.waitForExistence(timeout: 5)
+        }
+        albums.tap()
+        let first = app.buttons["album-0"]
+        XCTAssertTrue(first.waitForExistence(timeout: 15))
+        let firstTop = first.frame.minY
+        let paper = app.buttons.matching(NSPredicate(format: "label CONTAINS 'Paper Planes'")).firstMatch
+        XCTAssertTrue(paper.waitForExistence(timeout: 5))
+        let before = paper.frame.minY
+        let index = app.descendants(matching: .any)["letter-index"]
+        XCTAssertTrue(index.waitForExistence(timeout: 5), "the letter index")
+        // 8 pt padding, then 13 pt a letter: "#", A … Z. P is the 17th.
+        index.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0))
+            .withOffset(CGVector(dx: 0, dy: 8 + 16.5 * 13)).tap()
+        let moved = NSPredicate { _, _ in paper.frame.minY < before - 50 }
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: moved, object: nil)], timeout: 5), .completed,
+                       "the grid scrolled towards P")
+        XCTAssertTrue(paper.isHittable, "Paper Planes is in view")
+        XCTAssertLessThan(first.frame.minY, firstTop, "the top of the grid moved up")
+        attachScreenshot(app, "albums-letter-index")
+    }
+
     @MainActor func testSignInBrowsePlay() throws {
         let app = try launchSignedIn()
         let library = app.tabBars.buttons["Library"]
@@ -400,6 +455,87 @@ final class BrowseFlowTests: XCTestCase {
         for _ in 0..<6 where !disconnect.exists { app.swipeUp() }
         disconnect.tap()
         XCTAssertTrue(app.textFields["lidarr-address"].waitForExistence(timeout: 10))
+    }
+
+    /// P3 (re-review N1): the real "Add to Lidarr and download" confirmation delivers the owner's choice to the add.
+    /// The dev library has no visible artist with a real MusicBrainz id that Lidarr could add (its only real one, Judie
+    /// Tzuke, has just a missing song, which Navidrome hides), so Aurora Field's fixture MBID is used: Lidarr's lookup
+    /// can't find it, the add stops before any write, and the error line proves the confirmed choice arrived. Before the
+    /// fix the dialog cleared the choice and the tap did nothing at all. The real add and "Searching…" are covered by
+    /// ArtistAddIT on the same dev Lidarr. Nothing is written to Lidarr here except Magpie's set-up (already there).
+    @MainActor func testArtistAddConfirmationReachesTheAdd() throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let lidarrURL = env["MAGPIE_IT_LIDARR_URL"], let key = env["MAGPIE_IT_LIDARR_KEY"],
+              !lidarrURL.isEmpty, !key.isEmpty else { throw XCTSkip("no dev-stack Lidarr passed in") }
+        guard let host = URLComponents(string: lidarrURL)?.host, ["127.0.0.1", "localhost"].contains(host) else {
+            XCTFail("Refusing a non-local Lidarr (\(lidarrURL))")
+            return
+        }
+        let app = try launchSignedIn()
+        let settings = app.buttons["open-settings"]
+        for _ in 0..<3 where !settings.exists {
+            app.tabBars.buttons["Library"].tap()
+            _ = settings.waitForExistence(timeout: 5)
+        }
+        settings.tap()
+        let requests = app.buttons["settings-requests"]
+        XCTAssertTrue(requests.waitForExistence(timeout: 10))
+        requests.tap()
+        app.buttons["settings-connect-lidarr"].tap()
+        let address = app.textFields["lidarr-address"]
+        XCTAssertTrue(address.waitForExistence(timeout: 10))
+        address.tap()
+        address.typeText(lidarrURL)
+        let apiKey = app.secureTextFields["lidarr-api-key"]
+        apiKey.tap()
+        apiKey.typeText(key)
+        app.buttons["lidarr-connect"].tap()
+        let version = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", "Version")).firstMatch
+        XCTAssertTrue(version.waitForExistence(timeout: 20))
+        app.buttons["Done"].firstMatch.tap()
+
+        let toggle = app.switches["settings-allow-changes"]
+        XCTAssertTrue(toggle.waitForExistence(timeout: 10))
+        if toggle.value as? String != "1" { toggle.switches.firstMatch.exists ? toggle.switches.firstMatch.tap() : toggle.tap() }
+        XCTAssertTrue(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == '1'"), object: toggle)],
+                                     timeout: 5) == .completed, "changes allowed")
+        let provision = app.buttons["settings-provision"]
+        XCTAssertTrue(provision.waitForExistence(timeout: 10))
+        for _ in 0..<20 where !provision.isEnabled { usleep(200_000) }
+        provision.tap()
+        let setUp = NSPredicate(format: "label CONTAINS 'Done'")
+        XCTAssertTrue(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: setUp, object: provision)], timeout: 30) == .completed,
+                      "Magpie is set up in Lidarr")
+        let root = app.buttons["settings-root"]
+        if root.waitForExistence(timeout: 5) {
+            root.tap()
+            let library = app.buttons["/music/library"]
+            XCTAssertTrue(library.waitForExistence(timeout: 5))
+            library.tap()
+        }
+        app.navigationBars.buttons.firstMatch.tap()   // › Settings
+        app.buttons["settings-done"].tap()
+
+        let artists = app.buttons["library-artists"]
+        XCTAssertTrue(artists.waitForExistence(timeout: 10))
+        artists.tap()
+        let aurora = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Aurora Field'")).firstMatch
+        XCTAssertTrue(aurora.waitForExistence(timeout: 15))
+        aurora.tap()
+        let status = app.descendants(matching: .any)["artist-lidarr-status"]
+        XCTAssertTrue(status.waitForExistence(timeout: 20))
+        XCTAssertTrue(status.label.contains("Not in Lidarr"), status.label)
+        let add = app.buttons["artist-lidarr-add"]
+        XCTAssertTrue(add.waitForExistence(timeout: 5))
+        add.tap()
+        let confirm = app.buttons.matching(NSPredicate(format: "label == 'Add to Lidarr and download' AND identifier != 'artist-lidarr-add'")).firstMatch
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'Adds Aurora Field to Lidarr'")).firstMatch
+                        .waitForExistence(timeout: 5), "the confirmation names the artist")
+        attachScreenshot(app, "artist-add-confirmation")
+        confirm.tap()
+        let error = app.descendants(matching: .any)["artist-lidarr-error"]
+        XCTAssertTrue(error.waitForExistence(timeout: 30), "the confirmed choice reached the add (Lidarr can't find the fixture MBID)")
+        attachScreenshot(app, "artist-add-result")
     }
 
     /// Library › Settings › Requests with the dev Lidarr connected: the G1 switch (off), set-up and change log;
