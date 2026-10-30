@@ -51,10 +51,10 @@ struct SongsListView: View {
         }
     }
 
-    /// A letter picked while a jump runs joins it (the latest wins, `PagedLetterList.jump`); otherwise a new jump.
+    /// A letter picked while a jump runs joins it (the latest wins); otherwise a new jump, kept so leaving cancels it.
     private func pick(_ letter: String) {
         guard let list else { return }
-        if list.seeking { Task { await list.jump(to: letter) } } else { jumpTask = Task { await list.jump(to: letter) } }
+        if let task = list.startJump(to: letter) { jumpTask = task }   // nil: it joined the running jump
     }
 
     private func rows(_ songs: [Song], _ list: PagedLetterList<Song>) -> some View {

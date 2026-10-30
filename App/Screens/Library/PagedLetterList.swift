@@ -125,18 +125,28 @@ struct PagedRead<Item> {
     }
 
     /// The letter index picked `letter`. One seek at a time: a letter picked meanwhile (the end of a drag, a VoiceOver
-    /// swipe) replaces any earlier one still waiting, and is jumped to when the running seek ends (I2).
+    /// swipe) replaces any earlier one still waiting, and is jumped to when the running seek ends (I2). Returns the
+    /// task of a new jump, or nil when the letter joined the running one: the screen keeps the task to cancel it (N3).
+    @discardableResult
+    func startJump(to letter: String) -> Task<Void, Never>? {
+        guard !seeking else { pendingLetter = letter; return nil }
+        seeking = true   // synchronously, so a pick right after joins this jump
+        return Task { await self.runJumps(from: letter) }
+    }
+
+    /// `startJump`, waiting for the jump (or returning at once when the letter joined a running one).
     func jump(to letter: String) async {
-        guard !seeking else { pendingLetter = letter; return }
-        seeking = true
-        defer { seeking = false }
+        await startJump(to: letter)?.value
+    }
+
+    private func runJumps(from letter: String) async {
+        defer { seeking = false; pendingLetter = nil }
         var next: String? = letter
         while let current = next, !Task.isCancelled {
             pendingLetter = nil
             await jumpOnce(to: current)
             next = pendingLetter
         }
-        pendingLetter = nil
     }
 
     private func jumpOnce(to letter: String) async {

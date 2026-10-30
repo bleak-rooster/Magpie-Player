@@ -150,4 +150,22 @@ import Testing
         #expect(ArtistsListView.sorted(artists).map(\.name)
                 == ["Aurora Field", "Éléonore Brûlé", "The Midnight Cartographers", "Static Choir", "坂本光"])
     }
+
+    /// N3: a pick during a jump joins it (no second task), and cancelling the one task (the screen closing) stops it.
+    @Test func aJumpIsOneCancellableTask() async {
+        let server = Server()
+        let hold = Hold()
+        let list = makeList(server, hold: hold)
+        await list.load()
+        let task = list.startJump(to: "D")
+        #expect(task != nil && list.seeking)
+        #expect(list.startJump(to: "H") == nil, "joins the running jump")
+        while !(await hold.started) { await Task.yield() }
+        task?.cancel()
+        await hold.release()
+        await task?.value
+        #expect(server.seeks == ["D"], "cancelled: H never runs")
+        #expect(!list.seeking)
+        #expect(list.windowStart == 0, "nothing applied after the cancel")
+    }
 }

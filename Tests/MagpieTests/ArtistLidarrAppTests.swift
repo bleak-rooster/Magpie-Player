@@ -55,6 +55,8 @@ private let twinB = MBID("55555555-5555-4555-8555-555555555555")!
             case "lidarr:" + newMBID.rawValue: [row(newMBID.rawValue, "New Artist", "")]
             case "Solo": [row(soloMBID.rawValue, "SOLÓ", "Leeds duo"), row("77777777-7777-4777-8777-777777777777", "Solo Tribute", "")]
             case "Twin": [row(twinA.rawValue, "Twin", "US band"), row(twinB.rawValue, "twin", "UK band")]
+            case "lidarr:" + twinB.rawValue: [row(twinB.rawValue, "twin", "UK band")]
+            case "Dup": [row(ownerMBID.rawValue, "Dup", "in Lidarr as Owner"), row(twinA.rawValue, "dup", "another")]
             default: []
             }
             return MockTransport.Response(status: 200, body: Data("[\(rows.joined(separator: ","))]".utf8))
@@ -151,6 +153,7 @@ private let twinB = MBID("55555555-5555-4555-8555-555555555555")!
         #expect(lidarrWrites.isEmpty, "nothing written while the confirmation shows")
         #expect(!transport.inner.requests.contains { $0.url?.query?.contains("term=New") == true },
                 "with the library's MBID, no name search (I3)")
+        line.confirming = false   // what the dialog does as its button is tapped, before the action runs (N1)
         await line.confirmAdd(newMBID)
         #expect(lidarrWrites.map { "\($0.httpMethod!) \($0.url!.path)" } == ["POST /api/v1/artist"])
         #expect(line.presentation?.text == "In Lidarr \u{00B7} Monitored \u{00B7} Searching\u{2026}")
@@ -215,10 +218,14 @@ private let twinB = MBID("55555555-5555-4555-8555-555555555555")!
         guard case .pick(let list)? = line.confirmation else { Issue.record("\(String(describing: line.confirmation))"); return }
         #expect(list.map(\.label) == ["Twin (US band, Group)", "twin (UK band, Group)"])
         #expect(lidarrWrites.isEmpty)
-        // The add uses the picked one's MBID (its lookup row isn't stubbed: Lidarr says not found, nothing written).
+        // N4: the add sends the picked one's MBID.
+        line.confirming = false
         await line.confirmAdd(twinB)
-        #expect(lidarrWrites.isEmpty)
-        #expect(line.error == "Lidarr couldn't find Twin. Try again later.")
+        let post = try #require(lidarrWrites.first)
+        #expect(lidarrWrites.count == 1 && post.httpMethod == "POST" && post.url?.path == "/api/v1/artist")
+        let body = try #require(post.httpBody.flatMap { try JSONSerialization.jsonObject(with: $0) as? [String: Any] })
+        #expect(body["foreignArtistId"] as? String == twinB.rawValue)
+        #expect(line.presentation?.text == "In Lidarr \u{00B7} Monitored \u{00B7} Searching\u{2026}")
         cleanUp(model)
     }
 
@@ -231,6 +238,25 @@ private let twinB = MBID("55555555-5555-4555-8555-555555555555")!
         #expect(line.confirmation == nil)
         #expect(line.error == "Couldn't find Ghost in Lidarr's search")
         #expect(lidarrWrites.isEmpty)
+        cleanUp(model)
+    }
+
+    /// N2: a picked candidate that is in Lidarr already (under another name) writes nothing and doesn't stick: the line
+    /// stays "Not in Lidarr" for this library artist, so the owner can pick again.
+    @Test func aPickedCandidateAlreadyInLidarrDoesntStick() async throws {
+        let model = try await connected()
+        await model.setChangesAllowed(true)
+        let line = ArtistLidarrModel(model: model, name: "Dup", mbid: nil)
+        await line.refresh()
+        #expect(line.presentation?.text == "Not in Lidarr")
+        await line.requestAdd()
+        guard case .pick? = line.confirmation else { Issue.record("no pick"); return }
+        line.confirming = false
+        await line.confirmAdd(ownerMBID)
+        #expect(lidarrWrites.isEmpty)
+        #expect(line.error == "That artist is already in Lidarr.")
+        await line.refresh()
+        #expect(line.presentation == ArtistLidarrPresentation(text: "Not in Lidarr", symbol: "plus.circle", action: .add))
         cleanUp(model)
     }
 }

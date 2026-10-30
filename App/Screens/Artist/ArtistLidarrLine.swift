@@ -86,12 +86,15 @@ struct ArtistLidarrPresentation: Equatable {
         case pick([ArtistLidarr.Candidate])
     }
 
-    /// Bound to the confirmation dialog.
+    /// Bound to the confirmation dialog. The dialog sets it to false as a button is tapped, before the button's
+    /// action runs, so the offered MBIDs live apart from it (`offered`; re-review N1).
     var confirming: Bool {
         get { confirmation != nil }
         set { if !newValue { confirmation = nil } }
     }
-    /// The MBID an add resolved to, so a refresh after "already in Lidarr" finds the artist by it.
+    /// What the last confirmation offered: `confirmAdd` adds only one of these.
+    private var offered: [MBID] = []
+    /// The MBID a successful add used, so later refreshes find the artist by it (only after a success: re-review N2).
     private var resolvedMBID: MBID?
 
     @ObservationIgnored private let model: AppModel
@@ -128,7 +131,7 @@ struct ArtistLidarrPresentation: Equatable {
         guard presentation?.action == .add, case .notInLidarr? = state, !working else { return }
         error = nil
         if let mbid {
-            confirmation = .one(label: name, mbid: mbid)
+            offer(.one(label: name, mbid: mbid))
             return
         }
         working = true
@@ -137,33 +140,40 @@ struct ArtistLidarrPresentation: Equatable {
             let found = try await model.artistCandidates(name: name)
             switch found.count {
             case 0: error = ArtistLidarrPresentation.notFound(name)
-            case 1: confirmation = .one(label: found[0].label, mbid: found[0].mbid)
-            default: confirmation = .pick(found)
+            case 1: offer(.one(label: found[0].label, mbid: found[0].mbid))
+            default: offer(.pick(found))
             }
         } catch {
             self.error = Self.message(for: error, artist: name)
         }
     }
 
-    /// The owner confirmed this artist (one of the confirmation's).
-    func confirmAdd(_ mbid: MBID) async {
-        let offered: [MBID] = switch confirmation {
-        case .one(_, let m)?: [m]
-        case .pick(let list)?: list.map(\.mbid)
-        case nil: []
+    private func offer(_ confirmation: Confirmation) {
+        offered = switch confirmation {
+        case .one(_, let m): [m]
+        case .pick(let list): list.map(\.mbid)
         }
+        self.confirmation = confirmation
+    }
+
+    /// The owner confirmed this artist (one of those the confirmation offered).
+    func confirmAdd(_ mbid: MBID) async {
+        let allowed = offered
+        offered = []
         confirmation = nil
-        guard offered.contains(mbid), presentation?.action == .add, case .notInLidarr? = state, !working else { return }
-        resolvedMBID = mbid
+        guard allowed.contains(mbid), presentation?.action == .add, case .notInLidarr? = state, !working else { return }
         working = true
         error = nil
         defer { working = false }
         do {
             let id = try await model.addArtistToLidarr(mbid: mbid)
+            resolvedMBID = mbid
             state = .monitored(lidarrId: id, searching: true)
             justAdded = true
         } catch ArtistLidarrError.alreadyInLidarr {
-            await refresh()   // added meanwhile (by the owner): show it as it is, write nothing
+            // Nothing written. With the library's own MBID it's this artist: show it as it is. A picked candidate
+            // may be another artist: say so, and the line stays as it was (N2).
+            if self.mbid != nil { await refresh() } else { self.error = "That artist is already in Lidarr." }
         } catch {
             self.error = Self.message(for: error, artist: name)
         }
