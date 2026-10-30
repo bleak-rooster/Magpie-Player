@@ -9,7 +9,7 @@ import Testing
     /// The keys each area knows, so the random documents hit real fields as well as unknown ones.
     static let keys = ["home", "library", "showsRecentlyAdded", "wifi", "cellular", "replayGain", "sleepTimer", "quality",
                        "overMobileData", "concurrent", "preDownload", "keepRecentlyPlayed", "cacheLimit", "downloadsLimit",
-                       "offlineMode", "keepFavourites", "viaNavidrome", "viaListenBrainz", "rule", "percent", "minutesCap",
+                       "offlineMode", "keepFavourites", "keepScreenOn", "viaNavidrome", "viaListenBrainz", "rule", "percent", "minutesCap",
                        "mode", "assignments", "groupNames", "hidden", "customGroups", "id", "visible", "item", "version", "x"]
     static let words = ["original", "aac160", "opus64", "mp3_192", "track", "album", "off", "m30", "endOfSong", "gb2", "none",
                         "automatic", "on", "grouped", "all", "rock", "jazz", "genres", "downloads", "playlists", "songs",
@@ -53,7 +53,7 @@ import Testing
         #expect(playback == playback.normalised())
 
         let downloads = DownloadPreferences.decode(data)
-        #expect((1...4).contains(downloads.concurrent) && (0...10).contains(downloads.preDownload))
+        #expect((1...6).contains(downloads.concurrent) && (0...10).contains(downloads.preDownload))
 
         let scrobbling = ScrobblePreferences.decode(data)
         #expect((10...90).contains(scrobbling.rule.percent) && scrobbling.rule.percent % 5 == 0)
