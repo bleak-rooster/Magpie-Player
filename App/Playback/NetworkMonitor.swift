@@ -33,15 +33,20 @@ final class NetworkMonitor: NetworkStatusProviding {
 
 /// UI tests pin the network (T23 fix round 1): the host Mac may be on an expensive hotspot, which the simulator reports
 /// as mobile data, so manual downloads would rightly wait for Wi-Fi. `-MagpieNetwork wifi` counts only together with
-/// `-MagpieUITesting YES`; a production launch never passes that, so it never honours the pin.
+/// `-MagpieUITesting YES`; a production launch never passes that, so it never honours the pin. `-MagpieNetwork cellular`
+/// pins mobile data, so manual downloads wait for Wi-Fi (P1's Downloading now UI test).
 enum UITestNetworkPin {
     static func status(arguments: [String]) -> NetworkStatus? {
         func value(_ key: String) -> String? {
             guard let index = arguments.firstIndex(of: key), index + 1 < arguments.count else { return nil }
             return arguments[index + 1]
         }
-        guard value("-MagpieUITesting") == "YES", value("-MagpieNetwork") == "wifi" else { return nil }
-        return .wifi
+        guard value("-MagpieUITesting") == "YES" else { return nil }
+        switch value("-MagpieNetwork") {
+        case "wifi": return .wifi
+        case "cellular": return NetworkStatus(isConnected: true, isCellular: true, isConstrained: false)
+        default: return nil
+        }
     }
 }
 

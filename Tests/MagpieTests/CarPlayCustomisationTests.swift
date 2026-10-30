@@ -450,7 +450,11 @@ private func subsonic(_ body: String) -> Data {
         #expect(UITestNetworkPin.status(arguments: ["Magpie", "-MagpieUITesting", "YES", "-MagpieNetwork", "wifi"]) == .wifi)
         #expect(UITestNetworkPin.status(arguments: ["Magpie", "-MagpieNetwork", "wifi"]) == nil, "never without the UI-test flag")
         #expect(UITestNetworkPin.status(arguments: ["Magpie", "-MagpieUITesting", "NO", "-MagpieNetwork", "wifi"]) == nil)
-        #expect(UITestNetworkPin.status(arguments: ["Magpie", "-MagpieUITesting", "YES", "-MagpieNetwork", "cellular"]) == nil)
+        // P1: the Downloading now UI test pins mobile data, so its download waits for Wi-Fi.
+        #expect(UITestNetworkPin.status(arguments: ["Magpie", "-MagpieUITesting", "YES", "-MagpieNetwork", "cellular"])
+            == NetworkStatus(isConnected: true, isCellular: true, isConstrained: false))
+        #expect(UITestNetworkPin.status(arguments: ["Magpie", "-MagpieNetwork", "cellular"]) == nil)
+        #expect(UITestNetworkPin.status(arguments: ["Magpie", "-MagpieUITesting", "YES", "-MagpieNetwork", "5g"]) == nil)
         #expect(UITestNetworkPin.status(arguments: ["Magpie", "-MagpieUITesting", "YES"]) == nil)
         #expect(UITestNetworkPin.status(arguments: ProcessInfo.processInfo.arguments) == nil, "this test host isn't a UI test")
     }
