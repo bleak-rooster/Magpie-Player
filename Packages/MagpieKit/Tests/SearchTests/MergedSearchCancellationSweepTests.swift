@@ -75,7 +75,8 @@ import Testing
         let expected = try await Self.search(Delays(seed: 1), maxMicros: 0).runReportingLibraryFailure("harbour")
         #expect(expected.notYet.songs.first == Self.ext(0, 0), "source order, not arrival order")
         var rng = Rng(state: 0x5EA)
-        var outcomes = (whole: 0, cancelled: 0)
+        // The seed fixes the cancel points, not the outcomes: where a cancel lands against the delays depends on the
+        // machine, so which outcome a random round gets is never asserted (merged crash-hunt review, I3).
         for round in 0..<300 {
             let search = Self.search(Delays(seed: UInt64(round)), maxMicros: 2000)
             let task = Task { try await search.runReportingLibraryFailure("harbour") }
@@ -87,20 +88,31 @@ import Testing
             task.cancel()
             switch await task.result {
             case .success(let found):
-                if found == expected {
-                    outcomes.whole += 1
-                } else {
-                    // Cut short: exactly the merge of the sources that answered (a cancelled one adds nothing), in
-                    // source order, with the library's rows whole or absent; never a mix in arrival order.
-                    outcomes.cancelled += 1
-                    #expect(Self.possibleMerges.contains(found), "round \(round): not the merge of any set of sources")
-                }
+                // Whole, or cut short: exactly the merge of the sources that answered (a cancelled one adds nothing),
+                // in source order, with the library's rows whole or absent; never a mix in arrival order.
+                #expect(found == expected || Self.possibleMerges.contains(found),
+                        "round \(round): not the merge of any set of sources")
             case .failure(let error):
-                outcomes.cancelled += 1
                 #expect(error is CancellationError, "round \(round): \(error)")
             }
         }
-        #expect(outcomes.whole > 0 && outcomes.cancelled > 0, "\(outcomes)")
+        // Both ends, whatever the machine's speed: cancelled after it returned the run is whole; cancelled before it
+        // starts, nothing answers (a cancellation, or the merge of no sources).
+        let late = Self.search(Delays(seed: 1), maxMicros: 2000)
+        let finished = Task { try await late.runReportingLibraryFailure("harbour") }
+        let whole = await finished.result
+        finished.cancel()
+        #expect((try? whole.get()) == expected, "a run left to finish differs from the uncancelled one")
+        let early = Self.search(Delays(seed: 2), maxMicros: 2000)
+        let cut = Task { try await early.runReportingLibraryFailure("harbour") }
+        cut.cancel()
+        switch await cut.result {
+        case .success(let found):
+            let nothing = MergedSearch.merge(query: "harbour", library: LibrarySearchResult(),
+                                             outside: (0..<4).map { _ in ExternalHits() }, index: .empty)
+            #expect(found == nothing, "a run cancelled before it started: \(found)")
+        case .failure(let error): #expect(error is CancellationError, "\(error)")
+        }
     }
 
     /// The deadline race alone: the work, the deadline and the cancel finishing in any order resume the caller once.
