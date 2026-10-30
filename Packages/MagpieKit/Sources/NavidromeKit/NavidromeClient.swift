@@ -360,6 +360,17 @@ public actor NavidromeClient {
         return (songs, total)
     }
 
+    /// The title at `offset` of the whole library in title order (nil past the end), and the song count: the A–Z
+    /// index's seek (P2). Missing files count: they hold their place in the server's order.
+    public func songTitle(at offset: Int) async throws -> SongTitleRow {
+        let query = [int("_start", offset), int("_end", offset + 1),
+                     URLQueryItem(name: "_sort", value: "title"), URLQueryItem(name: "_order", value: "ASC")]
+        let (data, response) = try await native("api/song", query)
+        let rows = try Self.decode([NativeSong].self, data)
+        let total = response.value(forHTTPHeaderField: "X-Total-Count").flatMap { Int($0) }
+        return SongTitleRow(title: rows.first.map { $0.title ?? "" }, total: total)
+    }
+
     /// One library folder's songs as read, and whether that is all of them.
     public struct LibrarySongs: Sendable, Equatable {
         public var songs: [Song]
@@ -451,4 +462,13 @@ public actor NavidromeClient {
 
 private extension UInt8 {
     var isASCIIWhitespace: Bool { self == 0x20 || self == 0x09 || self == 0x0A || self == 0x0D }
+}
+
+/// One row of the library in title order (`NavidromeClient.songTitle(at:)`): its title, nil past the end, and the
+/// song count when the server sent it.
+public struct SongTitleRow: Sendable, Equatable {
+    public var title: String?
+    public var total: Int?
+
+    public init(title: String?, total: Int?) { self.title = title; self.total = total }
 }

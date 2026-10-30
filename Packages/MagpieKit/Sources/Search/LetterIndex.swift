@@ -106,6 +106,38 @@ public enum LetterIndex {
         return lo
     }
 
+    // MARK: - Server-paged lists
+
+    /// Where `letter` is among the items loaded so far, without asking the server; nil when only the server can say.
+    /// `windowStart`: the server offset of the first loaded item (a jump far ahead loads from there, so the run it
+    /// starts in may have begun earlier and isn't trusted). `complete`: everything from `windowStart` to the end is
+    /// loaded, so a missing letter goes to the nearest one.
+    public static func loadedTarget(_ letter: String, sections: [Section], windowStart: Int, complete: Bool) -> Int? {
+        if windowStart > 0 {
+            return sections.first { $0.key == letter && $0.isFirstOfKey && $0.range.lowerBound > 0 }?.range.lowerBound
+        }
+        if let exact = sections.first(where: { $0.key == letter && $0.isFirstOfKey }) { return exact.range.lowerBound }
+        return complete ? target(letter, in: sections)?.range.lowerBound : nil
+    }
+
+    /// How a paged list reaches the server offset a seek found.
+    public enum WindowMove: Sendable, Equatable {
+        /// Loaded already: this many items into the window.
+        case scroll(Int)
+        /// A few pages ahead: read on until the offset is loaded.
+        case pageForward(untilOffset: Int)
+        /// Far ahead, or before the window: load from the offset instead.
+        case restart(at: Int)
+    }
+
+    /// `windowStart..<windowEnd`: the server offsets loaded. Ahead by at most `forwardLimit`: page forward.
+    public static func move(toOffset offset: Int, windowStart: Int, windowEnd: Int, forwardLimit: Int) -> WindowMove {
+        let offset = max(offset, 0)
+        if offset < windowStart { return .restart(at: offset) }
+        if offset < windowEnd { return .scroll(offset - windowStart) }
+        return offset - windowEnd <= forwardLimit ? .pageForward(untilOffset: offset) : .restart(at: offset)
+    }
+
     // MARK: - Folding
 
     /// 0: files under "#" and sorts before "a"; 1–26: A–Z; 27: other scripts, emoji and symbols after "z".

@@ -128,3 +128,36 @@ struct LetterIndexTests {
         func count() { n += 1 }
     }
 }
+
+struct LetterJumpTests {
+    let songs = ["4 AM", "Abba", "Compass", "Drift", "Meridian"]
+
+    @Test func aLoadedLetterScrollsWithoutTheServer() {
+        let sections = LetterIndex.sections(songs) { $0 }
+        #expect(LetterIndex.loadedTarget("C", sections: sections, windowStart: 0, complete: false) == 2)
+        #expect(LetterIndex.loadedTarget("#", sections: sections, windowStart: 0, complete: false) == 0)
+        // Not loaded yet, and more may come: ask the server.
+        #expect(LetterIndex.loadedTarget("P", sections: sections, windowStart: 0, complete: false) == nil)
+        #expect(LetterIndex.loadedTarget("B", sections: sections, windowStart: 0, complete: false) == nil)
+        // The whole list is loaded: the nearest letter.
+        #expect(LetterIndex.loadedTarget("B", sections: sections, windowStart: 0, complete: true) == 2)
+        #expect(LetterIndex.loadedTarget("P", sections: sections, windowStart: 0, complete: true) == 4)
+    }
+
+    @Test func aWindowStartingMidListOnlyTrustsLettersAfterItsFirstRun() {
+        // The window starts at offset 300 inside the A run: A's first song may be earlier.
+        let sections = LetterIndex.sections(["Abba 2", "Compass", "Drift"]) { $0 }
+        #expect(LetterIndex.loadedTarget("A", sections: sections, windowStart: 300, complete: false) == nil)
+        #expect(LetterIndex.loadedTarget("C", sections: sections, windowStart: 300, complete: false) == 1)
+        #expect(LetterIndex.loadedTarget("#", sections: sections, windowStart: 300, complete: true) == nil)
+    }
+
+    @Test func aServerOffsetPagesForwardNearbyAndRestartsFarAway() {
+        #expect(LetterIndex.move(toOffset: 120, windowStart: 100, windowEnd: 200, forwardLimit: 300) == .scroll(20))
+        #expect(LetterIndex.move(toOffset: 450, windowStart: 0, windowEnd: 200, forwardLimit: 300) == .pageForward(untilOffset: 450))
+        #expect(LetterIndex.move(toOffset: 600, windowStart: 0, windowEnd: 200, forwardLimit: 300) == .restart(at: 600))
+        // Before the window: start again there.
+        #expect(LetterIndex.move(toOffset: 10, windowStart: 100, windowEnd: 200, forwardLimit: 300) == .restart(at: 10))
+        #expect(LetterIndex.move(toOffset: -5, windowStart: 0, windowEnd: 200, forwardLimit: 300) == .scroll(0))
+    }
+}
