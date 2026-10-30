@@ -1,5 +1,6 @@
 import Foundation
 import MagpieCore
+import MagpieTestSupport
 import MatchIndex
 import Testing
 @testable import Search
@@ -9,21 +10,10 @@ import Testing
 /// some fail. Never a trap, a continuation resumed twice or never (the run must return), or a band in arrival order: a
 /// run either returns exactly what the uncancelled run returns, or nothing it shouldn't.
 @Suite struct MergedSearchCancellationSweepTests {
-    struct Rng: RandomNumberGenerator {
-        var state: UInt64
-        mutating func next() -> UInt64 {
-            state &+= 0x9E37_79B9_7F4A_7C15
-            var z = state
-            z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9
-            z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
-            return z ^ (z >> 31)
-        }
-    }
-
     final class Delays: @unchecked Sendable {
         private let lock = NSLock()
-        private var rng: Rng
-        init(seed: UInt64) { rng = Rng(state: seed) }
+        private var rng: SeededRNG
+        init(seed: UInt64) { rng = SeededRNG(seed: seed) }
         func next(_ most: Int) -> Int { lock.lock(); defer { lock.unlock() }; return Int.random(in: 0...most, using: &rng) }
     }
 
@@ -71,11 +61,14 @@ import Testing
         return all
     }()
 
-    @Test func cancelledAnywhereReturnsTheWholeAnswerOrNothingWrong() async throws {
+    // MainActor: a Task made here can't start before the synchronous `cancel()` that follows it, so the early round
+    // really is cancelled before it starts (CHF re-review N1).
+    @MainActor @Test func cancelledAnywhereReturnsTheWholeAnswerOrNothingWrong() async throws {
         let expected = try await Self.search(Delays(seed: 1), maxMicros: 0).runReportingLibraryFailure("harbour")
         #expect(expected.notYet.songs.first == Self.ext(0, 0), "source order, not arrival order")
-        var rng = Rng(state: 0x5EA)
-        var outcomes = (whole: 0, cancelled: 0)
+        var rng = SeededRNG(seed: 0x5EA)
+        // The seed fixes the cancel points, not the outcomes: where a cancel lands against the delays depends on the
+        // machine, so which outcome a random round gets is never asserted (merged crash-hunt review, I3).
         for round in 0..<300 {
             let search = Self.search(Delays(seed: UInt64(round)), maxMicros: 2000)
             let task = Task { try await search.runReportingLibraryFailure("harbour") }
@@ -87,25 +80,36 @@ import Testing
             task.cancel()
             switch await task.result {
             case .success(let found):
-                if found == expected {
-                    outcomes.whole += 1
-                } else {
-                    // Cut short: exactly the merge of the sources that answered (a cancelled one adds nothing), in
-                    // source order, with the library's rows whole or absent; never a mix in arrival order.
-                    outcomes.cancelled += 1
-                    #expect(Self.possibleMerges.contains(found), "round \(round): not the merge of any set of sources")
-                }
+                // Whole, or cut short: exactly the merge of the sources that answered (a cancelled one adds nothing),
+                // in source order, with the library's rows whole or absent; never a mix in arrival order.
+                #expect(found == expected || Self.possibleMerges.contains(found),
+                        "round \(round): not the merge of any set of sources")
             case .failure(let error):
-                outcomes.cancelled += 1
                 #expect(error is CancellationError, "round \(round): \(error)")
             }
         }
-        #expect(outcomes.whole > 0 && outcomes.cancelled > 0, "\(outcomes)")
+        // Both ends, whatever the machine's speed: cancelled after it returned the run is whole; cancelled before it
+        // starts, nothing answers (a cancellation, or the merge of no sources).
+        let late = Self.search(Delays(seed: 1), maxMicros: 2000)
+        let finished = Task { try await late.runReportingLibraryFailure("harbour") }
+        let whole = await finished.result
+        finished.cancel()
+        #expect((try? whole.get()) == expected, "a run left to finish differs from the uncancelled one")
+        let early = Self.search(Delays(seed: 2), maxMicros: 2000)
+        let cut = Task { try await early.runReportingLibraryFailure("harbour") }
+        cut.cancel()
+        switch await cut.result {
+        case .success(let found):
+            let nothing = MergedSearch.merge(query: "harbour", library: LibrarySearchResult(),
+                                             outside: (0..<4).map { _ in ExternalHits() }, index: .empty)
+            #expect(found == nothing, "a run cancelled before it started: \(found)")
+        case .failure(let error): #expect(error is CancellationError, "\(error)")
+        }
     }
 
     /// The deadline race alone: the work, the deadline and the cancel finishing in any order resume the caller once.
     @Test func deadlineRaceResumesOnceWhateverFinishesFirst() async {
-        var rng = Rng(state: 0xDEAD)
+        var rng = SeededRNG(seed: 0xDEAD)
         for round in 0..<400 {
             let work = Int.random(in: 0...1500, using: &rng), limit = Int.random(in: 0...1500, using: &rng)
             let task = Task {

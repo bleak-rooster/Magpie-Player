@@ -108,9 +108,8 @@ import Testing
         }
         #expect(stats.cases >= 5_000)
         #expect(stats.decoded > 500 && stats.errors > 100)   // the sweep exercises both outcomes
-        #expect(stats.slowest < 3, // ~0.1 s idle; quadratic blow-ups take many seconds; headroom for loaded machines
-            "slowest case \(stats.slowest) s")
-        #expect(total < 9, "sweep took \(total) s")
+        #expect(stats.slowest < FuzzClock.caseBound, "slowest case \(stats.slowest) s")
+        #expect(total < FuzzClock.sweepBackstop, "sweep took \(total) s")
     }
 
     /// 5,000+ mutated native-API answers (`/api/song` pages with a fuzzed `X-Total-Count`, `/api/library`), and the
@@ -169,28 +168,44 @@ import Testing
             }
         }
         #expect(stats.decoded > 500 && stats.errors > 100)
-        #expect(stats.slowest < 3, // ~0.1 s idle; quadratic blow-ups take many seconds; headroom for loaded machines
-            "slowest case \(stats.slowest) s")
-        #expect(total < 9, "sweep took \(total) s")
+        #expect(stats.slowest < FuzzClock.caseBound, "slowest case \(stats.slowest) s")
+        #expect(total < FuzzClock.sweepBackstop, "sweep took \(total) s")
     }
 
-    /// 50,000 songs in one answer: decoded, indexed and built into car rows in linear time.
+    /// Up to 50,000 songs (and genres) in one answer: decoded, indexed and built into car rows in linear time. Time
+    /// at 4n against n, so the check holds on a loaded machine (merged crash-hunt review, I1).
     @Test func hugeAnswersStayLinear() async throws {
         let answer = Answer()
         let client = try await Self.connected(answer)
-        let rows = (0..<50_000).map { i in
-            #"{"id":"s\#(i % 49_000)","title":"Song \#(i)","artist":"Artist \#(i % 300)","albumId":"al\#(i % 4000)","album":"Album \#(i % 4000)","duration":\#(i % 2 == 0 ? "1e300" : "-1"),"libraryId":1,"genre":"Genre \#(i % 700)","trackNumber":\#(i),"discNumber":-\#(i)}"#
+        func songs(_ n: Int) -> Data {
+            let rows = (0..<n).map { i in
+                #"{"id":"s\#(i % (n - n / 50))","title":"Song \#(i)","artist":"Artist \#(i % 300)","albumId":"al\#(i % (n / 12))","album":"Album \#(i % (n / 12))","duration":\#(i % 2 == 0 ? "1e300" : "-1"),"libraryId":1,"genre":"Genre \#(i % 700)","trackNumber":\#(i),"discNumber":-\#(i)}"#
+            }
+            return Data("[\(rows.joined(separator: ","))]".utf8)
         }
-        answer.set(Data("[\(rows.joined(separator: ","))]".utf8), headers: ["X-Total-Count": "50000"])
-        let seconds = try await FuzzClock.seconds {
-            let page = try await client.songsPage(start: 0, end: 50_000)
-            #expect(page.songs.count == 50_000)
-            UISink.songs(page.songs)
+        func genres(_ n: Int) -> Data {
+            Self.envelope(#""genres":{"genre":[\#((0..<n).map { #"{"value":"G\#($0 % (n * 4 / 5)) rock","songCount":9223372036854775807,"albumCount":\#($0)}"# }.joined(separator: ","))]}"#)
         }
-        #expect(seconds < 9, "50k songs took \(seconds) s")
-        answer.set(Self.envelope(#""genres":{"genre":[\#((0..<50_000).map { #"{"value":"G\#($0 % 40_000) rock","songCount":9223372036854775807,"albumCount":\#($0)}"# }.joined(separator: ","))]}"#))
-        let genreSeconds = try await FuzzClock.seconds { UISink.genres(try await client.genres()) }
-        #expect(genreSeconds < 9, "50k genres took \(genreSeconds) s")
+        var largest = 0.0
+        let songGrowth = try await FuzzClock.growth(n: 12_500) { n in
+            answer.set(songs(n), headers: ["X-Total-Count": "\(n)"])
+            let seconds = try await FuzzClock.seconds {
+                let page = try await client.songsPage(start: 0, end: n)
+                #expect(page.songs.count == n)
+                UISink.songs(page.songs)
+            }
+            largest = max(largest, seconds)
+            return seconds
+        }
+        #expect(songGrowth < FuzzClock.linearBound(), "4× the songs took \(songGrowth)× as long")
+        let genreGrowth = try await FuzzClock.growth(n: 12_500) { n in
+            answer.set(genres(n))
+            let seconds = try await FuzzClock.seconds { UISink.genres(try await client.genres()) }
+            largest = max(largest, seconds)
+            return seconds
+        }
+        #expect(genreGrowth < FuzzClock.linearBound(), "4× the genres took \(genreGrowth)× as long")
+        #expect(largest < FuzzClock.sweepBackstop, "50k took \(largest) s")
     }
 
     /// The Subsonic envelope's error shapes all surface as typed errors.

@@ -1,24 +1,9 @@
 import Foundation
+import MagpieTestSupport
 import Synchronization
 import Testing
 import MagpieCore
 @testable import Playback
-
-/// Hunt 2: seeded, deterministic fuzzing of the store's files (index, sidecars, playlists), its reads (permission,
-/// EIO, disk-full) and its writes (a read-only directory), kill-mid-write leftovers, a directory replaced by a file,
-/// symlinks, quota edges and concurrency storms. Invariants: no trap; a download is never deleted unless the user
-/// removed it; quotas hold; no download is left with no reason.
-struct SplitMix64: RandomNumberGenerator {
-    var state: UInt64
-    init(seed: UInt64) { state = seed }
-    mutating func next() -> UInt64 {
-        state &+= 0x9E37_79B9_7F4A_7C15
-        var z = state
-        z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9
-        z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
-        return z ^ (z >> 31)
-    }
-}
 
 /// A reader that fails some files with the errors a phone's disk can give. Decided per path from the seed, so a
 /// file fails the same way on every read in one pass.
@@ -36,6 +21,10 @@ final class FaultyReader: Sendable {
     }
 }
 
+/// Hunt 2: seeded, deterministic fuzzing of the store's files (index, sidecars, playlists), its reads (permission,
+/// EIO, disk-full) and its writes (a read-only directory), kill-mid-write leftovers, a directory replaced by a file,
+/// symlinks, quota edges and concurrency storms. Invariants: no trap; a download is never deleted unless the user
+/// removed it; quotas hold; no download is left with no reason.
 @Suite(.serialized) final class StoreFuzzTests {
     let tmp = FileManager.default.temporaryDirectory.appending(path: "StoreFuzzTests-\(UUID().uuidString)")
     deinit {
@@ -61,7 +50,7 @@ final class FaultyReader: Sendable {
     static let reasons: [DownloadReason] = [.song, .album("al"), .playlist("p1"), .favourites]
 
     /// Corruptions applied to one file's bytes.
-    static func mangle(_ data: Data, _ rng: inout SplitMix64) -> Data {
+    static func mangle(_ data: Data, _ rng: inout SeededRNG) -> Data {
         switch Int.random(in: 0..<9, using: &rng) {
         case 0: return Data()
         case 1: return data.prefix(Int.random(in: 0...max(0, data.count), using: &rng))
@@ -91,8 +80,8 @@ final class FaultyReader: Sendable {
 
     /// Builds a store with `count` songs and a playlist, then damages the files. Returns the store directory and the
     /// download audio names left pristine (audio and sidecar untouched): those must survive any reconcile.
-    func damagedStore(seed: UInt64, count: Int) async throws -> (dir: URL, pristine: Set<String>, rng: SplitMix64) {
-        var rng = SplitMix64(seed: seed)
+    func damagedStore(seed: UInt64, count: Int) async throws -> (dir: URL, pristine: Set<String>, rng: SeededRNG) {
+        var rng = SeededRNG(seed: seed)
         let root = tmp.appending(path: "case-\(seed)")
         let store = AudioStore(root: root, scope: "s")
         await store.load()
@@ -120,7 +109,7 @@ final class FaultyReader: Sendable {
             case 2:   // a dangling symlink
                 try? fm.removeItem(at: url); try? fm.createSymbolicLink(atPath: url.path, withDestinationPath: "/nonexistent/\(seed)")
             case 3:   // a symlink to a file outside the store
-                let outside = tmp.appending(path: "outside-\(seed)-\(name.hashValue)")
+                let outside = tmp.appending(path: "outside-\(seed)-\(name.replacingOccurrences(of: "/", with: "_"))")
                 try? Data("x".utf8).write(to: outside)
                 try? fm.removeItem(at: url); try? fm.createSymbolicLink(at: url, withDestinationURL: outside)
             default:
@@ -266,7 +255,7 @@ final class FaultyReader: Sendable {
     /// A store the app can't write to (read-only directory: the writes fail like a full or broken disk).
     @Test func writeFailuresNeverTrapNorLoseDownloads() async throws {
         for seed in UInt64(100)..<130 {
-            var rng = SplitMix64(seed: seed)
+            var rng = SeededRNG(seed: seed)
             let root = tmp.appending(path: "ro-\(seed)")
             let store = AudioStore(root: root, scope: "s")
             await store.load()
@@ -334,7 +323,7 @@ final class FaultyReader: Sendable {
             await store.load()
             let files = (0..<120).map { _ in temp(64) }
             await withTaskGroup(of: Void.self) { group in
-                var rng = SplitMix64(seed: seed)
+                var rng = SeededRNG(seed: seed)
                 for i in 0..<120 {
                     let op = Int.random(in: 0..<10, using: &rng), id = "s\(Int.random(in: 0..<15, using: &rng))"
                     let reason = Self.reasons.randomElement(using: &rng)!, file = files[i]
@@ -367,7 +356,7 @@ final class FaultyReader: Sendable {
 
     /// Quota edges: a 0 limit refuses every download; `Int64.max` takes them; the downloads never exceed a limit.
     @Test func quotaEdges() async throws {
-        var rng = SplitMix64(seed: 7)
+        var rng = SeededRNG(seed: 7)
         for limit in [Int64(0), 1, 999, 5000, .max - 1, .max] {
             let root = tmp.appending(path: "quota-\(limit)")
             let store = AudioStore(root: root, scope: "s")
@@ -418,7 +407,7 @@ final class FaultyReader: Sendable {
                            song: Self.meta("q\(i)"), listenedAt: Date(timeIntervalSince1970: Double(i)))
         }))
         for seed in UInt64(300)..<380 {
-            var rng = SplitMix64(seed: seed)
+            var rng = SeededRNG(seed: seed)
             let url = tmp.appending(path: "sq-\(seed)/scrobble-queue.json")
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             var contents = Self.mangle(base, &rng)
@@ -429,10 +418,11 @@ final class FaultyReader: Sendable {
             }
             try contents.write(to: url)
             let failsFor = Int.random(in: 0...3, using: &rng)   // the first reads fail (locked phone, EIO)
+            let failure = [EPERM, EIO].randomElement(using: &rng)!
             let reads = Mutex(0)
             let reader: ScrobbleQueue.Reader = { u in
                 let n = reads.withLock { $0 += 1; return $0 }
-                if n <= failsFor { throw NSError(domain: NSPOSIXErrorDomain, code: Int([EPERM, EIO].randomElement()!)) }
+                if n <= failsFor { throw NSError(domain: NSPOSIXErrorDomain, code: Int(failure)) }
                 return try ScrobbleQueue.fileReader(u)
             }
             let q = ScrobbleQueue(fileURL: url, reader: reader)
@@ -450,54 +440,10 @@ final class FaultyReader: Sendable {
         }
     }
 
-    // MARK: - Preferences store
-
-    /// Stored preference areas with random, hostile values for every key (and nested ones): decoding never traps,
-    /// always returns a normalised area, and what it encodes decodes to the same value.
-    @Test func preferencesDecodeFuzz() throws {
-        var rng = SplitMix64(seed: 600)
-        func hostile(_ depth: Int) -> Any {
-            switch Int.random(in: 0..<12, using: &rng) {
-            case 0: return NSNull()
-            case 1: return Int.max
-            case 2: return Int.min
-            case 3: return -1
-            case 4: return 1e308
-            case 5: return String(repeating: "x", count: Int.random(in: 0..<3000, using: &rng))
-            case 6: return Bool.random(using: &rng)
-            case 7: return depth > 2 ? [] : (0..<Int.random(in: 0..<20, using: &rng)).map { _ in hostile(depth + 1) }
-            case 8: return depth > 2 ? [:] : Dictionary(uniqueKeysWithValues: (0..<5).map { ("k\($0)", hostile(depth + 1)) })
-            case 9: return ["none", "gb5", "gb2", "original", "opus128", "automatic", "on", "grouped"].randomElement(using: &rng)!
-            case 10: return 0
-            default: return 1
-            }
-        }
-        func sweep<A: PreferenceArea>(_ type: A.Type) throws {
-            let base = try JSONSerialization.jsonObject(with: JSONEncoder().encode(A.defaultValue)) as! [String: Any]
-            for _ in 0..<150 {
-                var obj = base
-                for key in base.keys where Bool.random(using: &rng) { obj[key] = hostile(0) }
-                if Bool.random(using: &rng) { obj["unknown\(Int.random(in: 0..<3, using: &rng))"] = hostile(0) }
-                let data = Int.random(in: 0..<10, using: &rng) == 0
-                    ? Data((0..<40).map { _ in UInt8.random(in: 0...255, using: &rng) })
-                    : try JSONSerialization.data(withJSONObject: obj)
-                let decoded = A.decode(data)
-                #expect(decoded == decoded.normalised(), "\(A.self) not normalised")
-                let again = A.decode(decoded.encoded())
-                #expect(again == decoded, "\(A.self) does not round-trip")
-            }
-        }
-        try sweep(LayoutPreferences.self)
-        try sweep(PlaybackPreferences.self)
-        try sweep(DownloadPreferences.self)
-        try sweep(ScrobblePreferences.self)
-        try sweep(GenrePreferences.self)
-    }
-
     // MARK: - Offline catalog and pre-download plan
 
     @Test func offlineCatalogFuzz() {
-        var rng = SplitMix64(seed: 400)
+        var rng = SeededRNG(seed: 400)
         let words = ["", " ", "A", "a", "É", "e\u{301}", "🎵", "\u{0}", String(repeating: "z", count: 300), "Ab", "ab"]
         for _ in 0..<300 {
             let entries: [AudioEntry] = (0..<Int.random(in: 0..<25, using: &rng)).map { i in
@@ -531,7 +477,7 @@ final class FaultyReader: Sendable {
     }
 
     @Test func preDownloadPlanFuzz() {
-        var rng = SplitMix64(seed: 500)
+        var rng = SeededRNG(seed: 500)
         for _ in 0..<1000 {
             let upcoming = (0..<Int.random(in: 0..<30, using: &rng)).map {
                 Song(id: "s\(Int.random(in: 0..<12, using: &rng))", title: "\($0)", artist: "", album: "", duration: 1)

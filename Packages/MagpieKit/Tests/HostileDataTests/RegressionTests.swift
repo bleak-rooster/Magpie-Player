@@ -87,12 +87,61 @@ import Testing
         for depth in [100, 400, 511, 600, 5_000] {
             for objects in [true, false] {
                 let data = Self.nested(depth, objects: objects)
+                #expect(throws: (any Error).self, "depth \(depth) is past the limit") {
+                    try JSONDecoder().decode(JSONValue.self, from: data)
+                }
                 if let value = try? JSONDecoder().decode(JSONValue.self, from: data) {
                     _ = try? JSONEncoder().encode(value)
                     _ = BodySummary.make(try? JSONEncoder().encode(value), apiKey: "k", limit: 100)
                 }
             }
         }
+        // Within the limit a document still decodes, so the guard can't be satisfied by refusing everything.
+        for objects in [true, false] {
+            #expect((try? JSONDecoder().decode(JSONValue.self, from: Self.nested(50, objects: objects))) != nil)
+        }
+    }
+
+    // MARK: - JSONNesting: bodies that aren't UTF-8
+
+    /// `JSONSerialization` also reads UTF-16 and UTF-32 (with or without a BOM). Scanned as UTF-8 bytes, the low byte
+    /// of a character such as U+0122 ("Ģ" is `22 01` in UTF-16LE) read as a quote, so every bracket after it counted
+    /// as inside a string and a deep document passed the guard (merged crash-hunt review, I2).
+    static func encodings(_ text: String) -> [(String, Data)] {
+        func bytes(_ encoding: String.Encoding, bom: [UInt8] = []) -> Data { Data(bom) + text.data(using: encoding)! }
+        return [("UTF-16LE", bytes(.utf16LittleEndian)), ("UTF-16BE", bytes(.utf16BigEndian)),
+                ("UTF-16LE BOM", bytes(.utf16LittleEndian, bom: [0xFF, 0xFE])),
+                ("UTF-16BE BOM", bytes(.utf16BigEndian, bom: [0xFE, 0xFF])),
+                ("UTF-32LE", bytes(.utf32LittleEndian)), ("UTF-32BE", bytes(.utf32BigEndian)),
+                ("UTF-32LE BOM", bytes(.utf32LittleEndian, bom: [0xFF, 0xFE, 0x00, 0x00])),
+                ("UTF-32BE BOM", bytes(.utf32BigEndian, bom: [0x00, 0x00, 0xFE, 0xFF])),
+                ("UTF-8 BOM", bytes(.utf8, bom: [0xEF, 0xBB, 0xBF]))]
+    }
+
+    @Test func jsonNestingCountsUTF16AndUTF32() {
+        let deep = #"["Ģ", "# + String(repeating: "[", count: 200) + "1" + String(repeating: "]", count: 200) + "]"
+        for (name, data) in Self.encodings(deep) {
+            #expect(!JSONNesting.isWithin(data), "\(name): 200 levels passed the guard")
+            #expect(JSONNesting.object(with: data) == nil, "\(name)")
+        }
+        // A shallow document in any of them still reads, with its text intact.
+        let shallow = #"["Ģ", [[1]], {"k": "ŀ\"]"}]"#
+        for (name, data) in Self.encodings(shallow) {
+            #expect(JSONNesting.isWithin(data), "\(name)")
+            let object = JSONNesting.object(with: data) as? [Any]
+            #expect(object?.first as? String == "Ģ", "\(name)")
+            #expect((object?.last as? [String: String])?["k"] == "ŀ\"]", "\(name)")
+        }
+    }
+
+    /// Anything the scanner can't read the way the parser will is refused rather than guessed at.
+    @Test func jsonNestingRefusesWhatItCantMeasure() {
+        #expect(!JSONNesting.isWithin(Data("]]][[[1".utf8)), "a stray closer took the depth below zero")
+        #expect(!JSONNesting.isWithin(Data([0x5B, 0x5B, 0x00, 0x5D, 0x5D])), "a NUL in UTF-8 means another encoding")
+        #expect(!JSONNesting.isWithin(Data([0x5B, 0x00, 0x5B, 0x5D, 0x5D])), "UTF-16 with half a character")
+        #expect(!JSONNesting.isWithin(Data([0xFF, 0xFE, 0x00, 0xD8, 0x5B, 0x00])), "UTF-16 that doesn't decode")
+        #expect(JSONNesting.isWithin(Data(#"{"a":"]]]"}"#.utf8)))
+        #expect(JSONNesting.isWithin(Data()))
     }
 
     // MARK: - Normalising a run of flags (watchdog)
@@ -100,14 +149,21 @@ import Testing
     /// `range(of:options: .backwards)` is quadratic on a run of regional indicators (flag emoji): 20,000 flags in an
     /// artist name took about 3 s per `Normalize.name`, and the car's "Try it next" normalises up to 100 search
     /// results' artists on the main actor (`bridgeMix`), so a hostile server could trip the watchdog.
+    /// Time at 4n against n rather than an absolute bound, so it holds on a loaded machine (merged review, I1).
     @Test func normalisingAFlagRunIsLinear() {
-        let flags = String(repeating: "🇬🇧", count: 20_000)
-        let seconds = FuzzClock.seconds {
-            _ = Normalize.key(artist: flags, title: flags + " - Live")
-            _ = Normalize.hasVersionAside(flags + " – Acoustic")
-            _ = ArtistNotYet.titleKey(flags + " - Deluxe Edition")
+        var largest = 0.0
+        let growth = FuzzClock.growth(n: 5_000) { n in
+            let flags = String(repeating: "🇬🇧", count: n)
+            let seconds = FuzzClock.seconds {
+                _ = Normalize.key(artist: flags, title: flags + " - Live")
+                _ = Normalize.hasVersionAside(flags + " – Acoustic")
+                _ = ArtistNotYet.titleKey(flags + " - Deluxe Edition")
+            }
+            largest = max(largest, seconds)
+            return seconds
         }
-        #expect(seconds < 0.5, "took \(seconds) s")
+        #expect(growth < FuzzClock.linearBound(), "4× the flags took \(growth)× as long")
+        #expect(largest < FuzzClock.caseBound, "20,000 flags took \(largest) s")
         // Same answers as before: the last dash splits, in the order " - ", " – ", " — ".
         #expect(Normalize.name("A - B - Remastered 2011") == "a b")
         #expect(Normalize.name("Halo - Live") == "halo live")
@@ -116,10 +172,25 @@ import Testing
         #expect(ArtistNotYet.titleKey("Album — Remix - Deluxe") == Normalize.name("Album — Remix"))
     }
 
+    /// The growth check itself: quadratic work is caught, linear work passes.
+    @Test func growthTellsQuadraticFromLinear() {
+        func work(_ steps: Int) -> Double {
+            var sink = 0
+            let seconds = FuzzClock.seconds { for i in 0..<steps { sink &+= i &* 31 } }
+            #expect(sink != 1)   // keeps the loop
+            return seconds
+        }
+        let quadratic = FuzzClock.growth(n: 400) { n in work(n * n) }
+        let linear = FuzzClock.growth(n: 1_000_000) { n in work(n) }
+        #expect(quadratic > FuzzClock.linearBound(), "quadratic grew only \(quadratic)×")
+        #expect(linear < FuzzClock.linearBound(), "linear grew \(linear)×")
+    }
+
     // MARK: - Genre groups: counts that overflow when summed
 
     /// The group's album and song counts were summed with `+`, which traps on overflow (a server reporting
-    /// `9223372036854775807` for two genres of one group). The sums saturate.
+    /// `9223372036854775807` for two genres of one group). The sums saturate, and a negative count can't pull a held
+    /// `.max` back down (merged review, M6).
     @Test func genreGroupCountsSaturate() {
         let genres = [Genre(name: "Rock", songCount: .max, albumCount: .max),
                       Genre(name: "Indie Rock", songCount: .max, albumCount: 5),
@@ -128,7 +199,10 @@ import Testing
         let sections = GenreGroups.grouped(genres, preferences: .defaultValue)
         let rock = try? #require(sections.first { $0.group.id == "rock" })
         #expect(rock?.albumCount == .max && rock?.songCount == .max)
+        // A negative count means nothing: it counts as none, so the sum holds at `.max` whatever the order.
         let jazz = try? #require(sections.first { $0.group.id == "jazz" })
-        #expect(jazz?.albumCount == .min && jazz?.songCount == .min)
+        #expect(jazz?.albumCount == 0 && jazz?.songCount == 0)
+        #expect(GenreGroups.total([.max, -5, 1]) == .max && GenreGroups.total([-5, .max, 1]) == .max)
+        #expect(GenreGroups.total([3, -2, 4]) == 7)
     }
 }

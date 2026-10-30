@@ -88,12 +88,13 @@ public enum GenreGroups {
         }
     }
 
-    /// The counts' sum, held at `Int.max` or `Int.min` instead of trapping: the counts are the server's, and a broken or
-    /// hostile one may send `9223372036854775807` for two genres of one group (crash hunt 4).
+    /// The counts' sum, held at `Int.max` instead of trapping: the counts are the server's, and a broken or hostile one
+    /// may send `9223372036854775807` for two genres of one group (crash hunt 4). A negative count means nothing and
+    /// counts as none, so a held `.max` isn't pulled back down and the sum doesn't depend on order.
     static func total(_ counts: [Int]) -> Int {
         counts.reduce(0) { sum, n in
-            let (result, overflow) = sum.addingReportingOverflow(n)
-            return overflow ? (n > 0 ? .max : .min) : result
+            let (result, overflow) = sum.addingReportingOverflow(max(0, n))
+            return overflow ? .max : result
         }
     }
 

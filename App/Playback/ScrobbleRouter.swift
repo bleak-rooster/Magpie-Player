@@ -316,10 +316,10 @@ final class ScrobbleRouter: Scrobbler {
                durationMs: durationMs(song.duration))
     }
 
-    /// Whole milliseconds, nil when unknown or past what an Int holds (a broken length: `Int(_:)` traps there,
-    /// crash hunt 1).
+    /// Whole milliseconds, nil when unknown or absurd. Past what an Int holds `Int(_:)` traps (crash hunt 1); a length
+    /// of 1e12 s or more is a broken one, and ListenBrainz shouldn't be sent it (crash hunt 2).
     static func durationMs(_ seconds: TimeInterval) -> Int? {
-        guard seconds > 0 else { return nil }
+        guard seconds > 0, seconds < 1e12 else { return nil }
         return Int(exactly: (seconds * 1000).rounded(.towardZero))
     }
 }

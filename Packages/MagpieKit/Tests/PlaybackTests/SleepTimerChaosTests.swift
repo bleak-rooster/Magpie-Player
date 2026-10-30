@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import MagpieCore
+import MagpieTestSupport
 @testable import Playback
 
 /// Crash hunt 1: the sleep timer's fade under chaos (starts, cancels, skips and pauses mid-fade, songs ending). After
@@ -12,7 +13,7 @@ import MagpieCore
 
     @Test func chaosSequences() async {
         for seed in 0..<UInt64(300) {
-            var rng = Fuzz.RNG(state: seed &+ 7)
+            var rng = SeededRNG(seed: seed &+ 7)
             let engine = Fuzz.ChaosEngine()
             let player = Player(engine: engine, scrobbler: Fuzz.CountingScrobbler(), urls: Fuzz.ChaosURLs())
             var clock = Date(timeIntervalSince1970: 1_800_000_000)
@@ -34,7 +35,11 @@ import MagpieCore
                 default: for _ in 0..<Int.random(in: 0...12, using: &rng) { await Task.yield() }
                 }
                 #expect(engine.volume >= 0 && engine.volume <= 1, "seed \(seed) step \(step)")
-                for _ in 0..<5 { await Task.yield() }   // the timer watches the flag through Observations
+                for _ in 0..<5 { await Task.yield() }
+                // The timer watches the flag through Observations: wait (bounded) for it to catch up, rather than count
+                // on how many hops Observations takes to deliver (merged crash-hunt review, M8).
+                var hops = 0
+                while timer.mode == .endOfSong, !player.stopsAfterCurrent, hops < 1_000 { await Task.yield(); hops += 1 }
                 if timer.mode == .endOfSong {
                     #expect(player.stopsAfterCurrent, "seed \(seed) step \(step): an end-of-song timer without the flag")
                 }

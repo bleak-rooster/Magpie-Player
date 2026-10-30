@@ -2,6 +2,7 @@ import AVFoundation
 import Foundation
 import ListenBrainzKit
 import MagpieCore
+import MagpieTestSupport
 import MediaPlayer
 import Playback
 import Testing
@@ -61,7 +62,7 @@ import Testing
         let urls = FakeURLs()
         urls.stream = { song in files[Int(song.id.dropFirst())! % files.count] }
         let player = Player(engine: engine, scrobbler: FakeScrobbler(), urls: urls)
-        var rng = PlayerChaosRNG(state: seed)
+        var rng = SeededRNG(seed: seed)
         let songs = (0..<6).map { PlayerTests.song("s\($0)", duration: [1, 0, 1e300][$0 % 3]) }
         player.play(songs, startAt: 0)
         for step in 0..<60 {
@@ -111,16 +112,5 @@ import Testing
         player.handle(.time(player.queue.current!.id, 5, duration: .nan))
         try await Task.sleep(for: .milliseconds(50))
         #expect(MPNowPlayingInfoCenter.default().nowPlayingInfo?[MPMediaItemPropertyTitle] as? String == "T2")
-    }
-}
-
-struct PlayerChaosRNG: RandomNumberGenerator {
-    var state: UInt64
-    mutating func next() -> UInt64 {
-        state &+= 0x9E37_79B9_7F4A_7C15
-        var z = state
-        z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9
-        z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
-        return z ^ (z >> 31)
     }
 }

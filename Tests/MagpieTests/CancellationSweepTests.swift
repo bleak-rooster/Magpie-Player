@@ -24,29 +24,16 @@ private func queryValue(_ request: URLRequest, _ name: String) -> String? {
         .queryItems?.first { $0.name == name }?.value
 }
 
-/// SplitMix64: a small seeded generator, so a failing sweep replays exactly from its seed.
-struct SeededGenerator: RandomNumberGenerator, Sendable {
-    private var state: UInt64
-    init(seed: UInt64) { state = seed &+ 0x9E37_79B9_7F4A_7C15 }
-    mutating func next() -> UInt64 {
-        state &+= 0x9E37_79B9_7F4A_7C15
-        var z = state
-        z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9
-        z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
-        return z ^ (z >> 31)
-    }
-}
-
 /// Answers every request after a seeded, cancellation-aware delay (0–`maxMicros` µs), the way a real network answers
 /// in no particular order. A cancelled request throws `CancellationError`, as URLSession's tasks stop when cancelled.
 final class JitterTransport: HTTPTransport, @unchecked Sendable {
     let base = HostSwitchTransport()
     var inner: MockTransport { base.inner }
-    private let rng = OSAllocatedUnfairLock(initialState: SeededGenerator(seed: 1))
+    private let rng = OSAllocatedUnfairLock(initialState: SeededRNG(seed: 1))
     private let maxMicros = OSAllocatedUnfairLock(initialState: 0)
 
     func jitter(seed: UInt64, maxMicros: Int) {
-        rng.withLock { $0 = SeededGenerator(seed: seed) }
+        rng.withLock { $0 = SeededRNG(seed: seed) }
         self.maxMicros.withLock { $0 = maxMicros }
     }
 
@@ -122,10 +109,21 @@ final class JitterTransport: HTTPTransport, @unchecked Sendable {
         return model
     }
 
+    /// Where `cancelled` cancels when not at random: the two ends every sweep must reach, whatever the machine's speed.
+    enum CancelPoint { case beforeStart, afterFinish }
+
     /// Runs `op`, cancelling it at a seeded random point: before it starts, after some yields, or after a short sleep.
-    func cancelled<T: Sendable>(_ rng: inout SeededGenerator, _ op: @escaping @MainActor () async throws -> T)
-        async -> Result<T, any Error> {
+    /// The seed fixes the choices, not the outcomes: where a cancel lands against the jittered answers depends on the
+    /// machine, so a replay repeats the same rounds but may not land them the same way. Which outcome a random round
+    /// gets is never asserted; `at` forces one end (merged crash-hunt review, I3).
+    func cancelled<T: Sendable>(_ rng: inout SeededRNG, at point: CancelPoint? = nil,
+                                _ op: @escaping @MainActor () async throws -> T) async -> Result<T, any Error> {
         let task = Task { @MainActor in try await op() }
+        if let point {
+            if point == .afterFinish { _ = await task.result }
+            task.cancel()
+            return await task.result
+        }
         switch Int.random(in: 0..<4, using: &rng) {
         case 0: break                                                         // before the first await
         case 1: for _ in 0..<Int.random(in: 1...40, using: &rng) { await Task.yield() }
@@ -147,8 +145,7 @@ final class JitterTransport: HTTPTransport, @unchecked Sendable {
     @Test func homeReadCancelledAnywhere() async throws {
         let model = try await signedInModel()
         let all = HomeSection.allCases.filter { $0 != .madeForYou }
-        var rng = SeededGenerator(seed: 0xB8)
-        var outcomes = (whole: 0, cancelled: 0)
+        var rng = SeededRNG(seed: 0xB8)
         for round in 0..<150 {
             let wanted = Array(all.shuffled(using: &rng).prefix(Int.random(in: 1...all.count, using: &rng)))
             let types = ["recent", "newest", "frequent", "starred", "random"]
@@ -159,19 +156,25 @@ final class JitterTransport: HTTPTransport, @unchecked Sendable {
             transport.jitter(seed: UInt64(round), maxMicros: 1500)
             switch await cancelled(&rng, { try await model.homeRead(for: wanted) }) {
             case .success(let read):
-                outcomes.whole += 1
                 let base = try #require(try? expected.get(), "round \(round): a read that failed uncancelled succeeded")
                 #expect(read.shelves == base.shelves, "round \(round) \(wanted): shelves differ from the uncancelled read")
                 #expect(read.failed == base.failed, "round \(round) \(wanted)")
             case .failure(let error):
-                outcomes.cancelled += 1
                 if case .success = expected {
                     #expect(isCancellation(error), "round \(round) \(wanted): a cancelled read reported \(error)")
                 }
             }
         }
+        // Both outcomes, whatever the machine's speed: a cancel after the read finished keeps it whole, one before it
+        // starts is a cancellation.
         failing.withLock { $0 = [] }
-        #expect(outcomes.whole > 0 && outcomes.cancelled > 0, "the sweep must hit both outcomes: \(outcomes)")
+        transport.jitter(seed: 0, maxMicros: 0)
+        let whole = try await model.homeRead(for: all)
+        transport.jitter(seed: 0, maxMicros: 1500)
+        let late = await cancelled(&rng, at: .afterFinish) { try await model.homeRead(for: all) }
+        #expect((try? late.get())?.shelves == whole.shelves, "a cancel after the read finished changed it")
+        let early = await cancelled(&rng, at: .beforeStart) { try await model.homeRead(for: all) }
+        #expect(early.error.map(isCancellation) == true, "a cancel before the read started: \(early)")
     }
 
     /// The car's Home reads the same shelves (with Made for you's own read alongside, `async let`).
@@ -179,7 +182,7 @@ final class JitterTransport: HTTPTransport, @unchecked Sendable {
         let model = try await signedInModel()
         let adapter = CarPlayLibraryAdapter(model: model)
         let all = HomeSection.allCases
-        var rng = SeededGenerator(seed: 0xCA)
+        var rng = SeededRNG(seed: 0xCA)
         for round in 0..<80 {
             let wanted = Array(all.shuffled(using: &rng).prefix(Int.random(in: 1...all.count, using: &rng)))
             let size = Int.random(in: -1...14, using: &rng)
@@ -203,8 +206,7 @@ final class JitterTransport: HTTPTransport, @unchecked Sendable {
         let model = try await signedInModel()
         let genres = try await model.allGenres()
         #expect(genres.count == Self.genreCount)
-        var rng = SeededGenerator(seed: 0x6E)
-        var whole = 0
+        var rng = SeededRNG(seed: 0x6E)
         for round in 0..<150 {
             let some = Array(genres.shuffled(using: &rng).prefix(Int.random(in: 1...genres.count, using: &rng)))
             transport.jitter(seed: UInt64(round), maxMicros: 0)
@@ -212,13 +214,19 @@ final class JitterTransport: HTTPTransport, @unchecked Sendable {
             transport.jitter(seed: UInt64(round), maxMicros: 1500)
             switch await cancelled(&rng, { try await model.groupAlbums(in: some) }) {
             case .success(let albums):
-                whole += 1
                 #expect(albums.map(\.id) == expected.map(\.id), "round \(round): merge differs from the uncancelled one")
             case .failure(let error):
                 #expect(isCancellation(error), "round \(round): \(error)")
             }
         }
-        #expect(whole > 0)
+        // Both outcomes, whatever the machine's speed.
+        transport.jitter(seed: 0, maxMicros: 0)
+        let whole = try await model.groupAlbums(in: genres)
+        transport.jitter(seed: 0, maxMicros: 1500)
+        let late = await cancelled(&rng, at: .afterFinish) { try await model.groupAlbums(in: genres) }
+        #expect((try? late.get())?.map(\.id) == whole.map(\.id), "a cancel after the merge finished changed it")
+        let early = await cancelled(&rng, at: .beforeStart) { try await model.groupAlbums(in: genres) }
+        #expect(early.error.map(isCancellation) == true, "a cancel before the merge started: \(early)")
     }
 
     /// A group's Shuffle reads every genre round by round (`inOrder` per round): the whole list or a cancellation;
@@ -226,7 +234,7 @@ final class JitterTransport: HTTPTransport, @unchecked Sendable {
     @Test func groupSongsCancelledAnywhere() async throws {
         let model = try await signedInModel()
         let genres = try await model.allGenres()
-        var rng = SeededGenerator(seed: 0x5A)
+        var rng = SeededRNG(seed: 0x5A)
         for round in 0..<60 {
             let some = Array(genres.shuffled(using: &rng).prefix(Int.random(in: 1...genres.count, using: &rng)))
             transport.jitter(seed: UInt64(round), maxMicros: 0)
@@ -246,7 +254,7 @@ final class JitterTransport: HTTPTransport, @unchecked Sendable {
     @Test func genreSectionsCancelledAnywhere() async throws {
         let model = try await signedInModel()
         let expected = try await model.genreSections()
-        var rng = SeededGenerator(seed: 0x6F)
+        var rng = SeededRNG(seed: 0x6F)
         for round in 0..<100 {
             transport.jitter(seed: UInt64(round), maxMicros: 1500)
             switch await cancelled(&rng, { try await model.genreSections() }) {
@@ -303,7 +311,7 @@ private let lbLibraryCount = 24
         }
         t.stub(pathSuffix: "/1/validate-token", body: Data(#"{"valid":true,"user_name":"rob"}"#.utf8))
         t.stub(pathSuffix: "/1/user/rob/playlists/createdfor", body: lbCreatedFor)
-        var order = SeededGenerator(seed: 7)
+        var order = SeededRNG(seed: 7)
         let inLibrary = (0..<16).map { #"{"title":"Song \#($0)","creator":"Artist \#($0)","duration":200000}"# }
         let outside = (0..<8).map { #"{"title":"Elsewhere \#($0)","creator":"Nobody \#($0)"}"# }
         let tracks = (inLibrary + outside).shuffled(using: &order).joined(separator: ",")
@@ -325,8 +333,7 @@ private let lbLibraryCount = 24
         let expected = try #require(await signedInModel().madeForYouTracks(lbPlaylistId))
         #expect(expected.count == 24)
         #expect(expected.filter { if case .library = $0 { true } else { false } }.count == 16)
-        var rng = SeededGenerator(seed: 0x3F)
-        var outcomes = (whole: 0, cancelled: 0)
+        var rng = SeededRNG(seed: 0x3F)
         for round in 0..<40 {
             // A model per round: its ListenBrainz limiter starts with a free slot, so the playlist read answers at once
             // and the cancel lands anywhere in the library song reads (6 at a time). A cancelled read keeps its
@@ -338,20 +345,28 @@ private let lbLibraryCount = 24
             if Bool.random(using: &rng) { try? await Task.sleep(for: .microseconds(Int.random(in: 0...12000, using: &rng))) }
             task.cancel()
             if let rows = await task.value {
-                outcomes.whole += 1
                 #expect(rows == expected, "round \(round): a finished read differs from the uncancelled one")
-            } else {
-                outcomes.cancelled += 1
             }
         }
-        #expect(outcomes.cancelled > 0 && outcomes.whole > 0, "\(outcomes)")
+        // Both outcomes, whatever the machine's speed (16 lookups behind a limiter can outlast every random cancel
+        // point on a slow simulator): cancelled after it finished it is whole, before it starts it is nil.
+        let lateModel = try await signedInModel()
+        transport.jitter(seed: 0, maxMicros: 1500)
+        let late = Task { @MainActor in await lateModel.madeForYouTracks(lbPlaylistId) }
+        let finished = await late.value
+        late.cancel()
+        #expect(finished == expected, "a read left to finish differs from the uncancelled one")
+        let earlyModel = try await signedInModel()
+        let early = Task { @MainActor in await earlyModel.madeForYouTracks(lbPlaylistId) }
+        early.cancel()
+        #expect(await early.value == nil, "a read cancelled before it started gave rows")
     }
 
     /// The shelf read writes the shelf only if it wasn't cancelled: what the shelf is when the cancel lands is what it
     /// stays.
     @Test func madeForYouShelfNotWrittenAfterCancel() async throws {
         let model = try await signedInModel()
-        var rng = SeededGenerator(seed: 0x5E)
+        var rng = SeededRNG(seed: 0x5E)
         for round in 0..<8 {
             model.listenBrainzTokenChanged()   // empties the shelf (what a token change does)
             transport.jitter(seed: UInt64(round), maxMicros: 3000)
@@ -371,7 +386,7 @@ private let lbLibraryCount = 24
     /// delay and handing over early library rows first. At every point the rows shown belong to the query shown (or
     /// there are none), and once typing stops the last query's rows show and search is done.
     @Test(arguments: 0..<6) func searchTypingNeverShowsAnotherQuerysRows(_ seed: Int) async throws {
-        let latency = OSAllocatedUnfairLock(initialState: SeededGenerator(seed: UInt64(seed) &* 31))
+        let latency = OSAllocatedUnfairLock(initialState: SeededRNG(seed: UInt64(seed) &* 31))
         let model = SearchModel(search: { q, early in
             let (a, b) = latency.withLock { (Int.random(in: 0...3000, using: &$0), Int.random(in: 0...3000, using: &$0)) }
             try await Task.sleep(for: .microseconds(a))
@@ -379,7 +394,7 @@ private let lbLibraryCount = 24
             try await Task.sleep(for: .microseconds(b))
             return SearchSections(songs: [sweepSong("done|" + q)])
         }, debounce: .microseconds(500))
-        var rng = SeededGenerator(seed: UInt64(seed))
+        var rng = SeededRNG(seed: UInt64(seed))
         var text = ""
         for step in 0..<120 {
             switch Int.random(in: 0..<10, using: &rng) {
@@ -413,3 +428,7 @@ private let lbLibraryCount = 24
 }
 
 private func sweepSong(_ id: String) -> Song { Song(id: id, title: id, artist: "A", album: "B", duration: 1) }
+
+private extension Result {
+    var error: Failure? { if case .failure(let error) = self { error } else { nil } }
+}

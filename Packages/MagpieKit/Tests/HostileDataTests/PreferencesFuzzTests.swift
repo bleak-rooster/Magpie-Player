@@ -64,8 +64,11 @@ import Testing
         #expect(genres == genres.normalised())
         #expect(genres.assignments.count <= GenrePreferences.maxAssignments && genres.groupNames.count <= GenrePreferences.maxGroupNames)
         #expect(genres.hidden.count <= GenrePreferences.maxHidden && genres.customGroups.count <= GenrePreferences.maxCustomGroups)
-        // What decode gives can be stored and read back unchanged.
+        // What decode gives can be stored and read back unchanged (every area; folded in from hunt 2's fuzzer).
         #expect(LayoutPreferences.decode(layout.encoded()) == layout)
+        #expect(PlaybackPreferences.decode(playback.encoded()) == playback)
+        #expect(DownloadPreferences.decode(downloads.encoded()) == downloads)
+        #expect(ScrobblePreferences.decode(scrobbling.encoded()) == scrobbling)
         #expect(GenrePreferences.decode(genres.encoded()) == genres)
     }
 
@@ -77,11 +80,15 @@ import Testing
         let seeds = [LayoutPreferences.defaultValue.encoded(), PlaybackPreferences.defaultValue.encoded(),
                      DownloadPreferences.defaultValue.encoded(), ScrobblePreferences.defaultValue.encoded(),
                      GenrePreferences.defaultValue.encoded()].compactMap { $0 }
+        var slowest = 0.0
         let seconds = FuzzClock.seconds {
-            for _ in 0..<5_000 { Self.check(Data(Self.object(&rng, depth: 0).utf8)) }
-            for i in 0..<5_000 { Self.check(fuzzer.mutate(seeds[i % seeds.count])) }
+            for i in 0..<10_000 {
+                let data = i < 5_000 ? Data(Self.object(&rng, depth: 0).utf8) : fuzzer.mutate(seeds[i % seeds.count])
+                slowest = max(slowest, FuzzClock.seconds { Self.check(data) })
+            }
         }
         #expect(LayoutPreferences.decode(nil) == .defaultValue && GenrePreferences.decode(nil) == .defaultValue)
-        #expect(seconds < 9, "took \(seconds) s")
+        #expect(slowest < FuzzClock.caseBound, "slowest case \(slowest) s")
+        #expect(seconds < FuzzClock.sweepBackstop, "took \(seconds) s")
     }
 }
