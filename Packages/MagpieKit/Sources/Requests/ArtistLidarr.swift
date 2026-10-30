@@ -125,14 +125,14 @@ public enum ArtistLidarr {
 
     /// The add body: Lidarr's lookup row with Magpie's root folder, profiles and tags, everything monitored, and a
     /// search for missing albums started.
-    static func addBody(lookup: JSONValue, setup: RequestRunner.Setup) throws -> JSONValue {
+    static func addBody(lookup: JSONValue, setup: RequestRunner.Setup, follow: Bool = true) throws -> JSONValue {
         guard var o = lookup.objectValue else { throw ArtistLidarrError.notFound }
         let overrides: [String: JSONValue] = [
             "rootFolderPath": .string(setup.rootFolderPath),
             "qualityProfileId": .int(setup.qualityProfileId),
             "metadataProfileId": .int(setup.metadataProfileId),
             "monitored": .bool(true),
-            "monitorNewItems": .string("all"),
+            "monitorNewItems": .string(follow ? "all" : "none"),
             "tags": .array(setup.tagIds.map { .int($0) }),
             "addOptions": .object([
                 "monitor": .string("all"),
@@ -148,15 +148,16 @@ public enum ArtistLidarr {
 
     /// "Add to Lidarr and download": adds the artist through the gate and records it in the ledger as Magpie's.
     /// Refuses (writing nothing) when changes are off or Lidarr has the artist already. Returns its Lidarr id.
+    /// R18: `setup` carries the chosen quality and release-types profiles; `follow` false monitors nothing new.
     public static func add(mbid: MBID, lidarr: LidarrClient, gate: LidarrWriteGate, ledger: Ledger,
-                           setup: RequestRunner.Setup) async throws -> Int {
+                           setup: RequestRunner.Setup, follow: Bool = true) async throws -> Int {
         guard await gate.enabled else { throw ArtistLidarrError.changesOff }
         // Fresh: never a second add, never a write to an artist the owner added meanwhile.
         guard try await !lidarr.artists().contains(where: { $0.foreignArtistId == mbid }) else {
             throw ArtistLidarrError.alreadyInLidarr
         }
         guard let lookup = try await lidarr.artistLookupJSON(mbid: mbid) else { throw ArtistLidarrError.notFound }
-        let body = try addBody(lookup: lookup, setup: setup)
+        let body = try addBody(lookup: lookup, setup: setup, follow: follow)
         let data: Data
         do {
             data = try await gate.send("POST", "artist", body: body)
