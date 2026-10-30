@@ -211,3 +211,35 @@ Overlaps:
   - Documented as best-effort: iOS decides when it runs.
   - Also, while audio plays in the background the process stays alive, and the runner keeps its 30 s cadence (verify).
 - **Workstream X5** (R15 + R16).
+
+## R17. Requests: get back to them, stalled Soulseek downloads, search again, live search rows (owner addendum)
+- **Get back to a request:**
+  - In search (phone and CarPlay-irrelevant), a "Not in your library" song/album/artist row that has a live request shows that request's status ("Looking…", "Bringing it home"…) instead of Try. Tapping it opens that request's page, never a second Try.
+  - The same applies from Activity, from the Play now banner, and from the song row anywhere it appears.
+- **Live rows:**
+  - When a request becomes Ready, search results showing it update in place, without leaving search: the row becomes the library song (playable, normal row, P4 cached art), and its request page shows Ready with Play.
+  - The same applies to the request page while it is open.
+  - The trigger is the runner's ready event or the match index refresh. No polling from views.
+- **Stalled Soulseek downloads** *(owner: "if there is no change in the download for 1 minute, then it should be deleted, blocked, and a new search performed")*:
+  - Magpie sees slskd through Lidarr: the owner's Lidarr uses a Soulseek/slskd download client.
+  - Detection: the queue item's `downloadClient` matches a download client whose `implementation`/`implementationName` is a Soulseek/slskd client (from `GET /api/v1/downloadclient`, read-only, cached per session).
+  - A Magpie request's queue item from such a client whose progress (`sizeleft`, plus status/trackedDownloadState) has not changed for **60 s** *(call: "Stalled downloads give up after", Settings › Requests: 1, 2, 5, 10 min, default 1 min; Soulseek only)*:
+    1. `DELETE /api/v1/queue/{id}?removeFromClient=true&blocklist=true&skipRedownload=true`;
+    2. then the runner's `AlbumSearch` for that album, so the search is ours and counted.
+  - The request shows "That source stalled. Looking for another…".
+  - At most 5 automatic stall-retries per request *(call)*. After that it waits as "Still looking" with Search again.
+- **Search again** (manual) on the request page, for a live request not yet imported:
+  - if a Magpie-request queue item exists, remove it with the same DELETE (blocklist=true);
+  - then `AlbumSearch`;
+  - confirmed with "Search again? The current download will be removed and blocked.", shown only when a download exists;
+  - rate-limited to once per 30 s.
+- **Owner-data rule:**
+  - The queue DELETE is allowed only through LidarrWriteGate, with exactly `removeFromClient=true&blocklist=true&skipRedownload=true`.
+  - Only for a queue item whose `albumId` belongs to a live Magpie request for which the ledger shows Magpie monitored/added it.
+  - It is re-read fresh right before (id, albumId, downloadClient).
+  - It never touches downloads of anything else. It never deletes library files: the queue only, before import.
+  - check-writes.sh covers it, and the write is logged in the change log.
+- **Tests:**
+  - dev stack: no Soulseek, so use stubs;
+  - a read-only probe of the owner's real Lidarr `GET /api/v1/downloadclient` and `GET /api/v1/queue` shapes is allowed, under the owner-real-servers rules: reads only, never print credentials, no writes.
+- **Workstream X6** (R17).
