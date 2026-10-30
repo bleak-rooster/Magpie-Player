@@ -287,3 +287,23 @@ Overlaps:
   - the Only in Finds detection, including mixed artists (some in main → not "only in Finds");
   - Main library auto-pick and picker.
 - **Workstream X7** (R18). It touches the gate after X6; it's merged after X6.
+
+## R19. Search: artist and album results open pages; outside artist/album pages (owner addendum)
+- **Bug:** tapping an Artists or Albums search result does nothing, and only songs act.
+  - Fix it: an in-library artist or album result opens the normal Artist/Album page.
+  - Reproduce first with a UI test (phone), and check CarPlay search too.
+- **Outside artist page** (an artist not in the library), styled like the library Artist page:
+  - **Header:** the artist picture per R15 (in memory only) and the name, plus the Lidarr status line (W3: "Not in Lidarr" / "In Lidarr").
+  - **Albums, EPs, Singles:** sections from MusicBrainz release groups (Official; primary type Album/EP/Single; Studio first, other secondary types under "More"). Cover art per R15, newest first.
+  - **Popular songs:** from ListenBrainz/MusicBrainz top recordings if the existing search client has a source. Otherwise omitted *(call)*.
+  - **Actions:**
+    - **Try in Finds**: on any song row (the existing Try, single release) and on any album (new "Try this album": the existing Try machinery with the album's release group as the target, into Finds mode when set up, otherwise straight into the library as today).
+    - **Add to your library**: the whole artist via R18's download choices or simple mode, through the gate. For an artist already in the owner's Lidarr, the W3 rules (never changed).
+- **Outside album page:** the cover per R15, the tracklist from MusicBrainz (the release of the release group Magpie would pick), with actions:
+  - **Try this album** (into Finds);
+  - **Add <artist> to your library** (R18);
+  - per track, **Try** (single song).
+- A live request for any item shows its status and opens its request page (R17).
+- When an outside item lands in the library, the page updates in place (R17 live rows).
+- **Rate limits:** MusicBrainz at most 1 request/s with the app UA (existing client), cached in memory per session only. Offline: these pages say "You're offline".
+- **Workstream X8** (R19). Dispatched after X5, X6 and X7 merge, since it builds on their search, request and download-choice code.
