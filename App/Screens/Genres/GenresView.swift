@@ -19,6 +19,7 @@ struct GenresView: View {
     private let themed = Themed()
 
     var body: some View {
+        ScrollViewReader { proxy in
         ScrollView {
             VStack(alignment: .leading, spacing: Tokens.Spacing.l) {
                 Picker("Show", selection: mode) {
@@ -44,6 +45,12 @@ struct GenresView: View {
                 }
             }
             .padding(.vertical, Tokens.Spacing.l)
+        }
+        // P2: over All genres, or the groups list; not while editing.
+        .letterIndex(available: Set(indexSections.map(\.key)), hidden: editing || indexSections.isEmpty) { letter in
+            guard let target = LetterIndex.target(letter, in: indexSections) else { return }
+            withAnimation(nil) { proxy.scrollTo(indexIds[target.range.lowerBound], anchor: .top) }
+        }
         }
         .refreshable {
             if model.isOffline { await model.checkReachability() }
@@ -72,6 +79,15 @@ struct GenresView: View {
         .task(id: LoadKey(page: model.offlinePageKey, genres: model.preferences.genres)) { await load() }
     }
 
+    /// The names the letter index runs over (group names in their own order, or genres A–Z) and their row ids.
+    private var indexNames: [String] {
+        model.preferences.genres.mode == .grouped ? (sections.value ?? []).map(\.group.name) : (genres.value ?? []).map(\.name)
+    }
+    private var indexIds: [String] {
+        model.preferences.genres.mode == .grouped ? (sections.value ?? []).map(\.group.id) : (genres.value ?? []).map(\.name)
+    }
+    private var indexSections: [LetterIndex.Section] { LetterIndex.sections(indexNames) { $0 } }
+
     private struct LoadKey: Hashable {
         let page: String
         let genres: GenrePreferences
@@ -99,7 +115,7 @@ struct GenresView: View {
     private func allList(_ genres: [Genre]) -> some View {
         LazyVStack(spacing: 0) {
             ForEach(genres, id: \.name) { genre in
-                GenreRow(genre: genre)
+                GenreRow(genre: genre).id(genre.name)
                 Divider().overlay(themed.palette.sepColor).padding(.leading, Tokens.Spacing.margin)
             }
         }
@@ -190,6 +206,7 @@ struct GenreGroupRows: View {
                 }
                 .tint(p.ink2Color)
                 .padding(.horizontal, Tokens.Spacing.margin)
+                .id(section.group.id)   // the letter index's target (P2)
                 Divider().overlay(p.sepColor).padding(.leading, Tokens.Spacing.margin)
             }
         }

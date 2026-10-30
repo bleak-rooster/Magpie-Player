@@ -20,6 +20,7 @@ struct DownloadsView: View {
     }
 
     var body: some View {
+        ScrollViewReader { proxy in
         ScrollView {
             VStack(alignment: .leading, spacing: Tokens.Spacing.l) {
                 Picker("Show", selection: $kind) {
@@ -38,6 +39,12 @@ struct DownloadsView: View {
                 }
             }
             .padding(.vertical, Tokens.Spacing.l)
+        }
+        // P2: offline too, the index runs over what's on the phone.
+        .letterIndex(available: Set(index.sections.map(\.key)), hidden: index.sections.isEmpty) { letter in
+            guard let target = LetterIndex.target(letter, in: index.sections) else { return }
+            proxy.scrollTo(index.ids[target.range.lowerBound], anchor: .top)
+        }
         }
         .navigationTitle("Downloads")
         .magpieScreen()
@@ -70,6 +77,19 @@ struct DownloadsView: View {
         }
     }
 
+    /// The shown kind's names in list order, and their rows' ids, for the letter index.
+    private var index: (sections: [LetterIndex.Section], ids: [String]) {
+        guard let catalog else { return ([], []) }
+        let rows: [(name: String, id: String)] = switch kind {
+        case .albums: catalog.albums().map { ($0.name, $0.id) }
+        case .artists: catalog.artists().map { ($0.name, $0.id) }
+        case .playlists: catalog.playlists().map { ($0.name, $0.id) }
+        case .songs: catalog.songs().map { ($0.title, $0.id) }
+        case .genres: GenreGroups.grouped(catalog.genres(), preferences: model.preferences.genres).map { ($0.group.name, $0.group.id) }
+        }
+        return (LetterIndex.sections(rows) { $0.name }, rows.map(\.id))
+    }
+
     private var empty: some View {
         ContentUnavailableView("Nothing downloaded yet", systemImage: "arrow.down.circle",
                                description: Text("Albums and playlists you download play here without a connection."))
@@ -80,7 +100,7 @@ struct DownloadsView: View {
                                                      @ViewBuilder row: @escaping (Item) -> Row) -> some View {
         LazyVStack(spacing: 0) {
             ForEach(items, id: id) { item in
-                row(item)
+                row(item).id(item[keyPath: id])
                 Divider().overlay(themed.palette.sepColor).padding(.leading, 76)
             }
         }
