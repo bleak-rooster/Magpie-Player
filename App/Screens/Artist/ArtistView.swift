@@ -17,6 +17,8 @@ struct ArtistView: View {
     @State private var notYetAlbums: [NotYetAlbum] = []
     @State private var gathering = false
     @State private var playError: String?
+    /// P3: where the artist stands in Lidarr (no line without Lidarr).
+    @State private var lidarrLine: ArtistLidarrModel?
     private let themed = Themed()
 
     struct Page {
@@ -52,6 +54,9 @@ struct ArtistView: View {
                 }
                 Text(page.artist.name).magpieDisplay(.largeTitle).multilineTextAlignment(.center)
                     .accessibilityAddTraits(.isHeader)
+                if let lidarrLine, let presentation = lidarrLine.presentation {
+                    ArtistLidarrLine(line: lidarrLine, presentation: presentation)
+                }
                 CapsuleRow {
                     CapsuleButton(gathering ? "Loading…" : "Play", symbol: "play.fill") {
                         Task { await playAll(albums, shuffled: false) }
@@ -133,6 +138,7 @@ struct ArtistView: View {
                 return
             }
             page = .loaded(Page(artist: artist, albums: catalog.albums(byArtist: artistId)))
+            lidarrLine = ArtistLidarrModel(model: model, name: artist.name, mbid: artist.mbid)   // "You're offline"
             return
         }
         do {
@@ -142,7 +148,8 @@ struct ArtistView: View {
             // Both fill in after the page; neither waits for the other.
             async let popular: Void = loadTopSongs(name)
             async let notYet: Void = loadNotYetAlbums(artist, library: albums)
-            _ = await (popular, notYet)
+            async let inLidarr: Void = loadLidarrLine(artist)
+            _ = await (popular, notYet, inLidarr)
         } catch {
             page = .failed(BrowseErrorCopy.message(for: error))
         }
@@ -150,6 +157,13 @@ struct ArtistView: View {
 
     private func loadTopSongs(_ name: String) async {
         topSongs = (try? await model.request { try await $0.topSongs(artistName: name) }) ?? []
+    }
+
+    private func loadLidarrLine(_ artist: Artist) async {
+        let line = lidarrLine.flatMap { $0.name == artist.name ? $0 : nil }
+            ?? ArtistLidarrModel(model: model, name: artist.name, mbid: artist.mbid)
+        lidarrLine = line
+        await line.refresh()
     }
 
     private func loadNotYetAlbums(_ artist: Artist, library: [Album]) async {
