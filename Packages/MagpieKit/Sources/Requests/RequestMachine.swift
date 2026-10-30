@@ -90,6 +90,10 @@ public enum RequestEvent: Sendable, Equatable {
     case downloadFailed
     case cancel, keep, notForMe, retryDue
     case error(FailReason)
+    /// R17: search again (a stalled Soulseek download was removed, or the owner's Search again).
+    case searchAgain
+    /// R17: a Soulseek download stalled and the automatic retries are used up: wait as still looking.
+    case stalled
 }
 
 public enum Effect: Sendable, Equatable {
@@ -161,6 +165,12 @@ public struct RequestMachine {
                 return (.failed(reason: .notFoundYet), [.cleanup])
             }
             return (.resolving, [.resolveRelease])
+
+        // R17: back to searching, before anything was imported.
+        case (.searching, .searchAgain), (.downloading, .searchAgain), (.waiting, .searchAgain):
+            return (.searching, [.startSearch])
+        case (.searching, .stalled), (.downloading, .stalled):
+            return wait(.stillLooking, now: now, prior: prior)
 
         case (.ready, .keep):
             return (.kept, [])

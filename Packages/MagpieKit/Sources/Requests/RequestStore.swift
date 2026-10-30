@@ -147,6 +147,16 @@ public struct MagpieRequest: Sendable, Codable, Equatable, Identifiable {
     /// When the latest Bring in more of this find was sent.
     public var bringInAt: Date?
 
+    // Stalled Soulseek downloads and Search again (R17, RequestRunner+Stall.swift). Optional, so older requests decode.
+
+    /// Stalled downloads removed and searched again automatically (at most `RequestRunner.maxStallRetries`); Search
+    /// again starts the count over.
+    public var stallRetries: Int?
+    /// When Magpie last gave up on a stalled download for it ("That source stalled. Looking for another…").
+    public var sourceStalledAt: Date?
+    /// When Search again last ran for it (once per `RequestRunner.searchAgainInterval`).
+    public var searchAgainAt: Date?
+
     public init(id: RequestID = RequestID(), recording: ExternalRecording, tier: Tier, createdAt: Date) {
         self.id = id
         self.recording = recording

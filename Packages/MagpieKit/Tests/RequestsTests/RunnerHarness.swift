@@ -137,8 +137,12 @@ final class FakeLidarr: @unchecked Sendable {
     struct Queued {
         var albumId: Int; var size: Double; var sizeleft: Double
         var status = "downloading"; var tracked = "downloading"; var messages: [String] = []
+        /// R17: the queue item's id, artist and download client name ("Slskd" is the Soulseek one); nil: not sent.
+        var id: Int? = nil; var artistId: Int? = nil; var client: String? = nil
     }
     struct Event { var albumId: Int; var type: String; var date: Date }
+    /// A download client as `GET /downloadclient` lists it (R17).
+    struct Client { var id: Int; var name: String; var implementation: String; var protocolName: String }
 
     struct State {
         var artists: [Artist] = []
@@ -219,6 +223,13 @@ final class FakeLidarr: @unchecked Sendable {
         var recycleBin = "/music/.trash"
         /// `DELETE /artist/{id}`: removes the artist (deleteFiles=false: files stay on disk).
         var deletedArtists: [Int] = []
+        // R17: the download clients (`GET /downloadclient`) and the queue items removed (`DELETE /queue/{id}`).
+        var downloadClients: [Client] = [
+            Client(id: 2, name: "SABnzbd", implementation: "Sabnzbd", protocolName: "UsenetDownloadProtocol"),
+            Client(id: 4, name: "Slskd", implementation: "SlskdClient", protocolName: "SoulseekDownloadProtocol"),
+        ]
+        var downloadClientReads = 0
+        var removedFromQueue: [Int] = []
     }
 
     let latch = Latch()
@@ -545,9 +556,32 @@ final class FakeLidarr: @unchecked Sendable {
         }
         t.stub(pathSuffix: "/api/v1/queue/details") { [self] _ in
             if let d = down() { return d }
-            return reply(with { s in s.queue.map { ["albumId": $0.albumId, "size": $0.size, "sizeleft": $0.sizeleft,
-                                                    "status": $0.status, "trackedDownloadState": $0.tracked,
-                                                    "statusMessages": [["title": "t", "messages": $0.messages]]] as [String: Any] } })
+            return reply(with { s in s.queue.map { q in
+                var row: [String: Any] = ["albumId": q.albumId, "size": q.size, "sizeleft": q.sizeleft,
+                                          "status": q.status, "trackedDownloadState": q.tracked,
+                                          "statusMessages": [["title": "t", "messages": q.messages]]]
+                if let id = q.id { row["id"] = id }
+                if let artistId = q.artistId { row["artistId"] = artistId }
+                if let client = q.client { row["downloadClient"] = client }
+                return row
+            } })
+        }
+        t.stub(pathSuffix: "/api/v1/downloadclient") { [self] _ in
+            if let d = down() { return d }
+            return reply(with { s in
+                s.downloadClientReads += 1
+                return s.downloadClients.map { ["id": $0.id, "name": $0.name, "implementation": $0.implementation,
+                                                "implementationName": $0.name, "protocol": $0.protocolName] as [String: Any] }
+            })
+        }
+        for id in 901...920 {
+            t.stub(method: "DELETE", pathSuffix: "/api/v1/queue/\(id)") { [self] _ in
+                with { s in
+                    s.queue.removeAll { $0.id == id }
+                    s.removedFromQueue.append(id)
+                }
+                return reply([String: Any]())
+            }
         }
         t.stub(pathSuffix: "/api/v1/history/since") { [self] _ in
             if let d = down() { return d }
@@ -646,6 +680,15 @@ final class FakeLibrary: @unchecked Sendable {
     }
 }
 
+/// The runner the gate asks for live requests (R17), set once the runner exists.
+final class RunnerRef: @unchecked Sendable {
+    private let lock = OSAllocatedUnfairLock<RequestRunner?>(initialState: nil)
+    var runner: RequestRunner? {
+        get { lock.withLock { $0 } }
+        set { lock.withLock { $0 = newValue } }
+    }
+}
+
 struct Harness {
     let server: FakeLidarr
     let library: FakeLibrary
@@ -677,11 +720,13 @@ struct Harness {
         library = FakeLibrary(events: lidarr.events)
         let client = LidarrClient(base: base, apiKey: "k", transport: lidarr.clientTransport)
         ledger = Ledger(fileURL: dir.appending(path: "ledger.json"), instance: client.instanceScope)
-        // FM1: the gate confines deletes and artist edits from the ledger and the owner's setup, like the app's.
+        // FM1: the gate confines deletes and artist edits from the ledger and the owner's setup, like the app's; R17:
+        // queue deletes from the runner's live requests too.
+        let runnerRef = RunnerRef()
         let confinement = WriteConfinement(ledger: ledger, roots: {
             WriteConfinement.Roots(mainRoot: keep?.mainRoot ?? setup.rootFolderPath, findsRoot: keep?.findsRoot,
                                    findTagId: keep?.findTagId)
-        })
+        }, liveRequests: { await runnerRef.runner?.liveRequestIds })
         gate = LidarrWriteGate(client: client, logURL: dir.appending(path: "log.json"), defaultsSuite: suite,
                                confinement: confinement)
         await gate.setEnabled(changesOn)
@@ -694,6 +739,7 @@ struct Harness {
                                sleep: { d in clock.advance(Double(d.components.seconds) + Double(d.components.attoseconds) / 1e18) },
                                onReady: { r in ready.withLock { $0.append(r.id) } },
                                onRelinked: { r, before, song in relinked.withLock { $0.append((r.id, before, song)) } })
+        runnerRef.runner = runner
         self.server = lidarr
         self.dir = dir
     }
