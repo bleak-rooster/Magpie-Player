@@ -83,7 +83,7 @@ public struct JSONFuzzer {
         if rng.chance(bodyChance) { return wholeBody(seed) }
         guard var tree = Self.parse(seed) else { return wholeBody(seed) }
         for _ in 0..<Int.random(in: 1...4, using: &rng) { tree = mutateSomewhere(tree, depth: 0) }
-        if Self.size(tree, cap: 4 * Self.maxBytes) > 4 * Self.maxBytes { return wholeBody(seed) }
+        if Self.size(tree, cap: 4 * maxBytes) > 4 * maxBytes { return wholeBody(seed) }
         var text = Self.render(tree)
         if rng.chance(0.03) { text = String(text.prefix(Int.random(in: 0...max(0, text.count), using: &rng))) }
         return Data(text.utf8)
@@ -135,7 +135,7 @@ public struct JSONFuzzer {
             if case .array(let items) = node, let first = items.first { source = first } else { source = node }
             let wanted = rng.chance(0.1) ? hugeArrayCount : Int.random(in: 2...200, using: &rng)
             // Copies of an already big node would make bodies of gigabytes: at most `maxBytes` in all.
-            let count = max(2, min(wanted, Self.maxBytes / max(1, Self.size(source, cap: Self.maxBytes))))
+            let count = max(2, min(wanted, maxBytes / max(1, Self.size(source, cap: maxBytes))))
             return .array(Array(repeating: source, count: count))
         case 8:                                                              // deep nesting
             return .nested(depth: Int.random(in: 50...5_000, using: &rng), objects: rng.chance(0.5), node)
@@ -151,8 +151,8 @@ public struct JSONFuzzer {
 
     // MARK: - Parse and render
 
-    /// About how many bytes one huge-array mutation may make.
-    static let maxBytes = 4_000_000
+    /// About how many bytes one huge-array mutation may make (a case at most four times that).
+    public var maxBytes = 4_000_000
 
     /// About how many bytes `node` renders to, counting no further than `cap`.
     static func size(_ node: Node, cap: Int) -> Int {

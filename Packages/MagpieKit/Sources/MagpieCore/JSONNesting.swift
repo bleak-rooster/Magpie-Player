@@ -9,22 +9,24 @@ public enum JSONNesting {
 
     /// Whether no array or object in `data` opens more than `limit` levels deep. Brackets inside strings don't count.
     public static func isWithin(_ data: Data, limit: Int = JSONNesting.limit) -> Bool {
-        var depth = 0, inString = false, escaped = false
-        for byte in data {
-            if inString {
-                if escaped { escaped = false } else if byte == UInt8(ascii: "\\") { escaped = true } else if byte == UInt8(ascii: "\"") { inString = false }
-                continue
+        data.withUnsafeBytes { bytes in
+            var depth = 0, inString = false, escaped = false
+            for byte in bytes {
+                if inString {
+                    if escaped { escaped = false } else if byte == 0x5C { escaped = true } else if byte == 0x22 { inString = false }
+                    continue
+                }
+                switch byte {
+                case 0x22: inString = true                                  // "
+                case 0x5B, 0x7B:                                            // [ {
+                    depth += 1
+                    if depth > limit { return false }
+                case 0x5D, 0x7D: depth -= 1                                 // ] }
+                default: break
+                }
             }
-            switch byte {
-            case UInt8(ascii: "\""): inString = true
-            case UInt8(ascii: "["), UInt8(ascii: "{"):
-                depth += 1
-                if depth > limit { return false }
-            case UInt8(ascii: "]"), UInt8(ascii: "}"): depth -= 1
-            default: break
-            }
+            return true
         }
-        return true
     }
 
     /// `JSONSerialization.jsonObject(with:)` for untrusted bytes: nil when the document nests past `limit` or isn't JSON.

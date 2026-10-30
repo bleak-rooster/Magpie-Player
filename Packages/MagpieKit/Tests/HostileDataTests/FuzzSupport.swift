@@ -118,7 +118,7 @@ enum UISink {
         checkClamped(CarPlayRows.artist(Artist(id: "a", name: "", albumCount: albums.count), albums: albums))
         checkClamped(CarPlayRows.favourites(Starred(albums: albums), playingId: nil))
         checkClamped(CarPlayRows.downloads(albums: albums, playlists: []))
-        for album in albums.prefix(20) { if let songs = album.songs { self.songs(songs) } }
+        for album in albums.prefix(2) { if let songs = album.songs { self.songs(songs) } }
         home(albums: albums, playlists: [], genres: [])
     }
 

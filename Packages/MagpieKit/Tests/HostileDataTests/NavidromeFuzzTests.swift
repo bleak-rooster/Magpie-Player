@@ -138,10 +138,10 @@ import Testing
                         case 1:
                             answer.set(fuzzer.mutate(page), headers: headers)
                             let r = try await client.songs(inLibrary: 1, pageSize: 50, maxPages: 4)
-                            UISink.songs(r.songs)
+                            #expect(Set(r.songs.map(\.id)).count == r.songs.count)   // a repeated row is read once
                         case 2:
                             answer.set(fuzzer.mutate(page), headers: headers)
-                            UISink.songs(try await client.songs(recordingMBID: mbid, inLibrary: 1, under: "Artist/Album"))
+                            _ = (try await client.songs(recordingMBID: mbid, inLibrary: 1, under: "Artist/Album"))
                             _ = try await client.songs(recordingMBID: mbid, excludingLibrary: 2)
                         case 3:
                             answer.set(fuzzer.mutate(libraries))

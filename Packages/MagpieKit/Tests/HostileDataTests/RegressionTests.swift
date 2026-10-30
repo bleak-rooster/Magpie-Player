@@ -4,6 +4,7 @@ import MagpieTestSupport
 import Testing
 @testable import LidarrKit
 @testable import Search
+@testable import MatchIndex
 
 /// Crash hunt 4: each crash the fuzzers found, reduced to the smallest input that trapped.
 @Suite struct HostileDataRegressionTests {
@@ -92,6 +93,27 @@ import Testing
                 }
             }
         }
+    }
+
+    // MARK: - Normalising a run of flags (watchdog)
+
+    /// `range(of:options: .backwards)` is quadratic on a run of regional indicators (flag emoji): 20,000 flags in an
+    /// artist name took about 3 s per `Normalize.name`, and the car's "Try it next" normalises up to 100 search
+    /// results' artists on the main actor (`bridgeMix`), so a hostile server could trip the watchdog.
+    @Test func normalisingAFlagRunIsLinear() {
+        let flags = String(repeating: "🇬🇧", count: 20_000)
+        let seconds = FuzzClock.seconds {
+            _ = Normalize.key(artist: flags, title: flags + " - Live")
+            _ = Normalize.hasVersionAside(flags + " – Acoustic")
+            _ = ArtistNotYet.titleKey(flags + " - Deluxe Edition")
+        }
+        #expect(seconds < 0.5, "took \(seconds) s")
+        // Same answers as before: the last dash splits, in the order " - ", " – ", " — ".
+        #expect(Normalize.name("A - B - Remastered 2011") == "a b")
+        #expect(Normalize.name("Halo - Live") == "halo live")
+        #expect(Normalize.hasVersionAside("Halo – Acoustic") && !Normalize.hasVersionAside("Halo - Remastered"))
+        #expect(ArtistNotYet.titleKey("🇬🇧 Album - Deluxe Edition") == Normalize.name("🇬🇧 Album"))
+        #expect(ArtistNotYet.titleKey("Album — Remix - Deluxe") == Normalize.name("Album — Remix"))
     }
 
     // MARK: - Genre groups: counts that overflow when summed
