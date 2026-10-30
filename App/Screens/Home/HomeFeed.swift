@@ -48,6 +48,9 @@ import Observation
     @ObservationIgnored private(set) var isStopped = false
     /// In the background (fix I2): no retry waits; returning to the foreground reads what is still missing.
     @ObservationIgnored private(set) var isPaused = false
+    /// A trigger (reconnect, a stale foreground) that arrived while a read was under way (fix N2): one read follows
+    /// it, everything again when `true`. At most one is queued.
+    @ObservationIgnored private var followUp: Bool?
     /// Retry tasks alive now (tests: never more than one).
     @ObservationIgnored private(set) var liveRetries = 0
 
@@ -82,7 +85,8 @@ import Observation
     var isReading: Bool { readTask != nil }
 
     /// Reads what a change to `key` needs (Home appearing, a section turned on, offline or back, a download). Replaces
-    /// any read in flight; cancelling the caller (the view's task) cancels the read.
+    /// any read in flight. The read is the feed's own: the view going away (a tab switch) stops the wait, not the
+    /// read, which still records and settles (fix N1).
     func show(_ key: HomeLoad.Key) async {
         await run(startRead(key, fresh: false, asked: false))
     }
@@ -133,9 +137,14 @@ import Observation
         retryTask = nil
     }
 
-    /// A read now, unless one is under way (it joins that one); the backoff starts over.
+    /// A read now; the backoff starts over. With a read under way, one read follows it instead (fix N2): that read
+    /// began before this trigger, so its outcome may be stale.
     private func restart(_ key: HomeLoad.Key, fresh: Bool) {
-        guard !isStopped, readTask == nil else { return }
+        guard !isStopped else { return }
+        guard readTask == nil else {
+            followUp = (followUp ?? false) || fresh
+            return
+        }
         attempt = 0
         startRead(key, fresh: fresh, asked: false)
     }
@@ -146,6 +155,7 @@ import Observation
         guard !isStopped else { return nil }
         readTask?.cancel()
         cancelRetry()
+        followUp = nil   // this read covers it
         generation += 1
         let mine = generation
         let task = Task { [weak self] () -> Void in await self?.perform(key, fresh: fresh, asked: asked, generation: mine) }
@@ -153,10 +163,10 @@ import Observation
         return task
     }
 
-    /// Waits for `task`; a cancelled caller cancels it.
+    /// Waits for `task` (pull to refresh's spinner, the view's task). A newer read, or `stop()`, cancels it; the
+    /// caller going away doesn't (fix N1).
     private func run(_ task: Task<Void, Never>?) async {
-        guard let task else { return }
-        await withTaskCancellationHandler { await task.value } onCancel: { task.cancel() }
+        await task?.value
     }
 
     private func isCurrent(_ mine: Int) -> Bool { !Task.isCancelled && !isStopped && mine == generation }
@@ -193,6 +203,11 @@ import Observation
     private func settle(_ want: HomeLoad.Key, asked: Bool) {
         guard !isStopped else { return }
         save(want)
+        if let fresh = followUp {   // a trigger arrived during this read: read once more, now (fix N2)
+            attempt = 0
+            startRead(lastKey ?? want, fresh: fresh, asked: false)
+            return
+        }
         guard needsRead(want) else {
             attempt = 0
             failuresShown = false

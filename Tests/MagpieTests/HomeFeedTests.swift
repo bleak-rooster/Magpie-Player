@@ -255,8 +255,8 @@ import Testing
 
     // MARK: - Fix round 1
 
-    /// I1: launch overlaps a reconnect and a foreground read. One read runs (the others join it), one retry task lives,
-    /// and the schedule stays 5 s, 30 s, 2 min; after `stop()` nothing more is read.
+    /// I1: launch overlaps a reconnect and a foreground read. One read runs (the others join it and queue a single
+    /// follow-up, N2), one retry task lives, and the schedule stays 5 s, 30 s, 2 min; after `stop()` nothing is read.
     @Test func overlappingTriggersShareOneReadAndOneRetry() async throws {
         let server = FakeServer(), sleeper = ManualSleep()
         server.holds = true
@@ -272,14 +272,15 @@ import Testing
         server.gate?.resume()
         await showing.value
 
-        #expect(await eventually { sleeper.pending == 1 && feed.liveRetries == 1 })
+        // The three joined triggers coalesce into one follow-up read, then one retry waits.
+        #expect(await eventually { server.reads.count == 2 && sleeper.pending == 1 && feed.liveRetries == 1 })
         feed.reconnected()   // a retry read now, replacing the waiting one
-        #expect(await eventually { server.reads.count == 2 && sleeper.requested.count == 2 && sleeper.pending == 1
+        #expect(await eventually { server.reads.count == 3 && sleeper.requested.count == 2 && sleeper.pending == 1
                                    && feed.liveRetries == 1 }, "an orphaned retry task")
         await sleeper.release()
-        #expect(await eventually { server.reads.count == 3 && sleeper.requested.count == 3 && sleeper.pending == 1 })
+        #expect(await eventually { server.reads.count == 4 && sleeper.requested.count == 3 && sleeper.pending == 1 })
         await sleeper.release()
-        #expect(await eventually { server.reads.count == 4 && sleeper.requested.count == 4 && sleeper.pending == 1 })
+        #expect(await eventually { server.reads.count == 5 && sleeper.requested.count == 4 && sleeper.pending == 1 })
         #expect(sleeper.requested == [.seconds(5), .seconds(5), .seconds(30), .seconds(120)],
                 "reconnect starts the backoff over; otherwise it is 5 s, 30 s, 2 min")
         #expect(feed.liveRetries == 1)
@@ -288,7 +289,63 @@ import Testing
         #expect(await eventually { sleeper.pending == 0 && feed.liveRetries == 0 })
         feed.reconnected(); feed.foregrounded()
         await feed.show(key)
-        #expect(server.reads.count == 4, "a stopped feed read again")
+        #expect(server.reads.count == 5, "a stopped feed read again")
+    }
+
+    /// N1: the view's task cancelled mid-read (a tab switch) doesn't drop the read: it records, and a failure still
+    /// gets its retry.
+    @Test func viewGoingAwayDoesNotDropTheRead() async throws {
+        let server = FakeServer(), sleeper = ManualSleep()
+        server.holds = true
+        server.answer = failing([.recentlyAdded])
+        let feed = makeFeed(server, sleeper)
+        let showing = Task { await feed.show(key) }
+        #expect(await eventually { server.gate != nil })
+        showing.cancel()   // the view goes away; its wait ends with the read, which carries on
+        server.holds = false
+        server.gate?.resume()
+        await showing.value
+        #expect(await eventually { feed.state.value?.found[.jumpBackIn] != nil }, "the read was dropped")
+        #expect(await eventually { sleeper.pending == 1 && feed.liveRetries == 1 }, "the failure got no retry")
+        #expect(server.reads.count == 1)
+    }
+
+    /// N2: a reconnect that joins a read begun before it queues one read right after it (no backoff wait); a stale
+    /// foreground that joins a read queues a full read.
+    @Test func joinedTriggersQueueOneFollowUp() async throws {
+        let server = FakeServer(), sleeper = ManualSleep()
+        var clock = Date(timeIntervalSince1970: 1_000_000)
+        let feed = makeFeed(server, sleeper, now: { clock })
+        server.holds = true
+        // The first read (begun before the network came back) fails Recently added; later reads work.
+        let failFirst = failing([.recentlyAdded]), work = failing([])
+        server.answer = { [server] sections in try (server.reads.count == 1 ? failFirst : work)(sections) }
+        let showing = Task { await feed.show(key) }
+        #expect(await eventually { server.gate != nil })
+        feed.reconnected()
+        feed.reconnected()
+        server.holds = false
+        server.gate?.resume()
+        await showing.value
+        // The first read's failure is not the last word: the follow-up reads it at once, no sleep in between.
+        #expect(await eventually { server.reads.count == 2 && feed.state.value?.found[.recentlyAdded] != nil })
+        #expect(sleeper.requested.isEmpty && feed.liveRetries == 0, "it waited for the backoff")
+        #expect(server.reads.last == [.recentlyAdded])
+
+        // Stale foreground during a pull to refresh: one full read follows it.
+        clock += 11 * 60
+        server.holds = true
+        let refreshing = Task { await feed.refresh(key) }
+        #expect(await eventually { server.reads.count == 3 && server.gate != nil })
+        feed.foregrounded()
+        feed.foregrounded()
+        server.holds = false
+        server.gate?.resume()
+        await refreshing.value
+        #expect(await eventually { server.reads.count == 4 })
+        #expect(server.reads.last == [.jumpBackIn, .recentlyAdded], "the stale foreground's full read")
+        #expect(await eventually { !feed.isReading })
+        #expect(server.reads.count == 4, "the two joined triggers queued more than one read")
     }
 
     /// M5: a stopped feed's waiting retry never reads, and a read in flight at the stop records and saves nothing.
