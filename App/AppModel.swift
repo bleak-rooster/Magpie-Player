@@ -46,7 +46,7 @@ struct ProbeFailure {
 final class AppModel {
     static let shared = AppModel.restore()
 
-    private(set) var session: Session?
+    private(set) var session: Session? { didSet { homeFeedSessionChanged() } }
     let player: Player
     /// Sleep timer (fade out, then pause, or stop after the current song).
     let sleepTimer: SleepTimer
@@ -119,6 +119,7 @@ final class AppModel {
     /// The scene is active: requests poll every 5 s, otherwise every 30 s.
     var isForeground = true {
         didSet {
+            if isForeground != oldValue { homeFeedForegroundChanged(isForeground) }   // P5: Home's retries
             guard isForeground, !oldValue else { return }
             // I3: the Lidarr item may still have been unreadable when the session was restored.
             if session != nil, reloadKeychainItems() { rebuildRunner() }

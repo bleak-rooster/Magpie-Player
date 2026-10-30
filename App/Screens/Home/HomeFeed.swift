@@ -37,9 +37,19 @@ import Observation
     @ObservationIgnored private let now: () -> Date
     @ObservationIgnored private var lastKey: HomeLoad.Key?
     @ObservationIgnored private var attempt = 0
+    /// The one read in flight and the one retry waiting (fix I1): a new read replaces both.
+    @ObservationIgnored private var readTask: Task<Void, Never>?
     @ObservationIgnored private var retryTask: Task<Void, Never>?
+    /// Bumped by every read; only the newest read records and settles.
+    @ObservationIgnored private var generation = 0
     @ObservationIgnored private var lastAnswered: Date?
     @ObservationIgnored private var lastSaved: [HomeShelf]?
+    /// Signed out or another account (fix M1): nothing is read, retried or saved again.
+    @ObservationIgnored private(set) var isStopped = false
+    /// In the background (fix I2): no retry waits; returning to the foreground reads what is still missing.
+    @ObservationIgnored private(set) var isPaused = false
+    /// Retry tasks alive now (tests: never more than one).
+    @ObservationIgnored private(set) var liveRetries = 0
 
     init(scope: String? = nil, cache: HomeShelfCache?, read: @escaping Reader,
          sleep: @escaping Sleep = { try await Task.sleep(for: $0) }, now: @escaping () -> Date = Date.init) {
@@ -54,9 +64,13 @@ import Observation
         }
     }
 
-    /// Home's state for `LoadableView`: the shelves as soon as there are any; a failure only once it is shown.
+    /// Home's state for `LoadableView`: the shelves as soon as there are any; a failure only once it is shown. While
+    /// nothing is on screen yet and a retry is coming, the spinner stays (not an empty Home).
     var state: Loadable<HomeLoad> {
-        if let load { return .loaded(load) }
+        if let load {
+            if load.found.isEmpty, !failuresShown, let key = lastKey, load.needsRead(key) { return .loading }
+            return .loaded(load)
+        }
         if let pageError, failuresShown { return .failed(pageError) }
         return .loading
     }
@@ -64,27 +78,31 @@ import Observation
     /// Whether `section` says "Couldn't load": it failed, nothing of it is on screen, and failures are shown.
     func showsFailure(_ section: HomeSection) -> Bool { failuresShown && load?.showsFailure(section) == true }
 
-    /// Reads what a change to `key` needs (Home appearing, a section turned on, offline or back, a download).
+    /// A read is in flight.
+    var isReading: Bool { readTask != nil }
+
+    /// Reads what a change to `key` needs (Home appearing, a section turned on, offline or back, a download). Replaces
+    /// any read in flight; cancelling the caller (the view's task) cancels the read.
     func show(_ key: HomeLoad.Key) async {
-        retryTask?.cancel()
-        await perform(key, fresh: false, asked: false)
+        await run(startRead(key, fresh: false, asked: false))
     }
 
     /// Pull to refresh (and Try again): everything again, failures shown at once.
     func refresh(_ key: HomeLoad.Key) async {
-        retryTask?.cancel()
         attempt = 0
-        await perform(key, fresh: true, asked: true)
+        await run(startRead(key, fresh: true, asked: true))
     }
 
-    /// The server answers again, or the network came back: what failed is read at once.
+    /// The server answers again, or the network came back: what failed is read at once (or by the read under way).
     func reconnected() {
         guard let key = lastKey, needsRead(key) else { return }
         restart(key, fresh: false)
     }
 
-    /// Back in the foreground: what failed is read at once; after `staleAfter`, everything is read again silently.
+    /// Back in the foreground: retries resume; what failed is read at once; after `staleAfter`, everything is read
+    /// again silently.
     func foregrounded() {
+        isPaused = false
         guard let key = lastKey else { return }
         if needsRead(key) {
             restart(key, fresh: false)
@@ -93,36 +111,72 @@ import Observation
         }
     }
 
-    /// Stops any retry (sign-out, another account).
+    /// To the background: no retry waits meanwhile (the read under way, if any, finishes).
+    func backgrounded() {
+        isPaused = true
+        cancelRetry()
+    }
+
+    /// Stops for good (sign-out, another account): the read in flight and any retry are cancelled, and nothing is
+    /// read, retried or saved again.
     func stop() {
-        retryTask?.cancel()
-        retryTask = nil
+        isStopped = true
+        readTask?.cancel()
+        readTask = nil
+        cancelRetry()
     }
 
     private func needsRead(_ key: HomeLoad.Key) -> Bool { load?.needsRead(key) ?? true }
 
-    /// A read now, in place of any retry waiting; the backoff starts over.
-    private func restart(_ key: HomeLoad.Key, fresh: Bool) {
+    private func cancelRetry() {
         retryTask?.cancel()
-        attempt = 0
-        retryTask = Task { [weak self] in await self?.perform(key, fresh: fresh, asked: false) }
+        retryTask = nil
     }
 
-    private func perform(_ want: HomeLoad.Key, fresh: Bool, asked: Bool) async {
+    /// A read now, unless one is under way (it joins that one); the backoff starts over.
+    private func restart(_ key: HomeLoad.Key, fresh: Bool) {
+        guard !isStopped, readTask == nil else { return }
+        attempt = 0
+        startRead(key, fresh: fresh, asked: false)
+    }
+
+    /// The one read: replaces the read in flight and any retry waiting.
+    @discardableResult
+    private func startRead(_ key: HomeLoad.Key, fresh: Bool, asked: Bool) -> Task<Void, Never>? {
+        guard !isStopped else { return nil }
+        readTask?.cancel()
+        cancelRetry()
+        generation += 1
+        let mine = generation
+        let task = Task { [weak self] () -> Void in await self?.perform(key, fresh: fresh, asked: asked, generation: mine) }
+        readTask = task
+        return task
+    }
+
+    /// Waits for `task`; a cancelled caller cancels it.
+    private func run(_ task: Task<Void, Never>?) async {
+        guard let task else { return }
+        await withTaskCancellationHandler { await task.value } onCancel: { task.cancel() }
+    }
+
+    private func isCurrent(_ mine: Int) -> Bool { !Task.isCancelled && !isStopped && mine == generation }
+
+    private func perform(_ want: HomeLoad.Key, fresh: Bool, asked: Bool, generation mine: Int) async {
+        defer { if mine == generation { readTask = nil } }
         lastKey = want
         var state = load ?? HomeLoad()
         let request = state.read(for: want, fresh: fresh)
         do {
             let result = request.sections.isEmpty ? AppModel.HomeRead(shelves: [], failed: [])
                                                   : try await read(request.sections)
-            guard !Task.isCancelled else { return }   // a newer read (or the view going) took over: nothing recorded
+            guard isCurrent(mine) else { return }   // a newer read took over, or the feed stopped: nothing recorded
             state = load ?? state
             state.record(request, for: want, shelves: result.shelves, failed: result.failed, unread: result.cancelled)
             load = state
             pageError = nil
             if result.failed.union(result.cancelled).count < request.sections.count { lastAnswered = now() }
         } catch {
-            guard !Task.isCancelled else { return }
+            guard isCurrent(mine) else { return }
             if AppModel.isCancellation(error) {
                 // Cut short, not failed: nothing recorded, read again soon.
             } else if var state = load {
@@ -137,30 +191,40 @@ import Observation
 
     /// After a read: done (save what is on screen), or retry on the backoff, or say what failed.
     private func settle(_ want: HomeLoad.Key, asked: Bool) {
+        guard !isStopped else { return }
+        save(want)
         guard needsRead(want) else {
             attempt = 0
             failuresShown = false
-            save(want)
             return
         }
         if asked { failuresShown = true }
-        save(want)
-        guard attempt < Self.retryDelays.count else {
-            failuresShown = true
-            return
-        }
+        guard attempt < Self.retryDelays.count else { return giveUp() }
+        guard !isPaused else { return }   // foregrounding reads it
         let delay = Self.retryDelays[attempt]
         attempt += 1
+        cancelRetry()
+        liveRetries += 1
         retryTask = Task { [weak self, sleep] in
+            defer { self?.liveRetries -= 1 }
             do { try await sleep(delay) } catch { return }
-            guard !Task.isCancelled, let self else { return }
-            await self.perform(self.lastKey ?? want, fresh: false, asked: false)
+            guard !Task.isCancelled, let self, !self.isStopped else { return }
+            self.retryTask = nil   // so starting the read doesn't cancel this task under it
+            self.startRead(self.lastKey ?? want, fresh: false, asked: false)
         }
     }
 
-    /// Saves the shelves on screen, in Home's order, when they changed.
+    /// The retries ran out: say so. A launch whose every read was cut short has no message yet (fix M2): it gets the
+    /// plain one, with Try again, instead of a spinner that never ends.
+    private func giveUp() {
+        failuresShown = true
+        if load == nil, pageError == nil { pageError = BrowseErrorCopy.message(for: CancellationError()) }
+    }
+
+    /// Saves the shelves on screen, in Home's order, when they changed. Not offline (fix M3): the offline shelves
+    /// (Downloaded only) never replace the saved online ones.
     private func save(_ want: HomeLoad.Key) {
-        guard let cache, let load else { return }
+        guard !isStopped, !want.offline, let cache, let load else { return }
         let shelves = want.sections.compactMap { load.found[$0] }
         guard !shelves.isEmpty, shelves != lastSaved else { return }
         lastSaved = shelves
@@ -181,6 +245,19 @@ extension AppModel {
                             })
         homeFeedSlot = feed
         return feed
+    }
+
+    /// The session changed (fix I2): another account's feed stops at once, not on Home's next draw.
+    func homeFeedSessionChanged() {
+        guard let feed = homeFeedSlot, feed.scope != navidromeScope else { return }
+        feed.stop()
+        homeFeedSlot = nil
+    }
+
+    /// The app went to the background or came back (fix I2): retries pause, and resume on return.
+    func homeFeedForegroundChanged(_ foreground: Bool) {
+        guard let feed = homeFeedSlot else { return }
+        if foreground { feed.foregrounded() } else { feed.backgrounded() }
     }
 
     /// Sign-out: the feed stops and every saved shelf is removed.

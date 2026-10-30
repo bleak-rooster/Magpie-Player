@@ -82,7 +82,13 @@ extension AppModel {
         }
         let asksServer = wanted.indices.filter { Self.asksServer(wanted[$0]) }
         let failures = asksServer.compactMap { i -> (any Error)? in if case .failure(let e) = filled[i] { e } else { nil } }
-        if !asksServer.isEmpty, failures.count == asksServer.count, let first = failures.first { throw first }
+        // Every server section failed: a real error when they all are; a cancellation when they all were cut short;
+        // a mix is returned as it is, so the cut-short ones stay unread rather than failed (fix M4).
+        if !asksServer.isEmpty, failures.count == asksServer.count, let first = failures.first {
+            let real = failures.filter { !isCancellation($0) }
+            if real.isEmpty { throw first }
+            if real.count == failures.count { throw real[0] }
+        }
         let shelves = zip(wanted, filled).compactMap { section, result -> HomeShelf? in
             guard case .success(let items) = result, !items.isEmpty else { return nil }
             return HomeShelf(section: section, items: items)

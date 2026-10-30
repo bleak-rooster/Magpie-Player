@@ -9,7 +9,6 @@ import SwiftUI
 /// offline", then the Downloaded shelf (albums on the phone).
 struct HomeView: View {
     @Environment(AppModel.self) private var model
-    @Environment(\.scenePhase) private var scenePhase
     @State private var editsHome = false
     private let themed = Themed()
 
@@ -40,11 +39,11 @@ struct HomeView: View {
         // Reads what a change needs: a section turned on or one that failed, offline or back online (everything
         // again), a song that landed on or left the phone (Downloaded), the genre preferences (Genres). A reorder or a
         // section turned off reads nothing.
-        // P5: Home's feed (saved shelves at once, retries by itself) does the reading; see `HomeFeed`.
+        // P5: Home's feed (saved shelves at once, retries by itself) does the reading; see `HomeFeed`. Foreground and
+        // background reach it from `AppModel.isForeground`, sign-out and another account from the session.
         .task(id: key) { await model.homeFeed.show(key) }
         .onChange(of: model.serverAnsweredGeneration) { model.homeFeed.reconnected() }
         .onChange(of: model.network.status.isConnected) { _, connected in if connected { model.homeFeed.reconnected() } }
-        .onChange(of: scenePhase) { _, phase in if phase == .active { model.homeFeed.foregrounded() } }
         // Its own task, so the library's shelves never wait for it. Read once (Refresh reads again), and again
         // whenever the token is saved, replaced or removed (which also clears the shelf).
         .task(id: model.listenBrainzTokenGeneration) {
