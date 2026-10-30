@@ -30,6 +30,8 @@ public struct JSONFuzzer {
         case string(String)                     // already escaped, without the quotes
         case array([Node])
         case object([(String, Node)])           // keys escaped, without the quotes; order kept, duplicates allowed
+        /// `node` inside `depth` arrays (or `{"x":` objects). Kept flat, so a deep document costs no recursion here.
+        case nested(depth: Int, objects: Bool, Node)
     }
 
     public var rng: SeededRNG
@@ -81,6 +83,7 @@ public struct JSONFuzzer {
         if rng.chance(bodyChance) { return wholeBody(seed) }
         guard var tree = Self.parse(seed) else { return wholeBody(seed) }
         for _ in 0..<Int.random(in: 1...4, using: &rng) { tree = mutateSomewhere(tree, depth: 0) }
+        if Self.size(tree, cap: 4 * Self.maxBytes) > 4 * Self.maxBytes { return wholeBody(seed) }
         var text = Self.render(tree)
         if rng.chance(0.03) { text = String(text.prefix(Int.random(in: 0...max(0, text.count), using: &rng))) }
         return Data(text.utf8)
@@ -130,12 +133,12 @@ public struct JSONFuzzer {
         case 7:                                                              // huge array of copies
             let source: Node
             if case .array(let items) = node, let first = items.first { source = first } else { source = node }
-            let count = rng.chance(0.1) ? hugeArrayCount : Int.random(in: 2...200, using: &rng)
+            let wanted = rng.chance(0.1) ? hugeArrayCount : Int.random(in: 2...200, using: &rng)
+            // Copies of an already big node would make bodies of gigabytes: at most `maxBytes` in all.
+            let count = max(2, min(wanted, Self.maxBytes / max(1, Self.size(source, cap: Self.maxBytes))))
             return .array(Array(repeating: source, count: count))
         case 8:                                                              // deep nesting
-            var deep = node
-            for _ in 0..<Int.random(in: 50...700, using: &rng) { deep = rng.chance(0.5) ? .array([deep]) : .object([("x", deep)]) }
-            return deep
+            return .nested(depth: Int.random(in: 50...5_000, using: &rng), objects: rng.chance(0.5), node)
         case 9:                                                              // duplicate elements (same ids)
             if case .array(let items) = node, !items.isEmpty {
                 return .array(items + items + [items[0]])
@@ -147,6 +150,26 @@ public struct JSONFuzzer {
     }
 
     // MARK: - Parse and render
+
+    /// About how many bytes one huge-array mutation may make.
+    static let maxBytes = 4_000_000
+
+    /// About how many bytes `node` renders to, counting no further than `cap`.
+    static func size(_ node: Node, cap: Int) -> Int {
+        switch node {
+        case .raw(let s): return s.utf8.count
+        case .string(let s): return s.utf8.count + 2
+        case .nested(let depth, _, let inner): return depth * 6 + size(inner, cap: cap)
+        case .array(let items):
+            var total = 2
+            for item in items where total < cap { total += size(item, cap: cap) + 1 }
+            return total
+        case .object(let pairs):
+            var total = 2
+            for pair in pairs where total < cap { total += pair.0.utf8.count + 4 + size(pair.1, cap: cap) }
+            return total
+        }
+    }
 
     /// Nil when `data` isn't JSON.
     public static func parse(_ data: Data) -> Node? {
@@ -180,6 +203,10 @@ public struct JSONFuzzer {
             out += "["
             for (i, item) in items.enumerated() { if i > 0 { out += "," }; render(item, into: &out) }
             out += "]"
+        case .nested(let depth, let objects, let inner):
+            out += String(repeating: objects ? "{\"x\":" : "[", count: depth)
+            render(inner, into: &out)
+            out += String(repeating: objects ? "}" : "]", count: depth)
         case .object(let pairs):
             out += "{"
             for (i, pair) in pairs.enumerated() {

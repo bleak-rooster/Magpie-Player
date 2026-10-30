@@ -172,7 +172,8 @@ extension PreferenceArea {
     /// 1. Not a JSON object: the default. 2. Start from the default as a JSON object. 3. Copy each stored key in and
     /// try to decode the merge; a key that breaks it gets its default back. 4. Return the result, normalised.
     public static func decode(_ data: Data?) -> Self {
-        guard let data, let stored = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+        // Measured first: deeply nested stored data would overflow the stack in JSONSerialization (crash hunt 4).
+        guard let data, let stored = JSONNesting.object(with: data) as? [String: Any],
               let defaults = try? JSONSerialization.jsonObject(with: JSONEncoder().encode(defaultValue)) as? [String: Any]
         else { return defaultValue }
         var merged = defaults

@@ -46,7 +46,7 @@ let package = Package(
         // Crash hunt 4: seeded fuzzing of every client's decoding, and the decoded models through the UI and car builders.
         .testTarget(name: "HostileDataTests",
                     dependencies: ["NavidromeKit", "LidarrKit", "ListenBrainzKit", "MatchIndex", "Search", "CarPlayUI",
-                                   "Playback", "MagpieCore", "MagpieTestSupport"],
+                                   "Playback", "Requests", "MagpieCore", "MagpieTestSupport"],
                     resources: [.copy("../Fixtures/navidrome"), .copy("../Fixtures/lidarr"),
                                 .copy("../Fixtures/listenbrainz"), .copy("../Fixtures/musicbrainz")]),
         .testTarget(name: "SearchTests",

@@ -1,4 +1,5 @@
 import Foundation
+import MagpieCore
 
 /// Any JSON document. Provisioning reads Lidarr's schemas and existing profiles as raw JSON (A15: the full
 /// `items` / type lists must round-trip) and posts edited copies back.
@@ -12,6 +13,11 @@ public enum JSONValue: Sendable, Equatable, Codable {
     case object([String: JSONValue])
 
     public init(from decoder: Decoder) throws {
+        // One level of recursion per level of the document: past `JSONNesting.limit` it is refused, before a deep
+        // document overflows a 512 KB stack here or in what reads it next (crash hunt 4).
+        guard decoder.codingPath.count <= JSONNesting.limit else {
+            throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "nested too deeply"))
+        }
         let c = try decoder.singleValueContainer()
         if c.decodeNil() { self = .null }
         else if let b = try? c.decode(Bool.self) { self = .bool(b) }

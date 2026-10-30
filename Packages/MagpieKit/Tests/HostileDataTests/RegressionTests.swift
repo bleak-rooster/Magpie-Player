@@ -57,6 +57,43 @@ import Testing
         #expect(JSONValue.double(-9_223_372_036_854_775_808).intValue == Int.min)
     }
 
+    // MARK: - Deeply nested documents (stack overflow on a 512 KB thread)
+
+    static func nested(_ depth: Int, objects: Bool = true, in inner: String = "1") -> Data {
+        Data((String(repeating: objects ? #"{"x":"# : "[", count: depth) + inner + String(repeating: objects ? "}" : "]", count: depth)).utf8)
+    }
+
+    /// `JSONSerialization` recurses once per nested object with no depth limit: about 500 levels overflow a
+    /// cooperative thread's 512 KB stack (SIGBUS). `/system/plugins` and `config/mediamanagement` are read with it.
+    @Test func lidarrDeeplyNestedAnswersDontOverflow() async throws {
+        let transport = MockTransport()
+        let deep = Self.nested(5_000)
+        let deepArray = Data(("[" + String(decoding: Self.nested(5_000), as: UTF8.self) + "]").utf8)
+        transport.stub(pathSuffix: "/api/v1/system/plugins", body: deepArray)
+        transport.stub(pathSuffix: "/api/v1/config/mediamanagement", body: deep)
+        let lidarr = LidarrClient(base: URL(string: "https://music.example/lidarr")!, apiKey: "k", transport: transport)
+        #expect(try await lidarr.pluginTexts() == [])
+        #expect(try await lidarr.recycleBin() == nil)
+    }
+
+    @Test func preferencesDeeplyNestedDontOverflow() {
+        let data = Data((#"{"concurrent":3,"x":"# + String(decoding: Self.nested(5_000), as: UTF8.self) + "}").utf8)
+        #expect(DownloadPreferences.decode(data) == DownloadPreferences.defaultValue)
+    }
+
+    /// `JSONValue` (raw Lidarr documents) recursed once per level, as deep as `JSONDecoder` allows.
+    @Test func jsonValueDeepDocumentsDontOverflow() async throws {
+        for depth in [100, 400, 511, 600, 5_000] {
+            for objects in [true, false] {
+                let data = Self.nested(depth, objects: objects)
+                if let value = try? JSONDecoder().decode(JSONValue.self, from: data) {
+                    _ = try? JSONEncoder().encode(value)
+                    _ = BodySummary.make(try? JSONEncoder().encode(value), apiKey: "k", limit: 100)
+                }
+            }
+        }
+    }
+
     // MARK: - Genre groups: counts that overflow when summed
 
     /// The group's album and song counts were summed with `+`, which traps on overflow (a server reporting
