@@ -108,7 +108,8 @@ import Testing
         }
         #expect(stats.cases >= 5_000)
         #expect(stats.decoded > 500 && stats.errors > 100)   // the sweep exercises both outcomes
-        #expect(stats.slowest < 1, "slowest case \(stats.slowest) s")
+        #expect(stats.slowest < 3, // ~0.1 s idle; quadratic blow-ups take many seconds; headroom for loaded machines
+            "slowest case \(stats.slowest) s")
         #expect(total < 9, "sweep took \(total) s")
     }
 
@@ -168,7 +169,8 @@ import Testing
             }
         }
         #expect(stats.decoded > 500 && stats.errors > 100)
-        #expect(stats.slowest < 1, "slowest case \(stats.slowest) s")
+        #expect(stats.slowest < 3, // ~0.1 s idle; quadratic blow-ups take many seconds; headroom for loaded machines
+            "slowest case \(stats.slowest) s")
         #expect(total < 9, "sweep took \(total) s")
     }
 

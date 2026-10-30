@@ -161,7 +161,8 @@ struct ModelFuzz {
                 slowest = max(slowest, s)
             }
         }
-        #expect(slowest < 1, "slowest case \(slowest) s")
+        #expect(slowest < 3, // ~0.1 s idle; quadratic blow-ups take many seconds; headroom for loaded machines
+            "slowest case \(slowest) s")
         #expect(total < 9, "sweep took \(total) s")
     }
 
