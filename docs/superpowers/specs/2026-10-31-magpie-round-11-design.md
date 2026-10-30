@@ -307,3 +307,32 @@ Overlaps:
 - When an outside item lands in the library, the page updates in place (R17 live rows).
 - **Rate limits:** MusicBrainz at most 1 request/s with the app UA (existing client), cached in memory per session only. Offline: these pages say "You're offline".
 - **Workstream X8** (R19). Dispatched after X5, X6 and X7 merge, since it builds on their search, request and download-choice code.
+
+## R20. UX appraisal rulings (docs/reviews/ux-appraisal-round-11.md)
+The appraisal is binding, with its §8 errata, §9 glossary and §10 principles, **except where it overrides something the owner explicitly asked for**. There the owner's request stands *(controller ruling; the owner is told)*:
+
+| Appraisal | Ruling |
+|---|---|
+| P3: move the Lidarr wording to a Curator-only Details sheet | **Not adopted.** The owner asked that the artist page "make clear if that artist is currently in Lidarr". Keep one calm, visible status line. The header otherwise follows the appraisal: Play/Shuffle, one primary capsule, the rest in a toolbar star plus ⋯. P3's button renames to **Add to your library** (the not-in-Lidarr case) → the Add sheet. |
+| R18: remove the Simple downloads toggle | **Not adopted.** The owner asked for it, default ON. Renamed **Add with my defaults** (Settings › New music › When you add an artist), because "download" means this iPhone only. When on, one confirmation with a one-line summary; when off, the Add sheet with the defaults preselected. |
+| R18: Studio always on, hidden | **Not adopted.** The owner asked for Studio / Soundtrack / Live choices. Studio is on by default. Official is applied silently. |
+| R12: no collection popup (toast with Shuffle instead) | **Not adopted.** The owner asked for the popup: "In order" / "Shuffled". |
+| R12: ask before replacing only when Up next holds user-added songs | **Not adopted.** The owner's wording: ask whenever tapping to play would replace a queue of more than the current song (setting off by default). |
+| R17: the stall clock starts at the first progress | **Not adopted.** The owner said "no change in the download for 1 minute". The clock starts when the item appears in the queue. The setting allows 1/2/5/10 min, so the owner can relax it. |
+| R19: per-track Try replaced by "Try this album, starting here" | **Partly adopted.** The owner asked to "select an album or song". A track tap opens Try for that song (the existing single-release Try), deduped against any live request for the same release group. Try this album stays. |
+
+**Everything else in the appraisal is adopted**, including:
+- the glossary (one word per concept; "Download" = this iPhone only);
+- Settings › Requests → **Settings › New music**;
+- Only in Finds → **Keep <artist>**, and a find's menus say **Keep**;
+- R17 copy: "That copy stopped coming. Looking for another…", **Find another copy**, and "Give up on a stuck copy after";
+- the R9 More menu: Keep and Not for me first for a find; Sleep timer stays in the bottom row; Favourite in More only in lyrics mode;
+- R12: destructive actions never full-swipe, and both actions stay on the trailing edge;
+- R8: the playlist Download capsule;
+- R4: ⋯ → **Download to this iPhone…**;
+- the Try sheet: **Done** plus the footnote;
+- a Ready find's request page: Play · Keep · Not for me…;
+- search: a song tap plays the song, then its album; remove `.simultaneousGesture` from the NavigationLink rows;
+- the car shows live-request status and never offers a second Try;
+- dedupe requests by recording and release group;
+- §10 principles as the review checklist, including the no-dead-taps UI test.
