@@ -100,7 +100,9 @@ extension AudioEntry {
         size = (try? c.decodeIfPresent(Int64.self, forKey: .size)) ?? 0
         kind = (try? c.decodeIfPresent(AudioKind.self, forKey: .kind)) ?? .download
         let decoded = (try? c.decodeIfPresent(Set<DownloadReason>.self, forKey: .reasons)) ?? nil
-        reasons = decoded ?? (kind == .download ? [.unknown] : [])
+        // A download with no reason could never be removed on its own (no reason to drop), so it gets `.unknown`.
+        let isDownload = kind == .download
+        reasons = decoded.flatMap { isDownload && $0.isEmpty ? nil : $0 } ?? (isDownload ? [.unknown] : [])
         downloadedAt = (try? c.decodeIfPresent(Date.self, forKey: .downloadedAt)) ?? Date(timeIntervalSinceReferenceDate: 0)
         lastPlayed = try? c.decodeIfPresent(Date.self, forKey: .lastPlayed)
         metadata = (try? c.decodeIfPresent(AudioMetadata.self, forKey: .metadata))

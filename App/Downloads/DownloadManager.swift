@@ -102,6 +102,11 @@ final class DownloadManager {
     /// Covers to fetch once manual downloads may use the network.
     @ObservationIgnored var pendingCovers: [String] = []   // (+Removal)
     @ObservationIgnored var savedPending: [PendingJob] = []   // (+Removal)
+    /// `pending.json` is there but couldn't be read yet (before first unlock, an I/O error): it is never written over
+    /// or removed until it has been read, and its downloads then join the ones asked for meanwhile.
+    @ObservationIgnored var pendingUnread = false   // (+Removal)
+    /// Removals made while `pending.json` was unread: they also apply to the downloads it holds.
+    @ObservationIgnored var removalsWhileUnread: [Removal] = []   // (+Removal)
     /// Store writes refused with `notReady`, done once the store is ready.
     @ObservationIgnored var deferredRemovals: [Removal] = []   // (+Removal)
     @ObservationIgnored var deferredPlaylists: [DownloadedPlaylist] = []   // (+Removal)
@@ -152,14 +157,7 @@ final class DownloadManager {
     func start() async {
         await store.load()
         await refresh()
-        if let saved = try? AtomicFile.read([PendingJob].self, from: pendingURL) {
-            savedPending = saved
-            for item in saved where !jobs.contains(where: { $0.songId == item.metadata.songId && $0.kind == .download(item.reason) }) {
-                let job = Job(kind: .download(item.reason), metadata: item.metadata, quality: item.quality,
-                              playlistId: item.playlistId)
-                if item.full == true { stoppedByFull.append(job) } else { jobs.append(job) }
-            }
-        }
+        loadPending()
         networkWatch?.cancel()
         networkWatch = Task { [weak self, network] in
             let statuses = Observations { @MainActor in network.status }
@@ -328,6 +326,7 @@ final class DownloadManager {
 
     /// Runs what the store refused, now that it may be ready; anything still refused waits for the next retry.
     private func resumeStoreWork() async {
+        if pendingUnread { savePending() }   // reads pending.json first, now that it may be readable
         let gen = generation
         let removals = deferredRemovals, playlists = deferredPlaylists
         deferredRemovals = []; deferredPlaylists = []
@@ -402,6 +401,7 @@ final class DownloadManager {
         deferredPlaylists = []
         storeRetry?.cancel()
         storeRetry = nil
+        discardUnreadPending()
         savePending()
     }
 
@@ -618,7 +618,8 @@ final class DownloadManager {
                 try await store.add(fetched.file, metadata: job.metadata, quality: job.quality, kind: .cache,
                                     reason: nil, fileExtension: ext, downloadsLimit: nil)
             case .replace:
-                try await store.replace(songId: job.songId, with: fetched.file, quality: job.quality, fileExtension: ext)
+                try await store.replace(songId: job.songId, with: fetched.file, quality: job.quality, fileExtension: ext,
+                                        downloadsLimit: limitBytes(prefs))
             }
         } catch AudioStoreError.downloadsFull {
             if isLive(gen) { stopForFull(id) }

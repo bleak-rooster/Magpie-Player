@@ -30,6 +30,7 @@ extension DownloadManager {
     /// Only the jobs the removal names go, "Downloads are full" ones included. Other full jobs stay stopped, and are
     /// queued again only when the removal deleted songs (it freed room).
     private func remove(_ removal: Removal) async {
+        if pendingUnread { removalsWhileUnread.append(removal) }   // also for the downloads pending.json holds
         let only = removal.songIds.map(Set.init)
         func matches(_ job: Job) -> Bool { job.kind == .download(removal.reason) && only?.contains(job.songId) != false }
         cancelRunning(where: matches)
@@ -80,6 +81,7 @@ extension DownloadManager {
         pendingCovers = []
         deferredRemovals = []
         deferredPlaylists = []
+        discardUnreadPending()
         savePending()
         do {
             try await store.removeAll(kind: .download)
@@ -116,6 +118,8 @@ extension DownloadManager {
     /// when there are none.
     func savePending() {
         guard isStarted else { return }   // the scope may still be being erased: `start` saves them
+        if pendingUnread { loadPending() }
+        guard !pendingUnread else { return }   // never written over before it has been read
         func pendingJob(_ job: Job, full: Bool) -> PendingJob? {
             guard case let .download(reason) = job.kind else { return nil }
             return PendingJob(metadata: job.metadata, reason: reason, quality: job.quality, playlistId: job.playlistId,
@@ -139,5 +143,42 @@ extension DownloadManager {
         } catch {
             Log.logger("downloads").error("cannot save queued downloads: \(Log.category(of: error), privacy: .public)")
         }
+    }
+
+    /// Reads `pending.json` and queues its downloads (not ones a removal took meanwhile). A file that doesn't decode is
+    /// ignored; one that can't be read yet is left alone (`pendingUnread`) and read again on the next save.
+    func loadPending() {
+        let url = pendingURL
+        let data: Data
+        do {
+            guard FileManager.default.fileExists(atPath: url.path) else { pendingUnread = false; return }
+            data = try Data(contentsOf: url)
+        } catch {
+            if !pendingUnread {
+                Log.logger("downloads").error("queued downloads not readable yet: \(Log.category(of: error), privacy: .public)")
+            }
+            pendingUnread = true
+            return
+        }
+        pendingUnread = false
+        let removals = removalsWhileUnread
+        removalsWhileUnread = []
+        guard let saved = try? JSONDecoder().decode([PendingJob].self, from: data) else { return }
+        savedPending = saved
+        for item in saved {
+            let id = item.metadata.songId
+            guard !removals.contains(where: { $0.reason == item.reason && $0.songIds?.contains(id) != false }),
+                  !(jobs + stoppedByFull).contains(where: { $0.songId == id && $0.kind == .download(item.reason) })
+            else { continue }
+            let job = Job(kind: .download(item.reason), metadata: item.metadata, quality: item.quality,
+                          playlistId: item.playlistId)
+            if item.full == true { stoppedByFull.append(job) } else { jobs.append(job) }
+        }
+    }
+
+    /// Every queued download goes (remove all, sign-out): an unread `pending.json` no longer needs reading first.
+    func discardUnreadPending() {
+        pendingUnread = false
+        removalsWhileUnread = []
     }
 }

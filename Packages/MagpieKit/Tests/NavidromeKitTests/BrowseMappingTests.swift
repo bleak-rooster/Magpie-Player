@@ -265,6 +265,18 @@ import os
         #expect(queryValue(req, "time") == "1700000000000")
     }
 
+    /// Hunt 2: a queued play's time comes back from `scrobble-queue.json`; one milliseconds can't hold sends no time
+    /// instead of trapping.
+    @Test func scrobbleTimeOutOfRangeSendsNoTime() async throws {
+        let ok = Data(#"{"subsonic-response":{"status":"ok","version":"1.16.1"}}"#.utf8)
+        let (client, transport) = try await connected { $0.stub(pathSuffix: "/rest/scrobble", body: ok) }
+        for t in [1e300, -1e300, Double.infinity, -.infinity, .nan, 1e17] {
+            try await client.scrobble(songId: "s1", submission: true, at: Date(timeIntervalSince1970: t))
+            let req = try #require(transport.requests.last { $0.url?.path.hasSuffix("scrobble") == true })
+            #expect(queryValue(req, "time") == nil, "\(t)")
+        }
+    }
+
     @Test func starAndUnstarSendTheSongId() async throws {
         let ok = Data(#"{"subsonic-response":{"status":"ok","version":"1.16.1"}}"#.utf8)
         let (client, transport) = try await connected {

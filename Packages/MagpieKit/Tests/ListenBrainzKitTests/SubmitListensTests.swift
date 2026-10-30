@@ -51,6 +51,17 @@ import MagpieTestSupport
         #expect(meta["release_name"] == nil && info["duration_ms"] == nil)
     }
 
+    /// Hunt 2: a queued listen's time comes back from `scrobble-queue.json`; one an `Int` can't hold is sent without
+    /// `listened_at` (ListenBrainz refuses it) instead of trapping.
+    @Test func listenedAtOutOfRangeIsLeftOut() async throws {
+        let t = Self.okTransport()
+        let times = [1e300, -1e300, Double.infinity, -.infinity, .nan]
+        try await ListenBrainzClient(transport: t, token: "tok").submitListens(
+            times.map { Listen(listenedAt: Date(timeIntervalSince1970: $0), trackName: "T", artistName: "A") }, type: .importBatch)
+        let p = try Self.payload(t.requests.last!)
+        #expect(p.items.count == times.count && p.items.allSatisfy { $0["listened_at"] == nil })
+    }
+
     @Test func playingNowHasNoTimestamp() async throws {
         let t = Self.okTransport()
         try await ListenBrainzClient(transport: t, token: "tok").submitListens([Self.listen(1)], type: .playingNow)
