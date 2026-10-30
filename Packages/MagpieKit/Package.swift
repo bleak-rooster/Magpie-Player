@@ -39,7 +39,7 @@ let package = Package(
         .testTarget(name: "ListenBrainzKitTests",
                     dependencies: ["ListenBrainzKit", "MagpieCore", "MagpieTestSupport"],
                     resources: [.copy("../Fixtures/listenbrainz"), .copy("../Fixtures/musicbrainz")]),
-        .testTarget(name: "PlaybackTests", dependencies: ["Playback", "MagpieCore"]),
+        .testTarget(name: "PlaybackTests", dependencies: ["Playback", "MagpieCore", "MagpieTestSupport"]),
         .testTarget(name: "MatchIndexTests", dependencies: ["MatchIndex", "MagpieCore", "NavidromeKit", "MagpieTestSupport"]),
         .testTarget(name: "RequestsTests",
                     dependencies: ["Requests", "MagpieCore", "LidarrKit", "ListenBrainzKit", "NavidromeKit", "MagpieTestSupport"]),

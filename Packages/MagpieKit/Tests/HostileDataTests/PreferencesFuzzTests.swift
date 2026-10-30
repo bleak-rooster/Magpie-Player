@@ -64,8 +64,11 @@ import Testing
         #expect(genres == genres.normalised())
         #expect(genres.assignments.count <= GenrePreferences.maxAssignments && genres.groupNames.count <= GenrePreferences.maxGroupNames)
         #expect(genres.hidden.count <= GenrePreferences.maxHidden && genres.customGroups.count <= GenrePreferences.maxCustomGroups)
-        // What decode gives can be stored and read back unchanged.
+        // What decode gives can be stored and read back unchanged (every area; folded in from hunt 2's fuzzer).
         #expect(LayoutPreferences.decode(layout.encoded()) == layout)
+        #expect(PlaybackPreferences.decode(playback.encoded()) == playback)
+        #expect(DownloadPreferences.decode(downloads.encoded()) == downloads)
+        #expect(ScrobblePreferences.decode(scrobbling.encoded()) == scrobbling)
         #expect(GenrePreferences.decode(genres.encoded()) == genres)
     }
 

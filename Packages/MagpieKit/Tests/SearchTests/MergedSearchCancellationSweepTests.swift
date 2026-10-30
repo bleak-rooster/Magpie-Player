@@ -1,5 +1,6 @@
 import Foundation
 import MagpieCore
+import MagpieTestSupport
 import MatchIndex
 import Testing
 @testable import Search
@@ -9,21 +10,10 @@ import Testing
 /// some fail. Never a trap, a continuation resumed twice or never (the run must return), or a band in arrival order: a
 /// run either returns exactly what the uncancelled run returns, or nothing it shouldn't.
 @Suite struct MergedSearchCancellationSweepTests {
-    struct Rng: RandomNumberGenerator {
-        var state: UInt64
-        mutating func next() -> UInt64 {
-            state &+= 0x9E37_79B9_7F4A_7C15
-            var z = state
-            z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9
-            z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
-            return z ^ (z >> 31)
-        }
-    }
-
     final class Delays: @unchecked Sendable {
         private let lock = NSLock()
-        private var rng: Rng
-        init(seed: UInt64) { rng = Rng(state: seed) }
+        private var rng: SeededRNG
+        init(seed: UInt64) { rng = SeededRNG(seed: seed) }
         func next(_ most: Int) -> Int { lock.lock(); defer { lock.unlock() }; return Int.random(in: 0...most, using: &rng) }
     }
 
@@ -74,7 +64,7 @@ import Testing
     @Test func cancelledAnywhereReturnsTheWholeAnswerOrNothingWrong() async throws {
         let expected = try await Self.search(Delays(seed: 1), maxMicros: 0).runReportingLibraryFailure("harbour")
         #expect(expected.notYet.songs.first == Self.ext(0, 0), "source order, not arrival order")
-        var rng = Rng(state: 0x5EA)
+        var rng = SeededRNG(seed: 0x5EA)
         // The seed fixes the cancel points, not the outcomes: where a cancel lands against the delays depends on the
         // machine, so which outcome a random round gets is never asserted (merged crash-hunt review, I3).
         for round in 0..<300 {
@@ -117,7 +107,7 @@ import Testing
 
     /// The deadline race alone: the work, the deadline and the cancel finishing in any order resume the caller once.
     @Test func deadlineRaceResumesOnceWhateverFinishesFirst() async {
-        var rng = Rng(state: 0xDEAD)
+        var rng = SeededRNG(seed: 0xDEAD)
         for round in 0..<400 {
             let work = Int.random(in: 0...1500, using: &rng), limit = Int.random(in: 0...1500, using: &rng)
             let task = Task {

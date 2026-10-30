@@ -189,7 +189,8 @@ import Testing
     // MARK: - Genre groups: counts that overflow when summed
 
     /// The group's album and song counts were summed with `+`, which traps on overflow (a server reporting
-    /// `9223372036854775807` for two genres of one group). The sums saturate.
+    /// `9223372036854775807` for two genres of one group). The sums saturate, and a negative count can't pull a held
+    /// `.max` back down (merged review, M6).
     @Test func genreGroupCountsSaturate() {
         let genres = [Genre(name: "Rock", songCount: .max, albumCount: .max),
                       Genre(name: "Indie Rock", songCount: .max, albumCount: 5),
@@ -198,7 +199,10 @@ import Testing
         let sections = GenreGroups.grouped(genres, preferences: .defaultValue)
         let rock = try? #require(sections.first { $0.group.id == "rock" })
         #expect(rock?.albumCount == .max && rock?.songCount == .max)
+        // A negative count means nothing: it counts as none, so the sum holds at `.max` whatever the order.
         let jazz = try? #require(sections.first { $0.group.id == "jazz" })
-        #expect(jazz?.albumCount == .min && jazz?.songCount == .min)
+        #expect(jazz?.albumCount == 0 && jazz?.songCount == 0)
+        #expect(GenreGroups.total([.max, -5, 1]) == .max && GenreGroups.total([-5, .max, 1]) == .max)
+        #expect(GenreGroups.total([3, -2, 4]) == 7)
     }
 }

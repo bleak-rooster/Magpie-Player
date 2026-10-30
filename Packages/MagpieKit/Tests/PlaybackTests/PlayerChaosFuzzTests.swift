@@ -1,4 +1,5 @@
 import Foundation
+import MagpieTestSupport
 import Testing
 import MagpieCore
 @testable import Playback
@@ -79,17 +80,6 @@ import MagpieCore
         }
     }
 
-    struct RNG: RandomNumberGenerator {
-        var state: UInt64
-        mutating func next() -> UInt64 {
-            state &+= 0x9E37_79B9_7F4A_7C15
-            var z = state
-            z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9
-            z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
-            return z ^ (z >> 31)
-        }
-    }
-
     // MARK: - Data
 
     /// Lengths as a server might send them, odd ones included (0 = unknown, a huge one, and the non-numbers a
@@ -98,7 +88,7 @@ import MagpieCore
     static let times: [TimeInterval] = [0, 0.5, 1, 3.2, 29, 100, 199.9, 250, -1, -1e9, 1e12, 1e300, .nan, .infinity,
                                         -.infinity, .greatestFiniteMagnitude, .leastNonzeroMagnitude]
 
-    static func songs(_ rng: inout RNG) -> [Song] {
+    static func songs(_ rng: inout SeededRNG) -> [Song] {
         (0..<Int.random(in: 0...9, using: &rng)).map { i in
             let id = "s\(Int.random(in: 0...7, using: &rng))"   // repeats on purpose: the same song in many slots
             var song = Song(id: id, title: "T\(i)", artist: "A", album: "B",
@@ -164,7 +154,7 @@ import MagpieCore
     /// Returns the plays counted and the steps that ended with the player playing.
     func runSequence(seed: UInt64, ops: Int) async -> (Int, Int) {
         var playingSteps = 0
-        var rng = RNG(state: seed &* 0xA24B_AED4_963E_E407 &+ 1)
+        var rng = SeededRNG(seed: seed &* 0xA24B_AED4_963E_E407 &+ 1)
         let engine = ChaosEngine()
         let scrobbler = CountingScrobbler()
         let urls = ChaosURLs()
@@ -289,11 +279,10 @@ import MagpieCore
     /// 2,000 sequences of 50 queue ops on `PlayQueue` alone, against a reference of what each op should keep.
     @Test func queueSequences() {
         for seed in 0..<UInt64(2000) {
-            var rng = RNG(state: seed &+ 0x51)
+            var rng = SeededRNG(seed: seed &+ 0x51)
             var q = PlayQueue()
             for step in 0..<50 {
                 let all = q.main + q.upNext
-                let countBefore = all.count
                 switch Int.random(in: 0...11, using: &rng) {
                 case 0: q.replace(with: Self.songs(&rng), startAt: Int.random(in: -5...15, using: &rng))
                 case 1: q.playNext(Self.songs(&rng))
@@ -314,7 +303,6 @@ import MagpieCore
                 if let i = q.currentIndex { #expect(q.main.indices.contains(i), "seed \(seed) step \(step)") }
                 let ids = (q.main + q.upNext).map(\.id)
                 #expect(Set(ids).count == ids.count, "seed \(seed) step \(step)")
-                #expect(q.current != nil || q.upNext.isEmpty || countBefore == 0 || true)
                 #expect(q.upcomingCount == q.upcoming.count)
                 #expect(q.upcoming(limit: 3).map(\.id) == Array(q.upcoming.prefix(3)).map(\.id))
             }

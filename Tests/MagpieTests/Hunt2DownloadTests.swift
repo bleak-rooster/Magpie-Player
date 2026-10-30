@@ -1,5 +1,6 @@
 import Foundation
 import MagpieCore
+import MagpieTestSupport
 import Playback
 import Testing
 import UIKit
@@ -8,19 +9,6 @@ import UIKit
 private let cell = NetworkStatus(isConnected: true, isCellular: true, isConstrained: false)
 
 @MainActor private final class OfflineFlag { var value = false }
-
-/// SplitMix64: deterministic across runs and platforms.
-private struct SeededRNG: RandomNumberGenerator {
-    var state: UInt64
-    init(seed: UInt64) { state = seed }
-    mutating func next() -> UInt64 {
-        state &+= 0x9E37_79B9_7F4A_7C15
-        var z = state
-        z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9
-        z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
-        return z ^ (z >> 31)
-    }
-}
 
 /// Hunt 2: downloads, storage and offline under chaos. `pending.json` that can't be read yet, seeded storms of
 /// downloads, removals, promotions, network flips, offline toggles and sign-outs.
