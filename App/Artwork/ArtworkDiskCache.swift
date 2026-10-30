@@ -98,8 +98,10 @@ actor ArtworkDiskCache {
         return total
     }
 
-    /// "Clear artwork cache": all of it goes. Covers saved with downloads live with the audio and stay.
-    func clear() {
+    /// "Clear artwork cache": all of it goes, and saves started before it are refused (review M2). Covers saved with
+    /// downloads live with the audio and stay.
+    func clear(generation: Int) {
+        minimumGeneration = max(minimumGeneration, generation)
         try? FileManager.default.removeItem(at: folder)
     }
 

@@ -11,6 +11,8 @@ import UIKit
 public final class NowPlayingBridge {
     private let player: Player
     private let artworkURL: (Song) -> URL?
+    /// The app's artwork, through its caches (P4); when given, `artworkURL` isn't used.
+    private let artworkImage: (@MainActor (Song) async -> UIImage?)?
     private let onLike: (Song) -> Void
     /// The like button's state for a song: the app's star state (with its unsaved flips), observed.
     private let isLiked: (Song) -> Bool
@@ -33,9 +35,11 @@ public final class NowPlayingBridge {
     }
 
     public init(player: Player, artworkURL: @escaping (Song) -> URL?, onLike: @escaping (Song) -> Void,
-                isLiked: @escaping (Song) -> Bool = { $0.starred }) {
+                isLiked: @escaping (Song) -> Bool = { $0.starred },
+                artworkImage: (@MainActor (Song) async -> UIImage?)? = nil) {
         self.player = player
         self.artworkURL = artworkURL
+        self.artworkImage = artworkImage
         self.onLike = onLike
         self.isLiked = isLiked
         registerCommands()
@@ -106,7 +110,17 @@ public final class NowPlayingBridge {
     }
 
     private func fetchArtwork(for song: Song) {
-        guard let id = song.coverArtId, artwork?.coverArtId != id, let url = artworkURL(song) else { return }
+        guard let id = song.coverArtId, artwork?.coverArtId != id else { return }
+        if let artworkImage {   // the app's caches: a cached cover costs no request, and shows offline
+            artworkTask?.cancel()
+            artworkTask = Task { [weak self] in
+                guard let image = await artworkImage(song), !Task.isCancelled, let self else { return }
+                self.artwork = (id, Self.makeArtwork(image))
+                if self.player.queue.current?.song.coverArtId == id { self.publish(loadArtwork: false) }
+            }
+            return
+        }
+        guard let url = artworkURL(song) else { return }
         artworkTask?.cancel()
         artworkTask = Task { [weak self] in
             guard let (data, _) = try? await Self.artworkSession.data(from: url, delegate: SameOriginRedirects.shared),

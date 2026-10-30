@@ -39,6 +39,12 @@ extension AppModel {
         return image
     }
 
+    /// The lock screen's and CarPlay's Now Playing cover (review I1): through the same caches, at 600 px.
+    func nowPlayingArtwork(_ song: Song) async -> UIImage? {
+        guard let id = song.coverArtId else { return nil }
+        return await artworkImage(id, size: 600)
+    }
+
     /// "Reload artwork" on an album, artist or playlist: its cached sizes go and it is fetched again.
     func reloadArtwork(_ coverArtId: String?) async {
         guard let coverArtId, let memoryScope = artworkScope, let scope = navidromeScope else { return }
@@ -52,8 +58,8 @@ extension AppModel {
 
     /// "Clear artwork cache" (confirmed first): what's on screen stays until it's next loaded.
     func clearArtworkCache() async {
-        ArtworkCache.shared.removeAll()
-        await artworkDisk.clear()
+        ArtworkCache.shared.removeAll()   // fetches in flight now drop their result
+        await artworkDisk.clear(generation: ArtworkCache.shared.generation)
     }
 
     /// Sign-out: the account's artwork leaves the phone (as its downloads do). The memory cache is cleared first, so a
