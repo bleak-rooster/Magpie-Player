@@ -17,3 +17,6 @@ App/Info.plist
 # Claude Code agent worktrees
 .claude/worktrees/
 ios_crash_reports/
+
+# Per-worktree DerivedData used by parallel agents
+/dd/
