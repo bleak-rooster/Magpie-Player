@@ -87,12 +87,61 @@ import Testing
         for depth in [100, 400, 511, 600, 5_000] {
             for objects in [true, false] {
                 let data = Self.nested(depth, objects: objects)
+                #expect(throws: (any Error).self, "depth \(depth) is past the limit") {
+                    try JSONDecoder().decode(JSONValue.self, from: data)
+                }
                 if let value = try? JSONDecoder().decode(JSONValue.self, from: data) {
                     _ = try? JSONEncoder().encode(value)
                     _ = BodySummary.make(try? JSONEncoder().encode(value), apiKey: "k", limit: 100)
                 }
             }
         }
+        // Within the limit a document still decodes, so the guard can't be satisfied by refusing everything.
+        for objects in [true, false] {
+            #expect((try? JSONDecoder().decode(JSONValue.self, from: Self.nested(50, objects: objects))) != nil)
+        }
+    }
+
+    // MARK: - JSONNesting: bodies that aren't UTF-8
+
+    /// `JSONSerialization` also reads UTF-16 and UTF-32 (with or without a BOM). Scanned as UTF-8 bytes, the low byte
+    /// of a character such as U+0122 ("Ģ" is `22 01` in UTF-16LE) read as a quote, so every bracket after it counted
+    /// as inside a string and a deep document passed the guard (merged crash-hunt review, I2).
+    static func encodings(_ text: String) -> [(String, Data)] {
+        func bytes(_ encoding: String.Encoding, bom: [UInt8] = []) -> Data { Data(bom) + text.data(using: encoding)! }
+        return [("UTF-16LE", bytes(.utf16LittleEndian)), ("UTF-16BE", bytes(.utf16BigEndian)),
+                ("UTF-16LE BOM", bytes(.utf16LittleEndian, bom: [0xFF, 0xFE])),
+                ("UTF-16BE BOM", bytes(.utf16BigEndian, bom: [0xFE, 0xFF])),
+                ("UTF-32LE", bytes(.utf32LittleEndian)), ("UTF-32BE", bytes(.utf32BigEndian)),
+                ("UTF-32LE BOM", bytes(.utf32LittleEndian, bom: [0xFF, 0xFE, 0x00, 0x00])),
+                ("UTF-32BE BOM", bytes(.utf32BigEndian, bom: [0x00, 0x00, 0xFE, 0xFF])),
+                ("UTF-8 BOM", bytes(.utf8, bom: [0xEF, 0xBB, 0xBF]))]
+    }
+
+    @Test func jsonNestingCountsUTF16AndUTF32() {
+        let deep = #"["Ģ", "# + String(repeating: "[", count: 200) + "1" + String(repeating: "]", count: 200) + "]"
+        for (name, data) in Self.encodings(deep) {
+            #expect(!JSONNesting.isWithin(data), "\(name): 200 levels passed the guard")
+            #expect(JSONNesting.object(with: data) == nil, "\(name)")
+        }
+        // A shallow document in any of them still reads, with its text intact.
+        let shallow = #"["Ģ", [[1]], {"k": "ŀ\"]"}]"#
+        for (name, data) in Self.encodings(shallow) {
+            #expect(JSONNesting.isWithin(data), "\(name)")
+            let object = JSONNesting.object(with: data) as? [Any]
+            #expect(object?.first as? String == "Ģ", "\(name)")
+            #expect((object?.last as? [String: String])?["k"] == "ŀ\"]", "\(name)")
+        }
+    }
+
+    /// Anything the scanner can't read the way the parser will is refused rather than guessed at.
+    @Test func jsonNestingRefusesWhatItCantMeasure() {
+        #expect(!JSONNesting.isWithin(Data("]]][[[1".utf8)), "a stray closer took the depth below zero")
+        #expect(!JSONNesting.isWithin(Data([0x5B, 0x5B, 0x00, 0x5D, 0x5D])), "a NUL in UTF-8 means another encoding")
+        #expect(!JSONNesting.isWithin(Data([0x5B, 0x00, 0x5B, 0x5D, 0x5D])), "UTF-16 with half a character")
+        #expect(!JSONNesting.isWithin(Data([0xFF, 0xFE, 0x00, 0xD8, 0x5B, 0x00])), "UTF-16 that doesn't decode")
+        #expect(JSONNesting.isWithin(Data(#"{"a":"]]]"}"#.utf8)))
+        #expect(JSONNesting.isWithin(Data()))
     }
 
     // MARK: - Normalising a run of flags (watchdog)
