@@ -109,19 +109,18 @@ struct PopularSongsCache {
     private(set) var songs: [Song] = []
     /// How many times a read changed what shows (tests).
     @ObservationIgnored private(set) var visibleChanges = 0
-    @ObservationIgnored private let artistId: String
+    @ObservationIgnored let artistId: String
     @ObservationIgnored private let cache: PopularSongsCache?
-    @ObservationIgnored private let read: () async throws -> [Song]
 
-    init(artistId: String, cache: PopularSongsCache?, read: @escaping () async throws -> [Song]) {
+    init(artistId: String, cache: PopularSongsCache?) {
         self.artistId = artistId
         self.cache = cache
-        self.read = read
         songs = cache?.load(artistId: artistId) ?? []
     }
 
-    /// Reads the server's Popular. A failed read keeps what shows; a list that reads the same keeps its rows.
-    func refresh() async {
+    /// Reads the server's Popular with `read`. A failed read keeps what shows; a list that reads the same keeps its
+    /// rows.
+    func refresh(_ read: () async throws -> [Song]) async {
         guard let fresh = try? await read(), !Task.isCancelled else { return }
         if PopularSongsCache.rows(fresh) != PopularSongsCache.rows(songs) {
             songs = fresh
@@ -135,11 +134,12 @@ struct PopularSongsCache {
 
 extension AppModel {
     /// Popular for an artist page, from this account's saved lists.
-    func popularSongs(artistId: String, artistName: String) -> PopularSongs {
-        PopularSongs(artistId: artistId, cache: navidromeScope.map { PopularSongsCache(root: dataDirectory, scope: $0) },
-                     read: { [weak self] in
-                         guard let self else { throw CancellationError() }
-                         return try await self.request { try await $0.topSongs(artistName: artistName) }
-                     })
+    func popularSongs(artistId: String) -> PopularSongs {
+        PopularSongs(artistId: artistId, cache: navidromeScope.map { PopularSongsCache(root: dataDirectory, scope: $0) })
+    }
+
+    /// Reads the artist's top songs (empty without the server's Last.fm agent) into `popular`.
+    func refreshPopular(_ popular: PopularSongs, artistName: String) async {
+        await popular.refresh { try await request { try await $0.topSongs(artistName: artistName) } }
     }
 }

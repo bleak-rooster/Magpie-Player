@@ -80,6 +80,11 @@ extension AppModel {
         return false
     }
 
+    /// `isFavourite` for an item read with its own `starred` (a list row): that, unless the session knows better.
+    func isFavourite(_ target: FavouriteTarget, given starred: Bool) -> Bool {
+        libraryEdits.overrides[target] ?? libraryEdits.known[target] ?? starred
+    }
+
     /// Favourites or unfavourites `target` at once, then tells the server; a refusal rolls back with a notice.
     func setFavourite(_ target: FavouriteTarget, _ on: Bool) async {
         await setFavourite(target, on, was: isFavourite(target))

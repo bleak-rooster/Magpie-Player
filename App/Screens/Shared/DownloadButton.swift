@@ -90,6 +90,7 @@ struct SongDownloadMenuItem: View {
         default:   // not on the phone, but on its way, waiting, full or failed
             Button("Cancel download", systemImage: "xmark") { Task { await model.removeSongDownload(song.id) } }
         }
+        SongLibraryMenuItems(song: song)   // R7, R8: Add to playlist…, Favourite
     }
 }
 

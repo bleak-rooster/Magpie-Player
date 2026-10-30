@@ -65,6 +65,7 @@ struct MadeForYouView: View {
             .buttonStyle(.plain)
             .accessibilityAddTraits(.isButton)
             .accessibilityIdentifier("made-for-you-track-\(index)")
+            .contextMenu { SongLibraryMenuItems(song: song) }   // R7, R8
         case .notYet(let recording):
             SongRow(song: Song(id: "notyet-\(index)", title: recording.title, artist: recording.artist,
                                album: recording.releaseTitle ?? "", duration: recording.duration ?? 0),
