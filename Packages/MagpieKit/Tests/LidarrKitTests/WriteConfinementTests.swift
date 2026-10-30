@@ -114,6 +114,8 @@ private let findMBID = "42424242-4242-4242-8242-424242424242"
         Call("PUT", "artist/editor", #"{"artistIds":[7],"tags":[2],"applyTags":"add"}"#),
         Call("PUT", "artist/editor", #"{"artistIds":[7],"qualityProfileId":9}"#),
         Call("PUT", "artist/editor", #"{"artistIds":[7],"monitorNewItems":"new"}"#),
+        // P3 "Monitor" is only for an artist Magpie added.
+        Call("PUT", "artist/editor", #"{"artistIds":[7],"monitored":true}"#),
         // An artist the ledger doesn't know at all.
         Call("DELETE", "artist/99?deleteFiles=false&addImportListExclusion=false"),
         Call("PUT", "artist/editor", #"{"artistIds":[99],"tags":[2],"applyTags":"remove"}"#),
@@ -134,6 +136,8 @@ private let findMBID = "42424242-4242-4242-8242-424242424242"
         Call("PUT", "artist/editor", #"{"artistIds":[42],"rootFolderPath":"/music/samples","moveFiles":false}"#),
         Call("PUT", "artist/editor", #"{"artistIds":[42],"tags":[2],"applyTags":"remove"}"#),
         Call("PUT", "artist/editor", #"{"artistIds":[42],"monitorNewItems":"new"}"#),
+        // P3 "Monitor": an unmonitored artist Magpie added.
+        Call("PUT", "artist/editor", #"{"artistIds":[42],"monitored":true}"#),
         // Case, prefix and `//` variants.
         Call("PUT", "//API//V1//Artist//Editor//", #"{"artistIds":[42],"tags":[2],"applyTags":"remove"}"#),
         Call("PUT", "artist/editor", #"{"ArtistIds":[42],"MonitorNewItems":"New"}"#),
@@ -180,6 +184,12 @@ private let findMBID = "42424242-4242-4242-8242-424242424242"
         Call("PUT", "artist/editor", #"{"artistIds":[42],"rootFolderPath":"/music/library","moveFiles":1}"#),
         Call("PUT", "artist/editor", #"{"artistIds":[42],"rootFolderPath":7}"#),
         Call("PUT", "artist/editor", #"{"artistIds":[42],"monitorNewItems":"new","qualityProfileId":4}"#),
+        // P3: monitoring is exactly {artistIds: [one], monitored: true}, never mixed with anything else.
+        Call("PUT", "artist/editor", #"{"artistIds":[42],"monitored":true,"tags":[2],"applyTags":"add"}"#),
+        Call("PUT", "artist/editor", #"{"artistIds":[42],"monitored":true,"rootFolderPath":"/music/library","moveFiles":true}"#),
+        Call("PUT", "artist/editor", #"{"artistIds":[42],"monitored":"true"}"#),
+        Call("PUT", "artist/editor", #"{"artistIds":[42],"monitored":1}"#),
+        Call("PUT", "artist/editor", #"{"artistIds":[42],"monitored":true,"Monitored":false}"#),
     ]
 
     @Test(arguments: badEditorShapes)
