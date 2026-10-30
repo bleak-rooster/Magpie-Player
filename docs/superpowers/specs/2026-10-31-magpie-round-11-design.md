@@ -278,7 +278,7 @@ Overlaps:
   - When on, every one of these actions skips the sheet and uses the defaults set in Settings › Requests › **Download defaults**: What (default The whole artist), Types (default Albums + EPs, Studio), Quality (default Lossless), Follow new releases (default off).
   - The defaults can't be changed per download. The confirmation stays a single "Add <artist> to your library?" with a one-line summary of the defaults.
   - When off, the sheet appears every time, preset with the defaults.
-- **Try (single song)** is unchanged: one release, Fast Start. New artists from Try use the default types' metadata profile in place of `Magpie Finds` only if simple mode is on *(call: keep Try's single-release behaviour; types matter only once more is brought in)*. Actually: unchanged.
+- **Try (single song)** is unchanged *(call)*: one release, the Fast Start profile, and the Magpie Finds metadata profile for new artists. The release types only matter once more is brought in.
 - **Tests:**
   - dev Lidarr with gated writes on the test's own fixture artists only, cleaned up afterwards;
   - profile provisioning is idempotent;
