@@ -243,3 +243,47 @@ Overlaps:
   - dev stack: no Soulseek, so use stubs;
   - a read-only probe of the owner's real Lidarr `GET /api/v1/downloadclient` and `GET /api/v1/queue` shapes is allowed, under the owner-real-servers rules: reads only, never print credentials, no writes.
 - **Workstream X6** (R17).
+
+## R18. "Only in Finds" → add to your library, download choices, simple mode (owner addendum; absorbs the queued Lidarr release-type round)
+- **Main library:**
+  - Finds setup gains **Main library**: the Navidrome library that is your main collection, picked from `/api/library` and required when there's more than one library. It's stored with the Finds setup.
+  - Also **Main folder**: Lidarr's main root folder, which already exists as Lidarr setup's main root. Show it alongside, so the pair is explicit.
+  - The main library is used for targeted scans after Keep, and to decide "in your library" vs "only in Finds".
+  - With exactly one non-Finds library, it's picked automatically.
+- **Only in Finds:**
+  - An artist whose every song Magpie knows is in the Finds library shows an info line on the artist page: "Only in Finds" (`sparkles` or the Finds symbol), plus a primary button **Add to your library**.
+  - A find song's Now Playing More menu (R9) and the long-press menu get **Add to your library…**
+  - For an artist Magpie added (ledger), this runs Keep (move into the main root, Lossless profile, remove `magpie-find`), then Bring in more per the choices below.
+  - For anything else, it's informational only (owner-data rule): "Added outside Magpie. Change it in Lidarr."
+- **Download choices sheet**, used by Add to your library, Bring in more, and the artist page's "Add to Lidarr and download" (W3):
+  - **What:**
+    - This album only;
+    - The whole artist, with release types:
+      - Albums / Albums + EPs / Albums + EPs + Singles;
+      - plus Studio, Soundtrack, Live as toggles (Studio on by default);
+      - Official releases only (always, not a choice).
+  - **Quality:**
+    - Lossless (FLAC), the Magpie Lossless profile;
+    - Smaller files (MP3), the Magpie Fast Start profile or an MP3 profile Magpie provisions.
+
+    The implementer verifies the existing Magpie profiles and names them clearly in the UI.
+  - **Follow new releases** toggle.
+  - Each choice shows "about N hours" when known (existing Bring in more logic).
+- **Metadata profiles for release types:**
+  - Magpie provisions, on demand, metadata profiles named `Magpie <Types> · <Secondary>` (e.g. `Magpie Albums+EPs · Studio+Live`), Official status only.
+  - Created only if missing. An existing profile with that name but different settings stops with an explanation (existing provisioning rule).
+  - Applied only to artists Magpie added (ledger). Gate shape: `PUT /artist/editor {artistIds:[id], metadataProfileId}`, plus the existing quality and monitor shapes.
+  - Never changes artists the owner added.
+- **Simple downloads** (Settings › Requests, default **ON**):
+  - When on, every one of these actions skips the sheet and uses the defaults set in Settings › Requests › **Download defaults**: What (default The whole artist), Types (default Albums + EPs, Studio), Quality (default Lossless), Follow new releases (default off).
+  - The defaults can't be changed per download. The confirmation stays a single "Add <artist> to your library?" with a one-line summary of the defaults.
+  - When off, the sheet appears every time, preset with the defaults.
+- **Try (single song)** is unchanged: one release, Fast Start. New artists from Try use the default types' metadata profile in place of `Magpie Finds` only if simple mode is on *(call: keep Try's single-release behaviour; types matter only once more is brought in)*. Actually: unchanged.
+- **Tests:**
+  - dev Lidarr with gated writes on the test's own fixture artists only, cleaned up afterwards;
+  - profile provisioning is idempotent;
+  - gate refusals for non-Magpie artists;
+  - simple mode on/off flows;
+  - the Only in Finds detection, including mixed artists (some in main → not "only in Finds");
+  - Main library auto-pick and picker.
+- **Workstream X7** (R18). It touches the gate after X6; it's merged after X6.
