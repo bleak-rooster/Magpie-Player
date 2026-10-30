@@ -172,7 +172,8 @@ extension PreferenceArea {
     /// 1. Not a JSON object: the default. 2. Start from the default as a JSON object. 3. Copy each stored key in and
     /// try to decode the merge; a key that breaks it gets its default back. 4. Return the result, normalised.
     public static func decode(_ data: Data?) -> Self {
-        guard let data, let stored = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+        // Measured first: deeply nested stored data would overflow the stack in JSONSerialization (crash hunt 4).
+        guard let data, let stored = JSONNesting.object(with: data) as? [String: Any],
               let defaults = try? JSONSerialization.jsonObject(with: JSONEncoder().encode(defaultValue)) as? [String: Any]
         else { return defaultValue }
         var merged = defaults
@@ -184,9 +185,12 @@ extension PreferenceArea {
         return (decoded(merged) ?? defaultValue).normalised()
     }
 
-    /// Serialises a JSON object and decodes it as this area; nil when either step fails.
+    /// Serialises a JSON object and decodes it as this area; nil when either step fails. `JSONSerialization` reads
+    /// `-1e400` as -infinity, and writing that back raises an Objective-C exception no `try?` catches (crash hunt 4),
+    /// so an object it can't write is refused first.
     private static func decoded(_ object: [String: Any]) -> Self? {
-        guard let data = try? JSONSerialization.data(withJSONObject: object) else { return nil }
+        guard JSONSerialization.isValidJSONObject(object),
+              let data = try? JSONSerialization.data(withJSONObject: object) else { return nil }
         return try? JSONDecoder().decode(Self.self, from: data)
     }
 

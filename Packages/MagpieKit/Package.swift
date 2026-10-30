@@ -43,6 +43,12 @@ let package = Package(
         .testTarget(name: "MatchIndexTests", dependencies: ["MatchIndex", "MagpieCore", "NavidromeKit", "MagpieTestSupport"]),
         .testTarget(name: "RequestsTests",
                     dependencies: ["Requests", "MagpieCore", "LidarrKit", "ListenBrainzKit", "NavidromeKit", "MagpieTestSupport"]),
+        // Crash hunt 4: seeded fuzzing of every client's decoding, and the decoded models through the UI and car builders.
+        .testTarget(name: "HostileDataTests",
+                    dependencies: ["NavidromeKit", "LidarrKit", "ListenBrainzKit", "MatchIndex", "Search", "CarPlayUI",
+                                   "Playback", "Requests", "MagpieCore", "MagpieTestSupport"],
+                    resources: [.copy("../Fixtures/navidrome"), .copy("../Fixtures/lidarr"),
+                                .copy("../Fixtures/listenbrainz"), .copy("../Fixtures/musicbrainz")]),
         .testTarget(name: "SearchTests",
                     dependencies: ["Search", "MatchIndex", "MagpieCore", "LidarrKit", "ListenBrainzKit", "MagpieTestSupport"]),
     ],

@@ -48,7 +48,7 @@ public enum ArtistNotYet {
     /// that only names an edition. A suffix with a version word ("- Live", "- Demo Edition") keeps it distinct.
     static func titleKey(_ title: String) -> String {
         for dash in [" - ", " \u{2013} ", " \u{2014} "] {
-            guard let r = title.range(of: dash, options: .backwards) else { continue }
+            guard let r = Normalize.lastRange(of: dash, in: title) else { continue }   // linear (crash hunt 4)
             let words = Normalize.name(String(title[r.upperBound...])).split(separator: " ").map(String.init)
             let head = Normalize.name(String(title[..<r.lowerBound]))
             if !head.isEmpty, words.contains(where: editionWords.contains),

@@ -68,7 +68,10 @@ struct FindsShelf: Equatable {
 
     /// 7 − whole days since `created`, between 0 and 7.
     static func daysLeft(since created: Date, now: Date) -> Int {
-        let days = Int((now.timeIntervalSince(created) / (24 * 3600)).rounded(.down))
+        // Held to ±1e9 days (NaN reads as today) before `Int(_:)`, which traps past Int or on NaN: `createdAt` comes from
+        // the server or a saved copy of it (crash hunt 4).
+        let elapsed = now.timeIntervalSince(created) / (24 * 3600)
+        let days = elapsed.isNaN ? 0 : Int(min(max(elapsed, -1e9), 1e9).rounded(.down))
         return min(sampleDays, max(0, sampleDays - max(0, days)))
     }
 }

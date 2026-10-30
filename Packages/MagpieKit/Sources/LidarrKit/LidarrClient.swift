@@ -71,7 +71,8 @@ public struct LidarrClient: Sendable {
         guard (200..<300).contains(response.statusCode) else {
             throw response.statusCode == 401 ? LidarrError.unauthorized : LidarrError.http(status: response.statusCode)
         }
-        guard let items = try? JSONSerialization.jsonObject(with: data) as? [Any] else { return [] }
+        // Measured first: a deeply nested answer would overflow the stack in JSONSerialization (crash hunt 4).
+        guard let items = JSONNesting.object(with: data) as? [Any] else { return [] }
         return items.map { Self.strings(in: $0).joined(separator: " ").lowercased() }
     }
 
@@ -83,7 +84,7 @@ public struct LidarrClient: Sendable {
     /// G3: `config/mediamanagement.recycleBin`. `nil` when empty, which means deletes are permanent.
     public func recycleBin() async throws -> String? {
         let data = try await ok("config/mediamanagement")
-        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+        guard let object = JSONNesting.object(with: data) as? [String: Any],
               let path = object["recycleBin"] as? String else { return nil }
         let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed

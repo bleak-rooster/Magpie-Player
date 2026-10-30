@@ -147,6 +147,9 @@ enum DurationText {
 
     /// "3 minutes, 58 seconds" for VoiceOver.
     static func spoken(_ t: TimeInterval) -> String {
+        // DateComponentsFormatter raises NSInternalInconsistencyException on NaN or infinity (crash hunt 4): spoken as
+        // 0, as `clock` shows 0:00.
+        let t = t.isFinite ? t : 0
         let f = DateComponentsFormatter()
         f.allowedUnits = t >= 3600 ? [.hour, .minute] : [.minute, .second]
         f.unitsStyle = .full

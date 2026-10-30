@@ -84,7 +84,16 @@ public enum GenreGroups {
             guard !preferences.hidden.contains(id), let list = members[id], !list.isEmpty else { return nil }
             let name = preferences.groupNames[id] ?? builtIn.first { $0.id == id }?.name ?? "Custom"
             return GenreGroupSection(group: GenreGroup(id: id, name: name), genres: sorted(list),
-                                     albumCount: list.reduce(0) { $0 + $1.albumCount }, songCount: list.reduce(0) { $0 + $1.songCount })
+                                     albumCount: total(list.map(\.albumCount)), songCount: total(list.map(\.songCount)))
+        }
+    }
+
+    /// The counts' sum, held at `Int.max` or `Int.min` instead of trapping: the counts are the server's, and a broken or
+    /// hostile one may send `9223372036854775807` for two genres of one group (crash hunt 4).
+    static func total(_ counts: [Int]) -> Int {
+        counts.reduce(0) { sum, n in
+            let (result, overflow) = sum.addingReportingOverflow(n)
+            return overflow ? (n > 0 ? .max : .min) : result
         }
     }
 

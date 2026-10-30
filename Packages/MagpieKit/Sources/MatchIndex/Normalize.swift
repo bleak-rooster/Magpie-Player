@@ -83,9 +83,22 @@ public enum Normalize {
     /// The text before and after the last " - " (or en/em dash), if any.
     private static func dashSplit(_ s: String) -> (head: Substring, suffix: Substring)? {
         for dash in [" - ", " – ", " — "] {
-            if let r = s.range(of: dash, options: .backwards) { return (s[..<r.lowerBound], s[r.upperBound...]) }
+            if let r = lastRange(of: dash, in: s) { return (s[..<r.lowerBound], s[r.upperBound...]) }
         }
         return nil
+    }
+
+    /// The last occurrence of `separator` in `s`, found by searching forwards from each match (overlapping ones too).
+    /// Stands in for `range(of:options: .backwards)`, which is quadratic on a run of flag emoji (regional indicators):
+    /// 20,000 flags took seconds, on the main actor in the car's "Try it next" (crash hunt 4, watchdog).
+    public static func lastRange(of separator: String, in s: String) -> Range<String.Index>? {
+        var found: Range<String.Index>?
+        var from = s.startIndex
+        while from < s.endIndex, let r = s.range(of: separator, range: from..<s.endIndex) {
+            found = r
+            from = s.index(after: r.lowerBound)
+        }
+        return found
     }
 
     /// "halo - remastered 2011" → "halo"; "halo - feat. x" → "halo"; "halo - live" stays (another

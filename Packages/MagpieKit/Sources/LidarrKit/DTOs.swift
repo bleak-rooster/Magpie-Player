@@ -51,7 +51,8 @@ extension KeyedDecodingContainer where Key == AnyKey {
 
     func int(_ key: String) -> Int? {
         if let i: Int = value(key) { return i }
-        if let d: Double = value(key), d.isFinite { return Int(d) }
+        // `Int(_:)` traps beyond Int's range (`"id": 1e300`, crash hunt 4): such a value is unusable, like a missing one.
+        if let d: Double = value(key) { return Int(exactly: d.rounded(.towardZero)) }
         return nil
     }
 
@@ -143,7 +144,8 @@ public struct RootFolder: Sendable, Equatable, Decodable {
         let c = try decoder.container(keyedBy: AnyKey.self)
         id = try c.requiredInt("id")
         path = c.value("path") ?? ""
-        freeSpace = c.value("freeSpace", as: Int64.self) ?? c.double("freeSpace").map { Int64($0) }
+        // Out of Int64's range (`1e300`) reads as unknown: `Int64(_:)` would trap (crash hunt 4).
+        freeSpace = c.value("freeSpace", as: Int64.self) ?? c.double("freeSpace").flatMap { Int64(exactly: $0.rounded(.towardZero)) }
         name = c.text("name")
         accessible = c.value("accessible")
     }
