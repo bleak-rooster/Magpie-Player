@@ -21,7 +21,7 @@ import Testing
         let ledger: Ledger
         let gate: LidarrWriteGate
 
-        init(artists: String = "[]", changesOn: Bool = true, magpieLedger: Bool = true) async throws {
+        init(artists: String = "[]", changesOn: Bool = true, magpieLedger: Bool = true, lookup: Data? = nil) async throws {
             client = LidarrClient(base: ArtistLidarrTests.base, apiKey: "devkey", transport: transport)
             ledger = Ledger(fileURL: nil, instance: client.instanceScope)
             let dir = FileManager.default.temporaryDirectory.appending(path: "ArtistLidarr-\(UUID().uuidString)")
@@ -39,7 +39,7 @@ import Testing
             }
             transport.stub(pathSuffix: "/api/v1/artist", body: Data(artists.utf8))
             transport.stub(pathSuffix: "/api/v1/command", body: Data("[]".utf8))
-            transport.stub(pathSuffix: "/api/v1/artist/lookup", body: Data(#"""
+            transport.stub(pathSuffix: "/api/v1/artist/lookup", body: lookup ?? Data(#"""
             [{"foreignArtistId":"11111111-1111-4111-8111-111111111111","artistName":"New Artist","id":0,
               "rootFolderPath":"/owner/elsewhere","qualityProfileId":1,"monitored":false,"addOptions":{"monitor":"none"}}]
             """#.utf8))
@@ -101,14 +101,66 @@ import Testing
                 == .notMonitored(lidarrId: 30, magpieAdded: false))
     }
 
-    @Test func readFindsTheMBIDByNameWhenTheLibraryHasNone() async throws {
+    /// I3: with the library's MBID, only that is used: no name search.
+    @Test func readWithAnMBIDNeverSearchesByName() async throws {
         let fake = try await Fake()
-        fake.transport.stub(pathSuffix: "/api/v1/search", body: Data(#"""
-        [{"foreignId":"11111111-1111-4111-8111-111111111111","artist":{"artistName":"New Artist","foreignArtistId":"11111111-1111-4111-8111-111111111111"}}]
-        """#.utf8))
-        let state = try await ArtistLidarr.read(name: "New Artist", mbid: nil, lidarr: fake.client, ledger: fake.ledger)
+        let state = try await ArtistLidarr.read(name: "New Artist", mbid: Self.newMBID, lidarr: fake.client, ledger: fake.ledger)
         #expect(state == .notInLidarr(mbid: Self.newMBID))
+        #expect(!fake.transport.requests.contains { $0.url?.path.hasSuffix("/search") == true || $0.url?.query?.contains("term=New") == true })
+    }
+
+    /// I3: without an MBID the page view searches nothing; status by name only among Lidarr's own artists.
+    @Test func readWithoutAnMBIDSearchesNothing() async throws {
+        let fake = try await Fake()
+        let state = try await ArtistLidarr.read(name: "New Artist", mbid: nil, lidarr: fake.client, ledger: fake.ledger)
+        #expect(state == .notInLidarr(mbid: nil))
+        #expect(!fake.transport.requests.contains { $0.url?.path.contains("lookup") == true || $0.url?.path.hasSuffix("/search") == true })
+    }
+
+    static func lookupRows(_ rows: [(String, String, String?, String?)]) -> Data {
+        let json = rows.map { mbid, name, dis, type in
+            #"{"foreignArtistId":"\#(mbid)","artistName":"\#(name)","disambiguation":"\#(dis ?? "")","artistType":"\#(type ?? "")"}"#
+        }.joined(separator: ",")
+        return Data("[\(json)]".utf8)
+    }
+
+    /// I3: exactly one candidate whose name matches, case- and diacritic-folded; others (similar names) are left out.
+    @Test func oneExactCandidateCarriesItsDisambiguation() async throws {
+        let fake = try await Fake(lookup: Self.lookupRows([
+            ("44444444-4444-4444-8444-444444444444", "Éléonore Brûlé", "French singer", "Person"),
+            ("55555555-5555-4555-8555-555555555555", "Eleonore Brule Trio", nil, "Group"),
+        ]))
+        let found = try await ArtistLidarr.candidates(name: "eleonore brule", lidarr: fake.client)
+        #expect(found.map(\.mbid) == [MBID("44444444-4444-4444-8444-444444444444")!])
+        #expect(found.first?.label == "Éléonore Brûlé (French singer, Person)")
         #expect(fake.writes.isEmpty)
+    }
+
+    @Test func severalExactCandidatesAreAllOffered() async throws {
+        let fake = try await Fake(lookup: Self.lookupRows([
+            ("44444444-4444-4444-8444-444444444444", "Nirvana", "US grunge band", "Group"),
+            ("55555555-5555-4555-8555-555555555555", "Nirvana", "60s band from the UK", "Group"),
+            ("66666666-6666-4666-8666-666666666666", "Nirvana Tribute", nil, nil),
+        ]))
+        let found = try await ArtistLidarr.candidates(name: "Nirvana", lidarr: fake.client)
+        #expect(found.map(\.label) == ["Nirvana (US grunge band, Group)", "Nirvana (60s band from the UK, Group)"])
+    }
+
+    @Test func noExactCandidateFindsNothing() async throws {
+        let fake = try await Fake(lookup: Self.lookupRows([
+            ("66666666-6666-4666-8666-666666666666", "Nirvana Tribute", nil, nil),
+        ]))
+        #expect(try await ArtistLidarr.candidates(name: "Nirvana", lidarr: fake.client).isEmpty)
+        #expect(try await ArtistLidarr.candidates(name: "   ", lidarr: fake.client).isEmpty)
+    }
+
+    @Test func aKeptArtistIsTheOwners() {
+        let mine = Self.lidarrArtist(30, "Mine", Self.magpieMBID, monitored: false)
+        let kept = LedgerEntry(lidarrArtistId: 30, albumId: 31, rgMbid: Self.newMBID, createdArtist: true,
+                               wasMonitoredBefore: false, root: "/music/library", mode: .finds, keptAt: Date(),
+                               artistMbid: Self.magpieMBID)
+        #expect(ArtistLidarr.state(name: "Mine", mbid: Self.magpieMBID, artists: [mine], commands: [], ledger: [kept])
+                == .notMonitored(lidarrId: 30, magpieAdded: false))
     }
 
     // MARK: - Add

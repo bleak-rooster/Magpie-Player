@@ -10,8 +10,8 @@ public enum ArtistLidarrState: Sendable, Equatable {
     case monitored(lidarrId: Int, searching: Bool)
     /// "In Lidarr · Not monitored". Only an artist Magpie added (the ledger says so) may be monitored from Magpie.
     case notMonitored(lidarrId: Int, magpieAdded: Bool)
-    /// "Not in Lidarr". `mbid`: who an add would bring in; nil when Magpie can't tell which MusicBrainz artist it is,
-    /// so nothing can be added.
+    /// "Not in Lidarr". `mbid`: the library's MusicBrainz id, the only one an add uses; nil: an add first asks Lidarr's
+    /// search (`ArtistLidarr.candidates`) and the owner confirms the exact artist.
     case notInLidarr(mbid: MBID?)
 }
 
@@ -65,30 +65,60 @@ public enum ArtistLidarr {
             }
             return .monitored(lidarrId: artist.id, searching: searching)
         }
-        return .notMonitored(lidarrId: artist.id, magpieAdded: entries.contains { $0.created(artist) })
+        // A kept artist is the owner's now (the gate refuses it too): no "Monitor" for it.
+        let kept = entries.contains { $0.lidarrArtistId == artist.id && $0.keptAt != nil }
+        return .notMonitored(lidarrId: artist.id, magpieAdded: !kept && entries.contains { $0.created(artist) })
     }
 
     static func isRunning(_ c: CommandStatus) -> Bool { ["queued", "started"].contains(c.status.lowercased()) }
 
-    /// Reads Lidarr (GETs only) and the ledger. An artist Lidarr doesn't have and the library has no MBID for is
-    /// looked up by name: added only when exactly one MusicBrainz artist has that normalised name.
+    /// Reads Lidarr (GETs only) and the ledger. Never searches by name (I3: an add by name waits for the owner's tap,
+    /// `candidates`), so a page view asks nothing of Lidarr's remote metadata.
     public static func read(name: String, mbid: MBID?, lidarr: LidarrClient, ledger: Ledger) async throws
         -> ArtistLidarrState {
         let artists = try await lidarr.artists()
         let commands = (try? await lidarr.commands()) ?? []
         let entries = (try? await ledger.entries) ?? []   // unreadable: nothing counts as Magpie's (fails safe)
-        let found = state(name: name, mbid: mbid, artists: artists, commands: commands, ledger: entries)
-        guard case .notInLidarr(nil) = found else { return found }
-        let key = Normalize.name(name)
-        guard !key.isEmpty else { return found }
-        let hits = (try? await lidarr.search(term: name)) ?? []
-        let ids = Set(hits.filter { $0.kind == .artist && Normalize.name($0.artistName) == key }.compactMap(\.foreignId))
-        guard ids.count == 1, let only = ids.first else { return found }
-        // The name led to an MBID Lidarr has after all (its name differs only in spelling): show it as it is.
-        if artists.contains(where: { $0.foreignArtistId == only }) {
-            return state(name: name, mbid: only, artists: artists, commands: commands, ledger: entries)
+        return state(name: name, mbid: mbid, artists: artists, commands: commands, ledger: entries)
+    }
+
+    // MARK: - Candidates (no MBID in the library)
+
+    /// A MusicBrainz artist Lidarr's search offers for a library artist without an MBID.
+    public struct Candidate: Sendable, Equatable, Identifiable {
+        public var mbid: MBID
+        public var name: String
+        public var disambiguation: String?
+        public var type: String?
+        public var id: String { mbid.rawValue }
+
+        public init(mbid: MBID, name: String, disambiguation: String? = nil, type: String? = nil) {
+            self.mbid = mbid; self.name = name; self.disambiguation = disambiguation; self.type = type
         }
-        return .notInLidarr(mbid: only)
+
+        /// "Nirvana (US grunge band, Group)": what the confirmation names, so the owner sees exactly who is added.
+        public var label: String {
+            let detail = [disambiguation, type].compactMap { $0 }.filter { !$0.isEmpty }
+            return detail.isEmpty ? name : "\(name) (\(detail.joined(separator: ", ")))"
+        }
+    }
+
+    /// Controller ruling (I3): Lidarr's artist search for `name`, keeping only artists whose name is the same once case
+    /// and diacritics are folded (one per MBID, in Lidarr's order). One: the confirmation names it; several: the owner
+    /// picks; none: nothing can be added. GETs only.
+    public static func candidates(name: String, lidarr: LidarrClient) async throws -> [Candidate] {
+        let key = folded(name)
+        guard !key.isEmpty else { return [] }
+        var seen = Set<MBID>()
+        return try await lidarr.artistLookup(term: name.trimmingCharacters(in: .whitespacesAndNewlines)).compactMap { row in
+            guard let mbid = row.foreignArtistId, folded(row.artistName) == key, seen.insert(mbid).inserted else { return nil }
+            return Candidate(mbid: mbid, name: row.artistName, disambiguation: row.disambiguation, type: row.artistType)
+        }
+    }
+
+    static func folded(_ s: String) -> String {
+        s.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     // MARK: - Writes
