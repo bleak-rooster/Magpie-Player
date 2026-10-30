@@ -136,8 +136,8 @@ public actor AudioStore {
         var usage = AudioUsage(downloadBytes: 0, cacheBytes: 0)
         for entry in index.entries.values {
             switch entry.kind {
-            case .download: usage.downloadBytes += entry.size
-            case .cache: usage.cacheBytes += entry.size
+            case .download: usage.downloadBytes = Self.sum(usage.downloadBytes, entry.size)
+            case .cache: usage.cacheBytes = Self.sum(usage.cacheBytes, entry.size)
             }
         }
         return usage
@@ -341,7 +341,7 @@ public actor AudioStore {
         var evicted: [String] = []
         for entry in candidates where total > limit {
             remove(entry)
-            total -= entry.size
+            total -= min(total, max(0, entry.size))
             evicted.append(entry.songId)
         }
         saveIndex()
@@ -400,7 +400,15 @@ public actor AudioStore {
 
     private func checkLimit(adding size: Int64, limit: Int64?) throws {
         guard let limit else { return }
-        if usage().downloadBytes + size > limit { throw AudioStoreError.downloadsFull }
+        if Self.sum(usage().downloadBytes, size) > limit { throw AudioStoreError.downloadsFull }
+    }
+
+    /// Adds a recorded size to a total. A damaged sidecar or index can claim any size, and it stands when its file
+    /// can't be sized (before first unlock, or a directory where the audio should be): a negative one counts as 0
+    /// and a sum that would overflow stays at `Int64.max`, over any real limit, instead of trapping.
+    static func sum(_ total: Int64, _ size: Int64) -> Int64 {
+        let (result, overflow) = total.addingReportingOverflow(max(0, size))
+        return overflow ? .max : result
     }
 
     private func fileSize(_ url: URL) throws -> Int64 {
