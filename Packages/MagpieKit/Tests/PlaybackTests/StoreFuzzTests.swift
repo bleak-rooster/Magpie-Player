@@ -427,6 +427,50 @@ final class FaultyReader: Sendable {
         }
     }
 
+    // MARK: - Preferences store
+
+    /// Stored preference areas with random, hostile values for every key (and nested ones): decoding never traps,
+    /// always returns a normalised area, and what it encodes decodes to the same value.
+    @Test func preferencesDecodeFuzz() throws {
+        var rng = SplitMix64(seed: 600)
+        func hostile(_ depth: Int) -> Any {
+            switch Int.random(in: 0..<12, using: &rng) {
+            case 0: return NSNull()
+            case 1: return Int.max
+            case 2: return Int.min
+            case 3: return -1
+            case 4: return 1e308
+            case 5: return String(repeating: "x", count: Int.random(in: 0..<3000, using: &rng))
+            case 6: return Bool.random(using: &rng)
+            case 7: return depth > 2 ? [] : (0..<Int.random(in: 0..<20, using: &rng)).map { _ in hostile(depth + 1) }
+            case 8: return depth > 2 ? [:] : Dictionary(uniqueKeysWithValues: (0..<5).map { ("k\($0)", hostile(depth + 1)) })
+            case 9: return ["none", "gb5", "gb2", "original", "opus128", "automatic", "on", "grouped"].randomElement(using: &rng)!
+            case 10: return 0
+            default: return 1
+            }
+        }
+        func sweep<A: PreferenceArea>(_ type: A.Type) throws {
+            let base = try JSONSerialization.jsonObject(with: JSONEncoder().encode(A.defaultValue)) as! [String: Any]
+            for _ in 0..<150 {
+                var obj = base
+                for key in base.keys where Bool.random(using: &rng) { obj[key] = hostile(0) }
+                if Bool.random(using: &rng) { obj["unknown\(Int.random(in: 0..<3, using: &rng))"] = hostile(0) }
+                let data = Int.random(in: 0..<10, using: &rng) == 0
+                    ? Data((0..<40).map { _ in UInt8.random(in: 0...255, using: &rng) })
+                    : try JSONSerialization.data(withJSONObject: obj)
+                let decoded = A.decode(data)
+                #expect(decoded == decoded.normalised(), "\(A.self) not normalised")
+                let again = A.decode(decoded.encoded())
+                #expect(again == decoded, "\(A.self) does not round-trip")
+            }
+        }
+        try sweep(LayoutPreferences.self)
+        try sweep(PlaybackPreferences.self)
+        try sweep(DownloadPreferences.self)
+        try sweep(ScrobblePreferences.self)
+        try sweep(GenrePreferences.self)
+    }
+
     // MARK: - Offline catalog and pre-download plan
 
     @Test func offlineCatalogFuzz() {
