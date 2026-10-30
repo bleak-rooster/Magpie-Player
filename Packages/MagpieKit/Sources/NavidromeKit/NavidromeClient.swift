@@ -305,7 +305,10 @@ public actor NavidromeClient {
     public func scrobble(songId: String, submission: Bool, at: Date?) async throws {
         var extra = [URLQueryItem(name: "id", value: songId),
                      URLQueryItem(name: "submission", value: submission ? "true" : "false")]
-        if let at { extra.append(URLQueryItem(name: "time", value: String(Int64(at.timeIntervalSince1970 * 1000)))) }
+        // A time milliseconds can't hold (a damaged queue file) is left out rather than trapping: the server uses now.
+        if let ms = at.map({ $0.timeIntervalSince1970 * 1000 }), ms.isFinite, abs(ms) < 1e15 {
+            extra.append(URLQueryItem(name: "time", value: String(Int64(ms))))
+        }
         _ = try await subsonic("scrobble", extra)
     }
 

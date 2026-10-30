@@ -61,7 +61,10 @@ extension ListenBrainzClient {
                                        "additional_info": info]
             if let release = listen.releaseName { meta["release_name"] = release }
             var item: [String: Any] = ["track_metadata": meta]
-            if type != .playingNow, let at = listen.listenedAt { item["listened_at"] = Int(at.timeIntervalSince1970) }
+            // A time an Int can't hold (a damaged queue file) is left out rather than trapping; ListenBrainz refuses it.
+            if type != .playingNow, let at = listen.listenedAt?.timeIntervalSince1970, at.isFinite, abs(at) < 1e15 {
+                item["listened_at"] = Int(at)
+            }
             return item
         }
         let body: [String: Any] = ["listen_type": type.rawValue, "payload": payload]
