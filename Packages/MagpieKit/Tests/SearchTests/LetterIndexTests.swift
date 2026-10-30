@@ -87,7 +87,7 @@ struct LetterIndexTests {
     @Test func seekFindsTheFirstOffsetOfALetterWithAKnownTotal() async throws {
         let titles = Self.devTitles
         let probes = Probes()
-        func at(_ i: Int) async -> String? { await probes.count(); return i < titles.count ? titles[i] : nil }
+        @Sendable func at(_ i: Int) async -> String? { await probes.count(); return i < titles.count ? titles[i] : nil }
         #expect(try await LetterIndex.seek("D", total: titles.count, nameAt: at) == 4)
         #expect(try await LetterIndex.seek("O", total: titles.count, nameAt: at) == 10)
         #expect(try await LetterIndex.seek("A", total: titles.count, nameAt: at) == 1)
@@ -103,7 +103,7 @@ struct LetterIndexTests {
             return "\(letter)song \(i)"
         }
         let probes = Probes()
-        func at(_ i: Int) async -> String? { await probes.count(); return i < titles.count ? titles[i] : nil }
+        @Sendable func at(_ i: Int) async -> String? { await probes.count(); return i < titles.count ? titles[i] : nil }
         #expect(try await LetterIndex.seek("M", total: nil, nameAt: at) == 12 * 200)
         #expect(await probes.n <= 2 * 14)
         #expect(try await LetterIndex.seek("A", total: nil, nameAt: at) == 0)
@@ -118,7 +118,7 @@ struct LetterIndexTests {
 
     @Test func seekRanksDropArticlesWhenAsked() async throws {
         let albums = ["Atlas", "Café", "The Cat Is Out", "Continuum", "Lowlands", "Paper Planes"]
-        func at(_ i: Int) async -> String? { i < albums.count ? albums[i] : nil }
+        @Sendable func at(_ i: Int) async -> String? { i < albums.count ? albums[i] : nil }
         #expect(try await LetterIndex.seek("D", total: albums.count, ignoringArticles: LetterIndex.navidromeArticles,
                                             nameAt: at) == 4)
     }

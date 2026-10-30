@@ -77,7 +77,7 @@ public enum LetterIndex {
     /// The server sorts on folded names: "#" names below "a" (digits, most symbols) come first, other scripts and
     /// emoji after "z". Those rank 0 and 27 here so the order stays monotone.
     public static func seek(_ letter: String, total: Int?, ignoringArticles articles: [String] = [],
-                            maxProbes: Int = 64, nameAt: (Int) async throws -> String?) async throws -> Int {
+                            maxProbes: Int = 64, nameAt: @Sendable (Int) async throws -> String?) async throws -> Int {
         let wanted = letters.firstIndex(of: letter) ?? 0
         guard wanted > 0 else { return 0 }
         var probes = 0
