@@ -28,8 +28,10 @@ enum BringInCopy {
 
     /// "about N hours of music" (at least 1), or nil when the length isn't known.
     static func size(_ duration: TimeInterval?) -> String? {
-        guard let duration, duration > 0, duration.isFinite else { return nil }
-        let hours = max(1, Int((duration / 3600).rounded()))
+        // `Int(exactly:)`: a finite length past Int's range (`1e300` from Lidarr) is unknown too; `Int(_:)` trapped
+        // (crash hunt 4, with hunter 1).
+        guard let duration, duration > 0, let whole = Int(exactly: (duration / 3600).rounded()) else { return nil }
+        let hours = max(1, whole)
         return "about \(hours) \(hours == 1 ? "hour" : "hours") of music"
     }
 
