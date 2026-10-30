@@ -235,9 +235,11 @@ final class DownloadManager {
             failed.removeAll { $0.songId == song.id && $0.kind == .download(reason) }
             guard !jobs.contains(where: { $0.songId == song.id && $0.kind == .download(reason) }) else { continue }
             var metadata = AudioMetadata(song)
-            if case .album = reason {
+            switch reason {
+            case .album, .artist:   // R4: an artist's download is asked for one album at a time
                 metadata.albumCoverArtId = coverArtId   // its saved cover, for offline (I2)
                 metadata.albumSongCount = songs.count   // P1: the artist list's mark knows when it's whole
+            default: break
             }
             jobs.append(Job(kind: .download(reason), metadata: metadata, quality: quality, playlistId: playlist?.id))
         }
@@ -472,6 +474,19 @@ final class DownloadManager {
         if failed.contains(where: mine) { return .failed }
         if done > 0 { return .partial(done: done, total: songIds.count) }   // e.g. a song removed on its own
         return .none
+    }
+
+    /// R4: an artist's "Download all songs", over every song kept or asked for with `.artist(artistId)`.
+    func artistStatus(_ artistId: String) -> DownloadStatus {
+        let reason = DownloadReason.artist(artistId)
+        func mine(_ job: Job) -> Bool { job.kind == .download(reason) }
+        let done = reasons.values.count { $0.contains(reason) }
+        if stoppedByFull.contains(where: mine) { return .full }
+        let active = jobs.filter(mine)
+        if active.contains(where: { $0.state == .waiting }) { return waitingStatus }
+        if !active.isEmpty { return .downloading(done: done, total: done + active.count) }
+        if failed.contains(where: mine) { return .failed }
+        return done > 0 ? .downloaded : .none
     }
 
     /// Why manual downloads wait: for the server while offline (ruling b), for Wi-Fi otherwise.

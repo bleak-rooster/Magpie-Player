@@ -10,7 +10,8 @@ struct DownloadIndex: Equatable {
     private(set) var songs: Set<String> = []
     private var byAlbum: [String: Set<String>] = [:]
     private var byArtist: [String: Set<String>] = [:]
-    /// Per artist, the albums with songs downloaded as that album (the album reason).
+    /// Per artist, the albums with songs downloaded as that album (the album reason), or with the artist's "Download all
+    /// songs" (R4, the artist reason: those count for the artist it names).
     private var albumDownloadsByArtist: [String: Set<String>] = [:]
     /// Per album downloaded as an album, its song count then (the largest recorded).
     private var albumSongCounts: [String: Int] = [:]
@@ -30,15 +31,20 @@ struct DownloadIndex: Equatable {
             let id = entry.songId, meta = entry.metadata
             songs.insert(id)
             if let album = meta.albumId { byAlbum[album, default: []].insert(id) }
-            if let artist = meta.artistId {
-                byArtist[artist, default: []].insert(id)
-                for case let .album(album) in entry.reasons {
-                    albumDownloadsByArtist[artist, default: []].insert(album)
-                    if let count = meta.albumSongCount {
-                        albumSongCounts[album] = max(albumSongCounts[album] ?? 0, count)
-                    } else {
-                        albumsWithoutCount.insert(album)
-                    }
+            if let artist = meta.artistId { byArtist[artist, default: []].insert(id) }
+            for reason in entry.reasons {
+                let whole: (artist: String, album: String)? = switch reason {
+                case let .album(album): meta.artistId.map { ($0, album) }
+                case let .artist(artist): meta.albumId.map { (artist, $0) }
+                default: nil
+                }
+                guard let whole else { continue }
+                if case .artist = reason { byArtist[whole.artist, default: []].insert(id) }
+                albumDownloadsByArtist[whole.artist, default: []].insert(whole.album)
+                if let count = meta.albumSongCount {
+                    albumSongCounts[whole.album] = max(albumSongCounts[whole.album] ?? 0, count)
+                } else {
+                    albumsWithoutCount.insert(whole.album)
                 }
             }
         }

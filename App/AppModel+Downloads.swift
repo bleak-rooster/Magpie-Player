@@ -154,6 +154,9 @@ extension AppModel {
         if reasons.contains(where: { if case .playlist = $0 { true } else { false } }) {
             return "It's \(also)part of a downloaded playlist; removing it here takes it off this phone."
         }
+        if reasons.contains(where: { if case .artist = $0 { true } else { false } }) {
+            return "It's \(also)part of an artist's downloaded songs; removing it here takes it off this phone."
+        }
         return nil
     }
 
