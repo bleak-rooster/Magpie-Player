@@ -61,7 +61,9 @@ import Testing
         return all
     }()
 
-    @Test func cancelledAnywhereReturnsTheWholeAnswerOrNothingWrong() async throws {
+    // MainActor: a Task made here can't start before the synchronous `cancel()` that follows it, so the early round
+    // really is cancelled before it starts (CHF re-review N1).
+    @MainActor @Test func cancelledAnywhereReturnsTheWholeAnswerOrNothingWrong() async throws {
         let expected = try await Self.search(Delays(seed: 1), maxMicros: 0).runReportingLibraryFailure("harbour")
         #expect(expected.notYet.songs.first == Self.ext(0, 0), "source order, not arrival order")
         var rng = SeededRNG(seed: 0x5EA)
