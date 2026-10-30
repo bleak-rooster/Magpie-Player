@@ -19,8 +19,11 @@ extension CarPlayLibraryAdapter {
     /// car's Downloaded shelf opens it from the phone.
     func homeShelves(_ sections: [HomeSection], size: Int) async throws -> [CPHomeShelf] {
         let model = model
+        // Read once per token: an empty answer isn't asked for again on every reload (a new token asks again).
+        let generation = model.listenBrainzTokenGeneration
         let readsMadeForYou = sections.contains(.madeForYou) && model.hasListenBrainzToken && !model.isOffline
-            && model.madeForYouShelf.isEmpty
+            && model.madeForYouShelf.isEmpty && madeForYouReadGeneration != generation
+        if readsMadeForYou { madeForYouReadGeneration = generation }
         async let refreshed: Void = refreshMadeForYou(if: readsMadeForYou)
         let shelves = try await model.homeShelves(for: sections)
         await refreshed
@@ -72,14 +75,14 @@ extension CarPlayLibraryAdapter {
         try await model.genreGroup(groupId)?.genres ?? []
     }
 
-    /// A genre's songs in server order (shuffled when asked); a group's Shuffle, round-robin across its genres.
+    /// A genre's songs in server order; a group's taken from each of its genres in turn, capped. Unshuffled: the
+    /// controller's `start` owns shuffling.
     func songs(for request: CPPlayRequest) async throws -> [Song] {
         switch request {
-        case .genre(let name, let shuffled):
-            let songs = try await model.genreSongs(name)
-            return shuffled ? songs.shuffled() : songs
+        case .genre(let name, _):
+            return try await model.genreSongs(name)
         case .genreGroup(let id, _):
-            return try await model.groupSongs(id)
+            return try await model.groupSongsInFetchOrder(model.genreGroup(id)?.genres ?? [])
         default:
             return []
         }
@@ -99,6 +102,12 @@ extension CarPlayLibraryAdapter {
         let catalog = await model.offlineCatalog
         guard let artist = catalog.artists().first(where: { $0.id == id }) else { return nil }
         return (artist, catalog.albums(byArtist: id))
+    }
+
+    func downloadedPlaylist(id: String) async -> (Playlist, [Song])? {
+        let catalog = await model.offlineCatalog
+        guard let playlist = catalog.playlists().first(where: { $0.id == id }) else { return nil }
+        return (playlist, catalog.songs(inPlaylist: id))
     }
 
     // MARK: - Favourites and Made for you

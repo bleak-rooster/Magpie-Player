@@ -54,6 +54,8 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
 final class CarPlayLibraryAdapter: CarPlayLibrary {
     let model: AppModel
     private let recents: RecentSearches
+    /// The ListenBrainz token generation Made for you was last read for (car Home, T23 fix round 1).
+    var madeForYouReadGeneration: Int?
 
     init(model: AppModel, recents: RecentSearches = RecentSearches()) {
         self.model = model
@@ -98,9 +100,8 @@ final class CarPlayLibraryAdapter: CarPlayLibrary {
     /// Offline, a downloaded playlist with its songs on the phone (Downloads opens playlists this way).
     func playlist(id: String) async throws -> (Playlist, [Song]) {
         if model.isOffline {
-            let catalog = await model.offlineCatalog
-            guard let playlist = catalog.playlists().first(where: { $0.id == id }) else { throw AppModel.forcedOfflineError }
-            return (playlist, catalog.songs(inPlaylist: id))
+            guard let page = await downloadedPlaylist(id: id) else { throw AppModel.forcedOfflineError }
+            return page
         }
         let result = try await model.request { client in
             let (playlist, songs) = try await client.playlist(id: id)

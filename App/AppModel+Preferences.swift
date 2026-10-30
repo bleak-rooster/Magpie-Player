@@ -1,5 +1,8 @@
 import Foundation
 import MagpieCore
+#if os(iOS)
+import UIKit
+#endif
 
 extension AppModel {
     /// The one way to change a preference: applies `change` to a copy, normalises every area, saves the areas that
@@ -15,14 +18,34 @@ extension AppModel {
         preferencesDidChange(from: old)
     }
 
-    /// Reads the saved preferences again. A launch before first unlock (from the car) couldn't read UserDefaults and
-    /// started with the defaults; once protected data is readable, what the owner saved applies, with every feature
-    /// reacting as to any change.
+    /// Whether protected data (UserDefaults included) is readable: `given` in tests, otherwise UIApplication's answer.
+    static func protectedDataAvailable(_ given: Bool?) -> Bool {
+        if let given { return given }
+        #if os(iOS)
+        return UIApplication.shared.isProtectedDataAvailable
+        #else
+        return true
+        #endif
+    }
+
+    /// After a launch before first unlock (from the car), once only: UserDefaults couldn't be read, so the app started
+    /// with the defaults. Each area the app hasn't changed since takes what the owner saved; an area changed in memory
+    /// meanwhile keeps that change (and is saved now). Every feature reacts as to any change.
     func reloadPreferences() {
+        guard let launch = preferencesReadLocked else { return }
+        preferencesReadLocked = nil
         let old = preferences
-        let saved = preferencesStore.load().normalised()
-        guard saved != old else { return }
-        preferences = saved
+        let saved = preferencesStore.load()
+        var merged = saved
+        if old.layout != launch.layout { merged.layout = old.layout }
+        if old.playback != launch.playback { merged.playback = old.playback }
+        if old.downloads != launch.downloads { merged.downloads = old.downloads }
+        if old.scrobbling != launch.scrobbling { merged.scrobbling = old.scrobbling }
+        if old.genres != launch.genres { merged.genres = old.genres }
+        merged = merged.normalised()
+        preferencesStore.save(merged, previous: saved)
+        guard merged != old else { return }
+        preferences = merged
         preferencesDidChange(from: old)
     }
 

@@ -30,7 +30,7 @@ final class BrowseFlowTests: XCTestCase {
         let stack = try devStack()
         continueAfterFailure = false
         let app = XCUIApplication()
-        app.launchArguments = ["-MagpieResetState", "YES"] + arguments
+        app.launchArguments = ["-MagpieResetState", "YES", "-MagpieUITesting", "YES", "-MagpieNetwork", "wifi"] + arguments
         app.launch()
 
         let address = app.textFields["connect-address-0"]

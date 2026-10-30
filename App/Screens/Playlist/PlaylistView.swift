@@ -8,6 +8,8 @@ struct PlaylistView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.magpieTheme) private var theme
     let playlistId: String
+    /// Opened from Downloads: the playlist as downloaded, only its songs on the phone, online too (T23).
+    var fromPhone = false
     @State private var page: Loadable<Page> = .loading
     /// Whether what is shown came from the phone (offline) or the server; a change of offline mode loads again.
     @State private var loadedOffline: Bool?
@@ -81,7 +83,7 @@ struct PlaylistView: View {
 
     private func load() async {
         loadedOffline = model.isOffline
-        if model.isOffline {   // Task 14: the playlist as downloaded, its songs on the phone
+        if model.isOffline || fromPhone {   // Task 14: the playlist as downloaded, its songs on the phone
             let catalog = await model.offlineCatalog
             guard let playlist = catalog.playlists().first(where: { $0.id == playlistId }) else {
                 page = .failed(OfflineCopy.notOnPhone)

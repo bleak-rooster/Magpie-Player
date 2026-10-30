@@ -166,8 +166,8 @@ extension CarPlayRows {
         return [CPSectionModel(header: nil, rows: [shuffle]), CPSectionModel(header: "Genres", rows: genres)]
     }
 
-    /// Library › Downloads (depth 2): what's on the phone. Albums and artists open from the phone; a playlist opens as
-    /// a playlist (from the phone while offline).
+    /// Library › Downloads (depth 2): what's on the phone. Albums, artists and playlists open from the phone, with only
+    /// their songs on it, online or offline.
     public static func downloads(albums: [Album], artists: [Artist] = [], playlists: [Playlist]) -> [CPSectionModel] {
         let albumRows = unique(albums, \.id).map { album in
             let name = display(album.name, untitledAlbum)
@@ -182,7 +182,7 @@ extension CarPlayRows {
         let playlistRows = unique(playlists, \.id).map { playlist in
             let name = display(playlist.name, untitledPlaylist)
             return CPRowModel(id: "downloads.playlist.\(playlist.id)", title: name, detail: songCount(playlist.songCount),
-                              artworkKey: playlist.coverArtId, action: .open(.playlist(id: playlist.id, title: name)))
+                              artworkKey: playlist.coverArtId, action: .open(.downloadedPlaylist(id: playlist.id, title: name)))
         }
         let sections = [CPSectionModel(header: "Albums", rows: albumRows), CPSectionModel(header: "Artists", rows: artistRows),
                         CPSectionModel(header: "Playlists", rows: playlistRows)].filter { !$0.rows.isEmpty }

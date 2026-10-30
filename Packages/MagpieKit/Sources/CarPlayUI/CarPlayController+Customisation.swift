@@ -7,7 +7,7 @@ import UIKit
 /// What the car reads for the owner's layout (Task 22) and the screens added with it (Task 23). The reads marked
 /// observable are followed with `Observations`.
 @MainActor
-public protocol CarPlayLayoutLibrary: AnyObject {
+public protocol CarPlayCustomisationLibrary: AnyObject {
     /// Home's sections, in the owner's order (Made for you with a ListenBrainz token; offline, Downloaded). Observable.
     var homeSections: [HomeSection] { get }
     /// The Library's rows, in the owner's order, without Songs and Requests (offline: Downloads, and Genres if shown).
@@ -27,7 +27,8 @@ public protocol CarPlayLayoutLibrary: AnyObject {
     func genreGroups() async throws -> [(id: String, name: String, albumCount: Int)]
     /// The group's genres in the order the server lists them; empty for a group with none.
     func genreSubgenres(_ groupId: String) async throws -> [Genre]
-    /// The songs a `.genre` or `.genreGroup` request plays (a group's come shuffled); empty for other requests.
+    /// The songs a `.genre` or `.genreGroup` request plays, unshuffled (a genre's in server order, a group's taken from
+    /// each genre in turn, capped); the controller's `start` shuffles. Empty for other requests.
     func songs(for request: CPPlayRequest) async throws -> [Song]
 
     /// What's on the phone (Downloads): never asks the server.
@@ -38,15 +39,14 @@ public protocol CarPlayLayoutLibrary: AnyObject {
     func downloadedAlbum(id: String) async -> Album?
     /// The artist and their albums on the phone; nil when none is.
     func downloadedArtist(id: String) async -> (Artist, [Album])?
+    /// The playlist as downloaded, with only its songs on the phone; nil when it isn't on the phone.
+    func downloadedPlaylist(id: String) async -> (Playlist, [Song])?
 
     /// Every starred song and album.
     func favourites() async throws -> Starred
     /// The songs of a Made for you playlist; nil when it can't be read (no token, offline, or ListenBrainz didn't answer).
     func madeForYouTracks(id: String) async -> [CPMadeForYouTrack]?
 }
-
-/// A read that came back empty-handed without an error of its own (Made for you, a download no longer on the phone).
-struct CPNothingRead: Error {}
 
 /// Home and Library from the owner's layout (spec §3, Task 22), the new rows' screens, genre play, the offline watch and
 /// the sleep button (Task 23). A change on the phone, or going offline, reloads Home and redraws the Library tab; a list
@@ -128,9 +128,15 @@ extension CarPlayController {
                 guard let page = await library.downloadedArtist(id: id) else { return { _ in CarPlayRows.state(.empty) } }
                 return { _ in CarPlayRows.downloadedArtist(page.0, albums: page.1) }
             }
+        case .downloadedPlaylist(let id, _):
+            return {
+                guard let page = await library.downloadedPlaylist(id: id) else { return { _ in CarPlayRows.state(.empty) } }
+                return { CarPlayRows.playlist(page.0, songs: page.1, playingId: $0) }
+            }
         case .madeForYou(let id, _):
             return {
-                guard let tracks = await library.madeForYouTracks(id: id) else { throw CPNothingRead() }
+                // A playlist that can't be read (ListenBrainz didn't answer) shows as empty, not as a library failure.
+                guard let tracks = await library.madeForYouTracks(id: id) else { return { _ in CarPlayRows.state(.empty) } }
                 let offer = library.tryOffer
                 return { CarPlayRows.madeForYou(tracks, offer: offer, playingId: $0) }
             }
@@ -146,7 +152,8 @@ extension CarPlayController {
         }
     }
 
-    /// Genre requests fetch their songs first; a group's come shuffled (D41). Songs from the phone play as they are.
+    /// Genre requests fetch their songs first. Shuffling has one owner, `start(_:at:shuffled:)` (the player's shuffle):
+    /// a group's Shuffle (D41) and the phone's Shuffle rows ask for it; a genre's row plays in server order.
     func playCustom(_ request: CPPlayRequest) {
         switch request {
         case .shuffle(let songs):
@@ -174,6 +181,7 @@ extension CarPlayController {
             self?.toggleSleepTimer()
         }
         button.isSelected = library.sleepTimerActive
+        button.accessibilityLabel = "Sleep timer"
         return button
     }
 

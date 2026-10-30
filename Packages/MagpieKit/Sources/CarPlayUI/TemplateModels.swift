@@ -15,6 +15,8 @@ public enum CPDestination: Sendable, Hashable {
     case downloadedAlbum(id: String, title: String)
     /// An artist's albums on the phone (Downloads).
     case downloadedArtist(id: String, name: String)
+    /// A playlist as downloaded (Downloads): only its songs on the phone, online or offline.
+    case downloadedPlaylist(id: String, title: String)
     /// A ListenBrainz "Made for you" playlist (Home, with a token; Task 23).
     case madeForYou(id: String, title: String)
     case album(id: String, title: String)
@@ -34,7 +36,8 @@ public enum CPDestination: Sendable, Hashable {
         case .favourites: "Favourites"
         case .downloads: "Downloads"
         case .finds: "Finds"
-        case .album(_, let title), .playlist(_, let title), .downloadedAlbum(_, let title), .madeForYou(_, let title): title
+        case .album(_, let title), .playlist(_, let title), .downloadedAlbum(_, let title), .madeForYou(_, let title),
+             .downloadedPlaylist(_, let title): title
         case .artist(_, let name), .genreGroup(_, let name), .downloadedArtist(_, let name): name
         case .searchResults(let query): query
         case .search: "Search"
@@ -132,18 +135,23 @@ public enum CarPlayState: Sendable, Hashable {
     /// T3: out of reach, and the Local Network prompt hasn't been answered (it can only be answered on the phone).
     /// The one instructive state line (D33, spec §8).
     case localNetworkPending
+    /// T23: offline mode is on (or the server is unreachable): only what's on the phone shows.
+    case offline
 
     /// D3: the symbol shown with the state's text, for the states that have one.
     public var statusSymbol: String? {
         switch self {
         case .localNetworkDenied: "network.slash"
         case .localNetworkPending: "iphone"
+        case .offline: "wifi.slash"
         default: nil
         }
     }
 
-    /// What a failed read shows: out of reach (with the Local Network reason when there is one), or didn't send.
-    public static func unavailable(outOfReach: Bool, localNetwork: CPLocalNetwork) -> CarPlayState {
+    /// What a failed read shows: offline when the app is (T23: never "out of reach" or Local Network then), out of
+    /// reach (with the Local Network reason when there is one), or didn't send.
+    public static func unavailable(outOfReach: Bool, localNetwork: CPLocalNetwork, offline: Bool = false) -> CarPlayState {
+        if offline { return .offline }
         guard outOfReach else { return .failed }
         return switch localNetwork {
         case .fine: .outOfReach
@@ -168,6 +176,7 @@ public enum CarPlayRows {
         case .findsOff: ("state.findsOff", "Finds aren't set up on this iPhone")
         case .localNetworkDenied: ("state.localNetworkDenied", "Local network access is off for Magpie")
         case .localNetworkPending: ("state.localNetworkPending", "Open Magpie on your iPhone once to allow local network access")
+        case .offline: ("state.offline", "You're offline")
         }
         return [CPSectionModel(header: nil, rows: [CPRowModel(id: id, title: title, action: .none,
                                                               statusSymbol: state.statusSymbol)])]

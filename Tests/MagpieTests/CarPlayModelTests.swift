@@ -134,6 +134,8 @@ import UIKit
             case .searchResults: CarPlayRows.searchResults(found, playingId: nil)
             case .search: [CPSectionModel(header: nil, rows: CarPlayRows.searchItems(found))]
             case .downloadedAlbum: CarPlayRows.downloadedAlbum(a, playingId: nil)
+            case .downloadedPlaylist: CarPlayRows.playlist(Playlist(id: "p", name: "P", songCount: 1, duration: 9),
+                                                           songs: [song("s")], playingId: nil)
             case .downloadedArtist: CarPlayRows.downloadedArtist(Artist(id: "r", name: "R", albumCount: 1), albums: [a])
             case .finds: CarPlayRows.finds(CPFindsShelf(newFinds: [CPFind(song: song("n"), daysLeft: 7, isNew: true)], finds: []),
                                            playingId: nil)

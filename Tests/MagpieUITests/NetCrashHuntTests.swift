@@ -25,7 +25,7 @@ final class NetCrashHuntTests: XCTestCase {
         setFault(#"{"mode":"good"}"#)
         continueAfterFailure = true
         let app = XCUIApplication()
-        app.launchArguments = ["-MagpieResetState", "YES"]
+        app.launchArguments = ["-MagpieResetState", "YES", "-MagpieUITesting", "YES", "-MagpieNetwork", "wifi"]
         app.launch()
         let address = app.textFields["connect-address-0"]
         XCTAssertTrue(address.waitForExistence(timeout: 10))

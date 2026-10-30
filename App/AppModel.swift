@@ -163,6 +163,8 @@ final class AppModel {
     /// Spaces the app's `api.listenbrainz.org` calls ("Made for you"); labs search never waits on it.
     @ObservationIgnored let listenBrainzLimiter = RateLimiter(perSecond: 2)
     @ObservationIgnored private var unlockObserver: NSObjectProtocol?
+    /// What the preferences read as at a launch before first unlock (UserDefaults unreadable); nil otherwise (T23).
+    @ObservationIgnored var preferencesReadLocked: Preferences?
     @ObservationIgnored let transport: HTTPTransport
     @ObservationIgnored private let probeTransport: HTTPTransport
     @ObservationIgnored private let box: ClientBox
@@ -236,7 +238,8 @@ final class AppModel {
          notifications: Bool = true,
          localNetworkProber: (any LocalNetworkProbing)? = nil,
          network: (any NetworkStatusProviding)? = nil,
-         audioFetcher: (any AudioFetching)? = nil) {
+         audioFetcher: (any AudioFetching)? = nil,
+         protectedDataAvailableAtLaunch: Bool? = nil) {
         let box = ClientBox()
         self.audioFetcher = audioFetcher ?? URLSessionAudioFetcher()
         self.store = store
@@ -252,6 +255,7 @@ final class AppModel {
         self.preferencesStore = preferencesStore
         let preferences = preferencesStore.load()
         self.preferences = preferences
+        self.preferencesReadLocked = Self.protectedDataAvailable(protectedDataAvailableAtLaunch) ? nil : preferences
         self.notifications = notifications
         let data = dataDirectory ?? FileManager.default.temporaryDirectory.appending(path: "magpie-\(UUID().uuidString)")
         self.dataDirectory = data
@@ -272,7 +276,8 @@ final class AppModel {
         self.replayGainBox = replayGain
         let scrobbleSettings = ScrobbleSettings(preferences.scrobbling)
         self.scrobbleSettings = scrobbleSettings
-        let network = network ?? (Self.isHostedTest ? FixedNetwork() : NetworkMonitor())
+        let pinned = UITestNetworkPin.status(arguments: ProcessInfo.processInfo.arguments)   // UI tests only (T23)
+        let network = network ?? (Self.isHostedTest ? FixedNetwork() : pinned.map(FixedNetwork.init) ?? NetworkMonitor())
         self.network = network
         let findsIdentity = self.findsIdentity
         let scrobbles = ScrobbleRouter(

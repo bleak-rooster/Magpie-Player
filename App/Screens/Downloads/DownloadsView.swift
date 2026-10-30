@@ -109,7 +109,7 @@ struct DownloadsView: View {
     }
 
     private func playlistRow(_ playlist: Playlist) -> some View {
-        NavigationLink(value: Route.playlist(id: playlist.id)) {
+        NavigationLink(value: Route.downloadedPlaylist(id: playlist.id)) {
             HStack(spacing: Tokens.Spacing.m) {
                 Artwork(playlist.coverArtId, side: 48) { SleeveArt(image: $0, side: 48) }
                 VStack(alignment: .leading, spacing: 1) {

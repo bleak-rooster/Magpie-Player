@@ -9,7 +9,7 @@ import UIKit
 /// What the CarPlay screens read from the app. The app implements it over its session (with
 /// address failover) and its in-memory artwork cache.
 @MainActor
-public protocol CarPlayLibrary: AnyObject, Sendable, CarPlayLayoutLibrary {
+public protocol CarPlayLibrary: AnyObject, Sendable, CarPlayCustomisationLibrary {
     func albumList(_ type: AlbumListType, size: Int) async throws -> [Album]
     func album(id: String) async throws -> Album
     func artists() async throws -> [Artist]
@@ -344,7 +344,8 @@ public final class CarPlayController: NSObject {
     }
 
     func showUnavailable(_ error: Error) {
-        let state = CarPlayState.unavailable(outOfReach: library.isOutOfReach(error), localNetwork: library.localNetwork)
+        let state = CarPlayState.unavailable(outOfReach: library.isOutOfReach(error), localNetwork: library.localNetwork,
+                                             offline: library.isOffline)
         showMessage(CarPlayRows.state(state).flatMap(\.rows).first?.title ?? "Your library didn't send this")
     }
 
@@ -512,7 +513,7 @@ public final class CarPlayController: NSObject {
             } catch {
                 guard !Task.isCancelled, let self, binding.isPlaceholder else { return }
                 let state = CarPlayState.unavailable(outOfReach: self.library.isOutOfReach(error),
-                                                     localNetwork: self.library.localNetwork)
+                                                     localNetwork: self.library.localNetwork, offline: self.library.isOffline)
                 self.apply(CarPlayRows.state(state), to: binding, placeholder: true)
             }
         }
@@ -758,7 +759,8 @@ extension CarPlayController: CPSearchTemplateDelegate {
                 guard !Task.isCancelled, searchResults.isCurrent(ticket) else {
                     return completionHandler(searchResults.stale())
                 }
-                let state = CarPlayState.unavailable(outOfReach: library.isOutOfReach(error), localNetwork: library.localNetwork)
+                let state = CarPlayState.unavailable(outOfReach: library.isOutOfReach(error), localNetwork: library.localNetwork,
+                                                     offline: library.isOffline)
                 finish(CarPlayRows.state(state).flatMap(\.rows).map {
                     CPListItem(text: $0.title, detailText: $0.detail, image: nil,
                                accessoryImage: $0.statusSymbol.flatMap { UIImage(systemName: $0) }, accessoryType: .none)

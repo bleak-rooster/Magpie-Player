@@ -3,6 +3,8 @@ import Foundation
 import MagpieCore
 import MagpieTestSupport
 import NavidromeKit
+import Playback
+import Search
 import Testing
 import UIKit
 @testable import CarPlayUI
@@ -95,13 +97,16 @@ final class FakeCarInterface: CarPlayInterface {
             return MockTransport.Response(status: 200, body: subsonic(#""albumList2":{"album":[\#(albums.joined(separator: ","))]}"#))
         }
         t.stub(pathSuffix: "/rest/getGenres", body: subsonic(#"""
-        "genres":{"genre":[{"value":"Indie Rock","songCount":2,"albumCount":1},{"value":"Alt Rock","songCount":2,"albumCount":2}]}
+        "genres":{"genre":[{"value":"Indie Rock","songCount":300,"albumCount":1},{"value":"Alt Rock","songCount":300,"albumCount":2}]}
         """#))
         t.stub(pathSuffix: "/rest/getSongsByGenre") { request in
-            let genre = request.url.flatMap { URLComponents(url: $0, resolvingAgainstBaseURL: false) }?
-                .queryItems?.first { $0.name == "genre" }?.value ?? ""
+            let items = request.url.flatMap { URLComponents(url: $0, resolvingAgainstBaseURL: false) }?.queryItems ?? []
+            func value(_ name: String) -> String? { items.first { $0.name == name }?.value }
+            let genre = value("genre") ?? ""
             let prefix = genre == "Indie Rock" ? "ir" : "ar"
-            let songs = (0..<2).map { #"{"id":"\#(prefix)\#($0)","title":"\#(prefix)\#($0)","genre":"\#(genre)"}"# }
+            let offset = Int(value("offset") ?? "0") ?? 0, count = Int(value("count") ?? "0") ?? 0
+            let songs = (0..<300).dropFirst(offset).prefix(count)
+                .map { #"{"id":"\#(prefix)\#($0)","title":"\#(prefix)\#($0)","genre":"\#(genre)"}"# }
             return MockTransport.Response(status: 200, body: subsonic(#""songsByGenre":{"song":[\#(songs.joined(separator: ","))]}"#))
         }
     }
@@ -111,11 +116,11 @@ final class FakeCarInterface: CarPlayInterface {
         try? FileManager.default.removeItem(at: tmp)
     }
 
-    func makeModel(store: any SessionStoring) -> AppModel {
+    func makeModel(store: any SessionStoring, unlocked: Bool = true) -> AppModel {
         AppModel(store: store, lidarrStore: MemoryLidarrStore(), tokenStore: MemoryTokenStore(),
                  matchIndexDirectory: nil, dataDirectory: tmp, transport: transport, probeTransport: transport,
                  engine: engine, defaults: defaults, systemNowPlaying: false, notifications: false,
-                 network: FakeNetwork(.wifi), audioFetcher: FakeFetcher())
+                 network: FakeNetwork(.wifi), audioFetcher: FakeFetcher(), protectedDataAvailableAtLaunch: unlocked)
     }
 
     func signedInModel() async throws -> AppModel {
@@ -179,10 +184,35 @@ final class FakeCarInterface: CarPlayInterface {
         car.tap("Rock", in: car.topList)
         #expect(car.topList?.title == "Rock")
         #expect(await eventually { FakeCarInterface.texts(car.topList) == ["Shuffle", "Indie Rock", "Alt Rock"] })
-        car.tap("Indie Rock", in: car.topList)
-        #expect(await eventually { model.player.queue.main.map(\.song.id) == ["ir0", "ir1"] })
+        let rock = try #require(car.topList)
+        car.tap("Indie Rock", in: rock)
+        #expect(await eventually { model.player.queue.main.prefix(2).map(\.song.id) == ["ir0", "ir1"] })
+        #expect(model.player.queue.main.count == 300)
         #expect(model.player.queue.current?.song.id == "ir0" && !model.player.isShuffled)
         #expect(await eventually { car.templates.last === CPNowPlayingTemplate.shared })
+
+        // Fix round 1 (7): the group's Shuffle plays its genres' songs, capped at 500, with shuffle on.
+        car.pop(to: rock, animated: false, completion: nil)
+        car.tap("Shuffle", in: rock)
+        #expect(await eventually { model.player.isShuffled && model.player.queue.main.count == AppModel.groupSongCap })
+        let ids = Set(model.player.queue.main.map(\.song.id))
+        #expect(ids.contains("ir0") && ids.contains("ar0") && ids.count == AppModel.groupSongCap)
+    }
+
+    /// Fix round 1 (3): a Made for you playlist that can't be read is empty, not a library failure.
+    @Test func unreadableMadeForYouIsEmpty() async throws {
+        let model = try await signedInModel()
+        try model.setListenBrainzToken("tok")
+        model.madeForYouShelf = [MadeForYou.Playlist(id: MBID("5a2b8c4e-7a0b-4f61-9a0e-0c8f2d1e9b11")!, title: "Daily Jams")]
+        let car = FakeCarInterface()
+        let controller = CarPlayController(interfaceController: car, library: CarPlayLibraryAdapter(model: model),
+                                           player: model.player)
+        defer { controller.disconnect() }
+        controller.setAvailability(.ready(account: "one"))
+        #expect(await eventually { FakeCarInterface.texts(self.shown(car, controller, tab: 0)).contains("Daily Jams") })
+        car.tap("Daily Jams", in: car.tab(0))
+        #expect(car.topList?.title == "Daily Jams")
+        #expect(await eventually { FakeCarInterface.texts(car.topList) == ["Nothing here yet"] })
     }
 
     /// Downloads and Favourites through the custom fetcher.
@@ -191,8 +221,10 @@ final class FakeCarInterface: CarPlayInterface {
         "starred2":{"song":[{"id":"st1","title":"Starred one","artist":"A"}],"album":[{"id":"sa1","name":"Starred album","artist":"A","songCount":1}]}
         """#))
         let model = try await signedInModel()
-        model.download([Song(id: "s1", title: "T1", artist: "A", album: "Continuum", albumId: "al-1", track: 1, duration: 200)],
-                       reason: .album("al-1"), coverArtId: "al-1")
+        let s1 = Song(id: "s1", title: "T1", artist: "A", album: "Continuum", albumId: "al-1", track: 1, duration: 200)
+        model.download([s1], reason: .album("al-1"), coverArtId: "al-1")
+        model.download([s1], reason: .playlist("p1"),
+                       playlist: DownloadedPlaylist(id: "p1", name: "Road", coverArtId: nil, songIds: ["s1", "s9"], savedAt: .now))
         await model.downloads!.settled()
         let car = FakeCarInterface()
         let controller = CarPlayController(interfaceController: car, library: CarPlayLibraryAdapter(model: model),
@@ -200,7 +232,12 @@ final class FakeCarInterface: CarPlayInterface {
         defer { controller.disconnect() }
         controller.setAvailability(.ready(account: "one"))
         car.tap("Downloads", in: car.tab(1))
-        #expect(await eventually { FakeCarInterface.texts(car.topList) == ["Continuum", "A"] })
+        #expect(await eventually { FakeCarInterface.texts(car.topList) == ["Continuum", "A", "Road"] })
+        // Fix round 1 (b): online too, a downloaded playlist shows only its songs on the phone (no server playlist).
+        let downloads = try #require(car.topList)
+        car.tap("Road", in: downloads)
+        #expect(await eventually { FakeCarInterface.texts(car.topList) == ["T1"] })
+        car.pop(to: downloads, animated: false, completion: nil)
         car.tap("Continuum", in: car.topList)
         #expect(await eventually { FakeCarInterface.texts(car.topList) == ["Shuffle", "T1"] })
         car.tap("T1", in: car.topList)
@@ -221,7 +258,7 @@ final class FakeCarInterface: CarPlayInterface {
         func sleepButton() -> CPNowPlayingButton? {
             CPNowPlayingTemplate.shared.nowPlayingButtons.first { $0 is CPNowPlayingImageButton }
         }
-        #expect(sleepButton()?.isSelected == false)
+        #expect(sleepButton()?.isSelected == false && sleepButton()?.accessibilityLabel == "Sleep timer")
         adapter.toggleSleepTimer()
         #expect(await eventually { sleepButton()?.isSelected == true })
         adapter.toggleSleepTimer()
@@ -232,7 +269,7 @@ final class FakeCarInterface: CarPlayInterface {
     /// once unlocked the saved session and the saved layout both apply.
     @Test func coldLaunchFromTheCarAppliesTheStoredLayout() async throws {
         let locked = LockableStore()
-        let model = makeModel(store: locked)
+        let model = makeModel(store: locked, unlocked: false)
         model.resumeSavedSession()
         let car = FakeCarInterface()
         let controller = CarPlayController(interfaceController: car, library: CarPlayLibraryAdapter(model: model),
@@ -255,5 +292,39 @@ final class FakeCarInterface: CarPlayInterface {
             FakeCarInterface.headers(self.shown(car, controller, tab: 0)) == ["Most played", "Jump back in", "Recently added"]
         })
         #expect(FakeCarInterface.texts(car.tab(1)).first == "Downloads")
+    }
+
+    /// Fix round 1 (1): the reload after unlock happens only after a launch before first unlock, only once, and an
+    /// area changed in memory meanwhile keeps that change.
+    @Test func preferencesReloadOnceAfterALockedLaunch() throws {
+        let unlockedLaunch = makeModel(store: LockableStore())
+        var other = unlockedLaunch.preferences
+        other.layout.home.move(fromOffsets: IndexSet(integer: 3), toOffset: 0)
+        PreferencesStore(defaults: defaults).save(other, previous: unlockedLaunch.preferences)
+        unlockedLaunch.protectedDataBecameAvailable()
+        #expect(unlockedLaunch.preferences.layout != other.layout, "a normal launch never reloads")
+
+        let fresh = UserDefaults(suiteName: "CarPlayControllerTests.locked.\(UUID().uuidString)")!
+        let model = AppModel(store: LockableStore(), lidarrStore: MemoryLidarrStore(), tokenStore: MemoryTokenStore(),
+                             matchIndexDirectory: nil, dataDirectory: tmp, transport: transport, probeTransport: transport,
+                             engine: engine, defaults: fresh, systemNowPlaying: false, notifications: false,
+                             network: FakeNetwork(.wifi), audioFetcher: FakeFetcher(), protectedDataAvailableAtLaunch: false)
+        let launch = model.preferences
+        model.updatePreferences { $0.playback.sleepTimer = .m60 }   // changed in the car before unlock
+        // What was saved before this launch, readable only now (the write above was lost while locked).
+        var saved = launch
+        saved.layout.home.move(fromOffsets: IndexSet(integer: 3), toOffset: 0)
+        let store = PreferencesStore(defaults: fresh)
+        store.save(saved, previous: model.preferences)
+        model.protectedDataBecameAvailable()
+        #expect(model.preferences.layout == saved.layout, "the saved layout applies")
+        #expect(model.preferences.playback.sleepTimer == .m60, "the change made before unlock survives")
+        #expect(store.load().playback.sleepTimer == .m60, "and is saved now")
+
+        var later = model.preferences
+        later.layout = launch.layout
+        store.save(later, previous: model.preferences)
+        model.protectedDataBecameAvailable()
+        #expect(model.preferences.layout == saved.layout, "only once")
     }
 }

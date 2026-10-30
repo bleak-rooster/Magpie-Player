@@ -258,7 +258,9 @@ private func subsonic(_ body: String) -> Data {
         let rows = CarPlayRows.downloads(albums: [Album(id: "a1", name: "Continuum", artist: "Aurora Field", songCount: 6, duration: 1)],
                                          playlists: [Playlist(id: "p1", name: "Mix", songCount: 2, duration: 1)]).flatMap(\.rows)
         #expect(rows.map(\.title) == ["Continuum", "Mix"])
-        #expect(rows[0].action == .open(.downloadedAlbum(id: "a1", title: "Continuum")) && rows[1].action == .open(.playlist(id: "p1", title: "Mix")))
+        // Fix round 1 (b): a downloaded playlist opens from the phone (only its songs there), not the server's playlist.
+        #expect(rows[0].action == .open(.downloadedAlbum(id: "a1", title: "Continuum"))
+                && rows[1].action == .open(.downloadedPlaylist(id: "p1", title: "Mix")))
     }
 
     @Test func favouritesRowsPlay() {
@@ -283,6 +285,8 @@ private func subsonic(_ body: String) -> Data {
         let adapter = CarPlayLibraryAdapter(model: model)
         #expect(try await adapter.songs(for: .genre(name: "Indie Rock", shuffled: false)).prefix(2).map(\.id) == ["ir0", "ir1"])
         #expect(try await adapter.songs(for: .genreGroup(id: "rock", shuffled: true)).count == 500)
+        // Fix round 1 (6): the adapter doesn't shuffle (the controller's `start` does): one genre at a time in turn.
+        #expect(try await adapter.songs(for: .genreGroup(id: "rock", shuffled: true)).prefix(4).map(\.id) == ["ir0", "ar0", "ir1", "ar1"])
     }
 
     @Test func carSleepToggleUsesDefault() async throws {
@@ -318,8 +322,8 @@ private func subsonic(_ body: String) -> Data {
         #expect(groups.map(\.id) == ["rock"] && groups.map(\.name) == ["Rock"] && groups.map(\.albumCount) == [3])
         #expect(try await adapter.genreSubgenres("rock").map(\.name) == ["Indie Rock", "Alt Rock"])
         #expect(try await adapter.genreSubgenres("jazz").isEmpty)
-        let shuffled = try await adapter.songs(for: .genre(name: "Indie Rock", shuffled: true))
-        #expect(shuffled.count == 300 && Set(shuffled.map(\.id)).contains("ir0"))
+        let genre = try await adapter.songs(for: .genre(name: "Indie Rock", shuffled: true))
+        #expect(genre.count == 300 && genre.prefix(2).map(\.id) == ["ir0", "ir1"], "start shuffles, not the adapter")
     }
 
     /// Downloads in the car: Albums, Artists and Playlists on the phone; an album or an artist opens from the phone, a
@@ -406,6 +410,49 @@ private func subsonic(_ body: String) -> Data {
         #expect(await adapter.downloadedAlbum(id: "nope") == nil)
         let artist = await adapter.downloadedArtist(id: "ar-1")
         #expect(artist?.0.name == "A" && artist?.1.map(\.id) == ["al-1"])
+        // A playlist as downloaded: only its songs on the phone, online too (fix round 1 b).
+        model.download([songs[0]], reason: .playlist("p1"),
+                       playlist: DownloadedPlaylist(id: "p1", name: "Road", coverArtId: nil, songIds: ["s1", "s9"], savedAt: .now))
+        await model.downloads!.settled()
+        let playlist = await adapter.downloadedPlaylist(id: "p1")
+        #expect(playlist?.0.name == "Road" && playlist?.1.map(\.id) == ["s1"])
+        #expect(await adapter.downloadedPlaylist(id: "nope") == nil)
+    }
+
+    /// Fix round 1 (2): any failed read while offline says so, with its symbol, never "out of reach" or Local Network.
+    @Test func offlineFailuresSayOffline() {
+        #expect(CarPlayState.unavailable(outOfReach: true, localNetwork: .denied, offline: true) == .offline)
+        #expect(CarPlayState.unavailable(outOfReach: false, localNetwork: .pending, offline: true) == .offline)
+        #expect(CarPlayState.unavailable(outOfReach: true, localNetwork: .denied) == .localNetworkDenied)
+        let row = CarPlayRows.state(.offline).flatMap(\.rows).first
+        #expect(row?.title == "You're offline" && row?.statusSymbol == "wifi.slash" && row?.action == RowAction.none)
+    }
+
+    /// Fix round 1 (4): Made for you is read once per token, so an empty answer isn't asked for on every Home reload;
+    /// a new token asks again.
+    @Test func madeForYouReadOncePerToken() async throws {
+        let model = try await signedInModel(fetcher: FakeFetcher())
+        try model.setListenBrainzToken("tok")
+        let adapter = CarPlayLibraryAdapter(model: model)
+        func reads() -> Int { transport.inner.requests.filter { $0.url?.host == "api.listenbrainz.org" && $0.url?.path.hasSuffix("validate-token") == true }.count }
+        let before = reads()
+        _ = try await adapter.homeShelves(adapter.homeSections, size: CarPlayRows.homeShelfMaxSize)
+        let once = reads()
+        _ = try await adapter.homeShelves(adapter.homeSections, size: CarPlayRows.homeShelfMaxSize)
+        #expect(once == before + 1 && reads() == once, "an empty answer isn't asked for again")
+        try model.setListenBrainzToken("other")
+        _ = try await adapter.homeShelves(adapter.homeSections, size: CarPlayRows.homeShelfMaxSize)
+        #expect(reads() > once, "a new token is read")
+    }
+
+    /// Fix round 1 (a): `-MagpieNetwork wifi` pins the network only together with `-MagpieUITesting YES`.
+    @Test func networkPinOnlyForUITests() {
+        #expect(UITestNetworkPin.status(arguments: ["Magpie", "-MagpieUITesting", "YES", "-MagpieNetwork", "wifi"]) == .wifi)
+        #expect(UITestNetworkPin.status(arguments: ["Magpie", "-MagpieNetwork", "wifi"]) == nil, "never without the UI-test flag")
+        #expect(UITestNetworkPin.status(arguments: ["Magpie", "-MagpieUITesting", "NO", "-MagpieNetwork", "wifi"]) == nil)
+        #expect(UITestNetworkPin.status(arguments: ["Magpie", "-MagpieUITesting", "YES", "-MagpieNetwork", "cellular"]) == nil)
+        #expect(UITestNetworkPin.status(arguments: ["Magpie", "-MagpieUITesting", "YES"]) == nil)
+        #expect(UITestNetworkPin.status(arguments: ProcessInfo.processInfo.arguments) == nil, "this test host isn't a UI test")
     }
 
     /// Late changes reach the car (T22 review): the reads the controller follows are observable.
