@@ -45,11 +45,13 @@ enum RequestsBackgroundRefresh {
 extension AppModel {
     /// Asks iOS for a background pass while any request is still on its way (on going to the background, and after
     /// each pass). Nothing is asked for otherwise.
-    func scheduleRequestRefresh(submit: @escaping (BGTaskRequest) throws -> Void = { try BGTaskScheduler.shared.submit($0) }) {
+    func scheduleRequestRefresh(submit: @escaping (BGTaskRequest) async throws -> Void = {
+        try await BGTaskScheduler.shared.submitTaskRequest($0)
+    }) {
         guard let runner else { return }
         Task {
             guard await runner.needsPolling else { return }
-            try? submit(RequestsBackgroundRefresh.request())
+            try? await submit(RequestsBackgroundRefresh.request())
         }
     }
 
