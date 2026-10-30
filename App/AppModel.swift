@@ -46,7 +46,7 @@ struct ProbeFailure {
 final class AppModel {
     static let shared = AppModel.restore()
 
-    private(set) var session: Session?
+    private(set) var session: Session? { didSet { homeFeedSessionChanged() } }
     let player: Player
     /// Sleep timer (fade out, then pause, or stop after the current song).
     let sleepTimer: SleepTimer
@@ -112,9 +112,14 @@ final class AppModel {
     var listenBrainzTokenGeneration = 0
     /// Home's "Made for you" shelf for the saved token (AppModel+MadeForYou.swift). Empty without a token.
     var madeForYouShelf: [MadeForYou.Playlist] = []
+    /// Home's feed for the signed-in account (P5, HomeFeed.swift).
+    @ObservationIgnored var homeFeedSlot: HomeFeed?
+    /// Changes each time the server answers again after it didn't: Home reads what failed (P5).
+    var serverAnsweredGeneration = 0
     /// The scene is active: requests poll every 5 s, otherwise every 30 s.
     var isForeground = true {
         didSet {
+            if isForeground != oldValue { homeFeedForegroundChanged(isForeground) }   // P5: Home's retries
             guard isForeground, !oldValue else { return }
             // I3: the Lidarr item may still have been unreadable when the session was restored.
             if session != nil, reloadKeychainItems() { rebuildRunner() }
@@ -537,6 +542,7 @@ final class AppModel {
         stopObservingUnlock()
         box.set(nil)
         ArtworkCache.shared.removeAll()
+        forgetHomeShelves()
         stopMatchIndex(erase: true)
         forgetLidarrPermissions()
         lidarrStore.clear()

@@ -9,8 +9,6 @@ import SwiftUI
 /// offline", then the Downloaded shelf (albums on the phone).
 struct HomeView: View {
     @Environment(AppModel.self) private var model
-    /// What has been read so far (`HomeLoad`); failed until the first read answers.
-    @State private var shelves: Loadable<HomeLoad> = .loading
     @State private var editsHome = false
     private let themed = Themed()
 
@@ -26,7 +24,7 @@ struct HomeView: View {
         .refreshable {
             guard !model.isOffline else { return await model.checkReachability() }
             async let made: Void = model.refreshMadeForYou()
-            await load(fresh: true)
+            await model.homeFeed.refresh(key)
             await made
         }
         .magpieLargeTitle("Home")
@@ -41,7 +39,11 @@ struct HomeView: View {
         // Reads what a change needs: a section turned on or one that failed, offline or back online (everything
         // again), a song that landed on or left the phone (Downloaded), the genre preferences (Genres). A reorder or a
         // section turned off reads nothing.
-        .task(id: key) { await load(fresh: false) }
+        // P5: Home's feed (saved shelves at once, retries by itself) does the reading; see `HomeFeed`. Foreground and
+        // background reach it from `AppModel.isForeground`, sign-out and another account from the session.
+        .task(id: key) { await model.homeFeed.show(key) }
+        .onChange(of: model.serverAnsweredGeneration) { model.homeFeed.reconnected() }
+        .onChange(of: model.network.status.isConnected) { _, connected in if connected { model.homeFeed.reconnected() } }
         // Its own task, so the library's shelves never wait for it. Read once (Refresh reads again), and again
         // whenever the token is saved, replaced or removed (which also clears the shelf).
         .task(id: model.listenBrainzTokenGeneration) {
@@ -69,7 +71,7 @@ struct HomeView: View {
                 FinishSettingUpCard()
                     .padding(.horizontal, Tokens.Spacing.margin)
             }
-            LoadableView(state: shelves, retry: { await load(fresh: true) }) { read in
+            LoadableView(state: model.homeFeed.state, retry: { await model.homeFeed.refresh(key) }) { read in
                 let sections = model.homeSections.filter { shows($0, read) }
                 if sections.isEmpty {
                     empty
@@ -102,7 +104,8 @@ struct HomeView: View {
     }
 
     private func shows(_ section: HomeSection, _ read: HomeLoad) -> Bool {
-        section == .madeForYou ? !model.madeForYouShelf.isEmpty : read.found[section] != nil || read.showsFailure(section)
+        section == .madeForYou ? !model.madeForYouShelf.isEmpty
+                               : read.found[section] != nil || model.homeFeed.showsFailure(section)
     }
 
     /// A section that couldn't be read: its title, and a line saying so.
@@ -144,29 +147,6 @@ struct HomeView: View {
             }
         }
         .accessibilityIdentifier("home-made-for-you")
-    }
-
-    /// Reads what `HomeLoad` says the change needs (everything when `fresh`). What was read stays on screen if a read
-    /// fails; a section that failed is read again on the next change, and says so until then.
-    private func load(fresh: Bool) async {
-        let want = key
-        var state = shelves.value ?? HomeLoad()
-        let read = state.read(for: want, fresh: fresh)
-        do {
-            let result = read.sections.isEmpty ? AppModel.HomeRead(shelves: [], failed: [])
-                                               : try await model.homeRead(for: read.sections)
-            guard !Task.isCancelled else { return }
-            state.record(read, for: want, shelves: result.shelves, failed: result.failed)
-            shelves = .loaded(state)
-        } catch {
-            guard !Task.isCancelled else { return }
-            if shelves.value == nil {
-                shelves = .failed(BrowseErrorCopy.message(for: error))
-            } else {
-                state.record(read, for: want, shelves: [], failed: Set(read.sections))
-                shelves = .loaded(state)
-            }
-        }
     }
 }
 

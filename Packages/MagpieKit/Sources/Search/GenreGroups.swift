@@ -12,6 +12,11 @@ public struct GenreGroupSection: Hashable, Sendable {
     public var genres: [Genre]
     public var albumCount: Int
     public var songCount: Int
+
+    /// Home's saved shelves (P5) rebuild a group's tile from its id, name and album count.
+    public init(group: GenreGroup, genres: [Genre], albumCount: Int, songCount: Int) {
+        self.group = group; self.genres = genres; self.albumCount = albumCount; self.songCount = songCount
+    }
 }
 
 /// Groups a server's raw genre list under about 16 parents for browsing. Pure logic: a hand-written alias map, ordered

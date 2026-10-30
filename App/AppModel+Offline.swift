@@ -136,6 +136,7 @@ extension AppModel {
         // Downloads that failed meanwhile count as attempts, and the rest go again.
         if wasDown || downloads?.hasAwaitingVerdict == true { downloads?.serverAnswered() }
         guard wasDown else { return }
+        serverAnsweredGeneration += 1   // P5: Home reads what failed
         player.retryAfterFailure()
         drainScrobblesSoon()   // plays queued while it was down (T17)
     }

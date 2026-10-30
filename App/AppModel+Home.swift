@@ -30,7 +30,7 @@ struct HomeShelf: Identifiable, Equatable, Sendable {
 /// Home layout (spec §3, Task 20): the sections the owner shows, in the owner's order, each fetched only when shown.
 extension AppModel {
     /// Tiles per shelf (not configurable).
-    static let homeShelfSize = 12
+    nonisolated static let homeShelfSize = 12
 
     /// The sections Home shows now, on the phone and in the car: the owner's order and switches; Made for you only with
     /// a token; offline, Downloaded.
@@ -43,6 +43,8 @@ extension AppModel {
     struct HomeRead: Sendable {
         var shelves: [HomeShelf]
         var failed: Set<HomeSection>
+        /// Sections whose read was cut short (cancelled, or never reported): not read, and never a failure (P5).
+        var cancelled: Set<HomeSection> = []
     }
 
     /// The shelves for `sections`, in that order, fetched at the same time. Made for you is left out (its own shelf),
@@ -80,15 +82,28 @@ extension AppModel {
         }
         let asksServer = wanted.indices.filter { Self.asksServer(wanted[$0]) }
         let failures = asksServer.compactMap { i -> (any Error)? in if case .failure(let e) = filled[i] { e } else { nil } }
-        if !asksServer.isEmpty, failures.count == asksServer.count, let first = failures.first { throw first }
+        // Every server section failed: a real error when they all are; a cancellation when they all were cut short;
+        // a mix is returned as it is, so the cut-short ones stay unread rather than failed (fix M4).
+        if !asksServer.isEmpty, failures.count == asksServer.count, let first = failures.first {
+            let real = failures.filter { !isCancellation($0) }
+            if real.isEmpty { throw first }
+            if real.count == failures.count { throw real[0] }
+        }
         let shelves = zip(wanted, filled).compactMap { section, result -> HomeShelf? in
             guard case .success(let items) = result, !items.isEmpty else { return nil }
             return HomeShelf(section: section, items: items)
         }
-        let failed = zip(wanted, filled).compactMap { section, result -> HomeSection? in
-            if case .failure = result { section } else { nil }
+        var failed = Set<HomeSection>(), cancelled = Set<HomeSection>()
+        for (section, result) in zip(wanted, filled) {
+            guard case .failure(let error) = result else { continue }
+            if isCancellation(error) { cancelled.insert(section) } else { failed.insert(section) }
         }
-        return HomeRead(shelves: shelves, failed: Set(failed))
+        return HomeRead(shelves: shelves, failed: failed, cancelled: cancelled)
+    }
+
+    /// A read cut short rather than one that failed: Swift's `CancellationError` or URLSession's `.cancelled` (P5).
+    nonisolated static func isCancellation(_ error: any Error) -> Bool {
+        error is CancellationError || (error as? URLError)?.code == .cancelled
     }
 
     /// Downloaded reads the phone only; every other section asks the server.

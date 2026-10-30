@@ -6,6 +6,8 @@ import SwiftUI
 /// Now Playing sheet: art (or lyrics in its place), title, artist, star, scrubber (rounded numerals, hallmark),
 /// transport, Up next, and Lyrics / Sleep timer / Queue. Signature has a "Playing from" top bar; Classic a close button.
 /// At standard text sizes it fits one screen and never scrolls: the art takes the height the rest leaves (D43).
+/// Lyrics mode (P6) gives the lyrics everything between the top bar and a compact title line above the scrubber; Up
+/// next and the playback hint step aside, the transport and bottom row stay, and only the lyrics scroll.
 /// At accessibility sizes the page scrolls, text wraps instead of truncating, and the times sit above the hallmark (D15).
 struct NowPlayingView: View {
     @Environment(AppModel.self) private var model
@@ -26,6 +28,15 @@ struct NowPlayingView: View {
     @State private var upNextHeight: CGFloat = 52
     private let themed = Themed()
 
+    /// `showingLyrics` opens in lyrics mode, as if the server offered them (tests).
+    init(showingLyrics: Bool = false) {
+        _showsLyrics = State(initialValue: showingLyrics)
+        _lyricsAvailable = State(initialValue: showingLyrics)
+    }
+
+    /// Lyrics in the art's place, laid out to fill the page (P6).
+    private var lyricsMode: Bool { showsLyrics && lyricsAvailable }
+
     var body: some View {
         let player = model.player
         Group {
@@ -38,18 +49,11 @@ struct NowPlayingView: View {
                             stack(song, player, side: side, spacing: Tokens.Spacing.xl, showsUpNext: true)
                         }
                     } else {
-                        let shown = partHeights.filter { key, _ in
-                            (key != "hint" || model.playbackHint != nil) && (key != "error" || player.lastError != nil)
-                        }
-                        let parts = shown.values.reduce(2 * Tokens.Spacing.l, +)   // vertical padding included
-                        let next = player.queue.nextUp?.song
-                        let plan = NowPlayingLayout.plan(available: CGSize(width: width, height: geo.size.height),
-                                                         parts: parts, gaps: shown.count,
-                                                         upNext: next == nil ? nil : upNextHeight)
-                        // Hidden until the always-present parts have measured, so the first frame isn't oversized art.
-                        let measured = ["top", "meta", "scrubber", "transport", "bottom"].allSatisfy { partHeights[$0] != nil }
-                        stack(song, player, side: plan.side, spacing: plan.spacing, showsUpNext: plan.showsUpNext)
-                            .opacity(measured ? 1 : 0)
+                        // One branch for art and lyrics mode, so the toggle cross-fades the slot, not the page (P6).
+                        let page = pagePlan(player, available: CGSize(width: width, height: geo.size.height))
+                        stack(song, player, side: page.side, lyricsHeight: page.lyricsHeight, spacing: page.spacing,
+                              showsUpNext: page.showsUpNext)
+                            .opacity(page.measured ? 1 : 0)
                     }
                 }
                 .accessibilityElement(children: .contain)
@@ -61,12 +65,57 @@ struct NowPlayingView: View {
         .foregroundStyle(themed.palette.inkColor)
         .background { ArtBackdrop(coverArtId: model.player.queue.current?.song.coverArtId) }
         .presentationDragIndicator(theme.character == .classic ? .visible : .hidden)
-        .task { lyricsAvailable = (try? await model.serverAdvertises("songLyrics")) ?? false }
+        .task { if !lyricsAvailable { lyricsAvailable = (try? await model.serverAdvertises("songLyrics")) ?? false } }
         .sheet(isPresented: $showsQueue) { QueueView() }
     }
 
+    private struct PagePlan {
+        var side: CGFloat
+        var lyricsHeight: CGFloat?
+        var spacing: CGFloat
+        var showsUpNext: Bool
+        /// The always-present parts have measured; until then the page is hidden, so the first frame isn't oversized.
+        var measured: Bool
+    }
+
+    /// The default-size page: the art takes what the rest leaves (D43); in lyrics mode the lyrics do, full width (P6).
+    private func pagePlan(_ player: Player, available: CGSize) -> PagePlan {
+        if lyricsMode {
+            let shown = lyricsParts(player)
+            let parts = shown.values.reduce(2 * Tokens.Spacing.l, +)   // vertical padding included
+            let height = NowPlayingLayout.lyricsHeight(available: available, parts: parts, gaps: shown.count)
+            let measured = ["top", "scrubber", "transport", "bottom"].allSatisfy { partHeights[$0] != nil }
+            return PagePlan(side: available.width, lyricsHeight: height, spacing: NowPlayingLayout.lyricsSpacing,
+                            showsUpNext: false, measured: measured)
+        }
+        let shown = partHeights.filter { key, _ in
+            key != "metaCompact"
+                && (key != "hint" || model.playbackHint != nil) && (key != "error" || player.lastError != nil)
+        }
+        let parts = shown.values.reduce(2 * Tokens.Spacing.l, +)   // vertical padding included
+        let next = player.queue.nextUp?.song
+        let plan = NowPlayingLayout.plan(available: available, parts: parts, gaps: shown.count,
+                                         upNext: next == nil ? nil : upNextHeight)
+        let measured = ["top", "meta", "scrubber", "transport", "bottom"].allSatisfy { partHeights[$0] != nil }
+        return PagePlan(side: plan.side, lyricsHeight: nil, spacing: plan.spacing, showsUpNext: plan.showsUpNext,
+                        measured: measured)
+    }
+
+    /// Lyrics mode's measured parts (P6). The compact line stands in for the title; until it has measured, the full
+    /// title's height stands in for it (taller, so the first frame never overflows).
+    private func lyricsParts(_ player: Player) -> [String: CGFloat] {
+        var shown = partHeights.filter { key, _ in
+            ["top", "scrubber", "transport", "bottom"].contains(key) || (key == "error" && player.lastError != nil)
+        }
+        shown["metaCompact"] = partHeights["metaCompact"] ?? partHeights["meta"]
+        return shown
+    }
+
     /// The top bar, then the art and the rest. Spare height (art capped at 360) goes under the top bar.
-    private func stack(_ song: Song, _ player: Player, side: CGFloat, spacing: CGFloat, showsUpNext: Bool) -> some View {
+    /// With `lyricsHeight` (lyrics mode, P6), the lyrics are `side` wide and that tall, the compact title line stands
+    /// in for the title, and the hint stays out.
+    private func stack(_ song: Song, _ player: Player, side: CGFloat, lyricsHeight: CGFloat? = nil, spacing: CGFloat,
+                       showsUpNext: Bool) -> some View {
         let p = themed.palette
         return VStack(spacing: 0) {
             Group {
@@ -81,10 +130,14 @@ struct NowPlayingView: View {
             .padding(.bottom, spacing)
             Spacer(minLength: 0)
             VStack(spacing: spacing) {
-                artSlot(song, player, side: side)
-                meta(song).nowPlayingPart("meta", into: $partHeights)
+                artSlot(song, player, side: side, lyricsHeight: lyricsHeight)
+                if lyricsHeight != nil {
+                    compactMeta(song).nowPlayingPart("metaCompact", into: $partHeights)
+                } else {
+                    meta(song).nowPlayingPart("meta", into: $partHeights)
+                }
                 scrubber(song, player).nowPlayingPart("scrubber", into: $partHeights)
-                if let hint = model.playbackHint {
+                if lyricsHeight == nil, let hint = model.playbackHint {
                     HStack(alignment: .firstTextBaseline) {
                         Label(hint, systemImage: "info.circle")
                             .font(.footnote).foregroundStyle(p.ink2Color)
@@ -116,8 +169,9 @@ struct NowPlayingView: View {
         .padding(.vertical, Tokens.Spacing.l)
     }
 
-    /// The art, or the lyrics in its place at the same size (D43). A cross-fade, none under Reduce Motion (D15).
-    private func artSlot(_ song: Song, _ player: Player, side: CGFloat) -> some View {
+    /// The art, or the lyrics in its place: at the art's size where the page scrolls (accessibility sizes), otherwise
+    /// `side` wide and `lyricsHeight` tall (P6). A cross-fade, none under Reduce Motion (D15).
+    private func artSlot(_ song: Song, _ player: Player, side: CGFloat, lyricsHeight: CGFloat? = nil) -> some View {
         ZStack {
             if showsLyrics && lyricsAvailable {
                 LyricsContent { setLyrics(false) }
@@ -134,8 +188,18 @@ struct NowPlayingView: View {
                 .transition(.opacity)
             }
         }
-        .frame(width: side, height: side)
-        .nowPlayingProbe("art")
+        .frame(width: side, height: lyricsHeight ?? side)
+        .nowPlayingProbe(lyricsHeight == nil ? "art" : "lyrics")
+    }
+
+    /// Lyrics mode (P6): the title and artist on one line. The star comes back with the art.
+    private func compactMeta(_ song: Song) -> some View {
+        let artist = Text(song.artist).font(.subheadline).foregroundStyle(themed.palette.ink2Color)
+        return Text("\(Text(song.title).font(.headline))  ·  \(artist)")
+            .lineLimit(1)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityLabel("\(song.title), \(song.artist)")
+            .accessibilityIdentifier("np-title-compact")
     }
 
     private func setLyrics(_ on: Bool) {
