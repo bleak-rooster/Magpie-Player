@@ -18,6 +18,7 @@ struct RootView: View {
             } else {
                 MainTabs()
                     .environment(\.songIsDownloaded, model.songIsDownloaded)   // P1: every song row's mark
+                    .libraryEditsPresenter()   // R7, R8: Add to playlist from menus, and the library's notices
             }
         }
         .magpieTheme(theme)

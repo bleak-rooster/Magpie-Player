@@ -54,8 +54,8 @@ final class AppModel {
     /// Layout, playback, downloads, scrobbling and genres; change it through `updatePreferences`.
     var preferences: Preferences
     @ObservationIgnored let preferencesStore: PreferencesStore
-    /// Star changes made this session, by song id (the queue's copies of songs are not edited).
-    private(set) var starOverrides: [String: Bool] = [:]
+    /// Favourites, playlist edits and their notices (round 11 R7, R8; the queue's copies of songs are not edited).
+    let libraryEdits = LibraryEdits()
     /// OpenSubsonic extensions the server advertises (A13), fetched once per session.
     private(set) var advertisedExtensions: Set<String>?
     /// A session is saved but the Keychain can't be read yet (before first unlock). Not signed out:
@@ -490,7 +490,7 @@ final class AppModel {
         savedSessionAwaitingConsent = nil
         reconnectTask = nil
         sessionGeneration += 1
-        starOverrides = [:]
+        libraryEdits.reset()
         advertisedExtensions = nil
         isWaitingForUnlock = false
         stopObservingUnlock()
@@ -534,7 +534,8 @@ final class AppModel {
         stopDownloads(erase: true)
         store.clear()
         session = nil
-        starOverrides = [:]
+        libraryEdits.reset()
+        PopularSongsCache.removeAll(root: dataDirectory)   // R3
         advertisedExtensions = nil
         reconnectTask = nil
         noteReachable()   // nothing to reach; the next session starts online
@@ -927,22 +928,5 @@ final class AppModel {
         let found = try await request { try await $0.extensions() }
         advertisedExtensions = found
         return found.contains(name)
-    }
-
-    func isStarred(_ song: Song) -> Bool { starOverrides[song.id] ?? song.starred }
-
-    /// Optimistic: flips at once, reverts if the server says no.
-    func toggleStar(_ song: Song) async {
-        let target = !isStarred(song)
-        starOverrides[song.id] = target
-        do {
-            try await request { client in
-                target ? try await client.star(id: song.id) : try await client.unstar(id: song.id)
-            }
-            favouriteStarChanged()
-        } catch {
-            starOverrides[song.id] = !target
-            Log.logger("session").error("star failed: \(Log.category(of: error), privacy: .public)")
-        }
     }
 }
