@@ -77,11 +77,15 @@ import Testing
         let seeds = [LayoutPreferences.defaultValue.encoded(), PlaybackPreferences.defaultValue.encoded(),
                      DownloadPreferences.defaultValue.encoded(), ScrobblePreferences.defaultValue.encoded(),
                      GenrePreferences.defaultValue.encoded()].compactMap { $0 }
+        var slowest = 0.0
         let seconds = FuzzClock.seconds {
-            for _ in 0..<5_000 { Self.check(Data(Self.object(&rng, depth: 0).utf8)) }
-            for i in 0..<5_000 { Self.check(fuzzer.mutate(seeds[i % seeds.count])) }
+            for i in 0..<10_000 {
+                let data = i < 5_000 ? Data(Self.object(&rng, depth: 0).utf8) : fuzzer.mutate(seeds[i % seeds.count])
+                slowest = max(slowest, FuzzClock.seconds { Self.check(data) })
+            }
         }
         #expect(LayoutPreferences.decode(nil) == .defaultValue && GenrePreferences.decode(nil) == .defaultValue)
-        #expect(seconds < 9, "took \(seconds) s")
+        #expect(slowest < FuzzClock.caseBound, "slowest case \(slowest) s")
+        #expect(seconds < FuzzClock.sweepBackstop, "took \(seconds) s")
     }
 }

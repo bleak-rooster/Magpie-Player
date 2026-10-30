@@ -235,8 +235,40 @@ public struct JSONFuzzer {
     }
 }
 
-/// Wall-clock timing for fuzz tests (no quadratic blow-ups: each case and each sweep has a time bound).
+/// Wall-clock timing for fuzz tests. A sum over thousands of cases measures the machine, not the algorithm, and
+/// failed whenever other suites ran alongside (merged crash-hunt review, I1). So quadratic blow-ups are caught per case
+/// (`caseBound`) and by how time grows with size (`growth`); a whole sweep's bound is only a hang backstop.
 public enum FuzzClock {
+    /// No single case over this many seconds: ~0.1 s idle, a quadratic blow-up takes many seconds.
+    public static let caseBound = 3.0
+    /// A whole sweep or a large input: generous, so a loaded machine never trips it, but a hang still fails.
+    public static let sweepBackstop = 90.0
+
+    /// How much longer the work takes at `factor` × `n` than at `n`: about `factor` when linear, `factor`² when
+    /// quadratic. `timed` does the work at a size and returns the seconds it took, so setup stays out of the clock.
+    /// Each size is measured `repeats` times, interleaved, and the fastest kept, so load slows both sizes alike and a
+    /// passing hiccup doesn't count.
+    public static func growth(n: Int, factor: Int = 4, repeats: Int = 3, _ timed: (Int) throws -> Double) rethrows -> Double {
+        var small = Double.infinity, large = Double.infinity
+        for _ in 0..<repeats {
+            small = min(small, try timed(n))
+            large = min(large, try timed(n * factor))
+        }
+        return large / max(small, 1e-6)
+    }
+
+    public static func growth(n: Int, factor: Int = 4, repeats: Int = 3, _ timed: (Int) async throws -> Double) async rethrows -> Double {
+        var small = Double.infinity, large = Double.infinity
+        for _ in 0..<repeats {
+            small = min(small, try await timed(n))
+            large = min(large, try await timed(n * factor))
+        }
+        return large / max(small, 1e-6)
+    }
+
+    /// The most `growth` may be and still count as linear (or n log n): twice `factor`, half of quadratic's `factor`².
+    public static func linearBound(factor: Int = 4) -> Double { Double(factor * 2) }
+
     /// Seconds `body` takes.
     public static func seconds(_ body: () throws -> Void) rethrows -> Double {
         let start = DispatchTime.now().uptimeNanoseconds

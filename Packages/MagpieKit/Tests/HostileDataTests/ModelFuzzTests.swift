@@ -161,27 +161,36 @@ struct ModelFuzz {
                 slowest = max(slowest, s)
             }
         }
-        #expect(slowest < 3, // ~0.1 s idle; quadratic blow-ups take many seconds; headroom for loaded machines
-            "slowest case \(slowest) s")
-        #expect(total < 9, "sweep took \(total) s")
+        #expect(slowest < FuzzClock.caseBound, "slowest case \(slowest) s")
+        #expect(total < FuzzClock.sweepBackstop, "sweep took \(total) s")
     }
 
-    /// Normalising never-ending or adversarial names stays linear: 20,000 combining marks, brackets, dashes.
+    /// Normalising never-ending or adversarial names stays linear: up to 20,000 combining marks, brackets, dashes.
+    /// Time at 4n against n, so the check holds on a loaded machine (merged crash-hunt review, I1).
     @Test func normaliseStaysLinear() {
-        let long = [String(repeating: "e\u{0301}", count: 20_000), String(repeating: "(", count: 20_000),
-                    String(repeating: "a - ", count: 10_000), String(repeating: "[live] ", count: 5_000),
-                    String(repeating: "feat. ", count: 10_000), String(repeating: "🇬🇧", count: 10_000),
-                    String(repeating: "Rock & Pop; ", count: 5_000)]
-        let seconds = FuzzClock.seconds {
-            for s in long {
-                _ = Normalize.key(artist: s, title: s)
-                _ = Normalize.hasVersionAside(s)
-                _ = GenreGroups.split(s)
-                _ = GenreGroups.groupId(for: s)
-                _ = ArtistNotYet.titleKey(s)
-            }
+        func long(_ n: Int) -> [String] {
+            [String(repeating: "e\u{0301}", count: n), String(repeating: "(", count: n),
+             String(repeating: "a - ", count: n / 2), String(repeating: "[live] ", count: n / 4),
+             String(repeating: "feat. ", count: n / 2), String(repeating: "🇬🇧", count: n / 2),
+             String(repeating: "Rock & Pop; ", count: n / 4)]
         }
-        #expect(seconds < 9, "took \(seconds) s")
+        var largest = 0.0
+        let growth = FuzzClock.growth(n: 5_000) { n in
+            let names = long(n)
+            let seconds = FuzzClock.seconds {
+                for s in names {
+                    _ = Normalize.key(artist: s, title: s)
+                    _ = Normalize.hasVersionAside(s)
+                    _ = GenreGroups.split(s)
+                    _ = GenreGroups.groupId(for: s)
+                    _ = ArtistNotYet.titleKey(s)
+                }
+            }
+            if n > 5_000 { largest = max(largest, seconds) }
+            return seconds
+        }
+        #expect(growth < FuzzClock.linearBound(), "4× the input took \(growth)× as long")
+        #expect(largest < FuzzClock.sweepBackstop, "took \(largest) s")
     }
 
     /// 5,000 mutated match index snapshots: loading never traps, and a damaged one is ignored.
@@ -197,19 +206,23 @@ struct ModelFuzz {
         defer { try? FileManager.default.removeItem(at: dir) }
         let file = dir.appending(path: "snapshot.json")
         var fuzzer = JSONFuzzer(seed: 0x1D_E5)
-        var loaded = 0
+        var loaded = 0, slowest = 0.0
         let seconds = await FuzzClock.seconds {
             for _ in 0..<5_000 {
-                try? fuzzer.mutate(seed).write(to: file)
-                let store = MatchIndexStore(fileURL: file)
-                if await store.loadSnapshot() {
-                    loaded += 1
-                    let index = await store.index
-                    _ = index.match(ExternalRecording(title: "Title 1", artist: "Artist 1", source: .listenBrainz))
+                let s = await FuzzClock.seconds {
+                    try? fuzzer.mutate(seed).write(to: file)
+                    let store = MatchIndexStore(fileURL: file)
+                    if await store.loadSnapshot() {
+                        loaded += 1
+                        let index = await store.index
+                        _ = index.match(ExternalRecording(title: "Title 1", artist: "Artist 1", source: .listenBrainz))
+                    }
                 }
+                slowest = max(slowest, s)
             }
         }
         #expect(loaded > 100)
-        #expect(seconds < 9, "took \(seconds) s")
+        #expect(slowest < FuzzClock.caseBound, "slowest case \(slowest) s")
+        #expect(seconds < FuzzClock.sweepBackstop, "took \(seconds) s")
     }
 }

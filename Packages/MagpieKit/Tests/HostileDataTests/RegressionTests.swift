@@ -149,20 +149,41 @@ import Testing
     /// `range(of:options: .backwards)` is quadratic on a run of regional indicators (flag emoji): 20,000 flags in an
     /// artist name took about 3 s per `Normalize.name`, and the car's "Try it next" normalises up to 100 search
     /// results' artists on the main actor (`bridgeMix`), so a hostile server could trip the watchdog.
+    /// Time at 4n against n rather than an absolute bound, so it holds on a loaded machine (merged review, I1).
     @Test func normalisingAFlagRunIsLinear() {
-        let flags = String(repeating: "🇬🇧", count: 20_000)
-        let seconds = FuzzClock.seconds {
-            _ = Normalize.key(artist: flags, title: flags + " - Live")
-            _ = Normalize.hasVersionAside(flags + " – Acoustic")
-            _ = ArtistNotYet.titleKey(flags + " - Deluxe Edition")
+        var largest = 0.0
+        let growth = FuzzClock.growth(n: 5_000) { n in
+            let flags = String(repeating: "🇬🇧", count: n)
+            let seconds = FuzzClock.seconds {
+                _ = Normalize.key(artist: flags, title: flags + " - Live")
+                _ = Normalize.hasVersionAside(flags + " – Acoustic")
+                _ = ArtistNotYet.titleKey(flags + " - Deluxe Edition")
+            }
+            largest = max(largest, seconds)
+            return seconds
         }
-        #expect(seconds < 0.5, "took \(seconds) s")
+        #expect(growth < FuzzClock.linearBound(), "4× the flags took \(growth)× as long")
+        #expect(largest < FuzzClock.caseBound, "20,000 flags took \(largest) s")
         // Same answers as before: the last dash splits, in the order " - ", " – ", " — ".
         #expect(Normalize.name("A - B - Remastered 2011") == "a b")
         #expect(Normalize.name("Halo - Live") == "halo live")
         #expect(Normalize.hasVersionAside("Halo – Acoustic") && !Normalize.hasVersionAside("Halo - Remastered"))
         #expect(ArtistNotYet.titleKey("🇬🇧 Album - Deluxe Edition") == Normalize.name("🇬🇧 Album"))
         #expect(ArtistNotYet.titleKey("Album — Remix - Deluxe") == Normalize.name("Album — Remix"))
+    }
+
+    /// The growth check itself: quadratic work is caught, linear work passes.
+    @Test func growthTellsQuadraticFromLinear() {
+        func work(_ steps: Int) -> Double {
+            var sink = 0
+            let seconds = FuzzClock.seconds { for i in 0..<steps { sink &+= i &* 31 } }
+            #expect(sink != 1)   // keeps the loop
+            return seconds
+        }
+        let quadratic = FuzzClock.growth(n: 400) { n in work(n * n) }
+        let linear = FuzzClock.growth(n: 1_000_000) { n in work(n) }
+        #expect(quadratic > FuzzClock.linearBound(), "quadratic grew only \(quadratic)×")
+        #expect(linear < FuzzClock.linearBound(), "linear grew \(linear)×")
     }
 
     // MARK: - Genre groups: counts that overflow when summed
