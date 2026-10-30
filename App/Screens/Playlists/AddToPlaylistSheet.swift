@@ -2,9 +2,11 @@ import DesignSystem
 import MagpieCore
 import SwiftUI
 
-/// Add to playlist (round 11 R8): "New playlist…" at the top, then the user's own playlists A–Z (read-only ones are
-/// left out). A playlist that holds any of the songs already asks "Already in X. Add again?" (duplicates are allowed).
-/// The sheet closes once the songs are in; a notice confirms ("Added to X").
+/// Add to playlist (round 11 R8, in the UX appraisal's words): "New playlist…" at the top, then the user's own
+/// playlists, the most recently changed first (read-only ones are left out). A playlist that holds the song already
+/// asks "Already in X" / "Add <song> again?"; for several songs only the ones already there are asked about ("3 of
+/// these are already in X.": Add all, Skip those). Duplicates are allowed. The sheet closes once the songs are in; a
+/// notice confirms ("Added to X").
 struct AddToPlaylistSheet: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
@@ -53,25 +55,36 @@ struct AddToPlaylistSheet: View {
                     }
                 }
             }
-            .navigationTitle(flow.songIds.count == 1 ? "Add to playlist" : "Add \(flow.songIds.count) songs")
+            .navigationTitle("Add to playlist")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
             }
             .overlay { if flow.busy { ProgressView() } }
             .magpieScreen()
-            .alert(PlaylistCopy.newPlaylist, isPresented: $naming) {
+            .alert(PlaylistCopy.newPlaylistTitle, isPresented: $naming) {
                 TextField("Name", text: $newName)
                     .accessibilityIdentifier("new-playlist-name")
-                Button("Cancel", role: .cancel) {}
                 Button("Create") { Task { await flow.create(named: newName, model) } }
                     .disabled(newName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
-            .alert(flow.duplicate.map { PlaylistCopy.alreadyIn($0.name) } ?? "",
-                   isPresented: Binding(get: { flow.duplicate != nil }, set: { if !$0 { flow.duplicate = nil } }),
-                   presenting: flow.duplicate) { playlist in
-                Button("Add again") { Task { await flow.addAgain(playlist, model) } }
                 Button("Cancel", role: .cancel) {}
+            }
+            .alert(flow.duplicate.map { PlaylistCopy.alreadyIn($0.playlist.name) } ?? "",
+                   isPresented: Binding(get: { flow.duplicate != nil }, set: { if !$0 { flow.duplicate = nil } }),
+                   presenting: flow.duplicate) { duplicate in
+                if flow.songIds.count == 1 {
+                    Button("Add again") { Task { await flow.addAll(duplicate, model) } }
+                } else {
+                    Button("Add all") { Task { await flow.addAll(duplicate, model) } }
+                    if duplicate.ids.count < Set(flow.songIds).count {
+                        Button("Skip those") { Task { await flow.skipThose(duplicate, model) } }
+                    }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: { duplicate in
+                Text(flow.songIds.count == 1 ? PlaylistCopy.addAgain(duplicate.title ?? "it")
+                                             : PlaylistCopy.someAlreadyIn(duplicate.count(in: flow.songIds),
+                                                                          duplicate.playlist.name))
             }
         }
         .task { await flow.load(model) }
@@ -99,12 +112,23 @@ struct AddToPlaylistSheet: View {
 @MainActor @Observable final class AddToPlaylistFlow {
     let songIds: [String]
     private(set) var playlists: Loadable<[Playlist]> = .loading
-    /// The playlist that holds some of the songs already: "Already in X. Add again?"
-    var duplicate: Playlist?
+    /// The playlist that holds some of the songs already, waiting for the user's answer.
+    var duplicate: Duplicate?
     private(set) var busy = false
     private(set) var failure: String?
     /// The songs went in: the sheet closes.
     private(set) var done = false
+
+    /// A playlist holding `ids` of the songs already (`title`: the first one's, for a single song's question).
+    struct Duplicate: Identifiable {
+        let playlist: Playlist
+        let ids: Set<String>
+        let title: String?
+        var id: String { playlist.id }
+
+        /// How many of `songIds` (repeats counted) are there already.
+        func count(in songIds: [String]) -> Int { songIds.filter(ids.contains).count }
+    }
 
     init(songIds: [String]) { self.songIds = songIds }
 
@@ -119,20 +143,31 @@ struct AddToPlaylistSheet: View {
     /// Adds to `playlist`, unless it already holds any of the songs: then asks first (`duplicate`).
     func choose(_ playlist: Playlist, _ model: AppModel) async {
         await run {
-            if try await model.songsAlreadyIn(playlist, of: songIds) > 0 {
-                duplicate = playlist
-            } else {
+            let there = try await model.songsAlreadyIn(playlist, of: songIds)
+            if there.ids.isEmpty {
                 try await model.add(songIds, to: playlist)
                 done = true
+            } else {
+                duplicate = Duplicate(playlist: playlist, ids: there.ids, title: there.title)
             }
         }
     }
 
-    /// "Add again": the songs go in even though some are there already.
-    func addAgain(_ playlist: Playlist, _ model: AppModel) async {
-        duplicate = nil
+    /// "Add again" / "Add all": every song goes in, the ones already there too.
+    func addAll(_ duplicate: Duplicate, _ model: AppModel) async {
+        self.duplicate = nil
         await run {
-            try await model.add(songIds, to: playlist)
+            try await model.add(songIds, to: duplicate.playlist)
+            done = true
+        }
+    }
+
+    /// "Skip those": only the songs not there yet go in.
+    func skipThose(_ duplicate: Duplicate, _ model: AppModel) async {
+        self.duplicate = nil
+        let rest = songIds.filter { !duplicate.ids.contains($0) }
+        await run {
+            if !rest.isEmpty { try await model.add(rest, to: duplicate.playlist) }
             done = true
         }
     }

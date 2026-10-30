@@ -2,25 +2,38 @@ import Foundation
 import MagpieCore
 import NavidromeKit
 
+/// Round 11 R8 copy, in the UX appraisal's words (R20: docs/reviews/ux-appraisal-round-11.md §6, §9).
 enum PlaylistCopy {
-    static let newPlaylist = "New playlist…"
+    static let newPlaylist = "New playlist\u{2026}"
+    static let newPlaylistTitle = "New playlist"
+    static let addToPlaylist = "Add to playlist\u{2026}"
     static func added(to name: String) -> String { "Added to \(name)" }
-    static func alreadyIn(_ name: String) -> String { "Already in \(name). Add again?" }
-    static func deleteTitle(_ name: String) -> String { "Delete \u{2018}\(name)\u{2019}?" }
-    static let deleteMessage = "This removes it from Navidrome for everyone using it."
-    static let removed = "Removed from the playlist"
+    static func removed(from name: String) -> String { "Removed from \(name)" }
+    /// One song already there: the alert's title and message.
+    static func alreadyIn(_ name: String) -> String { "Already in \(name)" }
+    static func addAgain(_ song: String) -> String { "Add \(song) again?" }
+    /// Several songs, some already there.
+    static func someAlreadyIn(_ count: Int, _ name: String) -> String {
+        count == 1 ? "1 of these is already in \(name)." : "\(count) of these are already in \(name)."
+    }
+    static func deleteTitle(_ name: String) -> String { "Delete \u{201C}\(name)\u{201D}?" }
+    static let deleteMessage = "It\u{2019}s deleted from your music server for everyone who uses it."
+    static func madeBy(_ owner: String) -> String { "Made by \(owner). You can play it but not change it." }
 }
 
 /// Playlists (round 11 R8): Add to playlist, create, rename, delete and remove a song, each only on the user's own
 /// explicit action (and delete only once confirmed), and only on playlists the user owns. Every change bumps
 /// `playlistsRevision` so open lists read again.
 extension AppModel {
-    /// The playlists the signed-in user may change (their own), A–Z.
+    /// The playlists the signed-in user may change (their own), the most recently changed first, then A–Z.
     func editablePlaylists() async throws -> [Playlist] {
         let user = session?.username ?? ""
         return try await request { try await $0.playlists() }
             .filter { $0.isEditable(by: user) }
-            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+            .sorted { a, b in
+                let (x, y) = (a.changed ?? .distantPast, b.changed ?? .distantPast)
+                return x != y ? x > y : a.name.localizedStandardCompare(b.name) == .orderedAscending
+            }
     }
 
     /// Whether the user may change `playlist`.
@@ -29,11 +42,12 @@ extension AppModel {
         return playlist.isEditable(by: user)
     }
 
-    /// How many of `songIds` `playlist` holds already (the "Already in" warning).
-    func songsAlreadyIn(_ playlist: Playlist, of songIds: [String]) async throws -> Int {
+    /// Which of `songIds` `playlist` holds already, and the first one's title (the "Already in" warning).
+    func songsAlreadyIn(_ playlist: Playlist, of songIds: [String]) async throws -> (ids: Set<String>, title: String?) {
         let (_, songs) = try await request { [id = playlist.id] in try await $0.playlist(id: id) }
-        let present = Set(songs.map(\.id))
-        return songIds.filter(present.contains).count
+        let wanted = Set(songIds)
+        let there = songs.filter { wanted.contains($0.id) }
+        return (Set(there.map(\.id)), there.first?.title)
     }
 
     /// Appends `songIds` (repeats kept) to `playlist`.
@@ -70,7 +84,7 @@ extension AppModel {
         try await request { [id = playlist.id] in
             try await $0.updatePlaylist(id: id, name: nil, adding: [], removingIndexes: [index])
         }
-        playlistsChanged(PlaylistCopy.removed)
+        playlistsChanged(PlaylistCopy.removed(from: playlist.name))
     }
 
     /// Opens the Add to playlist sheet for `songIds` (from a menu); offline it says so instead.
