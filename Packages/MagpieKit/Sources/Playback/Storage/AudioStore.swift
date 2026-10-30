@@ -188,15 +188,20 @@ public actor AudioStore {
         return entry
     }
 
-    /// Re-download: stores the new file first, then deletes the old one; kind, reasons and lastPlayed carry over.
+    /// Re-download: stores the new file first, then deletes the old one; kind, reasons and lastPlayed carry over. A
+    /// download whose new file would take the downloads past `downloadsLimit` is refused (`downloadsFull`).
     @discardableResult
-    public func replace(songId: String, with temporaryFile: URL, quality: StreamQuality, fileExtension: String) throws -> AudioEntry {
+    public func replace(songId: String, with temporaryFile: URL, quality: StreamQuality, fileExtension: String,
+                        downloadsLimit: Int64? = nil) throws -> AudioEntry {
         let fm = FileManager.default
         defer { try? fm.removeItem(at: temporaryFile) }
         try ensureReady()
         guard Self.allowedExtensions.contains(fileExtension) else { throw AudioStoreError.invalidFile }
         guard let old = index.entries[songId] else { throw AudioStoreError.unknownSong }
         let size = try fileSize(temporaryFile)
+        // A download's bigger new file must fit the limit in place of the old one; refused, the old file stays.
+        let oldSize = max(0, old.size)
+        if old.kind == .download, size > oldSize { try checkLimit(adding: size - oldSize, limit: downloadsLimit) }
         try prepareDirectory()
         let name = Self.fileName(songId: songId, quality: quality, fileExtension: fileExtension)
         let destination = directory.appending(path: name)

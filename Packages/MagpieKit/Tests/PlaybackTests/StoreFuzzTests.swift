@@ -385,6 +385,29 @@ final class FaultyReader: Sendable {
         }
     }
 
+    /// "Re-download in this format" swaps in a file of another size: a bigger one that would take the downloads past
+    /// their limit is refused, and the old file stays. A cached song's re-download isn't held to the downloads limit.
+    @Test func redownloadRespectsTheLimit() async throws {
+        let store = AudioStore(root: tmp.appending(path: "redl"), scope: "s")
+        await store.load()
+        try await store.add(temp(800), metadata: Self.meta("d"), quality: .original, kind: .download, reason: .song,
+                            fileExtension: "mp3", downloadsLimit: 1000)
+        try await store.add(temp(500), metadata: Self.meta("c"), quality: .original, kind: .cache, reason: nil,
+                            fileExtension: "mp3", downloadsLimit: nil)
+        await #expect(throws: AudioStoreError.downloadsFull) {
+            try await store.replace(songId: "d", with: self.temp(1500), quality: .aac160, fileExtension: "aac",
+                                    downloadsLimit: 1000)
+        }
+        let kept = try #require(await store.entry(songId: "d"))
+        #expect(kept.quality == .original && kept.size == 800)
+        #expect(FileManager.default.fileExists(atPath: store.directory.appending(path: kept.fileName).path))
+        #expect(await store.usage().downloadBytes == 800)
+        // Smaller fits; the cached song isn't counted against the downloads limit.
+        try await store.replace(songId: "d", with: temp(900), quality: .aac160, fileExtension: "aac", downloadsLimit: 1000)
+        try await store.replace(songId: "c", with: temp(5000), quality: .aac160, fileExtension: "aac", downloadsLimit: 1000)
+        #expect(await store.usage() == AudioUsage(downloadBytes: 900, cacheBytes: 5000))
+    }
+
     // MARK: - Scrobble queue
 
     /// Corrupt, truncated, empty and huge queue files and failing reads: never a trap; an unread file is never

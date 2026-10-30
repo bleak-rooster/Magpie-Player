@@ -618,7 +618,8 @@ final class DownloadManager {
                 try await store.add(fetched.file, metadata: job.metadata, quality: job.quality, kind: .cache,
                                     reason: nil, fileExtension: ext, downloadsLimit: nil)
             case .replace:
-                try await store.replace(songId: job.songId, with: fetched.file, quality: job.quality, fileExtension: ext)
+                try await store.replace(songId: job.songId, with: fetched.file, quality: job.quality, fileExtension: ext,
+                                        downloadsLimit: limitBytes(prefs))
             }
         } catch AudioStoreError.downloadsFull {
             if isLive(gen) { stopForFull(id) }
