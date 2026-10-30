@@ -152,6 +152,7 @@ private struct LabsRow: Decodable {
     var recording_name: String?
     var recording_mbid: String?
     var release_name: String?
+    var release_mbid: String?
     var artist_credit_name: String?
 
     var recording: ExternalRecording? {
@@ -161,7 +162,7 @@ private struct LabsRow: Decodable {
         return ExternalRecording(recordingMBID: recording_mbid.flatMap(MBID.init), artistMBID: nil,
                                  title: title, artist: artist,
                                  releaseTitle: (release?.isEmpty == false) ? release : nil,
-                                 duration: nil, source: .listenBrainz)
+                                 duration: nil, source: .listenBrainz, releaseMBID: release_mbid.flatMap(MBID.init))
     }
 }
 

@@ -16,6 +16,8 @@ import MagpieTestSupport
         #expect(judie.releaseTitle == "The Cat Is Out")
         #expect(judie.recordingMBID == MBID("c2272a15-8f3a-4cdc-8f32-7e723352d44d"))
         #expect(judie.source == .listenBrainz)
+        // R15: the release the search already names, for its Cover Art Archive front.
+        #expect(judie.releaseMBID == MBID("b5cdfb5f-35a5-4bc5-bbca-57839a71813a"))
         #expect(rows.allSatisfy { $0.recordingMBID != nil })
         let url = try #require(t.requests.first?.url)
         #expect(url.host == "labs.api.listenbrainz.org")

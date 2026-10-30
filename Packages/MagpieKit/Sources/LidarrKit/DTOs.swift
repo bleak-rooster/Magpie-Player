@@ -201,12 +201,31 @@ public struct LidarrArtistLookup: Sendable, Equatable, Decodable {
     public var id: Int?
     /// The artist folder name Lidarr's naming format gives now (`folder`): where a move puts it (G4).
     public var folder: String?
+    /// The artist's picture (R15): the poster's, else the headshot's `remoteUrl`, HTTPS only. Never Lidarr's own
+    /// `/MediaCoverProxy` path, which would need the API key.
+    public var pictureURL: URL?
 
     public init(foreignArtistId: MBID?, artistName: String, disambiguation: String? = nil, overview: String? = nil,
-                artistType: String? = nil, status: String? = nil, id: Int? = nil, folder: String? = nil) {
+                artistType: String? = nil, status: String? = nil, id: Int? = nil, folder: String? = nil,
+                pictureURL: URL? = nil) {
         self.foreignArtistId = foreignArtistId; self.artistName = artistName; self.disambiguation = disambiguation
         self.overview = overview; self.artistType = artistType; self.status = status; self.id = id
-        self.folder = folder
+        self.folder = folder; self.pictureURL = pictureURL
+    }
+
+    private struct Image: Decodable {
+        var coverType: String?
+        var remoteUrl: String?
+    }
+
+    private static func picture(_ images: [Image]) -> URL? {
+        for type in ["poster", "headshot"] {
+            for image in images where image.coverType?.lowercased() == type {
+                if let s = image.remoteUrl, let url = URL(string: s), url.scheme?.lowercased() == "https",
+                   url.host()?.isEmpty == false { return url }
+            }
+        }
+        return nil
     }
 
     public init(from decoder: Decoder) throws {
@@ -219,6 +238,7 @@ public struct LidarrArtistLookup: Sendable, Equatable, Decodable {
         status = c.text("status")
         id = c.int("id").flatMap { $0 > 0 ? $0 : nil }
         folder = c.value("folder", as: String.self).flatMap { $0.isEmpty ? nil : $0 }
+        pictureURL = Self.picture(c.value("images", as: LossyArray<Image>.self)?.values ?? [])
     }
 }
 
