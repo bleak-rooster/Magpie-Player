@@ -246,7 +246,7 @@ public struct PartialDownloads: Sendable {
         return isKey(key) ? key : nil
     }
 
-    static func size(of url: URL) -> Int64 {
+    public static func size(of url: URL) -> Int64 {
         Int64((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
     }
 
