@@ -313,6 +313,7 @@ final class ScrobbleRouter: Scrobbler {
     static func listen(_ song: AudioMetadata, at: Date) -> Listen {
         Listen(listenedAt: at, trackName: song.title, artistName: song.artist,
                releaseName: song.album.isEmpty ? nil : song.album,
-               durationMs: song.duration > 0 ? Int(song.duration * 1000) : nil)
+               // Not finite or too long for milliseconds (a damaged snapshot): no duration rather than a trap.
+               durationMs: song.duration > 0 && song.duration < 1e12 ? Int(song.duration * 1000) : nil)
     }
 }
