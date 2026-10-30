@@ -99,7 +99,9 @@ struct AlbumView: View {
             return
         }
         do {
-            album = .loaded(try await model.request { [albumId] in try await $0.album(id: albumId) })
+            let loaded = try await model.request { [albumId] in try await $0.album(id: albumId) }
+            album = .loaded(loaded)
+            model.noteAlbumSongCounts([loaded])   // P1: backfills downloads saved without the album's count
         } catch {
             album = .failed(BrowseErrorCopy.message(for: error))
         }

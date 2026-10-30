@@ -23,6 +23,17 @@ extension AppModel {
     /// Manual downloads still to finish: "Keep Magpie open to finish downloading" shows while true.
     var hasActiveDownloads: Bool { downloads?.hasActiveDownloads ?? false }
 
+    /// Albums just loaded from the server: their song counts backfill downloads saved without one (builds 8 and 9).
+    func noteAlbumSongCounts(_ albums: [Album]) {
+        guard let downloads else { return }
+        var counts: [String: Int] = [:]
+        for album in albums {
+            let count = album.songs.map(\.count) ?? album.songCount
+            if count > 0 { counts[album.id] = count }
+        }
+        Task { await downloads.noteAlbumSongCounts(counts) }
+    }
+
     /// The scene phase (P1, foreground only): in the background downloads and pre-downloads wait; they go on when
     /// Magpie is back. Playback carries on as normal.
     func scenePhaseChanged(_ phase: ScenePhase) {

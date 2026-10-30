@@ -14,11 +14,18 @@ struct DownloadIndex: Equatable {
     private var albumDownloadsByArtist: [String: Set<String>] = [:]
     /// Per album downloaded as an album, its song count then (the largest recorded).
     private var albumSongCounts: [String: Int] = [:]
+    /// Albums downloaded as albums whose songs were saved without a count (builds before it was kept).
+    private(set) var albumsWithoutCount: Set<String> = []
+    /// Albums with a song on the phone only as cache: such an album isn't whole.
+    private var albumsWithCachedSongs: Set<String> = []
     private var playlists: [String: [String]] = [:]
 
     init() {}
 
     init(entries: [AudioEntry], playlists: [DownloadedPlaylist]) {
+        for entry in entries where entry.kind == .cache {
+            if let album = entry.metadata.albumId { albumsWithCachedSongs.insert(album) }
+        }
         for entry in entries where entry.kind == .download {
             let id = entry.songId, meta = entry.metadata
             songs.insert(id)
@@ -27,7 +34,11 @@ struct DownloadIndex: Equatable {
                 byArtist[artist, default: []].insert(id)
                 for case let .album(album) in entry.reasons {
                     albumDownloadsByArtist[artist, default: []].insert(album)
-                    if let count = meta.albumSongCount { albumSongCounts[album] = max(albumSongCounts[album] ?? 0, count) }
+                    if let count = meta.albumSongCount {
+                        albumSongCounts[album] = max(albumSongCounts[album] ?? 0, count)
+                    } else {
+                        albumsWithoutCount.insert(album)
+                    }
                 }
             }
         }
@@ -69,14 +80,30 @@ struct DownloadIndex: Equatable {
 
     /// The artist list, where the full song count isn't known: "Downloaded" only when as many albums as the artist has
     /// were downloaded as albums and every one of them is whole (all the songs it had then are on the phone); anything
-    /// less is "Some downloaded" (review I2). An album saved without its count can't be shown whole.
+    /// less is "Some downloaded" (review I2). An album saved without its count (builds 8 and 9) reads whole while every
+    /// song of it Magpie has is a download, until its count is backfilled (`noteAlbumSongCounts`).
     func listMark(artist: Artist) -> DownloadMark {
         guard byArtist[artist.id]?.isEmpty == false else { return .none }
         let albums = albumDownloadsByArtist[artist.id] ?? []
         let whole = albums.filter { album in
-            guard let count = albumSongCounts[album], count > 0 else { return false }
+            guard let count = albumSongCounts[album], count > 0 else { return !albumsWithCachedSongs.contains(album) }
             return (byAlbum[album]?.count ?? 0) >= count
         }
         return artist.albumCount > 0 && whole.count >= artist.albumCount ? .downloaded : .some
+    }
+}
+
+extension DownloadManager {
+    /// Albums whose songs are known now (an album page, an artist's albums): saves the count on downloads from before it
+    /// was kept, so their marks become exact. Albums that don't need it cost nothing; a store not ready yet is asked
+    /// again the next time.
+    func noteAlbumSongCounts(_ counts: [String: Int]) async {
+        let missing = counts.filter { index.albumsWithoutCount.contains($0.key) && $0.value > 0 }
+        guard !missing.isEmpty else { return }
+        var changed = false
+        for (album, count) in missing.sorted(by: { $0.key < $1.key }) {
+            changed = (try? await store.recordAlbumSongCount(albumId: album, count: count)) == true || changed
+        }
+        if changed { await refresh() }
     }
 }

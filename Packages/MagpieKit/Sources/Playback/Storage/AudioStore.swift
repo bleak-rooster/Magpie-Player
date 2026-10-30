@@ -246,6 +246,23 @@ public actor AudioStore {
         try store(entry)
     }
 
+    /// Saves an album's song count on its songs downloaded with it that don't have one yet (downloads from before the
+    /// count was kept, P1). A count already saved stays. Returns whether anything changed.
+    @discardableResult
+    public func recordAlbumSongCount(albumId: String, count: Int) throws -> Bool {
+        try ensureReady()
+        guard count > 0 else { return false }
+        var changed = false
+        for var entry in index.entries.values
+        where entry.reasons.contains(.album(albumId)) && entry.metadata.albumSongCount == nil {
+            entry.metadata.albumSongCount = count
+            try store(entry, writeIndex: false)
+            changed = true
+        }
+        if changed { saveIndex() }
+        return changed
+    }
+
     /// Adds `reason` to stored songs; a cached song becomes a download.
     public func addReason(_ reason: DownloadReason, songIds: [String]) throws {
         try ensureReady()

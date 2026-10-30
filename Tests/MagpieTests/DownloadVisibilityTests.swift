@@ -149,6 +149,53 @@ private let cellular = NetworkStatus(isConnected: true, isCellular: true, isCons
         #expect(m.index.listMark(artist: artist) == .some)
     }
 
+    /// Re-review N1: an artist with no albums listed never reads "Downloaded", only "Some downloaded".
+    @Test func artistListZeroAlbums() async {
+        let (m, _, _) = await makeManager()
+        let artist = Artist(id: "ar1", name: "A", albumCount: 0)
+        #expect(m.index.listMark(artist: artist) == .none, "nothing on the phone")
+        m.download(songs("s1"), reason: .album("a1"))
+        await m.settled()
+        #expect(m.index.listMark(artist: artist) == .some)
+    }
+
+    /// Round 2: albums downloaded before the count was kept (builds 8 and 9). With no count, an album whose indexed
+    /// songs are all downloads reads whole; one with a cached song of it doesn't. The first time the album's songs are
+    /// known the count is saved with its songs (and kept across a relaunch), and the mark follows it.
+    @Test func albumsSavedWithoutACountBackfillIt() async throws {
+        let store = AudioStore(root: tmp, scope: "w1")
+        await store.load()
+        for id in ["s1", "s2"] {   // as builds 8 and 9 saved them: album reason, no count
+            let file = tmp.appending(path: "old-\(id).tmp")
+            try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+            try Data(count: 1000).write(to: file)
+            var meta = AudioMetadata(songs(id)[0])
+            meta.albumCoverArtId = "al-a1"
+            _ = try await store.add(file, metadata: meta, quality: .original, kind: .download, reason: .album("a1"),
+                                    fileExtension: "mp3", downloadsLimit: nil)
+        }
+        let artist = Artist(id: "ar1", name: "A", albumCount: 1)
+        let (m, _, _) = await makeManager()
+        #expect(await m.store.entry(songId: "s1")?.metadata.albumSongCount == nil)
+        #expect(m.index.listMark(artist: artist) == .downloaded, "count unknown, every indexed song downloaded")
+        m.preDownload(songs("s3"), quality: .original)
+        await m.settled()
+        #expect(m.index.listMark(artist: artist) == .some, "a song of it is only cached: not whole")
+        await m.clearCache()
+        #expect(m.index.listMark(artist: artist) == .downloaded)
+        // The album's page loads: 3 songs. Saved, so the mark is now exact.
+        await m.noteAlbumSongCounts(["a1": 3, "a9": 5])
+        #expect(await m.store.entry(songId: "s1")?.metadata.albumSongCount == 3)
+        #expect(await m.store.entry(songId: "s2")?.metadata.albumSongCount == 3)
+        #expect(m.index.listMark(artist: artist) == .some, "2 of 3")
+        // Kept across a relaunch.
+        let (again, _, _) = await makeManager()
+        #expect(again.index.listMark(artist: artist) == .some)
+        // A count already saved isn't changed by a later look.
+        await again.noteAlbumSongCounts(["a1": 2])
+        #expect(await again.store.entry(songId: "s1")?.metadata.albumSongCount == 3)
+    }
+
     // MARK: - Concurrency
 
     @Test func concurrencyOneToSixAppliedLive() async {

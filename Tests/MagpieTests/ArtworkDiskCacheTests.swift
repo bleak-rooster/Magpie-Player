@@ -186,6 +186,27 @@ private let home = URL(string: "http://192.168.1.2:4533")!
         #expect(asked == ["np1"])
     }
 
+    /// Round 2: the lock screen's artwork task is cancelled on every song change. Cancelling a caller that waits on a
+    /// shared in-flight fetch (here the one that started it) leaves the fetch running: the view waiting on it gets the
+    /// image, and it is saved to disk once.
+    @Test func cancellingOneWaiterNeverCancelsTheSharedFetch() async throws {
+        let model = try await signedInModel()
+        let gate = GatedArt(answer: art)
+        ArtworkCache.shared.transportForTesting = gate
+        defer { ArtworkCache.shared.transportForTesting = art }
+        let id = "\(tag)shared"
+        let nowPlaying = Task { await model.artworkImage(id, size: 600) }   // like the bridge's artworkTask
+        #expect(await eventually { gate.waiting == 1 })
+        let view = Task { await model.artworkImage(id, size: 600) }        // a view asking for the same cover
+        try await Task.sleep(for: .milliseconds(50))
+        nowPlaying.cancel()                                                 // the song changed
+        gate.release()
+        #expect(await view.value != nil, "the other waiter still gets the image")
+        _ = await nowPlaying.value
+        #expect(gate.sent == 1, "one request for both")
+        #expect(exists(try await file(model, id, 600)), "and it reached the disk cache")
+    }
+
     @Test func signOutRemovesTheScope() async throws {
         let model = try await signedInModel()
         _ = await model.artworkImage("\(tag)al-1", size: 300)
@@ -198,5 +219,26 @@ private let home = URL(string: "http://192.168.1.2:4533")!
         await model.artworkDisk.save(Data([1]), scope: scopeFolder.lastPathComponent, coverArtId: "\(tag)al-9", size: 300,
                                      generation: before)
         #expect(!exists(scopeFolder))
+    }
+}
+
+/// Holds every artwork request until `release()`, then answers from `answer`.
+private final class GatedArt: HTTPTransport, @unchecked Sendable {
+    private let answer: HTTPTransport
+    private let lock = NSLock()
+    private var released = false
+    private var _waiting = 0
+    private var _sent = 0
+
+    init(answer: HTTPTransport) { self.answer = answer }
+
+    var waiting: Int { lock.withLock { _waiting } }
+    var sent: Int { lock.withLock { _sent } }
+    func release() { lock.withLock { released = true } }
+
+    func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        lock.withLock { _waiting += 1; _sent += 1 }
+        while !lock.withLock({ released }) { try? await Task.sleep(for: .milliseconds(5)) }
+        return try await answer.send(request)
     }
 }
