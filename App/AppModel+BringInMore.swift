@@ -1,4 +1,5 @@
 import Foundation
+import LidarrKit
 import MagpieCore
 import Requests
 
@@ -81,6 +82,8 @@ enum BringInCopy {
         case .tooMany?: "Five songs and releases are already on their way. Bring in more when one of them is home or has stopped."
         case .failed?: "Couldn't bring them in this time. Nothing new is on its way yet."
         case .unconfirmed?: "Couldn't tell whether that went through. Try again to see what's still to come."
+        case .profileConflict(let name)?:
+            "Your server already has a profile called \u{201C}\(name)\u{201D} set up differently. Magpie won't change it, so nothing was added."
         case .unavailable?, nil: "Can't bring in more right now."
         }
     }
@@ -89,7 +92,7 @@ enum BringInCopy {
     static func isRetryable(_ error: Error) -> Bool {
         switch error as? RequestRunner.BringInError {
         case .failed?, .unconfirmed?, .unavailable?, nil: true
-        case .changesOff?, .notSetUp?, .notKept?, .tooMany?: false
+        case .changesOff?, .notSetUp?, .notKept?, .tooMany?, .profileConflict?: false
         }
     }
 }
@@ -114,10 +117,11 @@ extension AppModel {
         case message(BringInReply)
     }
 
-    func bringInOffer(_ id: RequestID) async -> BringInLoad {
+    /// `types` (R18): Everything counts only releases of these types.
+    func bringInOffer(_ id: RequestID, types: ReleaseTypes? = nil) async -> BringInLoad {
         guard let runner else { return .message(BringInReply(error: RequestRunner.BringInError.unavailable)) }
         do {
-            return .offer(try await runner.bringInOffer(id))
+            return .offer(try await runner.bringInOffer(id, types: types))
         } catch {
             return .message(BringInReply(error: error))
         }
@@ -125,11 +129,13 @@ extension AppModel {
 
     /// Brings in `choice` (nil: no releases) and follows new releases when `follow`. `offered`: the release ids the
     /// sheet showed, so never more than it said come in (FL4).
+    /// R18: `types` (with Everything) and `qualityProfileId` set the artist's release types and quality first.
     func bringIn(_ id: RequestID, choice: RequestRunner.BringInChoice?, offered: [Int]?, follow: Bool,
-                 artist: String) async -> BringInReply {
+                 artist: String, types: ReleaseTypes? = nil, qualityProfileId: Int? = nil) async -> BringInReply {
         guard let runner else { return BringInReply(error: RequestRunner.BringInError.unavailable) }
         do {
-            let result = try await runner.bringIn(id, choice: choice, offered: offered, follow: follow)
+            let result = try await runner.bringIn(id, choice: choice, offered: offered, follow: follow, types: types,
+                                                  qualityProfileId: qualityProfileId)
             return BringInReply(message: BringInCopy.done(result, artist: artist))
         } catch {
             return BringInReply(error: error)
