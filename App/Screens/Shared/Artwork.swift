@@ -2,18 +2,18 @@ import MagpieCore
 import SwiftUI
 import UIKit
 
-/// Cover art loaded from the server and cached in memory only, keyed by server/account, cover id
-/// and size. Cleared on sign-in and sign-out.
+/// Cover art loaded from the server and cached in memory, keyed by server/account, cover id and size. Cleared on
+/// sign-in and sign-out. The lasting copy is on disk (`ArtworkDiskCache`, P4); `AppModel.artworkImage` asks both.
 @MainActor
 final class ArtworkCache {
     static let shared = ArtworkCache()
     private let cache = NSCache<NSString, UIImage>()
-    private var inFlight: [String: Task<UIImage?, Never>] = [:]
-    /// Bumped by `removeAll()` so a fetch started for the previous account isn't cached.
-    private var generation = 0
+    private var inFlight: [String: Task<(image: UIImage?, data: Data?), Never>] = [:]
+    /// Bumped by `removeAll()` so a fetch started for the previous account isn't cached (in memory or on disk).
+    private(set) var generation = 0
 
     /// Cover-art URLs carry Subsonic auth (`u`, `t`, `s`): ephemeral, and no URLCache, so they are
-    /// never written to disk. The NSCache above is the only cache.
+    /// never written to disk. The images alone are kept: in the NSCache above and, by key, on disk (P4).
     nonisolated static let sessionConfiguration: URLSessionConfiguration = {
         let config = URLSessionConfiguration.ephemeral
         config.urlCache = nil
@@ -23,6 +23,11 @@ final class ArtworkCache {
     nonisolated static let transport: HTTPTransport =
         URLSessionTransport(timeout: 20, session: SameOriginRedirects.session(configuration: sessionConfiguration))
 
+    #if DEBUG
+    /// Tests: artwork requests go here instead of the network (G0).
+    var transportForTesting: HTTPTransport?
+    #endif
+
     init() { cache.countLimit = 400 }
 
     static func key(scope: String, coverArtId: String, size: Int) -> String { "\(scope)|\(coverArtId)@\(size)" }
@@ -31,6 +36,11 @@ final class ArtworkCache {
 
     func store(_ image: UIImage, for key: String) { cache.setObject(image, forKey: key as NSString) }
 
+    /// "Reload artwork": every size of one cover leaves memory.
+    func remove(scope: String, coverArtId: String) {
+        for size in ArtworkDiskCache.sizes { cache.removeObject(forKey: Self.key(scope: scope, coverArtId: coverArtId, size: size) as NSString) }
+    }
+
     func removeAll() {
         cache.removeAllObjects()
         inFlight.values.forEach { $0.cancel() }
@@ -38,21 +48,29 @@ final class ArtworkCache {
         generation += 1
     }
 
-    func image(key: String, url: URL) async -> UIImage? {
+    /// Fetches the image; `fetched` gets the bytes of one that decoded, with the generation it was started in (the
+    /// disk cache saves them), unless a sign-out or sign-in came in between.
+    func image(key: String, url: URL, fetched: (@MainActor (_ data: Data, _ generation: Int) -> Void)? = nil) async -> UIImage? {
         if let hit = cached(key) { return hit }
-        if let task = inFlight[key] { return await task.value }
+        if let task = inFlight[key] { return await task.value.image }
         let started = generation
-        let task = Task<UIImage?, Never> {
-            guard let (data, response) = try? await Self.transport.send(URLRequest(url: url)),
-                  response.statusCode == 200 else { return nil }
-            return await Task.detached(priority: .utility) { UIImage(data: data)?.preparingForDisplay() }.value
+        var transport = Self.transport
+        #if DEBUG
+        if let transportForTesting { transport = transportForTesting }
+        #endif
+        let task = Task<(image: UIImage?, data: Data?), Never> { [transport] in
+            guard let (data, response) = try? await transport.send(URLRequest(url: url)),
+                  response.statusCode == 200 else { return (nil, nil) }
+            let image = await Task.detached(priority: .utility) { UIImage(data: data)?.preparingForDisplay() }.value
+            return (image, image == nil ? nil : data)
         }
         inFlight[key] = task
-        let image = await task.value
+        let result = await task.value
         guard generation == started else { return nil }   // signed out/in meanwhile
         inFlight[key] = nil
-        if let image { store(image, for: key) }
-        return image
+        if let image = result.image { store(image, for: key) }
+        if let data = result.data { fetched?(data, started) }
+        return result.image
     }
 }
 
@@ -77,22 +95,12 @@ struct Artwork<Content: View>: View {
 
     var body: some View {
         let scope = model.artworkScope ?? ""
+        // "Reload artwork" (P4) bumps the cover's version, which loads it again.
+        let version = coverArtId.map { ArtworkReloads.shared.version($0) } ?? 0
         content(image.map { Image(uiImage: $0) })
-            .task(id: "\(scope)|\(coverArtId ?? "")@\(pixelSize)") {
+            .task(id: "\(scope)|\(coverArtId ?? "")@\(pixelSize)#\(version)") {
                 guard let coverArtId, !scope.isEmpty else { image = nil; return }
-                let key = ArtworkCache.key(scope: scope, coverArtId: coverArtId, size: pixelSize)
-                if let hit = ArtworkCache.shared.cached(key) { image = hit; return }
-                // Task 14: the cover saved with a download first; it shows offline and costs no request.
-                if let file = model.localCoverURL(coverArtId),
-                   let saved = await Task.detached(priority: .utility, operation: {
-                       UIImage(contentsOfFile: file.path)?.preparingForDisplay()
-                   }).value {
-                    ArtworkCache.shared.store(saved, for: key)
-                    image = saved
-                    return
-                }
-                guard let url = model.coverArtURL(coverArtId, size: pixelSize) else { return }
-                image = await ArtworkCache.shared.image(key: key, url: url)
+                image = await model.artworkImage(coverArtId, size: pixelSize)
             }
     }
 }

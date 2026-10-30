@@ -519,6 +519,7 @@ final class AppModel {
         findSongs = []
         lettingGoSongIds = []
         playedFinds = []
+        eraseArtwork(scope: navidromeScope)   // P4
         stopDownloads(erase: true)
         store.clear()
         session = nil
