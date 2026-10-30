@@ -32,12 +32,10 @@ extension AppModel {
     /// Tiles per shelf (not configurable).
     static let homeShelfSize = 12
 
-    /// The sections Home shows now: the owner's order and switches; Made for you only with a token; offline, Downloaded.
-    var homeSections: [HomeSection] { homeSections(carPlay: false) }
-
-    /// The phone's sections, or the car's (no Made for you: the car has no screen for it).
-    func homeSections(carPlay: Bool) -> [HomeSection] {
-        preferences.layout.visibleHomeSections(offline: isOffline, hasListenBrainzToken: hasListenBrainzToken, carPlay: carPlay)
+    /// The sections Home shows now, on the phone and in the car: the owner's order and switches; Made for you only with
+    /// a token; offline, Downloaded.
+    var homeSections: [HomeSection] {
+        preferences.layout.visibleHomeSections(offline: isOffline, hasListenBrainzToken: hasListenBrainzToken)
     }
 
     /// A read of Home's sections: the shelves with something in them, in the order asked, and the sections that

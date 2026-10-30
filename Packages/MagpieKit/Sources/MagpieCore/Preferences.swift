@@ -243,9 +243,11 @@ public struct LayoutPreferences: PreferenceArea {
                                  showsRecentlyAdded: showsRecentlyAdded)
     }
 
-    public func visibleHomeSections(offline: Bool, hasListenBrainzToken: Bool, carPlay: Bool) -> [HomeSection] {
+    /// The Home sections to show, in the owner's order, for the phone and the car alike (the car shows Made for you too,
+    /// T23): Made for you only with a ListenBrainz token; offline, Downloaded.
+    public func visibleHomeSections(offline: Bool, hasListenBrainzToken: Bool) -> [HomeSection] {
         if offline { return [.downloaded] }
-        return home.visibleItems.filter { $0 != .madeForYou || (hasListenBrainzToken && !carPlay) }
+        return home.visibleItems.filter { $0 != .madeForYou || hasListenBrainzToken }
     }
 
     /// The Library rows to show, in the owner's order. Offline (the phone and the car alike): Downloads, which always

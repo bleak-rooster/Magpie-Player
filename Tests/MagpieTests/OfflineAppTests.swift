@@ -333,13 +333,36 @@ private let noNetwork = NetworkStatus(isConnected: false, isCellular: false, isC
         // The car (T22) mirrors it: Home is the Downloaded shelf, opened from the phone, and the Library the offline rows.
         let car = CarPlayLibraryAdapter(model: model)
         #expect(car.homeSections == [.downloaded] && car.libraryRows == [.genres, .downloads])
-        let carHome = CarPlayRows.home(try await car.homeShelves(car.homeSections,
-                                                                size: CarPlayRows.homeShelfSize(sectionCount: 1)))
+        #expect(car.isOffline)
+        let carHome = CarPlayRows.home(try await car.homeShelves(car.homeSections, size: CarPlayRows.homeShelfMaxSize))
         #expect(carHome.map(\.header) == ["Downloaded"])
         let carRows = carHome.flatMap(\.rows)
         #expect(carRows.map(\.id) == ["home.downloaded.al-1"])
         #expect(carRows.first?.action == .open(.downloadedAlbum(id: "al-1", title: carRows.first?.title ?? "")))
         #expect(CarPlayRows.libraryRoot(car.libraryRows, hasFindsTab: true).flatMap(\.rows).map(\.title) == ["Genres", "Downloads"])
+        // Every car destination (T23) reads the phone, or nothing: Genres, Downloads (albums, artists, playlists), an
+        // album or playlist opened from search, Favourites, Made for you, genre Play and Shuffle, and the Finds shelf.
+        #expect(try await car.genreGroups().isEmpty)
+        #expect(try await car.genreSubgenres("rock").isEmpty)
+        #expect(try await car.songs(for: .genreGroup(id: "rock", shuffled: true)).isEmpty)
+        #expect(try await car.songs(for: .genre(name: "Rock", shuffled: false)).isEmpty)
+        #expect(await car.downloadedAlbums().map(\.id) == ["al-1"])
+        #expect(await car.downloadedPlaylists().isEmpty)
+        let carArtists = await car.downloadedArtists()
+        #expect(carArtists.map(\.name) == ["A"])
+        #expect(await car.downloadedArtist(id: carArtists[0].id)?.1.map(\.id) == ["al-1"])
+        #expect(await car.downloadedAlbum(id: "al-1")?.songs?.map(\.id) == ["s1"])
+        #expect(try await car.album(id: "al-1").songs?.map(\.id) == ["s1"], "a search result's album opens from the phone")
+        await #expect(throws: (any Error).self) { try await car.album(id: "elsewhere") }
+        await #expect(throws: (any Error).self) { try await car.playlist(id: "p1") }
+        #expect(try await car.albumList(.alphabeticalByName, size: 500).map(\.id) == ["al-1"])
+        #expect(try await car.artists().map(\.name) == ["A"])
+        #expect(try await car.playlists().isEmpty)
+        await #expect(throws: (any Error).self) { try await car.favourites() }
+        #expect(await car.madeForYouTracks(id: "2b9a3b3a-1f8e-4b55-9a0e-6f1f7c1c2d3e") == nil)
+        #expect(try await car.homeShelves(HomeSection.allCases, size: CarPlayRows.homeShelfMaxSize).map(\.section) == [.downloaded])
+        await car.refreshFinds()
+        #expect(try await car.search("t").library.songs.map(\.id) == ["s1"])
         await #expect(throws: (any Error).self) { try await model.songsPage(0) }
         await #expect(throws: (any Error).self) { try await model.favourites() }
         try await Task.sleep(for: .milliseconds(300))

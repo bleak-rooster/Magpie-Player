@@ -8,11 +8,15 @@ import MagpieCore
 /// A screen that a row pushes.
 public enum CPDestination: Sendable, Hashable {
     case playlists, artists, albums
-    /// Library rows from the owner's layout (Task 22); their screens are built in Task 23.
+    /// Library rows from the owner's layout (Task 22); their screens are Task 23's.
     case genres, favourites, downloads, finds
     case genreGroup(id: String, name: String)
     /// An album on the phone (Downloads, or Home's Downloaded shelf): it opens with no server.
     case downloadedAlbum(id: String, title: String)
+    /// An artist's albums on the phone (Downloads).
+    case downloadedArtist(id: String, name: String)
+    /// A ListenBrainz "Made for you" playlist (Home, with a token; Task 23).
+    case madeForYou(id: String, title: String)
     case album(id: String, title: String)
     case playlist(id: String, title: String)
     case artist(id: String, name: String)
@@ -30,8 +34,8 @@ public enum CPDestination: Sendable, Hashable {
         case .favourites: "Favourites"
         case .downloads: "Downloads"
         case .finds: "Finds"
-        case .album(_, let title), .playlist(_, let title), .downloadedAlbum(_, let title): title
-        case .artist(_, let name), .genreGroup(_, let name): name
+        case .album(_, let title), .playlist(_, let title), .downloadedAlbum(_, let title), .madeForYou(_, let title): title
+        case .artist(_, let name), .genreGroup(_, let name), .downloadedArtist(_, let name): name
         case .searchResults(let query): query
         case .search: "Search"
         }
@@ -46,6 +50,8 @@ public enum CPPlayRequest: Sendable, Hashable {
     /// A subgenre's songs, and a genre group's (Task 23).
     case genre(name: String, shuffled: Bool)
     case genreGroup(id: String, shuffled: Bool)
+    /// These songs, shuffled: the Shuffle of an album or artist on the phone (nothing is asked of the server).
+    case shuffle([Song])
 }
 
 /// What tapping a row does. `.none` rows are shown disabled.

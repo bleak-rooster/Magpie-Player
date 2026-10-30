@@ -48,7 +48,8 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
     }
 }
 
-/// The app's session, artwork cache and recent searches, as CarPlay reads them.
+/// The app's session, artwork cache and recent searches, as CarPlay reads them. Offline (Task 14) the lists, albums,
+/// artists and playlists come from what's on the phone (T23), and nothing is asked of the server.
 @MainActor
 final class CarPlayLibraryAdapter: CarPlayLibrary {
     let model: AppModel
@@ -60,18 +61,28 @@ final class CarPlayLibraryAdapter: CarPlayLibrary {
     }
 
     func albumList(_ type: AlbumListType, size: Int) async throws -> [Album] {
-        try await model.request { try await $0.albumList(type, size: size, offset: 0) }
+        if model.isOffline { return Array(await model.offlineCatalog.albums().prefix(size)) }
+        return try await model.request { try await $0.albumList(type, size: size, offset: 0) }
     }
 
     func album(id: String) async throws -> Album {
-        try await model.request { try await $0.album(id: id) }
+        if model.isOffline {
+            guard let album = await model.offlineCatalog.album(id: id) else { throw AppModel.forcedOfflineError }
+            return album
+        }
+        return try await model.request { try await $0.album(id: id) }
     }
 
     func artists() async throws -> [Artist] {
-        try await model.request { try await $0.artists() }
+        if model.isOffline { return await model.offlineCatalog.artists() }
+        return try await model.request { try await $0.artists() }
     }
 
     func artist(id: String) async throws -> (Artist, [Album]) {
+        if model.isOffline {
+            guard let page = await downloadedArtist(id: id) else { throw AppModel.forcedOfflineError }
+            return page
+        }
         let result = try await model.request { client in
             let (artist, albums) = try await client.artist(id: id)
             return ArtistPage(artist: artist, albums: albums)
@@ -80,10 +91,17 @@ final class CarPlayLibraryAdapter: CarPlayLibrary {
     }
 
     func playlists() async throws -> [Playlist] {
-        try await model.request { try await $0.playlists() }
+        if model.isOffline { return await model.offlineCatalog.playlists() }
+        return try await model.request { try await $0.playlists() }
     }
 
+    /// Offline, a downloaded playlist with its songs on the phone (Downloads opens playlists this way).
     func playlist(id: String) async throws -> (Playlist, [Song]) {
+        if model.isOffline {
+            let catalog = await model.offlineCatalog
+            guard let playlist = catalog.playlists().first(where: { $0.id == id }) else { throw AppModel.forcedOfflineError }
+            return (playlist, catalog.songs(inPlaylist: id))
+        }
         let result = try await model.request { client in
             let (playlist, songs) = try await client.playlist(id: id)
             return PlaylistPage(playlist: playlist, songs: songs)

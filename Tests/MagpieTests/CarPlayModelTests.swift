@@ -107,6 +107,11 @@ import UIKit
             CarPlayRows.playlist(Playlist(id: "p", name: "P", songCount: 2, duration: 400),
                                  songs: [song("1"), song("2")], playingId: "1"),
             CarPlayRows.artist(Artist(id: "r", name: "R", albumCount: 2), albums: [album("y"), album("z")]),
+            CarPlayRows.genreGroup(id: "rock", subgenres: [Genre(name: "Indie Rock", songCount: 1, albumCount: 1)]),
+            CarPlayRows.downloadedAlbum(a, playingId: nil),
+            CarPlayRows.downloadedArtist(Artist(id: "r", name: "R", albumCount: 2), albums: [album("y"), album("z")]),
+            CarPlayRows.madeForYou([.song(song("1")), .notYet(ExternalRecording(title: "E", artist: "S", source: .listenBrainz))],
+                                   offer: .next, playingId: nil),
         ]
         for sections in deepest {
             for row in sections.flatMap(\.rows) {
@@ -116,6 +121,7 @@ import UIKit
 
         // Walk every push reachable from the tab roots: none goes past depth 3.
         let found = LibrarySearchResult(songs: [song("s")], albums: [a])
+        let outside = ExternalRecording(title: "Elsewhere", artist: "Someone", source: .listenBrainz)
         func screen(_ destination: CPDestination) -> [CPSectionModel] {
             switch destination {
             case .playlists: CarPlayRows.playlists([Playlist(id: "p", name: "P", songCount: 1, duration: 9)])
@@ -127,11 +133,16 @@ import UIKit
             case .artist: CarPlayRows.artist(Artist(id: "r", name: "R", albumCount: 1), albums: [a])
             case .searchResults: CarPlayRows.searchResults(found, playingId: nil)
             case .search: [CPSectionModel(header: nil, rows: CarPlayRows.searchItems(found))]
-            case .downloadedAlbum: CarPlayRows.album(a, playingId: nil)
+            case .downloadedAlbum: CarPlayRows.downloadedAlbum(a, playingId: nil)
+            case .downloadedArtist: CarPlayRows.downloadedArtist(Artist(id: "r", name: "R", albumCount: 1), albums: [a])
             case .finds: CarPlayRows.finds(CPFindsShelf(newFinds: [CPFind(song: song("n"), daysLeft: 7, isNew: true)], finds: []),
                                            playingId: nil)
-            // Task 23 builds these screens; until then they show a state row.
-            case .genres, .genreGroup, .favourites, .downloads: CarPlayRows.state(.empty)
+            case .genres: CarPlayRows.genres([(id: "rock", name: "Rock", albumCount: 1)])
+            case .genreGroup: CarPlayRows.genreGroup(id: "rock", subgenres: [Genre(name: "Indie Rock", songCount: 1, albumCount: 1)])
+            case .favourites: CarPlayRows.favourites(Starred(songs: [song("s")], albums: [a]), playingId: nil)
+            case .downloads: CarPlayRows.downloads(albums: [a], artists: [Artist(id: "r", name: "R", albumCount: 1)],
+                                                   playlists: [Playlist(id: "p", name: "P", songCount: 1, duration: 9)])
+            case .madeForYou: CarPlayRows.madeForYou([.song(song("s")), .notYet(outside)], offer: .next, playingId: nil)
             }
         }
         func walk(_ sections: [CPSectionModel], depth: Int) {
@@ -143,7 +154,8 @@ import UIKit
         }
         let home = CarPlayRows.home(HomeSection.allCases.map { section in
             CPHomeShelf(section: section, items: [.album(a), .playlist(Playlist(id: "p", name: "P", songCount: 1, duration: 9)),
-                                                  .genreGroup(id: "rock", name: "Rock", albumCount: 1)])
+                                                  .genreGroup(id: "rock", name: "Rock", albumCount: 1),
+                                                  .madeForYou(id: "m", title: "Daily Jams")])
         })
         walk(home, depth: 1)
         walk(CarPlayRows.libraryRoot(LibraryRow.allCases, hasFindsTab: false), depth: 1)
@@ -152,7 +164,6 @@ import UIKit
         let finds = CPFindsShelf(newFinds: [CPFind(song: song("n"), daysLeft: 7, isNew: true)],
                                  finds: [CPFind(song: song("f"), daysLeft: 2, isNew: false)])
         walk(CarPlayRows.finds(finds, playingId: nil), depth: 1)
-        let outside = ExternalRecording(title: "Elsewhere", artist: "Someone", source: .listenBrainz)
         for row in CarPlayRows.finds(finds, playingId: nil).flatMap(\.rows)
             + CarPlayRows.searchItems(found, notYet: [outside], offer: .next) {
             if case .open = row.action, row.id.hasPrefix("find.") || row.id.hasPrefix("notyet.") {

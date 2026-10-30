@@ -407,6 +407,7 @@ final class AppModel {
     /// Protected data (the Keychain) became readable: retry the restore.
     func protectedDataBecameAvailable() {
         reloadScrobbleQueue()   // a launch before first unlock couldn't read it (T17 fix round 1)
+        reloadPreferences()     // nor the preferences, so the car showed the default layout (T23)
         guard isWaitingForUnlock else { return }
         resumeSavedSession()
     }

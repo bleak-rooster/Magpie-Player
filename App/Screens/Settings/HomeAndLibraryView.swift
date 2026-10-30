@@ -13,7 +13,7 @@ struct HomeAndLibraryView: View {
     /// The Home row's value: how many Home sections show (online).
     static func homeSummary(_ model: AppModel) -> String {
         let count = model.preferences.layout.visibleHomeSections(
-            offline: false, hasListenBrainzToken: model.hasListenBrainzToken, carPlay: false).count
+            offline: false, hasListenBrainzToken: model.hasListenBrainzToken).count
         return count == 1 ? "1 section" : "\(count) sections"
     }
 

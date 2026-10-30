@@ -9,7 +9,7 @@ import UIKit
 /// What the CarPlay screens read from the app. The app implements it over its session (with
 /// address failover) and its in-memory artwork cache.
 @MainActor
-public protocol CarPlayLibrary: AnyObject, Sendable {
+public protocol CarPlayLibrary: AnyObject, Sendable, CarPlayLayoutLibrary {
     func albumList(_ type: AlbumListType, size: Int) async throws -> [Album]
     func album(id: String) async throws -> Album
     func artists() async throws -> [Artist]
@@ -41,15 +41,6 @@ public protocol CarPlayLibrary: AnyObject, Sendable {
     var tryOffer: CPTryOffer { get }
     /// "Try it next" (D6): the phone's Try; with nothing playing, a library mix seeded by the artist starts first.
     func tryNext(_ recording: ExternalRecording) async -> CPTryResult
-
-    // Home and Library from the owner's layout (Task 22). Both lists are observable.
-
-    /// Home's sections, in the owner's order, that the car can show (offline: Downloaded).
-    var homeSections: [HomeSection] { get }
-    /// The Library's rows, in the owner's order, without Songs and Requests (offline: Downloads, and Genres if shown).
-    var libraryRows: [LibraryRow] { get }
-    /// The shelves for `sections` that have something in them, in that order, each at most `size` tiles.
-    func homeShelves(_ sections: [HomeSection], size: Int) async throws -> [CPHomeShelf]
 }
 
 /// What the car can show right now.
@@ -69,7 +60,7 @@ public enum CarPlayAvailability: Sendable, Hashable {
 /// back until the list is off screen, so browsing never jumps (Amperfy #647).
 @MainActor
 public final class CarPlayController: NSObject {
-    private let interface: CPInterfaceController
+    private let interface: any CarPlayInterface
     let library: any CarPlayLibrary
     private let player: Player
     private var sessionConfiguration: CPSessionConfiguration?
@@ -102,7 +93,7 @@ public final class CarPlayController: NSObject {
     /// Artwork requests in flight per list.
     private static let artworkConcurrency = 4
 
-    public init(interfaceController: CPInterfaceController, library: any CarPlayLibrary, player: Player) {
+    public init(interfaceController: any CarPlayInterface, library: any CarPlayLibrary, player: Player) {
         self.interface = interfaceController
         self.library = library
         self.player = player
@@ -114,6 +105,7 @@ public final class CarPlayController: NSObject {
         configureNowPlaying()
         watchPlayer()
         watchFinds()
+        watchSleepTimer()
     }
 
     /// Shows the tabs when ready, otherwise a list that describes why not. Rebuilds only when the
@@ -164,7 +156,8 @@ public final class CarPlayController: NSObject {
         findsRoot = findsList.map(bind)
         searchRoot = bind(searchList)
         if let libraryRoot {
-            apply(CarPlayRows.libraryRoot(library.libraryRows, hasFindsTab: findsList != nil), to: libraryRoot, placeholder: false)
+            let rows = CarPlayRows.libraryRoot(library.libraryRows, hasFindsTab: findsList != nil)
+            apply(rows, to: libraryRoot, placeholder: CarPlayRows.isPlaceholder(rows))
         }
         refreshFindsRoot()
         refreshSearchRoot()
@@ -329,7 +322,7 @@ public final class CarPlayController: NSObject {
         }
     }
 
-    private func start(_ songs: [Song], at index: Int, shuffled: Bool) {
+    func start(_ songs: [Song], at index: Int, shuffled: Bool) {
         guard !songs.isEmpty else { return }
         if shuffled {
             player.play(songs, startAt: Int.random(in: songs.indices))
@@ -350,13 +343,13 @@ public final class CarPlayController: NSObject {
         }
     }
 
-    private func showUnavailable(_ error: Error) {
+    func showUnavailable(_ error: Error) {
         let state = CarPlayState.unavailable(outOfReach: library.isOutOfReach(error), localNetwork: library.localNetwork)
         showMessage(CarPlayRows.state(state).flatMap(\.rows).first?.title ?? "Your library didn't send this")
     }
 
     /// Only in direct response to a tap (critique M3). Describes; never instructs.
-    private func showMessage(_ title: String) {
+    func showMessage(_ title: String) {
         guard interface.presentedTemplate == nil else { return }
         let ok = CPAlertAction(title: "OK", style: .cancel) { [weak self] _ in
             self?.interface.dismissTemplate(animated: true, completion: nil)
@@ -398,8 +391,8 @@ public final class CarPlayController: NSObject {
     // MARK: - Now Playing
 
     /// Now Playing shows the system's view of `MPNowPlayingInfoCenter` (the real square cover,
-    /// H4). Our buttons: Keep (the system add-to-library button, for a find that may be kept; D12, M1), shuffle and
-    /// repeat.
+    /// H4). Our buttons: Keep (the system add-to-library button, for a find that may be kept; D12, M1), shuffle,
+    /// repeat and the sleep timer (T23).
     private func configureNowPlaying() {
         let nowPlaying = CPNowPlayingTemplate.shared
         nowPlaying.isUpNextButtonEnabled = false
@@ -410,7 +403,7 @@ public final class CarPlayController: NSObject {
 
     /// Same Player calls as the lock screen's shuffle/repeat commands (`NowPlayingBridge`),
     /// which also keeps the commands' current types (the glyphs) in sync.
-    private func updateNowPlayingButtons() {
+    func updateNowPlayingButtons() {
         var buttons: [CPNowPlayingButton] = []
         let keep = keepButton
         if keep.isShown {
@@ -429,7 +422,7 @@ public final class CarPlayController: NSObject {
             NowPlayingBridge.applyRepeat(NowPlayingBridge.repeatType(player.repeatMode.next), to: player)
         }
         repeatButton.isSelected = player.repeatMode != .off
-        CPNowPlayingTemplate.shared.updateNowPlayingButtons(buttons + [shuffle, repeatButton])
+        CPNowPlayingTemplate.shared.updateNowPlayingButtons(buttons + [shuffle, repeatButton, sleepButton()])
     }
 
     private var keepButton: CPKeepButton {

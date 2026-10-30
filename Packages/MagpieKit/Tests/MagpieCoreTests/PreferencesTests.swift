@@ -132,10 +132,10 @@ import Testing
 
     @Test func visibleSectionRules() {
         let l = LayoutPreferences.defaultValue
-        #expect(l.visibleHomeSections(offline: false, hasListenBrainzToken: false, carPlay: false) == [.jumpBackIn, .recentlyAdded, .mostPlayed])
-        #expect(l.visibleHomeSections(offline: false, hasListenBrainzToken: true, carPlay: false) == [.jumpBackIn, .madeForYou, .recentlyAdded, .mostPlayed])
-        #expect(l.visibleHomeSections(offline: false, hasListenBrainzToken: true, carPlay: true) == [.jumpBackIn, .recentlyAdded, .mostPlayed])
-        #expect(l.visibleHomeSections(offline: true, hasListenBrainzToken: true, carPlay: false) == [.downloaded])
+        #expect(l.visibleHomeSections(offline: false, hasListenBrainzToken: false) == [.jumpBackIn, .recentlyAdded, .mostPlayed])
+        // The car shows Made for you too (T23 ruling): one rule for the phone and the car.
+        #expect(l.visibleHomeSections(offline: false, hasListenBrainzToken: true) == [.jumpBackIn, .madeForYou, .recentlyAdded, .mostPlayed])
+        #expect(l.visibleHomeSections(offline: true, hasListenBrainzToken: true) == [.downloaded])
         #expect(l.visibleLibraryRows(offline: false, findsSetUp: false, lidarrConnected: true, carPlay: true)
                 == [.playlists, .artists, .albums, .genres, .favourites, .downloads])
         #expect(l.visibleLibraryRows(offline: false, findsSetUp: true, lidarrConnected: false, carPlay: false)

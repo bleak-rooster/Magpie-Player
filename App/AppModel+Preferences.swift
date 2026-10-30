@@ -15,6 +15,17 @@ extension AppModel {
         preferencesDidChange(from: old)
     }
 
+    /// Reads the saved preferences again. A launch before first unlock (from the car) couldn't read UserDefaults and
+    /// started with the defaults; once protected data is readable, what the owner saved applies, with every feature
+    /// reacting as to any change.
+    func reloadPreferences() {
+        let old = preferences
+        let saved = preferencesStore.load().normalised()
+        guard saved != old else { return }
+        preferences = saved
+        preferencesDidChange(from: old)
+    }
+
     /// The fan-out: one line per feature that reacts to a changed preference (later tasks add theirs here).
     func preferencesDidChange(from old: Preferences) {
         // Only what the upcoming songs are built from: the stream quality now, and ReplayGain.
