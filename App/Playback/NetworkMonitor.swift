@@ -35,6 +35,7 @@ final class NetworkMonitor: NetworkStatusProviding {
 /// as mobile data, so manual downloads would rightly wait for Wi-Fi. `-MagpieNetwork wifi` counts only together with
 /// `-MagpieUITesting YES`; a production launch never passes that, so it never honours the pin. `-MagpieNetwork cellular`
 /// pins mobile data, so manual downloads wait for Wi-Fi (P1's Downloading now UI test).
+#if DEBUG   // review M3: a Release build can't honour the pin at all
 enum UITestNetworkPin {
     static func status(arguments: [String]) -> NetworkStatus? {
         func value(_ key: String) -> String? {
@@ -49,6 +50,7 @@ enum UITestNetworkPin {
         }
     }
 }
+#endif
 
 /// A network that never changes: hosted tests, which must not depend on the simulator host's connection (an
 /// expensive or constrained path would change the stream quality, and with it the transcode fallback).

@@ -17,6 +17,9 @@ extension AppModel {
     /// Downloading now's rows: running, waiting, then failed.
     var downloadActivity: [DownloadActivityItem] { downloads?.activity ?? [] }
 
+    /// How many rows Downloading now has (cheap: no progress read).
+    var downloadActivityCount: Int { downloads?.activityCount ?? 0 }
+
     /// Manual downloads still to finish: "Keep Magpie open to finish downloading" shows while true.
     var hasActiveDownloads: Bool { downloads?.hasActiveDownloads ?? false }
 

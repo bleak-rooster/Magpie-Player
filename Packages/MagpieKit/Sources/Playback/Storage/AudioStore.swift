@@ -231,11 +231,13 @@ public actor AudioStore {
     /// Adds `reason` to a stored song in one step; a cached song becomes a download only if it fits the downloads
     /// limit (nothing is evicted).
     /// `albumCoverArtId`: the album's cover, recorded when the song is downloaded with its album (Task 14).
+    /// `albumSongCount`: the album's song count, recorded with it (P1 marks).
     public func promote(songId: String, reason: DownloadReason, downloadsLimit: Int64?,
-                        albumCoverArtId: String? = nil) throws {
+                        albumCoverArtId: String? = nil, albumSongCount: Int? = nil) throws {
         try ensureReady()
         guard var entry = index.entries[songId] else { throw AudioStoreError.unknownSong }
         if let albumCoverArtId { entry.metadata.albumCoverArtId = albumCoverArtId }
+        if let albumSongCount { entry.metadata.albumSongCount = albumSongCount }
         if entry.kind == .cache {
             try checkLimit(adding: entry.size, limit: downloadsLimit)
             entry.kind = .download

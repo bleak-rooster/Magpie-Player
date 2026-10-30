@@ -33,17 +33,14 @@ struct DownloadingNowView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             if !items.isEmpty {
-                ToolbarItemGroup(placement: .bottomBar) {
+                ToolbarItemGroup(placement: .topBarTrailing) {   // the spec's "top actions" (review M5)
                     if model.downloads?.isPaused == true {
                         Button("Resume all", systemImage: "play.fill") { model.downloads?.resumeAll() }
-                            .labelStyle(.titleAndIcon)
                             .accessibilityIdentifier("downloads-resume-all")
                     } else {
                         Button("Pause all", systemImage: "pause.fill") { model.downloads?.pauseAll() }
-                            .labelStyle(.titleAndIcon)
                             .accessibilityIdentifier("downloads-pause-all")
                     }
-                    Spacer()
                     Button("Cancel all", role: .destructive) { confirmsCancelAll = true }
                         .accessibilityIdentifier("downloads-cancel-all")
                 }
@@ -85,20 +82,34 @@ struct DownloadingNowView: View {
                 .accessibilityLabel("Cancel")
                 .accessibilityIdentifier("downloading-cancel")
             }
-            if case let .running(progress) = item.phase {
-                if let fraction = progress?.fraction {
-                    ProgressView(value: fraction)
-                } else {
-                    ProgressView(value: 0).opacity(0.5)
-                }
-                Text(progress.map(DownloadActivityCopy.progress) ?? "Starting…")
-                    .font(.footnote.monospacedDigit()).foregroundStyle(p.ink2Color)
+            if item.isRunning {
+                RunningProgress(id: item.id)
             } else {
                 Label(item.text, systemImage: item.symbol)
                     .font(.footnote).foregroundStyle(p.ink2Color)
             }
         }
         .padding(.vertical, Tokens.Spacing.xs)
+    }
+}
+
+/// A running row's bar and "x of y MB": the only view that reads the progress, so a tick re-renders it alone.
+private struct RunningProgress: View {
+    @Environment(AppModel.self) private var model
+    let id: UUID
+    private let themed = Themed()
+
+    var body: some View {
+        let progress = model.downloads?.progress[id]
+        VStack(alignment: .leading, spacing: Tokens.Spacing.xs) {
+            if let fraction = progress?.fraction {
+                ProgressView(value: fraction)
+            } else {
+                ProgressView(value: 0).opacity(0.5)
+            }
+            Text(progress.map(DownloadActivityCopy.progress) ?? "Starting…")
+                .font(.footnote.monospacedDigit()).foregroundStyle(themed.palette.ink2Color)
+        }
     }
 }
 
@@ -121,7 +132,7 @@ struct DownloadingNowLink: View {
     private let themed = Themed()
 
     var body: some View {
-        let count = model.downloadActivity.count
+        let count = model.downloadActivityCount
         if count > 0 {
             NavigationLink { DownloadingNowView() } label: {
                 VStack(alignment: .leading, spacing: Tokens.Spacing.xs) {

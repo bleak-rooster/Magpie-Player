@@ -19,7 +19,8 @@ struct DownloadProgress: Equatable {
 /// One row of Downloading now: a manual download running, waiting or failed.
 struct DownloadActivityItem: Identifiable, Equatable {
     enum Phase: Equatable {
-        case running(DownloadProgress?)
+        /// Its progress is read per row from `DownloadManager.progress` (review M4: a tick doesn't rebuild the list).
+        case running
         /// Queued behind the others ("Waiting to start"), paused, waiting for Wi-Fi or a connection, or full.
         case waiting(DownloadStatus)
         case paused
@@ -96,7 +97,7 @@ extension DownloadManager {
         for job in jobs {
             guard case let .download(reason) = job.kind else { continue }
             let phase: DownloadActivityItem.Phase = switch job.state {
-            case .running: .running(progress[job.id])
+            case .running: .running
             case .waiting: .waiting(waitingStatus)
             case .queued, .blocked: isHeld ? .paused : .queued
             }
@@ -112,6 +113,13 @@ extension DownloadManager {
             return DownloadActivityItem(id: job.id, metadata: job.metadata, reason: reason, phase: .failed)
         }
         return running + waiting + failures
+    }
+
+    /// How many rows Downloading now has, without building them or reading progress (the Settings row and the
+    /// Library banner re-render only when a row comes or goes).
+    var activityCount: Int {
+        func isDownload(_ job: Job) -> Bool { if case .download = job.kind { true } else { false } }
+        return jobs.count(where: isDownload) + stoppedByFull.count(where: isDownload) + failed.count(where: isDownload)
     }
 
     /// Manual downloads still to finish (running or waiting to run): the "Keep Magpie open" banner shows while true.
@@ -159,6 +167,7 @@ extension DownloadManager {
 
     func resumeAll() {
         isPaused = false
+        fetchCovers()
         pump()
     }
 
@@ -168,7 +177,12 @@ extension DownloadManager {
         isAppActive = active
         guard background != isInBackground else { return }
         isInBackground = background
-        if background { holdNetworkWork() } else { pump() }
+        if background {
+            holdNetworkWork()
+        } else {
+            fetchCovers()
+            pump()
+        }
     }
 
     /// Fetches in flight are cancelled back to queued: their run sees it is no longer current and drops its result

@@ -12,6 +12,8 @@ struct DownloadIndex: Equatable {
     private var byArtist: [String: Set<String>] = [:]
     /// Per artist, the albums with songs downloaded as that album (the album reason).
     private var albumDownloadsByArtist: [String: Set<String>] = [:]
+    /// Per album downloaded as an album, its song count then (the largest recorded).
+    private var albumSongCounts: [String: Int] = [:]
     private var playlists: [String: [String]] = [:]
 
     init() {}
@@ -23,7 +25,10 @@ struct DownloadIndex: Equatable {
             if let album = meta.albumId { byAlbum[album, default: []].insert(id) }
             if let artist = meta.artistId {
                 byArtist[artist, default: []].insert(id)
-                for case let .album(album) in entry.reasons { albumDownloadsByArtist[artist, default: []].insert(album) }
+                for case let .album(album) in entry.reasons {
+                    albumDownloadsByArtist[artist, default: []].insert(album)
+                    if let count = meta.albumSongCount { albumSongCounts[album] = max(albumSongCounts[album] ?? 0, count) }
+                }
             }
         }
         for playlist in playlists { self.playlists[playlist.id] = playlist.songIds }
@@ -62,11 +67,16 @@ struct DownloadIndex: Equatable {
         return .counting(done: done.count, total: max(total, done.count))
     }
 
-    /// The artist list, where the full song count isn't known: "Downloaded" once as many albums as the artist has
-    /// were downloaded as albums, "Some downloaded" for anything less.
+    /// The artist list, where the full song count isn't known: "Downloaded" only when as many albums as the artist has
+    /// were downloaded as albums and every one of them is whole (all the songs it had then are on the phone); anything
+    /// less is "Some downloaded" (review I2). An album saved without its count can't be shown whole.
     func listMark(artist: Artist) -> DownloadMark {
         guard byArtist[artist.id]?.isEmpty == false else { return .none }
-        let albums = albumDownloadsByArtist[artist.id]?.count ?? 0
-        return artist.albumCount > 0 && albums >= artist.albumCount ? .downloaded : .some
+        let albums = albumDownloadsByArtist[artist.id] ?? []
+        let whole = albums.filter { album in
+            guard let count = albumSongCounts[album], count > 0 else { return false }
+            return (byAlbum[album]?.count ?? 0) >= count
+        }
+        return artist.albumCount > 0 && whole.count >= artist.albumCount ? .downloaded : .some
     }
 }

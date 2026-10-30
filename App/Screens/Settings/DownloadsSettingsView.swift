@@ -24,7 +24,7 @@ struct DownloadsSettingsView: View {
     var body: some View {
         Form {
             // P1: hidden when nothing is downloading.
-            let active = model.downloadActivity.count
+            let active = model.downloadActivityCount
             if active > 0 {
                 Section {
                     NavigationLink { DownloadingNowView() } label: {

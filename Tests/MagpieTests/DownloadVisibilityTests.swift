@@ -126,6 +126,29 @@ private let cellular = NetworkStatus(isConnected: true, isCellular: true, isCons
         #expect(m.index.mark(artistId: "ar1", albums: albums) == .downloaded)
     }
 
+    /// Review I2: one album partly on the phone (the rest cancelled) is "Some downloaded" on the artist list, never
+    /// "Downloaded"; an album finished through a song already on the phone counts as whole.
+    @Test func artistListPartlyDownloadedAlbumIsSome() async {
+        let (m, f, _) = await makeManager(prefs(concurrent: 1))
+        let artist = Artist(id: "ar1", name: "A", albumCount: 1)
+        f.hold(after: 1)
+        m.download(songs("s1", "s2", "s3"), reason: .album("a1"))
+        #expect(await eventually { m.index.isDownloaded("s1") })
+        #expect(m.index.listMark(artist: artist) == .some, "1 of 3 landed, the rest still coming")
+        await m.cancelAllActive()
+        f.release()
+        await m.settled()
+        #expect(m.index.isDownloaded("s1") && !m.index.isDownloaded("s2"))
+        #expect(m.index.listMark(artist: artist) == .some, "cancelled partway: it stays Some downloaded")
+        // "Download the rest", with s1 already there (it only gains the reason): now whole.
+        m.download(songs("s1", "s2", "s3"), reason: .album("a1"))
+        await m.settled()
+        #expect(m.index.listMark(artist: artist) == .downloaded)
+        // One song removed on its own: no longer whole.
+        await m.remove(songIds: ["s2"])
+        #expect(m.index.listMark(artist: artist) == .some)
+    }
+
     // MARK: - Concurrency
 
     @Test func concurrencyOneToSixAppliedLive() async {
@@ -189,6 +212,26 @@ private let cellular = NetworkStatus(isConnected: true, isCellular: true, isCons
         #expect(m.jobs.isEmpty && m.failed.isEmpty)
     }
 
+    /// Review M1: an album's cover waits while paused or in the background, and comes on resume.
+    @Test func coversWaitWhileHeld() async {
+        let (m, f, _) = await makeManager()
+        func coverFetches() -> Int { f.urls.filter { $0.path.hasSuffix("/rest/getCoverArt") }.count }
+        m.pauseAll()
+        m.download(songs("s1"), reason: .album("a1"), coverArtId: "al-c")
+        try? await Task.sleep(for: .milliseconds(150))
+        #expect(coverFetches() == 0, "paused: no cover either")
+        m.resumeAll()
+        await m.settled()
+        #expect(coverFetches() == 1)
+        m.setPresence(active: false, background: true)
+        m.download(songs("s2"), reason: .album("a2"), coverArtId: "al-d")
+        try? await Task.sleep(for: .milliseconds(150))
+        #expect(coverFetches() == 1, "in the background: no cover")
+        m.setPresence(active: true, background: false)
+        await m.settled()
+        #expect(coverFetches() == 2)
+    }
+
     @Test func idleTimerHeldOnlyWhileRunningAndActive() async {
         let (m, f, box) = await makeManager()
         var timer = false
@@ -242,9 +285,15 @@ private let cellular = NetworkStatus(isConnected: true, isCellular: true, isCons
         guard case let .running(run)? = m.jobs.first(where: { $0.songId == "s2" })?.state else {
             Issue.record("s2 isn't running"); return
         }
+        #expect(m.activityCount == 3)
+        // Review M4: a progress tick re-renders the row alone, not the list or the Settings count.
+        let listChanged = Mutex(false)
+        withObservationTracking { _ = m.activity; _ = m.activityCount } onChange: { listChanged.withLock { $0 = true } }
         m.noteProgress(items[0].id, run, received: 1_000_000, expected: 8_000_000)
         m.noteProgress(items[0].id, UUID(), received: 5, expected: 10)
-        #expect(m.activity[0].phase == .running(DownloadProgress(received: 1_000_000, expected: 8_000_000)))
+        #expect(!listChanged.withLock { $0 }, "progress doesn't invalidate the list")
+        #expect(m.activity[0].phase == .running)
+        #expect(m.progress[items[0].id] == DownloadProgress(received: 1_000_000, expected: 8_000_000))
         #expect(DownloadActivityCopy.progress(DownloadProgress(received: 1_000_000, expected: 8_000_000)) == "1.0 of 8.0 MB")
         #expect(DownloadActivityCopy.row(3) == "Downloading now \u{00B7} 3")
         // Cancel the waiting one; Try again the failed one.

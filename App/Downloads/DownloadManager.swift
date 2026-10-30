@@ -226,7 +226,10 @@ final class DownloadManager {
             failed.removeAll { $0.songId == song.id && $0.kind == .download(reason) }
             guard !jobs.contains(where: { $0.songId == song.id && $0.kind == .download(reason) }) else { continue }
             var metadata = AudioMetadata(song)
-            if case .album = reason { metadata.albumCoverArtId = coverArtId }   // its saved cover, for offline (I2)
+            if case .album = reason {
+                metadata.albumCoverArtId = coverArtId   // its saved cover, for offline (I2)
+                metadata.albumSongCount = songs.count   // P1: the artist list's mark knows when it's whole
+            }
             jobs.append(Job(kind: .download(reason), metadata: metadata, quality: quality, playlistId: playlist?.id))
         }
         savePending()
@@ -584,7 +587,8 @@ final class DownloadManager {
             if case let .download(reason) = job.kind {
                 do {
                     try await store.promote(songId: job.songId, reason: reason, downloadsLimit: limitBytes(prefs),
-                                            albumCoverArtId: job.metadata.albumCoverArtId)
+                                            albumCoverArtId: job.metadata.albumCoverArtId,
+                                            albumSongCount: job.metadata.albumSongCount)
                 } catch AudioStoreError.downloadsFull {
                     if isLive(gen) { stopForFull(id) }
                     return
@@ -712,9 +716,10 @@ final class DownloadManager {
         savePending()
     }
 
-    private func fetchCovers() {
+    /// Covers wait while paused or in the background too (P1, review M1).
+    func fetchCovers() {
         let prefs = preferences().normalised()
-        guard isStarted, !pendingCovers.isEmpty, manualAllowed(prefs) else { return }
+        guard isStarted, !pendingCovers.isEmpty, manualAllowed(prefs), !isHeld else { return }
         let ids = pendingCovers
         pendingCovers = []
         for id in ids {
