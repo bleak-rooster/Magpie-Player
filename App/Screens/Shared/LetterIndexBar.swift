@@ -5,13 +5,16 @@ import SwiftUI
 /// The right-edge A–Z + "#" index (P2) for lists the system index can't serve: scroll views, the album grid and the
 /// server-paged lists (the system's `listSectionIndexVisibility` only indexes the sections a `List` holds).
 ///
-/// Touch or drag picks the letter under the finger, with a selection tick on each change. VoiceOver reads it as one
+/// Touch or drag picks the letter under the finger, with a selection tick on each change, and shows it large in the
+/// middle of the screen until shortly after the finger lifts (round 11 R2, `LetterBubble`). VoiceOver reads it as one
 /// adjustable "Letter index" (swipe up or down moves through the letters that have items). It steps aside at
 /// accessibility text sizes, and when the screen is too short for 27 letters (D15); the list stays usable.
 struct LetterIndexBar: View {
     /// Letters with items: shown in full ink, the rest dimmed (they still go to the nearest letter).
     let available: Set<String>
     let onSelect: (String) -> Void
+    /// The bubble the drag drives (R2); VoiceOver's adjusting doesn't show it.
+    var bubble: LetterBubbleState?
     @State private var current: String?
     @State private var height: CGFloat = 0
     private let themed = Themed()
@@ -41,8 +44,15 @@ struct LetterIndexBar: View {
         .contentShape(Rectangle())
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height = $0 }
         .gesture(DragGesture(minimumDistance: 0)
-            .onChanged { pick(Self.letter(atY: $0.location.y - 8, height: height - 16)) }
-            .onEnded { _ in current = nil })
+            .onChanged { drag in
+                let letter = Self.letter(atY: drag.location.y - 8, height: height - 16)
+                pick(letter)
+                bubble?.dragged(to: letter)
+            }
+            .onEnded { _ in
+                current = nil
+                bubble?.released()
+            })
         // A tick per letter, not when the finger lifts (`current` back to nil).
         .sensoryFeedback(.selection, trigger: current) { _, new in new != nil }
         .accessibilityElement()
@@ -89,6 +99,7 @@ private struct LetterIndexOverlay: ViewModifier {
     let onSelect: (String) -> Void
     @Environment(\.dynamicTypeSize) private var typeSize
     @State private var height: CGFloat = .infinity
+    @State private var bubble = LetterBubbleState()
 
     func body(content: Content) -> some View {
         // Hidden at accessibility sizes and when 27 letters don't fit (D15); then rows keep their full width too.
@@ -97,7 +108,8 @@ private struct LetterIndexOverlay: ViewModifier {
             .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height = $0 }
             .contentMargins(.trailing, shown ? 14 : 0, for: .scrollContent)
             .overlay(alignment: .trailing) {
-                if shown { LetterIndexBar(available: available, onSelect: onSelect).padding(.trailing, 2) }
+                if shown { LetterIndexBar(available: available, onSelect: onSelect, bubble: bubble).padding(.trailing, 2) }
             }
+            .overlay { LetterBubble(state: bubble) }
     }
 }
