@@ -34,7 +34,9 @@ struct ArtistView: View {
         }
         .navigationTitle(page.value?.artist.name ?? "")
         .navigationBarTitleDisplayMode(.inline)
+        .background { ArtBackdrop(coverArtId: page.value?.artist.coverArtId) }   // R13: tinted by the artist's art
         .magpieScreen()
+        .immersiveArt(coverArtId: page.value?.artist.coverArtId)
         // Again when offline mode changes, and offline when songs land on or leave the phone (the store may be
         // unreadable before first unlock): the downloaded albums offline, the server's online.
         .task(id: model.offlinePageKey) {

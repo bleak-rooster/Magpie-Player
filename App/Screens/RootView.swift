@@ -18,6 +18,7 @@ struct RootView: View {
             } else {
                 MainTabs()
                     .environment(\.songIsDownloaded, model.songIsDownloaded)   // P1: every song row's mark
+                    .immersiveArt(coverArtId: model.player.queue.current?.song.coverArtId)   // R13: what's playing colours the app
             }
         }
         .magpieTheme(theme)
@@ -62,6 +63,7 @@ struct MainTabs: View {
         }
         .sheet(isPresented: $showNowPlaying) {
             NowPlayingView()
+                .immersiveArt(coverArtId: model.player.queue.current?.song.coverArtId)   // R13
         }
     }
 }

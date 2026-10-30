@@ -24,7 +24,7 @@ public struct CapsuleButton: View {
         Button(action: action) {
             HStack(spacing: 4) {
                 if let symbol { Image(systemName: symbol).imageScale(.small) }
-                Text(title).font(.footnote.weight(.semibold))
+                Text(title).font(theme.capsuleFont)
             }
             .padding(.horizontal, 12)
             .frame(minHeight: 30)
