@@ -5,7 +5,8 @@ import MagpieCore
 /// don't rest on the runner's checks alone. A runner bug (wrong ids, a stale record, a wider body) is refused here.
 ///
 /// Checked at the gate, from the ledger and the gate's own fresh Lidarr reads, never from anything the caller says:
-/// - `PUT /artist/editor`: only for an artist the ledger says Magpie created. A body with `rootFolderPath` moves
+/// - `PUT /artist/editor`: only for an artist the ledger says Magpie created; a `metadataProfileId` (R18) only names
+///   one of Magpie's own profiles (`Magpie …`, read fresh). A body with `rootFolderPath` moves
 ///   only into the current main root (`moveFiles: true`, and only a tagged find now inside the Finds root), or
 ///   points back at the current Finds root (otherwise, which moves no files);
 /// - `DELETE /artist/{id}`: only an artist Magpie created, nothing of it kept, carrying `magpie-find` and strictly
@@ -41,6 +42,9 @@ public struct WriteConfinement: Sendable {
         self.ledger = ledger
         self.roots = roots
     }
+
+    /// R18: Magpie's metadata profiles are named `Magpie …` (`Provisioner`, `ReleaseTypes.profileName`).
+    static let magpieProfilePrefix = "Magpie "
 
     /// At most this many track files in one delete (each is read first).
     static let maxTrackFiles = 500
@@ -219,6 +223,14 @@ public struct WriteConfinement: Sendable {
                 throw Refusal(reason: "the artist editor changes one artist")
             }
             guard try await created(id) else { throw Refusal(reason: "not an artist Magpie added") }
+            if let profile = (value("metadataprofileid") as? NSNumber)?.intValue {
+                // R18: only to one of Magpie's own metadata profiles, by its name in Lidarr now.
+                let profiles = try await read { try await lidarr.metadataProfiles() }
+                guard let name = profiles.first(where: { $0.id == profile })?.name,
+                      name.hasPrefix(WriteConfinement.magpieProfilePrefix) else {
+                    throw Refusal(reason: "only Magpie's own metadata profiles")
+                }
+            }
             guard let target = value("rootfolderpath") as? String else { return }
             if let move = value("movefiles") as? NSNumber, move.boolValue {
                 // Keep: a tagged find in the Finds folder moves into the main root, nowhere else.

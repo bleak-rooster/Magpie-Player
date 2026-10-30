@@ -178,7 +178,7 @@ private let findMBID = "42424242-4242-4242-8242-424242424242"
         Call("PUT", "artist/editor", #"{"artistIds":[42,7],"tags":[2],"applyTags":"remove"}"#),
         Call("PUT", "artist/editor", #"{"artistIds":[],"tags":[2],"applyTags":"remove"}"#),
         Call("PUT", "artist/editor", #"{"artistIds":[42],"monitored":false}"#),
-        Call("PUT", "artist/editor", #"{"artistIds":[42],"metadataProfileId":3}"#),
+        Call("PUT", "artist/editor", #"{"artistIds":[42],"metadataProfileId":3,"qualityProfileId":4}"#),
         Call("PUT", "artist/editor", #"{"artistIds":[42],"tags":[2]}"#),
         Call("PUT", "artist/editor", #"{"artistIds":[42],"moveFiles":true}"#),
         Call("PUT", "artist/editor", #"{"artistIds":[42],"rootFolderPath":"/music/library","moveFiles":1}"#),
