@@ -193,3 +193,21 @@ Overlaps:
   - Offline mode On sends nothing.
 - **CarPlay:** the car search's "Not in your library" rows show the same art (in-memory, same rules), within the CarPlay image limits.
 - **Workstream X5** (R15).
+
+## R16. Request screens show art and keep working when you leave (owner addendum)
+- **Art:** the Try sheet and the request wait/detail screens ("Looking…", "Spotted", "Bringing it home", Ready, etc.), the Activity/requests list rows, and the Play now banner show artwork:
+  - the song's or album's cover, from the release group;
+  - for an artist request, the artist picture.
+  - Before the item is in the library, R15 rules apply: Cover Art Archive or Lidarr images, in memory only, re-fetched when the screen opens.
+  - Once Navidrome lists it, the library cover is used through the P4 cache.
+  - When nothing is available, the placeholder.
+- **Leaving the screen** *(owner: "you should be able to leave it and it should work in the background")*:
+  - Verify, with tests, that a request keeps going when its screen is dismissed or the user navigates elsewhere. The RequestRunner is owned by the model, not the view.
+  - Verify that a request found ready while the user is elsewhere lands per D6 (queued next and the Play now banner) and posts the ready notification.
+  - Fix anything that ties progress to the view's lifetime.
+- **App in the background** *(call)*:
+  - Register a `BGAppRefreshTask` (`com.bleak-rooster.magpie.requests`) that, when iOS grants time, runs one bounded runner pass: Lidarr queue/history reads and a Navidrome match check, with no new writes except the already-scheduled retry searches the runner would send anyway, and posts the ready notification.
+  - Scheduled whenever requests are live; at most every 15 min (the iOS minimum hint).
+  - Documented as best-effort: iOS decides when it runs.
+  - Also, while audio plays in the background the process stays alive, and the runner keeps its 30 s cadence (verify).
+- **Workstream X5** (R15 + R16).
