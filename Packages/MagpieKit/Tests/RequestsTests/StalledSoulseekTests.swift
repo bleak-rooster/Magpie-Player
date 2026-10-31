@@ -59,6 +59,21 @@ import MagpieCore
         #expect(h.server.with { $0.downloadClientReads } == 1)
     }
 
+    /// R20 (owner's ruling over the appraisal): the clock starts when the item appears in the queue, so a copy queued
+    /// remotely that never made progress (`sizeleft == size`) is given up on after the limit too.
+    @Test func clockStartsWhenTheItemAppears() async throws {
+        let (h, id) = try await searching()
+        var queued = soulseek(902, sizeleft: 100)
+        queued.status = "queued"
+        h.server.with { $0.queue = [queued] }
+        await h.runner.tick()
+        h.clock.advance(59); await h.runner.tick()
+        #expect(deletes(h).isEmpty)
+        h.clock.advance(1); await h.runner.tick()
+        #expect(deletes(h) == ["/lidarr/api/v1/queue/902?" + Self.deleteQuery])
+        #expect(await h.request(id)?.stallRetries == 1)
+    }
+
     /// Progress (sizeleft, or status / trackedDownloadState) restarts the clock.
     @Test func anyChangeRestartsTheClock() async throws {
         let (h, _) = try await searching()
