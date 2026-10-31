@@ -46,6 +46,13 @@ private let cellular = NetworkStatus(isConnected: true, isCellular: true, isCons
         return p
     }
 
+    /// R1: P1's foreground-only rule now applies with "Download in the background" off.
+    private func foregroundOnly(concurrent: Int = 2) -> DownloadPreferences {
+        var p = prefs(concurrent: concurrent)
+        p.downloadInBackground = false
+        return p
+    }
+
     // MARK: - Marks
 
     @Test func markCopyAndSymbols() {
@@ -218,10 +225,10 @@ private let cellular = NetworkStatus(isConnected: true, isCellular: true, isCons
         #expect(Array(DownloadPreferences.concurrentRange) == [1, 2, 3, 4, 5, 6])
     }
 
-    // MARK: - Foreground only
+    // MARK: - Foreground only ("Download in the background" off, R1)
 
     @Test func backgroundPausesWithoutAnAttemptAndResumesOnReturn() async {
-        let (m, f, _) = await makeManager(prefs(concurrent: 2))
+        let (m, f, _) = await makeManager(foregroundOnly())
         f.hold(after: 0)
         m.download(songs("s1"), reason: .song)
         #expect(await eventually { f.inFlight == 1 })
@@ -261,7 +268,7 @@ private let cellular = NetworkStatus(isConnected: true, isCellular: true, isCons
 
     /// Review M1: an album's cover waits while paused or in the background, and comes on resume.
     @Test func coversWaitWhileHeld() async {
-        let (m, f, _) = await makeManager()
+        let (m, f, _) = await makeManager(foregroundOnly())
         func coverFetches() -> Int { f.urls.filter { $0.path.hasSuffix("/rest/getCoverArt") }.count }
         m.pauseAll()
         m.download(songs("s1"), reason: .album("a1"), coverArtId: "al-c")
