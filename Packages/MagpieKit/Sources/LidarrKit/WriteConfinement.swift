@@ -107,10 +107,13 @@ public struct WriteConfinement: Sendable {
     }
 
     /// R17: `DELETE /queue/{id}` only removes a download Magpie's own live request is waiting on. From the ledger, the
-    /// live requests and a fresh queue read (never from the caller):
-    /// - the queue lists item `id` now, with an album and an artist;
-    /// - the ledger has an open entry for that album and artist, for a request that is live right now, applied, not
-    ///   kept, and saying Magpie monitored the album (`wasMonitoredBefore == false`) or added its artist.
+    /// live requests and a fresh read of the whole queue (never from the caller):
+    /// - the queue lists item `id` now, with an album and an artist, still downloading before import (fix round 1 I1:
+    ///   never a copy that's complete, waiting to import, importing or blocked);
+    /// - every queue row of the same download (`downloadId`; fix round 1 I2) has an open ledger entry for its album and
+    ///   artist, for a request that is live right now, applied, not kept, and saying Magpie monitored the album
+    ///   (`wasMonitoredBefore == false`) or added its artist; a row without a download id can't be shown to be
+    ///   Magpie's alone and is refused.
     /// The queue only, before import: it never touches library files, and nothing of the owner's own downloads.
     func queueDelete(_ id: Int, lidarr: LidarrClient) async -> Verdict {
         guard let liveRequests else { return .refused("queue deletes need Magpie's live requests") }
@@ -124,19 +127,25 @@ public struct WriteConfinement: Sendable {
         guard !mine.isEmpty else { return .refused("no live request of Magpie's has a download") }
         let items: [QueueItem]
         do {
-            items = try await lidarr.queueDetails(albumIds: Array(Set(mine.compactMap(\.albumId))).sorted())
+            items = try await lidarr.queueDetails(albumIds: [])   // the whole queue: every album of the download
         } catch {
             return .unknown
         }
-        guard let item = items.first(where: { $0.id == id }), let albumId = item.albumId, let artistId = item.artistId else {
+        guard let item = items.first(where: { $0.id == id }) else {
             return .refused("not one of Magpie's downloads in the queue now")
         }
-        guard mine.contains(where: { $0.albumId == albumId && $0.lidarrArtistId == artistId }) else {
-            return .refused("not one of Magpie's downloads in the queue now")
-        }
-        // A plain album entry is the album's only one (`Ledger.record`); an owner's monitor before Magpie's never passes.
-        guard !entries.contains(where: { $0.albumId == albumId && ($0.wasMonitoredBefore && !$0.createdArtist) }) else {
-            return .refused("the owner monitored this album")
+        guard item.isDownloadingBeforeImport else { return .refused("that copy is past downloading") }
+        guard let downloadId = item.downloadId else { return .refused("the queue doesn't say which download it is") }
+        for row in items where row.downloadId == downloadId {
+            guard let albumId = row.albumId, let artistId = row.artistId,
+                  mine.contains(where: { $0.albumId == albumId && $0.lidarrArtistId == artistId }) else {
+                return .refused("not one of Magpie's downloads in the queue now")
+            }
+            // A plain album entry is the album's only one (`Ledger.record`); an owner's monitor before Magpie's never
+            // passes.
+            guard !entries.contains(where: { $0.albumId == albumId && ($0.wasMonitoredBefore && !$0.createdArtist) }) else {
+                return .refused("the owner monitored this album")
+            }
         }
         return .confined(artists: [])
     }

@@ -51,10 +51,34 @@ import MagpieTestSupport
                 ["id": 504, "albumId": 35, "artistId": 9, "downloadClient": "SABnzbd"],
                 ["id": 505, "albumId": 31, "artistId": 8, "downloadClient": "Slskd"],
                 ["id": 506, "albumId": 34, "artistId": 7, "downloadClient": "Slskd"],
+                // Fix round 1 I1: album 31 copies past downloading (complete, waiting or importing, blocked).
+                ["id": 511, "albumId": 31, "artistId": 7, "downloadClient": "Slskd", "sizeleft": 0,
+                 "status": "completed", "trackedDownloadState": "importPending"],
+                ["id": 512, "albumId": 31, "artistId": 7, "downloadClient": "Slskd", "sizeleft": 0,
+                 "status": "completed", "trackedDownloadState": "importing"],
+                ["id": 513, "albumId": 31, "artistId": 7, "downloadClient": "Slskd", "sizeleft": 0,
+                 "status": "warning", "trackedDownloadState": "importBlocked"],
+                ["id": 514, "albumId": 31, "artistId": 7, "downloadClient": "Slskd", "sizeleft": 0,
+                 "status": "downloading", "trackedDownloadState": "downloading"],
+                // I2: one download (a two-album release) for Magpie's album 31 and the owner's album 35.
+                ["id": 521, "albumId": 31, "artistId": 7, "downloadClient": "Slskd", "downloadId": "multi"],
+                ["id": 522, "albumId": 35, "artistId": 9, "downloadClient": "Slskd", "downloadId": "multi"],
+                // I2: and one Lidarr can't name a download for: it can't be shown to be Magpie's alone.
+                ["id": 523, "albumId": 31, "artistId": 7, "downloadClient": "Slskd", "downloadId": NSNull()],
             ].map { row in row.merging(["size": 100, "sizeleft": 50, "status": "downloading",
-                                        "trackedDownloadState": "downloading"]) { a, _ in a } }
-            transport.stub(pathSuffix: "/api/v1/queue/details", status: queueDown ? 503 : 200,
-                           body: try JSONSerialization.data(withJSONObject: rows))
+                                        "trackedDownloadState": "downloading",
+                                        "downloadId": "dl-\(row["id"]!)"]) { a, _ in a } }
+            let down = queueDown
+            let all = try JSONSerialization.data(withJSONObject: rows)
+            // Like Lidarr: `albumIds` narrows the rows; without it, the whole queue.
+            transport.stub(pathSuffix: "/api/v1/queue/details") { request in
+                if down { return MockTransport.Response(status: 503) }
+                let rows = try JSONSerialization.jsonObject(with: all) as? [[String: Any]] ?? []
+                let ids = (URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems ?? [])
+                    .filter { $0.name == "albumIds" }.compactMap { $0.value.flatMap(Int.init) }
+                let shown = ids.isEmpty ? rows : rows.filter { ($0["albumId"] as? Int).map(ids.contains) == true }
+                return MockTransport.Response(status: 200, body: try JSONSerialization.data(withJSONObject: shown))
+            }
             transport.stub(method: "DELETE", pathSuffix: "", body: json("{}"))
         }
 
@@ -134,6 +158,26 @@ import MagpieTestSupport
     /// id that isn't in the queue now.
     @Test(arguments: [502, 503, 504, 505, 506, 999])
     func notAMagpieLiveDownloadRefused(_ id: Int) async throws {
+        let fake = try await Fake()
+        let gate = await fake.gate()
+        await WriteConfinementTests.expectRefusedHere(Call("DELETE", "queue/\(id)" + Self.shape), gate,
+                                                      writes: { fake.writes })
+    }
+
+    /// Fix round 1 I1: only a copy still coming before import: never one that's complete, waiting to import, being
+    /// imported or blocked from importing, even of a live request's album.
+    @Test(arguments: [511, 512, 513, 514])
+    func copyPastDownloadingRefused(_ id: Int) async throws {
+        let fake = try await Fake()
+        let gate = await fake.gate()
+        await WriteConfinementTests.expectRefusedHere(Call("DELETE", "queue/\(id)" + Self.shape), gate,
+                                                      writes: { fake.writes })
+    }
+
+    /// Fix round 1 I2: one download that also brings the owner's album 35 (every queue row sharing its downloadId is
+    /// read, from the whole queue), or one without a downloadId, is never removed.
+    @Test(arguments: [521, 523])
+    func sharedOrUnnamedDownloadRefused(_ id: Int) async throws {
         let fake = try await Fake()
         let gate = await fake.gate()
         await WriteConfinementTests.expectRefusedHere(Call("DELETE", "queue/\(id)" + Self.shape), gate,
