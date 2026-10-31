@@ -2,6 +2,7 @@ import BackgroundTasks
 import Foundation
 import os
 import Requests
+import SwiftUI
 
 /// R16: requests keep going in the background. While audio plays, the process stays alive and the runner keeps polling
 /// every 30 s (`pollRequests`). Otherwise, when iOS grants time, a `BGAppRefreshTask` runs one bounded runner pass: the
@@ -53,6 +54,14 @@ extension AppModel {
             guard await runner.needsPolling else { return }
             try? await submit(RequestsBackgroundRefresh.request())
         }
+    }
+
+    /// The scene phase: going to the background asks iOS for a pass while a request is on its way (RootView).
+    func requestsScenePhaseChanged(_ phase: ScenePhase, submit: @escaping (BGTaskRequest) async throws -> Void = {
+        try await BGTaskScheduler.shared.submitTaskRequest($0)
+    }) {
+        guard phase == .background else { return }
+        scheduleRequestRefresh(submit: submit)
     }
 
     /// One bounded runner pass (the BGAppRefreshTask's work). Offline, signed out or without Lidarr: nothing is sent.

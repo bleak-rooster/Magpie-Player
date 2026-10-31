@@ -1,3 +1,4 @@
+import BackgroundTasks
 import CarPlayUI
 import Foundation
 import LidarrKit
@@ -9,6 +10,7 @@ import os
 import Playback
 import Requests
 import Search
+import SwiftUI
 import Testing
 import UIKit
 @testable import Magpie
@@ -248,9 +250,16 @@ private let recordingMBID = MBID("c2272a15-8f3a-4cdc-8f32-7e723352d44d")!
         #expect(model.magpieRequest(id)?.state == .searching, "it kept going")
         #expect(model.magpieRequest(id)?.plan?.releaseGroupMBID == rg)
         #expect(model.magpieRequest(id)?.cover.outside == .releaseGroup(rg))
-        // Live: going to the background asks iOS for a refresh pass.
+        // Live: going to the background (the scene phase) asks iOS for a refresh pass; coming back doesn't.
         let submitted = OSAllocatedUnfairLock(initialState: [String]())
-        model.scheduleRequestRefresh { request in let id = request.identifier; submitted.withLock { $0.append(id) } }
+        let record: (BGTaskRequest) async throws -> Void = { request in
+            let id = request.identifier; submitted.withLock { $0.append(id) }
+        }
+        model.requestsScenePhaseChanged(.active, submit: record)
+        model.requestsScenePhaseChanged(.inactive, submit: record)
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(submitted.withLock { $0 }.isEmpty, "only going to the background asks")
+        model.requestsScenePhaseChanged(.background, submit: record)
         for _ in 0..<100 where submitted.withLock({ $0 }).isEmpty { try await Task.sleep(for: .milliseconds(10)) }
         #expect(submitted.withLock { $0 } == [RequestsBackgroundRefresh.identifier])
         await model.cancelRequest(id)
