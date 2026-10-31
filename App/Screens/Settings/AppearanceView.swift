@@ -1,7 +1,7 @@
 import DesignSystem
 import SwiftUI
 
-/// Settings > Appearance: the Character dial (three cards that re-skin the app live) and the accent.
+/// Settings > Appearance: the Character dial (three cards that re-skin the app live), the accent and the app icon (R14).
 struct AppearanceView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.colorScheme) private var scheme
@@ -32,6 +32,13 @@ struct AppearanceView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             } header: {
                 Text("Accent")
+            }
+            Section {
+                AppIconPicker()
+            } header: {
+                Text("App icon")
+            } footer: {
+                Text("Your iPhone confirms the change.")
             }
             Section {
                 Label(reduceMotion ? "Reduce Motion is on: records don't spin, and changes fade."
@@ -68,7 +75,7 @@ enum CharacterCopy {
         switch c {
         case .classic: "Stock iOS. System type and colours."
         case .signature: "Warm paper and ink, with a serif voice."
-        case .immersive: "Album art fills the background. Always dark."
+        case .immersive: "Album art sets the colours, with bolder type. Always dark."
         }
     }
 }
