@@ -185,7 +185,7 @@ struct AddToPlaylistSheet: View {
         busy = true
         failure = nil
         defer { busy = false }
-        do { try await step() } catch { failure = BrowseErrorCopy.message(for: error) }
+        do { try await step() } catch { failure = PlaylistEditError.message(for: error) }
     }
 }
 

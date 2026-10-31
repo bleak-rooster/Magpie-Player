@@ -19,6 +19,58 @@ enum PlaylistCopy {
     static func deleteTitle(_ name: String) -> String { "Delete \u{201C}\(name)\u{201D}?" }
     static let deleteMessage = "It\u{2019}s deleted from your music server for everyone who uses it."
     static func madeBy(_ owner: String) -> String { "Made by \(owner). You can play it but not change it." }
+    static let changedMeanwhile = "That playlist changed, so nothing was removed. Here it is again."
+}
+
+/// Why a playlist edit didn't go through (review fixes I1, I4).
+enum PlaylistEditError: Error, Equatable {
+    /// Someone else's playlist (or read-only): nothing was sent.
+    case notYours
+    /// The connection dropped, and reading back showed the change didn't happen.
+    case notChanged
+    /// The connection dropped, and the playlist couldn't be read back either.
+    case outcomeUnknown
+
+    var message: String {
+        switch self {
+        case .notYours: "That playlist isn\u{2019}t yours, so Magpie can\u{2019}t change it."
+        case .notChanged: "Your music server didn\u{2019}t answer, so the playlist hasn\u{2019}t changed."
+        case .outcomeUnknown:
+            "Your music server stopped answering, so Magpie can\u{2019}t tell whether the playlist changed. Look again when it\u{2019}s back."
+        }
+    }
+
+    /// What to say about a failed playlist edit.
+    static func message(for error: Error) -> String {
+        (error as? PlaylistEditError)?.message ?? BrowseErrorCopy.message(for: error)
+    }
+}
+
+/// One at a time per key (a playlist's edits, one item's favourite): each `run` waits for the ones before it.
+@MainActor final class KeyedLock<Key: Hashable> {
+    private var busy: Set<Key> = []
+    private var waiting: [Key: [CheckedContinuation<Void, Never>]] = [:]
+
+    func run<T>(_ key: Key, _ body: () async throws -> T) async throws -> T {
+        await acquire(key)
+        defer { release(key) }
+        return try await body()
+    }
+
+    private func acquire(_ key: Key) async {
+        guard busy.contains(key) else { busy.insert(key); return }
+        await withCheckedContinuation { waiting[key, default: []].append($0) }   // handed over by `release`
+    }
+
+    private func release(_ key: Key) {
+        if var queue = waiting[key], !queue.isEmpty {
+            let next = queue.removeFirst()
+            waiting[key] = queue.isEmpty ? nil : queue
+            next.resume()   // `key` stays busy: it passes to the next in line
+        } else {
+            busy.remove(key)
+        }
+    }
 }
 
 /// Playlists (round 11 R8): Add to playlist, create, rename, delete and remove a song, each only on the user's own
@@ -50,41 +102,107 @@ extension AppModel {
         return (Set(there.map(\.id)), there.first?.title)
     }
 
-    /// Appends `songIds` (repeats kept) to `playlist`.
+    /// Appends `songIds` (repeats kept) to `playlist`, if it is the user's.
     func add(_ songIds: [String], to playlist: Playlist) async throws {
-        try await request { [id = playlist.id] in
-            try await $0.updatePlaylist(id: id, name: nil, adding: songIds, removingIndexes: [])
+        try await libraryEdits.playlistLocks.run(playlist.id) {
+            let (fresh, before) = try await ownPlaylist(playlist)
+            try await sendOnce({ [id = fresh.id] in
+                try await $0.updatePlaylist(id: id, name: nil, adding: songIds, removingIndexes: [])
+            }, landed: { try await self.songIds(in: fresh) == before.map(\.id) + songIds })
+            playlistsChanged(PlaylistCopy.added(to: fresh.name))
         }
-        playlistsChanged(PlaylistCopy.added(to: playlist.name))
     }
 
     /// A new playlist called `name` (trimmed) holding `songIds`.
     func createPlaylist(named name: String, songIds: [String]) async throws {
         let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return }
-        _ = try await request { try await $0.createPlaylist(name: name, songIds: songIds) }
+        let user = session?.username ?? ""
+        let before = Set(try await request { try await $0.playlists() }.map(\.id))
+        try await sendOnce({ _ = try await $0.createPlaylist(name: name, songIds: songIds) }, landed: {
+            try await self.request { try await $0.playlists() }
+                .contains { !before.contains($0.id) && $0.name == name && $0.isEditable(by: user) }
+        })
         playlistsChanged(songIds.isEmpty ? nil : PlaylistCopy.added(to: name))
     }
 
     func renamePlaylist(_ playlist: Playlist, to name: String) async throws {
         let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty, name != playlist.name else { return }
-        try await request { [id = playlist.id] in try await $0.updatePlaylist(id: id, name: name, adding: [], removingIndexes: []) }
-        playlistsChanged(nil)
-    }
-
-    /// Deletes `playlist` from the server (after the user confirmed).
-    func deletePlaylist(_ playlist: Playlist) async throws {
-        try await request { [id = playlist.id] in try await $0.deletePlaylist(id: id) }
-        playlistsChanged(nil)
-    }
-
-    /// Removes the song at `index` (its position in the playlist as last read).
-    func removeSong(at index: Int, from playlist: Playlist) async throws {
-        try await request { [id = playlist.id] in
-            try await $0.updatePlaylist(id: id, name: nil, adding: [], removingIndexes: [index])
+        guard !name.isEmpty else { return }
+        try await libraryEdits.playlistLocks.run(playlist.id) {
+            let (fresh, _) = try await ownPlaylist(playlist)
+            guard name != fresh.name else { return }
+            try await sendOnce({ [id = fresh.id] in
+                try await $0.updatePlaylist(id: id, name: name, adding: [], removingIndexes: [])
+            }, landed: {
+                try await self.request { [id = fresh.id] in try await $0.playlist(id: id) }.0.name == name
+            })
+            playlistsChanged(nil)
         }
-        playlistsChanged(PlaylistCopy.removed(from: playlist.name))
+    }
+
+    /// Deletes `playlist` from the server (after the user confirmed), if it is the user's.
+    func deletePlaylist(_ playlist: Playlist) async throws {
+        try await libraryEdits.playlistLocks.run(playlist.id) {
+            let (fresh, _) = try await ownPlaylist(playlist)
+            try await sendOnce({ [id = fresh.id] in try await $0.deletePlaylist(id: id) }, landed: {
+                try await !self.request { try await $0.playlists() }.contains { $0.id == fresh.id }
+            })
+            playlistsChanged(nil)
+        }
+    }
+
+    /// Removes `songId` from `playlist`, at `index` (its position on the page). Subsonic removes by position only, so
+    /// the playlist is read first (after any edit to it still under way): if `songId` isn't at `index` any more, the
+    /// playlist changed meanwhile, nothing is removed, and the page reads again (review fix I2).
+    func removeSong(at index: Int, songId: String, from playlist: Playlist) async throws {
+        try await libraryEdits.playlistLocks.run(playlist.id) {
+            let (fresh, songs) = try await ownPlaylist(playlist)
+            guard songs.indices.contains(index), songs[index].id == songId else {
+                return playlistsChanged(PlaylistCopy.changedMeanwhile, symbol: "arrow.clockwise")
+            }
+            var expected = songs.map(\.id)
+            expected.remove(at: index)
+            try await sendOnce({ [id = fresh.id] in
+                try await $0.updatePlaylist(id: id, name: nil, adding: [], removingIndexes: [index])
+            }, landed: { [expected] in try await self.songIds(in: fresh) == expected })
+            playlistsChanged(PlaylistCopy.removed(from: fresh.name))
+        }
+    }
+
+    /// The playlist as the server has it now, if the user may change it. Every write checks here, not only the
+    /// screens (review fix I4): Navidrome lets an admin change anyone's playlist, so the server is no backstop. The
+    /// server's current owner decides, whatever `playlist` says.
+    private func ownPlaylist(_ playlist: Playlist) async throws -> (Playlist, [Song]) {
+        let user = session?.username ?? ""
+        guard playlist.isEditable(by: user) else { throw PlaylistEditError.notYours }
+        let (fresh, songs) = try await request { [id = playlist.id] in try await $0.playlist(id: id) }
+        guard fresh.isEditable(by: user) else { throw PlaylistEditError.notYours }
+        return (fresh, songs)
+    }
+
+    private func songIds(in playlist: Playlist) async throws -> [String] {
+        try await request { [id = playlist.id] in try await $0.playlist(id: id) }.1.map(\.id)
+    }
+
+    /// Sends a playlist change exactly once (review fix I1: it isn't safe to repeat; a repeated remove-by-position
+    /// would take a different song). If the connection drops, `landed` reads back whether it happened: if so, it
+    /// counts as done; if not, or if that can't be told, the lists read again and the error says which.
+    private func sendOnce(_ op: @Sendable (NavidromeClient) async throws -> Void,
+                          landed: () async throws -> Bool) async throws {
+        do {
+            try await requestOnce(op)
+        } catch where Self.isConnectionError(error) {
+            let happened: Bool
+            do { happened = try await landed() } catch {
+                playlistsChanged(nil)
+                throw PlaylistEditError.outcomeUnknown
+            }
+            guard happened else {
+                playlistsChanged(nil)
+                throw PlaylistEditError.notChanged
+            }
+        }
     }
 
     /// Opens the Add to playlist sheet for `songIds` (from a menu); offline it says so instead.
@@ -104,8 +222,8 @@ extension AppModel {
         }
     }
 
-    private func playlistsChanged(_ notice: String?) {
+    private func playlistsChanged(_ notice: String?, symbol: String = "checkmark.circle") {
         libraryEdits.playlistsRevision += 1
-        if let notice { libraryEdits.notify(notice, symbol: "checkmark.circle") }
+        if let notice { libraryEdits.notify(notice, symbol: symbol) }
     }
 }

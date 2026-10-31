@@ -592,6 +592,24 @@ final class AppModel {
         }
     }
 
+    /// Runs `op` once, for a write that isn't safe to repeat (a playlist edit: round 11 review fix I1). On a
+    /// connection error it still moves to an address that answers, for what comes next, but never sends `op` again:
+    /// the request may have arrived and only the reply been lost. The caller reads back to learn what happened.
+    func requestOnce<T: Sendable>(_ op: @Sendable (NavidromeClient) async throws -> T) async throws -> T {
+        try requireNotForcedOffline()
+        if let pending = reconnectTask { _ = await pending.value }
+        guard let client = session?.client else { throw NavidromeError.noReachableServer }
+        do {
+            return try noteLocalSuccess(await op(client))
+        } catch where Self.isConnectionError(error) {
+            if await !reconnect(rebuildAlways: false) {
+                try rethrowAuthRejection()
+                if session?.client === client { noteUnreachable() }
+            }
+            throw error
+        }
+    }
+
     /// T3: a request to a home address worked, so the Local Network setting is on (fix M1: only an IP literal or a
     /// `.local` name proves it; a single-label name may have gone over Tailscale).
     private func noteLocalSuccess<T>(_ value: T) -> T {

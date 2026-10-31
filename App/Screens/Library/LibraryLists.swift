@@ -10,6 +10,8 @@ struct ArtistsListView: View {
     @Environment(AppModel.self) private var model
     @State private var artists: Loadable<[Artist]> = .loading
     @State private var sections: [LetterIndex.Section] = []
+    /// The "Album artists only" value the list was read for: coming back to the list doesn't read it again (M1).
+    @State private var loadedFor: Bool?
     private let themed = Themed()
 
     var body: some View {
@@ -45,7 +47,11 @@ struct ArtistsListView: View {
         }
         .magpieScreen()
         // Again when "Album artists only" changes (here or in Settings).
-        .task(id: albumArtistsOnly) { await load() }
+        .task(id: albumArtistsOnly) {
+            guard loadedFor != albumArtistsOnly || artists.value == nil else { return }
+            loadedFor = albumArtistsOnly
+            await load()
+        }
     }
 
     private func row(_ artist: Artist) -> some View {
@@ -166,6 +172,8 @@ struct PlaylistsListView: View {
     @State private var naming = false
     @State private var newName = ""
     @State private var createError: String?
+    /// The playlists revision the list was read for (M1).
+    @State private var loadedRevision: Int?
     private let themed = Themed()
 
     var body: some View {
@@ -208,7 +216,7 @@ struct PlaylistsListView: View {
             Button("Create") {
                 Task {
                     do { try await model.createPlaylist(named: newName, songIds: []) } catch {
-                        createError = BrowseErrorCopy.message(for: error)
+                        createError = PlaylistEditError.message(for: error)
                     }
                 }
             }
@@ -222,7 +230,12 @@ struct PlaylistsListView: View {
             Text(createError ?? "")
         }
         .magpieScreen()
-        .task(id: model.libraryEdits.playlistsRevision) { await load() }
+        .task(id: model.libraryEdits.playlistsRevision) {
+            // Once per change, not each time the list comes back into view (M1).
+            guard loadedRevision != model.libraryEdits.playlistsRevision || playlists.value == nil else { return }
+            loadedRevision = model.libraryEdits.playlistsRevision
+            await load()
+        }
     }
 
     private func row(_ playlist: Playlist) -> some View {

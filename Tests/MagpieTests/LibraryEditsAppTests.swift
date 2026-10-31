@@ -27,6 +27,26 @@ final class FakePlaylistServer: @unchecked Sendable {
     private let lock = NSLock()
     private var lists: [String: List] = [:]
     private var made = 0
+    /// Calls (by method name) whose next reply is lost after the change is made (`timedOut`): the change happened.
+    private var losing: Set<String> = []
+    /// Calls (by method name) whose next request never arrives (`timedOut`): nothing changes.
+    private var dropping: Set<String> = []
+
+    func loseNextReply(to method: String) { lock.withLock { _ = losing.insert(method) } }
+    func dropNext(_ method: String) { lock.withLock { _ = dropping.insert(method) } }
+    private func take(_ set: ReferenceWritableKeyPath<FakePlaylistServer, Set<String>>, _ method: String) -> Bool {
+        lock.withLock { self[keyPath: set].remove(method) != nil }
+    }
+    /// Wraps a write: a dropped request changes nothing; a lost reply changes it, then times out.
+    private func write(_ method: String, _ change: @escaping @Sendable (URLRequest) -> MockTransport.Response)
+        -> @Sendable (URLRequest) throws -> MockTransport.Response {
+        { r in
+            if self.take(\.dropping, method) { throw URLError(.timedOut) }
+            let response = change(r)
+            if self.take(\.losing, method) { throw URLError(.timedOut) }
+            return response
+        }
+    }
 
     func put(_ id: String, _ list: List) { lock.withLock { lists[id] = list } }
     func list(_ id: String) -> List? { lock.withLock { lists[id] } }
@@ -44,14 +64,14 @@ final class FakePlaylistServer: @unchecked Sendable {
             let entries = l.songs.map { #"{"id":"\#($0)","title":"\#($0)"}"# }.joined(separator: ",")
             return .init(status: 200, body: ok(#""playlist":{"id":"\#(id)","name":"\#(l.name)","owner":"\#(l.owner)","readonly":\#(l.readonly),"entry":[\#(entries)]}"#))
         }
-        t.stub(pathSuffix: "/rest/createPlaylist") { r in
+        t.stub(pathSuffix: "/rest/createPlaylist", handler: write("createPlaylist") { r in
             let id = self.lock.withLock { self.made += 1; return "new\(self.made)" }
             let name = value(r, "name") ?? ""
             self.put(id, List(name: name, owner: "admin", readonly: false,
                               songs: query(r).filter { $0.name == "songId" }.compactMap(\.value)))
             return .init(status: 200, body: ok(#""playlist":{"id":"\#(id)","name":"\#(name)","owner":"admin","readonly":false}"#))
-        }
-        t.stub(pathSuffix: "/rest/updatePlaylist") { r in
+        })
+        t.stub(pathSuffix: "/rest/updatePlaylist", handler: write("updatePlaylist") { r in
             guard let id = value(r, "playlistId"), var l = self.list(id), !l.readonly else { return .init(status: 200, body: refused) }
             if let name = value(r, "name") { l.name = name }
             let remove = Set(query(r).filter { $0.name == "songIndexToRemove" }.compactMap { $0.value.flatMap(Int.init) })
@@ -59,12 +79,12 @@ final class FakePlaylistServer: @unchecked Sendable {
             l.songs += query(r).filter { $0.name == "songIdToAdd" }.compactMap(\.value)
             self.put(id, l)
             return .init(status: 200, body: ok())
-        }
-        t.stub(pathSuffix: "/rest/deletePlaylist") { r in
+        })
+        t.stub(pathSuffix: "/rest/deletePlaylist", handler: write("deletePlaylist") { r in
             guard let id = value(r, "id") else { return .init(status: 200, body: refused) }
             self.lock.withLock { _ = self.lists.removeValue(forKey: id) }
             return .init(status: 200, body: ok())
-        }
+        })
     }
 }
 
@@ -139,6 +159,22 @@ final class FakePlaylistServer: @unchecked Sendable {
         #expect(model.libraryEdits.notice?.text == FavouriteCopy.removeFailed)
     }
 
+    /// I3: a row's menu (a Home tile, the Artists list) knows the item only from the row: a refused unfavourite
+    /// rolls back to the row's starred state, with nothing noted beforehand.
+    @Test func aRefusedUnfavouriteFromARowRollsBackToTheRowsState() async throws {
+        let model = try await signedInModel()
+        transport.inner.stub(pathSuffix: "/rest/unstar", body: refused)
+        for target in [FavouriteTarget.song("s3"), .album("al3"), .artist("ar3")] {
+            #expect(model.isFavourite(target, given: true))
+            await model.setFavourite(target, false, given: true)
+            #expect(model.isFavourite(target, given: true), "rolled back to starred: \(target)")
+            #expect(model.isFavourite(target), "rolled back to starred: \(target)")
+            #expect(model.libraryEdits.notice?.text == FavouriteCopy.removeFailed)
+        }
+        let song = Song(id: "s3", title: "T", artist: "A", album: "B", duration: 100, starred: true)
+        #expect(model.isStarred(song))
+    }
+
     @Test func nowPlayingsStarStillWorksAndReadsTheQueue() async throws {
         let model = try await signedInModel()
         transport.inner.stub(pathSuffix: "/rest/star", body: ok())
@@ -198,10 +234,10 @@ final class FakePlaylistServer: @unchecked Sendable {
         #expect(server.list(made.id)?.name == "Long drive")
         try await model.add(["s2", "s3"], to: made)
         #expect(server.list(made.id)?.songs == ["s1", "s2", "s3"])
-        #expect(model.libraryEdits.notice?.text == "Added to Road trip")
-        try await model.removeSong(at: 1, from: made)
+        #expect(model.libraryEdits.notice?.text == "Added to Long drive", "the playlist's name now")
+        try await model.removeSong(at: 1, songId: "s2", from: made)
         #expect(server.list(made.id)?.songs == ["s1", "s3"])
-        #expect(model.libraryEdits.notice?.text == "Removed from Road trip")
+        #expect(model.libraryEdits.notice?.text == "Removed from Long drive")
         try await model.deletePlaylist(made)
         #expect(server.ids.isEmpty)
         #expect(model.libraryEdits.playlistsRevision == revision + 5, "every change refreshes the lists")
@@ -256,6 +292,97 @@ final class FakePlaylistServer: @unchecked Sendable {
         model.updatePreferences { $0.downloads.offlineMode = .on }
         model.askToAddToPlaylist(["s1"])
         #expect(model.libraryEdits.addToPlaylist == nil && model.libraryEdits.notice?.text == "You're offline")
+    }
+
+    // MARK: - R8 review fixes (I1, I2, I4)
+
+    /// I1: a playlist write is sent once, never again after a timeout; the playlist is read back to say what happened.
+    @Test func aTimedOutPlaylistWriteIsSentOnceAndReadBack() async throws {
+        let model = try await signedInModel()
+        let server = FakePlaylistServer()
+        server.put("p1", .init(name: "Road trip", owner: "admin", readonly: false, songs: ["s1", "s2", "s3"]))
+        server.install(on: transport.inner)
+        let playlist = try #require(try await model.editablePlaylists().first)
+
+        // The change landed and only the reply was lost: one request, and it counts as done.
+        server.loseNextReply(to: "updatePlaylist")
+        try await model.add(["s4"], to: playlist)
+        #expect(requests("/rest/updatePlaylist").count == 1)
+        #expect(server.list("p1")?.songs == ["s1", "s2", "s3", "s4"])
+        #expect(model.libraryEdits.notice?.text == "Added to Road trip")
+
+        server.loseNextReply(to: "updatePlaylist")
+        try await model.removeSong(at: 0, songId: "s1", from: playlist)
+        #expect(requests("/rest/updatePlaylist").count == 2, "a lost reply is never followed by a second remove")
+        #expect(server.list("p1")?.songs == ["s2", "s3", "s4"])
+
+        // The request never arrived: one request, nothing changed, and the error says so.
+        server.dropNext("updatePlaylist")
+        await #expect(throws: PlaylistEditError.notChanged) {
+            try await model.removeSong(at: 0, songId: "s2", from: playlist)
+        }
+        #expect(requests("/rest/updatePlaylist").count == 3)
+        #expect(server.list("p1")?.songs == ["s2", "s3", "s4"])
+
+        server.loseNextReply(to: "updatePlaylist")
+        try await model.renamePlaylist(playlist, to: "Long drive")
+        #expect(requests("/rest/updatePlaylist").count == 4 && server.list("p1")?.name == "Long drive")
+
+        server.loseNextReply(to: "createPlaylist")
+        try await model.createPlaylist(named: "Fresh", songIds: ["s9"])
+        #expect(requests("/rest/createPlaylist").count == 1)
+        #expect(server.ids.count == 2, "exactly one new playlist")
+
+        server.loseNextReply(to: "deletePlaylist")
+        try await model.deletePlaylist(playlist)
+        #expect(requests("/rest/deletePlaylist").count == 1 && server.list("p1") == nil)
+    }
+
+    /// I2: a remove checks the song is still at that position, and edits to one playlist go one at a time.
+    @Test func aRemoveChecksTheSongAndEditsGoOneAtATime() async throws {
+        let model = try await signedInModel()
+        let server = FakePlaylistServer()
+        server.put("p1", .init(name: "Road trip", owner: "admin", readonly: false, songs: ["s1", "s2", "s3", "s4"]))
+        server.install(on: transport.inner)
+        let playlist = try #require(try await model.editablePlaylists().first)
+
+        // Two quick swipes, each with the position the page showed when it was swiped (the row left at once).
+        async let first: Void = model.removeSong(at: 1, songId: "s2", from: playlist)
+        async let second: Void = model.removeSong(at: 1, songId: "s3", from: playlist)
+        _ = try await (first, second)
+        #expect(server.list("p1")?.songs == ["s1", "s4"])
+
+        // A stale position (the playlist changed elsewhere): nothing is removed, the page reads again and says why.
+        server.put("p1", .init(name: "Road trip", owner: "admin", readonly: false, songs: ["s4", "s1"]))
+        let sent = requests("/rest/updatePlaylist").count
+        let revision = model.libraryEdits.playlistsRevision
+        try await model.removeSong(at: 0, songId: "s1", from: playlist)
+        #expect(server.list("p1")?.songs == ["s4", "s1"])
+        #expect(requests("/rest/updatePlaylist").count == sent, "nothing sent")
+        #expect(model.libraryEdits.playlistsRevision == revision + 1)
+        #expect(model.libraryEdits.notice?.text == PlaylistCopy.changedMeanwhile)
+    }
+
+    /// I4: the write functions themselves refuse a playlist that isn't the user's, even when an admin's server
+    /// would allow it, and send nothing.
+    @Test func writesRefuseSomeoneElsesPlaylist() async throws {
+        let model = try await signedInModel()
+        let server = FakePlaylistServer()
+        server.put("p2", .init(name: "Theirs", owner: "listener", readonly: false, songs: ["s1"]))
+        server.install(on: transport.inner)
+        let theirs = Playlist(id: "p2", name: "Theirs", songCount: 1, duration: 0, owner: "listener", readOnly: false)
+        // A stale or forged value that claims to be the user's: the server's current owner decides.
+        let claimed = Playlist(id: "p2", name: "Theirs", songCount: 1, duration: 0, owner: "admin", readOnly: false)
+        for playlist in [theirs, claimed] {
+            await #expect(throws: PlaylistEditError.notYours) { try await model.add(["s2"], to: playlist) }
+            await #expect(throws: PlaylistEditError.notYours) { try await model.renamePlaylist(playlist, to: "Mine") }
+            await #expect(throws: PlaylistEditError.notYours) {
+                try await model.removeSong(at: 0, songId: "s1", from: playlist)
+            }
+            await #expect(throws: PlaylistEditError.notYours) { try await model.deletePlaylist(playlist) }
+        }
+        #expect(requests("/rest/updatePlaylist").isEmpty && requests("/rest/deletePlaylist").isEmpty)
+        #expect(server.list("p2")?.songs == ["s1"] && server.list("p2")?.name == "Theirs")
     }
 
     // MARK: - R3 Popular

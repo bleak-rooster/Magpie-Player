@@ -131,11 +131,12 @@ struct PlaylistView: View {
                 Divider().overlay(p.sepColor).padding(.leading, 76)
             }
             .foregroundStyle(p.inkColor)
-            // R8: a tap on Remove (no full swipe) is the confirmation; the list reads again after.
+            // R8: a tap on Remove (no full swipe) is the confirmation. The row leaves at once; the server checks the
+            // song is still at that position (review fix I2), and the list reads again after.
             .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                 if editable {
                     Button("Remove from playlist", systemImage: "minus.circle", role: .destructive) {
-                        edit { try await model.removeSong(at: index, from: $0) }
+                        remove(at: index, song)
                     }
                 }
             }
@@ -148,12 +149,23 @@ struct PlaylistView: View {
                            songIds: page.songs.map(\.id), savedAt: .now)
     }
 
-    /// A change to this playlist on the server; a failure says why.
+    /// A change to this playlist on the server; a failure says why, and the page reads again.
     private func edit(_ change: @escaping (Playlist) async throws -> Void) {
         guard let playlist = page.value?.playlist else { return }
         Task {
-            do { try await change(playlist) } catch { editError = BrowseErrorCopy.message(for: error) }
+            do { try await change(playlist) } catch {
+                editError = PlaylistEditError.message(for: error)
+                await load()
+            }
         }
+    }
+
+    /// The row animates out now (the appraisal's §6); the model removes it on the server, one edit at a time.
+    private func remove(at index: Int, _ song: Song) {
+        guard var shown = page.value, shown.songs.indices.contains(index), shown.songs[index].id == song.id else { return }
+        shown.songs.remove(at: index)
+        withAnimation { page = .loaded(shown) }
+        edit { try await model.removeSong(at: index, songId: song.id, from: $0) }
     }
 
     private func load() async {

@@ -21,6 +21,10 @@ enum FavouriteTarget: Hashable {
     /// The latest change per target: a failure rolls back only if no newer change came since.
     @ObservationIgnored var changeTokens: [FavouriteTarget: Int] = [:]
     @ObservationIgnored var nextToken = 0
+    /// A playlist's edits go one at a time (review fix I2), and so do one item's stars (M2: the server gets them in
+    /// the order the user made them).
+    @ObservationIgnored let playlistLocks = KeyedLock<String>()
+    @ObservationIgnored let favouriteLocks = KeyedLock<FavouriteTarget>()
 
     /// Add to playlist asked for from a menu (`AddToPlaylistPresenter` shows the sheet).
     var addToPlaylist: AddToPlaylistRequest?
@@ -90,6 +94,12 @@ extension AppModel {
         await setFavourite(target, on, was: isFavourite(target))
     }
 
+    /// `setFavourite` from a row that knows the item's `starred` (a tile, a list row; review fix I3): a refusal rolls
+    /// back to what the row said, not to "not favourited" when nothing was noted.
+    func setFavourite(_ target: FavouriteTarget, _ on: Bool, given starred: Bool) async {
+        await setFavourite(target, on, was: isFavourite(target, given: starred))
+    }
+
     /// What the server said about an album, artist or song, as a page loaded. A change the user made this session
     /// still wins.
     func noteFavourite(_ target: FavouriteTarget, _ starred: Bool) {
@@ -103,7 +113,7 @@ extension AppModel {
         for artist in starred.artists { noteFavourite(.artist(artist.id), true) }
     }
 
-    func isStarred(_ song: Song) -> Bool { libraryEdits.overrides[.song(song.id)] ?? song.starred }
+    func isStarred(_ song: Song) -> Bool { isFavourite(.song(song.id), given: song.starred) }
 
     /// Now Playing's star: optimistic, reverts (with a notice) if the server says no.
     func toggleStar(_ song: Song) async {
@@ -122,11 +132,14 @@ extension AppModel {
         edits.changeTokens[target] = token
         edits.overrides[target] = on
         do {
-            try await request { client in
-                switch target {
-                case .song(let id): on ? try await client.star(id: id) : try await client.unstar(id: id)
-                case .album(let id): on ? try await client.star(albumId: id) : try await client.unstar(albumId: id)
-                case .artist(let id): on ? try await client.star(artistId: id) : try await client.unstar(artistId: id)
+            // Star and unstar are safe to repeat, so they keep `request`'s retry; one item's go in order (M2).
+            try await edits.favouriteLocks.run(target) {
+                try await request { client in
+                    switch target {
+                    case .song(let id): on ? try await client.star(id: id) : try await client.unstar(id: id)
+                    case .album(let id): on ? try await client.star(albumId: id) : try await client.unstar(albumId: id)
+                    case .artist(let id): on ? try await client.star(artistId: id) : try await client.unstar(artistId: id)
+                    }
                 }
             }
             if case .song = target { favouriteStarChanged() }
