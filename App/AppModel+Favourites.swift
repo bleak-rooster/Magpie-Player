@@ -25,6 +25,8 @@ enum FavouriteTarget: Hashable {
     /// the order the user made them).
     @ObservationIgnored let playlistLocks = KeyedLock<String>()
     @ObservationIgnored let favouriteLocks = KeyedLock<FavouriteTarget>()
+    /// A Create is under way (re-review N4).
+    @ObservationIgnored var creatingPlaylist = false
 
     /// Add to playlist asked for from a menu (`AddToPlaylistPresenter` shows the sheet).
     var addToPlaylist: AddToPlaylistRequest?

@@ -48,6 +48,9 @@ final class FakePlaylistServer: @unchecked Sendable {
         }
     }
 
+    /// An empty owner is left out, as a server that doesn't say.
+    static func ownerField(_ l: List) -> String { l.owner.isEmpty ? "" : #""owner":"\#(l.owner)","# }
+
     func put(_ id: String, _ list: List) { lock.withLock { lists[id] = list } }
     func list(_ id: String) -> List? { lock.withLock { lists[id] } }
     var ids: [String] { lock.withLock { lists.keys.sorted() } }
@@ -55,14 +58,14 @@ final class FakePlaylistServer: @unchecked Sendable {
     func install(on t: MockTransport) {
         t.stub(pathSuffix: "/rest/getPlaylists") { _ in
             let rows = self.lock.withLock { self.lists.sorted { $0.key < $1.key }.map { id, l in
-                #"{"id":"\#(id)","name":"\#(l.name)","owner":"\#(l.owner)","readonly":\#(l.readonly),"songCount":\#(l.songs.count)}"#
+                #"{"id":"\#(id)","name":"\#(l.name)",\#(Self.ownerField(l))"readonly":\#(l.readonly),"songCount":\#(l.songs.count)}"#
             } }
             return .init(status: 200, body: ok(#""playlists":{"playlist":[\#(rows.joined(separator: ","))]}"#))
         }
         t.stub(pathSuffix: "/rest/getPlaylist") { r in
             guard let id = value(r, "id"), let l = self.list(id) else { return .init(status: 200, body: refused) }
             let entries = l.songs.map { #"{"id":"\#($0)","title":"\#($0)"}"# }.joined(separator: ",")
-            return .init(status: 200, body: ok(#""playlist":{"id":"\#(id)","name":"\#(l.name)","owner":"\#(l.owner)","readonly":\#(l.readonly),"entry":[\#(entries)]}"#))
+            return .init(status: 200, body: ok(#""playlist":{"id":"\#(id)","name":"\#(l.name)",\#(Self.ownerField(l))"readonly":\#(l.readonly),"entry":[\#(entries)]}"#))
         }
         t.stub(pathSuffix: "/rest/createPlaylist", handler: write("createPlaylist") { r in
             let id = self.lock.withLock { self.made += 1; return "new\(self.made)" }
@@ -383,6 +386,35 @@ final class FakePlaylistServer: @unchecked Sendable {
         }
         #expect(requests("/rest/updatePlaylist").isEmpty && requests("/rest/deletePlaylist").isEmpty)
         #expect(server.list("p2")?.songs == ["s1"] && server.list("p2")?.name == "Theirs")
+    }
+
+    /// N1: a playlist the server gives no owner for is refused, even when it says `readonly: false`.
+    @Test func aPlaylistWithNoOwnerIsRefused() async throws {
+        let model = try await signedInModel()
+        let server = FakePlaylistServer()
+        server.put("p3", .init(name: "Nobody's", owner: "", readonly: false, songs: ["s1"]))
+        server.install(on: transport.inner)
+        let unowned = Playlist(id: "p3", name: "Nobody's", songCount: 1, duration: 0, owner: nil, readOnly: false)
+        let claimed = Playlist(id: "p3", name: "Nobody's", songCount: 1, duration: 0, owner: "admin", readOnly: false)
+        for playlist in [unowned, claimed] {
+            await #expect(throws: PlaylistEditError.notYours) { try await model.add(["s2"], to: playlist) }
+            await #expect(throws: PlaylistEditError.notYours) { try await model.deletePlaylist(playlist) }
+        }
+        #expect(requests("/rest/updatePlaylist").isEmpty && requests("/rest/deletePlaylist").isEmpty)
+        #expect(!model.canEdit(unowned))
+        #expect(try await model.editablePlaylists().isEmpty)
+    }
+
+    /// N4: a double tap on Create makes one playlist.
+    @Test func aDoubleTapOnCreateMakesOnePlaylist() async throws {
+        let model = try await signedInModel()
+        let server = FakePlaylistServer()
+        server.install(on: transport.inner)
+        async let first: Void = model.createPlaylist(named: "Fresh", songIds: [])
+        async let second: Void = model.createPlaylist(named: "Fresh", songIds: [])
+        _ = try await (first, second)
+        #expect(requests("/rest/createPlaylist").count == 1)
+        #expect(server.ids.count == 1)
     }
 
     // MARK: - R3 Popular

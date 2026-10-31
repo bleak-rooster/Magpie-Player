@@ -81,7 +81,7 @@ extension AppModel {
     func editablePlaylists() async throws -> [Playlist] {
         let user = session?.username ?? ""
         return try await request { try await $0.playlists() }
-            .filter { $0.isEditable(by: user) }
+            .filter { Self.isOwn($0, by: user) }
             .sorted { a, b in
                 let (x, y) = (a.changed ?? .distantPast, b.changed ?? .distantPast)
                 return x != y ? x > y : a.name.localizedStandardCompare(b.name) == .orderedAscending
@@ -91,7 +91,7 @@ extension AppModel {
     /// Whether the user may change `playlist`.
     func canEdit(_ playlist: Playlist) -> Bool {
         guard let user = session?.username, !isOffline else { return false }
-        return playlist.isEditable(by: user)
+        return Self.isOwn(playlist, by: user)
     }
 
     /// Which of `songIds` `playlist` holds already, and the first one's title (the "Already in" warning).
@@ -108,7 +108,11 @@ extension AppModel {
             let (fresh, before) = try await ownPlaylist(playlist)
             try await sendOnce({ [id = fresh.id] in
                 try await $0.updatePlaylist(id: id, name: nil, adding: songIds, removingIndexes: [])
-            }, landed: { try await self.songIds(in: fresh) == before.map(\.id) + songIds })
+            }, landed: {
+                // Ours went on the end, whatever else changed meanwhile (re-review N2).
+                let after = try await self.songIds(in: fresh)
+                return after.count == before.count + songIds.count && Array(after.suffix(songIds.count)) == songIds
+            })
             playlistsChanged(PlaylistCopy.added(to: fresh.name))
         }
     }
@@ -117,11 +121,15 @@ extension AppModel {
     func createPlaylist(named name: String, songIds: [String]) async throws {
         let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return }
+        // A double tap on Create makes one playlist (re-review N4): a second Create while one is under way does nothing.
+        guard !libraryEdits.creatingPlaylist else { return }
+        libraryEdits.creatingPlaylist = true
+        defer { libraryEdits.creatingPlaylist = false }
         let user = session?.username ?? ""
         let before = Set(try await request { try await $0.playlists() }.map(\.id))
         try await sendOnce({ _ = try await $0.createPlaylist(name: name, songIds: songIds) }, landed: {
             try await self.request { try await $0.playlists() }
-                .contains { !before.contains($0.id) && $0.name == name && $0.isEditable(by: user) }
+                .contains { !before.contains($0.id) && $0.name == name && Self.isOwn($0, by: user) }
         })
         playlistsChanged(songIds.isEmpty ? nil : PlaylistCopy.added(to: name))
     }
@@ -175,10 +183,17 @@ extension AppModel {
     /// server's current owner decides, whatever `playlist` says.
     private func ownPlaylist(_ playlist: Playlist) async throws -> (Playlist, [Song]) {
         let user = session?.username ?? ""
-        guard playlist.isEditable(by: user) else { throw PlaylistEditError.notYours }
+        guard Self.isOwn(playlist, by: user) else { throw PlaylistEditError.notYours }
         let (fresh, songs) = try await request { [id = playlist.id] in try await $0.playlist(id: id) }
-        guard fresh.isEditable(by: user) else { throw PlaylistEditError.notYours }
+        guard Self.isOwn(fresh, by: user) else { throw PlaylistEditError.notYours }
         return (fresh, songs)
+    }
+
+    /// The user's own: the server names them as its owner (an unnamed owner is refused, whatever `readonly` says:
+    /// re-review N1) and doesn't call it read-only.
+    nonisolated static func isOwn(_ playlist: Playlist, by user: String) -> Bool {
+        guard let owner = playlist.owner, !owner.isEmpty, !user.isEmpty else { return false }
+        return playlist.isEditable(by: user)
     }
 
     private func songIds(in playlist: Playlist) async throws -> [String] {
