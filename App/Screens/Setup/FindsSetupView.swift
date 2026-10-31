@@ -33,6 +33,7 @@ struct FindsSetupView: View {
             if setup?.useFindsFolder == true {
                 rootSection
                 if setup?.findsRoot != nil { librarySection }
+                if setup?.library != nil, let libraries { MainLibrarySection(libraries: libraries) }   // R18
                 if mappingFor != nil { mappingSection }
                 if model.findsNeedsRecycleBinWarning {
                     Section {
