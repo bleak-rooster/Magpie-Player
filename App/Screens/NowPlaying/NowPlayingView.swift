@@ -26,6 +26,10 @@ struct NowPlayingView: View {
     /// Up next's last measured height, kept while it is hidden so the plan doesn't flip back and forth.
     /// Seeded with the default-size row (36 pt art + 2 × 8 pt padding) so a small phone doesn't flash it on the first frame.
     @State private var upNextHeight: CGFloat = 52
+    /// Where the album and artist names go (R10); recomputed per song and when offline mode changes.
+    @State private var links = NowPlayingLinks()
+    /// The current tab's stack, which the links push onto (absent in tests: the links do nothing).
+    @Environment(TabNavigator.self) private var navigator: TabNavigator?
     private let themed = Themed()
 
     /// `showingLyrics` opens in lyrics mode, as if the server offered them (tests).
@@ -67,6 +71,18 @@ struct NowPlayingView: View {
         .presentationDragIndicator(theme.character == .classic ? .visible : .hidden)
         .task { if !lyricsAvailable { lyricsAvailable = (try? await model.serverAdvertises("songLyrics")) ?? false } }
         .sheet(isPresented: $showsQueue) { QueueView() }
+        .task(id: "\(model.player.queue.current?.song.id ?? "")|\(model.offlinePageKey)") { await resolveLinks() }
+    }
+
+    private func resolveLinks() async {
+        guard let song = model.player.queue.current?.song else { return }
+        links = await model.nowPlayingLinks(song)
+    }
+
+    /// R10: Now Playing goes away and the page pushes onto the tab the user is on.
+    private func open(_ route: Route) {
+        dismiss()
+        navigator?.push(route)
     }
 
     private struct PagePlan {
@@ -123,7 +139,7 @@ struct NowPlayingView: View {
                     topBar(song)
                 } else {
                     // The grabber alone can't be reached by VoiceOver or Switch Control (H3 M11).
-                    HStack { closeButton; Spacer() }
+                    HStack { closeButton; Spacer(); moreMenu(song) }
                 }
             }
             .nowPlayingPart("top", into: $partHeights)
@@ -211,15 +227,27 @@ struct NowPlayingView: View {
         HStack {
             closeButton
             Spacer()
-            VStack(spacing: 1) {
-                Text("Playing from").font(.caption).foregroundStyle(themed.palette.ink2Color)
-                Text(song.album).font(.footnote.weight(.semibold)).lineLimit(1)
+            // R10: the album name opens the album.
+            Button { if let album = links.album { open(album) } } label: {
+                VStack(spacing: 1) {
+                    Text("Playing from").font(.caption).foregroundStyle(themed.palette.ink2Color)
+                    Text(song.album).font(.footnote.weight(.semibold)).lineLimit(1)
+                }
+                .frame(minHeight: Tokens.minHitSize)
+                .contentShape(Rectangle())
             }
+            .disabled(links.album == nil)
             .accessibilityElement(children: .combine)
+            .accessibilityHint("Opens the album")
+            .accessibilityIdentifier("np-album-link")
             Spacer()
-            Color.clear.frame(width: Tokens.minHitSize, height: Tokens.minHitSize)   // balances the close button
+            moreMenu(song)   // R9, in the slot that balanced the close button
         }
         .buttonStyle(.plain)
+    }
+
+    private func moreMenu(_ song: Song) -> some View {
+        NowPlayingMoreMenu(song: song, lyricsMode: lyricsMode, links: links, open: open)
     }
 
     private var closeButton: some View {
@@ -242,10 +270,17 @@ struct NowPlayingView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(song.title).magpieDisplay(.title2).lineLimit(ax ? nil : 2)
                     .accessibilityIdentifier("np-title")
-                Text(song.artist).font(.title3).foregroundStyle(themed.palette.ink2Color).lineLimit(ax ? nil : 1)
+                // R10: the artist name opens the (primary) artist.
+                Button { if let artist = links.artist { open(artist) } } label: {
+                    Text(song.artist).font(.title3).foregroundStyle(themed.palette.ink2Color).lineLimit(ax ? nil : 1)
+                        .multilineTextAlignment(.leading)
+                }
+                .buttonStyle(.plain)
+                .disabled(links.artist == nil)
+                .accessibilityHint("Opens the artist")
+                .accessibilityIdentifier("np-artist-link")
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .accessibilityElement(children: .combine)
             Button { Task { await model.toggleStar(song) } } label: {
                 Image(systemName: starred ? "star.fill" : "star")
                     .font(.title3)

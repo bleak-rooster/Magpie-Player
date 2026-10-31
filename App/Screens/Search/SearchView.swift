@@ -11,9 +11,13 @@ struct SearchView: View {
     @Environment(AppModel.self) private var app
     @State private var model: SearchModel?
     @State private var scope = SearchScope.all
+    /// The tab's stack (R10 pushes onto it); a stack of its own where there is no tab bar (tests).
+    @Environment(TabNavigator.self) private var navigator: TabNavigator?
+    @State private var ownPath = NavigationPath()
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: Binding(get: { navigator?.search ?? ownPath },
+                                      set: { if let navigator { navigator.search = $0 } else { ownPath = $0 } })) {
             Group {
                 if let model {
                     SearchContent(model: model, scope: scope)

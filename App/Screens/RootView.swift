@@ -37,21 +37,20 @@ struct RootView: View {
     }
 }
 
-private enum AppTab: Hashable { case home, library, search }
-
 /// Home · Library + Search, with the mini player above the tab bar while something is queued.
 struct MainTabs: View {
     @Environment(AppModel.self) private var model
-    @State private var tab: AppTab = .home
+    @State private var navigator = TabNavigator()
     @State private var showNowPlaying = false
 
     var body: some View {
-        TabView(selection: $tab) {
+        @Bindable var navigator = navigator
+        TabView(selection: $navigator.tab) {
             Tab("Home", systemImage: "house", value: AppTab.home) {
-                NavigationStack { HomeView().magpieRoutes() }
+                NavigationStack(path: $navigator.home) { HomeView().magpieRoutes() }
             }
             Tab("Library", systemImage: "square.stack", value: AppTab.library) {
-                NavigationStack { LibraryView().magpieRoutes() }
+                NavigationStack(path: $navigator.library) { LibraryView().magpieRoutes() }
             }
             Tab(value: AppTab.search, role: .search) {
                 SearchView()
@@ -61,8 +60,9 @@ struct MainTabs: View {
             MiniPlayerAccessory { showNowPlaying = true }
         }
         .sheet(isPresented: $showNowPlaying) {
-            NowPlayingView()
+            NowPlayingView().environment(navigator)
         }
+        .environment(navigator)
     }
 }
 
