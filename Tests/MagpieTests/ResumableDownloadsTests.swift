@@ -198,12 +198,19 @@ import Testing
     }
 
     @Test func confirmationCopy() {
-        #expect(ArtistDownloadCopy.title(count: 143, artist: "X") == "Download 143 songs by X?")
-        #expect(ArtistDownloadCopy.title(count: 1, artist: "X") == "Download 1 song by X?")
+        // R20 (appraisal R4, glossary): in the artist's ⋯, and it says where the songs go.
+        #expect(ArtistDownloadCopy.title(count: 143) == "Download 143 songs to this iPhone?")
+        #expect(ArtistDownloadCopy.title(count: 1) == "Download 1 song to this iPhone?")
         #expect(ArtistDownloadCopy.message(bytes: 1_200_000_000) == "About 1.2 GB.")
         #expect(ArtistDownloadCopy.message(bytes: nil) == nil, "no size when it isn't known")
-        #expect(ArtistDownloadCopy.action == "Download all songs")
-        #expect(ArtistDownloadCopy.remove == "Remove downloads")
+        #expect(ArtistDownloadCopy.action == "Download to this iPhone\u{2026}")
+        #expect(ArtistDownloadCopy.confirm == "Download")
+        #expect(ArtistDownloadCopy.remove == "Remove download")
+        #expect(ArtistDownloadCopy.menuTitle(.none) == ArtistDownloadCopy.action)
+        #expect(ArtistDownloadCopy.menuTitle(.downloaded) == "Remove download")
+        #expect(ArtistDownloadCopy.menuTitle(.downloading(done: 1, total: 3)) == "Remove download",
+                "while on its way, removing stops it too")
+        #expect(ArtistDownloadCopy.menuTitle(.failed) == "Remove download")
         // The estimate: bit rate × duration for Original; the format's rate when converting.
         let s = Song(id: "x", title: "T", artist: "A", album: "Al", duration: 100, bitRate: 320)
         #expect(ArtistDownloadCopy.estimate([s, s], quality: .original) == 8_000_000)

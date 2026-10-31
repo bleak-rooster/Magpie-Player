@@ -56,6 +56,7 @@ struct ArtistView: View {
                 Text(page.artist.name).magpieDisplay(.largeTitle).multilineTextAlignment(.center)
                     .accessibilityAddTraits(.isHeader)
                 DownloadMarkLine(model.downloadIndex.mark(artistId: page.artist.id, albums: page.albums))
+                    .artistDownload(artist: page.artist, albums: albums)   // R4: ⋯ → Download to this iPhone…
                 if let lidarrLine, let presentation = lidarrLine.presentation {
                     ArtistLidarrLine(line: lidarrLine, presentation: presentation)
                 }
