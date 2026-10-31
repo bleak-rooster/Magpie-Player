@@ -215,14 +215,26 @@ public struct LayoutPreferences: PreferenceArea {
     }
 }
 
+/// What a swipe on a song row does (round 11 R12, Settings › Playback › Swipe actions).
+public enum SwipeAction: String, CaseIterable, Codable, Hashable, Sendable {
+    case playNext, addToQueue, addToPlaylist, download, favourite, none
+}
+
 public struct PlaybackPreferences: PreferenceArea {
     public static let key = "magpie.prefs.playback"
-    public static let defaultValue = PlaybackPreferences(wifi: .original, cellular: .aacMedium, replayGain: .track, sleepTimer: .m30)
+    public static let defaultValue = PlaybackPreferences(wifi: .original, cellular: .aacMedium, replayGain: .track, sleepTimer: .m30,
+                                                         swipeRight: .addToQueue, swipeLeft: .playNext,
+                                                         askBeforeReplacingQueue: false)
 
     public var wifi: StreamQuality
     public var cellular: StreamQuality
     public var replayGain: ReplayGainMode
     public var sleepTimer: SleepTimerOption
+    /// R12: a song row's leading-edge (swipe right) and trailing-edge (swipe left) actions.
+    public var swipeRight: SwipeAction
+    public var swipeLeft: SwipeAction
+    /// R12: tapping to play asks before it replaces a queue of more than one song (never in the car).
+    public var askBeforeReplacingQueue: Bool
 
     public func normalised() -> PlaybackPreferences { self }
 }

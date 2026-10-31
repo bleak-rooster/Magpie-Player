@@ -68,6 +68,21 @@ import Testing
         #expect(unknown.wifi == PlaybackPreferences.defaultValue.wifi && unknown.cellular == .mp3Medium)
     }
 
+    /// R12: right = Add to queue, left = Play next, asking before replacing the queue off; settings saved before
+    /// round 11 take these defaults, and an unknown action falls back on its own.
+    @Test func swipeAndQueueReplaceDefaults() {
+        let d = PlaybackPreferences.defaultValue
+        #expect(d.swipeRight == .addToQueue && d.swipeLeft == .playNext && d.askBeforeReplacingQueue == false)
+        #expect(SwipeAction.allCases == [.playNext, .addToQueue, .addToPlaylist, .download, .favourite, .none])
+        let old = PlaybackPreferences.decode(Data(#"{"wifi":"original","cellular":"aac160","replayGain":"track","sleepTimer":"m30"}"#.utf8))
+        #expect(old.swipeRight == .addToQueue && old.swipeLeft == .playNext && !old.askBeforeReplacingQueue)
+        let custom = PlaybackPreferences.decode(Data(#"{"swipeRight":"download","swipeLeft":"teleport","askBeforeReplacingQueue":true}"#.utf8))
+        #expect(custom.swipeRight == .download && custom.swipeLeft == .playNext && custom.askBeforeReplacingQueue)
+        var p = d
+        p.swipeLeft = .none
+        #expect(PlaybackPreferences.decode(p.encoded()) == p)
+    }
+
     @Test func corruptDataFallsBackToDefault() {
         #expect(LayoutPreferences.decode(Data("{not json".utf8)) == .defaultValue)
         #expect(DownloadPreferences.decode(nil) == .defaultValue)
