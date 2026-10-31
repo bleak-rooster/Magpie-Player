@@ -116,7 +116,7 @@ enum RequestCopy {
     /// One status line. `context` only speaks for `.serviceUnavailable` waits.
     static func status(_ state: RequestState, context: WaitContext = .unknown) -> String {
         switch state {
-        case .pending, .resolving, .adding: "Looking"
+        case .pending, .resolving, .adding: "Looking…"   // R20
         case .searching: "Looking for the best copy"
         case .downloading(let p): p > 0 ? "Bringing it home · \(percent(p))" : "Spotted it"
         case .importing: "Bringing it home · almost there"
