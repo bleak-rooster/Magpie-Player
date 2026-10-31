@@ -2,7 +2,8 @@ import Foundation
 import LidarrKit
 import MagpieCore
 
-/// Settings › Requests "Stalled downloads give up after" (R17). Soulseek downloads only.
+/// Settings › New music "Give up on a stuck copy after" (R17; R20's words). Soulseek downloads only. The clock
+/// starts when the item appears in the queue (R20: the owner's "no change for 1 minute", not the first progress).
 public enum StallLimit: Int, CaseIterable, Sendable, Identifiable {
     case oneMinute = 60, twoMinutes = 120, fiveMinutes = 300, tenMinutes = 600
 
@@ -40,9 +41,9 @@ struct StallWatch: Sendable, Equatable {
 extension MagpieRequest {
     /// Stalled downloads given up on automatically so far.
     public var stalls: Int { stallRetries ?? 0 }
-    /// The automatic stall retries are used up: it waits as Still looking, with Search again.
+    /// The automatic stall retries are used up: it waits as Still looking, with Find another copy (Search again in R17).
     public var stallsUsedUp: Bool { stalls >= RequestRunner.maxStallRetries }
-    /// Searching again after a stalled download ("That source stalled. Looking for another…").
+    /// Searching again after a stalled download ("That copy stopped coming. Looking for another…").
     public var isSourceStalled: Bool { sourceStalledAt != nil && state == .searching }
 
     /// Search again is offered: on its way and not yet imported, with its album known, and not following another
@@ -91,7 +92,7 @@ extension RequestRunner {
     /// The requests on their way now, as `RequestID` text (the write gate's check for queue deletes).
     public var liveRequestIds: Set<String> { Set(list.filter(\.isActive).map(\.id.description)) }
 
-    /// Settings › Requests "Stalled downloads give up after".
+    /// Settings › New music "Give up on a stuck copy after".
     public func setStallLimit(_ seconds: TimeInterval) { stallLimit = StallLimit(seconds: seconds).seconds }
 
     // MARK: - Soulseek

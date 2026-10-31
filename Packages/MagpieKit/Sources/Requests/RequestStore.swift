@@ -152,7 +152,7 @@ public struct MagpieRequest: Sendable, Codable, Equatable, Identifiable {
     /// Stalled downloads removed and searched again automatically (at most `RequestRunner.maxStallRetries`); Search
     /// again starts the count over.
     public var stallRetries: Int?
-    /// When Magpie last gave up on a stalled download for it ("That source stalled. Looking for another…").
+    /// When Magpie last gave up on a stalled download for it ("That copy stopped coming. Looking for another…").
     public var sourceStalledAt: Date?
     /// When Search again last ran for it (once per `RequestRunner.searchAgainInterval`).
     public var searchAgainAt: Date?
