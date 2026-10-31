@@ -79,6 +79,8 @@ struct NotYetSongLink<TryRow: View>: View {
     let recording: ExternalRecording
     let play: (Song) -> Void
     @ViewBuilder let tryRow: () -> TryRow
+    /// The long-press menu's Stop looking… asks first, as on the request page.
+    @State private var confirmsStop: MagpieRequest?
 
     var body: some View {
         switch RequestLinks.songRow(for: recording, in: app.requests, readySongs: app.readySongs) {
@@ -96,6 +98,21 @@ struct NotYetSongLink<TryRow: View>: View {
                     RequestRow(request: request, context: app.waitContext)
                 }
                 .padding(.horizontal, Tokens.Spacing.margin)
+                // R20 §2: long-press offers Stop looking… (a tap opens the request); no swipe actions on not-yet rows.
+                .contextMenu {
+                    if RequestCopy.canCancel(request.state), !app.isOffline {
+                        Button("Stop looking\u{2026}", systemImage: "xmark.circle", role: .destructive) {
+                            confirmsStop = request
+                        }
+                    }
+                }
+                .confirmationDialog(confirmsStop.map { "Stop looking for \($0.recording.title)?" } ?? "",
+                                    isPresented: Binding(get: { confirmsStop != nil }, set: { if !$0 { confirmsStop = nil } }),
+                                    titleVisibility: .visible, presenting: confirmsStop) { r in
+                    Button("Stop looking", role: .destructive) { Task { await app.cancelRequest(r.id) } }
+                } message: { _ in
+                    Text("Magpie stops asking for it. Nothing is deleted.")
+                }
                 // Ready but its song not read yet: read it once (the runner's ready event does this too).
                 .task(id: request.state == .ready) { await app.rememberReadySong(request) }
             }

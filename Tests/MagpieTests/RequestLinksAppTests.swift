@@ -125,6 +125,24 @@ private let artistMBID = MBID("00000000-0000-0000-0000-000000000001")!
         UserDefaults(suiteName: gateSuite)?.removePersistentDomain(forName: gateSuite)
     }
 
+    /// The Play now banner leads back to its request ("Show request", long-press and VoiceOver): the page it opens is
+    /// that request's, Ready, with Play first; and its long-press on a live song row offers Stop looking.
+    @Test func bannerLeadsBackToItsRequest() async throws {
+        let model = makeModel()
+        try await model.signIn(urls: [home], username: "admin", password: "pw")
+        var request = Self.request(.ready)
+        request.songId = "landed"
+        model.requests = [request]
+        await model.land(request)
+        let banner = try #require(model.playNowBanner)
+        #expect(banner.request == request.id)
+        let page = try #require(model.magpieRequest(banner.request))
+        #expect(RequestPageAction.actions(for: page).first == .play)
+        #expect(BannerCopy.showRequest == "Show request")
+        model.signOut()
+        UserDefaults(suiteName: gateSuite)?.removePersistentDomain(forName: gateSuite)
+    }
+
     // MARK: - Stalled copies and Find another copy (R20's words)
 
     @Test func stalledCopyAndStillLookingCopy() {
