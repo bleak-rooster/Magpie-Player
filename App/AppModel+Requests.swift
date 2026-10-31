@@ -56,6 +56,8 @@ enum TryCopy {
     static let tooMany = "Five songs and releases are already on their way. Try this one when one of them is home or has stopped."
     static let unavailable = "Your requests can't be read right now. Unlock your iPhone and try again."
     static let changesOff = TryAvailability.changesOff.message!
+    /// R20: under the wait view's stages in the Try sheet, whose button says Done.
+    static let keepBrowsing = "You can keep browsing. It plays next when it's here."
     static let notSetUp = TryAvailability.notSetUp.message!
 
     static func message(for error: Error) -> String {
@@ -100,7 +102,7 @@ extension AppModel {
         // FM1: the gate confines deletes and artist edits itself, from this ledger and the owner's setup.
         let confinement = WriteConfinement(ledger: ledger, roots: { [weak self] in
             await self?.gateRoots ?? WriteConfinement.Roots(mainRoot: nil, findsRoot: nil, findTagId: nil)
-        })
+        }, liveRequests: { [weak self] in await self?.liveRequestIds() })   // R17: queue deletes
         let gate = LidarrWriteGate(client: client, logURL: LidarrWriteGate.defaultLogURL(in: dataDirectory),
                                    defaultsSuite: gateDefaultsSuite, confinement: confinement)
         let requestStore = RequestStore(fileURL: RequestStore.defaultURL(in: dataDirectory, instance: scope))
@@ -116,6 +118,8 @@ extension AppModel {
             })
         self.gate = gate
         self.runner = runner
+        let stallLimit = stallLimit.seconds
+        Task { await runner.setStallLimit(stallLimit) }   // R17
         runnerTasks.append(Task { [weak self] in
             for await list in await runner.updates {
                 guard let self, self.runner === runner else { return }
@@ -359,6 +363,7 @@ extension AppModel {
         // FM2: a find from now on, before it can land and play (the refresh below runs next to the landing).
         if request.isFind, let songId = request.songId { findsIdentity.markLanded(songId) }
         if request.isFind { Task { await refreshFinds() } }
+        Task { await rememberReadySong(request) }   // R17: rows showing it become the library song in place
         if !request.isFind, findsLibraryId != nil {
             // Final fix 2 A-I1, belt and braces: a song the runner didn't call a find can still be in the Finds
             // library. Read it again before landing, so it never plays as now playing (D29).

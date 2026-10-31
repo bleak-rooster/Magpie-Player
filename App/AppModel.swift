@@ -95,6 +95,8 @@ final class AppModel {
     }
     /// D6: a find that became ready went next in the queue; the in-app "Play now" banner (AppModel+Landing.swift).
     var playNowBanner: PlayNowBanner?
+    /// R17: the library song each Ready request became, so rows showing it turn into it in place (RequestLinks.swift).
+    var readySongs: [RequestID: Song] = [:]
     /// Wait screens on screen now, per request (a request's screen may be shown twice, e.g. sheet and Requests).
     @ObservationIgnored var waitScreens: [RequestID: Int] = [:]
     /// Requests already landed (D6): each lands once.

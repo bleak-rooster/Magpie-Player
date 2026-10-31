@@ -63,6 +63,10 @@ enum RequestCopy {
     /// The status line for a request (its state, or the not-listed note).
     static func status(_ request: MagpieRequest, context: WaitContext = .unknown) -> String {
         if request.isNotListed { return notListed }
+        if request.isSourceStalled { return sourceStalled }   // R17
+        if request.stallsUsedUp, case .waiting(let reason, _) = request.state, reason.kind == .stillLooking {
+            return stillTrying
+        }
         if request.isFind, request.state == .ready {
             if request.notForMeNeedsAttention { return notForMeNeedsAttention }
             if request.notForMe != nil { return lettingGo }
@@ -116,7 +120,7 @@ enum RequestCopy {
     /// One status line. `context` only speaks for `.serviceUnavailable` waits.
     static func status(_ state: RequestState, context: WaitContext = .unknown) -> String {
         switch state {
-        case .pending, .resolving, .adding: "Looking"
+        case .pending, .resolving, .adding: "Looking…"
         case .searching: "Looking for the best copy"
         case .downloading(let p): p > 0 ? "Bringing it home · \(percent(p))" : "Spotted it"
         case .importing: "Bringing it home · almost there"
@@ -145,6 +149,22 @@ enum RequestCopy {
             case .unknown: "Something went wrong"
             }
         }
+    }
+
+    // R17 (with R20's wording): a stalled copy, and the owner's way to drop the copy coming now.
+
+    static let sourceStalled = "That copy stopped coming. Looking for another…"
+    static let findAnotherCopy = "Find another copy"
+    static let findAnotherTitle = "Look for another copy?"
+    static let findAnotherMessage = "Magpie drops the copy it's getting now and won't pick that one again."
+    static let askAgainSoon = "You can ask again in a moment."
+    static let findAnotherFailed = "Couldn't look for another copy right now. Try again in a moment."
+    /// Settings › New music.
+    static let stuckCopySetting = "Give up on a stuck copy after"
+
+    /// The wait screen's estimate line for a request: says so when a stalled copy was dropped (R17).
+    static func phrase(_ request: MagpieRequest) -> String {
+        request.isSourceStalled ? sourceStalled : phrase(request.state, tier: request.tier)
     }
 
     /// The wait screen's estimate line (D7: real % in the foreground, otherwise the tier phrase).
