@@ -39,6 +39,22 @@ import Testing
                                                            "opus96", "mp3_320", "mp3_192", "mp3_128"])
     }
 
+    /// R5 fix C1: every stored name a pre-round-11 build could write either is a preset's own name or is listed as a
+    /// legacy name of exactly the preset it migrates to (the audio store accepts files saved under it).
+    @Test func everyOldPresetNameIsCurrentOrLegacy() {
+        let old = ["original", "aac256", "aac160", "aac96", "opus192", "opus128", "opus96", "opus64", "mp3_320", "mp3_192"]
+        for name in old {
+            let migrated = StreamQuality(migrating: name)
+            #expect(migrated != nil, "\(name)")
+            if let migrated, migrated.rawValue != name {
+                #expect(migrated.legacyRawValues.contains(name), "\(name) → \(migrated)")
+            }
+        }
+        let legacy = StreamQuality.allCases.flatMap(\.legacyRawValues)
+        #expect(Set(legacy) == ["opus192", "opus128", "opus64"] && legacy.count == 3)
+        #expect(StreamQuality.allCases.allSatisfy { q in q.legacyRawValues.allSatisfy { StreamQuality(migrating: $0) == q } })
+    }
+
     /// R5: a saved bit rate that is no longer a preset moves to the nearest one of its format; a tie goes up.
     @Test func oldBitRatesMigrateToTheNearestPreset() throws {
         let cases: [(String, StreamQuality)] = [

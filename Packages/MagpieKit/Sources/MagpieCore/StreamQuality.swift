@@ -29,6 +29,16 @@ public enum StreamQuality: String, CaseIterable, Hashable, Sendable {
     case opusHigh = "opus320", opusMedium = "opus160", opusLow = "opus96"
     case mp3High = "mp3_320", mp3Medium = "mp3_192", mp3Low = "mp3_128"
 
+    /// The stored names of presets from before round 11 that now decode as this one (R5 fix C1). Files saved under
+    /// those names keep them: the audio store still accepts them, so nothing on the phone is lost or fetched again.
+    public var legacyRawValues: [String] {
+        switch self {
+        case .opusMedium: ["opus192", "opus128"]
+        case .opusLow: ["opus64"]
+        default: []
+        }
+    }
+
     /// The `format` parameter of `stream`: "raw", "aac", "opus" or "mp3".
     public var format: String {
         switch self {

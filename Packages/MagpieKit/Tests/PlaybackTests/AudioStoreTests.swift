@@ -143,6 +143,47 @@ private final class TestClock: @unchecked Sendable {
         #expect(await store.entries().map(\.songId) == ["s3"])
     }
 
+    /// R5 fix C1: files saved before the presets as Opus 192, 128 or 64 keep their names on disk. Their entries decode
+    /// as the preset they migrate to and stay valid, counted and playable, through the sidecar pass and the index
+    /// written back; nothing is dropped or downloaded again.
+    @Test func legacyOpusFilesSurviveTheRename() async throws {
+        for (legacy, preset) in [("opus192", StreamQuality.opusMedium), ("opus128", .opusMedium), ("opus64", .opusLow)] {
+            let root = tmp.appending(path: legacy)
+            let store = AudioStore(root: root, scope: "abc"); await store.load()
+            let added = try await store.add(tempFile(bytes: 500), metadata: meta("s1"), quality: preset, kind: .download,
+                                            reason: .song, fileExtension: "ogg", downloadsLimit: nil)
+            let dir = store.directory
+            // Rewrite it as an older build left it: the legacy name, the legacy quality, no index.
+            let legacyName = AudioStore.sha256("s1|" + legacy) + ".ogg"
+            try FileManager.default.moveItem(at: dir.appending(path: added.fileName), to: dir.appending(path: legacyName))
+            try FileManager.default.removeItem(at: dir.appending(path: added.fileName + ".json"))
+            var json = try #require(try JSONSerialization.jsonObject(with: JSONEncoder().encode(added)) as? [String: Any])
+            json["quality"] = legacy
+            json["fileName"] = legacyName
+            try JSONSerialization.data(withJSONObject: json).write(to: dir.appending(path: legacyName + ".json"))
+            try FileManager.default.removeItem(at: dir.appending(path: "index.json"))
+
+            let decoded = try JSONDecoder().decode(AudioEntry.self, from: JSONSerialization.data(withJSONObject: json))
+            #expect(decoded.quality == preset && decoded.fileName == legacyName, "\(legacy)")
+            #expect(AudioStore.isValid(decoded), "\(legacy): a legacy entry stays valid")
+
+            let again = AudioStore(root: root, scope: "abc"); await again.load()
+            #expect(await again.entry(songId: "s1")?.fileName == legacyName, "\(legacy): kept from its sidecar")
+            #expect(await again.localFiles() == ["s1": dir.appending(path: legacyName)])
+            #expect(await again.usage().downloadBytes == 500, "\(legacy): counted")
+            // The index written back (quality now the preset's name) still reads.
+            let third = AudioStore(root: root, scope: "abc"); await third.load()
+            #expect(await third.entry(songId: "s1")?.quality == preset, "\(legacy)")
+            #expect(await third.localFiles()["s1"] != nil, "\(legacy)")
+        }
+        // A legacy name under another quality is still refused.
+        var other = try JSONDecoder().decode(AudioEntry.self, from: Data(
+            #"{"songId":"s1","quality":"opus96","fileName":"\#(AudioStore.sha256("s1|opus128")).ogg"}"#.utf8))
+        #expect(!AudioStore.isValid(other))
+        other.quality = .opusMedium
+        #expect(AudioStore.isValid(other))
+    }
+
     @Test func corruptIndexRebuildsFromSidecars() async throws {
         let store = AudioStore(root: tmp, scope: "abc"); await store.load()
         try await add(store, "s1", bytes: 100, kind: .download, reason: .song, limit: nil)
