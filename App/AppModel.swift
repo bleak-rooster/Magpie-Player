@@ -120,7 +120,6 @@ final class AppModel {
     var isForeground = true {
         didSet {
             if isForeground != oldValue { homeFeedForegroundChanged(isForeground) }   // P5: Home's retries
-            if !isForeground, oldValue { scheduleRequestRefresh() }   // R16: a background pass while requests are live
             guard isForeground, !oldValue else { return }
             // I3: the Lidarr item may still have been unreadable when the session was restored.
             if session != nil, reloadKeychainItems() { rebuildRunner() }
