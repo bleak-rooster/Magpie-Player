@@ -104,8 +104,12 @@ extension AppModel {
     struct BringInReply: Equatable {
         var message: String
         var retryable = false
+        /// It went through (R18: the Add sheet closes then).
+        var succeeded = false
 
-        init(message: String, retryable: Bool = false) { self.message = message; self.retryable = retryable }
+        init(message: String, retryable: Bool = false, succeeded: Bool = false) {
+            self.message = message; self.retryable = retryable; self.succeeded = succeeded
+        }
 
         init(error: Error) {
             self.init(message: BringInCopy.message(for: error), retryable: BringInCopy.isRetryable(error))
@@ -136,7 +140,7 @@ extension AppModel {
         do {
             let result = try await runner.bringIn(id, choice: choice, offered: offered, follow: follow, types: types,
                                                   qualityProfileId: qualityProfileId)
-            return BringInReply(message: BringInCopy.done(result, artist: artist))
+            return BringInReply(message: BringInCopy.done(result, artist: artist), succeeded: true)
         } catch {
             return BringInReply(error: error)
         }

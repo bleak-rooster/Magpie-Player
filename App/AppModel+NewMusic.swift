@@ -152,6 +152,8 @@ enum AddWhat: String, CaseIterable, Identifiable {
     }
     /// A Keep asked for from a find's menu or an artist page, run by the `FindsKeepFlow` of `host`.
     var keeping: KeepFlowRequest?
+    /// Finds a Keep is running for: no menu or row offers a second Keep meanwhile.
+    var keepsRunning: Set<RequestID> = []
 
     init(defaults: UserDefaults) {
         self.defaults = defaults
@@ -299,13 +301,16 @@ extension AppModel {
         if main == nil { main = Self.autoMainLibrary(libraries, findsLibrary: setup.library) }
         guard main != setup.mainLibrary else { return }
         setup.mainLibrary = main
-        findsSetup = setup
-        findsStore.save(setup)
+        storeFindsSetup(setup)
     }
 
     func chooseMainLibrary(_ library: NavidromeLibrary) {
         guard var setup = findsSetup, library.id != setup.library?.id else { return }
         setup.mainLibrary = library
+        storeFindsSetup(setup)
+    }
+
+    private func storeFindsSetup(_ setup: FindsSetup) {
         findsSetup = setup
         findsStore.save(setup)
     }
@@ -313,5 +318,197 @@ extension AppModel {
     /// A main library has to be chosen: more than one library besides the Finds library, and none chosen.
     func needsMainLibrary(_ libraries: [NavidromeLibrary]) -> Bool {
         findsSetup?.mainLibrary == nil && Self.mainLibraryChoices(libraries, findsLibrary: findsSetup?.library).count > 1
+    }
+}
+
+// MARK: - The Add sheet or one confirmation (R18 simple mode, R20 "Add with my defaults")
+
+/// What an Add is for: an artist not in your library yet, more from an artist Magpie added, or more after a Keep.
+enum AddKind: Equatable {
+    case add
+    case addMore
+    /// After a Keep that moved the find into the library; what Keep said.
+    case afterKeep(kept: String)
+}
+
+/// How much one "What to add" row brings in: its length (when known) and, after a Keep, the releases it offered (so
+/// never more comes in than the sheet said, FL4).
+struct AddSize: Equatable {
+    var duration: TimeInterval?
+    var albumIds: [Int]?
+}
+
+/// How an Add turned out: what to say, and whether it went through.
+struct AddOutcome: Equatable {
+    var message: String
+    var succeeded: Bool
+}
+
+/// One Add, asked for: who it's for, whether an album is in context ("Just this album"), the artists to pick from when
+/// the name matches several ("Which <artist>?"), how big each choice is, and what it does.
+struct AddFlowRequest: Identifiable {
+    let id = UUID()
+    let kind: AddKind
+    let artist: String
+    var albumContext = false
+    var candidates: [ArtistLidarr.Candidate] = []
+    /// Each row's size for these release types; rows left out aren't known (A5: never guessed).
+    let sizes: @MainActor (ReleaseTypes) async -> [AddWhat: AddSize]
+    /// Does the add with these choices (and the picked artist, when there were several).
+    let commit: @MainActor (DownloadChoices, ArtistLidarr.Candidate?, AddSize?) async -> AddOutcome
+}
+
+/// Whether an Add shows the sheet or one confirmation, and with what (pure, tested).
+enum AddRoute: Equatable {
+    /// "Add with my defaults" on: one confirmation, the defaults as they are.
+    case confirm(DownloadChoices)
+    /// Off (or an artist to pick first): the Add sheet, preset with the defaults.
+    case sheet(DownloadChoices)
+
+    static func route(withMyDefaults: Bool, defaults: DownloadChoices, albumContext: Bool,
+                      candidates: Int) -> AddRoute {
+        var preset = defaults
+        // "Just this album" only with an album in context.
+        if !albumContext, preset.what == .thisAlbum { preset.what = .wholeArtist }
+        return withMyDefaults && candidates <= 1 ? .confirm(preset) : .sheet(preset)
+    }
+}
+
+extension NewMusicCopy {
+    static func title(_ kind: AddKind, _ artist: String) -> String {
+        switch kind {
+        case .add: addTitle(artist)
+        case .addMore: addMoreTitle(artist)
+        case .afterKeep: keptTitle(artist)
+        }
+    }
+
+    /// The one confirmation's title (Add with my defaults on).
+    static func confirmTitle(_ kind: AddKind, _ artist: String) -> String {
+        switch kind {
+        case .add: "Add \(name(artist)) to your library?"
+        case .addMore: "Add more from \(name(artist))?"
+        case .afterKeep: keptTitle(artist)
+        }
+    }
+
+    static func primary(_ kind: AddKind) -> String {
+        switch kind {
+        case .add: addToLibrary
+        case .addMore: addMoreToLibrary
+        case .afterKeep: addMore
+        }
+    }
+
+    static func cancel(_ kind: AddKind) -> String {
+        if case .afterKeep = kind { return notNow }
+        return cancel
+    }
+
+    static func whichArtist(_ artist: String) -> String { "Which \(name(artist))?" }
+
+    static func added(_ artist: String) -> String {
+        "Adding \(name(artist)) to your library. Their music comes in as it's found."
+    }
+
+    static func addedMore(_ artist: String) -> String {
+        "Asked for more from \(name(artist)). It comes in as it's found."
+    }
+
+    /// The footnote past 50 hours (UX appraisal §5).
+    static func isLotOfMusic(_ duration: TimeInterval?) -> Bool { (duration ?? 0) > lotOfMusicHours }
+}
+
+extension AppModel {
+    // MARK: - Requests for each Add
+
+    /// "Add to your library" for an artist not in it: no sizes (Lidarr doesn't have their releases yet).
+    func addRequest(artist: String, candidates: [ArtistLidarr.Candidate],
+                    add: @escaping @MainActor (MBID, DownloadChoices) async throws -> Void) -> AddFlowRequest {
+        AddFlowRequest(kind: .add, artist: artist, candidates: candidates, sizes: { _ in [:] }) { choices, picked, _ in
+            guard let mbid = picked?.mbid ?? (candidates.count == 1 ? candidates[0].mbid : nil) else {
+                return AddOutcome(message: NewMusicCopy.message(for: ArtistLidarrError.notFound), succeeded: false)
+            }
+            do {
+                try await add(mbid, choices)
+                return AddOutcome(message: NewMusicCopy.added(artist), succeeded: true)
+            } catch {
+                return AddOutcome(message: NewMusicCopy.message(for: error), succeeded: false)
+            }
+        }
+    }
+
+    /// "Add more to your library" for an artist Magpie added (the package refuses any other, nothing sent).
+    func addMoreRequest(artist: String, lidarrId: Int,
+                        done: @escaping @MainActor () async -> Void = {}) -> AddFlowRequest {
+        AddFlowRequest(kind: .addMore, artist: artist, sizes: { [weak self] types in
+            await self?.addMoreSizes(lidarrId: lidarrId, types: types) ?? [:]
+        }) { [weak self] choices, _, _ in
+            guard let self else { return AddOutcome(message: NewMusicCopy.message(for: ArtistLidarrError.failed), succeeded: false) }
+            do {
+                try await addMoreToLibrary(lidarrId: lidarrId, choices: choices)
+                await done()
+                return AddOutcome(message: NewMusicCopy.addedMore(artist), succeeded: true)
+            } catch {
+                return AddOutcome(message: NewMusicCopy.message(for: error), succeeded: false)
+            }
+        }
+    }
+
+    /// "Kept. Add more from <artist>?" after a Keep that moved the find: the kept find's Bring in more, with the
+    /// choices' release types and quality.
+    func afterKeepRequest(_ id: RequestID, artist: String, kept: String) -> AddFlowRequest {
+        AddFlowRequest(kind: .afterKeep(kept: kept), artist: artist, albumContext: true, sizes: { [weak self] types in
+            await self?.afterKeepSizes(id, types: types) ?? [:]
+        }) { [weak self] choices, _, size in
+            guard let self else { return AddOutcome(message: BringInCopy.message(for: RequestRunner.BringInError.unavailable), succeeded: false) }
+            let reply = await addMore(afterKeep: id, choices: choices, offered: size?.albumIds, artist: artist)
+            return AddOutcome(message: reply.message, succeeded: reply.succeeded)
+        }
+    }
+
+    // MARK: - Sizes
+
+    /// Each whole-artist row's length for an artist Magpie added: their releases of those types not in yet.
+    func addMoreSizes(lidarrId: Int, types: ReleaseTypes) async -> [AddWhat: AddSize] {
+        guard let client = lidarrClient, !isOffline, let albums = try? await client.albums(artistId: lidarrId) else { return [:] }
+        var sizes: [AddWhat: AddSize] = [:]
+        for what in [AddWhat.albumsAndEPs, .albums, .everything] {
+            let rowTypes = what.applied(to: DownloadChoices(types: types)).types
+            sizes[what] = AddSize(duration: Self.missingDuration(albums, types: rowTypes))
+        }
+        return sizes
+    }
+
+    /// Each row's length after a Keep, from the kept find's Bring in more offers (writes nothing).
+    func afterKeepSizes(_ id: RequestID, types: ReleaseTypes) async -> [AddWhat: AddSize] {
+        var sizes: [AddWhat: AddSize] = [:]
+        for what in [AddWhat.albumsAndEPs, .albums, .everything] {
+            let rowTypes = what.applied(to: DownloadChoices(types: types)).types
+            guard case .offer(let offer) = await afterKeepOffer(id, types: rowTypes) else { continue }
+            if let option = offer.options[.everything] {
+                sizes[what] = AddSize(duration: option.duration, albumIds: option.albumIds)
+            }
+            if sizes[.thisAlbum] == nil, let option = offer.options[.thisAlbum] {
+                sizes[.thisAlbum] = AddSize(duration: option.duration, albumIds: option.albumIds)
+            }
+        }
+        return sizes
+    }
+
+    // MARK: - Keep, from a menu or an artist page
+
+    /// The ready finds Keep goes through for these songs, one per request, none a Keep is already running for.
+    func keepRequests(songIds: [String]) -> [RequestID] {
+        var seen = Set<RequestID>()
+        return songIds.compactMap { keepRequest(songIds: [$0]) }.filter {
+            !newMusic.keepsRunning.contains($0) && seen.insert($0).inserted
+        }
+    }
+
+    /// The ledger says Magpie added the artist Lidarr has under this id (read now). Unreadable: not Magpie's.
+    func isMagpieArtist(lidarrId: Int) async -> Bool {
+        guard let ledger, let entries = try? await ledger.entries else { return false }
+        return entries.contains { $0.lidarrArtistId == lidarrId && $0.createdArtist }
     }
 }
