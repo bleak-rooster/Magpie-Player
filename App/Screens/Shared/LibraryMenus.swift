@@ -12,20 +12,22 @@ struct SongLibraryMenuItems: View {
     var body: some View {
         if !model.isOffline, !OfflineCatalog.isLocalId(song.id) {
             Button(PlaylistCopy.addToPlaylist, systemImage: "text.badge.plus") { model.askToAddToPlaylist([song.id]) }
-            FavouriteMenuItem(target: .song(song.id), starred: model.isStarred(song))
+            FavouriteMenuItem(target: .song(song.id), rowStarred: song.starred)
         }
     }
 }
 
-/// Favourite / Unfavourite for a menu.
+/// Favourite / Unfavourite for a row's menu. `rowStarred` is what the row's own item says; the session's changes
+/// win over it, and a refused change rolls back to it (review fix I3).
 struct FavouriteMenuItem: View {
     @Environment(AppModel.self) private var model
     let target: FavouriteTarget
-    let starred: Bool
+    let rowStarred: Bool
 
     var body: some View {
+        let starred = model.isFavourite(target, given: rowStarred)
         Button(FavouriteCopy.label(starred), systemImage: starred ? "star.slash" : "star") {
-            Task { await model.setFavourite(target, !starred) }
+            Task { await model.setFavourite(target, !starred, given: rowStarred) }
         }
     }
 }
@@ -102,12 +104,12 @@ private struct LibraryItemMenu: ViewModifier {
             content
         } else {
             content.contextMenu {
-                FavouriteMenuItem(target: target, starred: model.isFavourite(target, given: starred))
-                if case .album(let album) = item {
+                if case .album(let album) = item {   // the appraisal's order (§4): Add to playlist…, Favourite
                     Button(PlaylistCopy.addToPlaylist, systemImage: "text.badge.plus") {
                         Task { await model.askToAddAlbumToPlaylist(album.id) }
                     }
                 }
+                FavouriteMenuItem(target: target, rowStarred: starred)
                 if let coverArtId {
                     Button("Reload artwork", systemImage: "arrow.clockwise") {
                         Task { await model.reloadArtwork(coverArtId) }
