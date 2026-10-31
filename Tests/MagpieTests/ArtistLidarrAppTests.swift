@@ -75,7 +75,7 @@ private let twinB = MBID("55555555-5555-4555-8555-555555555555")!
     func connected() async throws -> AppModel {
         LidarrSetupStore(defaults: defaults).save(LidarrSetup(base: lidarrBase, scope: lidarrScope, fastStartProfileId: 4,
                                                               findsMetadataProfileId: 3, magpieTagId: 1,
-                                                              rootFolderPath: "/music"))
+                                                              losslessProfileId: 7, rootFolderPath: "/music"))
         let model = makeModel()
         try await model.signIn(urls: [home], username: "admin", password: "pw")
         _ = try await model.connectLidarr(base: lidarrBase, apiKey: "key")
@@ -94,6 +94,33 @@ private let twinB = MBID("55555555-5555-4555-8555-555555555555")!
         try? FileManager.default.removeItem(at: data)
     }
 
+    /// The existing Magpie profile for the default release types, so an add reuses it (no profile write).
+    func stubProfiles(existing: Bool = true) {
+        let t = transport.inner
+        let standard: [String: Any] = [
+            "id": 12, "name": ReleaseTypes.standard.profileName,
+            "primaryAlbumTypes": ["Album", "EP", "Single"].enumerated().map {
+                ["albumType": ["id": $0.offset, "name": $0.element], "allowed": $0.element != "Single"] as [String: Any]
+            },
+            "secondaryAlbumTypes": ["Studio", "Live"].enumerated().map {
+                ["albumType": ["id": $0.offset, "name": $0.element], "allowed": $0.element == "Studio"] as [String: Any]
+            },
+            "releaseStatuses": ["Official", "Bootleg"].enumerated().map {
+                ["releaseStatus": ["id": $0.offset, "name": $0.element], "allowed": $0.element == "Official"] as [String: Any]
+            },
+        ]
+        let list = existing ? [standard] : []
+        t.stub(pathSuffix: "/api/v1/metadataprofile",
+               body: try! JSONSerialization.data(withJSONObject: list))
+    }
+
+    /// Commits the Add the line handed over, as the sheet or the confirmation does (picking `pick` when several).
+    func commit(_ line: ArtistLidarrModel, pick: MBID? = nil, choices: DownloadChoices = .defaults) async throws -> AddOutcome {
+        let flow = try #require(line.addFlow)
+        let picked = pick.flatMap { m in flow.candidates.first { $0.mbid == m } }
+        return await flow.commit(choices, picked, nil)
+    }
+
     @Test func statesMapToTheirCopyAndSymbols() {
         typealias P = ArtistLidarrPresentation
         let monitored = P.make(.monitored(lidarrId: 1, searching: false), offline: false, changesAllowed: true, canAdd: true)
@@ -103,17 +130,19 @@ private let twinB = MBID("55555555-5555-4555-8555-555555555555")!
         let paused = P.make(.notMonitored(lidarrId: 1, magpieAdded: false), offline: false, changesAllowed: true, canAdd: true)
         #expect(paused == P(text: "In Lidarr \u{00B7} Not monitored", symbol: "pause.circle"), "the owner's: no action")
         let mine = P.make(.notMonitored(lidarrId: 1, magpieAdded: true), offline: false, changesAllowed: true, canAdd: true)
-        #expect(mine?.action == .monitor)
+        #expect(mine?.action == .addMore, "R20: Add more to your library")
+        #expect(P.actionTitle(.addMore) == "Add more to your library")
         let absent = P.make(.notInLidarr(mbid: newMBID), offline: false, changesAllowed: true, canAdd: true)
-        #expect(absent == P(text: "Not in Lidarr", symbol: "plus.circle", action: .add))
+        #expect(absent == P(text: "Not in Lidarr", symbol: "plus.circle", action: .add), "R20: the status stays visible")
+        #expect(P.actionTitle(.add) == "Add to your library")
         #expect(P.make(nil, offline: false, changesAllowed: true, canAdd: true) == nil, "no Lidarr: nothing shown")
         #expect(P.make(.notInLidarr(mbid: newMBID), offline: true, changesAllowed: true, canAdd: true)
                 == P(text: "You're offline", symbol: "wifi.slash"))
         #expect(P.make(.notInLidarr(mbid: nil), offline: false, changesAllowed: true, canAdd: true)?.action == .add,
                 "without an MBID the tap asks Lidarr's search (I3)")
         #expect(P.make(.notInLidarr(mbid: newMBID), offline: false, changesAllowed: true, canAdd: false)?.hint == .setUpFirst)
-        #expect(P.confirmation("New Artist")
-                == "Adds New Artist to Lidarr, monitors their albums and starts searching. This may download a lot of music.")
+        #expect(P.make(.notMonitored(lidarrId: 1, magpieAdded: true), offline: false, changesAllowed: false, canAdd: true)?.hint
+                == .turnOnChanges)
     }
 
     @Test func noLidarrShowsNothingAndAsksNothing() async throws {
@@ -132,30 +161,36 @@ private let twinB = MBID("55555555-5555-4555-8555-555555555555")!
         let line = ArtistLidarrModel(model: model, name: "New Artist", mbid: newMBID)
         await line.refresh()
         let p = try #require(line.presentation)
-        #expect(p.text == "Not in Lidarr" && p.action == nil && p.hint == .turnOnChanges(toAdd: true))
+        #expect(p.text == "Not in Lidarr" && p.action == nil && p.hint == .turnOnChanges)
         #expect(ArtistLidarrPresentation.hintText(p.hint!)
-                == "Turn on Allow Magpie to change Lidarr in Settings \u{203A} Requests to add artists.")
+                == "Turn on Allow Magpie to change your library in Settings \u{203A} New music to add more.")
         await line.requestAdd()
-        #expect(line.confirmation == nil)
-        await line.confirmAdd(newMBID)
+        #expect(line.addFlow == nil)
         #expect(lidarrWrites.isEmpty)
         cleanUp(model)
     }
 
-    @Test func theConfirmationComesBeforeTheWrite() async throws {
+    @Test func theAddComesBeforeTheWrite() async throws {
         let model = try await connected()
         await model.setChangesAllowed(true)
+        stubProfiles()
         let line = ArtistLidarrModel(model: model, name: "New Artist", mbid: newMBID)
         await line.refresh()
         #expect(line.presentation?.action == .add)
         await line.requestAdd()
-        #expect(line.confirmation == .one(label: "New Artist", mbid: newMBID), "asks first")
-        #expect(lidarrWrites.isEmpty, "nothing written while the confirmation shows")
+        let flow = try #require(line.addFlow, "asks first (the Add sheet, or one confirmation)")
+        #expect(flow.kind == .add && flow.artist == "New Artist" && flow.candidates.map(\.mbid) == [newMBID])
+        #expect(lidarrWrites.isEmpty, "nothing written while the Add shows")
         #expect(!transport.inner.requests.contains { $0.url?.query?.contains("term=New") == true },
                 "with the library's MBID, no name search (I3)")
-        line.confirming = false   // what the dialog does as its button is tapped, before the action runs (N1)
-        await line.confirmAdd(newMBID)
-        #expect(lidarrWrites.map { "\($0.httpMethod!) \($0.url!.path)" } == ["POST /api/v1/artist"])
+        let outcome = try await commit(line, choices: DownloadChoices(quality: .smaller, follow: true))
+        #expect(outcome.succeeded, "\(outcome.message)")
+        #expect(lidarrWrites.map { "\($0.httpMethod!) \($0.url!.path)" } == ["POST /api/v1/artist"],
+                "the existing Magpie profile for these types is reused")
+        let body = try #require(lidarrWrites.first?.httpBody.flatMap { try JSONSerialization.jsonObject(with: $0) as? [String: Any] })
+        #expect(body["metadataProfileId"] as? Int == 12, "R18: the release types' Magpie profile")
+        #expect(body["qualityProfileId"] as? Int == 4, "Smaller files: Magpie Fast Start")
+        #expect(body["monitorNewItems"] as? String == "all", "Follow new releases")
         #expect(line.presentation?.text == "In Lidarr \u{00B7} Monitored \u{00B7} Searching\u{2026}")
         let added = LidarrArtist(id: 55, artistName: "New Artist", foreignArtistId: newMBID, monitored: true)
         #expect(try await model.ledger?.createdArtist(added) == true, "ledgered as Magpie's")
@@ -172,8 +207,8 @@ private let twinB = MBID("55555555-5555-4555-8555-555555555555")!
         #expect(line.presentation == ArtistLidarrPresentation(text: "You're offline", symbol: "wifi.slash"))
         #expect(lidarrReads.count == before, "no request offline")
         await line.requestAdd()
-        await line.confirmAdd(newMBID)
-        await #expect(throws: (any Error).self) { try await model.addArtistToLidarr(mbid: newMBID) }
+        #expect(line.addFlow == nil)
+        await #expect(throws: (any Error).self) { _ = try await model.addArtist(mbid: newMBID, choices: .defaults) }
         #expect(lidarrWrites.isEmpty)
         cleanUp(model)
     }
@@ -181,30 +216,35 @@ private let twinB = MBID("55555555-5555-4555-8555-555555555555")!
     @Test func theOwnersArtistIsNeverWritten() async throws {
         let model = try await connected()
         await model.setChangesAllowed(true)
+        stubProfiles(existing: false)
         let line = ArtistLidarrModel(model: model, name: "Owner", mbid: ownerMBID)
         await line.refresh()
         #expect(line.presentation == ArtistLidarrPresentation(text: "In Lidarr \u{00B7} Not monitored", symbol: "pause.circle"))
-        await line.monitor()
-        await #expect(throws: ArtistLidarrError.notMagpies) { try await model.monitorArtistInLidarr(id: 20) }
-        await #expect(throws: ArtistLidarrError.alreadyInLidarr) { _ = try await model.addArtistToLidarr(mbid: ownerMBID) }
-        #expect(lidarrWrites.isEmpty)
+        line.requestAddMore()
+        #expect(line.addFlow == nil, "no Add more for the owner's artist")
+        await #expect(throws: ArtistLidarrError.notMagpies) {
+            try await model.addMoreToLibrary(lidarrId: 20, choices: .defaults)
+        }
+        let outcome = await model.addMoreRequest(artist: "Owner", lidarrId: 20).commit(.defaults, nil, nil)
+        #expect(!outcome.succeeded && outcome.message == "Added outside Magpie. Change it where you added it.")
+        await #expect(throws: ArtistLidarrError.alreadyInLidarr) { _ = try await model.addArtist(mbid: ownerMBID, choices: .defaults) }
+        #expect(lidarrWrites.isEmpty, "not even a metadata profile")
         cleanUp(model)
     }
 
     // MARK: - I3: no MBID in the library
 
-    @Test func oneExactSearchMatchIsNamedInTheConfirmation() async throws {
+    @Test func oneExactSearchMatchIsNamedInTheAdd() async throws {
         let model = try await connected()
         await model.setChangesAllowed(true)
         let line = ArtistLidarrModel(model: model, name: "Solo", mbid: nil)
         await line.refresh()
         #expect(!transport.inner.requests.contains { $0.url?.path.hasSuffix("/lookup") == true }, "no search on view")
         await line.requestAdd()
-        #expect(line.confirmation == .one(label: "SOLÓ (Leeds duo, Group)", mbid: soloMBID))
-        #expect(ArtistLidarrPresentation.confirmation("SOLÓ (Leeds duo, Group)")
-                == "Adds SOLÓ (Leeds duo, Group) to Lidarr, monitors their albums and starts searching. This may download a lot of music.")
+        let flow = try #require(line.addFlow)
+        #expect(flow.candidates.map(\.label) == ["SOLÓ (Leeds duo, Group)"])
         #expect(lidarrWrites.isEmpty)
-        await line.confirmAdd(twinA)   // not offered: ignored
+        await #expect(throws: ArtistLidarrError.failed) { try await line.add(twinA, .defaults) }   // not offered
         #expect(lidarrWrites.isEmpty)
         cleanUp(model)
     }
@@ -212,15 +252,19 @@ private let twinB = MBID("55555555-5555-4555-8555-555555555555")!
     @Test func severalExactMatchesAreListedToPickOne() async throws {
         let model = try await connected()
         await model.setChangesAllowed(true)
+        stubProfiles()
         let line = ArtistLidarrModel(model: model, name: "Twin", mbid: nil)
         await line.refresh()
         await line.requestAdd()
-        guard case .pick(let list)? = line.confirmation else { Issue.record("\(String(describing: line.confirmation))"); return }
-        #expect(list.map(\.label) == ["Twin (US band, Group)", "twin (UK band, Group)"])
+        let flow = try #require(line.addFlow)
+        #expect(flow.candidates.map(\.label) == ["Twin (US band, Group)", "twin (UK band, Group)"])
+        #expect(AddRoute.route(withMyDefaults: true, defaults: .defaults, albumContext: false,
+                               candidates: flow.candidates.count) == .sheet(.defaults),
+                "several: the sheet asks \u{201C}Which Twin?\u{201D} even with Add with my defaults on")
         #expect(lidarrWrites.isEmpty)
         // N4: the add sends the picked one's MBID.
-        line.confirming = false
-        await line.confirmAdd(twinB)
+        let outcome = try await commit(line, pick: twinB)
+        #expect(outcome.succeeded)
         let post = try #require(lidarrWrites.first)
         #expect(lidarrWrites.count == 1 && post.httpMethod == "POST" && post.url?.path == "/api/v1/artist")
         let body = try #require(post.httpBody.flatMap { try JSONSerialization.jsonObject(with: $0) as? [String: Any] })
@@ -235,8 +279,8 @@ private let twinB = MBID("55555555-5555-4555-8555-555555555555")!
         let line = ArtistLidarrModel(model: model, name: "Ghost", mbid: nil)
         await line.refresh()
         await line.requestAdd()
-        #expect(line.confirmation == nil)
-        #expect(line.error == "Couldn't find Ghost in Lidarr's search")
+        #expect(line.addFlow == nil)
+        #expect(line.error == "Couldn't find Ghost to add. Try again later.")
         #expect(lidarrWrites.isEmpty)
         cleanUp(model)
     }
@@ -250,11 +294,11 @@ private let twinB = MBID("55555555-5555-4555-8555-555555555555")!
         await line.refresh()
         #expect(line.presentation?.text == "Not in Lidarr")
         await line.requestAdd()
-        guard case .pick? = line.confirmation else { Issue.record("no pick"); return }
-        line.confirming = false
-        await line.confirmAdd(ownerMBID)
+        let outcome = try await commit(line, pick: ownerMBID)
+        #expect(!outcome.succeeded && outcome.message == "That artist is in your library already.")
+        line.finished(outcome)
         #expect(lidarrWrites.isEmpty)
-        #expect(line.error == "That artist is already in Lidarr.")
+        #expect(line.error == "That artist is in your library already.")
         await line.refresh()
         #expect(line.presentation == ArtistLidarrPresentation(text: "Not in Lidarr", symbol: "plus.circle", action: .add))
         cleanUp(model)
