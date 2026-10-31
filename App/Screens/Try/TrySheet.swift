@@ -31,13 +31,14 @@ struct TrySheet: View {
             Group {
                 switch phase {
                 case .choosing, .working: choosing
-                case .waiting(let id): RequestDetailView(requestId: id)
+                case .waiting(let id): RequestDetailView(requestId: id, footnote: RequestCopy.keepBrowsing)   // R20
                 case .asked(let id): asked(id)
                 }
             }
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button(isWaiting ? "Leave" : "Done") { dismiss() }
+                    // R20: Done, never "Leave" (which reads as abandon); the footnote says it keeps coming.
+                    Button(Self.closeTitle) { dismiss() }
                         .accessibilityHint(isWaiting ? "It keeps coming. Find it in Library, Requests." : "")
                         .accessibilityIdentifier("try-done")
                 }
@@ -58,6 +59,8 @@ struct TrySheet: View {
         }
         .accessibilityHidden(true).padding(.top, Tokens.Spacing.xl)
     }
+
+    static let closeTitle = "Done"
 
     private var isWaiting: Bool { if case .waiting = phase { true } else { false } }
 

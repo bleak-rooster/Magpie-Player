@@ -9,6 +9,10 @@ struct ActivityView: View {
     @Environment(AppModel.self) private var model
     /// R16: covers of requests not in the library yet, while the list is open (R15 rules).
     @State private var outsideArt: OutsideArtLoader?
+    /// R20: Ready finds a Keep (the leading swipe) is running for, what it said, and Bring in more after a move (D5).
+    @State private var keeping: Set<RequestID> = []
+    @State private var keepMessage: String?
+    @State private var bringingInMore: KeptFind?
     private let themed = Themed()
 
     var body: some View {
@@ -43,6 +47,27 @@ struct ActivityView: View {
         .refreshable { model.pollRequests() }
         .task { if outsideArt == nil { outsideArt = model.makeOutsideArt() } }
         .onDisappear { outsideArt?.reset() }
+        .sheet(item: $bringingInMore) { BringInMoreSheet(requestId: $0.id, keptMessage: $0.message) }
+        .alert(keepMessage ?? "", isPresented: Binding(get: { keepMessage != nil }, set: { if !$0 { keepMessage = nil } })) {
+            Button("OK", role: .cancel) {}
+        }
+    }
+
+    /// R20: Keep on a Ready find's row (leading swipe, never a full swipe), as on the Finds shelf.
+    private func keepAction(_ request: MagpieRequest) -> (() -> Void)? {
+        guard !model.isOffline, let id = ReadyFindActions.keep(request), !keeping.contains(id) else { return nil }
+        return {
+            keeping.insert(id)
+            Task {
+                let reply = await model.keep(id)
+                if reply.bringsInMore {
+                    bringingInMore = KeptFind(id: id, message: reply.message)
+                } else {
+                    keepMessage = reply.message
+                }
+                keeping.remove(id)
+            }
+        }
     }
 
     private func row(_ request: MagpieRequest) -> some View {
@@ -53,6 +78,14 @@ struct ActivityView: View {
         .accessibilityIdentifier("request-\(request.recording.title)")
         .swipeActions {
             if !model.isOffline { swipeActions(request) }
+        }
+        .swipeActions(edge: .leading, allowsFullSwipe: false) {
+            if let keep = keepAction(request) {
+                Button(RequestCopy.keep, systemImage: "checkmark.circle", action: keep).tint(.green)
+            }
+        }
+        .accessibilityActions {
+            if let keep = keepAction(request) { Button(RequestCopy.keep, action: keep) }
         }
     }
 
@@ -108,7 +141,14 @@ struct RequestDetailView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     let requestId: RequestID
+    /// R20: the Try sheet's line under the stages ("You can keep browsing…") while it's on its way.
+    var footnote: String? = nil
     @State private var confirmsStop = false
+    /// R20: a Ready find's Keep and Not for me…, with what they said shown on the page.
+    @State private var working = false
+    @State private var outcome: String?
+    @State private var bringingInMore: KeptFind?
+    @State private var asking: NotForMeConfirm?
     /// R16: the cover from outside while this screen is open (R15 rules: memory only, fetched again when it opens).
     @State private var outsideArt: OutsideArtLoader?
     private let themed = Themed()
@@ -141,6 +181,11 @@ struct RequestDetailView: View {
                     WaitView(title: request.recording.title, artist: subtitle(request), artwork: art,
                              stage: RequestCopy.stage(state), phrase: RequestCopy.phrase(state, tier: request.tier))
                 }
+                if let footnote, RequestCopy.group(request) == .inProgress {
+                    Text(footnote).font(.footnote).foregroundStyle(themed.palette.ink2Color)
+                        .multilineTextAlignment(.center).padding(.horizontal, Tokens.Spacing.largeTitleMargin)
+                        .accessibilityIdentifier("request-footnote")
+                }
             } else {
                 calm(request)
             }
@@ -163,6 +208,15 @@ struct RequestDetailView: View {
         } message: {
             Text("Magpie stops asking for it. Nothing is deleted.")
         }
+        .confirmationDialog(NotForMeCopy.confirmTitle, isPresented: Binding(get: { asking != nil }, set: { shown in
+            if !shown { asking = nil }
+        }), titleVisibility: .visible, presenting: asking) { confirm in
+            Button(NotForMeCopy.action, role: .destructive) { letGo(confirm) }
+            Button("Cancel", role: .cancel) {}
+        } message: { confirm in
+            Text(confirm.message)
+        }
+        .sheet(item: $bringingInMore) { BringInMoreSheet(requestId: $0.id, keptMessage: $0.message) }
     }
 
     private func subtitle(_ r: MagpieRequest) -> String {
@@ -200,6 +254,11 @@ struct RequestDetailView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .accessibilityIdentifier("request-play")
+                readyFindActions(request)   // R20: Play · Keep · Not for me…
+            }
+            if let outcome {
+                Text(outcome).font(.footnote).foregroundStyle(themed.palette.ink2Color).multilineTextAlignment(.center)
+                    .accessibilityIdentifier("request-outcome")
             }
             if request.isNotListed {
                 Button("Check again") { Task { await model.checkAgain(requestId) } }
@@ -224,8 +283,58 @@ struct RequestDetailView: View {
         .padding(.horizontal, Tokens.Spacing.largeTitleMargin)
     }
 
+    /// R20 (appraisal "R16 / Activity"): a Ready find's Keep, then Not for me… (it asks first). What they said shows
+    /// on the page; after a Keep that moved it, Bring in more follows (D5), as on the Finds shelf.
+    @ViewBuilder private func readyFindActions(_ request: MagpieRequest) -> some View {
+        if let id = ReadyFindActions.keep(request) {
+            Button(RequestCopy.keep) {
+                working = true
+                Task {
+                    let reply = await model.keep(id)
+                    outcome = reply.message
+                    if reply.bringsInMore { bringingInMore = KeptFind(id: id, message: reply.message) }
+                    working = false
+                }
+            }
+            .buttonStyle(.bordered)
+            .frame(minHeight: Tokens.minHitSize)
+            .disabled(working)
+            .accessibilityIdentifier("request-keep")
+        }
+        if let id = ReadyFindActions.notForMe(request) {
+            Button(RequestCopy.notForMeAsks, role: .destructive) {
+                working = true
+                Task {
+                    switch await model.notForMeAsk(id) {
+                    case .confirm(let confirm): asking = confirm
+                    case .message(let text): outcome = text
+                    }
+                    working = false
+                }
+            }
+            .frame(minHeight: Tokens.minHitSize)
+            .disabled(working)
+            .accessibilityIdentifier("request-not-for-me")
+        }
+    }
+
+    private func letGo(_ confirm: NotForMeConfirm) {
+        asking = nil
+        working = true
+        Task {
+            outcome = await model.notForMe(confirm)
+            working = false
+        }
+    }
+
     private func play(_ request: MagpieRequest) async {
         guard let song = await model.readySong(request) else { return }
         model.playReady(song, request: request.id)
     }
+}
+
+/// R20: a kept find that moved into the library, for the Bring in more sheet (D5).
+struct KeptFind: Identifiable {
+    let id: RequestID
+    let message: String
 }
