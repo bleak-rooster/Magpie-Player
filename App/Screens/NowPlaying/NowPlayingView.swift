@@ -303,13 +303,17 @@ struct NowPlayingView: View {
         }
     }
 
+    /// Shuffle | previous | play | next | repeat (R6), spread across the width, so the row's height is unchanged (D43).
     private func transport(_ player: Player) -> some View {
-        HStack(spacing: 44) {
+        HStack(spacing: 0) {
+            PlayerModeButton(kind: .shuffle)
+            Spacer(minLength: 0)
             Button { player.previous() } label: {
                 Image(systemName: "backward.fill").font(.title)
                     .frame(width: 60, height: 60)
             }
             .accessibilityLabel("Previous")
+            Spacer(minLength: 0)
             Button { player.toggle() } label: {
                 Image(systemName: player.isPlaying ? "pause.fill" : "play.fill").font(.system(size: 34))
                     .frame(width: 76, height: 76)
@@ -317,12 +321,16 @@ struct NowPlayingView: View {
             }
             .accessibilityLabel(player.isPlaying ? "Pause" : "Play")
             .accessibilityIdentifier("np-play-pause")
+            Spacer(minLength: 0)
             Button { player.next() } label: {
                 Image(systemName: "forward.fill").font(.title)
                     .frame(width: 60, height: 60)
             }
             .accessibilityLabel("Next")
+            Spacer(minLength: 0)
+            PlayerModeButton(kind: .repeatMode)
         }
+        .frame(maxWidth: .infinity)
         .buttonStyle(.plain)
     }
 

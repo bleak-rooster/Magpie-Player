@@ -417,12 +417,13 @@ public final class CarPlayController: NSObject {
             guard let player = self?.player else { return }
             NowPlayingBridge.applyShuffle(player.isShuffled ? .off : .items, to: player)
         }
-        shuffle.isSelected = player.isShuffled
+        let selection = Self.modeSelection(of: player)
+        shuffle.isSelected = selection.shuffle
         let repeatButton = CPNowPlayingRepeatButton { [weak self] _ in
             guard let player = self?.player else { return }
             NowPlayingBridge.applyRepeat(NowPlayingBridge.repeatType(player.repeatMode.next), to: player)
         }
-        repeatButton.isSelected = player.repeatMode != .off
+        repeatButton.isSelected = selection.repeating
         CPNowPlayingTemplate.shared.updateNowPlayingButtons(buttons + [shuffle, repeatButton, sleepButton()])
     }
 
