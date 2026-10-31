@@ -192,6 +192,9 @@ private struct TrackList: View {
                                                       : DurationText.spoken(song.duration)))
         .accessibilityAddTraits(.isButton)
         .accessibilityIdentifier("track-\(index)")
-        .contextMenu { SongDownloadMenuItem(song: song, removing: $removing) }
+        .contextMenu {
+            FindsLibraryMenuItem(songId: song.id, artist: song.artist, host: FindsLibraryMenuItem.main)   // R18/R20: Keep
+            SongDownloadMenuItem(song: song, removing: $removing)
+        }
     }
 }

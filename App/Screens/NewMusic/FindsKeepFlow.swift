@@ -58,10 +58,12 @@ extension View {
 /// or a Keep is already running for it.
 ///
 /// Hook for Now Playing's More menu (X2, R9): put `FindsLibraryMenuItem(songId: song.id, artist: song.artist)` first
-/// in the menu (Keep and Not for me first for a find), and `.findsKeepFlow(host: FindsLibraryMenuItem.nowPlaying)` on
-/// the Now Playing view. Any other menu passes the host its own screen attached.
+/// in the menu (Keep and Not for me first for a find). Its host, `FindsLibraryMenuItem.nowPlaying`, is attached to
+/// the Now Playing sheet in `MainTabs` (RootView.swift). Song long-press menus in the tabs use
+/// `FindsLibraryMenuItem.main`, attached to the tab view; a screen with its own flow passes its own host.
 struct FindsLibraryMenuItem: View {
     static let nowPlaying = "nowPlaying"
+    static let main = "main"
 
     @Environment(AppModel.self) private var model
     let songId: String

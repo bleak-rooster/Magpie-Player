@@ -309,6 +309,7 @@ private struct SearchContent: View {
         .accessibilityAddTraits(.isButton)
         .accessibilityIdentifier(id ?? "search-song-\(index)")
         .contextMenu {
+            FindsLibraryMenuItem(songId: song.id, artist: song.artist, host: FindsLibraryMenuItem.main)   // R18/R20: Keep
             Button("Play Next", systemImage: "text.line.first.and.arrowtriangle.forward") { app.player.playNext([song]) }
             Button("Add to Queue", systemImage: "text.line.last.and.arrowtriangle.forward") { app.player.addToEnd([song]) }
             SongDownloadMenuItem(song: song, removing: $removing)

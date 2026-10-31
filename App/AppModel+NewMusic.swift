@@ -17,6 +17,7 @@ import Requests
 enum NewMusicCopy {
     static let onlyInFinds = "Only in your Finds"
     static let keep = "Keep"
+    static let keeping = "Keeping\u{2026}"
     static let addedOutside = "Added outside Magpie. Change it where you added it."
     static let addToLibrary = "Add to your library"
     static let addMoreToLibrary = "Add more to your library"
@@ -34,6 +35,7 @@ enum NewMusicCopy {
     /// Past this, the Add sheet says it's a lot of music (UX appraisal §5).
     static let lotOfMusicHours: TimeInterval = 50 * 3600
     static let withMyDefaults = "Add with my defaults"
+    static let qualityFooter = "Lossless keeps every detail (FLAC). Smaller files save space (MP3)."
     static let withMyDefaultsFooter = "On: one tap adds with the choices below. Off: you choose each time."
     static let whenYouAdd = "When you add an artist"
     static let mainLibrary = "Main library"
@@ -504,6 +506,19 @@ extension AppModel {
         return songIds.compactMap { keepRequest(songIds: [$0]) }.filter {
             !newMusic.keepsRunning.contains($0) && seen.insert($0).inserted
         }
+    }
+
+    /// What an Only in your Finds artist page offers for these find songs: Keep <artist>, a Keep already running, or
+    /// nothing to Keep through (no ready Magpie request: added outside Magpie).
+    enum ArtistKeepState: Equatable { case keepable, keeping, outside }
+
+    func artistKeepState(songIds: [String]) -> ArtistKeepState {
+        if !keepRequests(songIds: songIds).isEmpty { return .keepable }
+        let ids = Set(songIds)
+        let running = requests.contains { request in
+            request.songId.map(ids.contains) == true && newMusic.keepsRunning.contains(request.id)
+        }
+        return running ? .keeping : .outside
     }
 
     /// The ledger says Magpie added the artist Lidarr has under this id (read now). Unreadable: not Magpie's.
