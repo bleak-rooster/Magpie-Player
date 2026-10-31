@@ -139,6 +139,8 @@ final class FakeLidarr: @unchecked Sendable {
         var status = "downloading"; var tracked = "downloading"; var messages: [String] = []
         /// R17: the queue item's id, artist and download client name ("Slskd" is the Soulseek one); nil: not sent.
         var id: Int? = nil; var artistId: Int? = nil; var client: String? = nil
+        /// Fix round 1 I2: the download it's part of (rows of one multi-album download share it); nil: "dl-<id>".
+        var downloadId: String? = nil
     }
     struct Event { var albumId: Int; var type: String; var date: Date }
     /// A download client as `GET /downloadclient` lists it (R17).
@@ -563,6 +565,7 @@ final class FakeLidarr: @unchecked Sendable {
                 if let id = q.id { row["id"] = id }
                 if let artistId = q.artistId { row["artistId"] = artistId }
                 if let client = q.client { row["downloadClient"] = client }
+                if let d = q.downloadId ?? q.id.map({ "dl-\($0)" }) { row["downloadId"] = d }
                 return row
             } })
         }

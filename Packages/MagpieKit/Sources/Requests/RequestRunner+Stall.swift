@@ -43,6 +43,8 @@ extension MagpieRequest {
     public var stalls: Int { stallRetries ?? 0 }
     /// The automatic stall retries are used up: it waits as Still looking, with Find another copy (Search again in R17).
     public var stallsUsedUp: Bool { stalls >= RequestRunner.maxStallRetries }
+    /// Fix round 1 I3: the five removals (automatic and Find another copy together) are used up for good.
+    public var removalsUsedUp: Bool { stallsUsedUp }
     /// Searching again after a stalled download ("That copy stopped coming. Looking for another…").
     public var isSourceStalled: Bool { sourceStalledAt != nil && state == .searching }
 
@@ -87,6 +89,8 @@ extension RequestRunner {
         case needsConfirmation
         /// Lidarr couldn't be read or written right now (or changes are switched off).
         case unavailable
+        /// Five copies have been dropped for this request already (automatically and by hand together).
+        case limitReached
     }
 
     /// The requests on their way now, as `RequestID` text (the write gate's check for queue deletes).
@@ -126,7 +130,9 @@ extension RequestRunner {
     func handledStall(_ id: RequestID, _ items: [QueueItem]) async -> Bool {
         guard let r = request(id), let albumId = r.albumId else { return false }
         let t = now()
-        let followed = items.filter { $0.albumId == albumId && $0.id != nil }
+        // Fix round 1 I1: only copies still coming before import; one that's complete, waiting to import, importing or
+        // blocked is never stalled (its watch is dropped).
+        let followed = items.filter { $0.albumId == albumId && $0.id != nil && $0.isDownloadingBeforeImport }
         let present = Set(followed.compactMap(\.id))
         stallWatch = stallWatch.filter { $0.value.albumId != albumId || present.contains($0.key) }
         guard !followed.isEmpty, r.isActive, r.joinedTo == nil, let names = await soulseekNames() else { return false }
@@ -149,35 +155,43 @@ extension RequestRunner {
             await apply(id, .stalled)
             return true
         }
-        await giveUp(on: stalled, for: id)
-        return true
+        return await giveUp(on: stalled, for: id)
     }
 
-    /// The stalled downloads, re-read fresh: removed (blocklisted) and searched again.
-    private func giveUp(on stalled: [QueueItem], for id: RequestID) async {
-        guard !busy.contains(id), let r = request(id), let albumId = r.albumId else { return }
+    /// Fix round 1 I2: `item` is a download of `albumId` alone: Lidarr names its download, and no other queue row
+    /// (another album) shares it. Removing it can then take nothing else with it. The gate checks the same from its own
+    /// read of the whole queue, against the live requests.
+    static func isOwnDownload(_ item: QueueItem, of albumId: Int, in queue: [QueueItem]) -> Bool {
+        guard item.albumId == albumId, let downloadId = item.downloadId else { return false }
+        return queue.allSatisfy { $0.downloadId != downloadId || $0.albumId == albumId }
+    }
+
+    /// The stalled downloads, re-read fresh: removed (blocklisted) and searched again. True when it did.
+    private func giveUp(on stalled: [QueueItem], for id: RequestID) async -> Bool {
+        guard !busy.contains(id), let r = request(id), let albumId = r.albumId else { return false }
         busy.insert(id)
         defer { busy.remove(id) }
         do {
-            let fresh = try await lidarr.queueDetails(albumIds: [albumId])
+            let fresh = try await lidarr.queueDetails(albumIds: [])   // the whole queue (I2: every album of the download)
             lastLidarrContact = now()
             let still = stalled.filter { old in
                 fresh.contains { item in
                     item.id == old.id && item.albumId == albumId && item.downloadClient == old.downloadClient
-                        && isSoulseek(item) && StallWatch.Signature(item) == StallWatch.Signature(old)
+                        && isSoulseek(item) && item.isDownloadingBeforeImport
+                        && StallWatch.Signature(item) == StallWatch.Signature(old)
+                        && Self.isOwnDownload(item, of: albumId, in: fresh)
                 }
             }
-            guard !still.isEmpty, try await mayRemoveDownloads(r),
-                  let current = request(id), current.isActive, current.state == r.state else { return }
-            await mutate(id) {
-                $0.stallRetries = $0.stalls + 1
-                $0.sourceStalledAt = self.now()
-            }
-            try await removeFromQueue(still, for: id)
+            guard !still.isEmpty, try await mayRemoveDownloads(r), let current = request(id), current.isActive,
+                  current.state == r.state, !current.stallsUsedUp else { return false }
+            let removed = try await removeCounting(still, for: id)
+            guard removed > 0 else { return false }
             Log.logger("requests").info("stalled download removed; searching again")
             await searchAgainNow(id)
+            return true
         } catch {
             Log.logger("requests").error("stalled download not removed: \(Log.category(of: error), privacy: .public)")
+            return false
         }
     }
 
@@ -185,11 +199,14 @@ extension RequestRunner {
 
     /// The owner's Search again on the request page: removes the request's download from Lidarr's queue (the same
     /// blocklisting delete) and searches again. Throws `needsConfirmation` (nothing sent) when there is a download
-    /// and `removingDownload` is false. Once per `searchAgainInterval`; it starts the stall count over.
+    /// and `removingDownload` is false. Once per `searchAgainInterval`. A removal by hand counts toward the same
+    /// `maxStallRetries` as the automatic ones, and never starts the count over (fix round 1 I3): once they're used up
+    /// it throws `limitReached`.
     public func searchAgain(_ id: RequestID, removingDownload confirmed: Bool) async throws {
         guard !stopped, let r = request(id), r.canSearchAgain, let albumId = r.albumId, !busy.contains(id) else {
             throw SearchAgainError.notNow
         }
+        guard !r.removalsUsedUp else { throw SearchAgainError.limitReached }
         let t = now()
         if let last = r.searchAgainAt, t >= last, t.timeIntervalSince(last) < Self.searchAgainInterval {
             throw SearchAgainError.tooSoon
@@ -198,19 +215,33 @@ extension RequestRunner {
         defer { busy.remove(id) }
         guard await gate.enabled else { throw SearchAgainError.unavailable }
         let queue: [QueueItem]
-        do { queue = try await lidarr.queueDetails(albumIds: [albumId]) } catch { throw SearchAgainError.unavailable }
+        do { queue = try await lidarr.queueDetails(albumIds: []) } catch { throw SearchAgainError.unavailable }
         lastLidarrContact = now()
-        let downloads = queue.filter { $0.albumId == albumId && $0.id != nil }
+        // I1, I2: only a copy still coming before import, and a download of this album alone.
+        let downloads = queue.filter {
+            $0.id != nil && $0.isDownloadingBeforeImport && Self.isOwnDownload($0, of: albumId, in: queue)
+        }
         // Only Magpie's to remove (the ledger); an owner's download stays and the search goes ahead without it.
         let removable = (try? await mayRemoveDownloads(r)) == true ? downloads : []
         if !removable.isEmpty, !confirmed { throw SearchAgainError.needsConfirmation }
-        guard request(id)?.canSearchAgain == true else { throw SearchAgainError.notNow }
+        guard let current = request(id), current.canSearchAgain else { throw SearchAgainError.notNow }
+        guard removable.isEmpty || !current.removalsUsedUp else { throw SearchAgainError.limitReached }
         await mutate(id) {
             $0.searchAgainAt = t
-            $0.stallRetries = 0
             $0.sourceStalledAt = nil
         }
-        do { try await removeFromQueue(removable, for: id) } catch { throw SearchAgainError.unavailable }
+        if !removable.isEmpty {
+            // M4: once anything was removed, the search goes ahead even if a later removal was refused.
+            do {
+                guard try await removeCounting(removable, for: id, manual: true) > 0 else {
+                    throw SearchAgainError.unavailable
+                }
+            } catch let error as SearchAgainError {
+                throw error
+            } catch {
+                throw SearchAgainError.unavailable
+            }
+        }
         await searchAgainNow(id)
     }
 
@@ -226,14 +257,38 @@ extension RequestRunner {
             && entry.requestId.map(live.contains) == true && entry.lidarrArtistId == r.lidarrArtistId
     }
 
-    /// Saves the request (M6), then `DELETE /queue/{id}` with exactly `queueRemoval` for each item, through the gate.
-    private func removeFromQueue(_ items: [QueueItem], for id: RequestID) async throws {
-        try await persist()
-        for item in items {
-            guard let queueId = item.id else { continue }
-            _ = try await gate.send("DELETE", "queue/\(queueId)?\(Self.queueRemoval)", body: nil)
-            stallWatch[queueId] = nil
+    /// One removal toward the request's `maxStallRetries` (automatic and by hand alike), counted and saved before
+    /// anything is sent (M6: a crash never refunds one), then `DELETE /queue/{id}` with exactly `queueRemoval` for
+    /// each item, through the gate. Returns how many were removed. When none was (the gate refused or couldn't
+    /// confirm), the count is rolled back (fix round 1 M2) and the error passed on; after one or more, a later
+    /// refusal is logged and the count stands.
+    private func removeCounting(_ items: [QueueItem], for id: RequestID, manual: Bool = false) async throws -> Int {
+        let before = request(id)
+        await mutate(id) {
+            $0.stallRetries = $0.stalls + 1
+            if !manual { $0.sourceStalledAt = self.now() }
         }
+        var removed = 0
+        do {
+            try await persist()
+            for item in items {
+                guard let queueId = item.id else { continue }
+                _ = try await gate.send("DELETE", "queue/\(queueId)?\(Self.queueRemoval)", body: nil)
+                stallWatch[queueId] = nil
+                removed += 1
+            }
+        } catch {
+            if removed == 0 {
+                await mutate(id) {
+                    $0.stallRetries = before?.stallRetries
+                    $0.sourceStalledAt = before?.sourceStalledAt
+                }
+                try? await persist()
+                throw error
+            }
+            Log.logger("requests").error("a copy wasn't removed: \(Log.category(of: error), privacy: .public)")
+        }
+        return removed
     }
 
     /// Back to searching: the runner's own AlbumSearch (`startSearch`). The blocklisting delete makes Lidarr record the

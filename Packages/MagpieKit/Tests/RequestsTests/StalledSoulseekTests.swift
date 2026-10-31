@@ -81,12 +81,38 @@ import MagpieCore
         await h.runner.tick()
         h.clock.advance(50); h.server.with { $0.queue = [self.soulseek(901, sizeleft: 55)] }
         await h.runner.tick()
-        h.clock.advance(50); h.server.with { $0.queue[0].tracked = "importPending" }
+        h.clock.advance(50); h.server.with { $0.queue[0].status = "queued" }
         await h.runner.tick()
         h.clock.advance(59); await h.runner.tick()
         #expect(deletes(h).isEmpty)
         h.clock.advance(1); await h.runner.tick()
         #expect(deletes(h).count == 1)
+    }
+
+    /// Fix round 1 I1: a copy that's complete, waiting to import, being imported or blocked from importing is never
+    /// "stalled": not after 10 minutes either. Only a copy still coming (downloading, something left) counts.
+    @Test(arguments: [("importPending", "completed", 0.0), ("importing", "completed", 0.0),
+                      ("importBlocked", "warning", 0.0), ("downloading", "completed", 0.0)])
+    func copyPastDownloadingNeverStalls(_ tracked: String, _ status: String, _ sizeleft: Double) async throws {
+        let (h, id) = try await searching()
+        var copy = soulseek(901, sizeleft: sizeleft)
+        copy.tracked = tracked; copy.status = status
+        h.server.with { $0.queue = [copy] }
+        for _ in 0..<11 { await h.runner.tick(); h.clock.advance(60) }
+        #expect(deletes(h).isEmpty)
+        #expect(await h.request(id)?.stallRetries == nil)
+    }
+
+    /// Fix round 1 I2: a stalled copy that's one download with another album (rows sharing its downloadId) is left
+    /// alone: removing it would take that album too.
+    @Test func sharedDownloadNeverRemoved() async throws {
+        let (h, id) = try await searching()
+        var mine = soulseek(901); mine.downloadId = "multi"
+        var other = soulseek(902, album: 99); other.downloadId = "multi"
+        h.server.with { $0.queue = [mine, other] }
+        for _ in 0..<5 { await h.runner.tick(); h.clock.advance(60) }
+        #expect(deletes(h).isEmpty)
+        #expect(await h.request(id)?.stallRetries == nil)
     }
 
     /// Re-read fresh right before: a download that moved meanwhile is left alone (and nothing is searched).
@@ -201,7 +227,8 @@ import MagpieCore
         #expect(deletes(h) == ["/lidarr/api/v1/queue/901?" + Self.deleteQuery])
         #expect(h.server.writeBodies().map(\.0).suffix(2) == ["DELETE queue/901", "POST command"])
         let r = try #require(await h.request(id))
-        #expect(r.state == .searching && r.searchAgainAt == h.clock.now && r.stallRetries == 0)
+        // Fix round 1 I3: a removal by hand counts toward the same five.
+        #expect(r.state == .searching && r.searchAgainAt == h.clock.now && r.stallRetries == 1)
 
         h.clock.advance(29)
         await #expect(throws: RequestRunner.SearchAgainError.tooSoon) {
@@ -211,6 +238,56 @@ import MagpieCore
         try await h.runner.searchAgain(id, removingDownload: false)   // nothing queued now: no question
         #expect(h.server.writeBodies().map(\.0).last == "POST command")
         #expect(deletes(h).count == 1)
+    }
+
+    /// Fix round 1 I3: five removals over the request's whole life, automatic and by hand together; a tap never
+    /// starts the count over. Once used up, Find another copy removes nothing (`removalsUsedUp`), and the count
+    /// survives a relaunch.
+    @Test func fiveRemovalsInAllEvenByHand() async throws {
+        let (h, id) = try await searching()
+        for n in 0..<3 {   // three automatic
+            h.server.with { $0.queue = [self.soulseek(901 + n)] }
+            await h.runner.tick(); h.clock.advance(60); await h.runner.tick()
+        }
+        for n in 3..<5 {   // two by hand
+            h.server.with { $0.queue = [self.soulseek(901 + n)] }
+            await h.runner.tick()
+            h.clock.advance(31)
+            try await h.runner.searchAgain(id, removingDownload: true)
+        }
+        #expect(h.server.with { $0.removedFromQueue } == [901, 902, 903, 904, 905])
+        #expect(await h.request(id)?.stallRetries == 5)
+        #expect(await h.request(id)?.removalsUsedUp == true)
+
+        h.server.with { $0.queue = [self.soulseek(906)] }
+        await h.runner.tick()
+        h.clock.advance(31)
+        await #expect(throws: RequestRunner.SearchAgainError.limitReached) {
+            try await h.runner.searchAgain(id, removingDownload: true)
+        }
+        h.clock.advance(60); await h.runner.tick()
+        #expect(h.server.with { $0.removedFromQueue }.count == 5, "the sixth copy stays")
+
+        await h.runner.stop()
+        let again = await Harness(directory: h.dir, lidarr: h.server)
+        #expect(await again.runner.load())
+        #expect(await again.request(id)?.stallRetries == 5)
+        again.clock.advance(again.clock.now.distance(to: h.clock.now) + 31)
+        await #expect(throws: RequestRunner.SearchAgainError.limitReached) {
+            try await again.runner.searchAgain(id, removingDownload: true)
+        }
+    }
+
+    /// Fix round 1 I1: Find another copy never removes a copy past downloading (here waiting to import): no question,
+    /// nothing removed.
+    @Test func searchAgainLeavesACopyPastDownloading() async throws {
+        let (h, id) = try await searching()
+        var copy = soulseek(901, sizeleft: 0)
+        copy.tracked = "importPending"; copy.status = "completed"
+        h.server.with { $0.queue = [copy] }
+        await h.runner.tick()
+        try await h.runner.searchAgain(id, removingDownload: false)
+        #expect(deletes(h).isEmpty)
     }
 
     /// No download: no question, just the search.
