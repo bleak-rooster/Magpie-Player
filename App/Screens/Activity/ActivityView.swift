@@ -235,15 +235,15 @@ struct RequestDetailView: View {
         case .findAnotherCopy:
             // Once per 30 s: the clock only re-enables the button on this screen (nothing is read from the servers).
             TimelineView(.periodic(from: .now, by: 1)) { context in
-                let waits = model.findAnotherCopyWaits(request, now: context.date)
+                let hold = model.findAnotherCopyHold(request, now: context.date)
                 VStack(spacing: Tokens.Spacing.xs) {
                     Button(RequestCopy.findAnotherCopy) { Task { await findAnotherCopy(removingCopy: false) } }
                         .buttonStyle(.bordered)
                         .frame(minHeight: Tokens.minHitSize)
-                        .disabled(working || waits)
+                        .disabled(working || hold != nil)
                         .accessibilityIdentifier("request-find-another-copy")
-                    if waits || anotherCopyNote != nil {
-                        Text(waits ? RequestCopy.askAgainSoon : anotherCopyNote ?? "").font(.footnote)
+                    if let note = hold ?? anotherCopyNote {
+                        Text(note).font(.footnote)
                             .foregroundStyle(themed.palette.ink2Color).multilineTextAlignment(.center)
                             .accessibilityIdentifier("request-find-another-note")
                     }

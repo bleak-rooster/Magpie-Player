@@ -50,9 +50,18 @@ extension AppModel {
             return .needsConfirmation
         } catch RequestRunner.SearchAgainError.tooSoon {
             return .tooSoon
+        } catch RequestRunner.SearchAgainError.limitReached {
+            return .failed(RequestCopy.anotherCopyUsedUp)
         } catch {
             return .failed(RequestCopy.findAnotherFailed)
         }
+    }
+
+    /// Why Find another copy is off right now, in one line; nil when it's on. Five copies dropped is for good (fix
+    /// round 1 I3); otherwise it's held back for 30 s after the last one (R17).
+    func findAnotherCopyHold(_ request: MagpieRequest, now: Date = Date()) -> String? {
+        if request.removalsUsedUp { return RequestCopy.anotherCopyUsedUp }
+        return findAnotherCopyWaits(request, now: now) ? RequestCopy.askAgainSoon : nil
     }
 
     /// Find another copy is held back for 30 s after the last one (R17).

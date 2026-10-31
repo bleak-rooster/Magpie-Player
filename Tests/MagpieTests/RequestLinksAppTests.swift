@@ -164,7 +164,7 @@ private let artistMBID = MBID("00000000-0000-0000-0000-000000000001")!
         #expect(RequestCopy.stuckCopySetting == "Give up on a stuck copy after")
         for text in [RequestCopy.sourceStalled, RequestCopy.findAnotherCopy, RequestCopy.findAnotherTitle,
                      RequestCopy.findAnotherMessage, RequestCopy.askAgainSoon, RequestCopy.findAnotherFailed,
-                     RequestCopy.stuckCopySetting, RequestsSettingsView.stuckCopyFooter] {
+                     RequestCopy.stuckCopySetting, RequestsSettingsView.stuckCopyFooter, RequestCopy.anotherCopyUsedUp] {
             for word in ["Lidarr", "Soulseek", "slskd", "blocklist", "Search again", "download", "stalled"] {
                 #expect(!text.localizedCaseInsensitiveContains(word), "§9: \(word) in \(text)")
             }
@@ -193,6 +193,20 @@ private let artistMBID = MBID("00000000-0000-0000-0000-000000000001")!
         r.searchAgainAt = t0
         #expect(model.findAnotherCopyWaits(r, now: t0.addingTimeInterval(29)))
         #expect(!model.findAnotherCopyWaits(r, now: t0.addingTimeInterval(30)))
+    }
+
+    /// Fix round 1 I3: after five copies were dropped (automatically or by hand), Find another copy stays on the page
+    /// but is off, with one line saying why; the 30 s hold has its own line.
+    @Test func findAnotherCopyOffOnceFiveWereDropped() {
+        let model = makeModel()
+        var r = Self.request(.waiting(reason: WaitReason(.stillLooking, since: t0), retryAt: t0))
+        #expect(model.findAnotherCopyHold(r, now: t0) == nil)
+        r.searchAgainAt = t0
+        #expect(model.findAnotherCopyHold(r, now: t0.addingTimeInterval(10)) == RequestCopy.askAgainSoon)
+        r.stallRetries = RequestRunner.maxStallRetries
+        #expect(model.findAnotherCopyHold(r, now: t0.addingTimeInterval(60)) == RequestCopy.anotherCopyUsedUp)
+        #expect(RequestPageAction.actions(for: r).contains(.findAnotherCopy))
+        #expect(RequestCopy.anotherCopyUsedUp == "Magpie has dropped five copies of this one. It keeps looking on its own.")
     }
 
     /// Find another copy without a runner says so calmly; nothing is sent.
