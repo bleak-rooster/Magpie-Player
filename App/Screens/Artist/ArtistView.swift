@@ -89,6 +89,7 @@ struct ArtistView: View {
                         }
                         .buttonStyle(.plain)
                         .accessibilityAddTraits(.isButton)
+                        .songSwipeActions(song, in: .stack)   // R12
                     }
                 }
             }

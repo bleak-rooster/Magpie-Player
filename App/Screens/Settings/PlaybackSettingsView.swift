@@ -1,7 +1,8 @@
 import MagpieCore
 import SwiftUI
 
-/// Settings › Playback: streaming quality per network, volume levelling and the sleep timer's default.
+/// Settings › Playback: streaming quality per network, volume levelling, the sleep timer's default, swipe actions and
+/// asking before replacing the queue (R12).
 struct PlaybackSettingsView: View {
     @Environment(AppModel.self) private var model
 
@@ -32,9 +33,29 @@ struct PlaybackSettingsView: View {
                     ForEach(SleepTimerOption.allCases, id: \.self) { Text(Self.title($0)).tag($0) }
                 }
             }
+            Section {
+                swipePicker("Swipe right", binding(\.swipeRight))
+                swipePicker("Swipe left", binding(\.swipeLeft))
+            } header: {
+                Text("Swipe actions")
+            } footer: {
+                Text("On a song. Where a row has its own Remove, swipe left shows both, and Remove always takes a second tap.")
+            }
+            Section {
+                Toggle("Ask before replacing the queue", isOn: binding(\.askBeforeReplacingQueue))
+                    .accessibilityIdentifier("ask-before-replacing")
+            } footer: {
+                Text("When you tap a song to play while other songs are queued. Never in the car.")
+            }
         }
         .navigationTitle("Playback")
         .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private func swipePicker(_ title: String, _ selection: Binding<SwipeAction>) -> some View {
+        Picker(title, selection: selection) {
+            ForEach(SwipeAction.allCases, id: \.self) { Text(QueueCopy.title($0)).tag($0) }
+        }
     }
 
     /// The Settings row's value: the Wi-Fi quality, then mobile data's when it differs ("Original · AAC 160 kbps on mobile").

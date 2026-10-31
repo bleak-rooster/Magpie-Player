@@ -76,6 +76,7 @@ struct SongsListView: View {
                 .accessibilityAddTraits(.isButton)
                 .accessibilityIdentifier("song-\(index)")
                 .contextMenu { SongDownloadMenuItem(song: song, removing: $removing) }
+                .songSwipeActions(song, in: .stack)   // R12
                 .onAppear { if index == songs.count - 1 { Task { await list.loadMore() } } }
                 .id(song.id)
                 Divider().overlay(p.sepColor).padding(.leading, 76)

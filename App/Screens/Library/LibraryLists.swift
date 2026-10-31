@@ -34,6 +34,7 @@ struct ArtistsListView: View {
                                 .accessibilityElement(children: .combine)
                             }
                             .reloadArtworkMenu(artist.coverArtId)   // P4
+                            .collectionSwipeActions(.artist(artist.id), in: .list)   // R12
                             .listRowBackground(Color.clear)
                         }
                     }
@@ -161,6 +162,7 @@ struct PlaylistsListView: View {
                                 .accessibilityElement(children: .combine)
                             }
                             .reloadArtworkMenu(playlist.coverArtId)   // P4
+                            .collectionSwipeActions(.playlist(playlist.id), in: .list)   // R12
                             .listRowBackground(Color.clear)
                         }
                     }

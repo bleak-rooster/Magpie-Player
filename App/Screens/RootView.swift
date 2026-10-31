@@ -63,6 +63,7 @@ struct MainTabs: View {
             NowPlayingView().environment(navigator)
         }
         .environment(navigator)
+        .queueActionsPresenter()   // R12
     }
 }
 

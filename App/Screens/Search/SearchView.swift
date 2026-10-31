@@ -313,10 +313,11 @@ private struct SearchContent: View {
         .accessibilityAddTraits(.isButton)
         .accessibilityIdentifier(id ?? "search-song-\(index)")
         .contextMenu {
-            Button("Play Next", systemImage: "text.line.first.and.arrowtriangle.forward") { app.player.playNext([song]) }
-            Button("Add to Queue", systemImage: "text.line.last.and.arrowtriangle.forward") { app.player.addToEnd([song]) }
+            Button(QueueCopy.playNext, systemImage: QueueCopy.symbol(.playNext)) { app.place([song], .next) }
+            Button("Add to queue", systemImage: QueueCopy.symbol(.addToQueue)) { app.place([song], .end) }
             SongDownloadMenuItem(song: song, removing: $removing)
         }
+        .songSwipeActions(song, in: .list)   // R12
         .listRowInsets(EdgeInsets())
         .listRowBackground(Color.clear)
     }
@@ -337,6 +338,7 @@ private struct SearchContent: View {
             .accessibilityElement(children: .combine)
         }
         .reloadArtworkMenu(artist.coverArtId)   // P4
+        .collectionSwipeActions(.artist(artist.id), in: .list)   // R12
         .simultaneousGesture(TapGesture().onEnded { remember(model.query) })
         .listRowBackground(Color.clear)
     }
@@ -357,6 +359,7 @@ private struct SearchContent: View {
             .accessibilityElement(children: .combine)
         }
         .reloadArtworkMenu(album.coverArtId)   // P4
+        .collectionSwipeActions(.album(album.id), in: .list)   // R12
         .simultaneousGesture(TapGesture().onEnded { remember(model.query) })
         .listRowBackground(Color.clear)
     }
