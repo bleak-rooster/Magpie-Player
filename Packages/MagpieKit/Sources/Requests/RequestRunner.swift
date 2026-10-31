@@ -913,7 +913,9 @@ public actor RequestRunner {
 
     private func startSearch(_ id: RequestID) async {
         guard let r = request(id) else { return }
-        if r.skipNextSearch || r.albumId == nil {
+        // M3 ruling: once five copies were dropped, Magpie sends no searches of its own for this request; Lidarr's
+        // own monitoring carries on and the request stays live until its normal expiry.
+        if r.skipNextSearch || r.albumId == nil || r.removalsUsedUp {
             await mutate(id) {
                 $0.skipNextSearch = false
                 if $0.searchStartedAt == nil { $0.searchStartedAt = self.now() }

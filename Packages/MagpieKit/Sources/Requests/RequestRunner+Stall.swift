@@ -11,7 +11,8 @@ public enum StallLimit: Int, CaseIterable, Sendable, Identifiable {
 
     public var id: Int { rawValue }
     public var seconds: TimeInterval { TimeInterval(rawValue) }
-    public var title: String { "\(rawValue / 60) min" }
+    /// Read naturally in the setting's picker: "1 minute", "2 minutes"… (fix round 1 M7).
+    public var title: String { rawValue == 60 ? "1 minute" : "\(rawValue / 60) minutes" }
 
     /// A saved value; anything that isn't one of the choices reads as the default.
     public init(seconds: TimeInterval) {
@@ -150,10 +151,9 @@ extension RequestRunner {
         }
         guard !stalled.isEmpty, (try? await mayRemoveDownloads(r)) == true else { return false }
         if r.stallsUsedUp {
-            // Waits as still looking; nothing more is removed. A download that moves again starts over (above).
-            if case .waiting = r.state { return true }
-            await apply(id, .stalled)
-            return true
+            // M3 ruling: nothing more is removed and nothing searched; the stuck copy is left to Lidarr, and the poll
+            // carries on as usual. A download that moves again starts over (above).
+            return false
         }
         return await giveUp(on: stalled, for: id)
     }

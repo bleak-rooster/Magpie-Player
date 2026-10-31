@@ -154,7 +154,11 @@ private let artistMBID = MBID("00000000-0000-0000-0000-000000000001")!
 
         var usedUp = Self.request(.waiting(reason: WaitReason(.stillLooking, since: t0), retryAt: t0))
         usedUp.stallRetries = RequestRunner.maxStallRetries
-        #expect(RequestCopy.status(usedUp) == "Still looking…")
+        #expect(RequestCopy.status(usedUp) == RequestCopy.anotherCopyUsedUp, "M3: one line for the capped state")
+        var capped = Self.request(.downloading(progress: 0.4))
+        capped.stallRetries = RequestRunner.maxStallRetries
+        #expect(RequestCopy.status(capped) == RequestCopy.anotherCopyUsedUp)
+        #expect(RequestPageAction.actions(for: capped).contains(.stopLooking), "it can still be let go")
         #expect(RequestPageAction.actions(for: usedUp).contains(.findAnotherCopy))
 
         #expect(RequestCopy.status(.resolving) == "Looking…")
@@ -206,7 +210,7 @@ private let artistMBID = MBID("00000000-0000-0000-0000-000000000001")!
         r.stallRetries = RequestRunner.maxStallRetries
         #expect(model.findAnotherCopyHold(r, now: t0.addingTimeInterval(60)) == RequestCopy.anotherCopyUsedUp)
         #expect(RequestPageAction.actions(for: r).contains(.findAnotherCopy))
-        #expect(RequestCopy.anotherCopyUsedUp == "Magpie has dropped five copies of this one. It keeps looking on its own.")
+        #expect(RequestCopy.anotherCopyUsedUp == "Tried five copies. Your library keeps watching for another.")
     }
 
     /// Find another copy without a runner says so calmly; nothing is sent.
@@ -219,7 +223,7 @@ private let artistMBID = MBID("00000000-0000-0000-0000-000000000001")!
 
     /// Settings › New music "Give up on a stuck copy after": 1, 2, 5, 10 min; 1 min unless changed; kept.
     @Test func stuckCopySettingValues() {
-        #expect(StallLimit.allCases.map(\.title) == ["1 min", "2 min", "5 min", "10 min"])
+        #expect(StallLimit.allCases.map(\.title) == ["1 minute", "2 minutes", "5 minutes", "10 minutes"])
         #expect(StallLimit.allCases.map(\.seconds) == [60, 120, 300, 600])
         let model = makeModel()
         #expect(model.stallLimit == .oneMinute)

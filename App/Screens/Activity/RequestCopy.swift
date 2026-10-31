@@ -64,8 +64,11 @@ enum RequestCopy {
     static func status(_ request: MagpieRequest, context: WaitContext = .unknown) -> String {
         if request.isNotListed { return notListed }
         if request.isSourceStalled { return sourceStalled }   // R17
-        if request.stallsUsedUp, case .waiting(let reason, _) = request.state, reason.kind == .stillLooking {
-            return stillTrying
+        if request.removalsUsedUp, request.isActive {   // M3 ruling: one line for the capped state
+            switch request.state {
+            case .searching, .downloading, .waiting: return anotherCopyUsedUp
+            default: break
+            }
         }
         if request.isFind, request.state == .ready {
             if request.notForMeNeedsAttention { return notForMeNeedsAttention }
@@ -158,8 +161,9 @@ enum RequestCopy {
     static let findAnotherTitle = "Look for another copy?"
     static let findAnotherMessage = "Magpie drops the copy it's getting now and won't pick that one again."
     static let askAgainSoon = "You can ask again in a moment."
-    /// Five copies dropped (automatically and by hand together): Find another copy is off for good (fix round 1 I3).
-    static let anotherCopyUsedUp = "Magpie has dropped five copies of this one. It keeps looking on its own."
+    /// Five copies dropped (automatically and by hand together): Find another copy is off for good (fix round 1 I3),
+    /// Magpie sends no more searches of its own, and the owner's library watches for another (M3 ruling).
+    static let anotherCopyUsedUp = "Tried five copies. Your library keeps watching for another."
     static let findAnotherFailed = "Couldn't look for another copy right now. Try again in a moment."
     /// Settings › New music.
     static let stuckCopySetting = "Give up on a stuck copy after"

@@ -172,8 +172,9 @@ import MagpieCore
         #expect(owned.server.writeBodies().map(\.0) == ["POST command"], "only the Try's own search")
     }
 
-    /// At most 5 automatic stall retries; then it waits as Still looking, and nothing more is removed.
-    @Test func fiveRetriesThenStillLooking() async throws {
+    /// At most 5 automatic stall retries. Then (M3 ruling) Magpie sends no more searches of its own for the request:
+    /// Lidarr's own monitoring carries on, the request stays live, and nothing more is removed.
+    @Test func fiveRetriesThenNoMoreOwnSearches() async throws {
         let (h, id) = try await searching()
         for n in 0..<6 {
             h.server.with { $0.queue = [self.soulseek(901 + n)] }
@@ -184,16 +185,23 @@ import MagpieCore
         #expect(h.server.with { $0.removedFromQueue } == [901, 902, 903, 904, 905])
         let r = try #require(await h.request(id))
         #expect(r.stallRetries == RequestRunner.maxStallRetries)
-        guard case .waiting(let reason, _) = r.state else { Issue.record("not waiting: \(r.state)"); return }
-        #expect(reason.kind == .stillLooking)
-        #expect(r.stallsUsedUp)
+        #expect(r.stallsUsedUp && r.isActive)
         #expect(h.server.with { $0.queue.map(\.id) } == [906], "the sixth download stays")
+
+        let searches = { h.server.writeBodies().filter { $0.1["name"] as? String == "AlbumSearch" }.count }
+        let atCap = searches()
+        for _ in 0..<15 { h.clock.advance(60); await h.runner.tick() }   // the stuck copy stays 15 minutes
+        h.server.with { s in s.queue = []; s.history = [.init(albumId: 31, type: "downloadFailed", date: h.clock.now)] }
+        for _ in 0..<15 { h.clock.advance(120); await h.runner.tick() }  // and Lidarr says it failed
+        #expect(searches() == atCap, "no search of Magpie's own after the cap")
+        #expect(h.server.with { $0.removedFromQueue }.count == 5)
+        #expect(await h.request(id)?.isActive == true, "still live until its normal expiry")
     }
 
     /// Settings › Requests: "Stalled downloads give up after" 1, 2, 5 or 10 minutes, 1 by default; the runner uses it.
     @Test func stallLimitSetting() async throws {
         #expect(StallLimit.allCases.map(\.seconds) == [60, 120, 300, 600])
-        #expect(StallLimit.allCases.map(\.title) == ["1 min", "2 min", "5 min", "10 min"])
+        #expect(StallLimit.allCases.map(\.title) == ["1 minute", "2 minutes", "5 minutes", "10 minutes"])
         #expect(StallLimit.standard == .oneMinute)
         #expect(StallLimit(seconds: 300) == .fiveMinutes)
         #expect(StallLimit(seconds: 7) == .oneMinute, "anything else reads as the default")
