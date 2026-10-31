@@ -41,6 +41,21 @@ import os
         #expect(t.requests.last.flatMap { queryValue($0, "id") } == "s9")
     }
 
+    /// R9 Song info: the file's facts from getSong, never its path; zero or negative values read as unknown.
+    @Test func songDetailsById() async throws {
+        let body = Data(#"{"subsonic-response":{"status":"ok","version":"1.16.1","song":{"id":"s9","title":"Harbour Lights","artist":"Judie Tzuke","album":"The Cat Is Out","duration":232,"year":1985,"size":34567890,"playCount":12,"suffix":"flac","bitRate":1011,"samplingRate":44100,"bitDepth":16,"path":"/music/secret/01.flac"}}}"#.utf8)
+        let (client, t) = try await connected { $0.stub(pathSuffix: "/rest/getSong", body: body) }
+        let d = try await client.songDetails(id: "s9")
+        #expect(d.song.id == "s9" && d.year == 1985 && d.size == 34_567_890 && d.playCount == 12)
+        #expect(d.suffix == "flac" && d.bitRate == 1011 && d.samplingRate == 44100 && d.bitDepth == 16)
+        #expect(!String(describing: d).contains("secret"), "the path is never read")
+        #expect(t.requests.last.flatMap { queryValue($0, "id") } == "s9")
+        let zero = Data(#"{"subsonic-response":{"status":"ok","version":"1.16.1","song":{"id":"s1","year":0,"size":-1,"bitRate":0,"samplingRate":0,"bitDepth":0}}}"#.utf8)
+        let (client2, _) = try await connected { $0.stub(pathSuffix: "/rest/getSong", body: zero) }
+        let z = try await client2.songDetails(id: "s1")
+        #expect(z.year == nil && z.size == nil && z.bitRate == nil && z.samplingRate == nil && z.bitDepth == nil && z.playCount == nil)
+    }
+
     @Test func compilationArtistIsVarious() async throws {
         let (client, _) = try await connected {
             $0.stub(pathSuffix: "/rest/getAlbum", body: Fixtures.data("getAlbum-compilation"))

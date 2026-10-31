@@ -45,6 +45,13 @@ public struct OfflineCatalog: Sendable {
         albums().filter { album in album.songs?.contains { Self.artistKey($0.artistId, $0.artist) == id } == true }
     }
 
+    /// The downloaded album and artist pages a downloaded song belongs to (their ids here), or nil when it isn't
+    /// downloaded (round 11 R10: Now Playing's links offline).
+    public func pages(ofSong songId: String) -> (albumId: String, artistId: String)? {
+        guard let meta = downloads.first(where: { $0.songId == songId })?.metadata else { return nil }
+        return (Self.albumKey(meta), Self.artistKey(meta.artistId, meta.artist))
+    }
+
     // MARK: - Artists
 
     /// The artists of the downloads, sorted by name; `albumCount` counts their downloaded albums.
