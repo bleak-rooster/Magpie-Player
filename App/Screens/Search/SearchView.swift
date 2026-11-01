@@ -20,7 +20,7 @@ struct SearchView: View {
                                       set: { if let navigator { navigator.search = $0 } else { ownPath = $0 } })) {
             Group {
                 if let model {
-                    SearchContent(model: model, scope: scope)
+                    SearchContent(model: model, scope: scope, depth: navigator?.search.count ?? ownPath.count)
                 } else {
                     Color.clear
                 }
@@ -60,6 +60,9 @@ private struct SearchContent: View {
     @Environment(AppModel.self) private var app
     let model: SearchModel
     let scope: SearchScope
+    /// How deep the tab's stack is: a row that opens a page remembers the search (R19: no gesture on the rows, which
+    /// took their taps).
+    let depth: Int
     @State private var recents = RecentSearches().items
     @State private var trying: TryTarget?
     @State private var removing: Song?
@@ -104,6 +107,7 @@ private struct SearchContent: View {
         .scrollDismissesKeyboard(.interactively)
         .sheet(item: $trying) { TrySheet(recording: $0.recording) }
         .songRemovalDialog($removing)
+        .onChange(of: depth) { old, new in if new > old, !model.query.isEmpty { remember(model.query) } }
     }
 
     // MARK: - Start
@@ -159,13 +163,17 @@ private struct SearchContent: View {
         if scope == .all || scope == .artists, !sections.artists.isEmpty {
             Section {
                 header("Artists")
-                ForEach(sections.artists, id: \.id) { artistRow($0) }
+                ForEach(Array(sections.artists.enumerated()), id: \.element.id) { i, a in
+                    artistRow(a).accessibilityIdentifier("search-artist-\(i)")
+                }
             }
         }
         if scope == .all || scope == .albums, !sections.albums.isEmpty {
             Section {
                 header("Albums")
-                ForEach(sections.albums, id: \.id) { albumRow($0) }
+                ForEach(Array(sections.albums.enumerated()), id: \.element.id) { i, a in
+                    albumRow(a).accessibilityIdentifier("search-album-\(i)")
+                }
             }
         }
         notYetBand(sections.notYet)
@@ -381,7 +389,6 @@ private struct SearchContent: View {
         }
         .artistMenu(artist)   // R12, R7 Favourite, P4 Reload artwork
         .collectionSwipeActions(.artist(artist.id), in: .list)   // R12
-        .simultaneousGesture(TapGesture().onEnded { remember(model.query) })
         .listRowBackground(Color.clear)
     }
 
@@ -402,7 +409,6 @@ private struct SearchContent: View {
         }
         .albumMenu(album)   // R12, R7 Favourite, R8 Add to playlist…, P4 Reload artwork
         .collectionSwipeActions(.album(album.id), in: .list)   // R12
-        .simultaneousGesture(TapGesture().onEnded { remember(model.query) })
         .listRowBackground(Color.clear)
     }
 
