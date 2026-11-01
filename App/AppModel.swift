@@ -134,6 +134,8 @@ final class AppModel {
     @ObservationIgnored let tokenStore: any ListenBrainzTokenStoring
     @ObservationIgnored let setupStore: LidarrSetupStore
     @ObservationIgnored let findsStore: FindsSetupStore
+    /// R18: Add with my defaults, When you add an artist, and the Keep a menu asked for (AppModel+NewMusic.swift).
+    @ObservationIgnored let newMusic: NewMusicSettings
     @ObservationIgnored let gateDefaultsSuite: String?
     @ObservationIgnored let gateDefaults: UserDefaults
     @ObservationIgnored let appDefaults: UserDefaults
@@ -277,6 +279,7 @@ final class AppModel {
         self.localNetwork = LocalNetworkAccess(prober: prober, defaults: defaults)
         self.setupStore = LidarrSetupStore(defaults: defaults)
         self.findsStore = FindsSetupStore(defaults: defaults)
+        self.newMusic = NewMusicSettings(defaults: defaults)
         self.countPlays = defaults.object(forKey: Self.countPlaysKey) as? Bool ?? true
         self.hasListenBrainzToken = tokenStore.load() != nil
         let counting = PlayCounting(on: defaults.object(forKey: Self.countPlaysKey) as? Bool ?? true)

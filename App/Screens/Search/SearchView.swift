@@ -356,6 +356,7 @@ private struct SearchContent: View {
         .accessibilityIdentifier(id ?? "search-song-\(index)")
         .contextMenu {
             SongQueueMenuItems(song: song)
+            FindsLibraryMenuItem(songId: song.id, artist: song.artist, host: FindsLibraryMenuItem.main)   // R18/R20: Keep
             SongDownloadMenuItem(song: song, removing: $removing)
         }
         .songSwipeActions(song, in: .list)   // R12

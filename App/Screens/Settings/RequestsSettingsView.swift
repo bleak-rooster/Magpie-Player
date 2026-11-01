@@ -3,7 +3,7 @@ import LidarrKit
 import Requests
 import SwiftUI
 
-/// Settings › New music (R20; was Requests): Lidarr (connect, set up, the G1 switch, the main root folder, Finds, the change log), and
+/// Settings › New music (R20; was Settings › Requests): Lidarr (connect, set up, the G1 switch, the main root folder, Finds, the change log), and
 /// the T2 "Allow This Address" step. Offline (Task 14) every Lidarr action is disabled, under "You're offline".
 struct RequestsSettingsView: View {
     @Environment(AppModel.self) private var model
@@ -22,6 +22,7 @@ struct RequestsSettingsView: View {
                 Section { OfflineNotice() }   // just above the Lidarr sections it disables
             }
             Group { lidarrSections }.disabled(model.isOffline)
+            if model.lidarr != nil { NewMusicDefaultsSection() }   // R18 + R20
         }
         .navigationTitle("New music")
         .navigationBarTitleDisplayMode(.inline)

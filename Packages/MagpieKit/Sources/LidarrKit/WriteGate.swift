@@ -348,9 +348,10 @@ enum ForbiddenWrites {
         return nil
     }
 
-    /// The only fields Keep, its restore and Bring in more send (FM1). Never `monitored`, `metadataProfileId`…
+    /// The only fields Keep, its restore, Bring in more and Add to your library send (FM1). `metadataProfileId`
+    /// (R18) only alone, see `editorReason`.
     static let editorKeys: Set<String> = ["artistids", "rootfolderpath", "movefiles", "qualityprofileid", "tags",
-                                          "applytags", "monitornewitems", "monitored"]
+                                          "applytags", "monitornewitems", "monitored", "metadataprofileid"]
 
     /// Only `editorKeys`, exactly one artist id, no `deleteFiles` / `addImportListExclusion` key at any depth;
     /// `applyTags` (at most one) is add or remove and comes with `tags`; `moveFiles` is a boolean and comes with a
@@ -383,6 +384,13 @@ enum ForbiddenWrites {
             guard monitoring.count == 1, object.count == 2, isBoolean(monitored), (monitored as? NSNumber)?.boolValue == true,
                   let ids = value("artistids") as? [Any], ids.count == 1, isPositiveInteger(ids[0]) else {
                 return "monitoring changes one artist to monitored and nothing else"
+            }
+        }
+        // R18: release types are exactly `{artistIds: [one id], metadataProfileId: <positive id>}`. Which artist and
+        // which profile (Magpie's own only), the gate's confinement decides.
+        if let profile = object.first(where: { $0.key.lowercased() == "metadataprofileid" })?.value {
+            guard object.count == 2, isPositiveInteger(profile) else {
+                return "a metadata profile changes one artist's profile and nothing else"
             }
         }
         if let follow = object.first(where: { $0.key.lowercased() == "monitornewitems" })?.value {

@@ -95,6 +95,8 @@ final class FakeLidarr: @unchecked Sendable {
         var recorded: String? = nil
         /// Bring in more (Task 7.1b): Follow new releases sets it through the artist editor.
         var monitorNewItems = "none"
+        /// R18: the metadata profile (release types); Add to your library sets it through the artist editor.
+        var metadata = 3
         var currentPath: String { path ?? root + "/Aurora Field" }
     }
     /// A `/command` row (Keep's BulkMoveArtist, A3).
@@ -120,6 +122,8 @@ final class FakeLidarr: @unchecked Sendable {
         var type = "Album"; var duration: Int? = nil; var releaseDate: String? = nil
         /// Lidarr's `statistics.trackFileCount` (Bring in more counts a release as arrived once it has files).
         var trackFiles = 0
+        /// R18: Lidarr's secondary album types ("Live"…); empty is a studio release.
+        var secondary: [String] = []
     }
     /// Not for me (Task 6.2c): a track file besides the artist's song (id 1, album 50). `path` is where Lidarr
     /// records it; `onDisk` where it really is (nil: gone).
@@ -320,6 +324,7 @@ final class FakeLidarr: @unchecked Sendable {
                     }
                     if let q = body["qualityProfileId"] as? Int { s.artists[i].quality = q }
                     if let m = body["monitorNewItems"] as? String { s.artists[i].monitorNewItems = m }
+                    if let m = body["metadataProfileId"] as? Int { s.artists[i].metadata = m }
                     if let root = body["rootFolderPath"] as? String, body["moveFiles"] as? Bool == false {
                         // Path only, from the existing folder name; nothing moves.
                         let folder = String(s.artists[i].currentPath.split(separator: "/").last!)
@@ -497,6 +502,7 @@ final class FakeLidarr: @unchecked Sendable {
                                           "statistics": ["trackFileCount": $0.trackFiles]]
                 if let d = $0.duration { row["duration"] = d }
                 if let date = $0.releaseDate { row["releaseDate"] = date }
+                row["secondaryTypes"] = $0.secondary
                 return row
             } })
         }
@@ -617,7 +623,7 @@ final class FakeLidarr: @unchecked Sendable {
     static func artistJSON(_ a: Artist) -> [String: Any] {
         ["id": a.id, "artistName": "A", "foreignArtistId": a.mbid.rawValue, "rootFolderPath": a.root,
          "path": a.currentPath, "monitored": true, "tags": a.tags, "qualityProfileId": a.quality,
-         "monitorNewItems": a.monitorNewItems]
+         "monitorNewItems": a.monitorNewItems, "metadataProfileId": a.metadata]
     }
 
     /// Lidarr already has the artist (id 7) with the album (id 31) and a live album (id 33).

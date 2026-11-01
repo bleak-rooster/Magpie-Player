@@ -12,7 +12,7 @@ struct ActivityView: View {
     /// R20: Ready finds a Keep (the leading swipe) is running for, what it said, and Bring in more after a move (D5).
     @State private var keeping: Set<RequestID> = []
     @State private var keepMessage: String?
-    @State private var bringingInMore: KeptRequestFind?
+    @State private var addingMore: AddFlowRequest?
     private let themed = Themed()
 
     var body: some View {
@@ -47,7 +47,7 @@ struct ActivityView: View {
         .refreshable { model.pollRequests() }
         .task { if outsideArt == nil { outsideArt = model.makeOutsideArt() } }
         .onDisappear { outsideArt?.reset() }
-        .sheet(item: $bringingInMore) { BringInMoreSheet(requestId: $0.id, keptMessage: $0.message) }
+        .addFlow($addingMore) { keepMessage = $0.message }
         .alert(keepMessage ?? "", isPresented: Binding(get: { keepMessage != nil }, set: { if !$0 { keepMessage = nil } })) {
             Button("OK", role: .cancel) {}
         }
@@ -61,7 +61,7 @@ struct ActivityView: View {
             Task {
                 let reply = await model.keep(id)
                 if reply.bringsInMore {
-                    bringingInMore = KeptRequestFind(id: id, message: reply.message)
+                    addingMore = model.afterKeepRequest(id, artist: request.recording.artist, kept: reply.message)
                 } else {
                     keepMessage = reply.message
                 }
@@ -150,9 +150,10 @@ struct RequestDetailView: View {
     @State private var working = false
     @State private var message: String?
     @State private var asking: NotForMeConfirm?
-    @State private var bringingInMore: String?
     /// R16: the cover from outside while this screen is open (R15 rules: memory only, fetched again when it opens).
     @State private var outsideArt: OutsideArtLoader?
+    /// R20: after a Keep that moved the find, "Kept. Add more from <artist>?" (the Add sheet, X7).
+    @State private var addingMore: AddFlowRequest?
     private let themed = Themed()
 
     var body: some View {
@@ -224,9 +225,7 @@ struct RequestDetailView: View {
         } message: { confirm in
             Text(confirm.message)
         }
-        .sheet(item: Binding(get: { bringingInMore.map { KeptFind(message: $0) } }, set: { bringingInMore = $0?.message })) {
-            BringInMoreSheet(requestId: requestId, keptMessage: $0.message)
-        }
+        .addFlow($addingMore) { message = $0.message }
     }
 
     private func subtitle(_ r: MagpieRequest) -> String {
@@ -335,12 +334,16 @@ struct RequestDetailView: View {
         }
     }
 
-    /// Keep, as in Finds: Bring in more follows a move (D5); otherwise what happened shows here.
+    /// Keep, as in Finds: the Add sheet follows a move (D5, R20); otherwise what happened shows here.
     private func keep() async {
         working = true
         defer { working = false }
         let reply = await model.keep(requestId)
-        if reply.bringsInMore { bringingInMore = reply.message } else { message = reply.message }
+        if reply.bringsInMore, let request = model.requests.first(where: { $0.id == requestId }) {
+            addingMore = model.afterKeepRequest(requestId, artist: request.recording.artist, kept: reply.message)
+        } else {
+            message = reply.message
+        }
     }
 
     private func askNotForMe() async {
@@ -367,14 +370,3 @@ struct RequestDetailView: View {
     }
 }
 
-/// The Bring in more sheet after a Keep on a request page moved the find (D5).
-private struct KeptFind: Identifiable {
-    let message: String
-    var id: String { message }
-}
-
-/// R20: a kept find from a Requests row that moved into the library, for the Bring in more sheet (D5).
-struct KeptRequestFind: Identifiable {
-    let id: RequestID
-    let message: String
-}

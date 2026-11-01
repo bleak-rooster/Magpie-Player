@@ -89,6 +89,9 @@ extension RequestRunner {
         case failed
         /// The answer was lost and Lidarr couldn't be read to tell whether the albums were monitored.
         case unconfirmed
+        /// R18: Lidarr has a metadata profile with the name Magpie would give these release types, with other
+        /// settings. It isn't Magpie's to change, so nothing was written.
+        case profileConflict(String)
     }
 
     /// G7: the most releases one Bring in more monitors and searches.
@@ -99,14 +102,15 @@ extension RequestRunner {
 
     // MARK: - Offer
 
-    /// What each choice would bring in, from fresh Lidarr state. Writes nothing.
-    public func bringInOffer(_ id: RequestID) async throws -> BringInOffer {
+    /// What each choice would bring in, from fresh Lidarr state. Writes nothing. `types` (R18): Everything is only
+    /// the releases of these types.
+    public func bringInOffer(_ id: RequestID, types: ReleaseTypes? = nil) async throws -> BringInOffer {
         let target = try await bringInTarget(id)
         let songAlbums = await songAlbumGroups(target.request)
         var options: [BringInChoice: BringInOption] = [:]
         for choice in BringInChoice.allCases {
             options[choice] = Self.bringInOption(target.albums, choice: choice, songAlbums: songAlbums,
-                                                 skip: target.openAlbums, limit: bringInRoom)
+                                                 skip: target.openAlbums, limit: bringInRoom, types: types)
         }
         return BringInOffer(artistId: target.artist.id, artistName: target.artist.artistName, options: options,
                             followsNewReleases: Self.follows(target.artist))
@@ -121,21 +125,32 @@ extension RequestRunner {
     /// never more, and at most as many as the limit of 5 has room for now; any held back for room are counted in
     /// `heldBack`. Nil: the choice's newest releases, as many as there is room for. Following new releases downloads
     /// nothing now, so it never needs room.
+    ///
+    /// R18: `types` (with Everything) brings in only releases of those types, and first sets the artist to Magpie's
+    /// metadata profile for them (provisioned if missing), so new releases follow the same types. `qualityProfileId`
+    /// sets the artist's quality profile (Lossless or Smaller files). Each is sent only when it differs, before any
+    /// release is monitored; the gate allows both only for an artist Magpie added.
     public func bringIn(_ id: RequestID, choice: BringInChoice?, offered: [Int]? = nil,
-                        follow: Bool) async throws -> BringInResult {
+                        follow: Bool, types: ReleaseTypes? = nil, qualityProfileId: Int? = nil) async throws -> BringInResult {
         let target = try await bringInTarget(id)
         let artistId = target.artist.id
         guard !keepingArtists.contains(artistId) else { throw BringInError.unavailable }
         keepingArtists.insert(artistId)
         defer { keepingArtists.remove(artistId) }
 
+        // R18: the release types and quality first. They await Lidarr (a read, maybe writes), so they come before
+        // the room is checked and taken below, which must have no await between (FL4, review I1). If the room is gone
+        // by then, the artist keeps the new settings (Magpie's own artist; nothing is monitored).
+        try await applyProfiles(target.artist, types: choice == .everything ? types : nil,
+                                qualityProfileId: qualityProfileId)
+
         var albums: [LidarrAlbum] = []
         var heldBack = 0
         if let choice {
-            let songAlbums = choice == .thisAlbum ? await songAlbumGroups(target.request) : nil
+            let songAlbums = choice == .thisAlbum ? await songAlbumGroups(target.request) : nil   // before the room check
             if choice == .thisAlbum, songAlbums == nil { throw BringInError.unavailable }
             let option = Self.bringInOption(target.albums, choice: choice, songAlbums: songAlbums,
-                                            skip: target.openAlbums, limit: Self.bringInLimit)
+                                            skip: target.openAlbums, limit: Self.bringInLimit, types: types)
             let eligible = option?.albumIds ?? []
             let wanted = offered.map { ids in ids.filter(eligible.contains) } ?? eligible
             albums = wanted.compactMap { albumId in target.albums.first { $0.id == albumId } }
@@ -301,8 +316,9 @@ extension RequestRunner {
     }
 
     /// What `choice` brings in from `albums` (pure). Nil: This album only, and the song's album isn't known.
+    /// `types` (R18) narrows Everything to those release types.
     static func bringInOption(_ albums: [LidarrAlbum], choice: BringInChoice, songAlbums: Set<MBID>?,
-                              skip: Set<Int>, limit: Int) -> BringInOption? {
+                              skip: Set<Int>, limit: Int, types: ReleaseTypes? = nil) -> BringInOption? {
         let known = albums.filter { $0.foreignAlbumId != nil }
         let type = { (a: LidarrAlbum) in a.albumType?.lowercased() ?? "" }
         let candidates: [LidarrAlbum]
@@ -311,7 +327,8 @@ extension RequestRunner {
         case .albumsAndEPs:
             candidates = known.filter { ["album", "ep"].contains(type($0)) }
         case .everything:
-            candidates = known
+            candidates = types.map { t in known.filter { t.includes(albumType: $0.albumType, secondaryTypes: $0.secondaryTypes) } }
+                ?? known
         case .thisAlbum:
             // The earliest such album Lidarr lists (the original, not a later edition).
             guard let groups = songAlbums,
@@ -327,6 +344,43 @@ extension RequestRunner {
         let lengths = chosen.compactMap(\.duration)
         let duration = !chosen.isEmpty && lengths.count == chosen.count ? lengths.reduce(0, +) : nil
         return BringInOption(albumIds: chosen.map(\.id), available: pending.count, duration: duration, title: title)
+    }
+
+    /// R18: the artist's release types (Magpie's metadata profile for them, created through the gate if missing) and
+    /// quality profile, each sent only when it differs, as exactly `{artistIds, metadataProfileId}` and
+    /// `{artistIds, qualityProfileId}`. Throws `BringInError`; nothing after a failure is sent.
+    private func applyProfiles(_ artist: LidarrArtist, types: ReleaseTypes?, qualityProfileId: Int?) async throws {
+        do {
+            if let types {
+                let profile = try await Provisioner().ensureReleaseTypes(types, gate: gate, client: lidarr)
+                if artist.metadataProfileId != profile {
+                    _ = try await gate.send("PUT", "artist/editor",
+                                            body: MetadataProfileBody(artistIds: [artist.id], metadataProfileId: profile))
+                }
+            }
+            if let qualityProfileId, artist.qualityProfileId != qualityProfileId {
+                _ = try await gate.send("PUT", "artist/editor",
+                                        body: QualityProfileBody(artistIds: [artist.id], qualityProfileId: qualityProfileId))
+            }
+        } catch ProvisionError.conflict(let name) {
+            throw BringInError.profileConflict(name)
+        } catch let error as WriteGateError {
+            throw Self.bringInError(error)
+        } catch let error where Self.isDefinitiveRejection(error) || error is ProvisionError {
+            throw BringInError.failed
+        } catch {
+            throw BringInError.unavailable
+        }
+    }
+
+    private struct MetadataProfileBody: Encodable, Sendable {
+        var artistIds: [Int]
+        var metadataProfileId: Int
+    }
+
+    private struct QualityProfileBody: Encodable, Sendable {
+        var artistIds: [Int]
+        var qualityProfileId: Int
     }
 
     static func follows(_ artist: LidarrArtist) -> Bool {

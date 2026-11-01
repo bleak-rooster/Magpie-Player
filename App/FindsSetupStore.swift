@@ -18,6 +18,9 @@ struct FindsSetup: Codable, Equatable, Sendable {
     var library: NavidromeLibrary?
     /// Lidarr → Navidrome paths, when they differ. Nil: the same paths.
     var mapping: PathMapping?
+    /// R18: the Navidrome library that is your main collection (Lidarr's main root, "where new music goes"). Picked
+    /// automatically when there is exactly one library besides the Finds library; chosen by the owner otherwise.
+    var mainLibrary: NavidromeLibrary?
 
     /// The Finds folder as Navidrome sees it.
     var navidromeRoot: String? {

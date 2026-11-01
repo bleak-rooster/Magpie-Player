@@ -6,7 +6,7 @@ import SwiftUI
 /// Library › Finds (Task 6.2a): New finds (here, not played yet), the other finds with their days left, and
 /// finds still on their way. Every find is a round record with a text status, a symbol (D3) and the "Sample"
 /// hallmark. Tapping a find plays it; finds are never scrobbled (D29). Keep (Task 6.2b) moves it into the
-/// library and says how it went; after a move, Bring in more follows (Task 7.1b, D5). Not for me (Task 6.2c, a
+/// library and says how it went; after a move, "Kept. Add more from <artist>?" follows (D5, R20: the Add sheet). Not for me (Task 6.2c, a
 /// swipe, the context menu or the VoiceOver action) asks first, saying whether the files can come back, then lets
 /// the find's release go.
 struct FindsView: View {
@@ -14,8 +14,8 @@ struct FindsView: View {
     /// Finds a Keep is running for: their row offers no second Keep meanwhile.
     @State private var keeping: Set<RequestID> = []
     @State private var keepMessage: String?
-    /// D5: a Keep moved the find into the library; Bring in more follows.
-    @State private var bringingInMore: BringInMoreRequest?
+    /// D5 + R20: a Keep moved the find into the library; "Kept. Add more from <artist>?" follows (the Add sheet).
+    @State private var addingMore: AddFlowRequest?
     /// Finds a Not for me is asking about or running for: their row offers no second one meanwhile.
     @State private var lettingGo: Set<RequestID> = []
     @State private var asking: NotForMeConfirm?
@@ -52,9 +52,7 @@ struct FindsView: View {
         .magpieScreen()
         .refreshable { await model.refreshFinds() }
         .task { await model.refreshFinds() }
-        .sheet(item: $bringingInMore) { more in
-            BringInMoreSheet(requestId: more.id, keptMessage: more.keptMessage)
-        }
+        .addFlow($addingMore) { keepMessage = $0.message }
         .alert(keepMessage ?? "", isPresented: Binding(get: { keepMessage != nil }, set: { if !$0 { keepMessage = nil } })) {
             Button("OK", role: .cancel) {}
         }
@@ -102,13 +100,14 @@ struct FindsView: View {
 
     /// Keep, when the find has a ready request and no Keep is running for it (else the row offers none).
     private func keepAction(_ item: FindsShelf.Item) -> (() -> Void)? {
-        guard let id = item.keepRequest, !keeping.contains(id), !lettingGo.contains(id) else { return nil }
+        guard let id = item.keepRequest, !keeping.contains(id), !lettingGo.contains(id),
+              !model.newMusic.keepsRunning.contains(id) else { return nil }
         return {
             keeping.insert(id)
             Task {
                 let reply = await model.keep(id)
                 if reply.bringsInMore {
-                    bringingInMore = BringInMoreRequest(id: id, keptMessage: reply.message)
+                    addingMore = model.afterKeepRequest(id, artist: item.song.artist, kept: reply.message)
                 } else {
                     keepMessage = reply.message
                 }
@@ -149,12 +148,6 @@ struct FindsView: View {
         guard let index = songs.firstIndex(of: item.song) else { return }
         model.play(songs, startAt: index)
     }
-}
-
-/// The Bring in more sheet's subject: the kept find's request and what Keep said.
-private struct BringInMoreRequest: Identifiable {
-    let id: RequestID
-    let keptMessage: String
 }
 
 /// Not for me on a find row: a trailing swipe, the context menu and a named VoiceOver action (no extra swipe stop).

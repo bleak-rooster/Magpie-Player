@@ -346,13 +346,16 @@ public struct LidarrAlbum: Sendable, Equatable, Decodable {
     /// Seconds of music, from Lidarr's `duration` (milliseconds, the length of the release it would bring in).
     /// Nil when Lidarr doesn't know it (0 or missing): never guessed (A5).
     public var duration: TimeInterval?
+    /// Lidarr's secondary album types ("Live", "Soundtrack"…); empty is a studio release (R18 release types).
+    public var secondaryTypes: [String]
 
     public init(id: Int, title: String, artistId: Int? = nil, foreignAlbumId: MBID? = nil, monitored: Bool = false,
                 albumType: String? = nil, releaseDate: Date? = nil, trackCount: Int? = nil, trackFileCount: Int? = nil,
-                duration: TimeInterval? = nil) {
+                duration: TimeInterval? = nil, secondaryTypes: [String] = []) {
         self.id = id; self.title = title; self.artistId = artistId; self.foreignAlbumId = foreignAlbumId
         self.monitored = monitored; self.albumType = albumType; self.releaseDate = releaseDate
         self.trackCount = trackCount; self.trackFileCount = trackFileCount; self.duration = duration
+        self.secondaryTypes = secondaryTypes
     }
 
     public init(from decoder: Decoder) throws {
@@ -368,6 +371,24 @@ public struct LidarrAlbum: Sendable, Equatable, Decodable {
         trackCount = stats?.int("trackCount")
         trackFileCount = stats?.int("trackFileCount")
         duration = c.double("duration").flatMap { $0 > 0 && $0.isFinite ? $0 / 1000 : nil }
+        // Names, or `{name}` objects (either shape; anything else is dropped).
+        secondaryTypes = (c.value("secondaryTypes", as: LossyArray<SecondaryType>.self)?.values ?? []).map(\.name)
+    }
+
+    private struct SecondaryType: Decodable {
+        var name: String
+
+        init(from decoder: Decoder) throws {
+            if let name = try? decoder.singleValueContainer().decode(String.self) {
+                self.name = name
+            } else {
+                let c = try decoder.container(keyedBy: AnyKey.self)
+                guard let name = c.text("name") else {
+                    throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "no name"))
+                }
+                self.name = name
+            }
+        }
     }
 }
 

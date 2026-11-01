@@ -65,9 +65,11 @@ struct MainTabs: View {
         .sheet(isPresented: $showNowPlaying) {
             NowPlayingView().environment(navigator)
                 .immersiveArt(coverArtId: model.player.queue.current?.song.coverArtId)   // R13
+                .findsKeepFlow(host: FindsLibraryMenuItem.nowPlaying)   // R18/R20: Keep from Now Playing's menus
         }
         .environment(navigator)
         .queueActionsPresenter()   // R12
+        .findsKeepFlow(host: FindsLibraryMenuItem.main)   // R18/R20: Keep from a song's long-press menu
     }
 }
 

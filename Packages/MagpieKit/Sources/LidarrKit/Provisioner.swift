@@ -135,7 +135,7 @@ public struct Provisioner: Sendable {
             created: created)
     }
 
-    private static func create(_ gate: LidarrWriteGate, _ path: String, _ body: JSONValue, _ name: String) async throws -> Int {
+    static func create(_ gate: LidarrWriteGate, _ path: String, _ body: JSONValue, _ name: String) async throws -> Int {
         let data = try await gate.send("POST", path, body: body)
         guard let id = (try? JSONDecoder().decode(JSONValue.self, from: data))?["id"]?.intValue else {
             throw ProvisionError.unexpectedResponse(name)

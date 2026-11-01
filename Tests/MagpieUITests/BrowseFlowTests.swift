@@ -496,19 +496,15 @@ final class BrowseFlowTests: XCTestCase {
         XCTAssertTrue(app.textFields["lidarr-address"].waitForExistence(timeout: 10))
     }
 
-    /// P3 (re-review N1): the real "Add to Lidarr and download" confirmation delivers the owner's choice to the add.
-    /// The dev library has no visible artist with a real MusicBrainz id that Lidarr could add (its only real one, Judie
-    /// Tzuke, has just a missing song, which Navidrome hides), so Aurora Field's fixture MBID is used: Lidarr's lookup
-    /// can't find it, the add stops before any write, and the error line proves the confirmed choice arrived. Before the
-    /// fix the dialog cleared the choice and the tap did nothing at all. The real add and "Searching…" are covered by
-    /// ArtistAddIT on the same dev Lidarr. Nothing is written to Lidarr here except Magpie's set-up (already there).
-    @MainActor func testArtistAddConfirmationReachesTheAdd() throws {
+    /// Connects the dev Lidarr, allows changes, sets Magpie up, sets Add with my defaults, and opens Aurora Field's
+    /// page ("Not in Lidarr"). Nothing is written to Lidarr except Magpie's set-up (already there).
+    @MainActor private func openAuroraWithLidarr(withMyDefaults: Bool) throws -> XCUIApplication {
         let env = ProcessInfo.processInfo.environment
         guard let lidarrURL = env["MAGPIE_IT_LIDARR_URL"], let key = env["MAGPIE_IT_LIDARR_KEY"],
               !lidarrURL.isEmpty, !key.isEmpty else { throw XCTSkip("no dev-stack Lidarr passed in") }
         guard let host = URLComponents(string: lidarrURL)?.host, ["127.0.0.1", "localhost"].contains(host) else {
             XCTFail("Refusing a non-local Lidarr (\(lidarrURL))")
-            return
+            throw XCTSkip("non-local Lidarr")
         }
         let app = try launchSignedIn()
         let settings = app.buttons["open-settings"]
@@ -552,6 +548,13 @@ final class BrowseFlowTests: XCTestCase {
             XCTAssertTrue(library.waitForExistence(timeout: 5))
             library.tap()
         }
+        // R18 + R20: Add with my defaults, as the test needs it.
+        let mine = app.switches["settings-add-with-my-defaults"]
+        for _ in 0..<6 where !mine.isHittable { app.swipeUp() }
+        XCTAssertTrue(mine.exists, "Settings › New music has Add with my defaults")
+        if (mine.value as? String == "1") != withMyDefaults { mine.switches.firstMatch.exists ? mine.switches.firstMatch.tap() : mine.tap() }
+        XCTAssertTrue(XCTWaiter.wait(for: [XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value == %@", withMyDefaults ? "1" : "0"), object: mine)], timeout: 5) == .completed)
         app.navigationBars.buttons.firstMatch.tap()   // › Settings
         app.buttons["settings-done"].tap()
 
@@ -564,17 +567,65 @@ final class BrowseFlowTests: XCTestCase {
         let status = app.descendants(matching: .any)["artist-lidarr-status"]
         XCTAssertTrue(status.waitForExistence(timeout: 20))
         XCTAssertTrue(status.label.contains("Not in Lidarr"), status.label)
+        return app
+    }
+
+    /// P3 (re-review N1) with R18 + R20: "Add to your library" with Add with my defaults on is one confirmation naming
+    /// the artist and the defaults in one line, and the confirmed choice reaches the add. The dev library has no
+    /// visible artist with a real MusicBrainz id that Lidarr could add (its only real one, Judie Tzuke, has just a
+    /// missing song, which Navidrome hides), so Aurora Field's fixture MBID is used: Lidarr's lookup can't find it,
+    /// the add stops before any write (the release types' profile is made only after the lookup), and the error line
+    /// proves the confirmed choice arrived. The real add is covered by ArtistAddIT on the same dev Lidarr.
+    @MainActor func testArtistAddConfirmationReachesTheAdd() throws {
+        let app = try openAuroraWithLidarr(withMyDefaults: true)
         let add = app.buttons["artist-lidarr-add"]
         XCTAssertTrue(add.waitForExistence(timeout: 5))
+        XCTAssertEqual(add.label, "Add to your library")
         add.tap()
-        let confirm = app.buttons.matching(NSPredicate(format: "label == 'Add to Lidarr and download' AND identifier != 'artist-lidarr-add'")).firstMatch
-        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'Adds Aurora Field to Lidarr'")).firstMatch
-                        .waitForExistence(timeout: 5), "the confirmation names the artist")
+        XCTAssertTrue(app.staticTexts["Add Aurora Field to your library?"].waitForExistence(timeout: 5),
+                      "one confirmation names the artist")
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'Their albums and EPs \u{00B7} Lossless'"))
+                        .firstMatch.exists, "with the defaults in one line")
         attachScreenshot(app, "artist-add-confirmation")
+        let confirm = app.buttons.matching(NSPredicate(format: "label == 'Add to your library' AND identifier != 'artist-lidarr-add'")).firstMatch
         confirm.tap()
         let error = app.descendants(matching: .any)["artist-lidarr-error"]
         XCTAssertTrue(error.waitForExistence(timeout: 30), "the confirmed choice reached the add (Lidarr can't find the fixture MBID)")
         attachScreenshot(app, "artist-add-result")
+    }
+
+    /// R18 + R20 with Add with my defaults off: the Add sheet, preset with When you add an artist (their albums and
+    /// EPs, Studio on, Live and Soundtracks off, Lossless), no "Just this album" without an album; the choice reaches
+    /// the add, and a failure stays in the sheet.
+    @MainActor func testArtistAddSheetWhenAddWithMyDefaultsIsOff() throws {
+        let app = try openAuroraWithLidarr(withMyDefaults: false)
+        let add = app.buttons["artist-lidarr-add"]
+        XCTAssertTrue(add.waitForExistence(timeout: 5))
+        add.tap()
+        let preset = app.buttons["add-what-albumsAndEPs"]
+        XCTAssertTrue(preset.waitForExistence(timeout: 5), "the Add sheet")
+        XCTAssertTrue(preset.isSelected, "preset with the defaults")
+        XCTAssertFalse(app.buttons["add-what-thisAlbum"].exists, "Just this album only with an album")
+        attachScreenshot(app, "artist-add-sheet")
+        // The sheet opens at half height: the rest is below.
+        for id in ["add-studio", "add-live", "add-soundtracks"] {
+            let toggle = app.switches[id]
+            for _ in 0..<4 where !toggle.isHittable { app.swipeUp() }
+            XCTAssertEqual(toggle.value as? String, id == "add-studio" ? "1" : "0", id)
+        }
+        let start = app.buttons["add-start"]
+        for _ in 0..<8 where !start.isHittable { app.swipeUp() }
+        XCTAssertTrue(start.isHittable, "the sheet's Add to your library")
+        start.tap()
+        let error = app.descendants(matching: .any)["add-error"]
+        for _ in 0..<15 where !error.exists {
+            app.swipeUp()   // the line shows under the button, maybe below the fold
+            _ = error.waitForExistence(timeout: 2)
+        }
+        XCTAssertTrue(error.exists, "the choice reached the add, and its failure stays in the sheet")
+        attachScreenshot(app, "artist-add-sheet-result")
+        app.buttons["add-cancel"].tap()
+        XCTAssertTrue(add.waitForExistence(timeout: 5))
     }
 
     /// Library › Settings › Requests with the dev Lidarr connected: the G1 switch (off), set-up and change log;

@@ -89,7 +89,7 @@ struct NowPlayingMoreMenu: View {
     @State private var showsInfo = false
     @State private var removing: Song?
     @State private var message: String?
-    @State private var bringingInMore: KeptFind?
+    @State private var addingMore: AddFlowRequest?
     @State private var asking: NotForMeConfirm?
     @State private var busy = false
 
@@ -146,9 +146,7 @@ struct NowPlayingMoreMenu: View {
             AddToPlaylistSheet(songIds: addingToPlaylist ?? [])
         }
         .sheet(isPresented: $showsInfo) { SongInfoSheet(song: song) }
-        .sheet(item: $bringingInMore) { kept in
-            BringInMoreSheet(requestId: kept.id, keptMessage: kept.message)
-        }
+        .addFlow($addingMore) { message = $0.message }
         .songRemovalDialog($removing)
         .alert(message ?? "", isPresented: Binding(get: { message != nil }, set: { if !$0 { message = nil } })) {
             Button("OK", role: .cancel) {}
@@ -167,7 +165,7 @@ struct NowPlayingMoreMenu: View {
         Task {
             let reply = await model.keep(id)
             if reply.bringsInMore {
-                bringingInMore = KeptFind(id: id, message: reply.message)
+                addingMore = model.afterKeepRequest(id, artist: song.artist, kept: reply.message)
             } else {
                 message = reply.message
             }
@@ -196,8 +194,3 @@ struct NowPlayingMoreMenu: View {
     }
 }
 
-/// The Bring in more sheet's subject after a Keep from Now Playing.
-private struct KeptFind: Identifiable {
-    let id: RequestID
-    let message: String
-}

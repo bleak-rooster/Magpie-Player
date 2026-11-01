@@ -47,12 +47,16 @@ struct ArtistView: View {
         .background { ArtBackdrop(coverArtId: page.value?.artist.coverArtId) }   // R13: tinted by the artist's art
         .magpieScreen()
         .immersiveArt(coverArtId: page.value?.artist.coverArtId)
+        .findsKeepFlow(host: keepHost)
         // Again when offline mode changes, and offline when songs land on or leave the phone (the store may be
         // unreadable before first unlock): the downloaded albums offline, the server's online.
         .task(id: model.offlinePageKey) {
             if page.value == nil || loadedOffline != model.isOffline || model.isOffline { await load() }
         }
     }
+
+    /// R18: this page runs the Keeps its Keep <artist> asks for.
+    private var keepHost: String { "artist-\(artistId)" }
 
     private func content(_ page: Page) -> some View {
         let p = themed.palette
@@ -68,8 +72,14 @@ struct ArtistView: View {
                 Text(page.artist.name).magpieDisplay(.largeTitle).multilineTextAlignment(.center)
                     .accessibilityAddTraits(.isHeader)
                 DownloadMarkLine(model.downloadIndex.mark(artistId: page.artist.id, albums: page.albums))
+                // R18 + R20: an artist only in your Finds offers Keep <artist> as the page's one capsule; the Lidarr
+                // status line stays visible (R20).
+                let onlyInFinds = model.isOnlyInFinds(albums: page.albums)
                 if let lidarrLine, let presentation = lidarrLine.presentation {
-                    ArtistLidarrLine(line: lidarrLine, presentation: presentation)
+                    ArtistLidarrLine(line: lidarrLine, presentation: presentation, showsAction: !onlyInFinds)
+                }
+                if onlyInFinds {
+                    OnlyInFindsLine(artist: page.artist.name, albums: page.albums, host: keepHost)
                 }
                 CapsuleRow {
                     CapsuleButton(gathering ? "Loading…" : "Play", symbol: "play.fill") {

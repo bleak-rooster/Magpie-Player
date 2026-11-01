@@ -97,18 +97,26 @@ extension AppModel {
         var targets: [String] = []
         if let finds = findsSetup, let findsLibrary = finds.library,
            let libraries = try? await navidromeLibraries() {
-            targets = Self.keepScanTargets(to: to, findsLibrary: findsLibrary, mapping: finds.mapping, libraries: libraries)
+            reconcileMainLibrary(libraries)   // R18: picked when there's exactly one other library
+            targets = Self.keepScanTargets(to: to, findsLibrary: findsLibrary, mapping: finds.mapping, libraries: libraries,
+                                           mainLibrary: findsSetup?.mainLibrary)
         }
         let scan = targets
         try await request { try await $0.startScan(targets: scan) }
     }
 
-    /// `["<finds library id>:", "<library id>:<artist folder relative to it>"]`, or empty (a plain scan) when the
-    /// new folder isn't inside exactly one other Navidrome library.
+    /// `["<finds library id>:", "<library id>:<artist folder relative to it>"]`. R18: when the new folder isn't
+    /// inside exactly one other Navidrome library, the whole main library (if chosen and still there) instead;
+    /// otherwise empty (a plain scan).
     nonisolated static func keepScanTargets(to: String, findsLibrary: NavidromeLibrary, mapping: PathMapping?,
-                                            libraries: [NavidromeLibrary]) -> [String] {
+                                            libraries: [NavidromeLibrary], mainLibrary: NavidromeLibrary? = nil) -> [String] {
         guard let (library, relative) = keptLocation(to, findsLibrary: findsLibrary, mapping: mapping,
-                                                     libraries: libraries) else { return [] }
+                                                     libraries: libraries) else {
+            guard let main = mainLibrary, main.id != findsLibrary.id, libraries.contains(where: { $0.id == main.id }) else {
+                return []
+            }
+            return ["\(findsLibrary.id):", "\(main.id):"]
+        }
         return ["\(findsLibrary.id):", "\(library.id):\(relative)"]
     }
 
