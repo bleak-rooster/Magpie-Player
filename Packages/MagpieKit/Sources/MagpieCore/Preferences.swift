@@ -249,7 +249,7 @@ public struct DownloadPreferences: PreferenceArea {
     public static let defaultValue = DownloadPreferences(
         quality: .original, overMobileData: false, concurrent: 2, preDownload: 3, keepRecentlyPlayed: true,
         cacheLimit: .gb2, downloadsLimit: .none, offlineMode: .automatic, keepFavourites: false,
-        keepScreenOn: true)
+        keepScreenOn: true, downloadInBackground: true)
 
     public var quality: StreamQuality
     public var overMobileData: Bool
@@ -262,6 +262,9 @@ public struct DownloadPreferences: PreferenceArea {
     public var keepFavourites: Bool
     /// "Keep screen on while downloading" (P1): the idle timer is off only while downloads run and Magpie is open.
     public var keepScreenOn: Bool
+    /// "Download in the background" (R1): downloads go on with Magpie closed or the phone locked. Off brings back
+    /// P1's foreground-only rule.
+    public var downloadInBackground: Bool
 
     /// "Downloads at the same time" (P1: 1–6).
     public static let concurrentRange = 1...6

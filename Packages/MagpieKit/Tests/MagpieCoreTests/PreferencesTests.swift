@@ -17,6 +17,10 @@ import Testing
         #expect(d.keepRecentlyPlayed && d.cacheLimit == .gb2 && d.downloadsLimit == .none && d.offlineMode == .automatic)
         #expect(!d.keepFavourites)
         #expect(d.keepScreenOn, "P1: Keep screen on while downloading defaults on")
+        #expect(d.downloadInBackground, "R1: Download in the background defaults on")
+        #expect(DownloadPreferences.decode(Data(#"{"keepScreenOn":true}"#.utf8)).downloadInBackground,
+                "a setting saved before R1 takes the default")
+        #expect(!DownloadPreferences.decode(Data(#"{"downloadInBackground":false}"#.utf8)).downloadInBackground)
         #expect(p.scrobbling.viaNavidrome && !p.scrobbling.viaListenBrainz && p.scrobbling.rule == ScrobbleRule(percent: 50, minutes: 4))
         #expect(p.genres.mode == .grouped)
     }

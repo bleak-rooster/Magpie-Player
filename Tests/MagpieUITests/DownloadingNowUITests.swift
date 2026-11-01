@@ -75,8 +75,9 @@ final class DownloadingNowUITests: XCTestCase {
         XCTAssertTrue(now.waitForExistence(timeout: 10), "Downloading now shows while something downloads")
         XCTAssertTrue(now.label.hasPrefix("Downloading now \u{00B7} "), now.label)
         now.tap()
-        XCTAssertTrue(app.staticTexts["Keep Magpie open to finish downloading"].waitForExistence(timeout: 10))
         XCTAssertTrue(app.staticTexts["Waiting for Wi-Fi"].firstMatch.waitForExistence(timeout: 10))
+        // R1: "Download in the background" is on by default, so there's no "Keep Magpie open" banner.
+        XCTAssertFalse(app.staticTexts["Keep Magpie open to finish downloading"].exists)
         XCTAssertTrue(app.buttons["downloading-cancel"].firstMatch.exists)
         let screenshot = XCTAttachment(screenshot: app.screenshot())
         screenshot.name = "downloading-now"
@@ -90,5 +91,45 @@ final class DownloadingNowUITests: XCTestCase {
         confirm.tap()
         XCTAssertTrue(app.otherElements["downloading-now-empty"].waitForExistence(timeout: 10)
                       || app.staticTexts["Nothing downloading"].waitForExistence(timeout: 5))
+    }
+
+    /// R4 (as ruled by R20): the artist's ⋯ → "Download to this iPhone…", confirmed with the count; it waits for Wi-Fi
+    /// (mobile data is pinned), then ⋯ → "Remove download" takes it off again. Nothing is left on the simulator.
+    @MainActor func testArtistDownloadToThisIPhoneAndRemove() throws {
+        let app = try launchSignedIn()
+        let library = app.tabBars.buttons["Library"]
+        let artists = app.buttons["library-artists"]
+        for _ in 0..<3 where !artists.exists {
+            library.tap()
+            _ = artists.waitForExistence(timeout: 5)
+        }
+        artists.tap()
+        let aurora = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Aurora Field'")).firstMatch
+        XCTAssertTrue(aurora.waitForExistence(timeout: 15))
+        aurora.tap()
+        let more = app.buttons["artist-more"]
+        XCTAssertTrue(more.waitForExistence(timeout: 15))
+        XCTAssertEqual(app.buttons.matching(identifier: "artist-more").count, 1, "one ⋯ in the toolbar, not two")
+        more.tap()
+        let download = app.buttons["Download to this iPhone\u{2026}"]
+        XCTAssertTrue(download.waitForExistence(timeout: 5))
+        download.tap()
+        let title = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'Download ' AND label ENDSWITH ' to this iPhone?'")).firstMatch
+        XCTAssertTrue(title.waitForExistence(timeout: 15), "the confirmation counts the songs and says where they go")
+        let screenshot = XCTAttachment(screenshot: app.screenshot())
+        screenshot.name = "artist-download-confirmation"
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
+        app.buttons["Download"].tap()
+        let status = app.descendants(matching: .any)["artist-download-status"]
+        XCTAssertTrue(status.waitForExistence(timeout: 15), "it shows on the artist page while it waits")
+        XCTAssertTrue(status.label.contains("Waiting for Wi-Fi"), status.label)
+        more.tap()
+        let remove = app.buttons["Remove download"]
+        XCTAssertTrue(remove.waitForExistence(timeout: 5))
+        remove.tap()
+        XCTAssertTrue(status.waitForNonExistence(timeout: 10), "removed as a group")
+        more.tap()
+        XCTAssertTrue(app.buttons["Download to this iPhone\u{2026}"].waitForExistence(timeout: 5), "and it can be downloaded again")
     }
 }

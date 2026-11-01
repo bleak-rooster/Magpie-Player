@@ -7,13 +7,16 @@ import MagpieCore
 /// Layout under `directory`:
 /// - `<sha256(songId|quality)>.<ext>`: the audio, with its `AudioEntry` beside it as `<fileName>.json`;
 /// - `index.json`: every entry and playlist (written atomically), rebuilt from the sidecars when unreadable;
-/// - `playlists/<sha256(id)>.json` and `covers/<sha256(coverArtId)>.jpg`.
+/// - `playlists/<sha256(id)>.json` and `covers/<sha256(coverArtId)>.jpg`;
+/// - `partials/`: what downloads stopped part-way leave (R1, `PartialDownloads`).
 ///
 /// No path is made from a server string. Everything is kept out of backups and, on iOS, readable after the first
 /// unlock so the car can play with the phone locked.
 public actor AudioStore {
     /// `<root>/Magpie/Audio/<scope>`. `scope` is the app's own server-scope id, never a server string.
     public nonisolated let directory: URL
+    /// R1: resume data and partial bytes; they count toward the downloads limit, and go with the scope.
+    public nonisolated var partialsDirectory: URL { directory.appending(path: "partials", directoryHint: .isDirectory) }
     private let now: @Sendable () -> Date
     /// Reads a file; tests inject one that fails like protected data before first unlock.
     private let reader: @Sendable (URL) throws -> Data
@@ -428,7 +431,8 @@ public actor AudioStore {
 
     private func checkLimit(adding size: Int64, limit: Int64?) throws {
         guard let limit else { return }
-        if Self.sum(usage().downloadBytes, size) > limit { throw AudioStoreError.downloadsFull }
+        let partials = PartialDownloads(directory: partialsDirectory).totalBytes()   // R1: partials count too
+        if Self.sum(Self.sum(usage().downloadBytes, partials), size) > limit { throw AudioStoreError.downloadsFull }
     }
 
     /// Adds a recorded size to a total. A damaged sidecar or index can claim any size, and it stands when its file

@@ -222,6 +222,8 @@ final class AppModel {
     @ObservationIgnored var beforeCacheUpkeepForTesting: (@MainActor () async -> Void)?
     #endif
     @ObservationIgnored let audioFetcher: any AudioFetching
+    /// R1: the background session's fetcher (nil in hosted tests, unless one is injected).
+    @ObservationIgnored let backgroundAudioFetcher: (any ResumableAudioFetching)?
     /// The last stopped manager's cancel-settle-erase; the next manager starts after it.
     @ObservationIgnored var downloadsTeardown: Task<Void, Never>?
     @ObservationIgnored var favouritesSync: Task<Void, Never>?
@@ -252,9 +254,11 @@ final class AppModel {
          localNetworkProber: (any LocalNetworkProbing)? = nil,
          network: (any NetworkStatusProviding)? = nil,
          audioFetcher: (any AudioFetching)? = nil,
+         backgroundAudioFetcher: (any ResumableAudioFetching)? = nil,
          protectedDataAvailableAtLaunch: Bool? = nil) {
         let box = ClientBox()
         self.audioFetcher = audioFetcher ?? URLSessionAudioFetcher()
+        self.backgroundAudioFetcher = backgroundAudioFetcher ?? (Self.isHostedTest ? nil : BackgroundAudioFetcher.shared)
         self.store = store
         self.lidarrStore = lidarrStore
         self.tokenStore = tokenStore

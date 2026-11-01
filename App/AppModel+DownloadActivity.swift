@@ -20,8 +20,11 @@ extension AppModel {
     /// How many rows Downloading now has (cheap: no progress read).
     var downloadActivityCount: Int { downloads?.activityCount ?? 0 }
 
-    /// Manual downloads still to finish: "Keep Magpie open to finish downloading" shows while true.
+    /// Manual downloads still to finish.
     var hasActiveDownloads: Bool { downloads?.hasActiveDownloads ?? false }
+
+    /// "Keep Magpie open to finish downloading": only with "Download in the background" off (R1).
+    var showsKeepOpen: Bool { downloads?.showsKeepOpen ?? false }
 
     /// Albums just loaded from the server: their song counts backfill downloads saved without one (builds 8 and 9).
     func noteAlbumSongCounts(_ albums: [Album]) {
@@ -34,13 +37,14 @@ extension AppModel {
         Task { await downloads.noteAlbumSongCounts(counts) }
     }
 
-    /// The scene phase (P1, foreground only): in the background downloads and pre-downloads wait; they go on when
-    /// Magpie is back. Playback carries on as normal.
+    /// The scene phase: with "Download in the background" off (P1, foreground only), downloads and pre-downloads wait
+    /// in the background and go on when Magpie is back. Playback carries on as normal.
     func scenePhaseChanged(_ phase: ScenePhase) {
         downloads?.setPresence(active: phase == .active, background: phase == .background)
     }
 
-    /// A manager built while Magpie isn't open (a launch for the car) starts held. Hosted tests run in the foreground.
+    /// A manager built while Magpie isn't open (a launch for the car, or for the background session's events) knows it;
+    /// it holds only with "Download in the background" off. Hosted tests run in the foreground.
     func applyLaunchPresence(to manager: DownloadManager) {
         guard !Self.isHostedTest else { return }
         let state = UIApplication.shared.applicationState
@@ -56,6 +60,9 @@ enum DownloadActivityCopy {
 
     /// "Downloading now · 3".
     static func row(_ count: Int) -> String { "\(title) \u{00B7} \(count)" }
+
+    /// R1: "Paused · 2.1 of 8.4 MB" for a download that resumes from where it stopped.
+    static func paused(_ progress: DownloadProgress) -> String { "Paused \u{00B7} \(self.progress(progress))" }
 
     /// "1.2 of 8.4 MB"; just "1.2 MB" when the size isn't known.
     static func progress(_ progress: DownloadProgress) -> String {

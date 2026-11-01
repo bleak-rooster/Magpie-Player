@@ -13,7 +13,7 @@ struct DownloadingNowView: View {
     var body: some View {
         let items = model.downloadActivity
         List {
-            if model.hasActiveDownloads {
+            if model.showsKeepOpen {
                 KeepOpenBanner().listRowBackground(Color.clear)
             }
             if !items.isEmpty {
@@ -72,6 +72,12 @@ struct DownloadingNowView: View {
                         .frame(minHeight: Tokens.minHitSize)
                         .accessibilityIdentifier("downloading-retry")
                 }
+                if item.phase == .paused {   // R1: Pause all is one switch, so Resume lets every download go on
+                    Button("Resume") { model.downloads?.resumeAll() }
+                        .buttonStyle(.borderless)
+                        .frame(minHeight: Tokens.minHitSize)
+                        .accessibilityIdentifier("downloading-resume")
+                }
                 Button {
                     Task { await model.downloads?.cancel(item) }
                 } label: {
@@ -113,7 +119,8 @@ private struct RunningProgress: View {
     }
 }
 
-/// "Keep Magpie open to finish downloading" (P1: downloads don't go on in the background).
+/// "Keep Magpie open to finish downloading" (P1: with "Download in the background" off, downloads don't go on in the
+/// background).
 struct KeepOpenBanner: View {
     private let themed = Themed()
 
@@ -138,7 +145,7 @@ struct DownloadingNowLink: View {
                 VStack(alignment: .leading, spacing: Tokens.Spacing.xs) {
                     Label(DownloadActivityCopy.row(count), systemImage: "arrow.down.circle.dotted")
                         .font(.body.weight(.semibold))
-                    if model.hasActiveDownloads {
+                    if model.showsKeepOpen {
                         Text(DownloadActivityCopy.keepOpen).font(.footnote).foregroundStyle(themed.palette.ink2Color)
                     }
                 }

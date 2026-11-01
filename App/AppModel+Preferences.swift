@@ -63,6 +63,10 @@ extension AppModel {
         let new = preferences.downloads, was = old.downloads
         if new.overMobileData != was.overMobileData || new.downloadsLimit != was.downloadsLimit
             || new.concurrent != was.concurrent || new.quality != was.quality { downloads?.retryWaiting() }
+        // R1: mobile data off stops what may no longer use it (it resumes later); the background rule applies at once.
+        if new.overMobileData != was.overMobileData || new.downloadInBackground != was.downloadInBackground {
+            downloads?.downloadSettingsChanged()
+        }
         if preferences.downloads.keepFavourites != old.downloads.keepFavourites { keepFavouritesChanged() }
         if new.preDownload != was.preDownload { applyEngineWindow() }
         if new.offlineMode != was.offlineMode { offlineInputsChanged() }

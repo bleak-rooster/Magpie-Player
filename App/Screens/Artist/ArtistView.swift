@@ -20,6 +20,8 @@ struct ArtistView: View {
     @State private var playError: String?
     /// P3: where the artist stands in Lidarr (no line without Lidarr).
     @State private var lidarrLine: ArtistLidarrModel?
+    /// R4: the artist download (its ⋯ items, confirmation and status line share it).
+    @State private var artistDownload = ArtistDownloadState()
     private let themed = Themed()
 
     struct Page {
@@ -37,10 +39,18 @@ struct ArtistView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             // R7 (the UX appraisal's header): Favourite and ⋯ in the toolbar, not more capsules.
-            if let artist = page.value?.artist, !model.isOffline, !OfflineCatalog.isLocalId(artist.id) {
-                ToolbarItemGroup(placement: .topBarTrailing) {
-                    FavouriteButton(target: .artist(artist.id))
-                    PageMoreMenu(coverArtId: artist.coverArtId, identifier: "artist-more") { EmptyView() }
+            // R4: the download's items are in the same ⋯; offline it stays for "Remove download" only.
+            if let page = page.value {
+                let artist = page.artist
+                let online = !model.isOffline && !OfflineCatalog.isLocalId(artist.id)
+                if online || model.downloads?.artistStatus(artist.id) ?? .none != .none {
+                    ToolbarItemGroup(placement: .topBarTrailing) {
+                        if online { FavouriteButton(target: .artist(artist.id)) }
+                        PageMoreMenu(coverArtId: artist.coverArtId, identifier: "artist-more") {
+                            ArtistDownloadMenuItems(state: artistDownload, artist: artist,
+                                                    albums: page.albums.sorted { ($0.year ?? 0) > ($1.year ?? 0) })
+                        }
+                    }
                 }
             }
         }
@@ -72,6 +82,7 @@ struct ArtistView: View {
                 Text(page.artist.name).magpieDisplay(.largeTitle).multilineTextAlignment(.center)
                     .accessibilityAddTraits(.isHeader)
                 DownloadMarkLine(model.downloadIndex.mark(artistId: page.artist.id, albums: page.albums))
+                    .artistDownload(artistDownload, artist: page.artist)   // R4: its confirmation and status line
                 // R18 + R20: an artist only in your Finds offers Keep <artist> as the page's one capsule; the Lidarr
                 // status line stays visible (R20).
                 let onlyInFinds = model.isOnlyInFinds(albums: page.albums)

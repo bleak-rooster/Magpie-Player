@@ -95,6 +95,12 @@ final class DownloadManager {
     var isAppActive = true
 
     @ObservationIgnored private let fetcher: any AudioFetching
+    /// R1: downloads and pre-downloads go through it while "Download in the background" is on (nil in most tests).
+    @ObservationIgnored let backgroundFetcher: (any ResumableAudioFetching)?
+    /// R1: bytes held for a stopped job (job id), for "Paused · 2.1 of 8.4 MB" (+Resume).
+    var partialProgress: [UUID: DownloadProgress] = [:]
+    /// R1: runs whose bytes have arrived and are being stored (+Resume, a background launch waits for them).
+    @ObservationIgnored var storing = 0
     @ObservationIgnored private let network: any NetworkStatusProviding
     @ObservationIgnored private let preferences: @MainActor () -> DownloadPreferences
     @ObservationIgnored private let streamURL: @MainActor (Song, StreamQuality) -> URL?
@@ -147,9 +153,11 @@ final class DownloadManager {
          coverURL: @escaping @MainActor (String) -> URL?,
          limitBytes: @escaping (DownloadPreferences) -> Int64? = { $0.downloadsLimit.bytes },
          isOffline: @escaping @MainActor () -> Bool = { false },
-         notifications: NotificationCenter = .default, storeRetryInterval: Duration = .seconds(30)) {
+         notifications: NotificationCenter = .default, storeRetryInterval: Duration = .seconds(30),
+         backgroundFetcher: (any ResumableAudioFetching)? = nil) {
         self.store = store
         self.fetcher = fetcher
+        self.backgroundFetcher = backgroundFetcher
         self.network = network
         self.preferences = preferences
         self.streamURL = url
@@ -172,6 +180,7 @@ final class DownloadManager {
         await store.load()
         await refresh()
         loadPending()
+        await reconcilePartials()   // R1: what the system kept across a relaunch, and partials no job wants
         networkWatch?.cancel()
         networkWatch = Task { [weak self, network] in
             let statuses = Observations { @MainActor in network.status }
@@ -226,9 +235,11 @@ final class DownloadManager {
             failed.removeAll { $0.songId == song.id && $0.kind == .download(reason) }
             guard !jobs.contains(where: { $0.songId == song.id && $0.kind == .download(reason) }) else { continue }
             var metadata = AudioMetadata(song)
-            if case .album = reason {
+            switch reason {
+            case .album, .artist:   // R4: an artist's download is asked for one album at a time
                 metadata.albumCoverArtId = coverArtId   // its saved cover, for offline (I2)
                 metadata.albumSongCount = songs.count   // P1: the artist list's mark knows when it's whole
+            default: break
             }
             jobs.append(Job(kind: .download(reason), metadata: metadata, quality: quality, playlistId: playlist?.id))
         }
@@ -246,6 +257,7 @@ final class DownloadManager {
             && !invalidPreDownloads.contains(Self.key(song.id, quality)) {
             jobs.append(Job(kind: .cache, metadata: AudioMetadata(song), quality: quality))
         }
+        prunePartials()
         pump()
     }
 
@@ -422,6 +434,7 @@ final class DownloadManager {
         storeRetry = nil
         discardUnreadPending()
         savePending()
+        prunePartials()   // R1: nothing kept part-way survives a sign-out
         releaseKeepAwake()
     }
 
@@ -461,6 +474,19 @@ final class DownloadManager {
         if failed.contains(where: mine) { return .failed }
         if done > 0 { return .partial(done: done, total: songIds.count) }   // e.g. a song removed on its own
         return .none
+    }
+
+    /// R4: an artist's "Download all songs", over every song kept or asked for with `.artist(artistId)`.
+    func artistStatus(_ artistId: String) -> DownloadStatus {
+        let reason = DownloadReason.artist(artistId)
+        func mine(_ job: Job) -> Bool { job.kind == .download(reason) }
+        let done = reasons.values.count { $0.contains(reason) }
+        if stoppedByFull.contains(where: mine) { return .full }
+        let active = jobs.filter(mine)
+        if active.contains(where: { $0.state == .waiting }) { return waitingStatus }
+        if !active.isEmpty { return .downloading(done: done, total: done + active.count) }
+        if failed.contains(where: mine) { return .failed }
+        return done > 0 ? .downloaded : .none
     }
 
     /// Why manual downloads wait: for the server while offline (ruling b), for Wi-Fi otherwise.
@@ -536,7 +562,7 @@ final class DownloadManager {
             let needsNetwork = jobs[i].kind == .replace || kinds[jobs[i].songId] == nil
             if jobs[i].isManual, needsNetwork, !allowed { jobs[i].state = .waiting; continue }
             if needsNetwork, isHeld { continue }   // P1: paused, or Magpie is in the background
-            guard activeRuns.count < prefs.concurrent else { continue }
+            guard activeRuns.count < runCap(prefs) else { continue }
             let songId = jobs[i].songId
             guard !activeRuns.values.contains(songId) else { continue }
             let run = UUID(), id = jobs[i].id
@@ -546,6 +572,7 @@ final class DownloadManager {
             tasks[run] = Task { [weak self] in
                 await self?.perform(id: id, run: run)
                 self?.progress[id] = nil
+                self?.notePartial(id)
                 self?.taskEnded(run)
             }
         }
@@ -615,10 +642,16 @@ final class DownloadManager {
         guard isLive(gen), isCurrent(id, run) else { return }
         guard let source = streamURL(job.metadata.song, job.quality) else { fail(id, URLError(.badURL)); return }
         let fetched: (file: URL, mimeType: String?)
+        let allowsCellular = !job.isManual || prefs.overMobileData
+        let report: FetchProgress = { [weak self] received, expected in
+            Task { @MainActor in self?.noteProgress(id, run, received: received, expected: expected) }
+        }
         do {
-            fetched = try await fetcher.fetch(source, allowsCellular: !job.isManual || prefs.overMobileData) {
-                [weak self] received, expected in
-                Task { @MainActor in self?.noteProgress(id, run, received: received, expected: expected) }
+            if prefs.downloadInBackground, let backgroundFetcher {   // R1: goes on with Magpie closed
+                fetched = try await backgroundFetcher.fetch(source, job: fetchJob(job), allowsCellular: allowsCellular,
+                                                            progress: report)
+            } else {
+                fetched = try await fetcher.fetch(source, allowsCellular: allowsCellular, progress: report)
             }
         } catch {
             guard isLive(gen), isCurrent(id, run) else { return }   // sent back to wait, removed or signed out
@@ -635,6 +668,8 @@ final class DownloadManager {
             return
         }
         setNeedsNetwork(id, false)   // the bytes are here: a network flip no longer stops this job
+        storing += 1
+        defer { storing -= 1 }
         #if DEBUG
         if let beforeStoreForTesting { await beforeStoreForTesting(job.songId) }
         #endif

@@ -46,6 +46,8 @@ struct DownloadsSettingsView: View {
                 Picker("Pre-download upcoming songs", selection: binding(\.preDownload)) {
                     ForEach(0...10, id: \.self) { Text(Self.aheadTitle($0)).tag($0) }
                 }
+                Toggle(Self.backgroundTitle, isOn: binding(\.downloadInBackground))
+                    .accessibilityIdentifier("download-in-background")
                 Toggle("Keep screen on while downloading", isOn: binding(\.keepScreenOn))
                     .accessibilityIdentifier("keep-screen-on")
                 Toggle("Keep recently played songs", isOn: binding(\.keepRecentlyPlayed))
@@ -59,7 +61,7 @@ struct DownloadsSettingsView: View {
                     ForEach(OfflineMode.allCases, id: \.self) { Text(Self.title($0)).tag($0) }
                 }
             } footer: {
-                Text("Without mobile data, downloads wait for Wi-Fi. Upcoming songs are saved ahead on any network. Downloads only go on while Magpie is open.")
+                Text(Self.footer(inBackground: model.preferences.downloads.downloadInBackground))
             }
             Section {
                 Toggle("Keep favourites downloaded", isOn: binding(\.keepFavourites))
@@ -121,6 +123,15 @@ struct DownloadsSettingsView: View {
     private func readUsage() async {
         usage = await model.storageUsage
         artworkBytes = await model.artworkUsage
+    }
+
+    static let backgroundTitle = "Download in the background"
+
+    /// The settings footer: the Wi-Fi rule, then whether downloads go on with Magpie closed (R1).
+    static func footer(inBackground: Bool) -> String {
+        "Without mobile data, downloads wait for Wi-Fi. Upcoming songs are saved ahead on any network. "
+            + (inBackground ? "Downloads go on when Magpie is closed or your phone is locked, and pick up where they stopped."
+                            : "Downloads only go on while Magpie is open.")
     }
 
     static let clearArtworkMessage = "Covers load again from your server when you next see them. Covers of downloaded albums stay."
