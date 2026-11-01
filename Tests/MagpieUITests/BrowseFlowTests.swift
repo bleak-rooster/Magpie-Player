@@ -594,8 +594,8 @@ final class BrowseFlowTests: XCTestCase {
         for _ in 0..<4 where !log.isHittable { app.swipeUp() }
         log.tap()
         XCTAssertTrue(app.navigationBars["Lidarr change log"].waitForExistence(timeout: 10))
-        app.navigationBars.buttons.firstMatch.tap()   // › Requests
-        XCTAssertTrue(app.navigationBars["Requests"].waitForExistence(timeout: 10))
+        app.navigationBars.buttons.firstMatch.tap()   // › New music
+        XCTAssertTrue(app.navigationBars["New music"].waitForExistence(timeout: 10))
         app.navigationBars.buttons.firstMatch.tap()   // › Settings
         let scrobbling = app.buttons["settings-scrobbling"]   // T17: Count plays lives in Settings › Scrobbling
         for _ in 0..<4 where !scrobbling.isHittable { app.swipeUp() }
@@ -615,7 +615,7 @@ final class BrowseFlowTests: XCTestCase {
         }
         card.tap()
         XCTAssertTrue(app.switches["settings-allow-changes"].waitForExistence(timeout: 10), "Review lands on Requests")
-        XCTAssertTrue(app.navigationBars["Requests"].exists)
+        XCTAssertTrue(app.navigationBars["New music"].exists)
         app.navigationBars.buttons.firstMatch.tap()   // › Settings
         XCTAssertTrue(app.buttons["settings-account"].waitForExistence(timeout: 10), "Settings lies under Requests")
         app.buttons["settings-done"].tap()

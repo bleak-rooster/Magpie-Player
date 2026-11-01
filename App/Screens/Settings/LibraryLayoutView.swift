@@ -41,6 +41,16 @@ struct LibraryLayoutView: View {
             } footer: {
                 Text("At least one row stays visible.")
             }
+            Section {
+                // R11: the same preference as the Artists page's filter menu; the car follows it too.
+                Toggle("Album artists only", isOn: Binding(
+                    get: { model.preferences.layout.albumArtistsOnly },
+                    set: { on in model.updatePreferences { $0.layout.albumArtistsOnly = on } }))
+                    .frame(minHeight: 44)
+                    .accessibilityIdentifier("layout-album-artists-only")
+            } footer: {
+                Text("Off, Artists also lists people who only appear on songs.")
+            }
         }
     }
 }

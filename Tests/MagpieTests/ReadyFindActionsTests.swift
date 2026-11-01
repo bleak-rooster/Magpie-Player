@@ -54,8 +54,8 @@ struct ReadyFindActionsTests {
 
     @Test func theWaitSheetSaysDoneWithItsFootnote() {
         #expect(TrySheet.closeTitle == "Done", "never Leave, which reads as abandon")
-        #expect(RequestCopy.keepBrowsing == "You can keep browsing. It plays next when it's here.")
-        #expect(RequestCopy.notForMeAsks == "Not for me…")
+        #expect(TryCopy.keepBrowsing == "You can keep browsing. It plays next when it's here.")
+        #expect(RequestCopy.keep == "Keep")
         #expect(RequestCopy.status(.pending) == "Looking…", "R20: RequestCopy's first stage")
     }
 }

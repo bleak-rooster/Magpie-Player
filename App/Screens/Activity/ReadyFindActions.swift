@@ -24,9 +24,6 @@ enum ReadyFindActions {
 }
 
 extension RequestCopy {
-    /// R20: under the wait view's stages in the Try sheet, whose button says Done (never "Leave").
-    static let keepBrowsing = "You can keep browsing. It plays next when it's here."
-    /// R20: Not for me on a request page asks first, so it carries the ellipsis.
-    static let notForMeAsks = "\(NotForMeCopy.action)…"
+    /// R20: the Requests row's leading swipe for a Ready find.
     static let keep = "Keep"
 }

@@ -28,10 +28,13 @@ public struct Palette: Sendable, Hashable {
 public struct Theme: Sendable, Hashable {
     public var character: Character
     public var accent: AccentChoice
+    /// R13: the cover's colours, for Immersive only (nil elsewhere, and under Increase Contrast; see `ImmersiveArt`).
+    public var art: ArtPalette?
 
-    public init(character: Character = .signature, accent: AccentChoice = .sheen) {
+    public init(character: Character = .signature, accent: AccentChoice = .sheen, art: ArtPalette? = nil) {
         self.character = character
         self.accent = accent
+        self.art = art
     }
 
     /// Signature and Immersive set display titles in New York (system serif).
@@ -60,10 +63,13 @@ public struct Theme: Sendable, Hashable {
         case .immersive:
             // Real backgrounds are art-derived and darkened to a luminance floor (a11y C1);
             // #2A2A2A is that floor, so it is the worst case these tokens are validated against.
-            return Palette(bg: .init(hex: 0x2A2A2A), surface: .init(hex: 0xFFFFFF, alpha: 0.14),
+            // R13: with the cover's palette, its darkened colour is the background and its accent (AA-checked
+            // against the floor) the accent; a cover without one keeps the user's accent.
+            let tokens = art?.accentTokens
+            return Palette(bg: art?.background ?? .init(hex: 0x2A2A2A), surface: .init(hex: 0xFFFFFF, alpha: 0.14),
                            ink: .init(hex: 0xFFFFFF), ink2: .init(hex: 0xFFFFFF, alpha: 0.72),
                            sep: .init(hex: 0xFFFFFF, alpha: 0.16),
-                           accent: a.fill, accentInk: a.ink, onAccent: a.on)
+                           accent: tokens?.fill ?? a.fill, accentInk: tokens?.ink ?? a.ink, onAccent: tokens?.on ?? a.on)
         }
     }
 
@@ -82,15 +88,52 @@ public struct Theme: Sendable, Hashable {
 
     // MARK: Type
 
-    /// Display titles (Large title, Title 1/2, album titles): New York semibold in Signature/Immersive, SF in Classic.
-    /// Pair with `.magpieDisplayTracking(_:)` for the -0.4 pt tracking.
+    /// Display titles (Large title, Title 1/2, album titles): New York semibold in Signature, SF in Classic.
+    /// Immersive (R13) has its own pairing, one size step up for bolder contrast with the SF Pro text:
+    /// New York black/heavy/bold for Large title, Title 1 and Title 2 (page, album and Now Playing titles, shelf
+    /// headings), and SF Pro Compressed heavy for Title 3 section headings. All follow Dynamic Type (D15).
+    /// `.magpieDisplay(_:)` applies the font with `displayTracking(_:)`.
     public func displayFont(_ style: Font.TextStyle) -> Font {
-        usesSerifDisplay ? .system(style, design: .serif, weight: .semibold) : .system(style, design: .default, weight: .semibold)
+        switch character {
+        case .classic: .system(style, design: .default, weight: .semibold)
+        case .signature: .system(style, design: .serif, weight: .semibold)
+        case .immersive:
+            switch style {
+            case .largeTitle: .system(.largeTitle, design: .serif, weight: .black)
+            case .title: .system(.largeTitle, design: .serif, weight: .heavy)
+            case .title2: .system(.title, design: .serif, weight: .bold)
+            case .title3: .system(.title2, weight: .heavy).width(.compressed)
+            case .headline: .system(.title3, weight: .heavy).width(.compressed)
+            default: .system(style, design: .serif, weight: .bold)
+            }
+        }
     }
 
-    /// Times, counts, days left: SF Pro Rounded with tabular digits.
+    /// Tracking for `displayFont(_:)`: -0.4 pt in Signature; Immersive pulls its big serif tighter and opens up its
+    /// compressed headings.
+    public func displayTracking(_ style: Font.TextStyle) -> CGFloat {
+        switch character {
+        case .classic: 0
+        case .signature: -0.4
+        case .immersive:
+            switch style {
+            case .largeTitle: -0.8
+            case .title: -0.6
+            case .title3, .headline: 0.3
+            default: -0.5
+            }
+        }
+    }
+
+    /// Times, counts, days left: SF Pro Rounded with tabular digits; Immersive reads them out in SF Mono.
     public func numberFont(_ style: Font.TextStyle = .footnote) -> Font {
-        .system(style, design: .rounded).monospacedDigit()
+        character == .immersive ? .system(style, design: .monospaced, weight: .medium)
+                                : .system(style, design: .rounded).monospacedDigit()
+    }
+
+    /// Capsule labels (Play, Shuffle, Try, Keep): SF Pro footnote; Immersive's are SF Pro Compressed, bolder and larger.
+    public var capsuleFont: Font {
+        character == .immersive ? .system(.callout, weight: .bold).width(.compressed) : .footnote.weight(.semibold)
     }
 }
 
@@ -115,7 +158,7 @@ struct ThemedPalette: DynamicProperty {
 }
 
 public extension View {
-    /// Display-title font plus the Signature/Immersive -0.4 pt tracking.
+    /// Display-title font plus its tracking (`Theme.displayTracking`).
     func magpieDisplay(_ style: Font.TextStyle) -> some View { modifier(DisplayTitle(style: style)) }
 }
 
@@ -123,6 +166,6 @@ private struct DisplayTitle: ViewModifier {
     @Environment(\.magpieTheme) private var theme
     let style: Font.TextStyle
     func body(content: Content) -> some View {
-        content.font(theme.displayFont(style)).tracking(theme.usesSerifDisplay ? -0.4 : 0)
+        content.font(theme.displayFont(style)).tracking(theme.displayTracking(style))
     }
 }

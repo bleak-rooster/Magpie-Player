@@ -60,6 +60,8 @@ targets:
         CODE_SIGN_ENTITLEMENTS: $(MAGPIE_ENTITLEMENTS_$(MAGPIE_CARPLAY))
         "CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]": App/Magpie.entitlements
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        # R14: the alternate icons (scripts/render-alternate-icons.swift; AppIconChoice). Settings › Appearance › App icon.
+        ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES: "RecordForest RecordInk RecordSunset MagpieForest MagpieInk MagpieSunset WaveForest WaveInk WaveSunset NestForest NestInk NestSunset"
         GENERATE_INFOPLIST_FILE: NO
         INFOPLIST_FILE: App/Info.plist
         ENABLE_USER_SCRIPT_SANDBOXING: NO

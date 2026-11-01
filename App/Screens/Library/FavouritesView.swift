@@ -2,8 +2,9 @@ import DesignSystem
 import MagpieCore
 import SwiftUI
 
-/// Library › Favourites (spec §3, Task 21): every starred song (a row plays the starred songs from that one), then
-/// every starred album as a grid. Read with `getStarred2`.
+/// Library › Favourites (spec §3, Task 21; round 11 R7): every favourite song (a row plays the favourite songs from
+/// that one), then albums as a grid, then artists. Read with `getStarred2`. Something unfavourited here leaves the list
+/// at once.
 struct FavouritesView: View {
     @Environment(AppModel.self) private var model
     @State private var starred: Loadable<Starred> = .loading
@@ -13,11 +14,12 @@ struct FavouritesView: View {
     var body: some View {
         ScrollView {
             LoadableView(state: starred, retry: load) { starred in
-                if starred.songs.isEmpty, starred.albums.isEmpty {
+                let shown = visible(starred)
+                if shown.songs.isEmpty, shown.albums.isEmpty, shown.artists.isEmpty {
                     ContentUnavailableView("No favourites yet", systemImage: "heart",
-                                           description: Text("Songs and albums you star show up here."))
+                                           description: Text("Songs, albums and artists you favourite show up here."))
                 } else {
-                    content(starred)
+                    content(shown)
                 }
             }
         }
@@ -27,6 +29,13 @@ struct FavouritesView: View {
         .magpieScreen()
         .songRemovalDialog($removing)
         .task { if starred.value == nil { await load() } }
+    }
+
+    /// What is still a favourite (the session's changes applied).
+    private func visible(_ starred: Starred) -> Starred {
+        Starred(songs: starred.songs.filter(model.isStarred),
+                albums: starred.albums.filter { model.isFavourite(.album($0.id), given: true) },
+                artists: starred.artists.filter { model.isFavourite(.artist($0.id), given: true) })
     }
 
     private func content(_ starred: Starred) -> some View {
@@ -58,9 +67,36 @@ struct FavouritesView: View {
                     AlbumGrid(albums: starred.albums) { $0.artist }
                 }
             }
+            if !starred.artists.isEmpty {
+                VStack(alignment: .leading, spacing: Tokens.Spacing.s) {
+                    heading("Artists")
+                    LazyVStack(spacing: 0) {
+                        ForEach(Array(starred.artists.enumerated()), id: \.element.id) { index, artist in
+                            artistRow(artist)
+                                .accessibilityIdentifier("favourite-artist-\(index)")
+                            Divider().overlay(p.sepColor).padding(.leading, 76)
+                        }
+                    }
+                }
+            }
         }
         .padding(.vertical, Tokens.Spacing.l)
         .foregroundStyle(p.inkColor)
+    }
+
+    private func artistRow(_ artist: Artist) -> some View {
+        NavigationLink(value: Route.artist(id: artist.id)) {
+            HStack(spacing: Tokens.Spacing.m) {
+                Artwork(artist.coverArtId, side: 48) { SleeveArt(image: $0, side: 48).clipShape(Circle()) }
+                Text(artist.name).font(.body).frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(.horizontal, Tokens.Spacing.margin)
+            .frame(minHeight: 56)
+            .contentShape(Rectangle())
+            .accessibilityElement(children: .combine)
+        }
+        .buttonStyle(.plain)
+        .artistMenu(artist)
     }
 
     private func heading(_ title: String) -> some View {

@@ -12,7 +12,7 @@ struct ActivityView: View {
     /// R20: Ready finds a Keep (the leading swipe) is running for, what it said, and Bring in more after a move (D5).
     @State private var keeping: Set<RequestID> = []
     @State private var keepMessage: String?
-    @State private var bringingInMore: KeptFind?
+    @State private var bringingInMore: KeptRequestFind?
     private let themed = Themed()
 
     var body: some View {
@@ -61,7 +61,7 @@ struct ActivityView: View {
             Task {
                 let reply = await model.keep(id)
                 if reply.bringsInMore {
-                    bringingInMore = KeptFind(id: id, message: reply.message)
+                    bringingInMore = KeptRequestFind(id: id, message: reply.message)
                 } else {
                     keepMessage = reply.message
                 }
@@ -111,11 +111,11 @@ struct RequestRow: View {
 
     var body: some View {
         HStack(spacing: Tokens.Spacing.m) {
-            RequestArtwork(cover: request.cover, loader: outsideArt, side: 44) { art in
+            RequestArtwork(cover: request.cover, loader: outsideArt, side: 44) { art in   // R16
                 RecordArt(image: art, side: 44,
                           isSpinning: RequestCopy.group(request) == .inProgress && request.tier != .patient)
             }
-            .accessibilityHidden(true)
+                .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
                 Text(request.recording.title).font(.body).lineLimit(2)
                 Text(request.recording.artist).font(.footnote).foregroundStyle(themed.palette.ink2Color).lineLimit(1)
@@ -141,14 +141,16 @@ struct RequestDetailView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     let requestId: RequestID
-    /// R20: the Try sheet's line under the stages ("You can keep browsing…") while it's on its way.
+    /// Under the stages (the Try sheet's "You can keep browsing…", R20).
     var footnote: String? = nil
     @State private var confirmsStop = false
-    /// R20: a Ready find's Keep and Not for me…, with what they said shown on the page.
+    // R17 / R20: Find another copy, and a Ready find's Keep and Not for me.
+    @State private var confirmsAnotherCopy = false
+    @State private var anotherCopyNote: String?
     @State private var working = false
-    @State private var outcome: String?
-    @State private var bringingInMore: KeptFind?
+    @State private var message: String?
     @State private var asking: NotForMeConfirm?
+    @State private var bringingInMore: String?
     /// R16: the cover from outside while this screen is open (R15 rules: memory only, fetched again when it opens).
     @State private var outsideArt: OutsideArtLoader?
     private let themed = Themed()
@@ -179,15 +181,15 @@ struct RequestDetailView: View {
             if request.tier != .patient, RequestCopy.group(request) != .attention {
                 RequestArtwork(cover: request.cover, loader: outsideArt, side: 150) { art in   // R16
                     WaitView(title: request.recording.title, artist: subtitle(request), artwork: art,
-                             stage: RequestCopy.stage(state), phrase: RequestCopy.phrase(state, tier: request.tier))
-                }
-                if let footnote, RequestCopy.group(request) == .inProgress {
-                    Text(footnote).font(.footnote).foregroundStyle(themed.palette.ink2Color)
-                        .multilineTextAlignment(.center).padding(.horizontal, Tokens.Spacing.largeTitleMargin)
-                        .accessibilityIdentifier("request-footnote")
+                             stage: RequestCopy.stage(state), phrase: RequestCopy.phrase(request))
                 }
             } else {
                 calm(request)
+            }
+            if let footnote, RequestCopy.group(request) == .inProgress {
+                Text(footnote).font(.footnote).foregroundStyle(themed.palette.ink2Color)
+                    .multilineTextAlignment(.center).padding(.horizontal, Tokens.Spacing.largeTitleMargin)
+                    .accessibilityIdentifier("request-footnote")
             }
             if request.findsUnavailable {
                 Text(TryCopy.findsUnavailable).font(.footnote).foregroundStyle(themed.palette.ink2Color)
@@ -208,15 +210,23 @@ struct RequestDetailView: View {
         } message: {
             Text("Magpie stops asking for it. Nothing is deleted.")
         }
-        .confirmationDialog(NotForMeCopy.confirmTitle, isPresented: Binding(get: { asking != nil }, set: { shown in
-            if !shown { asking = nil }
-        }), titleVisibility: .visible, presenting: asking) { confirm in
+        .confirmationDialog(RequestCopy.findAnotherTitle, isPresented: $confirmsAnotherCopy, titleVisibility: .visible) {
+            Button(RequestCopy.findAnotherCopy, role: .destructive) { Task { await findAnotherCopy(removingCopy: true) } }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(RequestCopy.findAnotherMessage)
+        }
+        .confirmationDialog(NotForMeCopy.confirmTitle, isPresented: Binding(get: { asking != nil },
+                                                                            set: { if !$0 { asking = nil } }),
+                            titleVisibility: .visible, presenting: asking) { confirm in
             Button(NotForMeCopy.action, role: .destructive) { letGo(confirm) }
             Button("Cancel", role: .cancel) {}
         } message: { confirm in
             Text(confirm.message)
         }
-        .sheet(item: $bringingInMore) { BringInMoreSheet(requestId: $0.id, keptMessage: $0.message) }
+        .sheet(item: Binding(get: { bringingInMore.map { KeptFind(message: $0) } }, set: { bringingInMore = $0?.message })) {
+            BringInMoreSheet(requestId: requestId, keptMessage: $0.message)
+        }
     }
 
     private func subtitle(_ r: MagpieRequest) -> String {
@@ -248,81 +258,105 @@ struct RequestDetailView: View {
 
     @ViewBuilder private func actions(_ request: MagpieRequest) -> some View {
         VStack(spacing: Tokens.Spacing.s) {
-            if request.state == .ready {
-                Button { Task { await play(request) } } label: {
-                    Label("Play", systemImage: "play.fill").frame(maxWidth: .infinity, minHeight: Tokens.minHitSize)
-                }
-                .buttonStyle(.borderedProminent)
-                .accessibilityIdentifier("request-play")
-                readyFindActions(request)   // R20: Play · Keep · Not for me…
-            }
-            if let outcome {
-                Text(outcome).font(.footnote).foregroundStyle(themed.palette.ink2Color).multilineTextAlignment(.center)
-                    .accessibilityIdentifier("request-outcome")
-            }
-            if request.isNotListed {
-                Button("Check again") { Task { await model.checkAgain(requestId) } }
-                    .buttonStyle(.bordered)
-                    .frame(minHeight: Tokens.minHitSize)
-                    .accessibilityIdentifier("request-check-again")
-            }
-            if RequestCopy.canCancel(request.state) {
-                Button("Stop looking", role: .destructive) { confirmsStop = true }
-                    .frame(minHeight: Tokens.minHitSize)
-                    .accessibilityIdentifier("request-stop")
-            } else if !request.cleanupPending, request.state != .ready {
-                Button("Remove from the list") {
-                    Task {
-                        await model.forgetRequest(requestId)
-                        dismiss()
-                    }
-                }
-                .frame(minHeight: Tokens.minHitSize)
+            ForEach(RequestPageAction.actions(for: request), id: \.self) { action(request, $0) }
+            if let message {
+                Text(message).font(.footnote).foregroundStyle(themed.palette.ink2Color).multilineTextAlignment(.center)
+                    .accessibilityIdentifier("request-message")
             }
         }
         .padding(.horizontal, Tokens.Spacing.largeTitleMargin)
     }
 
-    /// R20 (appraisal "R16 / Activity"): a Ready find's Keep, then Not for me… (it asks first). What they said shows
-    /// on the page; after a Keep that moved it, Bring in more follows (D5), as on the Finds shelf.
-    @ViewBuilder private func readyFindActions(_ request: MagpieRequest) -> some View {
-        if let id = ReadyFindActions.keep(request) {
-            Button(RequestCopy.keep) {
-                working = true
-                Task {
-                    let reply = await model.keep(id)
-                    outcome = reply.message
-                    if reply.bringsInMore { bringingInMore = KeptFind(id: id, message: reply.message) }
-                    working = false
-                }
+    @ViewBuilder private func action(_ request: MagpieRequest, _ action: RequestPageAction) -> some View {
+        switch action {
+        case .play:
+            Button { Task { await play(request) } } label: {
+                Label("Play", systemImage: "play.fill").frame(maxWidth: .infinity, minHeight: Tokens.minHitSize)
+            }
+            .buttonStyle(.borderedProminent)
+            .accessibilityIdentifier("request-play")
+        case .keep:
+            Button { Task { await keep() } } label: {
+                Label("Keep", systemImage: "plus.circle").frame(maxWidth: .infinity, minHeight: Tokens.minHitSize)
             }
             .buttonStyle(.bordered)
-            .frame(minHeight: Tokens.minHitSize)
             .disabled(working)
             .accessibilityIdentifier("request-keep")
-        }
-        if let id = ReadyFindActions.notForMe(request) {
-            Button(RequestCopy.notForMeAsks, role: .destructive) {
-                working = true
-                Task {
-                    switch await model.notForMeAsk(id) {
-                    case .confirm(let confirm): asking = confirm
-                    case .message(let text): outcome = text
+        case .notForMe:
+            Button(NotForMeCopy.action + "…", role: .destructive) { Task { await askNotForMe() } }
+                .frame(minHeight: Tokens.minHitSize)
+                .disabled(working)
+                .accessibilityIdentifier("request-not-for-me")
+        case .findAnotherCopy:
+            // Once per 30 s: the clock only re-enables the button on this screen (nothing is read from the servers).
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                let hold = model.findAnotherCopyHold(request, now: context.date)
+                VStack(spacing: Tokens.Spacing.xs) {
+                    Button(RequestCopy.findAnotherCopy) { Task { await findAnotherCopy(removingCopy: false) } }
+                        .buttonStyle(.bordered)
+                        .frame(minHeight: Tokens.minHitSize)
+                        .disabled(working || hold != nil)
+                        .accessibilityIdentifier("request-find-another-copy")
+                    if let note = hold ?? anotherCopyNote {
+                        Text(note).font(.footnote)
+                            .foregroundStyle(themed.palette.ink2Color).multilineTextAlignment(.center)
+                            .accessibilityIdentifier("request-find-another-note")
                     }
-                    working = false
+                }
+            }
+        case .checkAgain:
+            Button("Check again") { Task { await model.checkAgain(requestId) } }
+                .buttonStyle(.bordered)
+                .frame(minHeight: Tokens.minHitSize)
+                .accessibilityIdentifier("request-check-again")
+        case .stopLooking:
+            Button("Stop looking", role: .destructive) { confirmsStop = true }
+                .frame(minHeight: Tokens.minHitSize)
+                .accessibilityIdentifier("request-stop")
+        case .remove:
+            Button("Remove from the list") {
+                Task {
+                    await model.forgetRequest(requestId)
+                    dismiss()
                 }
             }
             .frame(minHeight: Tokens.minHitSize)
-            .disabled(working)
-            .accessibilityIdentifier("request-not-for-me")
+        }
+    }
+
+    /// Asks first only when there's a copy coming (the runner reads Lidarr's queue; nothing is sent before the OK).
+    private func findAnotherCopy(removingCopy: Bool) async {
+        working = true
+        defer { working = false }
+        switch await model.findAnotherCopy(requestId, removingCopy: removingCopy) {
+        case .started, .tooSoon: anotherCopyNote = nil
+        case .needsConfirmation: confirmsAnotherCopy = true
+        case .failed(let text): anotherCopyNote = text
+        }
+    }
+
+    /// Keep, as in Finds: Bring in more follows a move (D5); otherwise what happened shows here.
+    private func keep() async {
+        working = true
+        defer { working = false }
+        let reply = await model.keep(requestId)
+        if reply.bringsInMore { bringingInMore = reply.message } else { message = reply.message }
+    }
+
+    private func askNotForMe() async {
+        working = true
+        defer { working = false }
+        switch await model.notForMeAsk(requestId) {
+        case .confirm(let confirm): asking = confirm
+        case .message(let text): message = text
         }
     }
 
     private func letGo(_ confirm: NotForMeConfirm) {
         asking = nil
-        working = true
         Task {
-            outcome = await model.notForMe(confirm)
+            working = true
+            message = await model.notForMe(confirm)
             working = false
         }
     }
@@ -333,8 +367,14 @@ struct RequestDetailView: View {
     }
 }
 
-/// R20: a kept find that moved into the library, for the Bring in more sheet (D5).
-struct KeptFind: Identifiable {
+/// The Bring in more sheet after a Keep on a request page moved the find (D5).
+private struct KeptFind: Identifiable {
+    let message: String
+    var id: String { message }
+}
+
+/// R20: a kept find from a Requests row that moved into the library, for the Bring in more sheet (D5).
+struct KeptRequestFind: Identifiable {
     let id: RequestID
     let message: String
 }

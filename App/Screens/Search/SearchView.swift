@@ -246,21 +246,45 @@ private struct SearchContent: View {
             .listRowSeparator(.hidden)
     }
 
+    /// R17: a song already asked for opens its request (or, once Ready, is the library song, in place).
     private func notYetSongRow(_ recording: ExternalRecording, index: Int) -> some View {
         let song = Song(id: "notyet-\(index)", title: recording.title, artist: recording.artist,
                         album: recording.releaseTitle ?? "", duration: recording.duration ?? 0)
-        // R15: the release's cover from outside, never cached.
-        return OutsideArtwork(model.outsideArt, key: .cover(releaseGroup: nil, release: recording.releaseMBID)) { art in
-            SongRow(song: song, state: RequestCopy.rowState(for: recording, in: app.requests), artwork: art,
-                    tryTitle: RequestCopy.tryTitle(app.tryAvailability),
-                    onTry: { trying = TryTarget(recording: recording) })
+        return NotYetSongLink(recording: recording, play: { song in
+            remember(model.query)
+            app.play([song], startAt: 0)
+        }) {
+            // R15: the release's cover from outside, never cached.
+            OutsideArtwork(model.outsideArt, key: .cover(releaseGroup: nil, release: recording.releaseMBID)) { art in
+                SongRow(song: song, state: RequestCopy.rowState(for: recording, in: app.requests), artwork: art,
+                        tryTitle: RequestCopy.tryTitle(app.tryAvailability),
+                        onTry: { trying = TryTarget(recording: recording) })
+            }
         }
             .accessibilityIdentifier("search-notyet-song-\(index)")
             .listRowInsets(EdgeInsets())
             .listRowBackground(Color.clear)
     }
 
-    private func notYetArtistRow(_ artist: NotYetArtist) -> some View {
+    @ViewBuilder private func notYetArtistRow(_ artist: NotYetArtist) -> some View {
+        if let request = RequestLinks.request(artist: artist.mbid, in: app.requests) {   // R17
+            RequestedItemRow(title: artist.name, detail: "Artist", request: request).listRowBackground(Color.clear)
+        } else {
+            plainNotYetArtistRow(artist)
+        }
+    }
+
+    @ViewBuilder private func notYetAlbumRow(_ album: NotYetAlbum) -> some View {
+        if let request = RequestLinks.request(releaseGroup: album.mbid, in: app.requests) {   // R17
+            RequestedItemRow(title: album.title,
+                             detail: [album.kind ?? "Album", album.artist].joined(separator: " \u{00B7} "), request: request)
+                .listRowBackground(Color.clear)
+        } else {
+            plainNotYetAlbumRow(album)
+        }
+    }
+
+    private func plainNotYetArtistRow(_ artist: NotYetArtist) -> some View {
         HStack(spacing: Tokens.Spacing.m) {
             // A plain circle: the groove ring is invisible at this size (review of D3). R15: the artist's picture from
             // Lidarr's lookup when there is one, never cached.
@@ -287,7 +311,7 @@ private struct SearchContent: View {
         .listRowBackground(Color.clear)
     }
 
-    private func notYetAlbumRow(_ album: NotYetAlbum) -> some View {
+    private func plainNotYetAlbumRow(_ album: NotYetAlbum) -> some View {
         OutsideArtwork(model.outsideArt, key: album.mbid.map(OutsideArtKey.releaseGroup)) { art in   // R15
             NotYetAlbumRow(title: album.title, detail: [album.kind ?? "Album", album.artist].joined(separator: " \u{00B7} "),
                            label: "\(album.title), \(album.kind ?? "Album") by \(album.artist)", artwork: art)
@@ -350,7 +374,7 @@ private struct SearchContent: View {
             }
             .accessibilityElement(children: .combine)
         }
-        .reloadArtworkMenu(artist.coverArtId)   // P4
+        .artistMenu(artist)   // R7 Favourite, P4 Reload artwork
         .simultaneousGesture(TapGesture().onEnded { remember(model.query) })
         .listRowBackground(Color.clear)
     }
@@ -370,7 +394,7 @@ private struct SearchContent: View {
             }
             .accessibilityElement(children: .combine)
         }
-        .reloadArtworkMenu(album.coverArtId)   // P4
+        .albumMenu(album)   // R7 Favourite, R8 Add to playlist…, P4 Reload artwork
         .simultaneousGesture(TapGesture().onEnded { remember(model.query) })
         .listRowBackground(Color.clear)
     }

@@ -19,6 +19,12 @@ struct TrySheet: View {
         case asked(RequestID)
     }
 
+    /// R17: a song already on its way (or Ready) opens its request instead of a second Try. Nil: Try as usual.
+    static func existingPhase(for recording: ExternalRecording, in requests: [MagpieRequest]) -> Phase? {
+        guard let live = RequestLinks.request(for: recording, in: requests) else { return nil }
+        return live.tier.asksInsteadOfWaiting ? .asked(live.id) : .waiting(live.id)
+    }
+
     @State private var phase = Phase.choosing
     @State private var error: String?
     @State private var showsSettings = false
@@ -31,7 +37,7 @@ struct TrySheet: View {
             Group {
                 switch phase {
                 case .choosing, .working: choosing
-                case .waiting(let id): RequestDetailView(requestId: id, footnote: RequestCopy.keepBrowsing)   // R20
+                case .waiting(let id): RequestDetailView(requestId: id, footnote: TryCopy.keepBrowsing)   // R20
                 case .asked(let id): asked(id)
                 }
             }
@@ -44,8 +50,12 @@ struct TrySheet: View {
                 }
             }
         }
-        .sheet(isPresented: $showsSettings) { SettingsView(opening: [.requests]) }   // T21b: every reason Try names is on Requests
-        .task { if outsideArt == nil { outsideArt = model.makeOutsideArt() } }
+        .sheet(isPresented: $showsSettings) { SettingsView(opening: [.requests]) }   // T21b: every reason Try names is on New music
+        .onAppear {
+            // R17: a song already on its way opens its request, never a second Try.
+            if phase == .choosing, let live = Self.existingPhase(for: recording, in: model.requests) { phase = live }
+        }
+        .task { if outsideArt == nil { outsideArt = model.makeOutsideArt() } }   // R16
         .onDisappear { outsideArt?.reset() }
     }
 

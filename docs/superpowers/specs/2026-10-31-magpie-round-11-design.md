@@ -211,3 +211,128 @@ Overlaps:
   - Documented as best-effort: iOS decides when it runs.
   - Also, while audio plays in the background the process stays alive, and the runner keeps its 30 s cadence (verify).
 - **Workstream X5** (R15 + R16).
+
+## R17. Requests: get back to them, stalled Soulseek downloads, search again, live search rows (owner addendum)
+- **Get back to a request:**
+  - In search (phone and CarPlay-irrelevant), a "Not in your library" song/album/artist row that has a live request shows that request's status ("Looking…", "Bringing it home"…) instead of Try. Tapping it opens that request's page, never a second Try.
+  - The same applies from Activity, from the Play now banner, and from the song row anywhere it appears.
+- **Live rows:**
+  - When a request becomes Ready, search results showing it update in place, without leaving search: the row becomes the library song (playable, normal row, P4 cached art), and its request page shows Ready with Play.
+  - The same applies to the request page while it is open.
+  - The trigger is the runner's ready event or the match index refresh. No polling from views.
+- **Stalled Soulseek downloads** *(owner: "if there is no change in the download for 1 minute, then it should be deleted, blocked, and a new search performed")*:
+  - Magpie sees slskd through Lidarr: the owner's Lidarr uses a Soulseek/slskd download client.
+  - Detection: the queue item's `downloadClient` matches a download client whose `implementation`/`implementationName` is a Soulseek/slskd client (from `GET /api/v1/downloadclient`, read-only, cached per session).
+  - A Magpie request's queue item from such a client whose progress (`sizeleft`, plus status/trackedDownloadState) has not changed for **60 s** *(call: "Stalled downloads give up after", Settings › Requests: 1, 2, 5, 10 min, default 1 min; Soulseek only)*:
+    1. `DELETE /api/v1/queue/{id}?removeFromClient=true&blocklist=true&skipRedownload=true`;
+    2. then the runner's `AlbumSearch` for that album, so the search is ours and counted.
+  - The request shows "That source stalled. Looking for another…".
+  - At most 5 automatic stall-retries per request *(call)*. After that it waits as "Still looking" with Search again.
+- **Search again** (manual) on the request page, for a live request not yet imported:
+  - if a Magpie-request queue item exists, remove it with the same DELETE (blocklist=true);
+  - then `AlbumSearch`;
+  - confirmed with "Search again? The current download will be removed and blocked.", shown only when a download exists;
+  - rate-limited to once per 30 s.
+- **Owner-data rule:**
+  - The queue DELETE is allowed only through LidarrWriteGate, with exactly `removeFromClient=true&blocklist=true&skipRedownload=true`.
+  - Only for a queue item whose `albumId` belongs to a live Magpie request for which the ledger shows Magpie monitored/added it.
+  - It is re-read fresh right before (id, albumId, downloadClient).
+  - It never touches downloads of anything else. It never deletes library files: the queue only, before import.
+  - check-writes.sh covers it, and the write is logged in the change log.
+- **Tests:**
+  - dev stack: no Soulseek, so use stubs;
+  - a read-only probe of the owner's real Lidarr `GET /api/v1/downloadclient` and `GET /api/v1/queue` shapes is allowed, under the owner-real-servers rules: reads only, never print credentials, no writes.
+- **Workstream X6** (R17).
+
+## R18. "Only in Finds" → add to your library, download choices, simple mode (owner addendum; absorbs the queued Lidarr release-type round)
+- **Main library:**
+  - Finds setup gains **Main library**: the Navidrome library that is your main collection, picked from `/api/library` and required when there's more than one library. It's stored with the Finds setup.
+  - Also **Main folder**: Lidarr's main root folder, which already exists as Lidarr setup's main root. Show it alongside, so the pair is explicit.
+  - The main library is used for targeted scans after Keep, and to decide "in your library" vs "only in Finds".
+  - With exactly one non-Finds library, it's picked automatically.
+- **Only in Finds:**
+  - An artist whose every song Magpie knows is in the Finds library shows an info line on the artist page: "Only in Finds" (`sparkles` or the Finds symbol), plus a primary button **Add to your library**.
+  - A find song's Now Playing More menu (R9) and the long-press menu get **Add to your library…**
+  - For an artist Magpie added (ledger), this runs Keep (move into the main root, Lossless profile, remove `magpie-find`), then Bring in more per the choices below.
+  - For anything else, it's informational only (owner-data rule): "Added outside Magpie. Change it in Lidarr."
+- **Download choices sheet**, used by Add to your library, Bring in more, and the artist page's "Add to Lidarr and download" (W3):
+  - **What:**
+    - This album only;
+    - The whole artist, with release types:
+      - Albums / Albums + EPs / Albums + EPs + Singles;
+      - plus Studio, Soundtrack, Live as toggles (Studio on by default);
+      - Official releases only (always, not a choice).
+  - **Quality:**
+    - Lossless (FLAC), the Magpie Lossless profile;
+    - Smaller files (MP3), the Magpie Fast Start profile or an MP3 profile Magpie provisions.
+
+    The implementer verifies the existing Magpie profiles and names them clearly in the UI.
+  - **Follow new releases** toggle.
+  - Each choice shows "about N hours" when known (existing Bring in more logic).
+- **Metadata profiles for release types:**
+  - Magpie provisions, on demand, metadata profiles named `Magpie <Types> · <Secondary>` (e.g. `Magpie Albums+EPs · Studio+Live`), Official status only.
+  - Created only if missing. An existing profile with that name but different settings stops with an explanation (existing provisioning rule).
+  - Applied only to artists Magpie added (ledger). Gate shape: `PUT /artist/editor {artistIds:[id], metadataProfileId}`, plus the existing quality and monitor shapes.
+  - Never changes artists the owner added.
+- **Simple downloads** (Settings › Requests, default **ON**):
+  - When on, every one of these actions skips the sheet and uses the defaults set in Settings › Requests › **Download defaults**: What (default The whole artist), Types (default Albums + EPs, Studio), Quality (default Lossless), Follow new releases (default off).
+  - The defaults can't be changed per download. The confirmation stays a single "Add <artist> to your library?" with a one-line summary of the defaults.
+  - When off, the sheet appears every time, preset with the defaults.
+- **Try (single song)** is unchanged *(call)*: one release, the Fast Start profile, and the Magpie Finds metadata profile for new artists. The release types only matter once more is brought in.
+- **Tests:**
+  - dev Lidarr with gated writes on the test's own fixture artists only, cleaned up afterwards;
+  - profile provisioning is idempotent;
+  - gate refusals for non-Magpie artists;
+  - simple mode on/off flows;
+  - the Only in Finds detection, including mixed artists (some in main → not "only in Finds");
+  - Main library auto-pick and picker.
+- **Workstream X7** (R18). It touches the gate after X6; it's merged after X6.
+
+## R19. Search: artist and album results open pages; outside artist/album pages (owner addendum)
+- **Bug:** tapping an Artists or Albums search result does nothing, and only songs act.
+  - Fix it: an in-library artist or album result opens the normal Artist/Album page.
+  - Reproduce first with a UI test (phone), and check CarPlay search too.
+- **Outside artist page** (an artist not in the library), styled like the library Artist page:
+  - **Header:** the artist picture per R15 (in memory only) and the name, plus the Lidarr status line (W3: "Not in Lidarr" / "In Lidarr").
+  - **Albums, EPs, Singles:** sections from MusicBrainz release groups (Official; primary type Album/EP/Single; Studio first, other secondary types under "More"). Cover art per R15, newest first.
+  - **Popular songs:** from ListenBrainz/MusicBrainz top recordings if the existing search client has a source. Otherwise omitted *(call)*.
+  - **Actions:**
+    - **Try in Finds**: on any song row (the existing Try, single release) and on any album (new "Try this album": the existing Try machinery with the album's release group as the target, into Finds mode when set up, otherwise straight into the library as today).
+    - **Add to your library**: the whole artist via R18's download choices or simple mode, through the gate. For an artist already in the owner's Lidarr, the W3 rules (never changed).
+- **Outside album page:** the cover per R15, the tracklist from MusicBrainz (the release of the release group Magpie would pick), with actions:
+  - **Try this album** (into Finds);
+  - **Add <artist> to your library** (R18);
+  - per track, **Try** (single song).
+- A live request for any item shows its status and opens its request page (R17).
+- When an outside item lands in the library, the page updates in place (R17 live rows).
+- **Rate limits:** MusicBrainz at most 1 request/s with the app UA (existing client), cached in memory per session only. Offline: these pages say "You're offline".
+- **Workstream X8** (R19). Dispatched after X5, X6 and X7 merge, since it builds on their search, request and download-choice code.
+
+## R20. UX appraisal rulings (docs/reviews/ux-appraisal-round-11.md)
+The appraisal is binding, with its §8 errata, §9 glossary and §10 principles, **except where it overrides something the owner explicitly asked for**. There the owner's request stands *(controller ruling; the owner is told)*:
+
+| Appraisal | Ruling |
+|---|---|
+| P3: move the Lidarr wording to a Curator-only Details sheet | **Not adopted.** The owner asked that the artist page "make clear if that artist is currently in Lidarr". Keep one calm, visible status line. The header otherwise follows the appraisal: Play/Shuffle, one primary capsule, the rest in a toolbar star plus ⋯. P3's button renames to **Add to your library** (the not-in-Lidarr case) → the Add sheet. |
+| R18: remove the Simple downloads toggle | **Not adopted.** The owner asked for it, default ON. Renamed **Add with my defaults** (Settings › New music › When you add an artist), because "download" means this iPhone only. When on, one confirmation with a one-line summary; when off, the Add sheet with the defaults preselected. |
+| R18: Studio always on, hidden | **Not adopted.** The owner asked for Studio / Soundtrack / Live choices. Studio is on by default. Official is applied silently. |
+| R12: no collection popup (toast with Shuffle instead) | **Not adopted.** The owner asked for the popup: "In order" / "Shuffled". |
+| R12: ask before replacing only when Up next holds user-added songs | **Not adopted.** The owner's wording: ask whenever tapping to play would replace a queue of more than the current song (setting off by default). |
+| R17: the stall clock starts at the first progress | **Not adopted.** The owner said "no change in the download for 1 minute". The clock starts when the item appears in the queue. The setting allows 1/2/5/10 min, so the owner can relax it. |
+| R19: per-track Try replaced by "Try this album, starting here" | **Partly adopted.** The owner asked to "select an album or song". A track tap opens Try for that song (the existing single-release Try), deduped against any live request for the same release group. Try this album stays. |
+
+**Everything else in the appraisal is adopted**, including:
+- the glossary (one word per concept; "Download" = this iPhone only);
+- Settings › Requests → **Settings › New music**;
+- Only in Finds → **Keep <artist>**, and a find's menus say **Keep**;
+- R17 copy: "That copy stopped coming. Looking for another…", **Find another copy**, and "Give up on a stuck copy after";
+- the R9 More menu: Keep and Not for me first for a find; Sleep timer stays in the bottom row; Favourite in More only in lyrics mode;
+- R12: destructive actions never full-swipe, and both actions stay on the trailing edge;
+- R8: the playlist Download capsule;
+- R4: ⋯ → **Download to this iPhone…**;
+- the Try sheet: **Done** plus the footnote;
+- a Ready find's request page: Play · Keep · Not for me…;
+- search: a song tap plays the song, then its album; remove `.simultaneousGesture` from the NavigationLink rows;
+- the car shows live-request status and never offers a second Try;
+- dedupe requests by recording and release group;
+- §10 principles as the review checklist, including the no-dead-taps UI test.

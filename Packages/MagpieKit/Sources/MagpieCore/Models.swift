@@ -67,12 +67,15 @@ public struct Genre: Sendable, Hashable, Codable {
     public var isKnownEmpty: Bool { countsKnown && songCount == 0 && albumCount == 0 }
 }
 
-/// The user's starred songs and albums.
+/// The user's starred songs, albums and artists.
 public struct Starred: Sendable, Hashable {
     public var songs: [Song]
     public var albums: [Album]
+    public var artists: [Artist]
 
-    public init(songs: [Song] = [], albums: [Album] = []) { self.songs = songs; self.albums = albums }
+    public init(songs: [Song] = [], albums: [Album] = [], artists: [Artist] = []) {
+        self.songs = songs; self.albums = albums; self.artists = artists
+    }
 }
 
 public struct Album: Sendable, Hashable, Codable {
@@ -86,13 +89,16 @@ public struct Album: Sendable, Hashable, Codable {
     public var coverArtId: String?
     public var releaseGroupMBID: MBID?
     public var songs: [Song]?
+    /// The user starred ("favourited") it (round 11 R7).
+    public var starred: Bool
 
     public init(id: String, name: String, artist: String, artistId: String? = nil, year: Int? = nil,
                 songCount: Int, duration: TimeInterval, coverArtId: String? = nil,
-                releaseGroupMBID: MBID? = nil, songs: [Song]? = nil) {
+                releaseGroupMBID: MBID? = nil, songs: [Song]? = nil, starred: Bool = false) {
         self.id = id; self.name = name; self.artist = artist; self.artistId = artistId
         self.year = year; self.songCount = songCount; self.duration = duration
         self.coverArtId = coverArtId; self.releaseGroupMBID = releaseGroupMBID; self.songs = songs
+        self.starred = starred
     }
 }
 
@@ -102,10 +108,13 @@ public struct Artist: Sendable, Hashable, Codable {
     public var albumCount: Int
     public var coverArtId: String?
     public var mbid: MBID?
+    /// The user starred ("favourited") them (round 11 R7).
+    public var starred: Bool
 
-    public init(id: String, name: String, albumCount: Int, coverArtId: String? = nil, mbid: MBID? = nil) {
+    public init(id: String, name: String, albumCount: Int, coverArtId: String? = nil, mbid: MBID? = nil,
+                starred: Bool = false) {
         self.id = id; self.name = name; self.albumCount = albumCount
-        self.coverArtId = coverArtId; self.mbid = mbid
+        self.coverArtId = coverArtId; self.mbid = mbid; self.starred = starred
     }
 }
 
@@ -115,10 +124,27 @@ public struct Playlist: Sendable, Hashable, Codable {
     public var songCount: Int
     public var duration: TimeInterval
     public var coverArtId: String?
+    /// The owner's user name, when the server says (round 11 R8).
+    public var owner: String?
+    /// OpenSubsonic `readonly`: whether the signed-in user may not change it; nil from a server that doesn't say.
+    public var readOnly: Bool?
+    /// When it last changed, when the server says (Add to playlist lists the latest first).
+    public var changed: Date?
 
-    public init(id: String, name: String, songCount: Int, duration: TimeInterval, coverArtId: String? = nil) {
+    public init(id: String, name: String, songCount: Int, duration: TimeInterval, coverArtId: String? = nil,
+                owner: String? = nil, readOnly: Bool? = nil, changed: Date? = nil) {
         self.id = id; self.name = name; self.songCount = songCount
-        self.duration = duration; self.coverArtId = coverArtId
+        self.duration = duration; self.coverArtId = coverArtId; self.owner = owner; self.readOnly = readOnly
+        self.changed = changed
+    }
+
+    /// Whether `username` may rename it, change its songs or delete it (spec R8: only the user's own): never when
+    /// the server says `readonly`; otherwise owned by that user (compared case-insensitively, as Navidrome signs in),
+    /// or, with no owner given, the server's `readonly: false`.
+    public func isEditable(by username: String) -> Bool {
+        if readOnly == true { return false }
+        if let owner { return owner.caseInsensitiveCompare(username) == .orderedSame }
+        return readOnly == false
     }
 }
 

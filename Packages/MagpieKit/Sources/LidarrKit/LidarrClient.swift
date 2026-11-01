@@ -157,6 +157,11 @@ public struct LidarrClient: Sendable {
         try await list(QueueItem.self, "queue/details", albumIds.map { URLQueryItem(name: "albumIds", value: String($0)) })
     }
 
+    /// The download clients set up in Lidarr (R17: which ones are Soulseek). Read only; never written (G5).
+    public func downloadClients() async throws -> [DownloadClientInfo] {
+        try await list(DownloadClientInfo.self, "downloadclient")
+    }
+
     public func historySince(_ date: Date) async throws -> [HistoryEvent] {
         try await list(HistoryEvent.self, "history/since", [URLQueryItem(name: "date", value: LidarrDates.format(date))])
     }

@@ -77,7 +77,7 @@ final class CarPlayLibraryAdapter: CarPlayLibrary {
 
     func artists() async throws -> [Artist] {
         if model.isOffline { return await model.offlineCatalog.artists() }
-        return try await model.request { try await $0.artists() }
+        return try await model.libraryArtists()   // R11: "Album artists only"
     }
 
     func artist(id: String) async throws -> (Artist, [Album]) {
