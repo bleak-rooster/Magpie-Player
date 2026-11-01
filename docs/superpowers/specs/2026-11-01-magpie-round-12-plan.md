@@ -79,13 +79,30 @@ Two things could still explain it:
 - (a) Playlist tiles reuse the album tile, and Navidrome makes a playlist's cover from its albums, so playlists *look* like random albums.
 - (b) There's no "Recently downloaded" shelf. "Downloaded" lists every downloaded album, unordered.
 
+**Diagnosis (2026-11-01).** The diagnosis was run read-only against the owner's Navidrome, with a fresh install on a simulator, every shelf turned on, and screenshots and tile dumps compared. **No heading-to-content wiring bug reproduced:** every shelf matched the server, and taps opened the right kind of page. The complaint comes from design faults:
+1. **Home mixes all three libraries.** No call sends `musicFolderId` (NavidromeClient.swift:173-186). The server has Music Library (1), Aurral Playlists (2) and Finds (3), so Aurral flow downloads turn up in Random albums and Recently added and read as "random albums".
+2. **The Playlists shelf** is the first 12 playlists A–Z, unsorted (AppModel+Home.swift:121), so it starts with old playlists. Navidrome's covers are 2×2 album grids, so the tiles look like albums.
+3. **"Downloaded"** is A–Z by name (OfflineCatalog.swift:31-35), takes the first 12, and ignores `downloadedAt`. Downloaded playlists show up as partial albums.
+4. **CarPlay** uses the same calls, so it has the same faults.
+
 **Plan.**
-1. **Diagnose first, against the real server, read-only.** Run the app's Home reads against the owner's Navidrome and diff each shelf against the raw API and the cached shelf file. A screenshot from the owner would settle it fastest.
-2. **Fix whatever the diff shows.** Then, whatever the cause:
-   - playlist tiles get their own look (a stacked-cover style, a "Playlist" subtitle and the song count);
-   - "Downloaded" becomes **"Recently downloaded"**, ordered by download date (the date is already stored per entry) and capped at 20, with "See all";
-   - a shelf whose cached content's kind doesn't match its section is thrown away on load. This guards against stale caches from older builds.
-- **Tests:** each shelf's tile kind, the download-date order, and the stale-cache guard.
+- **Main library only, everywhere:**
+  - Home, Library lists, Search and CarPlay read the **main library** (`musicFolderId`), picked as in R18 ("Main library", automatic when the choice is obvious).
+  - Aurral's library appears only under Discover (item 7), and Finds only under Finds.
+  - Album artists only (R11) keeps working.
+- **Playlists shelf:**
+  - most recently changed first;
+  - Aurral flow playlists left out (they live in Discover);
+  - the owner's own playlists before public ones from others;
+  - a distinct playlist tile (stacked frame, "Playlist · N songs").
+- **Recently downloaded:** ordered by `downloadedAt`, newest first. Albums and playlists are listed as themselves, not split into partial albums. "See all" opens Downloads.
+- **Stale cache:** a saved shelf whose tile kinds don't match its section is thrown away on load.
+- **Tests:**
+  - musicFolderId is sent on every list call;
+  - Aurral and Finds albums never reach Home, Library or Search;
+  - the playlist order;
+  - the download-date order;
+  - the stale-cache guard.
 
 ## 6. Settings › Downloads in Lidarr (all of Lidarr's downloads)
 
@@ -220,7 +237,7 @@ Two things could still explain it:
 
 | WS | Items | Notes |
 |---|---|---|
-| Y0 | 5 (diagnosis) | Read-only, against the owner's Navidrome; needs no code. First. |
+| Y0 | 5 (diagnosis) | Done 2026-11-01: no wiring bug; causes recorded in item 5. |
 | Y1 | 1, 3 | Search ranking and paging. |
 | Y2 | 2, 2b | CarPlay. |
 | Y3 | 4, 11, 5 (fix) | Pages, Now Playing and Home. |
