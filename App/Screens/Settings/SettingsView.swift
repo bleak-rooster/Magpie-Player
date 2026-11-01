@@ -65,7 +65,7 @@ struct SettingsView: View {
         case .appearance:
             SettingsRow(title: "Appearance", symbol: "paintpalette", summary: SettingsSummary(SettingsSummaries.appearance(model.theme)))
         case .requests:
-            SettingsRow(title: "Requests", symbol: "tray.and.arrow.down", summary: SettingsSummaries.requests(model))
+            SettingsRow(title: "New music", symbol: "tray.and.arrow.down", summary: SettingsSummaries.requests(model))
         case .about:
             SettingsRow(title: "About", symbol: "info.circle", summary: SettingsSummary(AboutView.summary))
         case .findsSetup:

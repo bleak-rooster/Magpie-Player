@@ -95,6 +95,8 @@ private struct PlayNowBannerView: View {
     @Environment(AppModel.self) private var model
     let banner: PlayNowBanner
     let open: () -> Void
+    /// R17: the banner's "Show request" opens the request's page over it.
+    @State private var showsRequest = false
     private let themed = Themed()
 
     var body: some View {
@@ -156,6 +158,23 @@ private struct PlayNowBannerView: View {
             }
         }
         .accessibilityAction(named: "Not now") { model.dismissBanner() }
+        .accessibilityAction(named: BannerCopy.showRequest) { showsRequest = true }
+        .contextMenu {   // R17: back to its request (a tap still opens Now Playing, B-M4)
+            Button(BannerCopy.showRequest, systemImage: "tray.and.arrow.down") { showsRequest = true }
+        }
+        .sheet(isPresented: $showsRequest) {
+            NavigationStack {
+                RequestDetailView(requestId: banner.request)
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) { Button("Done") { showsRequest = false } }
+                    }
+                    .magpieRoutes()
+            }
+        }
         .accessibilityIdentifier("play-now-banner")
     }
+}
+
+enum BannerCopy {
+    static let showRequest = "Show request"
 }

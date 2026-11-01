@@ -438,6 +438,6 @@ final class LockableTokenStore: ListenBrainzTokenStoring, @unchecked Sendable {
 
     @Test func provisioningConflictIsExplained() {
         #expect(RequestsSettingsView.provisionError(ProvisionError.conflict("Magpie Fast Start")).contains("Magpie won't change it"))
-        #expect(RequestsSettingsView.provisionError(WriteGateError.disabled).contains("Allow Magpie to change Lidarr"))
+        #expect(RequestsSettingsView.provisionError(WriteGateError.disabled).contains("Allow Magpie to change your library"))
     }
 }

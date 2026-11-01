@@ -3,7 +3,7 @@ import LidarrKit
 import Requests
 import SwiftUI
 
-/// Settings › Requests: Lidarr (connect, set up, the G1 switch, the main root folder, Finds, the change log), and
+/// Settings › New music (R20; was Requests): Lidarr (connect, set up, the G1 switch, the main root folder, Finds, the change log), and
 /// the T2 "Allow This Address" step. Offline (Task 14) every Lidarr action is disabled, under "You're offline".
 struct RequestsSettingsView: View {
     @Environment(AppModel.self) private var model
@@ -11,6 +11,10 @@ struct RequestsSettingsView: View {
     @State private var provisioning = false
     @State private var provisionMessage: String?
     @State private var asksLidarrConsent = false
+    @State private var stuckCopyLimit = StallLimit.standard
+
+    /// Only Soulseek copies are given up on (R17); the footer says so without naming the service (§5).
+    static let stuckCopyFooter = "Copies shared by other listeners can stop coming. When one hasn't moved for this long, Magpie drops it and finds another."
 
     var body: some View {
         Form {
@@ -19,7 +23,7 @@ struct RequestsSettingsView: View {
             }
             Group { lidarrSections }.disabled(model.isOffline)
         }
-        .navigationTitle("Requests")
+        .navigationTitle("New music")
         .navigationBarTitleDisplayMode(.inline)
         .sheet(isPresented: $showsConnect) { ConnectLidarrView() }
         .alert(LidarrConnectCopy.plainHTTPTitle, isPresented: $asksLidarrConsent) {
@@ -83,12 +87,23 @@ struct RequestsSettingsView: View {
                 }
             }
             Section {
-                Toggle("Allow Magpie to change Lidarr", isOn: Binding(
+                Toggle("Allow Magpie to change your library", isOn: Binding(
                     get: { model.changesAllowed },
                     set: { on in Task { await model.setChangesAllowed(on) } }))
                     .accessibilityIdentifier("settings-allow-changes")
             } footer: {
                 Text("Turn on to bring songs home. Every change is logged.")
+            }
+            Section {   // R17 (R20's words)
+                Picker(RequestCopy.stuckCopySetting, selection: Binding(
+                    get: { stuckCopyLimit },
+                    set: { stuckCopyLimit = $0; model.setStallLimit($0) })) {
+                    ForEach(StallLimit.allCases) { Text($0.title).tag($0) }
+                }
+                .accessibilityIdentifier("settings-stuck-copy")
+                .onAppear { stuckCopyLimit = model.stallLimit }
+            } footer: {
+                Text(Self.stuckCopyFooter)
             }
             Section {
                 Button {
@@ -114,7 +129,7 @@ struct RequestsSettingsView: View {
             } footer: {
                 Text(model.changesAllowed
                      ? "Adds Magpie's profiles (Magpie Fast Start, Magpie Finds…) and the magpie tag if they're missing. Nothing you already have is changed."
-                     : "Turn on \u{201C}Allow Magpie to change Lidarr\u{201D} first.")
+                     : "Turn on \u{201C}Allow Magpie to change your library\u{201D} first.")
             }
         }
     }
@@ -156,7 +171,7 @@ struct RequestsSettingsView: View {
 
     nonisolated static func provisionError(_ error: Error) -> String {
         switch error {
-        case WriteGateError.disabled: "Turn on \u{201C}Allow Magpie to change Lidarr\u{201D} first."
+        case WriteGateError.disabled: "Turn on \u{201C}Allow Magpie to change your library\u{201D} first."
         case ProvisionError.conflict(let name):
             "Lidarr already has a profile called \u{201C}\(name)\u{201D} set up differently. Magpie won't change it; rename it in Lidarr, then try again."
         case ProvisionError.schemaMissing(let what): "This Lidarr doesn't offer \(what), which Magpie needs."
