@@ -246,15 +246,21 @@ public actor RequestRunner {
 
     /// Asks for `recording`. A request for the same song that is still on its way (or ready) is returned
     /// instead of a new one. Work continues in the background; watch `updates`.
-    public func tryRecording(_ recording: ExternalRecording, tier: Tier) async throws -> RequestID {
+    /// - Parameters:
+    ///   - album: R19 "Try this album": bring in this release group (one request per album).
+    ///   - releaseGroup: the album the song was picked from, when known: a live request for it is this Try (R20).
+    public func tryRecording(_ recording: ExternalRecording, tier: Tier, album: MBID? = nil,
+                             releaseGroup: MBID? = nil) async throws -> RequestID {
         guard !stopped, await load() else { throw TryError.unavailable }
-        if let existing = list.first(where: { ($0.isActive || $0.state == .ready) && Self.sameSong($0.recording, recording) }) {
+        if let existing = list.first(where: { ($0.isActive || $0.state == .ready) && Self.sameSong($0.recording, recording) })
+            ?? liveRequest(releaseGroup: album ?? releaseGroup) {
             return existing.id
         }
         guard await gate.enabled else { throw TryError.changesOff }
         guard await setup() != nil else { throw TryError.notSetUp }
         guard activeCount < Self.maxActive else { throw TryError.tooMany }
-        let request = MagpieRequest(recording: recording, tier: tier, createdAt: now())
+        var request = MagpieRequest(recording: recording, tier: tier, createdAt: now())
+        request.albumTarget = album
         list.append(request)
         await changed()
         let id = request.id
@@ -491,8 +497,9 @@ public actor RequestRunner {
             // An artist Magpie just added may not list its albums yet (Lidarr's refresh): pick as for a new artist.
             let magpies = (try? await ledger.createdArtist(artist)) == true
             let fits = Set(recording.releases.filter(Self.fitsFindsProfile).map(\.releaseGroup.id))
-            guard let rg = ReleasePicker.smallest(containing: recording, available: available)
-                    ?? (magpies ? ReleasePicker.smallest(containing: recording, available: fits) : nil) else {
+            guard let rg = Self.albumTarget(r.albumTarget, allowed: available.contains(r.albumTarget ?? rgNone) || magpies)
+                    ?? (r.albumTarget != nil ? nil : ReleasePicker.smallest(containing: recording, available: available)
+                        ?? (magpies ? ReleasePicker.smallest(containing: recording, available: fits) : nil)) else {
                 return await apply(id, .error(.notInCatalogue))
             }
             plan = Plan(recordingMBID: recordingId, releaseGroupMBID: rg, artistMBID: artistMBID,
@@ -502,7 +509,8 @@ public actor RequestRunner {
             // A1: the "Magpie Finds" metadata profile only has official Album/EP/Single studio releases, so
             // only those can be monitored after the add.
             let fits = Set(recording.releases.filter(Self.fitsFindsProfile).map(\.releaseGroup.id))
-            guard let rg = ReleasePicker.smallest(containing: recording, available: fits) else {
+            guard let rg = Self.albumTarget(r.albumTarget, allowed: fits.contains(r.albumTarget ?? rgNone))
+                    ?? (r.albumTarget != nil ? nil : ReleasePicker.smallest(containing: recording, available: fits)) else {
                 return await apply(id, .error(.noRelease))
             }
             // Finds mode is the intent here; the add checks the Finds root again and may fall back (G2, B8).

@@ -64,9 +64,9 @@ public actor MusicBrainzClient {
     public static func userAgent(version: String) -> String { "Magpie/\(version) ( https://github.com/bleak-rooster )" }
     public static let base = URL(string: "https://musicbrainz.org")!
 
-    private let transport: HTTPTransport
-    private let userAgent: String
-    private let limiter: RateLimiter
+    let transport: HTTPTransport
+    let userAgent: String
+    let limiter: RateLimiter
 
     public init(transport: HTTPTransport, userAgent: String,
                 limiter: RateLimiter = RateLimiter(perSecond: 1)) {
