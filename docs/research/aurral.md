@@ -128,3 +128,89 @@ Owner's state at probe time: two flows, both enabled, 20 tracks, scheduled Frida
   add-artist.
 - Never fetch `/api/settings` in the app (secrets). Use `/api/playlists/status` for flows.
 - Feature-detect by `appVersion` / 404s; HEAD routes differ from 2.10.
+
+## Replacing a flow track (2026-11-01)
+
+Goal: once a flow artist is added to Lidarr and Lidarr imports the same recording into the
+main library, play the main-library copy instead of the Aurral single (no duplicate), ideally
+with the Aurral file gone. Source read at tag v2.10.0; owner checks were GET-only.
+
+### What Aurral 2.10 offers (and what it does not)
+
+- **No per-track remove/replace for flows.** Flows are not "shared playlists", so
+  `DELETE /api/playlists/shared-playlists/:playlistId/tracks/:jobId` (which removes the job and
+  its file) returns `missingPlaylist` for a flow ID. The only flow-scoped writes are
+  `POST /start/:flowId` (regenerate the whole flow), `PUT /flows/:flowId/enabled`,
+  `POST /reset` (admin, wipes flows) and the per-track re-search below.
+- **`POST /api/playlists/flows/:flowId/tracks/:jobId/research`** (enqueues
+  `shared-playlist-research-track`; 409 if the job is pending/downloading). With
+  `existingFileMode: reuse` it calls `reuseTrackForPlaylist(job, flowId)`, whose source order is
+  (1) a file in the flow's own dir `_flows/<flowId>/<Artist>/<Album>/<Track>.*`,
+  (2) another Aurral job with the same track, (3) Lidarr. Step 1 finds **the existing Aurral file
+  itself** (same sanitised name the downloader wrote), so for a finished track whose file still
+  exists the call is a **no-op** (`reused:true`, path unchanged). It only switches to the Lidarr
+  file if the Aurral file is already missing; with reuse off it deletes the file and re-downloads.
+  Not usable for this goal.
+- **"Reuse existing files" (`existingFileMode`, default `reuse`; owner: `reuse`)** runs only
+  (a) when a job is about to download (the worker checks for a reusable file first), (b) on
+  research, and (c) in the periodic health sweep (`repairReusableTrackLinks`, 50 jobs per pass),
+  which acts **only when a job's file is missing**. Lidarr matching (`findLidarrSource`): artist by
+  MBID then normalised name; albums ranked by album MBID / name; track by recording/track MBID
+  then normalised title; needs `hasFile` and the path readable by Aurral (owner: `/music` yes,
+  `/finds` no). A matched Lidarr file is used **in place** (job `finalPath` = the Lidarr path,
+  `externalPath` set); Aurral never deletes files outside its Downloads Folder. There is no way
+  to re-resolve one flow track against Lidarr while its Aurral file exists, and a flow run cannot
+  be limited to some tracks: `POST /start/:flowId` clears all jobs and files of the flow and plans
+  a new set (a later run that happens to pick the same track would reuse the Lidarr file).
+- **Never use `DELETE /api/library/tracks/:id`** for this: flow files are excluded from Aurral's
+  library scan (`_flows` is skipped), and when a track has a Lidarr copy that endpoint deletes the
+  **Lidarr track file** (via Lidarr), the opposite of the goal.
+- Lidarr webhook (`POST /api/webhooks/lidarr`) only records import history; it does not touch flows.
+- Rotation: the weekly run deletes the previous flow files, **except** files still referenced by
+  any other Navidrome playlist (the playback deletion guard reads every playlist's track paths);
+  those are kept.
+
+### Navidrome side
+
+- `getPlaylists` (owner's account): **every playlist, including "Discover Weekly" and "Trending
+  Mix", has `owner` = the same Navidrome user Magpie signs in as** (Aurral is configured with the
+  owner's account). Flow playlists are `public: true`, not read-only. So Magpie can edit them with
+  `updatePlaylist` (`songIndexToRemove`, `songIdToAdd`).
+- Aurral **overwrites edits whenever it republishes** that flow: its `updatePlaylist` reads the
+  playlist, removes every index and adds its own list (songs matched by file path, then MBID,
+  then title+artist, so it re-points to the Aurral file while that exists). Republish triggers:
+  the weekly/manual flow run and its completion, any flow or shared-playlist create/edit/enable
+  (it republishes all flows), re-search, health-sweep repairs, and settings saves. An unchanged
+  snapshot is skipped only via an in-memory hash, so the first republish after an Aurral restart
+  also resets edits. Nothing republishes on a timer.
+
+### Recommendation: Magpie swaps the entry in the Navidrome flow playlist, re-applied on view
+
+Call sequence (owner's Navidrome credentials; Aurral GET-only):
+1. `GET /api/playlists/status` → `flows[].name`; `getPlaylists` → the playlists with those names.
+2. `getPlaylist?id=<pl>` → entries. For each entry from the "Aurral Playlists" folder, look for a
+   main-library copy: `search3?query=<title>&musicFolderId=<main library>&songCount=20`, match on
+   `musicBrainzId` (or the Aurral job's `trackMbid` from `GET /api/playlists/jobs/:flowId`), else
+   normalised artist + title with duration within 3 s. Skip if there is no match or more than one.
+3. If any entry has a match, write the whole list once, keeping the order:
+   `updatePlaylist?playlistId=<pl>&songIndexToRemove=0..n-1&songIdToAdd=<ids with substitutions>`
+   (the same remove-all/add pattern Aurral itself uses on this server). Re-read with
+   `getPlaylist` and check the count.
+4. Repeat on each open/refresh of a flow playlist (idempotent), so an Aurral republish is healed
+   the next time it is viewed.
+
+Risks: Aurral can revert the swap at any republish (healed on next view, but other clients may
+briefly see the Aurral copy); a write racing an Aurral republish can leave a mixed list (re-read
+and redo once; skip while `GET /api/playlists/status` shows `operationQueue.processing` or the
+worker downloading for that flow); the Aurral file stays on disk and in Navidrome's "Aurral
+Playlists" library until the weekly rotation; and if the owner had added the Aurral copy to one
+of their own playlists, the deletion guard keeps the file forever, so Magpie should swap it in
+those playlists too (same steps). No supported Aurral call removes a single flow file.
+
+### Fallback: hide in Magpie, let rotation delete it
+
+Without any writes: when showing a flow playlist (and search/artist/album views), replace an
+"Aurral Playlists" song with its main-library match (same matching as step 2), so playback,
+favourites and scrobbles go to the library copy; hide the Aurral copy when both appear. The
+Aurral file is removed by the next flow run (Fridays 00:00 on the owner's server), provided no
+other playlist references it.

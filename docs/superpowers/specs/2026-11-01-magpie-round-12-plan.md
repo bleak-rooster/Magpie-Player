@@ -128,8 +128,17 @@ Two things could still explain it:
 - **No duplicates once an artist is in the main library:**
   - when the main library has the same recording (by MBID, else title+artist+duration ±3 s), Discover plays and shows the **main-library copy** in place of the Aurral single;
   - the Aurral copy is hidden from Discover, search and Library;
-  - **deleting the Aurral single** is Aurral's job: it deletes its own files when the flow rotates, and its "reuse existing files" setting picks up Lidarr's copy on later runs. Magpie never touches Aurral's files, and the research found no supported API for deleting one track.
-  - If the owner wants the file gone immediately, see the open question below.
+  - **Replacing the file (research: docs/research/aurral.md, "Replacing a flow track"):** Aurral 2.10.0 has **no** supported way to replace or delete one flow track.
+    - Its per-track delete doesn't apply to flows.
+    - Its "research" route finds its own file first.
+    - `DELETE /api/library/tracks/:id` would delete the **Lidarr** copy, so it is never used.
+  - **Chosen approach: swap the playlist entry.**
+    - The flow playlists in Navidrome belong to the owner's user and are writable.
+    - When a Discover playlist is opened, and after a matching import, Magpie rewrites the playlist in its existing order with the main-library copies in place of the Aurral entries.
+    - It uses `updatePlaylist` (remove all, re-add), sends once (X3 rule), re-reads to verify, and skips while Aurral's worker is busy.
+    - The same swap runs in the owner's own playlists that hold the Aurral copy, so Aurral isn't made to keep the file.
+    - Aurral's next republish undoes the swap, so it's redone on each open.
+  - **The Aurral file itself** stays on disk until the flow's next weekly run deletes it (it's no longer referenced). Magpie never touches Aurral's files.
 - **Tests:** the endpoint allow-list (any other path is refused), never calling settings, flow↔playlist matching, the duplicate swap, and Refresh confirming and refusing while a run is active.
 
 ## 8. Finds: the right status, and "Add to your library" that finishes the job
@@ -146,8 +155,11 @@ Two things could still explain it:
   2. **new:** send `AlbumSearch` for the kept albums right away, so the FLAC is searched for;
   3. **new:** watch for the lossless import. Lidarr's upgrade replaces the MP3 file and deletes it into Lidarr's recycle bin;
   4. **new:** after the import, rescan and relink by MBID, and show "Lossless" when it lands.
-  - **If no lossless copy is found within 7 days,** the page says "No lossless copy found yet. Keeping the MP3", with **Search again** and **Remove the MP3** (a gated trackfile delete, confined to files Magpie's find created).
-  - **The owner's ask, "mp3 version deleted",** happens automatically when the FLAC lands. It's never deleted before a replacement exists: the song never disappears.
+  - **The MP3 (owner ruling 2026-11-01):**
+    - it stays, playable, until the FLAC lands (Lidarr's upgrade then replaces and deletes it), **or until 7 days pass**, whichever comes first;
+    - after 7 days with no FLAC, Magpie deletes the MP3 automatically (a gated trackfile delete, confined to files Magpie's find created), and the album stays monitored, so the FLAC is still searched for;
+    - the song is then gone from the library until a FLAC arrives. The page says so beforehand ("The MP3 is removed on <date> unless a lossless copy turns up") and afterwards ("Waiting for a lossless copy");
+    - **Remove the MP3 now** is offered at any time, with a confirmation.
 - **Folder collision (keptInPlace):** currently "kept" but left in Finds. Instead, merge into the existing main-library artist when the MBID matches; otherwise show a clear message and don't call it kept.
 
 ## 9. Make Find → Add rock solid
@@ -219,8 +231,9 @@ Two things could still explain it:
 
 Y1–Y5 run in parallel, at most 4 at a time to limit machine load. Y6 follows Y5, and Y7 comes last. Each workstream goes through tests (TDD) → review → fixes → merge. Then a full suite, a security review of the new write shapes and the Aurral client, and the next TestFlight build (12).
 
-## Questions for the owner (the rest is decided above)
+## Owner answers (2026-11-01)
 
-1. **Home (5):** a screenshot of the wrong shelves. Or should I run the read-only diagnosis against your server?
-2. **Aurral duplicates (7):** Magpie hides the Aurral copy at once, and Aurral deletes the file when the flow next rotates. Is that enough, or do you want the file deleted immediately? Immediate deletion would need a filesystem-level helper or a Navidrome/Aurral feature, because Magpie has no safe API for it today.
-3. **Lossless after Add (8):** keep the MP3 until a FLAC is found, with "Remove the MP3" after 7 days (recommended)? Or delete the MP3 straight away, even if no FLAC turns up?
+1. **Home:** Magpie runs the read-only diagnosis against the owner's server itself; the owner sends screenshots only if it can't be reproduced.
+2. **Aurral duplicates:** find a supported way to replace the Aurral file with the main-library copy. If there is none, leave it until the flow rotates it out, with Magpie hiding the duplicate meanwhile. The research is in docs/research/aurral.md, "Replacing a flow track".
+3. **MP3 after Add:** kept until a FLAC replaces it, or auto-deleted after 7 days whichever comes first; manual delete any time (see item 8).
+4. **Plan only for now:** no building until the owner says go.
