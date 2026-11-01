@@ -69,8 +69,8 @@ private let recordingMBID = MBID("c2272a15-8f3a-4cdc-8f32-7e723352d44d")!
         }
     }
 
-    private func makeModel(notifications: Bool = false) -> AppModel {
-        AppModel(store: store, lidarrStore: MemoryLidarrStore(), tokenStore: MemoryTokenStore(), matchIndexDirectory: nil,
+    private func makeModel(notifications: Bool = false, lidarrStore: MemoryLidarrStore = MemoryLidarrStore()) -> AppModel {
+        AppModel(store: store, lidarrStore: lidarrStore, tokenStore: MemoryTokenStore(), matchIndexDirectory: nil,
                  dataDirectory: tmp, gateDefaultsSuite: gateSuite, transport: transport, probeTransport: transport,
                  engine: FakeEngine(), defaults: defaults, systemNowPlaying: false, notifications: notifications,
                  network: FakeNetwork(.wifi), audioFetcher: FakeFetcher())
@@ -262,6 +262,14 @@ private let recordingMBID = MBID("c2272a15-8f3a-4cdc-8f32-7e723352d44d")!
         model.requestsScenePhaseChanged(.background, submit: record)
         for _ in 0..<100 where submitted.withLock({ $0 }).isEmpty { try await Task.sleep(for: .milliseconds(10)) }
         #expect(submitted.withLock { $0 } == [RequestsBackgroundRefresh.identifier])
+        // Fix round 1: an offline pass sends nothing but still asks for the next one, so the chain doesn't stop.
+        model.updatePreferences { $0.downloads.offlineMode = .on }
+        let sent = transport.inner.requests.count
+        #expect(await model.backgroundRequestPass(submit: record) == false)
+        for _ in 0..<100 where submitted.withLock({ $0.count }) < 2 { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(submitted.withLock { $0.count } == 2)
+        #expect(transport.inner.requests.count == sent, "offline: nothing sent")
+        model.updatePreferences { $0.downloads.offlineMode = .off }
         await model.cancelRequest(id)
         for _ in 0..<300 where model.magpieRequest(id)?.cleanupPending != false || model.magpieRequest(id)?.state != .cancelled {
             try await Task.sleep(for: .milliseconds(10))
@@ -313,6 +321,20 @@ private let recordingMBID = MBID("c2272a15-8f3a-4cdc-8f32-7e723352d44d")!
         // Offline: nothing at all.
         model.updatePreferences { $0.downloads.offlineMode = .on }
         #expect(await model.backgroundRequestPass() == false)
+        model.signOut()
+    }
+
+    /// Fix round 1 (d): a cold background launch whose first Keychain read found no Lidarr (still locked) reads it
+    /// again and builds the runner before the pass, instead of ending with nothing done.
+    @Test func aColdBackgroundLaunchBuildsTheRunnerFirst() async throws {
+        let lidarrStore = MemoryLidarrStore()
+        let model = makeModel(lidarrStore: lidarrStore)
+        try await model.signIn(urls: [home], username: "admin", password: "pw")
+        #expect(model.runner == nil)
+        #expect(await model.backgroundRequestPass(limit: .seconds(5)) == false, "no Lidarr at all: ends cleanly")
+        try lidarrStore.save(LidarrConnection(base: lidarrBase, apiKey: "key"))   // readable now
+        #expect(await model.backgroundRequestPass(limit: .seconds(10)))
+        #expect(model.runner != nil, "the pass built the runner")
         model.signOut()
     }
 

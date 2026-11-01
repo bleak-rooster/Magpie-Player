@@ -36,3 +36,20 @@ import MagpieCore
         #expect(await h.runner.storeLoads == 1)
     }
 }
+
+/// X5 fix round 1: when iOS takes the background time back, the pass stops between steps, never mid-write.
+@Suite struct BackgroundPassStopTests {
+    @Test func aStoppedPassSendsNothingMoreAfterTheCurrentStep() async throws {
+        let h = await Harness()
+        h.server.ownerHasArtist(albumMonitored: false)
+        _ = try await h.runner.tryRecording(h.recording(recAlbumOnly), tier: .standard)
+        await h.runner.settle()   // on its way: a pass reads Lidarr's queue
+        let before = h.server.transport.requests.count
+        let passes = await h.runner.passCount
+        await h.runner.tick(shouldStop: { true })
+        #expect(h.server.transport.requests.count == before, "stopped before the first step: nothing sent")
+        #expect(await h.runner.passCount == passes + 1)
+        await h.runner.tick(shouldStop: { false })
+        #expect(h.server.transport.requests.count > before, "a pass that isn't stopped polls as usual")
+    }
+}

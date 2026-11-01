@@ -308,7 +308,11 @@ public actor RequestRunner {
     /// Reads of the saved list (tests: concurrent loads share one).
     private(set) var storeLoads = 0
 
-    public func tick() async {
+    public func tick() async { await tick(shouldStop: { false }) }
+
+    /// One pass that ends early, between steps (never during one, so never mid-write), once `shouldStop` says so: a
+    /// background pass whose time iOS takes back (R16, X5 fix round 1).
+    public func tick(shouldStop: @Sendable () -> Bool) async {
         tickCount += 1
         // X5 fix I1: claimed before the load, so a tick arriving meanwhile (a background pass at a cold launch,
         // the app's first poll) runs no second pass.
@@ -317,13 +321,25 @@ public actor RequestRunner {
         defer { ticking = false }
         guard await load() else { return }
         passCount += 1
-        for r in list where r.isActive { await advance(r.id) }
+        for r in list where r.isActive {
+            if shouldStop() { return }
+            await advance(r.id)
+        }
+        if shouldStop() { return }
         await discoverAlbums()
+        if shouldStop() { return }
         await pollLidarr()
+        if shouldStop() { return }
         await checkLibrary()
-        for r in list where r.cleanupPending && !busy.contains(r.id) { await cleanup(r.id) }
+        for r in list where r.cleanupPending && !busy.contains(r.id) {
+            if shouldStop() { return }
+            await cleanup(r.id)
+        }
+        if shouldStop() { return }
         await followKeeps()
+        if shouldStop() { return }
         await followNotForMes()
+        if shouldStop() { return }
         await followBringIns()
     }
 
