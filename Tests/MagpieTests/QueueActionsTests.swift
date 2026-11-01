@@ -111,6 +111,37 @@ private func songsJSON(_ ids: [String]) -> String {
         #expect(ids(model) == before)
     }
 
+    /// Polish (a): the queue toasts are quick (about 1.5 s); other notices keep their 3 s.
+    @Test func queueToastsAreShort() async throws {
+        let model = try await signedIn()
+        defer { tearDown(model) }
+        model.play([song("1")], startAt: 0)
+        model.performSwipe(.playNext, on: song("y"))
+        #expect(model.libraryEdits.notice?.text == "Playing next" && model.libraryEdits.notice?.shown == .milliseconds(1500))
+        model.performSwipe(.addToQueue, on: song("x"))
+        #expect(model.libraryEdits.notice?.text == "Added to queue" && model.libraryEdits.notice?.shown == .milliseconds(1500))
+        model.libraryEdits.notify("Added to Road trip", symbol: "text.badge.plus")
+        #expect(model.libraryEdits.notice?.shown == .seconds(3))
+    }
+
+    /// Polish (b): offline, Play next or Add to queue on an album or playlist with nothing on the phone says "Nothing
+    /// downloaded" instead of asking In order or Shuffled and then doing nothing.
+    @Test func offlineQueueingWithNothingDownloadedSaysSo() async throws {
+        let model = try await signedIn()
+        defer { tearDown(model) }
+        model.updatePreferences { $0.downloads.offlineMode = .on }
+        for collection in [CollectionRef.album("al1"), .playlist("p1")] {
+            model.libraryEdits.notice = nil
+            await model.offerQueue(collection, .next)
+            #expect(model.queueActions.pendingCollection == nil, "no In order / Shuffled question")
+            #expect(model.libraryEdits.notice?.text == "Nothing downloaded")
+        }
+        // Online, it asks as before.
+        model.updatePreferences { $0.downloads.offlineMode = .off }
+        await model.offerQueue(.album("al1"), .end)
+        #expect(model.queueActions.pendingCollection?.collection == .album("al1"))
+    }
+
     // MARK: - Long-press menus (fix round 1 I1)
 
     /// Songs and collections lead their long-press menus with Play next · Add to queue (appraisal §4 group 1).

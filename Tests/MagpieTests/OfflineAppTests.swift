@@ -502,10 +502,14 @@ private let noNetwork = NetworkStatus(isConnected: false, isCellular: false, isC
         let seen = recordRequests()
         f.failWith(URLError(.timedOut))
         let songs = [song("s1"), song("s2"), song("s3")]
+        let start = Date()
         model.download(songs, reason: .album("a1"))
         try await Task.sleep(for: .seconds(4.5))
-        #expect(seen.urls.filter { $0.path.hasSuffix("/auth/login") }.count <= 2, "few logins within 5 s")
-        #expect(seen.urls.filter { $0.path.hasSuffix("/rest/ping") }.count <= 3, "few probes within 5 s")
+        // Counted by when each request was sent, not by when the test wakes (a late wake under load let a request
+        // from the next 5 s window in: deflaked).
+        let early = seen.sent(before: start.addingTimeInterval(4.5))
+        #expect(early.filter { $0.path.hasSuffix("/auth/login") }.count <= 2, "few logins within 5 s")
+        #expect(early.filter { $0.path.hasSuffix("/rest/ping") }.count <= 3, "few probes within 5 s")
         #expect(await eventually(15) { model.downloadStatus(songs.map(\.id), reason: .album("a1")) == .failed })
         #expect(model.downloadStatus(songs.map(\.id), reason: .album("a1")).text == "Couldn't download")
         let fetched = f.urls.compactMap { URLComponents(url: $0, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "id" }?.value }
@@ -524,9 +528,11 @@ private let noNetwork = NetworkStatus(isConnected: false, isCellular: false, isC
 
 /// Requests seen by the transport, from any thread.
 final class Recorder: Sendable {
-    private let seen = OSAllocatedUnfairLock<[URL]>(initialState: [])
-    var urls: [URL] { seen.withLock { $0 } }
-    func add(_ request: URLRequest) { if let url = request.url { seen.withLock { $0.append(url) } } }
+    private let seen = OSAllocatedUnfairLock<[(url: URL, at: Date)]>(initialState: [])
+    var urls: [URL] { seen.withLock { $0.map(\.url) } }
+    /// The requests sent before `date`.
+    func sent(before date: Date) -> [URL] { seen.withLock { $0.filter { $0.at < date }.map(\.url) } }
+    func add(_ request: URLRequest) { if let url = request.url { seen.withLock { $0.append((url, Date())) } } }
 }
 
 /// Fetches like `FakeFetcher` for the first `allowed` songs, then fails like a server that dropped, until `up()`.

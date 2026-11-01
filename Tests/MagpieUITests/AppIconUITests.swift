@@ -43,13 +43,19 @@ final class AppIconUITests: XCTestCase {
             let icon = app.buttons["app-icon-\(id)"]
             for _ in 0..<6 where !(icon.exists && icon.isHittable) { app.swipeUp() }
             XCTAssertTrue(icon.waitForExistence(timeout: 10), id)
+            if icon.isSelected { return }   // left there by an earlier run
             icon.tap()
-            // iOS confirms with its own alert; the change completes once it is dismissed.
-            let ok = springboard.alerts.buttons["OK"]
-            if ok.waitForExistence(timeout: 10) { ok.tap() }
+            // iOS confirms with its own alert; the change completes once it is dismissed. The alert can come late under
+            // load, and from SpringBoard or inside the app, so answer it wherever it shows until the icon is chosen
+            // (deflaked: one 10 s wait on SpringBoard alone sometimes missed it).
             let selected = NSPredicate(format: "isSelected == true")
-            XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: selected, object: icon)], timeout: 10),
-                           .completed, "\(id) is the chosen icon")
+            let deadline = Date().addingTimeInterval(40)
+            while !icon.isSelected, Date() < deadline {
+                for ok in [springboard.alerts.buttons["OK"], app.alerts.buttons["OK"]] where ok.exists { ok.tap() }
+                XCTAssertFalse(app.staticTexts["Couldn't change the icon. Try again in a moment."].exists, id)
+                _ = XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: selected, object: icon)], timeout: 1)
+            }
+            XCTAssertTrue(icon.isSelected, "\(id) is the chosen icon")
         }
         // Each of the 13 has a preview in the grid.
         XCTAssertTrue(app.buttons["app-icon-Default"].waitForExistence(timeout: 10))

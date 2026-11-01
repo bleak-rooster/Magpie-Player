@@ -30,7 +30,9 @@ final class BrowseFlowTests: XCTestCase {
         let stack = try devStack()
         continueAfterFailure = false
         let app = XCUIApplication()
-        app.launchArguments = ["-MagpieResetState", "YES", "-MagpieUITesting", "YES", "-MagpieNetwork", "wifi"] + arguments
+        // -MagpieResetLayouts: a layout test that failed half-way never leaves Songs hidden for the next one.
+        app.launchArguments = ["-MagpieResetState", "YES", "-MagpieUITesting", "YES", "-MagpieResetLayouts", "YES",
+                               "-MagpieNetwork", "wifi"] + arguments
         app.launch()
 
         let address = app.textFields["connect-address-0"]
@@ -455,6 +457,34 @@ final class BrowseFlowTests: XCTestCase {
         XCTAssertTrue(mini.waitForExistence(timeout: 15), "mini player did not show \(title)")
     }
 
+    /// R19 bug: tapping an Artists or Albums search result did nothing (only songs acted). Each opens its page.
+    @MainActor func testSearchArtistAndAlbumResultsOpenTheirPages() throws {
+        let app = try launchSignedIn()
+        let field = app.searchFields.firstMatch
+        for _ in 0..<3 where !field.exists {
+            app.tabBars.buttons["Search"].tap()
+            _ = field.waitForExistence(timeout: 5)
+        }
+        field.tap()
+        field.typeText("Aurora Field")
+        // The Artists scope, so the row is on screen (the songs come first in All).
+        let artistsScope = app.buttons["Artists"].firstMatch
+        XCTAssertTrue(artistsScope.waitForExistence(timeout: 5))
+        artistsScope.tap()
+        let artist = app.descendants(matching: .any)["search-artist-0"]
+        XCTAssertTrue(artist.waitForExistence(timeout: 15), "no artist result for the dev library's Aurora Field")
+        artist.tap()
+        XCTAssertTrue(app.navigationBars["Aurora Field"].waitForExistence(timeout: 10), "the artist result opened nothing")
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        field.tap()
+        field.clearAndType("Continuum")
+        app.buttons["Albums"].firstMatch.tap()
+        let album = app.descendants(matching: .any)["search-album-0"]
+        XCTAssertTrue(album.waitForExistence(timeout: 15), "no album result for the dev library's Continuum")
+        album.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["track-0"].waitForExistence(timeout: 10), "the album result opened nothing")
+    }
+
     /// Home › Finish setting up › connect the dev stack's Lidarr: the read-only summary appears
     /// (version, sign-in, root folders, ...). Disconnects again so the next run starts clean.
     @MainActor func testConnectLidarrShowsSummary() throws {
@@ -781,6 +811,14 @@ final class BrowseFlowTests: XCTestCase {
     /// the top, Recently added off; the Library follows. Screenshots of the editor and the reordered Library.
     /// Preferences outlive a reset launch, so the test starts and ends at the defaults.
     @MainActor func testLibraryLayoutEditor() throws {
+        // Restores the layout if this test fails half-way (hidden Songs would break the next test).
+        addTeardownBlock { @MainActor [weak self] in
+            guard self?.testRun?.hasSucceeded == false else { return }
+            let reset = XCUIApplication()
+            reset.launchArguments = ["-MagpieUITesting", "YES", "-MagpieResetLayouts", "YES", "-MagpieNetwork", "wifi"]
+            reset.launch()
+            reset.terminate()
+        }
         let app = try launchSignedIn()
         let libraryTab = app.tabBars.buttons["Library"]
         let settings = app.buttons["open-settings"]
@@ -837,10 +875,12 @@ final class BrowseFlowTests: XCTestCase {
         XCTAssertEqual(app.switches["layout-songs"].value as? String, "0")
         flip(recent)
         XCTAssertEqual(recent.value as? String, "0")
-        for _ in 0..<4 { app.swipeDown() }
         let handle = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Reorder' AND label CONTAINS 'Genres'")).firstMatch
-        XCTAssertTrue(handle.exists, "drag handle for Genres")
         let top = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Reorder' AND label CONTAINS 'Playlists'")).firstMatch
+        // Back to the top until both handles are on screen (a fixed four swipes sometimes left them under the bar).
+        for _ in 0..<8 where !(handle.exists && handle.isHittable && top.exists && top.isHittable) { app.swipeDown() }
+        XCTAssertTrue(handle.waitForExistence(timeout: 5) && handle.isHittable, "drag handle for Genres")
+        XCTAssertTrue(top.isHittable, "drag handle for Playlists")
         handle.press(forDuration: 0.6, thenDragTo: top)
         attachScreenshot(app, "library-editor-changed")
         for _ in 0..<4 where !reset.exists || !reset.isHittable { app.swipeUp() }
@@ -859,5 +899,15 @@ final class BrowseFlowTests: XCTestCase {
         openEditor()
         resetAndClose()
         XCTAssertTrue(app.buttons["library-songs"].waitForExistence(timeout: 10))
+    }
+}
+
+private extension XCUIElement {
+    /// Replaces a search field's text.
+    func clearAndType(_ text: String) {
+        if let current = value as? String, !current.isEmpty, current != placeholderValue {
+            typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: current.count))
+        }
+        typeText(text)
     }
 }

@@ -20,8 +20,26 @@ enum QueueMenu {
 extension AppModel {
     func perform(_ item: QueueMenu.Item, on song: Song) { place([song], item.placement) }
 
-    func perform(_ item: QueueMenu.Item, on collection: CollectionRef) {
-        queueActions.pendingCollection = .init(collection: collection, placement: item.placement)
+    func perform(_ item: QueueMenu.Item, on collection: CollectionRef) { askToQueue(collection, item.placement) }
+
+    /// A collection's Play next or Add to queue: asks In order or Shuffled. Offline it first checks the phone has some
+    /// of it (`offerQueue`).
+    func askToQueue(_ collection: CollectionRef, _ placement: QueuePlacement) {
+        if isOffline {
+            Task { await offerQueue(collection, placement) }
+        } else {
+            queueActions.pendingCollection = .init(collection: collection, placement: placement)
+        }
+    }
+
+    /// Offline, a collection with nothing on the phone says "Nothing downloaded" rather than asking and then doing
+    /// nothing (polish).
+    func offerQueue(_ collection: CollectionRef, _ placement: QueuePlacement) async {
+        if isOffline, (try? await songs(of: collection))?.isEmpty ?? true {
+            libraryEdits.notify(QueueCopy.nothingDownloaded, symbol: "arrow.down.circle")
+            return
+        }
+        queueActions.pendingCollection = .init(collection: collection, placement: placement)
     }
 }
 

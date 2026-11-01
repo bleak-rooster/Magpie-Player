@@ -171,6 +171,8 @@ final class AppModel {
     @ObservationIgnored private var matchIndexTask: Task<Void, Never>?
     @ObservationIgnored private let matchIndexDirectory: URL?
     @ObservationIgnored private var musicBrainzClient: MusicBrainzClient?
+    /// R19: what the outside artist and album pages read from MusicBrainz, in memory for this session only.
+    @ObservationIgnored var outsideCatalogStore: OutsideCatalog?
     /// Spaces the app's `api.listenbrainz.org` calls ("Made for you"); labs search never waits on it.
     @ObservationIgnored let listenBrainzLimiter = RateLimiter(perSecond: 2)
     @ObservationIgnored private var unlockObserver: NSObjectProtocol?
@@ -385,6 +387,11 @@ final class AppModel {
             LidarrConnectionStore.standard.clear()
         }
         let model = AppModel(store: store, defaults: defaults, theme: savedTheme(defaults))
+        // UI tests only (with `-MagpieUITesting YES`): Home and Library back to their default layout, so a layout test
+        // that failed half-way never leaves a section hidden for the next test.
+        if defaults.string(forKey: "MagpieUITesting") == "YES", defaults.bool(forKey: "MagpieResetLayouts") {
+            model.updatePreferences { $0.layout = .defaultValue }
+        }
         if resumesSavedSession(environment: environment) { model.resumeSavedSession() }
         return model
     }
@@ -919,7 +926,7 @@ final class AppModel {
     }
 
     /// The one MusicBrainz client (1 request per second across the whole app), made on first use.
-    /// Only Try uses it (A8), never search.
+    /// Try (A8) and the outside artist and album pages (R19) use it, never a search row.
     var musicBrainz: MusicBrainzClient {
         if let musicBrainzClient { return musicBrainzClient }
         let client = MusicBrainzClient(transport: transport, userAgent: MusicBrainzClient.userAgent(version: Self.marketingVersion))

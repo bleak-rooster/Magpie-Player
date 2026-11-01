@@ -1,0 +1,180 @@
+import DesignSystem
+import MagpieCore
+import Requests
+import Search
+import SwiftUI
+
+/// R19: an artist that's not in the library (from search). Styled like the library Artist page: the picture (R15,
+/// memory only) and the name, the Lidarr status line with Add to your library (W3, R18), then Albums, EPs and Singles
+/// (studio releases), and More for live albums, compilations and the rest. Each album opens its outside page, and
+/// offers Try this album on a long press; an album already on its way shows its request instead (R17).
+struct OutsideArtistView: View {
+    @Environment(AppModel.self) private var app
+    let artist: NotYetArtist
+    @State private var model: OutsideArtistModel?
+    @State private var art: OutsideArtLoader?
+    @State private var showsMore = false
+    @State private var trying: TryTarget?
+    @State private var tryError: String?
+    private let themed = Themed()
+
+    var body: some View {
+        ScrollView {
+            if let model { content(model) }
+        }
+        .navigationTitle(artist.name)
+        .navigationBarTitleDisplayMode(.inline)
+        .magpieScreen()
+        .sheet(item: $trying) { TrySheet(target: $0) }
+        // One task builds and loads (review I2); again when offline mode flips ("You're offline", then the page).
+        .task(id: app.isOffline) {
+            if art == nil { art = app.makeOutsideArt() }
+            _ = await OutsideArtistModel.open(model, app: app, artist: artist) { model = $0 }
+        }
+        .onDisappear { art?.reset() }   // R15: the outside art goes with the page
+    }
+
+    private func content(_ model: OutsideArtistModel) -> some View {
+        let p = themed.palette
+        return VStack(alignment: .leading, spacing: Tokens.Spacing.xxl) {
+            VStack(spacing: Tokens.Spacing.m) {
+                OutsideArtwork(art, key: artist.mbid.map(OutsideArtKey.artist)) { image in
+                    SleeveArt(image: image, placeholder: p.surfaceColor, side: 180)
+                        .overlay { if image == nil { ArtistMonogram(name: artist.name) } }
+                        .clipShape(Circle())
+                }
+                .accessibilityHidden(true)
+                Text(artist.name).magpieDisplay(.largeTitle).multilineTextAlignment(.center)
+                    .accessibilityAddTraits(.isHeader)
+                StatusLine(.notYet)
+                if let presentation = model.lidarrLine.presentation, model.phase != .offline {
+                    ArtistLidarrLine(line: model.lidarrLine, presentation: presentation)
+                }
+                if let tryError {
+                    Label(tryError, systemImage: "exclamationmark.circle").font(.footnote).foregroundStyle(p.ink2Color)
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, Tokens.Spacing.margin)
+
+            switch model.phase {
+            case .loading:
+                ProgressView().frame(maxWidth: .infinity, minHeight: 120)
+            case .offline:
+                OfflineNotice().frame(maxWidth: .infinity).accessibilityIdentifier("outside-offline")
+            case .failed:
+                OutsideFailed { Task { await model.load() } }
+            case .loaded:
+                sections(model)
+            }
+        }
+        .padding(.vertical, Tokens.Spacing.l)
+        .foregroundStyle(p.inkColor)
+    }
+
+    @ViewBuilder private func sections(_ model: OutsideArtistModel) -> some View {
+        let s = model.sections
+        if s.isEmpty {
+            Text("MusicBrainz lists no albums for \(artist.name).").font(.body).foregroundStyle(themed.palette.ink2Color)
+                .frame(maxWidth: .infinity).padding(.horizontal, Tokens.Spacing.margin)
+        }
+        section("Albums", s.albums, model, id: "outside-albums")
+        section("EPs", s.eps, model, id: "outside-eps")
+        section("Singles", s.singles, model, id: "outside-singles")
+        if !s.more.isEmpty {
+            VStack(alignment: .leading, spacing: Tokens.Spacing.m) {
+                Button { withAnimation { showsMore.toggle() } } label: {
+                    HStack {
+                        Text("More").magpieDisplay(.title2)
+                        Spacer()
+                        Image(systemName: showsMore ? "chevron.up" : "chevron.down").accessibilityHidden(true)
+                    }
+                    .frame(minHeight: Tokens.minHitSize)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(.isHeader)
+                .accessibilityValue(showsMore ? "Expanded" : "Collapsed")
+                .accessibilityHint("Live albums, compilations and the rest")
+                .accessibilityIdentifier("outside-more")
+                .padding(.horizontal, Tokens.Spacing.largeTitleMargin)
+                if showsMore { rows(s.more, model, id: "outside-more") }
+            }
+        }
+    }
+
+    @ViewBuilder private func section(_ title: String, _ items: [OutsideArtistSections.Item], _ model: OutsideArtistModel,
+                                      id: String) -> some View {
+        if !items.isEmpty {
+            VStack(alignment: .leading, spacing: Tokens.Spacing.m) {
+                Text(title).magpieDisplay(.title2).accessibilityAddTraits(.isHeader)
+                    .padding(.horizontal, Tokens.Spacing.largeTitleMargin)
+                rows(items, model, id: id)
+            }
+        }
+    }
+
+    private func rows(_ items: [OutsideArtistSections.Item], _ model: OutsideArtistModel, id: String) -> some View {
+        LazyVStack(alignment: .leading, spacing: Tokens.Spacing.m) {
+            ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                albumRow(model.album(item), item: item).accessibilityIdentifier("\(id)-\(index)")
+            }
+        }
+        .padding(.horizontal, Tokens.Spacing.margin)
+    }
+
+    @ViewBuilder private func albumRow(_ album: NotYetAlbum, item: OutsideArtistSections.Item) -> some View {
+        let detail = [item.kind, item.year.map(String.init)].compactMap { $0 }.joined(separator: " \u{00B7} ")
+        if let request = RequestLinks.request(releaseGroup: item.id, in: app.requests) {   // R17: back to its request
+            RequestedItemRow(title: item.title, detail: detail, request: request)
+                .buttonStyle(.plain)
+        } else {
+            NavigationLink(value: Route.outsideAlbum(album)) {
+                OutsideArtwork(art, key: .releaseGroup(item.id)) { image in
+                    NotYetAlbumRow(title: item.title, detail: detail,
+                                   label: [item.title, item.kind, item.year.map(String.init)].compactMap { $0 }.joined(separator: ", "),
+                                   artwork: image)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .contextMenu {
+                if !app.isOffline, model?.canTryAlbum(item) ?? false {
+                    Button(TrySheet.tryAlbumTitle, systemImage: "sparkles") { Task { await tryAlbum(album) } }
+                }
+            }
+        }
+    }
+
+    /// Try this album from the list: reads the album's tracklist first (the request names its first track).
+    private func tryAlbum(_ album: NotYetAlbum) async {
+        tryError = nil
+        guard let rg = album.mbid, let release = try? await app.outsideCatalog.release(releaseGroup: rg),
+              let first = OutsideReleasePick.recordings(release, artist: album.artist, artistMBID: album.artistMBID).first else {
+            tryError = OutsideCopy.couldntLoad
+            return
+        }
+        trying = TryTarget(recording: first, album: album, albumGroup: rg)
+    }
+}
+
+enum OutsideCopy {
+    static let couldntLoad = "Couldn't reach MusicBrainz. Try again in a moment."
+}
+
+/// MusicBrainz couldn't be read: says so calmly, with Try again.
+struct OutsideFailed: View {
+    let retry: () -> Void
+
+    var body: some View {
+        ContentUnavailableView {
+            Label("Couldn't load this page", systemImage: "wifi.exclamationmark")
+        } description: {
+            Text(OutsideCopy.couldntLoad)
+        } actions: {
+            Button("Try again", action: retry)
+        }
+        .accessibilityIdentifier("outside-failed")
+    }
+}

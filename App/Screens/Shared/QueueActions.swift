@@ -32,6 +32,8 @@ enum QueueCopy {
     static let inOrder = "In order"
     static let shuffled = "Shuffled"
     static let couldntLoad = "Couldn't get those songs. Try again in a moment."
+    /// Offline, an album or playlist with nothing on the phone (polish).
+    static let nothingDownloaded = "Nothing downloaded"
 
     /// "Your queue has 12 songs."
     static func replaceMessage(_ count: Int) -> String { "Your queue has \(count) songs." }
@@ -151,7 +153,7 @@ extension AppModel {
         guard !songs.isEmpty else { return }
         placement == .next ? player.playNext(songs) : player.addToEnd(songs)
         libraryEdits.notify(QueueCopy.toast(placement),
-                          symbol: QueueCopy.symbol(placement == .next ? .playNext : .addToQueue))
+                          symbol: QueueCopy.symbol(placement == .next ? .playNext : .addToQueue), shown: LibraryNotice.quick)
     }
 
     /// A song row's swipe.
@@ -316,7 +318,7 @@ private struct CollectionSwipeModifier: ViewModifier {
         let placement: QueuePlacement = action == .playNext ? .next : .end
         return SwipeButtonModel(id: QueueCopy.title(action), title: QueueCopy.title(action), symbol: QueueCopy.symbol(action),
                                 tint: SongSwipeModifier.tint(action)) {
-            model.queueActions.pendingCollection = .init(collection: collection, placement: placement)
+            model.askToQueue(collection, placement)
         }
     }
 }

@@ -28,6 +28,9 @@ enum Route: Hashable {
     /// Library › Songs and Library › Favourites (Task 21).
     case songs
     case favourites
+    /// R19: an artist or album that's not in the library, from MusicBrainz.
+    case outsideArtist(NotYetArtist)
+    case outsideAlbum(NotYetAlbum)
 }
 
 extension View {
@@ -52,6 +55,8 @@ extension View {
             case .genre(let name): GenreView(name: name)
             case .songs: SongsListView()
             case .favourites: FavouritesView()
+            case .outsideArtist(let artist): OutsideArtistView(artist: artist)
+            case .outsideAlbum(let album): OutsideAlbumView(album: album)
             }
         }
     }

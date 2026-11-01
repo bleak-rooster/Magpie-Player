@@ -48,6 +48,8 @@ public struct MagpieRequest: Sendable, Codable, Equatable, Identifiable {
 
     public var updatedAt: Date
     public var plan: Plan?
+    /// R19 "Try this album": the release group to bring in, instead of the smallest one holding the song.
+    public var albumTarget: MBID?
     public var lidarrArtistId: Int?
     public var albumId: Int?
     /// Root folder the artist was added to (new-artist branch), for the ledger.

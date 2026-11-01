@@ -349,10 +349,15 @@ final class FakePlaylistServer: @unchecked Sendable {
         server.install(on: transport.inner)
         let playlist = try #require(try await model.editablePlaylists().first)
 
-        // Two quick swipes, each with the position the page showed when it was swiped (the row left at once).
-        async let first: Void = model.removeSong(at: 1, songId: "s2", from: playlist)
-        async let second: Void = model.removeSong(at: 1, songId: "s3", from: playlist)
-        _ = try await (first, second)
+        // Two quick swipes, each with the position the page showed when it was swiped (the row left at once). The
+        // second is swiped once the first is under way (it has read the playlist inside the lock), so it waits for the
+        // first's write: the order the user made them, not whichever task the scheduler starts first (deflaked).
+        let reads = requests("/rest/getPlaylist").count
+        let first = Task { try await model.removeSong(at: 1, songId: "s2", from: playlist) }
+        #expect(await eventually(10) { requests("/rest/getPlaylist").count > reads }, "the first remove is under way")
+        let second = Task { try await model.removeSong(at: 1, songId: "s3", from: playlist) }
+        try await first.value
+        try await second.value
         #expect(server.list("p1")?.songs == ["s1", "s4"])
 
         // A stale position (the playlist changed elsewhere): nothing is removed, the page reads again and says why.

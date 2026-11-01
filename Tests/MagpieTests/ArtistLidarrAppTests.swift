@@ -3,6 +3,7 @@ import LidarrKit
 import MagpieCore
 import MagpieTestSupport
 import Requests
+import Search
 import Testing
 @testable import Magpie
 
@@ -229,6 +230,36 @@ private let twinB = MBID("55555555-5555-4555-8555-555555555555")!
         #expect(!outcome.succeeded && outcome.message == "Added outside Magpie. Change it where you added it.")
         await #expect(throws: ArtistLidarrError.alreadyInLidarr) { _ = try await model.addArtist(mbid: ownerMBID, choices: .defaults) }
         #expect(lidarrWrites.isEmpty, "not even a metadata profile")
+        cleanUp(model)
+    }
+
+    /// R19: the outside artist (and album) page's Add to your library is this line: it asks first, then adds through
+    /// the gate; for an artist already in the owner's Lidarr there is no Add and nothing can be written.
+    @Test func outsidePagesAddThroughTheGateAndRefuseTheOwnersArtist() async throws {
+        let model = try await connected()
+        await model.setChangesAllowed(true)
+        stubProfiles()
+        let owner = OutsideArtistModel(app: model, artist: NotYetArtist(name: "Owner", mbid: ownerMBID))
+        await owner.lidarrLine.refresh()
+        #expect(owner.lidarrLine.presentation?.text == "In Lidarr \u{00B7} Not monitored")
+        #expect(owner.lidarrLine.presentation?.action == nil, "the owner's artist offers no Add")
+        await owner.lidarrLine.requestAdd()
+        #expect(owner.lidarrLine.addFlow == nil)
+        await #expect(throws: ArtistLidarrError.alreadyInLidarr) { _ = try await model.addArtist(mbid: ownerMBID, choices: .defaults) }
+        #expect(lidarrWrites.isEmpty)
+
+        let album = OutsideAlbumModel(app: model, album: NotYetAlbum(title: "First", artist: "New Artist", mbid: soloMBID,
+                                                                     artistMBID: newMBID), librarySong: { _ in nil })
+        let line = album.lidarrLine
+        await line.refresh()
+        #expect(line.presentation?.action == .add)
+        await line.requestAdd()
+        #expect(lidarrWrites.isEmpty, "nothing written while the Add shows")
+        let outcome = try await commit(line)
+        #expect(outcome.succeeded, "\(outcome.message)")
+        #expect(lidarrWrites.map { "\($0.httpMethod!) \($0.url!.path)" } == ["POST /api/v1/artist"])
+        let added = LidarrArtist(id: 55, artistName: "New Artist", foreignArtistId: newMBID, monitored: true)
+        #expect(try await model.ledger?.createdArtist(added) == true, "through the gate and its ledger")
         cleanUp(model)
     }
 

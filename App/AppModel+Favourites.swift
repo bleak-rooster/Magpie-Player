@@ -35,9 +35,10 @@ enum FavouriteTarget: Hashable {
     /// A short message: an edit that worked ("Added to Road trip") or one that didn't.
     var notice: LibraryNotice?
 
-    func notify(_ text: String, symbol: String) {
+    /// - Parameter shown: how long it stays (the queue's "Playing next" is quick).
+    func notify(_ text: String, symbol: String, shown: Duration = LibraryNotice.standard) {
         nextToken += 1
-        notice = LibraryNotice(id: nextToken, text: text, symbol: symbol)
+        notice = LibraryNotice(id: nextToken, text: text, symbol: symbol, shown: shown)
     }
 
     /// Sign-out: nothing of the old account stays.
@@ -53,9 +54,14 @@ enum FavouriteTarget: Hashable {
 
 /// A notice shown briefly over the screen (text and symbol, D3).
 struct LibraryNotice: Equatable, Identifiable {
+    static let standard: Duration = .seconds(3)
+    /// "Playing next" and "Added to queue": a quick confirmation (polish).
+    static let quick: Duration = .milliseconds(1500)
+
     let id: Int
     let text: String
     let symbol: String
+    var shown: Duration = LibraryNotice.standard
 }
 
 /// The songs a menu asked to add to a playlist.
