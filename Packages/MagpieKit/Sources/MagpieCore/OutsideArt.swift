@@ -50,6 +50,10 @@ public enum OutsideArtPolicy {
     public static let maxBytes = 2 * 1024 * 1024
     /// Lidarr lookups per search: about the visible artist rows.
     public static let maxArtistLookups = 8
+    /// Wider or taller than this is refused before decoding (a small file can declare a huge canvas).
+    public static let maxDimension = 8000
+    /// The image types covers come in; anything else is refused before decoding.
+    static let coverTypes: Set<String> = ["public.jpeg", "public.png", "org.webmproject.webp", "public.heic"]
     public static let coverArtArchive = URL(string: "https://coverartarchive.org")!
 
     /// The Cover Art Archive front for a release group or release; nil for an artist.
@@ -78,8 +82,18 @@ public enum OutsideArtPolicy {
         guard let host = httpsHost(url) else { return false }
         switch key {
         case .releaseGroup, .release: return host == "coverartarchive.org"
-        case .artist: return true
+        case .artist: return isPublicHost(host)
         }
+    }
+
+    /// A Lidarr answer names the artist picture's host: never an IP address or a local-network name, so a tampered
+    /// answer can't point the phone at the owner's network (X5 fix round 1).
+    static func isPublicHost(_ host: String) -> Bool {
+        let name = host.hasSuffix(".") ? String(host.dropLast()) : host
+        guard name.contains("."), !name.contains(":"), name != "localhost" else { return false }
+        if name.split(separator: ".").allSatisfy({ $0.allSatisfy(\.isNumber) }) { return false }   // IPv4 literal
+        let local = [".local", ".lan", ".home", ".home.arpa", ".internal", ".localhost", ".localdomain", ".intranet", ".corp"]
+        return !local.contains { name.hasSuffix($0) }
     }
 
     /// Whether a redirect from `original` to `target` is followed: HTTPS only, to archive.org's servers or the same
@@ -175,6 +189,20 @@ public final class OutsideArtLoader {
         // Belt and braces: an answer that ended up anywhere the redirect policy wouldn't follow is dropped.
         if let final = response.url, final != url, !OutsideArtPolicy.allowsRedirect(from: url, to: final) { return nil }
         if let final = response.url, final.scheme?.lowercased() != "https" { return nil }
+        return decode(data, maxPixel: maxPixel)
+    }
+
+    /// Hostile data: only JPEG, PNG, WebP or HEIC, at most `OutsideArtPolicy.maxDimension` on each side (read from the
+    /// header, before anything is decoded), then decoded downsampled.
+    nonisolated public static func decode(_ data: Data, maxPixel: Int) -> CGImage? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
+              let type = CGImageSourceGetType(source) as String?, OutsideArtPolicy.coverTypes.contains(type),
+              CGImageSourceGetCount(source) >= 1,
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let width = properties[kCGImagePropertyPixelWidth] as? Int,
+              let height = properties[kCGImagePropertyPixelHeight] as? Int,
+              width > 0, height > 0, width <= OutsideArtPolicy.maxDimension, height <= OutsideArtPolicy.maxDimension
+        else { return nil }
         return downsample(data, maxPixel: maxPixel)
     }
 
@@ -213,6 +241,11 @@ public struct OutsideArtTransport: HTTPTransport {
 
     public init() { session = Self.shared }
 
+    /// Tests: the same transport over `configuration` (a local URLProtocol stub in place of the internet).
+    public init(configuration: URLSessionConfiguration) {
+        session = URLSession(configuration: configuration, delegate: OutsideArtRedirects.shared, delegateQueue: nil)
+    }
+
     /// The configuration in use (tests check it keeps nothing).
     public var sessionConfiguration: URLSessionConfiguration { session.configuration }
 
@@ -222,6 +255,7 @@ public struct OutsideArtTransport: HTTPTransport {
         guard http.statusCode == 200 else { return (Data(), http) }
         guard http.expectedContentLength <= OutsideArtPolicy.maxBytes else { throw URLError(.dataLengthExceedsMaximum) }
         var data = Data()
+        data.reserveCapacity(Int(min(max(http.expectedContentLength, 64 * 1024), Int64(OutsideArtPolicy.maxBytes))))
         for try await byte in bytes {
             data.append(byte)
             if data.count > OutsideArtPolicy.maxBytes { throw URLError(.dataLengthExceedsMaximum) }
