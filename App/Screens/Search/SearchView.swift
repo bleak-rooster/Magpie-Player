@@ -332,7 +332,7 @@ private struct SearchContent: View {
             }
             .accessibilityElement(children: .combine)
         }
-        .reloadArtworkMenu(artist.coverArtId)   // P4
+        .artistMenu(artist)   // R7 Favourite, P4 Reload artwork
         .simultaneousGesture(TapGesture().onEnded { remember(model.query) })
         .listRowBackground(Color.clear)
     }
@@ -352,7 +352,7 @@ private struct SearchContent: View {
             }
             .accessibilityElement(children: .combine)
         }
-        .reloadArtworkMenu(album.coverArtId)   // P4
+        .albumMenu(album)   // R7 Favourite, R8 Add to playlist…, P4 Reload artwork
         .simultaneousGesture(TapGesture().onEnded { remember(model.query) })
         .listRowBackground(Color.clear)
     }
