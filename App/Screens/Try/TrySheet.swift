@@ -53,7 +53,8 @@ struct TrySheet: View {
     /// not-yet badge (D3).
     private var record: some View {
         let cover = model.requests.last { $0.recording.recordingMBID != nil && $0.recording.recordingMBID == recording.recordingMBID }?.cover
-            ?? MagpieRequestCover(songId: nil, outside: .cover(releaseGroup: nil, release: recording.releaseMBID))
+            ?? MagpieRequestCover(songId: nil, outside: .cover(releaseGroup: nil, release: recording.releaseMBID),
+                                  artist: recording.artistMBID.map(OutsideArtKey.artist))
         return RequestArtwork(cover: cover, loader: outsideArt, side: 140) { art in
             RecordArt(image: art, side: 140).recordBadge(RowState.notYet.statusSymbol, size: 22)
         }

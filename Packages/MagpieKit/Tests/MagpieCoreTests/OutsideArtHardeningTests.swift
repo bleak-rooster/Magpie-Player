@@ -143,3 +143,23 @@ final class StubProtocol: URLProtocol, @unchecked Sendable {
 
     override func stopLoading() { stopped.withLock { $0 = true } }
 }
+
+/// X5 fix round 1 (c): a request's art falls back to the artist's picture (Lidarr's, from an allowed host) when its
+/// cover has none; otherwise the placeholder.
+@MainActor @Suite struct OutsideArtFallbackTests {
+    @Test func noCoverMeansTheArtistPictureThenThePlaceholder() async {
+        let t = MockTransport()
+        t.stub(pathSuffix: "/poster.jpg", body: OutsideArtTests.png())   // the cover isn't stubbed: a 404
+        let picture = Box<URL?>(URL(string: "https://assets.fanart.tv/poster.jpg"))
+        let l = OutsideArtLoader(transport: t, userAgent: OutsideArtTests.ua, artistImage: { _ in await picture.value },
+                                 isOffline: { false })
+        #expect(await l.image(.releaseGroup(OutsideArtTests.rg), fallback: .artist(OutsideArtTests.artist)) != nil)
+        #expect(t.requests.compactMap { $0.url?.host() } == ["coverartarchive.org", "assets.fanart.tv"])
+
+        l.reset()
+        await picture.set(URL(string: "https://nas.local/poster.jpg"))
+        #expect(await l.image(.releaseGroup(OutsideArtTests.rg), fallback: .artist(OutsideArtTests.artist)) == nil,
+                "a picture from a host that isn't allowed: the placeholder")
+        #expect(await l.image(nil, fallback: nil) == nil)
+    }
+}

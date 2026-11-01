@@ -46,7 +46,8 @@ extension AppModel {
 extension MagpieRequest {
     var cover: MagpieRequestCover {
         MagpieRequestCover(songId: songId,
-                           outside: .cover(releaseGroup: plan?.releaseGroupMBID, release: recording.releaseMBID))
+                           outside: .cover(releaseGroup: plan?.releaseGroupMBID, release: recording.releaseMBID),
+                           artist: (plan?.artistMBID ?? recording.artistMBID).map(OutsideArtKey.artist))
     }
 }
 
@@ -56,6 +57,8 @@ struct MagpieRequestCover: Hashable {
     var songId: String?
     /// Before then: the release group (once resolved) or the release search named.
     var outside: OutsideArtKey?
+    /// Without a cover: the artist's picture (Lidarr's, from an allowed host), else the placeholder (fix round 1).
+    var artist: OutsideArtKey? = nil
 }
 
 /// Ready songs' cover ids, so a request row doesn't ask the server for its song each time it shows. Ids only, never
@@ -70,23 +73,26 @@ final class ReadyCovers {
 struct OutsideArtwork<Content: View>: View {
     let loader: OutsideArtLoader?
     let key: OutsideArtKey?
+    var fallback: OutsideArtKey? = nil
     @ViewBuilder let content: (Image?) -> Content
     @State private var image: CGImage?
 
-    init(_ loader: OutsideArtLoader?, key: OutsideArtKey?, @ViewBuilder content: @escaping (Image?) -> Content) {
-        self.loader = loader; self.key = key; self.content = content
+    init(_ loader: OutsideArtLoader?, key: OutsideArtKey?, fallback: OutsideArtKey? = nil,
+         @ViewBuilder content: @escaping (Image?) -> Content) {
+        self.loader = loader; self.key = key; self.fallback = fallback; self.content = content
     }
 
     var body: some View {
         content(image.map { Image(decorative: $0, scale: 1) })
-            .task(id: TaskKey(key: key, loader: loader.map(ObjectIdentifier.init))) {
-                guard let loader, let key else { image = nil; return }
-                image = await loader.image(key)
+            .task(id: TaskKey(key: key, fallback: fallback, loader: loader.map(ObjectIdentifier.init))) {
+                guard let loader else { image = nil; return }
+                image = await loader.image(key, fallback: fallback)
             }
     }
 
     private struct TaskKey: Equatable {
         var key: OutsideArtKey?
+        var fallback: OutsideArtKey?
         var loader: ObjectIdentifier?
     }
 }
@@ -106,7 +112,7 @@ struct RequestArtwork<Content: View>: View {
             if let coverArtId {
                 Artwork(coverArtId, side: side, content: content)
             } else {
-                OutsideArtwork(loader, key: cover.outside, content: content)
+                OutsideArtwork(loader, key: cover.outside, fallback: cover.artist, content: content)
             }
         }
         .task(id: cover.songId) { coverArtId = await model.readyCoverArtId(cover) }

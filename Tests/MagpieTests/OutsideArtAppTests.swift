@@ -259,6 +259,7 @@ private let recordingMBID = MBID("c2272a15-8f3a-4cdc-8f32-7e723352d44d")!
         #expect(model.magpieRequest(id)?.state == .searching, "it kept going")
         #expect(model.magpieRequest(id)?.plan?.releaseGroupMBID == rg)
         #expect(model.magpieRequest(id)?.cover.outside == .releaseGroup(rg))
+        #expect(model.magpieRequest(id)?.cover.artist == .artist(artistMBID), "no cover: the artist's picture")
         // Live: going to the background (the scene phase) asks iOS for a refresh pass; coming back doesn't.
         let submitted = OSAllocatedUnfairLock(initialState: [String]())
         let record: (BGTaskRequest) async throws -> Void = { request in

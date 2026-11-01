@@ -145,6 +145,13 @@ public final class OutsideArtLoader {
         artistLookups = 0
     }
 
+    /// `key`'s image, else `fallback`'s (a request's cover, else its artist's picture), else nil: the placeholder.
+    public func image(_ key: OutsideArtKey?, fallback: OutsideArtKey?) async -> CGImage? {
+        if let key, let image = await image(key) { return image }
+        guard let fallback, fallback != key else { return nil }
+        return await image(fallback)
+    }
+
     public func image(_ key: OutsideArtKey) async -> CGImage? {
         if let hit = images[key] { return hit }
         if let task = inFlight[key] { return await task.value }

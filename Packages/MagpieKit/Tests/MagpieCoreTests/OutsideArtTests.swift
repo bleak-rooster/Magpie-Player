@@ -242,7 +242,7 @@ private struct RedirectingTransport: HTTPTransport {
     }
 }
 
-private actor Box<T: Sendable> {
+actor Box<T: Sendable> {
     var value: T
     init(_ v: T) { value = v }
     func set(_ v: T) { value = v }
