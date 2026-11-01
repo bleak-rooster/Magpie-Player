@@ -1,4 +1,5 @@
 import BackgroundTasks
+import CarPlay
 import CarPlayUI
 import Foundation
 import LidarrKit
@@ -193,6 +194,14 @@ private let recordingMBID = MBID("c2272a15-8f3a-4cdc-8f32-7e723352d44d")!
         #expect(adapter.outsideArt.cachedCount == 1)
         _ = try? await adapter.search("anything")
         #expect(adapter.outsideArt.cachedCount == 0, "a new car search drops it")
+        // Fix round 1 (b): closing the car's search drops it too.
+        let car = FakeCarInterface()
+        let controller = CarPlayController(interfaceController: car, library: adapter, player: model.player)
+        defer { controller.disconnect() }
+        _ = await adapter.artwork(coverArtId: key, pixelSide: 100)
+        #expect(adapter.outsideArt.cachedCount == 1)
+        controller.templateDidDisappear(CPSearchTemplate(), animated: false)   // popped: not in the stack
+        #expect(adapter.outsideArt.cachedCount == 0, "the car search closed")
         // A library cover id still goes through P4.
         _ = await adapter.artwork(coverArtId: "\(tag)al-2", pixelSide: 100)
         #expect(await model.artworkUsage > 0)

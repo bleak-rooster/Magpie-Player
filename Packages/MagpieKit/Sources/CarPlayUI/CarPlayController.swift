@@ -26,6 +26,8 @@ public protocol CarPlayLibrary: AnyObject, Sendable, CarPlayCustomisationLibrary
     var localNetwork: CPLocalNetwork { get }
     var recentSearches: [String] { get }
     func addRecentSearch(_ query: String)
+    /// The search template closed: drop what was held for its results (R15: outside art goes with the search).
+    func searchClosed()
 
     // Finds (Task 7.1d). The reads below are observable: the controller follows them with `Observations`.
 
@@ -129,6 +131,7 @@ public final class CarPlayController: NSObject {
         searchArtwork?.cancel()
         searchArtwork = nil
         searchTask?.cancel()
+        library.searchClosed()
         interface.delegate = nil
         sessionConfiguration = nil
     }
@@ -688,6 +691,13 @@ extension CarPlayController: CPInterfaceControllerDelegate {
     public func templateWillDisappear(_ aTemplate: CPTemplate, animated: Bool) {}
 
     public func templateDidDisappear(_ aTemplate: CPTemplate, animated: Bool) {
+        if aTemplate is CPSearchTemplate, !interface.templates.contains(where: { $0 === aTemplate }) {
+            searchTask?.cancel()
+            searchArtwork?.cancel()
+            searchArtwork = nil
+            library.searchClosed()   // R15: the search closed, so its outside art goes
+            return
+        }
         let id = ObjectIdentifier(aTemplate)
         guard let binding = bindings[id] else { return }
         let isTabRoot = [home, libraryRoot, findsRoot, searchRoot].contains { $0 === binding }
@@ -862,5 +872,9 @@ enum CarPlayArtwork {
             image.draw(in: rect)
         }
     }
+}
+
+public extension CarPlayLibrary {
+    func searchClosed() {}
 }
 #endif

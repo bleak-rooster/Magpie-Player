@@ -118,6 +118,9 @@ final class CarPlayLibraryAdapter: CarPlayLibrary {
         return try await model.carPlaySearch(query)
     }
 
+    /// R15: the car's search closed (or the car went): its outside art goes with it.
+    func searchClosed() { outsideArt.reset() }
+
     /// Server-side sizes match the phone's, so the memory and disk caches (P4) are shared. Outside art (R15) never
     /// touches them.
     func artwork(coverArtId: String, pixelSide: Int) async -> UIImage? {
