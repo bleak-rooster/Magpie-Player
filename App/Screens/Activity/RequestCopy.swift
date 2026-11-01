@@ -162,8 +162,8 @@ enum RequestCopy {
     static let findAnotherMessage = "Magpie drops the copy it's getting now and won't pick that one again."
     static let askAgainSoon = "You can ask again in a moment."
     /// Five copies dropped (automatically and by hand together): Find another copy is off for good (fix round 1 I3),
-    /// Magpie sends no more searches of its own, and the owner's library watches for another (M3 ruling).
-    static let anotherCopyUsedUp = "Tried five copies. Your library keeps watching for another."
+    /// Magpie sends no more searches of its own; it stays on its way (§9) in case another copy turns up (M3, N4).
+    static let anotherCopyUsedUp = "Tried five copies. It's still on its way if another turns up."
     static let findAnotherFailed = "Couldn't look for another copy right now. Try again in a moment."
     /// Settings › New music.
     static let stuckCopySetting = "Give up on a stuck copy after"

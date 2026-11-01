@@ -210,7 +210,7 @@ private let artistMBID = MBID("00000000-0000-0000-0000-000000000001")!
         r.stallRetries = RequestRunner.maxStallRetries
         #expect(model.findAnotherCopyHold(r, now: t0.addingTimeInterval(60)) == RequestCopy.anotherCopyUsedUp)
         #expect(RequestPageAction.actions(for: r).contains(.findAnotherCopy))
-        #expect(RequestCopy.anotherCopyUsedUp == "Tried five copies. Your library keeps watching for another.")
+        #expect(RequestCopy.anotherCopyUsedUp == "Tried five copies. It's still on its way if another turns up.")
     }
 
     /// Find another copy without a runner says so calmly; nothing is sent.
