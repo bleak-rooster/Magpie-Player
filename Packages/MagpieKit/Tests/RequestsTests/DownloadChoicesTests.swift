@@ -157,6 +157,25 @@ import MagpieTestSupport
         #expect(h.server.writes.count == before)
     }
 
+    /// X7 review I1 (FL4/G7): the room under the limit of 5 is checked and taken with no await between, so the
+    /// release-types profile (a Lidarr read, maybe writes) is set up first. Here the room is taken while that read
+    /// waits: nothing more is monitored, and never more than 5 places are held.
+    @Test func roomTakenWhileProfilesApplyIsRespected() async throws {
+        let h = await Harness(setup: Harness.findsSetup)
+        let id = try await Self.keptFind(h)
+        h.server.with { $0.hold = ("/metadataprofile", 1); $0.holdMethod = "GET"; $0.holdSeen = 0 }
+
+        let task = Task { try await h.runner.bringIn(id, choice: .everything, follow: false, types: .standard) }
+        await h.server.latch.waitArrived()
+        // Meanwhile other bring-ins take every place left.
+        await h.runner.mutate(id) { $0.bringingIn = [901, 902, 903, 904, 905] }
+        await h.server.latch.release()
+
+        await #expect(throws: RequestRunner.BringInError.tooMany) { _ = try await task.value }
+        #expect(await h.runner.activeCount <= RequestRunner.maxActive)
+        #expect(!h.server.writeBodies().contains { $0.0 == "PUT album/monitor" })
+    }
+
     @Test func defaultsAreTheOwners() {
         let d = DownloadChoices.defaults
         #expect(d.what == .wholeArtist && d.types == .standard && d.quality == .lossless && !d.follow)

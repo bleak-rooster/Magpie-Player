@@ -138,10 +138,16 @@ extension RequestRunner {
         keepingArtists.insert(artistId)
         defer { keepingArtists.remove(artistId) }
 
+        // R18: the release types and quality first. They await Lidarr (a read, maybe writes), so they come before
+        // the room is checked and taken below, which must have no await between (FL4, review I1). If the room is gone
+        // by then, the artist keeps the new settings (Magpie's own artist; nothing is monitored).
+        try await applyProfiles(target.artist, types: choice == .everything ? types : nil,
+                                qualityProfileId: qualityProfileId)
+
         var albums: [LidarrAlbum] = []
         var heldBack = 0
         if let choice {
-            let songAlbums = choice == .thisAlbum ? await songAlbumGroups(target.request) : nil
+            let songAlbums = choice == .thisAlbum ? await songAlbumGroups(target.request) : nil   // before the room check
             if choice == .thisAlbum, songAlbums == nil { throw BringInError.unavailable }
             let option = Self.bringInOption(target.albums, choice: choice, songAlbums: songAlbums,
                                             skip: target.openAlbums, limit: Self.bringInLimit, types: types)
@@ -155,8 +161,6 @@ extension RequestRunner {
                 albums = Array(albums.prefix(bringInRoom))
             }
         }
-        try await applyProfiles(target.artist, types: choice == .everything ? types : nil,
-                                qualityProfileId: qualityProfileId)
         let reserved = albums.map(\.id)
         if !reserved.isEmpty {
             await mutate(id) {
