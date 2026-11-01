@@ -22,6 +22,8 @@ public struct OutsideArtistSections: Equatable, Sendable {
 
     public var isEmpty: Bool { albums.isEmpty && eps.isEmpty && singles.isEmpty && more.isEmpty }
 
+    public init() {}
+
     public static func make(_ groups: [MBReleaseGroupSummary]) -> OutsideArtistSections {
         var s = OutsideArtistSections()
         var seen = Set<MBID>()

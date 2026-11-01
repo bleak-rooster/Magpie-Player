@@ -171,6 +171,8 @@ final class AppModel {
     @ObservationIgnored private var matchIndexTask: Task<Void, Never>?
     @ObservationIgnored private let matchIndexDirectory: URL?
     @ObservationIgnored private var musicBrainzClient: MusicBrainzClient?
+    /// R19: what the outside artist and album pages read from MusicBrainz, in memory for this session only.
+    @ObservationIgnored var outsideCatalogStore: OutsideCatalog?
     /// Spaces the app's `api.listenbrainz.org` calls ("Made for you"); labs search never waits on it.
     @ObservationIgnored let listenBrainzLimiter = RateLimiter(perSecond: 2)
     @ObservationIgnored private var unlockObserver: NSObjectProtocol?

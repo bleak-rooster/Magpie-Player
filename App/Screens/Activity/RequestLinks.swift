@@ -30,7 +30,7 @@ enum RequestLinks {
     /// The live request bringing in this album (release group).
     static func request(releaseGroup: MBID?, in requests: [MagpieRequest]) -> MagpieRequest? {
         guard let releaseGroup else { return nil }
-        return requests.last { isLinkable($0) && $0.plan?.releaseGroupMBID == releaseGroup }
+        return requests.last { isLinkable($0) && ($0.plan?.releaseGroupMBID ?? $0.albumTarget) == releaseGroup }   // R19: Try this album
     }
 
     /// The newest live request for a song by this artist.

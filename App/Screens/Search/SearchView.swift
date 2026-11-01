@@ -105,7 +105,7 @@ private struct SearchContent: View {
         .navigationTitle("Search")
         .magpieScreen()
         .scrollDismissesKeyboard(.interactively)
-        .sheet(item: $trying) { TrySheet(recording: $0.recording) }
+        .sheet(item: $trying) { TrySheet(target: $0) }
         .songRemovalDialog($removing)
         .onChange(of: depth) { old, new in if new > old, !model.query.isEmpty { remember(model.query) } }
     }
@@ -281,6 +281,10 @@ private struct SearchContent: View {
     @ViewBuilder private func notYetArtistRow(_ artist: NotYetArtist) -> some View {
         if let request = RequestLinks.request(artist: artist.mbid, in: app.requests) {   // R17
             RequestedItemRow(title: artist.name, detail: "Artist", request: request).listRowBackground(Color.clear)
+        } else if artist.mbid != nil {
+            // R19: opens the outside artist page.
+            NavigationLink(value: Route.outsideArtist(artist)) { plainNotYetArtistRow(artist) }
+                .listRowBackground(Color.clear)
         } else {
             plainNotYetArtistRow(artist)
         }
@@ -290,6 +294,10 @@ private struct SearchContent: View {
         if let request = RequestLinks.request(releaseGroup: album.mbid, in: app.requests) {   // R17
             RequestedItemRow(title: album.title,
                              detail: [album.kind ?? "Album", album.artist].joined(separator: " \u{00B7} "), request: request)
+                .listRowBackground(Color.clear)
+        } else if album.mbid != nil {
+            // R19: opens the outside album page.
+            NavigationLink(value: Route.outsideAlbum(album)) { plainNotYetAlbumRow(album) }
                 .listRowBackground(Color.clear)
         } else {
             plainNotYetAlbumRow(album)
@@ -422,4 +430,9 @@ private struct SearchContent: View {
 struct TryTarget: Identifiable {
     let id = UUID()
     let recording: ExternalRecording
+    /// R19 "Try this album": the album, and its release group as the target (`recording` is its first track).
+    var album: NotYetAlbum? = nil
+    var albumGroup: MBID? = nil
+    /// R19: a track of an outside album: a live request for that album is this Try (R20).
+    var releaseGroup: MBID? = nil
 }

@@ -186,6 +186,8 @@ struct ArtistLidarrLine: View {
     let presentation: ArtistLidarrPresentation
     /// False while another capsule takes the one place (Keep <artist> for an artist only in your Finds, R20).
     var showsAction = true
+    /// R19: the outside album page names the artist ("Add <artist> to your library").
+    var addTitle: String? = nil
     @State private var showsSettings = false
     private let themed = Themed()
 
@@ -197,7 +199,8 @@ struct ArtistLidarrLine: View {
                 .foregroundStyle(p.ink2Color)
                 .accessibilityIdentifier("artist-lidarr-status")
             if let action = presentation.action, showsAction {
-                CapsuleButton(line.working ? "Adding\u{2026}" : ArtistLidarrPresentation.actionTitle(action), symbol: "plus") {
+                CapsuleButton(line.working ? "Adding\u{2026}" : action == .add ? addTitle ?? ArtistLidarrPresentation.actionTitle(action)
+                              : ArtistLidarrPresentation.actionTitle(action), symbol: "plus") {
                     switch action {
                     case .add: Task { await line.requestAdd() }
                     case .addMore: line.requestAddMore()

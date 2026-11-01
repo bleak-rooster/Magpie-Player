@@ -135,17 +135,24 @@ struct ArtistView: View {
         return VStack(alignment: .leading, spacing: Tokens.Spacing.m) {
             VStack(alignment: .leading, spacing: Tokens.Spacing.xs) {
                 Text("Not in your library").magpieDisplay(.title2).accessibilityAddTraits(.isHeader)
-                Text("To try one, search for a song from it.").font(.footnote).foregroundStyle(p.ink2Color)
+                Text("Open one to try it, or a song from it.").font(.footnote).foregroundStyle(p.ink2Color)
             }
             .padding(.horizontal, Tokens.Spacing.largeTitleMargin)
             LazyVStack(alignment: .leading, spacing: Tokens.Spacing.m) {
                 ForEach(Array(notYetAlbums.enumerated()), id: \.offset) { index, album in
                     let kind = album.kind ?? "Album"
-                    NotYetAlbumRow(title: album.title,
-                                   detail: [kind, album.year.map(String.init)].compactMap { $0 }.joined(separator: " \u{00B7} "),
-                                   label: [album.title, kind, album.year.map(String.init)].compactMap { $0 }.joined(separator: ", "))
+                    let row = NotYetAlbumRow(title: album.title,
+                                             detail: [kind, album.year.map(String.init)].compactMap { $0 }.joined(separator: " \u{00B7} "),
+                                             label: [album.title, kind, album.year.map(String.init)].compactMap { $0 }.joined(separator: ", "))
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .accessibilityIdentifier("artist-notyet-album-\(index)")
+                    Group {
+                        if album.mbid != nil {   // R19: its outside page (Try this album, the tracklist)
+                            NavigationLink(value: Route.outsideAlbum(album)) { row.contentShape(Rectangle()) }.buttonStyle(.plain)
+                        } else {
+                            row
+                        }
+                    }
+                    .accessibilityIdentifier("artist-notyet-album-\(index)")
                 }
             }
             .padding(.horizontal, Tokens.Spacing.margin)

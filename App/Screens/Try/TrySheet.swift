@@ -1,6 +1,7 @@
 import DesignSystem
 import MagpieCore
 import Requests
+import Search
 import SwiftUI
 
 /// Try on a song that's not in the library: into Finds when they're set up (Task 6.2a), else straight into
@@ -11,6 +12,22 @@ struct TrySheet: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     let recording: ExternalRecording
+    /// R19 "Try this album": the album and its release group (the target); `recording` is its first track.
+    var album: NotYetAlbum? = nil
+    var albumGroup: MBID? = nil
+    /// R19: a track of an outside album; a live request for that album opens instead of a second Try (R20).
+    var releaseGroup: MBID? = nil
+
+    init(recording: ExternalRecording) { self.recording = recording }
+
+    init(target: TryTarget) {
+        recording = target.recording
+        album = target.album
+        albumGroup = target.albumGroup
+        releaseGroup = target.releaseGroup
+    }
+
+    static let tryAlbumTitle = "Try this album"
 
     enum Phase: Equatable {
         case choosing
@@ -20,8 +37,10 @@ struct TrySheet: View {
     }
 
     /// R17: a song already on its way (or Ready) opens its request instead of a second Try. Nil: Try as usual.
-    static func existingPhase(for recording: ExternalRecording, in requests: [MagpieRequest]) -> Phase? {
-        guard let live = RequestLinks.request(for: recording, in: requests) else { return nil }
+    static func existingPhase(for recording: ExternalRecording, releaseGroup: MBID? = nil,
+                              in requests: [MagpieRequest]) -> Phase? {
+        guard let live = RequestLinks.request(for: recording, in: requests)
+                ?? RequestLinks.request(releaseGroup: releaseGroup, in: requests) else { return nil }
         return live.tier.asksInsteadOfWaiting ? .asked(live.id) : .waiting(live.id)
     }
 
@@ -53,7 +72,8 @@ struct TrySheet: View {
         .sheet(isPresented: $showsSettings) { SettingsView(opening: [.requests]) }   // T21b: every reason Try names is on New music
         .onAppear {
             // R17: a song already on its way opens its request, never a second Try.
-            if phase == .choosing, let live = Self.existingPhase(for: recording, in: model.requests) { phase = live }
+            if phase == .choosing, let live = Self.existingPhase(for: recording, releaseGroup: albumGroup ?? releaseGroup,
+                                                                 in: model.requests) { phase = live }
         }
         .task { if outsideArt == nil { outsideArt = model.makeOutsideArt() } }   // R16
         .onDisappear { outsideArt?.reset() }
@@ -63,7 +83,7 @@ struct TrySheet: View {
     /// not-yet badge (D3).
     private var record: some View {
         let cover = model.requests.last { $0.recording.recordingMBID != nil && $0.recording.recordingMBID == recording.recordingMBID }?.cover
-            ?? MagpieRequestCover(songId: nil, outside: .cover(releaseGroup: nil, release: recording.releaseMBID),
+            ?? MagpieRequestCover(songId: nil, outside: .cover(releaseGroup: albumGroup, release: recording.releaseMBID),
                                   artist: recording.artistMBID.map(OutsideArtKey.artist))
         return RequestArtwork(cover: cover, loader: outsideArt, side: 140) { art in
             RecordArt(image: art, side: 140).recordBadge(RowState.notYet.statusSymbol, size: 22)
@@ -84,7 +104,7 @@ struct TrySheet: View {
             VStack(spacing: Tokens.Spacing.l) {
                 record
                 VStack(spacing: Tokens.Spacing.xs) {
-                    Text(recording.title).magpieDisplay(.title2).multilineTextAlignment(.center)
+                    Text(album?.title ?? recording.title).magpieDisplay(.title2).multilineTextAlignment(.center)
                     Text(details).font(.subheadline).foregroundStyle(p.ink2Color).multilineTextAlignment(.center)
                     StatusLine(.notYet)
                 }
@@ -105,7 +125,7 @@ struct TrySheet: View {
                     Button { Task { await start(tier) } } label: {
                         HStack {
                             if phase == .working { ProgressView() }
-                            Text(tier.asksInsteadOfWaiting ? RequestCopy.askForIt : "Try it")
+                            Text(tier.asksInsteadOfWaiting ? RequestCopy.askForIt : album != nil ? Self.tryAlbumTitle : "Try it")
                         }
                         .frame(maxWidth: .infinity, minHeight: Tokens.minHitSize)
                     }
@@ -131,6 +151,10 @@ struct TrySheet: View {
     }
 
     private var details: String {
+        if let album {
+            return ([album.kind ?? "Album", album.artist] + [album.year.map(String.init)].compactMap { $0 })
+                .joined(separator: " · ")
+        }
         var parts = [recording.artist]
         if let album = recording.releaseTitle, !album.isEmpty { parts.append(album) }
         if let d = recording.duration, d > 0 { parts.append(DurationText.clock(d)) }
@@ -141,7 +165,14 @@ struct TrySheet: View {
         error = nil
         phase = .working
         do {
-            let id = try await model.tryRecording(recording)
+            let id: RequestID
+            if let albumGroup {
+                id = try await model.tryAlbum(recording, releaseGroup: albumGroup)
+            } else if releaseGroup != nil {
+                id = try await model.tryTrack(recording, releaseGroup: releaseGroup)
+            } else {
+                id = try await model.tryRecording(recording)
+            }
             phase = tier.asksInsteadOfWaiting ? .asked(id) : .waiting(id)
         } catch {
             self.error = TryCopy.message(for: error)
@@ -157,7 +188,7 @@ struct TrySheet: View {
             VStack(spacing: Tokens.Spacing.l) {
                 record
                 Text("We'll keep looking").magpieDisplay(.title2)
-                Text(recording.title + " · " + recording.artist).font(.subheadline).foregroundStyle(p.ink2Color)
+                Text((album?.title ?? recording.title) + " · " + recording.artist).font(.subheadline).foregroundStyle(p.ink2Color)
                     .multilineTextAlignment(.center)
                 Text("This one might take a while. It can take a few hours. It shows up in Library › Requests, and in your library when it's home.")
                     .font(.body).multilineTextAlignment(.center)
