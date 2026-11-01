@@ -19,6 +19,7 @@ struct RootView: View {
                 MainTabs()
                     .environment(\.songIsDownloaded, model.songIsDownloaded)   // P1: every song row's mark
                     .libraryEditsPresenter()   // R7, R8: Add to playlist from menus, and the library's notices
+                    .immersiveArt(coverArtId: model.player.queue.current?.song.coverArtId)   // R13: what's playing colours the app
             }
         }
         .magpieTheme(theme)
@@ -63,6 +64,7 @@ struct MainTabs: View {
         }
         .sheet(isPresented: $showNowPlaying) {
             NowPlayingView()
+                .immersiveArt(coverArtId: model.player.queue.current?.song.coverArtId)   // R13
         }
     }
 }

@@ -39,6 +39,7 @@ final class ArtworkCache {
     /// "Reload artwork": every size of one cover leaves memory.
     func remove(scope: String, coverArtId: String) {
         for size in ArtworkDiskCache.sizes { cache.removeObject(forKey: Self.key(scope: scope, coverArtId: coverArtId, size: size) as NSString) }
+        ArtPaletteCache.shared.remove(coverArtId)   // R13: its colours are worked out again too
     }
 
     func removeAll() {
@@ -46,6 +47,7 @@ final class ArtworkCache {
         inFlight.values.forEach { $0.cancel() }
         inFlight = [:]
         generation += 1
+        ArtPaletteCache.shared.removeAll()   // R13
     }
 
     /// Fetches the image; `fetched` gets the bytes of one that decoded, with the generation it was started in (the
