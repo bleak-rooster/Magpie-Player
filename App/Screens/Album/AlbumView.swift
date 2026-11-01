@@ -20,6 +20,15 @@ struct AlbumView: View {
         }
         .navigationTitle(album.value?.name ?? "")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            // R7, R8 (the UX appraisal's header): Favourite and ⋯ in the toolbar; Download stays the capsule.
+            if let album = album.value, !model.isOffline, !OfflineCatalog.isLocalId(album.id) {
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    FavouriteButton(target: .album(album.id))
+                    AlbumMoreMenu(album: album)
+                }
+            }
+        }
         .background { ArtBackdrop(coverArtId: album.value?.coverArtId) }
         .magpieScreen()
         // Again when offline mode changes, and offline when songs land on or leave the phone (the store may be
@@ -102,6 +111,7 @@ struct AlbumView: View {
             let loaded = try await model.request { [albumId] in try await $0.album(id: albumId) }
             album = .loaded(loaded)
             model.noteAlbumSongCounts([loaded])   // P1: backfills downloads saved without the album's count
+            model.noteFavourite(.album(loaded.id), loaded.starred)   // R7
         } catch {
             album = .failed(BrowseErrorCopy.message(for: error))
         }

@@ -61,3 +61,14 @@ public struct NavidromeLibrary: Sendable, Equatable, Hashable, Codable, Identifi
         self.id = id; self.name = name; self.path = path
     }
 }
+
+/// One row of `/api/artist` (every role: album artists and track-only artists).
+struct NativeArtist: Decodable {
+    let id: String
+    let name: String?
+    let albumCount: Int?
+    let mbzArtistId: String?
+    let imageAbsent: Bool?
+    let missing: Bool?
+    let starred: Bool?
+}

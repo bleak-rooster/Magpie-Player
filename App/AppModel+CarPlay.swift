@@ -76,7 +76,19 @@ extension AppModel {
         let sections = try await mergedSearch(libraryTimeout: Self.carPlayLibraryTimeout,
                                                 sourceTimeout: Self.carPlaySourceTimeout).runReportingLibraryFailure(query)
         return CarPlaySearchResult(library: LibrarySearchResult(songs: sections.songs, albums: sections.albums),
-                                   notYet: sections.notYet.songs)
+                                   notYet: sections.notYet.songs, onTheirWay: carPlayOnTheirWay(sections.notYet.songs))
+    }
+
+    /// R20: the status of each not-yet song that already has a request on its way (by index), as the phone's row says
+    /// it. A Ready one is left as it was: Try it next lands the song that's already here (the runner returns it).
+    func carPlayOnTheirWay(_ songs: [ExternalRecording]) -> [Int: String] {
+        var statuses: [Int: String] = [:]
+        for (i, recording) in songs.enumerated() {
+            if let request = RequestLinks.request(for: recording, in: requests), request.isActive {
+                statuses[i] = RequestCopy.status(request, context: waitContext)
+            }
+        }
+        return statuses
     }
 
     // MARK: - Try it next (D6, CarPlay H3)

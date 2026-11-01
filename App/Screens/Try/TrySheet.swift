@@ -19,6 +19,12 @@ struct TrySheet: View {
         case asked(RequestID)
     }
 
+    /// R17: a song already on its way (or Ready) opens its request instead of a second Try. Nil: Try as usual.
+    static func existingPhase(for recording: ExternalRecording, in requests: [MagpieRequest]) -> Phase? {
+        guard let live = RequestLinks.request(for: recording, in: requests) else { return nil }
+        return live.tier.asksInsteadOfWaiting ? .asked(live.id) : .waiting(live.id)
+    }
+
     @State private var phase = Phase.choosing
     @State private var error: String?
     @State private var showsSettings = false
@@ -29,19 +35,24 @@ struct TrySheet: View {
             Group {
                 switch phase {
                 case .choosing, .working: choosing
-                case .waiting(let id): RequestDetailView(requestId: id)
+                case .waiting(let id): RequestDetailView(requestId: id, footnote: TryCopy.keepBrowsing)
                 case .asked(let id): asked(id)
                 }
             }
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button(isWaiting ? "Leave" : "Done") { dismiss() }
+                    // R20: never "Leave" (it read as abandoning it); it keeps coming.
+                    Button("Done") { dismiss() }
                         .accessibilityHint(isWaiting ? "It keeps coming. Find it in Library, Requests." : "")
                         .accessibilityIdentifier("try-done")
                 }
             }
         }
-        .sheet(isPresented: $showsSettings) { SettingsView(opening: [.requests]) }   // T21b: every reason Try names is on Requests
+        .sheet(isPresented: $showsSettings) { SettingsView(opening: [.requests]) }   // T21b: every reason Try names is on New music
+        .onAppear {
+            // R17: a song already on its way opens its request, never a second Try.
+            if phase == .choosing, let live = Self.existingPhase(for: recording, in: model.requests) { phase = live }
+        }
     }
 
     /// The bare record; Classic draws it as a square with the not-yet badge (D3).

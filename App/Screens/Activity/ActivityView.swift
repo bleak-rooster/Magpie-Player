@@ -99,7 +99,17 @@ struct RequestDetailView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     let requestId: RequestID
+    /// Under the stages (the Try sheet's "You can keep browsing…", R20).
+    var footnote: String? = nil
     @State private var confirmsStop = false
+    // R17 / R20: Find another copy, and a Ready find's Keep and Not for me.
+    @State private var confirmsAnotherCopy = false
+    @State private var anotherCopyNote: String?
+    @State private var working = false
+    @State private var message: String?
+    @State private var asking: NotForMeConfirm?
+    /// R20: after a Keep that moved the find, "Kept. Add more from <artist>?" (the Add sheet, X7).
+    @State private var addingMore: AddFlowRequest?
     private let themed = Themed()
 
     var body: some View {
@@ -119,9 +129,14 @@ struct RequestDetailView: View {
         VStack(spacing: Tokens.Spacing.l) {
             if request.tier != .patient, RequestCopy.group(request) != .attention {
                 WaitView(title: request.recording.title, artist: subtitle(request), stage: RequestCopy.stage(state),
-                         phrase: RequestCopy.phrase(state, tier: request.tier))
+                         phrase: RequestCopy.phrase(request))
             } else {
                 calm(request)
+            }
+            if let footnote, RequestCopy.group(request) == .inProgress {
+                Text(footnote).font(.footnote).foregroundStyle(themed.palette.ink2Color)
+                    .multilineTextAlignment(.center).padding(.horizontal, Tokens.Spacing.largeTitleMargin)
+                    .accessibilityIdentifier("request-footnote")
             }
             if request.findsUnavailable {
                 Text(TryCopy.findsUnavailable).font(.footnote).foregroundStyle(themed.palette.ink2Color)
@@ -142,6 +157,21 @@ struct RequestDetailView: View {
         } message: {
             Text("Magpie stops asking for it. Nothing is deleted.")
         }
+        .confirmationDialog(RequestCopy.findAnotherTitle, isPresented: $confirmsAnotherCopy, titleVisibility: .visible) {
+            Button(RequestCopy.findAnotherCopy, role: .destructive) { Task { await findAnotherCopy(removingCopy: true) } }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(RequestCopy.findAnotherMessage)
+        }
+        .confirmationDialog(NotForMeCopy.confirmTitle, isPresented: Binding(get: { asking != nil },
+                                                                            set: { if !$0 { asking = nil } }),
+                            titleVisibility: .visible, presenting: asking) { confirm in
+            Button(NotForMeCopy.action, role: .destructive) { letGo(confirm) }
+            Button("Cancel", role: .cancel) {}
+        } message: { confirm in
+            Text(confirm.message)
+        }
+        .addFlow($addingMore) { message = $0.message }
     }
 
     private func subtitle(_ r: MagpieRequest) -> String {
@@ -172,34 +202,111 @@ struct RequestDetailView: View {
 
     @ViewBuilder private func actions(_ request: MagpieRequest) -> some View {
         VStack(spacing: Tokens.Spacing.s) {
-            if request.state == .ready {
-                Button { Task { await play(request) } } label: {
-                    Label("Play", systemImage: "play.fill").frame(maxWidth: .infinity, minHeight: Tokens.minHitSize)
-                }
-                .buttonStyle(.borderedProminent)
-                .accessibilityIdentifier("request-play")
-            }
-            if request.isNotListed {
-                Button("Check again") { Task { await model.checkAgain(requestId) } }
-                    .buttonStyle(.bordered)
-                    .frame(minHeight: Tokens.minHitSize)
-                    .accessibilityIdentifier("request-check-again")
-            }
-            if RequestCopy.canCancel(request.state) {
-                Button("Stop looking", role: .destructive) { confirmsStop = true }
-                    .frame(minHeight: Tokens.minHitSize)
-                    .accessibilityIdentifier("request-stop")
-            } else if !request.cleanupPending, request.state != .ready {
-                Button("Remove from the list") {
-                    Task {
-                        await model.forgetRequest(requestId)
-                        dismiss()
-                    }
-                }
-                .frame(minHeight: Tokens.minHitSize)
+            ForEach(RequestPageAction.actions(for: request), id: \.self) { action(request, $0) }
+            if let message {
+                Text(message).font(.footnote).foregroundStyle(themed.palette.ink2Color).multilineTextAlignment(.center)
+                    .accessibilityIdentifier("request-message")
             }
         }
         .padding(.horizontal, Tokens.Spacing.largeTitleMargin)
+    }
+
+    @ViewBuilder private func action(_ request: MagpieRequest, _ action: RequestPageAction) -> some View {
+        switch action {
+        case .play:
+            Button { Task { await play(request) } } label: {
+                Label("Play", systemImage: "play.fill").frame(maxWidth: .infinity, minHeight: Tokens.minHitSize)
+            }
+            .buttonStyle(.borderedProminent)
+            .accessibilityIdentifier("request-play")
+        case .keep:
+            Button { Task { await keep() } } label: {
+                Label("Keep", systemImage: "plus.circle").frame(maxWidth: .infinity, minHeight: Tokens.minHitSize)
+            }
+            .buttonStyle(.bordered)
+            .disabled(working)
+            .accessibilityIdentifier("request-keep")
+        case .notForMe:
+            Button(NotForMeCopy.action + "…", role: .destructive) { Task { await askNotForMe() } }
+                .frame(minHeight: Tokens.minHitSize)
+                .disabled(working)
+                .accessibilityIdentifier("request-not-for-me")
+        case .findAnotherCopy:
+            // Once per 30 s: the clock only re-enables the button on this screen (nothing is read from the servers).
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                let hold = model.findAnotherCopyHold(request, now: context.date)
+                VStack(spacing: Tokens.Spacing.xs) {
+                    Button(RequestCopy.findAnotherCopy) { Task { await findAnotherCopy(removingCopy: false) } }
+                        .buttonStyle(.bordered)
+                        .frame(minHeight: Tokens.minHitSize)
+                        .disabled(working || hold != nil)
+                        .accessibilityIdentifier("request-find-another-copy")
+                    if let note = hold ?? anotherCopyNote {
+                        Text(note).font(.footnote)
+                            .foregroundStyle(themed.palette.ink2Color).multilineTextAlignment(.center)
+                            .accessibilityIdentifier("request-find-another-note")
+                    }
+                }
+            }
+        case .checkAgain:
+            Button("Check again") { Task { await model.checkAgain(requestId) } }
+                .buttonStyle(.bordered)
+                .frame(minHeight: Tokens.minHitSize)
+                .accessibilityIdentifier("request-check-again")
+        case .stopLooking:
+            Button("Stop looking", role: .destructive) { confirmsStop = true }
+                .frame(minHeight: Tokens.minHitSize)
+                .accessibilityIdentifier("request-stop")
+        case .remove:
+            Button("Remove from the list") {
+                Task {
+                    await model.forgetRequest(requestId)
+                    dismiss()
+                }
+            }
+            .frame(minHeight: Tokens.minHitSize)
+        }
+    }
+
+    /// Asks first only when there's a copy coming (the runner reads Lidarr's queue; nothing is sent before the OK).
+    private func findAnotherCopy(removingCopy: Bool) async {
+        working = true
+        defer { working = false }
+        switch await model.findAnotherCopy(requestId, removingCopy: removingCopy) {
+        case .started, .tooSoon: anotherCopyNote = nil
+        case .needsConfirmation: confirmsAnotherCopy = true
+        case .failed(let text): anotherCopyNote = text
+        }
+    }
+
+    /// Keep, as in Finds: the Add sheet follows a move (D5, R20); otherwise what happened shows here.
+    private func keep() async {
+        working = true
+        defer { working = false }
+        let reply = await model.keep(requestId)
+        if reply.bringsInMore, let request = model.requests.first(where: { $0.id == requestId }) {
+            addingMore = model.afterKeepRequest(requestId, artist: request.recording.artist, kept: reply.message)
+        } else {
+            message = reply.message
+        }
+    }
+
+    private func askNotForMe() async {
+        working = true
+        defer { working = false }
+        switch await model.notForMeAsk(requestId) {
+        case .confirm(let confirm): asking = confirm
+        case .message(let text): message = text
+        }
+    }
+
+    private func letGo(_ confirm: NotForMeConfirm) {
+        asking = nil
+        Task {
+            working = true
+            message = await model.notForMe(confirm)
+            working = false
+        }
     }
 
     private func play(_ request: MagpieRequest) async {

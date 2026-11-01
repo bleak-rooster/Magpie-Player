@@ -229,6 +229,8 @@ enum ForbiddenWrites {
             return .editor(json as? [String: Any] ?? [:])
         case ("DELETE", "artist"):
             return Int(key[1]).map { .artistDelete($0) } ?? .trackFileDelete([])
+        case ("DELETE", "queue"):
+            return Int(key[1]).map { .queueDelete($0) }
         case ("DELETE", "trackfile"):
             if key[1] == "bulk" {
                 let ids = (json as? [String: Any])?["trackFileIds"] as? [Any] ?? []
@@ -270,6 +272,9 @@ enum ForbiddenWrites {
             return noQuery ?? trackFileBulkReason(json)
         case ("DELETE", 2) where key[0] == "trackfile" && isId(key[1]):
             return noQuery ?? (json == nil ? nil : "no body allowed on DELETE /trackfile/{id}")
+        // R17: a stalled Soulseek download or Search again. Which queue item, the gate's confinement decides.
+        case ("DELETE", 2) where key[0] == "queue" && isId(key[1]) && Int(key[1]).map({ $0 > 0 }) == true:
+            return json == nil ? queueDeleteReason(t.query) : "no body allowed on DELETE /queue/{id}"
         default:
             return notAllowed
         }
@@ -284,6 +289,23 @@ enum ForbiddenWrites {
             seen.insert(name)
         }
         return seen == falseOnlyFlags ? nil : "artist delete needs explicit deleteFiles=false and addImportListExclusion=false"
+    }
+
+    /// The only query `DELETE /queue/{id}` may carry, spelled exactly so: remove it from the download client, blocklist
+    /// the release so Lidarr doesn't grab it again, and don't let Lidarr search on its own (Magpie's AlbumSearch follows).
+    static let queueDeleteQuery: [String: String] = ["removeFromClient": "true", "blocklist": "true",
+                                                     "skipRedownload": "true"]
+
+    /// `DELETE /queue/{id}`: exactly `removeFromClient=true&blocklist=true&skipRedownload=true` (any order), each
+    /// once, nothing else.
+    private static func queueDeleteReason(_ query: [URLQueryItem]) -> String? {
+        let pairs = query.map { ($0.name, $0.value ?? "") }
+        guard pairs.count == queueDeleteQuery.count,
+              Set(pairs.map(\.0)).count == pairs.count,
+              pairs.allSatisfy({ queueDeleteQuery[$0.0] == $0.1 }) else {
+            return "queue delete needs exactly removeFromClient=true&blocklist=true&skipRedownload=true"
+        }
+        return nil
     }
 
     /// `DELETE /trackfile/bulk`: exactly `{"trackFileIds": [<positive integers>]}`, at least one id.

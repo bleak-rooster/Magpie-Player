@@ -11,6 +11,10 @@ struct RequestsSettingsView: View {
     @State private var provisioning = false
     @State private var provisionMessage: String?
     @State private var asksLidarrConsent = false
+    @State private var stuckCopyLimit = StallLimit.standard
+
+    /// Only Soulseek copies are given up on (R17); the footer says so without naming the service (§5).
+    static let stuckCopyFooter = "Copies shared by other listeners can stop coming. When one hasn't moved for this long, Magpie drops it and finds another."
 
     var body: some View {
         Form {
@@ -90,6 +94,17 @@ struct RequestsSettingsView: View {
                     .accessibilityIdentifier("settings-allow-changes")
             } footer: {
                 Text("Turn on to bring songs home. Every change is logged.")
+            }
+            Section {   // R17 (R20's words)
+                Picker(RequestCopy.stuckCopySetting, selection: Binding(
+                    get: { stuckCopyLimit },
+                    set: { stuckCopyLimit = $0; model.setStallLimit($0) })) {
+                    ForEach(StallLimit.allCases) { Text($0.title).tag($0) }
+                }
+                .accessibilityIdentifier("settings-stuck-copy")
+                .onAppear { stuckCopyLimit = model.stallLimit }
+            } footer: {
+                Text(Self.stuckCopyFooter)
             }
             Section {
                 Button {

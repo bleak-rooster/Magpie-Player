@@ -75,5 +75,20 @@ for hit in $hits; do
     bad=1
   fi
 done
+# R17: the one queue write, DELETE /queue/{id}, is sent only with the runner's `queueRemoval` query, spelled exactly
+# removeFromClient=true&blocklist=true&skipRedownload=true (the gate refuses any other shape too).
+if [ -z "${G1_SRC:-}" ]; then
+  queue_sends=$(grep -rnE --include='*.swift' 'gate\.send\("DELETE",[[:space:]]*"queue/' "${product[@]}" || true)
+  while IFS= read -r q; do
+    [ -n "$q" ] || continue
+    case "$q" in
+      *'?\(Self.queueRemoval)"'*) ;;
+      *) echo "G1: queue delete without the one allowed query: ${q%%:*}" >&2; bad=1 ;;
+    esac
+  done <<< "$queue_sends"
+  stall="Packages/MagpieKit/Sources/Requests/RequestRunner+Stall.swift"
+  grep -qF 'static let queueRemoval = "removeFromClient=true&blocklist=true&skipRedownload=true"' "$stall" ||
+    { echo "G1: $stall: queueRemoval isn't exactly removeFromClient=true&blocklist=true&skipRedownload=true" >&2; bad=1; }
+fi
 [ "$bad" = 0 ] || { echo "G1 check failed: route Lidarr writes through LidarrWriteGate (or extend the allowlist in $0)" >&2; exit 1; }
 echo "G1 check: no write verbs outside LidarrWriteGate in ${product[*]}${tests[*]:+ and ${tests[*]}} (allowlisted: Navidrome auth/login, dev-only IT helpers)"

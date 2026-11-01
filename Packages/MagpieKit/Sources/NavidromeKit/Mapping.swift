@@ -70,17 +70,26 @@ enum Mapping {
         // Subsonic `musicBrainzId` on an album is the release id, not the release group: leave RG nil.
         return Album(id: d.id, name: d.name ?? "", artist: artist, artistId: d.artistId, year: d.year,
                      songCount: d.songCount ?? songs?.count ?? 0, duration: d.duration ?? 0,
-                     coverArtId: d.coverArt, releaseGroupMBID: nil, songs: songs)
+                     coverArtId: d.coverArt, releaseGroupMBID: nil, songs: songs, starred: d.starred != nil)
     }
 
     static func artist(_ d: SubsonicArtist) -> Artist {
         Artist(id: d.id, name: d.name ?? "", albumCount: d.albumCount ?? d.album?.count ?? 0,
-               coverArtId: d.coverArt, mbid: mbid(d.musicBrainzId))
+               coverArtId: d.coverArt, mbid: mbid(d.musicBrainzId), starred: d.starred != nil)
+    }
+
+    /// A native `/api/artist` row (every role). Its picture is Navidrome's `ar-` cover id unless the server says it
+    /// has none.
+    static func artist(_ d: NativeArtist) -> Artist {
+        Artist(id: d.id, name: d.name ?? "", albumCount: d.albumCount ?? 0,
+               coverArtId: d.imageAbsent == true ? nil : "ar-\(d.id)", mbid: mbid(d.mbzArtistId),
+               starred: d.starred ?? false)
     }
 
     static func playlist(_ d: SubsonicPlaylist) -> Playlist {
         Playlist(id: d.id, name: d.name ?? "", songCount: d.songCount ?? d.entry?.count ?? 0,
-                 duration: d.duration ?? 0, coverArtId: d.coverArt)
+                 duration: d.duration ?? 0, coverArtId: d.coverArt, owner: d.owner, readOnly: d.readonly,
+                 changed: date(d.changed))
     }
 
     /// Prefers synced lyrics; line starts arrive in milliseconds.
