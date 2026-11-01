@@ -56,6 +56,18 @@ final class DownloadingNowUITests: XCTestCase {
         firstAlbum.tap()
         let download = app.buttons.matching(NSPredicate(format: "label == %@ AND identifier == %@", "Download", "download")).firstMatch
         XCTAssertTrue(download.waitForExistence(timeout: 15))
+        // A download left by an earlier test or run (-MagpieResetState keeps the audio store): take it off first, so
+        // the tap below starts a fresh one (deflaked).
+        if let value = download.value as? String, !value.isEmpty {
+            download.tap()
+            let clear = app.buttons.matching(NSPredicate(format: "label IN %@", ["Cancel download", "Remove download"])).firstMatch
+            XCTAssertTrue(clear.waitForExistence(timeout: 5), "a way to clear the earlier download")
+            clear.tap()
+            let confirm = app.buttons.matching(NSPredicate(format: "label == 'Remove download' OR label == 'Remove'")).firstMatch
+            if confirm.waitForExistence(timeout: 2) { confirm.tap() }
+            expectation(for: NSPredicate(format: "value == ''"), evaluatedWith: download)
+            waitForExpectations(timeout: 15)
+        }
         download.tap()
         expectation(for: NSPredicate(format: "value == 'Waiting for Wi-Fi'"), evaluatedWith: download)
         waitForExpectations(timeout: 15)
