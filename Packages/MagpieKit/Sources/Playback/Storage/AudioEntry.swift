@@ -6,8 +6,10 @@ public enum AudioKind: String, Codable, Sendable { case download, cache }
 
 /// Why a download is kept. A song stays while any reason holds it. `unknown` stands in for reasons a sidecar no
 /// longer decodes (a later schema), so such a download is never stranded: removing `.unknown` (or all downloads)
-/// clears it.
-public enum DownloadReason: Codable, Hashable, Sendable { case song, album(String), playlist(String), favourites, unknown }
+/// clears it. `artist` (R4) is an artist's "Download all songs": every album of theirs at the time.
+public enum DownloadReason: Codable, Hashable, Sendable {
+    case song, album(String), playlist(String), favourites, unknown, artist(String)
+}
 
 /// The snapshot of a song kept beside its file: enough to browse and play what's on the phone offline.
 public struct AudioMetadata: Codable, Hashable, Sendable {
