@@ -163,3 +163,30 @@ final class StubProtocol: URLProtocol, @unchecked Sendable {
         #expect(await l.image(nil, fallback: nil) == nil)
     }
 }
+
+/// Re-review minor: a reset (new results, a closed screen) while the cover is being asked for never goes on to the
+/// artist picture.
+@MainActor @Suite struct OutsideArtFallbackAfterResetTests {
+    struct SlowCover: HTTPTransport {
+        let inner = MockTransport()
+        func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+            try? await Task.sleep(for: .milliseconds(300))   // the cover is slow, then a 404
+            return try await inner.send(request)
+        }
+    }
+
+    @Test func noFallbackAfterAReset() async {
+        let t = SlowCover()
+        let asked = Box(0)
+        let l = OutsideArtLoader(transport: t, userAgent: OutsideArtTests.ua, artistImage: { _ in
+            await asked.add(1)
+            return URL(string: "https://assets.fanart.tv/poster.jpg")
+        }, isOffline: { false })
+        let pending = Task { await l.image(.releaseGroup(OutsideArtTests.rg), fallback: .artist(OutsideArtTests.artist)) }
+        try? await Task.sleep(for: .milliseconds(50))
+        l.reset()   // the screen closed
+        #expect(await pending.value == nil)
+        try? await Task.sleep(for: .milliseconds(400))
+        #expect(await asked.value == 0, "no artist lookup for a screen that's gone")
+    }
+}

@@ -147,8 +147,10 @@ public final class OutsideArtLoader {
 
     /// `key`'s image, else `fallback`'s (a request's cover, else its artist's picture), else nil: the placeholder.
     public func image(_ key: OutsideArtKey?, fallback: OutsideArtKey?) async -> CGImage? {
+        let started = generation
         if let key, let image = await image(key) { return image }
-        guard let fallback, fallback != key else { return nil }
+        // New results or a closed screen meanwhile: nothing more is asked for (no artist lookup for a screen that's gone).
+        guard generation == started, !Task.isCancelled, let fallback, fallback != key else { return nil }
         return await image(fallback)
     }
 
