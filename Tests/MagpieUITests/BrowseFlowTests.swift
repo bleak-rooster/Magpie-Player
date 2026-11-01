@@ -30,7 +30,9 @@ final class BrowseFlowTests: XCTestCase {
         let stack = try devStack()
         continueAfterFailure = false
         let app = XCUIApplication()
-        app.launchArguments = ["-MagpieResetState", "YES", "-MagpieUITesting", "YES", "-MagpieNetwork", "wifi"] + arguments
+        // -MagpieResetLayouts: a layout test that failed half-way never leaves Songs hidden for the next one.
+        app.launchArguments = ["-MagpieResetState", "YES", "-MagpieUITesting", "YES", "-MagpieResetLayouts", "YES",
+                               "-MagpieNetwork", "wifi"] + arguments
         app.launch()
 
         let address = app.textFields["connect-address-0"]
@@ -809,6 +811,14 @@ final class BrowseFlowTests: XCTestCase {
     /// the top, Recently added off; the Library follows. Screenshots of the editor and the reordered Library.
     /// Preferences outlive a reset launch, so the test starts and ends at the defaults.
     @MainActor func testLibraryLayoutEditor() throws {
+        // Restores the layout if this test fails half-way (hidden Songs would break the next test).
+        addTeardownBlock { @MainActor [weak self] in
+            guard self?.testRun?.hasSucceeded == false else { return }
+            let reset = XCUIApplication()
+            reset.launchArguments = ["-MagpieUITesting", "YES", "-MagpieResetLayouts", "YES", "-MagpieNetwork", "wifi"]
+            reset.launch()
+            reset.terminate()
+        }
         let app = try launchSignedIn()
         let libraryTab = app.tabBars.buttons["Library"]
         let settings = app.buttons["open-settings"]
@@ -865,10 +875,12 @@ final class BrowseFlowTests: XCTestCase {
         XCTAssertEqual(app.switches["layout-songs"].value as? String, "0")
         flip(recent)
         XCTAssertEqual(recent.value as? String, "0")
-        for _ in 0..<4 { app.swipeDown() }
         let handle = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Reorder' AND label CONTAINS 'Genres'")).firstMatch
-        XCTAssertTrue(handle.exists, "drag handle for Genres")
         let top = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Reorder' AND label CONTAINS 'Playlists'")).firstMatch
+        // Back to the top until both handles are on screen (a fixed four swipes sometimes left them under the bar).
+        for _ in 0..<8 where !(handle.exists && handle.isHittable && top.exists && top.isHittable) { app.swipeDown() }
+        XCTAssertTrue(handle.waitForExistence(timeout: 5) && handle.isHittable, "drag handle for Genres")
+        XCTAssertTrue(top.isHittable, "drag handle for Playlists")
         handle.press(forDuration: 0.6, thenDragTo: top)
         attachScreenshot(app, "library-editor-changed")
         for _ in 0..<4 where !reset.exists || !reset.isHittable { app.swipeUp() }
