@@ -13,9 +13,6 @@ private struct LibraryNotices: ViewModifier {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private let themed = Themed()
 
-    /// How long a notice stays.
-    static let shown: Duration = .seconds(3)
-
     func body(content: Content) -> some View {
         let notice = model.libraryEdits.notice
         content
@@ -38,7 +35,7 @@ private struct LibraryNotices: ViewModifier {
             .task(id: notice?.id) {
                 guard let notice else { return }
                 AccessibilityNotification.Announcement(notice.text).post()
-                try? await Task.sleep(for: Self.shown)
+                try? await Task.sleep(for: notice.shown)
                 if model.libraryEdits.notice?.id == notice.id { model.libraryEdits.notice = nil }
             }
     }

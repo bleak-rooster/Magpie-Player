@@ -387,6 +387,11 @@ final class AppModel {
             LidarrConnectionStore.standard.clear()
         }
         let model = AppModel(store: store, defaults: defaults, theme: savedTheme(defaults))
+        // UI tests only (with `-MagpieUITesting YES`): Home and Library back to their default layout, so a layout test
+        // that failed half-way never leaves a section hidden for the next test.
+        if defaults.string(forKey: "MagpieUITesting") == "YES", defaults.bool(forKey: "MagpieResetLayouts") {
+            model.updatePreferences { $0.layout = .defaultValue }
+        }
         if resumesSavedSession(environment: environment) { model.resumeSavedSession() }
         return model
     }
