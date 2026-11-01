@@ -163,6 +163,17 @@ import MagpieCore
                                 downloadsLimit: 1000)
         }
     }
+
+    /// Review M4: sizes show only when something is kept to resume from.
+    @Test func progressOnlyWhenSomethingIsKept() throws {
+        let p = PartialDownloads(directory: tmp.appending(path: "m4"))
+        let key = PartialDownloads.key(songId: "m4", quality: .original)
+        try p.saveInfo(.init(received: 2, expected: 8, isOriginal: true, allowsCellular: false, validator: nil,
+                             acceptsRanges: false, mimeType: nil), key: key)
+        #expect(p.progress(key) == nil, "counts alone: it will restart")
+        try p.saveResumeData(Data("r".utf8), key: key)
+        #expect(p.progress(key) == PartialDownloads.Progress(received: 2, expected: 8))
+    }
 }
 
 /// R4: "Download all songs" keeps its songs with the artist's reason.

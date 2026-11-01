@@ -128,9 +128,11 @@ import Testing
         f.hold(after: 0)
         m.download(songs("s1"), reason: .song)
         #expect(await eventually { f.inFlight == 1 })
-        // What the background fetcher writes as the task stops.
-        try PartialDownloads(directory: m.store.partialsDirectory).saveInfo(info(received: 2_100_000, expected: 8_400_000),
-                                                                            key: key("s1"))
+        // What the background fetcher writes as the task stops: the counts and the resume data (review M4: sizes show
+        // only when something is kept).
+        let kept = PartialDownloads(directory: m.store.partialsDirectory)
+        try kept.saveInfo(info(received: 2_100_000, expected: 8_400_000), key: key("s1"))
+        try kept.saveResumeData(Data("resume".utf8), key: key("s1"))
         m.pauseAll()
         #expect(await eventually { m.activity.first?.text == "Paused \u{00B7} 2.1 of 8.4 MB" })
         #expect(m.activity.first?.symbol == "pause.circle")

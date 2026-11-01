@@ -97,6 +97,9 @@ public struct PartialDownloads: Sendable {
     /// What a resumable partial shows while paused; nil for a transcoded one (it restarts) or with nothing received.
     public func progress(_ key: String) -> Progress? {
         guard let info = info(key), info.isOriginal, info.received > 0 else { return nil }
+        // Review M4: only when something is kept to resume from (resume data or bytes); counts alone restart.
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: url(key, "resume").path) || partSize(key) > 0 else { return nil }
         return Progress(received: info.received, expected: info.expected)
     }
 
