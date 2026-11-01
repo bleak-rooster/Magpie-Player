@@ -74,6 +74,26 @@ import MagpieCore
         #expect(await h.request(id)?.stallRetries == 1)
     }
 
+    /// N3 (M2's refund): the gate refuses the delete (its own fresh read no longer lists the copy): nothing was
+    /// removed, so the count goes back and nothing is searched.
+    @Test func refusedRemovalIsRefunded() async throws {
+        let (h, id) = try await searching()
+        h.server.with { $0.queue = [self.soulseek(901)] }
+        await h.runner.tick()
+        h.clock.advance(60)
+        // From here: 1st queue read is the poll's, 2nd the runner's fresh read, 3rd the gate's own.
+        h.server.with { $0.hold = (suffix: "/queue/details", n: 3); $0.holdSeen = 0 }
+        let tick = Task { await h.runner.tick() }
+        await h.server.latch.waitArrived()
+        h.server.with { $0.queue = [] }
+        await h.server.latch.release()
+        await tick.value
+        #expect(deletes(h).isEmpty)
+        let r = try #require(await h.request(id))
+        #expect(r.stallRetries == nil && r.sourceStalledAt == nil)
+        #expect(h.server.writeBodies().map(\.0) == ["PUT album/monitor", "POST command"])
+    }
+
     /// Progress (sizeleft, or status / trackedDownloadState) restarts the clock.
     @Test func anyChangeRestartsTheClock() async throws {
         let (h, _) = try await searching()
@@ -189,6 +209,8 @@ import MagpieCore
         #expect(h.server.with { $0.queue.map(\.id) } == [906], "the sixth download stays")
 
         let searches = { h.server.writeBodies().filter { $0.1["name"] as? String == "AlbumSearch" }.count }
+        // N1: the Try's own search, then exactly one after each of the five removals, the fifth's included.
+        #expect(searches() == 1 + 5)
         let atCap = searches()
         for _ in 0..<15 { h.clock.advance(60); await h.runner.tick() }   // the stuck copy stays 15 minutes
         h.server.with { s in s.queue = []; s.history = [.init(albumId: 31, type: "downloadFailed", date: h.clock.now)] }
@@ -266,6 +288,8 @@ import MagpieCore
         #expect(h.server.with { $0.removedFromQueue } == [901, 902, 903, 904, 905])
         #expect(await h.request(id)?.stallRetries == 5)
         #expect(await h.request(id)?.removalsUsedUp == true)
+        // N1: each removal, automatic or by hand (the fifth too), is followed by exactly one search.
+        #expect(h.server.writeBodies().filter { $0.1["name"] as? String == "AlbumSearch" }.count == 1 + 5)
 
         h.server.with { $0.queue = [self.soulseek(906)] }
         await h.runner.tick()

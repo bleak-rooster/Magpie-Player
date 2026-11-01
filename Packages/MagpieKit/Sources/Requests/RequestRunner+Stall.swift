@@ -257,15 +257,18 @@ extension RequestRunner {
             && entry.requestId.map(live.contains) == true && entry.lidarrArtistId == r.lidarrArtistId
     }
 
-    /// One removal toward the request's `maxStallRetries` (automatic and by hand alike), counted and saved before
+    /// Each copy removed counts toward the request's `maxStallRetries` (automatic and by hand alike; N2), counted and saved before
     /// anything is sent (M6: a crash never refunds one), then `DELETE /queue/{id}` with exactly `queueRemoval` for
     /// each item, through the gate. Returns how many were removed. When none was (the gate refused or couldn't
     /// confirm), the count is rolled back (fix round 1 M2) and the error passed on; after one or more, a later
     /// refusal is logged and the count stands.
     private func removeCounting(_ items: [QueueItem], for id: RequestID, manual: Bool = false) async throws -> Int {
         let before = request(id)
+        // N2: one count per copy removed, and never past the cap: only as many copies as are left to it.
+        let items = Array(items.prefix(max(0, Self.maxStallRetries - (before?.stalls ?? 0))))
+        guard !items.isEmpty else { return 0 }
         await mutate(id) {
-            $0.stallRetries = $0.stalls + 1
+            $0.stallRetries = $0.stalls + items.count
             if !manual { $0.sourceStalledAt = self.now() }
         }
         var removed = 0
@@ -287,6 +290,9 @@ extension RequestRunner {
                 throw error
             }
             Log.logger("requests").error("a copy wasn't removed: \(Log.category(of: error), privacy: .public)")
+            let unsent = items.count - removed
+            await mutate(id) { $0.stallRetries = max(0, $0.stalls - unsent) }   // only the ones sent count
+            try? await persist()
         }
         return removed
     }
@@ -294,6 +300,7 @@ extension RequestRunner {
     /// Back to searching: the runner's own AlbumSearch (`startSearch`). The blocklisting delete makes Lidarr record the
     /// download as failed; that failure is this search's start, not a new one to wait on.
     private func searchAgainNow(_ id: RequestID) async {
+        searchAfterRemoval.insert(id)   // N1: this search goes out, even right after the fifth removal
         await mutate(id) {
             $0.skipNextSearch = false
             $0.grabbed = false

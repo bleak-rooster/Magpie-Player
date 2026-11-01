@@ -144,6 +144,9 @@ public actor RequestRunner {
     var stallWatch: [Int: StallWatch] = [:]
     var soulseekClients: Set<String>?
     var stallLimit: TimeInterval = StallLimit.standard.seconds
+    /// N1: requests whose next search follows a copy just removed: that search goes out even at the cap (the cap
+    /// stops further removals, not the search that belongs to the last one).
+    var searchAfterRemoval: Set<RequestID> = []
     /// Lidarr artists a Keep, a Not for me or a Bring in more is working on right now (RequestRunner+Keep.swift,
     /// RequestRunner+NotForMe.swift, RequestRunner+BringInMore.swift): one at a time per artist, so they never run
     /// together on one artist.
@@ -915,7 +918,8 @@ public actor RequestRunner {
         guard let r = request(id) else { return }
         // M3 ruling: once five copies were dropped, Magpie sends no searches of its own for this request; Lidarr's
         // own monitoring carries on and the request stays live until its normal expiry.
-        if r.skipNextSearch || r.albumId == nil || r.removalsUsedUp {
+        let afterRemoval = searchAfterRemoval.remove(id) != nil
+        if r.skipNextSearch || r.albumId == nil || (r.removalsUsedUp && !afterRemoval) {
             await mutate(id) {
                 $0.skipNextSearch = false
                 if $0.searchStartedAt == nil { $0.searchStartedAt = self.now() }
