@@ -260,10 +260,11 @@ public enum CarPlayRows {
                        artworkKey: song.coverArtId, playing: song.id == playingId,
                        action: .play(.songs(result.songs, startAt: i)))
         })
+        let artists = CPSectionModel(header: "Artists", rows: searchArtistRows(result.artists))   // R19
         let albums = CPSectionModel(header: "Albums", rows: unique(result.albums, \.id).map { albumRow($0, id: "album.\($0.id)") })
         let outside = CPSectionModel(header: RowState.notYet.statusText,
                                      rows: notYetRows(notYet, offer: offer, onTheirWay: onTheirWay))
-        let sections = [songs, albums, outside].filter { !$0.rows.isEmpty }
+        let sections = [songs, artists, albums, outside].filter { !$0.rows.isEmpty }
         return sections.isEmpty ? state(.empty) : sections
     }
 
@@ -280,7 +281,17 @@ public enum CarPlayRows {
             return CPRowModel(id: "album.\($0.id)", title: name, detail: "Album · \($0.artist)",
                               artworkKey: $0.coverArtId, action: .open(.album(id: $0.id, title: name)))
         }
-        return songs + albums + notYetRows(notYet, offer: offer, onTheirWay: onTheirWay)
+        return songs + searchArtistRows(result.artists) + albums + notYetRows(notYet, offer: offer, onTheirWay: onTheirWay)
+    }
+
+    /// R19: an artist found by search opens the artist page (its albums play there, within D12's depth budget).
+    static func searchArtistRows(_ artists: [Artist]) -> [CPRowModel] {
+        unique(artists, \.id).map {
+            let name = display($0.name, unknownArtist)
+            return CPRowModel(id: "artist.\($0.id)", title: name,
+                              detail: $0.albumCount == 1 ? "Artist \u{00B7} 1 album" : "Artist \u{00B7} \($0.albumCount) albums",
+                              artworkKey: $0.coverArtId, round: true, action: .open(.artist(id: $0.id, name: name)))
+        }
     }
 
     /// Fits the search template's flat list into `maxItems`: library rows first (D4), but when the list is too long,
