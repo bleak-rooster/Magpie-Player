@@ -45,6 +45,9 @@ protocol DownloadTasking: AnyObject, Sendable {
     var countOfBytesReceived: Int64 { get }
     var countOfBytesExpectedToReceive: Int64 { get }
     var response: URLResponse? { get }
+    /// Whether the request carried Magpie's own `Range` header (a continuation of a `.part`); a task made from resume
+    /// data didn't, though the system asks for the rest itself (review C1).
+    var sentRange: Bool { get }
     func resume()
     func cancel()
     func cancelProducingResumeData(_ done: @escaping @Sendable (Data?) -> Void)
@@ -59,6 +62,8 @@ protocol DownloadSessioning: AnyObject, Sendable {
 }
 
 extension URLSessionDownloadTask: DownloadTasking {
+    var sentRange: Bool { originalRequest?.value(forHTTPHeaderField: "Range") != nil }
+
     func cancelProducingResumeData(_ done: @escaping @Sendable (Data?) -> Void) {
         cancel(byProducingResumeData: { done($0) })
     }
@@ -107,6 +112,8 @@ final class BackgroundAudioFetcher: NSObject, ResumableAudioFetching, URLSession
         var offset: Int64
         let task: any DownloadTasking
         var landed: Landed?
+        /// A 206 is appended to the `.part` only for Magpie's own Range request; a resumed task's file is whole.
+        var isRangeContinuation: Bool { task.sentRange }
     }
 
     /// What `didFinishDownloadingTo` moved in and what the response said.
@@ -131,6 +138,8 @@ final class BackgroundAudioFetcher: NSObject, ResumableAudioFetching, URLSession
     private let makeSession: SessionFactory
     private let lock = NSLock()
     private var session: (any DownloadSessioning)?
+    /// Review M1: a session being invalidated; a new one with the same identifier waits for it to go.
+    private var invalidating: (any DownloadSessioning)?
     private var adopted = false
     private var running: [Int: Running] = [:]
     /// The current token per job id; a callback from an older task (or after `retain` dropped the job) is ignored.
@@ -162,6 +171,16 @@ final class BackgroundAudioFetcher: NSObject, ResumableAudioFetching, URLSession
         configuration.httpCookieAcceptPolicy = .never
         configuration.httpMaximumConnectionsPerHost = BackgroundAudioFetcher.maxConnections
         return URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
+    }
+
+    /// The session, made only once the previous one has become invalid (review M1; at most a few seconds' wait).
+    private func readySession() async -> any DownloadSessioning {
+        let deadline = ContinuousClock.now + .seconds(3)
+        while lock.withLock({ invalidating != nil }), ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        lock.withLock { invalidating = nil }
+        return currentSession()
     }
 
     private func currentSession() -> any DownloadSessioning {
@@ -215,7 +234,7 @@ final class BackgroundAudioFetcher: NSObject, ResumableAudioFetching, URLSession
     private func run(_ url: URL, job: FetchJob, allowsCellular: Bool, progress: @escaping FetchProgress) async throws
         -> Outcome {
         try Task.checkCancellation()
-        let session = currentSession()
+        let session = await readySession()
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 let token = lock.withLock { () -> Int in
@@ -306,7 +325,7 @@ final class BackgroundAudioFetcher: NSObject, ResumableAudioFetching, URLSession
 
     /// Once per session: the tasks the system kept from before a relaunch are taken up by their description.
     private func adoptTasks() async {
-        let session = currentSession()
+        let session = await readySession()
         guard lock.withLock({ !adopted }) else { return }
         let tasks = await session.downloadTasks()
         lock.withLock {
@@ -355,10 +374,18 @@ final class BackgroundAudioFetcher: NSObject, ResumableAudioFetching, URLSession
             running = [:]
             tokens = [:]
             adopted = false
+            invalidating = session
             defer { session = nil }
             return session
         }
         old?.invalidateAndCancel()
+    }
+
+    /// Whether a callback comes from the current session (lock held). Review I1: after sign-out, the old session's
+    /// late callbacks are dropped, so nothing is written into an erased scope. `nil` (tests) means the current one.
+    private func isCurrent(_ source: (any DownloadSessioning)?) -> Bool {
+        guard let source else { return true }
+        return session.map { $0 === source } ?? false
     }
 
     // MARK: - Background launch
@@ -381,16 +408,22 @@ final class BackgroundAudioFetcher: NSObject, ResumableAudioFetching, URLSession
         }
     }
 
-    func urlSession(_ session: URLSession, didBecomeInvalidWithError error: (any Error)?) {
+    /// The old session has gone: its identifier can be used again (review M1).
+    func sessionBecameInvalid(_ old: any DownloadSessioning) {
         lock.withLock {
-            if self.session === session { self.session = nil; adopted = false }
+            if invalidating === old { invalidating = nil }
+            if session === old { session = nil; adopted = false }
         }
+    }
+
+    func urlSession(_ session: URLSession, didBecomeInvalidWithError error: (any Error)?) {
+        sessionBecameInvalid(session)
     }
 
     // MARK: - Delegate (forwarded to the handlers tests call)
 
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
-        handleFinished(downloadTask, location: location)
+        handleFinished(downloadTask, location: location, from: session)
     }
 
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64,
@@ -400,7 +433,7 @@ final class BackgroundAudioFetcher: NSObject, ResumableAudioFetching, URLSession
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: (any Error)?) {
         guard let task = task as? URLSessionDownloadTask else { return }
-        handleCompleted(task, error: error)
+        handleCompleted(task, error: error, from: session)
     }
 
     /// Security M1: redirects stay within the origin.
@@ -441,9 +474,9 @@ final class BackgroundAudioFetcher: NSObject, ResumableAudioFetching, URLSession
     }
 
     /// The file must be moved before this returns: it goes to `<key>.landing` with what the response said.
-    func handleFinished(_ task: any DownloadTasking, location: URL) {
+    func handleFinished(_ task: any DownloadTasking, location: URL, from source: (any DownloadSessioning)? = nil) {
         lock.withLock {
-            guard let entry = entry(for: task), tokens[entry.job.id] == entry.token else { return }
+            guard isCurrent(source), let entry = entry(for: task), tokens[entry.job.id] == entry.token else { return }
             let http = task.response as? HTTPURLResponse
             guard let landing = try? partials(entry.job.scope).adopt(location, key: entry.job.key, as: "landing") else { return }
             func header(_ name: String) -> String? { http?.value(forHTTPHeaderField: name) }
@@ -456,9 +489,9 @@ final class BackgroundAudioFetcher: NSObject, ResumableAudioFetching, URLSession
         }
     }
 
-    func handleCompleted(_ task: any DownloadTasking, error: (any Error)?) {
+    func handleCompleted(_ task: any DownloadTasking, error: (any Error)?, from source: (any DownloadSessioning)? = nil) {
         let delivery: (CheckedContinuation<Outcome, Error>, Result<Outcome, Error>)? = lock.withLock {
-            guard let entry = entry(for: task) else { return nil }
+            guard isCurrent(source), let entry = entry(for: task) else { return nil }
             running[task.taskIdentifier] = nil
             guard tokens[entry.job.id] == entry.token else {   // dropped (`retain`) or superseded
                 if let landed = entry.landed { try? FileManager.default.removeItem(at: landed.file) }
@@ -496,8 +529,33 @@ final class BackgroundAudioFetcher: NSObject, ResumableAudioFetching, URLSession
             partials.remove(key)
             return .failure(URLError(.cannotOpenFile))
         }
+        if landed.status == 206, !entry.isRangeContinuation {
+            // Review C1: a task resumed from resume data answers 206 for the rest, but the system hands over the
+            // whole, stitched file. Taken once it matches the Content-Range total; otherwise tried again from zero.
+            let total = landed.contentRange.flatMap(PartialDownloads.parseContentRange)?.total
+            let size = PartialDownloads.size(of: landed.file)
+            guard let total, size == total else {
+                try? FileManager.default.removeItem(at: landed.file)
+                partials.remove(key)
+                return .success(.incomplete)
+            }
+            let file = FileManager.default.temporaryDirectory.appending(path: "magpie-audio-\(UUID().uuidString).tmp")
+            do {
+                try FileManager.default.moveItem(at: landed.file, to: file)
+            } catch {
+                return .failure(error)
+            }
+            partials.remove(key)
+            return .success(.file(file, landed.mimeType))
+        }
         if landed.status == 206 {
-            // A Range continuation: appended to the bytes held, then the total checked.
+            // Magpie's own Range continuation: appended to the bytes held, then the total checked. Review M5: bytes of
+            // another type than those held aren't joined to them; it starts again from zero.
+            if let held = partials.info(key)?.mimeType, let got = landed.mimeType, held != got {
+                try? FileManager.default.removeItem(at: landed.file)
+                partials.remove(key)
+                return .success(.incomplete)
+            }
             do {
                 switch try partials.appendRange(landed.file, status: 206, contentRange: landed.contentRange, key: key) {
                 case let .complete(file): return .success(.file(file, landed.mimeType ?? partials.info(key)?.mimeType))

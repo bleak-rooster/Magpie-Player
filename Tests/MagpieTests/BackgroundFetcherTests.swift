@@ -42,6 +42,7 @@ final class StubTask: DownloadTasking, @unchecked Sendable {
         get { lock.withLock { _response } }
         set { lock.withLock { _response = newValue } }
     }
+    var sentRange: Bool { request?.value(forHTTPHeaderField: "Range") != nil }
     var isResumed: Bool { lock.withLock { _resumed } }
     var isCancelled: Bool { lock.withLock { _cancelled } }
 
@@ -78,7 +79,7 @@ final class StubSession: DownloadSessioning, @unchecked Sendable {
 }
 
 /// R1: the background fetcher's delegate-driven logic, without a real background session.
-@MainActor @Suite(.serialized) final class BackgroundFetcherTests {
+@MainActor @Suite(.serialized, .timeLimit(.minutes(1))) final class BackgroundFetcherTests {
     let tmp = FileManager.default.temporaryDirectory.appending(path: "BackgroundFetcherTests-\(UUID().uuidString)")
     let url = URL(string: "http://192.168.1.2:4533/rest/stream?id=s1&format=raw")!
     let scope = "abc"
@@ -160,8 +161,77 @@ final class StubSession: DownloadSessioning, @unchecked Sendable {
         let task = try #require(await waitForTask(session))
         #expect(task.resumeData == Data("resume-me".utf8), "resumed with downloadTask(withResumeData:)")
         #expect(task.request == nil)
-        complete(f, task, [9, 9], response(200, original))
-        #expect(try Data(contentsOf: try await fetch.value.file) == Data([9, 9]))
+        // Review C1: as iOS does, the resumed task answers 206 for the rest, and its file is the whole, stitched file.
+        var rest = original
+        rest["Content-Range"] = "bytes 2-3/4"
+        rest["Content-Length"] = "2"
+        complete(f, task, [9, 9, 9, 9], response(206, rest))
+        #expect(try Data(contentsOf: try await fetch.value.file) == Data([9, 9, 9, 9]), "the whole file, as delivered")
+        #expect(session.tasks.count == 1, "no second download")
+        #expect(p.keys().isEmpty)
+    }
+
+    /// Review C1: a resumed file short of the Content-Range total isn't taken.
+    @Test func aResumedFileShortOfTheTotalIsNotTaken() async throws {
+        let session = StubSession()
+        let (f, _) = makeFetcher(session)
+        let p = partials(f), key = job().key
+        try p.saveResumeData(Data("resume-me".utf8), key: key)
+        try p.saveInfo(.init(received: 2, expected: 4, isOriginal: true, allowsCellular: false,
+                             validator: nil, acceptsRanges: false, mimeType: nil), key: key)
+        let fetch = Task { try await f.fetch(url, job: job(), allowsCellular: false) { _, _ in } }
+        let task = try #require(await waitForTask(session))
+        var rest = original
+        rest["Content-Range"] = "bytes 2-3/4"
+        complete(f, task, [9, 9, 9], response(206, rest))
+        let next = try #require(await waitForTask(session, count: 2), "tried again")
+        #expect(next.resumeData == nil && next.request?.value(forHTTPHeaderField: "Range") == nil, "from zero")
+        var headers = original
+        headers["Content-Length"] = "4"
+        complete(f, next, [1, 2, 3, 4], response(200, headers))
+        #expect(try Data(contentsOf: try await fetch.value.file) == Data([1, 2, 3, 4]))
+    }
+
+    /// Review I1: after sign-out, callbacks from the old session write nothing into the erased scope.
+    @Test func lateCallbacksFromAnInvalidatedSessionWriteNothing() async throws {
+        let old = StubSession(), fresh = StubSession(firstId: 500)
+        let sessions = Mutex([old, fresh])
+        let f = BackgroundAudioFetcher(audioRoot: tmp) { _ in sessions.withLock { $0.removeFirst() } }
+        let fetch = Task { try await f.fetch(url, job: job(), allowsCellular: false) { _, _ in } }
+        let task = try #require(await waitForTask(old))
+        task.countOfBytesReceived = 2
+        f.invalidate()
+        _ = try? await fetch.value
+        let p = partials(f)
+        p.removeAll()   // eraseScope
+        var headers = original
+        headers["Content-Length"] = "4"
+        task.response = response(200, headers)
+        f.handleFinished(task, location: file([1, 2, 3, 4]), from: old)
+        let error = NSError(domain: NSURLErrorDomain, code: NSURLErrorCancelled,
+                            userInfo: [NSURLSessionDownloadTaskResumeData: Data("late".utf8)])
+        f.handleCompleted(task, error: URLError(_nsError: error), from: old)
+        #expect(!FileManager.default.fileExists(atPath: p.directory.path), "nothing written under the scope")
+    }
+
+    /// Review M5: a Range continuation whose type differs from the bytes held restarts from zero.
+    @Test func aRangeContinuationOfAnotherTypeRestarts() async throws {
+        let session = StubSession()
+        let (f, _) = makeFetcher(session)
+        let fetch = Task { try await f.fetch(url, job: job(), allowsCellular: false) { _, _ in } }
+        let first = try #require(await waitForTask(session))
+        var headers = original
+        headers["Content-Length"] = "10"
+        complete(f, first, [0, 1, 2, 3], response(200, headers))
+        let second = try #require(await waitForTask(session, count: 2))
+        var other = original
+        other["Content-Type"] = "audio/flac"
+        other["Content-Range"] = "bytes 4-9/10"
+        complete(f, second, [4, 5, 6, 7, 8, 9], response(206, other))
+        let third = try #require(await waitForTask(session, count: 3))
+        #expect(third.request?.value(forHTTPHeaderField: "Range") == nil, "from zero")
+        complete(f, third, Array(0..<10), response(200, headers))
+        _ = try await fetch.value
     }
 
     @Test func pauseKeepsResumeDataAndTheSizes() async throws {
@@ -290,6 +360,10 @@ final class StubSession: DownloadSessioning, @unchecked Sendable {
         #expect(session.invalidated)
         await #expect(throws: CancellationError.self) { try await fetch.value }
         let again = Task { try await f.fetch(url, job: job("s2"), allowsCellular: false) { _, _ in } }
+        // Review M1: the identifier isn't reused until the old session has become invalid.
+        try? await Task.sleep(for: .milliseconds(200))
+        #expect(made.value == 1, "waits for the old session to go")
+        f.sessionBecameInvalid(session)
         let task = try #require(await waitForTask(session, count: 2))
         #expect(made.value == 2, "made again, lazily")
         complete(f, task, [1], response(200, original))
