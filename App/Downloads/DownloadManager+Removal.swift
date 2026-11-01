@@ -15,7 +15,7 @@ extension DownloadManager {
         await remove(Removal(reason: reason, songIds: songIds))
     }
 
-    /// A song's "Remove from this phone": every reason it's kept for goes, so it leaves the phone.
+    /// A song's "Remove download": every reason it's kept for goes, so it leaves the phone.
     func remove(songIds: Set<String>) async {
         var reasons: [DownloadReason] = []
         for id in songIds {

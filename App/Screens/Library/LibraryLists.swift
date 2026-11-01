@@ -71,7 +71,8 @@ struct ArtistsListView: View {
             }
             .accessibilityElement(children: .combine)
         }
-        .artistMenu(artist)   // R7 Favourite, P4 Reload artwork
+        .artistMenu(artist)   // R12 Play next · Add to queue, R7 Favourite, P4 Reload artwork
+        .collectionSwipeActions(.artist(artist.id), in: .list)   // R12
         .listRowBackground(Color.clear)
         .id(artist.id)
     }
@@ -253,7 +254,8 @@ struct PlaylistsListView: View {
             }
             .accessibilityElement(children: .combine)
         }
-        .reloadArtworkMenu(playlist.coverArtId)   // P4
+        .collectionMenu(.playlist(playlist.id), coverArtId: playlist.coverArtId)   // R12, P4
+        .collectionSwipeActions(.playlist(playlist.id), in: .list)   // R12
         .listRowBackground(Color.clear)
         .id(playlist.id)
     }

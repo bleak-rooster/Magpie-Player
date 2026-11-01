@@ -127,19 +127,16 @@ struct PlaylistView: View {
                 .buttonStyle(.plain)
                 .accessibilityAddTraits(.isButton)
                 .accessibilityIdentifier("track-\(index)")
-                .contextMenu { SongDownloadMenuItem(song: song, removing: $removing) }
+                .contextMenu { SongQueueMenuItems(song: song); SongDownloadMenuItem(song: song, removing: $removing) }
                 Divider().overlay(p.sepColor).padding(.leading, 76)
             }
             .foregroundStyle(p.inkColor)
-            // R8: a tap on Remove (no full swipe) is the confirmation. The row leaves at once; the server checks the
-            // song is still at that position (review fix I2), and the list reads again after.
-            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                if editable {
-                    Button("Remove from playlist", systemImage: "minus.circle", role: .destructive) {
-                        remove(at: index, song)
-                    }
-                }
-            }
+            // R12 swipes; R8: Remove from playlist keeps the trailing edge's outer place, never on a full swipe, so a
+            // tap on it is the confirmation. The row leaves at once; the server checks the song is still at that
+            // position (review fix I2), and the list reads again after.
+            .songSwipeActions(song, in: .list, destructive: editable
+                              ? RowDestructiveAction(title: "Remove from playlist", symbol: "minus.circle") { remove(at: index, song) }
+                              : nil)
         }
         Color.clear.frame(height: Tokens.Spacing.l)
     }

@@ -105,7 +105,7 @@ extension AppModel {
         }
     }
 
-    /// A song's "Remove from this phone": it leaves the phone, whatever it was downloaded with.
+    /// A song's "Remove download": it leaves the phone, whatever it was downloaded with.
     func removeSongDownload(_ songId: String) async {
         await downloads?.remove(songIds: [songId])
     }
@@ -133,7 +133,7 @@ extension AppModel {
         return "\(count) of \(songIds.count) songs are already on this phone"
     }
 
-    /// What "Remove from this phone" confirms about a song kept for more than itself; nil when nothing to add.
+    /// What "Remove download" confirms about a song kept for more than itself; nil when nothing to add.
     func songRemovalNote(_ songId: String) -> String? {
         let reasons = downloads?.reasons(for: songId) ?? []
         if reasons.contains(.favourites), preferences.downloads.keepFavourites {

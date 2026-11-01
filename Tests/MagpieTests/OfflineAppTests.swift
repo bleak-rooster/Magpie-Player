@@ -176,7 +176,7 @@ private let noNetwork = NetworkStatus(isConnected: false, isCellular: false, isC
     /// can't play.
     @Test func offlineHasNoOriginalFallback() async throws {
         let model = try await signedInModel(fetcher: FakeFetcher())
-        model.updatePreferences { $0.playback.wifi = .opus128 }
+        model.updatePreferences { $0.playback.wifi = .opusMedium }
         model.play([song("s1")], startAt: 0)
         model.updatePreferences { $0.downloads.offlineMode = .on }
         model.player.handle(.failed(model.player.queue.current!.id, "couldn't convert"))

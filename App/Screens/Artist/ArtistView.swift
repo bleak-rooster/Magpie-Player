@@ -101,7 +101,8 @@ struct ArtistView: View {
                         }
                         .buttonStyle(.plain)
                         .accessibilityAddTraits(.isButton)
-                        .contextMenu { SongLibraryMenuItems(song: song) }   // R7, R8
+                        .contextMenu { SongQueueMenuItems(song: song); SongLibraryMenuItems(song: song) }   // R12, R7, R8
+                        .songSwipeActions(song, in: .stack)   // R12
                     }
                 }
                 .transaction { $0.animation = nil }   // R3: a refreshed list swaps in place, no animation storm

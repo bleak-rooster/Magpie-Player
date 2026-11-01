@@ -131,6 +131,8 @@ struct DownloadsView: View {
         }
         .buttonStyle(.plain)
         .foregroundStyle(themed.palette.inkColor)
+        .collectionMenu(.downloadedArtist(artist.id), coverArtId: nil)   // R12
+        .collectionSwipeActions(.downloadedArtist(artist.id), in: .stack)   // R12
     }
 
     private func playlistRow(_ playlist: Playlist) -> some View {
@@ -154,7 +156,8 @@ struct DownloadsView: View {
         }
         .buttonStyle(.plain)
         .foregroundStyle(themed.palette.inkColor)
-        .reloadArtworkMenu(playlist.coverArtId)   // P4
+        .collectionMenu(.downloadedPlaylist(playlist.id), coverArtId: playlist.coverArtId)   // R12, P4
+        .collectionSwipeActions(.downloadedPlaylist(playlist.id), in: .stack)   // R12
     }
 
     private func songRow(_ song: Song, index: Int, in songs: [Song]) -> some View {
@@ -165,9 +168,11 @@ struct DownloadsView: View {
         .accessibilityAddTraits(.isButton)
         .accessibilityIdentifier("downloads-song-\(index)")
         .contextMenu {
-            Button("Play Next", systemImage: "text.line.first.and.arrowtriangle.forward") { model.player.playNext([song]) }
-            Button("Add to Queue", systemImage: "text.line.last.and.arrowtriangle.forward") { model.player.addToEnd([song]) }
+            SongQueueMenuItems(song: song)
             SongDownloadMenuItem(song: song, removing: $removing)
         }
+        // R12: Remove download keeps its trailing place, never on a full swipe; it asks first.
+        .songSwipeActions(song, in: .stack,
+                          destructive: RowDestructiveAction(title: "Remove download", symbol: "trash") { removing = song })
     }
 }

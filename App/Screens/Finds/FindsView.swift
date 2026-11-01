@@ -84,7 +84,7 @@ struct FindsView: View {
                     .onTapGesture { play(item, in: all) }
                     .accessibilityAddTraits(.isButton)
                     .accessibilityAction { play(item, in: all) }
-                    .modifier(NotForMeActions(action: notForMeAction(item)))
+                    .modifier(NotForMeActions(song: item.song, action: notForMeAction(item)))
                     .listRowInsets(EdgeInsets())
                     .listRowBackground(Color.clear)
                     .accessibilityIdentifier("find-\(item.song.title)")
@@ -158,21 +158,22 @@ private struct BringInMoreRequest: Identifiable {
 }
 
 /// Not for me on a find row: a trailing swipe, the context menu and a named VoiceOver action (no extra swipe stop).
+/// R12: the row's swipe actions come with it; Not for me keeps the trailing edge's outer place, never on a full swipe.
 private struct NotForMeActions: ViewModifier {
+    let song: Song
     let action: (() -> Void)?
 
     func body(content: Content) -> some View {
         if let action {
             content
-                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                    Button(NotForMeCopy.action, systemImage: "hand.thumbsdown", action: action).tint(.red)
-                }
+                .songSwipeActions(song, in: .list,
+                                  destructive: RowDestructiveAction(title: NotForMeCopy.action, symbol: "hand.thumbsdown", action: action))
                 .contextMenu {
                     Button(NotForMeCopy.action, systemImage: "hand.thumbsdown", role: .destructive, action: action)
                 }
                 .accessibilityAction(named: NotForMeCopy.action, action)
         } else {
-            content
+            content.songSwipeActions(song, in: .list)
         }
     }
 }

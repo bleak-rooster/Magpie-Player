@@ -89,12 +89,16 @@ public actor AudioStore {
         return nil
     }
 
-    /// An entry may only name the file its own song id and quality hash to, with an allowed extension.
+    /// An entry may only name the file its own song id and quality (or that quality's pre-R5 name) hash to, with an
+    /// allowed extension.
     static func isValid(_ entry: AudioEntry) -> Bool {
         guard let dot = entry.fileName.lastIndex(of: ".") else { return false }
         let ext = String(entry.fileName[entry.fileName.index(after: dot)...])
-        return allowedExtensions.contains(ext)
-            && entry.fileName == fileName(songId: entry.songId, quality: entry.quality, fileExtension: ext)
+        guard allowedExtensions.contains(ext) else { return false }
+        // A file saved before the R5 presets keeps its older name (fix C1).
+        return ([entry.quality.rawValue] + entry.quality.legacyRawValues).contains {
+            entry.fileName == sha256(entry.songId + "|" + $0) + "." + ext
+        }
     }
 
     static func sha256(_ text: String) -> String {

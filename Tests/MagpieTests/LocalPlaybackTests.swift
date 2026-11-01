@@ -193,7 +193,7 @@ private let home = URL(string: "http://192.168.1.2:4533")!
         let model = try await signedInModel(fetcher: FakeFetcher())
         let box = ClientBox()
         box.set(model.session?.client)
-        let urls = NavidromeStreamURLs(box: box, quality: QualityBox(.aac160))
+        let urls = NavidromeStreamURLs(box: box, quality: QualityBox(.aacMedium))
         let original = try #require(urls.originalURL(for: song("s1")))
         #expect(urls.isOriginal(original))
         #expect(!urls.isOriginal(urls.streamURL(for: song("s1"))), "a transcode")
@@ -314,7 +314,7 @@ private let home = URL(string: "http://192.168.1.2:4533")!
         #expect(await eventually { await model.downloads!.store.entry(songId: "s2") != nil })
         let url = try #require(f.urls.first)
         #expect(url.query?.contains("format=aac") == true && url.query?.contains("maxBitRate=160") == true)
-        #expect(await model.downloads!.store.entry(songId: "s2")?.quality == .aac160)
+        #expect(await model.downloads!.store.entry(songId: "s2")?.quality == .aacMedium)
     }
 
     /// Minor 4: a pre-download the store refused (`invalidFile`) isn't tried again when the queue changes.
@@ -336,7 +336,7 @@ private let home = URL(string: "http://192.168.1.2:4533")!
     @Test func storedOggOpusPlaysLocallyThroughTheEngine() async throws {
         let avEngine = AVQueueEngine()
         let model = try await signedInModel(fetcher: OggFetcher(), engine: avEngine)
-        model.updatePreferences { $0.downloads.preDownload = 0; $0.downloads.quality = .opus128 }
+        model.updatePreferences { $0.downloads.preDownload = 0; $0.downloads.quality = .opusMedium }
         let opus = Song(id: "o1", title: "T", artist: "A", album: "B", duration: 1.5)
         model.download([opus], reason: .song); await model.downloads!.settled()
         let file = try #require(model.downloads!.localFiles["o1"])
@@ -371,7 +371,7 @@ private let home = URL(string: "http://192.168.1.2:4533")!
     @Test func decodeFailureThatRevalidatesKeepsTheFile() async throws {
         let fetcher = OggFetcher()
         let model = try await signedInModel(fetcher: fetcher)
-        model.updatePreferences { $0.downloads.preDownload = 0; $0.downloads.quality = .opus128 }
+        model.updatePreferences { $0.downloads.preDownload = 0; $0.downloads.quality = .opusMedium }
         let opus = Song(id: "o1", title: "T", artist: "A", album: "B", duration: 1.5)
         model.download([opus], reason: .song); await model.downloads!.settled()
         let file = try #require(model.downloads!.localFiles["o1"])

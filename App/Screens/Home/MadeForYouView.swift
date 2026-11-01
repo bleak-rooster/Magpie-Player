@@ -65,7 +65,8 @@ struct MadeForYouView: View {
             .buttonStyle(.plain)
             .accessibilityAddTraits(.isButton)
             .accessibilityIdentifier("made-for-you-track-\(index)")
-            .contextMenu { SongLibraryMenuItems(song: song) }   // R7, R8
+            .contextMenu { SongQueueMenuItems(song: song); SongLibraryMenuItems(song: song) }   // R12, R7, R8
+            .songSwipeActions(song, in: .stack)   // R12
         case .notYet(let recording):
             // R17: one already asked for opens its request, or is the library song once Ready.
             NotYetSongLink(recording: recording, play: { model.play([$0], startAt: 0) }) {

@@ -67,6 +67,13 @@ struct SubsonicSong: Decodable {
     let starred: String?
     let genre: String?
     let replayGain: SubsonicReplayGain?
+    // Song info (round 11 R9); `path` is never read.
+    let year: Int?
+    let size: Int?
+    let playCount: Int?
+    let contentType: String?
+    let samplingRate: Int?
+    let bitDepth: Int?
 }
 
 struct SubsonicReplayGain: Decodable {

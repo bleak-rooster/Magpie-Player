@@ -157,6 +157,8 @@ final class AppModel {
     @ObservationIgnored let scrobbles: ScrobbleRouter
     /// D29: what the player treats as a find (never scrobbled). Kept in step with `findsSetup` and `findSongs`.
     @ObservationIgnored let findsIdentity = FindsIdentity()
+    /// R12: the swipe toast, the Add to playlist sheet a swipe asks for, the replace question, the collection popup.
+    @ObservationIgnored let queueActions = QueueActions()
     @ObservationIgnored var findPlaysWatch: Task<Void, Never>?
     /// The Finds library's song ids for the current account and library, as last read or saved
     /// (`findSongIdsKey`); `ids` nil when never read. Keyed so another account or library reloads it.
@@ -932,14 +934,7 @@ final class AppModel {
         return client.coverArtURL(id: id, size: size)
     }
 
-    func play(_ songs: [Song], startAt: Int) {
-        guard !songs.isEmpty else { return }
-        player.play(songs, startAt: startAt)
-    }
-
-    func shuffle(_ songs: [Song]) {
-        play(songs.shuffled(), startAt: 0)
-    }
+    // play(_:startAt:) and shuffle(_:) live in QueueActions.swift (R12: Ask before replacing the queue).
 
     /// Whether the server advertises the OpenSubsonic extension `name` (e.g. "songLyrics"). Asks once
     /// per session; a failed ask throws and is retried next time.

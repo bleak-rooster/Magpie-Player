@@ -10,7 +10,7 @@ import Testing
         #expect(p.layout.home.entries.map(\.visible) == [true, true, true, true, false, false, false, false, false])
         #expect(p.layout.library.entries.map(\.item) == LibraryRow.allCases && p.layout.library.entries.allSatisfy(\.visible))
         #expect(p.layout.showsRecentlyAdded)
-        #expect(p.playback.wifi == .original && p.playback.cellular == .aac160 && p.playback.replayGain == .track)
+        #expect(p.playback.wifi == .original && p.playback.cellular == .aacMedium && p.playback.replayGain == .track)
         #expect(p.playback.sleepTimer == .m30)
         let d = p.downloads
         #expect(d.quality == .original && !d.overMobileData && d.concurrent == 2 && d.preDownload == 3)
@@ -21,24 +21,82 @@ import Testing
         #expect(p.genres.mode == .grouped)
     }
 
-    @Test func opusPresetsSitBetweenAACAndMP3() {
-        #expect(StreamQuality.allCases == [.original, .aac256, .aac160, .aac96, .opus192, .opus128, .opus96, .opus64,
-                                           .mp3_320, .mp3_192])
-        #expect(Set(StreamQuality.allCases.map(\.format)) == ["raw", "aac", "opus", "mp3"])
-        #expect(StreamQuality.allCases.map(\.rawValue) == ["original", "aac256", "aac160", "aac96", "opus192", "opus128",
-                                                           "opus96", "opus64", "mp3_320", "mp3_192"])
-        #expect([StreamQuality.opus192, .opus128, .opus96, .opus64].map(\.maxBitRate) == [192, 128, 96, 64])
-        #expect([StreamQuality.opus192, .opus128, .opus96, .opus64].map(\.title) == [
-            "High · Opus 192 kbps", "Medium · Opus 128 kbps", "Low · Opus 96 kbps", "Very low · Opus 64 kbps"])
+    /// R5: every transcode choice is a format × High / Medium / Low preset, plus Original.
+    @Test func presetsAreFormatTimesLevel() {
+        #expect(StreamQuality.allCases == [.original, .aacHigh, .aacMedium, .aacLow, .opusHigh, .opusMedium, .opusLow,
+                                           .mp3High, .mp3Medium, .mp3Low])
+        #expect(StreamQuality.allCases.map(\.format) == ["raw", "aac", "aac", "aac", "opus", "opus", "opus", "mp3", "mp3", "mp3"])
+        #expect(StreamQuality.allCases.map(\.maxBitRate) == [nil, 256, 160, 96, 320, 160, 96, 320, 192, 128])
+        #expect(StreamQuality.allCases.map(\.level) == [nil, .high, .medium, .low, .high, .medium, .low, .high, .medium, .low])
+        #expect([StreamQuality.mp3High, .aacMedium, .opusLow].map(\.title) == ["High · 320 kbps", "Medium · 160 kbps", "Low · 96 kbps"])
+        #expect(StreamQuality.original.title == "Original")
+        #expect([StreamQuality.original, .aacHigh, .opusMedium, .mp3Low].map(\.shortTitle)
+                == ["Original", "AAC 256 kbps", "Opus 160 kbps", "MP3 128 kbps"])
         #expect(StreamQuality.groups.map(\.format) == ["raw", "aac", "opus", "mp3"])
         #expect(StreamQuality.groups.flatMap(\.qualities) == StreamQuality.allCases)
+        // The stored names: a preset kept from before keeps its name, so it needs no migration.
+        #expect(StreamQuality.allCases.map(\.rawValue) == ["original", "aac256", "aac160", "aac96", "opus320", "opus160",
+                                                           "opus96", "mp3_320", "mp3_192", "mp3_128"])
+    }
+
+    /// R5 fix C1: every stored name a pre-round-11 build could write either is a preset's own name or is listed as a
+    /// legacy name of exactly the preset it migrates to (the audio store accepts files saved under it).
+    @Test func everyOldPresetNameIsCurrentOrLegacy() {
+        let old = ["original", "aac256", "aac160", "aac96", "opus192", "opus128", "opus96", "opus64", "mp3_320", "mp3_192"]
+        for name in old {
+            let migrated = StreamQuality(migrating: name)
+            #expect(migrated != nil, "\(name)")
+            if let migrated, migrated.rawValue != name {
+                #expect(migrated.legacyRawValues.contains(name), "\(name) → \(migrated)")
+            }
+        }
+        let legacy = StreamQuality.allCases.flatMap(\.legacyRawValues)
+        #expect(Set(legacy) == ["opus192", "opus128", "opus64"] && legacy.count == 3)
+        #expect(StreamQuality.allCases.allSatisfy { q in q.legacyRawValues.allSatisfy { StreamQuality(migrating: $0) == q } })
+    }
+
+    /// R5: a saved bit rate that is no longer a preset moves to the nearest one of its format; a tie goes up.
+    @Test func oldBitRatesMigrateToTheNearestPreset() throws {
+        let cases: [(String, StreamQuality)] = [
+            ("opus192", .opusMedium), ("opus128", .opusMedium), ("opus64", .opusLow), ("opus96", .opusLow),
+            ("aac256", .aacHigh), ("aac160", .aacMedium), ("aac96", .aacLow), ("mp3_320", .mp3High), ("mp3_192", .mp3Medium),
+            ("aac128", .aacMedium), ("mp3_256", .mp3High), ("mp3_160", .mp3Medium), ("opus240", .opusHigh), ("opus32", .opusLow),
+        ]
+        for (stored, expected) in cases {
+            #expect(StreamQuality(migrating: stored) == expected, "\(stored)")
+            let decoded = try JSONDecoder().decode(StreamQuality.self, from: Data("\"\(stored)\"".utf8))
+            #expect(decoded == expected, "\(stored) decodes")
+        }
+        for unknown in ["vorbis96", "opus", "aac0", "opus999", "lossless-ultra", "mp3_x", ""] {
+            #expect(StreamQuality(migrating: unknown) == nil, "\(unknown)")
+        }
+        let prefs = PlaybackPreferences.decode(Data(#"{"wifi":"opus128","cellular":"opus64","replayGain":"track","sleepTimer":"m30"}"#.utf8))
+        #expect(prefs.wifi == .opusMedium && prefs.cellular == .opusLow)
+        #expect(DownloadPreferences.decode(Data(#"{"quality":"opus192"}"#.utf8)).quality == .opusMedium)
+        // Written back under the preset's own name.
+        #expect(String(data: try JSONEncoder().encode(StreamQuality.opusMedium), encoding: .utf8) == "\"opus160\"")
     }
 
     @Test func opusAndOlderQualitiesDecode() throws {
-        let decoded = PlaybackPreferences.decode(Data(#"{"wifi":"opus128","cellular":"aac160","replayGain":"track","sleepTimer":"m30"}"#.utf8))
-        #expect(decoded.wifi == .opus128 && decoded.cellular == .aac160)
+        let decoded = PlaybackPreferences.decode(Data(#"{"wifi":"opus160","cellular":"aac160","replayGain":"track","sleepTimer":"m30"}"#.utf8))
+        #expect(decoded.wifi == .opusMedium && decoded.cellular == .aacMedium)
         let unknown = PlaybackPreferences.decode(Data(#"{"wifi":"opus999","cellular":"mp3_192","replayGain":"track","sleepTimer":"m30"}"#.utf8))
-        #expect(unknown.wifi == PlaybackPreferences.defaultValue.wifi && unknown.cellular == .mp3_192)
+        #expect(unknown.wifi == PlaybackPreferences.defaultValue.wifi && unknown.cellular == .mp3Medium)
+    }
+
+    /// R12: right = Add to queue, left = Play next, asking before replacing the queue off; settings saved before
+    /// round 11 take these defaults, and an unknown action falls back on its own.
+    @Test func swipeAndQueueReplaceDefaults() {
+        let d = PlaybackPreferences.defaultValue
+        #expect(d.swipeRight == .addToQueue && d.swipeLeft == .playNext && d.askBeforeReplacingQueue == false)
+        #expect(SwipeAction.allCases == [.playNext, .addToQueue, .addToPlaylist, .download, .favourite, .none])
+        let old = PlaybackPreferences.decode(Data(#"{"wifi":"original","cellular":"aac160","replayGain":"track","sleepTimer":"m30"}"#.utf8))
+        #expect(old.swipeRight == .addToQueue && old.swipeLeft == .playNext && !old.askBeforeReplacingQueue)
+        let custom = PlaybackPreferences.decode(Data(#"{"swipeRight":"download","swipeLeft":"teleport","askBeforeReplacingQueue":true}"#.utf8))
+        #expect(custom.swipeRight == .download && custom.swipeLeft == .playNext && custom.askBeforeReplacingQueue)
+        var p = d
+        p.swipeLeft = .none
+        #expect(PlaybackPreferences.decode(p.encoded()) == p)
     }
 
     @Test func corruptDataFallsBackToDefault() {
@@ -48,8 +106,8 @@ import Testing
 
     @Test func oneBadFieldKeepsTheOthers() {
         let p = PlaybackPreferences.decode(Data(#"{"version":1,"wifi":"lossless-ultra","cellular":"mp3_192","replayGain":7}"#.utf8))
-        #expect(p.wifi == .original && p.cellular == .mp3_192 && p.replayGain == .track)
-        #expect(PlaybackPreferences.decode(Data(#"{"cellular":"vorbis96"}"#.utf8)).cellular == .aac160, "an unknown value falls back")
+        #expect(p.wifi == .original && p.cellular == .mp3Medium && p.replayGain == .track)
+        #expect(PlaybackPreferences.decode(Data(#"{"cellular":"vorbis96"}"#.utf8)).cellular == .aacMedium, "an unknown value falls back")
     }
 
     @Test func unknownAndDuplicateSectionsDropped() {
@@ -162,8 +220,8 @@ import Testing
 
     @Test func qualityStreamParameters() {
         #expect(StreamQuality.original.format == "raw" && StreamQuality.original.maxBitRate == nil)
-        #expect(StreamQuality.aac160.format == "aac" && StreamQuality.aac160.maxBitRate == 160)
-        #expect(StreamQuality.mp3_320.format == "mp3" && StreamQuality.mp3_320.maxBitRate == 320)
+        #expect(StreamQuality.aacMedium.format == "aac" && StreamQuality.aacMedium.maxBitRate == 160)
+        #expect(StreamQuality.mp3High.format == "mp3" && StreamQuality.mp3High.maxBitRate == 320)
     }
 
     @Test func extremeIntegersNeverTrapAndClamp() {

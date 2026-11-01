@@ -25,6 +25,18 @@ private func entry(_ id: String, title: String = "T", album: String, albumId: St
         #expect(c.artists().map(\.albumCount) == [2])
     }
 
+    /// R10: Now Playing's album and artist links offline open the downloaded pages, which these ids name.
+    @Test func pagesOfADownloadedSong() {
+        let c = OfflineCatalog(entries: [entry("s1", album: "x", albumId: "x"), entry("s2", album: "Loose", albumId: nil, artistId: nil),
+                                         entry("c1", album: "y", albumId: "y", kind: .cache)], playlists: [])
+        #expect(c.pages(ofSong: "s1")?.albumId == "x" && c.pages(ofSong: "s1")?.artistId == "ar1")
+        let loose = c.pages(ofSong: "s2")
+        #expect(loose.map { c.album(id: $0.albumId) != nil } == true)
+        #expect(loose.map { id in c.artists().contains { $0.id == id.artistId } } == true)
+        #expect(c.pages(ofSong: "c1") == nil, "a cached song isn't a download")
+        #expect(c.pages(ofSong: "nope") == nil)
+    }
+
     @Test func albumWithoutIdGroupsByTitleAndArtist() {
         let c = OfflineCatalog(entries: [entry("s1", album: "Loose", albumId: nil), entry("s2", album: "Loose", albumId: nil)], playlists: [])
         #expect(c.albums().count == 1 && c.albums()[0].songCount == 2)

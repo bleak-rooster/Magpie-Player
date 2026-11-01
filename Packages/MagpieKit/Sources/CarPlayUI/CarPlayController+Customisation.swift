@@ -2,6 +2,7 @@
 import CarPlay
 import MagpieCore
 import Observation
+import Playback
 import UIKit
 
 /// What the car reads for the owner's layout (Task 22) and the screens added with it (Task 23). The reads marked
@@ -202,6 +203,19 @@ extension CarPlayController {
                 self?.updateNowPlayingButtons()
             }
         })
+    }
+}
+
+// R6: the car's shuffle and repeat buttons mirror the phone's (the glyph, One included, comes from the remote
+// command centre's current types, which `NowPlayingBridge.syncModes` keeps).
+extension CarPlayController {
+    struct ModeSelection: Equatable, Sendable {
+        var shuffle: Bool
+        var repeating: Bool
+    }
+
+    static func modeSelection(of player: Player) -> ModeSelection {
+        ModeSelection(shuffle: player.isShuffled, repeating: player.repeatMode != .off)
     }
 }
 #endif

@@ -177,7 +177,7 @@ private struct ShelfView: View {
                     AlbumTile(title: playlist.name, subtitle: playlist.songCount == 1 ? "1 song" : "\(playlist.songCount) songs",
                               artwork: image, mark: model.downloadIndex.mark(playlistId: playlist.id))
                 }
-                .reloadArtworkMenu(playlist.coverArtId)
+                .collectionMenu(.playlist(playlist.id), coverArtId: playlist.coverArtId)   // R12, P4
             }
             .buttonStyle(.plain)
         case .genreGroup(let section):

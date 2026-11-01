@@ -58,10 +58,11 @@ struct FavouriteButton: View {
 }
 
 extension View {
-    /// An album's long-press menu: Favourite, Add to playlist… (all its songs) and Reload artwork (offline: none).
+    /// An album's long-press menu: Play next · Add to queue (R12), then Add to playlist… (all its songs), Favourite and
+    /// Reload artwork (offline: only the first two).
     func albumMenu(_ album: Album) -> some View { modifier(LibraryItemMenu(item: .album(album))) }
 
-    /// An artist's long-press menu: Favourite and Reload artwork (offline: none of them).
+    /// An artist's long-press menu: Play next · Add to queue (R12), then Favourite and Reload artwork (not offline).
     func artistMenu(_ artist: Artist) -> some View { modifier(LibraryItemMenu(item: .artist(artist))) }
 }
 
@@ -99,11 +100,22 @@ private struct LibraryItemMenu: ViewModifier {
         }
     }
 
+    private var collection: CollectionRef {
+        switch item {
+        case .album(let a): .album(a.id)
+        case .artist(let a): .artist(a.id)
+        }
+    }
+
     func body(content: Content) -> some View {
-        if model.isOffline || OfflineCatalog.isLocalId(id) {
-            content
-        } else {
-            content.contextMenu {
+        content.contextMenu {
+            // R12 (appraisal §4 group 1): Play next · Add to queue, which ask In order or Shuffled; offline too.
+            Section {
+                ForEach(QueueMenu.items) { item in
+                    Button(item.title, systemImage: item.symbol) { model.perform(item, on: collection) }
+                }
+            }
+            if !model.isOffline, !OfflineCatalog.isLocalId(id) {
                 if case .album(let album) = item {   // the appraisal's order (§4): Add to playlist…, Favourite
                     Button(PlaylistCopy.addToPlaylist, systemImage: "text.badge.plus") {
                         Task { await model.askToAddAlbumToPlaylist(album.id) }

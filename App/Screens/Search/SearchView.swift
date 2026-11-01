@@ -11,9 +11,13 @@ struct SearchView: View {
     @Environment(AppModel.self) private var app
     @State private var model: SearchModel?
     @State private var scope = SearchScope.all
+    /// The tab's stack (R10 pushes onto it); a stack of its own where there is no tab bar (tests).
+    @Environment(TabNavigator.self) private var navigator: TabNavigator?
+    @State private var ownPath = NavigationPath()
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: Binding(get: { navigator?.search ?? ownPath },
+                                      set: { if let navigator { navigator.search = $0 } else { ownPath = $0 } })) {
             Group {
                 if let model {
                     SearchContent(model: model, scope: scope)
@@ -351,10 +355,10 @@ private struct SearchContent: View {
         .accessibilityAddTraits(.isButton)
         .accessibilityIdentifier(id ?? "search-song-\(index)")
         .contextMenu {
-            Button("Play Next", systemImage: "text.line.first.and.arrowtriangle.forward") { app.player.playNext([song]) }
-            Button("Add to Queue", systemImage: "text.line.last.and.arrowtriangle.forward") { app.player.addToEnd([song]) }
+            SongQueueMenuItems(song: song)
             SongDownloadMenuItem(song: song, removing: $removing)
         }
+        .songSwipeActions(song, in: .list)   // R12
         .listRowInsets(EdgeInsets())
         .listRowBackground(Color.clear)
     }
@@ -374,7 +378,8 @@ private struct SearchContent: View {
             }
             .accessibilityElement(children: .combine)
         }
-        .artistMenu(artist)   // R7 Favourite, P4 Reload artwork
+        .artistMenu(artist)   // R12, R7 Favourite, P4 Reload artwork
+        .collectionSwipeActions(.artist(artist.id), in: .list)   // R12
         .simultaneousGesture(TapGesture().onEnded { remember(model.query) })
         .listRowBackground(Color.clear)
     }
@@ -394,7 +399,8 @@ private struct SearchContent: View {
             }
             .accessibilityElement(children: .combine)
         }
-        .albumMenu(album)   // R7 Favourite, R8 Add to playlist…, P4 Reload artwork
+        .albumMenu(album)   // R12, R7 Favourite, R8 Add to playlist…, P4 Reload artwork
+        .collectionSwipeActions(.album(album.id), in: .list)   // R12
         .simultaneousGesture(TapGesture().onEnded { remember(model.query) })
         .listRowBackground(Color.clear)
     }
