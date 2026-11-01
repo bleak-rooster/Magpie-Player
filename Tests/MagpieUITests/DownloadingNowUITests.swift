@@ -109,6 +109,7 @@ final class DownloadingNowUITests: XCTestCase {
         aurora.tap()
         let more = app.buttons["artist-more"]
         XCTAssertTrue(more.waitForExistence(timeout: 15))
+        XCTAssertEqual(app.buttons.matching(identifier: "artist-more").count, 1, "one ⋯ in the toolbar, not two")
         more.tap()
         let download = app.buttons["Download to this iPhone\u{2026}"]
         XCTAssertTrue(download.waitForExistence(timeout: 5))
