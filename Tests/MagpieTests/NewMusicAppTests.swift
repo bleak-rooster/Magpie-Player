@@ -149,6 +149,11 @@ import Testing
         model.newMusic.keepsRunning = [ready.id]
         #expect(model.keepRequests(songIds: ["a"]).isEmpty, "no second Keep while one runs")
         #expect(model.artistKeepState(songIds: ["a"]) == .keeping)
+        var waiting = ready
+        waiting.state = .importing
+        model.newMusic.keepsRunning = []
+        model.requests = [waiting]
+        #expect(model.artistKeepState(songIds: ["a"]) == .later, "Magpie's own find, not ready: never 'Added outside Magpie'")
         model.requests = []
     }
 

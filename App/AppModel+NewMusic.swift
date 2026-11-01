@@ -178,7 +178,9 @@ extension AppModel {
     // MARK: - Only in your Finds
 
     /// An artist "Only in your Finds": every album of theirs has songs in the Finds library, as last read. Mixed
-    /// artists (some albums in your library) aren't; nothing known means not.
+    /// artists (some albums in your library) aren't; nothing known means not. Review M3: any album outside the Finds
+    /// library counts as "in your library" (Album carries no library id); this equals asking the main library unless
+    /// a third library holds the artist, which then also reads as not only in Finds.
     nonisolated static func onlyInFinds(albumIds: [String], findSongs: [Song]) -> Bool {
         guard !albumIds.isEmpty else { return false }
         let inFinds = Set(findSongs.compactMap(\.albumId))
@@ -510,7 +512,8 @@ extension AppModel {
 
     /// What an Only in your Finds artist page offers for these find songs: Keep <artist>, a Keep already running, or
     /// nothing to Keep through (no ready Magpie request: added outside Magpie).
-    enum ArtistKeepState: Equatable { case keepable, keeping, outside }
+    /// `.later`: Magpie's own find that can't be kept right now (on its way, or needing a look; review M7).
+    enum ArtistKeepState: Equatable { case keepable, keeping, later, outside }
 
     func artistKeepState(songIds: [String]) -> ArtistKeepState {
         if !keepRequests(songIds: songIds).isEmpty { return .keepable }
@@ -518,7 +521,9 @@ extension AppModel {
         let running = requests.contains { request in
             request.songId.map(ids.contains) == true && newMusic.keepsRunning.contains(request.id)
         }
-        return running ? .keeping : .outside
+        if running { return .keeping }
+        let magpies = requests.contains { request in request.isFind && request.songId.map(ids.contains) == true }
+        return magpies ? .later : .outside
     }
 
     /// The ledger says Magpie added the artist Lidarr has under this id (read now). Unreadable: not Magpie's.

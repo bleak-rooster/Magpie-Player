@@ -89,7 +89,8 @@ import MagpieTestSupport
 }
 
 /// The gate's metadata-profile shape (R18), on WriteConfinementTests' fake: artist 7 is the owner's, 42 a find Magpie
-/// created. Profiles: 1 "Standard" (the owner's), 3 "Magpie Finds", 12 "Magpie Albums+EPs · Studio+Live".
+/// created. Profiles: 1 "Standard" (the owner's), 3 "Magpie Finds", 12 "Magpie Albums+EPs · Studio+Live", 14 "Magpie Owner
+/// Picks" (the owner's, despite the name).
 @Suite struct ReleaseTypesGateTests {
     typealias Call = WriteGateTests.Call
     typealias Fake = WriteConfinementTests.Fake
@@ -97,7 +98,8 @@ import MagpieTestSupport
     static func fake(kept: Bool = false) async throws -> Fake {
         let fake = try await Fake(kept: kept)
         let profiles: [[String: Any]] = [["id": 1, "name": "Standard"], ["id": 3, "name": "Magpie Finds"],
-                                         ["id": 12, "name": "Magpie Albums+EPs \u{00B7} Studio+Live"]]
+                                         ["id": 12, "name": "Magpie Albums+EPs \u{00B7} Studio+Live"],
+                                         ["id": 14, "name": "Magpie Owner Picks"]]
         fake.transport.stub(pathSuffix: "/api/v1/metadataprofile", body: try JSONSerialization.data(withJSONObject: profiles))
         return fake
     }
@@ -127,6 +129,8 @@ import MagpieTestSupport
         // Only Magpie's own profiles.
         Call("PUT", "artist/editor", #"{"artistIds":[42],"metadataProfileId":1}"#),
         Call("PUT", "artist/editor", #"{"artistIds":[42],"metadataProfileId":55}"#),
+        // Review M1: an owner's profile that merely starts with "Magpie ".
+        Call("PUT", "artist/editor", #"{"artistIds":[42],"metadataProfileId":14}"#),
         // Exactly {artistIds: [one], metadataProfileId: positive id}.
         Call("PUT", "artist/editor", #"{"artistIds":[42,7],"metadataProfileId":12}"#),
         Call("PUT", "artist/editor", #"{"artistIds":[42],"metadataProfileId":12,"qualityProfileId":4}"#),

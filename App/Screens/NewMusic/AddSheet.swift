@@ -207,8 +207,12 @@ private struct AddFlowModifier: ViewModifier {
                 case .sheet(let preset):
                     sheet = SheetItem(request: asked, preset: preset)
                 case .confirm(let choices):
+                    // Shown at once (review M6: never a dead tap); the length fills in when Lidarr has said it.
+                    confirm = ConfirmItem(request: asked, choices: choices,
+                                          summary: NewMusicCopy.summary(choices, duration: nil), size: nil)
                     Task {
                         let size = await asked.sizes(choices.types)[AddWhat(choices)]
+                        guard let shown = confirm, shown.request.id == asked.id, size != nil else { return }
                         confirm = ConfirmItem(request: asked, choices: choices,
                                               summary: NewMusicCopy.summary(choices, duration: size?.duration), size: size)
                     }

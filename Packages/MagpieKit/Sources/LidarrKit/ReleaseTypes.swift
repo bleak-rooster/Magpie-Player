@@ -54,6 +54,19 @@ public struct ReleaseTypes: Codable, Hashable, Sendable {
         return "Magpie \(kinds) \u{00B7} \(secondaryNames.joined(separator: "+"))"
     }
 
+    /// Every choice there is (3 kinds × the Studio / Soundtrack / Live toggles).
+    public static var all: [ReleaseTypes] {
+        Kinds.allCases.flatMap { kinds in
+            (0..<8).map { bits in ReleaseTypes(kinds: kinds, studio: bits & 1 != 0, soundtrack: bits & 2 != 0, live: bits & 4 != 0) }
+        }
+    }
+
+    /// A metadata profile name only Magpie makes: "Magpie Finds" or one `profileName` produces (review M1: never
+    /// any `Magpie …` the owner may have named).
+    public static func isMagpieMetadataProfile(_ name: String) -> Bool {
+        name == Provisioner.findsMetadataName || all.contains { $0.profileName == name }
+    }
+
     /// Whether a release of this primary type and these secondary types is brought in (as Lidarr's metadata profile
     /// filters: the primary type allowed, and every secondary type allowed; none counts as Studio). Unknown primary
     /// type: not brought in.

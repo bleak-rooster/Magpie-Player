@@ -74,7 +74,7 @@ struct DownloadChoicesIT {
                                                             "metadataProfileId": .int(provisioned.findsMetadataProfileId)]))
             #expect(try await client.artist(id: id).metadataProfileId == provisioned.findsMetadataProfileId)
             // …never to a profile that isn't Magpie's…
-            if let owners = try await client.metadataProfiles().first(where: { !$0.name.hasPrefix("Magpie ") }) {
+            if let owners = try await client.metadataProfiles().first(where: { !ReleaseTypes.isMagpieMetadataProfile($0.name) }) {
                 await #expect(throws: WriteGateError.self) {
                     _ = try await gate.send("PUT", "artist/editor",
                                             body: JSONValue.object(["artistIds": .array([.int(id)]),
@@ -95,12 +95,18 @@ struct DownloadChoicesIT {
             Issue.record(error)
         }
 
-        // Clean up only what this test created.
-        if let createdId {
+        // Clean up only what this test created: found by its MBID (the add may have gone through without an answer,
+        // review M5), and the profile by its name when this run made it. Magpie's base profiles and tag from
+        // `Provisioner.ensure` stay, as on any set-up dev stack.
+        _ = createdId
+        if let createdId = try? await client.artists().first(where: { $0.foreignArtistId == artist })?.id {
             try await TryIT.waitForRefresh(client)
             _ = try await FindsIT.devLidarr("DELETE", "artist/\(createdId)",
                                             query: ["deleteFiles": "false", "addImportListExclusion": "false"])
             #expect(try await client.artists().first { $0.foreignArtistId == artist } == nil)
+        }
+        if profileId == nil, !profileExisted {
+            profileId = try? await client.metadataProfiles().first { $0.name == Self.types.profileName }?.id
         }
         if !profileExisted, let profileId {
             _ = try await FindsIT.devLidarr("DELETE", "metadataprofile/\(profileId)")

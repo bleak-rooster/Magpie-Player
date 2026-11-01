@@ -202,7 +202,8 @@ public enum ArtistLidarr {
     /// R18 "Add more to your library", for an artist Magpie added (the ledger says so, for the same id and MBID, read
     /// fresh): its release types (Magpie's metadata profile, made if missing), quality profile, Follow new releases
     /// and monitoring, each sent only when it differs, then a search for its monitored albums. Any other artist is the
-    /// owner's: refused with nothing sent, not even a profile.
+    /// owner's: refused with nothing sent, not even a profile. Review M2: the writes are separate, so if a later one
+    /// fails the earlier ones stay (Magpie's own artist only); asking again sends just what still differs.
     public static func addMore(lidarrId: Int, lidarr: LidarrClient, gate: LidarrWriteGate, ledger: Ledger,
                                types: ReleaseTypes?, qualityProfileId: Int?, follow: Bool) async throws {
         guard await gate.enabled else { throw ArtistLidarrError.changesOff }

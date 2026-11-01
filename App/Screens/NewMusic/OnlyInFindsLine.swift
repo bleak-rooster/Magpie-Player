@@ -32,6 +32,8 @@ struct OnlyInFindsLine: View {
                 CapsuleButton(NewMusicCopy.keeping, symbol: "checkmark.seal") {}
                     .disabled(true)
                     .accessibilityIdentifier("artist-keep")
+            case .later:
+                EmptyView()   // Magpie's own find, not ready to keep yet: its request says why
             case .outside:
                 Text(NewMusicCopy.addedOutside)
                     .font(.footnote).foregroundStyle(p.ink2Color).multilineTextAlignment(.center)
