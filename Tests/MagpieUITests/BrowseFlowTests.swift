@@ -141,6 +141,45 @@ final class BrowseFlowTests: XCTestCase {
         XCTAssertTrue(mini.waitForExistence(timeout: 15), "mini player did not show \(title)")
     }
 
+    /// R12 fix C2: a row swiped part-way rests open, and its revealed button takes the tap. With nothing playing, the
+    /// album's first track swiped left and its Play next tapped starts it (the tap-to-close layer must not cover it).
+    @MainActor func testRevealedSwipeButtonTakesTheTap() throws {
+        let app = try launchSignedIn()
+        let library = app.tabBars.buttons["Library"]
+        let albums = app.buttons["library-albums"]
+        for _ in 0..<3 where !albums.exists {
+            library.tap()
+            _ = albums.waitForExistence(timeout: 5)
+        }
+        albums.tap()
+        let firstAlbum = app.buttons["album-0"]
+        XCTAssertTrue(firstAlbum.waitForExistence(timeout: 15))
+        firstAlbum.tap()
+        let track = app.buttons["track-0"]
+        XCTAssertTrue(track.waitForExistence(timeout: 15))
+        let title = track.label
+        // A slow, part-way drag to the left: short of a full swipe, so the row rests open on Play next.
+        track.coordinate(withNormalizedOffset: CGVector(dx: 0.6, dy: 0.5))
+            .press(forDuration: 0.1, thenDragTo: track.coordinate(withNormalizedOffset: CGVector(dx: 0.35, dy: 0.5)),
+                   withVelocity: .slow, thenHoldForDuration: 0.1)
+        Thread.sleep(forTimeInterval: 0.6)
+        attachScreenshot(app, "swipe-open")
+        let mini = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Now playing:")).firstMatch
+        let toast = app.descendants(matching: .any)["queue-toast"]
+        XCTAssertFalse(mini.exists, "nothing plays until the button is tapped; toast: \(toast.exists ? toast.label : "none")")
+        // The revealed button sits at the row's trailing edge.
+        track.coordinate(withNormalizedOffset: CGVector(dx: 0.96, dy: 0.5)).tap()
+        let playing = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Now playing: \(title),")).firstMatch
+        XCTAssertTrue(playing.waitForExistence(timeout: 15), "Play next on the revealed button didn't queue \(title)")
+        // Vertical drags on the rows still scroll the page (the row swipe takes only sideways drags).
+        let before = track.frame.minY
+        // From the row itself (track 1 sits under the mini player).
+        track.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            .press(forDuration: 0.05, thenDragTo: track.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: -6)))
+        Thread.sleep(forTimeInterval: 1)
+        XCTAssertLessThan(track.frame.minY, before - 20, "a vertical drag starting on a row didn't scroll the page")
+    }
+
     /// T12: the album's Download control is one button to VoiceOver, labelled "Download" with the status as its
     /// value, and activating it by that label downloads the album; its menu then removes the download.
     @MainActor func testAlbumDownloadButtonActivatesByLabel() throws {
@@ -211,7 +250,7 @@ final class BrowseFlowTests: XCTestCase {
         let song = app.buttons["search-song-0"]
         XCTAssertTrue(song.waitForExistence(timeout: 15))
         app.keyboards.buttons["search"].tap()
-        for action in ["Play Next", "Add to Queue", "Play Next"] {
+        for action in ["Play next", "Add to queue", "Play next"] {
             song.press(forDuration: 1.5)
             let item = app.buttons[action]
             XCTAssertTrue(item.waitForExistence(timeout: 5), action)
