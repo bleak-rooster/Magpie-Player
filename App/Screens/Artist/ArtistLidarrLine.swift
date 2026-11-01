@@ -49,9 +49,9 @@ struct ArtistLidarrPresentation: Equatable {
     static func hintText(_ hint: Hint) -> String {
         switch hint {
         case .turnOnChanges(let toAdd):
-            toAdd ? "Turn on Allow Magpie to change Lidarr in Settings \u{203A} Requests to add artists."
-                   : "Turn on Allow Magpie to change Lidarr in Settings \u{203A} Requests to monitor this artist."
-        case .setUpFirst: "Set up Magpie in Lidarr in Settings \u{203A} Requests to add artists."
+            toAdd ? "Turn on Allow Magpie to change your library in Settings \u{203A} New music to add artists."
+                   : "Turn on Allow Magpie to change your library in Settings \u{203A} New music to monitor this artist."
+        case .setUpFirst: "Set up Magpie in Lidarr in Settings \u{203A} New music to add artists."
         }
     }
 
@@ -196,7 +196,7 @@ struct ArtistLidarrPresentation: Equatable {
     static func message(for error: Error, artist: String) -> String {
         switch error {
         case ArtistLidarrError.changesOff, WriteGateError.disabled:
-            "Turn on Allow Magpie to change Lidarr in Settings \u{203A} Requests first."
+            "Turn on Allow Magpie to change your library in Settings \u{203A} New music first."
         case ArtistLidarrError.notFound: "Lidarr couldn't find \(artist). Try again later."
         default: "Lidarr didn't take the change. Try again in a moment."
         }

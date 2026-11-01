@@ -209,7 +209,8 @@ public actor NavidromeClient {
     public func starred() async throws -> Starred {
         let body = try await subsonic("getStarred2")
         return Starred(songs: (body.starred2?.song ?? []).map(Mapping.song),
-                       albums: (body.starred2?.album ?? []).map { Mapping.album($0) })
+                       albums: (body.starred2?.album ?? []).map { Mapping.album($0) },
+                       artists: (body.starred2?.artist ?? []).map(Mapping.artist))
     }
 
     public func album(id: String) async throws -> Album {
@@ -329,6 +330,49 @@ public actor NavidromeClient {
         _ = try await subsonic("unstar", [URLQueryItem(name: "id", value: id)])
     }
 
+    /// Stars an album (`albumId`; round 11 R7, verified on the dev Navidrome 0.64.2).
+    public func star(albumId: String) async throws {
+        _ = try await subsonic("star", [URLQueryItem(name: "albumId", value: albumId)])
+    }
+
+    public func unstar(albumId: String) async throws {
+        _ = try await subsonic("unstar", [URLQueryItem(name: "albumId", value: albumId)])
+    }
+
+    /// Stars an artist (`artistId`; round 11 R7, verified on the dev Navidrome 0.64.2).
+    public func star(artistId: String) async throws {
+        _ = try await subsonic("star", [URLQueryItem(name: "artistId", value: artistId)])
+    }
+
+    public func unstar(artistId: String) async throws {
+        _ = try await subsonic("unstar", [URLQueryItem(name: "artistId", value: artistId)])
+    }
+
+    // MARK: - Playlist writes (round 11 R8; only on the user's own, explicit action)
+
+    /// A new playlist owned by the signed-in user, with `songIds` in order: the playlist as the server answers
+    /// (Navidrome sends it back; nil from a server that doesn't).
+    @discardableResult
+    public func createPlaylist(name: String, songIds: [String]) async throws -> Playlist? {
+        let body = try await subsonic("createPlaylist", [URLQueryItem(name: "name", value: name)]
+                                      + songIds.map { URLQueryItem(name: "songId", value: $0) })
+        return body.playlist.map(Mapping.playlist)
+    }
+
+    /// Renames (`name` non-nil), appends `adding` (repeats allowed) and removes the songs at `removingIndexes`
+    /// (positions in the playlist before this call), in one request.
+    public func updatePlaylist(id: String, name: String?, adding: [String], removingIndexes: [Int]) async throws {
+        var extra = [URLQueryItem(name: "playlistId", value: id)]
+        if let name { extra.append(URLQueryItem(name: "name", value: name)) }
+        extra += adding.map { URLQueryItem(name: "songIdToAdd", value: $0) }
+        extra += removingIndexes.map { int("songIndexToRemove", $0) }
+        _ = try await subsonic("updatePlaylist", extra)
+    }
+
+    public func deletePlaylist(id: String) async throws {
+        _ = try await subsonic("deletePlaylist", [URLQueryItem(name: "id", value: id)])
+    }
+
     /// Quick scan (`fullScan=false`). `target` is `<libraryId>:<path relative to that library>`.
     /// At most one scan per target per 10 s; a debounced call returns without contacting the server.
     public func startScan(target: String?) async throws {
@@ -437,6 +481,26 @@ public actor NavidromeClient {
         let (data, _) = try await native("api/song", query)
         return try Self.decode([NativeSong].self, data)
             .filter { $0.missing != true && $0.mbzRecordingID.flatMap { MBID($0) } == recording }
+    }
+
+    /// Every artist whatever their role (album artists and track-only artists; R11 "Album artists only" off), by
+    /// name, via `/api/artist` without a role filter, a page at a time up to `maxPages`. Rows flagged `missing` (no
+    /// files left) are skipped. On the dev Navidrome 0.64.2, `role=albumartist` gives what `getArtists` gives.
+    public func allArtists(pageSize: Int = 500, maxPages: Int = 200) async throws -> [Artist] {
+        var artists: [Artist] = [], seen = Set<String>(), start = 0
+        for _ in 0..<maxPages {
+            let query = [int("_start", start), int("_end", start + pageSize),
+                         URLQueryItem(name: "_sort", value: "name"), URLQueryItem(name: "_order", value: "ASC")]
+            let (data, response) = try await native("api/artist", query)
+            let rows = try Self.decode([NativeArtist].self, data)
+            for row in rows where row.missing != true && seen.insert(row.id).inserted {
+                artists.append(Mapping.artist(row))
+            }
+            start += pageSize
+            let total = response.value(forHTTPHeaderField: "X-Total-Count").flatMap { Int($0) }
+            if rows.count < pageSize || total.map({ start >= $0 }) == true { break }
+        }
+        return artists
     }
 
     /// The library folders and their paths as Navidrome sees them (`/api/library`; B6, G2). Some versions

@@ -84,6 +84,12 @@ struct SongDownloadMenuItem: View {
     static let removeTitle = "Remove download"
 
     var body: some View {
+        // The UX appraisal's menu order (§4): Add to playlist… · Favourite, then Download.
+        Section { SongLibraryMenuItems(song: song) }   // R7, R8
+        Section { downloadItem }
+    }
+
+    @ViewBuilder private var downloadItem: some View {
         switch model.downloadStatus([song.id]) {
         case .none:
             Button("Download", systemImage: "arrow.down.to.line") { model.download([song], reason: .song) }

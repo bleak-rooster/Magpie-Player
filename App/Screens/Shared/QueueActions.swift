@@ -5,7 +5,7 @@ import Observation
 import Playback
 import SwiftUI
 
-// Round 11 R12: swipe actions on song and collection rows, the toast that confirms them, the collection popup
+// Round 11 R12: swipe actions on song and collection rows, the notice that confirms them, the collection popup
 // ("In order" / "Shuffled") and "Ask before replacing the queue". CarPlay plays through the player directly, so none
 // of this reaches the car (D12).
 
@@ -91,15 +91,10 @@ struct SwipeLayout: Equatable {
                                         leadingFullSwipe: true, trailingFullSwipe: true)
 }
 
-/// The R12 state screens share: the toast, the Add to playlist sheet asked for by a swipe, the queue-replace
-/// question and the collection popup. One object, so `AppModel` holds a single property for it.
+/// The R12 state screens share: the queue-replace question and the collection popup. One object, so `AppModel`
+/// holds a single property for it. Confirmations ("Playing next") are the library's notices and Add to playlist is
+/// the library's sheet (`LibraryEdits`, one presenter for both).
 @MainActor @Observable final class QueueActions {
-    struct Toast: Equatable, Identifiable {
-        let id: Int
-        let text: String
-        let symbol: String
-    }
-
     /// Tapping to play would replace a queue of `queueCount` songs.
     struct PendingReplace: Identifiable {
         let id = UUID()
@@ -115,23 +110,8 @@ struct SwipeLayout: Equatable {
         let placement: QueuePlacement
     }
 
-    struct PlaylistRequest: Identifiable {
-        let id = UUID()
-        let songIds: [String]
-    }
-
-    var toast: Toast?
-    var addingToPlaylist: PlaylistRequest?
     var pendingReplace: PendingReplace?
     var pendingCollection: PendingCollection?
-    @ObservationIgnored private var nextToast = 0
-
-    /// Shows `text` briefly and has VoiceOver say it.
-    func show(_ text: String, symbol: String) {
-        nextToast += 1
-        toast = Toast(id: nextToast, text: text, symbol: symbol)
-        AccessibilityNotification.Announcement(text).post()
-    }
 }
 
 extension AppModel {
@@ -170,7 +150,7 @@ extension AppModel {
     func place(_ songs: [Song], _ placement: QueuePlacement) {
         guard !songs.isEmpty else { return }
         placement == .next ? player.playNext(songs) : player.addToEnd(songs)
-        queueActions.show(QueueCopy.toast(placement),
+        libraryEdits.notify(QueueCopy.toast(placement),
                           symbol: QueueCopy.symbol(placement == .next ? .playNext : .addToQueue))
     }
 
@@ -179,17 +159,17 @@ extension AppModel {
         switch action {
         case .playNext: place([song], .next)
         case .addToQueue: place([song], .end)
-        case .addToPlaylist: queueActions.addingToPlaylist = .init(songIds: [song.id])
+        case .addToPlaylist: askToAddToPlaylist([song.id])
         case .download:
             download([song], reason: .song)
-            queueActions.show("Downloading", symbol: "arrow.down.to.line")
+            libraryEdits.notify("Downloading", symbol: "arrow.down.to.line")
         case .favourite:
             let on = !isFavourite(.song(song.id))
             Task {
                 await setFavourite(.song(song.id), on)
                 // Confirmed only once it took (a refusal says so through the favourites' own notice).
                 if isFavourite(.song(song.id)) == on {
-                    queueActions.show(on ? "Added to favourites" : "Removed from favourites", symbol: on ? "star.fill" : "star")
+                    libraryEdits.notify(on ? "Added to favourites" : "Removed from favourites", symbol: on ? "star.fill" : "star")
                 }
             }
         case .none: break
@@ -236,7 +216,7 @@ extension AppModel {
             guard !songs.isEmpty else { return }
             place(shuffled ? songs.shuffled() : songs, placement)
         } catch {
-            queueActions.show(QueueCopy.couldntLoad, symbol: "exclamationmark.triangle")
+            libraryEdits.notify(QueueCopy.couldntLoad, symbol: "exclamationmark.triangle")
         }
     }
 }
@@ -265,7 +245,7 @@ extension View {
         modifier(CollectionSwipeModifier(collection: collection, host: host))
     }
 
-    /// Shows R12's toast, the Add to playlist sheet, the replace question and the collection popup. Once, at the root.
+    /// Shows R12's replace question and collection popup. Once, at the root.
     func queueActionsPresenter() -> some View { modifier(QueueActionsPresenter()) }
 }
 
@@ -373,33 +353,9 @@ private struct SwipeRenderer: ViewModifier {
 
 private struct QueueActionsPresenter: ViewModifier {
     @Environment(AppModel.self) private var model
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    private let themed = Themed()
-
     func body(content: Content) -> some View {
         let actions = model.queueActions
         content
-            .overlay(alignment: .top) {
-                if let toast = actions.toast {
-                    Label(toast.text, systemImage: toast.symbol)
-                        .font(.subheadline.weight(.semibold))
-                        .padding(.horizontal, Tokens.Spacing.l).padding(.vertical, Tokens.Spacing.s)
-                        .background(themed.palette.solidSurfaceColor, in: Capsule())
-                        .shadow(color: .black.opacity(0.15), radius: 8, y: 4)
-                        .padding(.top, Tokens.Spacing.s)
-                        .transition(reduceMotion ? .opacity : .move(edge: .top).combined(with: .opacity))
-                        .accessibilityHidden(true)   // announced when shown
-                        .accessibilityIdentifier("queue-toast")
-                        .task(id: toast.id) {
-                            try? await Task.sleep(for: .seconds(1.5))
-                            if actions.toast?.id == toast.id { withAnimation { actions.toast = nil } }
-                        }
-                }
-            }
-            .animation(reduceMotion ? nil : .spring(duration: 0.3), value: actions.toast)
-            .sheet(item: Binding(get: { actions.addingToPlaylist }, set: { actions.addingToPlaylist = $0 })) { request in
-                AddToPlaylistSheet(songIds: request.songIds)
-            }
             .confirmationDialog(QueueCopy.replaceTitle,
                                 isPresented: Binding(get: { actions.pendingReplace != nil },
                                                      set: { if !$0 { actions.pendingReplace = nil } }),

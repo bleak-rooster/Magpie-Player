@@ -165,11 +165,16 @@ public struct LayoutPreferences: PreferenceArea {
     public var home: OrderedVisibility<HomeSection>
     public var library: OrderedVisibility<LibraryRow>
     public var showsRecentlyAdded: Bool
+    /// Round 11 R11: Artists lists only album artists (on, the default) or every artist, track-only ones too; the
+    /// phone and the car alike.
+    public var albumArtistsOnly: Bool
 
-    public init(home: OrderedVisibility<HomeSection>, library: OrderedVisibility<LibraryRow>, showsRecentlyAdded: Bool) {
+    public init(home: OrderedVisibility<HomeSection>, library: OrderedVisibility<LibraryRow>, showsRecentlyAdded: Bool,
+                albumArtistsOnly: Bool = true) {
         self.home = home
         self.library = library
         self.showsRecentlyAdded = showsRecentlyAdded
+        self.albumArtistsOnly = albumArtistsOnly
     }
 
     /// Hides or shows a Library row; false (no change) when it would leave none of the always-available rows visible.
@@ -188,7 +193,7 @@ public struct LayoutPreferences: PreferenceArea {
             }
         }
         return LayoutPreferences(home: home.normalised(against: Self.defaultValue.home), library: library,
-                                 showsRecentlyAdded: showsRecentlyAdded)
+                                 showsRecentlyAdded: showsRecentlyAdded, albumArtistsOnly: albumArtistsOnly)
     }
 
     /// The Home sections to show, in the owner's order, for the phone and the car alike (the car shows Made for you too,

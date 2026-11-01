@@ -65,14 +65,17 @@ struct MadeForYouView: View {
             .buttonStyle(.plain)
             .accessibilityAddTraits(.isButton)
             .accessibilityIdentifier("made-for-you-track-\(index)")
-            .contextMenu { SongQueueMenuItems(song: song) }
+            .contextMenu { SongQueueMenuItems(song: song); SongLibraryMenuItems(song: song) }   // R12, R7, R8
             .songSwipeActions(song, in: .stack)   // R12
         case .notYet(let recording):
-            SongRow(song: Song(id: "notyet-\(index)", title: recording.title, artist: recording.artist,
-                               album: recording.releaseTitle ?? "", duration: recording.duration ?? 0),
-                    state: RequestCopy.rowState(for: recording, in: model.requests),
-                    tryTitle: RequestCopy.tryTitle(model.tryAvailability),
-                    onTry: { trying = TryTarget(recording: recording) })
+            // R17: one already asked for opens its request, or is the library song once Ready.
+            NotYetSongLink(recording: recording, play: { model.play([$0], startAt: 0) }) {
+                SongRow(song: Song(id: "notyet-\(index)", title: recording.title, artist: recording.artist,
+                                   album: recording.releaseTitle ?? "", duration: recording.duration ?? 0),
+                        state: RequestCopy.rowState(for: recording, in: model.requests),
+                        tryTitle: RequestCopy.tryTitle(model.tryAvailability),
+                        onTry: { trying = TryTarget(recording: recording) })
+            }
                 .accessibilityIdentifier("made-for-you-notyet-\(index)")
         }
     }

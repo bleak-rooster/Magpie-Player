@@ -165,7 +165,7 @@ final class BrowseFlowTests: XCTestCase {
         Thread.sleep(forTimeInterval: 0.6)
         attachScreenshot(app, "swipe-open")
         let mini = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Now playing:")).firstMatch
-        let toast = app.descendants(matching: .any)["queue-toast"]
+        let toast = app.descendants(matching: .any)["library-notice"]
         XCTAssertFalse(mini.exists, "nothing plays until the button is tapped; toast: \(toast.exists ? toast.label : "none")")
         // The revealed button sits at the row's trailing edge.
         track.coordinate(withNormalizedOffset: CGVector(dx: 0.96, dy: 0.5)).tap()
@@ -633,8 +633,8 @@ final class BrowseFlowTests: XCTestCase {
         for _ in 0..<4 where !log.isHittable { app.swipeUp() }
         log.tap()
         XCTAssertTrue(app.navigationBars["Lidarr change log"].waitForExistence(timeout: 10))
-        app.navigationBars.buttons.firstMatch.tap()   // › Requests
-        XCTAssertTrue(app.navigationBars["Requests"].waitForExistence(timeout: 10))
+        app.navigationBars.buttons.firstMatch.tap()   // › New music
+        XCTAssertTrue(app.navigationBars["New music"].waitForExistence(timeout: 10))
         app.navigationBars.buttons.firstMatch.tap()   // › Settings
         let scrobbling = app.buttons["settings-scrobbling"]   // T17: Count plays lives in Settings › Scrobbling
         for _ in 0..<4 where !scrobbling.isHittable { app.swipeUp() }
@@ -654,7 +654,7 @@ final class BrowseFlowTests: XCTestCase {
         }
         card.tap()
         XCTAssertTrue(app.switches["settings-allow-changes"].waitForExistence(timeout: 10), "Review lands on Requests")
-        XCTAssertTrue(app.navigationBars["Requests"].exists)
+        XCTAssertTrue(app.navigationBars["New music"].exists)
         app.navigationBars.buttons.firstMatch.tap()   // › Settings
         XCTAssertTrue(app.buttons["settings-account"].waitForExistence(timeout: 10), "Settings lies under Requests")
         app.buttons["settings-done"].tap()

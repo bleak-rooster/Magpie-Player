@@ -100,12 +100,12 @@ private func songsJSON(_ ids: [String]) -> String {
 
         model.performSwipe(.addToQueue, on: song("x"))
         #expect(ids(model).rest == ["2", "x"])
-        #expect(model.queueActions.toast?.text == "Added to queue")
+        #expect(model.libraryEdits.notice?.text == "Added to queue")
         model.performSwipe(.playNext, on: song("y"))
         #expect(ids(model).upNext == ["y"])
-        #expect(model.queueActions.toast?.text == "Playing next")
+        #expect(model.libraryEdits.notice?.text == "Playing next")
         model.performSwipe(.addToPlaylist, on: song("z"))
-        #expect(model.queueActions.addingToPlaylist?.songIds == ["z"])
+        #expect(model.libraryEdits.addToPlaylist?.songIds == ["z"])
         let before = ids(model)
         model.performSwipe(.none, on: song("w"))
         #expect(ids(model) == before)
@@ -143,11 +143,11 @@ private func songsJSON(_ ids: [String]) -> String {
 
         await model.queue(.album("al1"), .end, shuffled: false)
         #expect(ids(model).rest == ["a1", "a2", "a3"], "in order, at the end")
-        #expect(model.queueActions.toast?.text == "Added to queue")
+        #expect(model.libraryEdits.notice?.text == "Added to queue")
 
         await model.queue(.playlist("p1"), .next, shuffled: false)
         #expect(ids(model).upNext == ["p1", "p2"], "in order, next")
-        #expect(model.queueActions.toast?.text == "Playing next")
+        #expect(model.libraryEdits.notice?.text == "Playing next")
 
         // The artist: all their songs, album by album in the artist page's order.
         #expect(try await model.songs(of: .artist("ar1")).map(\.id) == ["a1", "a2", "a3", "c", "d"])

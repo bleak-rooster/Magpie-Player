@@ -263,6 +263,6 @@ struct AlbumTileView: View {
             AlbumTile(title: album.name, subtitle: subtitle, artwork: image, width: width,
                       mark: model.downloadIndex.mark(album: album))   // P1
         }
-        .collectionMenu(.album(album.id), coverArtId: album.coverArtId)   // R12, P4
+        .albumMenu(album)   // R7 Favourite, R8 Add to playlist…, P4 Reload artwork
     }
 }

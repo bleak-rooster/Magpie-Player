@@ -225,7 +225,18 @@ public final class CarPlayController: NSObject {
         case .open(let destination): open(destination)
         case .play(let request): play(request)
         case .tryNext(let recording): offerTry(recording)
+        case .onItsWay: showOnItsWay()
         }
+    }
+
+    /// R20: a song already on its way: "On its way" / "It goes next when it's here.", OK. Never a second Try.
+    private func showOnItsWay() {
+        guard interface.presentedTemplate == nil else { return }
+        let ok = CPAlertAction(title: CPOnItsWay.ok, style: .cancel) { [weak self] _ in
+            self?.interface.dismissTemplate(animated: true, completion: nil)
+        }
+        interface.presentTemplate(CPActionSheetTemplate(title: CPOnItsWay.title, message: CPOnItsWay.message, actions: [ok]),
+                                  animated: true, completion: nil)
     }
 
     private func open(_ destination: CPDestination) {
@@ -277,7 +288,8 @@ public final class CarPlayController: NSObject {
             return {
                 let r = try await library.search(query)
                 let offer = library.tryOffer
-                return { CarPlayRows.searchResults(r.library, notYet: r.notYet, offer: offer, playingId: $0) }
+                return { CarPlayRows.searchResults(r.library, notYet: r.notYet, offer: offer, onTheirWay: r.onTheirWay,
+                                                   playingId: $0) }
             }
         case .search:
             return { { _ in [] } }
@@ -736,7 +748,8 @@ extension CarPlayController: CPSearchTemplateDelegate {
                 lastSearch = query
                 let offer = library.tryOffer
                 let rows = await Task.detached(priority: .userInitiated) {
-                    CarPlayRows.searchItems(result.library, notYet: result.notYet, offer: offer)
+                    CarPlayRows.searchItems(result.library, notYet: result.notYet, offer: offer,
+                                            onTheirWay: result.onTheirWay)
                 }.value
                 let fitted = CarPlayRows.fitSearchItems(rows, maxItems: Int(CPListTemplate.maximumItemCount))
                 let binding = ListBinding(template: CPListTemplate(title: nil, sections: []))
