@@ -60,3 +60,33 @@ Status: DONE. Branch `x8-outside-pages` (off v0.0.1-custom). Worktree: `.claude/
 - **Not exercised end-to-end:** no UI test opens an outside page, since that would reach musicbrainz.org (G0).
 - **Large catalogues:** artists with more than 200 official releases list only the first 200.
 - **Scope:** CarPlay has no outside pages; R19 asked only for the search check there.
+
+## Fix round (review 0C/2I + polish), after merging v0.0.1-custom (X1)
+- I1 (9a2347e): Try this album now dedupes only against a live request for its release group, in both the runner (`liveTry`) and `TrySheet.existingPhase(album:)`.
+  - A single-song request for track 1 no longer stands for the album.
+  - RED: `TryAlbumTests.anEarlierSongTryOfTrackOneIsNotTheAlbum` failed with 4 issues before the fix.
+  - Also added: `OutsidePagesAppTests.trySheetForTheAlbumIgnoresASongRequestOfTrackOne`.
+- I2: each outside page now builds and loads its model in one task, `OutsideArtistModel.open` / `OutsideAlbumModel.open`, so the order SwiftUI runs tasks in no longer matters.
+  - RED: compile-level (missing symbols).
+  - Test: `thePageTaskBuildsAndLoadsTheModel`.
+- Try this album is hidden where it can't work: an album with a secondary type (Live, Compilation…) by an artist not known to be in Lidarr.
+  - The rule is `OutsideAlbumModel.canTryAlbum`, tested.
+- Review Minors:
+  - A Magpie-added artist's target must now fit the Finds profile.
+  - The `rgNone` sentinel is gone.
+  - The `OutsideCatalog.reset` comment no longer claims sign-out clears it.
+- Polish (a) and (b) (44756bc), tested in QueueActionsTests (RED was compile-level):
+  - The queue toasts last 1.5 s (`LibraryNotice.shown`).
+  - Offline, Play next or Add to queue on an album or playlist with nothing downloaded says "Nothing downloaded" instead of asking.
+- Polish (c), deflaked tests (cb4ecca, abab9cc); no assertion was weakened:
+  - The remove test starts the second remove only once the first is under way.
+  - The probe test counts requests by when they were sent.
+  - The icon picker answers the system alert wherever it shows, until the icon is chosen.
+  - The layout editor test waits until both drag handles can be tapped.
+  - A new UI-testing-only `-MagpieResetLayouts` resets layouts on every BrowseFlow launch, and on failure through a teardown relaunch.
+  - The DownloadingNow test first clears any download an earlier test left. It failed in the full run for that reason, and passed once fixed and re-run with the leftover state in place.
+- Final runs:
+  - Packages: green.
+  - App suite (app uninstalled first): 1108 passed, 1 failed (DownloadingNow, fixed above).
+  - UI target re-run: 23 passed, 3 skipped.
+  - check-writes.sh and check-release.sh: OK.
