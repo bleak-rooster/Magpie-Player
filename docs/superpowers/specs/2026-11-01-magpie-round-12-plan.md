@@ -149,13 +149,19 @@ Two things could still explain it:
     - Its per-track delete doesn't apply to flows.
     - Its "research" route finds its own file first.
     - `DELETE /api/library/tracks/:id` would delete the **Lidarr** copy, so it is never used.
-  - **Chosen approach: swap the playlist entry.**
-    - The flow playlists in Navidrome belong to the owner's user and are writable.
-    - When a Discover playlist is opened, and after a matching import, Magpie rewrites the playlist in its existing order with the main-library copies in place of the Aurral entries.
-    - It uses `updatePlaylist` (remove all, re-add), sends once (X3 rule), re-reads to verify, and skips while Aurral's worker is busy.
-    - The same swap runs in the owner's own playlists that hold the Aurral copy, so Aurral isn't made to keep the file.
-    - Aurral's next republish undoes the swap, so it's redone on each open.
-  - **The Aurral file itself** stays on disk until the flow's next weekly run deletes it (it's no longer referenced). Magpie never touches Aurral's files.
+  - **Chosen approach (owner 2026-11-01: keep every other Aurral song and don't disrupt the system): swap in Magpie, never in Aurral's data.**
+    - **No writes** to Aurral, to its flow playlists in Navidrome, or to its files.
+      - Rewriting the flow playlists would race Aurral's republish (mixed lists) and be undone each run, so it's dropped.
+      - The Aurral Playlists library and every other flow song stay exactly as Aurral manages them.
+    - **When Magpie shows or plays a Discover playlist:**
+      - each entry whose recording is in the main library is replaced by the main-library song, in the same position;
+      - the match is by MusicBrainz recording ID, else artist + title + duration within 3 s, and never by name alone;
+      - it plays from your library and is marked "In your library";
+      - every other entry is untouched.
+    - **The Aurral copy is hidden only where a duplicate would show:** search, artist and album pages, and Library. Discover still lists every flow song.
+    - **In the owner's *own* playlists** (never Aurral's) that contain the Aurral copy, Magpie offers a one-tap "Use your library's copy", sent through X3's checked playlist write. Otherwise the reference would keep Aurral from deleting the file.
+    - **Self-healing:** at Aurral's next weekly run the old file is no longer referenced and Aurral deletes it. Its "reuse existing files" setting (owner: on) then points the flow at Lidarr's copy, so the duplicate is gone for good with no action from Magpie.
+  - **The Aurral file itself** stays on disk until that weekly run. Magpie never touches Aurral's files.
 - **Tests:** the endpoint allow-list (any other path is refused), never calling settings, flow↔playlist matching, the duplicate swap, and Refresh confirming and refusing while a run is active.
 
 ## 8. Finds: the right status, and "Add to your library" that finishes the job
@@ -251,6 +257,6 @@ Y1–Y5 run in parallel, at most 4 at a time to limit machine load. Y6 follows Y
 ## Owner answers (2026-11-01)
 
 1. **Home:** Magpie runs the read-only diagnosis against the owner's server itself; the owner sends screenshots only if it can't be reproduced.
-2. **Aurral duplicates:** find a supported way to replace the Aurral file with the main-library copy. If there is none, leave it until the flow rotates it out, with Magpie hiding the duplicate meanwhile. The research is in docs/research/aurral.md, "Replacing a flow track".
+2. **Aurral duplicates:** replace the duplicate with the main-library copy without disturbing Aurral or the other songs in the Aurral Playlists library (follow-up 2026-11-01). Aurral has no supported per-track replace, so Magpie swaps it in what it shows and plays, and Aurral's weekly run removes the file. The research is in docs/research/aurral.md, "Replacing a flow track".
 3. **MP3 after Add:** kept until a FLAC replaces it, or auto-deleted after 7 days whichever comes first; manual delete any time (see item 8).
 4. **Plan only for now:** no building until the owner says go.
