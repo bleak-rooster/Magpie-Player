@@ -37,10 +37,15 @@ struct TrySheet: View {
     }
 
     /// R17: a song already on its way (or Ready) opens its request instead of a second Try. Nil: Try as usual.
-    static func existingPhase(for recording: ExternalRecording, releaseGroup: MBID? = nil,
+    /// - Parameters:
+    ///   - album: Try this album: only a request bringing in that release group counts; a single-song request for its
+    ///     first track never stands for the album (review I1).
+    ///   - releaseGroup: a track of an outside album: its own request, else its album's (R20).
+    static func existingPhase(for recording: ExternalRecording, album: MBID? = nil, releaseGroup: MBID? = nil,
                               in requests: [MagpieRequest]) -> Phase? {
-        guard let live = RequestLinks.request(for: recording, in: requests)
-                ?? RequestLinks.request(releaseGroup: releaseGroup, in: requests) else { return nil }
+        let found = album.map { RequestLinks.request(releaseGroup: $0, in: requests) }
+            ?? (RequestLinks.request(for: recording, in: requests) ?? RequestLinks.request(releaseGroup: releaseGroup, in: requests))
+        guard let live = found else { return nil }
         return live.tier.asksInsteadOfWaiting ? .asked(live.id) : .waiting(live.id)
     }
 
@@ -72,7 +77,7 @@ struct TrySheet: View {
         .sheet(isPresented: $showsSettings) { SettingsView(opening: [.requests]) }   // T21b: every reason Try names is on New music
         .onAppear {
             // R17: a song already on its way opens its request, never a second Try.
-            if phase == .choosing, let live = Self.existingPhase(for: recording, releaseGroup: albumGroup ?? releaseGroup,
+            if phase == .choosing, let live = Self.existingPhase(for: recording, album: albumGroup, releaseGroup: releaseGroup,
                                                                  in: model.requests) { phase = live }
         }
         .task { if outsideArt == nil { outsideArt = model.makeOutsideArt() } }   // R16

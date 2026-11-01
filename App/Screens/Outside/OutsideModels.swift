@@ -31,6 +31,21 @@ enum OutsidePhase: Equatable {
         lidarrLine = ArtistLidarrModel(model: app, name: artist.name, mbid: artist.mbid)
     }
 
+    /// The page's one task (review I2): builds the model when there's none, shows it, then loads it, so the page
+    /// loads whatever order SwiftUI runs its tasks in.
+    static func open(_ existing: OutsideArtistModel?, app: AppModel, artist: NotYetArtist,
+                     show: (OutsideArtistModel) -> Void) async -> OutsideArtistModel {
+        let model = existing ?? OutsideArtistModel(app: app, artist: artist)
+        show(model)
+        await model.load()
+        return model
+    }
+
+    /// Try this album on this row can work (see `OutsideAlbumModel.canTryAlbum`).
+    func canTryAlbum(_ item: OutsideArtistSections.Item) -> Bool {
+        OutsideAlbumModel.canTryAlbum(kind: item.kind, artist: lidarrLine.state)
+    }
+
     func load() async {
         guard !app.isOffline else { phase = .offline; return }
         if phase != .loaded { phase = .loading }
@@ -84,6 +99,28 @@ enum OutsideTrackRow: Equatable {
         self.librarySong = librarySong ?? { [weak app] in await app?.librarySong(for: $0) }
         lidarrLine = ArtistLidarrModel(model: app, name: album.artist, mbid: album.artistMBID)
     }
+
+    /// The page's one task (review I2), as for the artist page.
+    static func open(_ existing: OutsideAlbumModel?, app: AppModel, album: NotYetAlbum,
+                     show: (OutsideAlbumModel) -> Void) async -> OutsideAlbumModel {
+        let model = existing ?? OutsideAlbumModel(app: app, album: album)
+        show(model)
+        await model.load()
+        return model
+    }
+
+    /// Whether Try this album can work: a studio Album, EP or Single (or an unknown kind) for any artist; a release
+    /// with a secondary type (Live, Compilation…) only for an artist known to be in Lidarr. A new artist's add can
+    /// only monitor what the Finds metadata profile lists (official studio releases), so it would always fail.
+    nonisolated static func canTryAlbum(kind: String?, artist: ArtistLidarrState?) -> Bool {
+        if kind == nil || ["album", "ep", "single"].contains(kind!.lowercased()) { return true }
+        switch artist {
+        case .monitored?, .notMonitored?: return true
+        case .notInLidarr?, nil: return false
+        }
+    }
+
+    var canTryAlbum: Bool { tryTarget != nil && Self.canTryAlbum(kind: album.kind, artist: lidarrLine.state) }
 
     func load() async {
         guard !app.isOffline else { phase = .offline; return }

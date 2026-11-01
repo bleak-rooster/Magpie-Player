@@ -24,11 +24,11 @@ struct OutsideAlbumView: View {
         .navigationBarTitleDisplayMode(.inline)
         .magpieScreen()
         .sheet(item: $trying) { TrySheet(target: $0) }
-        .task {
-            if model == nil { model = OutsideAlbumModel(app: app, album: album) }
+        // One task builds and loads (review I2); again when offline mode flips.
+        .task(id: app.isOffline) {
             if art == nil { art = app.makeOutsideArt() }
+            _ = await OutsideAlbumModel.open(model, app: app, album: album) { model = $0 }
         }
-        .task(id: app.isOffline) { await model?.load() }
         // R17: something for this album is Ready: the library is asked again, and its tracks become library songs.
         .task(id: model?.landingKey ?? []) { await model?.refreshLanded() }
         .onDisappear { art?.reset() }
@@ -57,7 +57,7 @@ struct OutsideAlbumView: View {
                     .accessibilityIdentifier("outside-album-request")
                 } else {
                     StatusLine(.notYet)
-                    if model.phase == .loaded, let target = model.tryTarget {
+                    if model.phase == .loaded, model.canTryAlbum, let target = model.tryTarget {
                         CapsuleButton(TrySheet.tryAlbumTitle, symbol: "sparkles") { trying = target }
                             .accessibilityIdentifier("outside-album-try")
                     }

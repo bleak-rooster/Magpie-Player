@@ -67,4 +67,21 @@ import MagpieCore
         #expect(await h.runner.requests.count == 1)
         #expect(h.server.writeBodies().map(\.0) == ["POST artist"])
     }
+
+    /// Review I1: a single-song request for the album's first track never stands for the album: Try this album then
+    /// makes its own request, aimed at the album.
+    @Test func anEarlierSongTryOfTrackOneIsNotTheAlbum() async throws {
+        let h = await Harness()
+        h.server.artistIsNew()
+        let song = try await h.runner.tryRecording(h.recording(recSingleAndAlbum), tier: .standard)
+        await h.runner.settle()
+        #expect(await h.request(song)?.plan?.releaseGroupMBID == rgSingle)
+        let album = try await h.runner.tryRecording(h.recording(recSingleAndAlbum), tier: .standard, album: rgAlbum)
+        #expect(album != song)
+        #expect(await h.runner.requests.count == 2)
+        #expect(await h.request(album)?.albumTarget == rgAlbum)
+        // A song request that resolved to the album itself does count.
+        let again = try await h.runner.tryRecording(h.recording(recAlbumOnly), tier: .standard, album: rgAlbum)
+        #expect(again == album)
+    }
 }

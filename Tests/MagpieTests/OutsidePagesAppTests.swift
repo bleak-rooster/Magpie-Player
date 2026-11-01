@@ -137,6 +137,48 @@ private let rec2 = mb(101)
         #expect(TrySheet.existingPhase(for: track, releaseGroup: rgAlbum, in: [other, stopped]) == nil)
     }
 
+    /// Review I1: Try this album on an album whose first track was Tried on its own (resolved to the single) opens
+    /// the Try, not the song's request; a request bringing in the album itself does open.
+    @Test func trySheetForTheAlbumIgnoresASongRequestOfTrackOne() {
+        let first = ExternalRecording(recordingMBID: rec1, artistMBID: artistMBID, title: "First Light", artist: "Aurora Field",
+                                      source: .lidarr)
+        let songTry = Self.request(.searching, recording: first, plan: rgEP)
+        #expect(TrySheet.existingPhase(for: first, album: rgAlbum, in: [songTry]) == nil)
+        let albumTry = Self.request(.searching, recording: first, plan: rgAlbum, target: rgAlbum)
+        #expect(TrySheet.existingPhase(for: first, album: rgAlbum, in: [songTry, albumTry]) == .waiting(albumTry.id))
+        // The per-track Try keeps its song-first rule.
+        #expect(TrySheet.existingPhase(for: first, releaseGroup: rgAlbum, in: [songTry]) == .waiting(songTry.id))
+    }
+
+    /// Review I2: the page's one task builds the model when there is none and loads it, whatever order SwiftUI runs
+    /// its tasks in; a later run (offline flips) reuses the same model.
+    @Test func thePageTaskBuildsAndLoadsTheModel() async throws {
+        let app = makeModel()
+        var shown: [ObjectIdentifier] = []
+        let artistPage = await OutsideArtistModel.open(nil, app: app, artist: NotYetArtist(name: "Aurora Field", mbid: artistMBID)) {
+            shown.append(ObjectIdentifier($0))
+        }
+        #expect(artistPage.phase == .loaded && artistPage.sections.albums.count == 1)
+        #expect(shown == [ObjectIdentifier(artistPage)], "shown before it loads (the spinner)")
+        let again = await OutsideArtistModel.open(artistPage, app: app, artist: artistPage.artist) { _ in }
+        #expect(again === artistPage)
+        let albumPage = await OutsideAlbumModel.open(nil, app: app, album: Self.album) { _ in }
+        #expect(albumPage.phase == .loaded && albumPage.tracks.count == 2)
+    }
+
+    /// Try this album shows only where it can work: a studio album, or any album of an artist already in Lidarr. A live
+    /// album (or other secondary type) of an artist not in Lidarr can't be brought in (the Finds profile), so it's hidden.
+    @Test func tryThisAlbumIsHiddenWhereItCantWork() {
+        #expect(OutsideAlbumModel.canTryAlbum(kind: "Album", artist: .notInLidarr(mbid: artistMBID)))
+        #expect(OutsideAlbumModel.canTryAlbum(kind: "EP", artist: nil))
+        #expect(OutsideAlbumModel.canTryAlbum(kind: "Single", artist: .notInLidarr(mbid: nil)))
+        #expect(OutsideAlbumModel.canTryAlbum(kind: nil, artist: .notInLidarr(mbid: nil)), "unknown: an album")
+        #expect(!OutsideAlbumModel.canTryAlbum(kind: "Live", artist: .notInLidarr(mbid: artistMBID)))
+        #expect(!OutsideAlbumModel.canTryAlbum(kind: "Compilation", artist: nil), "not known to be in Lidarr")
+        #expect(OutsideAlbumModel.canTryAlbum(kind: "Live", artist: .monitored(lidarrId: 7, searching: false)))
+        #expect(OutsideAlbumModel.canTryAlbum(kind: "Live", artist: .notMonitored(lidarrId: 7, magpieAdded: false)))
+    }
+
     /// The album lands: the page asks the library again and its tracks turn into library songs in place.
     @Test func anItemThatLandsUpdatesInPlace() async throws {
         let app = makeModel()

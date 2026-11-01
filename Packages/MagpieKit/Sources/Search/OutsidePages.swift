@@ -109,7 +109,7 @@ public actor OutsideCatalog {
         return picked
     }
 
-    /// Sign-out or another account: nothing read is kept.
+    /// Drops what was read (public MusicBrainz data, not tied to an account; the app keeps it for the session).
     public func reset() {
         groups = [:]
         releases = [:]

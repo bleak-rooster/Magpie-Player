@@ -252,8 +252,7 @@ public actor RequestRunner {
     public func tryRecording(_ recording: ExternalRecording, tier: Tier, album: MBID? = nil,
                              releaseGroup: MBID? = nil) async throws -> RequestID {
         guard !stopped, await load() else { throw TryError.unavailable }
-        if let existing = list.first(where: { ($0.isActive || $0.state == .ready) && Self.sameSong($0.recording, recording) })
-            ?? liveRequest(releaseGroup: album ?? releaseGroup) {
+        if let existing = liveTry(recording, album: album, releaseGroup: releaseGroup) {
             return existing.id
         }
         guard await gate.enabled else { throw TryError.changesOff }
@@ -497,7 +496,7 @@ public actor RequestRunner {
             // An artist Magpie just added may not list its albums yet (Lidarr's refresh): pick as for a new artist.
             let magpies = (try? await ledger.createdArtist(artist)) == true
             let fits = Set(recording.releases.filter(Self.fitsFindsProfile).map(\.releaseGroup.id))
-            guard let rg = Self.albumTarget(r.albumTarget, allowed: available.contains(r.albumTarget ?? rgNone) || magpies)
+            guard let rg = Self.albumTarget(r.albumTarget, allowed: r.albumTarget.map { available.contains($0) || (magpies && fits.contains($0)) } ?? false)
                     ?? (r.albumTarget != nil ? nil : ReleasePicker.smallest(containing: recording, available: available)
                         ?? (magpies ? ReleasePicker.smallest(containing: recording, available: fits) : nil)) else {
                 return await apply(id, .error(.notInCatalogue))
@@ -509,7 +508,7 @@ public actor RequestRunner {
             // A1: the "Magpie Finds" metadata profile only has official Album/EP/Single studio releases, so
             // only those can be monitored after the add.
             let fits = Set(recording.releases.filter(Self.fitsFindsProfile).map(\.releaseGroup.id))
-            guard let rg = Self.albumTarget(r.albumTarget, allowed: fits.contains(r.albumTarget ?? rgNone))
+            guard let rg = Self.albumTarget(r.albumTarget, allowed: r.albumTarget.map(fits.contains) ?? false)
                     ?? (r.albumTarget != nil ? nil : ReleasePicker.smallest(containing: recording, available: fits)) else {
                 return await apply(id, .error(.noRelease))
             }

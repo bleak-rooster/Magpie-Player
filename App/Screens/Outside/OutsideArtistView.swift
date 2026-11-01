@@ -26,11 +26,11 @@ struct OutsideArtistView: View {
         .navigationBarTitleDisplayMode(.inline)
         .magpieScreen()
         .sheet(item: $trying) { TrySheet(target: $0) }
-        .task {
-            if model == nil { model = OutsideArtistModel(app: app, artist: artist) }
+        // One task builds and loads (review I2); again when offline mode flips ("You're offline", then the page).
+        .task(id: app.isOffline) {
             if art == nil { art = app.makeOutsideArt() }
+            _ = await OutsideArtistModel.open(model, app: app, artist: artist) { model = $0 }
         }
-        .task(id: app.isOffline) { await model?.load() }   // offline and back: "You're offline", then the page
         .onDisappear { art?.reset() }   // R15: the outside art goes with the page
     }
 
@@ -140,7 +140,7 @@ struct OutsideArtistView: View {
             }
             .buttonStyle(.plain)
             .contextMenu {
-                if !app.isOffline {
+                if !app.isOffline, model?.canTryAlbum(item) ?? false {
                     Button(TrySheet.tryAlbumTitle, systemImage: "sparkles") { Task { await tryAlbum(album) } }
                 }
             }
