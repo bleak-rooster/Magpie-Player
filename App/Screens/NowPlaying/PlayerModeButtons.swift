@@ -57,7 +57,7 @@ struct PlayerModeButton: View {
         .accessibilityLabel(kind == .shuffle ? "Shuffle" : "Repeat")
         .accessibilityValue(kind == .shuffle ? PlayerModeControls.shuffleValue(player)
                                              : PlayerModeControls.repeatValue(player.repeatMode))
-        .accessibilityHint(kind == .shuffle ? "" : "Changes between off, all and one")
+        .accessibilityHint(kind == .repeatMode ? "Changes between off, all and one" : "")
         .accessibilityAddTraits(on ? .isSelected : [])
         .accessibilityIdentifier(kind == .shuffle ? "np-shuffle" : "np-repeat")
         .sensoryFeedback(.selection, trigger: kind == .shuffle ? "\(player.isShuffled)" : player.repeatMode.rawValue)

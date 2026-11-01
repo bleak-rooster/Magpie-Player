@@ -185,8 +185,13 @@ extension AppModel {
             queueActions.show("Downloading", symbol: "arrow.down.to.line")
         case .favourite:
             let on = !isFavourite(.song(song.id))
-            queueActions.show(on ? "Added to favourites" : "Removed from favourites", symbol: on ? "star.fill" : "star")
-            Task { await setFavourite(.song(song.id), on) }
+            Task {
+                await setFavourite(.song(song.id), on)
+                // Confirmed only once it took (a refusal says so through the favourites' own notice).
+                if isFavourite(.song(song.id)) == on {
+                    queueActions.show(on ? "Added to favourites" : "Removed from favourites", symbol: on ? "star.fill" : "star")
+                }
+            }
         case .none: break
         }
     }
