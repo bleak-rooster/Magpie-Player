@@ -64,6 +64,8 @@ public enum RowAction: Sendable, Hashable {
     case play(CPPlayRequest)
     /// A not-yet song: offers "Try it next" in an action sheet (modal, no push; D6).
     case tryNext(ExternalRecording)
+    /// A not-yet song already on its way (R20): says so ("On its way"), never a second Try.
+    case onItsWay
 }
 
 public struct CPRowModel: Sendable, Hashable, Identifiable {
@@ -251,14 +253,16 @@ public enum CarPlayRows {
 
     /// A recent search re-run: library songs, then albums, then songs not in the library (D4: library first).
     public static func searchResults(_ result: LibrarySearchResult, notYet: [ExternalRecording] = [],
-                                     offer: CPTryOffer = .unavailable, playingId: String?) -> [CPSectionModel] {
+                                     offer: CPTryOffer = .unavailable, onTheirWay: [Int: String] = [:],
+                                     playingId: String?) -> [CPSectionModel] {
         let songs = CPSectionModel(header: "Songs", rows: result.songs.enumerated().map { i, song in
             CPRowModel(id: "song.\(i).\(song.id)", title: display(song.title, untitled), detail: song.artist,
                        artworkKey: song.coverArtId, playing: song.id == playingId,
                        action: .play(.songs(result.songs, startAt: i)))
         })
         let albums = CPSectionModel(header: "Albums", rows: unique(result.albums, \.id).map { albumRow($0, id: "album.\($0.id)") })
-        let outside = CPSectionModel(header: RowState.notYet.statusText, rows: notYetRows(notYet, offer: offer))
+        let outside = CPSectionModel(header: RowState.notYet.statusText,
+                                     rows: notYetRows(notYet, offer: offer, onTheirWay: onTheirWay))
         let sections = [songs, albums, outside].filter { !$0.rows.isEmpty }
         return sections.isEmpty ? state(.empty) : sections
     }
@@ -266,7 +270,7 @@ public enum CarPlayRows {
     /// Results for the system search template, which shows a flat list: the kind goes in the
     /// detail line. Songs not in the library come last.
     public static func searchItems(_ result: LibrarySearchResult, notYet: [ExternalRecording] = [],
-                                   offer: CPTryOffer = .unavailable) -> [CPRowModel] {
+                                   offer: CPTryOffer = .unavailable, onTheirWay: [Int: String] = [:]) -> [CPRowModel] {
         let songs = result.songs.enumerated().map { i, song in
             CPRowModel(id: "song.\(i).\(song.id)", title: display(song.title, untitled), detail: "Song · \(song.artist)",
                        artworkKey: song.coverArtId, action: .play(.songs(result.songs, startAt: i)))
@@ -276,7 +280,7 @@ public enum CarPlayRows {
             return CPRowModel(id: "album.\($0.id)", title: name, detail: "Album · \($0.artist)",
                               artworkKey: $0.coverArtId, action: .open(.album(id: $0.id, title: name)))
         }
-        return songs + albums + notYetRows(notYet, offer: offer)
+        return songs + albums + notYetRows(notYet, offer: offer, onTheirWay: onTheirWay)
     }
 
     /// Fits the search template's flat list into `maxItems`: library rows first (D4), but when the list is too long,
@@ -294,14 +298,21 @@ public enum CarPlayRows {
 
     /// A song from outside the library: a record with "Not in your library" and its symbol (D3), and "· Try" when
     /// Try is possible here; then a tap offers "Try it next". Otherwise the row does nothing.
-    static func notYetRows(_ recordings: [ExternalRecording], offer: CPTryOffer) -> [CPRowModel] {
+    /// R17 / R20: a song in `onTheirWay` (by index) shows its request's status and a tap says it's on its way; never a
+    /// second Try.
+    static func notYetRows(_ recordings: [ExternalRecording], offer: CPTryOffer,
+                           onTheirWay: [Int: String] = [:]) -> [CPRowModel] {
         let state = RowState.notYet
         let status = offer == .unavailable ? state.statusText : "\(state.statusText) · Try"
         return recordings.enumerated().map { i, recording in
-            CPRowModel(id: "\(notYetPrefix)\(i).\(recording.recordingMBID?.rawValue ?? recording.title)",
-                       title: display(recording.title, untitled),
-                       detail: "\(status) · \(display(recording.artist, unknownArtist))", round: true,
-                       action: offer == .unavailable ? .none : .tryNext(recording), statusSymbol: state.statusSymbol)
+            let id = "\(notYetPrefix)\(i).\(recording.recordingMBID?.rawValue ?? recording.title)"
+            let artist = display(recording.artist, unknownArtist)
+            if let live = onTheirWay[i] {
+                return CPRowModel(id: id, title: display(recording.title, untitled), detail: "\(live) · \(artist)",
+                                  round: true, action: .onItsWay, statusSymbol: "arrow.down.circle")
+            }
+            return CPRowModel(id: id, title: display(recording.title, untitled), detail: "\(status) · \(artist)", round: true,
+                              action: offer == .unavailable ? .none : .tryNext(recording), statusSymbol: state.statusSymbol)
         }
     }
 

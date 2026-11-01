@@ -13,7 +13,8 @@ struct ArtistView: View {
     @State private var page: Loadable<Page> = .loading
     /// Whether what is shown came from the phone (offline) or the server; a change of offline mode loads again.
     @State private var loadedOffline: Bool?
-    @State private var topSongs: [Song] = []
+    /// R3: Popular, from this account's saved list at once, then the server's when it differs.
+    @State private var popular: PopularSongs?
     @State private var notYetAlbums: [NotYetAlbum] = []
     @State private var gathering = false
     @State private var playError: String?
@@ -34,7 +35,18 @@ struct ArtistView: View {
         }
         .navigationTitle(page.value?.artist.name ?? "")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            // R7 (the UX appraisal's header): Favourite and ⋯ in the toolbar, not more capsules.
+            if let artist = page.value?.artist, !model.isOffline, !OfflineCatalog.isLocalId(artist.id) {
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    FavouriteButton(target: .artist(artist.id))
+                    PageMoreMenu(coverArtId: artist.coverArtId, identifier: "artist-more") { EmptyView() }
+                }
+            }
+        }
+        .background { ArtBackdrop(coverArtId: page.value?.artist.coverArtId) }   // R13: tinted by the artist's art
         .magpieScreen()
+        .immersiveArt(coverArtId: page.value?.artist.coverArtId)
         // Again when offline mode changes, and offline when songs land on or leave the phone (the store may be
         // unreadable before first unlock): the downloaded albums offline, the server's online.
         .task(id: model.offlinePageKey) {
@@ -78,7 +90,7 @@ struct ArtistView: View {
             .frame(maxWidth: .infinity)
             .padding(.horizontal, Tokens.Spacing.margin)
 
-            if !topSongs.isEmpty {
+            if let topSongs = popular?.songs, !topSongs.isEmpty {
                 VStack(alignment: .leading, spacing: Tokens.Spacing.s) {
                     Text("Popular").magpieDisplay(.title2).accessibilityAddTraits(.isHeader)
                         .padding(.horizontal, Tokens.Spacing.margin)
@@ -90,8 +102,10 @@ struct ArtistView: View {
                         }
                         .buttonStyle(.plain)
                         .accessibilityAddTraits(.isButton)
+                        .contextMenu { SongLibraryMenuItems(song: song) }   // R7, R8
                     }
                 }
+                .transaction { $0.animation = nil }   // R3: a refreshed list swaps in place, no animation storm
             }
 
             VStack(alignment: .leading, spacing: Tokens.Spacing.m) {
@@ -134,7 +148,7 @@ struct ArtistView: View {
         // Offline (Task 14), or an artist the catalog grouped itself: their downloaded albums, from the phone.
         if model.isOffline || OfflineCatalog.isLocalId(artistId) {
             let catalog = await model.offlineCatalog
-            topSongs = []
+            popular = nil
             notYetAlbums = []
             guard let artist = catalog.artists().first(where: { $0.id == artistId }) else {
                 page = .failed(OfflineCopy.notOnPhone)
@@ -144,23 +158,26 @@ struct ArtistView: View {
             lidarrLine = ArtistLidarrModel(model: model, name: artist.name, mbid: artist.mbid)   // "You're offline"
             return
         }
+        // R3: the saved Popular is ready the moment the page is, without waiting for the server's top songs.
+        if popular?.artistId != artistId { popular = model.popularSongs(artistId: artistId) }
         do {
             let (artist, albums) = try await model.request { [artistId] in try await $0.artist(id: artistId) }
             page = .loaded(Page(artist: artist, albums: albums))
             model.noteAlbumSongCounts(albums)   // P1: backfills downloads saved without the album's count
+            model.noteFavourite(.artist(artist.id), artist.starred)   // R7
             let name = artist.name
             // Both fill in after the page; neither waits for the other.
-            async let popular: Void = loadTopSongs(name)
+            async let top: Void = loadTopSongs(name)
             async let notYet: Void = loadNotYetAlbums(artist, library: albums)
             async let inLidarr: Void = loadLidarrLine(artist)
-            _ = await (popular, notYet, inLidarr)
+            _ = await (top, notYet, inLidarr)
         } catch {
             page = .failed(BrowseErrorCopy.message(for: error))
         }
     }
 
     private func loadTopSongs(_ name: String) async {
-        topSongs = (try? await model.request { try await $0.topSongs(artistName: name) }) ?? []
+        if let popular { await model.refreshPopular(popular, artistName: name) }
     }
 
     private func loadLidarrLine(_ artist: Artist) async {

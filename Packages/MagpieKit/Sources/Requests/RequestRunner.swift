@@ -137,7 +137,16 @@ public actor RequestRunner {
 
     private(set) var list: [MagpieRequest] = []
     private var loaded = false
-    private var busy: Set<RequestID> = []
+    /// Requests with a step running (internal for R17's stall handling and Search again).
+    var busy: Set<RequestID> = []
+    /// R17 (RequestRunner+Stall.swift): each Soulseek download being watched, by queue id; the Soulseek clients'
+    /// names (read once per runner); how long a download may sit unchanged.
+    var stallWatch: [Int: StallWatch] = [:]
+    var soulseekClients: Set<String>?
+    var stallLimit: TimeInterval = StallLimit.standard.seconds
+    /// N1: requests whose next search follows a copy just removed: that search goes out even at the cap (the cap
+    /// stops further removals, not the search that belongs to the last one).
+    var searchAfterRemoval: Set<RequestID> = []
     /// Lidarr artists a Keep, a Not for me or a Bring in more is working on right now (RequestRunner+Keep.swift,
     /// RequestRunner+NotForMe.swift, RequestRunner+BringInMore.swift): one at a time per artist, so they never run
     /// together on one artist.
@@ -475,7 +484,7 @@ public actor RequestRunner {
             && release.status?.lowercased() == "official"
     }
 
-    static func sameSong(_ a: ExternalRecording, _ b: ExternalRecording) -> Bool {
+    public static func sameSong(_ a: ExternalRecording, _ b: ExternalRecording) -> Bool {
         if let x = a.recordingMBID, let y = b.recordingMBID { return x == y }
         let fold = { (s: String) in s.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
         return fold(a.title) == fold(b.title) && fold(a.artist) == fold(b.artist)
@@ -907,7 +916,10 @@ public actor RequestRunner {
 
     private func startSearch(_ id: RequestID) async {
         guard let r = request(id) else { return }
-        if r.skipNextSearch || r.albumId == nil {
+        // M3 ruling: once five copies were dropped, Magpie sends no searches of its own for this request; Lidarr's
+        // own monitoring carries on and the request stays live until its normal expiry.
+        let afterRemoval = searchAfterRemoval.remove(id) != nil
+        if r.skipNextSearch || r.albumId == nil || (r.removalsUsedUp && !afterRemoval) {
             await mutate(id) {
                 $0.skipNextSearch = false
                 if $0.searchStartedAt == nil { $0.searchStartedAt = self.now() }
@@ -967,7 +979,8 @@ public actor RequestRunner {
                 await apply(r.id, .imported)
                 continue
             }
-            if let stuck = items.first(where: Self.isStuck) {
+            if await handledStall(r.id, items) { continue }   // R17 (RequestRunner+Stall.swift)
+            if let stuck = items.first(where: { Self.isStuck($0) && !isSoulseekDownloading($0) }) {
                 // IMPORTANT 5: blocked or failed import sits in the queue at 100%: that is a wait, not progress.
                 await mutate(r.id) {
                     $0.grabbed = true

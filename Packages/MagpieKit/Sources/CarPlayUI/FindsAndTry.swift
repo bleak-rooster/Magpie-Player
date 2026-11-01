@@ -159,10 +159,20 @@ public enum CPTryProblem: Sendable, Hashable {
 public struct CarPlaySearchResult: Sendable, Hashable {
     public var library: LibrarySearchResult
     public var notYet: [ExternalRecording]
+    /// R17 / R20: the status of each not-yet song that already has a live request, by its index in `notYet`
+    /// ("Bringing it home · 40%"). Those rows say so and never offer a second Try.
+    public var onTheirWay: [Int: String]
 
-    public init(library: LibrarySearchResult, notYet: [ExternalRecording] = []) {
-        self.library = library; self.notYet = notYet
+    public init(library: LibrarySearchResult, notYet: [ExternalRecording] = [], onTheirWay: [Int: String] = [:]) {
+        self.library = library; self.notYet = notYet; self.onTheirWay = onTheirWay
     }
+}
+
+/// A tap on a song already on its way (R20 §7). Describes; never instructs (D12).
+public enum CPOnItsWay {
+    public static let title = "On its way"
+    public static let message = "It goes next when it's here."
+    public static let ok = "OK"
 }
 
 /// The bridge (CarPlay H3, review D6): a library mix seeded by the tried song's artist that plays while the find

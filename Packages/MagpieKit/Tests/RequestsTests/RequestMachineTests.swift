@@ -32,6 +32,7 @@ private enum S: String, CaseIterable {
 private enum E: String, CaseIterable {
     case start, resolved, added, searchStarted, queueProgress, imported, visibleInLibrary, noGrabAfter
     case lidarrUnavailable, downloadFailed, cancel, keep, notForMe, retryDue, error
+    case searchAgain, stalled
     var value: RequestEvent {
         switch self {
         case .start: .start
@@ -49,6 +50,8 @@ private enum E: String, CaseIterable {
         case .notForMe: .notForMe
         case .retryDue: .retryDue
         case .error: .error(.addFailed)
+        case .searchAgain: .searchAgain
+        case .stalled: .stalled
         }
     }
 }
@@ -87,6 +90,8 @@ private func _guardEvent(_ e: RequestEvent) -> E {
     case .notForMe: .notForMe
     case .retryDue: .retryDue
     case .error: .error
+    case .searchAgain: .searchAgain
+    case .stalled: .stalled
     }
 }
 
@@ -119,6 +124,9 @@ private let valid: [Key: (RequestState, [Effect])] = {
         Key(s: .ready, e: .notForMe): (.dismissed, [.cleanup]),
         Key(s: .waiting, e: .retryDue): (.resolving, [.resolveRelease]),
     ]
+    // R17: search again before anything was imported; a stall with the retries used up waits as still looking.
+    for s in [S.searching, .downloading, .waiting] { m[Key(s: s, e: .searchAgain)] = (.searching, [.startSearch]) }
+    for s in [S.searching, .downloading] { m[Key(s: s, e: .stalled)] = retry(.stillLooking, after: 60) }
     for s in [S.resolving, .adding, .searching, .downloading, .importing] {
         m[Key(s: s, e: .lidarrUnavailable)] = retry(.serviceUnavailable, after: 60)
         m[Key(s: s, e: .error)] = (.failed(reason: .addFailed), [.cleanup])

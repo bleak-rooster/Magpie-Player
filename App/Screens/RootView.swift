@@ -18,6 +18,8 @@ struct RootView: View {
             } else {
                 MainTabs()
                     .environment(\.songIsDownloaded, model.songIsDownloaded)   // P1: every song row's mark
+                    .libraryEditsPresenter()   // R7, R8: Add to playlist from menus, and the library's notices
+                    .immersiveArt(coverArtId: model.player.queue.current?.song.coverArtId)   // R13: what's playing colours the app
             }
         }
         .magpieTheme(theme)
@@ -62,6 +64,7 @@ struct MainTabs: View {
         }
         .sheet(isPresented: $showNowPlaying) {
             NowPlayingView()
+                .immersiveArt(coverArtId: model.player.queue.current?.song.coverArtId)   // R13
         }
     }
 }
@@ -94,6 +97,8 @@ private struct PlayNowBannerView: View {
     @Environment(AppModel.self) private var model
     let banner: PlayNowBanner
     let open: () -> Void
+    /// R17: the banner's "Show request" opens the request's page over it.
+    @State private var showsRequest = false
     private let themed = Themed()
 
     var body: some View {
@@ -155,6 +160,23 @@ private struct PlayNowBannerView: View {
             }
         }
         .accessibilityAction(named: "Not now") { model.dismissBanner() }
+        .accessibilityAction(named: BannerCopy.showRequest) { showsRequest = true }
+        .contextMenu {   // R17: back to its request (a tap still opens Now Playing, B-M4)
+            Button(BannerCopy.showRequest, systemImage: "tray.and.arrow.down") { showsRequest = true }
+        }
+        .sheet(isPresented: $showsRequest) {
+            NavigationStack {
+                RequestDetailView(requestId: banner.request)
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) { Button("Done") { showsRequest = false } }
+                    }
+                    .magpieRoutes()
+            }
+        }
         .accessibilityIdentifier("play-now-banner")
     }
+}
+
+enum BannerCopy {
+    static let showRequest = "Show request"
 }

@@ -45,7 +45,8 @@ public extension Palette {
     var solidSurfaceColor: Color { surface.composited(over: bg).color }
 }
 
-/// The backdrop itself. Non-interactive. In Signature and Classic it is just the plain background.
+/// The backdrop itself. Non-interactive. In Signature and Classic it is just the plain background. With the cover's
+/// palette (R13) it is tinted by the cover's colours.
 public struct ImmersiveBackdrop: View {
     private let image: Image?
     @Environment(\.magpieTheme) private var theme
@@ -61,6 +62,10 @@ public struct ImmersiveBackdrop: View {
                                                  reduceTransparency: reduceTransparency, hasArt: image != nil)
         ZStack {
             p.bgColor
+            // R13: the cover's own colours (both under the floor): an opaque gradient under Reduce Transparency.
+            if mode == .solid, let art = theme.art {
+                LinearGradient(colors: [art.glow.color, art.background.color], startPoint: .top, endPoint: .bottom)
+            }
             if mode == .art, let image {
                 GeometryReader { geo in
                     image.resizable().scaledToFill()
@@ -69,12 +74,23 @@ public struct ImmersiveBackdrop: View {
                         .clipped()
                 }
                 .overlay(Color.black.opacity(ImmersiveScrim.opacity))
+                .overlay { if let art = theme.art { Self.tint(art) } }
                 .transition(.opacity)
             }
         }
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.4), value: mode)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.4), value: theme.art)
         .ignoresSafeArea()
         .allowsHitTesting(false)
         .accessibilityHidden(true)
+    }
+
+    /// The cover's tint over the scrimmed art: its accent at the top fading into its dominant colour. Both sit under
+    /// the floor, and a mix of colours under the floor stays under it, so text keeps its contrast (D15).
+    static func tint(_ art: ArtPalette) -> some View {
+        LinearGradient(stops: [.init(color: art.glow.color.opacity(0.6), location: 0),
+                               .init(color: art.background.color.opacity(0.45), location: 0.55),
+                               .init(color: art.background.color.opacity(0.7), location: 1)],
+                       startPoint: .top, endPoint: .bottom)
     }
 }

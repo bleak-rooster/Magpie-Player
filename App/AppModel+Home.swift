@@ -164,8 +164,10 @@ extension AppModel {
         return try await request { try await $0.songsPage(start: page * size, end: (page + 1) * size, sort: "title") }.songs
     }
 
-    /// Library › Favourites: every starred song and album (`getStarred2`).
+    /// Library › Favourites: every starred song, album and artist (`getStarred2`), noted as favourites (R7).
     func favourites() async throws -> Starred {
-        try await request { try await $0.starred() }
+        let starred = try await request { try await $0.starred() }
+        noteFavourites(starred)
+        return starred
     }
 }

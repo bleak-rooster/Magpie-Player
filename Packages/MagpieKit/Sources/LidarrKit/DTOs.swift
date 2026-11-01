@@ -352,7 +352,17 @@ public struct LidarrAlbum: Sendable, Equatable, Decodable {
 }
 
 public struct QueueItem: Sendable, Equatable, Decodable {
+    /// The queue item's id (R17: `DELETE /queue/{id}` removes a stalled download). Nil when Lidarr didn't send one.
+    public var id: Int?
     public var albumId: Int?
+    public var artistId: Int?
+    /// The download client's *name* as set up in Lidarr (`DownloadClientInfo.name`), e.g. "Slskd".
+    public var downloadClient: String?
+    /// Lidarr's protocol name, e.g. `SoulseekDownloadProtocol`.
+    public var protocolName: String?
+    /// The download this row is part of. A multi-album download has one queue row per album, all sharing it; removing
+    /// any of them removes (and blocklists) the whole download (fix round 1 I2).
+    public var downloadId: String?
     public var size: Double
     public var sizeleft: Double
     public var status: String
@@ -360,15 +370,22 @@ public struct QueueItem: Sendable, Equatable, Decodable {
     public var timeleft: String?
     public var statusMessages: [String]
 
-    public init(albumId: Int?, size: Double, sizeleft: Double, status: String = "", trackedDownloadState: String = "",
-                timeleft: String? = nil, statusMessages: [String] = []) {
-        self.albumId = albumId; self.size = size; self.sizeleft = sizeleft; self.status = status
+    public init(id: Int? = nil, albumId: Int?, artistId: Int? = nil, downloadClient: String? = nil,
+                protocolName: String? = nil, downloadId: String? = nil, size: Double, sizeleft: Double, status: String = "",
+                trackedDownloadState: String = "", timeleft: String? = nil, statusMessages: [String] = []) {
+        self.id = id; self.albumId = albumId; self.artistId = artistId; self.downloadClient = downloadClient
+        self.protocolName = protocolName; self.downloadId = downloadId; self.size = size; self.sizeleft = sizeleft; self.status = status
         self.trackedDownloadState = trackedDownloadState; self.timeleft = timeleft; self.statusMessages = statusMessages
     }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: AnyKey.self)
+        id = c.int("id")
         albumId = c.int("albumId")
+        artistId = c.int("artistId")
+        downloadClient = c.text("downloadClient")
+        protocolName = c.text("protocol")
+        downloadId = c.text("downloadId").flatMap { $0.isEmpty ? nil : $0 }
         size = c.double("size") ?? 0
         sizeleft = c.double("sizeleft") ?? 0
         status = c.text("status") ?? ""
@@ -395,6 +412,49 @@ public struct QueueItem: Sendable, Equatable, Decodable {
             let c = try decoder.container(keyedBy: AnyKey.self)
             title = c.text("title") ?? ""
             messages = (c.value("messages", as: LossyArray<String>.self)?.values ?? []).map { $0.cappedForDisplay() }
+        }
+    }
+}
+
+extension QueueItem {
+    /// Fix round 1 I1: still coming, before import: Lidarr tracks it as downloading, the client doesn't call it
+    /// complete, and something is left. Never a copy that's complete, waiting to import, being imported, blocked from
+    /// importing, imported or failed. Only such a copy may be given up on or removed (R17: "the queue only, before
+    /// import").
+    public var isDownloadingBeforeImport: Bool {
+        trackedDownloadState.lowercased() == "downloading" && status.lowercased() != "completed" && sizeleft > 0
+    }
+}
+
+/// One download client as Lidarr has it set up (`GET /downloadclient`, read only). Only what R17 needs: its settings
+/// (`fields`, which may carry the client's own API key) are never decoded.
+public struct DownloadClientInfo: Sendable, Equatable, Decodable {
+    public var id: Int
+    public var name: String
+    public var implementation: String
+    public var implementationName: String
+    public var protocolName: String
+
+    public init(id: Int, name: String, implementation: String = "", implementationName: String = "",
+                protocolName: String = "") {
+        self.id = id; self.name = name; self.implementation = implementation
+        self.implementationName = implementationName; self.protocolName = protocolName
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: AnyKey.self)
+        id = try c.requiredInt("id")
+        name = c.text("name") ?? ""
+        implementation = c.text("implementation") ?? ""
+        implementationName = c.text("implementationName") ?? ""
+        protocolName = c.text("protocol") ?? ""
+    }
+
+    /// A Soulseek client (slskd through Tubifarry: implementation `SlskdClient`, protocol `SoulseekDownloadProtocol`).
+    public var isSoulseek: Bool {
+        [implementation, implementationName, protocolName].contains { text in
+            let t = text.lowercased()
+            return t.contains("slskd") || t.contains("soulseek")
         }
     }
 }
