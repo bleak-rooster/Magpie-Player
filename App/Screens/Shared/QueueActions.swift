@@ -28,6 +28,7 @@ enum QueueCopy {
     static let replaceTitle = "Replace your queue?"
     static let replace = "Replace"
     static let playNext = "Play next"
+    static let addToQueue = "Add to queue"
     static let inOrder = "In order"
     static let shuffled = "Shuffled"
     static let couldntLoad = "Couldn't get those songs. Try again in a moment."

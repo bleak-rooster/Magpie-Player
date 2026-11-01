@@ -192,7 +192,7 @@ private struct TrackList: View {
                                                       : DurationText.spoken(song.duration)))
         .accessibilityAddTraits(.isButton)
         .accessibilityIdentifier("track-\(index)")
-        .contextMenu { SongDownloadMenuItem(song: song, removing: $removing) }
+        .contextMenu { SongQueueMenuItems(song: song); SongDownloadMenuItem(song: song, removing: $removing) }
         .songSwipeActions(song, in: .stack)   // R12
     }
 }

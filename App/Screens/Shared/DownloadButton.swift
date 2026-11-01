@@ -75,18 +75,20 @@ struct DownloadButton: View {
     }
 }
 
-/// "Download" or "Remove from this phone" in a song's context menu. Removing asks first (`songRemovalDialog`).
+/// "Download" or "Remove download" in a song's context menu (glossary §9). Removing asks first (`songRemovalDialog`).
 struct SongDownloadMenuItem: View {
     @Environment(AppModel.self) private var model
     let song: Song
     @Binding var removing: Song?
+
+    static let removeTitle = "Remove download"
 
     var body: some View {
         switch model.downloadStatus([song.id]) {
         case .none:
             Button("Download", systemImage: "arrow.down.to.line") { model.download([song], reason: .song) }
         case .downloaded:
-            Button("Remove from this phone", systemImage: "trash", role: .destructive) { removing = song }
+            Button(Self.removeTitle, systemImage: "trash", role: .destructive) { removing = song }
         default:   // not on the phone, but on its way, waiting, full or failed
             Button("Cancel download", systemImage: "xmark") { Task { await model.removeSongDownload(song.id) } }
         }
@@ -94,7 +96,7 @@ struct SongDownloadMenuItem: View {
 }
 
 extension View {
-    /// The confirmation for a song's "Remove from this phone", saying when it's kept for more than itself.
+    /// The confirmation for a song's "Remove download", saying when it's kept for more than itself.
     func songRemovalDialog(_ removing: Binding<Song?>) -> some View {
         modifier(SongRemovalDialog(removing: removing))
     }
@@ -106,11 +108,11 @@ private struct SongRemovalDialog: ViewModifier {
 
     func body(content: Content) -> some View {
         content.confirmationDialog(
-            "Remove \(removing?.title ?? "this song") from this phone?",
+            "Remove \(removing?.title ?? "this song") from this iPhone?",
             isPresented: Binding(get: { removing != nil }, set: { if !$0 { removing = nil } }),
             titleVisibility: .visible, presenting: removing
         ) { song in
-            Button("Remove from this phone", role: .destructive) {
+            Button(SongDownloadMenuItem.removeTitle, role: .destructive) {
                 Task { await model.removeSongDownload(song.id) }
             }
             Button("Cancel", role: .cancel) {}

@@ -131,6 +131,7 @@ struct DownloadsView: View {
         }
         .buttonStyle(.plain)
         .foregroundStyle(themed.palette.inkColor)
+        .collectionMenu(.downloadedArtist(artist.id), coverArtId: nil)   // R12
         .collectionSwipeActions(.downloadedArtist(artist.id), in: .stack)   // R12
     }
 
@@ -155,7 +156,7 @@ struct DownloadsView: View {
         }
         .buttonStyle(.plain)
         .foregroundStyle(themed.palette.inkColor)
-        .reloadArtworkMenu(playlist.coverArtId)   // P4
+        .collectionMenu(.downloadedPlaylist(playlist.id), coverArtId: playlist.coverArtId)   // R12, P4
         .collectionSwipeActions(.downloadedPlaylist(playlist.id), in: .stack)   // R12
     }
 
@@ -167,8 +168,7 @@ struct DownloadsView: View {
         .accessibilityAddTraits(.isButton)
         .accessibilityIdentifier("downloads-song-\(index)")
         .contextMenu {
-            Button(QueueCopy.playNext, systemImage: QueueCopy.symbol(.playNext)) { model.place([song], .next) }
-            Button("Add to queue", systemImage: QueueCopy.symbol(.addToQueue)) { model.place([song], .end) }
+            SongQueueMenuItems(song: song)
             SongDownloadMenuItem(song: song, removing: $removing)
         }
         // R12: Remove download keeps its trailing place, never on a full swipe; it asks first.

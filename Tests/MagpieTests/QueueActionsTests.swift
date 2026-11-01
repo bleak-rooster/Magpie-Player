@@ -111,6 +111,29 @@ private func songsJSON(_ ids: [String]) -> String {
         #expect(ids(model) == before)
     }
 
+    // MARK: - Long-press menus (fix round 1 I1)
+
+    /// Songs and collections lead their long-press menus with Play next · Add to queue (appraisal §4 group 1).
+    @Test func longPressMenusLeadWithQueueItems() async throws {
+        #expect(QueueMenu.items.map(\.title) == ["Play next", "Add to queue"])
+        #expect(QueueMenu.items.map(\.placement) == [.next, .end])
+        #expect(SongDownloadMenuItem.removeTitle == "Remove download", "glossary: never \"Remove from this phone\"")
+
+        let model = try await signedIn()
+        defer { tearDown(model) }
+        model.play([song("1"), song("2")], startAt: 0)
+        model.perform(QueueMenu.items[0], on: song("x"))
+        model.perform(QueueMenu.items[1], on: song("y"))
+        #expect(ids(model).upNext == ["x"] && ids(model).rest == ["2", "y"])
+
+        // A collection's items ask In order or Shuffled, like its swipes.
+        model.perform(QueueMenu.items[0], on: .album("al1"))
+        #expect(model.queueActions.pendingCollection?.collection == .album("al1"))
+        #expect(model.queueActions.pendingCollection?.placement == .next)
+        model.perform(QueueMenu.items[1], on: .playlist("p1"))
+        #expect(model.queueActions.pendingCollection?.placement == .end)
+    }
+
     // MARK: - Collections
 
     @Test func collectionPopupInOrderOrShuffled() async throws {

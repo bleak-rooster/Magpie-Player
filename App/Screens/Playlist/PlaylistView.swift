@@ -74,7 +74,7 @@ struct PlaylistView: View {
                     .buttonStyle(.plain)
                     .accessibilityAddTraits(.isButton)
                     .accessibilityIdentifier("track-\(index)")
-                    .contextMenu { SongDownloadMenuItem(song: song, removing: $removing) }
+                    .contextMenu { SongQueueMenuItems(song: song); SongDownloadMenuItem(song: song, removing: $removing) }
                     .songSwipeActions(song, in: .stack)   // R12
                     Divider().overlay(p.sepColor).padding(.leading, 76)
                 }
