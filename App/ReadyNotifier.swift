@@ -18,7 +18,15 @@ final class ReadyNotifier: NSObject, UNUserNotificationCenterDelegate {
         Task { _ = try? await center.requestAuthorization(options: [.alert, .sound]) }
     }
 
+    #if DEBUG
+    /// Tests: the identifiers of the notifications posted (R16: a request that turns ready away from its screen).
+    var postedForTesting: [String] = []
+    #endif
+
     func post(id: String, title: String, body: String) {
+        #if DEBUG
+        postedForTesting.append("ready-\(id)")
+        #endif
         center.delegate = self
         let content = UNMutableNotificationContent()
         content.title = title

@@ -37,9 +37,26 @@ import MagpieTestSupport
         let term = t.requests.last.flatMap { URLComponents(url: $0.url!, resolvingAgainstBaseURL: false)?.queryItems }?
             .first { $0.name == "term" }?.value
         #expect(term == "lidarr:b10bbbfc-cf9e-42e0-be17-e2c3e1d2600d")
+        // R15: the artist's picture is the poster's remote URL (HTTPS), never Lidarr's own proxy path.
+        #expect(hit?.pictureURL?.absoluteString
+                == "https://images.lidarr.audio/cache/https://assets.fanart.tv/fanart/beatles-the-4facf1550225f.jpg")
 
         let other = MBID("00000000-0000-4000-8000-000000000000")!
         #expect(try await client.artistLookup(mbid: other) == nil)
+    }
+
+    @Test func artistPictureIsPosterThenHeadshotOverHTTPSOnly() throws {
+        func lookup(_ images: String) throws -> LidarrArtistLookup {
+            try JSONDecoder().decode(LidarrArtistLookup.self, from: Data("{\"artistName\":\"A\",\"images\":\(images)}".utf8))
+        }
+        let fanartHeadshot = #"[{"coverType":"fanart","remoteUrl":"https://h/f.jpg"},{"coverType":"headshot","remoteUrl":"https://h/h.jpg"}]"#
+        #expect(try lookup(fanartHeadshot).pictureURL?.absoluteString == "https://h/h.jpg")
+        let headshotPoster = #"[{"coverType":"headshot","remoteUrl":"https://h/h.jpg"},{"coverType":"poster","remoteUrl":"https://h/p.jpg"}]"#
+        #expect(try lookup(headshotPoster).pictureURL?.absoluteString == "https://h/p.jpg")
+        #expect(try lookup(#"[{"coverType":"poster","remoteUrl":"http://h/p.jpg"}]"#).pictureURL == nil)
+        #expect(try lookup(#"[{"coverType":"poster","url":"/MediaCoverProxy/x.jpg"}]"#).pictureURL == nil)
+        #expect(try lookup(#"[{"coverType":"fanart","remoteUrl":"https://h/f.jpg"}]"#).pictureURL == nil)
+        #expect(try lookup("[]").pictureURL == nil)
     }
 
     @Test func searchReturnsArtistAndAlbumRowsOnly() async throws {

@@ -32,6 +32,9 @@ final class SearchModel {
     @ObservationIgnored private let debounce: Duration
     @ObservationIgnored private let errorMessage: (Error) -> String
     @ObservationIgnored private var task: Task<Void, Never>?
+    /// R15: artwork for the "Not in your library" rows, held for the current results only. Every new search drops it
+    /// and cancels its fetches, so it's fetched again.
+    @ObservationIgnored var outsideArt: OutsideArtLoader?
 
     init(search: @escaping Search,
          sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
@@ -48,6 +51,7 @@ final class SearchModel {
     func update(query newQuery: String) {
         query = newQuery
         task?.cancel()
+        outsideArt?.reset()
         let trimmed = newQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             task = nil

@@ -38,7 +38,10 @@ struct SearchView: View {
                                     return try await app.mergedSearch().runReportingLibraryFailure(q, libraryFirst: early)
                                 },
                                 errorMessage: BrowseErrorCopy.message(for:))
+            model?.outsideArt = app.makeOutsideArt()   // R15
         }
+        // R15: search closed; outside artwork goes with it (fetched again next time).
+        .onDisappear { model?.outsideArt?.reset() }
         // The same query again from the other source when offline mode changes.
         .onChange(of: app.isOffline) { if let model { model.update(query: model.query) } }
     }
@@ -251,9 +254,12 @@ private struct SearchContent: View {
             remember(model.query)
             app.play([song], startAt: 0)
         }) {
-            SongRow(song: song, state: RequestCopy.rowState(for: recording, in: app.requests),
-                    tryTitle: RequestCopy.tryTitle(app.tryAvailability),
-                    onTry: { trying = TryTarget(recording: recording) })
+            // R15: the release's cover from outside, never cached.
+            OutsideArtwork(model.outsideArt, key: .cover(releaseGroup: nil, release: recording.releaseMBID)) { art in
+                SongRow(song: song, state: RequestCopy.rowState(for: recording, in: app.requests), artwork: art,
+                        tryTitle: RequestCopy.tryTitle(app.tryAvailability),
+                        onTry: { trying = TryTarget(recording: recording) })
+            }
         }
             .accessibilityIdentifier("search-notyet-song-\(index)")
             .listRowInsets(EdgeInsets())
@@ -280,10 +286,20 @@ private struct SearchContent: View {
 
     private func plainNotYetArtistRow(_ artist: NotYetArtist) -> some View {
         HStack(spacing: Tokens.Spacing.m) {
-            // A plain circle: the groove ring is invisible at this size (review of D3).
-            Circle().fill(themed.palette.surfaceColor).frame(width: 48, height: 48)
-                .overlay { Image(systemName: "person.fill").foregroundStyle(themed.palette.ink2Color) }
-                .accessibilityHidden(true)
+            // A plain circle: the groove ring is invisible at this size (review of D3). R15: the artist's picture from
+            // Lidarr's lookup when there is one, never cached.
+            OutsideArtwork(model.outsideArt, key: artist.mbid.map(OutsideArtKey.artist)) { art in
+                Circle().fill(themed.palette.surfaceColor).frame(width: 48, height: 48)
+                    .overlay {
+                        if let art {
+                            art.resizable().scaledToFill()
+                        } else {
+                            Image(systemName: "person.fill").foregroundStyle(themed.palette.ink2Color)
+                        }
+                    }
+                    .clipShape(Circle())
+            }
+            .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 1) {
                 Text(artist.name).font(.body)
                 StatusLine(.notYet)
@@ -296,9 +312,11 @@ private struct SearchContent: View {
     }
 
     private func plainNotYetAlbumRow(_ album: NotYetAlbum) -> some View {
-        NotYetAlbumRow(title: album.title, detail: [album.kind ?? "Album", album.artist].joined(separator: " \u{00B7} "),
-                       label: "\(album.title), \(album.kind ?? "Album") by \(album.artist)")
-            .listRowBackground(Color.clear)
+        OutsideArtwork(model.outsideArt, key: album.mbid.map(OutsideArtKey.releaseGroup)) { art in   // R15
+            NotYetAlbumRow(title: album.title, detail: [album.kind ?? "Album", album.artist].joined(separator: " \u{00B7} "),
+                           label: "\(album.title), \(album.kind ?? "Album") by \(album.artist)", artwork: art)
+        }
+        .listRowBackground(Color.clear)
     }
 
     /// A section's title as its first row, not a List header: plain-list headers pin while scrolling and slid

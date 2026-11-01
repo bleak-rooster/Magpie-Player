@@ -162,13 +162,16 @@ public struct ExternalRecording: Sendable, Hashable, Codable {
     /// ISRCs when the source knows them (LB labs search doesn't; A8).
     public var isrcs: [String]
     public var source: ExternalSource
+    /// The release the source names (LB labs search's `release_mbid`), for its Cover Art Archive front (R15). Optional,
+    /// so requests saved before it still decode.
+    public var releaseMBID: MBID?
 
     public init(recordingMBID: MBID? = nil, artistMBID: MBID? = nil, title: String, artist: String,
                 releaseTitle: String? = nil, duration: TimeInterval? = nil, isrcs: [String] = [],
-                source: ExternalSource) {
+                source: ExternalSource, releaseMBID: MBID? = nil) {
         self.recordingMBID = recordingMBID; self.artistMBID = artistMBID; self.title = title
         self.artist = artist; self.releaseTitle = releaseTitle; self.duration = duration
-        self.isrcs = isrcs; self.source = source
+        self.isrcs = isrcs; self.source = source; self.releaseMBID = releaseMBID
     }
 }
 

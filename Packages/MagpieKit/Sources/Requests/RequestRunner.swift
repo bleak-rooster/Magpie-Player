@@ -137,6 +137,8 @@ public actor RequestRunner {
 
     private(set) var list: [MagpieRequest] = []
     private var loaded = false
+    /// The read of the saved list in flight, shared by every `load()` meanwhile.
+    private var loading: Task<[MagpieRequest], Error>?
     /// Requests with a step running (internal for R17's stall handling and Search again).
     var busy: Set<RequestID> = []
     /// R17 (RequestRunner+Stall.swift): each Soulseek download being watched, by queue id; the Soulseek clients'
@@ -216,12 +218,28 @@ public actor RequestRunner {
     @discardableResult
     public func load() async -> Bool {
         if loaded { return true }
+        // X5 fix I1: callers that arrive while the read is in flight share it, and only the first to resume sets
+        // the list, so a late copy from disk never overwrites changes made in memory since (e.g. `addSent`).
+        let task: Task<[MagpieRequest], Error>
+        if let loading {
+            task = loading
+        } else {
+            storeLoads += 1
+            let store = store
+            task = Task { try await store.load() }
+            loading = task
+        }
         do {
-            list = try await store.load()
-            loaded = true
-            publish()
+            let saved = try await task.value
+            if !loaded {
+                list = saved
+                loaded = true
+                publish()
+            }
+            loading = nil
             return true
         } catch {
+            if loading == task { loading = nil }   // a later call reads again
             return false
         }
     }
@@ -294,19 +312,43 @@ public actor RequestRunner {
     /// One pass: resume interrupted steps, retry what is due, poll Lidarr, scan and check the library.
     /// How many ticks have started (tests: whether polling ran).
     public private(set) var tickCount = 0
+    /// Passes that ran (tests: overlapping ticks run one).
+    private(set) var passCount = 0
+    /// Reads of the saved list (tests: concurrent loads share one).
+    private(set) var storeLoads = 0
 
-    public func tick() async {
+    public func tick() async { await tick(shouldStop: { false }) }
+
+    /// One pass that ends early, between steps (never during one, so never mid-write), once `shouldStop` says so: a
+    /// background pass whose time iOS takes back (R16, X5 fix round 1).
+    public func tick(shouldStop: @Sendable () -> Bool) async {
         tickCount += 1
-        guard !ticking, !stopped, await load() else { return }
+        // X5 fix I1: claimed before the load, so a tick arriving meanwhile (a background pass at a cold launch,
+        // the app's first poll) runs no second pass.
+        guard !ticking, !stopped else { return }
         ticking = true
         defer { ticking = false }
-        for r in list where r.isActive { await advance(r.id) }
+        guard await load() else { return }
+        passCount += 1
+        for r in list where r.isActive {
+            if shouldStop() { return }
+            await advance(r.id)
+        }
+        if shouldStop() { return }
         await discoverAlbums()
+        if shouldStop() { return }
         await pollLidarr()
+        if shouldStop() { return }
         await checkLibrary()
-        for r in list where r.cleanupPending && !busy.contains(r.id) { await cleanup(r.id) }
+        for r in list where r.cleanupPending && !busy.contains(r.id) {
+            if shouldStop() { return }
+            await cleanup(r.id)
+        }
+        if shouldStop() { return }
         await followKeeps()
+        if shouldStop() { return }
         await followNotForMes()
+        if shouldStop() { return }
         await followBringIns()
     }
 

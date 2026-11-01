@@ -28,6 +28,8 @@ struct TrySheet: View {
     @State private var phase = Phase.choosing
     @State private var error: String?
     @State private var showsSettings = false
+    /// R16: the song's cover from outside while the sheet is open (R15 rules: memory only, fetched again next time).
+    @State private var outsideArt: OutsideArtLoader?
     private let themed = Themed()
 
     var body: some View {
@@ -35,14 +37,14 @@ struct TrySheet: View {
             Group {
                 switch phase {
                 case .choosing, .working: choosing
-                case .waiting(let id): RequestDetailView(requestId: id, footnote: TryCopy.keepBrowsing)
+                case .waiting(let id): RequestDetailView(requestId: id, footnote: TryCopy.keepBrowsing)   // R20
                 case .asked(let id): asked(id)
                 }
             }
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
-                    // R20: never "Leave" (it read as abandoning it); it keeps coming.
-                    Button("Done") { dismiss() }
+                    // R20: Done, never "Leave" (which reads as abandon); the footnote says it keeps coming.
+                    Button(Self.closeTitle) { dismiss() }
                         .accessibilityHint(isWaiting ? "It keeps coming. Find it in Library, Requests." : "")
                         .accessibilityIdentifier("try-done")
                 }
@@ -53,13 +55,23 @@ struct TrySheet: View {
             // R17: a song already on its way opens its request, never a second Try.
             if phase == .choosing, let live = Self.existingPhase(for: recording, in: model.requests) { phase = live }
         }
+        .task { if outsideArt == nil { outsideArt = model.makeOutsideArt() } }   // R16
+        .onDisappear { outsideArt?.reset() }
     }
 
-    /// The bare record; Classic draws it as a square with the not-yet badge (D3).
+    /// The record, with the song's cover as its label once it's here (R16); Classic draws it as a square with the
+    /// not-yet badge (D3).
     private var record: some View {
-        RecordArt(side: 140).recordBadge(RowState.notYet.statusSymbol, size: 22)
-            .accessibilityHidden(true).padding(.top, Tokens.Spacing.xl)
+        let cover = model.requests.last { $0.recording.recordingMBID != nil && $0.recording.recordingMBID == recording.recordingMBID }?.cover
+            ?? MagpieRequestCover(songId: nil, outside: .cover(releaseGroup: nil, release: recording.releaseMBID),
+                                  artist: recording.artistMBID.map(OutsideArtKey.artist))
+        return RequestArtwork(cover: cover, loader: outsideArt, side: 140) { art in
+            RecordArt(image: art, side: 140).recordBadge(RowState.notYet.statusSymbol, size: 22)
+        }
+        .accessibilityHidden(true).padding(.top, Tokens.Spacing.xl)
     }
+
+    static let closeTitle = "Done"
 
     private var isWaiting: Bool { if case .waiting = phase { true } else { false } }
 

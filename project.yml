@@ -91,7 +91,9 @@ targets:
               - UISceneConfigurationName: CarPlay
                 UISceneClassName: CPTemplateApplicationScene
                 UISceneDelegateClassName: $(PRODUCT_MODULE_NAME).CarPlaySceneDelegate
-        UIBackgroundModes: [audio]
+        # R16: "fetch" lets iOS give the requests runner a background pass now and then (BGAppRefreshTask, best-effort).
+        UIBackgroundModes: [audio, fetch]
+        BGTaskSchedulerPermittedIdentifiers: [com.bleak-rooster.magpie.requests]
         NSLocalNetworkUsageDescription: Magpie connects to your music server on your home network.
         # T3 (D38): Magpie advertises and browses for its own _magpie._tcp service to ask for Local Network access.
         NSBonjourServices: ["_http._tcp", "_magpie._tcp"]

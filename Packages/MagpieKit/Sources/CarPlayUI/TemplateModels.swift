@@ -307,11 +307,14 @@ public enum CarPlayRows {
         return recordings.enumerated().map { i, recording in
             let id = "\(notYetPrefix)\(i).\(recording.recordingMBID?.rawValue ?? recording.title)"
             let artist = display(recording.artist, unknownArtist)
+            // R15: its release's cover from outside, in memory only (`OutsideArtKey`); a plain record without.
+            let art = OutsideArtKey.cover(releaseGroup: nil, release: recording.releaseMBID)?.token
             if let live = onTheirWay[i] {
                 return CPRowModel(id: id, title: display(recording.title, untitled), detail: "\(live) · \(artist)",
-                                  round: true, action: .onItsWay, statusSymbol: "arrow.down.circle")
+                                  artworkKey: art, round: true, action: .onItsWay, statusSymbol: "arrow.down.circle")
             }
-            return CPRowModel(id: id, title: display(recording.title, untitled), detail: "\(status) · \(artist)", round: true,
+            return CPRowModel(id: id, title: display(recording.title, untitled), detail: "\(status) · \(artist)",
+                              artworkKey: art, round: true,
                               action: offer == .unavailable ? .none : .tryNext(recording), statusSymbol: state.statusSymbol)
         }
     }

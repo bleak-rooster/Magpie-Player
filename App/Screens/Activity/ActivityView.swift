@@ -7,6 +7,12 @@ import SwiftUI
 /// its wait screen (Standard) or a calm detail with no spinner (Patient, D8).
 struct ActivityView: View {
     @Environment(AppModel.self) private var model
+    /// R16: covers of requests not in the library yet, while the list is open (R15 rules).
+    @State private var outsideArt: OutsideArtLoader?
+    /// R20: Ready finds a Keep (the leading swipe) is running for, what it said, and Bring in more after a move (D5).
+    @State private var keeping: Set<RequestID> = []
+    @State private var keepMessage: String?
+    @State private var bringingInMore: KeptRequestFind?
     private let themed = Themed()
 
     var body: some View {
@@ -39,16 +45,47 @@ struct ActivityView: View {
         .navigationBarTitleDisplayMode(.inline)   // as with rows; an empty list would otherwise show a large title
         .magpieScreen()
         .refreshable { model.pollRequests() }
+        .task { if outsideArt == nil { outsideArt = model.makeOutsideArt() } }
+        .onDisappear { outsideArt?.reset() }
+        .sheet(item: $bringingInMore) { BringInMoreSheet(requestId: $0.id, keptMessage: $0.message) }
+        .alert(keepMessage ?? "", isPresented: Binding(get: { keepMessage != nil }, set: { if !$0 { keepMessage = nil } })) {
+            Button("OK", role: .cancel) {}
+        }
+    }
+
+    /// R20: Keep on a Ready find's row (leading swipe, never a full swipe), as on the Finds shelf.
+    private func keepAction(_ request: MagpieRequest) -> (() -> Void)? {
+        guard !model.isOffline, let id = ReadyFindActions.keep(request), !keeping.contains(id) else { return nil }
+        return {
+            keeping.insert(id)
+            Task {
+                let reply = await model.keep(id)
+                if reply.bringsInMore {
+                    bringingInMore = KeptRequestFind(id: id, message: reply.message)
+                } else {
+                    keepMessage = reply.message
+                }
+                keeping.remove(id)
+            }
+        }
     }
 
     private func row(_ request: MagpieRequest) -> some View {
         NavigationLink(value: Route.request(request.id)) {
-            RequestRow(request: request, context: model.waitContext)
+            RequestRow(request: request, context: model.waitContext, outsideArt: outsideArt)
         }
         .listRowBackground(Color.clear)
         .accessibilityIdentifier("request-\(request.recording.title)")
         .swipeActions {
             if !model.isOffline { swipeActions(request) }
+        }
+        .swipeActions(edge: .leading, allowsFullSwipe: false) {
+            if let keep = keepAction(request) {
+                Button(RequestCopy.keep, systemImage: "checkmark.circle", action: keep).tint(.green)
+            }
+        }
+        .accessibilityActions {
+            if let keep = keepAction(request) { Button(RequestCopy.keep, action: keep) }
         }
     }
 
@@ -68,11 +105,16 @@ struct ActivityView: View {
 struct RequestRow: View {
     let request: MagpieRequest
     var context: RequestCopy.WaitContext = .unknown
+    /// R16: the screen's outside artwork; nil shows the library cover once listed, else the bare record.
+    var outsideArt: OutsideArtLoader? = nil
     private let themed = Themed()
 
     var body: some View {
         HStack(spacing: Tokens.Spacing.m) {
-            RecordArt(side: 44, isSpinning: RequestCopy.group(request) == .inProgress && request.tier != .patient)
+            RequestArtwork(cover: request.cover, loader: outsideArt, side: 44) { art in   // R16
+                RecordArt(image: art, side: 44,
+                          isSpinning: RequestCopy.group(request) == .inProgress && request.tier != .patient)
+            }
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
                 Text(request.recording.title).font(.body).lineLimit(2)
@@ -109,6 +151,8 @@ struct RequestDetailView: View {
     @State private var message: String?
     @State private var asking: NotForMeConfirm?
     @State private var bringingInMore: String?
+    /// R16: the cover from outside while this screen is open (R15 rules: memory only, fetched again when it opens).
+    @State private var outsideArt: OutsideArtLoader?
     private let themed = Themed()
 
     var body: some View {
@@ -119,16 +163,26 @@ struct RequestDetailView: View {
                 ContentUnavailableView("Not on the list any more", systemImage: "tray")
             }
         }
-        .onAppear { model.waitScreenAppeared(requestId) }
-        .onDisappear { model.waitScreenDisappeared(requestId) }
+        // Only the landing rule follows the screen (D6); the request itself is the runner's, which the model owns,
+        // so it keeps going when this screen goes (R16).
+        .onAppear {
+            model.waitScreenAppeared(requestId)
+            if outsideArt == nil { outsideArt = model.makeOutsideArt(maxPixel: 600) }
+        }
+        .onDisappear {
+            model.waitScreenDisappeared(requestId)
+            outsideArt?.reset()
+        }
     }
 
     @ViewBuilder private func content(_ request: MagpieRequest) -> some View {
         let state = request.state
         VStack(spacing: Tokens.Spacing.l) {
             if request.tier != .patient, RequestCopy.group(request) != .attention {
-                WaitView(title: request.recording.title, artist: subtitle(request), stage: RequestCopy.stage(state),
-                         phrase: RequestCopy.phrase(request))
+                RequestArtwork(cover: request.cover, loader: outsideArt, side: 150) { art in   // R16
+                    WaitView(title: request.recording.title, artist: subtitle(request), artwork: art,
+                             stage: RequestCopy.stage(state), phrase: RequestCopy.phrase(request))
+                }
             } else {
                 calm(request)
             }
@@ -182,7 +236,8 @@ struct RequestDetailView: View {
     private func calm(_ request: MagpieRequest) -> some View {
         ScrollView {
             VStack(spacing: Tokens.Spacing.m) {
-                RecordArt(side: 150).accessibilityHidden(true).padding(.vertical, Tokens.Spacing.l)
+                RequestArtwork(cover: request.cover, loader: outsideArt, side: 150) { RecordArt(image: $0, side: 150) }   // R16
+                    .accessibilityHidden(true).padding(.vertical, Tokens.Spacing.l)
                 Text(request.recording.title).magpieDisplay(.title2).multilineTextAlignment(.center)
                 Text(subtitle(request)).font(.subheadline).foregroundStyle(themed.palette.ink2Color)
                 Label(RequestCopy.status(request, context: model.waitContext), systemImage: RequestCopy.symbol(request))
@@ -316,4 +371,10 @@ struct RequestDetailView: View {
 private struct KeptFind: Identifiable {
     let message: String
     var id: String { message }
+}
+
+/// R20: a kept find from a Requests row that moved into the library, for the Bring in more sheet (D5).
+struct KeptRequestFind: Identifiable {
+    let id: RequestID
+    let message: String
 }

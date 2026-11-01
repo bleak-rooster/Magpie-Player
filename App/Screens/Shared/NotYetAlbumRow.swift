@@ -7,11 +7,13 @@ struct NotYetAlbumRow: View {
     let title: String
     let detail: String
     let label: String
+    /// R15: the release group's cover from outside (Search), as the record's label; nil is the bare record.
+    var artwork: Image? = nil
     private let themed = Themed()
 
     var body: some View {
         HStack(spacing: Tokens.Spacing.m) {
-            RecordArt(side: 48).recordBadge(RowState.notYet.statusSymbol)
+            RecordArt(image: artwork, side: 48).recordBadge(RowState.notYet.statusSymbol)
             VStack(alignment: .leading, spacing: 1) {
                 Text(title).font(.body).lineLimit(2)
                 Text(detail).font(.footnote).foregroundStyle(themed.palette.ink2Color).lineLimit(1)
