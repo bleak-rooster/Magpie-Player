@@ -3,8 +3,8 @@ import Observation
 import Requests
 import SwiftUI
 
-/// Round 12 item 6 (D49): the words of Settings › New music › Downloads in Lidarr. This page sits under the Lidarr
-/// section, which names the service already.
+/// Round 12 item 6 (D49): the words of Settings › Downloads in Lidarr (a top-level row while Lidarr is connected; fix
+/// round 1 I3).
 enum LidarrDownloadsCopy {
     static let title = "Downloads in Lidarr"
     static let empty = "Nothing downloading"
@@ -15,6 +15,15 @@ enum LidarrDownloadsCopy {
     static let restartAll = "Restart all stalled and failed"
     static let footer = "Restart drops the copy, stops Lidarr picking that same copy again, and looks for another. "
         + "It never touches music already in your library."
+
+    /// The Settings row's summary: how many need attention at the page's last read.
+    static func attention(_ count: Int?) -> SettingsSummary {
+        switch count {
+        case nil: SettingsSummary("Stalled and failed downloads")
+        case 0?: SettingsSummary("Nothing stalled or failed")
+        case let n?: SettingsSummary("\(n) need attention", symbol: "exclamationmark.triangle")
+        }
+    }
 
     static func confirmTitle(_ count: Int) -> String {
         count == 1 ? "Restart 1 download?" : "Restart \(min(count, LidarrDownloadRestarter.maxPerTap)) downloads?"
@@ -28,12 +37,19 @@ enum LidarrDownloadsCopy {
 
     /// The status line for a row (always text, with `symbol`, D3).
     static func status(_ row: LidarrDownloads.Row, limit: StallLimit) -> String {
-        switch row.phase {
-        case .downloading: row.progress.map { "Downloading \(Int(($0 * 100).rounded()))%" } ?? "Downloading"
+        if row.phase == .downloading {
+            let percent = row.progress.map { "Downloading \(Int(($0 * 100).rounded()))%" } ?? "Downloading"
+            guard let speed = row.speed, speed > 0 else { return percent }
+            return percent + " \u{00B7} " + ByteCountFormatter.string(fromByteCount: Int64(speed), countStyle: .decimal) + "/s"
+        }
+        return switch row.phase {
+        case .downloading: "Downloading"
         case .queued: "Waiting to start"
+        case .paused: "Paused"
+        case .clientUnavailable: "Can't reach the download app"
         case .waitingToImport: "Waiting to import"
         case .importing: "Importing"
-        case .stalled: "No progress for \(limit.title) or more"
+        case .stalled: row.stall == .lidarr ? "Stalled" : "No progress for \(limit.title) or more"
         case .failed: "Failed"
         }
     }
@@ -42,6 +58,8 @@ enum LidarrDownloadsCopy {
         switch phase {
         case .downloading: "arrow.down.circle.dotted"
         case .queued: "clock"
+        case .paused: "pause"
+        case .clientUnavailable: "bolt.horizontal.circle"
         case .waitingToImport: "tray"
         case .importing: "tray.and.arrow.down"
         case .stalled: "pause.circle"
@@ -53,24 +71,34 @@ enum LidarrDownloadsCopy {
     static func summary(_ outcomes: [LidarrDownloadRestarter.Outcome]) -> String? {
         guard !outcomes.isEmpty else { return nil }
         if outcomes.contains(.changesOff) { return changesOff }
-        let restarted = outcomes.filter { $0 == .restarted || $0 == .removedNotSearched }.count
-        let unsearched = outcomes.filter { $0 == .removedNotSearched }.count
-        let limited = outcomes.filter { $0 == .limitReached }.count
-        let gone = outcomes.filter { $0 == .gone }.count
-        let unavailable = outcomes.filter { $0 == .unavailable }.count
-        let refused = outcomes.count - restarted - limited - gone - unavailable
-        var parts: [String] = []
-        if restarted > 0 { parts.append(outcomes.count == 1 ? "Restarted." : "Restarted \(restarted).") }
-        if unsearched > 0 { parts.append("Lidarr will look again on its own schedule.") }
-        if limited > 0 { parts.append("Magpie has already tried five copies of that request.") }
-        if gone > 0 { parts.append(gone == 1 ? "One had already left the list." : "\(gone) had already left the list.") }
-        if refused > 0 { parts.append(refused == 1 ? "One is importing or done, so it was left alone." : "\(refused) are importing or done, so they were left alone.") }
-        if unavailable > 0 { parts.append("Couldn't reach Lidarr for \(unavailable == 1 ? "one" : String(unavailable)). Try again in a moment.") }
-        return parts.joined(separator: " ")
+        func count(_ match: (LidarrDownloadRestarter.Outcome) -> Bool) -> Int { outcomes.filter(match).count }
+        func some(_ n: Int, one: String, many: (Int) -> String) -> String? { n == 0 ? nil : n == 1 ? one : many(n) }
+        let restarted = count { $0 == .restarted || $0 == .removedNotSearched }
+        let refused = count { if case .refused = $0 { true } else { false } }
+        let parts: [String?] = [
+            restarted == 0 ? nil : outcomes.count == 1 ? "Restarted." : "Restarted \(restarted).",
+            count { $0 == .removedNotSearched } > 0 ? "Lidarr will look again on its own schedule." : nil,
+            some(count { $0 == .skipped }, one: outcomes.count == 1 ? "It started moving again, so it was left alone."
+                                                                     : "One started moving again, so it was left alone.",
+                 many: { "\($0) started moving again, so they were left alone." }),
+            count { $0 == .limitReached } > 0 ? "Magpie has already tried five copies of that request." : nil,
+            count { $0 == .magpieBusy } > 0 ? "Magpie is bringing that album home right now, so it was left alone." : nil,
+            some(count { $0 == .gone }, one: "One had already left the list.", many: { "\($0) had already left the list." }),
+            some(count { $0 == .importingOrDone }, one: "One is importing or done, so it was left alone.",
+                 many: { "\($0) are importing or done, so they were left alone." }),
+            count { $0 == .unnamed } > 0 ? "Lidarr doesn't say which download one belongs to, so it was left alone." : nil,
+            some(refused, one: "Lidarr's list changed, so one was left alone.",
+                 many: { "Lidarr's list changed, so \($0) were left alone." }),
+            count { $0 == .logUnavailable } > 0 ? "The change log couldn't be saved, so nothing was sent." : nil,
+            some(count { $0 == .unavailable }, one: "Couldn't reach Lidarr for one. Try again in a moment.",
+                 many: { "Couldn't reach Lidarr for \($0). Try again in a moment." }),
+        ]
+        return parts.compactMap { $0 }.joined(separator: " ")
     }
 }
 
-/// The screen's state: the queue read every 5 s while it's open, the stall watch, and the restarter (one per gate).
+/// The screen's state: the queue read every 5 s while it's open, and the restarter (one per gate). The no-progress
+/// clock lives in `AppModel` (fix round 1 I2), so leaving the page doesn't start it over.
 @MainActor @Observable final class LidarrDownloadsScreen {
     static let refreshInterval: Duration = .seconds(5)
 
@@ -78,7 +106,6 @@ enum LidarrDownloadsCopy {
     private(set) var unreachable = false
     private(set) var restarting = false
     private(set) var message: String?
-    @ObservationIgnored private var watch = QueueStallWatch()
     @ObservationIgnored private var restarter: (gate: ObjectIdentifier, restarter: LidarrDownloadRestarter)?
 
     /// One read of the queue and the download clients.
@@ -88,9 +115,15 @@ enum LidarrDownloadsCopy {
             async let queue = client.queueDetailsNamed()
             async let clients = client.downloadClients()
             let (items, setup) = try await (queue, clients)
-            watch.observe(items, at: now)
-            board = LidarrDownloads(items, soulseekClients: Set(setup.filter(\.isSoulseek).map { $0.name.lowercased() }),
-                                    watch: watch, stallLimit: model.stallLimit.seconds, now: now)
+            let soulseek = Set(setup.filter(\.isSoulseek).map { $0.name.lowercased() })
+            let scope = client.instanceScope
+            var watch = model.lidarrDownloadsWatch.flatMap { $0.scope == scope ? $0.watch : nil } ?? QueueStallWatch()
+            watch.observe(items, soulseekClients: soulseek, at: now)
+            model.lidarrDownloadsWatch = (scope, watch)
+            let board = LidarrDownloads(items, soulseekClients: soulseek, watch: watch,
+                                        stallLimit: model.stallLimit.seconds, now: now)
+            self.board = board
+            model.lidarrDownloadsAttention = board.stalled.count + board.failed.count
             unreachable = false
         } catch is CancellationError {
             return
@@ -107,11 +140,12 @@ enum LidarrDownloadsCopy {
         }
     }
 
-    func restart(_ ids: [Int], model: AppModel) async {
-        guard !ids.isEmpty, let restarter = restarter(model) else { return }
+    /// Each row is re-checked on a fresh read before it's restarted (fix round 1 I1).
+    func restart(_ rows: [LidarrDownloads.Row], model: AppModel) async {
+        guard !rows.isEmpty, let restarter = restarter(model) else { return }
         restarting = true
         defer { restarting = false }
-        let outcomes = ids.count == 1 ? [await restarter.restart(ids[0])] : await restarter.restartAll(ids)
+        let outcomes = rows.count == 1 ? [await restarter.restart(rows[0])] : await restarter.restartAll(rows)
         message = LidarrDownloadsCopy.summary(outcomes)
         await refresh(model)
     }
@@ -125,12 +159,14 @@ enum LidarrDownloadsCopy {
     }
 }
 
-/// Settings › New music › Downloads in Lidarr: everything in Lidarr's queue, whoever asked for it (D49), as Active,
+/// Settings › Downloads in Lidarr: everything in Lidarr's queue, whoever asked for it (D49), as Active,
 /// Stalled and Failed, with Restart on the stalled and failed ones and Restart all (one confirmation, 25 at a time).
 struct LidarrDownloadsView: View {
     @Environment(AppModel.self) private var model
     @State private var screen = LidarrDownloadsScreen()
     @State private var confirmsAll = false
+    /// The rows Restart all was tapped for (minor M5: the dialog counts what it will do, not a later read).
+    @State private var pendingAll: [LidarrDownloads.Row] = []
 
     var body: some View {
         List {
@@ -165,16 +201,16 @@ struct LidarrDownloadsView: View {
         .navigationBarTitleDisplayMode(.inline)
         .task { await screen.follow(model) }
         .refreshable { await screen.refresh(model) }
-        .confirmationDialog(LidarrDownloadsCopy.confirmTitle(screen.board?.restartable.count ?? 0),
+        .confirmationDialog(LidarrDownloadsCopy.confirmTitle(pendingAll.count),
                             isPresented: $confirmsAll, titleVisibility: .visible) {
             Button(LidarrDownloadsCopy.restartAll, role: .destructive) {
-                let ids = screen.board?.restartable.map(\.id) ?? []
-                Task { await screen.restart(ids, model: model) }
+                let rows = pendingAll
+                Task { await screen.restart(rows, model: model) }
             }
             .accessibilityIdentifier("lidarr-downloads-restart-all-confirm")
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text(LidarrDownloadsCopy.confirmMessage(screen.board?.restartable.count ?? 0))
+            Text(LidarrDownloadsCopy.confirmMessage(pendingAll.count))
         }
     }
 
@@ -185,7 +221,8 @@ struct LidarrDownloadsView: View {
             Section {
                 if !board.restartable.isEmpty {
                     Button(role: .destructive) {
-                        confirmsAll = true
+                        pendingAll = board.restartable
+                        confirmsAll = !pendingAll.isEmpty
                     } label: {
                         Label(LidarrDownloadsCopy.restartAll, systemImage: "arrow.clockwise")
                     }
@@ -203,11 +240,11 @@ struct LidarrDownloadsView: View {
             Section(title) {
                 ForEach(rows) { row in
                     DownloadRow(row: row, limit: model.stallLimit, canChange: canChange) {
-                        Task { await screen.restart([row.id], model: model) }
+                        Task { await screen.restart([row], model: model) }
                     }
                     .swipeActions(edge: .trailing, allowsFullSwipe: false) {   // §10.7: never a full swipe
                         if row.canRestart {
-                            Button(LidarrDownloadsCopy.restart) { Task { await screen.restart([row.id], model: model) } }
+                            Button(LidarrDownloadsCopy.restart) { Task { await screen.restart([row], model: model) } }
                                 .tint(.orange)
                                 .disabled(!canChange)
                         }

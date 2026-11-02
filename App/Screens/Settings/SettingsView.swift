@@ -3,11 +3,16 @@ import SwiftUI
 /// A Settings page: the top-level rows, and the pages entry points elsewhere open directly (T21b).
 enum SettingsPage: Hashable {
     case account, playback, downloads, scrobbling, homeAndLibrary, appearance, requests, about
+    /// Y4 (round 12 item 6, fix I3): Downloads in Lidarr, a top-level row while Lidarr is connected.
+    case lidarrDownloads
     /// Requests › Finds.
     case findsSetup
 
-    /// The top level, in order.
-    static let topLevel: [SettingsPage] = [.account, .playback, .downloads, .scrobbling, .homeAndLibrary, .appearance, .requests, .about]
+    /// The top level, in order. Downloads in Lidarr only while Lidarr is connected (Y4).
+    static func topLevel(lidarrConnected: Bool) -> [SettingsPage] {
+        [.account, .playback, .downloads, .scrobbling, .homeAndLibrary, .appearance, .requests]
+            + (lidarrConnected ? [.lidarrDownloads] : []) + [.about]
+    }
 
     /// Home's "Finish setting up" › Review: Requests while Try isn't available yet, else Finds set-up (the step left).
     static func finishSettingUp(_ availability: TryAvailability) -> [SettingsPage] {
@@ -29,7 +34,7 @@ struct SettingsView: View {
 
     var body: some View {
         NavigationStack(path: $path) {
-            List(SettingsPage.topLevel, id: \.self) { page in
+            List(SettingsPage.topLevel(lidarrConnected: model.lidarr != nil), id: \.self) { page in
                 NavigationLink(value: page) { row(page) }
                     .listRowInsets(.vertical, 6)   // two-line rows, still over 44 pt, so all eight fit 375 × 667
                     .accessibilityIdentifier(Self.identifier(page))
@@ -66,6 +71,9 @@ struct SettingsView: View {
             SettingsRow(title: "Appearance", symbol: "paintpalette", summary: SettingsSummary(SettingsSummaries.appearance(model.theme)))
         case .requests:
             SettingsRow(title: "New music", symbol: "tray.and.arrow.down", summary: SettingsSummaries.requests(model))
+        case .lidarrDownloads:
+            SettingsRow(title: LidarrDownloadsCopy.title, symbol: "arrow.down.to.line.circle",
+                        summary: LidarrDownloadsCopy.attention(model.lidarrDownloadsAttention))
         case .about:
             SettingsRow(title: "About", symbol: "info.circle", summary: SettingsSummary(AboutView.summary))
         case .findsSetup:
@@ -82,6 +90,7 @@ struct SettingsView: View {
         case .homeAndLibrary: HomeAndLibraryView()
         case .appearance: AppearanceView()
         case .requests: RequestsSettingsView()
+        case .lidarrDownloads: LidarrDownloadsView()
         case .about: AboutView()
         case .findsSetup: FindsSetupView()
         }
@@ -97,6 +106,7 @@ struct SettingsView: View {
         case .homeAndLibrary: "settings-home-library"
         case .appearance: "settings-appearance"
         case .requests: "settings-requests"
+        case .lidarrDownloads: "settings-lidarr-downloads"
         case .about: "settings-about"
         case .findsSetup: "settings-finds"
         }

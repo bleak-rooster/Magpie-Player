@@ -125,8 +125,6 @@ struct RequestsSettingsView: View {
                 if let provisionMessage {
                     Text(provisionMessage).font(.footnote).accessibilityIdentifier("settings-provision-message")
                 }
-                NavigationLink(LidarrDownloadsCopy.title) { LidarrDownloadsView() }   // round 12 item 6 (D49)
-                    .accessibilityIdentifier("settings-lidarr-downloads")
                 NavigationLink("Lidarr change log") { ChangeLogView() }
                     .accessibilityIdentifier("settings-change-log")
             } footer: {

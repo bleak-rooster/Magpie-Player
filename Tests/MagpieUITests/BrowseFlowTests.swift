@@ -526,7 +526,7 @@ final class BrowseFlowTests: XCTestCase {
         XCTAssertTrue(app.textFields["lidarr-address"].waitForExistence(timeout: 10))
     }
 
-    /// Y4 (round 12 item 6): Settings › New music › Downloads in Lidarr reads the dev Lidarr's whole queue. The dev stack
+    /// Y4 (round 12 item 6): Settings › Downloads in Lidarr reads the dev Lidarr's whole queue. The dev stack
     /// has no download client or indexer, so its queue is empty and no item can be made: the page shows "Nothing
     /// downloading" (restart itself is covered model-level, RequestsTests `DownloadsInLidarrTests`). Writes nothing.
     @MainActor func testDownloadsInLidarrOpensFromNewMusic() throws {
@@ -562,9 +562,10 @@ final class BrowseFlowTests: XCTestCase {
             XCTAssertTrue(version.waitForExistence(timeout: 20))
             app.buttons["Done"].firstMatch.tap()
         }
+        // Fix round 1 I3: a top-level Settings row while Lidarr is connected.
+        app.navigationBars.buttons.firstMatch.tap()   // › Settings
         let downloads = app.buttons["settings-lidarr-downloads"]
-        for _ in 0..<6 where !downloads.isHittable { app.swipeUp() }
-        XCTAssertTrue(downloads.waitForExistence(timeout: 10), "New music lists Downloads in Lidarr")
+        XCTAssertTrue(downloads.waitForExistence(timeout: 10), "Settings lists Downloads in Lidarr")
         downloads.tap()
         XCTAssertTrue(app.navigationBars["Downloads in Lidarr"].waitForExistence(timeout: 10))
         let empty = app.descendants(matching: .any)["lidarr-downloads-empty"]

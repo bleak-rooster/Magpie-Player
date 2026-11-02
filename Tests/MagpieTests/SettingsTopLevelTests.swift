@@ -61,7 +61,7 @@ import UIKit
         #expect(SettingsPage.finishSettingUp(.changesOff) == [.requests])
         #expect(SettingsPage.finishSettingUp(.addressNotAllowed) == [.requests])
         #expect(SettingsPage.finishSettingUp(.available(.standard)) == [.requests, .findsSetup])
-        #expect(SettingsPage.topLevel == [.account, .playback, .downloads, .scrobbling, .homeAndLibrary, .appearance, .requests, .about])
+        #expect(SettingsPage.topLevel(lidarrConnected: false) == [.account, .playback, .downloads, .scrobbling, .homeAndLibrary, .appearance, .requests, .about])
     }
 
     /// Signed in to a long plain-http public address (the "Not encrypted" warning row) with Lidarr connected, and
@@ -98,7 +98,7 @@ import UIKit
         defer { window.isHidden = true }
         let list = try #require(Self.scrollView(in: sheet.view), "the top level is a list")
         let rows = (0..<list.numberOfSections).reduce(0) { $0 + list.numberOfItems(inSection: $1) }
-        #expect(rows == 8, "eight pages")
+        #expect(rows == 9, "eight pages, and Downloads in Lidarr while Lidarr is connected (Y4)")
         let visible = list.bounds.height - list.adjustedContentInset.top - list.adjustedContentInset.bottom
         print("T21b settings: content \(list.contentSize.height) pt in \(visible) pt visible (sheet \(sheet.view.frame))")
         #expect(sheet.view.frame.height < 667, "measured inside the sheet, not the whole window")
