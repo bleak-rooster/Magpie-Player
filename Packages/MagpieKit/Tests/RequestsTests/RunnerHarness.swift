@@ -236,6 +236,22 @@ final class FakeLidarr: @unchecked Sendable {
         ]
         var downloadClientReads = 0
         var removedFromQueue: [Int] = []
+        // Y5: the song file's quality and size, its track, Lidarr's clock, and how a delete and a refresh go.
+        var songQuality = "MP3-320"
+        var songSize = 1000
+        var songTrack = "ft-1"
+        /// The song file's id (a re-import gives it a new one).
+        var songFileId = 1
+        /// Lidarr's track lists the song file (`GET /track`): off by default, so older tests' flows don't change.
+        var songImported = false
+        /// `Date` of `GET /system/status` (nil: no header); `Age` set: served from a cache.
+        var serverDate: Date?
+        var serverDateCached = false
+        /// A track file delete makes Lidarr unmonitor the album (the owner's "Unmonitor deleted tracks").
+        var unmonitorOnDelete = false
+        /// `POST /command RefreshArtist` rescans: track file records follow the files (Lidarr 3.2 after a move).
+        var refreshFollowsFiles = true
+        var posted: [String] = []
     }
 
     let latch = Latch()
@@ -392,9 +408,10 @@ final class FakeLidarr: @unchecked Sendable {
             with { s in
                 if s.rootsDownAfterDelete { s.rootsDown = true }
                 if s.deleteFails503 > 0 { s.deleteFails503 -= 1; return MockTransport.Response(status: 503) }
-                for i in s.artists.indices where ids.contains(1) {
+                for i in s.artists.indices where ids.contains(s.songFileId) {
                     s.artists[i].files = nil
                     s.artists[i].recorded = nil
+                    if s.unmonitorOnDelete { for a in s.albums.indices where s.albums[a].id == 50 { s.albums[a].monitored = false } }
                 }
                 s.extraFiles.removeAll { ids.contains($0.id) }
                 if s.deleteAppliedThen504 > 0 { s.deleteAppliedThen504 -= 1; return MockTransport.Response(status: 504) }
@@ -412,6 +429,28 @@ final class FakeLidarr: @unchecked Sendable {
         }
         for id in 1...4 {
             t.stub(method: "DELETE", pathSuffix: "/api/v1/trackfile/\(id)") { _ in deleteFiles([id]) }
+        }
+        t.stub(pathSuffix: "/api/v1/system/status") { [self] _ in
+            let (date, cached) = with { ($0.serverDate, $0.serverDateCached) }
+            var headers: [String: String] = [:]
+            if let date {
+                let f = DateFormatter()
+                f.locale = Locale(identifier: "en_US_POSIX"); f.timeZone = TimeZone(identifier: "GMT")
+                f.dateFormat = "EEE, dd MMM yyyy HH:mm:ss 'GMT'"
+                headers["Date"] = f.string(from: date)
+            }
+            if cached { headers["Age"] = "30" }
+            return MockTransport.Response(status: 200, body: Data("{}".utf8), headers: headers)
+        }
+        t.stub(pathSuffix: "/api/v1/track") { [self] req in
+            let albumId = URLComponents(url: req.url!, resolvingAgainstBaseURL: false)?.queryItems?
+                .first { $0.name == "albumId" }?.value.flatMap(Int.init)
+            return reply(with { s in
+                guard albumId == 50 else { return [[String: Any]]() }
+                let file = s.songImported && s.artists.contains { $0.recorded != nil } ? s.songFileId : 0
+                return [["id": 900, "albumId": 50, "trackFileId": file, "foreignTrackId": s.songTrack,
+                         "foreignRecordingId": recSingleAndAlbum.rawValue] as [String: Any]]
+            })
         }
         for id in [7, 42, 43] {
             t.stub(method: "DELETE", pathSuffix: "/api/v1/artist/\(id)") { [self] _ in
@@ -463,21 +502,26 @@ final class FakeLidarr: @unchecked Sendable {
             let albumId = items.first { $0.name == "albumId" }?.value.flatMap(Int.init)
             return reply(with { s in
                 let song: [(Int, Int, Int, String)] = s.artists.compactMap { a in
-                    a.recorded.map { (1, a.id, 50, $0 + "/" + FakeLidarr.songFile) }
+                    a.recorded.map { (s.songFileId, a.id, 50, $0 + "/" + FakeLidarr.songFile) }
                 }
                 let extra = s.extraFiles.filter(\.recorded).map { ($0.id, $0.artistId, $0.albumId, $0.path) }
                 return (song + extra).filter { row in
                     (artistId == nil || row.1 == artistId) && (albumId == nil || row.2 == albumId)
                         && (artistId != nil || albumId != nil)
-                }.map { ["id": $0.0, "path": $0.3, "albumId": $0.2, "artistId": $0.1] as [String: Any] }
+                }.map {
+                    var row: [String: Any] = ["id": $0.0, "path": $0.3, "albumId": $0.2, "artistId": $0.1]
+                    if $0.0 == s.songFileId { row["quality"] = ["quality": ["name": s.songQuality]]; row["size"] = s.songSize }
+                    return row
+                }
             })
         }
         // The write gate reads each track file before deleting it (FM1).
         for id in 1...4 {
             t.stub(pathSuffix: "/api/v1/trackfile/\(id)") { [self] _ in
                 let row: [String: Any]? = with { s in
-                    if id == 1, let a = s.artists.first(where: { $0.recorded != nil }) {
-                        return ["id": 1, "artistId": a.id, "albumId": 50, "path": a.recorded! + "/" + FakeLidarr.songFile]
+                    if id == s.songFileId, let a = s.artists.first(where: { $0.recorded != nil }) {
+                        return ["id": id, "artistId": a.id, "albumId": 50, "path": a.recorded! + "/" + FakeLidarr.songFile,
+                                "quality": ["quality": ["name": s.songQuality]], "size": s.songSize]
                     }
                     return s.extraFiles.first { $0.id == id && $0.recorded }.map {
                         ["id": $0.id, "artistId": $0.artistId, "albumId": $0.albumId, "path": $0.path]
@@ -558,9 +602,27 @@ final class FakeLidarr: @unchecked Sendable {
             if with({ $0.addAnswers504 }) { return MockTransport.Response(status: 504) }
             return reply(["id": id, "artistName": "Aurora Field"], status: 201)
         }
-        t.stub(method: "POST", pathSuffix: "/api/v1/command") { [self] _ in
-            let id: Int = with { s in s.nextCommandId += 1; return s.nextCommandId }
-            return reply(["id": id, "name": "AlbumSearch", "status": "queued"], status: 201)
+        t.stub(method: "POST", pathSuffix: "/api/v1/command") { [self] req in
+            let body = (req.httpBody.flatMap { try? JSONSerialization.jsonObject(with: $0) } as? [String: Any]) ?? [:]
+            let name = body["name"] as? String ?? "?"
+            let id: Int = with { s in
+                s.nextCommandId += 1
+                s.posted.append(name)
+                if name == "RefreshArtist", let artistId = body["artistId"] as? Int {
+                    s.commands.append(Command(id: s.nextCommandId, name: name, status: "completed", artistIds: [artistId]))
+                    if s.refreshFollowsFiles {
+                        for i in s.artists.indices where s.artists[i].id == artistId { s.artists[i].recorded = s.artists[i].files }
+                    }
+                }
+                return s.nextCommandId
+            }
+            return reply(["id": id, "name": name, "status": "queued"], status: 201)
+        }
+        for id in 79...160 {
+            t.stub(pathSuffix: "/api/v1/command/\(id)") { [self] _ in
+                guard let c = with({ s in s.commands.first { $0.id == id } }) else { return MockTransport.Response(status: 404) }
+                return reply(["id": c.id, "name": c.name, "status": c.status, "body": ["artistIds": c.artistIds]])
+            }
         }
         t.stub(pathSuffix: "/api/v1/queue/details") { [self] _ in
             if let d = down() { return d }

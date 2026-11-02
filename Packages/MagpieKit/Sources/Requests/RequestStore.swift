@@ -159,6 +159,31 @@ public struct MagpieRequest: Sendable, Codable, Equatable, Identifiable {
     /// When Search again last ran for it (once per `RequestRunner.searchAgainInterval`).
     public var searchAgainAt: Date?
 
+    // Y5 (Find → Add). Optional, so older requests decode.
+
+    /// After the Keep's commit: the lossless search, the upgrade watch and the MP3 rule (`RequestRunner+Lossless`).
+    public var lossless: LosslessWatch?
+    /// The MP3 couldn't be removed safely (no mapping, a changed size, a refusal): "Couldn't remove the MP3".
+    public var mp3NeedsAttention: Bool {
+        get { mp3Stuck ?? false }
+        set { mp3Stuck = newValue ? true : nil }
+    }
+    var mp3Stuck: Bool?
+    /// C1: the main root already has a folder of the artist's name, so Add to your library refused (nothing written).
+    public var collision: Bool {
+        get { folderTaken ?? false }
+        set { folderTaken = newValue ? true : nil }
+    }
+    var folderTaken: Bool?
+    /// The search's start in Lidarr's time (item 9.7): the history filter compares Lidarr's dates with it.
+    public var searchStartedAtServer: Date?
+    /// The highest `/command` id before `POST /artist` (item 9.8): only a later RefreshArtist naming the artist counts.
+    public var addCommandBaseline: Int?
+    /// That RefreshArtist completed (I12): only after it may an album's absence mean something.
+    public var addRefreshDone: Bool?
+    /// The album was listed by Lidarr at least once (I12/6: `stoppedInLidarr` needs that).
+    public var albumSeen: Bool?
+
     public init(id: RequestID = RequestID(), recording: ExternalRecording, tier: Tier, createdAt: Date) {
         self.id = id
         self.recording = recording
@@ -177,6 +202,7 @@ public struct MagpieRequest: Sendable, Codable, Equatable, Identifiable {
     public var canBeRemoved: Bool {
         !isActive && !cleanupPending && keep == nil && notForMe == nil && !keepNeedsAttention
             && !notForMeNeedsAttention && relinkPending != true && (bringingIn ?? []).isEmpty
+            && !(lossless?.isActive ?? false) && !mp3NeedsAttention
     }
 
     /// How many places this request takes in the limit of 5 (G7): one while on its way, plus each release Bring in
@@ -199,6 +225,9 @@ public struct KeepProgress: Sendable, Codable, Equatable {
         case untagging
         /// The move failed: `magpie-find` and the earlier quality profile are being put back.
         case restoring
+        /// Y5: the intent is saved (ledger `keepIntentAt`) and nothing is sent yet: it goes when Lidarr is free
+        /// ("Adding when your server is free…", item 9.5).
+        case queued
     }
 
     public var phase: Phase
@@ -222,6 +251,10 @@ public struct KeepProgress: Sendable, Codable, Equatable {
     /// Lidarr saved the main root as the artist path but the files never left `fromPath`: the restore also
     /// points the artist back at the Finds root, without moving files.
     public var revertPath: Bool?
+    /// Y5 (I2): when the PUT was sent (saved just before it): the start grace and the move limit count from here.
+    public var sentAt: Date?
+    /// The time the move limits count from.
+    public var since: Date { sentAt ?? startedAt }
 
     public init(phase: Phase, startedAt: Date, artistId: Int, fromPath: String, findsRoot: String, mainRoot: String,
                 findTagId: Int, priorQualityProfileId: Int?, commandBaseline: Int) {
@@ -229,6 +262,32 @@ public struct KeepProgress: Sendable, Codable, Equatable {
         self.findsRoot = findsRoot; self.mainRoot = mainRoot; self.findTagId = findTagId
         self.priorQualityProfileId = priorQualityProfileId; self.commandBaseline = commandBaseline
     }
+}
+
+/// Y5 (§5): after a Keep, Magpie asks for the lossless copy, watches for it, and (only for a Keep the owner tapped,
+/// C2) removes the MP3 after the deadline. Times are Lidarr's (item 9.7).
+public struct LosslessWatch: Sendable, Codable, Equatable {
+    /// The find's albums.
+    public var albumIds: [Int]
+    public var startedAt: Date
+    /// A Y5 owner-tapped Keep: the MP3 goes at `deadline`. Adopted, hand-moved and older kept finds: never (C2).
+    public var autoDelete: Bool
+    public var deadline: Date?
+    public var searches: Int = 0
+    public var lastSearchAt: Date?
+    public var lastCheckAt: Date?
+    /// The MP3 is gone (a read showed it, never claimed without one).
+    public var removedAt: Date?
+    /// Every track of the find is lossless now.
+    public var losslessAt: Date?
+    /// The watch ended: lossless, or 30 days (I5).
+    public var doneAt: Date?
+
+    public init(albumIds: [Int], startedAt: Date, autoDelete: Bool, deadline: Date?) {
+        self.albumIds = albumIds; self.startedAt = startedAt; self.autoDelete = autoDelete; self.deadline = deadline
+    }
+
+    public var isActive: Bool { doneAt == nil }
 }
 
 /// A Not for me in flight (Task 6.2c), saved before its first Lidarr write so a relaunch picks it up and proves
@@ -288,7 +347,7 @@ public actor RequestStore {
         directory.appending(path: "Magpie/requests-\(instance).json")
     }
 
-    private let fileURL: URL?
+    nonisolated let fileURL: URL?
     private var memory: [MagpieRequest] = []
 
     /// `fileURL` nil keeps the requests in memory only.
@@ -333,7 +392,7 @@ public actor RequestStore {
     public static func eraseAll(in directory: URL = URL.applicationSupportDirectory) {
         let folder = defaultURL(in: directory, instance: "x").deletingLastPathComponent()
         let names = (try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []
-        for name in names where name.hasPrefix("requests-") && name.contains(".json") {
+        for name in names where (name.hasPrefix("requests-") || name.hasPrefix("runner-state-")) && name.contains(".json") {
             try? FileManager.default.removeItem(at: folder.appending(path: name))
         }
     }

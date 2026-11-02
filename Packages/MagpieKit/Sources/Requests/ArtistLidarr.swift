@@ -68,7 +68,7 @@ public enum ArtistLidarr {
             return .monitored(lidarrId: artist.id, searching: searching)
         }
         // A kept artist is the owner's now (the gate refuses it too): no "Monitor" for it.
-        let kept = entries.contains { $0.lidarrArtistId == artist.id && $0.keptAt != nil }
+        let kept = entries.contains { $0.lidarrArtistId == artist.id && $0.isKeptOrKeeping }
         return .notMonitored(lidarrId: artist.id, magpieAdded: !kept && entries.contains { $0.created(artist) })
     }
 

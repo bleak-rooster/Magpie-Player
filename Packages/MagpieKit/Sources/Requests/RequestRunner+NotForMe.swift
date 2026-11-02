@@ -86,7 +86,7 @@ extension RequestRunner {
     public func notForMeCheck(_ id: RequestID) async throws -> NotForMeCheck {
         guard !stopped, await load() else { throw NotForMeError.unavailable }
         guard let r = request(id), let candidate = letGoCandidate(r) else { throw NotForMeError.notAFind }
-        guard !keepingArtists.contains(candidate.artist) else { throw NotForMeError.unavailable }
+        guard !artistBusy(candidate.artist) else { throw NotForMeError.unavailable }
         guard await gate.enabled else { throw NotForMeError.changesOff }
         guard let setup = await keepSetup() else { throw NotForMeError.notSetUp }
         switch await proveLetGo(r, artistId: candidate.artist, albumId: candidate.album, setup: setup, artistPath: nil) {
@@ -103,7 +103,7 @@ extension RequestRunner {
         guard let r = request(id) else { throw NotForMeError.notAFind }
         // M6: already under way: only follow it (each step proven again); never start it twice.
         if let p = r.notForMe {
-            guard !keepingArtists.contains(p.artistId) else { return .stillGoing }
+            guard !artistBusy(p.artistId) else { return .stillGoing }
             hold(p.artistId)
             defer { release(p.artistId) }
             return try await followNotForMe(id, inline: true)
@@ -111,7 +111,7 @@ extension RequestRunner {
         guard let (artistId, albumId) = letGoCandidate(r).map({ ($0.artist, $0.album) }) else {
             throw NotForMeError.notAFind
         }
-        guard !keepingArtists.contains(artistId) else { throw NotForMeError.unavailable }
+        guard !artistBusy(artistId) else { throw NotForMeError.unavailable }
         hold(artistId)
         defer { release(artistId) }
         guard await gate.enabled else { throw NotForMeError.changesOff }
@@ -154,7 +154,7 @@ extension RequestRunner {
     /// `tick()`: follows Not for mes still going (at most every `notForMeCheckInterval`).
     func followNotForMes() async {
         for r in list {
-            guard let p = r.notForMe, !keepingArtists.contains(p.artistId) else { continue }
+            guard let p = r.notForMe, !artistBusy(p.artistId) else { continue }
             // A last check "in the future" (the clock went back) is due now.
             if let last = p.lastCheckAt, (0..<Self.notForMeCheckInterval).contains(now().timeIntervalSince(last)) { continue }
             hold(p.artistId)
@@ -405,7 +405,7 @@ extension RequestRunner {
                     artistPath: String?) async -> Proven<LetGoProof> {
         let entries: [LedgerEntry]
         do { entries = try await ledger.entries.filter { $0.lidarrArtistId == artistId } } catch { return .unknown }
-        guard entries.contains(where: \.createdArtist), !entries.contains(where: { $0.keptAt != nil }),
+        guard entries.contains(where: \.createdArtist), !entries.contains(where: \.isKeptOrKeeping),
               let entry = entries.first(where: { $0.albumId == albumId }), !entry.wasMonitoredBefore,
               entry.rgMbid == r.plan?.releaseGroupMBID else { return .no }
         let roots: [String], artist: LidarrArtist, commands: [CommandStatus], albums: [LidarrAlbum]
@@ -454,7 +454,7 @@ extension RequestRunner {
         let entries: [LedgerEntry]
         do {
             entries = try await ledger.entries.filter { $0.lidarrArtistId == p.artistId }
-            guard entries.contains(where: \.createdArtist), !entries.contains(where: { $0.keptAt != nil }) else { return .no }
+            guard entries.contains(where: \.createdArtist), !entries.contains(where: \.isKeptOrKeeping) else { return .no }
         } catch {
             return .unknown
         }

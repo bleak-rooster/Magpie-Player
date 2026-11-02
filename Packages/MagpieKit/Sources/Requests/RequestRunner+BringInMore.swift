@@ -134,7 +134,7 @@ extension RequestRunner {
                         follow: Bool, types: ReleaseTypes? = nil, qualityProfileId: Int? = nil) async throws -> BringInResult {
         let target = try await bringInTarget(id)
         let artistId = target.artist.id
-        guard !keepingArtists.contains(artistId) else { throw BringInError.unavailable }
+        guard !artistBusy(artistId) else { throw BringInError.unavailable }
         keepingArtists.insert(artistId)
         defer { keepingArtists.remove(artistId) }
 

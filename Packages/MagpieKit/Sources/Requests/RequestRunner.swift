@@ -127,24 +127,42 @@ public actor RequestRunner {
     let ledger: Ledger
     let mb: MusicBrainzClient
     let library: LibraryAccess
-    private let store: RequestStore
+    let store: RequestStore
     private let setup: @Sendable () async -> Setup?
     let keepSetup: @Sendable () async -> KeepSetup?
     let now: @Sendable () -> Date
     let sleep: @Sendable (Duration) async -> Void
     private let onReady: @Sendable (MagpieRequest) -> Void
     let onRelinked: @Sendable (MagpieRequest, _ before: String?, Song) -> Void
+    /// Y5 (M1): the kept find's MP3 was removed: the app drops queue entries and the phone's download of that song.
+    let onMP3Removed: @Sendable (MagpieRequest, _ songId: String?) -> Void
+    /// Tests and the dev-stack IT: a shorter MP3 grace than 7 days.
+    var mp3GraceOverride: TimeInterval?
+    public func setMP3Grace(_ seconds: TimeInterval?) { mp3GraceOverride = seconds }
 
     private(set) var list: [MagpieRequest] = []
     private var loaded = false
     /// The read of the saved list in flight, shared by every `load()` meanwhile.
     private var loading: Task<[MagpieRequest], Error>?
     /// Requests with a step running (internal for R17's stall handling and Search again).
-    var busy: Set<RequestID> = []
+    var busy: Set<RequestID> = [] { didSet { if busy != oldValue { saveLeases() } } }
+    /// Y5 (RunnerState.swift): this runner's id for its leases, where they and Lidarr's clock are kept, and the last
+    /// copy read or written.
+    let process = UUID().uuidString
+    var stateURL: URL? { store.fileURL.map(RunnerState.url(forRequests:)) }
+    var persistedState = RunnerState()
+    var lastClockRead: Date?
+    /// Y5 throttles (in memory: a relaunch only checks sooner).
+    var factChecks: [RequestID: Date] = [:]
+    var adoptedChecks: [RequestID: Date] = [:]
     /// R17 (RequestRunner+Stall.swift): each Soulseek download being watched, by queue id; the Soulseek clients'
     /// names (read once per runner); how long a download may sit unchanged.
     var stallWatch: [Int: StallWatch] = [:]
     var soulseekClients: Set<String>?
+    /// The pass the Soulseek clients were last read in (item 9.6: once per pass).
+    var clientsReadInPass = -1
+    /// Non-Soulseek "warning" downloads by queue id: their `sizeleft` and since when (item 9.6).
+    var warningWatch: [Int: (sizeleft: Double, since: Date)] = [:]
     var stallLimit: TimeInterval = StallLimit.standard.seconds
     /// N1: requests whose next search follows a copy just removed: that search goes out even at the cap (the cap
     /// stops further removals, not the search that belongs to the last one).
@@ -152,7 +170,7 @@ public actor RequestRunner {
     /// Lidarr artists a Keep, a Not for me or a Bring in more is working on right now (RequestRunner+Keep.swift,
     /// RequestRunner+NotForMe.swift, RequestRunner+BringInMore.swift): one at a time per artist, so they never run
     /// together on one artist.
-    var keepingArtists: Set<Int> = []
+    var keepingArtists: Set<Int> = [] { didSet { if keepingArtists != oldValue { saveLeases() } } }
     /// The artists in `keepingArtists` that a Not for me holds (so Keep can say why it can't go ahead).
     var lettingGoArtists: Set<Int> = []
     /// When the kept song was last looked up, per request (throttles `relink`).
@@ -163,8 +181,6 @@ public actor RequestRunner {
     private var ticking = false
     private(set) var stopped = false
     private var lastIndexRefresh: Date?
-    /// `history/since` cursor: the last successful poll, minus an overlap (PROMOTED B).
-    private var historyCursor: Date?
     var lastLidarrContact: Date
     private var watchers: [UUID: AsyncStream<[MagpieRequest]>.Continuation] = [:]
 
@@ -177,10 +193,12 @@ public actor RequestRunner {
                 now: @escaping @Sendable () -> Date = { Date() },
                 sleep: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) },
                 onReady: @escaping @Sendable (MagpieRequest) -> Void = { _ in },
-                onRelinked: @escaping @Sendable (MagpieRequest, _ before: String?, Song) -> Void = { _, _, _ in }) {
+                onRelinked: @escaping @Sendable (MagpieRequest, _ before: String?, Song) -> Void = { _, _, _ in },
+                onMP3Removed: @escaping @Sendable (MagpieRequest, _ songId: String?) -> Void = { _, _ in }) {
         self.lidarr = lidarr; self.gate = gate; self.ledger = ledger; self.mb = mb
         self.library = library; self.store = store; self.setup = setup; self.keepSetup = keepSetup
         self.now = now; self.sleep = sleep; self.onReady = onReady; self.onRelinked = onRelinked
+        self.onMP3Removed = onMP3Removed
         self.lastLidarrContact = now()
         // Critical: ids are only meaningful on their own server. A ledger for another Lidarr disables the runner.
         if ledger.instance != lidarr.instanceScope {
@@ -210,7 +228,7 @@ public actor RequestRunner {
     public var needsPolling: Bool {
         list.contains {
             ($0.isActive && !$0.isNotListed) || $0.cleanupPending || $0.keep != nil || $0.relinkPending == true
-                || $0.notForMe != nil
+                || $0.notForMe != nil || ($0.lossless?.isActive ?? false)
         }
     }
 
@@ -234,6 +252,7 @@ public actor RequestRunner {
             if !loaded {
                 list = saved
                 loaded = true
+                persistedState = RunnerState.load(stateURL)
                 publish()
             }
             loading = nil
@@ -274,7 +293,7 @@ public actor RequestRunner {
     /// While a step is in flight for it, only the state changes here; the clean-up runs after that step
     /// (which re-checks the state before any write).
     public func cancel(_ id: RequestID) async {
-        await apply(id, .cancel, deferCleanup: busy.contains(id))
+        await apply(id, .cancel, deferCleanup: requestBusy(id))
     }
 
     /// Needs attention "Not showing up in your library yet": scan and look again.
@@ -291,7 +310,7 @@ public actor RequestRunner {
     /// Removes a finished (or ready) request from the list, only when `canBeRemoved` (FL6: never one whose Keep or
     /// Not for me is still going or needs a look, or that still has follow-ups owed).
     public func forget(_ id: RequestID) async {
-        guard let r = request(id), r.canBeRemoved, !keepingArtists.contains(r.lidarrArtistId ?? -1) else { return }
+        guard let r = request(id), r.canBeRemoved, !artistBusy(r.lidarrArtistId ?? -1) else { return }
         list.removeAll { $0.id == id }
         await changed()
     }
@@ -302,6 +321,7 @@ public actor RequestRunner {
         stopped = true
         for c in watchers.values { c.finish() }
         watchers = [:]
+        releaseLeases()   // a retired runner holds nothing (its step in flight writes nothing more)
     }
 
     /// Waits for work started by `tryRecording` (tests).
@@ -335,6 +355,13 @@ public actor RequestRunner {
         defer { ticking = false }
         guard await load() else { return }
         passCount += 1
+        // Y5: leases renewed (I1), Lidarr's clock (item 9.7), the one-time migration (§9), then the facts (§3).
+        renewLeases()
+        if shouldStop() { return }
+        await updateServerClock()
+        await migrateY5()
+        if shouldStop() { return }
+        await foldFacts()
         for r in list where r.isActive {
             if shouldStop() { return }
             await advance(r.id)
@@ -345,12 +372,16 @@ public actor RequestRunner {
         await pollLidarr()
         if shouldStop() { return }
         await checkLibrary()
-        for r in list where r.cleanupPending && !busy.contains(r.id) {
+        for r in list where r.cleanupPending && !requestBusy(r.id) {
             if shouldStop() { return }
             await cleanup(r.id)
         }
         if shouldStop() { return }
         await followKeeps()
+        if shouldStop() { return }
+        await followAdopted()
+        if shouldStop() { return }
+        await followLossless()
         if shouldStop() { return }
         await followNotForMes()
         if shouldStop() { return }
@@ -403,7 +434,7 @@ public actor RequestRunner {
     /// Re-runs whatever step the request is in when nothing is running for it (after a relaunch, a retry
     /// timer, or `tryRecording`).
     private func advance(_ id: RequestID) async {
-        guard !busy.contains(id), let r = request(id) else { return }
+        guard !requestBusy(id), let r = request(id) else { return }
         busy.insert(id)
         defer { busy.remove(id) }
         switch r.state {
@@ -814,8 +845,11 @@ public actor RequestRunner {
         }
         let target = try await destination(setup)
         let body = try Self.addArtistBody(lookup: lookup, setup: target.setup, releaseGroup: plan.releaseGroupMBID)
+        // Item 9.8: the command list before the add, so only Lidarr's RefreshArtist for this add counts.
+        let baseline = (try? await lidarr.commands())?.map(\.id).max()
         try ensure(id, .adding)
         await mutate(id) {
+            $0.addCommandBaseline = baseline
             $0.addSent = true
             $0.addedAt = self.now()
             $0.root = target.setup.rootFolderPath
@@ -927,9 +961,21 @@ public actor RequestRunner {
         guard let albums = try? await lidarr.albums(artistId: artistId) else { return }
         lastLidarrContact = now()
         guard let album = albums.first(where: { $0.foreignAlbumId == rg }) else {
-            if r.isActive, !following,
-               now().timeIntervalSince(r.addedAt ?? r.searchStartedAt ?? r.createdAt) > Self.albumAppearLimit {
+            guard r.isActive, !following else { return }
+            // Item 9.8: once Lidarr's refresh of the new artist completed, a missing album won't appear.
+            switch await addRefresh(r, artistId: artistId) {
+            case .completed?:
+                // Read once more: the refresh may have completed just after the first read.
+                if let again = try? await lidarr.albums(artistId: artistId), again.contains(where: { $0.foreignAlbumId == rg }) {
+                    return
+                }
                 await apply(id, .error(.noRelease))
+            case .failed?:
+                await apply(id, .lidarrUnavailable)
+            case nil:
+                if now().timeIntervalSince(r.addedAt ?? r.searchStartedAt ?? r.createdAt) > Self.albumAppearLimit {
+                    await apply(id, .error(.noRelease))
+                }
             }
             return
         }
@@ -948,12 +994,35 @@ public actor RequestRunner {
         await mutate(id) {
             $0.lidarrArtistId = artistId
             $0.albumId = album.id
+            $0.albumSeen = true
+        }
+    }
+
+    enum RefreshOutcome { case completed, failed }
+
+    /// I12: Lidarr's RefreshArtist for this request's add: newer than the baseline saved before `POST /artist`, with
+    /// non-empty artist ids naming the artist (a global refresh never counts). Nil: unknown (none seen, still
+    /// running, pruned, or Lidarr unreadable): the fixed limits apply.
+    func addRefresh(_ r: MagpieRequest, artistId: Int) async -> RefreshOutcome? {
+        if r.addRefreshDone == true { return .completed }
+        guard r.addSent, let baseline = r.addCommandBaseline, let commands = try? await lidarr.commands() else { return nil }
+        guard let refresh = commands.filter({
+            $0.id > baseline && $0.name.lowercased() == "refreshartist" && !$0.artistIds.isEmpty && $0.artistIds.contains(artistId)
+        }).max(by: { $0.id < $1.id }) else { return nil }
+        switch refresh.status.lowercased() {
+        case "completed":
+            await mutate(r.id) { $0.addRefreshDone = true }
+            return .completed
+        case "failed", "aborted", "cancelled", "orphaned":
+            return .failed
+        default:
+            return nil
         }
     }
 
     private func discoverAlbums() async {
         for r in list where (r.isActive || r.cleanupPending) && r.albumId == nil && r.plan != nil
-                            && !busy.contains(r.id) {
+                            && !requestBusy(r.id) {
             switch r.state {
             case .pending, .resolving, .adding: continue
             default: await discoverAlbum(r.id)
@@ -971,7 +1040,10 @@ public actor RequestRunner {
         if r.skipNextSearch || r.albumId == nil || (r.removalsUsedUp && !afterRemoval) {
             await mutate(id) {
                 $0.skipNextSearch = false
-                if $0.searchStartedAt == nil { $0.searchStartedAt = self.now() }
+                if $0.searchStartedAt == nil {
+                    $0.searchStartedAt = self.now()
+                    $0.searchStartedAtServer = self.serverNow()
+                }
             }
             return await apply(id, .searchStarted)
         }
@@ -982,6 +1054,7 @@ public actor RequestRunner {
             let commandId = (try? JSONDecoder().decode(JSONValue.self, from: data))?["id"]?.intValue
             await mutate(id) {
                 $0.searchStartedAt = self.now()
+                $0.searchStartedAtServer = self.serverNow()
                 $0.searchCommandId = commandId
                 $0.grabbed = false
             }
@@ -997,7 +1070,7 @@ public actor RequestRunner {
 
     private func pollLidarr() async {
         let polled = list.filter { r in
-            guard r.albumId != nil, !busy.contains(r.id) else { return false }
+            guard r.albumId != nil, !requestBusy(r.id) else { return false }
             switch r.state {
             case .searching, .downloading, .waiting: return r.searchStartedAt != nil
             default: return false
@@ -1005,23 +1078,25 @@ public actor RequestRunner {
         }
         guard !polled.isEmpty else { return }
         let albumIds = Array(Set(polled.compactMap(\.albumId))).sorted()
-        let pollStart = now()
+        // Item 9.7: Lidarr's time throughout (its history dates are its own clock's).
+        let pollStart = serverNow()
         // PROMOTED B: only what's new since the last poll (with a minute of overlap), never more than a day.
-        let earliest = (polled.compactMap(\.searchStartedAt).min() ?? pollStart).addingTimeInterval(-60)
-        let since = max(historyCursor ?? earliest, earliest, pollStart.addingTimeInterval(-Self.historyLookback))
+        let earliest = (polled.map(serverStart).min() ?? pollStart).addingTimeInterval(-60)
+        let since = max(persistedState.historyCursor ?? earliest, earliest, pollStart.addingTimeInterval(-Self.historyLookback))
         let queue: [QueueItem], history: [HistoryEvent]
         do {
             queue = try await lidarr.queueDetails(albumIds: albumIds)
             history = try await lidarr.historySince(since)
             lastLidarrContact = now()
-            historyCursor = pollStart.addingTimeInterval(-60)
+            saveHistoryCursor(pollStart.addingTimeInterval(-60))
         } catch {
             guard now().timeIntervalSince(lastLidarrContact) >= Self.lidarrSilenceLimit else { return }
             for r in polled where r.state != .importing { await apply(r.id, .lidarrUnavailable) }
             return
         }
         for r in polled {
-            guard let current = request(r.id), let albumId = current.albumId, let started = current.searchStartedAt else { continue }
+            guard let current = request(r.id), let albumId = current.albumId, current.searchStartedAt != nil else { continue }
+            let started = serverStart(current)
             let items = queue.filter { $0.albumId == albumId }
             let events = history.filter { $0.albumId == albumId && ($0.date ?? started) >= started.addingTimeInterval(-60) }
             if events.contains(where: { $0.kind == .imported }) {
@@ -1029,7 +1104,16 @@ public actor RequestRunner {
                 continue
             }
             if await handledStall(r.id, items) { continue }   // R17 (RequestRunner+Stall.swift)
-            if let stuck = items.first(where: { Self.isStuck($0) && !isSoulseekDownloading($0) }) {
+            // Item 9.6: a download in "warning" (any client) is stalled only once it hasn't moved for the stall limit.
+            if let stalled = staleWarning(items) {
+                await mutate(r.id) {
+                    $0.grabbed = true
+                    $0.note = Self.shortNote(stalled)
+                }
+                if case .waiting = current.state {} else { await apply(r.id, .downloadFailed) }
+                continue
+            }
+            if let stuck = items.first(where: { Self.isStuck($0) && !Self.isWarningDownloading($0) }) {
                 // IMPORTANT 5: blocked or failed import sits in the queue at 100%: that is a wait, not progress.
                 await mutate(r.id) {
                     $0.grabbed = true
@@ -1056,7 +1140,7 @@ public actor RequestRunner {
                 continue
             }
             // A14 "nothing found": the search finished, nothing queued, nothing grabbed for 10 minutes.
-            let elapsed = now().timeIntervalSince(started)
+            let elapsed = now().timeIntervalSince(current.searchStartedAt ?? now())
             if current.state == .searching, !current.grabbed, lastGrab == nil, elapsed >= RequestMachine.noGrabThreshold {
                 var searchDone = true
                 if let commandId = current.searchCommandId, let command = try? await lidarr.command(id: commandId) {
@@ -1065,6 +1149,31 @@ public actor RequestRunner {
                 if searchDone { await apply(r.id, .noGrabAfter(elapsed)) }
             }
         }
+    }
+
+    /// When the request's search started, in Lidarr's time (stored since Y5; older requests: the phone's + offset).
+    func serverStart(_ r: MagpieRequest) -> Date {
+        r.searchStartedAtServer ?? (r.searchStartedAt ?? now()).addingTimeInterval(persistedState.clockOffset ?? 0)
+    }
+
+    /// Still downloading, with a warning (slskd shows this while it works; other clients for slow peers).
+    static func isWarningDownloading(_ item: QueueItem) -> Bool {
+        item.trackedDownloadState.lowercased() == "downloading" && item.status.lowercased() == "warning"
+    }
+
+    /// A non-Soulseek "warning" download whose `sizeleft` hasn't changed for the stall limit (Soulseek ones are
+    /// R17's, removed and searched again by `handledStall`).
+    func staleWarning(_ items: [QueueItem]) -> QueueItem? {
+        let t = now()
+        for item in items where Self.isWarningDownloading(item) && !isSoulseek(item) {
+            guard let id = item.id else { continue }
+            if let seen = warningWatch[id], seen.sizeleft == item.sizeleft {
+                if t.timeIntervalSince(seen.since) >= stallLimit { return item }
+            } else {
+                warningWatch[id] = (item.sizeleft, t)
+            }
+        }
+        return nil
     }
 
     /// Queue states that won't finish without help: Lidarr's import blocked or failed, or the download failed.
@@ -1097,11 +1206,11 @@ public actor RequestRunner {
     /// after `importingLimit` it goes to Needs attention and the library is left alone for it.
     private func checkLibrary() async {
         let t = now()
-        for r in list where r.state == .importing && r.notListedAt == nil && !busy.contains(r.id)
+        for r in list where r.state == .importing && r.notListedAt == nil && !requestBusy(r.id)
             && t.timeIntervalSince(r.importingSince ?? r.updatedAt) >= Self.importingLimit {
             await mutate(r.id) { $0.notListedAt = t }
         }
-        let importing = list.filter { $0.state == .importing && $0.notListedAt == nil && !busy.contains($0.id) }
+        let importing = list.filter { $0.state == .importing && $0.notListedAt == nil && !requestBusy($0.id) }
         if !importing.isEmpty {
             // A scan status stuck at "scanning" must not hide a song Navidrome already lists (it lists files as
             // the scan reaches them): the index is refreshed either way; a new scan only starts when none runs.
@@ -1125,7 +1234,7 @@ public actor RequestRunner {
             }
         }
         // Ground truth from any pre-ready state: the library lists the song (an in-memory index lookup).
-        for r in list where r.isActive && !busy.contains(r.id) {
+        for r in list where r.isActive && !requestBusy(r.id) {
             if let songId = await library.songId(r.recording) {
                 await apply(r.id, .visibleInLibrary(songId: songId))
             }
@@ -1151,7 +1260,8 @@ public actor RequestRunner {
                 && (other.isActive || other.state == .ready || other.state == .kept)
         }
         if shared { return await done() }   // the entry stays open: the other request still relies on it
-        let settling = r.addSent && r.joinedTo == nil
+        // Item 9.8: settled once Lidarr's refresh of the add completed (it applies `albumsToMonitor`), else by time.
+        let settling = r.addSent && r.joinedTo == nil && r.addRefreshDone != true
             && now().timeIntervalSince(r.addedAt ?? r.createdAt) < Self.addSettleTime
         if r.albumId == nil { await discoverAlbum(id) }
         var albumId = request(id)?.albumId, artistId = request(id)?.lidarrArtistId
@@ -1169,7 +1279,7 @@ public actor RequestRunner {
             guard let entry = try await ledger.entry(albumId: albumId) else { return await done() }
             // Only an open, applied entry of Magpie's own monitor is undone (never an intent, a kept album or
             // an album the owner had monitored).
-            if entry.isOpen, entry.isApplied, !entry.wasMonitoredBefore, entry.keptAt == nil {
+            if entry.isOpen, entry.isApplied, !entry.wasMonitoredBefore, !entry.isKeptOrKeeping {
                 let albums = try await lidarr.albums(artistId: artistId)
                 if let album = albums.first(where: { $0.id == albumId }), album.monitored {
                     try await persist()
