@@ -98,6 +98,11 @@ struct FindFlowIT {
                 let folder = artistPath.split(separator: "/").last.map(String.init) ?? ""
                 let songs = try await navidrome.songs(recordingMBID: id, inLibrary: main.id, under: folder)
                 return songs.first { $0.suffix?.lowercased() == "flac" } ?? songs.first
+            },
+            scanFolder: { artistFolder in
+                // Fix I7: the artist folder only (same paths on both servers on the dev stack).
+                guard artistFolder.hasPrefix("/music/library/"), let folder = artistFolder.split(separator: "/").last else { return false }
+                return (try? await navidrome.startScan(targets: ["\(main.id):\(folder)"])) != nil
             })
         // Chaos: the phone's clock 10 minutes ahead of Lidarr's (Lidarr's `Date` header corrects it, item 9.7).
         let skew: TimeInterval = scenario == .upgrade ? 600 : 0

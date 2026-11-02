@@ -129,3 +129,73 @@ results, §14 the as-built notes).
   small merge.
 - `dev/data` (a symlink to the main repo's dev data) and `dev/.env.local` are in the worktree for the ITs. They are
   git-ignored or untracked and not committed. Remove them with the worktree.
+
+## Fix round 1 (review Y5-review.md: 0 Critical, 10 Important)
+
+**RED:** every new test was red before its fix. The gate suite failed to compile until the new gate code existed (that
+code was set aside with a reversible patch while the RED run was recorded). The runner suite failed to compile on
+`scanFolder`, `FaultPoint` and `hasRecord`.
+
+**Fixes**
+- **I1:** the find's file record is stored once per album entry. The gate also matches one *distinct* record and
+  refuses copies that disagree. Tests: two-entry artist, at the gate and in the runner.
+- **I2:** `recoverOrphanIntents`. An intent that no request follows is either:
+  - cleared, with a change-log `NOTE`, when the artist is still a tagged find in the Finds folder; or
+  - left in place, with the find marked "needs a look".
+
+  `clearIntent` now reports failure, so the next pass retries.
+- **I3:** the lossless watch is saved in the same request change that says kept. The commit then sends its commands;
+  a pass re-sends them if a crash came first.
+- **I4:**
+  - `Ledger.record` merges, so a replacing entry carries over `keptAt`, `keepIntentAt` and `findFiles`;
+  - the Try's album entry also inherits them explicitly;
+  - the check-writes `.keptAt` pin is now per call site (file plus line text). A planted read in an allowlisted file
+    was caught.
+- **I5:**
+  - `RunnerState.modify` runs under a process-wide lock;
+  - `tryAcquireArtist` is one locked check-and-insert;
+  - leases are renewed inside the Keep and refresh waits;
+  - the removal's RefreshArtist is sent and checked on later passes (its id is kept on the watch), so the tick never
+    waits; only the owner's tap waits, up to 3 minutes, renewing its lease.
+- **I6:** each migration step reports done or unknown; the flag is set only when every step finished.
+- **I7:**
+  - one coalesced, targeted scan per artist folder through a new `LibraryAccess.scanFolder` (it never falls back to the
+    whole library or a full scan);
+  - skipped while Navidrome scans;
+  - backs off 1, 2, 4, 8 minutes;
+  - bounded to 30 minutes per folder.
+- **I8:** "Remove the MP3 now" is offered only with a file record (`LosslessWatch.hasRecord`). The app uses it.
+  Decision D50 now matches design §9.
+- **I9:** the gate confines `POST /command`:
+  - AlbumSearch only for albums the ledger knows;
+  - RefreshArtist only for an artist it knows;
+  - neither without the ledger.
+- **I10:**
+  - chaos suite: the app killed at 8 `FaultPoint`s, then relaunched, reaches the end state:
+    - Keep: intentSaved, beforePut, afterPut, ledgerCommitted, requestCommitted;
+    - removal: refreshSent, beforeDelete, afterDelete;
+  - sign-out with an active watch: the watch ends and nothing is deleted; the ledger keeps its record (decision D55);
+  - a lease kept fresh across a 3-minute step;
+  - a lease that goes stale mid-step: the takeover only follows the saved Keep (one move);
+  - critic 1 completed: the queue delete at the gate, plus Stall, Not for me's artist removal and the cleanup unmonitor
+    in the runner;
+  - two passes over an unchanged server write nothing.
+- **Minors done:** Opus counts as lossy; the legacy-lock clear writes a change-log note.
+- **Minors not done:** moving runner helpers out of RequestRunner.swift; the "can't be undone" line on the artist page;
+  `remonitor` of an owner-unmonitored album; pruning `warningWatch`.
+
+**Merge and decisions**
+- v0.0.1-custom (Y1, Y2, Y3) merged with no conflicts.
+- The decisions are renumbered D50 to D55 (Y4 has D49).
+
+**Results**
+- Package: 970 tests, all pass.
+- App suite on a fresh "Magpie Y5" simulator: 943 tests, all pass.
+- `check-writes.sh` and `check-release.sh`: OK.
+- Dev stack (FindFlowIT and FindsIT): see the final line below.
+- Dev stack:
+  - `FindsIT` passed.
+  - The first `FindFlowIT` run failed 2/3. Its own library hook had no targeted folder scan (the new `scanFolder`), so
+    Navidrome never saw the FLAC. The upgrade run also showed the MP3 still in place once; that was not reproduced.
+  - With the hook added (artist folder only), `FindFlowIT` passed 3/3 in 309 s.
+- The simulator is deleted and the worktree's dev links are removed.
