@@ -22,7 +22,7 @@ private func subsonic(_ body: String) -> Data {
 
 /// Task 22: the car's Home follows the owner's order and switches (Made for you with a ListenBrainz token, as on the
 /// phone), its shelves sized to fit the car's list together; the car's Library is the owner's rows without Songs and
-/// Requests (spec §3, D12). Task 23: Genres, Favourites, Downloads, Made for you, offline and the sleep timer.
+/// Requests (spec §3, D12). Task 23: Genres, Favourites, Downloads, Made for you, offline; Y2: Favourite in Now Playing instead of the sleep timer.
 @MainActor @Suite(.serialized) final class CarPlayCustomisationTests {
     let tmp = FileManager.default.temporaryDirectory.appending(path: "CarPlayCustomisationTests-\(UUID().uuidString)")
     let store = SessionStore(keychain: KeychainStore(service: "com.bleak-rooster.magpie.tests.\(UUID().uuidString)"))
@@ -212,7 +212,9 @@ private func subsonic(_ body: String) -> Data {
         #expect(CPDestination.genreGroup(id: "rock", name: "Rock").title == "Rock")
         #expect(CPDestination.downloadedAlbum(id: "a", title: "Continuum").title == "Continuum")
         var nav = CPNavigator()
-        #expect(nav.push(.genres) && nav.push(.genreGroup(id: "rock", name: "Rock")) && !nav.push(.album(id: "a", title: "A")))
+        // D12 as revised in round 12: three pushes below the tab (Now Playing makes CarPlay's fifth).
+        #expect(nav.push(.genres) && nav.push(.genreGroup(id: "rock", name: "Rock")) && nav.push(.album(id: "a", title: "A"))
+                    && !nav.push(.album(id: "b", title: "B")))
     }
 
     /// The car's Library while the layout changes: the template model follows the owner's switches (the controller's
@@ -249,9 +251,10 @@ private func subsonic(_ body: String) -> Data {
     @Test func genreDepthBudget() {
         var nav = CPNavigator()
         #expect(nav.push(.genres) && nav.push(.genreGroup(id: "rock", name: "Rock")))
-        #expect(nav.depth == CPNavigator.maxBrowseDepth)
+        #expect(nav.depth == CPNavigator.maxBrowseDepth - 1, "a genre group may sit one above the deepest level")
         let third = nav.push(.genres)   // #expect can't call a mutating method itself
-        #expect(!third, "only two pushes below the tab")
+        let fourth = nav.push(.genres)
+        #expect(third && !fourth, "three pushes below the tab (D12 as revised in round 12)")
     }
 
     @Test func downloadsRowsOpenDownloadedAlbum() {
@@ -289,29 +292,14 @@ private func subsonic(_ body: String) -> Data {
         #expect(try await adapter.songs(for: .genreGroup(id: "rock", shuffled: true)).prefix(4).map(\.id) == ["ir0", "ar0", "ir1", "ar1"])
     }
 
-    @Test func carSleepToggleUsesDefault() async throws {
-        let model = try await signedInModel(fetcher: FakeFetcher())
-        let adapter = CarPlayLibraryAdapter(model: model)
-        adapter.toggleSleepTimer()
-        guard case .at(let fire) = model.sleepTimer.mode else { Issue.record("not started"); return }
-        #expect(abs(fire.timeIntervalSinceNow - 1800) < 5 && adapter.sleepTimerActive)
-        adapter.toggleSleepTimer()
-        #expect(model.sleepTimer.mode == .off && !adapter.sleepTimerActive)
-    }
-
     // MARK: - Task 23: controller additions
 
-    /// The owner's default, not always 30 minutes; "End of song" counts as on.
-    @Test func carSleepToggleFollowsTheSetting() async throws {
-        let model = try await signedInModel(fetcher: FakeFetcher())
-        model.updatePreferences { $0.playback.sleepTimer = .endOfSong }
-        let adapter = CarPlayLibraryAdapter(model: model)
-        adapter.toggleSleepTimer()
-        #expect(model.sleepTimer.mode == .endOfSong && adapter.sleepTimerActive)
-        adapter.toggleSleepTimer()
-        #expect(model.sleepTimer.mode == .off)
-        #expect(CarPlayRows.sleepTimerMessage(active: true) == "Sleep timer on")
-        #expect(CarPlayRows.sleepTimerMessage(active: false) == "Sleep timer off")
+    /// Y2 (2b): the sleep timer left the car for Favourite; what the car says when a favourite doesn't go through.
+    @Test func carFavouriteMessages() {
+        #expect(CarPlayRows.favouriteMessage(.failed(adding: true)) == "Couldn't add to your favourites")
+        #expect(CarPlayRows.favouriteMessage(.failed(adding: false)) == "Couldn't remove from your favourites")
+        #expect(CarPlayRows.favouriteMessage(.offline) == "You're offline")
+        #expect(CarPlayRows.favouriteMessage(.done) == nil)
     }
 
     /// Genres in the car (D41): the list is the phone's groups; a group page is Shuffle, then its genres in server order.
@@ -344,12 +332,14 @@ private func subsonic(_ body: String) -> Data {
                      Song(id: "s2", title: "Two", artist: "A", album: "B", duration: 200)]
         let album = Album(id: "a1", name: "B", artist: "A", songCount: 2, duration: 400, songs: songs)
         let rows = CarPlayRows.downloadedAlbum(album, playingId: "s2").flatMap(\.rows)
-        #expect(rows.map(\.title) == ["Shuffle", "One", "Two"] && rows[2].playing)
-        #expect(rows.map(\.action) == [.play(.shuffle(songs)), .play(.songs(songs, startAt: 0)), .play(.songs(songs, startAt: 1))])
+        #expect(rows.map(\.title) == ["Play", "Shuffle", "One", "Two"] && rows[3].playing)
+        #expect(rows.map(\.action) == [.play(.songs(songs, startAt: 0)), .play(.shuffle(songs)), .play(.songs(songs, startAt: 0)),
+                                       .play(.songs(songs, startAt: 1))])
         let other = Album(id: "a2", name: "C", artist: "A", songCount: 1, duration: 1, songs: [songs[0]])
         let artist = CarPlayRows.downloadedArtist(Artist(id: "r", name: "A", albumCount: 2), albums: [album, other]).flatMap(\.rows)
-        #expect(artist.map(\.title) == ["Shuffle", "B", "C"])
-        #expect(artist.map(\.action) == [.play(.shuffle(songs + [songs[0]])), .play(.songs(songs, startAt: 0)),
+        #expect(artist.map(\.title) == ["Play", "Shuffle", "B", "C"])
+        #expect(artist.map(\.action) == [.play(.songs(songs + [songs[0]], startAt: 0)), .play(.shuffle(songs + [songs[0]])),
+                                         .play(.songs(songs, startAt: 0)),
                                          .play(.songs([songs[0]], startAt: 0))])
         #expect((rows + artist).allSatisfy { if case .open = $0.action { false } else { true } }, "depth 3: leaves")
         #expect(CarPlayRows.downloadedAlbum(Album(id: "x", name: "X", artist: "A", songCount: 0, duration: 0), playingId: nil)
@@ -371,7 +361,9 @@ private func subsonic(_ body: String) -> Data {
         let one = Song(id: "s1", title: "One", artist: "A", album: "B", duration: 200)
         let two = Song(id: "s2", title: "Two", artist: "A", album: "B", duration: 200)
         let outside = ExternalRecording(title: "Elsewhere", artist: "Someone", source: .listenBrainz)
-        let rows = CarPlayRows.madeForYou([.song(one), .notYet(outside), .song(two)], offer: .next, playingId: "s2").flatMap(\.rows)
+        let all = CarPlayRows.madeForYou([.song(one), .notYet(outside), .song(two)], offer: .next, playingId: "s2").flatMap(\.rows)
+        #expect(all.prefix(2).map(\.title) == ["Play", "Shuffle"], "fix round 1: Play and Shuffle (2c)")
+        let rows = Array(all.dropFirst(2))
         #expect(rows.map(\.title) == ["One", "Elsewhere", "Two"] && rows[2].playing)
         #expect(rows.map(\.action) == [.play(.songs([one, two], startAt: 0)), .tryNext(outside), .play(.songs([one, two], startAt: 1))])
         #expect(Set(rows.map(\.id)).count == 3 && rows[1].statusSymbol == RowState.notYet.statusSymbol)
@@ -475,11 +467,11 @@ private func subsonic(_ body: String) -> Data {
         }
         let token = try changes({ adapter.homeSections }) { try model.setListenBrainzToken("tok") }
         let offline = changes({ adapter.isOffline }) { model.updatePreferences { prefs in prefs.downloads.offlineMode = .on } }
-        let sleep = changes({ adapter.sleepTimerActive }) { adapter.toggleSleepTimer() }
+        let favourite = changes({ adapter.isFavourite(songId: "s1") }) { model.noteFavourite(.song("s1"), true) }
         #expect(finds, "findsSetup")
         #expect(token, "hasListenBrainzToken")
         #expect(offline, "isOffline")
-        #expect(sleep, "sleepTimerActive")
+        #expect(favourite, "isFavourite (Y2)")
     }
 }
 

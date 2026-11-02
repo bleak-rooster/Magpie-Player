@@ -5,8 +5,8 @@ import MagpieCore
 import Playback
 
 /// Home and Library as the car shows them (spec §3, Task 22): the phone's layout and the phone's shelves, so the two
-/// never disagree. Task 23: Genres, Favourites, Downloads and Made for you, offline, and the sleep timer, each the
-/// phone's own. Offline, every read here is the phone's and nothing is asked of the server.
+/// never disagree. Task 23: Genres, Favourites, Downloads and Made for you, offline, and (Y2) the favourite star, each
+/// the phone's own. Offline, every read here is the phone's and nothing is asked of the server.
 extension CarPlayLibraryAdapter {
     /// The phone's Home sections (Made for you with a token, as on the phone). Offline: Downloaded.
     var homeSections: [HomeSection] { model.homeSections }
@@ -50,19 +50,27 @@ extension CarPlayLibraryAdapter {
         if needed { await model.refreshMadeForYou() }
     }
 
-    // MARK: - Offline and the sleep timer
+    // MARK: - Offline and Now Playing's star
 
     var isOffline: Bool { model.isOffline }
 
-    var sleepTimerActive: Bool { model.sleepTimer.mode != .off }
+    /// Y2 (2b): the phone's favourite state for the song (the queue's copy until a page or a change says otherwise).
+    func isFavourite(songId: String) -> Bool { model.isFavourite(.song(songId)) }
 
-    /// The owner's default (Settings › Playback), as the phone's menu marks it.
-    func toggleSleepTimer() {
-        if sleepTimerActive {
-            model.sleepTimer.cancel()
-        } else {
-            model.sleepTimer.start(model.preferences.playback.sleepTimer)
-        }
+    /// Through the phone's favourites (X3), which change at once and roll back to the real state on a refusal. Offline
+    /// nothing is sent. Whether it went through is read back from the phone's state afterwards.
+    func setFavourite(songId: String, _ on: Bool) async -> CPFavouriteResult {
+        if model.isOffline { return .offline }
+        await model.setFavourite(.song(songId), on)
+        return model.isFavourite(.song(songId)) == on ? .done : .failed(adding: on)
+    }
+
+    // MARK: - Albums A–Z (Y2)
+
+    func albumsAZ(offset: Int, size: Int) async throws -> [Album] {
+        // Offline the phone's albums all come at once (M6: one catalog read; the car sorts them).
+        if model.isOffline { return offset == 0 ? await model.offlineCatalog.albums() : [] }
+        return try await model.request { try await $0.albumList(.alphabeticalByName, size: size, offset: offset) }
     }
 
     // MARK: - Genres (D41)

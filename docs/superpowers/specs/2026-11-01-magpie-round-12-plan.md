@@ -260,3 +260,15 @@ Y1–Y5 run in parallel, at most 4 at a time to limit machine load. Y6 follows Y
 2. **Aurral duplicates:** replace the duplicate with the main-library copy without disturbing Aurral or the other songs in the Aurral Playlists library (follow-up 2026-11-01). Aurral has no supported per-track replace, so Magpie swaps it in what it shows and plays, and Aurral's weekly run removes the file. The research is in docs/research/aurral.md, "Replacing a flow track".
 3. **MP3 after Add:** kept until a FLAC replaces it, or auto-deleted after 7 days whichever comes first; manual delete any time (see item 8).
 4. **Plan only for now:** no building until the owner says go.
+
+## 2c. CarPlay: Play and Shuffle on album, artist and playlist pages (owner addition 2026-11-02)
+- Every CarPlay album, artist and playlist list starts with two rows: **Play**, which plays from the first song in order, and **Shuffle**.
+  - Artist: all the artist's songs. Album and playlist: their songs in order.
+  - The rows replace the queue as phone Play and Shuffle do. "Ask before replacing" never applies in the car (R12).
+- Owner: Y2. Tests: the rows are present, plus the queue order for Play and the shuffled queue for Shuffle.
+
+## 2d. CarPlay: Now Playing's album and artist open their pages (owner addition 2026-11-02)
+- CarPlay has one album/artist button on Now Playing (`isAlbumArtistButtonEnabled`, delegate `nowPlayingTemplateAlbumArtistButtonTapped`). Tapping it shows a choice, "Go to album" or "Go to artist", which pushes that CarPlay page.
+  - If only one is known, it goes straight there.
+  - Offline, it goes to the downloaded page or is disabled, matching R10 on the phone.
+- Owner: Y2. Tests: the button is enabled, both choices push the right page, and offline behaves as stated.

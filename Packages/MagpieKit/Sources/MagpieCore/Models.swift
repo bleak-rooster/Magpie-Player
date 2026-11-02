@@ -23,6 +23,9 @@ public struct Song: Sendable, Hashable, Codable {
     public var createdAt: Date?
     public var genre: String?
     public var replayGain: ReplayGain?
+    /// The original file's sample rate (Hz) and bit depth, when the server says (round 12 Y3: Now Playing's label).
+    public var samplingRate: Int? = nil
+    public var bitDepth: Int? = nil
 
     public init(id: String, title: String, artist: String, artistId: String? = nil,
                 album: String, albumId: String? = nil, track: Int? = nil, disc: Int? = nil,

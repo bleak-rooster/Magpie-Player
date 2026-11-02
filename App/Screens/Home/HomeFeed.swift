@@ -115,6 +115,13 @@ import Observation
         }
     }
 
+    /// Round 12 Y3: the library Home reads changed (the main library was picked or chosen): everything again,
+    /// silently, so no other library's albums stay on screen.
+    func libraryChanged() {
+        guard let key = lastKey else { return }
+        restart(key, fresh: true)
+    }
+
     /// To the background: no retry waits meanwhile (the read under way, if any, finishes).
     func backgrounded() {
         isPaused = true

@@ -316,18 +316,21 @@ struct NowPlayingView: View {
             }
             let elapsedText = Text(DurationText.clock(elapsed)).accessibilityHidden(true)   // the slider speaks the time
             let remainingText = Text("-" + DurationText.clock(duration - elapsed)).accessibilityHidden(true)
+            // Y3 (item 11): the hallmark follows what plays (none for a transcode), and the line says what you hear.
+            let hearing = model.hearing(song)
+            let hallmark = hearing.hallmark(model.quality(of: song))   // "Lossless soon" for a kept find (Task 6.2b)
             Group {
                 if typeSize.isAccessibilitySize {
                     // Times on their own line, the hallmark below with the full width, so it never hyphenates.
                     VStack(spacing: Tokens.Spacing.xs) {
                         HStack { elapsedText; Spacer(); remainingText }
-                        Hallmark(model.quality(of: song))
+                        Hallmark(hallmark)
                     }
                 } else {
                     HStack {
                         elapsedText
                         Spacer()
-                        Hallmark(model.quality(of: song))   // "Lossless soon" for a kept find (Task 6.2b)
+                        Hallmark(hallmark)
                         Spacer()
                         remainingText
                     }
@@ -335,6 +338,15 @@ struct NowPlayingView: View {
             }
             .font(theme.numberFont(.caption))
             .foregroundStyle(themed.palette.ink2Color)
+            if let text = hearing.text {
+                Text(text)
+                    .font(.caption2)
+                    .foregroundStyle(themed.palette.ink2Color)
+                    .lineLimit(typeSize.isAccessibilitySize ? nil : 1)
+                    .minimumScaleFactor(typeSize.isAccessibilitySize ? 1 : 0.8)
+                    .frame(maxWidth: .infinity)
+                    .accessibilityIdentifier("now-playing-hearing")
+            }
         }
     }
 

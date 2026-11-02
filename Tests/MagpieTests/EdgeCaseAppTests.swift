@@ -308,7 +308,7 @@ private let lidarrScope = LidarrClient(base: lidarrBase, apiKey: "key", transpor
                 #expect(item.text == row.title)
             }
         }
-        #expect(CarPlayRows.albums(albums).flatMap(\.rows).first?.title == Self.long, "never cut by Magpie")
+        #expect(CarPlayRows.albums(albums).flatMap(\.rows).contains { $0.title == Self.long }, "never cut by Magpie (Y2: rows are A–Z now)")
         #expect(CPDestination.album(id: "x", title: Self.long).title == Self.long)
     }
 

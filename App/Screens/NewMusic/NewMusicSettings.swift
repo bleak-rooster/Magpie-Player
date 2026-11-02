@@ -84,6 +84,18 @@ struct WhenYouAddView: View {
 /// R18, Settings › Finds: the main library (your main collection in Navidrome, picked from the server's libraries,
 /// automatically when only one other library exists) shown with the main folder (Lidarr's "New music goes to"), so
 /// the pair is explicit. Used for the scan after a Keep and for "Only in your Finds".
+/// Round 12 Y3: what Settings says about how the main library (the one Home, Library and Search read) was set.
+enum MainLibraryCopy {
+    static func note(_ pick: AppModel.MainLibraryPick) -> String? {
+        switch pick {
+        case .lidarrRoot: "Picked automatically: the library where new music goes."
+        case .mostAlbums: "Picked automatically for now: the library with the most albums."
+        case .none: "No main library yet: Home, Library and Search show every library."
+        case .chosen, .obvious: nil
+        }
+    }
+}
+
 struct MainLibrarySection: View {
     @Environment(AppModel.self) private var model
     let libraries: [NavidromeLibrary]
@@ -109,7 +121,12 @@ struct MainLibrarySection: View {
         } header: {
             Text("Your library")
         } footer: {
-            Text(NewMusicCopy.mainLibraryFooter)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(NewMusicCopy.mainLibraryFooter)
+                if let note = MainLibraryCopy.note(model.mainLibraryPick) {   // Y3: how it was picked, or that it wasn't
+                    Text(note).accessibilityIdentifier("finds-main-library-note")
+                }
+            }
         }
         .onAppear { model.reconcileMainLibrary(libraries) }
         .onChange(of: libraries) { model.reconcileMainLibrary(libraries) }
