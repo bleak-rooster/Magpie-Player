@@ -76,6 +76,72 @@ public struct QueueStallWatch: Sendable, Equatable {
     public func speed(_ id: Int) -> Double? { reads[id]?.speed }
 }
 
+/// Fix round 3 N2: whether Lidarr itself grabbed each download (`LidarrClient.grabbed`, read only), for the rows that
+/// could be restarted. On the owner's Lidarr most finished copies it couldn't import were never grabbed by it (another
+/// tool's transfers), so the board shows them as another app's from the start. A grab is kept; "no grab" is asked again
+/// after `recheckNoGrab`; at most `perRefresh` lookups per refresh, `concurrency` at a time. Held by the app per Lidarr.
+/// The restarter and the gate still check the history themselves before anything is sent.
+public struct GrabCache: Sendable, Equatable {
+    public static let perRefresh = 10
+    public static let concurrency = 4
+    public static let recheckNoGrab: TimeInterval = 60
+
+    private var grabbed: Set<String> = []
+    private var noGrab: [String: Date] = [:]
+
+    public init() {}
+
+    /// True: Lidarr grabbed it; false: no grab in its history; nil: not looked up yet.
+    public func status(_ downloadId: String) -> Bool? {
+        if grabbed.contains(downloadId) { return true }
+        return noGrab[downloadId] != nil ? false : nil
+    }
+
+    public mutating func record(_ downloadId: String, grabbed isGrabbed: Bool, at now: Date) {
+        if isGrabbed {
+            grabbed.insert(downloadId)
+            noGrab[downloadId] = nil
+        } else {
+            noGrab[downloadId] = now
+        }
+    }
+
+    /// Looks up the downloads of rows that are stalled, failed or couldn't import (as `watch` and `stallLimit` say) and
+    /// aren't known yet, or had no grab more than `recheckNoGrab` ago; at most `perRefresh`. Returns how many it asked
+    /// about. A lookup that fails stays unknown (not restartable).
+    @discardableResult
+    public mutating func lookUp(_ items: [QueueItem], soulseekClients: Set<String>, lidarr: LidarrClient, now: Date,
+                                watch: QueueStallWatch = QueueStallWatch(),
+                                stallLimit: TimeInterval = .infinity) async -> Int {
+        var wanted: [String] = []
+        for item in items {
+            guard let id = item.id, let downloadId = item.downloadId, !item.saysNotGrabbedByLidarr,
+                  !wanted.contains(downloadId) else { continue }
+            let soulseek = LidarrDownloads.isSoulseek(item, soulseekClients)
+            let (section, _, _) = LidarrDownloads.classify(item, soulseek: soulseek, unchanged: watch.unchangedFor(id, at: now),
+                                                           limit: stallLimit)
+            guard [.stalled, .failed, .couldntImport].contains(section) else { continue }
+            switch status(downloadId) {
+            case true?: continue
+            case false?: if let last = noGrab[downloadId], now.timeIntervalSince(last) < Self.recheckNoGrab { continue }
+            case nil: break
+            }
+            wanted.append(downloadId)
+            if wanted.count == Self.perRefresh { break }
+        }
+        var answers: [(String, Bool)] = []
+        for batch in stride(from: 0, to: wanted.count, by: Self.concurrency) {
+            let ids = Array(wanted[batch..<min(batch + Self.concurrency, wanted.count)])
+            await withTaskGroup(of: (String, Bool?).self) { group in
+                for id in ids { group.addTask { (id, try? await lidarr.grabbed(downloadId: id)) } }
+                for await (id, answer) in group { if let answer { answers.append((id, answer)) } }
+            }
+        }
+        for (id, answer) in answers { record(id, grabbed: answer, at: now) }
+        return wanted.count
+    }
+}
+
 /// The queue as the screen shows it.
 public struct LidarrDownloads: Sendable, Equatable {
     /// Fix round 2: `couldntImport`, a finished copy Lidarr couldn't import (restarted only one at a time, after its own
@@ -137,22 +203,28 @@ public struct LidarrDownloads: Sendable, Equatable {
     public var couldntImport: [Row] = []
     public var notStarted: [Row] = []
 
-    /// Rows that need the owner: stalled, failed and couldn't import (not another tool's transfers).
-    public var attention: Int { stalled.count + failed.count + couldntImport.count }
+    /// Rows that need the owner (N2): stalled, failed or couldn't import, grabbed by Lidarr and restartable now.
+    public var attention: Int { (stalled + failed + couldntImport).filter(\.canRestart).count }
 
     public init() {}
 
     /// `soulseekClients`: the Soulseek download clients' names, lower-cased (`DownloadClientInfo.isSoulseek`). `watch`
-    /// has seen this read already (`observe`).
-    public init(_ items: [QueueItem], soulseekClients: Set<String>, watch: QueueStallWatch, stallLimit: TimeInterval,
-                now: Date) {
+    /// has seen this read already (`observe`). `grabs` (N2): a row with no grab in Lidarr's history is another app's
+    /// (read-only); one not looked up yet keeps its section but can't be restarted.
+    public init(_ items: [QueueItem], soulseekClients: Set<String>, watch: QueueStallWatch, grabs: GrabCache = GrabCache(),
+                stallLimit: TimeInterval, now: Date) {
         let done = Set(items.filter(\.isImportingOrDone).compactMap(\.downloadId))
         for item in items {
             guard let id = item.id else { continue }   // can't be named to Lidarr, so not shown
             let soulseek = Self.isSoulseek(item, soulseekClients)
-            let (section, phase, stall) = Self.classify(item, soulseek: soulseek,
+            var (section, phase, stall) = Self.classify(item, soulseek: soulseek,
                                                         unchanged: watch.unchangedFor(id, at: now), limit: stallLimit)
-            let canRestart = ![.active, .notStarted].contains(section) && item.downloadId.map { !done.contains($0) } == true
+            let grabbed = item.downloadId.flatMap(grabs.status)
+            if [.stalled, .failed, .couldntImport].contains(section), grabbed == false {
+                (section, phase, stall) = (.notStarted, .notStarted, nil)
+            }
+            let canRestart = ![.active, .notStarted].contains(section) && grabbed == true
+                && item.downloadId.map { !done.contains($0) } == true
             let message = (item.statusMessages.first ?? item.errorMessage).flatMap { $0.isEmpty ? nil : $0 }
             let row = Row(id: id, item: item, section: section, phase: phase, stall: stall, soulseek: soulseek,
                           canRestart: canRestart, artist: item.artistName ?? "", album: item.albumTitle ?? item.title ?? "",

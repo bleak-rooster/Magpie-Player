@@ -26,9 +26,17 @@ import MagpieCore
                   albumTitle: "Album \(album)")
     }
 
+    /// Fix round 3 N2: a grab cache that knows Lidarr grabbed every download in `items` (unless listed in `not`).
+    private func grabs(_ items: [QueueItem], not ungrabbed: Set<String> = []) -> GrabCache {
+        var cache = GrabCache()
+        for id in Set(items.compactMap(\.downloadId)) { cache.record(id, grabbed: !ungrabbed.contains(id), at: t0) }
+        return cache
+    }
+
     private func board(_ items: [QueueItem], watch: QueueStallWatch = QueueStallWatch(), at now: Date? = nil,
-                       limit: TimeInterval = 60) -> LidarrDownloads {
-        LidarrDownloads(items, soulseekClients: Self.soulseek, watch: watch, stallLimit: limit, now: now ?? t0)
+                       limit: TimeInterval = 60, grabs given: GrabCache? = nil) -> LidarrDownloads {
+        LidarrDownloads(items, soulseekClients: Self.soulseek, watch: watch, grabs: given ?? grabs(items),
+                        stallLimit: limit, now: now ?? t0)
     }
 
     /// Observes `items` every 5 s for `seconds`, then classifies.
@@ -98,17 +106,38 @@ import MagpieCore
                         message: "Download wasn't grabbed by Lidarr, skipping",
                         errorMessage: "Download wasn't grabbed by Lidarr, skipping"),
             soulseekRow(5, status: "completed", tracked: "importPending", sizeleft: 0, message: "Waiting for manual import"),
+            soulseekRow(6, status: "completed", tracked: "importFailed", sizeleft: 0, message: "Has missing tracks"),
         ]
-        let b = watched(items, for: 3_600)
-        #expect(b.couldntImport.map(\.id) == [1, 2, 3, 5])
-        #expect(b.couldntImport.map(\.canRestart) == [true, true, true, false])
-        #expect(b.couldntImport.first?.message?.hasPrefix("Artist name mismatch") == true)
-        #expect(b.notStarted.map(\.id) == [4])
-        #expect(b.notStarted.first?.canRestart == false)
-        #expect(b.notStarted.first?.phase == .notStarted)
+        // Fix round 3 N2, as measured on the owner's Lidarr: the "Artist name mismatch" copies (1) have no grab in the
+        // history either, so they're another tool's; the import failures (2, 3) were grabbed. 6's history isn't read yet.
+        var cache = grabs(Array(items.prefix(5)), not: ["dl-1", "dl-4"])
+        cache.record("dl-5", grabbed: true, at: t0)
+        let b = board(items, grabs: cache)
+        #expect(b.couldntImport.map(\.id) == [2, 3, 5, 6])
+        #expect(b.couldntImport.map(\.canRestart) == [true, true, false, false])
+        #expect(b.couldntImport.first?.message == "Has missing tracks")
+        #expect(b.notStarted.map(\.id) == [1, 4])
+        #expect(b.notStarted.allSatisfy { !$0.canRestart && $0.phase == .notStarted })
+        #expect(b.notStarted.first?.message?.hasPrefix("Artist name mismatch") == true)
         #expect(b.failed.isEmpty && b.stalled.isEmpty)
         #expect(b.restartable.isEmpty, "Restart all never takes a finished copy or another tool's transfer")
-        #expect(b.attention == 4, "the four that couldn't import; not the other tool's transfer")
+        #expect(b.attention == 2, "only grabbed copies that can be restarted need attention")
+    }
+
+    /// N2: a stalled or failed row whose grab history isn't known yet isn't restartable and doesn't count; one with no
+    /// grab is another app's.
+    @Test func ungrabbedOrUnknownIsNeverRestartable() {
+        let items = [item(1, status: "failed", tracked: "downloadFailed"), item(2, status: "warning", trackedStatus: "warning"),
+                     item(3, status: "failed", tracked: "downloadFailed")]
+        var cache = GrabCache()
+        cache.record("dl-1", grabbed: false, at: t0)
+        cache.record("dl-3", grabbed: true, at: t0)
+        let b = board(items, grabs: cache)
+        #expect(b.notStarted.map(\.id) == [1])
+        #expect(b.stalled.map(\.id) == [2])
+        #expect(b.stalled.first?.canRestart == false)
+        #expect(b.restartable.map(\.id) == [3])
+        #expect(b.attention == 1)
     }
 
     /// C1: queued, paused, delayed and unreachable copies are never Stalled or restartable, however long they sit
@@ -213,10 +242,43 @@ import MagpieCore
         }
     }
 
-    /// The board as the screen would build it from the fake Lidarr now.
+    /// The board as the screen would build it from the fake Lidarr now, its grab history looked up (N2).
     private func rows(_ h: Harness) async throws -> LidarrDownloads {
-        LidarrDownloads(try await h.lidarrClient.queueDetails(albumIds: []), soulseekClients: Self.soulseek,
-                        watch: QueueStallWatch(), stallLimit: 60, now: t0)
+        let items = try await h.lidarrClient.queueDetails(albumIds: [])
+        var cache = GrabCache()
+        while await cache.lookUp(items, soulseekClients: Self.soulseek, lidarr: h.lidarrClient, now: t0) > 0 {}
+        return LidarrDownloads(items, soulseekClients: Self.soulseek, watch: QueueStallWatch(), grabs: cache,
+                               stallLimit: 60, now: t0)
+    }
+
+    private func historyReads(_ h: Harness) -> [String] {
+        h.server.transport.requests.filter { $0.url?.path.hasSuffix("/api/v1/history") == true }.compactMap {
+            URLComponents(url: $0.url!, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "downloadId" }?.value
+        }
+    }
+
+    /// N2: the grab history is read on each refresh for the rows that could be restarted, at most `GrabCache.perRefresh`
+    /// at a time; a grab is kept, "no grab" is asked again after a minute; Active rows are never asked about.
+    @Test func grabCacheIsBatchedAndCached() async throws {
+        let h = await Harness()
+        h.server.with { s in
+            s.queue = (901...930).map { FakeLidarr.Queued(albumId: 41 + $0 - 901, size: 100, sizeleft: 50, status: "failed",
+                                                         tracked: "downloadFailed", id: $0, artistId: 9, client: "SABnzbd") }
+                + [FakeLidarr.Queued(albumId: 99, size: 100, sizeleft: 50, id: 931, artistId: 9, client: "SABnzbd")]
+            s.ungrabbed = ["dl-901"]
+        }
+        let items = try await h.lidarrClient.queueDetails(albumIds: [])
+        var cache = GrabCache()
+        #expect(await cache.lookUp(items, soulseekClients: Self.soulseek, lidarr: h.lidarrClient, now: t0) == GrabCache.perRefresh)
+        #expect(historyReads(h).count == GrabCache.perRefresh)
+        while await cache.lookUp(items, soulseekClients: Self.soulseek, lidarr: h.lidarrClient, now: t0) > 0 {}
+        #expect(historyReads(h).count == 30)
+        #expect(!historyReads(h).contains("dl-931"), "an active row is never asked about")
+        #expect(cache.status("dl-901") == false && cache.status("dl-902") == true)
+        // Nothing more within the minute; then only the "no grab" one again.
+        #expect(await cache.lookUp(items, soulseekClients: Self.soulseek, lidarr: h.lidarrClient, now: t0.addingTimeInterval(59)) == 0)
+        #expect(await cache.lookUp(items, soulseekClients: Self.soulseek, lidarr: h.lidarrClient, now: t0.addingTimeInterval(60)) == 1)
+        #expect(historyReads(h).last == "dl-901")
     }
 
     private func writes(_ h: Harness) -> [String] {
@@ -267,12 +329,16 @@ import MagpieCore
             s.ungrabbed = ["dl-902"]
         }
         let board = try await rows(h)
-        #expect(board.couldntImport.map(\.id) == [901, 902])
+        // N2: 902 has no grab in the history, so the board already lists it as another app's.
+        #expect(board.couldntImport.map(\.id) == [901])
+        #expect(board.notStarted.map(\.id) == [902])
         #expect(board.restartable.isEmpty)
         let restarter = LidarrDownloadRestarter(lidarr: h.lidarrClient, gate: h.gate, runner: h.runner)
-        #expect(await restarter.restartAll(board.couldntImport) == [.skipped, .skipped], "never through Restart all")
+        #expect(await restarter.restartAll(board.couldntImport) == [.skipped], "never through Restart all")
         #expect(h.server.writes.isEmpty)
-        #expect(await restarter.restart(board.couldntImport[1]) == .notStartedByLidarr)
+        var forced = try #require(board.notStarted.first)   // the restarter's own history check still holds
+        forced.canRestart = true; forced.section = .couldntImport
+        #expect(await restarter.restart(forced) == .notStartedByLidarr)
         #expect(h.server.writes.isEmpty)
         #expect(await restarter.restart(board.couldntImport[0]) == .restarted)
         #expect(writes(h) == ["DELETE queue/901", "POST command"])
@@ -308,8 +374,8 @@ import MagpieCore
         let first = try await h.lidarrClient.queueDetails(albumIds: [])
         watch.observe(first, soulseekClients: Self.soulseek, at: t0)
         watch.observe(first, soulseekClients: Self.soulseek, at: t0.addingTimeInterval(60))
-        let board = LidarrDownloads(first, soulseekClients: Self.soulseek, watch: watch, stallLimit: 60,
-                                    now: t0.addingTimeInterval(60))
+        let board = LidarrDownloads(first, soulseekClients: Self.soulseek, watch: watch, grabs: grabs(first),
+                                    stallLimit: 60, now: t0.addingTimeInterval(60))
         #expect(board.stalled.map(\.id) == [901, 902, 903])
         // 902 picks up again while 901 is being restarted.
         h.server.with { s in
