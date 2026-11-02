@@ -17,6 +17,9 @@
 #   Packages/MagpieKit/Sources/ListenBrainzKit/ListenBrainzClient+Submit.swift  G1 allowlist: listenbrainz submit-listens
 #       The one non-Lidarr, non-Navidrome POST: the owner's own ListenBrainz scrobbles (D31). The router (not this
 #       client) enforces D29.
+#   Packages/MagpieKit/Sources/AurralKit/AurralClient.swift  G1 allowlist: aurral start flow
+#       Round 12 Y6 (D56): Aurral's Refresh Flow, `POST /api/playlists/start/:flowId`, the one write Magpie sends to
+#       Aurral; the client's allow-list (`AurralRoute`) refuses every other call. Pinned below.
 #   Packages/MagpieKit/Tests/RequestsTests/FindsIT.swift  G1 allowlist: devLidarr
 #       Raw requests to the dev Lidarr for IT set-up and clean-up (manual import, removing the test artist), after
 #       TryDevStack verified the host is local and the dev marker matches (G0). Never product code.
@@ -43,6 +46,7 @@ allow=(
   "Packages/MagpieKit/Sources/MagpieTestSupport/SharedLoginTransport.swift|auth/login"
   "Packages/MagpieKit/Sources/ListenBrainzKit/ListenBrainzClient+Submit.swift|G1 allowlist: listenbrainz submit-listens"
   "Packages/MagpieKit/Tests/RequestsTests/FindsIT.swift|G1 allowlist: devLidarr"
+  "Packages/MagpieKit/Sources/AurralKit/AurralClient.swift|G1 allowlist: aurral start flow"
   "Packages/MagpieKit/Tests/MagpieCoreTests/HTTPTransportTests.swift|RedirectStub"
   "Packages/MagpieKit/Tests/MagpieCoreTests/SharedLoginTransportTests.swift|auth/login"
 )
@@ -148,6 +152,34 @@ if [ -z "${G1_SRC:-}" ]; then
       echo "Y5 C5: a bare .keptAt at $file:$line; use isKeptOrKeeping (refusing) or isConfirmedKept (requiring)" >&2
       bad=1
     fi
+  done
+fi
+if [ -z "${G1_SRC:-}" ]; then
+  # Round 12 Y6 (D56): Aurral. The client allows exactly five calls (GET health, playlists status, playlists jobs,
+  # library lookup; POST playlists start), and nothing in the product names Aurral's dangerous routes.
+  aurral="Packages/MagpieKit/Sources/AurralKit/AurralClient.swift"
+  for want in 'case 1 where rest[0] == "health": .health' \
+              'case 2 where rest == ["playlists", "status"]: .playlistsStatus' \
+              'case 2 where rest == ["playlists", "jobs"]: .playlistsJobs' \
+              'case 3 where rest[0] == "library" && rest[1] == "lookup" && MBID(String(rest[2])) != nil' \
+              'case 3 where rest[0] == "playlists" && rest[1] == "start" && isPlainId(rest[2]): .startFlow' \
+              'case .health, .playlistsStatus, .playlistsJobs, .libraryLookup: "GET"' \
+              'case .startFlow: Self.startMethod' \
+              'guard AurralRoute.isAllowed(method: method, path: path),'; do
+    grep -qF -- "$want" "$aurral" || { echo "G1: $aurral: the Aurral allow-list changed (missing: $want)" >&2; bad=1; }
+  done
+  [ "$(grep -cE 'case [0-9] where' "$aurral")" = 5 ] || { echo "G1: $aurral: the Aurral allow-list isn't exactly five routes" >&2; bad=1; }
+  # Nobody names Aurral's settings, key, discover, add or track-delete routes (the stub for tests aside).
+  if grep -rnE --include='*.swift' 'api/settings|api/auth/api-key|"api/discover|api/library/tracks|api/library/artists|lidarr-import-list' \
+       "${product[@]}" | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' | grep -v '^Packages/MagpieKit/Sources/MagpieTestSupport/' | grep -q .; then
+    echo "G1: a forbidden Aurral route is named in product code" >&2; bad=1
+  fi
+  # Only the Lidarr gate and the Aurral client put an API key on a request.
+  for f in $(grep -rlE --include='*.swift' 'setValue\([^)]*forHTTPHeaderField: "X-Api-Key"' "${product[@]}" | sort -u || true); do
+    case "$f" in
+      "$aurral"|Packages/MagpieKit/Sources/LidarrKit/WriteGate.swift) ;;
+      *) echo "G1: an API-key request built outside the Lidarr gate and the Aurral client: $f" >&2; bad=1 ;;
+    esac
   done
 fi
 [ "$bad" = 0 ] || { echo "G1 check failed: route Lidarr writes through LidarrWriteGate (or extend the allowlist in $0)" >&2; exit 1; }
