@@ -105,6 +105,28 @@ import MagpieTestSupport
         #expect(fake.writes.count == 1)
     }
 
+    // MARK: Lows
+
+    /// L3: a grab record without a download id doesn't prove Lidarr started this download.
+    @Test func aGrabWithoutADownloadIdDoesNotCount() async throws {
+        let t = MockTransport()
+        t.stub(pathSuffix: "/history", body: json(#"{"records":[{"eventType":"grabbed"}]}"#))
+        let (client, _) = makeClient(t)
+        #expect(try await client.grabbed(downloadId: "abc") == false)
+        let t2 = MockTransport()
+        t2.stub(pathSuffix: "/history", body: json(#"{"records":[{"eventType":"grabbed","downloadId":"abc"}]}"#))
+        #expect(try await makeClient(t2).0.grabbed(downloadId: "abc"))
+    }
+
+    /// L7: a present but undecodable `keepIntentAt` fails the entry (the ledger file is then kept aside and every check
+    /// fails closed) instead of reading as "no Keep under way".
+    @Test func aMalformedKeepIntentFailsClosed() throws {
+        let entry = #"{"lidarrArtistId":42,"albumId":50,"rgMbid":"00000000-0000-0000-0000-000000000050","createdArtist":true,"wasMonitoredBefore":false,"root":"/m","mode":"finds","keepIntentAt":"soon"}"#
+        #expect(throws: (any Error).self) { try JSONDecoder().decode(LedgerEntry.self, from: json(entry)) }
+        let ok = #"{"lidarrArtistId":42,"albumId":50,"rgMbid":"00000000-0000-0000-0000-000000000050","createdArtist":true,"wasMonitoredBefore":false,"root":"/m","mode":"finds"}"#
+        #expect(try JSONDecoder().decode(LedgerEntry.self, from: json(ok)).keepIntentAt == nil)
+    }
+
     /// The exact shapes still go (the ledger knows album 50 and created artist 42).
     @Test func exactBodiesAreSent() async throws {
         let fake = try await Fake()
