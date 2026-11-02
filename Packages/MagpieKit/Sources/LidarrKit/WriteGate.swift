@@ -573,19 +573,22 @@ public actor LidarrWriteGate {
         // slip in between a check and its send.
         await takeConfinedTurn()
         defer { passConfinedTurn() }
-        let artists: Set<Int>
+        let artists: Set<Int>, rule: WriteConfinement.Rule
         switch await confinement.check(confined, lidarr: reader) {
-        case .confined(let touched): artists = touched
+        case .confined(let touched, let which): artists = touched; rule = which
         case .refused(let why): throw refused(target, why)
         case .unknown:
             Log.logger("lidarr").error("not confirmed \(target.method, privacy: .public) \(target.logPath, privacy: .public)")
             throw WriteGateError.unconfirmed
         }
         guard enabled else { throw WriteGateError.disabled }   // turned off during the reads
-        // The ledger once more, right before a delete: kept meanwhile (Keep saves "kept" before it writes) refuses.
-        switch await confinement.stillUnkept(artists) {
+        // The ledger once more, right before a delete, by the rule that let it through (C4): a find delete refuses an
+        // artist kept or keeping meanwhile (Keep saves its intent before it writes); a kept MP3 delete refuses one
+        // whose Keep isn't confirmed now.
+        switch await confinement.lastCheck(rule, artists) {
         case true?: break
-        case false?: throw refused(target, "the artist was kept meanwhile")
+        case false?:
+            throw refused(target, rule == .keptLossyDelete ? "the Keep isn't confirmed now" : "the artist was kept meanwhile")
         case nil: throw WriteGateError.unconfirmed
         }
         return try await deliver(target, data)
