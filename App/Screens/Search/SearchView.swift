@@ -41,6 +41,8 @@ struct SearchView: View {
                                     if await app.isOffline { return await OfflineSearch(catalog: app.offlineCatalog).sections(q) }
                                     return try await app.mergedSearch().runReportingLibraryFailure(q, libraryFirst: early)
                                 },
+                                // Round 12 (Y1): the next batch of a section, at its end.
+                                more: { kind, paging in try await app.mergedSearch().more(kind, paging: paging) },
                                 errorMessage: BrowseErrorCopy.message(for:))
             model?.outsideArt = app.makeOutsideArt()   // R15
         }
@@ -158,6 +160,7 @@ private struct SearchContent: View {
                 ForEach(Array(sections.songs.enumerated()), id: \.element.id) { index, song in
                     songRow(song, index: index, in: sections.songs)
                 }
+                moreFooter(.songs, in: sections, count: sections.songs.count)
             }
         }
         if scope == .all || scope == .artists, !sections.artists.isEmpty {
@@ -166,6 +169,7 @@ private struct SearchContent: View {
                 ForEach(Array(sections.artists.enumerated()), id: \.element.id) { i, a in
                     artistRow(a).accessibilityIdentifier("search-artist-\(i)")
                 }
+                moreFooter(.artists, in: sections, count: sections.artists.count)
             }
         }
         if scope == .all || scope == .albums, !sections.albums.isEmpty {
@@ -174,9 +178,51 @@ private struct SearchContent: View {
                 ForEach(Array(sections.albums.enumerated()), id: \.element.id) { i, a in
                     albumRow(a).accessibilityIdentifier("search-album-\(i)")
                 }
+                moreFooter(.albums, in: sections, count: sections.albums.count)
             }
         }
         notYetBand(sections.notYet)
+    }
+
+    /// Round 12 (Y1, plan item 3): the end of a library section. While it has more, a spinner that loads the next
+    /// batch as it comes on screen (its identity follows the row count, so it loads again if it's still on screen after
+    /// a small batch); "No more results" once a batch comes back short (in All, only after something more loaded, so a
+    /// short list doesn't end every section with it).
+    @ViewBuilder private func moreFooter(_ kind: LibraryKind, in sections: SearchSections, count: Int) -> some View {
+        if sections.paging != nil, model.phase == .done {
+            if sections.hasMore(kind) {
+                if model.moreState(kind) == .failed {
+                    Button { model.loadMore(kind) } label: {
+                        Label("Couldn't load more. Try again", systemImage: "arrow.clockwise")
+                            .font(.subheadline)
+                            .frame(maxWidth: .infinity, minHeight: Tokens.minHitSize)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(themed.palette.ink2Color)
+                    .accessibilityIdentifier("search-more-\(kind.rawValue)")
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
+                } else {
+                    ProgressView()
+                        .frame(maxWidth: .infinity, minHeight: Tokens.minHitSize)
+                        .accessibilityLabel("Loading more")
+                        .accessibilityIdentifier("search-more-\(kind.rawValue)")
+                        .onAppear { model.loadMore(kind) }
+                        .id("search-more-\(kind.rawValue)-\(count)")
+                        .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
+                }
+            } else if scope != .all || sections.loadedMore(kind) {
+                Label("No more results", systemImage: "checkmark.circle")
+                    .font(.footnote)
+                    .foregroundStyle(themed.palette.ink2Color)
+                    .frame(maxWidth: .infinity, minHeight: Tokens.minHitSize)
+                    .accessibilityElement(children: .combine)
+                    .accessibilityIdentifier("search-end-\(kind.rawValue)")
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
+            }
+        }
     }
 
     // MARK: - Offline
@@ -387,7 +433,9 @@ private struct SearchContent: View {
                 VStack(alignment: .leading, spacing: 1) {
                     Text(artist.name).font(.body)
                     HStack(spacing: 4) {
-                        Text(artist.albumCount == 1 ? "Artist \u{00B7} 1 album" : "Artist \u{00B7} \(artist.albumCount) albums")
+                        // A song's own artist (Y1, plan item 1.3) comes without an album count: just "Artist".
+                        Text(artist.albumCount == 0 ? "Artist"
+                             : artist.albumCount == 1 ? "Artist \u{00B7} 1 album" : "Artist \u{00B7} \(artist.albumCount) albums")
                             .font(.footnote).foregroundStyle(themed.palette.ink2Color)
                         DownloadMarkView(app.downloadIndex.listMark(artist: artist))   // P1
                     }

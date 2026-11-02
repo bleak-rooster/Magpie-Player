@@ -27,23 +27,77 @@ final class SearchModel {
     typealias Search = @Sendable (_ query: String, _ early: @escaping @Sendable (SearchSections) async -> Void)
         async throws -> SearchSections
 
+    /// The next batch of one library section (round 12, plan item 3).
+    typealias More = @Sendable (LibraryKind, SearchPaging) async throws -> MoreResults
+
+    /// A section's load-more: none running, one running, or the last one failed (the footer offers to try again).
+    enum MoreState: Equatable { case idle, loading, failed }
+
     @ObservationIgnored private let search: Search
+    @ObservationIgnored private let more: More?
     @ObservationIgnored private let sleep: @Sendable (Duration) async throws -> Void
     @ObservationIgnored private let debounce: Duration
     @ObservationIgnored private let errorMessage: (Error) -> String
     @ObservationIgnored private var task: Task<Void, Never>?
+    @ObservationIgnored private var moreTasks: [LibraryKind: Task<Void, Never>] = [:]
+    private var moreStates: [LibraryKind: MoreState] = [:]
     /// R15: artwork for the "Not in your library" rows, held for the current results only. Every new search drops it
     /// and cancels its fetches, so it's fetched again.
     @ObservationIgnored var outsideArt: OutsideArtLoader?
 
     init(search: @escaping Search,
+         more: More? = nil,
          sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
          debounce: Duration = SearchModel.debounce,
          errorMessage: @escaping (Error) -> String = { _ in "Search didn't work. Try again in a moment." }) {
         self.search = search
+        self.more = more
         self.sleep = sleep
         self.debounce = debounce
         self.errorMessage = errorMessage
+    }
+
+    func moreState(_ kind: LibraryKind) -> MoreState { moreStates[kind] ?? .idle }
+
+    /// The end of a section came on screen: loads its next batch, once at a time per section, when the search is
+    /// done and the section has more. The rows are added at the end; nothing on screen moves.
+    func loadMore(_ kind: LibraryKind) {
+        guard phase == .done, let more, let paging = results.paging, results.hasMore(kind),
+              moreState(kind) != .loading else { return }
+        moreStates[kind] = .loading
+        let q = query
+        moreTasks[kind] = Task { [weak self] in
+            do {
+                let found = try await more(kind, paging)
+                try Task.checkCancellation()
+                self?.finishMore(found, for: q)
+            } catch is CancellationError {
+                return
+            } catch let error as URLError where error.code == .cancelled {
+                return
+            } catch {
+                guard !Task.isCancelled else { return }
+                self?.failMore(kind, for: q)
+            }
+        }
+    }
+
+    /// Waits for every running load-more (tests).
+    func settleMore() async {
+        for task in moreTasks.values { await task.value }
+    }
+
+    private func finishMore(_ found: MoreResults, for q: String) {
+        guard q == query, phase == .done else { return }
+        results.append(found)
+        moreStates[found.kind] = .idle
+        moreTasks[found.kind] = nil
+    }
+
+    private func failMore(_ kind: LibraryKind, for q: String) {
+        guard q == query else { return }
+        moreStates[kind] = .failed
+        moreTasks[kind] = nil
     }
 
     /// The query changed. Results for the previous query are cleared at once (they would be tappable
@@ -51,6 +105,8 @@ final class SearchModel {
     func update(query newQuery: String) {
         query = newQuery
         task?.cancel()
+        moreTasks.values.forEach { $0.cancel() }
+        moreStates = [:]
         outsideArt?.reset()
         let trimmed = newQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {

@@ -62,13 +62,14 @@ public struct MergedSearch: Sendable {
     }
 
     /// The library through `search3` with counts and offsets (round 12): the whole query plus its split queries
-    /// (`SearchPlan`), and sections that page (`more`).
+    /// (`SearchPlan`), and sections that page (`more`). `pageSize` overrides the batch sizes (UI tests).
     public init(libraryPage: @escaping LibraryPager.Page,
+                pageSize: Int? = nil,
                 libraryTimeout: Duration = MergedSearch.libraryTimeout,
                 sources: [Source],
                 index: @escaping @Sendable () async -> MatchIndex,
                 sleep: @escaping Sleep = { try await Task.sleep(for: $0) }) {
-        let pager = LibraryPager(page: libraryPage)
+        let pager = LibraryPager(pageSize: pageSize, page: libraryPage)
         self.library = { q in
             let (found, paging) = try await pager.first(q)
             return (found, paging)

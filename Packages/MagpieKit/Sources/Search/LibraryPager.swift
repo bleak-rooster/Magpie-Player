@@ -74,6 +74,10 @@ public struct MoreResults: Sendable {
     public var albums: [Album] = []
     public var artists: [Artist] = []
     public var paging: SearchPaging
+
+    public init(kind: LibraryKind, songs: [Song] = [], albums: [Album] = [], artists: [Artist] = [], paging: SearchPaging) {
+        self.kind = kind; self.songs = songs; self.albums = albums; self.artists = artists; self.paging = paging
+    }
 }
 
 /// The library half of search: runs a query's plan (the whole query and its splits) with at most `maxConcurrent`
@@ -89,10 +93,16 @@ public struct LibraryPager: Sendable {
 
     private let page: Page
     private let maxConcurrent: Int
+    private let pageSize: Int?
 
-    public init(maxConcurrent: Int = LibraryPager.maxConcurrent, page: @escaping Page) {
+    /// - Parameter pageSize: one batch size for every section instead of `LibraryKind.pageSize` (UI tests on the small
+    ///   dev library).
+    public init(maxConcurrent: Int = LibraryPager.maxConcurrent, pageSize: Int? = nil, page: @escaping Page) {
         self.page = page; self.maxConcurrent = max(1, maxConcurrent)
+        self.pageSize = pageSize.map { max(1, $0) }
     }
+
+    private func size(_ kind: LibraryKind) -> Int { pageSize ?? kind.pageSize }
 
     /// The first batch of every section, from the whole query and its splits. Throws only when the whole query fails
     /// and no split found anything.
@@ -101,7 +111,8 @@ public struct LibraryPager: Sendable {
         let sources = [SearchPaging.Source(text: plan.whole, artist: nil)]
             + plan.splits.map { SearchPaging.Source(text: $0.title, artist: $0.artist) }
         let requests = sources.map { s in
-            LibraryQuery(text: s.text, artistCount: s.artist == nil ? LibraryKind.artists.pageSize : 0)
+            LibraryQuery(text: s.text, songCount: size(.songs), albumCount: size(.albums),
+                         artistCount: s.artist == nil ? size(.artists) : 0)
         }
         let results = try await run(requests)
         var paging = SearchPaging(query: query, sources: sources, sections: [:])
@@ -119,7 +130,7 @@ public struct LibraryPager: Sendable {
             case .success(let rows):
                 let source = sources[i]
                 for kind in LibraryKind.allCases {
-                    let asked = kind == .artists && source.artist != nil ? 0 : kind.pageSize
+                    let asked = kind == .artists && source.artist != nil ? 0 : size(kind)
                     let (new, raw) = Self.filter(rows, kind, source, seen: paging.seen(kind))
                     paging.sections[kind]?.offsets[i] = raw
                     paging.sections[kind]?.done[i] = asked == 0 || raw < asked
@@ -142,9 +153,9 @@ public struct LibraryPager: Sendable {
             let requests = active.map { i in
                 var q = LibraryQuery(text: paging.sources[i].text, songCount: 0, albumCount: 0, artistCount: 0)
                 switch kind {
-                case .songs: q.songCount = kind.pageSize; q.songOffset = section.offsets[i]
-                case .albums: q.albumCount = kind.pageSize; q.albumOffset = section.offsets[i]
-                case .artists: q.artistCount = kind.pageSize; q.artistOffset = section.offsets[i]
+                case .songs: q.songCount = size(kind); q.songOffset = section.offsets[i]
+                case .albums: q.albumCount = size(kind); q.albumOffset = section.offsets[i]
+                case .artists: q.artistCount = size(kind); q.artistOffset = section.offsets[i]
                 }
                 return q
             }
@@ -160,7 +171,7 @@ public struct LibraryPager: Sendable {
                 case .success(let rows):
                     let (new, raw) = Self.filter(rows, kind, paging.sources[i], seen: paging.seen(kind))
                     paging.sections[kind]?.offsets[i] += raw
-                    paging.sections[kind]?.done[i] = raw < kind.pageSize
+                    paging.sections[kind]?.done[i] = raw < size(kind)
                     found.append(new, kind)
                     paging.insert(new.ids(kind), into: kind)
                 }

@@ -916,10 +916,15 @@ final class AppModel {
         if !isOffline, let lidarr = lidarrClient { sources.append(.lidarr(lidarr, timeout: sourceTimeout)) }
         let index = matchIndex
         return MergedSearch(
-            library: { [weak self] q in
+            // Round 12 (Y1): the whole query and its splits, each a paged search3 (`LibraryQuery` carries it all).
+            libraryPage: { [weak self] q in
                 guard let self else { throw NavidromeError.noReachableServer }
-                return try await self.request { try await $0.search(q) }
+                return try await self.request {
+                    try await $0.search(q.text, songCount: q.songCount, albumCount: q.albumCount, artistCount: q.artistCount,
+                                        songOffset: q.songOffset, albumOffset: q.albumOffset, artistOffset: q.artistOffset)
+                }
             },
+            pageSize: SearchPageSize.override(appDefaults),
             libraryTimeout: libraryTimeout,
             sources: sources,
             index: { await index?.index ?? .empty })

@@ -112,6 +112,17 @@ import Testing
         #expect(artists.artists.first?.id == "r010" && server.queries.last?.artistOffset == 10)
     }
 
+    /// UI tests page the small dev library with a smaller batch.
+    @Test func aSmallerPageSize() async throws {
+        let server = many(12)
+        let p = LibraryPager(pageSize: 5) { try await server.search($0) }
+        let (found, paging) = try await p.first("harbour")
+        #expect(found.songs.count == 5 && found.albums.count == 5 && found.artists.count == 5)
+        let more = try await p.more(.songs, paging: paging)
+        #expect(more.songs.count == 5 && server.queries.last?.songOffset == 5 && server.queries.last?.songCount == 5)
+        #expect(more.paging.hasMore(.songs))
+    }
+
     @Test func aFirstShortBatchHasNoMore() async throws {
         let (_, paging) = try await pager(FakeNavidrome()).first("bloodbuzz")
         #expect(!paging.hasMore(.songs) && !paging.hasMore(.albums) && !paging.hasMore(.artists))
