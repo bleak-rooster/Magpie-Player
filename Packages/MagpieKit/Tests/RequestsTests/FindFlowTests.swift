@@ -433,4 +433,11 @@ import MagpieCore
         #expect(state == .notMonitored(lidarrId: 42, magpieAdded: false))
         #expect(h.server.writes.count == before)
     }
+
+    /// Found by the dev-stack IT: a requests file not named `requests-…` must never share its name with the state file.
+    @Test func theStateFileIsNeverTheRequestsFile() {
+        let dir = URL(fileURLWithPath: "/tmp/x")
+        #expect(RunnerState.url(forRequests: dir.appending(path: "requests-abc.json")).lastPathComponent == "runner-state-abc.json")
+        #expect(RunnerState.url(forRequests: dir.appending(path: "requests.json")).lastPathComponent == "runner-state-requests.json")
+    }
 }

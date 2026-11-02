@@ -88,6 +88,8 @@ extension AppModel {
         return outcome
     }
 
+    nonisolated static let losslessSuffixes: Set<String> = ["flac", "alac", "wav", "ape", "wv", "aiff", "aif"]
+
     /// Songs kept from Finds that aren't lossless yet: "Lossless soon".
     func quality(of song: Song) -> Quality {
         let quality = Quality.from(suffix: song.suffix, bitRate: song.bitRate)
@@ -150,7 +152,9 @@ extension AppModel {
               let (library, folder) = Self.keptLocation(artistPath, findsLibrary: findsLibrary, mapping: finds.mapping,
                                                         libraries: try await navidromeLibraries()) else { return nil }
         let id = library.id
-        return try await request { try await $0.songs(recordingMBID: recording, inLibrary: id, under: folder) }.first
+        // Y5: after Lidarr's upgrade both copies may be listed until Navidrome's scan ends: the lossless one wins.
+        let songs = try await request { try await $0.songs(recordingMBID: recording, inLibrary: id, under: folder) }
+        return songs.first { Self.losslessSuffixes.contains($0.suffix?.lowercased() ?? "") } ?? songs.first
     }
 
     /// The runner found the kept song in the library: queue slots now hold the library song, and the finds

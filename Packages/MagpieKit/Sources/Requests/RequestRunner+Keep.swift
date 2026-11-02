@@ -652,7 +652,12 @@ extension RequestRunner {
         }
         let found: Song?
         do { found = try await library.keptSong(recording, folder) } catch { found = nil }
-        guard let song = found else {
+        // Y5: after the lossless upgrade, only the lossless song counts (Navidrome may still list the MP3 until its scan).
+        let wantsLossless = r.lossless?.losslessAt != nil
+        let usable = found.flatMap { song in
+            !wantsLossless || ["flac", "alac", "wav", "ape", "wv", "aiff", "aif"].contains(song.suffix?.lowercased() ?? "") ? song : nil
+        }
+        guard let song = usable else {
             if now().timeIntervalSince(r.movedAt ?? r.updatedAt) >= Self.relinkLimit {
                 await mutate(id) { $0.relinkPending = false }
             }

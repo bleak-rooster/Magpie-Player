@@ -54,6 +54,11 @@ extension RequestRunner {
         var albums = Set(entries.flatMap { $0.findFiles ?? [] }.map(\.albumId))
         if let album = r.albumId { albums.insert(album) }
         guard !albums.isEmpty else { return }
+        // Lidarr 3.2 leaves the track file records at the old (Finds) paths after a move; its upgrade of the MP3 would
+        // then fail on a file that isn't there. A rescan first (queued before the search, so it runs first).
+        if (try? await gate.send("POST", "command", body: RefreshBody(name: "RefreshArtist", artistId: artistId))) != nil {
+            lastLidarrContact = now()
+        }
         let start = serverNow()
         await mutate(id) {
             $0.lossless = LosslessWatch(albumIds: albums.sorted(), startedAt: start, autoDelete: autoDelete,
@@ -92,6 +97,9 @@ extension RequestRunner {
     }
 
     // MARK: - Follow (tick)
+
+    /// Tests and the dev-stack IT: the next pass checks this watch now (it is throttled otherwise).
+    func forceLosslessCheck(_ id: RequestID) async { await mutate(id) { $0.lossless?.lastCheckAt = nil } }
 
     /// `tick()`: every active watch, at most every `losslessCheckInterval` (daily once the MP3 is gone).
     func followLossless() async {

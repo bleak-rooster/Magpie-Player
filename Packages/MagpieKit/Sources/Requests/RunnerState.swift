@@ -33,9 +33,11 @@ public struct RunnerState: Codable, Sendable, Equatable {
     /// Offsets larger than a day are a broken header, not a clock (M4).
     public static let maxOffset: TimeInterval = 24 * 3600
 
+    /// `requests-<instance>.json` → `runner-state-<instance>.json`; any other name gets the prefix (never the same file).
     public static func url(forRequests requests: URL) -> URL {
-        requests.deletingLastPathComponent().appending(path: requests.lastPathComponent
-            .replacingOccurrences(of: "requests-", with: "runner-state-"))
+        let name = requests.lastPathComponent
+        let state = name.hasPrefix("requests-") ? "runner-state-" + name.dropFirst("requests-".count) : "runner-state-" + name
+        return requests.deletingLastPathComponent().appending(path: String(state))
     }
 
     /// Nil file: in memory only. A damaged or missing file reads as empty (leases fail open to "not busy" only after
