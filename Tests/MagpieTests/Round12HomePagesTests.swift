@@ -1,6 +1,7 @@
 import CarPlayUI
 import DesignSystem
 import Foundation
+import LidarrKit
 import MagpieCore
 import MagpieTestSupport
 import NavidromeKit
@@ -57,6 +58,13 @@ private func queryValue(_ request: URLRequest, _ name: String) -> String? {
         }
     }
 
+    /// The albums of every `musicFolderId` named (repeated: "any of"), or of all libraries when none is.
+    nonisolated private static func albums(_ request: URLRequest) -> [String] {
+        let folders = request.url.flatMap { URLComponents(url: $0, resolvingAgainstBaseURL: false) }?
+            .queryItems?.filter { $0.name == "musicFolderId" }.compactMap(\.value) ?? []
+        return folders.isEmpty ? albums(nil) : folders.flatMap { albums($0) }
+    }
+
     func signedInModel() async throws -> AppModel {
         let t = transport.inner
         t.stub(pathSuffix: "/rest/ping", body: ok)
@@ -67,12 +75,12 @@ private func queryValue(_ request: URLRequest, _ name: String) -> String? {
             return MockTransport.Response(status: 200, body: subsonic(#""musicFolders":{"musicFolder":[\#(list)]}"#))
         }
         t.stub(pathSuffix: "/rest/getAlbumList2") { request in
-            let rows = Self.albums(queryValue(request, "musicFolderId"))
+            let rows = Self.albums(request)
                 .map { #"{"id":"\#($0)","name":"\#($0)","artist":"A","songCount":1}"# }.joined(separator: ",")
             return MockTransport.Response(status: 200, body: subsonic(#""albumList2":{"album":[\#(rows)]}"#))
         }
         t.stub(pathSuffix: "/rest/search3") { request in
-            let rows = Self.albums(queryValue(request, "musicFolderId"))
+            let rows = Self.albums(request)
                 .map { #"{"id":"\#($0)","name":"\#($0)","artist":"A","songCount":1}"# }.joined(separator: ",")
             return MockTransport.Response(status: 200, body: subsonic(#""searchResult3":{"album":[\#(rows)]}"#))
         }
@@ -136,7 +144,7 @@ private func queryValue(_ request: URLRequest, _ name: String) -> String? {
     @Test func aurralAndFindsNeverReachHomeLibraryOrSearch() async throws {
         let model = try await signedInModel()
         try chooseMainLibrary(model)
-        #expect(model.libraryScope == 1)
+        #expect(model.libraryScope == [1])
         let before = transport.inner.requests.count
 
         let shelves = try await model.homeShelves(for: [.jumpBackIn, .recentlyAdded, .mostPlayed, .randomAlbums])
@@ -159,7 +167,7 @@ private func queryValue(_ request: URLRequest, _ name: String) -> String? {
         let scope = try #require(model.navidromeScope)
         defaults.set(3, forKey: AppModel.findsLibraryKey(scope))   // the Finds library, known per account (FM2)
         await model.refreshMusicFolders()
-        #expect(model.libraryScope == 1)
+        #expect(model.libraryScope == [1])
         #expect(albumIds(try await model.homeShelves(for: [.recentlyAdded])) == ["main-1"])
     }
 
@@ -187,10 +195,9 @@ private func queryValue(_ request: URLRequest, _ name: String) -> String? {
         setup.library = NavidromeLibrary(id: 3, name: "Finds", path: "/finds")
         model.findsSetup = setup
         model.lidarrSetup = LidarrSetup(base: URL(string: "http://127.0.0.1:8686")!, scope: "lidarr", rootFolderPath: "/music")
-        #expect(model.libraryScope == nil, "two libraries left besides Finds: not obvious from the folders alone")
         await model.refreshMusicFolders()
         #expect(model.findsSetup?.mainLibrary?.id == 1)
-        #expect(model.libraryScope == 1)
+        #expect(model.libraryScope == [1])
         #expect(albumIds(try await model.homeShelves(for: [.recentlyAdded])) == ["main-1"])
     }
 
@@ -204,35 +211,51 @@ private func queryValue(_ request: URLRequest, _ name: String) -> String? {
         model.findsSetup = setup
         model.lidarrSetup = LidarrSetup(base: URL(string: "http://127.0.0.1:8686")!, scope: "lidarr", rootFolderPath: "/music/")
         await model.refreshMusicFolders()
-        #expect(model.libraryScope == 1)
+        #expect(model.libraryScope == [1])
     }
 
-    /// Without Lidarr: the library with the most albums, Finds left out (it has more here).
-    @Test func withoutLidarrTheLibraryWithMostAlbums() async throws {
+    /// Regression (dev stack, v0.0.1-custom after Y4): two ordinary libraries and no Lidarr. Nothing says the
+    /// smaller one is apart, so nothing is hidden: no "most albums" guess.
+    @Test func withoutLidarrNothingButFindsIsHidden() async throws {
+        folders.withLock { $0 = [1, 2] }
         stubLibraries()
         let model = try await signedInModel()
+        #expect(model.libraryScope == nil, "both libraries are listed")
+        #expect(albumIds(try await model.homeShelves(for: [.recentlyAdded])) == ["main-1", "aurral-1", "find-1"])
+        // With a Finds library known, only it is left out.
+        folders.withLock { $0 = [1, 2, 3] }
         let scope = try #require(model.navidromeScope)
         defaults.set(3, forKey: AppModel.findsLibraryKey(scope))
         await model.refreshMusicFolders()
-        #expect(model.libraryScope == 1)
-        #expect(model.mainLibraryPick == .mostAlbums && model.mainLibraryPickedAutomatically)
-        // N1: a fallback pick is never saved.
-        #expect(defaults.object(forKey: AppModel.autoMainLibraryKey(scope)) == nil)
+        #expect(model.libraryScope == [1, 2])
+        #expect(albumIds(try await model.homeShelves(for: [.recentlyAdded])) == ["main-1", "aurral-1"])
     }
 
-    // MARK: - Fix round 2 (N1): the pick follows Lidarr and Finds as they arrive
+    /// Every library holding one of Lidarr's root folders is music (the dev stack keeps Samples as a second root):
+    /// both are listed. A library that holds none (Aurral's) is the one left out.
+    @Test func everyLibraryHoldingALidarrRootIsListed() async throws {
+        stubLibraries(names: [1: "Music Library", 2: "Samples", 3: "Aurral Playlists"],
+                      paths: [1: "/music/library", 2: "/music/samples", 3: "/aurral"])
+        let model = try await signedInModel()
+        model.lidarrStatus = LidarrAudit(reachable: true, roots: [RootFolder(id: 1, path: "/music/library"),
+                                                                 RootFolder(id: 2, path: "/music/samples")])
+        model.lidarrSetup = LidarrSetup(base: URL(string: "http://127.0.0.1:8686")!, scope: "lidarr",
+                                        rootFolderPath: "/music/library")
+        #expect(await eventually { model.libraryScope == [1, 2] })
+        #expect(model.mainLibraryId == 1)
+    }
 
-    /// A fresh install: sign in (no Lidarr, Finds unknown), then Lidarr, then Finds. The fallback's first guess
-    /// (library 3, the most albums) is only a guess: Lidarr's root replaces it, and it's saved only then.
+    /// A fresh install: sign in (no Lidarr, Finds unknown), then Lidarr, then Finds. Nothing is hidden until Lidarr
+    /// says where the music is; then the Lidarr-mapped pick is saved and shows in Settings.
     @Test func freshInstallSignInThenLidarrThenFinds() async throws {
         stubLibraries()
         let model = try await signedInModel()
         let scope = try #require(model.navidromeScope)
-        #expect(model.libraryScope == 3 && model.mainLibraryPick == .mostAlbums)
-        #expect(defaults.object(forKey: AppModel.autoMainLibraryKey(scope)) == nil, "a guess is kept in memory only")
+        #expect(model.libraryScope == nil && model.mainLibraryPick == .none)
+        #expect(defaults.object(forKey: AppModel.autoMainLibraryKey(scope)) == nil)
 
         model.lidarrSetup = LidarrSetup(base: URL(string: "http://127.0.0.1:8686")!, scope: "lidarr", rootFolderPath: "/music")
-        #expect(await eventually { model.libraryScope == 1 }, "Lidarr's root decides as soon as it's there")
+        #expect(await eventually { model.libraryScope == [1] }, "Lidarr's root decides as soon as it's there")
         #expect(model.mainLibraryPick == .lidarrRoot)
         #expect(defaults.object(forKey: AppModel.autoMainLibraryKey(scope)) as? Int == 1)
 
@@ -240,18 +263,7 @@ private func queryValue(_ request: URLRequest, _ name: String) -> String? {
         setup.library = NavidromeLibrary(id: 3, name: "Finds", path: "/finds")
         model.findsSetup = setup
         #expect(await eventually { model.findsSetup?.mainLibrary?.id == 1 }, "the Lidarr pick shows in Settings")
-        #expect(model.libraryScope == 1 && model.mainLibraryPickedAutomatically)
-    }
-
-    /// The fallback never picks the remembered Finds library, and learning it redoes the pick.
-    @Test func fallbackRedoneWhenFindsIsLearned() async throws {
-        stubLibraries()
-        let model = try await signedInModel()
-        let scope = try #require(model.navidromeScope)
-        #expect(model.libraryScope == 3)
-        defaults.set(3, forKey: AppModel.findsLibraryKey(scope))
-        model.findsLibraryLearned()
-        #expect(await eventually { model.libraryScope == 1 })
+        #expect(model.libraryScope == [1] && model.mainLibraryPickedAutomatically)
     }
 
     /// The owner's own choice is never replaced by a pick.
@@ -265,7 +277,8 @@ private func queryValue(_ request: URLRequest, _ name: String) -> String? {
         model.chooseMainLibrary(NavidromeLibrary(id: 2, name: "Aurral Playlists", path: "/aurral"))
         model.lidarrSetup = LidarrSetup(base: URL(string: "http://127.0.0.1:8686")!, scope: "lidarr", rootFolderPath: "/music")
         await model.autoPickMainLibrary()
-        #expect(model.libraryScope == 2 && model.mainLibraryPick == .chosen)
+        #expect(model.mainLibraryId == 2 && model.mainLibraryPick == .chosen, "the choice stays the main library")
+        #expect(model.libraryScope == [1, 2], "and the library holding Lidarr's root is listed too")
     }
 
     /// m1: a Lidarr root that's in no library picks nothing (no guess either), and Settings says so.

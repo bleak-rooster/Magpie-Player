@@ -2,17 +2,20 @@ import Foundation
 import LidarrKit
 import NavidromeKit
 
-/// Round 12 Y3 (plan item 5): Home, Library, Search and CarPlay read the **main library** only, so Aurral's flow
-/// downloads and the Finds folder never turn up as "random albums". The main library is:
-/// 1. the one chosen in R18 ("Main library", Settings);
-/// 2. else the one obvious from the folders: exactly one library besides the ones kept apart (Finds; Discover's, Y6);
-/// 3. else picked automatically (fix round 1), never by a library's name:
-///    - the Navidrome library holding Lidarr's main root folder (through the Finds path mapping, `keptLocation`);
-///    - without a Lidarr main root, the library with the most albums, Finds left out.
-///    The pick is saved where Settings shows it (`findsSetup.mainLibrary`, or per account without a Finds setup);
-///    the owner can change it there.
-/// With one library, or no pick, no library is named and the server answers for all of them, as before. Album artists
-/// only (R11) is untouched: it filters artists, not libraries.
+/// Round 12 Y3 (plan item 5): Home, Library, Search and CarPlay list only the libraries that hold the owner's music,
+/// so Aurral's flow downloads and the Finds folder never turn up as "random albums".
+///
+/// What is listed (`listedLibraryIds`):
+/// - the **main library**: chosen in R18 ("Main library", Settings), else the one obvious from the folders (exactly one
+///   besides the separate ones), else the library holding Lidarr's main root folder (mapped through the Finds path
+///   mapping with `keptLocation`, saved where Settings shows it). Never picked by a library's name, and never guessed;
+/// - every other library holding one of Lidarr's root folders (a second music root, such as the dev stack's Samples);
+/// - without any of that (no Lidarr yet): every library but the separate ones.
+/// The separate ones (Finds; Discover's, Y6) are never listed. With one library, or when everything is listed, no
+/// library is named and the server answers for all of them, as before. Album artists only (R11) is untouched.
+///
+/// Fix round 3 (regression on the dev stack): the "most albums" guess is gone. With two ordinary libraries and no
+/// Lidarr, it listed only the bigger one, so the other library's music disappeared from every list.
 ///
 /// The scope lives on the client (`NavidromeClient.setLibraryScope`), so every list and search call carries it,
 /// whichever screen or the car asks. Lookups by id, playlists and the Finds library's own read are never scoped.
@@ -31,8 +34,7 @@ extension AppModel {
     /// (never from its name). None until Aurral is set up.
     var discoverLibraryIds: Set<Int> { [] }
 
-    /// The library picked from Lidarr's root for this account, if any (cleared when the owner chooses one). Only
-    /// this pick is saved; the "most albums" guess never is (N1).
+    /// The library picked from Lidarr's root for this account, if any (cleared when the owner chooses one).
     var autoMainLibraryId: Int? {
         navidromeScope.flatMap { appDefaults.object(forKey: Self.autoMainLibraryKey($0)) as? Int }
     }
@@ -43,8 +45,6 @@ extension AppModel {
         case chosen
         /// The library holding Lidarr's main root folder.
         case lidarrRoot
-        /// A guess: the library with the most albums (no Lidarr root yet); kept in memory only.
-        case mostAlbums
         /// The only library besides the separate ones.
         case obvious
         /// None: every library is read.
@@ -56,24 +56,44 @@ extension AppModel {
         let auto = autoMainLibraryId
         if let chosen = findsSetup?.mainLibrary?.id, chosen == main { return chosen == auto ? .lidarrRoot : .chosen }
         if auto == main { return .lidarrRoot }
-        if fallbackMainLibraryId == main { return .mostAlbums }
         return .obvious
     }
 
     /// The main library came from an automatic pick, not the owner's choice (Settings says so).
-    var mainLibraryPickedAutomatically: Bool { [.lidarrRoot, .mostAlbums].contains(mainLibraryPick) }
+    var mainLibraryPickedAutomatically: Bool { mainLibraryPick == .lidarrRoot }
 
-    /// The library the lists read, or nil for all of them.
+    /// The main library (Keep's scans, "Only in your Finds"), or nil when none is known.
     var mainLibraryId: Int? {
-        Self.mainLibraryId(chosen: findsSetup?.mainLibrary?.id ?? autoMainLibraryId ?? fallbackMainLibraryId,
+        Self.mainLibraryId(chosen: findsSetup?.mainLibrary?.id ?? autoMainLibraryId,
                            folders: knownMusicFolderIds, separate: separateLibraryIds)
     }
 
-    /// The match index (what counts as already yours for outside results) covers the main library and Finds, named
-    /// explicitly, never Discover's; every library while no main library is known.
+    /// The libraries holding one of Lidarr's root folders (other than the Finds root), as last worked out.
+    var lidarrLibraryIds: [Int] {
+        navidromeScope.flatMap { appDefaults.array(forKey: Self.lidarrLibrariesKey($0)) as? [Int] } ?? []
+    }
+
+    /// The libraries Home, Library, Search and the car list, or nil for all of them.
+    var listedLibraryIds: [Int]? {
+        Self.listedLibraries(main: mainLibraryId, lidarrLibraries: lidarrLibraryIds, folders: knownMusicFolderIds,
+                             separate: separateLibraryIds)
+    }
+
+    /// The main library and every library holding a Lidarr root; without either, every library. Never a separate
+    /// one. Nil (name none) with one library, or when that's every library.
+    nonisolated static func listedLibraries(main: Int?, lidarrLibraries: [Int], folders: [Int]?,
+                                            separate: Set<Int>) -> [Int]? {
+        guard let folders, folders.count > 1 else { return nil }
+        let music = Set(main.map { [$0] } ?? []).union(lidarrLibraries)
+        let listed = folders.filter { (music.isEmpty || music.contains($0)) && !separate.contains($0) }
+        return listed.isEmpty || listed.count == folders.count ? nil : listed
+    }
+
+    /// The match index (what counts as already yours for outside results) covers the listed libraries and Finds,
+    /// named explicitly, never Discover's; every library while nothing is set apart.
     var matchIndexLibraries: NavidromeClient.LibraryFilter {
-        guard let main = mainLibraryId else { return .all }
-        return .only([main] + [findsLibraryId].compactMap { $0 }.filter { $0 != main })
+        guard let listed = listedLibraryIds else { return .all }
+        return .only(listed + [findsLibraryId].compactMap { $0 }.filter { !listed.contains($0) })
     }
 
     /// The chosen main library (unless it's one kept apart, or the server no longer lists it); otherwise the one
@@ -88,7 +108,7 @@ extension AppModel {
         return left.count == 1 ? left[0] : nil
     }
 
-    /// The one library holding Lidarr's main root folder `root`, through `mapping` (Lidarr → Navidrome paths), among
+    /// The one library holding Lidarr's root folder `root`, through `mapping` (Lidarr → Navidrome paths), among
     /// `libraries`. The root itself, or any folder in it, counts. Nil when none or several hold it.
     nonisolated static func libraryHolding(root: String, mapping: PathMapping?,
                                            libraries: [NavidromeLibrary]) -> NavidromeLibrary? {
@@ -97,13 +117,13 @@ extension AppModel {
         return keptLocation(base + "/artist", findsLibrary: none, mapping: mapping, libraries: libraries)?.0
     }
 
-    /// Hands the main library to the client; when it changed, Home reads again (its saved shelves may hold another
-    /// library's albums).
+    /// Hands the listed libraries to the client; when they changed, Home reads again (its saved shelves may hold
+    /// another library's albums).
     func syncLibraryScope() {
-        let id = session == nil ? nil : mainLibraryId
-        session?.client.setLibraryScope(id)
-        guard id != libraryScope else { return }
-        libraryScope = id
+        let ids = session == nil ? nil : listedLibraryIds
+        session?.client.setLibraryScope(ids)
+        guard ids != libraryScope else { return }
+        libraryScope = ids
         homeFeedSlot?.libraryChanged()
         if session != nil, matchIndex != nil {   // m4: what counts as yours follows the scope
             Task { [weak self] in try? await self?.refreshMatchIndex() }
@@ -132,51 +152,41 @@ extension AppModel {
         mainLibraryInputsChanged()
     }
 
-    /// Picks the main library when the owner hasn't (fix rounds 1 and 2):
-    /// - with Lidarr's main root: the library holding it (saved, shown in Settings); none when it's in no library;
-    /// - with Lidarr connected but no root yet: no pick (Lidarr will decide);
-    /// - without Lidarr: the library with the most albums, never a separate one (Finds), kept in memory only.
-    /// Runs again whenever Lidarr's root, the Finds setup or the Finds library changes; a later Lidarr pick replaces a
-    /// guess or an earlier automatic pick, never the owner's choice.
+    /// Works out which libraries hold Lidarr's root folders, and the main library when the owner hasn't chosen one
+    /// (fix rounds 1 to 3):
+    /// - the main library is the one holding Lidarr's main root (saved, shown in Settings); none when it's in no
+    ///   library or there is no Lidarr root yet. Nothing is guessed;
+    /// - every library holding any Lidarr root folder (the Finds root aside) is listed too.
+    /// Runs again whenever Lidarr's roots, the Finds setup or the Finds library changes; a later pick replaces an
+    /// earlier automatic one, never the owner's choice.
     func autoPickMainLibrary() async {
         guard let scope = navidromeScope, let folders = knownMusicFolderIds else { return }
-        let auto = autoMainLibraryId
-        if let chosen = findsSetup?.mainLibrary?.id, chosen != auto { return }   // the owner's choice stands
         let separate = separateLibraryIds
         let candidates = folders.filter { !separate.contains($0) }
-        guard candidates.count > 1 else {   // obvious (or one library): nothing to pick
-            fallbackMainLibraryId = nil
-            return syncLibraryScope()
-        }
-        var lidarrPick: NavidromeLibrary?, guess: Int?
-        if let root = lidarrSetup?.rootFolderPath {
-            if let libraries = (try? await navidromeLibraries())?.filter({ candidates.contains($0.id) }) {
-                lidarrPick = Self.libraryHolding(root: root, mapping: findsSetup?.mapping, libraries: libraries)
-            }
-        } else if lidarr == nil {
-            let counts = await withTaskGroup(of: (Int, Int?).self) { group in
-                for id in candidates {
-                    group.addTask { [weak self] in (id, try? await self?.request { try await $0.albumCount(inLibrary: id) }) }
-                }
-                var counts: [(id: Int, albums: Int)] = []
-                for await (id, n) in group { if let n { counts.append((id, n)) } }
-                return counts
-            }
-            if let most = counts.map(\.albums).max(), counts.filter({ $0.albums == most }).count == 1 {
-                guess = counts.first { $0.albums == most }?.id
-            }
+        let mainRoot = lidarrSetup?.rootFolderPath
+        let roots = ([mainRoot].compactMap { $0 } + (lidarrStatus?.roots.map(\.path) ?? []))
+            .filter { root in !(findsSetup?.findsRoot.map { Self.sameFolder($0, root) } ?? false) }
+        var mainPick: NavidromeLibrary?, holders: [Int] = []
+        if candidates.count > 1, !roots.isEmpty,
+           let libraries = (try? await navidromeLibraries())?.filter({ candidates.contains($0.id) }) {
+            let mapping = findsSetup?.mapping
+            mainPick = mainRoot.flatMap { Self.libraryHolding(root: $0, mapping: mapping, libraries: libraries) }
+            holders = roots.compactMap { Self.libraryHolding(root: $0, mapping: mapping, libraries: libraries)?.id }
         }
         guard navidromeScope == scope else { return }
-        if let chosen = findsSetup?.mainLibrary?.id, chosen != autoMainLibraryId { return }   // chosen meanwhile
-        fallbackMainLibraryId = guess.flatMap { separateLibraryIds.contains($0) ? nil : $0 }
-        if let lidarrPick {
-            appDefaults.set(lidarrPick.id, forKey: Self.autoMainLibraryKey(scope))
-            if var setup = findsSetup, setup.library?.id != lidarrPick.id, setup.mainLibrary != lidarrPick {
-                setup.mainLibrary = lidarrPick
+        let held = Array(Set(holders)).sorted()
+        if held.isEmpty { appDefaults.removeObject(forKey: Self.lidarrLibrariesKey(scope)) }
+        else { appDefaults.set(held, forKey: Self.lidarrLibrariesKey(scope)) }
+        let auto = autoMainLibraryId
+        if let chosen = findsSetup?.mainLibrary?.id, chosen != auto { return syncLibraryScope() }   // the owner's choice stands
+        if let mainPick {
+            appDefaults.set(mainPick.id, forKey: Self.autoMainLibraryKey(scope))
+            if var setup = findsSetup, setup.library?.id != mainPick.id, setup.mainLibrary != mainPick {
+                setup.mainLibrary = mainPick
                 findsSetup = setup
                 findsStore.save(setup)
             }
-        } else if auto != nil {   // the root moved out of every library, or Lidarr went: the old pick goes too
+        } else if auto != nil, candidates.count > 1 {   // the root moved out of every library, or Lidarr went
             appDefaults.removeObject(forKey: Self.autoMainLibraryKey(scope))
             if var setup = findsSetup, setup.mainLibrary?.id == auto {
                 setup.mainLibrary = nil
@@ -191,4 +201,6 @@ extension AppModel {
     nonisolated static func musicFoldersKey(_ navidromeScope: String) -> String { musicFoldersKeyPrefix + navidromeScope }
     nonisolated static let autoMainLibraryKeyPrefix = "magpie.autoMainLibrary."
     nonisolated static func autoMainLibraryKey(_ navidromeScope: String) -> String { autoMainLibraryKeyPrefix + navidromeScope }
+    nonisolated static let lidarrLibrariesKeyPrefix = "magpie.lidarrLibraries."
+    nonisolated static func lidarrLibrariesKey(_ navidromeScope: String) -> String { lidarrLibrariesKeyPrefix + navidromeScope }
 }

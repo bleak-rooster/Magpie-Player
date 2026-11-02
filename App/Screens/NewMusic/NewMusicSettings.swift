@@ -89,7 +89,6 @@ enum MainLibraryCopy {
     static func note(_ pick: AppModel.MainLibraryPick) -> String? {
         switch pick {
         case .lidarrRoot: "Picked automatically: the library where new music goes."
-        case .mostAlbums: "Picked automatically for now: the library with the most albums."
         case .none: "No main library yet: Home, Library and Search show every library."
         case .chosen, .obvious: nil
         }

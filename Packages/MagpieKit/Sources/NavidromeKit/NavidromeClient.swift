@@ -17,7 +17,7 @@ public actor NavidromeClient {
     private let now: @Sendable () -> Date
     private let session = OSAllocatedUnfairLock(initialState: Session())
     /// Round 12 Y3: the library the app's lists read (the main library), or nil for all of them.
-    private let scope = OSAllocatedUnfairLock<Int?>(initialState: nil)
+    private let scope = OSAllocatedUnfairLock<[Int]?>(initialState: nil)
     private var loginTask: Task<Session, Error>?
     private var lastScan: [String: Date] = [:]
     private static let scanDebounce: TimeInterval = 10
@@ -172,20 +172,26 @@ public actor NavidromeClient {
 
     // MARK: - Library scope (round 12 Y3)
 
-    /// Scopes every list and search call to library `id` (the main library), so another library's music (Aurral's
-    /// playlists, the Finds folder) never reaches Home, Library, Search or the car. Nil: no library is named (one
-    /// library, or the main one isn't known). Lookups by id, playlists, the Finds library read and recording lookups
-    /// are never scoped.
-    public nonisolated func setLibraryScope(_ id: Int?) { scope.withLock { $0 = id } }
+    /// Scopes every list and search call to `ids` (the libraries the app lists: the main library, and every other
+    /// library holding music), so another library's music (Aurral's playlists, the Finds folder) never reaches Home,
+    /// Library, Search or the car. Navidrome reads a repeated `musicFolderId` / `library_id` as "any of" (verified on
+    /// 0.64.2). Nil or empty: no library is named. Lookups by id, playlists, the Finds library read and recording
+    /// lookups are never scoped.
+    public nonisolated func setLibraryScope(_ ids: [Int]?) {
+        scope.withLock { $0 = ids.flatMap { $0.isEmpty ? nil : $0 } }
+    }
 
-    /// The library list calls are scoped to, if any.
-    public nonisolated var libraryScope: Int? { scope.withLock { $0 } }
+    /// One library.
+    public nonisolated func setLibraryScope(_ id: Int?) { setLibraryScope(id.map { [$0] }) }
 
-    /// `musicFolderId=<scope>` for a Subsonic list call; nothing when unscoped.
-    private var folderItem: [URLQueryItem] { libraryScope.map { [int("musicFolderId", $0)] } ?? [] }
+    /// The libraries list calls are scoped to, if any.
+    public nonisolated var libraryScope: [Int]? { scope.withLock { $0 } }
 
-    /// `library_id=<scope>` for a native list call; nothing when unscoped.
-    private var libraryItem: [URLQueryItem] { libraryScope.map { [int("library_id", $0)] } ?? [] }
+    /// `musicFolderId=<id>` for each scoped library, for a Subsonic list call; nothing when unscoped.
+    private var folderItem: [URLQueryItem] { (libraryScope ?? []).map { int("musicFolderId", $0) } }
+
+    /// `library_id=<id>` for each scoped library, for a native list call; nothing when unscoped.
+    private var libraryItem: [URLQueryItem] { (libraryScope ?? []).map { int("library_id", $0) } }
 
     /// The music folders (libraries) any account may read, unlike `libraries()`.
     public func musicFolders() async throws -> [MusicFolder] {
@@ -256,13 +262,6 @@ public actor NavidromeClient {
         let query = [URLQueryItem(name: "starred", value: "true"), int("_start", 0), int("_end", 5000)] + libraryItem
         let (data, _) = try await native(path, query)
         return Set(try Self.decode([IdRow].self, data).map(\.id))
-    }
-
-    /// How many albums library `id` holds (`/api/album`'s total): Y3's fallback pick of the main library.
-    public func albumCount(inLibrary id: Int) async throws -> Int {
-        let (data, response) = try await native("api/album", [int("library_id", id), int("_start", 0), int("_end", 1)])
-        if let total = response.value(forHTTPHeaderField: "X-Total-Count").flatMap({ Int($0) }) { return total }
-        return try Self.decode([IdRow].self, data).count
     }
 
     public func album(id: String) async throws -> Album {

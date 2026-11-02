@@ -78,7 +78,9 @@ final class AppModel {
         didSet { if oldValue?.rootFolderPath != lidarrSetup?.rootFolderPath { mainLibraryInputsChanged() } }   // Y3 N1
     }
     /// The connected Lidarr's setup as last read (speed tier, root folders). Nil until read.
-    var lidarrStatus: LidarrAudit?
+    var lidarrStatus: LidarrAudit? {
+        didSet { if oldValue?.roots.map(\.path) != lidarrStatus?.roots.map(\.path) { mainLibraryInputsChanged() } }   // Y3
+    }
     /// Finds mode's setup for this Lidarr and Navidrome account (AppModel+Finds.swift). Nil unless both are connected.
     var findsSetup: FindsSetup? {
         didSet {
@@ -126,9 +128,7 @@ final class AppModel {
     /// Home's feed for the signed-in account (P5, HomeFeed.swift).
     @ObservationIgnored var homeFeedSlot: HomeFeed?
     /// Round 12 Y3: the library Home, Library, Search and the car read (`AppModel+LibraryScope.swift`); nil for all.
-    var libraryScope: Int?
-    /// Y3 N1: the "most albums" guess, kept in memory only (never saved); Lidarr's root or the owner replaces it.
-    var fallbackMainLibraryId: Int?
+    var libraryScope: [Int]?
     /// Changes each time the server answers again after it didn't: Home reads what failed (P5).
     var serverAnsweredGeneration = 0
     /// The scene is active: requests poll every 5 s, otherwise every 30 s.
@@ -563,6 +563,7 @@ final class AppModel {
             appDefaults.removeObject(forKey: Self.findsLibraryKey(navidromeScope))
             appDefaults.removeObject(forKey: Self.musicFoldersKey(navidromeScope))
             appDefaults.removeObject(forKey: Self.autoMainLibraryKey(navidromeScope))
+            appDefaults.removeObject(forKey: Self.lidarrLibrariesKey(navidromeScope))
             let prefix = Self.findSongIdsKeyPrefix + navidromeScope + "."
             for key in appDefaults.dictionaryRepresentation().keys where key.hasPrefix(prefix) {
                 appDefaults.removeObject(forKey: key)
