@@ -160,12 +160,19 @@ public struct WriteConfinement: Sendable {
     /// - that row isn't importing, imported or complete (`QueueItem.isImportingOrDone`): a finished copy is never lost;
     /// - no other row of the same download is either (removing one row removes the whole download).
     /// The queue only, before import: it never touches library files.
+    static let waitingStatuses: Set<String> = ["queued", "paused", "delay", "downloadclientunavailable", "fallback"]
+
     static func queueRestartAny(_ id: Int, lidarr: LidarrClient) async -> Verdict {
         let items: [QueueItem]
         do { items = try await lidarr.queueDetails(albumIds: []) } catch { return .unknown }
         guard let item = items.first(where: { $0.id == id }) else { return .refused("not in the queue now") }
         guard let downloadId = item.downloadId else { return .refused("the queue doesn't say which download it is") }
         guard !item.isImportingOrDone else { return .refused("that copy is importing or done") }
+        // Fix round 1 C1 (second layer): waiting its turn, paused, held back by Lidarr or its client unreachable isn't
+        // stuck; never restarted, whatever the screen thought.
+        guard !Self.waitingStatuses.contains(item.status.lowercased()) else {
+            return .refused("that copy is waiting, paused or can't reach its download app")
+        }
         guard !items.contains(where: { $0.downloadId == downloadId && $0.isImportingOrDone }) else {
             return .refused("another album of that download is importing or done")
         }

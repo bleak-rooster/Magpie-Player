@@ -40,6 +40,12 @@ import MagpieTestSupport
                  "downloadId": "shared"],
                 ["id": 610, "albumId": 50, "artistId": 9, "status": "failed", "trackedDownloadState": "downloadFailed",
                  "downloadId": NSNull()],
+                // Fix round 1 C1: waiting its turn, paused by the owner, held back by Lidarr, or the client unreachable.
+                ["id": 611, "albumId": 51, "artistId": 9, "status": "queued", "trackedDownloadState": "downloading"],
+                ["id": 612, "albumId": 52, "artistId": 9, "status": "paused", "trackedDownloadState": "downloading"],
+                ["id": 613, "albumId": 53, "artistId": 9, "status": "delay", "trackedDownloadState": "downloading"],
+                ["id": 614, "albumId": 54, "artistId": 9, "status": "downloadClientUnavailable",
+                 "trackedDownloadState": "downloading"],
             ].map { row in row.merging(["size": 100, "sizeleft": 50, "downloadClient": "SABnzbd",
                                         "downloadId": "dl-\(row["id"]!)"]) { a, _ in a } }
             let all = try! JSONSerialization.data(withJSONObject: rows)
@@ -155,6 +161,17 @@ import MagpieTestSupport
         let fake = Fake()
         let gate = await fake.gate()
         for id in [604, 605, 606, 607] {
+            #expect(await refused(gate, id) != nil, "\(id)")
+        }
+        #expect(fake.writes.isEmpty)
+    }
+
+    /// Fix round 1 C1 (second layer): a copy that's queued, paused, delayed or whose client can't be reached isn't
+    /// stuck; the gate never restarts it, whatever the screen thought.
+    @Test func refusesWaitingPausedOrUnreachableCopies() async throws {
+        let fake = Fake()
+        let gate = await fake.gate()
+        for id in [611, 612, 613, 614] {
             #expect(await refused(gate, id) != nil, "\(id)")
         }
         #expect(fake.writes.isEmpty)
