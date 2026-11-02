@@ -53,6 +53,8 @@ public protocol CarPlayCustomisationLibrary: AnyObject {
     func favourites() async throws -> Starred
     /// The songs of a Made for you playlist; nil when it can't be read (no token, offline, or ListenBrainz didn't answer).
     func madeForYouTracks(id: String) async -> [CPMadeForYouTrack]?
+    /// Round 12 Y6: Library › Discover's playlists (Aurral's flows); none by default (CarPlayDiscover.swift).
+    func discoverPlaylists() async throws -> [Playlist]
 }
 
 /// Home and Library from the owner's layout (spec §3, Task 22), the new rows' screens, genre play, the offline watch
@@ -148,6 +150,8 @@ extension CarPlayController {
                 let offer = library.tryOffer
                 return { CarPlayRows.madeForYou(tracks, offer: offer, playingId: $0) }
             }
+        case .discover:   // Y6 (CarPlayDiscover.swift)
+            return { let playlists = try await library.discoverPlaylists(); return { _ in CarPlayRows.discover(playlists) } }
         case .finds:
             // Read again first, so the list isn't what the phone last saw (the Finds tab refreshes the same way).
             return {

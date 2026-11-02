@@ -11,6 +11,8 @@ public enum CPDestination: Sendable, Hashable {
     case playlists, artists, albums
     /// Library rows from the owner's layout (Task 22); their screens are Task 23's.
     case genres, favourites, downloads, finds
+    /// Round 12 Y6: Library › Discover (Aurral's flow playlists), while Aurral is set up.
+    case discover
     case genreGroup(id: String, name: String)
     /// An album on the phone (Downloads, or Home's Downloaded shelf): it opens with no server.
     case downloadedAlbum(id: String, title: String)
@@ -39,6 +41,7 @@ public enum CPDestination: Sendable, Hashable {
         case .favourites: "Favourites"
         case .downloads: "Downloads"
         case .finds: "Finds"
+        case .discover: "Discover"
         case .album(_, let title), .playlist(_, let title), .downloadedAlbum(_, let title), .madeForYou(_, let title),
              .downloadedPlaylist(_, let title): title
         case .artist(_, let name), .genreGroup(_, let name), .downloadedArtist(_, let name): name

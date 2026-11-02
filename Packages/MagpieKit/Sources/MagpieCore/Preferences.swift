@@ -4,6 +4,8 @@ import Foundation
 
 public enum HomeSection: String, CaseIterable, Codable, Hashable, Sendable {
     case jumpBackIn, madeForYou, recentlyAdded, mostPlayed, favourites, randomAlbums, playlists, genres, downloaded
+    /// Round 12 Y6: Aurral's flow playlists, only while Aurral is set up.
+    case discover
 
     public var title: String {
         switch self {
@@ -16,12 +18,15 @@ public enum HomeSection: String, CaseIterable, Codable, Hashable, Sendable {
         case .playlists: "Playlists"
         case .genres: "Genres"
         case .downloaded: "Recently downloaded"
+        case .discover: "Discover"
         }
     }
 }
 
 public enum LibraryRow: String, CaseIterable, Codable, Hashable, Sendable {
     case playlists, artists, albums, songs, genres, favourites, downloads, finds, requests
+    /// Round 12 Y6: Aurral's flow playlists, only while Aurral is set up.
+    case discover
 
     public var title: String {
         switch self {
@@ -34,6 +39,7 @@ public enum LibraryRow: String, CaseIterable, Codable, Hashable, Sendable {
         case .downloads: "Downloads"
         case .finds: "Finds"
         case .requests: "Requests"
+        case .discover: "Discover"
         }
     }
 
@@ -48,6 +54,7 @@ public enum LibraryRow: String, CaseIterable, Codable, Hashable, Sendable {
         case .downloads: "arrow.down.circle"
         case .finds: "sparkles"
         case .requests: "tray.and.arrow.down"
+        case .discover: "binoculars"
         }
     }
 }
@@ -158,7 +165,7 @@ public struct LayoutPreferences: PreferenceArea {
     public static let key = "magpie.prefs.layout"
     public static let alwaysAvailableRows: Set<LibraryRow> = [.playlists, .artists, .albums, .songs, .genres, .favourites, .downloads]
     public static let defaultValue = LayoutPreferences(
-        home: OrderedVisibility(HomeSection.allCases.map { .init(item: $0, visible: [.jumpBackIn, .madeForYou, .recentlyAdded, .mostPlayed].contains($0)) }),
+        home: OrderedVisibility(HomeSection.allCases.map { .init(item: $0, visible: [.jumpBackIn, .madeForYou, .recentlyAdded, .mostPlayed, .discover].contains($0)) }),
         library: OrderedVisibility(LibraryRow.allCases.map { .init(item: $0, visible: true) }),
         showsRecentlyAdded: true)
 
@@ -198,14 +205,17 @@ public struct LayoutPreferences: PreferenceArea {
 
     /// The Home sections to show, in the owner's order, for the phone and the car alike (the car shows Made for you too,
     /// T23): Made for you only with a ListenBrainz token; offline, Downloaded.
-    public func visibleHomeSections(offline: Bool, hasListenBrainzToken: Bool) -> [HomeSection] {
+    /// Y6: Discover only while Aurral is set up (`discoverSetUp`).
+    public func visibleHomeSections(offline: Bool, hasListenBrainzToken: Bool, discoverSetUp: Bool = false) -> [HomeSection] {
         if offline { return [.downloaded] }
-        return home.visibleItems.filter { $0 != .madeForYou || hasListenBrainzToken }
+        return home.visibleItems.filter { ($0 != .madeForYou || hasListenBrainzToken) && ($0 != .discover || discoverSetUp) }
     }
 
     /// The Library rows to show, in the owner's order. Offline (the phone and the car alike): Downloads, which always
     /// shows, and Genres (read from the phone) when switched on. The car never shows Songs or Requests (spec §3).
-    public func visibleLibraryRows(offline: Bool, findsSetUp: Bool, lidarrConnected: Bool, carPlay: Bool) -> [LibraryRow] {
+    /// Y6: Discover only while Aurral is set up (`discoverSetUp`), in the car too.
+    public func visibleLibraryRows(offline: Bool, findsSetUp: Bool, lidarrConnected: Bool, carPlay: Bool,
+                                   discoverSetUp: Bool = false) -> [LibraryRow] {
         if offline {
             return library.entries.filter { $0.item == .downloads || ($0.item == .genres && $0.visible) }.map(\.item)
         }
@@ -214,6 +224,7 @@ public struct LayoutPreferences: PreferenceArea {
             case .finds: findsSetUp
             case .requests: lidarrConnected && !carPlay
             case .songs: !carPlay
+            case .discover: discoverSetUp
             default: true
             }
         }
