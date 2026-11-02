@@ -157,6 +157,12 @@ public struct LidarrClient: Sendable {
         try await list(QueueItem.self, "queue/details", albumIds.map { URLQueryItem(name: "albumIds", value: String($0)) })
     }
 
+    /// Round 12 item 6 (Settings › Downloads in Lidarr): the whole queue, with each row's artist and album names.
+    public func queueDetailsNamed() async throws -> [QueueItem] {
+        try await list(QueueItem.self, "queue/details", [URLQueryItem(name: "includeArtist", value: "true"),
+                                                         URLQueryItem(name: "includeAlbum", value: "true")])
+    }
+
     /// The download clients set up in Lidarr (R17: which ones are Soulseek). Read only; never written (G5).
     public func downloadClients() async throws -> [DownloadClientInfo] {
         try await list(DownloadClientInfo.self, "downloadclient")

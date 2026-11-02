@@ -76,11 +76,14 @@ public struct WriteConfinement: Sendable {
         case albumMonitor(albumIds: [Int], monitored: Bool)
         /// `DELETE /queue/{id}` (R17).
         case queueDelete(Int)
+        /// The same request, named `ConfinedShape.queueRestartAny` by Settings › Downloads in Lidarr (D49).
+        case queueRestartAny(Int)
     }
 
     func check(_ write: Write, lidarr: LidarrClient) async -> Verdict {
         guard ledger.instance == lidarr.instanceScope else { return .refused("the ledger belongs to another Lidarr") }
         if case .queueDelete(let id) = write { return await queueDelete(id, lidarr: lidarr) }
+        if case .queueRestartAny(let id) = write { return await Self.queueRestartAny(id, lidarr: lidarr) }
         do {
             let entries: [LedgerEntry]
             do { entries = try await ledger.entries } catch { throw Unreadable() }
@@ -97,7 +100,7 @@ public struct WriteConfinement: Sendable {
             case .albumMonitor(let ids, let monitored):
                 try context.albumMonitor(ids, monitored: monitored)
                 return .confined(artists: [])
-            case .queueDelete:
+            case .queueDelete, .queueRestartAny:
                 return .unknown   // handled above
             }
         } catch let refusal as Refusal {
@@ -147,6 +150,24 @@ public struct WriteConfinement: Sendable {
             guard !entries.contains(where: { $0.albumId == albumId && ($0.wasMonitoredBefore && !$0.createdArtist) }) else {
                 return .refused("the owner monitored this album")
             }
+        }
+        return .confined(artists: [])
+    }
+
+    /// D49 (round 12 item 6): Settings › Downloads in Lidarr may restart any download, the owner's too. From a fresh read
+    /// of the whole queue (never from the caller):
+    /// - the queue lists item `id` now, and names its download (`downloadId`), so every row it takes along is known;
+    /// - that row isn't importing, imported or complete (`QueueItem.isImportingOrDone`): a finished copy is never lost;
+    /// - no other row of the same download is either (removing one row removes the whole download).
+    /// The queue only, before import: it never touches library files.
+    static func queueRestartAny(_ id: Int, lidarr: LidarrClient) async -> Verdict {
+        let items: [QueueItem]
+        do { items = try await lidarr.queueDetails(albumIds: []) } catch { return .unknown }
+        guard let item = items.first(where: { $0.id == id }) else { return .refused("not in the queue now") }
+        guard let downloadId = item.downloadId else { return .refused("the queue doesn't say which download it is") }
+        guard !item.isImportingOrDone else { return .refused("that copy is importing or done") }
+        guard !items.contains(where: { $0.downloadId == downloadId && $0.isImportingOrDone }) else {
+            return .refused("another album of that download is importing or done")
         }
         return .confined(artists: [])
     }

@@ -410,13 +410,24 @@ public struct QueueItem: Sendable, Equatable, Decodable {
     public var trackedDownloadState: String
     public var timeleft: String?
     public var statusMessages: [String]
+    /// Round 12 item 6 (Settings › Downloads in Lidarr): Lidarr's `ok` / `warning` / `error` for the tracked download,
+    /// its error message, the release title, and the artist and album names (`includeArtist` / `includeAlbum`).
+    public var trackedDownloadStatus: String
+    public var errorMessage: String?
+    public var title: String?
+    public var artistName: String?
+    public var albumTitle: String?
 
     public init(id: Int? = nil, albumId: Int?, artistId: Int? = nil, downloadClient: String? = nil,
                 protocolName: String? = nil, downloadId: String? = nil, size: Double, sizeleft: Double, status: String = "",
-                trackedDownloadState: String = "", timeleft: String? = nil, statusMessages: [String] = []) {
+                trackedDownloadState: String = "", timeleft: String? = nil, statusMessages: [String] = [],
+                trackedDownloadStatus: String = "", errorMessage: String? = nil, title: String? = nil,
+                artistName: String? = nil, albumTitle: String? = nil) {
         self.id = id; self.albumId = albumId; self.artistId = artistId; self.downloadClient = downloadClient
         self.protocolName = protocolName; self.downloadId = downloadId; self.size = size; self.sizeleft = sizeleft; self.status = status
         self.trackedDownloadState = trackedDownloadState; self.timeleft = timeleft; self.statusMessages = statusMessages
+        self.trackedDownloadStatus = trackedDownloadStatus; self.errorMessage = errorMessage; self.title = title
+        self.artistName = artistName; self.albumTitle = albumTitle
     }
 
     public init(from decoder: Decoder) throws {
@@ -437,6 +448,23 @@ public struct QueueItem: Sendable, Equatable, Decodable {
             messages.append(contentsOf: entry.messages.isEmpty ? [entry.title].filter { !$0.isEmpty } : entry.messages)
         }
         statusMessages = messages
+        trackedDownloadStatus = c.text("trackedDownloadStatus") ?? ""
+        errorMessage = c.text("errorMessage").flatMap { $0.isEmpty ? nil : $0 }
+        title = c.text("title")
+        artistName = c.value("artist", as: Named.self)?.artistName
+        albumTitle = c.value("album", as: Named.self)?.title
+    }
+
+    /// The `artist` / `album` objects Lidarr nests when asked to: only their names.
+    private struct Named: Decodable {
+        var artistName: String?
+        var title: String?
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: AnyKey.self)
+            artistName = c.text("artistName")
+            title = c.text("title")
+        }
     }
 
     /// A14: progress = 1 - sizeleft/size, clamped to 0...1. `nil` when the size is not known yet.
@@ -464,6 +492,16 @@ extension QueueItem {
     /// import").
     public var isDownloadingBeforeImport: Bool {
         trackedDownloadState.lowercased() == "downloading" && status.lowercased() != "completed" && sizeleft > 0
+    }
+
+    /// Round 12 item 6: Lidarr is importing it, has imported it, or it's complete and waiting to import (or the client
+    /// says complete while Lidarr still tracks it as downloading). Such a copy, and every row of its download, is never
+    /// restarted. A complete copy Lidarr couldn't import (`importBlocked`, `importFailed`) or a failed one isn't this.
+    public var isImportingOrDone: Bool {
+        let tracked = trackedDownloadState.lowercased()
+        if ["importpending", "importing", "imported"].contains(tracked) { return true }
+        let failed: Set<String> = ["importblocked", "importfailed", "downloadfailed", "downloadfailedpending", "failedpending"]
+        return status.lowercased() == "completed" && !failed.contains(tracked)
     }
 }
 

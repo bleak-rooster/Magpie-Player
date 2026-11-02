@@ -66,6 +66,15 @@ public enum WriteGateError: Error, Sendable, Equatable {
     case unconfirmed
 }
 
+/// A confined write the caller names explicitly, because its request alone looks like another one.
+public enum ConfinedShape: Sendable, Equatable {
+    /// Round 12 item 6 (D49): Settings › Downloads in Lidarr restarts any download in Lidarr's queue, not only a Magpie
+    /// request's. The same `DELETE /queue/{id}?removeFromClient=true&blocklist=true&skipRedownload=true` as R17's, but
+    /// confined by `WriteConfinement.queueRestartAny` (a fresh read of the whole queue) instead of the ledger.
+    /// `scripts/check-writes.sh` pins where it may be named.
+    case queueRestartAny
+}
+
 /// One line of the Lidarr change log: what Magpie asked Lidarr to change. Never carries secrets.
 public struct ChangeLogEntry: Sendable, Equatable, Codable {
     public var date: Date
@@ -560,11 +569,26 @@ public actor LidarrWriteGate {
     /// Sends one write. `path` is relative to `<base>/api/v1/` (`artist/12?deleteFiles=false&…`; a leading
     /// `/api/v1/` is accepted, any other `/api/…` is refused). Returns the response body on 2xx.
     public func send(_ method: String, _ path: String, body: (any Encodable & Sendable)?) async throws -> Data {
+        try await send(method, path, body: body, shape: nil)
+    }
+
+    /// Sends one write the caller names as `shape` (D49): it must be that shape exactly, and is confined as it says.
+    public func send(_ method: String, _ path: String, body: (any Encodable & Sendable)?,
+                     confinedAs shape: ConfinedShape) async throws -> Data {
+        try await send(method, path, body: body, shape: shape)
+    }
+
+    private func send(_ method: String, _ path: String, body: (any Encodable & Sendable)?,
+                      shape: ConfinedShape?) async throws -> Data {
         let target = try WriteTarget(method: method, path: path)
         let data = try body.map { try JSONEncoder().encode($0) }
         if let why = ForbiddenWrites.reason(target, body: data) { throw refused(target, why) }
         let json = data.flatMap { try? JSONSerialization.jsonObject(with: $0, options: [.fragmentsAllowed]) }
-        let confined = ForbiddenWrites.confined(target, json: json)
+        var confined = ForbiddenWrites.confined(target, json: json)
+        if shape == .queueRestartAny {
+            guard case .queueDelete(let id)? = confined else { throw refused(target, "queueRestartAny is a queue delete only") }
+            confined = .queueRestartAny(id)
+        }
         if confined != nil, confinement == nil { throw refused(target, "deletes and artist edits need the ledger") }
         guard enabled else { throw WriteGateError.disabled }
         guard let confined, let confinement else { return try await deliver(target, data) }
