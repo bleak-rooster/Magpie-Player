@@ -63,10 +63,13 @@ import Testing
     /// Fix round 2: the two new sections' words, and the one-at-a-time confirmation for a finished copy.
     @Test func couldntImportAndNotStartedCopy() {
         #expect(LidarrDownloadsCopy.couldntImportSection == "Couldn't import")
-        #expect(LidarrDownloadsCopy.notStartedSection == "Not started by your library")
+        #expect(LidarrDownloadsCopy.notStartedSection == "Started by another app")   // fix round 3: glossary
         #expect(!LidarrDownloadsCopy.notStartedFooter.isEmpty)
-        #expect(LidarrDownloadsCopy.couldntImportConfirm
-                == "This deletes a finished download that couldn't be imported, blocklists it and looks for another copy.")
+        #expect(LidarrDownloadsCopy.couldntImportConfirm == "Removes this copy so it isn't picked again, and looks for another.")
+        for text in [LidarrDownloadsCopy.couldntImportConfirm, LidarrDownloadsCopy.footer, LidarrDownloadsCopy.couldntImportFooter,
+                     LidarrDownloadsCopy.notStartedFooter, LidarrDownloadsCopy.confirmMessage(3)] {
+            #expect(!text.lowercased().contains("blocklist"), "\(text)")
+        }
         #expect(LidarrDownloadsCopy.summary([.notStartedByLidarr])
                 == "Another app started that download, so it was left alone.")
     }

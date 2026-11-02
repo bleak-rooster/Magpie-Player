@@ -18,9 +18,9 @@ enum LidarrDownloadsCopy {
     /// Fix round 2: finished copies Lidarr couldn't import; restarted one at a time, after their own confirmation.
     static let couldntImportSection = "Couldn't import"
     static let couldntImportFooter = "These finished downloading, but Lidarr couldn't file them. Restart all leaves them alone."
-    static let couldntImportConfirm = "This deletes a finished download that couldn't be imported, blocklists it and looks for another copy."
-    /// Fix round 2 N1: transfers Lidarr lists but never started; read-only.
-    static let notStartedSection = "Not started by your library"
+    static let couldntImportConfirm = "Removes this copy so it isn't picked again, and looks for another."
+    /// Fix round 2 N1 (round 3: the glossary's words): transfers Lidarr lists but never grabbed; read-only.
+    static let notStartedSection = "Started by another app"
     static let notStartedFooter = "Another app started these in your download app. Magpie leaves them alone."
 
     /// The Settings row's summary: how many need attention at the page's last read.
@@ -133,7 +133,12 @@ enum LidarrDownloadsCopy {
             var watch = model.lidarrDownloadsWatch.flatMap { $0.scope == scope ? $0.watch : nil } ?? QueueStallWatch()
             watch.observe(items, soulseekClients: soulseek, at: now)
             model.lidarrDownloadsWatch = (scope, watch)
-            let board = LidarrDownloads(items, soulseekClients: soulseek, watch: watch,
+            // N2: the grab history of rows that could be restarted, a few at a time, cached per download.
+            var grabs = model.lidarrDownloadsGrabs.flatMap { $0.scope == scope ? $0.grabs : nil } ?? GrabCache()
+            await grabs.lookUp(items, soulseekClients: soulseek, lidarr: client, now: now, watch: watch,
+                               stallLimit: model.stallLimit.seconds)
+            model.lidarrDownloadsGrabs = (scope, grabs)
+            let board = LidarrDownloads(items, soulseekClients: soulseek, watch: watch, grabs: grabs,
                                         stallLimit: model.stallLimit.seconds, now: now)
             self.board = board
             model.lidarrDownloadsAttention = board.attention
