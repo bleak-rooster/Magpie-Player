@@ -54,8 +54,7 @@ commit was lost; reconciliation commits it (§4). Plan item 8's third criterion 
 | inLibrary(mp3Removed) | Waiting for a lossless copy | none |
 | inLibrary(lossless) | In your library · Lossless | (R18 Add more) |
 | unmatched | Couldn't match this artist | none |
-Song and album rows show the same status for their album; CarPlay shows the status line text only.
-Flagged: the plan's "Adding when Lidarr is free…" is reworded to obey the glossary.
+Rows show their album's status; CarPlay the status text only. Flagged: plan's "Adding when Lidarr is free…" reworded (glossary).
 
 ## 3. Reconciliation tick
 
@@ -227,7 +226,6 @@ refuses); lease orphan recovery; decoding of pre-Y5 requests, ledger and runner-
 - the phone clock 10 min off (injected `now`);
 - tagless files: ffmpeg `-map_metadata -1` → Ready through §6 path or ±3 s.
 
-Run focused suites while working; full package + app suites, check-release.sh and check-writes.sh once at the end.
 
 ## 11. Files
 
