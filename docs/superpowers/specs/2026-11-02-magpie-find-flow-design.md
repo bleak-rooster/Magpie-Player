@@ -149,27 +149,18 @@ Never title + artist alone. Never a song outside the artist's folder, so the own
 
 ## 7. Stalls, server time, RefreshArtist
 
-- **Stall (item 9.6).**
-  - The signature is `sizeleft` + client + queue id. A status flip between ok and warning no longer restarts the clock.
-  - A warning item from any client is stalled only after `stallLimit` with no change, never at once: Soulseek → the
-    R17 removal; other clients → the `downloadFailed` wait.
-  - The client names are read every poll pass (one `GET /downloadclient`, reused within the pass); the per-runner
-    cache is removed.
-  - `StallLimit` gains `threeMinutes = 180`, and `standard` becomes 3 min (choices 1/2/3/5/10).
-  - A one-time migration turns a saved 60 into 180 (`RunnerState` flag).
-  - Flagged: this overrides R17/R20's 1 min, as plan 9.6 asks.
-- **Server time (item 9.7).**
-  - `LidarrClient` exposes the `Date` header of each response.
-  - The runner keeps `clockOffset = serverDate − phone now` from the latest successful read, and `serverNow()` uses it.
-  - The history cursor, `searchStartedAt` (also stored as `searchStartedAtServer`), the event filters and the 7-day
-    deadline are all in server time.
-  - Without a header the offset is 0.
-- **RefreshArtist completion (item 9.8).**
-  - After `POST /artist`, the runner saves `commandBaseline` and follows the newest `RefreshArtist` naming the artist.
-  - When it completes and the album is still missing: `.noRelease` at once.
-  - When it fails: the `serviceUnavailable` wait.
-  - Cleanup's `settling` ends when it completes.
-  - If no refresh command is seen within 2 min, the existing `albumAppearLimit` and `addSettleTime` apply.
+- **Stall (item 9.6).** The signature is `sizeleft` + client + queue id: a status flip between ok and warning no
+  longer restarts the clock. A warning item from any client is stalled only after `stallLimit` unchanged, never at once
+  (Soulseek → the R17 removal; other clients → the `downloadFailed` wait). Client names are read every poll pass (one
+  `GET /downloadclient` per pass; the per-runner cache goes). `StallLimit` gains `threeMinutes = 180` and `standard`
+  becomes 3 min (choices 1/2/3/5/10); a one-time migration turns a saved 60 into 180. Flagged: overrides R17/R20's 1 min.
+- **Server time (item 9.7).** `LidarrClient` exposes each response's `Date` header; the runner keeps `clockOffset =
+  serverDate − phone now` from the latest successful read, and `serverNow()` uses it for the history cursor,
+  `searchStartedAtServer`, the event filters and the 7-day deadline. No header → offset 0.
+- **RefreshArtist completion (item 9.8).** After `POST /artist` the runner saves `commandBaseline` and follows the newest
+  `RefreshArtist` naming the artist: completed with the album still missing → `.noRelease` at once; failed → the
+  `serviceUnavailable` wait; cleanup's `settling` ends on completion. None seen within 2 min → the existing
+  `albumAppearLimit` / `addSettleTime` apply.
 
 ## 8. Gate (G1): every new or changed shape
 
@@ -204,23 +195,13 @@ The change log records every delete with its rule name.
 
 ## 10. Tests
 
-**Unit (MagpieKit, stubbed Lidarr/Navidrome; RED first):**
-- the resolver precedence table (one case per row, legacy in-place, unmatched by name, owner's artist);
-- fact folding;
-- two-tick idempotence;
-- intent recovery for every phase × crash point;
-- the legacy-lock clear;
-- queued Keep: busy → idle → sent;
-- merge preconditions (a)–(d), with each refusal;
-- `keptLossyDelete` allow, and refusals for: a FLAC id, an id not recorded, a changed size, an artist that isn't
-  kept, an owner's artist, a mixed bulk, the main root changed;
-- deadline in server time;
-- `Date` header parsing and offset;
-- stall warning, client-name re-read, 3-min default and migration;
-- RefreshArtist complete / failed / unseen;
-- §6 match order (path, ±3 s, ambiguity refuses, outside the folder refuses);
-- lease orphan recovery;
-- decoding of pre-Y5 fixtures for requests, the ledger and runner state.
+**Unit (MagpieKit, stubbed Lidarr/Navidrome; RED first):** resolver precedence table (one case per row, legacy in
+place, unmatched by name, owner's artist); fact folding; two-tick idempotence; intent recovery for every phase × crash
+point; legacy-lock clear; queued Keep busy → idle → sent; merge preconditions (a)–(d) with each refusal;
+`keptLossyDelete` allow and refusals (FLAC id, unrecorded id, changed size, not kept, owner's artist, mixed bulk, main
+root changed); deadline in server time; `Date` parsing and offset; stall warning, client re-read, 3-min default and
+migration; RefreshArtist complete / failed / unseen; §6 match order (path, ±3 s, ambiguity refuses, outside the folder
+refuses); lease orphan recovery; decoding of pre-Y5 requests, ledger and runner-state fixtures.
 
 **End-to-end on the dev stack (`FindFlowIT`; G0 local only; creates and removes only its own objects):**
 - Fixture: a `findflow` compose profile adds a ~60-line Torznab stub (`dev/fake-indexer`).
@@ -250,15 +231,13 @@ Run focused suites while working; full package + app suites, check-release.sh an
 
 ## 11. Files
 
-- **New:** `Requests/FindState.swift`, `RequestRunner+Reconcile.swift`, `RequestRunner+Lossless.swift`,
-  `RunnerState.swift`, `App/AppModel+FindState.swift`, `Tests/RequestsTests/{FindStateTests,ReconcileTests,
-  LosslessTests,FindFlowIT}.swift`, `dev/fake-indexer/`.
-- **Changed:**
-  - `RequestRunner.swift` (tick, poll time, refresh, matching), `+Keep`, `+Stall`, `RequestStore.swift`,
-    `ArtistLidarr.swift` (delegates to the resolver);
-  - LidarrKit `Ledger.swift`, `WriteConfinement.swift`, `DTOs.swift` (command body artistId), the connection (`Date`);
-  - `ArtistLidarrLine.swift`, `FindsShelf.swift`, `RequestCopy.swift`, the Settings stall picker;
-  - `scripts/check-writes.sh`, `docs/decisions.md` (D-entries for the MP3 rule, merge, 3-min default, server time).
+- **New:** `Requests/{FindState,RequestRunner+Reconcile,RequestRunner+Lossless,RunnerState}.swift`,
+  `App/AppModel+FindState.swift`, `RequestsTests/{FindStateTests,ReconcileTests,LosslessTests,FindFlowIT}.swift`,
+  `dev/fake-indexer/`.
+- **Changed:** `RequestRunner.swift` (tick, poll time, refresh, matching), `+Keep`, `+Stall`, `RequestStore.swift`,
+  `ArtistLidarr.swift` (delegates to the resolver); LidarrKit `Ledger`, `WriteConfinement`, `DTOs` (command body
+  artistId), the connection (`Date`); `ArtistLidarrLine`, `FindsShelf`, `RequestCopy`, the Settings stall picker;
+  `scripts/check-writes.sh`; `docs/decisions.md` (MP3 rule, merge, 3-min default, server time).
 - **Not touched:** CarPlay/ (Y2), library scoping (Y3).
 
 ## 12. Flagged for the critic
