@@ -181,3 +181,34 @@ The first round's Concerns about the unscoped owner layout, the missing "24/96" 
 - **m2:** sign-in still waits for the album counts on the no-Lidarr path (now run concurrently).
 - **m5:** Favourites reads at most 5,000 starred items per kind.
 - **m6:** the hearing label refreshes only because the scrubber redraws, not because `currentURL` is observed.
+
+## Fix round 3: dev-stack UI regression ("Paper Planes" missing)
+
+### Root cause: a real product bug, not a fixture problem
+- **The dev stack's layout.** It has two ordinary libraries: Music Library (`/music/library`, 6 albums) and Samples (`/music/samples`, 1 album, "Paper Planes"). Both are Lidarr root folders. There is no Finds library.
+- **What went wrong.** The UI tests sign in without Lidarr, so round 1's "most albums" guess picked Music Library and scoped every list to it. Samples vanished from Home, Library, Search and the car.
+- **Who else is affected.** Any real user with a second music library (no Lidarr, or several Lidarr roots) would lose it the same way.
+
+### Fix
+- **The guess is gone.** Lists now show:
+  - the main library: the owner's choice, the obvious one, or the one holding Lidarr's main root;
+  - plus every library that holds any Lidarr root folder, the Finds root aside;
+  - with neither, every library except the separate ones (Finds; Discover's from Y6).
+- **The scope is now a list of libraries.** The client sends a repeated `musicFolderId` / `library_id`, which Navidrome 0.64.2 reads as "any of" (probed on dev).
+- **The owner's server is unchanged.** Music Library holds the Lidarr root; Aurral holds none, so it stays out.
+- **Lidarr root changes trigger a re-pick.** The roots read in `lidarrStatus` do this too (didSet). `albumCount` is removed, since nothing uses it now.
+
+### Tests
+- **New in `Round12HomePagesTests`:**
+  - `withoutLidarrNothingButFindsIsHidden`: two libraries and no Lidarr give no scope, and both libraries' albums show. With a Finds library, scope is [1, 2].
+  - `everyLibraryHoldingALidarrRootIsListed`: Lidarr roots on Music Library and Samples, plus an Aurral library, give [1, 2].
+- **Updated:**
+  - `freshInstallSignInThenLidarrThenFinds`: nothing is hidden until Lidarr arrives, then [1].
+  - `ownersChoiceIsNeverReplaced`: main stays 2, and [1, 2] are listed.
+  - `LibraryScopeTests.severalLibrariesAreEachNamed`.
+- **RED evidence.** The three failing UI tests on the merged base. The new app tests were written before the change, but not run against the old code.
+
+### Runs
+- The 3 UI tests with MAGPIE_IT=1 now pass: `testAlbumsLetterIndexJumps`, `testQueueAfterPlayNextAndModes`, `testSearchAndPlay`.
+- Full app suite with MAGPIE_IT=1: `✔ Test run with 942 tests in 102 suites passed`, `** TEST SUCCEEDED **`. All UI tests had 0 failures; 5 were skipped (the existing skips).
+- `test-packages.sh` exit 0; check-writes OK.
