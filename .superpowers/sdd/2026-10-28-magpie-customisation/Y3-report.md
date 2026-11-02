@@ -99,3 +99,45 @@ Branch `y3-home-pages`, off `v0.0.1-custom`. Commits are prefixed "Y3:".
 - **Aurral flows still show under Playlists.** getPlaylists can't be filtered by library, so they stay there until Y6's `isDiscoverPlaylist`.
 - **Library › Songs labels lack "24/96".** Songs read from the native API carry no sample rate or bit depth, so the line shows "Lossless · FLAC".
 - **"Transcoded" is inferred.** It comes from the quality settings plus the passthrough rule (the same approach as Song info), not from what the server reports.
+
+## Fix round 1 (review Y3-review.md: 0C/2I)
+
+The first round's Concerns about the unscoped owner layout, the missing "24/96" in Library › Songs and the inferred "Transcoded" are resolved by I1 and minors 5 and 6 below.
+
+### Important
+- **I1: the main library is picked without the owner** (`AppModel+LibraryScope.swift`, `autoPickMainLibrary`). It runs after the folders are read, but only when more than one library is left besides the separate ones and none is chosen.
+  - It picks the Navidrome library that holds Lidarr's main root folder (`lidarrSetup.rootFolderPath`), mapped through the Finds `PathMapping` with the existing `keptLocation` (`libraryHolding(root:)`).
+  - With no Lidarr main root, it picks the library with the most albums (new `NavidromeClient.albumCount(inLibrary:)`), leaving Finds out. A tie means no pick.
+  - It never goes by a library's name.
+  - The pick is saved to `findsSetup.mainLibrary`, so Settings shows it and the owner can change it. It is also saved per account as `magpie.autoMainLibrary.<scope>`, which also covers the case with no Finds setup.
+  - `mainLibraryPickedAutomatically` is there for a Settings note. Choosing a library by hand clears the auto pick.
+- **I2: the car's Recently downloaded playlists open the phone's copy.** One `where section == .downloaded` case in `CarPlayRows.homeRow` (`CustomisationRows.swift`, Y2's file) gives `.open(.downloadedPlaylist(id:title:))`.
+
+### Minors
+- **Refresh:**
+  - it asks `getScanStatus` first; while a scan is running it reloads once and never starts a second scan or waits;
+  - the quick scan targets the main library and Finds (`"1:"`, `"3:"`) once they are known;
+  - the second reload happens only after a scan that started and finished.
+- **Match index:** it reads `.only([main, finds])` explicitly (new `NavidromeClient.LibraryFilter`; Navidrome reads a repeated `library_id` as "any of", probed on dev). It reads every library while no main library is known. `MatchIndexStore.refresh(using:)` passes `.all` instead of relying on the scoped default.
+- **Favourites:** when scoped, `starred()` keeps only the songs, albums and artists that the native API lists as `starred=true` in the main library. getStarred2 ignores `musicFolderId`, which is why this filter is needed.
+- **Label:** `playingSource` reads the playing entry's own URL (new `Player.currentURL`):
+  - a file means on the phone;
+  - otherwise the `format` and `maxBitRate` of the stream it plays.
+  - It falls back to the setting only before anything has loaded.
+- **Sample rate and bit depth:** native `/api/song` rows now map `sampleRate` and `bitDepth`.
+- **Finds library:** `rememberFindsLibrary` rescopes when it first learns the Finds library.
+- **Sign-in folder read:** I tried making it non-blocking (review minor 9), but `SecurityAppTests.plainHTTPLidarrNeedsConsent` caught a background request interleaving with the caller's next step. The read is awaited again.
+
+### Tests
+- **RED:**
+  - Package: compile errors, "no member 'albumCount'", "extra argument 'libraries'".
+  - App: after stubbing the two new properties, 10 tests failed (`mainLibraryIsTheOneHoldingLidarrsRootFolder`, `mainLibraryPickNeverGoesByName`, `withoutLidarrTheLibraryWithMostAlbums`, `carRecentlyDownloadedPlaylistOpensThePhonesCopy`, `refreshDuringARunningScanJustReloads`, `refreshScansTheMainLibraryAndFinds`, `matchIndexCoversMainAndFinds`, `hearingFollowsThePlayingStreamNotTheSetting`, and the two existing refresh tests whose scripted scan answers changed).
+- **GREEN:**
+  - `LibraryScopeTests`: 8 tests.
+  - `Round12HomePagesTests`: 21 tests. The owner's shape is covered: Music Library /music, Aurral Playlists /aurral, Finds /finds, with Lidarr root /music → library 1, and with the names swapped → still 1.
+  - Not added: an offline car test that opens a downloaded playlist end to end. Only the row action is tested.
+- **Full runs:**
+  - `scripts/test-packages.sh`: exit 0.
+  - `check-writes.sh` and `check-release.sh`: OK.
+  - App suite, first run: 912/913; the one failure was the race above. Rerun after the fix: see the line below.
+  - App suite, rerun after the fix: `✔ Test run with 913 tests in 100 suites passed`, `** TEST SUCCEEDED **`.
