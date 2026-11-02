@@ -311,6 +311,7 @@ extension AppModel {
     func chooseMainLibrary(_ library: NavidromeLibrary) {
         guard var setup = findsSetup, library.id != setup.library?.id else { return }
         setup.mainLibrary = library
+        if let scope = navidromeScope { appDefaults.removeObject(forKey: Self.autoMainLibraryKey(scope)) }   // Y3: chosen now
         storeFindsSetup(setup)
     }
 

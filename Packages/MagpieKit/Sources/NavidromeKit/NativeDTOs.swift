@@ -42,6 +42,8 @@ struct NativeSong: Decodable {
     let rgAlbumGain: Double?
     let rgTrackPeak: Double?
     let rgAlbumPeak: Double?
+    let sampleRate: Int?
+    let bitDepth: Int?
 }
 
 /// `/api/library` row (Navidrome 0.58+; verified against 0.64.2).

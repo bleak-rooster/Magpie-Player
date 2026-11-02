@@ -32,6 +32,11 @@ extension AppModel {
             await reload()
             return PageRefreshOutcome(scanned: false, scanFinished: false, reloads: 1)
         }
+        // A scan already under way (the owner's own): no second one and no wait, just the page again.
+        if (try? await request({ try await $0.scanStatus() })) == true {
+            await reload()
+            return PageRefreshOutcome(scanned: false, scanFinished: false, reloads: 1)
+        }
         let scanned = await startQuickScan()
         await reload()
         guard scanned else { return PageRefreshOutcome(scanned: false, scanFinished: false, reloads: 1) }
@@ -53,11 +58,16 @@ extension AppModel {
         }
     }
 
-    /// A quick scan of every library (`fullScan=false`); false when the server refused it (an account that isn't an
-    /// admin) or didn't answer.
+    /// A quick scan (`fullScan=false`) of the main library and Finds (every library while no main one is known);
+    /// false when the server refused it (an account that isn't an admin) or didn't answer.
     private func startQuickScan() async -> Bool {
+        let targets: [String]
+        switch matchIndexLibraries {
+        case .only(let ids): targets = ids.map { "\($0):" }
+        case .all, .scoped: targets = []
+        }
         do {
-            try await request { try await $0.startScan(target: nil) }
+            try await request { try await $0.startScan(targets: targets) }
             return true
         } catch {
             return false

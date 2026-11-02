@@ -1,3 +1,4 @@
+import CarPlayUI
 import DesignSystem
 import Foundation
 import MagpieCore
@@ -162,6 +163,115 @@ private func queryValue(_ request: URLRequest, _ name: String) -> String? {
         #expect(albumIds(try await model.homeShelves(for: [.recentlyAdded])) == ["main-1"])
     }
 
+    // MARK: - Fix round 1: the main library picked without the owner
+
+    /// The owner's three libraries, with their paths (`/api/library`) and album counts (`/api/album`).
+    func stubLibraries(names: [Int: String] = [1: "Music Library", 2: "Aurral Playlists", 3: "Finds"],
+                       paths: [Int: String] = [1: "/music", 2: "/aurral", 3: "/finds"],
+                       albums: [Int: Int] = [1: 312, 2: 40, 3: 900]) {
+        let rows = [1, 2, 3].map { #"{"id":\#($0),"name":"\#(names[$0]!)","path":"\#(paths[$0]!)"}"# }.joined(separator: ",")
+        transport.inner.stub(pathSuffix: "/api/library", body: Data("[\(rows)]".utf8))
+        transport.inner.stub(pathSuffix: "/api/album") { request in
+            let id = Int(queryValue(request, "library_id") ?? "") ?? 0
+            return MockTransport.Response(status: 200, body: Data("[]".utf8), headers: ["X-Total-Count": "\(albums[id] ?? 0)"])
+        }
+    }
+
+    /// I1: Lidarr's main root folder (`/music`) is in library 1, so library 1 is the main library, picked and saved
+    /// where Settings shows it, with no choice made and nothing named "Aurral" looked for.
+    @Test func mainLibraryIsTheOneHoldingLidarrsRootFolder() async throws {
+        stubLibraries()
+        let model = try await signedInModel()
+        let scope = try #require(model.navidromeScope)
+        var setup = FindsSetup(lidarrScope: "lidarr", navidromeScope: scope)
+        setup.library = NavidromeLibrary(id: 3, name: "Finds", path: "/finds")
+        model.findsSetup = setup
+        model.lidarrSetup = LidarrSetup(base: URL(string: "http://127.0.0.1:8686")!, scope: "lidarr", rootFolderPath: "/music")
+        #expect(model.libraryScope == nil, "two libraries left besides Finds: not obvious from the folders alone")
+        await model.refreshMusicFolders()
+        #expect(model.findsSetup?.mainLibrary?.id == 1)
+        #expect(model.libraryScope == 1)
+        #expect(albumIds(try await model.homeShelves(for: [.recentlyAdded])) == ["main-1"])
+    }
+
+    /// Names are the owner's to change: the pick follows the folder, whatever the libraries are called.
+    @Test func mainLibraryPickNeverGoesByName() async throws {
+        stubLibraries(names: [1: "Aurral Playlists", 2: "Music Library", 3: "Finds"])
+        let model = try await signedInModel()
+        let scope = try #require(model.navidromeScope)
+        var setup = FindsSetup(lidarrScope: "lidarr", navidromeScope: scope)
+        setup.library = NavidromeLibrary(id: 3, name: "Finds", path: "/finds")
+        model.findsSetup = setup
+        model.lidarrSetup = LidarrSetup(base: URL(string: "http://127.0.0.1:8686")!, scope: "lidarr", rootFolderPath: "/music/")
+        await model.refreshMusicFolders()
+        #expect(model.libraryScope == 1)
+    }
+
+    /// Without Lidarr: the library with the most albums, Finds left out (it has more here).
+    @Test func withoutLidarrTheLibraryWithMostAlbums() async throws {
+        stubLibraries()
+        let model = try await signedInModel()
+        let scope = try #require(model.navidromeScope)
+        defaults.set(3, forKey: AppModel.findsLibraryKey(scope))
+        await model.refreshMusicFolders()
+        #expect(model.libraryScope == 1)
+        #expect(model.mainLibraryPickedAutomatically)
+    }
+
+    // MARK: - Fix round 1: CarPlay, refresh, match index, label
+
+    /// I2: the car's Recently downloaded playlist opens the phone's copy, so it plays offline.
+    @Test func carRecentlyDownloadedPlaylistOpensThePhonesCopy() {
+        let playlist = Playlist(id: "p1", name: "Road Mix", songCount: 2, duration: 0)
+        let rows = CarPlayRows.home([CPHomeShelf(section: .downloaded, items: [.playlist(playlist)]),
+                                     CPHomeShelf(section: .playlists, items: [.playlist(playlist)])]).flatMap(\.rows)
+        #expect(rows.map(\.action) == [.open(.downloadedPlaylist(id: "p1", title: "Road Mix")),
+                                       .open(.playlist(id: "p1", title: "Road Mix"))])
+    }
+
+    /// A scan already running (the owner's own): no second scan, no wait, one reload.
+    @Test func refreshDuringARunningScanJustReloads() async throws {
+        let model = try await signedInModel()
+        scanAnswers.withLock { $0 = [true] }
+        let before = transport.inner.requests.count
+        var reloads = 0
+        let outcome = await model.refreshPage(coverArtIds: [], reload: { reloads += 1 }, sleep: { _ in Issue.record("no wait") })
+        #expect(outcome == .init(scanned: false, scanFinished: false, reloads: 1) && reloads == 1)
+        #expect(!transport.inner.requests.dropFirst(before).contains { $0.url!.lastPathComponent == "startScan" })
+    }
+
+    /// The quick scan covers the main library and Finds, not every library.
+    @Test func refreshScansTheMainLibraryAndFinds() async throws {
+        let model = try await signedInModel()
+        try chooseMainLibrary(model)
+        scanAnswers.withLock { $0 = [false] }
+        let before = transport.inner.requests.count
+        await model.refreshPage(coverArtIds: [], reload: {}, sleep: { _ in })
+        let scan = try #require(transport.inner.requests.dropFirst(before).first { $0.url!.lastPathComponent == "startScan" })
+        let targets = URLComponents(url: scan.url!, resolvingAgainstBaseURL: false)?.queryItems?
+            .filter { $0.name == "target" }.compactMap(\.value)
+        #expect(targets == ["1:", "3:"])
+    }
+
+    /// The match index names the main library and Finds; unscoped it reads every library.
+    @Test func matchIndexCoversMainAndFinds() async throws {
+        let model = try await signedInModel()
+        #expect(model.matchIndexLibraries == .all)
+        try chooseMainLibrary(model)
+        #expect(model.matchIndexLibraries == .only([1, 3]))
+    }
+
+    /// The label follows the stream the song is playing on, not a quality changed since.
+    @Test func hearingFollowsThePlayingStreamNotTheSetting() async throws {
+        let model = try await signedInModel()
+        model.updatePreferences { $0.playback.wifi = .opusMedium }
+        let song = Song(id: "st", title: "S", artist: "A", album: "B", duration: 60, suffix: "flac")
+        model.play([song], startAt: 0)
+        #expect(await eventually { model.player.currentURL != nil })
+        model.updatePreferences { $0.playback.wifi = .aacHigh }
+        #expect(model.playingSource(song) == .stream(.opusMedium))
+    }
+
     @Test func singleLibrarySendsNothing() async throws {
         folders.withLock { $0 = [1] }
         let model = try await signedInModel()
@@ -226,7 +336,7 @@ private func queryValue(_ request: URLRequest, _ name: String) -> String? {
 
     @Test func refreshScansWaitsAndReloads() async throws {
         let model = try await signedInModel()
-        scanAnswers.withLock { $0 = [true, true, false] }
+        scanAnswers.withLock { $0 = [false, true, true, false] }   // idle before the pull
         var reloads = 0
         var slept: [Duration] = []
         let before = transport.inner.requests.count
@@ -238,12 +348,12 @@ private func queryValue(_ request: URLRequest, _ name: String) -> String? {
         let sent = transport.inner.requests.dropFirst(before)
         let scan = try #require(sent.first { $0.url!.lastPathComponent == "startScan" })
         #expect(queryValue(scan, "fullScan") == "false", "a quick scan, never a full one")
-        #expect(sent.filter { $0.url!.lastPathComponent == "getScanStatus" }.count == 3)
+        #expect(sent.filter { $0.url!.lastPathComponent == "getScanStatus" }.count == 4, "one before, three while waiting")
     }
 
     @Test func refreshGivesUpWaitingAfterTwentySeconds() async throws {
         let model = try await signedInModel()
-        scanAnswers.withLock { $0 = [true] }   // never done
+        scanAnswers.withLock { $0 = [false, true] }   // idle before the pull, then never done
         var reloads = 0
         var waited: Duration = .zero
         let outcome = await model.refreshPage(coverArtIds: [], reload: { reloads += 1 },

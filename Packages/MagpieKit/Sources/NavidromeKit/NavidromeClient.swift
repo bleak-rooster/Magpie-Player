@@ -232,11 +232,37 @@ public actor NavidromeClient {
         }
     }
 
+    /// Everything starred. Scoped (Y3 fix): getStarred2 ignores `musicFolderId`, so only what the native API lists as
+    /// starred in the scoped library is kept.
     public func starred() async throws -> Starred {
         let body = try await subsonic("getStarred2", folderItem)
-        return Starred(songs: (body.starred2?.song ?? []).map(Mapping.song),
-                       albums: (body.starred2?.album ?? []).map { Mapping.album($0) },
-                       artists: (body.starred2?.artist ?? []).map(Mapping.artist))
+        var starred = Starred(songs: (body.starred2?.song ?? []).map(Mapping.song),
+                              albums: (body.starred2?.album ?? []).map { Mapping.album($0) },
+                              artists: (body.starred2?.artist ?? []).map(Mapping.artist))
+        guard libraryScope != nil else { return starred }
+        let songs = try await starredIds("api/song")
+        let albums = try await starredIds("api/album")
+        let artists = try await starredIds("api/artist")
+        starred.songs.removeAll { !songs.contains($0.id) }
+        starred.albums.removeAll { !albums.contains($0.id) }
+        starred.artists.removeAll { !artists.contains($0.id) }
+        return starred
+    }
+
+    private struct IdRow: Decodable { let id: String }
+
+    /// The ids the native API lists as starred in the scoped library (at most 5,000).
+    private func starredIds(_ path: String) async throws -> Set<String> {
+        let query = [URLQueryItem(name: "starred", value: "true"), int("_start", 0), int("_end", 5000)] + libraryItem
+        let (data, _) = try await native(path, query)
+        return Set(try Self.decode([IdRow].self, data).map(\.id))
+    }
+
+    /// How many albums library `id` holds (`/api/album`'s total): Y3's fallback pick of the main library.
+    public func albumCount(inLibrary id: Int) async throws -> Int {
+        let (data, response) = try await native("api/album", [int("library_id", id), int("_start", 0), int("_end", 1)])
+        if let total = response.value(forHTTPHeaderField: "X-Total-Count").flatMap({ Int($0) }) { return total }
+        return try Self.decode([IdRow].self, data).count
     }
 
     public func album(id: String) async throws -> Album {
@@ -430,12 +456,31 @@ public actor NavidromeClient {
 
     // MARK: - Native API
 
-    /// One page of the (scoped) library via `/api/song`; `end` is exclusive. Songs flagged `missing` are skipped.
-    /// `wholeServer`: every library (the match index: what counts as already yours for outside results).
-    public func songsPage(start: Int, end: Int, sort: String = "id", wholeServer: Bool = false) async throws -> (songs: [Song], total: Int) {
+    /// Which libraries a native read covers (round 12 Y3).
+    public enum LibraryFilter: Sendable, Equatable {
+        /// The client's scope (the main library), or every library when unscoped.
+        case scoped
+        /// Every library.
+        case all
+        /// These libraries (`library_id` repeated: Navidrome reads it as "any of").
+        case only([Int])
+    }
+
+    private func items(_ filter: LibraryFilter) -> [URLQueryItem] {
+        switch filter {
+        case .scoped: libraryItem
+        case .all: []
+        case .only(let ids): ids.map { int("library_id", $0) }
+        }
+    }
+
+    /// One page of the library via `/api/song`, of `libraries` (the scoped library by default); `end` is exclusive.
+    /// Songs flagged `missing` are skipped.
+    public func songsPage(start: Int, end: Int, sort: String = "id",
+                          libraries: LibraryFilter = .scoped) async throws -> (songs: [Song], total: Int) {
         let query = [int("_start", start), int("_end", end),
                      URLQueryItem(name: "_sort", value: sort), URLQueryItem(name: "_order", value: "ASC")]
-            + (wholeServer ? [] : libraryItem)
+            + items(libraries)
         let (data, response) = try await native("api/song", query)
         let rows = try Self.decode([NativeSong].self, data)
         let songs = rows.filter { $0.missing != true }.map(Mapping.song)

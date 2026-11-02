@@ -102,6 +102,10 @@ extension CarPlayRows {
                               action: .open(.downloadedAlbum(id: album.id, title: name)))
         case .album(let album):
             return albumRow(album, id: key + album.id)
+        case .playlist(let playlist) where section == .downloaded:   // Y3: the phone's copy, so it opens offline
+            let name = display(playlist.name, untitledPlaylist)
+            return CPRowModel(id: key + playlist.id, title: name, detail: songCount(playlist.songCount),
+                              artworkKey: playlist.coverArtId, action: .open(.downloadedPlaylist(id: playlist.id, title: name)))
         case .playlist(let playlist):
             let name = display(playlist.name, untitledPlaylist)
             return CPRowModel(id: key + playlist.id, title: name, detail: songCount(playlist.songCount),

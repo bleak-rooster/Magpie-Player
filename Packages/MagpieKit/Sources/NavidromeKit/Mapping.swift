@@ -27,7 +27,7 @@ enum Mapping {
     }
 
     static func song(_ d: NativeSong) -> Song {
-        Song(id: d.id, title: d.title ?? "", artist: d.artist ?? "", artistId: d.artistId,
+        var song = Song(id: d.id, title: d.title ?? "", artist: d.artist ?? "", artistId: d.artistId,
              album: d.album ?? "", albumId: d.albumId, track: d.trackNumber, disc: d.discNumber,
              duration: d.duration ?? 0, suffix: d.suffix, bitRate: d.bitRate,
              coverArtId: d.hasCoverArt == true ? "mf-\(d.id)" : nil,
@@ -36,6 +36,9 @@ enum Mapping {
              isrcs: d.tags?.isrc ?? [], libraryId: d.libraryId,
              starred: d.starred ?? false, createdAt: date(d.createdAt), genre: d.genre,
              replayGain: replayGain(d.rgTrackGain, d.rgAlbumGain, d.rgTrackPeak, d.rgAlbumPeak))
+        song.samplingRate = d.sampleRate.flatMap { $0 > 0 ? $0 : nil }
+        song.bitDepth = d.bitDepth.flatMap { $0 > 0 ? $0 : nil }
+        return song
     }
 
     /// Shared: creating a formatter per song is slow. `ISO8601DateFormatter` is thread-safe.

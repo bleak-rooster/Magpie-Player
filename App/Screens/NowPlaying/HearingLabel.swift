@@ -75,11 +75,24 @@ extension AppModel {
     /// Where the sound of `song` comes from now: the phone's copy, the original after a failed transcode, or a
     /// stream at the current quality. The same rule as Song info, answered without a wait.
     func playingSource(_ song: Song) -> SongInfo.Source {
+        // Fix round 1: the playing entry's own URL says what is heard, whatever the quality is set to now.
+        if player.queue.current?.song.id == song.id, let url = player.currentURL {
+            if url.isFileURL { return .onPhone(downloads?.localQualities[song.id] ?? .original) }
+            if let quality = Self.streamQuality(of: url) { return .stream(quality) }
+        }
         if let downloads, downloads.localFiles[song.id] != nil, let quality = downloads.localQualities[song.id] {
             return .onPhone(quality)
         }
         if player.lastFallbackSongId == song.id { return .stream(.original) }   // the transcode failed (Task 7)
         return .stream(currentStreamQuality)
+    }
+
+    /// The quality a server stream URL asks for (`format`, `maxBitRate`); nil for one Magpie didn't build.
+    nonisolated static func streamQuality(of url: URL) -> StreamQuality? {
+        let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        guard url.path.hasSuffix("/rest/stream"), let format = items.first(where: { $0.name == "format" })?.value else { return nil }
+        let rate = items.first { $0.name == "maxBitRate" }?.value.flatMap { Int($0) }
+        return StreamQuality.allCases.first { $0.format == format && $0.maxBitRate == rate }
     }
 
     /// Now Playing's line and hallmark for `song`.

@@ -525,7 +525,7 @@ final class AppModel {
         box.set(client)
         scrobbleQueueBelongs(to: navidromeScope)   // another account's queued plays never go to this one
         noteReachable()
-        await refreshMusicFolders()   // Y3: the main library, before anything is listed
+        Task { [weak self] in await self?.refreshMusicFolders() }   // Y3: the main library; Home reads again on a change
         startMatchIndex()
         startDownloads()
         rebuildRunner()
@@ -543,6 +543,7 @@ final class AppModel {
             appDefaults.removeObject(forKey: Self.playedFindsKey(navidromeScope))
             appDefaults.removeObject(forKey: Self.findsLibraryKey(navidromeScope))
             appDefaults.removeObject(forKey: Self.musicFoldersKey(navidromeScope))
+            appDefaults.removeObject(forKey: Self.autoMainLibraryKey(navidromeScope))
             let prefix = Self.findSongIdsKeyPrefix + navidromeScope + "."
             for key in appDefaults.dictionaryRepresentation().keys where key.hasPrefix(prefix) {
                 appDefaults.removeObject(forKey: key)
@@ -776,7 +777,8 @@ final class AppModel {
         return { [weak self] start, end in
             // Never fill this account's index from another session (signed out or in meanwhile).
             guard let self, await self.isSignedIn(to: endpoint, as: user) else { throw CancellationError() }
-            return try await self.request { try await $0.songsPage(start: start, end: end, wholeServer: true) }
+            let libraries = await self.matchIndexLibraries   // Y3: the main library and Finds, never Discover's
+            return try await self.request { try await $0.songsPage(start: start, end: end, libraries: libraries) }
         }
     }
 
