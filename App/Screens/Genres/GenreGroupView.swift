@@ -46,11 +46,11 @@ struct GenreGroupView: View {
 
             // Y7: the same ActionBar as every page; a group offers Shuffle only (D41), across the full row.
             ActionBar {
-                ActionButton("Shuffle", symbol: "shuffle") { Task { await shuffle() } }
+                // Review minor 6: the spinner sits in the capsule, so nothing shifts while songs load.
+                ActionButton("Shuffle", symbol: "shuffle", busy: shuffling) { Task { await shuffle() } }
                     .disabled(shuffling)
                     .accessibilityIdentifier("shuffle")
             }
-            if shuffling { ProgressView().accessibilityLabel("Getting songs") }
             if let shuffleError {
                 Text(shuffleError).font(.footnote).foregroundStyle(p.ink2Color).multilineTextAlignment(.center)
                     .padding(.horizontal, Tokens.Spacing.largeTitleMargin)

@@ -19,17 +19,22 @@ struct LibraryCopyBanner: View {
                 VStack(spacing: Tokens.Spacing.s) {
                     Text(DiscoverCopy.libraryCopies(copies)).font(.footnote).foregroundStyle(themed.palette.ink2Color)
                         .multilineTextAlignment(.center)
-                    CapsuleButton(working ? "Swapping\u{2026}" : DiscoverCopy.useLibraryCopy, symbol: "arrow.triangle.swap") {
-                        Task { await swap() }
+                        .padding(.horizontal, Tokens.Spacing.largeTitleMargin)
+                    // Y7 phase 2: the page's ActionBar style (tinted; busy while it swaps), on the 16 pt margins.
+                    ActionBar {
+                        ActionButton(working ? "Swapping\u{2026}" : DiscoverCopy.useLibraryCopy, symbol: "arrow.triangle.swap",
+                                     busy: working) {
+                            Task { await swap() }
+                        }
+                        .disabled(working)
+                        .accessibilityIdentifier("playlist-use-library-copy")
                     }
-                    .disabled(working)
-                    .accessibilityIdentifier("playlist-use-library-copy")
                     if let error {
                         Label(error, systemImage: "exclamationmark.triangle").font(.footnote)
                             .foregroundStyle(themed.palette.ink2Color)
+                            .padding(.horizontal, Tokens.Spacing.largeTitleMargin)
                     }
                 }
-                .padding(.horizontal, Tokens.Spacing.largeTitleMargin)
             }
         }
         .task(id: songs.map(\.id)) {

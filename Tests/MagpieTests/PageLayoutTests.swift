@@ -21,7 +21,7 @@ enum ScreenFixtureProbe {
                          typeSize: DynamicTypeSize = .large) async throws -> ActionBarFrames {
         let frames = ActionBarFrames()
         let window = try await ScreenFixture.host(screen, model: model, theme: theme, scheme: scheme, typeSize: typeSize) {
-            frames.byIndex[$0] = $1
+            frames.record($0, $1)
         }
         window.isHidden = true
         return frames
@@ -47,6 +47,24 @@ enum ScreenFixtureProbe {
         }
         // Play is the same width on every page with the same actions.
         #expect(widthsByCount.values.allSatisfy { $0.count == 1 }, "\(widthsByCount)")
+    }
+
+    /// Phase 2: Y6's Discover page uses the same bars: Play and Shuffle (one row, equal), then its own actions
+    /// (Artists in this playlist; Refresh Flow when it has a flow) in a second ActionBar, all 44 pt and on the margins.
+    @Test func discoverPageUsesActionBars() async throws {
+        let fixture = ScreenFixture()
+        let model = try await fixture.signedInModel()
+        for character in DesignSystem.Character.allCases {
+            let frames = try await measure(AnyView(DiscoverPlaylistView(playlistId: "p1")), model: model,
+                                           theme: Theme(character: character))
+            let items = frames.all.values.sorted { ($0.minY, $0.minX) < ($1.minY, $1.minX) }
+            #expect(items.count == 3, "\(character): \(items)")
+            guard items.count == 3 else { continue }
+            #expect(Set(items.map { ($0.height * 2).rounded() }).count == 1 && items[0].height >= 44, "\(character): \(items)")
+            #expect(abs(items[0].width - items[1].width) < 0.5 && abs(items[0].minY - items[1].minY) < 0.5, "\(character): \(items)")
+            #expect(abs(items[2].minX - 16) < 0.5 && abs(items[2].maxX - 386) < 0.5 && items[2].minY > items[0].maxY,
+                    "\(character): \(items)")
+        }
     }
 
     @Test func pagesStackTheBarAtAccessibilitySizes() async throws {

@@ -6,7 +6,15 @@ import UIKit
 @testable import Magpie
 
 /// Each ActionBar item's global frame by its position in the bar (`actionBarProbe`); shared by the page tests.
-@MainActor final class ActionBarFrames { var byIndex: [Int: CGRect] = [:] }
+@MainActor final class ActionBarFrames {
+    var byIndex: [Int: CGRect] = [:]
+    /// Every item frame reported, from every bar on the page (latest per position).
+    var all: [String: CGRect] = [:]
+    func record(_ index: Int, _ frame: CGRect) {
+        byIndex[index] = frame
+        all["\(index)@\(Int(frame.minY.rounded()))"] = frame
+    }
+}
 
 /// Y7 (plan item 10): one ActionBar for every Play / Shuffle / Download row. Phase 2 (owner ruling): Play, Shuffle
 /// and Download are three equal slots in one row, one height (at least 44 pt); Play is filled and the rest tinted;
