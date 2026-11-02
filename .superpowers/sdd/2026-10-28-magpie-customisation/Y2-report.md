@@ -93,3 +93,34 @@ Branch `y2-carplay` (off `v0.0.1-custom`). Commits are prefixed "Y2:".
 - **Y3 (library scoping) must scope the new car call.** The adapter's `albumsAZ(offset:size:)` in `App/CarPlay/CarPlayLibraryAdapter+Customisation.swift` calls `albumList(.alphabeticalByName, size:offset:)` and needs `musicFolderId` like the other car list calls. I added none, per the ownership rule. The old `albumList(_:size:)` is still on the protocol and in `CarPlaySceneDelegate`, but the car's Albums no longer uses it.
 - **2d clears the browse stack.** "Go to album" / "Go to artist" pops back to the tab bar before pushing the page, so the driver's place in the lists is lost. This was the only way to keep the page and Now Playing within 5 templates.
 - **Not checked in a real car.** Whether CarPlay draws a scrubber for `sectionIndexTitle` on every head unit, and how it styles a disabled `CPNowPlayingImageButton`, is only verifiable on the CarPlay simulator or a car. This was not done here.
+
+## Fix round 1 (review Y2-review.md: 0C/2I)
+- **I1:** the controller-side work moved into two new files, so `CarPlayController.swift` is back to 894 lines (its pre-Y2 size).
+  - `CarPlayUI/CarPlayController+AZ.swift`: `azFetcher`, `readAlbums` (paging plus counting), `reloadAZLists` and `artistSongs`.
+  - `CarPlayUI/CarPlayController+NowPlayingLinks.swift`: the 2d observer, `watchNowPlayingLinks` and `go(to:)`.
+  - The controller keeps one-line hooks only.
+- **I2:** on the artist and downloaded-artist pages, `albumsOpen` decides what an album row does.
+  - The controller sets it to `CPNavigator.allowsPush(atDepth:)` for the page's own depth.
+  - At depth ≤ 3 an album row opens the album page, which has Play/Shuffle and its tracks. At depth 4 it plays, so Now Playing stays the 5th template.
+  - `depthNeverExceeds` now builds each screen for the depth it sits at.
+- **Made for you:** now starts with Play and Shuffle over its library songs. A page with no library songs has neither.
+- **Minors:**
+  - M1: each A–Z list is laid out once per read, off the main thread, not on every song change.
+  - M3: the A–Z lists are read again when `limitedUserInterfacesChanged` fires.
+  - M4: past 5000 albums, the count is found with at most 40 single-row reads (gallop, then halve), and the list ends with "Showing 5000 of N". That row takes one of the car's slots.
+  - M6: offline, the phone's albums come in one catalog read.
+  - M9: the star's task is `[weak self]`, held in `favouriteTask`, and cancelled on disconnect.
+  - M12: the sheet's real path is tested (`CPAlertAction.handler` → dismiss → `go`). The offline test waits for the links of the song in question (`nowPlayingLinks.songId`) instead of a fixed sleep.
+  - Not done: M2 (smarter `go(to:)`), M5, M7, M8 and M10. None was asked for.
+- **Tests:**
+  - Package `FixRound1Tests` (3 tests): `albumsOpen` both ways (online and downloaded), Made for you's Play and Shuffle, and the "Showing 4 of 9" note in both layouts within `maxItems`.
+    - RED: extra-argument compile errors (no `albumsOpen` or `total` parameters existed yet).
+    - GREEN: the three CarPlayUI suites ran 21 tests.
+  - App tests:
+    - `artistAlbumsOpenWhenTheDepthAllows`: two routes. Artist page at depth 3: album opens. At depth 4: album plays, and Now Playing is the 5th template.
+    - `albumsPastTheCapSayHowManyShow`: 5200 albums give "Showing 5000 of 5200".
+    - `favouriteAfterDisconnectSaysNothing`.
+    - Updated: the sheet tap path, the offline wait and the Made for you rows.
+    - These were written with the code, so I have no RED run for them.
+  - `CarPlayControllerTests`: 21 passed.
+  - Final runs: `swift test` (10 runs) passed; check-writes and check-release OK; full app scheme on a fresh "Magpie Y2" (app uninstalled first): `Test run with 904 tests in 99 suites passed`, TEST SUCCEEDED.
