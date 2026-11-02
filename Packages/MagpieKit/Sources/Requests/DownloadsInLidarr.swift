@@ -70,6 +70,12 @@ public struct LidarrDownloads: Sendable, Equatable {
         public var progress: Double?
         /// Lidarr's own words for a failed copy.
         public var message: String?
+
+        public init(id: Int, item: QueueItem, section: Section, phase: Phase, canRestart: Bool, artist: String,
+                    album: String, client: String?, progress: Double?, message: String?) {
+            self.id = id; self.item = item; self.section = section; self.phase = phase; self.canRestart = canRestart
+            self.artist = artist; self.album = album; self.client = client; self.progress = progress; self.message = message
+        }
     }
 
     public var active: [Row] = []
