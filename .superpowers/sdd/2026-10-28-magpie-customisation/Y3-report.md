@@ -141,3 +141,43 @@ The first round's Concerns about the unscoped owner layout, the missing "24/96" 
   - `check-writes.sh` and `check-release.sh`: OK.
   - App suite, first run: 912/913; the one failure was the race above. Rerun after the fix: see the line below.
   - App suite, rerun after the fix: `✔ Test run with 913 tests in 100 suites passed`, `** TEST SUCCEEDED **`.
+
+## Fix round 2 (Y3-rereview.md: N1, m1, m4)
+
+### N1: the automatic pick
+- **Only Lidarr-mapped picks are saved.** The "most albums" guess lives only in memory (`fallbackMainLibraryId`). Only a pick mapped from Lidarr's root is saved, to the per-account key and to `findsSetup.mainLibrary`. The owner's own choice is never replaced.
+- **The pick is redone when its inputs change:**
+  - Lidarr's root changes (`lidarrSetup` didSet);
+  - the Finds setup's library or path mapping changes;
+  - the Finds library is learned (`findsLibraryLearned`, called from `rememberFindsLibrary`).
+- **The guess never picks Finds:**
+  - the Finds library is set aside before counting;
+  - the counts run concurrently;
+  - there is no guess while Lidarr is connected but has no root yet.
+- **When the Lidarr pick no longer applies,** because Lidarr's root moved out of every library or Lidarr went away, the saved pick is dropped.
+
+### m1: root in no library, and the Settings note
+- **A Lidarr root in no library** gives no pick and no guess.
+- **Settings › Main library** now has a note (`MainLibraryCopy`) for each case:
+  - picked from where new music goes;
+  - picked for now by the most albums;
+  - no main library yet, so every library shows.
+
+### m4: the match index follows the scope
+- The match index is rebuilt whenever the scope changes.
+
+### Tests
+- **RED:** compile errors: no `mainLibraryPick`, no `findsLibraryLearned`, no `MainLibraryCopy`.
+- **GREEN:** `Round12HomePagesTests` has 25 tests, including:
+  - `freshInstallSignInThenLidarrThenFinds`: the guess is 3, then Lidarr gives 1 (saved), then Finds shows 1 in Settings;
+  - `fallbackRedoneWhenFindsIsLearned`;
+  - `ownersChoiceIsNeverReplaced`;
+  - `lidarrRootInNoLibraryPicksNothing`.
+- **Not tested:** the m4 rebuild. The tests run without a match index, so nothing observes it.
+- **Affected suites:** Finds, NewMusic, Security and LidarrAndMergedSearch all pass.
+- **Full app suite:** `✔ Test run with 917 tests in 100 suites passed`. check-writes is OK.
+
+### Left open (optional minors from the re-review)
+- **m2:** sign-in still waits for the album counts on the no-Lidarr path (now run concurrently).
+- **m5:** Favourites reads at most 5,000 starred items per kind.
+- **m6:** the hearing label refreshes only because the scrubber redraws, not because `currentURL` is observed.
