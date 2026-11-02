@@ -70,8 +70,10 @@ public struct MergedSearch: Sendable {
                 index: @escaping @Sendable () async -> MatchIndex,
                 sleep: @escaping Sleep = { try await Task.sleep(for: $0) }) {
         let pager = LibraryPager(pageSize: pageSize, page: libraryPage)
+        // Fix round 1 (I3): the whole query and each split get their own deadline, so a slow split is dropped on its
+        // own and never hides the whole query's rows.
         self.library = { q in
-            let (found, paging) = try await pager.first(q)
+            let (found, paging) = try await pager.first(q, deadline: libraryTimeout, sleep: sleep)
             return (found, paging)
         }
         self.pager = pager
@@ -100,8 +102,10 @@ public struct MergedSearch: Sendable {
         let query = q.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return .empty }
         let library = self.library, sleep = self.sleep, libraryTimeout = self.libraryTimeout, sources = self.sources
+        let deadlinesInside = pager != nil   // the paged library times each request itself (fix round 1, I3)
         async let libraryResult: Result<(LibrarySearchResult, SearchPaging?), Error> = Self.capture {
-            try await Self.withDeadline(libraryTimeout, sleep: sleep) { try await library(query) }
+            if deadlinesInside { return try await library(query) }
+            return try await Self.withDeadline(libraryTimeout, sleep: sleep) { try await library(query) }
         }
         async let outside: [ExternalHits] = withTaskGroup(of: (Int, ExternalHits).self) { group in
             for (i, source) in sources.enumerated() {

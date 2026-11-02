@@ -87,3 +87,56 @@ Branch `y1-search` (off v0.0.1-custom). Commits: 524eeda (package), 6748bef (app
 ## Files
 - New: Packages/MagpieKit/Sources/Search/{SearchRanker,SearchPlan,LibraryPager}.swift; App/Screens/Search/SearchPageSize.swift; Packages/MagpieKit/Tests/SearchTests/{SearchFixtures,SearchRankerTests,SearchPlanTests,LibraryPagerTests,MergedSearchPagingTests}.swift; Tests/MagpieTests/SearchLoadMoreTests.swift; Tests/MagpieUITests/SearchUITests.swift.
 - Changed: Search/{SearchSections,MergedSearch}.swift; NavidromeKit/NavidromeClient.swift (search offsets); App/AppModel.swift (the `mergedSearch()` library closure only); App/Screens/Search/{SearchModel,SearchView}.swift; Tests/NavidromeKitTests/BrowseMappingTests.swift; Tests/MagpieTests/CarPlayFindsAppTests.swift (one expectation).
+
+## Fix round 1 (review Y1-review.md: 0C/3I)
+
+**I1: no more automatic load-more storms.**
+- A split now stops when its artist filter kept nothing from a batch. The count is taken after the filter, before de-duplication. A split also stops on a short batch, as before.
+- Only the whole query, and splits that actually found their artist, keep paging.
+- A load-more is at most 2 rounds (`LibraryPager.maxRounds` = 2).
+- `loadedMore` is set only when rows came. A load that brings nothing ends the section quietly.
+- Loading now needs the user's own scroll:
+  - `SearchModel.footerAppeared` / `footerDisappeared` / `userScrolled`, fed by `List.onScrollPhaseChange(.interacting)`.
+  - Each load needs a fresh scroll. A footer that is on screen when results arrive, or still on screen after a batch, loads nothing by itself. The footer's per-count identity was removed.
+  - The list always bounces, so a pull at the end of a short list counts as a scroll.
+- Tests:
+  - `splitsWhoseFilterKeptNothingStop`: "hey jude beatles" against 123 songs gives 3 matches, `!hasMore` for every section, and exactly 5 requests.
+  - `aLoadMoreIsAtMostTwoRounds`.
+  - `splitQueriesPage`: a split that kept nothing no longer pages.
+  - App `footersLoadOnlyAfterTheUserScrolls`: no scroll means no request; one scroll means one batch; scrolling elsewhere loads nothing.
+  - The UI load-more test now asserts nothing loads before a scroll, and dismisses the keyboard before swiping. The keyboard was swallowing the swipes; the old test had passed only because footers loaded on their own.
+
+**I2: an exact-name artist beats their self-titled album again.**
+- The artist field counts towards "matched in full" only when a query word went to it.
+- An album Top result matched by name + artist now also brings its artist row (plan item 1.3 extended).
+- Tests:
+  - "weezer" and "metallica" (including a song titled "Metallica") give the artist.
+  - "hey jude" still gives the album.
+  - "hey jude beatles" with a Beatles "Hey Jude" album gives the album: a deliberate tie, album before song. The Beatles appear as an artist row.
+  - The 40-row table is unchanged and green.
+
+**I3: separate deadlines.**
+- `LibraryPager.first(_:deadline:sleep:)` gives each request its own deadline: the phone's 3 s, or 60 s in the car.
+- The paged MergedSearch no longer puts one deadline round the whole plan.
+- A split that runs out of time fails on its own. Only the whole query timing out, with nothing from the splits, is an error.
+- Tests:
+  - `aSlowSplitNeverHidesTheWholeQuery` (virtual clock): the split "hey" never answers, and the whole query's rows plus the Top result show after one deadline.
+  - `aSlowWholeQueryStillTimesOut`.
+- Note: a slow request that started in the second wave of 3 can stretch the first answer to about 2 deadlines in the worst case.
+
+**Minors**
+- M1 done: split artist filters allow near-misses only on words of 6 letters or more (`nameMatches(strict:)`), so "love" no longer keeps "Live" and "hate" no longer keeps "Kate Bush". "beatels" and "cartografers" still match.
+- M3 done: en and em dashes need spaces around them to split a query, so "a–ha take on me" stays whole.
+- M5 checked: CarPlay album rows show no song count (only playlist rows do).
+- M2 not done: adding word splits after " by " contradicts the plan's "no guessing" for separators.
+- M4, M6, M7 noted; no change.
+
+**RED, then GREEN**
+- Package RED: 9 issues (maxRounds, loadedMore, weezer/metallica, album-top artist row, `SearchTimedOut` caught for the slow split, split paging, short sections). M3 RED: 2 issues.
+- App RED: `value of type 'SearchModel' has no member 'footerAppeared' / 'userScrolled'`.
+- GREEN:
+  - SearchTests: 99 passed. HostileDataTests and NavidromeKitTests also passed.
+  - Affected app suites: 31 passed.
+  - UI tests on the dev stack passed: SearchUITests (both) and BrowseFlowTests' two search tests.
+  - The full app suite, run once: 896 tests passed.
+  - check-writes and check-release OK.

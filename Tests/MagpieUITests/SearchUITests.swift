@@ -77,12 +77,22 @@ final class SearchUITests: XCTestCase {
         field.typeText("aurora")
         app.buttons["Songs"].firstMatch.tap()
         XCTAssertTrue(app.buttons["search-song-0"].waitForExistence(timeout: 15), "no songs for aurora")
+        // Fix round 1 (I1): nothing loads until the user scrolls, even with the footer on screen.
+        let more = app.descendants(matching: .any)["search-more-songs"]
+        XCTAssertTrue(more.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["search-song-5"].waitForExistence(timeout: 2), "loaded more without a scroll")
         let end = app.descendants(matching: .any)["search-end-songs"]
+        if app.keyboards.buttons["search"].exists { app.keyboards.buttons["search"].tap() }   // the keyboard off the list
+        _ = app.keyboards.firstMatch.waitForNonExistence(timeout: 3)
         for _ in 0..<12 where !end.exists {
             app.swipeUp()
             _ = end.waitForExistence(timeout: 2)
         }
-        XCTAssertTrue(end.exists, "\"No more results\" never showed")
+        if !end.exists {
+            let ids = app.descendants(matching: .any).allElementsBoundByIndex.filter { $0.identifier.hasPrefix("search") }
+                .map { "\($0.elementType.rawValue):\($0.identifier):\($0.label.prefix(30))" }
+            XCTFail("\"No more results\" never showed; screen: \(ids.joined(separator: " | "))")
+        }
         XCTAssertTrue(end.label.contains("No more results"))
         XCTAssertTrue(app.buttons["search-song-12"].exists, "the third batch did not load")
         XCTAssertFalse(app.buttons["search-song-13"].exists, "more rows than the library has: a duplicate")

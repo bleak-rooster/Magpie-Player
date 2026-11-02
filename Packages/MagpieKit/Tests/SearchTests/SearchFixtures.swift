@@ -73,6 +73,8 @@ final class FakeNavidrome: @unchecked Sendable {
     private(set) var peak = 0
     var delay: Duration = .zero
     var failing: Set<String> = []
+    /// Queries that never answer (until cancelled).
+    var slow: Set<String> = []
 
     init(_ library: LibrarySearchResult = Fixture.all) { self.library = library }
 
@@ -82,6 +84,7 @@ final class FakeNavidrome: @unchecked Sendable {
         lock.withLock { calls.append(q); running += 1; peak = max(peak, running) }
         defer { lock.withLock { running -= 1 } }
         if delay > .zero { try await Task.sleep(for: delay) }
+        if slow.contains(q.text) { try await Task.sleep(for: .seconds(3600)) }   // until cancelled
         try Task.checkCancellation()
         if failing.contains(q.text) { throw URLError(.badServerResponse) }
         let words = Self.words(q.text)

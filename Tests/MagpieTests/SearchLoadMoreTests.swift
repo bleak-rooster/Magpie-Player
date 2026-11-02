@@ -113,6 +113,37 @@ final class PagedLibrary: @unchecked Sendable {
         #expect(model.results.songs.count == 26 && model.moreState(.songs) == .idle)
     }
 
+    /// Fix round 1 (I1): a footer that is on screen as the results arrive loads nothing until the user scrolls, and
+    /// each load needs a scroll of its own (loads never chain).
+    @Test func footersLoadOnlyAfterTheUserScrolls() async {
+        let library = PagedLibrary(60)
+        let model = makeModel(library)
+        await searched(model, "harbour")
+        let first = library.calls.count
+        model.footerAppeared(.songs)
+        await model.settleMore()
+        #expect(library.calls.count == first, "no scroll, no request")
+        #expect(model.moreState(.songs) == .idle)
+
+        model.userScrolled()
+        await model.settleMore()
+        #expect(model.results.songs.count == 40, "the footer on screen loads once the user scrolls")
+        let afterOne = library.calls.count
+        #expect(afterOne == first + 1)
+
+        model.footerAppeared(.songs)   // still on screen after the batch: no new scroll, no new load
+        await model.settleMore()
+        #expect(library.calls.count == afterOne)
+
+        model.footerDisappeared(.songs)
+        model.userScrolled()           // scrolling elsewhere doesn't load a section whose end isn't on screen
+        await model.settleMore()
+        #expect(library.calls.count == afterOne)
+        model.footerAppeared(.songs)   // the user scrolled to it
+        await model.settleMore()
+        #expect(model.results.songs.count == 60)
+    }
+
     /// Results without paging (offline) never load more.
     @Test func noPagingNoLoad() async {
         let sleeper = self.sleeper

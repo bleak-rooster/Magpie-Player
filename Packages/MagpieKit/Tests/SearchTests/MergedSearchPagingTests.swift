@@ -53,6 +53,44 @@ import Testing
         #expect(!s.loadedMore(.albums))
     }
 
+    /// Fix round 1 (I2): an album Top result matched by its name and artist brings its artist as a row too.
+    @Test func anAlbumTopBringsItsArtist() async throws {
+        let s = try await merged(FakeNavidrome(SearchRankerTests.selfTitled)).runReportingLibraryFailure("hey jude beatles")
+        #expect(s.top.map { if case .album(let a) = $0 { a.name + "|" + a.artist } else { "" } } == "Hey Jude|The Beatles")
+        #expect(s.artists.first?.name == "The Beatles")
+    }
+
+    /// Fix round 1 (I3): the whole query and each split have their own deadline. A split that never answers is
+    /// dropped on its own; the whole query's rows still show, after the one deadline.
+    @Test func aSlowSplitNeverHidesTheWholeQuery() async throws {
+        let clock = TestClock()
+        let server = FakeNavidrome()
+        server.slow = ["hey"]   // the split "hey" + artist "jude beatles"
+        let search = MergedSearch(libraryPage: { try await server.search($0) }, sources: [], index: { .empty },
+                                  sleep: { try await clock.sleep($0) })
+        let task = Task { try await search.runReportingLibraryFailure("hey jude beatles") }
+        for _ in 0..<10_000 where !(server.queries.count == 5 && clock.waiting == 1) { await Task.yield() }
+        #expect(server.queries.count == 5 && clock.waiting == 1, "only the slow split is still out")
+        clock.advance(by: MergedSearch.libraryTimeout)
+        let s = try await task.value
+        #expect(Set(s.songs.map(\.id)) == ["s02", "s04"])
+        guard case .song(let top) = s.top else { Issue.record("top is \(String(describing: s.top))"); return }
+        #expect(top.id == "s04")
+    }
+
+    /// A whole query that runs out of time is still an error (with nothing from the splits either).
+    @Test func aSlowWholeQueryStillTimesOut() async throws {
+        let clock = TestClock()
+        let server = FakeNavidrome()
+        server.slow = ["zzz"]
+        let search = MergedSearch(libraryPage: { try await server.search($0) }, sources: [], index: { .empty },
+                                  sleep: { try await clock.sleep($0) })
+        let task = Task { try await search.runReportingLibraryFailure("zzz") }
+        await clock.until(waiting: 1)
+        clock.advance(by: MergedSearch.libraryTimeout)
+        await #expect(throws: SearchTimedOut.self) { _ = try await task.value }
+    }
+
     /// The old string-only library (tests, offline) doesn't page.
     @Test func aStringLibraryDoesntPage() async {
         let s = await MergedSearch(library: { _ in Fixture.all }, sources: [], index: { .empty }).run("beatles")

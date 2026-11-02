@@ -5,7 +5,7 @@ import Foundation
 /// word of a query to match, so "hey jude beatels" finds nothing whole, but "hey jude" by an artist like "beatels"
 /// does.
 ///
-/// - "title - artist" (or "–", "—") parses into both orders, and "title by artist" into one, with no guessing.
+/// - "title - artist" (or " – ", " — "; a dash needs spaces round it, so "a–ha" stays whole) parses into both orders, and "title by artist" into one, with no guessing.
 /// - Otherwise each split tries one word boundary near an end, in both orders: the artist as the last word, the first
 ///   word, the last two words, then the first two. A part that is only an article is skipped.
 public struct SearchPlan: Equatable, Sendable {
@@ -24,7 +24,7 @@ public struct SearchPlan: Equatable, Sendable {
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
         whole = q
         splits = []
-        if let (left, right) = Self.cut(q, at: [" - ", "–", "—"]) {
+        if let (left, right) = Self.cut(q, at: [" - ", " – ", " — "]) {
             whole = left + " " + right
             splits = [Split(title: left, artist: right), Split(title: right, artist: left)]
         } else if let (left, right) = Self.cut(q, at: [" by "], caseInsensitive: true) {

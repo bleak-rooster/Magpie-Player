@@ -82,14 +82,21 @@ public struct MoreResults: Sendable {
 
 /// The library half of search: runs a query's plan (the whole query and its splits) with at most `maxConcurrent`
 /// requests at a time, filters each split's rows by its artist part, drops repeats, and pages each section with
-/// `search3` offsets. A batch shorter than asked for ends that query's section; a load-more keeps going (up to
-/// `maxRounds` batches) while a split's filter drops everything, so the screen never waits on an empty batch.
+/// `search3` offsets.
+///
+/// Fix round 1 (review I1, I3):
+/// - A query's section ends on a batch shorter than asked for, and a split's also on a batch its artist filter kept
+///   nothing from (a common title word fills a batch with other artists' songs): such a split never pages.
+/// - A load-more makes at most `maxRounds` rounds, and adds to "loaded more" only when rows came.
+/// - On the first batch each request has its own deadline: a slow split is dropped on its own; only the whole query
+///   running out of time (with nothing from the splits) is an error.
 public struct LibraryPager: Sendable {
     public typealias Page = @Sendable (LibraryQuery) async throws -> LibrarySearchResult
+    public typealias Sleep = @Sendable (Duration) async throws -> Void
 
     /// Five queries at most (the whole one and four splits), three at a time.
     public static let maxConcurrent = 3
-    static let maxRounds = 5
+    static let maxRounds = 2
 
     private let page: Page
     private let maxConcurrent: Int
@@ -105,8 +112,12 @@ public struct LibraryPager: Sendable {
     private func size(_ kind: LibraryKind) -> Int { pageSize ?? kind.pageSize }
 
     /// The first batch of every section, from the whole query and its splits. Throws only when the whole query fails
-    /// and no split found anything.
-    public func first(_ query: String) async throws -> (LibrarySearchResult, SearchPaging) {
+    /// (or runs out of time) and no split found anything.
+    /// - Parameters:
+    ///   - deadline: each request's own time limit (nil: none but the request's own).
+    ///   - sleep: the clock for the deadline (tests inject one).
+    public func first(_ query: String, deadline: Duration? = nil,
+                      sleep: @escaping Sleep = { try await Task.sleep(for: $0) }) async throws -> (LibrarySearchResult, SearchPaging) {
         let plan = SearchPlan(query)
         let sources = [SearchPaging.Source(text: plan.whole, artist: nil)]
             + plan.splits.map { SearchPaging.Source(text: $0.title, artist: $0.artist) }
@@ -114,7 +125,7 @@ public struct LibraryPager: Sendable {
             LibraryQuery(text: s.text, songCount: size(.songs), albumCount: size(.albums),
                          artistCount: s.artist == nil ? size(.artists) : 0)
         }
-        let results = try await run(requests)
+        let results = try await run(requests, deadline: deadline, sleep: sleep)
         var paging = SearchPaging(query: query, sources: sources, sections: [:])
         for kind in LibraryKind.allCases {
             paging.sections[kind] = SearchPaging.Section(offsets: Array(repeating: 0, count: sources.count),
@@ -131,11 +142,11 @@ public struct LibraryPager: Sendable {
                 let source = sources[i]
                 for kind in LibraryKind.allCases {
                     let asked = kind == .artists && source.artist != nil ? 0 : size(kind)
-                    let (new, raw) = Self.filter(rows, kind, source, seen: paging.seen(kind))
-                    paging.sections[kind]?.offsets[i] = raw
-                    paging.sections[kind]?.done[i] = asked == 0 || raw < asked
-                    found.append(new, kind)
-                    paging.insert(new.ids(kind), into: kind)
+                    let batch = Self.filter(rows, kind, source, seen: paging.seen(kind))
+                    paging.sections[kind]?.offsets[i] = batch.raw
+                    paging.sections[kind]?.done[i] = asked == 0 || Self.ends(batch, asked: asked, source)
+                    found.append(batch.new, kind)
+                    paging.insert(batch.new.ids(kind), into: kind)
                 }
             }
         }
@@ -143,7 +154,8 @@ public struct LibraryPager: Sendable {
         return (found, paging)
     }
 
-    /// The next batch of one section, from every query of the plan that still has more.
+    /// The next batch of one section, from every query of the plan that still has more: one round, and a second only
+    /// when the first added nothing (never more; loads never chain on their own).
     public func more(_ kind: LibraryKind, paging: SearchPaging) async throws -> MoreResults {
         var paging = paging
         var found = LibrarySearchResult()
@@ -159,7 +171,7 @@ public struct LibraryPager: Sendable {
                 }
                 return q
             }
-            let results = try await run(requests)
+            let results = try await run(requests, deadline: nil, sleep: { _ in })
             let failures = results.compactMap { if case .failure(let e) = $0 { e } else { nil } }
             // Every query failed: say so (the section can be tried again; nothing moved on).
             if failures.count == results.count, let error = failures.first { throw error }
@@ -169,28 +181,31 @@ public struct LibraryPager: Sendable {
                 case .failure:
                     paging.sections[kind]?.done[i] = true   // a failing split stops; the others carry on
                 case .success(let rows):
-                    let (new, raw) = Self.filter(rows, kind, paging.sources[i], seen: paging.seen(kind))
-                    paging.sections[kind]?.offsets[i] += raw
-                    paging.sections[kind]?.done[i] = raw < size(kind)
-                    found.append(new, kind)
-                    paging.insert(new.ids(kind), into: kind)
+                    let batch = Self.filter(rows, kind, paging.sources[i], seen: paging.seen(kind))
+                    paging.sections[kind]?.offsets[i] += batch.raw
+                    paging.sections[kind]?.done[i] = Self.ends(batch, asked: size(kind), paging.sources[i])
+                    found.append(batch.new, kind)
+                    paging.insert(batch.new.ids(kind), into: kind)
                 }
             }
             if !found.isEmpty(kind) { break }
         }
-        // Still nothing after the last round: stop, rather than leave a footer waiting for rows that don't come.
         if found.isEmpty(kind), var section = paging.sections[kind] {
+            // Nothing came: the section ends here, rather than leave a footer waiting for rows that don't come.
             section.done = section.done.map { _ in true }
             paging.sections[kind] = section
+        } else {
+            paging.sections[kind]?.loadedMore = true
         }
-        paging.sections[kind]?.loadedMore = true
         return MoreResults(kind: kind, songs: found.songs, albums: found.albums, artists: found.artists, paging: paging)
     }
 
     // MARK: - Running
 
-    /// Each request's result in order, with at most `maxConcurrent` running at once. Cancellation is rethrown.
-    private func run(_ requests: [LibraryQuery]) async throws -> [Result<LibrarySearchResult, Error>] {
+    /// Each request's result in order, with at most `maxConcurrent` running at once, each within its own `deadline`
+    /// (a late one fails with `SearchTimedOut`). Cancellation is rethrown.
+    private func run(_ requests: [LibraryQuery], deadline: Duration?,
+                     sleep: @escaping Sleep) async throws -> [Result<LibrarySearchResult, Error>] {
         let page = self.page
         var results = [Result<LibrarySearchResult, Error>?](repeating: nil, count: requests.count)
         await withTaskGroup(of: (Int, Result<LibrarySearchResult, Error>).self) { group in
@@ -200,7 +215,14 @@ public struct LibraryPager: Sendable {
                 let i = next, q = requests[i]
                 next += 1
                 group.addTask {
-                    do { return (i, .success(try await page(q))) } catch { return (i, .failure(error)) }
+                    do {
+                        if let deadline {
+                            return (i, .success(try await MergedSearch.withDeadline(deadline, sleep: sleep) { try await page(q) }))
+                        }
+                        return (i, .success(try await page(q)))
+                    } catch {
+                        return (i, .failure(error))
+                    }
                 }
             }
             for _ in 0..<min(maxConcurrent, requests.count) { add() }
@@ -214,25 +236,38 @@ public struct LibraryPager: Sendable {
     }
 
     /// One section's rows from a batch: a split keeps only rows whose artist matches its artist part, and rows
-    /// already shown are dropped. `raw` is how many the server sent (for the offset).
+    /// already shown are dropped. `raw` is how many the server sent (for the offset); `passed` how many got past the
+    /// split's artist filter, repeats included.
     private static func filter(_ rows: LibrarySearchResult, _ kind: LibraryKind, _ source: SearchPaging.Source,
-                               seen: Set<String>) -> (LibrarySearchResult, raw: Int) {
+                               seen: Set<String>) -> (new: LibrarySearchResult, raw: Int, passed: Int) {
         var seen = seen
+        var passed = 0
         func keep(_ id: String, artist: String) -> Bool {
-            if let part = source.artist, !SearchRanker.nameMatches(artist, part) { return false }
+            if let part = source.artist, !SearchRanker.nameMatches(artist, part, strict: true) { return false }
+            passed += 1
             return seen.insert(id).inserted
         }
         switch kind {
         case .songs:
-            return (LibrarySearchResult(songs: rows.songs.filter { keep($0.id, artist: $0.artist) }), rows.songs.count)
+            let new = rows.songs.filter { keep($0.id, artist: $0.artist) }
+            return (LibrarySearchResult(songs: new), rows.songs.count, passed)
         case .albums:
-            return (LibrarySearchResult(albums: rows.albums.filter { keep($0.id, artist: $0.artist) }), rows.albums.count)
+            let new = rows.albums.filter { keep($0.id, artist: $0.artist) }
+            return (LibrarySearchResult(albums: new), rows.albums.count, passed)
         case .artists:
-            guard source.artist == nil else { return (LibrarySearchResult(), 0) }
-            return (LibrarySearchResult(artists: rows.artists.filter { keep($0.id, artist: $0.name) }), rows.artists.count)
+            guard source.artist == nil else { return (LibrarySearchResult(), 0, 0) }
+            let new = rows.artists.filter { keep($0.id, artist: $0.name) }
+            return (LibrarySearchResult(artists: new), rows.artists.count, passed)
         }
     }
+
+    /// A query's section ends on a short batch; a split's also on a batch its artist filter kept nothing from.
+    private static func ends(_ batch: (new: LibrarySearchResult, raw: Int, passed: Int), asked: Int,
+                             _ source: SearchPaging.Source) -> Bool {
+        batch.raw < asked || (source.artist != nil && batch.passed == 0)
+    }
 }
+
 
 extension LibrarySearchResult {
     mutating func append(_ other: LibrarySearchResult, _ kind: LibraryKind) {

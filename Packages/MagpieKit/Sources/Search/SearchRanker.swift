@@ -100,11 +100,17 @@ public enum SearchRanker {
 
     /// Whether every word of `part` matches a word of `name` (whole, prefix or near-miss): a split query keeps only
     /// the songs and albums whose artist is the other part.
-    public static func nameMatches(_ name: String, _ part: String) -> Bool {
+    ///
+    /// - Parameter strict: near-misses only for words of 6 letters or more, so a split's artist "love" doesn't keep
+    ///   "Live" (fix round 1, review M1).
+    public static func nameMatches(_ name: String, _ part: String, strict: Bool = false) -> Bool {
         let q = Query(part)
         guard !q.isEmpty else { return false }
         let field = Field(name, .primary)
-        return q.required.allSatisfy { match($0, field) > 0 }
+        return q.required.allSatisfy { w in
+            let m = match(w, field)
+            return m >= 2 || (m == 1 && (!strict || w.count >= 6))
+        }
     }
 
     // MARK: - Fields
@@ -243,7 +249,9 @@ public enum SearchRanker {
         }
         for w in q.optional where fields.contains(where: { match(w, $0) == 3 }) { s.quality += 1 }
         let words = q.required + q.optional
-        for f in fields where f.role != .other {
+        // The artist counts as matched in full only when a word went to it: an album or song named after its artist
+        // ("Weezer" by Weezer) must not beat the artist on the artist's own name (fix round 1, I2).
+        for f in fields where f.role == .primary || (f.role == .artist && usedArtist) {
             let significant = f.significant
             guard !significant.isEmpty, significant.allSatisfy({ covers(words, $0) }) else { continue }
             s.fullFields += 1

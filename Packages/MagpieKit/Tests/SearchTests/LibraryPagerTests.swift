@@ -148,7 +148,8 @@ import Testing
         let before = server.queries.count
         _ = try await p.more(.songs, paging: paging)
         let round = server.queries.dropFirst(before)
-        #expect(Set(round.map(\.text)) == ["harbour corin", "harbour", "corin"])
+        // "corin" + artist "harbour" kept nothing from its first batch, so it stopped (fix round 1, I1).
+        #expect(Set(round.map(\.text)) == ["harbour corin", "harbour"])
         #expect(round.allSatisfy { $0.songOffset == 20 })
     }
 
@@ -165,17 +166,33 @@ import Testing
         #expect(server.queries.count == 2)
     }
 
-    /// Batches whose rows a split's artist filter drops entirely don't stop the load: it keeps going (within a limit)
-    /// until something new comes, so the footer never waits for nothing.
-    @Test func filteredOutBatchesKeepLoading() async throws {
-        var songs = (0..<60).map { Fixture.song(String(format: "x%03d", $0), "Love \($0)", "Someone Else", "Other") }
-        songs.append(Fixture.song("b1", "Love Me Do", "The Beatles", "Please Please Me"))
+    /// Fix round 1 (I1): on a real-sized library a split's common title word fills a whole batch that its artist filter
+    /// then drops entirely. Such a split stops at once, so a multi-word query with short sections has nothing more to
+    /// load: 5 requests, and no footer asking for more.
+    @Test func splitsWhoseFilterKeptNothingStop() async throws {
+        var songs = [Fixture.song("j1", "Hey Jude", "The Beatles", "1"),
+                     Fixture.song("j2", "Hey Jude (Live)", "The Beatles", "Live"),
+                     Fixture.song("j3", "Hey Jude (Take 1)", "The Beatles", "Anthology 3")]
+        songs += (0..<60).map { Fixture.song(String(format: "o%03d", $0), "Hey Song \($0)", "Someone Else", "Other") }
+        songs += (0..<60).map { Fixture.song(String(format: "b%03d", $0), "Song \($0)", "The Beatles", "Box") }
         let server = FakeNavidrome(LibrarySearchResult(songs: songs))
+        let (found, paging) = try await pager(server).first("hey jude beatles")
+        #expect(Set(found.songs.map(\.id)) == ["j1", "j2", "j3"])
+        #expect(!paging.hasMore(.songs) && !paging.hasMore(.albums) && !paging.hasMore(.artists))
+        #expect(server.queries.count == 5)
+    }
+
+    /// Fix round 1 (I1): one load-more makes at most 2 rounds, and a batch that adds nothing ends the section without
+    /// counting as "loaded more".
+    @Test func aLoadMoreIsAtMostTwoRounds() async throws {
+        #expect(LibraryPager.maxRounds == 2)
+        let server = many(20)
         let p = pager(server)
-        let (found, paging) = try await p.first("love beatls")   // the misspelt whole query finds nothing
-        #expect(found.songs.isEmpty)
+        let (_, paging) = try await p.first("harbour")
+        #expect(paging.hasMore(.songs), "a full first batch")
         let more = try await p.more(.songs, paging: paging)
-        #expect(more.songs.map(\.id) == ["b1"])
+        #expect(more.songs.isEmpty)
         #expect(!more.paging.hasMore(.songs))
+        #expect(!more.paging.loadedMore(.songs), "nothing came, so nothing more was loaded")
     }
 }

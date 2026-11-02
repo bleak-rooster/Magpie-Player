@@ -59,6 +59,28 @@ final class SearchModel {
 
     func moreState(_ kind: LibraryKind) -> MoreState { moreStates[kind] ?? .idle }
 
+    // MARK: - When to load more (fix round 1, review I1)
+
+    /// Section ends (footers) on screen.
+    @ObservationIgnored private var visibleFooters: Set<LibraryKind> = []
+    /// The user has scrolled since the last load (or since the results came). Each load needs a scroll of its own, so
+    /// a footer already on screen when results arrive, or still on screen after a batch, loads nothing by itself.
+    @ObservationIgnored private var scrolled = false
+
+    /// A section's footer came on screen: loads it if the user brought it there by scrolling.
+    func footerAppeared(_ kind: LibraryKind) {
+        visibleFooters.insert(kind)
+        if scrolled { loadMore(kind) }
+    }
+
+    func footerDisappeared(_ kind: LibraryKind) { visibleFooters.remove(kind) }
+
+    /// The user started scrolling the results: every footer on screen loads.
+    func userScrolled() {
+        scrolled = true
+        for kind in visibleFooters { loadMore(kind) }
+    }
+
     /// The end of a section came on screen: loads its next batch, once at a time per section, when the search is
     /// done and the section has more. The rows are added at the end; nothing on screen moves.
     func loadMore(_ kind: LibraryKind) {
@@ -92,6 +114,7 @@ final class SearchModel {
         results.append(found)
         moreStates[found.kind] = .idle
         moreTasks[found.kind] = nil
+        scrolled = false   // the next batch waits for the next scroll
     }
 
     private func failMore(_ kind: LibraryKind, for q: String) {
@@ -107,6 +130,7 @@ final class SearchModel {
         task?.cancel()
         moreTasks.values.forEach { $0.cancel() }
         moreStates = [:]
+        scrolled = false
         outsideArt?.reset()
         let trimmed = newQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {

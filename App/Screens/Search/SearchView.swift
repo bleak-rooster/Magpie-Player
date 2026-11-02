@@ -107,6 +107,10 @@ private struct SearchContent: View {
         .navigationTitle("Search")
         .magpieScreen()
         .scrollDismissesKeyboard(.interactively)
+        // Fix round 1 (I1): a load-more needs the user's own scroll. The list always bounces, so a pull at the end of
+        // a short list counts too.
+        .scrollBounceBehavior(.always, axes: .vertical)
+        .onScrollPhaseChange { _, phase in if phase == .interacting { model.userScrolled() } }
         .sheet(item: $trying) { TrySheet(target: $0) }
         .songRemovalDialog($removing)
         .onChange(of: depth) { old, new in if new > old, !model.query.isEmpty { remember(model.query) } }
@@ -185,9 +189,9 @@ private struct SearchContent: View {
     }
 
     /// Round 12 (Y1, plan item 3): the end of a library section. While it has more, a spinner that loads the next
-    /// batch as it comes on screen (its identity follows the row count, so it loads again if it's still on screen after
-    /// a small batch); "No more results" once a batch comes back short (in All, only after something more loaded, so a
-    /// short list doesn't end every section with it).
+    /// batch when the user scrolls it into view (one batch per scroll; never on its own); "No more results" once a
+    /// batch comes back short (in All, only after something more loaded, so a short list doesn't end every section
+    /// with it).
     @ViewBuilder private func moreFooter(_ kind: LibraryKind, in sections: SearchSections, count: Int) -> some View {
         if sections.paging != nil, model.phase == .done {
             if sections.hasMore(kind) {
@@ -207,8 +211,9 @@ private struct SearchContent: View {
                         .frame(maxWidth: .infinity, minHeight: Tokens.minHitSize)
                         .accessibilityLabel("Loading more")
                         .accessibilityIdentifier("search-more-\(kind.rawValue)")
-                        .onAppear { model.loadMore(kind) }
-                        .id("search-more-\(kind.rawValue)-\(count)")
+                        // Fix round 1 (I1): loads only when the user scrolled it into view (SearchModel.footerAppeared).
+                        .onAppear { model.footerAppeared(kind) }
+                        .onDisappear { model.footerDisappeared(kind) }
                         .listRowBackground(Color.clear)
                         .listRowSeparator(.hidden)
                 }

@@ -64,6 +64,40 @@ private func describe(_ item: SearchItem?) -> String {
         #expect(describe(s.top) == top, "query \"\(query)\"")
     }
 
+    /// Fix round 1 (I2): self-titled albums and a Beatles "Hey Jude" album, on top of the main fixture.
+    static let selfTitled: LibrarySearchResult = {
+        var r = Fixture.all
+        let extra = [Fixture.song("w1", "Buddy Holly", "Weezer", "Weezer"),
+                     Fixture.song("m1", "Enter Sandman", "Metallica", "Metallica"),
+                     Fixture.song("m2", "Metallica", "Metallica", "Live Shit"),          // a song named after the band
+                     Fixture.song("hj", "Hey Jude", "The Beatles", "Hey Jude")]
+        r.songs += extra
+        for s in extra where !r.albums.contains(where: { $0.id == s.albumId }) {
+            r.albums.append(Album(id: s.albumId!, name: s.album, artist: s.artist, artistId: s.artistId, songCount: 1, duration: 1))
+        }
+        for s in extra where !r.artists.contains(where: { $0.id == s.artistId }) {
+            r.artists.append(Artist(id: s.artistId!, name: s.artist, albumCount: 1))
+        }
+        return r
+    }()
+
+    /// An exact-name artist beats the album (or song) named after it: the old rule.
+    @Test func anArtistBeatsTheirSelfTitledAlbum() {
+        #expect(describe(SearchSections.library(Self.selfTitled, query: "weezer").top) == "artist:Weezer")
+        #expect(describe(SearchSections.library(Self.selfTitled, query: "metallica").top) == "artist:Metallica")
+        #expect(describe(SearchSections.library(Self.selfTitled, query: "Metallica").top) == "artist:Metallica")
+    }
+
+    /// An exact-name album still beats the song of the same name ("hey jude"), and with the artist too it's the
+    /// album, whose artist is then shown as a row (plan item 1.3 for an album Top result).
+    @Test func anExactAlbumStillBeatsTheSong() {
+        #expect(describe(SearchSections.library(Self.selfTitled, query: "hey jude").top).hasPrefix("album:Hey Jude|"))
+        let s = SearchSections.library(Self.selfTitled, query: "hey jude beatles", withSongsArtist: true)
+        #expect(describe(s.top) == "album:Hey Jude|The Beatles")
+        #expect(s.artists.first?.name == "The Beatles")
+        #expect(s.songs.first?.title == "Hey Jude" && s.songs.first?.artist == "The Beatles")
+    }
+
     /// A song covering every word (title + artist) beats one covering only the title, and a plain title beats the same
     /// title with an aside.
     @Test func songsCoveringTitleAndArtistComeFirst() {
@@ -99,6 +133,12 @@ private func describe(_ item: SearchItem?) -> String {
         #expect(SearchRanker.nameMatches("坂本龍一", "坂本"))
         #expect(!SearchRanker.nameMatches("Queen", "qu een x"))
         #expect(SearchRanker.nameMatches("AC/DC", "acdc"))
+        // Strict (split filters, fix round 1 M1): no near-misses on short words.
+        #expect(SearchRanker.nameMatches("Live", "love"))
+        #expect(!SearchRanker.nameMatches("Live", "love", strict: true))
+        #expect(!SearchRanker.nameMatches("Kate Bush", "hate", strict: true))
+        #expect(SearchRanker.nameMatches("The Beatles", "beatels", strict: true))
+        #expect(SearchRanker.nameMatches("Kate Bush", "kate", strict: true))
     }
 
     /// Outside results go through the same ranker (a stable sort: equal scores keep the source's order).

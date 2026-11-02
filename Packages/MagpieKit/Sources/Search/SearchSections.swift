@@ -97,6 +97,13 @@ public struct SearchSections: Equatable, Sendable {
                                     duration: 0, coverArtId: song.coverArtId), at: 0)
             }
         }
+        // The same for an album Top result matched by its name and its artist ("hey jude beatles" with a Beatles
+        // "Hey Jude" album): its artist is a row too (fix round 1).
+        if withSongsArtist, case .album(let album) = top, SearchRanker.score(album, q).usesTitleAndArtist,
+           let id = album.artistId, !id.isEmpty, !album.artist.isEmpty,
+           !artists.contains(where: { $0.id == id || SearchRanker.fold($0.name) == SearchRanker.fold(album.artist) }) {
+            artists.insert(Artist(id: id, name: album.artist, albumCount: 0, coverArtId: "ar-\(id)"), at: 0)
+        }
         return SearchSections(top: top, songs: songs, artists: artists, albums: albums)
     }
 

@@ -34,7 +34,10 @@ import Testing
         let plan = SearchPlan("Hey Jude - The Beatles")
         #expect(plan.whole == "Hey Jude The Beatles")
         #expect(splits("Hey Jude - The Beatles") == ["Hey Jude|The Beatles", "The Beatles|Hey Jude"])
-        #expect(splits("beatles–hey jude") == ["beatles|hey jude", "hey jude|beatles"])
+        #expect(splits("beatles – hey jude") == ["beatles|hey jude", "hey jude|beatles"])
+        // Fix round 1 (M3): a dash inside a name ("a–ha") is not a separator.
+        #expect(SearchPlan("a–ha take on me").whole == "a–ha take on me")
+        #expect(splits("a–ha take") == ["a–ha|take", "take|a–ha"])
         #expect(splits("The National — Bloodbuzz Ohio") == ["The National|Bloodbuzz Ohio", "Bloodbuzz Ohio|The National"])
     }
 
