@@ -134,8 +134,7 @@ extension RequestRunner {
                         follow: Bool, types: ReleaseTypes? = nil, qualityProfileId: Int? = nil) async throws -> BringInResult {
         let target = try await bringInTarget(id)
         let artistId = target.artist.id
-        guard !artistBusy(artistId) else { throw BringInError.unavailable }
-        keepingArtists.insert(artistId)
+        guard tryAcquireArtist(artistId) else { throw BringInError.unavailable }   // Y5 fix I5: atomic
         defer { keepingArtists.remove(artistId) }
 
         // R18: the release types and quality first. They await Lidarr (a read, maybe writes), so they come before

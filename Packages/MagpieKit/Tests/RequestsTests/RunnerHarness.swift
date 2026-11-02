@@ -252,6 +252,10 @@ final class FakeLidarr: @unchecked Sendable {
         /// `POST /command RefreshArtist` rescans: track file records follow the files (Lidarr 3.2 after a move).
         var refreshFollowsFiles = true
         var posted: [String] = []
+        /// Y5 fix: a posted RefreshArtist stays "started" (a slow Lidarr) until a test completes it.
+        var refreshStaysStarted = false
+        /// Called on each `GET /command/{id}` (tests watch the runner during a long step).
+        var onCommandRead: (@Sendable () -> Void)?
     }
 
     let latch = Latch()
@@ -609,7 +613,8 @@ final class FakeLidarr: @unchecked Sendable {
                 s.nextCommandId += 1
                 s.posted.append(name)
                 if name == "RefreshArtist", let artistId = body["artistId"] as? Int {
-                    s.commands.append(Command(id: s.nextCommandId, name: name, status: "completed", artistIds: [artistId]))
+                    s.commands.append(Command(id: s.nextCommandId, name: name, status: s.refreshStaysStarted ? "started" : "completed",
+                                              artistIds: [artistId]))
                     if s.refreshFollowsFiles {
                         for i in s.artists.indices where s.artists[i].id == artistId { s.artists[i].recorded = s.artists[i].files }
                     }
@@ -620,6 +625,7 @@ final class FakeLidarr: @unchecked Sendable {
         }
         for id in 79...160 {
             t.stub(pathSuffix: "/api/v1/command/\(id)") { [self] _ in
+                with { $0.onCommandRead }?()
                 guard let c = with({ s in s.commands.first { $0.id == id } }) else { return MockTransport.Response(status: 404) }
                 return reply(["id": c.id, "name": c.name, "status": c.status, "body": ["artistIds": c.artistIds]])
             }
@@ -721,6 +727,9 @@ final class FakeLibrary: @unchecked Sendable {
         var mainSongReads = 0
         /// The artist folders the kept song was looked up in.
         var keptSongFolders: [String] = []
+        /// Y5 fix I7: targeted folder scans asked for, and whether a folder can be placed in a library.
+        var folderScans: [String] = []
+        var foldersPlaceable = true
     }
 
     let state = OSAllocatedUnfairLock(initialState: State())
@@ -746,6 +755,13 @@ final class FakeLibrary: @unchecked Sendable {
                     $0.mainSongReads += 1
                     $0.keptSongFolders.append(folder)
                     return $0.mainSongs[id]
+                }
+            },
+            scanFolder: { [self] folder in
+                state.withLock { s in
+                    guard s.foldersPlaceable else { return false }
+                    s.folderScans.append(folder)
+                    return true
                 }
             })
     }

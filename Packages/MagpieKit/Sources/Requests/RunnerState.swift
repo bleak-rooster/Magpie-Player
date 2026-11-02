@@ -1,15 +1,16 @@
 import Foundation
 import MagpieCore
+import os
 
 /// Y5: what the runner keeps on disk besides the requests (`runner-state-<instance>.json`, next to them).
 ///
 /// - **Leases** (item 9.10, I1): the requests with a step running and the artists a Keep, Not for me, Bring in more
-///   or MP3 removal is working on. Saved when taken and dropped when done; the holder renews `renewedAt` every pass.
-///   Another runner (a background pass, a relaunch with the old one still finishing a write) treats a fresh lease as
-///   busy; a lease not renewed for `RunnerState.staleAfter` is orphaned and dropped (its follow-up path then picks
-///   the work up; nothing is ever started fresh from a lease).
+///   or MP3 removal is working on. Taken in one locked check-and-insert, dropped when done; the holder renews
+///   `renewedAt` every pass and inside every long wait (fix I5). Another runner (a background pass, a relaunch with the
+///   old one still finishing a write) treats a fresh lease as busy; a lease not renewed for `RunnerState.staleAfter` is
+///   orphaned and dropped (its follow-up path then picks the work up; nothing is ever started fresh from a lease).
 /// - **Clock** (item 9.7, M4): Lidarr's clock offset and the history cursor in Lidarr's time.
-/// - **Migrations** (§9): one flag per migration, set after its last step, so a crash re-runs it.
+/// - **Migrations** (§9): one flag per migration, set only once every step finished (fix I6).
 public struct RunnerState: Codable, Sendable, Equatable {
     public struct Lease: Codable, Sendable, Equatable {
         /// `artist:<id>` or `request:<uuid>`.
@@ -53,55 +54,89 @@ public struct RunnerState: Codable, Sendable, Equatable {
             Log.logger("requests").error("runner state not saved")
         }
     }
+
+    /// Y5 fix I5: every read-modify-write of a state file goes under this process-wide lock (as the ledger's), so two
+    /// runners never lose each other's leases, cursor or flags, and taking a lease is one check-and-insert.
+    static let fileLock = OSAllocatedUnfairLock()
+
+    /// Reads, changes and saves the file in one locked step; returns the saved state and what `change` returned.
+    static func modify<T>(_ url: URL?, _ change: (inout RunnerState) -> T) -> (RunnerState, T) {
+        withoutActuallyEscaping(change) { change in
+            fileLock.withLockUnchecked {
+                var state = load(url)
+                let out = change(&state)
+                save(state, to: url)
+                return (state, out)
+            }
+        }
+    }
+
+    static func isFresh(_ lease: Lease, at t: Date) -> Bool {
+        (0..<staleAfter).contains(t.timeIntervalSince(lease.renewedAt))
+    }
 }
 
 extension RequestRunner {
     static func artistKey(_ id: Int) -> String { "artist:\(id)" }
     static func requestKey(_ id: RequestID) -> String { "request:\(id.description)" }
 
-    /// Leases now, from this runner's in-memory sets, keeping other runners' fresh leases that are on disk.
+    /// Leases now, from this runner's in-memory sets, keeping other runners' leases that are on disk.
     func saveLeases() {
         guard !stopped else { return }
         let t = now()
-        var state = RunnerState.load(stateURL)
         let mine = Set(keepingArtists.map(Self.artistKey) + busy.map(Self.requestKey))
-        state.leases.removeAll { $0.process == process && !mine.contains($0.key) }
-        for key in mine where !state.leases.contains(where: { $0.key == key && $0.process == process }) {
-            state.leases.append(.init(key: key, process: process, startedAt: t, renewedAt: t))
+        let me = process
+        persistedState = RunnerState.modify(stateURL) { state in
+            state.leases.removeAll { $0.process == me && !mine.contains($0.key) }
+            for key in mine where !state.leases.contains(where: { $0.key == key && $0.process == me }) {
+                state.leases.append(.init(key: key, process: me, startedAt: t, renewedAt: t))
+            }
+        }.0
+    }
+
+    /// Fix I5: takes the artist in one locked check-and-insert. False when another runner's fresh lease holds it, or
+    /// this runner already works on it.
+    func tryAcquireArtist(_ id: Int) -> Bool {
+        guard !stopped, !keepingArtists.contains(id) else { return false }
+        let t = now(), key = Self.artistKey(id), me = process
+        let (state, taken) = RunnerState.modify(stateURL) { state -> Bool in
+            if state.leases.contains(where: { $0.key == key && $0.process != me && RunnerState.isFresh($0, at: t) }) {
+                return false
+            }
+            state.leases.removeAll { $0.key == key }
+            state.leases.append(.init(key: key, process: me, startedAt: t, renewedAt: t))
+            return true
         }
         persistedState = state
-        RunnerState.save(state, to: stateURL)
+        if taken { keepingArtists.insert(id) }
+        return taken
     }
 
     /// A retired runner (`stop`) drops all of its leases at once.
     func releaseLeases() {
-        var state = RunnerState.load(stateURL)
-        let before = state.leases.count
-        state.leases.removeAll { $0.process == process }
-        guard state.leases.count != before else { return }
-        RunnerState.save(state, to: stateURL)
+        let me = process
+        _ = RunnerState.modify(stateURL) { $0.leases.removeAll { $0.process == me } }
     }
 
-    /// I1: renews this runner's leases and drops other runners' stale ones (logged). Called at the start of a pass.
+    /// I1/I5: renews this runner's leases and drops other runners' stale ones (logged). Called at the start of every
+    /// pass and inside every long wait (a heartbeat).
     func renewLeases() {
-        let t = now()
-        var state = RunnerState.load(stateURL)
-        let stale = state.leases.filter {
-            $0.process != process && !(0..<RunnerState.staleAfter).contains(t.timeIntervalSince($0.renewedAt))
+        guard !stopped else { return }
+        let t = now(), me = process
+        let (state, dropped) = RunnerState.modify(stateURL) { state -> Int in
+            let before = state.leases.count
+            state.leases.removeAll { $0.process != me && !RunnerState.isFresh($0, at: t) }
+            for i in state.leases.indices where state.leases[i].process == me { state.leases[i].renewedAt = t }
+            return before - state.leases.count
         }
-        if !stale.isEmpty { Log.logger("requests").error("dropped \(stale.count) stale lease(s) of an earlier runner") }
-        state.leases.removeAll { l in stale.contains(l) }
-        for i in state.leases.indices where state.leases[i].process == process { state.leases[i].renewedAt = t }
         persistedState = state
-        RunnerState.save(state, to: stateURL)
+        if dropped > 0 { Log.logger("requests").error("dropped \(dropped) stale lease(s) of an earlier runner") }
     }
 
     /// A fresh lease of another runner on `key` (read from disk now).
     func foreignLease(_ key: String) -> Bool {
         let t = now()
-        return RunnerState.load(stateURL).leases.contains {
-            $0.key == key && $0.process != process && (0..<RunnerState.staleAfter).contains(t.timeIntervalSince($0.renewedAt))
-        }
+        return RunnerState.load(stateURL).leases.contains { $0.key == key && $0.process != process && RunnerState.isFresh($0, at: t) }
     }
 
     /// Something is working on this artist: in this runner, or (a fresh lease) in another.
@@ -123,28 +158,18 @@ extension RequestRunner {
         guard let date = try? await lidarr.serverDate() else { return }
         let offset = date.timeIntervalSince(now())
         guard abs(offset) <= RunnerState.maxOffset else { return }
-        var state = RunnerState.load(stateURL)
-        if let old = state.clockOffset, abs(old - offset) > 60 { state.historyCursor = nil }
-        guard state.clockOffset.map({ abs($0 - offset) >= 1 }) ?? true || state.historyCursor == nil else {
-            persistedState = state
-            return
-        }
-        state.clockOffset = offset
-        persistedState = state
-        RunnerState.save(state, to: stateURL)
+        persistedState = RunnerState.modify(stateURL) { state in
+            if let old = state.clockOffset, abs(old - offset) > 60 { state.historyCursor = nil }
+            state.clockOffset = offset
+        }.0
     }
 
     func saveHistoryCursor(_ cursor: Date?) {
-        var state = RunnerState.load(stateURL)
-        state.historyCursor = cursor
-        persistedState = state
-        RunnerState.save(state, to: stateURL)
+        persistedState = RunnerState.modify(stateURL) { $0.historyCursor = cursor }.0
     }
 
     func markMigrated(_ name: String) {
-        var state = RunnerState.load(stateURL)
-        state.migrated[name] = now()
-        persistedState = state
-        RunnerState.save(state, to: stateURL)
+        let t = now()
+        persistedState = RunnerState.modify(stateURL) { $0.migrated[name] = t }.0
     }
 }

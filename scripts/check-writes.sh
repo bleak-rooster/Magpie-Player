@@ -100,16 +100,33 @@ if [ -z "${G1_SRC:-}" ]; then
       *) echo "G1: track file delete outside Not for me and the MP3 rule: $f" >&2; bad=1 ;;
     esac
   done
-  # Y5 C5: every check that refuses on "kept" reads `isKeptOrKeeping` (a Keep under way counts). A bare `.keptAt` is
-  # allowed only where the ledger stores it, where a confirmed Keep is required or set, and in the migration.
-  kept_reads=$(grep -rnE --include='*.swift' '\.keptAt\b' "${product[@]}" | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' | cut -d: -f1 | sort -u || true)
-  for f in $kept_reads; do
-    case "$f" in
-      Packages/MagpieKit/Sources/LidarrKit/Ledger.swift|Packages/MagpieKit/Sources/LidarrKit/WriteConfinement.swift|\
-      Packages/MagpieKit/Sources/Requests/RequestRunner+Keep.swift|Packages/MagpieKit/Sources/Requests/RequestRunner+Reconcile.swift|\
-      Packages/MagpieKit/Sources/Requests/RequestRunner.swift) ;;
-      *) echo "Y5 C5: a bare .keptAt read in $f; use isKeptOrKeeping (refusing) or isConfirmedKept (requiring)" >&2; bad=1 ;;
-    esac
+  # Y5 C5 (fix I4: per call site, not per file): every check that refuses on "kept" reads `isKeptOrKeeping` (a Keep
+  # under way counts). A bare `.keptAt` is allowed only at these call sites (file|text on the line):
+  #   the ledger's storage (init, decoding, the record merge), the gate's confirmed-Keep rule, the Keep's commit and
+  #   clean-up, the migration's legacy lock, and the Try's carry-over of the album entry (which also carries the intent).
+  kept_allow=(
+    "Packages/MagpieKit/Sources/LidarrKit/Ledger.swift|self.keptAt = keptAt"
+    "Packages/MagpieKit/Sources/LidarrKit/Ledger.swift|forKey: .keptAt"
+    "Packages/MagpieKit/Sources/LidarrKit/Ledger.swift|e.keptAt = old.keptAt"
+    "Packages/MagpieKit/Sources/LidarrKit/WriteConfinement.swift|!mine.contains { \$0.keepIntentAt != nil }"
+    "Packages/MagpieKit/Sources/Requests/RequestRunner+Keep.swift|{ \$0.keptAt = at }"
+    "Packages/MagpieKit/Sources/Requests/RequestRunner+Keep.swift|{ \$0.findFiles = nil }"
+    "Packages/MagpieKit/Sources/Requests/RequestRunner+Reconcile.swift|let lockedArtists"
+    "Packages/MagpieKit/Sources/Requests/RequestRunner+Reconcile.swift|ledger.update(artistId: artistId) { \$0.keptAt = nil }"
+    "Packages/MagpieKit/Sources/Requests/RequestRunner.swift|keptAt: prior?.keptAt"
+  )
+  kept_hits=$(grep -rnE --include='*.swift' '\.keptAt\b' "${product[@]}" | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' | cut -d: -f1,2 || true)
+  for hit in $kept_hits; do
+    file="${hit%%:*}" line="${hit##*:}"
+    text="$(sed -n "${line}p" "$file")"
+    ok=0
+    for entry in "${kept_allow[@]}"; do
+      [ "$file" = "${entry%%|*}" ] && case "$text" in *"${entry#*|}"*) ok=1 ;; esac
+    done
+    if [ "$ok" = 0 ]; then
+      echo "Y5 C5: a bare .keptAt at $file:$line; use isKeptOrKeeping (refusing) or isConfirmedKept (requiring)" >&2
+      bad=1
+    fi
   done
 fi
 [ "$bad" = 0 ] || { echo "G1 check failed: route Lidarr writes through LidarrWriteGate (or extend the allowlist in $0)" >&2; exit 1; }

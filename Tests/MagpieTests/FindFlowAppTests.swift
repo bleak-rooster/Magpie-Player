@@ -65,4 +65,18 @@ import Testing
         r.mp3NeedsAttention = true
         #expect(RequestCopy.group(r) == .attention)
     }
+
+    /// Y5 fix I8: "Remove the MP3 now" only where a file record exists (adopted and older kept finds: never).
+    @Test func removeMP3IsOfferedOnlyWithARecord() {
+        var r = MagpieRequest(recording: ExternalRecording(recordingMBID: nil, title: "S", artist: "A", source: .listenBrainz),
+                              tier: .standard, createdAt: Self.date)
+        r.state = .kept
+        var w = LosslessWatch(albumIds: [1], startedAt: Self.date, autoDelete: false, deadline: nil)
+        r.lossless = w
+        #expect(!AppModel.canRemoveMP3(r), "adopted / older: no record")
+        w.hasRecord = true; r.lossless = w
+        #expect(AppModel.canRemoveMP3(r))
+        w.removedAt = Self.date; r.lossless = w
+        #expect(!AppModel.canRemoveMP3(r))
+    }
 }

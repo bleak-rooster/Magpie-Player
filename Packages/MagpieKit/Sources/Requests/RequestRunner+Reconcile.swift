@@ -122,7 +122,7 @@ extension RequestRunner {
         }
         lastLidarrContact = now()
         Log.logger("requests").error("a find was moved into the library outside Magpie; adopted as kept")
-        keepingArtists.insert(artistId)
+        guard tryAcquireArtist(artistId) else { return }   // fix I5
         defer { keepingArtists.remove(artistId) }
         guard await commitKept(artistId) else { return }
         for other in list where other.lidarrArtistId == artistId && other.state == .ready && other.keep == nil {
@@ -137,46 +137,111 @@ extension RequestRunner {
         await startLosslessWatch(id, artistId: artistId, autoDelete: false)
     }
 
+    // MARK: - Orphan Keep intents (fix I2)
+
+    static let orphanInterval: TimeInterval = 60
+
+    /// A Keep intent no request follows (the app died after the ledger said "keeping", before the request saved its
+    /// Keep; or a clear that failed). The request's Keep is saved before any PUT, so with none saved no move was sent:
+    /// - the artist still a tagged find inside the Finds folder: the intent (and its file record) is cleared, with a
+    ///   change-log note;
+    /// - anything else: never cleared; the artist's finds say "needs a look".
+    func recoverOrphanIntents() async {
+        let t = now()
+        if let last = orphanChecks, (0..<Self.orphanInterval).contains(t.timeIntervalSince(last)) { return }
+        orphanChecks = t
+        guard let entries = try? await ledger.entries else { return }
+        let artists = Set(entries.filter { $0.keepIntentAt != nil }.map(\.lidarrArtistId))
+        guard !artists.isEmpty, let setup = await keepSetup() else { return }
+        for artistId in artists.sorted() where !list.contains(where: { $0.keep?.artistId == artistId }) {
+            guard tryAcquireArtist(artistId) else { continue }
+            defer { keepingArtists.remove(artistId) }
+            guard let artist = try? await lidarr.artist(id: artistId), let roots = try? await lidarr.rootFolders().map(\.path)
+            else { continue }
+            let mine = entries.filter { $0.lidarrArtistId == artistId }
+            let stillFind = mine.contains(where: { $0.created(artist) }) && artist.tags.contains(setup.findTagId)
+                && artist.path.map(Self.findsGuard(findsRoot: setup.findsRoot, mainRoot: setup.mainRoot, roots: roots).isInside) == true
+            if stillFind {
+                guard await clearIntent(artistId) else { continue }
+                await gate.note("Cleared an Add to your library that never reached Lidarr (artist \(artistId)).")
+                Log.logger("requests").error("cleared an orphan Keep intent; the artist never moved")
+            } else {
+                for r in list where r.lidarrArtistId == artistId && r.isFind && !r.keepNeedsAttention {
+                    await mutate(r.id) { $0.keepNeedsAttention = true }
+                }
+                Log.logger("requests").error("an orphan Keep intent on an artist that isn't a find any more: needs a look")
+            }
+        }
+    }
+
     // MARK: - Migration (§9)
 
+    /// Fix I6: the flag is set only once every step finished or was proven not to apply; a step that couldn't (Lidarr
+    /// or the ledger unreadable, no setup yet) runs again on a later pass. Every step is idempotent.
     func migrateY5() async {
         guard persistedState.migrated["y5"] == nil else { return }
         let entries: [LedgerEntry]
         do { entries = try await ledger.entries } catch { return }   // later: never migrate half-blind
+        var complete = true
         // 1. I3: a legacy lock (a Keep that crashed after saying kept, before its move): cleared only when certain.
         let lockedArtists = Set(entries.filter { $0.createdArtist && $0.keptAt != nil && $0.keepIntentAt == nil }
             .map(\.lidarrArtistId))
-        if let setup = await keepSetup() {
-            for artistId in lockedArtists { await clearLegacyLock(artistId, setup: setup) }
+        if !lockedArtists.isEmpty {
+            if let setup = await keepSetup() {
+                for artistId in lockedArtists.sorted() where await !clearLegacyLock(artistId, setup: setup) { complete = false }
+            } else {
+                complete = false
+            }
         }
-        // 2. Legacy kept-in-place finds stay as they are (I4). 3. Older kept, moved finds: the watch, no auto delete.
+        // 2. Legacy kept-in-place finds stay as they are (I4). 3. Older kept, moved finds: the watch, no auto delete,
+        //    for an artist Lidarr still lists (read now: an unreadable Lidarr leaves the step for later).
         for r in list where r.state == .kept && !r.keptInPlace && r.movedTo != nil && r.lossless == nil {
             guard let artistId = r.lidarrArtistId else { continue }
-            await startLosslessWatch(r.id, artistId: artistId, autoDelete: false)
+            do {
+                _ = try await lidarr.artist(id: artistId)
+            } catch LidarrError.http(status: 404) {
+                continue   // gone from Lidarr: nothing to watch
+            } catch {
+                complete = false
+                continue
+            }
+            if await !startLosslessWatch(r.id, artistId: artistId, autoDelete: false) { complete = false }
         }
-        markMigrated("y5")
+        if complete { markMigrated("y5") }
     }
 
     /// I3: only with a request of the artist that never finished keeping (no needs attention), the artist still
     /// tagged, and its path exactly where the request's Keep started from (or, with no Keep saved at all, the request
-    /// still ready, never moved, and the artist strictly inside the Finds root). Logged to the device log.
-    private func clearLegacyLock(_ artistId: Int, setup: KeepSetup) async {
+    /// still ready, never moved, and the artist strictly inside the Finds root). Logged to the change log. True: done or
+    /// proven not to apply; false: couldn't tell now.
+    private func clearLegacyLock(_ artistId: Int, setup: KeepSetup) async -> Bool {
         guard let r = list.first(where: { $0.lidarrArtistId == artistId && $0.isFind }), !r.keepNeedsAttention,
-              r.state != .kept, r.movedTo == nil, !r.keptInPlace,
-              let artist = try? await lidarr.artist(id: artistId), artist.tags.contains(setup.findTagId),
-              let path = artist.path, let roots = try? await lidarr.rootFolders().map(\.path) else { return }
+              r.state != .kept, r.movedTo == nil, !r.keptInPlace else { return true }
+        let artist: LidarrArtist, roots: [String]
+        do {
+            artist = try await lidarr.artist(id: artistId)
+            roots = try await lidarr.rootFolders().map(\.path)
+        } catch LidarrError.http(status: 404) {
+            return true
+        } catch {
+            return false
+        }
+        guard artist.tags.contains(setup.findTagId), let path = artist.path else { return true }
         if let from = r.keep?.fromPath {
-            guard Self.sameBytes(path, from) else { return }
+            guard Self.sameBytes(path, from) else { return true }
         } else {
             guard r.state == .ready,
-                  Self.findsGuard(findsRoot: setup.findsRoot, mainRoot: setup.mainRoot, roots: roots).isInside(path) else { return }
+                  Self.findsGuard(findsRoot: setup.findsRoot, mainRoot: setup.mainRoot, roots: roots).isInside(path) else { return true }
         }
         do {
             try await ledger.update(artistId: artistId) { $0.keptAt = nil }
             await mutate(r.id) { $0.keep = nil }
+            await gate.note("Cleared a Keep lock left by a crash before this version (artist \(artistId) never moved).")
             Log.logger("requests").error("cleared a Keep lock left by a crash (the artist never moved)")
+            return true
         } catch {
             Log.logger("requests").error("legacy Keep lock not cleared: ledger unavailable")
+            return false
         }
     }
 }

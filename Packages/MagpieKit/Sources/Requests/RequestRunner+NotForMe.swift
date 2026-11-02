@@ -450,6 +450,12 @@ extension RequestRunner {
     /// of it is under way, ready, kept or let go of; a fresh GET still shows it a find in the same folder; Lidarr
     /// records no track file and no other monitored album for it; and its folder holds no file on disk. A 404:
     /// it is gone already (`.no`, nothing to send).
+    /// Tests (critic test 1): whether the artist-removal check would allow it.
+    func mayRemoveArtistAllowed(_ r: MagpieRequest, _ p: NotForMeProgress) async -> Bool {
+        if case .yes = await mayRemoveArtist(r, p) { return true }
+        return false
+    }
+
     private func mayRemoveArtist(_ r: MagpieRequest, _ p: NotForMeProgress) async -> Proven<Void> {
         let entries: [LedgerEntry]
         do {

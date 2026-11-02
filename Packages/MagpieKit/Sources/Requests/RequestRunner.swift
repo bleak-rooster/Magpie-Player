@@ -19,6 +19,9 @@ public struct LibraryAccess: Sendable {
     /// After Keep's move: the recording's song in the folder the artist moved to (Lidarr's path); nil while not
     /// listed there. Never the owner's own copy of the recording elsewhere.
     public var keptSong: @Sendable (MBID, _ artistPath: String) async throws -> Song?
+    /// Y5 fix I7: a scan of exactly this artist folder (Lidarr's path) in the library it's in. False: it can't be
+    /// placed (never a whole-library or full scan instead).
+    public var scanFolder: @Sendable (_ artistFolder: String) async -> Bool
     /// Y5 (item 9.2): the library's songs titled like `title` inside Lidarr's artist folder, each with its path in
     /// Lidarr's terms (mapped from Navidrome's). Nil: can't tell. For files without MusicBrainz tags.
     public var songsTitled: @Sendable (_ title: String, _ artistFolder: String) async -> [(song: Song, lidarrPath: String)]?
@@ -30,7 +33,9 @@ public struct LibraryAccess: Sendable {
                 songId: @escaping @Sendable (ExternalRecording) async -> String?,
                 rescanMoved: (@Sendable (_ from: String, _ to: String) async throws -> Void)? = nil,
                 keptSong: (@Sendable (MBID, _ artistPath: String) async throws -> Song?)? = nil,
-                songsTitled: (@Sendable (_ title: String, _ artistFolder: String) async -> [(song: Song, lidarrPath: String)]?)? = nil) {
+                songsTitled: (@Sendable (_ title: String, _ artistFolder: String) async -> [(song: Song, lidarrPath: String)]?)? = nil,
+                scanFolder: (@Sendable (_ artistFolder: String) async -> Bool)? = nil) {
+        self.scanFolder = scanFolder ?? { _ in false }
         self.startScan = startScan; self.isScanning = isScanning
         self.refreshIndex = refreshIndex; self.songId = songId
         self.songsTitled = songsTitled ?? { _, _ in nil }
@@ -143,6 +148,27 @@ public actor RequestRunner {
     let onMP3Removed: @Sendable (MagpieRequest, _ songId: String?) -> Void
     /// Tests and the dev-stack IT: a shorter MP3 grace than 7 days.
     var mp3GraceOverride: TimeInterval?
+    /// Fix I7: artist folders waiting for Navidrome's scan (since when), the last scan, and its backoff.
+    var pendingScans: [String: Date] = [:]
+    var lastFolderScan: Date?
+    var scanBackoff: TimeInterval = 60
+    /// Fix I10 (chaos suite): a test kills the runner at a named step.
+    var faultHook: (@Sendable (FaultPoint) -> Bool)?
+    var orphanChecks: Date?
+
+    /// The steps the chaos suite kills the app at (design §10).
+    public enum FaultPoint: String, Sendable, CaseIterable {
+        case intentSaved, beforePut, afterPut, ledgerCommitted, requestCommitted, refreshSent, beforeDelete, afterDelete
+    }
+
+    public func setFaultHook(_ hook: (@Sendable (FaultPoint) -> Bool)?) { faultHook = hook }
+
+    /// A test's kill at this step: the runner stops (as a dead process would) and the caller returns.
+    func crashed(_ point: FaultPoint) -> Bool {
+        guard let faultHook, faultHook(point) else { return false }
+        stop()
+        return true
+    }
     public func setMP3Grace(_ seconds: TimeInterval?) { mp3GraceOverride = seconds }
 
     private(set) var list: [MagpieRequest] = []
@@ -367,6 +393,8 @@ public actor RequestRunner {
         await updateServerClock()
         await migrateY5()
         if shouldStop() { return }
+        await recoverOrphanIntents()   // fix I2
+        if shouldStop() { return }
         await foldFacts()
         for r in list where r.isActive {
             if shouldStop() { return }
@@ -388,6 +416,8 @@ public actor RequestRunner {
         await followAdopted()
         if shouldStop() { return }
         await followLossless()
+        if shouldStop() { return }
+        await flushFolderScans()   // fix I7
         if shouldStop() { return }
         await followNotForMes()
         if shouldStop() { return }
@@ -801,14 +831,17 @@ public actor RequestRunner {
             ? (livePrior?.wasMonitoredBefore ?? readyPrior?.wasMonitoredBefore ?? true) : false
         let needsMonitor = !album.monitored
         try ensure(id, .adding)
-        let entry = LedgerEntry(
+        var entry = LedgerEntry(
             lidarrArtistId: artist.id, albumId: album.id, rgMbid: rg,
             createdArtist: (try? await ledger.createdArtist(artist)) == true,
             wasMonitoredBefore: wasMonitoredBefore,
             root: readyPrior?.root ?? artist.rootFolderPath ?? r.root ?? artist.path ?? "", mode: readyPrior?.mode ?? .fallback,
-            keptAt: prior?.keptAt, send: needsMonitor ? .notSent : .applied,
+            keptAt: prior?.keptAt, send: needsMonitor ? .notSent : .applied,   // C5: carry-over (Y5 fix I4)
             requestId: needsMonitor ? id.description : (readyPrior?.requestId ?? id.description),
             artistMbid: artist.foreignArtistId)
+        // Y5 fix I4: a Try on this album never drops a Keep under way or the find's file record (Ledger.record merges too).
+        entry.keepIntentAt = prior?.keepIntentAt
+        entry.findFiles = prior?.findFiles
         try await ledger.record(entry)
         await mutate(id) {
             $0.lidarrArtistId = artist.id

@@ -141,8 +141,7 @@ extension RequestRunner {
         // Not for me is deleting (or couldn't finish deleting) this artist's find: never move it meanwhile.
         if lettingGoNow(artistId) { throw KeepError.notAFind }
         // One Keep per artist: the whole artist moves (a lease, I1: also against another runner).
-        guard !artistBusy(artistId) else { return .stillMoving }
-        keepingArtists.insert(artistId)
+        guard tryAcquireArtist(artistId) else { return .stillMoving }   // fix I5: one atomic check-and-insert
         defer { keepingArtists.remove(artistId) }
         // Queued: send it if Lidarr is free now. M6: already written: only see how it went; never write it again.
         if r.keep?.phase == .queued { return try await sendQueued(id) }
@@ -188,10 +187,17 @@ extension RequestRunner {
         // M6 + item 9.4: the intent is on disk (ledger and request) before anything can reach Lidarr; never "kept".
         do {
             let at = serverNow()
-            try await ledger.update(artistId: artistId) {
-                $0.keepIntentAt = at
-                $0.findFiles = files
+            // Fix I1: each file's record goes on its album's entry only (files of an album without an entry on the
+            // lowest album's entry), so the record is stored once per artist.
+            let withEntry = Set(entries.compactMap(\.albumId))
+            let catchAll = withEntry.min()
+            try await ledger.update(artistId: artistId) { e in
+                e.keepIntentAt = at
+                var mine = files.filter { $0.albumId == e.albumId }
+                if e.albumId == catchAll { mine += files.filter { !withEntry.contains($0.albumId) } }
+                e.findFiles = mine.isEmpty ? nil : mine
             }
+            if crashed(.intentSaved) { throw KeepError.unavailable }
             await mutate(id) {
                 $0.keep = progress
                 $0.keepFailed = false
@@ -199,7 +205,7 @@ extension RequestRunner {
             }
             try await persist()
         } catch {
-            await nothingKept(id, artistId)
+            if !stopped { await nothingKept(id, artistId) }
             throw KeepError.unavailable
         }
         return try await sendQueued(id)
@@ -291,6 +297,7 @@ extension RequestRunner {
         }
         let body = MoveBody(artistIds: [artistId], rootFolderPath: setup.mainRoot, moveFiles: true,
                             qualityProfileId: setup.losslessProfileId, tags: [setup.findTagId], applyTags: "remove")
+        if crashed(.beforePut) { throw KeepError.unavailable }
         do {
             _ = try await gate.send("PUT", "artist/editor", body: body)
         } catch let refusal as WriteGateError {
@@ -309,6 +316,7 @@ extension RequestRunner {
             Log.logger("requests").error("Keep: no answer from Lidarr; following the move")
             return try await followKeep(id, inline: true)
         }
+        if crashed(.afterPut) { throw KeepError.unavailable }
         return try await followKeep(id, inline: true)
     }
 
@@ -329,6 +337,7 @@ extension RequestRunner {
                 await mutate(id) { $0.keep?.lastCheckAt = self.now() }
                 guard now() < deadline else { return .stillMoving }
                 await sleep(Self.keepPollInterval)
+                renewLeases()   // fix I5: the heartbeat inside the wait
             }
         }
     }
@@ -575,24 +584,31 @@ extension RequestRunner {
     private func finishMove(_ id: RequestID, _ p: KeepProgress, to path: String) async {
         // Item 9.4 + I10: "kept" only now, after the move was proven, in one save for the whole artist.
         guard await commitKept(p.artistId) else { return }
+        if crashed(.ledgerCommitted) { return }
         let tapped = p.sentAt != nil && request(id)?.keep?.phase != .queued
+        // Fix I3: the watch is saved in the same change that says kept (§5: the MP3 rule only for a Keep the owner
+        // tapped under Y5, C2); its commands go after it's on disk.
+        let entries = (try? await ledger.entries.filter { $0.lidarrArtistId == p.artistId }) ?? []
+        let watch = request(id).flatMap { makeWatch($0, entries: entries, autoDelete: tapped) }
         let kept = list.filter { $0.lidarrArtistId == p.artistId && ($0.id == id || ($0.state == .ready && $0.keep == nil)) }
         for r in kept {
-            await apply(r.id, .keep)
-            await mutate(r.id) {
-                $0.keep = nil
-                $0.keepFailed = false
-                $0.relinkPending = true
-                $0.movedAt = self.now()
-                $0.movedTo = path
-            }
+            guard var updated = request(r.id) else { continue }
+            let (next, _) = RequestMachine.step(updated.state, .keep, now: now(), prior: updated.priorWait)
+            updated.state = next
+            updated.keep = nil
+            updated.keepFailed = false
+            updated.relinkPending = true
+            updated.movedAt = now()
+            updated.movedTo = path
+            if r.id == id, updated.lossless == nil { updated.lossless = watch }
+            await mutate(r.id) { $0 = updated }
         }
+        if crashed(.requestCommitted) { return }
         do { try await library.rescanMoved(p.fromPath, path) } catch {
             Log.logger("requests").error("Keep: scan failed: \(Log.category(of: error), privacy: .public)")
         }
         for r in kept { await relink(r.id) }
-        // §5: the lossless search and watch; the MP3 rule only for a Keep the owner tapped under Y5 (C2).
-        await startLosslessWatch(id, artistId: p.artistId, autoDelete: tapped)
+        await kickLosslessWatch(id, artistId: p.artistId)
     }
 
     /// The commit: `keptAt` on, the intent off, for every entry of the artist in one save. False: not saved (the
@@ -611,11 +627,19 @@ extension RequestRunner {
         }
     }
 
-    /// The intent is off and nothing says kept (the intent's file record goes with it).
-    func clearIntent(_ artistId: Int) async {
-        _ = try? await ledger.update(artistId: artistId) {
-            $0.keepIntentAt = nil
-            if $0.keptAt == nil { $0.findFiles = nil }
+    /// The intent is off and nothing says kept (the intent's file record goes with it). False: not saved (fix I2: the
+    /// next pass's orphan-intent recovery tries again).
+    @discardableResult
+    func clearIntent(_ artistId: Int) async -> Bool {
+        do {
+            try await ledger.update(artistId: artistId) {
+                $0.keepIntentAt = nil
+                if $0.keptAt == nil { $0.findFiles = nil }
+            }
+            return true
+        } catch {
+            Log.logger("requests").error("Keep: the intent couldn't be cleared; tried again")
+            return false
         }
     }
 
@@ -658,18 +682,16 @@ extension RequestRunner {
             !wantsLossless || ["flac", "alac", "wav", "ape", "wv", "aiff", "aif"].contains(song.suffix?.lowercased() ?? "") ? song : nil
         }
         guard let song = usable else {
-            // Y5: the library hasn't listed the lossless file yet (a scan may have been skipped while another ran):
-            // ask for the folder's scan again, at most once a minute.
-            if wantsLossless, r.lastScanAt.map({ now().timeIntervalSince($0) >= 60 }) ?? true {
-                await mutate(id) { $0.lastScanAt = self.now() }
-                try? await library.rescanMoved(folder, folder)
-            }
+            // Y5 fix I7: the library hasn't listed the lossless file yet: the artist folder's scan is asked for once,
+            // coalesced across requests and bounded by `flushFolderScans`.
+            if wantsLossless { requestFolderScan(folder) }
             if now().timeIntervalSince(r.movedAt ?? r.updatedAt) >= Self.relinkLimit {
                 await mutate(id) { $0.relinkPending = false }
             }
             return
         }
         let before = r.songId
+        if wantsLossless { folderScanned(folder) }
         await mutate(id) {
             $0.songId = song.id
             $0.songSuffix = song.suffix
@@ -683,10 +705,10 @@ extension RequestRunner {
 
     func followKeeps() async {
         for r in list {
-            guard let p = r.keep, !artistBusy(p.artistId) else { continue }
+            guard let p = r.keep else { continue }
             let artistId = p.artistId
             if p.phase == .queued {
-                keepingArtists.insert(artistId)
+                guard tryAcquireArtist(artistId) else { continue }
                 if now().timeIntervalSince(p.startedAt) >= Self.keepQueueLimit {
                     // Item 9.5: never sent; after a day it's dropped ("Couldn't add it yet. Try again.").
                     await nothingKept(r.id, artistId)
@@ -699,7 +721,7 @@ extension RequestRunner {
             }
             // A last check "in the future" (the clock went back) is due now.
             if let last = p.lastCheckAt, (0..<Self.keepCheckInterval).contains(now().timeIntervalSince(last)) { continue }
-            keepingArtists.insert(artistId)
+            guard tryAcquireArtist(artistId) else { continue }
             _ = try? await followKeep(r.id, inline: false)
             keepingArtists.remove(artistId)
         }

@@ -282,6 +282,11 @@ public struct LosslessWatch: Sendable, Codable, Equatable {
     public var losslessAt: Date?
     /// The watch ended: lossless, or 30 days (I5).
     public var doneAt: Date?
+    /// Fix I8: the ledger holds the find's file record, so "Remove the MP3 now" can work (nil: older, no record).
+    public var hasRecord: Bool?
+    /// Fix I5: the removal's RefreshArtist, sent and not yet seen completed (checked on later passes).
+    public var refreshCommandId: Int?
+    public var refreshSentAt: Date?
 
     public init(albumIds: [Int], startedAt: Date, autoDelete: Bool, deadline: Date?) {
         self.albumIds = albumIds; self.startedAt = startedAt; self.autoDelete = autoDelete; self.deadline = deadline

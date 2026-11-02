@@ -69,10 +69,24 @@ enum FindCopy {
 }
 
 extension AppModel {
-    /// "Remove the MP3 now" is offered on a kept find whose MP3 Magpie recorded (the runner checks the ledger again).
-    func canRemoveMP3(_ request: MagpieRequest) -> Bool {
-        guard request.state == .kept, let w = request.lossless else { return false }
+    /// "Remove the MP3 now" is offered on a kept find whose MP3 Magpie recorded (fix I8: only where a file record
+    /// exists; adopted and older kept finds show the watch status without it). The runner checks the ledger again.
+    func canRemoveMP3(_ request: MagpieRequest) -> Bool { Self.canRemoveMP3(request) }
+
+    nonisolated static func canRemoveMP3(_ request: MagpieRequest) -> Bool {
+        guard request.state == .kept, let w = request.lossless, w.hasRecord == true else { return false }
         return w.isActive && w.removedAt == nil && w.losslessAt == nil && !request.mp3NeedsAttention
+    }
+
+    /// Fix I7: a scan of exactly this artist folder (Lidarr's path) in the one library it's in. False when it can't be
+    /// placed: never the whole main library, never a full scan.
+    func scanArtistFolder(_ artistFolder: String) async -> Bool {
+        guard let finds = findsSetup, let findsLibrary = finds.library,
+              let libraries = try? await navidromeLibraries(),
+              let (library, relative) = Self.keptLocation(artistFolder, findsLibrary: findsLibrary, mapping: finds.mapping,
+                                                          libraries: libraries), !relative.isEmpty else { return false }
+        let target = "\(library.id):\(relative)"
+        return (try? await request { try await $0.startScan(targets: [target]) }) != nil
     }
 
     /// I7: true when Lidarr's recycle bin is unset (or can't be read: say the worst).

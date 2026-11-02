@@ -72,4 +72,12 @@ import MagpieTestSupport
         #expect(await gate.changeLog().last?.method == "NOTE")
         #expect(fake.writes.isEmpty)
     }
+
+    /// Critic test 1 (the queue reader): a queue delete of an album whose artist has only a Keep intent refuses.
+    @Test func aQueueDeleteRefusesOnAnIntent() async throws {
+        let fake = try await QueueDeleteGateTests.Fake()
+        try await fake.ledger.update(artistId: 7) { $0.keepIntentAt = Date() }
+        #expect(await KeptLossyDeleteTests.refused(await fake.gate(), "DELETE", "queue/501" + QueueDeleteGateTests.shape))
+        #expect(fake.writes.isEmpty)
+    }
 }
