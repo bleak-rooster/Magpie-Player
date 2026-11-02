@@ -22,7 +22,7 @@ private func subsonic(_ body: String) -> Data {
 
 /// Task 22: the car's Home follows the owner's order and switches (Made for you with a ListenBrainz token, as on the
 /// phone), its shelves sized to fit the car's list together; the car's Library is the owner's rows without Songs and
-/// Requests (spec §3, D12). Task 23: Genres, Favourites, Downloads, Made for you, offline and the sleep timer.
+/// Requests (spec §3, D12). Task 23: Genres, Favourites, Downloads, Made for you, offline; Y2: Favourite in Now Playing instead of the sleep timer.
 @MainActor @Suite(.serialized) final class CarPlayCustomisationTests {
     let tmp = FileManager.default.temporaryDirectory.appending(path: "CarPlayCustomisationTests-\(UUID().uuidString)")
     let store = SessionStore(keychain: KeychainStore(service: "com.bleak-rooster.magpie.tests.\(UUID().uuidString)"))
@@ -289,29 +289,14 @@ private func subsonic(_ body: String) -> Data {
         #expect(try await adapter.songs(for: .genreGroup(id: "rock", shuffled: true)).prefix(4).map(\.id) == ["ir0", "ar0", "ir1", "ar1"])
     }
 
-    @Test func carSleepToggleUsesDefault() async throws {
-        let model = try await signedInModel(fetcher: FakeFetcher())
-        let adapter = CarPlayLibraryAdapter(model: model)
-        adapter.toggleSleepTimer()
-        guard case .at(let fire) = model.sleepTimer.mode else { Issue.record("not started"); return }
-        #expect(abs(fire.timeIntervalSinceNow - 1800) < 5 && adapter.sleepTimerActive)
-        adapter.toggleSleepTimer()
-        #expect(model.sleepTimer.mode == .off && !adapter.sleepTimerActive)
-    }
-
     // MARK: - Task 23: controller additions
 
-    /// The owner's default, not always 30 minutes; "End of song" counts as on.
-    @Test func carSleepToggleFollowsTheSetting() async throws {
-        let model = try await signedInModel(fetcher: FakeFetcher())
-        model.updatePreferences { $0.playback.sleepTimer = .endOfSong }
-        let adapter = CarPlayLibraryAdapter(model: model)
-        adapter.toggleSleepTimer()
-        #expect(model.sleepTimer.mode == .endOfSong && adapter.sleepTimerActive)
-        adapter.toggleSleepTimer()
-        #expect(model.sleepTimer.mode == .off)
-        #expect(CarPlayRows.sleepTimerMessage(active: true) == "Sleep timer on")
-        #expect(CarPlayRows.sleepTimerMessage(active: false) == "Sleep timer off")
+    /// Y2 (2b): the sleep timer left the car for Favourite; what the car says when a favourite doesn't go through.
+    @Test func carFavouriteMessages() {
+        #expect(CarPlayRows.favouriteMessage(.failed(adding: true)) == "Couldn't add to your favourites")
+        #expect(CarPlayRows.favouriteMessage(.failed(adding: false)) == "Couldn't remove from your favourites")
+        #expect(CarPlayRows.favouriteMessage(.offline) == "You're offline")
+        #expect(CarPlayRows.favouriteMessage(.done) == nil)
     }
 
     /// Genres in the car (D41): the list is the phone's groups; a group page is Shuffle, then its genres in server order.
@@ -475,11 +460,11 @@ private func subsonic(_ body: String) -> Data {
         }
         let token = try changes({ adapter.homeSections }) { try model.setListenBrainzToken("tok") }
         let offline = changes({ adapter.isOffline }) { model.updatePreferences { prefs in prefs.downloads.offlineMode = .on } }
-        let sleep = changes({ adapter.sleepTimerActive }) { adapter.toggleSleepTimer() }
+        let favourite = changes({ adapter.isFavourite(songId: "s1") }) { model.noteFavourite(.song("s1"), true) }
         #expect(finds, "findsSetup")
         #expect(token, "hasListenBrainzToken")
         #expect(offline, "isOffline")
-        #expect(sleep, "sleepTimerActive")
+        #expect(favourite, "isFavourite (Y2)")
     }
 }
 

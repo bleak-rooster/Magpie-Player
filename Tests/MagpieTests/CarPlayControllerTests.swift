@@ -249,20 +249,149 @@ final class FakeCarInterface: CarPlayInterface {
         #expect(await eventually { FakeCarInterface.texts(car.topList) == ["Starred one", "Starred album"] })
     }
 
-    /// The sleep button sits in Now Playing (spec §5: the template allows a custom image button) and follows the timer.
-    @Test func sleepButtonFollowsTheTimer() async throws {
-        let model = try await signedInModel()
-        let adapter = CarPlayLibraryAdapter(model: model)
-        let controller = CarPlayController(interfaceController: FakeCarInterface(), library: adapter, player: model.player)
-        defer { controller.disconnect() }
-        func sleepButton() -> CPNowPlayingButton? {
-            CPNowPlayingTemplate.shared.nowPlayingButtons.first { $0 is CPNowPlayingImageButton }
+    // MARK: - Round 12 item 2b (Y2): Favourite in Now Playing, instead of the sleep timer
+
+    private func starButton() -> CPNowPlayingImageButton? {
+        CPNowPlayingTemplate.shared.nowPlayingButtons.compactMap { $0 as? CPNowPlayingImageButton }.first
+    }
+
+    private func starRequests(_ suffix: String) -> [String?] {
+        transport.inner.requests.filter { $0.url?.path.hasSuffix(suffix) == true }.map { request in
+            request.url.flatMap { URLComponents(url: $0, resolvingAgainstBaseURL: false) }?.queryItems?
+                .first { $0.name == "id" }?.value
         }
-        #expect(sleepButton()?.isSelected == false && sleepButton()?.accessibilityLabel == "Sleep timer")
-        adapter.toggleSleepTimer()
-        #expect(await eventually { sleepButton()?.isSelected == true })
-        adapter.toggleSleepTimer()
-        #expect(await eventually { sleepButton()?.isSelected == false })
+    }
+
+    private let plain = Song(id: "s1", title: "Plain", artist: "A", album: "X", duration: 200)
+    private let loved = Song(id: "s2", title: "Loved", artist: "A", album: "X", duration: 200, starred: true)
+
+    /// The star follows the song playing (its favourite state on the phone); the sleep button is gone from the car.
+    @Test func favouriteButtonFollowsTheSong() async throws {
+        let model = try await signedInModel()
+        let controller = CarPlayController(interfaceController: FakeCarInterface(), library: CarPlayLibraryAdapter(model: model),
+                                           player: model.player)
+        defer { controller.disconnect() }
+        #expect(starButton()?.isEnabled == false, "nothing playing: the star is there but off")
+        #expect(!CPNowPlayingTemplate.shared.nowPlayingButtons.contains { $0.accessibilityLabel == "Sleep timer" })
+        model.player.play([plain, loved], startAt: 0)
+        #expect(await eventually {
+            self.starButton()?.isEnabled == true && self.starButton()?.isSelected == false
+                && self.starButton()?.accessibilityLabel == "Favourite"
+        })
+        model.player.next()
+        #expect(await eventually {
+            self.starButton()?.isSelected == true && self.starButton()?.accessibilityLabel == "Unfavourite"
+        })
+        // Starred on the phone: the car follows.
+        await model.setFavourite(.song("s2"), false)
+        #expect(await eventually { self.starButton()?.isSelected == false })
+    }
+
+    /// A tap goes through the phone's favourites (X3's `setFavourite`): the star fills at once and the server is told.
+    @Test func favouriteTapStarsTheSongPlaying() async throws {
+        transport.inner.stub(pathSuffix: "/rest/star", body: ok)
+        transport.inner.stub(pathSuffix: "/rest/unstar", body: ok)
+        let model = try await signedInModel()
+        let car = FakeCarInterface()
+        let controller = CarPlayController(interfaceController: car, library: CarPlayLibraryAdapter(model: model),
+                                           player: model.player)
+        defer { controller.disconnect() }
+        model.player.play([plain, loved], startAt: 0)
+        #expect(await eventually { self.starButton()?.isEnabled == true })
+        controller.favouriteTapped()
+        #expect(await eventually { self.starRequests("/rest/star") == ["s1"] })
+        #expect(await eventually { self.starButton()?.isSelected == true && model.isFavourite(.song("s1")) })
+        #expect(car.presented.isEmpty, "a favourite that worked says nothing: the star shows it")
+        model.player.next()
+        #expect(await eventually { self.starButton()?.isSelected == true })
+        controller.favouriteTapped()
+        #expect(await eventually { self.starRequests("/rest/unstar") == ["s2"] })
+        #expect(await eventually { self.starButton()?.isSelected == false && !model.isFavourite(.song("s2")) })
+    }
+
+    /// The server says no: the star goes back to the real state, and the car says why (in answer to the tap).
+    @Test func favouriteFailureRollsBack() async throws {
+        let refused = Data(#"{"subsonic-response":{"status":"failed","version":"1.16.1","error":{"code":0,"message":"no"}}}"#.utf8)
+        transport.inner.stub(pathSuffix: "/rest/star", body: refused)
+        let model = try await signedInModel()
+        let car = FakeCarInterface()
+        let controller = CarPlayController(interfaceController: car, library: CarPlayLibraryAdapter(model: model),
+                                           player: model.player)
+        defer { controller.disconnect() }
+        model.player.play([plain], startAt: 0)
+        #expect(await eventually { self.starButton()?.isEnabled == true })
+        controller.favouriteTapped()
+        #expect(await eventually { !self.starRequests("/rest/star").isEmpty })
+        #expect(await eventually { car.presented.contains { $0 is CPAlertTemplate } })
+        let alert = try #require(car.presented.last as? CPAlertTemplate)
+        #expect(alert.titleVariants == ["Couldn't add to your favourites"])
+        #expect(self.starButton()?.isSelected == false && !model.isFavourite(.song("s1")))
+        #expect(self.starButton()?.isEnabled == true, "and it can be tried again")
+    }
+
+    /// Offline nothing is sent: the car says so and the star stays as it was.
+    @Test func favouriteOfflineSaysSo() async throws {
+        let model = try await signedInModel()
+        let car = FakeCarInterface()
+        let controller = CarPlayController(interfaceController: car, library: CarPlayLibraryAdapter(model: model),
+                                           player: model.player)
+        defer { controller.disconnect() }
+        model.player.play([plain], startAt: 0)
+        #expect(await eventually { self.starButton()?.isEnabled == true })
+        model.updatePreferences { $0.downloads.offlineMode = .on }
+        #expect(await eventually { model.isOffline })
+        controller.favouriteTapped()
+        #expect(await eventually { (car.presented.last as? CPAlertTemplate)?.titleVariants == ["You're offline"] })
+        #expect(starRequests("/rest/star").isEmpty && self.starButton()?.isSelected == false)
+    }
+
+    // MARK: - Round 12 item 2 (Y2): A–Z lists
+
+    /// Playlists come in letter sections with CarPlay's letter scrubber.
+    @Test func libraryListsShowTheLetterScrubber() async throws {
+        transport.inner.stub(pathSuffix: "/rest/getPlaylists", body: subsonic(#"""
+        "playlists":{"playlist":[{"id":"p1","name":"Road","songCount":1,"duration":9},{"id":"p2","name":"Beach","songCount":1,"duration":9},{"id":"p3","name":"Rain","songCount":1,"duration":9}]}
+        """#))
+        let model = try await signedInModel()
+        let car = FakeCarInterface()
+        let controller = CarPlayController(interfaceController: car, library: CarPlayLibraryAdapter(model: model),
+                                           player: model.player)
+        defer { controller.disconnect() }
+        controller.setAvailability(.ready(account: "one"))
+        car.tap("Playlists", in: car.tab(1))
+        #expect(await eventually { FakeCarInterface.texts(car.topList) == ["Beach", "Rain", "Road"] })
+        #expect(car.topList?.sections.map(\.sectionIndexTitle) == ["B", "R"])
+        #expect(FakeCarInterface.headers(car.topList) == ["B", "R"])
+    }
+
+    /// A letters screen's group opens its list (the third screen): letter sections, and rows that play.
+    @Test func aLetterGroupOpensAListThatPlays() async throws {
+        transport.inner.stub(pathSuffix: "/rest/getPlaylist", body: subsonic(#"""
+        "playlist":{"id":"p2","name":"Beach","songCount":1,"duration":9,"entry":[{"id":"b1","title":"Wave","artist":"A"}]}
+        """#))
+        let model = try await signedInModel()
+        let car = FakeCarInterface()
+        let controller = CarPlayController(interfaceController: car, library: CarPlayLibraryAdapter(model: model),
+                                           player: model.player)
+        defer { controller.disconnect() }
+        controller.setAvailability(.ready(account: "one"))
+        let playlists = [Playlist(id: "p1", name: "Road", songCount: 1, duration: 9),
+                         Playlist(id: "p2", name: "Beach", songCount: 1, duration: 9)]
+        let letters = CarPlayRows.playlists(playlists, maxItems: 2, maxSections: 1)
+        #expect(letters.flatMap(\.rows).map(\.title) == ["B", "R"])
+        let group = try #require(letters.first?.rows.first)
+        controller.perform(group.action)
+        #expect(car.topList?.title == "B")
+        #expect(await eventually { FakeCarInterface.texts(car.topList) == ["Beach"] })
+        #expect(car.topList?.sections.map(\.sectionIndexTitle) == ["B"])
+        car.tap("Beach", in: car.topList)
+        #expect(await eventually { model.player.queue.current?.song.id == "b1" })
+    }
+
+    /// What the car reports for its list limits on this simulator (recorded in the Y2 report).
+    @Test func listLimitsAreReadable() {
+        print("Y2 CPListTemplate.maximumItemCount=\(CPListTemplate.maximumItemCount) maximumSectionCount=\(CPListTemplate.maximumSectionCount)")
+        #expect(CPListTemplate.maximumItemCount > 0)
     }
 
     /// Cold launch from the car before first unlock: the car says it's locked, the preferences couldn't be read yet;

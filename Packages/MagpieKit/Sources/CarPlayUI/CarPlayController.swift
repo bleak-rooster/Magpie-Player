@@ -64,7 +64,7 @@ public enum CarPlayAvailability: Sendable, Hashable {
 public final class CarPlayController: NSObject {
     private let interface: any CarPlayInterface
     let library: any CarPlayLibrary
-    private let player: Player
+    let player: Player
     private var sessionConfiguration: CPSessionConfiguration?
     private var keyboardLimited = false
 
@@ -87,6 +87,8 @@ public final class CarPlayController: NSObject {
     /// Finds whose Keep (from Now Playing) is running, and finds kept from it, by song id.
     private var keeping: Set<String> = []
     private var kept: Set<String> = []
+    /// Y2: songs whose favourite change from the car's star is with the server.
+    var favouriting: Set<String> = []
     /// The plain record shown for a not-yet row (no cover to put on its label).
     private var blankRecord: UIImage?
 
@@ -107,7 +109,6 @@ public final class CarPlayController: NSObject {
         configureNowPlaying()
         watchPlayer()
         watchFinds()
-        watchSleepTimer()
     }
 
     /// Shows the tabs when ready, otherwise a list that describes why not. Rebuilds only when the
@@ -264,17 +265,27 @@ public final class CarPlayController: NSObject {
 
     private func fetcher(for destination: CPDestination) -> @MainActor () async throws -> Content {
         let library = library
+        // Y2: the A–Z lists open with a letters screen when they wouldn't fit the car's list.
+        let maxItems = Int(CPListTemplate.maximumItemCount), maxSections = Int(CPListTemplate.maximumSectionCount)
         switch destination {
         case .playlists:
-            return { let p = try await library.playlists(); return { _ in CarPlayRows.playlists(p) } }
+            return {
+                let p = try await library.playlists()
+                return { _ in CarPlayRows.playlists(p, maxItems: maxItems, maxSections: maxSections) }
+            }
         case .artists:
-            return { let a = try await library.artists(); return { _ in CarPlayRows.artists(a) } }
+            return {
+                let a = try await library.artists()
+                return { _ in CarPlayRows.artists(a, maxItems: maxItems, maxSections: maxSections) }
+            }
         case .albums:
             let size = Self.albumListSize
             return {
                 let a = try await library.albumList(.alphabeticalByName, size: size)
-                return { _ in CarPlayRows.albums(a) }
+                return { _ in CarPlayRows.albums(a, maxItems: maxItems, maxSections: maxSections) }
             }
+        case .letterGroup(_, let sections):
+            return { { _ in sections } }
         case .album(let id, _):
             return { let a = try await library.album(id: id); return { CarPlayRows.album(a, playingId: $0) } }
         case .playlist(let id, _):
@@ -328,6 +339,14 @@ public final class CarPlayController: NSObject {
                         return all
                     }
                     start(songs, at: 0, shuffled: true)
+                } catch {
+                    showUnavailable(error)
+                }
+            }
+        case .playlist(let id):
+            Task {
+                do {
+                    start(try await library.playlist(id: id).1, at: 0, shuffled: false)
                 } catch {
                     showUnavailable(error)
                 }
@@ -408,7 +427,7 @@ public final class CarPlayController: NSObject {
 
     /// Now Playing shows the system's view of `MPNowPlayingInfoCenter` (the real square cover,
     /// H4). Our buttons: Keep (the system add-to-library button, for a find that may be kept; D12, M1), shuffle,
-    /// repeat and the sleep timer (T23).
+    /// repeat and Favourite (round 12 item 2b: the star replaced the sleep timer, which stays on the phone).
     private func configureNowPlaying() {
         let nowPlaying = CPNowPlayingTemplate.shared
         nowPlaying.isUpNextButtonEnabled = false
@@ -439,7 +458,7 @@ public final class CarPlayController: NSObject {
             NowPlayingBridge.applyRepeat(NowPlayingBridge.repeatType(player.repeatMode.next), to: player)
         }
         repeatButton.isSelected = selection.repeating
-        CPNowPlayingTemplate.shared.updateNowPlayingButtons(buttons + [shuffle, repeatButton, sleepButton()])
+        CPNowPlayingTemplate.shared.updateNowPlayingButtons(buttons + [shuffle, repeatButton, favouriteButton()])
     }
 
     private var keepButton: CPKeepButton {
@@ -468,6 +487,8 @@ public final class CarPlayController: NSObject {
         /// The song playing, and whether it is a find that may be kept (the Keep button).
         var songId: String?
         var mayKeep: Bool
+        /// Whether the song is a favourite (the star; Y2).
+        var favourite: Bool
     }
 
     private func watchPlayer() {
@@ -488,7 +509,8 @@ public final class CarPlayController: NSObject {
             let modes = Observations { @MainActor in
                 let id = player.queue.current?.song.id
                 return PlayerModes(shuffled: player.isShuffled, repeatMode: player.repeatMode, songId: id,
-                                   mayKeep: id.map { library.mayKeep(songId: $0) } ?? false)
+                                   mayKeep: id.map { library.mayKeep(songId: $0) } ?? false,
+                                   favourite: id.map { library.isFavourite(songId: $0) } ?? false)
             }
             var last: PlayerModes?
             for await m in modes where m != last {
@@ -572,7 +594,7 @@ public final class CarPlayController: NSObject {
                 items[row.id] = item
                 return item
             }
-            return CPListSection(items: sectionItems, header: section.header, sectionIndexTitle: nil)
+            return CPListSection(items: sectionItems, header: section.header, sectionIndexTitle: section.indexTitle)
         }
         binding.items = items
         binding.shown = sections

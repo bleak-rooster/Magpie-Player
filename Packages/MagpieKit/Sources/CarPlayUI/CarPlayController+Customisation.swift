@@ -19,10 +19,12 @@ public protocol CarPlayCustomisationLibrary: AnyObject {
 
     /// Only what's on the phone plays and shows; nothing is asked of the server. Observable.
     var isOffline: Bool { get }
-    /// The sleep timer is set (minutes or the end of the song). Observable.
-    var sleepTimerActive: Bool { get }
-    /// Off: starts the owner's default sleep timer. On: turns it off.
-    func toggleSleepTimer()
+    /// Whether the song is a favourite on the phone (this session's change, else what the server or the queue said).
+    /// Observable. Y2: Now Playing's star.
+    func isFavourite(songId: String) -> Bool
+    /// Favourites or unfavourites the song through the phone's favourites (X3's `setFavourite`: at once, rolled back to
+    /// the real state if the server says no). Offline nothing is sent.
+    func setFavourite(songId: String, _ on: Bool) async -> CPFavouriteResult
 
     /// The phone's genre groups (hidden and empty ones left out).
     func genreGroups() async throws -> [(id: String, name: String, albumCount: Int)]
@@ -49,8 +51,8 @@ public protocol CarPlayCustomisationLibrary: AnyObject {
     func madeForYouTracks(id: String) async -> [CPMadeForYouTrack]?
 }
 
-/// Home and Library from the owner's layout (spec §3, Task 22), the new rows' screens, genre play, the offline watch and
-/// the sleep button (Task 23). A change on the phone, or going offline, reloads Home and redraws the Library tab; a list
+/// Home and Library from the owner's layout (spec §3, Task 22), the new rows' screens, genre play, the offline watch
+/// (Task 23) and Now Playing's star (round 12 item 2b). A change on the phone, or going offline, reloads Home and redraws the Library tab; a list
 /// being browsed keeps its shape until it is off screen (`apply`).
 extension CarPlayController {
     /// Home: the shelves of the sections shown, sized together by `CarPlayRows.home` to fit the car's list.
@@ -173,36 +175,35 @@ extension CarPlayController {
         }
     }
 
-    // MARK: - Sleep timer (spec §5: CPNowPlayingImageButton lets the template carry it)
+    // MARK: - Favourite (round 12 item 2b: CPNowPlayingImageButton, where the sleep timer was)
 
-    /// The moon in Now Playing: selected while the timer is set. A tap sets the owner's default or turns it off, and
-    /// says which.
-    func sleepButton() -> CPNowPlayingButton {
-        let button = CPNowPlayingImageButton(image: UIImage(systemName: "moon.zzz") ?? UIImage()) { [weak self] _ in
-            self?.toggleSleepTimer()
-        }
-        button.isSelected = library.sleepTimerActive
-        button.accessibilityLabel = "Sleep timer"
+    /// The star in Now Playing: filled and selected while the song playing is a favourite; off while nothing plays or
+    /// while a change is with the server.
+    func favouriteButton() -> CPNowPlayingButton {
+        let id = player.queue.current?.song.id
+        let on = id.map { library.isFavourite(songId: $0) } ?? false
+        let image = UIImage(systemName: on ? "star.fill" : "star") ?? UIImage()
+        let button = CPNowPlayingImageButton(image: image) { [weak self] _ in self?.favouriteTapped() }
+        button.isSelected = on
+        button.isEnabled = id.map { !favouriting.contains($0) } ?? false
+        button.accessibilityLabel = on ? "Unfavourite" : "Favourite"
         return button
     }
 
-    private func toggleSleepTimer() {
-        library.toggleSleepTimer()
+    /// Toggles the song playing. Says something only when it didn't go through (critique M3: in answer to the tap);
+    /// the star itself follows the phone's state, which the phone rolls back on a refusal.
+    func favouriteTapped() {
+        guard let id = player.queue.current?.song.id, !favouriting.contains(id) else { return }
+        let on = !library.isFavourite(songId: id)
+        favouriting.insert(id)
         updateNowPlayingButtons()
-        showMessage(CarPlayRows.sleepTimerMessage(active: library.sleepTimerActive))
-    }
-
-    /// The timer set or ended on the phone, or run out: the button follows.
-    func watchSleepTimer() {
         let library = library
-        let shown = library.sleepTimerActive
-        watches.append(Task { [weak self] in
-            var last = shown
-            for await active in Observations({ @MainActor in library.sleepTimerActive }) where active != last {
-                last = active
-                self?.updateNowPlayingButtons()
-            }
-        })
+        Task {
+            let result = await library.setFavourite(songId: id, on)
+            favouriting.remove(id)
+            updateNowPlayingButtons()
+            if let message = CarPlayRows.favouriteMessage(result) { showMessage(message) }
+        }
     }
 }
 

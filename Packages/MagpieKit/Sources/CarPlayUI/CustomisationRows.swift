@@ -250,6 +250,21 @@ extension CarPlayRows {
         return nonEmpty(rows)
     }
 
-    /// What the car says when the sleep button is tapped (only then: critique M3).
-    public static func sleepTimerMessage(active: Bool) -> String { active ? "Sleep timer on" : "Sleep timer off" }
+    /// What the car says after a tap on Now Playing's star (Y2), only when it didn't go through.
+    public static func favouriteMessage(_ result: CPFavouriteResult) -> String? {
+        switch result {
+        case .done: nil
+        case .offline: "You're offline"
+        case .failed(let adding): adding ? "Couldn't add to your favourites" : "Couldn't remove from your favourites"
+        }
+    }
+}
+
+/// How a favourite change from the car went (Y2).
+public enum CPFavouriteResult: Sendable, Hashable {
+    case done
+    /// Nothing was sent.
+    case offline
+    /// The server said no (or didn't answer); the star is back to the real state.
+    case failed(adding: Bool)
 }

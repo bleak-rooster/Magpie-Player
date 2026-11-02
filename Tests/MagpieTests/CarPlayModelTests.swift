@@ -122,11 +122,19 @@ import UIKit
         // Walk every push reachable from the tab roots: none goes past depth 3.
         let found = LibrarySearchResult(songs: [song("s")], albums: [a])
         let outside = ExternalRecording(title: "Elsewhere", artist: "Someone", source: .listenBrainz)
+        let twoPlaylists = [Playlist(id: "p", name: "P", songCount: 1, duration: 9),
+                            Playlist(id: "q", name: "Q", songCount: 1, duration: 9)]
+        let twoArtists = [Artist(id: "r", name: "R", albumCount: 1), Artist(id: "t", name: "T", albumCount: 1)]
+        let b = Album(id: "b", name: "Blue", artist: "B", songCount: 1, duration: 1)
         func screen(_ destination: CPDestination) -> [CPSectionModel] {
             switch destination {
-            case .playlists: CarPlayRows.playlists([Playlist(id: "p", name: "P", songCount: 1, duration: 9)])
-            case .artists: CarPlayRows.artists([Artist(id: "r", name: "R", albumCount: 1)])
-            case .albums: CarPlayRows.albums([a])
+            // Y2: each A–Z list both under the car's limits (letter sections) and over them (a letters screen).
+            case .playlists:
+                CarPlayRows.playlists(twoPlaylists) + CarPlayRows.playlists(twoPlaylists, maxItems: 1, maxSections: 1)
+            case .artists:
+                CarPlayRows.artists(twoArtists) + CarPlayRows.artists(twoArtists, maxItems: 1, maxSections: 1)
+            case .albums: CarPlayRows.albums([a, b]) + CarPlayRows.albums([a, b], maxItems: 1, maxSections: 1)
+            case .letterGroup(_, let sections): sections
             case .album: CarPlayRows.album(a, playingId: nil)
             case .playlist: CarPlayRows.playlist(Playlist(id: "p", name: "P", songCount: 1, duration: 9),
                                                  songs: [song("s")], playingId: nil)
