@@ -58,8 +58,11 @@ struct OutsideAlbumView: View {
                 } else {
                     StatusLine(.notYet)
                     if model.phase == .loaded, model.canTryAlbum, let target = model.tryTarget {
-                        CapsuleButton(TrySheet.tryAlbumTitle, symbol: "sparkles") { trying = target }
-                            .accessibilityIdentifier("outside-album-try")
+                        // Y7: the page's one action, in the same bar as Play on an album page.
+                        ActionBar(insetsMargins: false) {
+                            ActionButton(TrySheet.tryAlbumTitle, symbol: "sparkles", prominence: .primary) { trying = target }
+                                .accessibilityIdentifier("outside-album-try")
+                        }
                     }
                 }
                 if let presentation = model.lidarrLine.presentation, model.phase != .offline {

@@ -53,27 +53,22 @@ struct GenreView: View {
         .task(id: model.offlinePageKey) { await load() }
     }
 
-    /// Play and Shuffle capsules (as `PlayShuffleButtons`), fetching the songs when tapped.
+    /// Play and Shuffle in the ActionBar (as on Album), fetching the songs when tapped.
     private var playShuffle: some View {
         VStack(spacing: Tokens.Spacing.s) {
-            CapsuleRow {
-                wide("Play", symbol: "play.fill") { model.play($0, startAt: 0) }
-                wide("Shuffle", symbol: "shuffle") { model.shuffle($0) }
+            ActionBar {
+                PlayShuffleActions(disabled: fetchingSongs) {
+                    Task { await withSongs { model.play($0, startAt: 0) } }
+                } shuffle: {
+                    Task { await withSongs { model.shuffle($0) } }
+                }
             }
-            .disabled(fetchingSongs)
-            .padding(.horizontal, Tokens.Spacing.margin)
             if fetchingSongs { ProgressView().accessibilityLabel("Getting songs") }
             if let songsError {
                 Text(songsError).font(.footnote).foregroundStyle(themed.palette.ink2Color)
                     .multilineTextAlignment(.center).padding(.horizontal, Tokens.Spacing.largeTitleMargin)
             }
         }
-    }
-
-    private func wide(_ title: String, symbol: String, then start: @escaping ([Song]) -> Void) -> some View {
-        CapsuleButton(title, symbol: symbol) { Task { await withSongs(start) } }
-            .frame(maxWidth: .infinity)
-            .accessibilityIdentifier(title.lowercased())
     }
 
     private func withSongs(_ start: ([Song]) -> Void) async {

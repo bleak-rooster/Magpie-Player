@@ -297,17 +297,12 @@ struct RequestDetailView: View {
     @ViewBuilder private func action(_ request: MagpieRequest, _ action: RequestPageAction) -> some View {
         switch action {
         case .play:
-            Button { Task { await play(request) } } label: {
-                Label("Play", systemImage: "play.fill").frame(maxWidth: .infinity, minHeight: Tokens.minHitSize)
-            }
-            .buttonStyle(.borderedProminent)
-            .accessibilityIdentifier("request-play")
+            // Y7: the design system's action capsules (Play filled, the rest tinted), not iOS's bordered styles.
+            ActionButton("Play", symbol: "play.fill", prominence: .primary) { Task { await play(request) } }
+                .accessibilityIdentifier("request-play")
         case .keep:
-            Button { Task { await keep() } } label: {
-                Label("Keep", systemImage: "plus.circle").frame(maxWidth: .infinity, minHeight: Tokens.minHitSize)
-            }
-            .buttonStyle(.bordered)
-            .disabled(working)
+            ActionButton("Keep", symbol: "plus.circle") { Task { await keep() } }
+                .disabled(working)
             .accessibilityIdentifier("request-keep")
         case .notForMe:
             Button(NotForMeCopy.action + "…", role: .destructive) { Task { await askNotForMe() } }
@@ -319,11 +314,11 @@ struct RequestDetailView: View {
             TimelineView(.periodic(from: .now, by: 1)) { context in
                 let hold = model.findAnotherCopyHold(request, now: context.date)
                 VStack(spacing: Tokens.Spacing.xs) {
-                    Button(RequestCopy.findAnotherCopy) { Task { await findAnotherCopy(removingCopy: false) } }
-                        .buttonStyle(.bordered)
-                        .frame(minHeight: Tokens.minHitSize)
-                        .disabled(working || hold != nil)
-                        .accessibilityIdentifier("request-find-another-copy")
+                    ActionButton(RequestCopy.findAnotherCopy, symbol: "arrow.triangle.2.circlepath") {
+                        Task { await findAnotherCopy(removingCopy: false) }
+                    }
+                    .disabled(working || hold != nil)
+                    .accessibilityIdentifier("request-find-another-copy")
                     if let note = hold ?? anotherCopyNote {
                         Text(note).font(.footnote)
                             .foregroundStyle(themed.palette.ink2Color).multilineTextAlignment(.center)
@@ -332,9 +327,7 @@ struct RequestDetailView: View {
                 }
             }
         case .checkAgain:
-            Button("Check again") { Task { await model.checkAgain(requestId) } }
-                .buttonStyle(.bordered)
-                .frame(minHeight: Tokens.minHitSize)
+            ActionButton("Check again", symbol: "arrow.clockwise") { Task { await model.checkAgain(requestId) } }
                 .accessibilityIdentifier("request-check-again")
         case .stopLooking:
             Button("Stop looking", role: .destructive) { confirmsStop = true }

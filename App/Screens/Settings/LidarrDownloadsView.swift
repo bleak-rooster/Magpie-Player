@@ -1,3 +1,4 @@
+import DesignSystem
 import LidarrKit
 import Observation
 import Requests
@@ -333,9 +334,8 @@ private struct DownloadRow: View {
             }
             Spacer(minLength: 0)
             if row.canRestart {
-                Button(LidarrDownloadsCopy.restart, action: restart)
-                    .buttonStyle(.bordered)
-                    .frame(minHeight: 44)
+                // Y7: the design system's tinted capsule (44 pt target), not iOS's bordered style.
+                CapsuleButton(LidarrDownloadsCopy.restart, symbol: "arrow.clockwise", action: restart)
                     .disabled(!canChange)
                     .accessibilityIdentifier("lidarr-downloads-restart-\(row.id)")
             }

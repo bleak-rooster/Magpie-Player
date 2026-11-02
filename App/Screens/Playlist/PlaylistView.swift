@@ -111,9 +111,14 @@ struct PlaylistView: View {
             }
             .padding(.horizontal, Tokens.Spacing.largeTitleMargin)
 
-            PlayShuffleButtons(songs: songs)
-            DownloadButton(reason: .playlist(page.playlist.id), songs: songs, playlist: snapshot(page),
-                           coverArtId: page.playlist.coverArtId)
+            VStack(spacing: Tokens.Spacing.s) {
+                ActionBar {
+                    PlayShuffleButtons(songs: songs)
+                    DownloadButton(reason: .playlist(page.playlist.id), songs: songs, playlist: snapshot(page),
+                                   coverArtId: page.playlist.coverArtId)
+                }
+                DownloadNote(reason: .playlist(page.playlist.id), songs: songs)
+            }
         }
         .padding(.vertical, Tokens.Spacing.l)
         .frame(maxWidth: .infinity)
