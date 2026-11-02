@@ -94,6 +94,8 @@ public final class CarPlayController: NSObject {
 
     /// Navidrome's largest album-list page.
     private static let albumListSize = 500
+    /// Most albums the car's Albums reads (Y2): ten pages.
+    static let albumsMax = 5000
     /// Artwork requests in flight per list.
     private static let artworkConcurrency = 4
 
@@ -281,7 +283,14 @@ public final class CarPlayController: NSObject {
         case .albums:
             let size = Self.albumListSize
             return {
-                let a = try await library.albumList(.alphabeticalByName, size: size)
+                // Y2: page past the server's 500 (the car's own item limit), so a big library reaches the letters screen.
+                var albums: [Album] = []
+                while albums.count < Self.albumsMax {
+                    let page = try await library.albumsAZ(offset: albums.count, size: size)
+                    albums += page
+                    if page.count < size { break }
+                }
+                let a = albums
                 return { _ in CarPlayRows.albums(a, maxItems: maxItems, maxSections: maxSections) }
             }
         case .letterGroup(_, let sections):

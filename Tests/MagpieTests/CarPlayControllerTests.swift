@@ -3,6 +3,7 @@ import Foundation
 import MagpieCore
 import MagpieTestSupport
 import NavidromeKit
+import os
 import Playback
 import Search
 import Testing
@@ -84,15 +85,25 @@ final class FakeCarInterface: CarPlayInterface {
     let defaults = UserDefaults(suiteName: "CarPlayControllerTests.\(UUID().uuidString)")!
     let transport = HostSwitchTransport()
     let engine = FakeEngine()
+    /// Y2: how many albums the server's A–Z holds (paged by offset); nil answers every album list with 12.
+    let azAlbums = OSAllocatedUnfairLock<Int?>(initialState: nil)
 
     init() {
         let t = transport.inner
         t.stub(pathSuffix: "/rest/ping", body: ok)
         t.stub(method: "POST", pathSuffix: "/auth/login", body: loginJSON)
         t.stub(pathSuffix: "/api/song", body: Data("[]".utf8), headers: ["X-Total-Count": "0"])
+        let azAlbums = azAlbums
         t.stub(pathSuffix: "/rest/getAlbumList2") { request in
-            let type = request.url.flatMap { URLComponents(url: $0, resolvingAgainstBaseURL: false) }?
-                .queryItems?.first { $0.name == "type" }?.value ?? ""
+            let items = request.url.flatMap { URLComponents(url: $0, resolvingAgainstBaseURL: false) }?.queryItems ?? []
+            let type = items.first { $0.name == "type" }?.value ?? ""
+            if type == "alphabeticalByName", let total = azAlbums.withLock({ $0 }) {   // Y2: a big library, paged
+                func value(_ name: String) -> Int { Int(items.first { $0.name == name }?.value ?? "0") ?? 0 }
+                let albums = (0..<total).dropFirst(value("offset")).prefix(value("size"))
+                    .map { #"{"id":"al\#($0)","name":"Album \#(String(format: "%04d", $0))","artist":"A","songCount":1}"# }
+                return MockTransport.Response(status: 200,
+                                              body: subsonic(#""albumList2":{"album":[\#(albums.joined(separator: ","))]}"#))
+            }
             let albums = (0..<12).map { #"{"id":"\#(type)\#($0)","name":"\#(type) \#($0)","artist":"A","songCount":1}"# }
             return MockTransport.Response(status: 200, body: subsonic(#""albumList2":{"album":[\#(albums.joined(separator: ","))]}"#))
         }
@@ -386,6 +397,26 @@ final class FakeCarInterface: CarPlayInterface {
         #expect(car.topList?.sections.map(\.sectionIndexTitle) == ["B"])
         car.tap("Beach", in: car.topList)
         #expect(await eventually { model.player.queue.current?.song.id == "b1" })
+    }
+
+    /// Albums are read past Navidrome's 500-per-page answer, so a big library reaches the letters screen (it was cut at
+    /// 500 before, exactly the car's item limit, so albums after it were never shown).
+    @Test func albumsPastTheFirstPageReachTheLettersScreen() async throws {
+        azAlbums.withLock { $0 = 1200 }
+        let model = try await signedInModel()
+        let car = FakeCarInterface()
+        let controller = CarPlayController(interfaceController: car, library: CarPlayLibraryAdapter(model: model),
+                                           player: model.player)
+        defer { controller.disconnect() }
+        controller.setAvailability(.ready(account: "one"))
+        car.tap("Albums", in: car.tab(1))
+        let limit = Int(CPListTemplate.maximumItemCount)
+        try #require(limit < 1200, "this simulator's limit is \(limit)")
+        #expect(await eventually { FakeCarInterface.texts(car.topList).first?.hasPrefix("A (1 of ") == true })
+        let pages = FakeCarInterface.texts(car.topList)
+        #expect(pages.count == (1200 + limit - 1) / limit)
+        car.tap(try #require(pages.last), in: car.topList)
+        #expect(await eventually { FakeCarInterface.texts(car.topList).last == "Album 1199" })
     }
 
     /// What the car reports for its list limits on this simulator (recorded in the Y2 report).

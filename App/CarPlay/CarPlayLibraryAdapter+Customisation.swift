@@ -65,6 +65,13 @@ extension CarPlayLibraryAdapter {
         return model.isFavourite(.song(songId)) == on ? .done : .failed(adding: on)
     }
 
+    // MARK: - Albums A–Z (Y2)
+
+    func albumsAZ(offset: Int, size: Int) async throws -> [Album] {
+        if model.isOffline { return Array(await model.offlineCatalog.albums().dropFirst(offset).prefix(size)) }
+        return try await model.request { try await $0.albumList(.alphabeticalByName, size: size, offset: offset) }
+    }
+
     // MARK: - Genres (D41)
 
     func genreGroups() async throws -> [(id: String, name: String, albumCount: Int)] {

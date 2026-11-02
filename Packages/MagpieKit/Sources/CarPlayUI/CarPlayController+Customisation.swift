@@ -26,6 +26,10 @@ public protocol CarPlayCustomisationLibrary: AnyObject {
     /// the real state if the server says no). Offline nothing is sent.
     func setFavourite(songId: String, _ on: Bool) async -> CPFavouriteResult
 
+    /// Albums A–Z (Navidrome's order, articles dropped) from `offset`, at most `size`; a short page is the end. Offline,
+    /// the phone's. Y2: the car's Albums reads page after page.
+    func albumsAZ(offset: Int, size: Int) async throws -> [Album]
+
     /// The phone's genre groups (hidden and empty ones left out).
     func genreGroups() async throws -> [(id: String, name: String, albumCount: Int)]
     /// The group's genres in the order the server lists them; empty for a group with none.
