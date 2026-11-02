@@ -223,6 +223,14 @@ enum ForbiddenWrites {
     /// also pass (`WriteConfinement`). Nil for every other write.
     static func confined(_ t: WriteTarget, json: Any?) -> WriteConfinement.Write? {
         let key = t.key
+        // Y5 fix I9: AlbumSearch and RefreshArtist are confined to what the ledger knows.
+        if t.method == "POST", key == ["command"], let object = json as? [String: Any] {
+            let value = { (name: String) in object.first { $0.key.lowercased() == name }?.value }
+            let name = (value("name") as? String ?? "").lowercased()
+            guard ["albumsearch", "refreshartist"].contains(name) else { return nil }
+            let ids = (value("albumids") as? [Any] ?? []).compactMap { ($0 as? NSNumber)?.intValue }
+            return .command(name: name, albumIds: ids, artistId: (value("artistid") as? NSNumber)?.intValue)
+        }
         guard key.count == 2 else { return nil }
         switch (t.method, key[0]) {
         case ("PUT", "artist") where key[1] == "editor":
@@ -541,6 +549,18 @@ public actor LidarrWriteGate {
 
     public func setEnabled(_ on: Bool) {
         defaults.set(on, forKey: Self.enabledKey(scope: connection.instanceScope))
+    }
+
+    /// Y5 fix I2: a line in the change log for something Magpie did without a write to Lidarr (it cleared a Keep that
+    /// never reached Lidarr). Method `NOTE`; nothing is sent.
+    public func note(_ text: String) {
+        let entry = ChangeLogEntry(date: now(), method: "NOTE", path: "/magpie", bodySummary: String(text.prefix(Self.maxBodySummary)))
+        try? Self.logLock.withLock { [logURL] in
+            var log = try Self.readLog(logURL)
+            log.append(entry)
+            if log.count > Self.maxLogEntries { log.removeFirst(log.count - Self.maxLogEntries) }
+            try LocalFile.save(log, to: logURL)
+        }
     }
 
     /// The change log as saved on disk. Empty when there is none or it cannot be read right now.

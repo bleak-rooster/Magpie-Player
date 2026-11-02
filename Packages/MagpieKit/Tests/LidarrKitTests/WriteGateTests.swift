@@ -406,8 +406,9 @@ struct GateEnv {
         Call("POST", "qualityprofile", #"{"name":"Magpie Lossless"}"#),
         Call("POST", "metadataprofile", #"{"name":"Magpie Finds"}"#),
         Call("POST", "artist", #"{"foreignArtistId":"x","addOptions":{"monitor":"none"}}"#),
-        Call("POST", "command", #"{"name":"AlbumSearch","albumIds":[3]}"#),
-        Call("POST", "command", #"{"name":"RefreshArtist","artistId":12}"#),
+        // Y5 fix I9: AlbumSearch and RefreshArtist are allowed shapes too, but confined to the ledger: only a gate with
+        // the ledger sends them (GateFixRoundTests.commandsAreConfinedToTheLedger).
+        Call("POST", "command", #"{"name":"ArtistSearch","artistId":12}"#),
     ]
 
     @Test(arguments: allowed)

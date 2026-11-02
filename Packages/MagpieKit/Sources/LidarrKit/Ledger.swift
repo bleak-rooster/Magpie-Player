@@ -183,6 +183,15 @@ public actor Ledger {
     }
 
     private static func upserting(_ e: LedgerEntry, into list: [LedgerEntry]) -> [LedgerEntry] {
+        // Y5 fix I4: a record that replaces an entry (the same album, or the placeholder it supersedes) never drops the
+        // Keep's state: a kept time, a Keep under way or the find's file record is carried over when the new entry has
+        // none. Only `update(artistId:)` clears them (the Keep's own commit and clean-up).
+        var e = e
+        for old in list where old.instance == e.instance && replaces(e, old) {
+            if e.keptAt == nil { e.keptAt = old.keptAt }
+            if e.keepIntentAt == nil { e.keepIntentAt = old.keepIntentAt }
+            if e.findFiles == nil { e.findFiles = old.findFiles }
+        }
         var next = list.filter { old in
             guard old.instance == e.instance else { return true }
             if let albumId = e.albumId {
@@ -194,6 +203,11 @@ public actor Ledger {
         }
         next.append(e)
         return next
+    }
+
+    private static func replaces(_ e: LedgerEntry, _ old: LedgerEntry) -> Bool {
+        if let albumId = e.albumId, old.albumId == albumId { return true }
+        return old.albumId == nil && old.lidarrArtistId == e.lidarrArtistId && old.rgMbid == e.rgMbid
     }
 
     /// I10: changes every entry of this server for the artist in one read-modify-write and one save, so a crash

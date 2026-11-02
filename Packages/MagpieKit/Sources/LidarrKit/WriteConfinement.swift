@@ -93,6 +93,8 @@ public struct WriteConfinement: Sendable {
         case albumMonitor(albumIds: [Int], monitored: Bool)
         /// `DELETE /queue/{id}` (R17).
         case queueDelete(Int)
+        /// Y5 fix I9: `POST /command` AlbumSearch (its album ids) or RefreshArtist (its artist id).
+        case command(name: String, albumIds: [Int], artistId: Int?)
     }
 
     func check(_ write: Write, lidarr: LidarrClient) async -> Verdict {
@@ -119,6 +121,22 @@ public struct WriteConfinement: Sendable {
                 return .confined(artists: [], rule: .other)
             case .queueDelete:
                 return .unknown   // handled above
+            case .command(let name, let albumIds, let artistId):
+                // Y5 fix I9: a search can make Lidarr grab and replace files, so only albums the ledger knows (Magpie
+                // recorded each before it monitored or searched it); a refresh only for an artist the ledger knows.
+                switch name.lowercased() {
+                case "albumsearch":
+                    guard !albumIds.isEmpty, albumIds.allSatisfy({ id in entries.contains { $0.albumId == id } }) else {
+                        return .refused("a search only for albums Magpie asked for")
+                    }
+                case "refreshartist":
+                    guard let artistId, entries.contains(where: { $0.lidarrArtistId == artistId }) else {
+                        return .refused("a refresh only for an artist Magpie asked for")
+                    }
+                default:
+                    break
+                }
+                return .confined(artists: [], rule: .other)
             }
         } catch let refusal as Refusal {
             return .refused(refusal.reason)
@@ -197,6 +215,7 @@ public struct WriteConfinement: Sendable {
     public static func isLossy(_ quality: String?) -> Bool {
         guard let q = quality?.trimmingCharacters(in: .whitespaces) else { return false }
         return q.hasPrefix("MP3-") || q.hasPrefix("AAC-") || q.hasPrefix("OGG Vorbis") || q == "WMA"
+            || q.lowercased().hasPrefix("opus")
     }
 
     /// M3: two paths are the same file for the MP3 rule: standardised, and equal ignoring case and Unicode form.
@@ -387,8 +406,14 @@ public struct WriteConfinement: Sendable {
                 guard mainGuard.isInside(file.path), let relative = WriteConfinement.relative(file.path, under: folder) else {
                     throw Refusal(reason: "a track file outside the artist's folder")
                 }
-                let recorded = entries.filter { $0.lidarrArtistId == artistId }.flatMap { $0.findFiles ?? [] }
+                // Y5 fix I1: the record may sit on more than one entry of the artist; one *distinct* record must match,
+                // and copies that disagree (size, track) refuse.
+                let matching = entries.filter { $0.lidarrArtistId == artistId }.flatMap { $0.findFiles ?? [] }
                     .filter { $0.albumId == albumId && WriteConfinement.looselySame($0.relativePath, relative) }
+                var recorded: [FindFile] = []
+                for f in matching where !recorded.contains(where: { $0.size == f.size && $0.foreignTrackId == f.foreignTrackId }) {
+                    recorded.append(f)
+                }
                 guard recorded.count == 1, let find = recorded.first else {
                     throw Refusal(reason: "not a file Magpie's find brought in")
                 }
