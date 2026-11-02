@@ -16,6 +16,8 @@ public actor NavidromeClient {
     private let clientName: String
     private let now: @Sendable () -> Date
     private let session = OSAllocatedUnfairLock(initialState: Session())
+    /// Round 12 Y3: the library the app's lists read (the main library), or nil for all of them.
+    private let scope = OSAllocatedUnfairLock<Int?>(initialState: nil)
     private var loginTask: Task<Session, Error>?
     private var lastScan: [String: Date] = [:]
     private static let scanDebounce: TimeInterval = 10
@@ -168,6 +170,29 @@ public actor NavidromeClient {
 
     private func int(_ name: String, _ v: Int) -> URLQueryItem { URLQueryItem(name: name, value: String(v)) }
 
+    // MARK: - Library scope (round 12 Y3)
+
+    /// Scopes every list and search call to library `id` (the main library), so another library's music (Aurral's
+    /// playlists, the Finds folder) never reaches Home, Library, Search or the car. Nil: no library is named (one
+    /// library, or the main one isn't known). Lookups by id, playlists, the Finds library read and recording lookups
+    /// are never scoped.
+    public nonisolated func setLibraryScope(_ id: Int?) { scope.withLock { $0 = id } }
+
+    /// The library list calls are scoped to, if any.
+    public nonisolated var libraryScope: Int? { scope.withLock { $0 } }
+
+    /// `musicFolderId=<scope>` for a Subsonic list call; nothing when unscoped.
+    private var folderItem: [URLQueryItem] { libraryScope.map { [int("musicFolderId", $0)] } ?? [] }
+
+    /// `library_id=<scope>` for a native list call; nothing when unscoped.
+    private var libraryItem: [URLQueryItem] { libraryScope.map { [int("library_id", $0)] } ?? [] }
+
+    /// The music folders (libraries) any account may read, unlike `libraries()`.
+    public func musicFolders() async throws -> [MusicFolder] {
+        let body = try await subsonic("getMusicFolders")
+        return (body.musicFolders?.musicFolder ?? []).map { MusicFolder(id: $0.id, name: $0.name ?? "") }
+    }
+
     // MARK: - Browse
 
     public func albumList(_ type: AlbumListType, size: Int, offset: Int) async throws -> [Album] {
@@ -181,7 +206,7 @@ public actor NavidromeClient {
 
     /// `getAlbumList2` with `filter` (the list type and its arguments) and a clamped page.
     private func albumList2(_ filter: [URLQueryItem], size: Int, offset: Int) async throws -> [Album] {
-        let body = try await subsonic("getAlbumList2", filter + page("size", size, offset))
+        let body = try await subsonic("getAlbumList2", filter + page("size", size, offset) + folderItem)
         return (body.albumList2?.album ?? []).map { Mapping.album($0) }
     }
 
@@ -192,25 +217,52 @@ public actor NavidromeClient {
 
     /// A genre's songs, `count` at a time from `offset`.
     public func songs(genre: String, count: Int, offset: Int) async throws -> [Song] {
-        let body = try await subsonic("getSongsByGenre", [URLQueryItem(name: "genre", value: genre)] + page("count", count, offset))
+        let body = try await subsonic("getSongsByGenre", [URLQueryItem(name: "genre", value: genre)] + page("count", count, offset)
+                                      + folderItem)
         return (body.songsByGenre?.song ?? []).map(Mapping.song)
     }
 
     /// Every genre the server lists. A row with no name is dropped; missing counts read as 0 and the genre is marked
     /// `countsKnown == false`, so it is still shown.
     public func genres() async throws -> [Genre] {
-        let body = try await subsonic("getGenres")
+        let body = try await subsonic("getGenres", folderItem)
         return (body.genres?.genre ?? []).compactMap { g in
             g.value.map { Genre(name: $0, songCount: g.songCount ?? 0, albumCount: g.albumCount ?? 0,
                                 countsKnown: g.songCount != nil && g.albumCount != nil) }
         }
     }
 
+    /// Everything starred. Scoped (Y3 fix): getStarred2 ignores `musicFolderId`, so only what the native API lists as
+    /// starred in the scoped library is kept.
     public func starred() async throws -> Starred {
-        let body = try await subsonic("getStarred2")
-        return Starred(songs: (body.starred2?.song ?? []).map(Mapping.song),
-                       albums: (body.starred2?.album ?? []).map { Mapping.album($0) },
-                       artists: (body.starred2?.artist ?? []).map(Mapping.artist))
+        let body = try await subsonic("getStarred2", folderItem)
+        var starred = Starred(songs: (body.starred2?.song ?? []).map(Mapping.song),
+                              albums: (body.starred2?.album ?? []).map { Mapping.album($0) },
+                              artists: (body.starred2?.artist ?? []).map(Mapping.artist))
+        guard libraryScope != nil else { return starred }
+        let songs = try await starredIds("api/song")
+        let albums = try await starredIds("api/album")
+        let artists = try await starredIds("api/artist")
+        starred.songs.removeAll { !songs.contains($0.id) }
+        starred.albums.removeAll { !albums.contains($0.id) }
+        starred.artists.removeAll { !artists.contains($0.id) }
+        return starred
+    }
+
+    private struct IdRow: Decodable { let id: String }
+
+    /// The ids the native API lists as starred in the scoped library (at most 5,000).
+    private func starredIds(_ path: String) async throws -> Set<String> {
+        let query = [URLQueryItem(name: "starred", value: "true"), int("_start", 0), int("_end", 5000)] + libraryItem
+        let (data, _) = try await native(path, query)
+        return Set(try Self.decode([IdRow].self, data).map(\.id))
+    }
+
+    /// How many albums library `id` holds (`/api/album`'s total): Y3's fallback pick of the main library.
+    public func albumCount(inLibrary id: Int) async throws -> Int {
+        let (data, response) = try await native("api/album", [int("library_id", id), int("_start", 0), int("_end", 1)])
+        if let total = response.value(forHTTPHeaderField: "X-Total-Count").flatMap({ Int($0) }) { return total }
+        return try Self.decode([IdRow].self, data).count
     }
 
     public func album(id: String) async throws -> Album {
@@ -234,7 +286,7 @@ public actor NavidromeClient {
     }
 
     public func artists() async throws -> [Artist] {
-        let body = try await subsonic("getArtists")
+        let body = try await subsonic("getArtists", folderItem)
         return (body.artists?.index ?? []).flatMap { $0.artist ?? [] }.map(Mapping.artist)
     }
 
@@ -255,7 +307,7 @@ public actor NavidromeClient {
         return (Mapping.playlist(playlist), (playlist.entry ?? []).map(Mapping.song))
     }
 
-    /// `search3`. Offsets page one section (round 12); a zero offset is left out.
+    /// `search3`, in the scoped library (Y3's folder). Offsets page one section (round 12, Y1); a zero offset is left out.
     public func search(_ q: String, songCount: Int = 20, albumCount: Int = 10, artistCount: Int = 5,
                        songOffset: Int = 0, albumOffset: Int = 0, artistOffset: Int = 0) async throws -> LibrarySearchResult {
         var items = [URLQueryItem(name: "query", value: q), int("songCount", songCount),
@@ -264,11 +316,17 @@ public actor NavidromeClient {
             where offset > 0 {
             items.append(int(name, offset))
         }
-        let body = try await subsonic("search3", items)
+        let body = try await subsonic("search3", items + folderItem)
         let r = body.searchResult3
         return LibrarySearchResult(songs: (r?.song ?? []).map(Mapping.song),
                                    albums: (r?.album ?? []).map { Mapping.album($0) },
                                    artists: (r?.artist ?? []).map(Mapping.artist))
+    }
+
+    /// `size` random songs (at most 500, the server's cap) from the scoped library.
+    public func randomSongs(size: Int) async throws -> [Song] {
+        let body = try await subsonic("getRandomSongs", [int("size", min(500, max(1, size)))] + folderItem)
+        return (body.randomSongs?.song ?? []).map(Mapping.song)
     }
 
     public func extensions() async throws -> Set<String> {
@@ -403,10 +461,31 @@ public actor NavidromeClient {
 
     // MARK: - Native API
 
-    /// One page of the whole library via `/api/song`; `end` is exclusive. Songs flagged `missing` are skipped.
-    public func songsPage(start: Int, end: Int, sort: String = "id") async throws -> (songs: [Song], total: Int) {
+    /// Which libraries a native read covers (round 12 Y3).
+    public enum LibraryFilter: Sendable, Equatable {
+        /// The client's scope (the main library), or every library when unscoped.
+        case scoped
+        /// Every library.
+        case all
+        /// These libraries (`library_id` repeated: Navidrome reads it as "any of").
+        case only([Int])
+    }
+
+    private func items(_ filter: LibraryFilter) -> [URLQueryItem] {
+        switch filter {
+        case .scoped: libraryItem
+        case .all: []
+        case .only(let ids): ids.map { int("library_id", $0) }
+        }
+    }
+
+    /// One page of the library via `/api/song`, of `libraries` (the scoped library by default); `end` is exclusive.
+    /// Songs flagged `missing` are skipped.
+    public func songsPage(start: Int, end: Int, sort: String = "id",
+                          libraries: LibraryFilter = .scoped) async throws -> (songs: [Song], total: Int) {
         let query = [int("_start", start), int("_end", end),
                      URLQueryItem(name: "_sort", value: sort), URLQueryItem(name: "_order", value: "ASC")]
+            + items(libraries)
         let (data, response) = try await native("api/song", query)
         let rows = try Self.decode([NativeSong].self, data)
         let songs = rows.filter { $0.missing != true }.map(Mapping.song)
@@ -420,7 +499,7 @@ public actor NavidromeClient {
     /// index's seek (P2). Missing files count: they hold their place in the server's order.
     public func songTitle(at offset: Int) async throws -> SongTitleRow {
         let query = [int("_start", offset), int("_end", offset + 1),
-                     URLQueryItem(name: "_sort", value: "title"), URLQueryItem(name: "_order", value: "ASC")]
+                     URLQueryItem(name: "_sort", value: "title"), URLQueryItem(name: "_order", value: "ASC")] + libraryItem
         let (data, response) = try await native("api/song", query)
         let rows = try Self.decode([NativeSong].self, data)
         let total = response.value(forHTTPHeaderField: "X-Total-Count").flatMap { Int($0) }
@@ -495,7 +574,7 @@ public actor NavidromeClient {
         var artists: [Artist] = [], seen = Set<String>(), start = 0
         for _ in 0..<maxPages {
             let query = [int("_start", start), int("_end", start + pageSize),
-                         URLQueryItem(name: "_sort", value: "name"), URLQueryItem(name: "_order", value: "ASC")]
+                         URLQueryItem(name: "_sort", value: "name"), URLQueryItem(name: "_order", value: "ASC")] + libraryItem
             let (data, response) = try await native("api/artist", query)
             let rows = try Self.decode([NativeArtist].self, data)
             for row in rows where row.missing != true && seen.insert(row.id).inserted {

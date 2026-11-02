@@ -39,6 +39,8 @@ struct PlaylistView: View {
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
+        // Y3 (item 4): the playlist again, its cover colours forgotten, after a quick scan picks up new downloads.
+        .refreshable { await model.refreshPage(coverArtIds: [page.value?.playlist.coverArtId]) { await load() } }
         .navigationTitle(page.value?.playlist.name ?? "")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {

@@ -9,7 +9,8 @@ struct HomeShelf: Identifiable, Equatable, Sendable {
         case album(Album)
         case playlist(Playlist)
         case genreGroup(GenreGroupSection)
-        /// An album on the phone (Downloaded): it opens offline too.
+        /// An album on the phone (Recently downloaded): it opens offline too. A downloaded playlist there is a
+        /// `.playlist` (its page reads the phone's copy offline).
         case downloadedAlbum(Album)
 
         /// What the tile is (Task 21): stable across reads, unlike its position.
@@ -25,6 +26,19 @@ struct HomeShelf: Identifiable, Equatable, Sendable {
     var section: HomeSection
     var items: [Item]
     var id: HomeSection { section }
+
+    /// Round 12 Y3: whether `item` is a kind of tile `section` shows. A saved shelf with any other kind is stale (an
+    /// older build, another section's tiles) and is thrown away on load.
+    static func fits(_ item: Item, in section: HomeSection) -> Bool {
+        switch (section, item) {
+        case (.jumpBackIn, .album), (.recentlyAdded, .album), (.mostPlayed, .album), (.favourites, .album),
+             (.randomAlbums, .album): true
+        case (.playlists, .playlist): true
+        case (.genres, .genreGroup): true
+        case (.downloaded, .downloadedAlbum), (.downloaded, .playlist): true
+        default: false
+        }
+    }
 }
 
 /// Home layout (spec §3, Task 20): the sections the owner shows, in the owner's order, each fetched only when shown.
@@ -120,16 +134,50 @@ extension AppModel {
         case .randomAlbums: return try await albums(.random)
         case .playlists:
             guard !isOffline else { return [] }
-            return try await request { try await $0.playlists() }.prefix(size).map(HomeShelf.Item.playlist)
+            let all = try await request { try await $0.playlists() }
+            return Self.homePlaylists(all, username: session?.username, isDiscover: isDiscoverPlaylist)
+                .prefix(size).map(HomeShelf.Item.playlist)
         case .genres:
             // The groups with the most albums; ties keep the groups' own order.
             let sections = try await genreSections().enumerated()
                 .sorted { ($0.element.albumCount, -$0.offset) > ($1.element.albumCount, -$1.offset) }
             return sections.prefix(size).map { .genreGroup($0.element) }
-        case .downloaded: return await offlineCatalog.albums().prefix(size).map(HomeShelf.Item.downloadedAlbum)
+        case .downloaded:
+            // Y3: newest first by download date; a downloaded playlist as itself, never as partial albums.
+            return await offlineCatalog.recentlyDownloaded().prefix(size).map { item in
+                switch item {
+                case .album(let album): .downloadedAlbum(album)
+                case .playlist(let playlist): .playlist(playlist)
+                }
+            }
         case .madeForYou: return []
         }
     }
+
+    /// Y3: the Playlists shelf's order: the signed-in user's own first, then public ones from others; within each,
+    /// the most recently changed first (no date last), then by name. Discover's playlists (Aurral flows, Y6) are left
+    /// out: they have their own section.
+    nonisolated static func homePlaylists(_ playlists: [Playlist], username: String?,
+                                          isDiscover: (Playlist) -> Bool = { _ in false }) -> [Playlist] {
+        func own(_ p: Playlist) -> Bool {
+            guard let owner = p.owner, let username else { return false }
+            return owner.caseInsensitiveCompare(username) == .orderedSame
+        }
+        return playlists.filter { !isDiscover($0) }.sorted { a, b in
+            if own(a) != own(b) { return own(a) }
+            let at = a.changed ?? .distantPast, bt = b.changed ?? .distantPast
+            if at != bt { return at > bt }
+            switch a.name.compare(b.name, options: [.caseInsensitive, .diacriticInsensitive]) {
+            case .orderedAscending: return true
+            case .orderedDescending: return false
+            case .orderedSame: return a.id < b.id
+            }
+        }
+    }
+
+    /// Y6 hook: whether a playlist belongs in Discover (an Aurral flow) rather than Playlists. None until Aurral is
+    /// set up.
+    func isDiscoverPlaylist(_ playlist: Playlist) -> Bool { false }
 
     private func albums(_ type: AlbumListType) async throws -> [HomeShelf.Item] {
         guard !isOffline else { return [] }   // Task 14: nothing is asked of the server offline

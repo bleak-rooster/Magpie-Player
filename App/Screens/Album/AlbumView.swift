@@ -18,6 +18,8 @@ struct AlbumView: View {
                 content(album)
             }
         }
+        // Y3 (item 4): the album again, its cover colours forgotten, after a quick scan picks up new downloads.
+        .refreshable { await model.refreshPage(coverArtIds: [album.value?.coverArtId]) { await load() } }
         .navigationTitle(album.value?.name ?? "")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {

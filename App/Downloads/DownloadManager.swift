@@ -66,6 +66,8 @@ final class DownloadManager {
     var storeDirectory: URL { store.directory }
     /// Every stored song (downloads and cache), for playback to prefer over a stream.
     private(set) var localFiles: [String: URL] = [:]
+    /// Y3: the quality each stored song was saved in (Now Playing says what is heard: "On this iPhone · …").
+    private(set) var localQualities: [String: StreamQuality] = [:]
     @ObservationIgnored var onLocalFilesChanged: (@MainActor () -> Void)?
     /// A manual download failed to reach the server (Task 14, I3): it waits, and the app checks the server.
     @ObservationIgnored var onUnreachable: (@MainActor () -> Void)?
@@ -790,6 +792,8 @@ final class DownloadManager {
         if index != self.index { self.index = index }
         kinds = Dictionary(uniqueKeysWithValues: entries.map { ($0.songId, $0.kind) })
         reasons = Dictionary(uniqueKeysWithValues: entries.map { ($0.songId, $0.reasons) })
+        let qualities = Dictionary(entries.map { ($0.songId, $0.quality) }, uniquingKeysWith: { a, _ in a })
+        if qualities != localQualities { localQualities = qualities }
         if files != localFiles {
             localFiles = files
             onLocalFilesChanged?()

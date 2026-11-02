@@ -140,3 +140,19 @@ Branch `y1-search` (off v0.0.1-custom). Commits: 524eeda (package), 6748bef (app
   - UI tests on the dev stack passed: SearchUITests (both) and BrowseFlowTests' two search tests.
   - The full app suite, run once: 896 tests passed.
   - check-writes and check-release OK.
+
+## Fix round 2 (coordinator: the first answer never waits on the splits)
+
+- **Early rows:** `LibraryPager.first(onWhole:)` hands over the whole query's rows the moment they arrive. MergedSearch passes them to `libraryFirst`, so the phone shows them while the splits are still out. Once the splits land, `libraryFirst` gets the full library rows (still ahead of the outside sources), and then the final result follows.
+- **No jumps:**
+  - Result rows report when they appear and disappear (`SearchModel.rowAppeared` / `rowDisappeared`; no gestures on the rows).
+  - When late rows land (`SearchModel.stabilised`), every row above the first one on screen keeps its place in its section, as does the Top result if it is above the screen. The rest take the new order.
+  - At the top of the list, the new order applies in full.
+- **Merge:** merged v0.0.1-custom (Y2 CarPlay, Y3 library scoping). One conflict, in `NavidromeClient.search`, was resolved by keeping the offsets and adding Y3's `folderItem`.
+- **Tests:**
+  - RED for `aSlowSplitDoesntDelayTheFirstResults`: no early rows while a split was out. RED for the app: `no member 'rowAppeared'`.
+  - GREEN:
+    - Package: SearchTests 100, NavidromeKit 113 and HostileData 22 passed, plus 21 tests in the suites matched by "CarPlay".
+    - App: `lateRowsNeverMoveRowsAboveTheVisibleArea` and `lateRowsReRankFullyAtTheTop` pass.
+    - Full app suite after the merge, run once: 937 tests passed.
+    - check-writes OK.

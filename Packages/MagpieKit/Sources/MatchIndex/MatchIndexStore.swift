@@ -61,7 +61,7 @@ public actor MatchIndexStore {
     }
 
     public func refresh(using client: NavidromeClient) async throws {
-        try await refresh { start, end in try await client.songsPage(start: start, end: end) }
+        try await refresh { start, end in try await client.songsPage(start: start, end: end, libraries: .all) }
     }
 
     /// Pages through the whole library, then swaps in the new index and saves it. A failure part-way
