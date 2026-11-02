@@ -288,4 +288,16 @@ I1–I12 and M1–M8 as above. The copy keeps "your server" (glossary).
 
 ## 13. Step 0 spike results
 
-(filled in by the spike)
+Dev Lidarr 3.2.0.5144, 2026-11-02, test artist (Judie Tzuke) created and removed by the spike script.
+- **(6) RefreshArtist.** `POST /artist` queues `RefreshArtist` with `body.artistIds == [id]` (non-empty, names the
+  artist) and a `RescanFolders` with the same ids; it completed within ~4 s. A runner-sent `{name: RefreshArtist,
+  artistId}` is listed with `body.artistIds == [id]` too. Global refreshes (the scheduled one) carry no ids. So the
+  §7 rule (non-empty ids naming the artist, newer than the baseline) is sound.
+- **(3) Upgrade outside the allowed set: yes.** With the artist on Magpie Lossless (FLAC only), an MP3-192 file
+  imported, then a FLAC of the same track imported: no "not an upgrade" rejection; the FLAC replaced the track file
+  and the MP3 left the disk (recycle bin empty on the dev stack, so permanently). The album stayed monitored.
+  `wanted/cutoff` did **not** list the album while it held the MP3 (Lidarr's cutoff query skips qualities outside the
+  profile), so Lidarr's own cutoff search won't look for it: Magpie's daily AlbumSearch (§5) is required, not optional.
+- **I6.** Deleting a track file did not unmonitor the album on the dev stack (that is an owner setting); the re-monitor
+  stays, for owners who have "Unmonitor deleted tracks" on.
+- **(2) Collision.** Refuse-only; covered by unit tests and IT test M (nothing sent).
