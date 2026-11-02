@@ -42,8 +42,9 @@ import MagpieCore
 
         #expect(outcome == .moved)
         let writes = h.server.writeBodies().dropFirst(before)
-        #expect(writes.map(\.0) == ["PUT artist/editor", "POST command"], "one move, then the lossless search (Y5)")
-        #expect(writes.last?.1["name"] as? String == "AlbumSearch")
+        #expect(writes.map(\.0) == ["PUT artist/editor", "POST command", "POST command"],
+                "one move, then (Y5) a rescan and the lossless search")
+        #expect(writes.dropFirst().map { $0.1["name"] as? String } == ["RefreshArtist", "AlbumSearch"])
         let body = try #require(writes.first?.1)
         #expect(Set(body.keys) == ["artistIds", "rootFolderPath", "moveFiles", "qualityProfileId", "tags", "applyTags"])
         #expect(body["artistIds"] as? [Int] == [42])

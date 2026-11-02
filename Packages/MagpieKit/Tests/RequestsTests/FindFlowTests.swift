@@ -180,7 +180,10 @@ import MagpieCore
     @Test func aStaleRecordIsNeverTakenForGone() async throws {
         let h = await Harness(setup: Harness.findsSetup)
         let id = try await Self.keptFind(h)
-        h.server.with { $0.refreshFollowsFiles = false }
+        h.server.with { s in
+            s.refreshFollowsFiles = false
+            s.artists[0].recorded = KeepTests.findPath   // Lidarr's record still at the old folder
+        }
         await #expect(throws: RequestRunner.MP3Error.needsAttention) { _ = try await h.runner.removeMP3Now(id) }
         #expect(Self.deletes(h).isEmpty)
         #expect(await h.request(id)?.lossless?.removedAt == nil)
