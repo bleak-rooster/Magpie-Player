@@ -320,7 +320,7 @@ final class DiscoverNavidrome: @unchecked Sendable {
         #expect(model.discover.status?.progress(flowId: "flow-dw") == AurralProgress(done: 8, total: 20))
         await #expect(throws: AurralError.runActive) { try await model.refreshFlow("flow-dw") }
         #expect(aurral.asked.filter { $0.hasPrefix("POST") }.count == 1, "a second tap sends nothing")
-        #expect(DiscoverCopy.refreshConfirm == "Replaces this playlist's songs")
+        #expect(DiscoverCopy.refreshConfirm == "Replaces this playlist\u{2019}s songs")
     }
 
     // MARK: - Adding artists
@@ -350,6 +350,21 @@ final class DiscoverNavidrome: @unchecked Sendable {
         #expect(try await model.discoverPlaylists().isEmpty)
         #expect(aurral.requests.count == before, "nothing sent to Aurral offline")
         #expect(!model.homeSections.contains(.discover))
+    }
+
+    /// §5: Discover's own words name no service (Settings' Aurral page may, as Lidarr's does); curly quotes only.
+    @Test func discoverCopyNamesNoService() {
+        let texts = [DiscoverCopy.title, DiscoverCopy.refresh, DiscoverCopy.refreshConfirm, DiscoverCopy.refreshing,
+                     DiscoverCopy.runActive, DiscoverCopy.inYourLibrary, DiscoverCopy.artistsInPlaylist, DiscoverCopy.empty,
+                     DiscoverCopy.useLibraryCopy, DiscoverCopy.libraryCopies(1), DiscoverCopy.libraryCopies(2),
+                     DiscoverCopy.usedLibraryCopies(2), DiscoverCopy.tooLong,
+                     DiscoverCopy.progress(AurralProgress(done: 3, total: 20)),
+                     DiscoverCopy.message(for: AurralError.unauthorized), DiscoverCopy.message(for: URLError(.timedOut))]
+        for text in texts {
+            for name in ["Lidarr", "Navidrome", "Aurral", "MusicBrainz"] { #expect(!text.contains(name), "\(text)") }
+            #expect(!text.contains("'") && !text.contains("\""), "curly quotes: \(text)")
+        }
+        #expect(DiscoverCopy.progress(AurralProgress(done: 3, total: 20)) == "Getting songs: 3 of 20")
     }
 
     @Test func signOutForgetsAurral() async throws {

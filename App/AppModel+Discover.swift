@@ -345,31 +345,31 @@ extension AppModel {
 enum DiscoverCopy {
     static let title = "Discover"
     static let refresh = "Refresh Flow"
-    static let refreshConfirm = "Replaces this playlist's songs"
+    static let refreshConfirm = "Replaces this playlist\u{2019}s songs"
     static let refreshing = "Getting new songs\u{2026}"
-    static let runActive = "A refresh is already under way. Try again when it's done."
+    static let runActive = "A refresh is already under way. Try again when it\u{2019}s done."
     static let inYourLibrary = "In your library"
     static let artistsInPlaylist = "Artists in this playlist"
     static let empty = "No Discover playlists yet."
     static func progress(_ p: AurralProgress) -> String { "Getting songs: \(p.done) of \(p.total)" }
     static func addArtist(_ name: String) -> String { "Add \(name) to your library" }
-    static let useLibraryCopy = "Use your library's copy"
+    static let useLibraryCopy = "Use your library\u{2019}s copy"
     static func libraryCopies(_ n: Int) -> String {
         n == 1 ? "1 song here is a Discover copy of a song in your library."
                : "\(n) songs here are Discover copies of songs in your library."
     }
     static func usedLibraryCopies(_ n: Int) -> String {
-        n == 1 ? "Now plays your library's copy" : "Now plays your library's copies"
+        n == 1 ? "Now plays your library\u{2019}s copy" : "Now plays your library\u{2019}s copies"
     }
     static let tooLong = "This playlist is too long to change in one go."
 
     static func message(for error: Error) -> String {
         switch error as? AurralError {
         case .runActive?: runActive
-        case .unauthorized?: "Discover's server refused the key. Check it in Settings \u{203A} New music."
-        case .notFound?: "That flow isn't there any more."
-        case .forbidden?: "Magpie doesn't send that."
-        default: AppModel.isConnectionError(error) ? "Discover's server isn't answering right now." : BrowseErrorCopy.message(for: error)
+        case .unauthorized?: "Discover\u{2019}s server refused the key. Check it in Settings \u{203A} New music."
+        case .notFound?: "That flow isn\u{2019}t there any more."
+        case .forbidden?: "Magpie doesn\u{2019}t send that."
+        default: AppModel.isConnectionError(error) ? "Discover\u{2019}s server isn\u{2019}t answering right now." : BrowseErrorCopy.message(for: error)
         }
     }
 }

@@ -193,11 +193,11 @@ struct AurralSettingsView: View {
 enum AurralCopy {
     static let footer = "Aurral makes Discover playlists for you. Off until you set it up."
     static let connectFooter = "The API key is in Aurral under Settings. It gives full control of Aurral, so it stays on this iPhone and Magpie only reads Aurral, except when you tap Refresh Flow. Use an https:// address for anything outside your home."
-    static let connectedFooter = "Magpie reads Aurral's flows and never changes Aurral, except when you tap Refresh Flow."
-    static let needsConsent = "This Aurral address isn't encrypted, so Magpie waits for your OK before sending its API key."
+    static let connectedFooter = "Magpie reads Aurral\u{2019}s flows and never changes Aurral, except when you tap Refresh Flow."
+    static let needsConsent = "This Aurral address isn\u{2019}t encrypted, so Magpie waits for your OK before sending its API key."
     static let plainHTTPMessage = "Your Aurral API key will be sent in the clear, and it gives full control of Aurral. Use an https:// address when you can."
-    static let badKey = "That API key didn't work. Copy it again from Aurral's Settings."
-    static let notAurral = "That address answered, but it doesn't look like Aurral."
+    static let badKey = "That API key didn\u{2019}t work. Copy it again from Aurral\u{2019}s Settings."
+    static let notAurral = "That address answered, but it doesn\u{2019}t look like Aurral."
 
     @MainActor static func summary(_ model: AppModel) -> String {
         guard model.discover.connection != nil else { return "Off" }
@@ -214,7 +214,7 @@ enum AurralCopy {
         switch health?.compatibility {
         case .newer(let v)?: "Magpie is built for Aurral 2.10; this one runs \(v). Discover still works, though something new may not show."
         case .older(let v)?: "Magpie is built for Aurral 2.10; this one runs \(v). Some of Discover may not show."
-        case .unknown?: "Aurral didn't say its version. Magpie is built for 2.10."
+        case .unknown?: "Aurral didn\u{2019}t say its version. Magpie is built for 2.10."
         default: nil
         }
     }

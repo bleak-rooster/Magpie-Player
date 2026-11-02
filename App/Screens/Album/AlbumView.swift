@@ -111,7 +111,8 @@ struct AlbumView: View {
             return
         }
         do {
-            let loaded = try await model.request { [albumId] in try await $0.album(id: albumId) }
+            var loaded = try await model.request { [albumId] in try await $0.album(id: albumId) }
+            loaded.songs = loaded.songs.map(model.swappingFlowCopies)   // Y6: an Aurral copy plays as the library's
             album = .loaded(loaded)
             model.noteAlbumSongCounts([loaded])   // P1: backfills downloads saved without the album's count
             model.noteFavourite(.album(loaded.id), loaded.starred)   // R7
