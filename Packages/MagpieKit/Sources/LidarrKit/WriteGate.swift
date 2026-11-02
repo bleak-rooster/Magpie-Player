@@ -189,7 +189,8 @@ enum ForbiddenWrites {
     /// Query/body flags that must be absent or exactly `false`.
     static let falseOnlyFlags: Set<String> = ["deletefiles", "addimportlistexclusion"]
     /// `POST /command` names Magpie may start. Anything else (rename, retag, backup, reset API key…) is refused.
-    static let allowedCommands: Set<String> = ["albumsearch", "artistsearch", "refreshartist", "refreshalbum"]
+    /// Round 12 M2: `refreshalbum` is gone (nothing sends it); every allowed command is confined to the ledger.
+    static let allowedCommands: Set<String> = ["albumsearch", "artistsearch", "refreshartist"]
     /// `applyTags` values allowed in `PUT /artist/editor` (`replace` would wipe the owner's tags, A4).
     static let allowedApplyTags: Set<String> = ["add", "remove"]
     /// `monitorNewItems` values allowed in `PUT /artist/editor` (Follow new releases, Task 7.1b): only `new`. Never
@@ -239,7 +240,8 @@ enum ForbiddenWrites {
         if t.method == "POST", key == ["command"], let object = json as? [String: Any] {
             let value = { (name: String) in object.first { $0.key.lowercased() == name }?.value }
             let name = (value("name") as? String ?? "").lowercased()
-            guard ["albumsearch", "refreshartist"].contains(name) else { return nil }
+            // Round 12 M2: ArtistSearch too (it searches every monitored album of the artist). The body is exact (M3).
+            guard ["albumsearch", "refreshartist", "artistsearch"].contains(name) else { return nil }
             let ids = (value("albumids") as? [Any] ?? []).compactMap { ($0 as? NSNumber)?.intValue }
             return .command(name: name, albumIds: ids, artistId: (value("artistid") as? NSNumber)?.intValue)
         }
@@ -359,12 +361,27 @@ enum ForbiddenWrites {
         return n.int64Value > 0 && Double(n.int64Value) == n.doubleValue
     }
 
-    /// Exactly one `name` key (any case), naming an allowed command.
+    /// Exactly one `name` key (any case), naming an allowed command, and exactly that command's body (round 12 M3):
+    /// AlbumSearch is `{name, albumIds: [positive ints, at least one]}`; RefreshArtist and ArtistSearch are
+    /// `{name, artistId: positive int}`. Any other key (`artistIds`, `isNewArtist`…), a repeated key in another case,
+    /// or an id that isn't a positive integer refuses, so the ids the confinement checks are the ids Lidarr uses.
     private static func commandReason(_ json: Any?) -> String? {
         guard let object = json as? [String: Any] else { return "command needs a body" }
         let names = object.filter { $0.key.lowercased() == "name" }
-        guard names.count == 1, let name = names.first?.value as? String,
-              allowedCommands.contains(name.lowercased()) else { return "command not allowed" }
+        guard names.count == 1, let name = (names.first?.value as? String)?.lowercased(),
+              allowedCommands.contains(name) else { return "command not allowed" }
+        let idKey = name == "albumsearch" ? "albumids" : "artistid"
+        let keys = object.keys.map { $0.lowercased() }
+        guard keys.count == 2, Set(keys) == ["name", idKey], let ids = object.first(where: { $0.key.lowercased() == idKey })?.value else {
+            return "command body must be exactly name and \(idKey)"
+        }
+        if name == "albumsearch" {
+            guard let list = ids as? [Any], !list.isEmpty, list.allSatisfy(isPositiveInteger) else {
+                return "albumIds must be positive integers"
+            }
+        } else if !isPositiveInteger(ids) {
+            return "artistId must be a positive integer"
+        }
         return nil
     }
 

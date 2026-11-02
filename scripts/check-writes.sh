@@ -191,9 +191,69 @@ if [ -z "${G1_SRC:-}" ]; then
   # Only the Lidarr gate and the Aurral client name an API-key header or parameter (the redactor and the test stub aside).
   for f in $(grep -rlE --include='*.swift' '[Xx]-[Aa]pi-[Kk]ey"|"api_key' "${product[@]}" | sort -u || true); do
     case "$f" in
-      "$aurral"|Packages/MagpieKit/Sources/LidarrKit/WriteGate.swift|Packages/MagpieKit/Sources/MagpieTestSupport/StubAurral.swift|Packages/MagpieKit/Sources/MagpieCore/Redactor.swift) ;;
+      "$aurral"|Packages/MagpieKit/Sources/LidarrKit/WriteGate.swift|Packages/MagpieKit/Sources/MagpieTestSupport/StubAurral.swift|Packages/MagpieKit/Sources/MagpieCore/Redactor.swift|Packages/MagpieKit/Sources/MagpieCore/RedirectPolicy.swift) ;;
       *) echo "G1: an API-key request built outside the Lidarr gate and the Aurral client: $f" >&2; bad=1 ;;
     esac
+  done
+fi
+if [ -z "${G1_SRC:-}" ]; then
+  # Round 12 security L1: the pins above match exact spellings. The gate lower-cases and fully decodes the path, so
+  # every `gate.send(` is also checked normalised: lower case, `%XX` and `\u{X}` decoded, leading `/` and `api/v1/`
+  # dropped, `//` collapsed. Its verb and path must both be literals on the line (Provisioner's profile/tag create
+  # aside: POST only, a path from its own constants), and then:
+  #   - DELETE trackfile… only from Not for me and the MP3 rule;
+  #   - DELETE queue… only with the one allowed query (`?\(Self.queueRemoval)`), from Stall and the restarter;
+  #   - POST command only naming AlbumSearch (runner, Lossless, Bring in more, restarter), RefreshArtist (Lossless)
+  #     or ArtistSearch (ArtistLidarr).
+  # `removeCounting(…, restartAny: true)` (the queueRestartAny shape) only from the restarter.
+  rq="Packages/MagpieKit/Sources/Requests"
+  sends=$(grep -rnE --include='*.swift' 'gate\.send\(' "${product[@]}" | grep -v "^$gate:" |
+          grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' || true)
+  while IFS= read -r s; do
+    [ -n "$s" ] || continue
+    file="${s%%:*}" rest="${s#*:}"; line="${rest%%:*}" text="${rest#*:}"
+    parsed=$(printf '%s\n' "$text" | perl -ne '
+      s/\\u\{([0-9a-fA-F]+)\}/chr(hex($1))/ge; s/%([0-9a-fA-F]{2})/chr(hex($1))/ge; $_ = lc;
+      if (/gate\.send\(\s*"([a-z]+)"\s*,\s*"([^"]*)"/) {
+        my ($v, $p) = ($1, $2); $p =~ s#/{2,}#/#g; $p =~ s#^/##; $p =~ s#^api/v1/##; $p =~ s#^/##;
+        print "$v $p\n";
+      } else { print "-\n"; }')
+    if [ "$parsed" = "-" ]; then
+      case "$file|$text" in
+        "Packages/MagpieKit/Sources/LidarrKit/Provisioner.swift|"*'gate.send("POST", path, body: body)'*) ;;
+        *) echo "L1: gate.send without a literal verb and path: $file:$line" >&2; bad=1 ;;
+      esac
+      continue
+    fi
+    verb="${parsed%% *}" path="${parsed#* }"
+    case "$verb $path" in
+      "delete trackfile"*)
+        case "$file" in
+          "$rq/RequestRunner+NotForMe.swift"|"$rq/RequestRunner+Lossless.swift") ;;
+          *) echo "L1: track file delete outside Not for me and the MP3 rule: $file:$line" >&2; bad=1 ;;
+        esac ;;
+      "delete queue"*)
+        case "$file" in
+          "$rq/RequestRunner+Stall.swift"|"$rq/DownloadsInLidarr.swift") ;;
+          *) echo "L1: queue delete outside Stall and the restarter: $file:$line" >&2; bad=1 ;;
+        esac
+        case "$path" in
+          *'?\(self.queueremoval)') ;;
+          *) echo "L1: queue delete without the one allowed query: $file:$line" >&2; bad=1 ;;
+        esac ;;
+      "post command"*)
+        name=$(printf '%s\n' "$text" | perl -ne 'print lc($1) if /name:\s*"([^"]*)"/')
+        case "$name|$file" in
+          "albumsearch|$rq/RequestRunner.swift"|"albumsearch|$rq/RequestRunner+Lossless.swift"|\
+          "albumsearch|$rq/RequestRunner+BringInMore.swift"|"albumsearch|$rq/DownloadsInLidarr.swift"|\
+          "refreshartist|$rq/RequestRunner+Lossless.swift"|"artistsearch|$rq/ArtistLidarr.swift") ;;
+          *) echo "L1: a Lidarr command (${name:-no literal name}) outside its pinned callers: $file:$line" >&2; bad=1 ;;
+        esac ;;
+    esac
+  done <<< "$sends"
+  for f in $(grep -rlE --include='*.swift' 'restartAny:[[:space:]]*true' "${product[@]}" | sort -u || true); do
+    [ "$f" = "Packages/MagpieKit/Sources/Requests/DownloadsInLidarr.swift" ] ||
+      { echo "L1: removeCounting(restartAny: true) outside the restarter: $f" >&2; bad=1; }
   done
 fi
 [ "$bad" = 0 ] || { echo "G1 check failed: route Lidarr writes through LidarrWriteGate (or extend the allowlist in $0)" >&2; exit 1; }

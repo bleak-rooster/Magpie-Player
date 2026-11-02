@@ -123,7 +123,7 @@ public struct LedgerEntry: Sendable, Equatable, Codable {
         requestId = try c.decodeIfPresent(String.self, forKey: .requestId)
         closedAt = try c.decodeIfPresent(Date.self, forKey: .closedAt)
         artistMbid = try? c.decodeIfPresent(MBID.self, forKey: .artistMbid)
-        keepIntentAt = try? c.decodeIfPresent(Date.self, forKey: .keepIntentAt)
+        keepIntentAt = try c.decodeIfPresent(Date.self, forKey: .keepIntentAt)   // round 12 L7: malformed fails closed
         findFiles = try? c.decodeIfPresent([FindFile].self, forKey: .findFiles)
     }
 }

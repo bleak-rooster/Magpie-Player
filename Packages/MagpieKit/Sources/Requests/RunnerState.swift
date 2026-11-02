@@ -41,16 +41,57 @@ public struct RunnerState: Codable, Sendable, Equatable {
         return requests.deletingLastPathComponent().appending(path: String(state))
     }
 
-    /// Nil file: in memory only. A damaged or missing file reads as empty (leases fail open to "not busy" only after
-    /// they'd be stale anyway; a crash loses at most one pass of renewal).
+    /// Round 12 M5: set when a damaged file was kept aside and this state started over. While set, the runner never
+    /// re-runs a destructive migration step (the flags were lost with the file) and reports it needs a look.
+    public var damagedAt: Date?
+
+    enum ReadError: Error { case unavailable }
+
+    /// Round 12 M5 (as `LocalFile.load` for the ledger): nil file: in memory only; a missing file: empty.
+    /// - A file that exists but can't be *read* (protected data before first unlock) throws and is left alone:
+    ///   callers skip the pass rather than save over it.
+    /// - A file that reads but can't be *decoded* is renamed `<name>.corrupt` (never overwritten: a later damage gets
+    ///   `.corrupt-<time>`), logged, and replaced by an empty state marked `damagedAt`, saved at once so every runner
+    ///   sees the mark. If it can't be moved aside or the mark can't be saved, it throws.
+    static func read(_ url: URL?) throws -> RunnerState {
+        guard let url, FileManager.default.fileExists(atPath: url.path) else { return RunnerState() }
+        let data: Data
+        do { data = try Data(contentsOf: url) } catch {
+            Log.logger("requests").error("runner state can't be read right now; pass skipped")
+            throw ReadError.unavailable
+        }
+        do {
+            return try JSONDecoder().decode(RunnerState.self, from: data)
+        } catch {
+            let dir = url.deletingLastPathComponent(), name = url.lastPathComponent
+            var aside = dir.appending(path: name + ".corrupt")
+            if FileManager.default.fileExists(atPath: aside.path) {
+                aside = dir.appending(path: name + ".corrupt-\(Int(Date().timeIntervalSince1970))-\(UUID().uuidString.prefix(8))")
+            }
+            do { try FileManager.default.moveItem(at: url, to: aside) } catch { throw ReadError.unavailable }
+            Log.logger("requests").error("damaged runner state kept aside as \(aside.lastPathComponent, privacy: .public); needs a look")
+            var fresh = RunnerState()
+            fresh.damagedAt = Date()
+            do { try AtomicFile.write(fresh, to: url) } catch { throw ReadError.unavailable }
+            return fresh
+        }
+    }
+
+    /// Tests only: `read`, with an unreadable file as empty.
     static func load(_ url: URL?) -> RunnerState {
-        guard let url, let state = try? AtomicFile.read(RunnerState.self, from: url) else { return RunnerState() }
-        return state
+        (try? read(url)) ?? RunnerState()
     }
 
     static func save(_ state: RunnerState, to url: URL?) {
         guard let url else { return }
-        do { try AtomicFile.write(state, to: url) } catch {
+        do {
+            try AtomicFile.write(state, to: url)
+            // Round 12 review §4: kept out of device backups like the ledger (set after every atomic replace).
+            var values = URLResourceValues()
+            values.isExcludedFromBackup = true
+            var file = url
+            try? file.setResourceValues(values)
+        } catch {
             Log.logger("requests").error("runner state not saved")
         }
     }
@@ -60,10 +101,11 @@ public struct RunnerState: Codable, Sendable, Equatable {
     static let fileLock = OSAllocatedUnfairLock()
 
     /// Reads, changes and saves the file in one locked step; returns the saved state and what `change` returned.
-    static func modify<T>(_ url: URL?, _ change: (inout RunnerState) -> T) -> (RunnerState, T) {
+    /// Nil (nothing saved) when the file can't be read (round 12 M5: never save over it).
+    static func modify<T>(_ url: URL?, _ change: (inout RunnerState) -> T) -> (RunnerState, T)? {
         withoutActuallyEscaping(change) { change in
             fileLock.withLockUnchecked {
-                var state = load(url)
+                guard var state = try? read(url) else { return nil }
                 let out = change(&state)
                 save(state, to: url)
                 return (state, out)
@@ -86,12 +128,13 @@ extension RequestRunner {
         let t = now()
         let mine = Set(keepingArtists.map(Self.artistKey) + busy.map(Self.requestKey))
         let me = process
-        persistedState = RunnerState.modify(stateURL) { state in
+        guard let saved = RunnerState.modify(stateURL, { state in
             state.leases.removeAll { $0.process == me && !mine.contains($0.key) }
             for key in mine where !state.leases.contains(where: { $0.key == key && $0.process == me }) {
                 state.leases.append(.init(key: key, process: me, startedAt: t, renewedAt: t))
             }
-        }.0
+        }) else { return }
+        persistedState = saved.0
     }
 
     /// Fix I5: takes the artist in one locked check-and-insert. False when another runner's fresh lease holds it, or
@@ -99,14 +142,15 @@ extension RequestRunner {
     func tryAcquireArtist(_ id: Int) -> Bool {
         guard !stopped, !keepingArtists.contains(id) else { return false }
         let t = now(), key = Self.artistKey(id), me = process
-        let (state, taken) = RunnerState.modify(stateURL) { state -> Bool in
+        // Round 12 M5: an unreadable state file takes nothing (fails closed).
+        guard let (state, taken) = RunnerState.modify(stateURL, { state -> Bool in
             if state.leases.contains(where: { $0.key == key && $0.process != me && RunnerState.isFresh($0, at: t) }) {
                 return false
             }
             state.leases.removeAll { $0.key == key }
             state.leases.append(.init(key: key, process: me, startedAt: t, renewedAt: t))
             return true
-        }
+        }) else { return false }
         persistedState = state
         if taken { keepingArtists.insert(id) }
         return taken
@@ -123,12 +167,12 @@ extension RequestRunner {
     func renewLeases() {
         guard !stopped else { return }
         let t = now(), me = process
-        let (state, dropped) = RunnerState.modify(stateURL) { state -> Int in
+        guard let (state, dropped) = RunnerState.modify(stateURL, { state -> Int in
             let before = state.leases.count
             state.leases.removeAll { $0.process != me && !RunnerState.isFresh($0, at: t) }
             for i in state.leases.indices where state.leases[i].process == me { state.leases[i].renewedAt = t }
             return before - state.leases.count
-        }
+        }) else { return }
         persistedState = state
         if dropped > 0 { Log.logger("requests").error("dropped \(dropped) stale lease(s) of an earlier runner") }
     }
@@ -136,7 +180,9 @@ extension RequestRunner {
     /// A fresh lease of another runner on `key` (read from disk now).
     func foreignLease(_ key: String) -> Bool {
         let t = now()
-        return RunnerState.load(stateURL).leases.contains { $0.key == key && $0.process != process && RunnerState.isFresh($0, at: t) }
+        // Round 12 M5: an unreadable state file reads as busy (fails closed).
+        guard let state = try? RunnerState.read(stateURL) else { return true }
+        return state.leases.contains { $0.key == key && $0.process != process && RunnerState.isFresh($0, at: t) }
     }
 
     /// Something is working on this artist: in this runner, or (a fresh lease) in another.
@@ -158,18 +204,18 @@ extension RequestRunner {
         guard let date = try? await lidarr.serverDate() else { return }
         let offset = date.timeIntervalSince(now())
         guard abs(offset) <= RunnerState.maxOffset else { return }
-        persistedState = RunnerState.modify(stateURL) { state in
+        if let saved = RunnerState.modify(stateURL, { state in
             if let old = state.clockOffset, abs(old - offset) > 60 { state.historyCursor = nil }
             state.clockOffset = offset
-        }.0
+        }) { persistedState = saved.0 }
     }
 
     func saveHistoryCursor(_ cursor: Date?) {
-        persistedState = RunnerState.modify(stateURL) { $0.historyCursor = cursor }.0
+        if let saved = RunnerState.modify(stateURL, { $0.historyCursor = cursor }) { persistedState = saved.0 }
     }
 
     func markMigrated(_ name: String) {
         let t = now()
-        persistedState = RunnerState.modify(stateURL) { $0.migrated[name] = t }.0
+        if let saved = RunnerState.modify(stateURL, { $0.migrated[name] = t }) { persistedState = saved.0 }
     }
 }

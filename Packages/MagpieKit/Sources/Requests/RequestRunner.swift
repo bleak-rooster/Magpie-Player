@@ -255,6 +255,10 @@ public actor RequestRunner {
 
     private func unwatch(_ key: UUID) { watchers[key] = nil }
 
+    /// Round 12 M5: the runner's state file was damaged and kept aside (`.corrupt`): leases, Lidarr's clock and the
+    /// migration flags started over, and a destructive migration step won't run again. Needs a look.
+    public var stateNeedsAttention: Bool { persistedState.damagedAt != nil }
+
     /// Whether `tick()` has anything to do: an active request, a clean-up still owed, or a Keep or Not for me
     /// to follow.
     public var needsPolling: Bool {
@@ -282,9 +286,11 @@ public actor RequestRunner {
         do {
             let saved = try await task.value
             if !loaded {
+                // Round 12 M5: an unreadable runner state fails the load (the pass is skipped, nothing saved over it).
+                let state = try RunnerState.read(stateURL)
                 list = saved
                 loaded = true
-                persistedState = RunnerState.load(stateURL)
+                persistedState = state
                 publish()
             }
             loading = nil

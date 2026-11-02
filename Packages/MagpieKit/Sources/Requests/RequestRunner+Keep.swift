@@ -749,17 +749,16 @@ extension RequestRunner {
     /// near match counts as existing. Both only keep more finds in place.
     static func mustStayInFinds(current: String, named: String?, existing: [String]) -> Bool {
         // Strict: any drift in Lidarr's name (even case or accents) means the folder would change. Untag only.
-        guard let named, Array(named.utf8) == Array(current.utf8) else { return true }
-        return existing.contains { looselyEqual($0, current) || looselyEqual($0, named) }
+        // Round 12 M4: the same rule the gate re-checks at send time.
+        WriteConfinement.moveDestinationTaken(current: current, named: named, existing: existing)
     }
 
     static func looselyEqual(_ a: String, _ b: String) -> Bool {
-        let fold = { (s: String) in s.folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: nil) }
-        return fold(a) == fold(b)
+        WriteConfinement.looselyEqual(a, b)
     }
 
     static func lastComponent(_ path: String) -> String {
-        PathGuard.byteComponents(path).last ?? ""   // FL1: split on the byte `/`
+        WriteConfinement.lastComponent(path)   // FL1: split on the byte `/`
     }
 
     /// The Finds root, confined against every other fresh root folder and the main root; case-sensitive.

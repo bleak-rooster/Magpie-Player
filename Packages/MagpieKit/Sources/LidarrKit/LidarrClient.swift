@@ -169,7 +169,7 @@ public struct LidarrClient: Sendable {
         let page = try await decode(HistoryPage.self, "history", [
             URLQueryItem(name: "downloadId", value: downloadId), URLQueryItem(name: "eventType", value: "1"),
             URLQueryItem(name: "page", value: "1"), URLQueryItem(name: "pageSize", value: "10")])
-        return page.records.contains { $0.isGrab && ($0.downloadId == nil || $0.downloadId == downloadId) }
+        return page.records.contains { $0.isGrab && $0.downloadId == downloadId }   // round 12 L3: a record without the id never counts
     }
 
     /// The download clients set up in Lidarr (R17: which ones are Soulseek). Read only; never written (G5).

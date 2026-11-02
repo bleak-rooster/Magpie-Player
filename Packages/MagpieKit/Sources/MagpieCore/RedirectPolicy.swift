@@ -19,11 +19,29 @@ public final class SameOriginRedirects: NSObject, URLSessionTaskDelegate, Sendab
         return a == b
     }
 
+    /// Headers that carry a key or a login. A request with any of them is never redirected (round 12 M1).
+    static let credentialHeaders = ["x-api-key", "x-nd-authorization", "authorization"]
+
+    /// Round 12 M1: whether a redirect of `original` to `target` may be followed. Only a GET or HEAD with no
+    /// key or auth header, and only within its origin. Every write (any other method) and every keyed request
+    /// (Lidarr, Aurral, Navidrome's native API, ListenBrainz) is refused even on the same origin: its target
+    /// never went through the write gate or Aurral's allow-list, and a same-origin 307 could re-point an
+    /// allowed `DELETE /queue/7` at `/artist/5?deleteFiles=true`. Because keyed requests never follow, the
+    /// gate and the allow-list are in effect re-run on every target: the only target ever sent is the one
+    /// they checked.
+    public static func allows(original: URLRequest?, to target: URL?) -> Bool {
+        guard let original else { return false }
+        let method = (original.httpMethod ?? "GET").uppercased()
+        guard method == "GET" || method == "HEAD" else { return false }
+        let headers = (original.allHTTPHeaderFields ?? [:]).keys.map { $0.lowercased() }
+        guard !headers.contains(where: credentialHeaders.contains) else { return false }
+        return allows(from: original.url, to: target)
+    }
+
     public func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
                            newRequest request: URLRequest) async -> URLRequest? {
-        let original = task.originalRequest?.url ?? response.url
-        guard Self.allows(from: original, to: request.url) else {
-            Log.logger("network").error("redirect to another origin refused")
+        guard Self.allows(original: task.originalRequest, to: request.url) else {
+            Log.logger("network").error("redirect refused (another origin, a write, or a keyed request)")
             return nil
         }
         return request

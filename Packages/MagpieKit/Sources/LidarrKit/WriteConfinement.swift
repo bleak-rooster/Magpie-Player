@@ -32,6 +32,24 @@ import MagpieCore
 /// be one of them, and the Finds root must still pass G2 (`PathGuard.findsRootStillValid`). The ledger must belong
 /// to the same Lidarr as the gate. Anything that can't be read refuses the write (`WriteGateError.unconfirmed`).
 public struct WriteConfinement: Sendable {
+    /// G4 (round 12 M4: shared by the runner's C1 and the gate): a move into the main root would land somewhere
+    /// other than a fresh folder of the find's own name. Lidarr's folder name is unknown or differs from the current
+    /// one at all (byte for byte), or a folder of either name is in the main root already, compared loosely (case,
+    /// diacritics, width; Swift `==` already treats NFC and NFD alike) so a near match counts as existing.
+    public static func moveDestinationTaken(current: String, named: String?, existing: [String]) -> Bool {
+        guard let named, Array(named.utf8) == Array(current.utf8) else { return true }
+        return existing.contains { looselyEqual($0, current) || looselyEqual($0, named) }
+    }
+
+    public static func looselyEqual(_ a: String, _ b: String) -> Bool {
+        let fold = { (s: String) in s.folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: nil) }
+        return fold(a) == fold(b)
+    }
+
+    public static func lastComponent(_ path: String) -> String {
+        PathGuard.byteComponents(path).last ?? ""
+    }
+
     /// What the owner set up, read on every confined write.
     public struct Roots: Sendable, Equatable {
         public var mainRoot: String?
@@ -138,8 +156,13 @@ public struct WriteConfinement: Sendable {
                     guard let artistId, entries.contains(where: { $0.lidarrArtistId == artistId }) else {
                         return .refused("a refresh only for an artist Magpie asked for")
                     }
+                case "artistsearch":
+                    // Round 12 M2: searches every monitored album, so only an artist Magpie created (fresh MBID match).
+                    guard let artistId, try await context.created(artistId) else {
+                        return .refused("a search only for an artist Magpie added")
+                    }
                 default:
-                    break
+                    return .refused("command not allowed")
                 }
                 return .confined(artists: [], rule: .other)
             }
@@ -515,7 +538,23 @@ public struct WriteConfinement: Sendable {
                       try await lidarrRoots().contains(where: { Self.sameBytes($0, main) }) else {
                     throw Refusal(reason: "files only move into the main root folder")
                 }
-                _ = try await findArtist(id)
+                let (path, _) = try await findArtist(id)
+                // Round 12 M4 (G4/C1 at the gate): Lidarr's move merges into an existing folder, so the destination
+                // must be free now, read fresh in this confined turn. Unreadable reads refuse (as `.unknown`).
+                guard let mbid = try await artist(id).foreignArtistId else {
+                    throw Refusal(reason: "the artist has no MusicBrainz id")
+                }
+                let named: String?, existing: [String]
+                do {
+                    named = try await lidarr.artistLookup(mbid: mbid)?.folder
+                    existing = try await lidarr.directories(in: main)
+                } catch {
+                    throw Unreadable()
+                }
+                guard !WriteConfinement.moveDestinationTaken(current: WriteConfinement.lastComponent(path), named: named,
+                                                             existing: existing.map(WriteConfinement.lastComponent)) else {
+                    throw Refusal(reason: "a folder of that name is in the main root folder already")
+                }
             } else {
                 // Keep's restore: points the artist back at the Finds root; no files move.
                 _ = try await findsGuard()

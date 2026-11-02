@@ -190,7 +190,11 @@ extension RequestRunner {
         let lockedArtists = Set(entries.filter { $0.createdArtist && $0.keptAt != nil && $0.keepIntentAt == nil }
             .map(\.lidarrArtistId))
         if !lockedArtists.isEmpty {
-            if let setup = await keepSetup() {
+            if persistedState.damagedAt != nil {
+                // Round 12 M5: the state file (and the flag saying this already ran) was damaged. Clearing a lock makes a
+                // kept artist deletable again, so never after damage: the locks stay (fail closed), needs a look.
+                Log.logger("requests").error("runner state was damaged: legacy Keep locks left in place")
+            } else if let setup = await keepSetup() {
                 for artistId in lockedArtists.sorted() where await !clearLegacyLock(artistId, setup: setup) { complete = false }
             } else {
                 complete = false
