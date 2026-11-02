@@ -43,6 +43,15 @@ import Testing
         #expect(unmatched?.text == "Couldn't match this artist" && unmatched?.action == nil && unmatched?.hint == nil)
     }
 
+    /// Follow-up 2: the artist page says "This can't be undone." when Lidarr's recycle bin is off.
+    @Test func artistLineSaysWhenTheRemovalIsPermanent() {
+        let state = ArtistLidarrState.find(lidarrId: 42, state: .inLibrary(.waiting(removedOn: Self.date)))
+        let permanent = ArtistLidarrPresentation.make(state, offline: false, changesAllowed: true, canAdd: true, permanent: true)
+        #expect(permanent?.text.hasSuffix("This can't be undone.") == true)
+        let undoable = ArtistLidarrPresentation.make(state, offline: false, changesAllowed: true, canAdd: true, permanent: false)
+        #expect(undoable?.text.contains("undone") == false)
+    }
+
     @Test func keepRepliesAndTheCar() {
         #expect(KeepCopy.message(.queued) == "Adding when your server is free\u{2026}")
         #expect(KeepCopy.message(for: RequestRunner.KeepError.collision).contains("already has a folder"))

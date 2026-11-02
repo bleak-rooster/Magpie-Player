@@ -259,6 +259,72 @@ import MagpieCore
         #expect(await !h2.runner.mp3Removable(adopted))
     }
 
+    // MARK: - Follow-ups (re-review prep)
+
+    /// Follow-up 1: an album the owner unmonitored before Magpie's delete is never monitored again.
+    @Test func anAlbumTheOwnerUnmonitoredStaysUnmonitored() async throws {
+        let h = await Harness(setup: Harness.findsSetup)
+        let id = try await F.keptFind(h)
+        h.server.with { s in
+            s.unmonitorOnDelete = true
+            s.albums = [.init(id: 50, artistId: 42, rg: rgSingle, title: "Lowlands (single)", monitored: false)]
+        }
+        #expect(try await h.runner.removeMP3Now(id) == .removed)
+        #expect(h.server.with { $0.albums.first?.monitored } == false)
+        #expect(!h.server.writeBodies().contains { $0.0 == "PUT album/monitor" && $0.1["monitored"] as? Bool == true })
+    }
+
+    /// Follow-up 3: the FLAC landed for the track but the recorded MP3 is still there (Lidarr's upgrade didn't remove it:
+    /// a second file for one track). The watch removes the recorded MP3 through the gate, then says lossless.
+    @Test func aLeftoverRecordedMP3BesideTheFLACIsRemoved() async throws {
+        let h = await Harness(setup: Harness.findsSetup)
+        let id = try await F.keptFind(h)
+        h.server.with { s in
+            s.refreshFollowsFiles = true
+            s.artists[0].recorded = KeepTests.keptPath
+            s.songQuality = "FLAC"; s.songFileId = 3; s.songFileName = "Lowlands (2016)/01 - Song.flac"; s.songSize = 5000
+            s.extraFiles = [.init(id: 2, artistId: 42, albumId: 50, path: KeepTests.keptPath + "/" + FakeLidarr.songFile,
+                                  onDisk: KeepTests.keptPath + "/" + FakeLidarr.songFile, quality: "MP3-320", size: 1000)]
+        }
+        for _ in 0..<3 { h.clock.advance(RequestRunner.losslessCheckInterval); await h.runner.tick() }
+        #expect(F.deletes(h) == ["trackfile/bulk"], "the recorded MP3 only")
+        #expect(h.server.with { $0.extraFiles }.isEmpty)
+        let r = try #require(await h.request(id))
+        #expect(r.lossless?.losslessAt != nil && !r.mp3NeedsAttention)
+    }
+
+    /// Follow-up 3: a leftover lossy file Magpie never recorded: nothing is deleted; it needs a look.
+    @Test func anUnrecordedLeftoverNeedsAttention() async throws {
+        let h = await Harness(setup: Harness.findsSetup)
+        let id = try await F.keptFind(h)
+        h.server.with { s in
+            s.artists[0].recorded = KeepTests.keptPath
+            s.songQuality = "FLAC"; s.songFileId = 3; s.songFileName = "Lowlands (2016)/01 - Song.flac"
+            s.extraFiles = [.init(id: 2, artistId: 42, albumId: 50, path: KeepTests.keptPath + "/Lowlands (2016)/01 - Other.mp3",
+                                  onDisk: nil, quality: "MP3-320", size: 1000)]
+        }
+        for _ in 0..<3 { h.clock.advance(RequestRunner.losslessCheckInterval); await h.runner.tick() }
+        #expect(F.deletes(h).isEmpty)
+        #expect(await h.request(id)?.mp3NeedsAttention == true)
+    }
+
+    /// Follow-up 4: a download watched for "warning" is forgotten once it leaves the queue.
+    @Test func theWarningWatchIsPruned() async throws {
+        let h = await Harness()
+        h.server.ownerHasArtist(albumMonitored: false)
+        _ = try await h.runner.tryRecording(h.recording(recAlbumOnly), tier: .standard)
+        await h.runner.settle()
+        var q = FakeLidarr.Queued(albumId: 31, size: 100, sizeleft: 60, id: 907, artistId: 7, client: "SABnzbd")
+        q.status = "warning"
+        h.server.with { $0.queue = [q] }
+        await h.runner.tick()
+        #expect(await h.runner.warningWatch.count == 1)
+        h.server.with { $0.queue = [] }
+        h.clock.advance(5)
+        await h.runner.tick()
+        #expect(await h.runner.warningWatch.isEmpty)
+    }
+
     // MARK: - I10: the rest
 
     /// Critic 10: sign-out with an active watch. The requests (and the runner state) go, so the watch ends and nothing

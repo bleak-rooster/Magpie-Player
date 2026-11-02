@@ -1128,6 +1128,9 @@ public actor RequestRunner {
             history = try await lidarr.historySince(since)
             lastLidarrContact = now()
             saveHistoryCursor(pollStart.addingTimeInterval(-60))
+            // Y5 follow-up 4: forget "warning" downloads that left the queue.
+            let present = Set(queue.compactMap(\.id))
+            warningWatch = warningWatch.filter { present.contains($0.key) }
         } catch {
             guard now().timeIntervalSince(lastLidarrContact) >= Self.lidarrSilenceLimit else { return }
             for r in polled where r.state != .importing { await apply(r.id, .lidarrUnavailable) }

@@ -138,6 +138,22 @@ extension RequestRunner {
             }
             switch await findIsLossless(r.id, artistId: artistId) {
             case true?:
+                // Follow-up 3: the FLAC landed but a lossy file no track points to stayed (Lidarr's upgrade didn't
+                // remove the MP3). A recorded MP3 goes through the gate; anything else needs a look.
+                guard let left = await leftovers(r.id), let w = request(r.id)?.lossless else { continue }
+                if !left.isEmpty {
+                    if w.hasRecord == true {
+                        await mutate(r.id) { $0.lossless?.removedAt = nil }
+                        _ = try? await removeMP3(r.id, artistId: artistId, inline: false)
+                    }
+                    guard let still = await leftovers(r.id) else { continue }
+                    if !still.isEmpty {
+                        if request(r.id)?.lossless?.refreshCommandId == nil {
+                            await mp3Attention(r.id, "a lossy file stayed beside the lossless copy")
+                        }
+                        continue
+                    }
+                }
                 await landedLossless(r.id, artistId: artistId)
                 continue
             case nil:
@@ -177,6 +193,23 @@ extension RequestRunner {
             }
             lastLidarrContact = now()
             return any
+        } catch {
+            return nil
+        }
+    }
+
+    /// Follow-up 3: lossy files of the find's albums that no track points to (the FLAC took the track, the MP3 stayed).
+    /// Nil: can't tell now.
+    func leftovers(_ id: RequestID) async -> [TrackFile]? {
+        guard let w = request(id)?.lossless else { return nil }
+        do {
+            var out: [TrackFile] = []
+            for album in w.albumIds {
+                let files = try await lidarr.trackFiles(albumId: album)
+                let mapped = Set(try await lidarr.tracks(albumId: album).filter(\.hasFile).compactMap(\.trackFileId))
+                out += files.filter { !mapped.contains($0.id) && !Self.isLossless($0.quality) }
+            }
+            return out
         } catch {
             return nil
         }
@@ -277,9 +310,14 @@ extension RequestRunner {
                 continue
             }
             if Self.isLossless(file.quality) { continue }
-            let track = tracks.first { $0.trackFileId == file.id }
-            guard WriteConfinement.isLossy(file.quality), let foreign = find.foreignTrackId, track?.foreignTrackId == foreign,
-                  file.size == find.size else {
+            // The file's track, or (follow-up 3) a recorded MP3 left beside the FLAC that took its track.
+            let mapped = tracks.first { $0.trackFileId == file.id }?.foreignTrackId
+            let upgradedTrack = tracks.first { t in
+                t.foreignTrackId == find.foreignTrackId && t.hasFile
+                    && files.contains { $0.id == t.trackFileId && Self.isLossless($0.quality) }
+            }?.foreignTrackId
+            guard WriteConfinement.isLossy(file.quality), let foreign = find.foreignTrackId,
+                  (mapped ?? upgradedTrack) == foreign, file.size == find.size else {
                 await mp3Attention(id, "the MP3 changed or can't be matched")
                 throw MP3Error.needsAttention
             }
@@ -292,6 +330,8 @@ extension RequestRunner {
             }
             return .nothingToRemove
         }
+        // Follow-up 1: which albums were monitored right before Magpie's own delete (unreadable: none re-monitored).
+        let monitoredBefore = Set(((try? await lidarr.albums(artistId: artistId)) ?? []).filter(\.monitored).map(\.id))
         do {
             try await persist()
             if crashed(.beforeDelete) { return .later }
@@ -321,7 +361,7 @@ extension RequestRunner {
             $0.lossless?.refreshCommandId = nil
             $0.songId = nil
         }
-        await remonitor(id, artistId: artistId)
+        await remonitor(id, artistId: artistId, monitoredBefore: monitoredBefore)
         requestFolderScan(folder)   // fix I7
         if let r = request(id) { onMP3Removed(r, before) }
         return .removed
@@ -335,9 +375,11 @@ extension RequestRunner {
     }
 
     /// I6: a find album Lidarr unmonitored after the delete is monitored again (the album keeps being searched).
-    private func remonitor(_ id: RequestID, artistId: Int) async {
+    /// Follow-up 1: only an album that was monitored right before the delete and is unmonitored now (Lidarr's
+    /// "Unmonitor deleted tracks"); never one the owner unmonitored.
+    private func remonitor(_ id: RequestID, artistId: Int, monitoredBefore: Set<Int>) async {
         guard let w = request(id)?.lossless, let albums = try? await lidarr.albums(artistId: artistId) else { return }
-        let off = albums.filter { w.albumIds.contains($0.id) && !$0.monitored }.map(\.id)
+        let off = albums.filter { w.albumIds.contains($0.id) && monitoredBefore.contains($0.id) && !$0.monitored }.map(\.id)
         guard !off.isEmpty else { return }
         do {
             try await persist()

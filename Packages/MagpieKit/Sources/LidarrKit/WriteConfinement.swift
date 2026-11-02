@@ -218,6 +218,12 @@ public struct WriteConfinement: Sendable {
             || q.lowercased().hasPrefix("opus")
     }
 
+    /// A lossless quality (Lidarr's names).
+    public static func isLossless(_ quality: String?) -> Bool {
+        guard let q = quality?.uppercased() else { return false }
+        return q.hasPrefix("FLAC") || q.hasPrefix("ALAC") || q == "WAV" || q == "APE" || q == "WAVPACK"
+    }
+
     /// M3: two paths are the same file for the MP3 rule: standardised, and equal ignoring case and Unicode form.
     public static func looselySame(_ a: String, _ b: String) -> Bool {
         func fold(_ s: String) -> String? {
@@ -418,9 +424,18 @@ public struct WriteConfinement: Sendable {
                     throw Refusal(reason: "not a file Magpie's find brought in")
                 }
                 guard let size = file.size, size == find.size else { throw Refusal(reason: "the file changed") }
-                let track = try await albumTracks(albumId).first { $0.trackFileId == id }
-                guard let foreign = find.foreignTrackId, track?.foreignTrackId == foreign else {
-                    throw Refusal(reason: "not the find's track")
+                let albumTracks = try await albumTracks(albumId)
+                guard let foreign = find.foreignTrackId else { throw Refusal(reason: "not the find's track") }
+                if let track = albumTracks.first(where: { $0.trackFileId == id }) {
+                    guard track.foreignTrackId == foreign else { throw Refusal(reason: "not the find's track") }
+                } else {
+                    // Y5 follow-up 3: an MP3 no track points to any more, left beside the lossless file that took the
+                    // recorded track (Lidarr's upgrade didn't remove it).
+                    guard let upgraded = albumTracks.first(where: { $0.foreignTrackId == foreign && $0.hasFile }),
+                          let other = upgraded.trackFileId, other != id,
+                          WriteConfinement.isLossless(try await trackFile(other).quality) else {
+                        throw Refusal(reason: "not the find's track")
+                    }
                 }
                 artists.insert(artistId)
             }

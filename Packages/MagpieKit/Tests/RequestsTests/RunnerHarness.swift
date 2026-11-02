@@ -127,7 +127,11 @@ final class FakeLidarr: @unchecked Sendable {
     }
     /// Not for me (Task 6.2c): a track file besides the artist's song (id 1, album 50). `path` is where Lidarr
     /// records it; `onDisk` where it really is (nil: gone).
-    struct ExtraFile { var id: Int; var artistId: Int; var albumId: Int; var path: String; var recorded = true; var onDisk: String? }
+    struct ExtraFile {
+        var id: Int; var artistId: Int; var albumId: Int; var path: String; var recorded = true; var onDisk: String?
+        /// Y5: the file's quality and size (nil: not sent).
+        var quality: String? = nil; var size: Int? = nil
+    }
     /// How `DELETE /trackfile/bulk` goes.
     enum BulkDelete: Equatable {
         case deletes
@@ -244,6 +248,8 @@ final class FakeLidarr: @unchecked Sendable {
         var songFileId = 1
         /// Lidarr's track lists the song file (`GET /track`): off by default, so older tests' flows don't change.
         var songImported = false
+        /// The song file's path below the artist folder (Y5: a FLAC landing under another name).
+        var songFileName = FakeLidarr.songFile
         /// `Date` of `GET /system/status` (nil: no header); `Age` set: served from a cache.
         var serverDate: Date?
         var serverDateCached = false
@@ -506,15 +512,19 @@ final class FakeLidarr: @unchecked Sendable {
             let albumId = items.first { $0.name == "albumId" }?.value.flatMap(Int.init)
             return reply(with { s in
                 let song: [(Int, Int, Int, String)] = s.artists.compactMap { a in
-                    a.recorded.map { (s.songFileId, a.id, 50, $0 + "/" + FakeLidarr.songFile) }
+                    a.recorded.map { (s.songFileId, a.id, 50, $0 + "/" + s.songFileName) }
                 }
                 let extra = s.extraFiles.filter(\.recorded).map { ($0.id, $0.artistId, $0.albumId, $0.path) }
                 return (song + extra).filter { row in
                     (artistId == nil || row.1 == artistId) && (albumId == nil || row.2 == albumId)
                         && (artistId != nil || albumId != nil)
-                }.map {
-                    var row: [String: Any] = ["id": $0.0, "path": $0.3, "albumId": $0.2, "artistId": $0.1]
-                    if $0.0 == s.songFileId { row["quality"] = ["quality": ["name": s.songQuality]]; row["size"] = s.songSize }
+                }.map { r in
+                    var row: [String: Any] = ["id": r.0, "path": r.3, "albumId": r.2, "artistId": r.1]
+                    if r.0 == s.songFileId { row["quality"] = ["quality": ["name": s.songQuality]]; row["size"] = s.songSize }
+                    if let x = s.extraFiles.first(where: { $0.id == r.0 }) {
+                        if let q = x.quality { row["quality"] = ["quality": ["name": q]] }
+                        if let size = x.size { row["size"] = size }
+                    }
                     return row
                 }
             })
@@ -524,11 +534,14 @@ final class FakeLidarr: @unchecked Sendable {
             t.stub(pathSuffix: "/api/v1/trackfile/\(id)") { [self] _ in
                 let row: [String: Any]? = with { s in
                     if id == s.songFileId, let a = s.artists.first(where: { $0.recorded != nil }) {
-                        return ["id": id, "artistId": a.id, "albumId": 50, "path": a.recorded! + "/" + FakeLidarr.songFile,
+                        return ["id": id, "artistId": a.id, "albumId": 50, "path": a.recorded! + "/" + s.songFileName,
                                 "quality": ["quality": ["name": s.songQuality]], "size": s.songSize]
                     }
-                    return s.extraFiles.first { $0.id == id && $0.recorded }.map {
-                        ["id": $0.id, "artistId": $0.artistId, "albumId": $0.albumId, "path": $0.path]
+                    return s.extraFiles.first { $0.id == id && $0.recorded }.map { x in
+                        var row: [String: Any] = ["id": x.id, "artistId": x.artistId, "albumId": x.albumId, "path": x.path]
+                        if let q = x.quality { row["quality"] = ["quality": ["name": q]] }
+                        if let size = x.size { row["size"] = size }
+                        return row
                     }
                 }
                 return row.map { reply($0) } ?? MockTransport.Response(status: 404)
