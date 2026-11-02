@@ -90,5 +90,27 @@ if [ -z "${G1_SRC:-}" ]; then
   grep -qF 'static let queueRemoval = "removeFromClient=true&blocklist=true&skipRedownload=true"' "$stall" ||
     { echo "G1: $stall: queueRemoval isn't exactly removeFromClient=true&blocklist=true&skipRedownload=true" >&2; bad=1; }
 fi
+if [ -z "${G1_SRC:-}" ]; then
+  # Y5: track files are deleted only by Not for me (a find's files) and the MP3 rule (a kept find's recorded MP3); the
+  # gate confines both (findDelete / keptLossyDelete, one rule per call).
+  tf_sends=$(grep -rlE --include='*.swift' 'gate\.send\("DELETE",[[:space:]]*"trackfile' "${product[@]}" | sort -u || true)
+  for f in $tf_sends; do
+    case "$f" in
+      Packages/MagpieKit/Sources/Requests/RequestRunner+NotForMe.swift|Packages/MagpieKit/Sources/Requests/RequestRunner+Lossless.swift) ;;
+      *) echo "G1: track file delete outside Not for me and the MP3 rule: $f" >&2; bad=1 ;;
+    esac
+  done
+  # Y5 C5: every check that refuses on "kept" reads `isKeptOrKeeping` (a Keep under way counts). A bare `.keptAt` is
+  # allowed only where the ledger stores it, where a confirmed Keep is required or set, and in the migration.
+  kept_reads=$(grep -rnE --include='*.swift' '\.keptAt\b' "${product[@]}" | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' | cut -d: -f1 | sort -u || true)
+  for f in $kept_reads; do
+    case "$f" in
+      Packages/MagpieKit/Sources/LidarrKit/Ledger.swift|Packages/MagpieKit/Sources/LidarrKit/WriteConfinement.swift|\
+      Packages/MagpieKit/Sources/Requests/RequestRunner+Keep.swift|Packages/MagpieKit/Sources/Requests/RequestRunner+Reconcile.swift|\
+      Packages/MagpieKit/Sources/Requests/RequestRunner.swift) ;;
+      *) echo "Y5 C5: a bare .keptAt read in $f; use isKeptOrKeeping (refusing) or isConfirmedKept (requiring)" >&2; bad=1 ;;
+    esac
+  done
+fi
 [ "$bad" = 0 ] || { echo "G1 check failed: route Lidarr writes through LidarrWriteGate (or extend the allowlist in $0)" >&2; exit 1; }
 echo "G1 check: no write verbs outside LidarrWriteGate in ${product[*]}${tests[*]:+ and ${tests[*]}} (allowlisted: Navidrome auth/login, dev-only IT helpers)"
