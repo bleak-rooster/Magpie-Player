@@ -88,6 +88,13 @@ public final class Player {
     /// What the engine was last handed as current; reused so a refresh of the upcoming URLs (quality,
     /// network) never makes the engine reload the song that is playing.
     @ObservationIgnored private var loaded: (entryId: UUID, url: URL)?
+
+    /// The URL the current entry plays from (a file on the phone or a server stream), nil before it is loaded.
+    /// Round 12 Y3: Now Playing says what is heard from it, not from the quality set now.
+    public var currentURL: URL? {
+        guard let loaded, loaded.entryId == queue.current?.id else { return nil }
+        return loaded.url
+    }
     /// The list last sent to the engine, by entry id: an entry reached by advance plays the URL the engine
     /// enqueued it on (`adoptLoaded`).
     @ObservationIgnored private var sent: [(id: UUID, url: URL)] = []

@@ -85,22 +85,24 @@ import UIKit
     }
 
     @Test func depthNeverExceeds() {
-        // Tab root (1) → push Albums (2) → push an album (3) → nothing further.
+        // Owner ruling (round 12, D12 revised): tab root (1) → Albums' letters (2) → a letter group (3) → an album (4)
+        // → nothing further; Now Playing on top is CarPlay's fifth and last template.
         var nav = CPNavigator()
         #expect(nav.depth == 1)
         let pushedList = nav.push(.albums)
+        let pushedGroup = nav.push(.letterGroup(title: "A", sections: []))
         let pushedAlbum = nav.push(.album(id: "a", title: "A"))
-        #expect(pushedList && pushedAlbum)
+        #expect(pushedList && pushedGroup && pushedAlbum)
         #expect(nav.depth == CPNavigator.maxBrowseDepth)
-        let pushedFourth = nav.push(.album(id: "b", title: "B"))
+        let pushedFifth = nav.push(.album(id: "b", title: "B"))
         let pushedSearch = nav.push(.search)
-        #expect(!pushedFourth && !pushedSearch)
-        #expect(nav.depth == 3)
+        #expect(!pushedFifth && !pushedSearch)
+        #expect(nav.depth == 4 && nav.depth + 1 <= CPNavigator.carPlayTemplateDepthLimit)
         nav.pop()
         let pushedAfterPop = nav.push(.playlist(id: "p", title: "P"))
         #expect(pushedAfterPop)
 
-        // Screens that can sit at depth 3 offer no further pushes: every row plays (or does nothing).
+        // Pages (leaves, which may sit at the deepest level) offer no further pushes: every row plays (or does nothing).
         let a = album("x")
         let deepest: [[CPSectionModel]] = [
             CarPlayRows.album(a, playingId: nil),
@@ -115,28 +117,40 @@ import UIKit
         ]
         for sections in deepest {
             for row in sections.flatMap(\.rows) {
-                if case .open = row.action { Issue.record("depth-3 row \(row.id) pushes") }
+                if case .open = row.action { Issue.record("leaf row \(row.id) pushes") }
             }
         }
 
-        // Walk every push reachable from the tab roots: none goes past depth 3.
+        // Walk every push reachable from the tab roots: none goes past the budget (4, Now Playing making 5).
         let found = LibrarySearchResult(songs: [song("s")], albums: [a])
         let outside = ExternalRecording(title: "Elsewhere", artist: "Someone", source: .listenBrainz)
-        func screen(_ destination: CPDestination) -> [CPSectionModel] {
+        let twoPlaylists = [Playlist(id: "p", name: "P", songCount: 1, duration: 9),
+                            Playlist(id: "q", name: "Q", songCount: 1, duration: 9)]
+        let twoArtists = [Artist(id: "r", name: "R", albumCount: 1), Artist(id: "t", name: "T", albumCount: 1)]
+        let b = Album(id: "b", name: "Blue", artist: "B", songCount: 1, duration: 1)
+        /// The screen `destination` shows when it sits at `depth`.
+        func screen(_ destination: CPDestination, depth: Int) -> [CPSectionModel] {
             switch destination {
-            case .playlists: CarPlayRows.playlists([Playlist(id: "p", name: "P", songCount: 1, duration: 9)])
-            case .artists: CarPlayRows.artists([Artist(id: "r", name: "R", albumCount: 1)])
-            case .albums: CarPlayRows.albums([a])
+            // Y2: each A–Z list both under the car's limits (letter sections) and over them (a letters screen).
+            case .playlists:
+                CarPlayRows.playlists(twoPlaylists) + CarPlayRows.playlists(twoPlaylists, maxItems: 1, maxSections: 1)
+            case .artists:
+                CarPlayRows.artists(twoArtists) + CarPlayRows.artists(twoArtists, maxItems: 1, maxSections: 1)
+            case .albums: CarPlayRows.albums([a, b]) + CarPlayRows.albums([a, b], maxItems: 1, maxSections: 1)
+            case .letterGroup(_, let sections): sections
             case .album: CarPlayRows.album(a, playingId: nil)
             case .playlist: CarPlayRows.playlist(Playlist(id: "p", name: "P", songCount: 1, duration: 9),
                                                  songs: [song("s")], playingId: nil)
-            case .artist: CarPlayRows.artist(Artist(id: "r", name: "R", albumCount: 1), albums: [a])
+            // Fix round 1 (I2): an artist page's albums open only where one more push fits.
+            case .artist: CarPlayRows.artist(Artist(id: "r", name: "R", albumCount: 1), albums: [a],
+                                             albumsOpen: CPNavigator.allowsPush(atDepth: depth))
             case .searchResults: CarPlayRows.searchResults(found, playingId: nil)
             case .search: [CPSectionModel(header: nil, rows: CarPlayRows.searchItems(found))]
             case .downloadedAlbum: CarPlayRows.downloadedAlbum(a, playingId: nil)
             case .downloadedPlaylist: CarPlayRows.playlist(Playlist(id: "p", name: "P", songCount: 1, duration: 9),
                                                            songs: [song("s")], playingId: nil)
-            case .downloadedArtist: CarPlayRows.downloadedArtist(Artist(id: "r", name: "R", albumCount: 1), albums: [a])
+            case .downloadedArtist: CarPlayRows.downloadedArtist(Artist(id: "r", name: "R", albumCount: 1), albums: [a],
+                                                                 albumsOpen: CPNavigator.allowsPush(atDepth: depth))
             case .finds: CarPlayRows.finds(CPFindsShelf(newFinds: [CPFind(song: song("n"), daysLeft: 7, isNew: true)], finds: []),
                                            playingId: nil)
             case .genres: CarPlayRows.genres([(id: "rock", name: "Rock", albumCount: 1)])
@@ -151,7 +165,7 @@ import UIKit
             for row in sections.flatMap(\.rows) {
                 guard case .open(let destination) = row.action else { continue }
                 #expect(depth + 1 <= CPNavigator.maxBrowseDepth, "\(row.id) pushes to \(depth + 1)")
-                walk(screen(destination), depth: depth + 1)
+                walk(screen(destination, depth: depth + 1), depth: depth + 1)
             }
         }
         let home = CarPlayRows.home(HomeSection.allCases.map { section in

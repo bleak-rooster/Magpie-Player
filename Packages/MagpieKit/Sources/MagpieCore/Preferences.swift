@@ -15,7 +15,7 @@ public enum HomeSection: String, CaseIterable, Codable, Hashable, Sendable {
         case .randomAlbums: "Random albums"
         case .playlists: "Playlists"
         case .genres: "Genres"
-        case .downloaded: "Downloaded"
+        case .downloaded: "Recently downloaded"
         }
     }
 }

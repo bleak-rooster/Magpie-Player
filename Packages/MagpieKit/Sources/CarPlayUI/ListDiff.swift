@@ -14,7 +14,7 @@ public func clamp(_ sections: [CPSectionModel], maxItems: Int, maxSections: Int)
     for section in nonEmpty.prefix(maxSections) where budget > 0 {
         let rows = Array(section.rows.prefix(budget))
         budget -= rows.count
-        kept.append(CPSectionModel(header: section.header, rows: rows))
+        kept.append(CPSectionModel(header: section.header, rows: rows, indexTitle: section.indexTitle))
     }
 
     let shown = kept.reduce(0) { $0 + $1.rows.count }
@@ -31,7 +31,7 @@ public func clamp(_ sections: [CPSectionModel], maxItems: Int, maxSections: Int)
 public func needsRebuild(old: [CPSectionModel], new: [CPSectionModel]) -> Bool {
     guard old.count == new.count else { return true }
     for (a, b) in zip(old, new) {
-        if a.header != b.header || a.rows.map(\.id) != b.rows.map(\.id) { return true }
+        if a.header != b.header || a.indexTitle != b.indexTitle || a.rows.map(\.id) != b.rows.map(\.id) { return true }
     }
     return false
 }

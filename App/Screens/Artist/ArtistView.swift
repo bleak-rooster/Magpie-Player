@@ -35,6 +35,13 @@ struct ArtistView: View {
                 content(page)
             }
         }
+        // Y3 (item 4): the page again, its saved Popular and cover colours forgotten, after a quick scan.
+        .refreshable {
+            await model.refreshPage(artistId: artistId, coverArtIds: [page.value?.artist.coverArtId]) {
+                popular = nil   // the saved list is gone: read the server's afresh
+                await load()
+            }
+        }
         .navigationTitle(page.value?.artist.name ?? "")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {

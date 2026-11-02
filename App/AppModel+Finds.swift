@@ -150,6 +150,7 @@ extension AppModel {
     private func rememberFindsLibrary(_ id: Int) {
         guard let scope = navidromeScope, appDefaults.object(forKey: Self.findsLibraryKey(scope)) as? Int != id else { return }
         appDefaults.set(id, forKey: Self.findsLibraryKey(scope))
+        findsLibraryLearned()   // Y3: the Finds library is kept out of the lists, and may change the pick
     }
 
     /// FM2: the ids a read of the Finds library proves are all its songs; nil (unknown, so every song without a
