@@ -78,6 +78,26 @@ import Testing
         #expect(top.id == "s04")
     }
 
+    /// Fix round 2: the first answer never waits on the splits. The whole query's rows are handed over as soon as
+    /// they come, while a split is still out; the result then adds the splits'.
+    @Test func aSlowSplitDoesntDelayTheFirstResults() async throws {
+        let clock = TestClock()
+        let server = FakeNavidrome()
+        server.slow = ["hey"]
+        let search = MergedSearch(libraryPage: { try await server.search($0) }, sources: [], index: { .empty },
+                                  sleep: { try await clock.sleep($0) })
+        let early = EarlyBox()
+        let task = Task { try await search.runReportingLibraryFailure("hey jude beatles", libraryFirst: { early.set($0) }) }
+        for _ in 0..<10_000 where early.value == nil { await Task.yield() }
+        let first = try #require(early.value, "no early rows while the split \"hey\" is still out")
+        #expect(clock.now == .zero, "no deadline had to pass")
+        #expect(Set(first.songs.map(\.id)) == ["s02", "s04"])
+        for _ in 0..<10_000 where !(server.queries.count == 5 && clock.waiting == 1) { await Task.yield() }
+        clock.advance(by: MergedSearch.libraryTimeout)
+        let s = try await task.value
+        #expect(Set(s.songs.map(\.id)) == ["s02", "s04"])
+    }
+
     /// A whole query that runs out of time is still an error (with nothing from the splits either).
     @Test func aSlowWholeQueryStillTimesOut() async throws {
         let clock = TestClock()

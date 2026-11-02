@@ -144,6 +144,59 @@ final class PagedLibrary: @unchecked Sendable {
         #expect(model.results.songs.count == 60)
     }
 
+    /// Fix round 2: split results merge into the early (whole-query) rows without moving the rows the user has already
+    /// scrolled past; the rest re-rank.
+    @Test func lateRowsNeverMoveRowsAboveTheVisibleArea() async {
+        func song(_ id: String) -> Song { Song(id: id, title: id, artist: "A", album: "B", duration: 1) }
+        let early = SearchSections(top: .song(song("a")), songs: ["a", "b", "c", "d"].map(song),
+                                   artists: [Artist(id: "r1", name: "R1", albumCount: 1)])
+        let final = SearchSections(top: .song(song("x")), songs: ["x", "d", "c", "b", "a", "y"].map(song),
+                                   artists: [Artist(id: "r2", name: "R2", albumCount: 1), Artist(id: "r1", name: "R1", albumCount: 1)])
+        let gate = ManualSleeper(), sleeper = self.sleeper
+        let model = SearchModel(search: { _, show in
+            await show(early)
+            try await gate.sleep(.seconds(5))   // a split still out
+            return final
+        }, sleep: { try await sleeper.sleep($0) })
+        model.update(query: "q")
+        for _ in 0..<1000 where sleeper.waiting == 0 { await Task.yield() }
+        sleeper.releaseAll()
+        for _ in 0..<1000 where gate.waiting == 0 { await Task.yield() }
+        #expect(model.results.songs.map(\.id) == ["a", "b", "c", "d"], "the whole query's rows show at once")
+
+        // The user scrolled: the Top result and songs a, b are above the screen; c is the first visible row.
+        model.rowAppeared(.songs, index: 2)
+        model.rowAppeared(.songs, index: 3)
+        model.rowAppeared(.artists, index: 0)
+        gate.releaseAll()
+        await model.settle()
+        #expect(model.results.top == .song(song("a")), "the Top result above the screen stays")
+        #expect(model.results.songs.map(\.id) == ["a", "b", "x", "d", "c", "y"], "a, b keep their place; the rest re-rank")
+        #expect(model.results.artists.map(\.id) == ["r2", "r1"], "nothing of Artists is above the screen")
+    }
+
+    /// With nothing scrolled past (the list at its top), the late results replace the early order entirely.
+    @Test func lateRowsReRankFullyAtTheTop() async {
+        func song(_ id: String) -> Song { Song(id: id, title: id, artist: "A", album: "B", duration: 1) }
+        let early = SearchSections(top: .song(song("a")), songs: ["a", "b"].map(song))
+        let final = SearchSections(top: .song(song("x")), songs: ["x", "b", "a"].map(song))
+        let gate = ManualSleeper(), sleeper = self.sleeper
+        let model = SearchModel(search: { _, show in
+            await show(early)
+            try await gate.sleep(.seconds(5))
+            return final
+        }, sleep: { try await sleeper.sleep($0) })
+        model.update(query: "q")
+        for _ in 0..<1000 where sleeper.waiting == 0 { await Task.yield() }
+        sleeper.releaseAll()
+        for _ in 0..<1000 where gate.waiting == 0 { await Task.yield() }
+        model.rowAppeared(.top, index: 0)
+        model.rowAppeared(.songs, index: 0)
+        gate.releaseAll()
+        await model.settle()
+        #expect(model.results == final)
+    }
+
     /// Results without paging (offline) never load more.
     @Test func noPagingNoLoad() async {
         let sleeper = self.sleeper

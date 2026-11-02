@@ -155,14 +155,14 @@ private struct SearchContent: View {
         if scope == .all, let top = sections.top {
             Section {
                 header("Top result")
-                topRow(top, in: sections)
+                topRow(top, in: sections).tracked(model, .top, 0)
             }
         }
         if scope == .all || scope == .songs, !sections.songs.isEmpty {
             Section {
                 header("Songs")
                 ForEach(Array(sections.songs.enumerated()), id: \.element.id) { index, song in
-                    songRow(song, index: index, in: sections.songs)
+                    songRow(song, index: index, in: sections.songs).tracked(model, .songs, index)
                 }
                 moreFooter(.songs, in: sections, count: sections.songs.count)
             }
@@ -171,7 +171,7 @@ private struct SearchContent: View {
             Section {
                 header("Artists")
                 ForEach(Array(sections.artists.enumerated()), id: \.element.id) { i, a in
-                    artistRow(a).accessibilityIdentifier("search-artist-\(i)")
+                    artistRow(a).accessibilityIdentifier("search-artist-\(i)").tracked(model, .artists, i)
                 }
                 moreFooter(.artists, in: sections, count: sections.artists.count)
             }
@@ -180,7 +180,7 @@ private struct SearchContent: View {
             Section {
                 header("Albums")
                 ForEach(Array(sections.albums.enumerated()), id: \.element.id) { i, a in
-                    albumRow(a).accessibilityIdentifier("search-album-\(i)")
+                    albumRow(a).accessibilityIdentifier("search-album-\(i)").tracked(model, .albums, i)
                 }
                 moreFooter(.albums, in: sections, count: sections.albums.count)
             }
@@ -488,4 +488,13 @@ struct TryTarget: Identifiable {
     var albumGroup: MBID? = nil
     /// R19: a track of an outside album: a live request for that album is this Try (R20).
     var releaseGroup: MBID? = nil
+}
+
+private extension View {
+    /// Fix round 2: tells the model which result rows are on screen, so late (split) results never move the rows the
+    /// user scrolled past. Appear/disappear only; no gesture on the rows (R19).
+    func tracked(_ model: SearchModel, _ section: SearchModel.ResultSection, _ index: Int) -> some View {
+        onAppear { model.rowAppeared(section, index: index) }
+            .onDisappear { model.rowDisappeared(section, index: index) }
+    }
 }

@@ -102,9 +102,20 @@ public struct MergedSearch: Sendable {
         let query = q.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return .empty }
         let library = self.library, sleep = self.sleep, libraryTimeout = self.libraryTimeout, sources = self.sources
-        let deadlinesInside = pager != nil   // the paged library times each request itself (fix round 1, I3)
+        let pager = self.pager
+        // Fix round 2: the whole query's rows go to `libraryFirst` the moment they come; the splits follow.
+        var onWhole: (@Sendable (LibrarySearchResult, SearchPaging) async -> Void)?
+        if let libraryFirst {
+            onWhole = { @Sendable found, paging in
+                await libraryFirst(Self.librarySections(found, paging: paging, query: query))
+            }
+        }
+        let whole = onWhole
         async let libraryResult: Result<(LibrarySearchResult, SearchPaging?), Error> = Self.capture {
-            if deadlinesInside { return try await library(query) }
+            if let pager {   // the paged library times each request itself (fix round 1, I3)
+                let (found, paging) = try await pager.first(query, deadline: libraryTimeout, sleep: sleep, onWhole: whole)
+                return (found, paging)
+            }
             return try await Self.withDeadline(libraryTimeout, sleep: sleep) { try await library(query) }
         }
         async let outside: [ExternalHits] = withTaskGroup(of: (Int, ExternalHits).self) { group in
@@ -119,6 +130,7 @@ public struct MergedSearch: Sendable {
             return all.sorted { $0.0 < $1.0 }.map(\.1)    // source order, not arrival order
         }
         let lib = await libraryResult
+        // Every library row (the splits' too) still never waits for the outside sources.
         if let libraryFirst, case .success(let (found, paging)) = lib {
             await libraryFirst(Self.librarySections(found, paging: paging, query: query))
         }

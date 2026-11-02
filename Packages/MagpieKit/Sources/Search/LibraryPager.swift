@@ -116,8 +116,12 @@ public struct LibraryPager: Sendable {
     /// - Parameters:
     ///   - deadline: each request's own time limit (nil: none but the request's own).
     ///   - sleep: the clock for the deadline (tests inject one).
+    ///   - onWhole: called with the whole query's rows as soon as they come, before the splits are back (fix round 2:
+    ///     the first answer never waits on the splits). Not called when the whole query fails.
     public func first(_ query: String, deadline: Duration? = nil,
-                      sleep: @escaping Sleep = { try await Task.sleep(for: $0) }) async throws -> (LibrarySearchResult, SearchPaging) {
+                      sleep: @escaping Sleep = { try await Task.sleep(for: $0) },
+                      onWhole: (@Sendable (LibrarySearchResult, SearchPaging) async -> Void)? = nil)
+        async throws -> (LibrarySearchResult, SearchPaging) {
         let plan = SearchPlan(query)
         let sources = [SearchPaging.Source(text: plan.whole, artist: nil)]
             + plan.splits.map { SearchPaging.Source(text: $0.title, artist: $0.artist) }
@@ -125,7 +129,20 @@ public struct LibraryPager: Sendable {
             LibraryQuery(text: s.text, songCount: size(.songs), albumCount: size(.albums),
                          artistCount: s.artist == nil ? size(.artists) : 0)
         }
-        let results = try await run(requests, deadline: deadline, sleep: sleep)
+        let results = try await run(requests, deadline: deadline, sleep: sleep) { result in
+            guard let onWhole, case .success = result else { return }
+            let partial = [result] + Array(repeating: nil, count: sources.count - 1)
+            let (found, paging, _) = assemble(query, sources, partial)
+            await onWhole(found, paging)
+        }
+        let (found, paging, firstError) = assemble(query, sources, results)
+        if let firstError, found.songs.isEmpty, found.albums.isEmpty, found.artists.isEmpty { throw firstError }
+        return (found, paging)
+    }
+
+    /// The rows and paging state from the plan's results so far (nil: still out, counted as done).
+    private func assemble(_ query: String, _ sources: [SearchPaging.Source],
+                          _ results: [Result<LibrarySearchResult, Error>?]) -> (LibrarySearchResult, SearchPaging, Error?) {
         var paging = SearchPaging(query: query, sources: sources, sections: [:])
         for kind in LibraryKind.allCases {
             paging.sections[kind] = SearchPaging.Section(offsets: Array(repeating: 0, count: sources.count),
@@ -135,6 +152,8 @@ public struct LibraryPager: Sendable {
         var firstError: Error?
         for (i, result) in results.enumerated() {
             switch result {
+            case nil:
+                for kind in LibraryKind.allCases { paging.sections[kind]?.done[i] = true }
             case .failure(let error):
                 if i == 0 { firstError = error }
                 for kind in LibraryKind.allCases { paging.sections[kind]?.done[i] = true }
@@ -150,8 +169,7 @@ public struct LibraryPager: Sendable {
                 }
             }
         }
-        if let firstError, found.songs.isEmpty, found.albums.isEmpty, found.artists.isEmpty { throw firstError }
-        return (found, paging)
+        return (found, paging, firstError)
     }
 
     /// The next batch of one section, from every query of the plan that still has more: one round, and a second only
@@ -204,8 +222,9 @@ public struct LibraryPager: Sendable {
 
     /// Each request's result in order, with at most `maxConcurrent` running at once, each within its own `deadline`
     /// (a late one fails with `SearchTimedOut`). Cancellation is rethrown.
-    private func run(_ requests: [LibraryQuery], deadline: Duration?,
-                     sleep: @escaping Sleep) async throws -> [Result<LibrarySearchResult, Error>] {
+    private func run(_ requests: [LibraryQuery], deadline: Duration?, sleep: @escaping Sleep,
+                     onFirst: ((Result<LibrarySearchResult, Error>) async -> Void)? = nil)
+        async throws -> [Result<LibrarySearchResult, Error>] {
         let page = self.page
         var results = [Result<LibrarySearchResult, Error>?](repeating: nil, count: requests.count)
         await withTaskGroup(of: (Int, Result<LibrarySearchResult, Error>).self) { group in
@@ -229,6 +248,7 @@ public struct LibraryPager: Sendable {
             for await (i, result) in group {
                 results[i] = result
                 add()
+                if i == 0 { await onFirst?(result) }   // the whole query: hand it over at once
             }
         }
         try Task.checkCancellation()

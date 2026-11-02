@@ -59,6 +59,45 @@ final class SearchModel {
 
     func moreState(_ kind: LibraryKind) -> MoreState { moreStates[kind] ?? .idle }
 
+    // MARK: - Late rows without jumps (fix round 2)
+
+    /// The library parts of the results, in screen order.
+    enum ResultSection: Int, Comparable {
+        case top, songs, artists, albums
+        static func < (a: Self, b: Self) -> Bool { a.rawValue < b.rawValue }
+    }
+
+    /// Row indexes on screen, per part.
+    @ObservationIgnored private var visibleRows: [ResultSection: Set<Int>] = [:]
+
+    func rowAppeared(_ section: ResultSection, index: Int) { visibleRows[section, default: []].insert(index) }
+    func rowDisappeared(_ section: ResultSection, index: Int) { visibleRows[section]?.remove(index) }
+
+    /// The first row on screen, if any.
+    private var firstVisible: (ResultSection, Int)? {
+        visibleRows.compactMap { kv in kv.value.min().map { (kv.key, $0) } }
+            .min { ($0.0.rawValue, $0.1) < ($1.0.rawValue, $1.1) }
+    }
+
+    /// New results (the splits landing after the whole query's rows) without moving what the user scrolled past:
+    /// every row above the first one on screen keeps its place, in its section; the rest take the new order.
+    static func stabilised(_ new: SearchSections, old: SearchSections,
+                           firstVisible: (ResultSection, Int)?) -> SearchSections {
+        guard let (section, index) = firstVisible, !old.libraryIsEmpty else { return new }
+        func kept(_ s: ResultSection) -> Int { s < section ? Int.max : s == section ? index : 0 }
+        func merge<T>(_ old: [T], _ new: [T], _ s: ResultSection, _ id: (T) -> String) -> [T] {
+            let head = Array(old.prefix(kept(s)))
+            let ids = Set(head.map(id))
+            return head + new.filter { !ids.contains(id($0)) }
+        }
+        var out = new
+        if section > .top { out.top = old.top }
+        out.songs = merge(old.songs, new.songs, .songs, \.id)
+        out.artists = merge(old.artists, new.artists, .artists, \.id)
+        out.albums = merge(old.albums, new.albums, .albums, \.id)
+        return out
+    }
+
     // MARK: - When to load more (fix round 1, review I1)
 
     /// Section ends (footers) on screen.
@@ -131,6 +170,7 @@ final class SearchModel {
         moreTasks.values.forEach { $0.cancel() }
         moreStates = [:]
         scrolled = false
+        visibleRows = [:]
         outsideArt?.reset()
         let trimmed = newQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
@@ -170,12 +210,12 @@ final class SearchModel {
     /// Library rows (possibly none) while the outside sources are still out. Still `.searching`.
     private func showEarly(_ sections: SearchSections, for q: String) {
         guard q == query, phase == .searching else { return }
-        results = sections
+        results = Self.stabilised(sections, old: results, firstVisible: firstVisible)
     }
 
     private func finish(_ sections: SearchSections, for q: String) {
         guard q == query else { return }
-        results = sections
+        results = Self.stabilised(sections, old: results, firstVisible: firstVisible)
         phase = .done
     }
 
