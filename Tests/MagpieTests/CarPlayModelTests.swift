@@ -85,22 +85,24 @@ import UIKit
     }
 
     @Test func depthNeverExceeds() {
-        // Tab root (1) → push Albums (2) → push an album (3) → nothing further.
+        // Owner ruling (round 12, D12 revised): tab root (1) → Albums' letters (2) → a letter group (3) → an album (4)
+        // → nothing further; Now Playing on top is CarPlay's fifth and last template.
         var nav = CPNavigator()
         #expect(nav.depth == 1)
         let pushedList = nav.push(.albums)
+        let pushedGroup = nav.push(.letterGroup(title: "A", sections: []))
         let pushedAlbum = nav.push(.album(id: "a", title: "A"))
-        #expect(pushedList && pushedAlbum)
+        #expect(pushedList && pushedGroup && pushedAlbum)
         #expect(nav.depth == CPNavigator.maxBrowseDepth)
-        let pushedFourth = nav.push(.album(id: "b", title: "B"))
+        let pushedFifth = nav.push(.album(id: "b", title: "B"))
         let pushedSearch = nav.push(.search)
-        #expect(!pushedFourth && !pushedSearch)
-        #expect(nav.depth == 3)
+        #expect(!pushedFifth && !pushedSearch)
+        #expect(nav.depth == 4 && nav.depth + 1 <= CPNavigator.carPlayTemplateDepthLimit)
         nav.pop()
         let pushedAfterPop = nav.push(.playlist(id: "p", title: "P"))
         #expect(pushedAfterPop)
 
-        // Screens that can sit at depth 3 offer no further pushes: every row plays (or does nothing).
+        // Pages (leaves, which may sit at the deepest level) offer no further pushes: every row plays (or does nothing).
         let a = album("x")
         let deepest: [[CPSectionModel]] = [
             CarPlayRows.album(a, playingId: nil),
@@ -115,11 +117,11 @@ import UIKit
         ]
         for sections in deepest {
             for row in sections.flatMap(\.rows) {
-                if case .open = row.action { Issue.record("depth-3 row \(row.id) pushes") }
+                if case .open = row.action { Issue.record("leaf row \(row.id) pushes") }
             }
         }
 
-        // Walk every push reachable from the tab roots: none goes past depth 3.
+        // Walk every push reachable from the tab roots: none goes past the budget (4, Now Playing making 5).
         let found = LibrarySearchResult(songs: [song("s")], albums: [a])
         let outside = ExternalRecording(title: "Elsewhere", artist: "Someone", source: .listenBrainz)
         let twoPlaylists = [Playlist(id: "p", name: "P", songCount: 1, duration: 9),

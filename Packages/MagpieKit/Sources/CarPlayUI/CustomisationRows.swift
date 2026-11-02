@@ -189,31 +189,31 @@ extension CarPlayRows {
         return sections.isEmpty ? state(.empty) : sections
     }
 
-    /// An album on the phone (a leaf): Shuffle and its tracks, all from the phone.
+    /// An album on the phone (a leaf): Play, Shuffle (2c) and its tracks, all from the phone.
     public static func downloadedAlbum(_ album: Album, playingId: String?) -> [CPSectionModel] {
         let songs = album.songs ?? []
         guard !songs.isEmpty else { return state(.empty) }
-        let shuffle = CPRowModel(id: "album.shuffle", title: "Shuffle", detail: songCount(songs.count),
-                                 action: .play(.shuffle(songs)))
         let tracks = songs.enumerated().map { i, song in
             CPRowModel(id: "track.\(i).\(song.id)", title: display(song.title, untitled), detail: duration(song.duration),
                        playing: song.id == playingId, action: .play(.songs(songs, startAt: i)))
         }
-        return [CPSectionModel(header: nil, rows: [shuffle]), CPSectionModel(header: album.artist, rows: tracks)]
+        return [playShuffle(id: "album", detail: songCount(songs.count), play: .songs(songs, startAt: 0), shuffle: .shuffle(songs)),
+                CPSectionModel(header: album.artist, rows: tracks)]
     }
 
-    /// An artist's albums on the phone (a leaf): Shuffle of them all, then each album, which plays from its start.
+    /// An artist's albums on the phone (a leaf): Play and Shuffle of them all (2c), then each album, which plays from
+    /// its start.
     public static func downloadedArtist(_ artist: Artist, albums: [Album]) -> [CPSectionModel] {
         let albums = unique(albums, \.id).filter { !($0.songs ?? []).isEmpty }
         guard !albums.isEmpty else { return state(.empty) }
         let all = albums.flatMap { $0.songs ?? [] }
-        let shuffle = CPRowModel(id: "artist.shuffle", title: "Shuffle", detail: display(artist.name, unknownArtist),
-                                 action: .play(.shuffle(all)))
         let rows = albums.map { album in
             CPRowModel(id: "album.\(album.id)", title: display(album.name, untitledAlbum), detail: album.year.map(String.init),
                        artworkKey: album.coverArtId, action: .play(.songs(album.songs ?? [], startAt: 0)))
         }
-        return [CPSectionModel(header: nil, rows: [shuffle]), CPSectionModel(header: "Albums", rows: rows)]
+        return [playShuffle(id: "artist", detail: display(artist.name, unknownArtist), play: .songs(all, startAt: 0),
+                            shuffle: .shuffle(all)),
+                CPSectionModel(header: "Albums", rows: rows)]
     }
 
     /// Library › Favourites (depth 2): starred songs, which play from the one tapped, then starred albums, which open.

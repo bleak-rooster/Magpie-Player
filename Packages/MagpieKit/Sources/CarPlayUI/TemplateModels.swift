@@ -59,8 +59,8 @@ public enum CPPlayRequest: Sendable, Hashable {
     case genreGroup(id: String, shuffled: Bool)
     /// These songs, shuffled: the Shuffle of an album or artist on the phone (nothing is asked of the server).
     case shuffle([Song])
-    /// A playlist from its start (a playlist row in a letter group's list, Y2).
-    case playlist(id: String)
+    /// Y2 (2c): all the artist's songs in order (album by album, as the artist page lists them), from the first.
+    case artistInOrder(id: String)
 }
 
 /// What tapping a row does. `.none` rows are shown disabled.
@@ -106,11 +106,14 @@ public struct CPSectionModel: Sendable, Hashable {
     }
 }
 
-/// The depth budget (critique H1): a tab root plus at most two pushes, so Now Playing (4) and
-/// Up Next (5) fit from any browse screen, including when the system pushes Now Playing itself.
+/// The depth budget (critique H1, D12 as revised by the owner in round 12): a tab root plus at most three pushes
+/// (tab → letters → group → page), so Now Playing (5) fits from any browse screen within CarPlay's template depth limit
+/// for audio apps. Up Next stays off.
 public struct CPNavigator: Sendable {
     /// Counting the tab root as 1.
-    public static let maxBrowseDepth = 3
+    public static let maxBrowseDepth = 4
+    /// CarPlay's template depth limit for audio apps, Now Playing included.
+    public static let carPlayTemplateDepthLimit = 5
 
     public private(set) var stack: [CPDestination] = []
 
@@ -246,9 +249,7 @@ public enum CarPlayRows {
             let name = display($0.name, "Untitled playlist")
             let row = CPRowModel(id: "playlist.\($0.id)", title: name, detail: songCount($0.songCount),
                                  artworkKey: $0.coverArtId, action: .open(.playlist(id: $0.id, title: name)))
-            var leaf = row
-            leaf.action = .play(.playlist(id: $0.id))
-            return letterEntry(name: $0.name, articles: [], row: row, leaf: leaf)
+            return letterEntry(name: $0.name, articles: [], row: row)
         }, kind: .playlists, maxItems: maxItems, maxSections: maxSections)
     }
 
@@ -258,19 +259,13 @@ public enum CarPlayRows {
             let albums = $0.albumCount == 1 ? "1 album" : "\($0.albumCount) albums"
             let row = CPRowModel(id: "artist.\($0.id)", title: name, detail: albums,
                                  artworkKey: $0.coverArtId, action: .open(.artist(id: $0.id, name: name)))
-            var leaf = row
-            leaf.detail = "Shuffle \u{00B7} \(albums)"
-            leaf.action = .play(.artistShuffle(id: $0.id))
-            return letterEntry(name: $0.name, articles: LetterIndex.navidromeArticles, row: row, leaf: leaf)
+            return letterEntry(name: $0.name, articles: LetterIndex.navidromeArticles, row: row)
         }, kind: .artists, maxItems: maxItems, maxSections: maxSections)
     }
 
     public static func albums(_ albums: [Album], maxItems: Int = .max, maxSections: Int = .max) -> [CPSectionModel] {
         lettered(unique(albums, \.id).map {
-            let row = albumRow($0, id: "album.\($0.id)")
-            var leaf = row
-            leaf.action = .play(.album(id: $0.id, shuffled: false))
-            return letterEntry(name: $0.name, articles: LetterIndex.navidromeArticles, row: row, leaf: leaf)
+            letterEntry(name: $0.name, articles: LetterIndex.navidromeArticles, row: albumRow($0, id: "album.\($0.id)"))
         }, kind: .albums, maxItems: maxItems, maxSections: maxSections)
     }
 
@@ -358,18 +353,29 @@ public enum CarPlayRows {
     public static func album(_ album: Album, playingId: String?) -> [CPSectionModel] {
         let songs = album.songs ?? []
         guard !songs.isEmpty else { return state(.empty) }
-        let shuffle = CPRowModel(id: "album.shuffle", title: "Shuffle", detail: songCount(songs.count),
-                                 action: .play(.album(id: album.id, shuffled: true)))
         let tracks = songs.enumerated().map { i, song in
             CPRowModel(id: "track.\(i).\(song.id)", title: display(song.title, untitled), detail: duration(song.duration),
                        playing: song.id == playingId, action: .play(.songs(songs, startAt: i)))
         }
-        return [CPSectionModel(header: nil, rows: [shuffle]), CPSectionModel(header: album.artist, rows: tracks)]
+        return [playShuffle(id: "album", detail: songCount(songs.count), play: .songs(songs, startAt: 0),
+                            shuffle: .album(id: album.id, shuffled: true)),
+                CPSectionModel(header: album.artist, rows: tracks)]
+    }
+
+    /// Y2 (2c): the two rows every album, artist and playlist page starts with. Both replace the queue (the car never
+    /// asks first, R12): Play in order from the first song, Shuffle shuffled.
+    static func playShuffle(id: String, detail: String?, play: CPPlayRequest, shuffle: CPPlayRequest) -> CPSectionModel {
+        CPSectionModel(header: nil, rows: [
+            CPRowModel(id: "\(id).play", title: "Play", detail: detail, action: .play(play)),
+            CPRowModel(id: "\(id).shuffle", title: "Shuffle", action: .play(shuffle)),
+        ])
     }
 
     public static func playlist(_ playlist: Playlist, songs: [Song], playingId: String?) -> [CPSectionModel] {
         guard !songs.isEmpty else { return state(.empty) }
-        return [CPSectionModel(header: nil, rows: songs.enumerated().map { i, song in
+        return [playShuffle(id: "playlist", detail: songCount(songs.count), play: .songs(songs, startAt: 0),
+                            shuffle: .shuffle(songs)),
+                CPSectionModel(header: nil, rows: songs.enumerated().map { i, song in
             CPRowModel(id: "track.\(i).\(song.id)", title: display(song.title, untitled), detail: song.artist,
                        artworkKey: song.coverArtId, playing: song.id == playingId,
                        action: .play(.songs(songs, startAt: i)))
@@ -379,13 +385,13 @@ public enum CarPlayRows {
     /// Albums play when tapped (no tracklist push here: this screen is already at depth 3).
     public static func artist(_ artist: Artist, albums: [Album]) -> [CPSectionModel] {
         guard !albums.isEmpty else { return state(.empty) }
-        let shuffle = CPRowModel(id: "artist.shuffle", title: "Shuffle", detail: artist.name,
-                                 action: .play(.artistShuffle(id: artist.id)))
         let rows = unique(albums, \.id).map {
             CPRowModel(id: "album.\($0.id)", title: display($0.name, untitledAlbum), detail: $0.year.map(String.init),
                        artworkKey: $0.coverArtId, action: .play(.album(id: $0.id, shuffled: false)))
         }
-        return [CPSectionModel(header: nil, rows: [shuffle]), CPSectionModel(header: "Albums", rows: rows)]
+        return [playShuffle(id: "artist", detail: display(artist.name, unknownArtist), play: .artistInOrder(id: artist.id),
+                            shuffle: .artistShuffle(id: artist.id)),
+                CPSectionModel(header: "Albums", rows: rows)]
     }
 
     // MARK: Helpers

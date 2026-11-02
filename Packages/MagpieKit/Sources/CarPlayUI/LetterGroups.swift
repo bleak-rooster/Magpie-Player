@@ -5,8 +5,8 @@ import Search
 // Round 12 item 2 (Y2): the car's long lists (Artists, Albums, Playlists) in A–Z. Under the car's limits a list is one
 // section per letter ("#", then A–Z) with CarPlay's letter scrubber (`indexTitle`). Over them, the list opens with a
 // letters screen: one row per letter, merged into ranges ("X–Z") only while the screen wouldn't fit, and a letter over
-// the item limit split into pages ("S (1 of 3)"). A group's list is a third screen, so (D12) its rows play: an artist
-// shuffles, an album or playlist plays from the start.
+// the item limit split into pages ("S (1 of 3)"). A group's list is a third screen; its rows open their page as on a
+// list under the limit (owner ruling: D12 allows CarPlay's depth of 5, tab → letters → group → page → Now Playing).
 
 /// What a lettered list holds, for the letters screen's counts.
 public enum CPLetterKind: Sendable, Hashable {
@@ -44,12 +44,11 @@ public struct CPLetterGroup: Sendable, Hashable {
     }
 }
 
-/// One item of a lettered list: its row on a browse screen (depth 2) and as a leaf in a group's list (depth 3).
+/// One item of a lettered list and the letter it files under.
 struct CPLetterEntry: Sendable {
     var key: String
     var sortName: String
     var row: CPRowModel
-    var leaf: CPRowModel
 }
 
 extension CarPlayRows {
@@ -119,7 +118,7 @@ extension CarPlayRows {
             if let last = runs.last, last.0 == entry.key { runs[runs.count - 1].1 += 1 } else { runs.append((entry.key, 1)) }
         }
         if sorted.count <= maxItems, runs.count <= maxSections {
-            return letterSections(sorted, \.row)
+            return letterSections(sorted)
         }
         let groups = letterGroups(runs, maxItems: maxItems)
         let rows = groups.map { group -> CPRowModel in
@@ -127,26 +126,26 @@ extension CarPlayRows {
             let detail = group.pageIndex == nil ? kind.count(members.count)
                 : "\(members.first?.row.title ?? "") to \(members.last?.row.title ?? "")"
             return CPRowModel(id: group.id, title: group.title, detail: detail,
-                              action: .open(.letterGroup(title: group.title, sections: letterSections(members, \.leaf))))
+                              action: .open(.letterGroup(title: group.title, sections: letterSections(members))))
         }
         return [CPSectionModel(header: nil, rows: rows)]
     }
 
     /// One section per letter, headed and indexed by it.
-    private static func letterSections(_ entries: [CPLetterEntry], _ row: KeyPath<CPLetterEntry, CPRowModel>) -> [CPSectionModel] {
+    private static func letterSections(_ entries: [CPLetterEntry]) -> [CPSectionModel] {
         var sections: [CPSectionModel] = []
         for entry in entries {
             if sections.last?.header == entry.key {
-                sections[sections.count - 1].rows.append(entry[keyPath: row])
+                sections[sections.count - 1].rows.append(entry.row)
             } else {
-                sections.append(CPSectionModel(header: entry.key, rows: [entry[keyPath: row]], indexTitle: entry.key))
+                sections.append(CPSectionModel(header: entry.key, rows: [entry.row], indexTitle: entry.key))
             }
         }
         return sections
     }
 
-    static func letterEntry(name: String, articles: [String], row: CPRowModel, leaf: CPRowModel) -> CPLetterEntry {
+    static func letterEntry(name: String, articles: [String], row: CPRowModel) -> CPLetterEntry {
         CPLetterEntry(key: LetterIndex.key(name, ignoringArticles: articles),
-                      sortName: String(LetterIndex.sortName(name, ignoringArticles: articles)), row: row, leaf: leaf)
+                      sortName: String(LetterIndex.sortName(name, ignoringArticles: articles)), row: row)
     }
 }

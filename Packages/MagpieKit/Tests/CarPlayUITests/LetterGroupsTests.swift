@@ -93,10 +93,10 @@ import Testing
         #expect(title == "C–Z")
         #expect(groupSections.map(\.header) == ["C", "Z"], "a merged group keeps its letter sections")
         #expect(groupSections.map(\.indexTitle) == ["C", "Z"])
-        // D12: the group list is a third screen, so its rows play and never push.
+        // Owner ruling (round 12): a group's rows open their page, as under the limit (D12 now allows CarPlay's depth of 5).
         let cure = try #require(groupSections.first?.rows.first)
-        #expect(cure.title == "The Cure" && cure.action == .play(.artistShuffle(id: "ar6")))
-        #expect(cure.detail == "Shuffle · 1 album")
+        #expect(cure.title == "The Cure" && cure.action == .open(.artist(id: "ar6", name: "The Cure")))
+        #expect(cure.detail == "1 album")
     }
 
     @Test func pagedLettersSayWhereTheyRun() {
@@ -112,18 +112,18 @@ import Testing
         #expect(sections.flatMap(\.rows).map(\.title) == ["A", "B", "C", "D"])
     }
 
-    @Test func albumAndPlaylistGroupsPlayFromTheirList() {
+    @Test func albumAndPlaylistGroupsOpenTheirPages() {
         let albums = (0..<13).map { Album(id: "al\($0)", name: "Album \($0)", artist: "X", songCount: 1, duration: 1) }
         guard case .open(.letterGroup(_, let albumSections)) = CarPlayRows.albums(albums, maxItems: 12, maxSections: 12)[0]
             .rows[0].action else { Issue.record("albums group"); return }
-        #expect(albumSections[0].rows[0].action == .play(.album(id: "al0", shuffled: false)))
+        #expect(albumSections[0].rows[0].action == .open(.album(id: "al0", title: "Album 0")))
         #expect(albumSections[0].rows[0].detail == "X")
 
         let playlists = (0..<13).map { Playlist(id: "p\($0)", name: "Mix \($0)", songCount: 2, duration: 9) }
         guard case .open(.letterGroup(_, let playlistSections)) = CarPlayRows.playlists(playlists, maxItems: 12,
                                                                                          maxSections: 12)[0]
             .rows[0].action else { Issue.record("playlists group"); return }
-        #expect(playlistSections[0].rows[0].action == .play(.playlist(id: "p0")))
+        #expect(playlistSections[0].rows[0].action == .open(.playlist(id: "p0", title: "Mix 0")))
     }
 
     /// Clamping keeps a section's index title (the scrubber stays).

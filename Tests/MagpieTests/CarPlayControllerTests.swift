@@ -247,10 +247,10 @@ final class FakeCarInterface: CarPlayInterface {
         // Fix round 1 (b): online too, a downloaded playlist shows only its songs on the phone (no server playlist).
         let downloads = try #require(car.topList)
         car.tap("Road", in: downloads)
-        #expect(await eventually { FakeCarInterface.texts(car.topList) == ["T1"] })
+        #expect(await eventually { FakeCarInterface.texts(car.topList) == ["Play", "Shuffle", "T1"] })
         car.pop(to: downloads, animated: false, completion: nil)
         car.tap("Continuum", in: car.topList)
-        #expect(await eventually { FakeCarInterface.texts(car.topList) == ["Shuffle", "T1"] })
+        #expect(await eventually { FakeCarInterface.texts(car.topList) == ["Play", "Shuffle", "T1"] })
         car.tap("T1", in: car.topList)
         #expect(await eventually { model.player.queue.current?.song.id == "s1" })
 
@@ -375,8 +375,8 @@ final class FakeCarInterface: CarPlayInterface {
         #expect(FakeCarInterface.headers(car.topList) == ["B", "R"])
     }
 
-    /// A letters screen's group opens its list (the third screen): letter sections, and rows that play.
-    @Test func aLetterGroupOpensAListThatPlays() async throws {
+    /// A letters screen's group opens its list (the third screen): letter sections, and rows that open their page.
+    @Test func aLetterGroupOpensAListOfPages() async throws {
         transport.inner.stub(pathSuffix: "/rest/getPlaylist", body: subsonic(#"""
         "playlist":{"id":"p2","name":"Beach","songCount":1,"duration":9,"entry":[{"id":"b1","title":"Wave","artist":"A"}]}
         """#))
@@ -395,7 +395,11 @@ final class FakeCarInterface: CarPlayInterface {
         #expect(car.topList?.title == "B")
         #expect(await eventually { FakeCarInterface.texts(car.topList) == ["Beach"] })
         #expect(car.topList?.sections.map(\.sectionIndexTitle) == ["B"])
+        // Owner ruling: a group's row opens its page (Play and Shuffle there, 2c).
         car.tap("Beach", in: car.topList)
+        #expect(car.topList?.title == "Beach")
+        #expect(await eventually { FakeCarInterface.texts(car.topList) == ["Play", "Shuffle", "Wave"] })
+        car.tap("Play", in: car.topList)
         #expect(await eventually { model.player.queue.current?.song.id == "b1" })
     }
 
@@ -417,6 +421,138 @@ final class FakeCarInterface: CarPlayInterface {
         #expect(pages.count == (1200 + limit - 1) / limit)
         car.tap(try #require(pages.last), in: car.topList)
         #expect(await eventually { FakeCarInterface.texts(car.topList).last == "Album 1199" })
+    }
+
+    // MARK: - Round 12 item 2c: Play and Shuffle
+
+    private func stubAlbumsAndArtist() {
+        @Sendable nonisolated func songs(_ ids: [String], album: String) -> String {
+            ids.map { #"{"id":"\#($0)","title":"\#($0)","artist":"A","artistId":"ar1","album":"\#(album)","albumId":"\#(album)","duration":60}"# }
+                .joined(separator: ",")
+        }
+        transport.inner.stub(pathSuffix: "/rest/getAlbum") { request in
+            let id = request.url.flatMap { URLComponents(url: $0, resolvingAgainstBaseURL: false) }?.queryItems?
+                .first { $0.name == "id" }?.value ?? ""
+            let ids = id == "al2" ? ["c", "d"] : ["a1", "a2", "a3"]
+            return MockTransport.Response(status: 200, body: subsonic(#"""
+            "album":{"id":"\#(id)","name":"Album \#(id)","artist":"A","artistId":"ar1","songCount":\#(ids.count),"song":[\#(songs(ids, album: id))]}
+            """#))
+        }
+        transport.inner.stub(pathSuffix: "/rest/getArtist", body: subsonic(#"""
+        "artist":{"id":"ar1","name":"A","albumCount":2,"album":[{"id":"al1","name":"One","artist":"A","songCount":3},{"id":"al2","name":"Two","artist":"A","songCount":2}]}
+        """#))
+    }
+
+    /// Album and artist pages start with Play and Shuffle; both replace the queue, never asking first (R12), and Play
+    /// is in order from the first song.
+    @Test func playAndShuffleReplaceTheQueue() async throws {
+        stubAlbumsAndArtist()
+        let model = try await signedInModel()
+        model.updatePreferences { $0.playback.askBeforeReplacingQueue = true }
+        let car = FakeCarInterface()
+        let controller = CarPlayController(interfaceController: car, library: CarPlayLibraryAdapter(model: model),
+                                           player: model.player)
+        defer { controller.disconnect() }
+        controller.setAvailability(.ready(account: "one"))
+        model.player.play([plain, loved], startAt: 0)
+        model.player.setShuffled(true)
+
+        controller.perform(.open(.album(id: "al1", title: "One")))
+        #expect(await eventually { FakeCarInterface.texts(car.topList) == ["Play", "Shuffle", "a1", "a2", "a3"] })
+        let album = try #require(car.topList)
+        car.tap("Play", in: album)
+        #expect(await eventually { model.player.queue.main.map(\.song.id) == ["a1", "a2", "a3"] })
+        #expect(model.player.queue.current?.song.id == "a1" && !model.player.isShuffled)
+        #expect(car.presented.isEmpty, "the car never asks before replacing")
+
+        car.tap("Shuffle", in: album)
+        #expect(await eventually { model.player.isShuffled })
+        #expect(Set(model.player.queue.main.map(\.song.id)) == ["a1", "a2", "a3"])
+
+        car.pop(to: car.tabs!, animated: false, completion: nil)
+        controller.perform(.open(.artist(id: "ar1", name: "A")))
+        #expect(await eventually { FakeCarInterface.texts(car.topList) == ["Play", "Shuffle", "One", "Two"] })
+        car.tap("Play", in: car.topList)
+        #expect(await eventually { model.player.queue.main.map(\.song.id) == ["a1", "a2", "a3", "c", "d"] })
+        #expect(!model.player.isShuffled)
+    }
+
+    // MARK: - Round 12 item 2d: Now Playing's album and artist
+
+    private func alertTitles(_ template: CPTemplate?) -> [String] {
+        (template as? CPActionSheetTemplate)?.actions.map(\.title) ?? []
+    }
+
+    @Test func albumArtistButtonOffersBothPages() async throws {
+        stubAlbumsAndArtist()
+        let model = try await signedInModel()
+        let car = FakeCarInterface()
+        let controller = CarPlayController(interfaceController: car, library: CarPlayLibraryAdapter(model: model),
+                                           player: model.player)
+        defer { controller.disconnect() }
+        controller.setAvailability(.ready(account: "one"))
+        #expect(!CPNowPlayingTemplate.shared.isAlbumArtistButtonEnabled, "nothing playing")
+        let song = Song(id: "a1", title: "a1", artist: "A", artistId: "ar1", album: "One", albumId: "al1", duration: 60)
+        controller.perform(.play(.songs([song], startAt: 0)))
+        #expect(await eventually { CPNowPlayingTemplate.shared.isAlbumArtistButtonEnabled })
+        #expect(car.topTemplate === CPNowPlayingTemplate.shared)
+
+        controller.nowPlayingTemplateAlbumArtistButtonTapped(CPNowPlayingTemplate.shared)
+        #expect(alertTitles(car.presentedTemplate) == ["Go to album", "Go to artist", "Cancel"])
+        car.dismissTemplate(animated: false, completion: nil)
+        controller.go(to: .album(id: "al1", title: "One"))
+        #expect(car.topList?.title == "One")
+        #expect(await eventually { FakeCarInterface.texts(car.topList).first == "Play" })
+        #expect(car.templates.count == 2, "from the tab bar, so the page has the whole depth budget")
+
+        controller.perform(.play(.songs([song], startAt: 0)))
+        controller.go(to: .artist(id: "ar1", name: "A"))
+        #expect(car.topList?.title == "A")
+        #expect(await eventually { FakeCarInterface.texts(car.topList) == ["Play", "Shuffle", "One", "Two"] })
+    }
+
+    @Test func albumArtistButtonGoesStraightToTheOnlyPage() async throws {
+        stubAlbumsAndArtist()
+        let model = try await signedInModel()
+        let car = FakeCarInterface()
+        let controller = CarPlayController(interfaceController: car, library: CarPlayLibraryAdapter(model: model),
+                                           player: model.player)
+        defer { controller.disconnect() }
+        controller.setAvailability(.ready(account: "one"))
+        let song = Song(id: "a1", title: "a1", artist: "A", album: "One", albumId: "al1", duration: 60)   // no artist id
+        controller.perform(.play(.songs([song], startAt: 0)))
+        #expect(await eventually { CPNowPlayingTemplate.shared.isAlbumArtistButtonEnabled })
+        controller.nowPlayingTemplateAlbumArtistButtonTapped(CPNowPlayingTemplate.shared)
+        #expect(car.presented.isEmpty)
+        #expect(car.topList?.title == "One")
+    }
+
+    /// Offline (R10): the downloaded page, or the button is off.
+    @Test func albumArtistButtonOffline() async throws {
+        let model = try await signedInModel()
+        let car = FakeCarInterface()
+        let controller = CarPlayController(interfaceController: car, library: CarPlayLibraryAdapter(model: model),
+                                           player: model.player)
+        defer { controller.disconnect() }
+        controller.setAvailability(.ready(account: "one"))
+        let s1 = Song(id: "s1", title: "T1", artist: "A", artistId: "ar1", album: "Continuum", albumId: "al-1", track: 1,
+                      duration: 200)
+        model.download([s1], reason: .album("al-1"), coverArtId: "al-1")
+        await model.downloads!.settled()
+        model.updatePreferences { $0.downloads.offlineMode = .on }
+        #expect(await eventually { model.isOffline })
+        let away = Song(id: "x1", title: "Away", artist: "B", artistId: "ar9", album: "Gone", albumId: "al9", duration: 60)
+        model.player.play([away], startAt: 0)
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(!CPNowPlayingTemplate.shared.isAlbumArtistButtonEnabled, "not on the phone: off")
+
+        controller.perform(.play(.songs([s1], startAt: 0)))
+        #expect(await eventually { CPNowPlayingTemplate.shared.isAlbumArtistButtonEnabled })
+        controller.nowPlayingTemplateAlbumArtistButtonTapped(CPNowPlayingTemplate.shared)
+        #expect(alertTitles(car.presentedTemplate) == ["Go to album", "Go to artist", "Cancel"])
+        car.dismissTemplate(animated: false, completion: nil)
+        controller.go(to: .downloadedAlbum(id: "al-1", title: "Continuum"))
+        #expect(await eventually { FakeCarInterface.texts(car.topList) == ["Play", "Shuffle", "T1"] })
     }
 
     /// What the car reports for its list limits on this simulator (recorded in the Y2 report).

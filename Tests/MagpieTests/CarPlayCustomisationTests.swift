@@ -212,7 +212,9 @@ private func subsonic(_ body: String) -> Data {
         #expect(CPDestination.genreGroup(id: "rock", name: "Rock").title == "Rock")
         #expect(CPDestination.downloadedAlbum(id: "a", title: "Continuum").title == "Continuum")
         var nav = CPNavigator()
-        #expect(nav.push(.genres) && nav.push(.genreGroup(id: "rock", name: "Rock")) && !nav.push(.album(id: "a", title: "A")))
+        // D12 as revised in round 12: three pushes below the tab (Now Playing makes CarPlay's fifth).
+        #expect(nav.push(.genres) && nav.push(.genreGroup(id: "rock", name: "Rock")) && nav.push(.album(id: "a", title: "A"))
+                    && !nav.push(.album(id: "b", title: "B")))
     }
 
     /// The car's Library while the layout changes: the template model follows the owner's switches (the controller's
@@ -249,9 +251,10 @@ private func subsonic(_ body: String) -> Data {
     @Test func genreDepthBudget() {
         var nav = CPNavigator()
         #expect(nav.push(.genres) && nav.push(.genreGroup(id: "rock", name: "Rock")))
-        #expect(nav.depth == CPNavigator.maxBrowseDepth)
+        #expect(nav.depth == CPNavigator.maxBrowseDepth - 1, "a genre group may sit one above the deepest level")
         let third = nav.push(.genres)   // #expect can't call a mutating method itself
-        #expect(!third, "only two pushes below the tab")
+        let fourth = nav.push(.genres)
+        #expect(third && !fourth, "three pushes below the tab (D12 as revised in round 12)")
     }
 
     @Test func downloadsRowsOpenDownloadedAlbum() {
@@ -329,12 +332,14 @@ private func subsonic(_ body: String) -> Data {
                      Song(id: "s2", title: "Two", artist: "A", album: "B", duration: 200)]
         let album = Album(id: "a1", name: "B", artist: "A", songCount: 2, duration: 400, songs: songs)
         let rows = CarPlayRows.downloadedAlbum(album, playingId: "s2").flatMap(\.rows)
-        #expect(rows.map(\.title) == ["Shuffle", "One", "Two"] && rows[2].playing)
-        #expect(rows.map(\.action) == [.play(.shuffle(songs)), .play(.songs(songs, startAt: 0)), .play(.songs(songs, startAt: 1))])
+        #expect(rows.map(\.title) == ["Play", "Shuffle", "One", "Two"] && rows[3].playing)
+        #expect(rows.map(\.action) == [.play(.songs(songs, startAt: 0)), .play(.shuffle(songs)), .play(.songs(songs, startAt: 0)),
+                                       .play(.songs(songs, startAt: 1))])
         let other = Album(id: "a2", name: "C", artist: "A", songCount: 1, duration: 1, songs: [songs[0]])
         let artist = CarPlayRows.downloadedArtist(Artist(id: "r", name: "A", albumCount: 2), albums: [album, other]).flatMap(\.rows)
-        #expect(artist.map(\.title) == ["Shuffle", "B", "C"])
-        #expect(artist.map(\.action) == [.play(.shuffle(songs + [songs[0]])), .play(.songs(songs, startAt: 0)),
+        #expect(artist.map(\.title) == ["Play", "Shuffle", "B", "C"])
+        #expect(artist.map(\.action) == [.play(.songs(songs + [songs[0]], startAt: 0)), .play(.shuffle(songs + [songs[0]])),
+                                         .play(.songs(songs, startAt: 0)),
                                          .play(.songs([songs[0]], startAt: 0))])
         #expect((rows + artist).allSatisfy { if case .open = $0.action { false } else { true } }, "depth 3: leaves")
         #expect(CarPlayRows.downloadedAlbum(Album(id: "x", name: "X", artist: "A", songCount: 0, duration: 0), playingId: nil)
