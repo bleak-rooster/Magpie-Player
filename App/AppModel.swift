@@ -160,6 +160,12 @@ final class AppModel {
     @ObservationIgnored var requestStore: RequestStore?
     @ObservationIgnored var gate: LidarrWriteGate?
     @ObservationIgnored var runner: RequestRunner?
+    /// Y4 fix I2: Downloads in Lidarr's no-progress clock, per Lidarr (`instanceScope`), kept when the page closes.
+    @ObservationIgnored var lidarrDownloadsWatch: (scope: String, watch: QueueStallWatch)?
+    /// Y4 fix N2: which downloads Lidarr itself grabbed (history lookups, cached), per Lidarr.
+    @ObservationIgnored var lidarrDownloadsGrabs: (scope: String, grabs: GrabCache)?
+    /// Y4 fix I3: stalled and failed rows at the page's last read (the Settings row's summary); nil before one.
+    var lidarrDownloadsAttention: Int?
     @ObservationIgnored var runnerTasks: [Task<Void, Never>] = []
     @ObservationIgnored var pollTask: Task<Void, Never>?
     @ObservationIgnored var pollGeneration = 0
