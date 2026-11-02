@@ -138,8 +138,13 @@ public struct WriteConfinement: Sendable {
                     guard let artistId, entries.contains(where: { $0.lidarrArtistId == artistId }) else {
                         return .refused("a refresh only for an artist Magpie asked for")
                     }
+                case "artistsearch":
+                    // Round 12 M2: searches every monitored album, so only an artist Magpie created (fresh MBID match).
+                    guard let artistId, try await context.created(artistId) else {
+                        return .refused("a search only for an artist Magpie added")
+                    }
                 default:
-                    break
+                    return .refused("command not allowed")
                 }
                 return .confined(artists: [], rule: .other)
             }
