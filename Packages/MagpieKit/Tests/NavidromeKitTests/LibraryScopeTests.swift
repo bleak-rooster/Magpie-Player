@@ -52,7 +52,7 @@ private func ok(_ body: String) -> Data {
         let (client, t) = makeClient()
         stubAll(t)
         client.setLibraryScope(1)
-        #expect(client.libraryScope == 1)
+        #expect(client.libraryScope == [1])
         try await everyListCall(client)
         let lists = t.requests.filter { r in Self.listPaths.contains { r.url!.path.hasSuffix($0) } }
         #expect(lists.count == 14, "11 calls, plus Favourites' three native starred reads")
@@ -67,7 +67,7 @@ private func ok(_ body: String) -> Data {
         stubAll(t)
         try await everyListCall(client)
         client.setLibraryScope(1)
-        client.setLibraryScope(nil)   // a single library again: nothing is sent
+        client.setLibraryScope(nil as [Int]?)   // a single library again: nothing is sent
         _ = try await client.albumList(.random, size: 12, offset: 0)
         for r in t.requests {
             #expect(queryValue(r, "musicFolderId") == nil && queryValue(r, "library_id") == nil)
@@ -120,16 +120,18 @@ private func ok(_ body: String) -> Data {
         #expect(scoped.songs.map(\.id) == ["s-main"] && scoped.albums.map(\.id) == ["al-main"] && scoped.artists.map(\.id) == ["ar-main"])
     }
 
-    /// Y3 fix: a library's album count (the fallback pick of the main library), from the native API's total.
-    @Test func albumCountPerLibrary() async throws {
-        let t = MockTransport()
-        t.stub(pathSuffix: "/api/album") { r in
-            MockTransport.Response(status: 200, body: Data("[]".utf8),
-                                   headers: ["X-Total-Count": queryValue(r, "library_id") == "1" ? "312" : "40"])
-        }
-        let (client, _) = makeClient(transport: t)
-        #expect(try await client.albumCount(inLibrary: 1) == 312)
-        #expect(try await client.albumCount(inLibrary: 2) == 40)
+    /// Several libraries: each is named (Navidrome reads them as "any of").
+    @Test func severalLibrariesAreEachNamed() async throws {
+        let (client, t) = makeClient()
+        stubAll(t)
+        client.setLibraryScope([1, 2])
+        _ = try await client.albumList(.newest, size: 12, offset: 0)
+        _ = try await client.songsPage(start: 0, end: 10)
+        let sent = t.requests.suffix(2)
+        #expect(queryItems(sent.first!).filter { $0.name == "musicFolderId" }.map(\.value) == ["1", "2"])
+        #expect(queryItems(sent.last!).filter { $0.name == "library_id" }.map(\.value) == ["1", "2"])
+        client.setLibraryScope([Int]())
+        #expect(client.libraryScope == nil, "empty means unscoped")
     }
 
     /// Y3 fix: native song rows carry sample rate and bit depth too.
