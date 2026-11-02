@@ -163,6 +163,15 @@ public struct LidarrClient: Sendable {
                                                          URLQueryItem(name: "includeAlbum", value: "true")])
     }
 
+    /// Fix round 2 N1: Lidarr's history has a grab (`eventType=1`) for this download: Lidarr itself started it. Read
+    /// only. False when the history has none (another tool's transfer that Lidarr only lists).
+    public func grabbed(downloadId: String) async throws -> Bool {
+        let page = try await decode(HistoryPage.self, "history", [
+            URLQueryItem(name: "downloadId", value: downloadId), URLQueryItem(name: "eventType", value: "1"),
+            URLQueryItem(name: "page", value: "1"), URLQueryItem(name: "pageSize", value: "10")])
+        return page.records.contains { $0.isGrab && ($0.downloadId == nil || $0.downloadId == downloadId) }
+    }
+
     /// The download clients set up in Lidarr (R17: which ones are Soulseek). Read only; never written (G5).
     public func downloadClients() async throws -> [DownloadClientInfo] {
         try await list(DownloadClientInfo.self, "downloadclient")

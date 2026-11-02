@@ -497,11 +497,47 @@ extension QueueItem {
     /// Round 12 item 6: Lidarr is importing it, has imported it, or it's complete and waiting to import (or the client
     /// says complete while Lidarr still tracks it as downloading). Such a copy, and every row of its download, is never
     /// restarted. A complete copy Lidarr couldn't import (`importBlocked`, `importFailed`) or a failed one isn't this.
+    /// Round 12 fix round 2 N1: Lidarr lists the transfer but says it never grabbed it ("Download wasn't grabbed by
+    /// Lidarr, skipping", seen on the owner's Lidarr for Soulseek transfers another tool started). Not Lidarr's to
+    /// restart. The gate checks the grab history as well.
+    public var saysNotGrabbedByLidarr: Bool {
+        (statusMessages + [errorMessage].compactMap { $0 }).contains { text in
+            let t = text.lowercased().replacingOccurrences(of: "\u{2019}", with: "'")
+            return t.contains("wasn't grabbed by lidarr") || t.contains("was not grabbed by lidarr")
+        }
+    }
+
     public var isImportingOrDone: Bool {
         let tracked = trackedDownloadState.lowercased()
         if ["importpending", "importing", "imported"].contains(tracked) { return true }
         let failed: Set<String> = ["importblocked", "importfailed", "downloadfailed", "downloadfailedpending", "failedpending"]
         return status.lowercased() == "completed" && !failed.contains(tracked)
+    }
+}
+
+/// Fix round 2 N1: a page of `GET /history`, only what the grab check needs.
+struct HistoryPage: Decodable {
+    struct Record: Decodable {
+        var eventType: String?
+        var eventTypeNumber: Int?
+        var downloadId: String?
+
+        /// Lidarr sends the event type as a name ("grabbed"); a number (1) is accepted too.
+        var isGrab: Bool { eventType?.lowercased() == "grabbed" || eventTypeNumber == 1 }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: AnyKey.self)
+            eventType = c.value("eventType", as: String.self)
+            eventTypeNumber = c.value("eventType", as: Int.self)
+            downloadId = c.text("downloadId").flatMap { $0.isEmpty ? nil : $0 }
+        }
+    }
+
+    var records: [Record]
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: AnyKey.self)
+        records = c.value("records", as: LossyArray<Record>.self)?.values ?? []
     }
 }
 

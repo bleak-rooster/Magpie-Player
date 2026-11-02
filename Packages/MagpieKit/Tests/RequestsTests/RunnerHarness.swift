@@ -236,6 +236,8 @@ final class FakeLidarr: @unchecked Sendable {
         ]
         var downloadClientReads = 0
         var removedFromQueue: [Int] = []
+        /// Y4 fix round 2 N1: downloads with no grab in Lidarr's history (`GET /history?downloadId=…&eventType=1`).
+        var ungrabbed: Set<String> = []
     }
 
     let latch = Latch()
@@ -574,6 +576,14 @@ final class FakeLidarr: @unchecked Sendable {
                 if let d = q.downloadId ?? q.id.map({ "dl-\($0)" }) { row["downloadId"] = d }
                 return row
             } })
+        }
+        t.stub(pathSuffix: "/api/v1/history") { [self] request in
+            if let d = down() { return d }
+            let id = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?
+                .first { $0.name == "downloadId" }?.value ?? ""
+            let none = with { $0.ungrabbed.contains(id) }
+            let records: [[String: Any]] = none ? [] : [["id": 1, "eventType": "grabbed", "downloadId": id]]
+            return reply(["page": 1, "pageSize": 10, "totalRecords": records.count, "records": records] as [String: Any])
         }
         t.stub(pathSuffix: "/api/v1/downloadclient") { [self] _ in
             if let d = down() { return d }

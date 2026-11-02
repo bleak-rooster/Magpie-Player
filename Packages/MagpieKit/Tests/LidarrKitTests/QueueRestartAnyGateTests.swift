@@ -21,10 +21,20 @@ import MagpieTestSupport
         let client: LidarrClient
         let ledger: Ledger
 
-        init(queueDown: Bool = false) {
+        /// Fix round 2 N1, the owner's real shape (anonymised): a Soulseek transfer another tool started; Lidarr lists
+        /// it but never grabbed it (615). And one whose messages don't say so: only the grab history tells (616).
+        static var notGrabbed: [[String: Any]] { [
+            ["id": 615, "albumId": 55, "artistId": 9, "status": "failed", "trackedDownloadState": "downloading",
+             "trackedDownloadStatus": "warning", "downloadClient": "Slskd", "protocol": "SoulseekDownloadProtocol",
+             "errorMessage": "Download wasn't grabbed by Lidarr, skipping",
+             "statusMessages": [["title": "Release 615", "messages": ["Download wasn't grabbed by Lidarr, skipping"]]]],
+            ["id": 616, "albumId": 56, "artistId": 9, "status": "failed", "trackedDownloadState": "downloadFailed"],
+        ] }
+
+        init(queueDown: Bool = false, historyDown: Bool = false) {
             client = LidarrClient(base: testBase, apiKey: testKey, transport: transport)
             ledger = Ledger(fileURL: nil, instance: client.instanceScope)
-            let rows: [[String: Any]] = [
+            var rows: [[String: Any]] = [
                 ["id": 601, "albumId": 41, "artistId": 9, "status": "downloading", "trackedDownloadState": "downloading"],
                 ["id": 602, "albumId": 42, "artistId": 9, "sizeleft": 0, "status": "completed",
                  "trackedDownloadState": "importBlocked", "trackedDownloadStatus": "warning"],
@@ -46,11 +56,22 @@ import MagpieTestSupport
                 ["id": 613, "albumId": 53, "artistId": 9, "status": "delay", "trackedDownloadState": "downloading"],
                 ["id": 614, "albumId": 54, "artistId": 9, "status": "downloadClientUnavailable",
                  "trackedDownloadState": "downloading"],
-            ].map { row in row.merging(["size": 100, "sizeleft": 50, "downloadClient": "SABnzbd",
+            ] + Self.notGrabbed
+            rows = rows.map { row in row.merging(["size": 100, "sizeleft": 50, "downloadClient": "SABnzbd",
                                         "downloadId": "dl-\(row["id"]!)"]) { a, _ in a } }
             let all = try! JSONSerialization.data(withJSONObject: rows)
             transport.stub(pathSuffix: "/api/v1/queue/details") { _ in
                 queueDown ? MockTransport.Response(status: 503) : MockTransport.Response(status: 200, body: all)
+            }
+            // Fix round 2 N1: `GET /history?downloadId=…&eventType=1`: a grab for every download but 615's and 616's.
+            transport.stub(pathSuffix: "/api/v1/history") { request in
+                if historyDown { return MockTransport.Response(status: 503) }
+                let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
+                let id = query.first { $0.name == "downloadId" }?.value ?? ""
+                let records: [[String: Any]] = ["dl-615", "dl-616"].contains(id) ? []
+                    : [["id": 1, "eventType": "grabbed", "downloadId": id, "albumId": 1]]
+                return MockTransport.Response(status: 200, body: try JSONSerialization.data(
+                    withJSONObject: ["page": 1, "pageSize": 10, "totalRecords": records.count, "records": records]))
             }
             transport.stub(method: "DELETE", pathSuffix: "", body: json("{}"))
         }
@@ -174,6 +195,28 @@ import MagpieTestSupport
         for id in [611, 612, 613, 614] {
             #expect(await refused(gate, id) != nil, "\(id)")
         }
+        #expect(fake.writes.isEmpty)
+    }
+
+    /// Fix round 2 N1: a download Lidarr never grabbed (another tool's transfer) is never restarted: refused on its
+    /// message, and on a fresh read of the grab history even when the message doesn't say so.
+    @Test func refusesDownloadsLidarrNeverGrabbed() async throws {
+        let fake = Fake()
+        let gate = await fake.gate()
+        #expect(await refused(gate, 615) != nil)
+        #expect(await refused(gate, 616) != nil)
+        #expect(fake.writes.isEmpty)
+        let asked = fake.transport.requests.filter { $0.url?.path.hasSuffix("/api/v1/history") == true }
+        let items = URLComponents(url: try #require(asked.last?.url), resolvingAgainstBaseURL: false)?.queryItems ?? []
+        #expect(items.contains(URLQueryItem(name: "downloadId", value: "dl-616")))
+        #expect(items.contains(URLQueryItem(name: "eventType", value: "1")))
+    }
+
+    /// The grab history can't be read: not confirmed, not sent.
+    @Test func unreadableHistoryIsNotSent() async throws {
+        let fake = Fake(historyDown: true)
+        let gate = await fake.gate()
+        await #expect(throws: WriteGateError.unconfirmed) { try await self.restart(gate, 601) }
         #expect(fake.writes.isEmpty)
     }
 

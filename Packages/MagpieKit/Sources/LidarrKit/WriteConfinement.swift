@@ -176,6 +176,16 @@ public struct WriteConfinement: Sendable {
         guard !items.contains(where: { $0.downloadId == downloadId && $0.isImportingOrDone }) else {
             return .refused("another album of that download is importing or done")
         }
+        // Fix round 2 N1: only a download Lidarr itself grabbed. Another tool's transfer that Lidarr only lists has no
+        // grab (its blocklist would do nothing, and the search would bring in music nobody asked Lidarr for).
+        guard !items.contains(where: { $0.downloadId == downloadId && $0.saysNotGrabbedByLidarr }) else {
+            return .refused("Lidarr didn't start that download")
+        }
+        do {
+            guard try await lidarr.grabbed(downloadId: downloadId) else { return .refused("Lidarr didn't start that download") }
+        } catch {
+            return .unknown
+        }
         return .confined(artists: [])
     }
 

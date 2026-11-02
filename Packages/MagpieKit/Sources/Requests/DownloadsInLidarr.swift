@@ -78,11 +78,15 @@ public struct QueueStallWatch: Sendable, Equatable {
 
 /// The queue as the screen shows it.
 public struct LidarrDownloads: Sendable, Equatable {
-    public enum Section: Sendable, Equatable { case active, stalled, failed }
+    /// Fix round 2: `couldntImport`, a finished copy Lidarr couldn't import (restarted only one at a time, after its own
+    /// confirmation, never by Restart all); `notStarted`, a transfer Lidarr lists but never grabbed (another tool's;
+    /// read-only).
+    public enum Section: Sendable, Equatable { case active, stalled, failed, couldntImport, notStarted }
 
     /// What a row is doing, for its status line (text plus a symbol in the app, D3).
     public enum Phase: Sendable, Equatable {
-        case downloading, queued, paused, clientUnavailable, waitingToImport, importing, stalled, failed
+        case downloading, queued, paused, clientUnavailable, waitingToImport, importing, stalled, failed, couldntImport,
+             notStarted
     }
 
     /// Why a row is Stalled.
@@ -130,6 +134,11 @@ public struct LidarrDownloads: Sendable, Equatable {
     public var active: [Row] = []
     public var stalled: [Row] = []
     public var failed: [Row] = []
+    public var couldntImport: [Row] = []
+    public var notStarted: [Row] = []
+
+    /// Rows that need the owner: stalled, failed and couldn't import (not another tool's transfers).
+    public var attention: Int { stalled.count + failed.count + couldntImport.count }
 
     public init() {}
 
@@ -143,7 +152,7 @@ public struct LidarrDownloads: Sendable, Equatable {
             let soulseek = Self.isSoulseek(item, soulseekClients)
             let (section, phase, stall) = Self.classify(item, soulseek: soulseek,
                                                         unchanged: watch.unchangedFor(id, at: now), limit: stallLimit)
-            let canRestart = section != .active && item.downloadId.map { !done.contains($0) } == true
+            let canRestart = ![.active, .notStarted].contains(section) && item.downloadId.map { !done.contains($0) } == true
             let message = (item.statusMessages.first ?? item.errorMessage).flatMap { $0.isEmpty ? nil : $0 }
             let row = Row(id: id, item: item, section: section, phase: phase, stall: stall, soulseek: soulseek,
                           canRestart: canRestart, artist: item.artistName ?? "", album: item.albumTitle ?? item.title ?? "",
@@ -154,6 +163,8 @@ public struct LidarrDownloads: Sendable, Equatable {
             case .active: active.append(row)
             case .stalled: stalled.append(row)
             case .failed: failed.append(row)
+            case .couldntImport: couldntImport.append(row)
+            case .notStarted: notStarted.append(row)
             }
         }
     }
@@ -165,19 +176,28 @@ public struct LidarrDownloads: Sendable, Equatable {
     /// Waiting its turn, paused (often on purpose), held back by Lidarr, or the client can't be reached: not stuck.
     static let waitingStatuses: Set<String> = ["queued", "paused", "delay", "downloadclientunavailable", "fallback"]
 
-    /// Failed: a failed download or a blocked (or failed) import.
+    /// Failed: a failed download (fix round 2: a finished copy that couldn't be imported is `couldntImport`).
     static func isFailed(_ item: QueueItem) -> Bool {
         let tracked = item.trackedDownloadState.lowercased()
-        if ["downloadfailed", "downloadfailedpending", "failedpending", "importblocked", "importfailed"].contains(tracked) {
-            return true
-        }
+        if ["downloadfailed", "downloadfailedpending", "failedpending"].contains(tracked) { return true }
         return item.status.lowercased() == "failed"
+    }
+
+    /// Fix round 2: a finished copy Lidarr couldn't import (blocked, e.g. "Artist name mismatch", or failed, e.g. "Has
+    /// missing tracks").
+    static func couldntImport(_ item: QueueItem) -> Bool {
+        ["importblocked", "importfailed"].contains(item.trackedDownloadState.lowercased())
+    }
+
+    /// Failed, couldn't import, or not Lidarr's: never "downloading" nor "stalled".
+    static func isBroken(_ item: QueueItem) -> Bool {
+        isFailed(item) || couldntImport(item) || item.saysNotGrabbedByLidarr
     }
 
     /// Actually downloading before import: Lidarr tracks it as downloading and the client says downloading (or, for a
     /// Soulseek copy, "warning", which it shows all along; R17).
     static func isDownloading(_ item: QueueItem, soulseek: Bool) -> Bool {
-        guard item.isDownloadingBeforeImport, !isFailed(item) else { return false }
+        guard item.isDownloadingBeforeImport, !isBroken(item) else { return false }
         let status = item.status.lowercased()
         return status == "downloading" || (soulseek && status == "warning")
     }
@@ -185,7 +205,7 @@ public struct LidarrDownloads: Sendable, Equatable {
     /// Lidarr itself says the copy is stuck: a warning (or "stalled") while downloading. Not for Soulseek, whose
     /// warning is always on; the timer looks after those.
     static func lidarrSaysStalled(_ item: QueueItem, soulseek: Bool) -> Bool {
-        guard !soulseek, item.isDownloadingBeforeImport, !isFailed(item) else { return false }
+        guard !soulseek, item.isDownloadingBeforeImport, !isBroken(item) else { return false }
         let status = item.status.lowercased(), trackedStatus = item.trackedDownloadStatus.lowercased()
         if waitingStatuses.contains(status) { return false }
         return ["warning", "stalled"].contains(status) || ["warning", "stalled"].contains(trackedStatus)
@@ -197,10 +217,18 @@ public struct LidarrDownloads: Sendable, Equatable {
 
     static func classify(_ item: QueueItem, soulseek: Bool, unchanged: TimeInterval?, limit stallLimit: TimeInterval)
         -> (Section, Phase, StallReason?) {
-        let status = item.status.lowercased()
-        if item.isImportingOrDone {
-            return (.active, item.trackedDownloadState.lowercased() == "importing" ? .importing : .waitingToImport, nil)
+        let status = item.status.lowercased(), tracked = item.trackedDownloadState.lowercased()
+        // Fix round 2 N1: another tool's transfer Lidarr only lists. Read-only, whatever else it says.
+        if item.saysNotGrabbedByLidarr { return (.notStarted, .notStarted, nil) }
+        // Waiting to import with a warning: shown with the ones that couldn't import, but Lidarr may still import it,
+        // so it isn't restartable (its download is importing or done).
+        if tracked == "importpending", item.trackedDownloadStatus.lowercased() == "warning" {
+            return (.couldntImport, .couldntImport, nil)
         }
+        if item.isImportingOrDone {
+            return (.active, tracked == "importing" ? .importing : .waitingToImport, nil)
+        }
+        if couldntImport(item) { return (.couldntImport, .couldntImport, nil) }
         if isFailed(item) { return (.failed, .failed, nil) }
         if waitingStatuses.contains(status) {
             switch status {
@@ -220,9 +248,10 @@ public struct LidarrDownloads: Sendable, Equatable {
     /// word; or still downloading with nothing changed since (same signature). Anything that moved or stopped
     /// downloading is left alone.
     public static func stillRestartable(_ fresh: QueueItem, as row: Row) -> Bool {
-        guard !fresh.isImportingOrDone else { return false }
+        guard !fresh.isImportingOrDone, !fresh.saysNotGrabbedByLidarr else { return false }
         switch (row.section, row.stall) {
         case (.failed, _): return isFailed(fresh)
+        case (.couldntImport, _): return couldntImport(fresh)
         case (.stalled, .lidarr?): return lidarrSaysStalled(fresh, soulseek: row.soulseek)
         case (.stalled, .noProgress?):
             return isDownloading(fresh, soulseek: row.soulseek) && QueueSignature(fresh) == QueueSignature(row.item)
@@ -259,6 +288,8 @@ public actor LidarrDownloadRestarter {
         case unnamed
         /// A Magpie request for that album is between steps.
         case magpieBusy
+        /// Fix round 2 N1: Lidarr never grabbed it (another tool's transfer): left alone.
+        case notStartedByLidarr
         /// The gate refused (its own fresh read disagreed).
         case refused(String)
         /// A Magpie request's download whose five removals are used up.
@@ -301,6 +332,9 @@ public actor LidarrDownloadRestarter {
         var outcomes: [Outcome] = []
         var unavailableInARow = 0
         for row in rows.prefix(Self.maxPerTap) {
+            // Fix round 2: a finished copy that couldn't be imported is only ever restarted on its own (after its own
+            // confirmation), and another tool's transfer never.
+            guard [.stalled, .failed].contains(row.section) else { outcomes.append(.skipped); continue }
             let outcome = await restartOne(row)
             outcomes.append(outcome)
             if outcome == .changesOff { break }
@@ -329,6 +363,14 @@ public actor LidarrDownloadRestarter {
         guard let downloadId = item.downloadId else { return .unnamed }
         let rows = queue.filter { $0.downloadId == downloadId }
         guard !rows.contains(where: \.isImportingOrDone) else { return .importingOrDone }
+        // Fix round 2 N1: only a download Lidarr grabbed itself (its message, then its grab history, read fresh; the
+        // gate checks both again).
+        guard !rows.contains(where: \.saysNotGrabbedByLidarr) else { return .notStartedByLidarr }
+        do {
+            guard try await lidarr.grabbed(downloadId: downloadId) else { return .notStartedByLidarr }
+        } catch {
+            return .unavailable
+        }
         guard LidarrDownloads.stillRestartable(item, as: row) else { return .skipped }
         var albums: [Int] = []
         for album in rows.compactMap(\.albumId) where !albums.contains(album) { albums.append(album) }

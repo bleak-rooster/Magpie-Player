@@ -59,16 +59,56 @@ import MagpieCore
         #expect(b.stalled.map(\.id) == [5])
         #expect(b.stalled.first?.stall == .lidarr)
         #expect(b.stalled.first?.message == "The download is stalled with no connections")
-        #expect(b.failed.map(\.id) == [2, 3])
-        #expect(b.failed.first?.message == "No files found are eligible for import")
+        #expect(b.failed.map(\.id) == [3])
+        // Fix round 2: a finished copy that couldn't be imported has its own section, out of Restart all.
+        #expect(b.couldntImport.map(\.id) == [2])
+        #expect(b.couldntImport.first?.message == "No files found are eligible for import")
+        #expect(b.couldntImport.first?.canRestart == true)
         #expect(b.active.first { $0.id == 4 }?.canRestart == false)
         #expect(b.active.first { $0.id == 4 }?.phase == .importing)
         #expect(b.failed.filter { !$0.canRestart }.isEmpty)
-        #expect(b.restartable.map(\.id) == [5, 2, 3])
+        #expect(b.restartable.map(\.id) == [5, 3])
         #expect(b.active.first?.artist == "Owner Artist")
         #expect(b.active.first?.album == "Album 41")
         #expect(b.active.first?.client == "SABnzbd")
         #expect(b.active.first?.progress == 0.5)
+    }
+
+    /// Fix round 2, the owner's real queue (read-only re-review, anonymised): every row a Soulseek copy.
+    /// - complete, import blocked ("Artist name mismatch") or failed ("Has missing tracks", "Album match is not close
+    ///   enough") → Couldn't import: restartable one at a time, never by Restart all;
+    /// - status failed while Lidarr still tracks it as downloading, "Download wasn't grabbed by Lidarr, skipping" →
+    ///   Not started by your library: read-only, never restartable;
+    /// - import pending with a warning → Couldn't import, but Lidarr may still import it: not restartable.
+    @Test func ownersRealShapes() {
+        func soulseekRow(_ id: Int, status: String, tracked: String, sizeleft: Double, message: String,
+                         errorMessage: String? = nil) -> QueueItem {
+            QueueItem(id: id, albumId: 40 + id, artistId: 9, downloadClient: "Slskd",
+                      protocolName: "SoulseekDownloadProtocol", downloadId: "dl-\(id)", size: 100, sizeleft: sizeleft,
+                      status: status, trackedDownloadState: tracked, statusMessages: [message],
+                      trackedDownloadStatus: "warning", errorMessage: errorMessage)
+        }
+        let items = [
+            soulseekRow(1, status: "completed", tracked: "importBlocked", sizeleft: 0,
+                        message: "Artist name mismatch, automatic import is not possible. Check the release and import manually."),
+            soulseekRow(2, status: "completed", tracked: "importFailed", sizeleft: 0, message: "Has missing tracks"),
+            soulseekRow(3, status: "completed", tracked: "importFailed", sizeleft: 0,
+                        message: "Album match is not close enough: 72.4 % vs 80 % [Artist]"),
+            soulseekRow(4, status: "failed", tracked: "downloading", sizeleft: 40,
+                        message: "Download wasn't grabbed by Lidarr, skipping",
+                        errorMessage: "Download wasn't grabbed by Lidarr, skipping"),
+            soulseekRow(5, status: "completed", tracked: "importPending", sizeleft: 0, message: "Waiting for manual import"),
+        ]
+        let b = watched(items, for: 3_600)
+        #expect(b.couldntImport.map(\.id) == [1, 2, 3, 5])
+        #expect(b.couldntImport.map(\.canRestart) == [true, true, true, false])
+        #expect(b.couldntImport.first?.message?.hasPrefix("Artist name mismatch") == true)
+        #expect(b.notStarted.map(\.id) == [4])
+        #expect(b.notStarted.first?.canRestart == false)
+        #expect(b.notStarted.first?.phase == .notStarted)
+        #expect(b.failed.isEmpty && b.stalled.isEmpty)
+        #expect(b.restartable.isEmpty, "Restart all never takes a finished copy or another tool's transfer")
+        #expect(b.attention == 4, "the four that couldn't import; not the other tool's transfer")
     }
 
     /// C1: queued, paused, delayed and unreachable copies are never Stalled or restartable, however long they sit
@@ -213,6 +253,47 @@ import MagpieCore
         #expect(await restarter.restart(r2) == .importingOrDone)
         await h.gate.setEnabled(false)
         #expect(await restarter.restart(r3) == .changesOff)
+        #expect(h.server.writes.isEmpty)
+    }
+
+    /// Fix round 2: a finished copy that couldn't be imported is restarted one at a time (the screen asks first), and
+    /// only when Lidarr grabbed it; with no grab in the history (another tool's transfer) nothing is sent.
+    @Test func couldntImportRestartsOneAtATimeOnlyIfLidarrGrabbedIt() async throws {
+        let h = await Harness()
+        h.server.with { s in
+            s.queue = [901, 902].map { FakeLidarr.Queued(albumId: 41 + $0 - 901, size: 100, sizeleft: 0, status: "completed",
+                                                         tracked: "importBlocked", messages: ["Artist name mismatch"],
+                                                         id: $0, artistId: 9, client: "Slskd") }
+            s.ungrabbed = ["dl-902"]
+        }
+        let board = try await rows(h)
+        #expect(board.couldntImport.map(\.id) == [901, 902])
+        #expect(board.restartable.isEmpty)
+        let restarter = LidarrDownloadRestarter(lidarr: h.lidarrClient, gate: h.gate, runner: h.runner)
+        #expect(await restarter.restartAll(board.couldntImport) == [.skipped, .skipped], "never through Restart all")
+        #expect(h.server.writes.isEmpty)
+        #expect(await restarter.restart(board.couldntImport[1]) == .notStartedByLidarr)
+        #expect(h.server.writes.isEmpty)
+        #expect(await restarter.restart(board.couldntImport[0]) == .restarted)
+        #expect(writes(h) == ["DELETE queue/901", "POST command"])
+    }
+
+    /// N1: a "not started by your library" row is never restarted, even if handed to the restarter.
+    @Test func notStartedIsNeverRestarted() async throws {
+        let h = await Harness()
+        h.server.with { s in
+            s.queue = [FakeLidarr.Queued(albumId: 41, size: 100, sizeleft: 40, status: "failed",
+                                         messages: ["Download wasn't grabbed by Lidarr, skipping"], id: 901, artistId: 9,
+                                         client: "Slskd")]
+            s.ungrabbed = ["dl-901"]
+        }
+        let board = try await rows(h)
+        let row = try #require(board.notStarted.first)
+        var forced = row
+        forced.canRestart = true
+        let restarter = LidarrDownloadRestarter(lidarr: h.lidarrClient, gate: h.gate, runner: h.runner)
+        #expect(await restarter.restart(row) == .skipped)
+        #expect(await restarter.restart(forced) == .notStartedByLidarr)
         #expect(h.server.writes.isEmpty)
     }
 
