@@ -525,7 +525,9 @@ final class AppModel {
         box.set(client)
         scrobbleQueueBelongs(to: navidromeScope)   // another account's queued plays never go to this one
         noteReachable()
-        Task { [weak self] in await self?.refreshMusicFolders() }   // Y3: the main library; Home reads again on a change
+        // Y3: the main library, before anything is listed. Awaited (fix round 1 kept it so): a read left running
+        // after sign-in would interleave with whatever the caller sends next.
+        await refreshMusicFolders()
         startMatchIndex()
         startDownloads()
         rebuildRunner()
