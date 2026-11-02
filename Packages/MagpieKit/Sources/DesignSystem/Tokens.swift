@@ -51,6 +51,14 @@ public enum Tokens {
         /// Side margin; 20 on Large-title pages.
         public static let margin: CGFloat = 16
         public static let largeTitleMargin: CGFloat = 20
+        /// Between a capsule's symbol and its label (ActionButton and CapsuleButton alike).
+        public static let iconGap: CGFloat = 4
+    }
+    /// The compact inline capsule (`CapsuleButton`): rows and status lines (Lidarr downloads' Restart, the Play-now
+    /// banner). Page actions use the 44 pt `ActionButton` in an `ActionBar` instead. Its hit area is still 44 × 44.
+    public enum CompactCapsule {
+        public static let height: CGFloat = 30
+        public static let horizontalPadding: CGFloat = 12
     }
     public enum Radius {
         /// Art corner radius at <= 64 pt.

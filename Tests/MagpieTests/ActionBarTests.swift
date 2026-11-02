@@ -5,12 +5,15 @@ import Testing
 import UIKit
 @testable import Magpie
 
-/// Y7 (plan item 10): one ActionBar for every Play / Shuffle / Download row. Its items share one width per row and
-/// one height (at least 44 pt), Play is filled and the rest tinted, Download keeps the same capsule in every state,
-/// and the bar stacks at accessibility sizes. Hosted in a real window so the layout settles; the bar reports each
-/// item's frame through `actionBarProbe`.
+/// Each ActionBar item's global frame by its position in the bar (`actionBarProbe`); shared by the page tests.
+@MainActor final class ActionBarFrames { var byIndex: [Int: CGRect] = [:] }
+
+/// Y7 (plan item 10): one ActionBar for every Play / Shuffle / Download row. Phase 2 (owner ruling): Play, Shuffle
+/// and Download are three equal slots in one row, one height (at least 44 pt); Play is filled and the rest tinted;
+/// Download keeps the same capsule in every state with a short label (VoiceOver reads the full status); the bar
+/// stacks at accessibility sizes. Hosted in a real window so the layout settles.
 @MainActor @Suite(.serialized) struct ActionBarTests {
-    @MainActor final class Frames { var byIndex: [Int: CGRect] = [:] }
+    typealias Frames = ActionBarFrames
 
     // MARK: Arrangement (pure)
 
@@ -23,11 +26,42 @@ import UIKit
         #expect(frames.allSatisfy { $0.height == 44 })
     }
 
-    @Test func threeItemsPutTheThirdOnItsOwnRow() {
-        let frames = ActionBarArrangement.frames(idealWidths: [80, 90, 110], height: 44, width: 343, stacked: false)
-        #expect(frames[0].width == frames[1].width && frames[0].minY == frames[1].minY)
-        #expect(frames[2].minY > frames[0].maxY && frames[2].width == 343)
+    /// Owner ruling (phase 2): Play, Shuffle and Download are the same size, side by side.
+    @Test func threeItemsShareOneRowEqually() {
+        let frames = ActionBarArrangement.frames(idealWidths: [80, 90, 100], height: 44, width: 343, stacked: false)
+        #expect(Set(frames.map(\.minY)).count == 1, "\(frames)")
+        #expect(Set(frames.map { ($0.width * 100).rounded() }).count == 1, "\(frames)")
+        #expect(frames[0].minX == 0 && abs(frames[2].maxX - 343) < 0.01)
         #expect(frames.allSatisfy { $0.height == 44 })
+    }
+
+    /// A label up to 15 % wider than its slot still shares the row (its text may shrink a little, never truncate).
+    @Test func aSlightlyWideLabelStillSharesTheRow() {
+        let frames = ActionBarArrangement.frames(idealWidths: [100, 100, 125], height: 44, width: 343, stacked: false)
+        #expect(Set(frames.map(\.minY)).count == 1, "\(frames)")
+    }
+
+    /// The Download capsule's short labels; VoiceOver keeps the full status.
+    @Test func downloadShortLabels() {
+        #expect(DownloadControl.shortTitle(.none) == "Download")
+        #expect(DownloadControl.shortTitle(.downloading(done: 4, total: 10)) == "40%")
+        #expect(DownloadControl.shortTitle(.downloaded) == "Downloaded")
+        #expect(DownloadControl.shortTitle(.partial(done: 3, total: 12)) == "3 of 12")
+        for status: DownloadStatus in [.waitingForWiFi, .waitingForConnection, .full, .failed] {
+            #expect(DownloadControl.shortTitle(status).count <= 10, "\(status)")
+        }
+    }
+
+    /// Review minor 8: whatever accent Immersive is handed (an art palette's, say), Shuffle's deep shade keeps its
+    /// white label at AA; it never quietly keeps a fill that misses.
+    @Test func immersiveSecondaryNeverMissesAA() {
+        let ink = PaletteColor(hex: 0xFFFFFF)
+        for hex: UInt32 in [0xFFFFFF, 0xFFFFE0, 0xF0F0F0, 0x3CC4B8, 0xF25C05, 0x3D5AFE, 0x000000, 0x7FFF00] {
+            let fill = ActionStyle.immersiveSecondaryFill(accent: PaletteColor(hex: hex), label: ink)
+            #expect(fill.alpha == 1)
+            let shaded = PaletteColor(hex: 0x000000, alpha: 0.25).composited(over: fill)
+            #expect(Contrast.ratio(ink, on: fill) >= 4.5 && Contrast.ratio(ink, on: shaded) >= 4.5, "\(String(hex, radix: 16))")
+        }
     }
 
     @Test func aLabelThatWouldTruncateStacksTheBar() {
@@ -96,12 +130,14 @@ import UIKit
 
     // MARK: Hosted
 
-    /// Play, Shuffle and Download: the first two share a row with one width, Download fills the next row, and all
-    /// three are one height of at least 44 pt, inside the 16 pt margins, in every Character.
+    /// Play, Shuffle and Download: three equal slots in one row, one height of at least 44 pt, inside the 16 pt
+    /// margins, in every Character, on the smallest phone (375 pt).
     @Test func barItemsShareWidthsAndHeight() async throws {
         for character in DesignSystem.Character.allCases {
-            let frames = try await Self.host(Self.bar(.downloading(done: 4, total: 10)), theme: Theme(character: character))
-            Self.expectBar(frames, count: 3, width: 375, label: "\(character)")
+            for status: DownloadStatus in [.downloading(done: 4, total: 10), .downloaded, .waitingForConnection] {
+                let frames = try await Self.host(Self.bar(status), theme: Theme(character: character))
+                Self.expectBar(frames, count: 3, width: 375, label: "\(character) \(status)")
+            }
         }
     }
 
@@ -148,20 +184,16 @@ import UIKit
         })
     }
 
-    /// Items 0–1 on one row with one width; item 2 (if any) the full width below; one height ≥ 44; 16 pt margins.
+    /// Every item on one row with one width and one height ≥ 44, side by side, inside the 16 pt margins.
     static func expectBar(_ frames: Frames, count: Int, width: CGFloat, label: String) {
         let all = (0..<count).compactMap { frames.byIndex[$0] }
         guard all.count == count else { Issue.record("\(label): only \(frames.byIndex.keys.sorted()) laid out"); return }
-        let heights = Set(all.map { ($0.height * 2).rounded() })
-        #expect(heights.count == 1, "\(label): heights \(all.map(\.height))")
+        #expect(Set(all.map { ($0.height * 2).rounded() }).count == 1, "\(label): heights \(all.map(\.height))")
+        #expect(Set(all.map { ($0.width * 2).rounded() }).count == 1, "\(label): widths \(all.map(\.width))")
+        #expect(Set(all.map { ($0.minY * 2).rounded() }).count == 1, "\(label): not one row \(all)")
         #expect(all.allSatisfy { $0.height >= 44 }, "\(label): \(all)")
-        #expect(abs(all[0].width - all[1].width) < 0.5 && abs(all[0].minY - all[1].minY) < 0.5, "\(label): \(all)")
-        #expect(abs(all[0].minX - 16) < 0.5 && abs(all[1].maxX - (width - 16)) < 0.5, "\(label): \(all)")
-        #expect(all[1].minX >= all[0].maxX, "\(label): overlap \(all)")
-        if count == 3 {
-            #expect(abs(all[2].minX - 16) < 0.5 && abs(all[2].maxX - (width - 16)) < 0.5, "\(label): \(all)")
-            #expect(all[2].minY >= all[0].maxY, "\(label): \(all)")
-        }
+        #expect(abs(all[0].minX - 16) < 0.5 && abs(all[count - 1].maxX - (width - 16)) < 0.5, "\(label): \(all)")
+        for (a, b) in zip(all, all.dropFirst()) { #expect(b.minX >= a.maxX, "\(label): overlap \(all)") }
     }
 
     static func host(_ view: AnyView, theme: Theme, typeSize: DynamicTypeSize = .large,
