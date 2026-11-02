@@ -235,6 +235,19 @@ import os
         #expect(queryValue(req, "songCount") == "20")
         #expect(queryValue(req, "albumCount") == "10")
         #expect(queryValue(req, "artistCount") == "5")
+        #expect(queryValue(req, "songOffset") == nil, "no offsets on a first batch")
+    }
+
+    /// Round 12 (Y1): load more asks search3 for the next batch of one section with its offset.
+    @Test func searchSendsOffsets() async throws {
+        let (client, transport) = try await connected { $0.stub(pathSuffix: "/rest/search3", body: Fixtures.data("search3")) }
+        _ = try await client.search("aurora", songCount: 20, albumCount: 0, artistCount: 0,
+                                    songOffset: 40, albumOffset: 0, artistOffset: 10)
+        let req = try #require(transport.requests.last { $0.url?.path.hasSuffix("search3") == true })
+        #expect(queryValue(req, "songOffset") == "40")
+        #expect(queryValue(req, "albumOffset") == nil, "a zero offset is left out")
+        #expect(queryValue(req, "artistOffset") == "10")
+        #expect(queryValue(req, "albumCount") == "0" && queryValue(req, "artistCount") == "0")
     }
 
     @Test func extensionsAreNames() async throws {

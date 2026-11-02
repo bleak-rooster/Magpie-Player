@@ -322,7 +322,8 @@ private let t0 = Date(timeIntervalSince1970: 1_900_000_000)
         let result = try await model.carPlaySearch("Judie")
         let waited = ContinuousClock.now - start
         transport.open()
-        #expect(result.library.songs.map(\.id) == ["jt-1", "jt-2", "other-1"])
+        // Round 12 (Y1) ranking: the song called "Judie" first, then the songs by Judie Tzuke in the server's order.
+        #expect(result.library.songs.map(\.id) == ["other-1", "jt-1", "jt-2"])
         #expect(result.notYet.isEmpty)
         #expect(waited < .seconds(3), "outside sources cut off at \(AppModel.carPlaySourceTimeout)")
         #expect(AppModel.carPlaySourceTimeout == .milliseconds(1500))
