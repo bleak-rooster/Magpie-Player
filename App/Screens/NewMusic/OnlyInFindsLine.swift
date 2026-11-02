@@ -23,15 +23,20 @@ struct OnlyInFindsLine: View {
                 .foregroundStyle(p.ink2Color)
                 .accessibilityIdentifier("artist-only-in-finds")
             switch model.artistKeepState(songIds: songs) {
+            // Y7 phase 2: filled, in the same 44 pt ActionBar capsule as Play (one capsule size per page).
             case .keepable:
-                CapsuleButton(NewMusicCopy.addTitle(artist), symbol: "checkmark.seal") {   // Y5 item 8: "Add to your library"
-                    model.newMusic.keeping = KeepFlowRequest(host: host, songIds: songs, artist: artist)
-                }
-                .accessibilityIdentifier("artist-keep")
-            case .keeping:
-                CapsuleButton(NewMusicCopy.keeping, symbol: "checkmark.seal") {}
-                    .disabled(true)
+                ActionBar(insetsMargins: false) {
+                    ActionButton(NewMusicCopy.addTitle(artist), symbol: "checkmark.seal", prominence: .primary) {   // Y5 item 8
+                        model.newMusic.keeping = KeepFlowRequest(host: host, songIds: songs, artist: artist)
+                    }
                     .accessibilityIdentifier("artist-keep")
+                }
+            case .keeping:
+                ActionBar(insetsMargins: false) {
+                    ActionButton(NewMusicCopy.keeping, symbol: "checkmark.seal", prominence: .primary, busy: true) {}
+                        .disabled(true)
+                        .accessibilityIdentifier("artist-keep")
+                }
             case .later:
                 EmptyView()   // Magpie's own find, not ready to keep yet: its request says why
             case .outside:

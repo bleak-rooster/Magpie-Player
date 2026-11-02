@@ -42,6 +42,8 @@ struct FavouritesView: View {
         let p = themed.palette
         let songs = starred.songs
         return VStack(alignment: .leading, spacing: Tokens.Spacing.xxl) {
+            // Y7 phase 2: Play and Shuffle over the favourite songs, as on every other page.
+            if !songs.isEmpty { ActionBar { PlayShuffleButtons(songs: songs) } }
             if !songs.isEmpty {
                 VStack(alignment: .leading, spacing: Tokens.Spacing.s) {
                     heading("Songs")

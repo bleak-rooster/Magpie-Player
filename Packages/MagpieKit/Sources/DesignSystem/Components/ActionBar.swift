@@ -48,17 +48,18 @@ public enum ActionBarArrangement {
     /// The gap between items, across and down.
     public static let spacing: CGFloat = Tokens.Spacing.s
 
-    /// Rows of item indices: two to a row, or one to a row when `stacked` or when a label (its one-line ideal
-    /// width) wouldn't fit its slot.
+    /// How far below its one-line ideal width a label may be squeezed (its text scales down a little, never
+    /// truncates) before the bar stacks instead.
+    public static let fitAllowance: CGFloat = 0.85
+
+    /// Rows of item indices. Phase 2 (owner ruling): every item in one row of equal slots; one to a row when
+    /// `stacked`, or when a label wouldn't fit its slot even squeezed by `fitAllowance`.
     public static func rows(idealWidths: [CGFloat], width: CGFloat, stacked: Bool) -> [[Int]] {
         let indices = Array(idealWidths.indices)
         guard !stacked else { return indices.map { [$0] } }
-        let paired = stride(from: 0, to: indices.count, by: 2).map { Array(indices[$0..<min($0 + 2, indices.count)]) }
-        let fits = paired.allSatisfy { row in
-            let slot = slotWidth(width, count: row.count)
-            return row.allSatisfy { idealWidths[$0] <= slot + 0.5 }
-        }
-        return fits ? paired : indices.map { [$0] }
+        let slot = slotWidth(width, count: indices.count)
+        let fits = idealWidths.allSatisfy { $0 * fitAllowance <= slot + 0.5 }
+        return fits ? [indices] : indices.map { [$0] }
     }
 
     /// Each item's frame in a bar `width` wide, every item `height` tall.
@@ -134,14 +135,7 @@ public enum ActionStyle {
         // doesn't look like Play there, its capsule is an opaque deep shade of the accent with a white label, deep
         // enough that the label clears AA even over its progress.
         if prominence == .secondary, theme.character == .immersive {
-            let shade = PaletteColor(hex: 0x000000, alpha: 0.25)
-            var fill = p.accent
-            for step in 0...20 {
-                let t = 0.45 + Double(step) * 0.025
-                fill.red = p.accent.red * (1 - t); fill.green = p.accent.green * (1 - t); fill.blue = p.accent.blue * (1 - t)
-                if Contrast.ratio(p.ink, on: fill) >= 4.6 { break }
-            }
-            return Colors(label: p.ink, fill: fill, progress: shade)
+            return Colors(label: p.ink, fill: immersiveSecondaryFill(accent: p.accent, label: p.ink), progress: immersiveShade)
         }
         let solid = prominence == .primary || theme.character == .immersive
         if solid {
@@ -158,6 +152,29 @@ public enum ActionStyle {
         // label deepens toward ink until it clears 4.5:1 on the darkest part of the capsule.
         let darkest = done.composited(over: tint.composited(over: p.bg))
         return Colors(label: p.accentInk.deepened(toward: p.ink, untilContrast: 4.6, on: darkest), fill: tint, progress: done)
+    }
+
+    /// The done part of an Immersive secondary capsule: it darkens the deep shade further.
+    static let immersiveShade = PaletteColor(hex: 0x000000, alpha: 0.25)
+
+    /// Immersive's secondary capsule: the accent darkened until `label` clears AA on it.
+    /// Review minor 8: it never quietly keeps a fill that misses. Both the fill and its darker progress part are
+    /// checked, and if no shade of the accent clears 4.6:1 it falls back to near-black.
+    public static func immersiveSecondaryFill(accent: PaletteColor, label: PaletteColor) -> PaletteColor {
+        func clears(_ fill: PaletteColor) -> Bool {
+            Contrast.ratio(label, on: fill) >= 4.6 && Contrast.ratio(label, on: immersiveShade.composited(over: fill)) >= 4.6
+        }
+        var fill = accent
+        fill.alpha = 1
+        for step in 0...20 {
+            let t = 0.45 + Double(step) * 0.025
+            fill.red = accent.red * (1 - t); fill.green = accent.green * (1 - t); fill.blue = accent.blue * (1 - t)
+            if clears(fill) { return fill }
+        }
+        // A light label that no shade reaches (or a dark one): near-black, or near-white under a dark label.
+        let fallback = PaletteColor(hex: label.relativeLuminance > 0.5 ? 0x121212 : 0xF2F2F2)
+        assert(Contrast.ratio(label, on: fallback) >= 4.5, "Immersive secondary misses AA")
+        return fallback
     }
 }
 
@@ -206,16 +223,18 @@ public struct ActionCapsule: View {
 
     public var body: some View {
         let c = ActionStyle.colors(prominence, theme: theme, scheme: scheme)
-        HStack(spacing: Tokens.Spacing.s - 2) {
+        HStack(spacing: Tokens.Spacing.iconGap) {
             if busy {
                 ProgressView().tint(c.label.color).accessibilityHidden(true)
             } else {
                 Image(systemName: symbol).imageScale(.medium).accessibilityHidden(true)
             }
-            Text(title).lineLimit(1)
+            // Three equal slots (phase 2): a label may shrink a little to share the row, never truncate
+            // (`ActionBarArrangement.fitAllowance`); one that can't, stacks the bar.
+            Text(title).lineLimit(1).minimumScaleFactor(0.8)
         }
         .font(theme.actionFont)
-        .padding(.horizontal, Tokens.Spacing.l)
+        .padding(.horizontal, Tokens.Spacing.s)
         .padding(.vertical, Tokens.Spacing.s)
         .frame(maxWidth: .infinity, minHeight: Tokens.minHitSize, maxHeight: fillsHeight ? .infinity : nil)
         .foregroundStyle(c.label.color)
@@ -234,6 +253,15 @@ public struct ActionCapsule: View {
         }
         .opacity(isEnabled ? 1 : 0.45)
         .contentShape(Capsule())
+        .modifier(BusyValue(busy: busy))   // review minor 5: VoiceOver hears the busy state
+    }
+}
+
+/// "Working" as the VoiceOver value while busy; nothing otherwise, so a caller's own value (Download's status) stands.
+private struct BusyValue: ViewModifier {
+    let busy: Bool
+    func body(content: Content) -> some View {
+        if busy { content.accessibilityValue("Working") } else { content }
     }
 }
 

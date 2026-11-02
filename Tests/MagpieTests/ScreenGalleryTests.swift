@@ -79,6 +79,7 @@ import UIKit
         ("library", { AnyView(LibraryView()) }),
         ("home", { AnyView(HomeView()) }),
         ("settings", { AnyView(SettingsView()) }),
+        ("discover", { AnyView(DiscoverPlaylistView(playlistId: "p1")) }),   // phase 2: Y6's Discover page
     ]
 
     /// `screen` in a NavigationStack in a `size` window, with the theme, scheme and text size applied, given time to
@@ -115,7 +116,7 @@ import UIKit
     }
 }
 
-/// Sets the ActionBar probe when the design system has one (it is a no-op on builds without it).
+/// Hands the page tests' ActionBar probe to the hosted screen (`ScreenFixtureProbe`, in PageLayoutTests.swift).
 private struct ProbeModifier: ViewModifier {
     let probe: (@MainActor (Int, CGRect) -> Void)?
     func body(content: Content) -> some View { ScreenFixtureProbe.apply(content, probe) }

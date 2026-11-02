@@ -97,9 +97,8 @@ private struct DiscoverArtistRow: View {
             }
             Spacer()
             if line.presentation?.action == .add {
-                Button(NewMusicCopy.addToLibrary, action: add)
-                    .buttonStyle(.borderless)
-                    .frame(minHeight: Tokens.minHitSize)
+                // Y7 phase 2: the design system's compact capsule in a list row, filled as the row's Add.
+                CapsuleButton(NewMusicCopy.addToLibrary, symbol: "plus", style: .fill, action: add)
                     .accessibilityLabel(DiscoverCopy.addArtist(artist.name))
             }
         }

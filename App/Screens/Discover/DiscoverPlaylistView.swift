@@ -105,17 +105,21 @@ struct DiscoverPlaylistView: View {
                 }
             }
             .padding(.horizontal, Tokens.Spacing.largeTitleMargin)
-            PlayShuffleButtons(songs: songs)
-            HStack(spacing: Tokens.Spacing.s) {
-                if page.flow != nil {
-                    CapsuleButton(runActive ? DiscoverCopy.refreshing : DiscoverCopy.refresh, symbol: "arrow.clockwise") {
-                        confirmingRefresh = true
+            // Y7 phase 2: the same ActionBars as every page: Play and Shuffle, then this page's own actions (tinted).
+            VStack(spacing: Tokens.Spacing.s) {
+                ActionBar { PlayShuffleButtons(songs: songs) }
+                ActionBar {
+                    if page.flow != nil {
+                        ActionButton(runActive ? DiscoverCopy.refreshing : DiscoverCopy.refresh, symbol: "arrow.clockwise",
+                                     busy: runActive) {
+                            confirmingRefresh = true
+                        }
+                        .disabled(runActive)
+                        .accessibilityIdentifier("discover-refresh")
                     }
-                    .disabled(runActive)
-                    .accessibilityIdentifier("discover-refresh")
+                    ActionButton(DiscoverCopy.artistsInPlaylist, symbol: "person.2") { showsArtists = true }
+                        .accessibilityIdentifier("discover-artists")
                 }
-                CapsuleButton(DiscoverCopy.artistsInPlaylist, symbol: "person.2") { showsArtists = true }
-                    .accessibilityIdentifier("discover-artists")
             }
         }
         .padding(.vertical, Tokens.Spacing.l)

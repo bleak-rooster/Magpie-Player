@@ -1,6 +1,8 @@
 import SwiftUI
 
-/// Try / Keep / Play capsule. Looks ~30 pt tall; the hit area is at least 44 x 44 (a11y M3).
+/// The compact inline capsule (`Tokens.CompactCapsule`): for rows and status lines, e.g. Lidarr downloads' Restart,
+/// Discover's artist rows and the Play-now banner. Looks 30 pt tall; the hit area is at least 44 x 44 (a11y M3). A
+/// page's own actions (Play, Shuffle, Download, Try, Add, Keep) use `ActionButton` in an `ActionBar` (Y7).
 public struct CapsuleButton: View {
     public enum Style: Sendable { case tint, fill }
 
@@ -22,12 +24,12 @@ public struct CapsuleButton: View {
         // the ActionBar, whose tinted label clears AA for every accent.
         let c = ActionStyle.colors(style == .fill ? .primary : .secondary, theme: theme, scheme: scheme)
         Button(action: action) {
-            HStack(spacing: 4) {
+            HStack(spacing: Tokens.Spacing.iconGap) {
                 if let symbol { Image(systemName: symbol).imageScale(.small) }
                 Text(title).font(theme.capsuleFont)
             }
-            .padding(.horizontal, 12)
-            .frame(minHeight: 30)
+            .padding(.horizontal, Tokens.CompactCapsule.horizontalPadding)
+            .frame(minHeight: Tokens.CompactCapsule.height)
             .foregroundStyle(c.label.color)
             .background(c.fill.color, in: Capsule())
             .frame(minWidth: Self.minimumHitSize, minHeight: Self.minimumHitSize)

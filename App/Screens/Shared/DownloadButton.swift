@@ -86,9 +86,26 @@ struct DownloadControl: View {
                 }
                 Button(DownloadButton.removeTitle(status), systemImage: "trash", role: .destructive, action: remove)
             } label: {
-                ActionCapsule(status.text, symbol: status.symbol, progress: Self.progress(status))
+                ActionCapsule(Self.shortTitle(status), symbol: status.symbol, progress: Self.progress(status))
             }
+            // Review minor 4: a Menu takes a ButtonStyle only through the button menu style, so the capsule presses
+            // like Play and Shuffle.
+            .menuStyle(.button)
             .buttonStyle(ActionPressStyle())
+        }
+    }
+
+    /// The capsule's short label (owner ruling, phase 2: it shares one row with Play and Shuffle at the same size).
+    /// VoiceOver reads the full status (`DownloadStatus.text`) as the value; the D3 symbol stays beside it.
+    static func shortTitle(_ status: DownloadStatus) -> String {
+        switch status {
+        case .none: "Download"
+        case let .downloading(done, total): "\(total > 0 ? Int((Double(done) / Double(total) * 100).rounded(.down)) : 0)%"
+        case .downloaded: "Downloaded"
+        case .waitingForWiFi, .waitingForConnection: "Waiting"
+        case .full: "Full"
+        case .failed: "Stopped"
+        case let .partial(done, total): "\(done) of \(total)"
         }
     }
 

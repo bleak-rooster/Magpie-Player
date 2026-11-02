@@ -209,15 +209,20 @@ struct ArtistLidarrLine: View {
                 .foregroundStyle(p.ink2Color)
                 .accessibilityIdentifier("artist-lidarr-status")
             if let action = presentation.action, showsAction {
-                CapsuleButton(line.working ? "Adding\u{2026}" : action == .add ? addTitle ?? ArtistLidarrPresentation.actionTitle(action)
-                              : ArtistLidarrPresentation.actionTitle(action), symbol: "plus") {
-                    switch action {
-                    case .add: Task { await line.requestAdd() }
-                    case .addMore: line.requestAddMore()
+                // Y7 phase 2: the page's one Add, filled, in the same 44 pt ActionBar capsule as Play (one capsule
+                // size per page); the header already keeps the margins.
+                ActionBar(insetsMargins: false) {
+                    ActionButton(line.working ? "Adding\u{2026}" : action == .add ? addTitle ?? ArtistLidarrPresentation.actionTitle(action)
+                                 : ArtistLidarrPresentation.actionTitle(action), symbol: "plus", prominence: .primary,
+                                 busy: line.working) {
+                        switch action {
+                        case .add: Task { await line.requestAdd() }
+                        case .addMore: line.requestAddMore()
+                        }
                     }
+                    .disabled(line.working)
+                    .accessibilityIdentifier(action == .add ? "artist-lidarr-add" : "artist-lidarr-add-more")
                 }
-                .disabled(line.working)
-                .accessibilityIdentifier(action == .add ? "artist-lidarr-add" : "artist-lidarr-add-more")
             }
             if let hint = presentation.hint, showsAction {
                 Text(ArtistLidarrPresentation.hintText(hint))
