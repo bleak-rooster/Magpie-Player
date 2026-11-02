@@ -22,7 +22,8 @@ struct HomeShelfCache {
     }
 
     /// The saved shelves; none when there is no file or it doesn't read. Bounded: at most one shelf per section and
-    /// `AppModel.homeShelfSize` tiles each, whatever the file says.
+    /// `AppModel.homeShelfSize` tiles each, whatever the file says. Round 12 Y3: a shelf holding a tile its section
+    /// never shows (`HomeShelf.fits`) is stale and thrown away.
     func load() -> [HomeShelf] {
         guard let data = try? Data(contentsOf: url), data.count <= Self.maxBytes,
               let file = try? JSONDecoder().decode(File.self, from: data), file.version == File.currentVersion else { return [] }
@@ -30,6 +31,7 @@ struct HomeShelfCache {
         return file.shelves.prefix(HomeSection.allCases.count).compactMap { shelf in
             guard shelf.section != .madeForYou, seen.insert(shelf.section).inserted else { return nil }
             let items = shelf.items.prefix(AppModel.homeShelfSize).map(\.item)
+            guard items.allSatisfy({ HomeShelf.fits($0, in: shelf.section) }) else { return nil }
             return items.isEmpty ? nil : HomeShelf(section: shelf.section, items: Array(items))
         }
     }

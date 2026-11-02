@@ -46,7 +46,7 @@ struct ProbeFailure {
 final class AppModel {
     static let shared = AppModel.restore()
 
-    private(set) var session: Session? { didSet { homeFeedSessionChanged() } }
+    private(set) var session: Session? { didSet { homeFeedSessionChanged(); syncLibraryScope() } }
     let player: Player
     /// Sleep timer (fade out, then pause, or stop after the current song).
     let sleepTimer: SleepTimer
@@ -78,7 +78,7 @@ final class AppModel {
     /// The connected Lidarr's setup as last read (speed tier, root folders). Nil until read.
     var lidarrStatus: LidarrAudit?
     /// Finds mode's setup for this Lidarr and Navidrome account (AppModel+Finds.swift). Nil unless both are connected.
-    var findsSetup: FindsSetup? { didSet { syncFindsIdentity() } }
+    var findsSetup: FindsSetup? { didSet { syncFindsIdentity(); syncLibraryScope() } }
     /// The songs of the Finds library, as last read (`refreshFinds`).
     var findSongs: [Song] = [] { didSet { syncFindsIdentity() } }
     /// Finds let go (Not for me, Task 6.2c) that the Finds library may still list until its scan catches up:
@@ -116,6 +116,8 @@ final class AppModel {
     var madeForYouShelf: [MadeForYou.Playlist] = []
     /// Home's feed for the signed-in account (P5, HomeFeed.swift).
     @ObservationIgnored var homeFeedSlot: HomeFeed?
+    /// Round 12 Y3: the library Home, Library, Search and the car read (`AppModel+LibraryScope.swift`); nil for all.
+    var libraryScope: Int?
     /// Changes each time the server answers again after it didn't: Home reads what failed (P5).
     var serverAnsweredGeneration = 0
     /// The scene is active: requests poll every 5 s, otherwise every 30 s.
@@ -435,6 +437,10 @@ final class AppModel {
         startDownloads()
         reloadKeychainItems()
         rebuildRunner()
+        Task { [weak self] in   // Y3: the server's libraries, once the launch's login is in
+            _ = await reconnecting.value
+            await self?.refreshMusicFolders()
+        }
     }
 
     /// Protected data (the Keychain) became readable: retry the restore.
@@ -519,6 +525,7 @@ final class AppModel {
         box.set(client)
         scrobbleQueueBelongs(to: navidromeScope)   // another account's queued plays never go to this one
         noteReachable()
+        await refreshMusicFolders()   // Y3: the main library, before anything is listed
         startMatchIndex()
         startDownloads()
         rebuildRunner()
@@ -535,6 +542,7 @@ final class AppModel {
             findsStore.clear(navidromeScope: navidromeScope)
             appDefaults.removeObject(forKey: Self.playedFindsKey(navidromeScope))
             appDefaults.removeObject(forKey: Self.findsLibraryKey(navidromeScope))
+            appDefaults.removeObject(forKey: Self.musicFoldersKey(navidromeScope))
             let prefix = Self.findSongIdsKeyPrefix + navidromeScope + "."
             for key in appDefaults.dictionaryRepresentation().keys where key.hasPrefix(prefix) {
                 appDefaults.removeObject(forKey: key)
@@ -768,7 +776,7 @@ final class AppModel {
         return { [weak self] start, end in
             // Never fill this account's index from another session (signed out or in meanwhile).
             guard let self, await self.isSignedIn(to: endpoint, as: user) else { throw CancellationError() }
-            return try await self.request { try await $0.songsPage(start: start, end: end) }
+            return try await self.request { try await $0.songsPage(start: start, end: end, wholeServer: true) }
         }
     }
 
