@@ -72,8 +72,13 @@ struct AlbumView: View {
             }
             .padding(.horizontal, Tokens.Spacing.largeTitleMargin)
 
-            PlayShuffleButtons(songs: songs)
-            DownloadButton(reason: .album(album.id), songs: songs, coverArtId: album.coverArtId)
+            VStack(spacing: Tokens.Spacing.s) {
+                ActionBar {
+                    PlayShuffleButtons(songs: songs)
+                    DownloadButton(reason: .album(album.id), songs: songs, coverArtId: album.coverArtId)
+                }
+                DownloadNote(reason: .album(album.id), songs: songs)
+            }
 
             TrackList(songs: songs)
 
@@ -121,24 +126,31 @@ struct AlbumView: View {
     }
 }
 
-/// Play and Shuffle capsules, side by side (stacked at accessibility sizes).
+/// Play (filled) and Shuffle (tinted): two ActionBar items, so use it inside an `ActionBar` (Y7).
 struct PlayShuffleButtons: View {
     @Environment(AppModel.self) private var model
     let songs: [Song]
 
     var body: some View {
-        CapsuleRow {
-            wide("Play", symbol: "play.fill") { model.play(songs, startAt: 0) }
-            wide("Shuffle", symbol: "shuffle") { model.shuffle(songs) }
-        }
-        .disabled(songs.isEmpty)
-        .padding(.horizontal, Tokens.Spacing.margin)
+        PlayShuffleActions(disabled: songs.isEmpty) { model.play(songs, startAt: 0) } shuffle: { model.shuffle(songs) }
     }
+}
 
-    private func wide(_ title: String, symbol: String, action: @escaping () -> Void) -> some View {
-        CapsuleButton(title, symbol: symbol, action: action)
-            .frame(maxWidth: .infinity)
-            .accessibilityIdentifier(title.lowercased())
+/// Play and Shuffle as ActionBar items, with their identifiers ("play", "shuffle"); `playTitle` lets the artist page
+/// say "Loading…" while it gathers songs.
+struct PlayShuffleActions: View {
+    var playTitle = "Play"
+    var disabled = false
+    let play: () -> Void
+    let shuffle: () -> Void
+
+    var body: some View {
+        ActionButton(playTitle, symbol: "play.fill", prominence: .primary, action: play)
+            .disabled(disabled)
+            .accessibilityIdentifier("play")
+        ActionButton("Shuffle", symbol: "shuffle", action: shuffle)
+            .disabled(disabled)
+            .accessibilityIdentifier("shuffle")
     }
 }
 

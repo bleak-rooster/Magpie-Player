@@ -127,14 +127,11 @@ struct TrySheet: View {
                             .foregroundStyle(p.ink2Color).multilineTextAlignment(.center)
                             .accessibilityIdentifier("try-error")
                     }
-                    Button { Task { await start(tier) } } label: {
-                        HStack {
-                            if phase == .working { ProgressView() }
-                            Text(tier.asksInsteadOfWaiting ? RequestCopy.askForIt : album != nil ? Self.tryAlbumTitle : "Try it")
-                        }
-                        .frame(maxWidth: .infinity, minHeight: Tokens.minHitSize)
+                    // Y7: the design system's filled action capsule, not iOS's bordered style.
+                    ActionButton(tier.asksInsteadOfWaiting ? RequestCopy.askForIt : album != nil ? Self.tryAlbumTitle : "Try it",
+                                 symbol: "sparkles", prominence: .primary, busy: phase == .working) {
+                        Task { await start(tier) }
                     }
-                    .buttonStyle(.borderedProminent)
                     .disabled(phase == .working)
                     .accessibilityIdentifier("try-start")
                 case .offline:   // Task 14: nothing to set; it works again once back online
@@ -143,8 +140,7 @@ struct TrySheet: View {
                 default:
                     Text(availability.message ?? "").font(.body).multilineTextAlignment(.center)
                         .accessibilityIdentifier("turn-on-changes-message")
-                    Button("Open Settings") { showsSettings = true }
-                        .buttonStyle(.bordered)
+                    ActionButton("Open Settings", symbol: "gearshape") { showsSettings = true }
                         .accessibilityIdentifier("try-open-settings")
                 }
             }

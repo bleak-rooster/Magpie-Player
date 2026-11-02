@@ -11,6 +11,7 @@ struct LibraryView: View {
     @Environment(AppModel.self) private var model
     @State private var recent: Loadable<[Album]> = .loading
     @State private var showsSettings = false
+    @ScaledMetric(relativeTo: .title3) private var iconWidth: CGFloat = 28
     private let themed = Themed()
 
     var body: some View {
@@ -108,8 +109,9 @@ struct LibraryView: View {
     private func row(_ title: String, symbol: String, route: Route, detail: String? = nil) -> some View {
         NavigationLink(value: route) {
             HStack(spacing: Tokens.Spacing.m) {
+                // Y7 audit: the icon column grows with the text, so large icons no longer run into the titles.
                 Image(systemName: symbol).font(.title3).foregroundStyle(themed.palette.accentInkColor)
-                    .frame(width: 28).accessibilityHidden(true)
+                    .frame(width: iconWidth).accessibilityHidden(true)
                 Text(title).font(.title3)
                 Spacer()
                 if let detail {
@@ -142,8 +144,17 @@ struct AlbumGrid: View {
     let subtitle: (Album) -> String
     var onAppearLast: (() -> Void)?
     @State private var width: CGFloat = 350
+    @Environment(\.dynamicTypeSize) private var typeSize
 
-    private var columns: Int { max(2, Int((width + Tokens.Spacing.l) / (150 + Tokens.Spacing.l))) }
+    /// Columns of at least 150 pt (two at least); Y7 audit: at accessibility sizes tiles are at least
+    /// `AlbumTile.accessibilityWidth` wide, so a phone shows one column instead of two overlapping ones.
+    static func columnCount(width: CGFloat, accessibility: Bool) -> Int {
+        let minimum: CGFloat = accessibility ? AlbumTile.accessibilityWidth : 150
+        let fit = Int((width + Tokens.Spacing.l) / (minimum + Tokens.Spacing.l))
+        return accessibility ? max(1, fit) : max(2, fit)
+    }
+
+    private var columns: Int { Self.columnCount(width: width, accessibility: typeSize.isAccessibilitySize) }
     private var tileWidth: CGFloat { max(100, (width - CGFloat(columns - 1) * Tokens.Spacing.l) / CGFloat(columns)) }
 
     var body: some View {

@@ -143,11 +143,9 @@ private struct PlayNowBannerView: View {
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("play-now-banner-pause")
             }
-            Button(LandingCopy.playNow) { model.playNow(banner) }
-                .buttonStyle(.borderedProminent)
-                .buttonBorderShape(.capsule)
+            // Y7: the design system's filled capsule, not iOS's bordered style.
+            CapsuleButton(LandingCopy.playNow, style: .fill) { model.playNow(banner) }
                 .fixedSize()
-                .frame(minHeight: Tokens.minHitSize)
             Button { model.dismissBanner() } label: {
                 Image(systemName: "xmark").font(.footnote.weight(.semibold))
                     .frame(width: Tokens.minHitSize, height: Tokens.minHitSize).contentShape(Rectangle())

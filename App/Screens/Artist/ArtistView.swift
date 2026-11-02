@@ -75,47 +75,54 @@ struct ArtistView: View {
     /// R18: this page runs the Keeps its Keep <artist> asks for.
     private var keepHost: String { "artist-\(artistId)" }
 
+    /// The art, name, download mark and Lidarr / Finds lines, above the action bar.
+    @ViewBuilder private func header(_ page: Page) -> some View {
+        let p = themed.palette
+        VStack(spacing: Tokens.Spacing.m) {
+            Artwork(page.artist.coverArtId, side: 180) { image in
+                SleeveArt(image: image, placeholder: p.surfaceColor, side: 180)
+                    .overlay { if image == nil { ArtistMonogram(name: page.artist.name) } }
+                    .clipShape(Circle())
+            }
+            .reloadArtworkMenu(page.artist.coverArtId)
+            Text(page.artist.name).magpieDisplay(.largeTitle).multilineTextAlignment(.center)
+                .accessibilityAddTraits(.isHeader)
+            DownloadMarkLine(model.downloadIndex.mark(artistId: page.artist.id, albums: page.albums))
+                .artistDownload(artistDownload, artist: page.artist)   // R4: its confirmation and status line
+            // R18 + R20: an artist only in your Finds offers Keep <artist> as the page's one capsule; the Lidarr
+            // status line stays visible (R20).
+            let onlyInFinds = model.isOnlyInFinds(albums: page.albums)
+            if let lidarrLine, let presentation = lidarrLine.presentation {
+                ArtistLidarrLine(line: lidarrLine, presentation: presentation, showsAction: !onlyInFinds)
+            }
+            if onlyInFinds {
+                OnlyInFindsLine(artist: page.artist.name, albums: page.albums, host: keepHost)
+            }
+        }
+    }
+
     private func content(_ page: Page) -> some View {
         let p = themed.palette
         let albums = page.albums.sorted { ($0.year ?? 0) > ($1.year ?? 0) }
         return VStack(alignment: .leading, spacing: Tokens.Spacing.xxl) {
             VStack(spacing: Tokens.Spacing.m) {
-                Artwork(page.artist.coverArtId, side: 180) { image in
-                    SleeveArt(image: image, placeholder: p.surfaceColor, side: 180)
-                        .overlay { if image == nil { ArtistMonogram(name: page.artist.name) } }
-                        .clipShape(Circle())
-                }
-                .reloadArtworkMenu(page.artist.coverArtId)
-                Text(page.artist.name).magpieDisplay(.largeTitle).multilineTextAlignment(.center)
-                    .accessibilityAddTraits(.isHeader)
-                DownloadMarkLine(model.downloadIndex.mark(artistId: page.artist.id, albums: page.albums))
-                    .artistDownload(artistDownload, artist: page.artist)   // R4: its confirmation and status line
-                // R18 + R20: an artist only in your Finds offers Keep <artist> as the page's one capsule; the Lidarr
-                // status line stays visible (R20).
-                let onlyInFinds = model.isOnlyInFinds(albums: page.albums)
-                if let lidarrLine, let presentation = lidarrLine.presentation {
-                    ArtistLidarrLine(line: lidarrLine, presentation: presentation, showsAction: !onlyInFinds)
-                }
-                if onlyInFinds {
-                    OnlyInFindsLine(artist: page.artist.name, albums: page.albums, host: keepHost)
-                }
-                CapsuleRow {
-                    CapsuleButton(gathering ? "Loading…" : "Play", symbol: "play.fill") {
+                header(page).padding(.horizontal, Tokens.Spacing.margin)
+                // Y7: the same ActionBar as Album and Playlist, keeping its own margins.
+                ActionBar {
+                    PlayShuffleActions(playTitle: gathering ? "Loading…" : "Play", disabled: albums.isEmpty || gathering) {
                         Task { await playAll(albums, shuffled: false) }
+                    } shuffle: {
+                        Task { await playAll(albums, shuffled: true) }
                     }
-                    .frame(maxWidth: .infinity)
-                    CapsuleButton("Shuffle", symbol: "shuffle") { Task { await playAll(albums, shuffled: true) } }
-                        .frame(maxWidth: .infinity)
                 }
-                .disabled(albums.isEmpty || gathering)
                 if let playError {
                     Label(playError, systemImage: "exclamationmark.triangle")
                         .font(.footnote).foregroundStyle(p.ink2Color)
+                        .padding(.horizontal, Tokens.Spacing.margin)
                         .accessibilityIdentifier("artist-play-error")
                 }
             }
             .frame(maxWidth: .infinity)
-            .padding(.horizontal, Tokens.Spacing.margin)
 
             if let topSongs = popular?.songs, !topSongs.isEmpty {
                 VStack(alignment: .leading, spacing: Tokens.Spacing.s) {

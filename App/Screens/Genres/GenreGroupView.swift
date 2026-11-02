@@ -44,12 +44,13 @@ struct GenreGroupView: View {
             }
             .padding(.horizontal, Tokens.Spacing.largeTitleMargin)
 
-            HStack(spacing: Tokens.Spacing.s) {
-                CapsuleButton("Shuffle", symbol: "shuffle") { Task { await shuffle() } }
+            // Y7: the same ActionBar as every page; a group offers Shuffle only (D41), across the full row.
+            ActionBar {
+                ActionButton("Shuffle", symbol: "shuffle") { Task { await shuffle() } }
                     .disabled(shuffling)
                     .accessibilityIdentifier("shuffle")
-                if shuffling { ProgressView().accessibilityLabel("Getting songs") }
             }
+            if shuffling { ProgressView().accessibilityLabel("Getting songs") }
             if let shuffleError {
                 Text(shuffleError).font(.footnote).foregroundStyle(p.ink2Color).multilineTextAlignment(.center)
                     .padding(.horizontal, Tokens.Spacing.largeTitleMargin)

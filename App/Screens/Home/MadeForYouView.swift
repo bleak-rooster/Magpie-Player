@@ -41,7 +41,7 @@ struct MadeForYouView: View {
             }
             .padding(.horizontal, Tokens.Spacing.largeTitleMargin)
 
-            PlayShuffleButtons(songs: songs)
+            ActionBar { PlayShuffleButtons(songs: songs) }
 
             LazyVStack(spacing: 0) {
                 ForEach(Array(rows.enumerated()), id: \.offset) { index, row in

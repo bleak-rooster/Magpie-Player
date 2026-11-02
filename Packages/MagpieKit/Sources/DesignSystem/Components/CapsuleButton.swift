@@ -10,17 +10,17 @@ public struct CapsuleButton: View {
     private let symbol: String?
     private let style: Style
     private let action: () -> Void
-    private let themed = ThemedPalette()
     @Environment(\.magpieTheme) private var theme
+    @Environment(\.colorScheme) private var scheme
 
     public init(_ title: String, symbol: String? = nil, style: Style = .tint, action: @escaping () -> Void) {
         self.title = title; self.symbol = symbol; self.style = style; self.action = action
     }
 
     public var body: some View {
-        let p = themed.palette
-        // Immersive capsules are always solid: a tint over art can drop to 1.9:1 (a11y C1).
-        let solid = style == .fill || theme.character == .immersive
+        // Immersive capsules are always solid: a tint over art can drop to 1.9:1 (a11y C1). Y7: the same colours as
+        // the ActionBar, whose tinted label clears AA for every accent.
+        let c = ActionStyle.colors(style == .fill ? .primary : .secondary, theme: theme, scheme: scheme)
         Button(action: action) {
             HStack(spacing: 4) {
                 if let symbol { Image(systemName: symbol).imageScale(.small) }
@@ -28,28 +28,12 @@ public struct CapsuleButton: View {
             }
             .padding(.horizontal, 12)
             .frame(minHeight: 30)
-            .foregroundStyle(solid ? p.onAccentColor : p.accentInkColor)
-            .background(solid ? p.accentColor : p.accentColor.opacity(0.16), in: Capsule())
+            .foregroundStyle(c.label.color)
+            .background(c.fill.color, in: Capsule())
             .frame(minWidth: Self.minimumHitSize, minHeight: Self.minimumHitSize)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-    }
-}
-
-/// Capsules side by side (Play / Shuffle), stacked at accessibility sizes so each keeps the full width and no
-/// title breaks mid-word (D15).
-public struct CapsuleRow<Content: View>: View {
-    private let content: Content
-    @Environment(\.dynamicTypeSize) private var typeSize
-
-    public init(@ViewBuilder content: () -> Content) { self.content = content() }
-
-    public var body: some View {
-        let layout = typeSize.isAccessibilitySize
-            ? AnyLayout(VStackLayout(spacing: Tokens.Spacing.s))
-            : AnyLayout(HStackLayout(spacing: Tokens.Spacing.m))
-        layout { content }
     }
 }
 

@@ -3,61 +3,21 @@ import MagpieCore
 import Playback
 import SwiftUI
 
-/// An album's or playlist's download: "Download" until every song is downloaded with this album or playlist, then
-/// its status (D3: text plus symbol) with "Remove download" ("Cancel download" while it downloads or waits). Songs
-/// already on the phone for other reasons get a footnote. A 44 pt target; VoiceOver reads "Download" and the status.
+/// An album's or playlist's download, as the page's ActionBar item (Y7): "Download" until every song is downloaded
+/// with this album or playlist, then its status (D3: text plus symbol) in the same capsule, opening a menu with
+/// "Remove download" ("Cancel download" while it downloads or waits). A 44 pt target; VoiceOver reads "Download" and
+/// the status. Songs already on the phone for other reasons get a footnote: `DownloadNote`, under the bar.
 struct DownloadButton: View {
     @Environment(AppModel.self) private var model
     let reason: DownloadReason
     let songs: [Song]
     var playlist: DownloadedPlaylist?
     var coverArtId: String?
-    private let themed = Themed()
 
     var body: some View {
-        let ids = songs.map(\.id)
-        let status = model.downloadStatus(ids, reason: reason)
-        VStack(spacing: Tokens.Spacing.xs) {
-            control(status)
-                .accessibilityLabel("Download")
-                .accessibilityValue(status.text)
-                .accessibilityIdentifier("download")
-            if let note = model.alreadyOnPhoneNote(ids, reason: reason) {
-                Text(note)
-                    .font(.footnote)
-                    .foregroundStyle(themed.palette.ink2Color)
-                    .multilineTextAlignment(.center)
-                    .accessibilityIdentifier("download-note")
-            }
-        }
-    }
-
-    @ViewBuilder private func control(_ status: DownloadStatus) -> some View {
-        if status == .none {
-            CapsuleButton("Download", symbol: "arrow.down.to.line") { start() }
-                .disabled(songs.isEmpty)
-        } else {
-            Menu {
-                if status == .failed || status == .full {
-                    Button("Try again", systemImage: "arrow.clockwise") { model.retryDownloads() }
-                }
-                if case .partial = status {
-                    Button("Download the rest", systemImage: "arrow.down.to.line") { start() }
-                }
-                Button(Self.removeTitle(status), systemImage: "trash", role: .destructive) {
-                    Task { await model.removeDownload(reason) }
-                }
-            } label: {
-                HStack(alignment: .firstTextBaseline, spacing: 4) {
-                    Image(systemName: status.symbol)
-                    Text(status.text).lineLimit(2)
-                }
-                .font(.footnote.weight(.semibold))
-                .foregroundStyle(themed.palette.accentInkColor)
-                .frame(minWidth: Tokens.minHitSize, minHeight: Tokens.minHitSize)
-                .contentShape(Rectangle())
-            }
-        }
+        DownloadControl(status: model.downloadStatus(songs.map(\.id), reason: reason), canStart: !songs.isEmpty,
+                        start: start, retry: { model.retryDownloads() },
+                        remove: { Task { await model.removeDownload(reason) } })
     }
 
     /// "Cancel download" while songs are still on their way; "Remove download" otherwise.
@@ -72,6 +32,73 @@ struct DownloadButton: View {
         var snapshot = playlist
         snapshot?.savedAt = .now
         model.download(songs, reason: reason, playlist: snapshot, coverArtId: coverArtId)
+    }
+}
+
+/// The footnote under the action bar when some of the songs are already on the phone for other reasons.
+struct DownloadNote: View {
+    @Environment(AppModel.self) private var model
+    let reason: DownloadReason
+    let songs: [Song]
+    private let themed = Themed()
+
+    var body: some View {
+        if let note = model.alreadyOnPhoneNote(songs.map(\.id), reason: reason) {
+            Text(note)
+                .font(.footnote)
+                .foregroundStyle(themed.palette.ink2Color)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: .infinity)
+                .padding(.horizontal, Tokens.Spacing.margin)
+                .accessibilityIdentifier("download-note")
+        }
+    }
+}
+
+/// The Download capsule for a status: the same tinted capsule in every state, so the bar never shifts (Y7). Before a
+/// download it's a button; after, its status opens the menu (Try again, Download the rest, Cancel/Remove download).
+struct DownloadControl: View {
+    let status: DownloadStatus
+    let canStart: Bool
+    let start: () -> Void
+    let retry: () -> Void
+    let remove: () -> Void
+
+    var body: some View {
+        control
+            .accessibilityLabel("Download")
+            .accessibilityValue(status.text)
+            .accessibilityIdentifier("download")
+    }
+
+    @ViewBuilder private var control: some View {
+        if status == .none {
+            Button(action: start) { ActionCapsule("Download", symbol: "arrow.down.to.line") }
+                .buttonStyle(ActionPressStyle())
+                .disabled(!canStart)
+        } else {
+            Menu {
+                if status == .failed || status == .full {
+                    Button("Try again", systemImage: "arrow.clockwise", action: retry)
+                }
+                if case .partial = status {
+                    Button("Download the rest", systemImage: "arrow.down.to.line", action: start)
+                }
+                Button(DownloadButton.removeTitle(status), systemImage: "trash", role: .destructive, action: remove)
+            } label: {
+                ActionCapsule(status.text, symbol: status.symbol, progress: Self.progress(status))
+            }
+            .buttonStyle(ActionPressStyle())
+        }
+    }
+
+    /// The done part of the capsule while songs are on their way or partly here.
+    static func progress(_ status: DownloadStatus) -> Double? {
+        switch status {
+        case let .downloading(done, total), let .partial(done, total):
+            total > 0 ? Double(done) / Double(total) : nil
+        default: nil
+        }
     }
 }
 
