@@ -62,6 +62,19 @@ import MagpieTestSupport
         #expect(await KeptLossyDeleteTests.refused(plain, "POST", "command", #"{"name":"AlbumSearch","albumIds":[50]}"#))
     }
 
+    /// Merge with Y4 (D49): the restart's AlbumSearch for an owner's album goes only right after this gate restarted that
+    /// album's download; never on its own.
+    @Test func aRestartSearchNeedsARestartFirst() async throws {
+        let fake = try await Fake()
+        let gate = await fake.gate()
+        do {
+            _ = try await gate.send("POST", "command", body: try JSONDecoder().decode(JSONValue.self, from: json(#"{"name":"AlbumSearch","albumIds":[99]}"#)),
+                                    confinedAs: .restartSearch)
+            Issue.record("sent")
+        } catch WriteGateError.forbidden {}
+        #expect(fake.writes.isEmpty)
+    }
+
     @Test func opusIsLossy() { #expect(WriteConfinement.isLossy("Opus 128")) }
 
     /// I2: a note in the change log, nothing sent.

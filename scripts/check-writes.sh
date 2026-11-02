@@ -89,6 +89,25 @@ if [ -z "${G1_SRC:-}" ]; then
   stall="Packages/MagpieKit/Sources/Requests/RequestRunner+Stall.swift"
   grep -qF 'static let queueRemoval = "removeFromClient=true&blocklist=true&skipRedownload=true"' "$stall" ||
     { echo "G1: $stall: queueRemoval isn't exactly removeFromClient=true&blocklist=true&skipRedownload=true" >&2; bad=1; }
+  # D49 (round 12 item 6): the gate's `queueRestartAny` shape (Settings › Downloads in Lidarr restarts ANY download) is
+  # named only by the screen's restarter and the runner's counted removal, only as a queue delete with the same exact
+  # query, never through a variable.
+  restarter="Packages/MagpieKit/Sources/Requests/DownloadsInLidarr.swift"
+  shaped=$(grep -rnE --include='*.swift' 'confinedAs:' "${product[@]}" | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' |
+           grep -v "^Packages/MagpieKit/Sources/LidarrKit/WriteGate.swift:" || true)
+  while IFS= read -r s; do
+    [ -n "$s" ] || continue
+    case "${s%%:*}" in
+      "$stall"|"$restarter") ;;
+      *) echo "G1: queueRestartAny named outside its two callers: ${s%%:*}" >&2; bad=1; continue ;;
+    esac
+    case "$s" in
+      *'gate.send("DELETE", "queue/\(queueId)?\(Self.queueRemoval)", body: nil, confinedAs: .queueRestartAny)'*) ;;
+      *) echo "G1: queueRestartAny not exactly a queue delete with the one query: ${s%%:*}" >&2; bad=1 ;;
+    esac
+  done <<< "$shaped"
+  grep -qF 'static let queueRemoval = "removeFromClient=true&blocklist=true&skipRedownload=true"' "$restarter" ||
+    { echo "G1: $restarter: queueRemoval isn't exactly removeFromClient=true&blocklist=true&skipRedownload=true" >&2; bad=1; }
 fi
 if [ -z "${G1_SRC:-}" ]; then
   # Y5: track files are deleted only by Not for me (a find's files) and the MP3 rule (a kept find's recorded MP3); the

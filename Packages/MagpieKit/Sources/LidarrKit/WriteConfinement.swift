@@ -67,6 +67,8 @@ public struct WriteConfinement: Sendable {
         case keptLossyDelete
         /// Everything else (editor, album monitor, queue delete): no last-moment check.
         case other
+        /// D49: a restart of any download; its albums may get one `restartSearch` (Y5 fix I9).
+        case queueRestart(albums: Set<Int>)
     }
 
     enum Verdict: Equatable {
@@ -95,11 +97,14 @@ public struct WriteConfinement: Sendable {
         case queueDelete(Int)
         /// Y5 fix I9: `POST /command` AlbumSearch (its album ids) or RefreshArtist (its artist id).
         case command(name: String, albumIds: [Int], artistId: Int?)
+        /// The same request, named `ConfinedShape.queueRestartAny` by Settings › Downloads in Lidarr (D49).
+        case queueRestartAny(Int)
     }
 
     func check(_ write: Write, lidarr: LidarrClient) async -> Verdict {
         guard ledger.instance == lidarr.instanceScope else { return .refused("the ledger belongs to another Lidarr") }
         if case .queueDelete(let id) = write { return await queueDelete(id, lidarr: lidarr) }
+        if case .queueRestartAny(let id) = write { return await Self.queueRestartAny(id, lidarr: lidarr) }
         do {
             let entries: [LedgerEntry]
             do { entries = try await ledger.entries } catch { throw Unreadable() }
@@ -119,7 +124,7 @@ public struct WriteConfinement: Sendable {
             case .albumMonitor(let ids, let monitored):
                 try context.albumMonitor(ids, monitored: monitored)
                 return .confined(artists: [], rule: .other)
-            case .queueDelete:
+            case .queueDelete, .queueRestartAny:
                 return .unknown   // handled above
             case .command(let name, let albumIds, let artistId):
                 // Y5 fix I9: a search can make Lidarr grab and replace files, so only albums the ledger knows (Magpie
@@ -189,18 +194,53 @@ public struct WriteConfinement: Sendable {
         return .confined(artists: [], rule: .other)
     }
 
+    /// D49 (round 12 item 6): Settings › Downloads in Lidarr may restart any download, the owner's too. From a fresh read
+    /// of the whole queue (never from the caller):
+    /// - the queue lists item `id` now, and names its download (`downloadId`), so every row it takes along is known;
+    /// - that row isn't importing, imported or complete (`QueueItem.isImportingOrDone`): a finished copy is never lost;
+    /// - no other row of the same download is either (removing one row removes the whole download).
+    /// The queue only, before import: it never touches library files.
+    static let waitingStatuses: Set<String> = ["queued", "paused", "delay", "downloadclientunavailable", "fallback"]
+
+    static func queueRestartAny(_ id: Int, lidarr: LidarrClient) async -> Verdict {
+        let items: [QueueItem]
+        do { items = try await lidarr.queueDetails(albumIds: []) } catch { return .unknown }
+        guard let item = items.first(where: { $0.id == id }) else { return .refused("not in the queue now") }
+        guard let downloadId = item.downloadId else { return .refused("the queue doesn't say which download it is") }
+        guard !item.isImportingOrDone else { return .refused("that copy is importing or done") }
+        // Fix round 1 C1 (second layer): waiting its turn, paused, held back by Lidarr or its client unreachable isn't
+        // stuck; never restarted, whatever the screen thought.
+        guard !Self.waitingStatuses.contains(item.status.lowercased()) else {
+            return .refused("that copy is waiting, paused or can't reach its download app")
+        }
+        guard !items.contains(where: { $0.downloadId == downloadId && $0.isImportingOrDone }) else {
+            return .refused("another album of that download is importing or done")
+        }
+        // Fix round 2 N1: only a download Lidarr itself grabbed. Another tool's transfer that Lidarr only lists has no
+        // grab (its blocklist would do nothing, and the search would bring in music nobody asked Lidarr for).
+        guard !items.contains(where: { $0.downloadId == downloadId && $0.saysNotGrabbedByLidarr }) else {
+            return .refused("Lidarr didn't start that download")
+        }
+        do {
+            guard try await lidarr.grabbed(downloadId: downloadId) else { return .refused("Lidarr didn't start that download") }
+        } catch {
+            return .unknown
+        }
+        return .confined(artists: [], rule: .queueRestart(albums: Set(items.filter { $0.downloadId == downloadId }.compactMap(\.albumId))))
+    }
+
     /// Right before a confined write is sent, the ledger once more, by rule (C4). findDelete: none of `artists` is
     /// kept or keeping now. keptLossyDelete: every one is still confirmed kept, no Keep under way. Nil: the ledger
     /// can't be read.
     func lastCheck(_ rule: Rule, _ artists: Set<Int>) async -> Bool? {
-        guard !artists.isEmpty, rule != .other else { return true }
+        guard !artists.isEmpty, rule == .findDelete || rule == .keptLossyDelete else { return true }
         guard let entries = try? await ledger.entries else { return nil }
         switch rule {
         case .findDelete:
             return !entries.contains { artists.contains($0.lidarrArtistId) && $0.isKeptOrKeeping }
         case .keptLossyDelete:
             return artists.allSatisfy { Self.confirmedKept($0, in: entries) }
-        case .other:
+        case .other, .queueRestart:
             return true
         }
     }

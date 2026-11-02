@@ -66,6 +66,18 @@ public enum WriteGateError: Error, Sendable, Equatable {
     case unconfirmed
 }
 
+/// A confined write the caller names explicitly, because its request alone looks like another one.
+public enum ConfinedShape: Sendable, Equatable {
+    /// Round 12 item 6 (D49): Settings › Downloads in Lidarr restarts any download in Lidarr's queue, not only a Magpie
+    /// request's. The same `DELETE /queue/{id}?removeFromClient=true&blocklist=true&skipRedownload=true` as R17's, but
+    /// confined by `WriteConfinement.queueRestartAny` (a fresh read of the whole queue) instead of the ledger.
+    /// `scripts/check-writes.sh` pins where it may be named.
+    case queueRestartAny
+    /// D49 with Y5 fix I9: the AlbumSearch that follows a `queueRestartAny`, only for the albums of a download this gate
+    /// itself removed in the last 10 minutes (the confined AlbumSearch is otherwise for ledger albums only).
+    case restartSearch
+}
+
 /// One line of the Lidarr change log: what Magpie asked Lidarr to change. Never carries secrets.
 public struct ChangeLogEntry: Sendable, Equatable, Codable {
     public var date: Date
@@ -580,13 +592,40 @@ public actor LidarrWriteGate {
     /// Sends one write. `path` is relative to `<base>/api/v1/` (`artist/12?deleteFiles=false&…`; a leading
     /// `/api/v1/` is accepted, any other `/api/…` is refused). Returns the response body on 2xx.
     public func send(_ method: String, _ path: String, body: (any Encodable & Sendable)?) async throws -> Data {
+        try await send(method, path, body: body, shape: nil)
+    }
+
+    /// Sends one write the caller names as `shape` (D49): it must be that shape exactly, and is confined as it says.
+    public func send(_ method: String, _ path: String, body: (any Encodable & Sendable)?,
+                     confinedAs shape: ConfinedShape) async throws -> Data {
+        try await send(method, path, body: body, shape: shape)
+    }
+
+    private func send(_ method: String, _ path: String, body: (any Encodable & Sendable)?,
+                      shape: ConfinedShape?) async throws -> Data {
         let target = try WriteTarget(method: method, path: path)
         let data = try body.map { try JSONEncoder().encode($0) }
         if let why = ForbiddenWrites.reason(target, body: data) { throw refused(target, why) }
         let json = data.flatMap { try? JSONSerialization.jsonObject(with: $0, options: [.fragmentsAllowed]) }
-        let confined = ForbiddenWrites.confined(target, json: json)
+        var confined = ForbiddenWrites.confined(target, json: json)
+        if shape == .queueRestartAny {
+            guard case .queueDelete(let id)? = confined else { throw refused(target, "queueRestartAny is a queue delete only") }
+            confined = .queueRestartAny(id)
+        }
         if confined != nil, confinement == nil { throw refused(target, "deletes and artist edits need the ledger") }
         guard enabled else { throw WriteGateError.disabled }
+        if shape == .restartSearch {
+            guard case .command(let name, let albumIds, _)? = confined, name == "albumsearch", !albumIds.isEmpty else {
+                throw refused(target, "restartSearch is an AlbumSearch only")
+            }
+            let t = now()
+            restartedAlbums = restartedAlbums.filter { t.timeIntervalSince($0.value) < 600 }
+            guard albumIds.allSatisfy({ restartedAlbums[$0] != nil }) else {
+                throw refused(target, "a search only for albums of a download just restarted")
+            }
+            for id in albumIds { restartedAlbums[id] = nil }
+            return try await deliver(target, data)
+        }
         guard let confined, let confinement else { return try await deliver(target, data) }
         // FM1: checked from the ledger and fresh reads, after the switch (so nothing is read while it's off). H2b fix
         // 1: confined writes go one at a time, from their checks to Lidarr's answer, so no other confined write can
@@ -611,8 +650,16 @@ public actor LidarrWriteGate {
             throw refused(target, rule == .keptLossyDelete ? "the Keep isn't confirmed now" : "the artist was kept meanwhile")
         case nil: throw WriteGateError.unconfirmed
         }
-        return try await deliver(target, data)
+        let answer = try await deliver(target, data)
+        if case .queueRestart(let albums) = rule {
+            let t = now()
+            for id in albums { restartedAlbums[id] = t }
+        }
+        return answer
     }
+
+    /// Albums of downloads a `queueRestartAny` removed, and when (their `restartSearch` may follow for 10 minutes).
+    private var restartedAlbums: [Int: Date] = [:]
 
     private var confinedBusy = false
     private var confinedWaiting: [CheckedContinuation<Void, Never>] = []

@@ -262,6 +262,8 @@ final class FakeLidarr: @unchecked Sendable {
         var refreshStaysStarted = false
         /// Called on each `GET /command/{id}` (tests watch the runner during a long step).
         var onCommandRead: (@Sendable () -> Void)?
+        /// Y4 fix round 2 N1: downloads with no grab in Lidarr's history (`GET /history?downloadId=…&eventType=1`).
+        var ungrabbed: Set<String> = []
     }
 
     let latch = Latch()
@@ -656,6 +658,14 @@ final class FakeLidarr: @unchecked Sendable {
                 return row
             } })
         }
+        t.stub(pathSuffix: "/api/v1/history") { [self] request in
+            if let d = down() { return d }
+            let id = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?
+                .first { $0.name == "downloadId" }?.value ?? ""
+            let none = with { $0.ungrabbed.contains(id) }
+            let records: [[String: Any]] = none ? [] : [["id": 1, "eventType": "grabbed", "downloadId": id]]
+            return reply(["page": 1, "pageSize": 10, "totalRecords": records.count, "records": records] as [String: Any])
+        }
         t.stub(pathSuffix: "/api/v1/downloadclient") { [self] _ in
             if let d = down() { return d }
             return reply(with { s in
@@ -664,7 +674,7 @@ final class FakeLidarr: @unchecked Sendable {
                                                 "implementationName": $0.name, "protocol": $0.protocolName] as [String: Any] }
             })
         }
-        for id in 901...920 {
+        for id in 901...940 {   // Y4: the bulk restart cap needs more than 25
             t.stub(method: "DELETE", pathSuffix: "/api/v1/queue/\(id)") { [self] _ in
                 with { s in
                     s.queue.removeAll { $0.id == id }
@@ -798,6 +808,8 @@ struct Harness {
     let ledger: Ledger
     let store: RequestStore
     let runner: RequestRunner
+    /// The runner's Lidarr client (Y4: the Downloads in Lidarr restarter reads through it too).
+    let lidarrClient: LidarrClient
     let suite = "magpie-runner-\(UUID().uuidString)"
 
     static let setup = RequestRunner.Setup(rootFolderPath: "/music/library", qualityProfileId: 4,
@@ -819,6 +831,7 @@ struct Harness {
         let lidarr = existing ?? FakeLidarr()
         library = FakeLibrary(events: lidarr.events)
         let client = LidarrClient(base: base, apiKey: "k", transport: lidarr.clientTransport)
+        lidarrClient = client
         ledger = Ledger(fileURL: dir.appending(path: "ledger.json"), instance: client.instanceScope)
         // FM1: the gate confines deletes and artist edits from the ledger and the owner's setup, like the app's; R17:
         // queue deletes from the runner's live requests too.

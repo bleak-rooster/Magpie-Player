@@ -526,6 +526,55 @@ final class BrowseFlowTests: XCTestCase {
         XCTAssertTrue(app.textFields["lidarr-address"].waitForExistence(timeout: 10))
     }
 
+    /// Y4 (round 12 item 6): Settings › Downloads in Lidarr reads the dev Lidarr's whole queue. The dev stack
+    /// has no download client or indexer, so its queue is empty and no item can be made: the page shows "Nothing
+    /// downloading" (restart itself is covered model-level, RequestsTests `DownloadsInLidarrTests`). Writes nothing.
+    @MainActor func testDownloadsInLidarrOpensFromNewMusic() throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let lidarrURL = env["MAGPIE_IT_LIDARR_URL"], let key = env["MAGPIE_IT_LIDARR_KEY"],
+              !lidarrURL.isEmpty, !key.isEmpty else { throw XCTSkip("no dev-stack Lidarr passed in") }
+        guard let host = URLComponents(string: lidarrURL)?.host, ["127.0.0.1", "localhost"].contains(host) else {
+            XCTFail("Refusing a non-local Lidarr (\(lidarrURL))")
+            return
+        }
+        let app = try launchSignedIn()
+        let settings = app.buttons["open-settings"]
+        for _ in 0..<3 where !settings.exists {
+            app.tabBars.buttons["Library"].tap()
+            _ = settings.waitForExistence(timeout: 5)
+        }
+        settings.tap()
+        let requests = app.buttons["settings-requests"]
+        XCTAssertTrue(requests.waitForExistence(timeout: 10))
+        requests.tap()
+        let connect = app.buttons["settings-connect-lidarr"]
+        if connect.waitForExistence(timeout: 5) {
+            connect.tap()
+            let address = app.textFields["lidarr-address"]
+            XCTAssertTrue(address.waitForExistence(timeout: 10))
+            address.tap()
+            address.typeText(lidarrURL)
+            let apiKey = app.secureTextFields["lidarr-api-key"]
+            apiKey.tap()
+            apiKey.typeText(key)
+            app.buttons["lidarr-connect"].tap()
+            let version = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", "Version")).firstMatch
+            XCTAssertTrue(version.waitForExistence(timeout: 20))
+            app.buttons["Done"].firstMatch.tap()
+        }
+        // Fix round 1 I3: a top-level Settings row while Lidarr is connected.
+        app.navigationBars.buttons.firstMatch.tap()   // › Settings
+        let downloads = app.buttons["settings-lidarr-downloads"]
+        XCTAssertTrue(downloads.waitForExistence(timeout: 10), "Settings lists Downloads in Lidarr")
+        downloads.tap()
+        XCTAssertTrue(app.navigationBars["Downloads in Lidarr"].waitForExistence(timeout: 10))
+        let empty = app.descendants(matching: .any)["lidarr-downloads-empty"]
+        XCTAssertTrue(empty.waitForExistence(timeout: 15), "the dev queue is empty")
+        XCTAssertFalse(app.descendants(matching: .any)["lidarr-downloads-unreachable"].exists)
+        XCTAssertFalse(app.buttons["lidarr-downloads-restart-all"].exists)
+        attachScreenshot(app, "downloads-in-lidarr")
+    }
+
     /// Connects the dev Lidarr, allows changes, sets Magpie up, sets Add with my defaults, and opens Aurora Field's
     /// page ("Not in Lidarr"). Nothing is written to Lidarr except Magpie's set-up (already there).
     @MainActor private func openAuroraWithLidarr(withMyDefaults: Bool) throws -> XCUIApplication {
