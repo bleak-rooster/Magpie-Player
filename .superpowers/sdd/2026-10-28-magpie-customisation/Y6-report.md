@@ -81,3 +81,23 @@ Use your library's copy; Refresh Flow and adding artists).
 7. An Aurral album's page shows the library's songs under the Aurral album header. `GET /api/library/lookup` is
    allow-listed and tested, but the UI takes artist status from Lidarr's lookup (as the plan says).
 8. No new UI tests or screenshots for the Discover screens; coverage is hosted unit tests.
+
+## Fix round 1
+
+Review: 0C/3I (Y6-review.md). Commit `4e85059` (+ decisions/report); v0.0.1-custom already merged (no new commits).
+- **I1** `DiscoverRules.confirmedFlowPlaylists`: name match AND > half the entries are the flow's songs (jobs by recording
+  id, else artist + title ± 3 s) or known Aurral-library songs; empty never; best per flow. `refreshDiscover` reads each
+  candidate; an unreadable one keeps its previous state.
+- **I2** `refreshAurralLibrary`: learns the library on the first Discover read, then reads its songs (`library_id`) and
+  saves the ids per account (`magpie.aurralSongs.<scope>`); the swap and the candidate exclusion use them.
+- **I3** `RefreshLatch` (start time, flow's `lastRunAt`); `noteStatus` lets go when the run shows, `lastRunAt` moves, or
+  after 120 s; `isFlowRunActive` honours the limit, so the page's poll loop ends.
+- **M1** per-song lookup cache (30 min, hits and misses), `fresh:` on pull to refresh; **M3** job match needs ± 3 s;
+  **M5** greps widened; **M6** `AurralConnection`/`LidarrConnection` redact; **M7** sign-out removes the keys;
+  **M8** neutral placeholder. Flow ids: UUIDs accepted (test), "/", "?", "%" refused. Not done: M2 (artist-page hiding
+  still needs a Discover read this session), M4, M9, M10.
+- **Final:** full app suite 968/968 on "Magpie Y6"; AurralKit, CarPlayUI and Preferences package suites green; check-writes OK.
+- **Tests (RED → GREEN):** package `FixRound1Tests` (5) RED on missing `confirmedFlowPlaylists`/`jobRecording`/`lastRunAt`
+  → GREEN. App: with only the API surface added, 9 tests failed behaviourally (same-named playlist taken over and edits
+  refused, rotated copy not found, latch `.runActive`, lookups repeated, keys printed, keys left at sign-out) → GREEN 19/19.
+  Stub jobs now cover every flow song (as Aurral's do); `aurralsLibraryLearntFromJobPaths` now learns at connect.
