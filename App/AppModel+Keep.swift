@@ -20,6 +20,10 @@ enum KeepCopy {
     static let keptInPlace = CPKeepResult.keptInPlace.message
     static let stillMoving = CPKeepResult.stillMoving.message
     static let moveFailed = "Couldn't keep it this time. It's still in your Finds, so you can try again."
+    /// Y5 item 9.5: saved, and sent when Lidarr is free.
+    static let queued = FindCopy.addingQueued
+    /// Y5 C1: refused, nothing written.
+    static let collision = FindCopy.collision
     static let notAFind = CPKeepResult.notAFind.message
     static let unavailable = "Can't keep it right now. Try again in a moment."
     static let changesOff = "Keeping finds is switched off. Turn it on in Settings."
@@ -36,6 +40,7 @@ enum KeepCopy {
         case .moved: moved
         case .keptInPlace: keptInPlace
         case .stillMoving: stillMoving
+        case .queued: queued
         }
     }
 
@@ -46,6 +51,7 @@ enum KeepCopy {
         case .notAFind?: notAFind
         case .moveFailed?: moveFailed
         case .needsAttention?: needsAttention
+        case .collision?: collision
         case .unavailable?, nil: unavailable
         }
     }

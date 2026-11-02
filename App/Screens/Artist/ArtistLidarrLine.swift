@@ -42,6 +42,12 @@ struct ArtistLidarrPresentation: Equatable {
                 else { line.action = .addMore }
             }
             return line
+        case .find(_, let find):
+            // Y5 (item 8): one of Magpie's finds. "Add to your library" is the page's Finds line (OnlyInFindsLine).
+            return ArtistLidarrPresentation(text: FindCopy.status(find), symbol: FindCopy.symbol(find))
+        case .unmatched:
+            // Y5 (item 9.9): a name alone is never acted on.
+            return ArtistLidarrPresentation(text: FindCopy.unmatched, symbol: "questionmark.circle")
         case .notInLidarr:
             // Without the library's MBID the add asks Lidarr's search on the tap, and the owner picks the exact
             // artist in the Add sheet ("Which <artist>?", I3).

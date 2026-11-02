@@ -115,8 +115,8 @@ enum OutsideTrackRow: Equatable {
     nonisolated static func canTryAlbum(kind: String?, artist: ArtistLidarrState?) -> Bool {
         if kind == nil || ["album", "ep", "single"].contains(kind!.lowercased()) { return true }
         switch artist {
-        case .monitored?, .notMonitored?: return true
-        case .notInLidarr?, nil: return false
+        case .monitored?, .notMonitored?, .find?: return true   // Y5: one of Magpie's finds is in Lidarr
+        case .notInLidarr?, .unmatched?, nil: return false
         }
     }
 

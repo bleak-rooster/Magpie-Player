@@ -221,16 +221,19 @@ private let artistMBID = MBID("00000000-0000-0000-0000-000000000001")!
 
     // MARK: - The setting
 
-    /// Settings › New music "Give up on a stuck copy after": 1, 2, 5, 10 min; 1 min unless changed; kept.
+    /// Settings › New music "Give up on a stuck copy after": 1, 2, 3, 5, 10 min; Y5 item 9.6: 3 min unless changed
+    /// (a saved choice is kept, I11); kept.
     @Test func stuckCopySettingValues() {
-        #expect(StallLimit.allCases.map(\.title) == ["1 minute", "2 minutes", "5 minutes", "10 minutes"])
-        #expect(StallLimit.allCases.map(\.seconds) == [60, 120, 300, 600])
+        #expect(StallLimit.allCases.map(\.title) == ["1 minute", "2 minutes", "3 minutes", "5 minutes", "10 minutes"])
+        #expect(StallLimit.allCases.map(\.seconds) == [60, 120, 180, 300, 600])
         let model = makeModel()
-        #expect(model.stallLimit == .oneMinute)
+        #expect(model.stallLimit == .threeMinutes)
+        model.setStallLimit(.oneMinute)
+        #expect(makeModel().stallLimit == .oneMinute, "an owner's saved 1 minute stays (never migrated)")
         model.setStallLimit(.fiveMinutes)
         #expect(makeModel().stallLimit == .fiveMinutes, "kept across launches")
         defaults.set(42.0, forKey: AppModel.stallLimitKey)
-        #expect(makeModel().stallLimit == .oneMinute, "an unknown value reads as the default")
+        #expect(makeModel().stallLimit == .threeMinutes, "an unknown value reads as the default")
     }
 
     // MARK: - The car (R20 §7)

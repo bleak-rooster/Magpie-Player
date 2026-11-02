@@ -21,7 +21,7 @@ enum RequestCopy {
 
     /// Where Activity lists the request; nil for stopped or removed ones.
     static func group(_ request: MagpieRequest) -> Group? {
-        request.isNotListed || request.keepNeedsAttention || request.notForMeNeedsAttention
+        request.isNotListed || request.keepNeedsAttention || request.notForMeNeedsAttention || request.mp3NeedsAttention
             ? .attention : group(request.state)
     }
 
@@ -74,7 +74,10 @@ enum RequestCopy {
             if request.notForMeNeedsAttention { return notForMeNeedsAttention }
             if request.notForMe != nil { return lettingGo }
             if request.keepNeedsAttention { return keepNeedsAttention }
-            return request.keep != nil ? keeping : request.keepFailed ? keepFailed : readyInFinds
+            if request.keep?.phase == .queued { return FindCopy.addingQueued }   // Y5 item 9.5
+            if request.keep != nil { return keeping }
+            if request.collision { return FindCopy.collision }   // Y5 C1
+            return request.keepFailed ? keepFailed : readyInFinds
         }
         if request.state == .kept { return kept(request) }
         return status(request.state, context: context)
@@ -96,6 +99,12 @@ enum RequestCopy {
     /// Kept: "Lossless soon" until the library song is lossless (Keep moved it to the lossless profile).
     static func kept(_ request: MagpieRequest) -> String {
         if request.keptInPlace { return keptInFinds }
+        if request.mp3NeedsAttention { return FindCopy.mp3NeedsAttention }   // Y5
+        if let w = request.lossless {
+            if w.losslessAt != nil { return keptLossless }
+            if w.removedAt != nil { return FindCopy.waitingForLossless }
+            if w.autoDelete, let date = w.deadline { return "\(keptLosslessSoon). \(FindCopy.removedOn(date))" }
+        }
         guard request.relinkPending != nil else { return status(.kept) }   // kept before Task 6.2b
         let quality = Quality.from(suffix: request.songSuffix, bitRate: nil)
         return quality == .lossless || quality == .hiRes ? keptLossless : keptLosslessSoon
