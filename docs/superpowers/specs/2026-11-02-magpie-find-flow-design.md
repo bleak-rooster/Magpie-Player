@@ -1,6 +1,6 @@
 # Magpie round 12, Y5: Find → Add design (plan items 8 and 9)
 
-Status: **design, for critic review before any code.** Source: docs/superpowers/specs/2026-11-01-magpie-round-12-plan.md
+Status: **revised per critic (Y5-design-review.md; controller rulings C1–C5, I1–I12, M1–M8 adopted).** Source: docs/superpowers/specs/2026-11-01-magpie-round-12-plan.md
 items 8–9 and owner answer 3. Binding: G1–G9, M6 (save before every write), D7 (Ready = Navidrome lists it), D29, the
 round-11 glossary (no service names in new copy). Decisions, not options; "Flagged" marks the calls the critic should test.
 
@@ -25,24 +25,26 @@ root folders, running commands, the artist's albums and track files (id, albumId
 **Output**
 ```swift
 enum FindState { case notInLidarr(MBID?), unmatched, owners(monitored: Bool, searching: Bool),
-  find(inPlaceLegacy: Bool), adding(AddPhase), inLibrary(Lossless), needsAttention(Attention) }
+  find, keptInFinds, adding(AddPhase), inLibrary(Lossless), needsAttention(Attention) }
 enum AddPhase { case queued, moving }          // "Adding when your server is free…" / "Adding to your library…"
-enum Lossless { case lossless, waiting(mp3RemovedOn: Date), mp3Removed, merged }  // per album, worst wins per artist
+enum Lossless { case lossless, waiting(mp3RemovedOn: Date?), mp3Removed }  // nil date: no auto-delete (C2)
 ```
 **Precedence** (first match wins):
-1. No MBID on either side and the name matches → `.unmatched` ("Couldn't match this artist", no action). Name-only
+1. I9: an artist one of Magpie's own requests names (request `lidarrArtistId` + ledger `created`) resolves through
+   the request first, tagless files or not. Otherwise: no MBID on either side and the name matches → `.unmatched` ("Couldn't match this artist", no action). Name-only
    matches never reach a write (item 9.9). `notInLidarr` keeps the I3 candidate pick (owner-confirmed MBID).
 2. Artist not created by Magpie (ledger `created(_:)`, id + MBID) → `.owners` (today's monitored / not monitored).
 3. A request of the artist has `keepNeedsAttention` or `notForMeNeedsAttention` → `.needsAttention`.
 4. A `KeepIntent` exists → `.adding(.queued)` while phase is `queued`, else `.adding(.moving)`.
-5. Lidarr says find: `magpie-find` in tags **or** path strictly inside the Finds root (`PathGuard`) → `.find`
-   (`inPlaceLegacy` when the path is in Finds but the tag is gone: the old keptInPlace).
+5. Lidarr says find: `magpie-find` in tags → `.find`. Path inside the Finds root, tag gone, ledger kept → the legacy
+   keptInPlace: `.keptInFinds` (I4: stays as it is, refuse-only, "Kept · in your Finds folder for now").
 6. Otherwise (main root, untagged, Magpie-created) → `.inLibrary`, with `Lossless` derived from track files of the
-   find's albums: all lossless → `.lossless`; lossy files present → `.waiting(deadline)`; recorded find files deleted
-   and no lossless file yet → `.mp3Removed`.
+   find's albums: all lossless → `.lossless`; lossy files present → `.waiting(deadline or nil)`; the watch removed
+   the MP3 (read-confirmed) and no lossless file yet → `.mp3Removed`.
 
 A ledger "finds-mode, created, not kept" entry with neither tag nor Finds path is **not** a find: it is a Keep whose
-commit was lost; reconciliation commits it (§4). Plan item 8's third criterion is therefore used only there.
+commit was lost, or a find someone moved by hand; it goes to **verify** (§4.3), never straight to commit (C2), and it
+gets the watch without auto-delete.
 
 **Copy** (design language §5; "MP3" and "lossless" are format words, already in Settings copy):
 | State | Status line | Action |
@@ -50,10 +52,13 @@ commit was lost; reconciliation commits it (§4). Plan item 8's third criterion 
 | find | In your Finds | Add to your library |
 | adding(queued) | Adding when your server is free… | none |
 | adding(moving) | Adding to your library… | none |
-| inLibrary(waiting) | In your library · lossless soon. The MP3 is removed on <date> unless a lossless copy turns up. | Remove the MP3 now |
+| inLibrary(waiting) | In your library · lossless soon. The MP3 is removed on <date> unless a lossless copy turns up. (No date without auto-delete. I7: + "This can't be undone." when the recycle bin is empty.) | Remove the MP3 now |
 | inLibrary(mp3Removed) | Waiting for a lossless copy | none |
 | inLibrary(lossless) | In your library · Lossless | (R18 Add more) |
 | unmatched | Couldn't match this artist | none |
+| needsAttention(mp3) | Couldn't remove the MP3 · needs a look | none |
+| keepFailed (M7) | Couldn't add it to your library this time. It's still in your Finds. | Add to your library |
+| collision (C1) | Your library already has a folder for <artist>, so it stays in your Finds for now. | none |
 Rows show their album's status; CarPlay the status text only. Flagged: plan's "Adding when Lidarr is free…" reworded (glossary).
 
 ## 3. Reconciliation tick
@@ -76,10 +81,12 @@ recording's album → `.imported`; a queue item → `.queueProgress`; the album 
 lossy?). Test invariant: two ticks over an unchanged server send zero writes on the second.
 
 **Leases (item 9.10, extends X5 I1).** `busy`, `keepingArtists`, `lettingGoArtists` and `searchAfterRemoval` move into
-`RunnerState.leases: [Lease{key, op, requestId, startedAt, process}]`, saved before the work starts and dropped after.
-`process` is a UUID made per runner launch. At load, a lease from another process is **orphaned**: the next pass runs
-only that op's *follow/verify* path for it (never a fresh start) and then drops it. An in-process lease blocks a
-second start, as today. A lease older than 30 min with no progress turns into needs attention.
+`RunnerState.leases: [Lease{key, op, requestId, startedAt, renewedAt, process}]`, saved before the work starts and
+dropped after; the holder renews `renewedAt` every pass and every follow step (I1 heartbeat). `process` is a UUID per
+runner. A lease of another process is **orphaned only when stale** (`renewedAt` older than 2 min or 2 passes); then the
+next pass runs that op's *follow/verify* path only (never a fresh start) and drops it. A fresh foreign lease blocks
+(another runner, e.g. a background pass, is working). M5: Keep intents are per artist; a Keep re-checks `notForMe`
+and the letting-go lease before every write.
 
 ## 4. Keep = "Add to your library" (intent → PUT → verify → commit)
 
@@ -93,31 +100,32 @@ second start, as today. A lease older than 30 min with no progress turns into ne
    the destination is checked and the phase becomes `.intent`, then `.sent` is saved, then the PUT is sent. A busy
    Lidarr just waits; after 24 h queued: intent dropped, "Couldn't add it yet. Try again." Keep is never refused for
    being busy any more.
-3. **Verify** as today (BulkMoveArtist after `commandBaseline`, artist path in main root, every file on disk there,
+3. **Verify** as today, timed from **`sentAt`** (I2: `keepStartGrace`, `keepMoveLimit` and the `commandBaseline`
+   read just before the PUT all count from the send, not the tap) (BulkMoveArtist after `commandBaseline`, artist path in main root, every file on disk there,
    Finds folder gone, tag off, Lossless profile). A failed move → `restoring` (as today) → intent cleared.
-4. **Commit**, only after verify: ledger `keptAt = server now`, `keepIntentAt = nil`, and **`findFiles`** = the lossy
-   track files of the find's albums (`{id, albumId, size}`); the request goes to `.kept`; a `LosslessWatch` starts
-   (§5); then the scan and relink run as today.
+4. **Commit**, only after verify, as **one atomic ledger save** (I10 `Ledger.update(artistId:)`): `keptAt = server
+   now`, `keepIntentAt = nil`; the request goes to `.kept`; a `LosslessWatch(autoDelete: true)` starts (§5); then the
+   scan and relink run as today. **`findFiles`** are recorded at **intent** time (C3), from the find's track files
+   inside the Finds folder: `{id, albumId, foreignTrackId, relativePath, size, quality}` (relative to the artist folder).
 5. **Launch recovery** (every load, and every pass for intents without a lease):
    - `queued` or `intent`: nothing was sent. Drop the intent if it's older than 24 h; otherwise it stays queued.
-   - `sent`/`moving`, artist already in main root + untagged + files there → commit.
-   - Still a tagged find and no move command after the baseline within `keepStartGrace` → the PUT never applied →
-     clear the intent (the find stays, Add offered again).
+   - `sent`/`moving`, artist already in main root + untagged → verify (files on disk there), then commit.
+   - Still a tagged find and no move command after the baseline within `keepStartGrace` of `sentAt` → the PUT never
+     applied → clear the intent (the find stays, Add offered again).
    - Anything else → today's follow (limits, restore, needs attention).
-   - **Legacy lock (the crash of item 9.4):** `keptAt` set, no intent, artist still tagged in the Finds root, no needs
-     attention → clear `keptAt` (logged). Ledger finds-mode entry, no `keptAt`, artist untagged in main root → commit.
-6. **Collision → merge (item 8, replaces keptInPlace).** When `<main root>/<Lidarr folder name>` already exists:
-   merge only if (a) the folder name equals Lidarr's `folder` byte for byte, (b) Navidrome's main library lists songs
-   under that folder and every one with an artist MBID has the find artist's MBID (at least one), (c) no Lidarr artist's
-   path is that folder, (d) no file of the find has the same relative path as a file already there (Lidarr filesystem
-   API). Then the same G4 move body is sent. Lidarr's folder transfer merges the folders; (d) means nothing is
-   overwritten. Otherwise nothing is written and the page says: "Your library already has a folder for <artist>, so it
-   stays in your Finds for now." The request stays `.ready` and is **not** called kept. The untag-only write is
-   removed from new Keeps. Flagged: verify Lidarr 3.2's merge-move on the dev stack before relying on it (§10 test M).
+   - **Legacy lock (the crash of item 9.4), I3:** `keptAt` set, no intent, a request of the artist exists with no
+     `keepNeedsAttention`, the artist still tagged and its path **== that request's `keep.fromPath`** exactly → clear
+     `keptAt` (logged to the change log). Anything less certain stays locked.
+   - **Adopted** (finds-mode created, no `keptAt`, artist untagged in main root, no intent): verify as in 3; if it
+     holds, commit with `LosslessWatch(autoDelete: false)` (C2).
+6. **Collision (C1): refuse only, no merge.** When `<main root>/<Lidarr folder name>` exists (or the name drifted),
+   nothing is written, no intent stays, nothing is "kept"; the page says "Your library already has a folder for
+   <artist>, so it stays in your Finds for now." The untag-only write is no longer sent by new Keeps (allowed for the
+   restore only).
 
 ## 5. Lossless search, upgrade watch, relink, MP3 rule (`RequestRunner+Lossless.swift`)
 
-`LosslessWatch {albumIds, startedAt, deadline, searches, lastSearchAt, lastCheckAt, removed: Bool}` on the request.
+`LosslessWatch {albumIds, startedAt, autoDelete, deadline?, searches, lastSearchAt, lastCheckAt, removed, doneAt?}`.
 - **Search:** right after commit, `POST /command {name: AlbumSearch, albumIds}` for the find's monitored albums (an
   existing gate shape). Then once per 24 h until lossless or 30 days, then Lidarr's own RSS monitoring carries on.
 - **Watch** (each pass, throttled to 5 min in the foreground and every background pass): `trackFiles(albumId)`. The
@@ -125,15 +133,25 @@ second start, as today. A lease older than 30 min with no progress turns into ne
   Lidarr's recycle bin. When every track of the find's recordings is lossless → scan the artist folder (targeted, as
   Keep) → relink (§6) → `songSuffix` updated → `.lossless`. Flagged: test L confirms on 3.2 that an MP3 outside the
   profile's allowed set is upgraded.
-- **MP3 rule (owner answer 3).** `deadline = commit server time + 7 days` (persisted, shown on the page). At or after
-  it (server time), every file in `findFiles` that a fresh read shows still exists, still lossy, with the same size, is
-  deleted through the gate (`DELETE /trackfile/bulk`, or one id at a time on 404/405 as Not for me does). The album
-  stays monitored, `removed = true`, the targeted scan runs, and the request's `songId` is cleared (player entries for
-  it are dropped by the existing `onRelinked` path with a nil song). Status: "Waiting for a lossless copy".
-- **Remove the MP3 now:** the same delete at any time, after the confirmation "Remove the MP3 now?" with "This song
-  leaves your library until a lossless copy arrives." and the buttons Remove / Cancel.
-- With the recycle bin unset the delete is permanent. The owner ruled it automatic, so it runs anyway; the page's
-  pre-deadline line is the warning.
+- **MP3 rule (owner answer 3; C2, C3).** Auto-delete only when `autoDelete` (a Y5 owner-tapped Keep): `deadline =
+  commit server time + 7 days`. Adopted, hand-moved and pre-Y5 kept finds: watch + search + manual only.
+  Removal (auto or manual) = **re-map then delete**: `POST /command RefreshArtist {artistId}` and wait for that command
+  to complete; then for each recorded find file, the fresh track file at exactly `<artist folder>/<relativePath>`
+  (M3 loose compare: standardised, case- and NFC-folded) whose track's `foreignTrackId` is the recorded one, whose
+  quality is on the **lossy allowlist** (M2: MP3-*, AAC-*, OGG/Vorbis-*, Opus-*, WMA; anything unknown refuses) and
+  whose size equals the recorded size. A size change or no mapping → needs attention "Couldn't remove the MP3" (Lidarr
+  rewriting tags changes the size; trackfile ids go stale after the move, Keep.swift:30,334). Delete via the gate
+  (`DELETE /trackfile/bulk`, one at a time on 404/405); then **read again**: `removed` is set only when the files are
+  gone (never claimed without a read). I6: re-read the album; if Lidarr unmonitored it, re-monitor it (`PUT
+  /album/monitor true`, the existing shape, ledger entry present). Then the targeted scan, and M1: the new
+  `onMP3Removed(request, songId)` callback drops queue entries and the phone download of that song id; stars and plays
+  stay on Navidrome's (now gone) song id, documented in decisions.md.
+- **I5:** after removal the watch checks at most daily; it ends (`doneAt`) at lossless or 30 days after start. A gate
+  refusal or a missing ledger record → needs attention. `Ledger.forgetFinished` keeps an instance whose entries back an
+  active watch (the entry stays open until `doneAt`).
+- **Remove the MP3 now:** confirmation "Remove the MP3 now?" / "This song leaves your library until a lossless copy
+  arrives." (+ I7 "This can't be undone." when `mediamanagement.recycleBin` is empty) / Remove / Cancel. One delete:
+  manual and deadline share the request's lease, the second sees `removed` or no mappable file.
 
 ## 6. Matching (item 9.2), Ready and relink
 
@@ -152,43 +170,54 @@ Never title + artist alone. Never a song outside the artist's folder, so the own
   longer restarts the clock. A warning item from any client is stalled only after `stallLimit` unchanged, never at once
   (Soulseek → the R17 removal; other clients → the `downloadFailed` wait). Client names are read every poll pass (one
   `GET /downloadclient` per pass; the per-runner cache goes). `StallLimit` gains `threeMinutes = 180` and `standard`
-  becomes 3 min (choices 1/2/3/5/10); a one-time migration turns a saved 60 into 180. Flagged: overrides R17/R20's 1 min.
+  becomes 3 min (choices 1/2/3/5/10). I11: a saved value is **not** migrated; only the default changes.
 - **Server time (item 9.7).** `LidarrClient` exposes each response's `Date` header; the runner keeps `clockOffset =
   serverDate − phone now` from the latest successful read, and `serverNow()` uses it for the history cursor,
-  `searchStartedAtServer`, the event filters and the 7-day deadline. No header → offset 0.
-- **RefreshArtist completion (item 9.8).** After `POST /artist` the runner saves `commandBaseline` and follows the newest
-  `RefreshArtist` naming the artist: completed with the album still missing → `.noRelease` at once; failed → the
-  `serviceUnavailable` wait; cleanup's `settling` ends on completion. None seen within 2 min → the existing
-  `albumAppearLimit` / `addSettleTime` apply.
+  `searchStartedAtServer`, the event filters and the 7-day deadline. No header → offset 0. M4: cached or 304
+  responses and offsets over 1 day are ignored; an offset change over 60 s resets the history cursor (with the minute
+  of overlap); migration (§9.3) uses `serverNow`.
+- **RefreshArtist completion (item 9.8, I12).** After `POST /artist` the runner saves `commandBaseline` and follows the
+  newest `RefreshArtist` after it whose `artistIds` is **non-empty and names the artist** (a global RefreshArtist never
+  counts): completed with the album still missing → `.noRelease` at once; failed → the `serviceUnavailable` wait;
+  cleanup's `settling` ends on completion. None seen within 2 min, or the command disappeared (pruned) → unknown → the
+  existing `albumAppearLimit` / `addSettleTime` apply. Fact-folding `stoppedInLidarr` only fires after that refresh
+  completed **and** the album was listed at least once (I12/6).
 
 ## 8. Gate (G1): every new or changed shape
 
 | Shape | HTTP | Confinement |
 |---|---|---|
-| **keptLossyDelete** (new rule, existing verbs) | `DELETE /trackfile/{id}`, `DELETE /trackfile/bulk {trackFileIds}` | Every id: is in a ledger entry's `findFiles` for an artist the ledger says Magpie created (id + MBID) **and** `keptAt` set; a fresh `GET /trackfile/{id}` shows the same artist and album, the same size, and a quality that isn't lossless (FLAC/ALAC/WAV/APE/WavPack refused); its artist's path is strictly inside the current main root. A bulk delete is all-find (today's rule) or all-keptLossy, never mixed; at most 500 ids. |
-| Not for me / find deletes (changed) | same | "Kept" now also means `keepIntentAt` set. |
+| **keptLossyDelete** (new rule, existing verbs) | `DELETE /trackfile/{id}`, `DELETE /trackfile/bulk {trackFileIds}` | Every id, from a fresh `GET /trackfile/{id}` + `GET /track?albumId=`: its artist the ledger says Magpie created (id + MBID) with a **confirmed** `keptAt` and no intent; its path strictly inside the current main root and equal (M3 loose) to `<artist path>/<relativePath>` of a recorded `findFiles` item of the same album, whose `foreignTrackId` is the file's track's; same size; quality on the lossy allowlist (M2). |
+| findDelete (existing rule) | same | Unchanged checks, but "kept" means `isKeptOrKeeping` (C5). |
+| One rule per call (C4) | | `Verdict.confined(artists:, rule: .findDelete / .keptLossyDelete)`; ids that would need both rules, or neither, refuse. Last-moment check per rule: findDelete → none of the artists `isKeptOrKeeping`; keptLossyDelete → every artist still confirmed kept, no intent. |
 | Lossless search | `POST /command {name: AlbumSearch, albumIds}` | Unchanged; albums must have a ledger entry (new check, matching album monitor). |
 | Keep / merge move | `PUT /artist/editor` G4 `MoveBody` | Unchanged (merge uses the same body and the same confinement). The untag-only body is no longer sent by new Keeps. It stays allowed, for the restore. |
 
-check-writes.sh pins:
+C5: `LedgerEntry.isKeptOrKeeping` (`keptAt != nil || keepIntentAt != nil`) replaces bare `keptAt` in every refusing
+reader (WriteConfinement kept/stillUnkept/albumMonitor/queueDelete, RequestRunner cleanup, Stall `mayRemoveDownloads`,
+NotForMe 408/457, ArtistLidarr state). Plain `keptAt` only where a **confirmed** Keep is required (BringInMore,
+keptLossyDelete). check-writes.sh pins:
+- a bare `.keptAt` read outside Ledger.swift, the Keep commit and those two is flagged (allowlist by file);
 - `gate.send("DELETE", "trackfile` appears only in RequestRunner+NotForMe.swift and RequestRunner+Lossless.swift;
 - the new FindFlowIT helper is allowlisted like FindsIT (`G1 allowlist: devLidarr`).
 The change log records every delete with its rule name.
 
 ## 9. Data and migration (all fields optional: old files decode)
 
-- `MagpieRequest`: `keep: KeepIntent?` (KeepProgress renamed; new phases `queued`, `intent`, `sent`, `committed`;
-  `phase` decoded leniently), `lossless: LosslessWatch?`, `searchStartedAtServer: Date?`, `addCommandBaseline: Int?`.
-  `keptInPlace` stays decodable, is read only by migration, and is never set again.
-- `LedgerEntry`: `keepIntentAt: Date?`, `findFiles: [FindFile]?` (`{id, albumId, size}`). An unknown or missing value
-  decodes nil.
-- **First pass after update** (`RunnerState.migrated["y5"]`):
-  1. Clear the legacy locks (§4.5).
-  2. Turn legacy keptInPlace finds into `.find(inPlaceLegacy)`. Their `keptAt` stays, so Not for me stays refused;
-     "Add to your library" runs the merge, whose precondition accepts this one case.
-  3. Every kept-and-moved request without a watch gets `LosslessWatch` with `deadline = now + 7 days`, never sooner,
-     so nothing is deleted on update day. `findFiles` = its albums' lossy files now, and one AlbumSearch.
-  4. Stall limit 60 → 180 once.
+- `MagpieRequest`: `keep: KeepProgress?` (new phase `queued`; new `sentAt`), `lossless: LosslessWatch?`,
+  `searchStartedAtServer: Date?`, `addCommandBaseline: Int?`, `mp3NeedsAttention`, `collision`. `keptInPlace` stays
+  (I4) and is never set by new Keeps.
+- `LedgerEntry`: `keepIntentAt: Date?`, `findFiles: [FindFile]?`. `TrackFile.size` (M6, exists) and a new `LidarrTrack`
+  DTO (`id, albumId, trackFileId, foreignTrackId, foreignRecordingId`). An unknown or missing value decodes nil.
+- **First pass after update** (`RunnerState.migrated["y5"]`, set **last**, so a crash re-runs it; every step
+  idempotent):
+  1. Clear the legacy locks (§4.5, I3 rules).
+  2. Legacy keptInPlace finds stay as they are (I4).
+  3. Every kept-and-moved request without a watch gets `LosslessWatch(autoDelete: false)` (C2), started at `serverNow`,
+     and one AlbumSearch. Without recorded `findFiles`, "Remove the MP3 now" is not offered for it (no record, no
+     delete: the gate needs one).
+  M8: once migrated, rolling back to v1.0-rc is unsupported (rc ignores the new fields and could re-offer Keep);
+  recorded in decisions.md.
 - `RequestMachine`: `.kept` stays terminal. The lossless follow-up lives outside the machine. `canBeRemoved` and
   `needsPolling` add `lossless != nil && !done`.
 
@@ -196,11 +225,25 @@ The change log records every delete with its rule name.
 
 **Unit (MagpieKit, stubbed Lidarr/Navidrome; RED first):** resolver precedence table (one case per row, legacy in
 place, unmatched by name, owner's artist); fact folding; two-tick idempotence; intent recovery for every phase × crash
-point; legacy-lock clear; queued Keep busy → idle → sent; merge preconditions (a)–(d) with each refusal;
-`keptLossyDelete` allow and refusals (FLAC id, unrecorded id, changed size, not kept, owner's artist, mixed bulk, main
-root changed); deadline in server time; `Date` parsing and offset; stall warning, client re-read, 3-min default and
-migration; RefreshArtist complete / failed / unseen; §6 match order (path, ±3 s, ambiguity refuses, outside the folder
+point; legacy-lock clear; queued Keep busy → idle → sent; collision refuses with nothing written;
+`keptLossyDelete` allow and refusals (FLAC id, unrecorded path, changed size, not kept, intent only, owner's artist,
+mixed bulk, main root changed); deadline in server time; `Date` parsing, offset, 304/cached and >1 day ignored; stall
+warning, client re-read, 3-min default, saved value untouched; RefreshArtist complete / failed / unseen / global /
+pruned; §6 match order (path, ±3 s, ambiguity refuses, outside the folder
 refuses); lease orphan recovery; decoding of pre-Y5 requests, ledger and runner-state fixtures.
+
+**The critic's 16 (each its own test):** (1) every refusing keptAt reader with only an intent; (2) stillUnkept vs
+keptLossyDelete races both ways; (3) stale (pre-move) ids, (4) re-imported ids, (5) changed sizes; (6) adopted and
+(7) legacy finds never auto-deleted; (8) auto-unmonitor after delete → re-monitored; (9) recycle-bin-empty copy;
+(10) forget / sign-out with an active watch; (11) manual delete vs deadline → one delete; (12) two runners with a
+delayed write (lease heartbeat); (13) a queued Keep sent after the grace (timed from sentAt); (14) a crash after a
+mixed commit (atomic ledger); (15) migration idempotent and re-run; (16) a tagless own find, and the partial-album
+fold (.imported per recording).
+
+**Step 0 spike (dev stack, before code; I12):** (2) collision refusal sends nothing; (3) does Lidarr 3.2 upgrade an
+MP3 outside the Lossless allowed set to FLAC on import? (6) RefreshArtist command shape and timing after an add
+(artistIds, global vs targeted, pruning). Results in §13. Fallback for (3): if no upgrade, the 7-day delete makes the
+track missing and the daily AlbumSearch brings the FLAC.
 
 **End-to-end on the dev stack (`FindFlowIT`; G0 local only; creates and removes only its own objects):**
 - Fixture: a `findflow` compose profile adds a ~60-line Torznab stub (`dev/fake-indexer`).
@@ -215,8 +258,7 @@ refuses); lease orphan recovery; decoding of pre-Y5 requests, ledger and runner-
   - a test-only grace of 30 s replaces 7 days;
   - the gated MP3 delete runs, the album stays monitored, and the status reads "Waiting for a lossless copy";
   - then the FLAC arrives → "Lossless".
-- **M:** a pre-made main-root folder with a same-MBID tagged file → merge, owner file untouched (hash check); a
-  different-MBID folder → refused, nothing written.
+- **M:** a pre-made main-root folder with the artist's name → refused, nothing written, owner file untouched.
 
 **Chaos (same IT, one parameterised test per row; each must reach the main run's end state):**
 - kill at each step:
@@ -235,16 +277,15 @@ refuses); lease orphan recovery; decoding of pre-Y5 requests, ledger and runner-
 - **Changed:** `RequestRunner.swift` (tick, poll time, refresh, matching), `+Keep`, `+Stall`, `RequestStore.swift`,
   `ArtistLidarr.swift` (delegates to the resolver); LidarrKit `Ledger`, `WriteConfinement`, `DTOs` (command body
   artistId), the connection (`Date`); `ArtistLidarrLine`, `FindsShelf`, `RequestCopy`, the Settings stall picker;
-  `scripts/check-writes.sh`; `docs/decisions.md` (MP3 rule, merge, 3-min default, server time).
+  `scripts/check-writes.sh`; `docs/decisions.md` (MP3 rule, collision refusal, 3-min default, server time, M1, M8).
 - **Not touched:** CarPlay/ (Y2), library scoping (Y3).
 
-## 12. Flagged for the critic
+## 12. Critic rulings applied
 
-1. The copy reword ("your server", not "Lidarr").
-2. Merge relies on Lidarr 3.2's folder transfer merging into an existing folder; test M must pass before it ships,
-   otherwise collision = refuse only.
-3. The MP3 upgrade from outside the profile's allowed set (test L).
-4. The stall migration 60 → 180 overrides an owner-chosen 1 min, if they chose it.
-5. Auto-delete runs with the recycle bin unset (owner's rule, permanent).
-6. The fact-folding `stoppedInLidarr` on an unmonitored album with no files: confirm it can't fire during the add's
-   refresh window. Proposed guard: only after RefreshArtist completes.
+C1 refuse-only collisions; C2 auto-delete only for Y5 owner-tapped Keeps; C3 path + track re-mapping after a
+RefreshArtist; C4 one rule per call with per-rule last-moment checks; C5 `isKeptOrKeeping` everywhere a reader refuses;
+I1–I12 and M1–M8 as above. The copy keeps "your server" (glossary).
+
+## 13. Step 0 spike results
+
+(filled in by the spike)
