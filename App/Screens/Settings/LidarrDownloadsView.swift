@@ -15,6 +15,13 @@ enum LidarrDownloadsCopy {
     static let restartAll = "Restart all stalled and failed"
     static let footer = "Restart drops the copy, stops Lidarr picking that same copy again, and looks for another. "
         + "It never touches music already in your library."
+    /// Fix round 2: finished copies Lidarr couldn't import; restarted one at a time, after their own confirmation.
+    static let couldntImportSection = "Couldn't import"
+    static let couldntImportFooter = "These finished downloading, but Lidarr couldn't file them. Restart all leaves them alone."
+    static let couldntImportConfirm = "This deletes a finished download that couldn't be imported, blocklists it and looks for another copy."
+    /// Fix round 2 N1: transfers Lidarr lists but never started; read-only.
+    static let notStartedSection = "Not started by your library"
+    static let notStartedFooter = "Another app started these in your download app. Magpie leaves them alone."
 
     /// The Settings row's summary: how many need attention at the page's last read.
     static func attention(_ count: Int?) -> SettingsSummary {
@@ -51,6 +58,8 @@ enum LidarrDownloadsCopy {
         case .importing: "Importing"
         case .stalled: row.stall == .lidarr ? "Stalled" : "No progress for \(limit.title) or more"
         case .failed: "Failed"
+        case .couldntImport: "Couldn't import"
+        case .notStarted: "Started by another app"
         }
     }
 
@@ -64,6 +73,8 @@ enum LidarrDownloadsCopy {
         case .importing: "tray.and.arrow.down"
         case .stalled: "pause.circle"
         case .failed: "exclamationmark.triangle"
+        case .couldntImport: "tray.full"
+        case .notStarted: "arrow.triangle.branch"
         }
     }
 
@@ -83,6 +94,8 @@ enum LidarrDownloadsCopy {
                  many: { "\($0) started moving again, so they were left alone." }),
             count { $0 == .limitReached } > 0 ? "Magpie has already tried five copies of that request." : nil,
             count { $0 == .magpieBusy } > 0 ? "Magpie is bringing that album home right now, so it was left alone." : nil,
+            some(count { $0 == .notStartedByLidarr }, one: "Another app started that download, so it was left alone.",
+                 many: { "Another app started \($0) of them, so they were left alone." }),
             some(count { $0 == .gone }, one: "One had already left the list.", many: { "\($0) had already left the list." }),
             some(count { $0 == .importingOrDone }, one: "One is importing or done, so it was left alone.",
                  many: { "\($0) are importing or done, so they were left alone." }),
@@ -123,7 +136,7 @@ enum LidarrDownloadsCopy {
             let board = LidarrDownloads(items, soulseekClients: soulseek, watch: watch,
                                         stallLimit: model.stallLimit.seconds, now: now)
             self.board = board
-            model.lidarrDownloadsAttention = board.stalled.count + board.failed.count
+            model.lidarrDownloadsAttention = board.attention
             unreachable = false
         } catch is CancellationError {
             return
@@ -167,6 +180,8 @@ struct LidarrDownloadsView: View {
     @State private var confirmsAll = false
     /// The rows Restart all was tapped for (minor M5: the dialog counts what it will do, not a later read).
     @State private var pendingAll: [LidarrDownloads.Row] = []
+    /// Fix round 2: a finished copy that couldn't be imported asks first, on its own.
+    @State private var pendingOne: LidarrDownloads.Row?
 
     var body: some View {
         List {
@@ -183,7 +198,8 @@ struct LidarrDownloadsView: View {
                 Section { Text(message).accessibilityIdentifier("lidarr-downloads-message") }
             }
             if let board = screen.board {
-                if board.active.isEmpty, board.stalled.isEmpty, board.failed.isEmpty {
+                if board.active.isEmpty, board.stalled.isEmpty, board.failed.isEmpty, board.couldntImport.isEmpty,
+                   board.notStarted.isEmpty {
                     ContentUnavailableView(LidarrDownloadsCopy.empty, systemImage: "arrow.down.circle",
                                            description: Text(LidarrDownloadsCopy.emptyDetail))
                         .accessibilityIdentifier("lidarr-downloads-empty")
@@ -191,7 +207,11 @@ struct LidarrDownloadsView: View {
                     restartAllSection(board)
                     section("Stalled", board.stalled, id: "stalled")
                     section("Failed", board.failed, id: "failed")
+                    section(LidarrDownloadsCopy.couldntImportSection, board.couldntImport, id: "couldnt-import",
+                            footer: LidarrDownloadsCopy.couldntImportFooter)
                     section("Active", board.active, id: "active")
+                    section(LidarrDownloadsCopy.notStartedSection, board.notStarted, id: "not-started",
+                            footer: LidarrDownloadsCopy.notStartedFooter)
                 }
             } else if !screen.unreachable {
                 ProgressView().frame(maxWidth: .infinity)
@@ -211,6 +231,27 @@ struct LidarrDownloadsView: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text(LidarrDownloadsCopy.confirmMessage(pendingAll.count))
+        }
+        .confirmationDialog(LidarrDownloadsCopy.restart + "?", isPresented: Binding(
+            get: { pendingOne != nil }, set: { if !$0 { pendingOne = nil } }), titleVisibility: .visible) {
+            Button(LidarrDownloadsCopy.restart, role: .destructive) {
+                if let row = pendingOne { Task { await screen.restart([row], model: model) } }
+                pendingOne = nil
+            }
+            .accessibilityIdentifier("lidarr-downloads-restart-one-confirm")
+            Button("Cancel", role: .cancel) { pendingOne = nil }
+        } message: {
+            Text(LidarrDownloadsCopy.couldntImportConfirm)
+        }
+    }
+
+    /// One row's Restart: a finished copy that couldn't be imported asks first; another app's transfer never restarts.
+    private func tapRestart(_ row: LidarrDownloads.Row) {
+        guard row.canRestart, row.section != .notStarted else { return }
+        if row.section == .couldntImport {
+            pendingOne = row
+        } else {
+            Task { await screen.restart([row], model: model) }
         }
     }
 
@@ -235,21 +276,24 @@ struct LidarrDownloadsView: View {
         }
     }
 
-    @ViewBuilder private func section(_ title: String, _ rows: [LidarrDownloads.Row], id: String) -> some View {
+    @ViewBuilder private func section(_ title: String, _ rows: [LidarrDownloads.Row], id: String,
+                                      footer: String? = nil) -> some View {
         if !rows.isEmpty {
-            Section(title) {
+            Section {
                 ForEach(rows) { row in
-                    DownloadRow(row: row, limit: model.stallLimit, canChange: canChange) {
-                        Task { await screen.restart([row], model: model) }
-                    }
+                    DownloadRow(row: row, limit: model.stallLimit, canChange: canChange) { tapRestart(row) }
                     .swipeActions(edge: .trailing, allowsFullSwipe: false) {   // §10.7: never a full swipe
                         if row.canRestart {
-                            Button(LidarrDownloadsCopy.restart) { Task { await screen.restart([row], model: model) } }
+                            Button(LidarrDownloadsCopy.restart) { tapRestart(row) }
                                 .tint(.orange)
                                 .disabled(!canChange)
                         }
                     }
                 }
+            } header: {
+                Text(title)
+            } footer: {
+                if let footer { Text(footer) }
             }
             .accessibilityIdentifier("lidarr-downloads-\(id)")
         }
@@ -271,7 +315,7 @@ private struct DownloadRow: View {
                 }
                 Label(LidarrDownloadsCopy.status(row, limit: limit), systemImage: LidarrDownloadsCopy.symbol(row.phase))
                     .font(.footnote)
-                    .foregroundStyle(row.section == .active ? Color.secondary : Color.orange)
+                    .foregroundStyle([.active, .notStarted].contains(row.section) ? Color.secondary : Color.orange)
                 if row.phase == .downloading, let progress = row.progress {
                     ProgressView(value: progress).accessibilityHidden(true)
                 }

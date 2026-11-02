@@ -16,7 +16,9 @@ import Testing
 
     @Test func everyPhaseHasTextAndSymbol() {
         let phases: [LidarrDownloads.Phase] = [.downloading, .queued, .paused, .clientUnavailable, .waitingToImport,
-                                               .importing, .stalled, .failed]
+                                               .importing, .stalled, .failed, .couldntImport, .notStarted]
+        #expect(LidarrDownloadsCopy.status(row(.couldntImport), limit: .oneMinute) == "Couldn't import")
+        #expect(LidarrDownloadsCopy.status(row(.notStarted), limit: .oneMinute) == "Started by another app")
         for phase in phases {
             #expect(!LidarrDownloadsCopy.status(row(phase), limit: .oneMinute).isEmpty)
             #expect(!LidarrDownloadsCopy.symbol(phase).isEmpty)
@@ -56,6 +58,17 @@ import Testing
         #expect(LidarrDownloadsCopy.summary([.restarted, .changesOff]) == LidarrDownloadsCopy.changesOff)
         #expect(LidarrDownloadsCopy.summary([.gone, .gone]) == "2 had already left the list.")
         #expect(LidarrDownloadsCopy.summary([.unavailable])?.contains("Try again") == true)
+    }
+
+    /// Fix round 2: the two new sections' words, and the one-at-a-time confirmation for a finished copy.
+    @Test func couldntImportAndNotStartedCopy() {
+        #expect(LidarrDownloadsCopy.couldntImportSection == "Couldn't import")
+        #expect(LidarrDownloadsCopy.notStartedSection == "Not started by your library")
+        #expect(!LidarrDownloadsCopy.notStartedFooter.isEmpty)
+        #expect(LidarrDownloadsCopy.couldntImportConfirm
+                == "This deletes a finished download that couldn't be imported, blocklists it and looks for another copy.")
+        #expect(LidarrDownloadsCopy.summary([.notStartedByLidarr])
+                == "Another app started that download, so it was left alone.")
     }
 
     /// I3: "Downloads in Lidarr" is a top-level Settings row, only while Lidarr is connected.
