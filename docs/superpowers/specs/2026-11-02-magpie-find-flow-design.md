@@ -301,3 +301,22 @@ Dev Lidarr 3.2.0.5144, 2026-11-02, test artist (Judie Tzuke) created and removed
 - **I6.** Deleting a track file did not unmonitor the album on the dev stack (that is an owner setting); the re-monitor
   stays, for owners who have "Unmonitor deleted tracks" on.
 - **(2) Collision.** Refuse-only; covered by unit tests and IT test M (nothing sent).
+
+## 14. As built (deviations and findings)
+
+- **Rescan before the lossless search.** The dev-stack IT found that after Keep's move Lidarr 3.2's track file records
+  still point at the Finds folder, so its upgrade of the MP3 failed. The commit now queues a targeted `RefreshArtist`
+  before the first `AlbumSearch` (same allowed command shape).
+- **Relink after the upgrade** waits for the lossless song (Navidrome lists both until its scan ends); the app's
+  `keptSong` prefers the lossless copy.
+- **E2E releases** arrive by Lidarr's manual import (MP3, then FLAC), not a Torznab stub + blackhole client; the
+  search → grab path is not exercised on the dev stack. Lidarr's import re-tags files on the dev stack, so the
+  tagless case is covered by unit tests (`fallbackMatch`, I9 resolver), not the IT.
+- **Legacy lock with no saved Keep** (the crash case before Y5 left no `keep`): cleared only when the request is still
+  ready, never moved, and the artist is tagged strictly inside the Finds root; with a saved Keep, only at `fromPath`.
+- **`stoppedInLidarr` folding** fires on the album gone (or the artist 404), not on "unmonitored": an owner's unmonitor
+  is left to the machine's retry rule, as before.
+- **Car:** queued reads as "Moving it into your library…", a collision as "This one can't be kept from here." (the
+  adapter only; CarPlay files untouched).
+- **Copy:** the artist page's Finds button reads "Add <artist> to your library"; Activity keeps "Ready · in your Finds"
+  for requests and gains the queued, collision, lossless and "Remove the MP3 now" lines.
