@@ -153,7 +153,10 @@ extension RequestRunner {
         guard let entries = try? await ledger.entries else { return }
         let artists = Set(entries.filter { $0.keepIntentAt != nil }.map(\.lidarrArtistId))
         guard !artists.isEmpty, let setup = await keepSetup() else { return }
-        for artistId in artists.sorted() where !list.contains(where: { $0.keep?.artistId == artistId }) {
+        // Re-review N2: a Keep that needs a look keeps its intent on purpose (the lock): never cleared here.
+        for artistId in artists.sorted() where !list.contains(where: {
+            $0.keep?.artistId == artistId || ($0.lidarrArtistId == artistId && $0.keepNeedsAttention)
+        }) {
             guard tryAcquireArtist(artistId) else { continue }
             defer { keepingArtists.remove(artistId) }
             guard let artist = try? await lidarr.artist(id: artistId), let roots = try? await lidarr.rootFolders().map(\.path)

@@ -142,7 +142,7 @@ extension RequestRunner {
                 // remove the MP3). A recorded MP3 goes through the gate; anything else needs a look.
                 guard let left = await leftovers(r.id), let w = request(r.id)?.lossless else { continue }
                 if !left.isEmpty {
-                    if w.hasRecord == true {
+                    if w.autoDelete, w.hasRecord == true {   // re-review N1: the automatic delete only for C2 Keeps
                         await mutate(r.id) { $0.lossless?.removedAt = nil }
                         _ = try? await removeMP3(r.id, artistId: artistId, inline: false)
                     }

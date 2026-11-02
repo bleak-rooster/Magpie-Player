@@ -293,6 +293,41 @@ import MagpieCore
         #expect(r.lossless?.losslessAt != nil && !r.mp3NeedsAttention)
     }
 
+    /// Re-review N1 (C2): a recorded leftover MP3 of a watch without the automatic delete is never removed automatically.
+    @Test func aLeftoverIsNotAutoDeletedWithoutAutoDelete() async throws {
+        let h = await Harness(setup: Harness.findsSetup)
+        let id = try await F.keptFind(h)
+        await h.runner.stop()
+        var saved = try await h.store.load()
+        for i in saved.indices where saved[i].id == id { saved[i].lossless?.autoDelete = false; saved[i].lossless?.deadline = nil }
+        try await h.store.save(saved)
+        let again = await Harness(directory: h.dir, lidarr: h.server, setup: Harness.findsSetup)
+        h.server.with { s in
+            s.artists[0].recorded = KeepTests.keptPath
+            s.songQuality = "FLAC"; s.songFileId = 3; s.songFileName = "Lowlands (2016)/01 - Song.flac"; s.songSize = 5000
+            s.extraFiles = [.init(id: 2, artistId: 42, albumId: 50, path: KeepTests.keptPath + "/" + FakeLidarr.songFile,
+                                  onDisk: KeepTests.keptPath + "/" + FakeLidarr.songFile, quality: "MP3-320", size: 1000)]
+        }
+        for _ in 0..<3 { again.clock.advance(RequestRunner.losslessCheckInterval); await again.runner.tick() }
+        #expect(F.deletes(h).isEmpty)
+        #expect(h.server.with { $0.extraFiles }.count == 1)
+    }
+
+    /// Re-review N2: a Keep that needs a look keeps its intent (the lock): the stuck-intent clean-up leaves it alone.
+    @Test func theOrphanCleanupSkipsAKeepThatNeedsAttention() async throws {
+        let h = await Harness(setup: Harness.findsSetup)
+        let id = try await F.readyFind(h)
+        try await h.ledger.update(artistId: 42) { $0.keepIntentAt = h.clock.now }
+        await h.runner.stop()
+        var saved = try await h.store.load()
+        for i in saved.indices where saved[i].id == id { saved[i].keepNeedsAttention = true }
+        try await h.store.save(saved)
+        let again = await Harness(directory: h.dir, lidarr: h.server, setup: Harness.findsSetup)
+        for _ in 0..<2 { again.clock.advance(RequestRunner.orphanInterval); await again.runner.tick() }
+        #expect(try await F.entries(again).allSatisfy(\.isKeptOrKeeping))
+        #expect(await !again.gate.changeLog().contains { $0.method == "NOTE" })
+    }
+
     /// Follow-up 3: a leftover lossy file Magpie never recorded: nothing is deleted; it needs a look.
     @Test func anUnrecordedLeftoverNeedsAttention() async throws {
         let h = await Harness(setup: Harness.findsSetup)
