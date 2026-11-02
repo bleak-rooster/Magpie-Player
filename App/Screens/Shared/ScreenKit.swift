@@ -31,6 +31,8 @@ enum Route: Hashable {
     /// R19: an artist or album that's not in the library, from MusicBrainz.
     case outsideArtist(NotYetArtist)
     case outsideAlbum(NotYetAlbum)
+    /// Round 12 Y6: Library › Discover (Aurral's flow playlists).
+    case discover
 }
 
 extension View {
@@ -40,7 +42,8 @@ extension View {
             switch route {
             case .album(let id): AlbumView(albumId: id)
             case .artist(let id): ArtistView(artistId: id)
-            case .playlist(let id): PlaylistView(playlistId: id)
+            case .playlist(let id): PlaylistRouteView(playlistId: id)   // Y6: Discover's open their own page
+            case .discover: DiscoverListView()
             case .artists: ArtistsListView()
             case .albums: AlbumsListView()
             case .playlists: PlaylistsListView()

@@ -3,7 +3,7 @@ import MagpieCore
 import os
 
 /// Round 12 Y6: a stub Aurral (v2.10.0 shapes, from docs/research/aurral.md) for tests, in process. Never the owner's
-/// Aurral: it answers only its own host (`aurral.stub` by default) and fails every other request without sending it.
+/// Aurral: it answers only its own host (`aurral-stub` by default: a single-label name, so a home address) and fails every other request without sending it.
 ///
 /// It serves the five routes Magpie may call (health, playlists status and jobs, library lookup, a flow's start) and
 /// answers 404 to anything else, recording every request so tests can check what was (and wasn't) asked. A wrong or
@@ -53,7 +53,7 @@ public final class StubAurral: HTTPTransport, @unchecked Sendable {
     public let apiKey: String
     private let state = OSAllocatedUnfairLock(initialState: State())
 
-    public init(host: String = "aurral.stub", apiKey: String = "stub-aurral-key") {
+    public init(host: String = "aurral-stub", apiKey: String = "stub-aurral-key") {
         self.host = host
         self.apiKey = apiKey
     }

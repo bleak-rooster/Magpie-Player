@@ -114,6 +114,7 @@ struct PlaylistView: View {
             PlayShuffleButtons(songs: songs)
             DownloadButton(reason: .playlist(page.playlist.id), songs: songs, playlist: snapshot(page),
                            coverArtId: page.playlist.coverArtId)
+            if editable { LibraryCopyBanner(playlist: page.playlist, songs: songs) }   // Y6
         }
         .padding(.vertical, Tokens.Spacing.l)
         .frame(maxWidth: .infinity)

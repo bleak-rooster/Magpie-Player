@@ -49,7 +49,8 @@ extension AppModel {
     /// The sections Home shows now, on the phone and in the car: the owner's order and switches; Made for you only with
     /// a token; offline, Downloaded.
     var homeSections: [HomeSection] {
-        preferences.layout.visibleHomeSections(offline: isOffline, hasListenBrainzToken: hasListenBrainzToken)
+        preferences.layout.visibleHomeSections(offline: isOffline, hasListenBrainzToken: hasListenBrainzToken,
+                                               discoverSetUp: aurralSetUp)   // Y6
     }
 
     /// A read of Home's sections: the shelves with something in them, in the order asked, and the sections that
@@ -151,6 +152,8 @@ extension AppModel {
                 }
             }
         case .madeForYou: return []
+        case .discover:   // Y6: Aurral's flow playlists (AppModel+Discover.swift)
+            return try await discoverPlaylists().prefix(size).map(HomeShelf.Item.playlist)
         }
     }
 
@@ -177,7 +180,7 @@ extension AppModel {
 
     /// Y6 hook: whether a playlist belongs in Discover (an Aurral flow) rather than Playlists. None until Aurral is
     /// set up.
-    func isDiscoverPlaylist(_ playlist: Playlist) -> Bool { false }
+    func isDiscoverPlaylist(_ playlist: Playlist) -> Bool { isDiscoverPlaylist(id: playlist.id) }
 
     private func albums(_ type: AlbumListType) async throws -> [HomeShelf.Item] {
         guard !isOffline else { return [] }   // Task 14: nothing is asked of the server offline
@@ -200,7 +203,8 @@ extension AppModel {
     /// The phone's rows, or the car's (no Songs, no Requests): one rule for both (`visibleLibraryRows`).
     func libraryRows(carPlay: Bool) -> [LibraryRow] {
         preferences.layout.visibleLibraryRows(offline: isOffline, findsSetUp: findsSetup?.library != nil,
-                                              lidarrConnected: lidarr != nil, carPlay: carPlay)
+                                              lidarrConnected: lidarr != nil, carPlay: carPlay,
+                                              discoverSetUp: aurralSetUp)   // Y6
     }
 
     /// The Recently added grid at the bottom of the Library: its own switch, and never offline.

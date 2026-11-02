@@ -159,6 +159,7 @@ import UIKit
             case .downloads: CarPlayRows.downloads(albums: [a], artists: [Artist(id: "r", name: "R", albumCount: 1)],
                                                    playlists: [Playlist(id: "p", name: "P", songCount: 1, duration: 9)])
             case .madeForYou: CarPlayRows.madeForYou([.song(song("s")), .notYet(outside)], offer: .next, playingId: nil)
+            case .discover: CarPlayRows.discover(twoPlaylists)   // Y6: its playlists are leaves at depth 3
             }
         }
         func walk(_ sections: [CPSectionModel], depth: Int) {

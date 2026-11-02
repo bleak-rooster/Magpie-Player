@@ -196,6 +196,7 @@ extension AppModel {
         }
         switch collection {
         case .album(let id): return try await request { try await $0.album(id: id).songs ?? [] }
+        case .playlist(let id) where isDiscoverPlaylist(id: id): return try await discoverPage(playlistId: id).songs   // Y6
         case .playlist(let id), .downloadedPlaylist(let id): return try await request { try await $0.playlist(id: id).1 }
         case .downloadedArtist: return []   // read above
         case .artist(let id):

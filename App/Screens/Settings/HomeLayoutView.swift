@@ -10,6 +10,7 @@ struct HomeLayoutView: View {
         switch section {
         case .madeForYou: "Shows when a ListenBrainz token is saved"
         case .downloaded: "Shows on its own when you're offline"
+        case .discover: "Shows once Discover is set up in Settings \u{203A} New music"
         default: nil
         }
     }

@@ -196,7 +196,8 @@ struct ArtistView: View {
         // R3: the saved Popular is ready the moment the page is, without waiting for the server's top songs.
         if popular?.artistId != artistId { popular = model.popularSongs(artistId: artistId) }
         do {
-            let (artist, albums) = try await model.request { [artistId] in try await $0.artist(id: artistId) }
+            let (artist, read) = try await model.request { [artistId] in try await $0.artist(id: artistId) }
+            let albums = model.hidingFlowDuplicates(read)   // Y6: not Aurral's copy of what the library has
             page = .loaded(Page(artist: artist, albums: albums))
             model.noteAlbumSongCounts(albums)   // P1: backfills downloads saved without the album's count
             model.noteFavourite(.artist(artist.id), artist.starred)   // R7

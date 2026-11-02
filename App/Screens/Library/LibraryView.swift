@@ -67,6 +67,7 @@ struct LibraryView: View {
         case .downloads: .downloads
         case .finds: .finds
         case .requests: .requests
+        case .discover: .discover
         }
     }
 

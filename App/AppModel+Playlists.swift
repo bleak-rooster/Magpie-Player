@@ -81,7 +81,7 @@ extension AppModel {
     func editablePlaylists() async throws -> [Playlist] {
         let user = session?.username ?? ""
         return try await request { try await $0.playlists() }
-            .filter { Self.isOwn($0, by: user) }
+            .filter { Self.isOwn($0, by: user) && !isDiscoverPlaylist($0) }   // Y6: never Aurral's
             .sorted { a, b in
                 let (x, y) = (a.changed ?? .distantPast, b.changed ?? .distantPast)
                 return x != y ? x > y : a.name.localizedStandardCompare(b.name) == .orderedAscending
@@ -90,7 +90,7 @@ extension AppModel {
 
     /// Whether the user may change `playlist`.
     func canEdit(_ playlist: Playlist) -> Bool {
-        guard let user = session?.username, !isOffline else { return false }
+        guard let user = session?.username, !isOffline, !isDiscoverPlaylist(playlist) else { return false }   // Y6
         return Self.isOwn(playlist, by: user)
     }
 
@@ -181,11 +181,12 @@ extension AppModel {
     /// The playlist as the server has it now, if the user may change it. Every write checks here, not only the
     /// screens (review fix I4): Navidrome lets an admin change anyone's playlist, so the server is no backstop. The
     /// server's current owner decides, whatever `playlist` says.
-    private func ownPlaylist(_ playlist: Playlist) async throws -> (Playlist, [Song]) {
+    /// Round 12 Y6: never a Discover playlist (Aurral's), though the server names the owner as its owner.
+    func ownPlaylist(_ playlist: Playlist) async throws -> (Playlist, [Song]) {
         let user = session?.username ?? ""
-        guard Self.isOwn(playlist, by: user) else { throw PlaylistEditError.notYours }
+        guard Self.isOwn(playlist, by: user), !isDiscoverPlaylist(playlist) else { throw PlaylistEditError.notYours }
         let (fresh, songs) = try await request { [id = playlist.id] in try await $0.playlist(id: id) }
-        guard Self.isOwn(fresh, by: user) else { throw PlaylistEditError.notYours }
+        guard Self.isOwn(fresh, by: user), !isDiscoverPlaylist(fresh) else { throw PlaylistEditError.notYours }
         return (fresh, songs)
     }
 
@@ -196,14 +197,14 @@ extension AppModel {
         return playlist.isEditable(by: user)
     }
 
-    private func songIds(in playlist: Playlist) async throws -> [String] {
+    func songIds(in playlist: Playlist) async throws -> [String] {
         try await request { [id = playlist.id] in try await $0.playlist(id: id) }.1.map(\.id)
     }
 
     /// Sends a playlist change exactly once (review fix I1: it isn't safe to repeat; a repeated remove-by-position
     /// would take a different song). If the connection drops, `landed` reads back whether it happened: if so, it
     /// counts as done; if not, or if that can't be told, the lists read again and the error says which.
-    private func sendOnce(_ op: @Sendable (NavidromeClient) async throws -> Void,
+    func sendOnce(_ op: @Sendable (NavidromeClient) async throws -> Void,
                           landed: () async throws -> Bool) async throws {
         do {
             try await requestOnce(op)
@@ -237,7 +238,7 @@ extension AppModel {
         }
     }
 
-    private func playlistsChanged(_ notice: String?, symbol: String = "checkmark.circle") {
+    func playlistsChanged(_ notice: String?, symbol: String = "checkmark.circle") {
         libraryEdits.playlistsRevision += 1
         if let notice { libraryEdits.notify(notice, symbol: symbol) }
     }

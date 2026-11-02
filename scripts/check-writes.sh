@@ -174,6 +174,20 @@ if [ -z "${G1_SRC:-}" ]; then
        "${product[@]}" | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' | grep -v '^Packages/MagpieKit/Sources/MagpieTestSupport/' | grep -q .; then
     echo "G1: a forbidden Aurral route is named in product code" >&2; bad=1
   fi
+  # Playlist writes (X3's checked path) are sent only from the owner's playlist edits and Y6's "Use your library's
+  # copy" (AppModel+DiscoverSwap.swift: the whole list rewritten in place, after X3's ownership check, never on a
+  # Discover playlist). Both go through `ownPlaylist`, which refuses Discover's (Aurral's) playlists.
+  for hit in $(grep -rnE --include='*.swift' '(\$0|client)\.(updatePlaylist|deletePlaylist|createPlaylist)\(' "${product[@]}" |
+               grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' | cut -d: -f1 | sort -u || true); do
+    case "$hit" in
+      App/AppModel+Playlists.swift|App/AppModel+DiscoverSwap.swift) ;;
+      *) echo "G1: a playlist write outside X3's checked path: $hit" >&2; bad=1 ;;
+    esac
+  done
+  grep -qF 'guard Self.isOwn(fresh, by: user), !isDiscoverPlaylist(fresh) else { throw PlaylistEditError.notYours }' App/AppModel+Playlists.swift ||
+    { echo "G1: App/AppModel+Playlists.swift: ownPlaylist no longer refuses Discover's playlists" >&2; bad=1; }
+  grep -qF 'let (fresh, songs) = try await ownPlaylist(playlist)' App/AppModel+DiscoverSwap.swift ||
+    { echo "G1: App/AppModel+DiscoverSwap.swift: the swap no longer goes through ownPlaylist" >&2; bad=1; }
   # Only the Lidarr gate and the Aurral client put an API key on a request.
   for f in $(grep -rlE --include='*.swift' 'setValue\([^)]*forHTTPHeaderField: "X-Api-Key"' "${product[@]}" | sort -u || true); do
     case "$f" in

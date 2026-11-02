@@ -37,6 +37,8 @@ targets:
       - package: MagpieKit
         product: LidarrKit
       - package: MagpieKit
+        product: AurralKit
+      - package: MagpieKit
         product: MatchIndex
       - package: MagpieKit
         product: Search
