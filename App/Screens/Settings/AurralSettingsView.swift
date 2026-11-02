@@ -78,7 +78,7 @@ struct AurralSettingsView: View {
 
     @ViewBuilder private var connectForm: some View {
         Section {
-            TextField("http://homeserver:3001", text: $address)
+            TextField("http://192.168.1.20:3001", text: $address)
                 .textContentType(.URL)
                 .keyboardType(.URL)
                 .textInputAutocapitalization(.never)

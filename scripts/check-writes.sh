@@ -170,7 +170,7 @@ if [ -z "${G1_SRC:-}" ]; then
   done
   [ "$(grep -cE 'case [0-9] where' "$aurral")" = 5 ] || { echo "G1: $aurral: the Aurral allow-list isn't exactly five routes" >&2; bad=1; }
   # Nobody names Aurral's settings, key, discover, add or track-delete routes (the stub for tests aside).
-  if grep -rnE --include='*.swift' 'api/settings|api/auth/api-key|"api/discover|api/library/tracks|api/library/artists|lidarr-import-list' \
+  if grep -rnE --include='*.swift' 'api/settings|api/auth/api-key|api/discover|api/library/tracks|api/library/artists|lidarr-import-list' \
        "${product[@]}" | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' | grep -v '^Packages/MagpieKit/Sources/MagpieTestSupport/' | grep -q .; then
     echo "G1: a forbidden Aurral route is named in product code" >&2; bad=1
   fi
@@ -188,10 +188,10 @@ if [ -z "${G1_SRC:-}" ]; then
     { echo "G1: App/AppModel+Playlists.swift: ownPlaylist no longer refuses Discover's playlists" >&2; bad=1; }
   grep -qF 'let (fresh, songs) = try await ownPlaylist(playlist)' App/AppModel+DiscoverSwap.swift ||
     { echo "G1: App/AppModel+DiscoverSwap.swift: the swap no longer goes through ownPlaylist" >&2; bad=1; }
-  # Only the Lidarr gate and the Aurral client put an API key on a request.
-  for f in $(grep -rlE --include='*.swift' 'setValue\([^)]*forHTTPHeaderField: "X-Api-Key"' "${product[@]}" | sort -u || true); do
+  # Only the Lidarr gate and the Aurral client name an API-key header or parameter (the redactor and the test stub aside).
+  for f in $(grep -rlE --include='*.swift' '[Xx]-[Aa]pi-[Kk]ey"|"api_key' "${product[@]}" | sort -u || true); do
     case "$f" in
-      "$aurral"|Packages/MagpieKit/Sources/LidarrKit/WriteGate.swift) ;;
+      "$aurral"|Packages/MagpieKit/Sources/LidarrKit/WriteGate.swift|Packages/MagpieKit/Sources/MagpieTestSupport/StubAurral.swift|Packages/MagpieKit/Sources/MagpieCore/Redactor.swift) ;;
       *) echo "G1: an API-key request built outside the Lidarr gate and the Aurral client: $f" >&2; bad=1 ;;
     esac
   done

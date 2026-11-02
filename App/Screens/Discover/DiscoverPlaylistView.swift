@@ -45,7 +45,7 @@ struct DiscoverPlaylistView: View {
         .scrollContentBackground(.hidden)
         .refreshable {
             await model.refreshDiscover(force: true)
-            await load()
+            await load(fresh: true)
         }
         .navigationTitle(page.value?.playlist.name ?? DiscoverCopy.title)
         .navigationBarTitleDisplayMode(.inline)
@@ -176,10 +176,12 @@ struct DiscoverPlaylistView: View {
         do { try await model.refreshFlow(flowId) } catch { message = DiscoverCopy.message(for: error) }
     }
 
-    private func load() async {
+    private func load() async { await load(fresh: false) }
+
+    private func load(fresh: Bool) async {
         do {
             if model.discover.playlists.isEmpty { await model.refreshDiscover() }
-            page = .loaded(try await model.discoverPage(playlistId: playlistId))
+            page = .loaded(try await model.discoverPage(playlistId: playlistId, fresh: fresh))
         } catch {
             if page.value == nil { page = .failed(BrowseErrorCopy.message(for: error)) }
         }

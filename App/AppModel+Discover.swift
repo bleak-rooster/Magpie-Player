@@ -57,8 +57,7 @@ extension AppModel {
         if discover.connection != connection { forgetDiscoverReads() }
         discover.connection = connection
         discover.health = health
-        discover.status = status
-        discover.statusReadAt = .now
+        noteStatus(status)
         await refreshDiscover(force: true)
         return health
     }
@@ -68,9 +67,7 @@ extension AppModel {
         guard let client = aurralClient else { throw AurralError.unauthorized }
         let health = try await client.health()
         discover.health = health
-        let status = try await client.status()
-        discover.status = status
-        discover.statusReadAt = .now
+        noteStatus(try await client.status())
         return health
     }
 
@@ -98,6 +95,7 @@ extension AppModel {
         if let scope = navidromeScope {
             appDefaults.removeObject(forKey: Self.discoverPlaylistsKey(scope))
             appDefaults.removeObject(forKey: Self.discoverLibrariesKey(scope))
+            appDefaults.removeObject(forKey: Self.aurralSongsKey(scope))
         }
         syncLibraryScope()
     }
@@ -123,25 +121,69 @@ extension AppModel {
 
     // MARK: - Reading Aurral
 
-    /// Reads Aurral's flows and matches them to the server's playlists (and its jobs, for the songs' ids). At most
-    /// every 30 s unless `force`. Offline, or without Aurral, nothing is asked. A failure keeps what was read before.
+    /// Reads Aurral's flows (and its jobs, for the songs' ids) and finds their playlists: named after a flow AND holding
+    /// the flow's songs (fix I1, `DiscoverRules.confirmedFlowPlaylists`); a playlist that can't be read keeps what it
+    /// was. Then Aurral's library is read again (fix I2). At most every 30 s unless `force`. Offline, or without Aurral,
+    /// nothing is asked. A failure keeps what was read before.
     func refreshDiscover(force: Bool = false) async {
         guard let client = aurralClient, session != nil, !isOffline, let scope = navidromeScope else { return }
-        if !force, let at = discover.statusReadAt, Date.now.timeIntervalSince(at) < 30, !discover.playlists.isEmpty { return }
+        if !force, let at = discover.statusReadAt, discover.now().timeIntervalSince(at) < 30, !discover.playlists.isEmpty { return }
         let connection = discover.connection
         guard let status = try? await client.status(),
               let all = try? await request({ try await $0.playlists() }) else { return }
         let jobs = (try? await client.jobs()) ?? nil
         guard navidromeScope == scope, discover.connection == connection else { return }   // another account or Aurral
-        discover.status = status
-        discover.statusReadAt = .now
+        noteStatus(status)
         if let jobs { discover.jobs = jobs }
-        for flowId in discover.refreshing where status.isRunActive(flowId: flowId) { discover.refreshing.remove(flowId) }
-        let matched = DiscoverRules.flowPlaylists(flows: status.flows, playlists: all)
-        let changed = Set(matched.map(\.playlist.id)) != discoverPlaylistIds
+        let before = discoverPlaylistIds
+        let candidates = DiscoverRules.flowPlaylists(flows: status.flows, playlists: all)
+        var entries: [String: [Song]] = [:], unread = Set<String>()
+        for candidate in candidates {
+            if let (_, songs) = try? await request({ [id = candidate.playlist.id] in try await $0.playlist(id: id) }) {
+                entries[candidate.playlist.id] = songs
+            } else {
+                unread.insert(candidate.playlist.id)
+            }
+        }
+        guard navidromeScope == scope, discover.connection == connection else { return }
+        let confirmed = DiscoverRules.confirmedFlowPlaylists(candidates, entries: entries, jobs: discover.jobs,
+                                                             aurralSongIds: knownAurralSongIds)
+        let confirmedIds = Set(confirmed.map(\.playlist.id))
+        let matched = candidates.filter { confirmedIds.contains($0.playlist.id) || (unread.contains($0.playlist.id) && before.contains($0.playlist.id)) }
         discover.playlists = matched
         appDefaults.set(matched.map(\.playlist.id), forKey: Self.discoverPlaylistsKey(scope))
-        if changed { libraryEdits.playlistsRevision += 1 }   // Playlists lists read again without them
+        for playlist in matched { noteFlowSongs(entries[playlist.playlist.id] ?? []) }
+        if Set(matched.map(\.playlist.id)) != before { libraryEdits.playlistsRevision += 1 }   // Playlists read again
+        await refreshAurralLibrary(entries: matched.flatMap { entries[$0.playlist.id] ?? [] })
+    }
+
+    /// Fix I2: every song in Aurral's library (flow songs, and the ones rotated out but still kept because a playlist
+    /// holds them), read with the server's library filter and saved for the account, so "Use your library's copy"
+    /// recognises them after the flow moved on and after a relaunch. The library is learnt first when unknown (from
+    /// the flow songs' lookups).
+    func refreshAurralLibrary(entries: [Song]) async {
+        guard let scope = navidromeScope else { return }
+        if savedDiscoverLibraryIds.isEmpty, !entries.isEmpty { _ = await libraryCopies(for: entries, flowId: nil) }
+        var ids = Set(entries.map(\.id))
+        for library in savedDiscoverLibraryIds.sorted() {
+            guard let read = try? await request({ try await $0.songs(inLibrary: library, maxPages: 20) }) else { return }
+            ids.formUnion(read.songs.map(\.id))
+        }
+        guard navidromeScope == scope else { return }
+        discover.aurralSongIds = ids
+        appDefaults.set(Array(ids).sorted().prefix(Self.aurralSongsLimit).map { $0 }, forKey: Self.aurralSongsKey(scope))
+    }
+
+    nonisolated static let aurralSongsLimit = 10_000
+
+    /// The songs known to be Aurral's copies: as last read (this session), else as saved for the account, and every
+    /// flow song seen.
+    var knownAurralSongIds: Set<String> {
+        var ids = discover.aurralSongIds.union(discover.flowSongIds)
+        if discover.aurralSongIds.isEmpty, aurralSetUp, let scope = navidromeScope {
+            ids.formUnion(appDefaults.stringArray(forKey: Self.aurralSongsKey(scope)) ?? [])
+        }
+        return ids
     }
 
     /// Discover's playlists for Home, Library and the car: read again when stale; if Aurral doesn't answer, the
@@ -162,13 +204,13 @@ extension AppModel {
 
     // MARK: - A Discover playlist's page
 
-    /// The playlist with each flow song the main library has shown as the library's copy, in its place (copies already
-    /// known show at once; `fresh` looks them all up again).
-    func discoverPage(playlistId: String) async throws -> DiscoverPage {
+    /// The playlist with each flow song the main library has shown as the library's copy, in its place. Each song's
+    /// lookup is kept for the session (`lookupLifetime`); `fresh` (pull to refresh) looks them all up again.
+    func discoverPage(playlistId: String, fresh: Bool = false) async throws -> DiscoverPage {
         let (playlist, songs) = try await request { try await $0.playlist(id: playlistId) }
         noteFlowSongs(songs)
         let flow = discoverFlow(playlistId: playlistId)
-        let copies = await libraryCopies(for: songs, flowId: flow?.id)
+        let copies = await libraryCopies(for: songs, flowId: flow?.id, fresh: fresh)
         return DiscoverPage(playlist: playlist, flow: flow, entries: DiscoverRules.swapped(songs, copies: copies))
     }
 
@@ -181,26 +223,40 @@ extension AppModel {
         }
     }
 
+    /// How long a song's lookup (its library copy, or none) is kept (fix M1).
+    nonisolated static let lookupLifetime: TimeInterval = 30 * 60
+
     /// The main library's copy of each of `songs` that has one (by the song's id). Looks each song up: by recording id
     /// (the song's, else Aurral's job's) through the server's lookup, which also says which library each copy is in
     /// (and so where Aurral's files are: `learnDiscoverLibrary`); else by title, matched on artist + title + duration.
-    func libraryCopies(for songs: [Song], flowId: String?) async -> [String: Song] {
+    /// A lookup made in the last `lookupLifetime` is used as it is (hits and misses), unless `fresh`. The match index
+    /// isn't used: it answers ids only and matches by name too, which the swap never does.
+    func libraryCopies(for songs: [Song], flowId: String?, fresh: Bool = false) async -> [String: Song] {
         guard session != nil, !isOffline, !songs.isEmpty else { return [:] }
+        let now = discover.now()
         let jobs = discover.jobs
-        let excluding = discover.flowSongIds.union(songs.map(\.id)).union(findSongs.map(\.id))
+        let excluding = knownAurralSongIds.union(songs.map(\.id)).union(findSongs.map(\.id))
         let libraries = listedLibraryIds.map(Set.init)
         let notLibraries = separateLibraryIds
         var copies: [String: Song] = [:]
         var rows: [String: [Song]] = [:]
+        var toLookUp: [Song] = []
+        for song in songs {
+            if !fresh, let known = discover.lookups[song.id], now.timeIntervalSince(known.at) < Self.lookupLifetime {
+                if let copy = known.copy { copies[song.id] = copy }
+            } else if !toLookUp.contains(where: { $0.id == song.id }) {
+                toLookUp.append(song)
+            }
+        }
         await withTaskGroup(of: (String, Song?, [Song]).self) { group in
             var started = 0
-            for song in songs {
+            for song in toLookUp {
                 if started >= 4, let done = await group.next() {   // four at a time
                     copies[done.0] = done.1
                     rows[done.0] = done.2
                 }
                 started += 1
-                let recording = song.recordingMBID ?? Self.jobRecording(for: song, jobs: jobs, flowId: flowId)
+                let recording = song.recordingMBID ?? DiscoverRules.jobRecording(for: song, jobs: jobs, flowId: flowId)
                 group.addTask { [weak self] in
                     guard let self else { return (song.id, nil, []) }
                     let (copy, found) = await self.libraryCopy(of: song, recording: recording, excluding: excluding,
@@ -213,19 +269,11 @@ extension AppModel {
                 rows[done.0] = done.2
             }
         }
+        for song in toLookUp { discover.lookups[song.id] = DiscoverLookup(copy: copies[song.id], at: now) }
         let found = copies.compactMapValues { $0 }
         for song in songs { discover.copies[song.id] = found[song.id] }
-        learnDiscoverLibrary(entries: songs, rows: rows)
+        learnDiscoverLibrary(entries: toLookUp, rows: rows)
         return found
-    }
-
-    /// Aurral's job's recording id for a flow song without one: the job of the same artist and title in the flow.
-    nonisolated static func jobRecording(for song: Song, jobs: [AurralJob], flowId: String?) -> MBID? {
-        let artist = DiscoverRules.normalised(song.artist), title = DiscoverRules.normalised(song.title)
-        return jobs.first {
-            (flowId == nil || $0.flowId == flowId) && DiscoverRules.normalised($0.artistName) == artist
-                && DiscoverRules.normalised($0.trackName) == title
-        }?.trackMBID
     }
 
     private func libraryCopy(of song: Song, recording: MBID?, excluding: Set<String>, libraries: Set<Int>?,
@@ -266,40 +314,56 @@ extension AppModel {
 
     // MARK: - Refresh Flow
 
+    /// How long a Refresh Flow Magpie sent counts as under way without Aurral's status showing it (fix I3).
+    nonisolated static let refreshLatchLimit: TimeInterval = 120
+
     /// Refresh Flow (after the owner confirmed "Replaces this playlist's songs"): read Aurral's status fresh and refuse
     /// while a run is under way (`AurralError.runActive`, nothing sent); otherwise start the flow's run.
     func refreshFlow(_ flowId: String) async throws {
         guard !isOffline else { throw Self.forcedOfflineError }
         guard let client = aurralClient else { throw AurralError.unauthorized }
         let status = try await client.status()
-        discover.status = status
-        discover.statusReadAt = .now
-        guard !status.isRunActive(flowId: flowId), !discover.refreshing.contains(flowId) else { throw AurralError.runActive }
-        discover.refreshing.insert(flowId)
+        noteStatus(status)
+        guard !isFlowRunActive(flowId) else { throw AurralError.runActive }
+        let lastRun = status.flows.first { $0.id == flowId }?.lastRunAt
+        discover.refreshing[flowId] = RefreshLatch(startedAt: discover.now(), lastRunAt: lastRun)
         do {
             _ = try await client.startFlow(flowId)
         } catch {
-            discover.refreshing.remove(flowId)
+            discover.refreshing[flowId] = nil
             throw error
         }
-        if let fresh = try? await client.status() {
-            discover.status = fresh
-            discover.statusReadAt = .now
+        if let fresh = try? await client.status() { noteStatus(fresh) }
+    }
+
+    /// Reads the worker's progress again (the page polls while a run is under way).
+    func refreshDiscoverStatus() async {
+        guard let client = aurralClient, !isOffline, let status = try? await client.status() else { return }
+        noteStatus(status)
+    }
+
+    /// Takes a status read, and lets go of each Refresh Flow Magpie sent once Aurral's status speaks for it (fix I3):
+    /// it shows the run (from then on the status says when it ends), the flow's last run moved (it finished between
+    /// reads), or `refreshLatchLimit` passed without either (it failed at once, or was never queued).
+    func noteStatus(_ status: AurralStatus) {
+        discover.status = status
+        discover.statusReadAt = discover.now()
+        let now = discover.now()
+        for (flowId, latch) in discover.refreshing {
+            let lastRun = status.flows.first { $0.id == flowId }?.lastRunAt
+            if status.isRunActive(flowId: flowId) || (lastRun != nil && lastRun != latch.lastRunAt)
+                || now.timeIntervalSince(latch.startedAt) > Self.refreshLatchLimit {
+                discover.refreshing[flowId] = nil
+            }
         }
     }
 
-    /// Reads the worker's progress again (the page polls while a run is under way). A run Magpie started stays "under
-    /// way" until Aurral's status shows it, then follows Aurral.
-    func refreshDiscoverStatus() async {
-        guard let client = aurralClient, !isOffline, let status = try? await client.status() else { return }
-        discover.status = status
-        discover.statusReadAt = .now
-        for flowId in discover.refreshing where status.isRunActive(flowId: flowId) { discover.refreshing.remove(flowId) }
-    }
-
-    /// Whether the flow's run is under way (Refresh Flow is then refused).
+    /// Whether the flow's run is under way (Refresh Flow is then refused): Aurral's status says so, or Magpie just
+    /// started it and Aurral hasn't spoken for it yet (at most `refreshLatchLimit`).
     func isFlowRunActive(_ flowId: String) -> Bool {
-        discover.refreshing.contains(flowId) || (discover.status?.isRunActive(flowId: flowId) ?? false)
+        if discover.status?.isRunActive(flowId: flowId) ?? false { return true }
+        guard let latch = discover.refreshing[flowId] else { return false }
+        return discover.now().timeIntervalSince(latch.startedAt) <= Self.refreshLatchLimit
     }
 
     // MARK: - Artists
@@ -337,6 +401,8 @@ extension AppModel {
 
     nonisolated static let discoverPlaylistsKeyPrefix = "magpie.discoverPlaylists."
     nonisolated static func discoverPlaylistsKey(_ scope: String) -> String { discoverPlaylistsKeyPrefix + scope }
+    nonisolated static let aurralSongsKeyPrefix = "magpie.aurralSongs."
+    nonisolated static func aurralSongsKey(_ scope: String) -> String { aurralSongsKeyPrefix + scope }
     nonisolated static let discoverLibrariesKeyPrefix = "magpie.discoverLibraries."
     nonisolated static func discoverLibrariesKey(_ scope: String) -> String { discoverLibrariesKeyPrefix + scope }
 }

@@ -59,6 +59,56 @@ public enum DiscoverRules {
         }
     }
 
+    /// Fix I1: of the playlists named after flows, the ones whose songs are the flow's: more than half of the entries are
+    /// the flow's songs (by Aurral's jobs for that flow: recording id, else artist + title with the duration within 3 s
+    /// when both are known) or songs known to be in Aurral's library. An empty playlist never counts. Of several for one
+    /// flow, only the best (the larger share, then more songs, then the lower id). `entries` by playlist id.
+    public static func confirmedFlowPlaylists(_ candidates: [DiscoverPlaylist], entries: [String: [Song]],
+                                              jobs: [AurralJob], aurralSongIds: Set<String>) -> [DiscoverPlaylist] {
+        var best: [String: (candidate: DiscoverPlaylist, share: Double, matched: Int)] = [:]
+        for candidate in candidates {
+            let songs = entries[candidate.playlist.id] ?? []
+            guard !songs.isEmpty else { continue }
+            let flowJobs = jobs.filter { $0.flowId == candidate.flow.id }
+            let matched = songs.filter { aurralSongIds.contains($0.id) || isFlowSong($0, jobs: flowJobs) }.count
+            guard matched * 2 > songs.count else { continue }
+            let share = Double(matched) / Double(songs.count)
+            if let current = best[candidate.flow.id] {
+                let better = share != current.share ? share > current.share
+                    : matched != current.matched ? matched > current.matched
+                    : candidate.playlist.id < current.candidate.playlist.id
+                guard better else { continue }
+            }
+            best[candidate.flow.id] = (candidate, share, matched)
+        }
+        let kept = Set(best.values.map(\.candidate.playlist.id))
+        return candidates.filter { kept.contains($0.playlist.id) }
+    }
+
+    /// The song is one of these jobs': same recording id, else same artist and title (folded) with the durations within
+    /// 3 s when both are known.
+    static func isFlowSong(_ song: Song, jobs: [AurralJob]) -> Bool {
+        jobs.contains { job in
+            if let recording = song.recordingMBID, let track = job.trackMBID { return recording == track }
+            return sameSong(song, job)
+        }
+    }
+
+    private static func sameSong(_ song: Song, _ job: AurralJob) -> Bool {
+        guard normalised(job.artistName) == normalised(song.artist), normalised(job.trackName) == normalised(song.title)
+        else { return false }
+        if let duration = job.duration, duration > 0, song.duration > 0 {
+            return abs(duration - song.duration) <= durationTolerance
+        }
+        return true
+    }
+
+    /// Aurral's job's recording id for a flow song without one: the job of the same artist and title in the flow (any
+    /// flow when nil), with the duration within 3 s when both are known (fix M3).
+    public static func jobRecording(for song: Song, jobs: [AurralJob], flowId: String?) -> MBID? {
+        jobs.first { (flowId == nil || $0.flowId == flowId) && $0.trackMBID != nil && sameSong(song, $0) }?.trackMBID
+    }
+
     // MARK: - The main library's copy
 
     /// Most a duration may differ by for a match without a MusicBrainz id.

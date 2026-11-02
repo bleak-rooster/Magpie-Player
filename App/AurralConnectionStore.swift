@@ -6,9 +6,27 @@ import Observation
 
 /// Round 12 Y6: the owner's Aurral (Discover): its address and API key. The key is full admin on Aurral, so it lives
 /// only in the Keychain, is never logged and never shown.
-struct AurralConnection: Codable, Sendable, Equatable {
+struct AurralConnection: Codable, Sendable, Equatable, CustomStringConvertible, CustomDebugStringConvertible,
+                        CustomReflectable {
     var base: URL
     var apiKey: String
+
+    // Fix M6: never prints the key.
+    var description: String { "AurralConnection(\(Redactor.sanitize(base)))" }
+    var debugDescription: String { description }
+    var customMirror: Mirror { Mirror(self, children: ["base": Redactor.sanitize(base)]) }
+}
+
+/// One song's lookup for its main-library copy (fix M1): the copy, or none, and when it was looked up.
+struct DiscoverLookup: Equatable {
+    var copy: Song?
+    var at: Date
+}
+
+/// A Refresh Flow Magpie sent (fix I3): when, and the flow's last run then (a change says the run finished).
+struct RefreshLatch: Equatable {
+    var startedAt: Date
+    var lastRunAt: Date?
 }
 
 /// Where the Aurral connection is kept. Tests substitute their own.
@@ -60,8 +78,14 @@ struct AurralConnectionStore: AurralConnectionStoring {
     var copies: [String: Song] = [:]
     /// Album ids of Aurral's copies (an artist page hides one whose every song has a library copy).
     var flowAlbumSongs: [String: Set<String>] = [:]
-    /// A Refresh Flow just sent, per flow, until Aurral's status shows its run.
-    var refreshing: Set<String> = []
+    /// The clock (tests move it).
+    @ObservationIgnored var now: () -> Date = { Date() }
+    /// A Refresh Flow just sent, per flow, until Aurral's status speaks for it (`AppModel.noteStatus`).
+    var refreshing: [String: RefreshLatch] = [:]
+    /// Every song in Aurral's library, as last read this session (fix I2; saved per account too).
+    var aurralSongIds: Set<String> = []
+    /// Each song's library-copy lookup this session (fix M1).
+    @ObservationIgnored var lookups: [String: DiscoverLookup] = [:]
 
     init(store: any AurralConnectionStoring) {
         self.store = store
@@ -78,6 +102,8 @@ struct AurralConnectionStore: AurralConnectionStoring {
         flowSongIds = []
         copies = [:]
         flowAlbumSongs = [:]
-        refreshing = []
+        refreshing = [:]
+        aurralSongIds = []
+        lookups = [:]
     }
 }

@@ -69,11 +69,13 @@ public struct AurralFlow: Sendable, Equatable, Hashable {
     public var ownerUsername: String?
     public var size: Int?
     public var nextRunAt: Date?
+    /// When the flow's last run happened (a change says a run finished: Refresh Flow's latch, fix I3).
+    public var lastRunAt: Date?
 
     public init(id: String, name: String, enabled: Bool = true, ownerUsername: String? = nil, size: Int? = nil,
-                nextRunAt: Date? = nil) {
+                nextRunAt: Date? = nil, lastRunAt: Date? = nil) {
         self.id = id; self.name = name; self.enabled = enabled; self.ownerUsername = ownerUsername; self.size = size
-        self.nextRunAt = nextRunAt
+        self.nextRunAt = nextRunAt; self.lastRunAt = lastRunAt
     }
 }
 
@@ -140,10 +142,12 @@ public struct AurralStatus: Sendable, Equatable {
         guard let o = object(data) as? [String: Any] else { throw AurralError.decoding }
         let iso = ISO8601DateFormatter()
         iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let plain = ISO8601DateFormatter()
+        func date(_ text: String?) -> Date? { text.flatMap { iso.date(from: $0) ?? plain.date(from: $0) } }
         let flows = (o["flows"] as? [Any] ?? []).compactMap { item -> AurralFlow? in
             guard let f = item as? [String: Any], let id = f.string("id"), let name = f.string("name") else { return nil }
             return AurralFlow(id: id, name: name, enabled: f.bool("enabled") ?? true, ownerUsername: f.string("ownerUsername"),
-                              size: f.int("size"), nextRunAt: f.string("nextRunAt").flatMap { iso.date(from: $0) })
+                              size: f.int("size"), nextRunAt: date(f.string("nextRunAt")), lastRunAt: date(f.string("lastRunAt")))
         }
         var stats: [String: AurralFlowStats] = [:]
         for (id, value) in o.dict("flowStats") ?? [:] {

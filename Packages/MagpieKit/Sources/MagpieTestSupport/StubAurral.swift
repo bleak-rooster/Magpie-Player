@@ -38,7 +38,13 @@ public final class StubAurral: HTTPTransport, @unchecked Sendable {
         }
     }
 
+    /// What a flow's start does: a run Aurral's status shows (default), one that finishes before the next status read
+    /// (`lastRunAt` moves, never seen active), or one never seen at all (failed at once).
+    public enum StartBehaviour: Sendable { case runs, finishesAtOnce, neverSeen }
+
     private struct State {
+        var start = StartBehaviour.runs
+        var lastRunAt: [String: String] = [:]
         var version: String? = "2.10.0"
         var flows: [Flow] = []
         var jobs: [Job] = []
@@ -71,6 +77,7 @@ public final class StubAurral: HTTPTransport, @unchecked Sendable {
     public func setRunning(_ flowId: String, _ on: Bool) {
         state.withLock { if on { $0.running.insert(flowId) } else { $0.running.remove(flowId) } }
     }
+    public func setStartBehaviour(_ behaviour: StartBehaviour) { state.withLock { $0.start = behaviour } }
     public func finishRun() { state.withLock { $0.running = [] } }
     public func setArtistInAurralLibrary(_ mbid: String) { state.withLock { _ = $0.inAurralLibrary.insert(mbid) } }
     /// Down: every request fails with "can't connect".
@@ -120,7 +127,13 @@ public final class StubAurral: HTTPTransport, @unchecked Sendable {
         case (let m, let p) where p.hasPrefix("/api/playlists/start/") && m != "GET":
             let flowId = String(p.dropFirst("/api/playlists/start/".count))
             guard snapshot.flows.contains(where: { $0.id == flowId }) else { return answer(404, ["error": "Flow not found"]) }
-            state.withLock { _ = $0.running.insert(flowId) }
+            state.withLock { s in
+                switch s.start {
+                case .runs: s.running.insert(flowId)
+                case .finishesAtOnce: s.lastRunAt[flowId] = "2026-11-03T12:00:00.000Z"
+                case .neverSeen: break
+                }
+            }
             return answer(200, ["success": true, "flowId": flowId, "queued": true, "operationId": "op-1"])
         default:
             return answer(404, ["error": "Not found"])
@@ -150,7 +163,7 @@ public final class StubAurral: HTTPTransport, @unchecked Sendable {
             "flows": s.flows.map { f in
                 ["id": f.id, "name": f.name, "ownerUsername": "admin", "enabled": f.enabled, "size": f.size,
                  "scheduleDays": [5], "scheduleTime": "00:00", "nextRunAt": "2026-11-06T00:00:00.000Z",
-                 "lastRunAt": "2026-10-30T00:00:00.000Z", "mix": ["discover": 100], "lidarrFeedToken": "secret-feed-token"]
+                 "lastRunAt": s.lastRunAt[f.id] ?? "2026-10-30T00:00:00.000Z", "mix": ["discover": 100], "lidarrFeedToken": "secret-feed-token"]
             },
             "sharedPlaylists": [],
             "operationQueue": ["processing": busy, "pending": 0, "currentLabel": busy ? "Generating flow" : NSNull()],

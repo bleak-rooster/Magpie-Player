@@ -12,11 +12,13 @@ extension AppModel {
     nonisolated static let libraryCopySwapLimit = 500
 
     /// The positions of `songs` (an own playlist's) that are Aurral copies with a library copy, and that copy. Aurral
-    /// copies are the songs seen in Discover playlists (read first, once, if none have been yet).
+    /// copies are the songs in Aurral's library (fix I2: rotated out of every flow too; saved per account) and every flow
+    /// song seen (Discover is read first if nothing is known yet).
     func aurralCopiesInOwnPlaylist(_ playlist: Playlist, songs: [Song]) async -> [Int: Song] {
         guard aurralSetUp, !isOffline, canEdit(playlist), !isDiscoverPlaylist(playlist) else { return [:] }
-        if discover.flowSongIds.isEmpty { await readFlowSongs() }
-        let flow = songs.enumerated().filter { discover.flowSongIds.contains($0.element.id) }
+        if knownAurralSongIds.isEmpty { await readFlowSongs() }
+        let known = knownAurralSongIds
+        let flow = songs.enumerated().filter { known.contains($0.element.id) }
         guard !flow.isEmpty else { return [:] }
         let copies = await libraryCopies(for: flow.map(\.element), flowId: nil)
         var result: [Int: Song] = [:]
@@ -24,12 +26,9 @@ extension AppModel {
         return result
     }
 
-    /// Reads each Discover playlist's songs (to know Aurral's copies), best effort.
+    /// Reads Discover (its playlists' songs and Aurral's library), best effort.
     func readFlowSongs() async {
-        guard let ids = try? await discoverPlaylists().map(\.id) else { return }
-        for id in ids {
-            if let (_, songs) = try? await request({ try await $0.playlist(id: id) }) { noteFlowSongs(songs) }
-        }
+        await refreshDiscover(force: true)
     }
 
     /// "Use your library's copy": every Aurral copy in the owner's playlist that the library has replaced by that copy,

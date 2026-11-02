@@ -31,6 +31,7 @@ private let loginJSON = Data(#"""
 private let server = URL(string: "http://192.168.1.2:4533")!
 private let rec = "0383dadf-2a4e-4d10-a46a-e9e041da8eb3"
 private let artistMbid = "4ad9b3a4-8a3a-4c7f-8b0f-6b7e6f2c0a11"
+private let rec2 = "1b0c5c1e-6f0a-4a37-9c8f-0c2f1e8b2f10"
 
 private func ok(_ body: String = "") -> Data {
     Data(#"{"subsonic-response":{"status":"ok","version":"1.16.1"\#(body.isEmpty ? "" : "," + body)}}"#.utf8)
@@ -47,7 +48,10 @@ final class DiscoverNavidrome: @unchecked Sendable {
     private let lock = NSLock()
     var lists: [String: (name: String, songs: [String])] = [
         "pl-dw": ("Discover Weekly", ["a-lullaby", "a-words", "a-other", "a-nameonly"]),
-        "pl-road": ("Road trip", ["m-x", "a-lullaby", "m-y"]),
+        "pl-road": ("Road trip", ["m-x", "a-lullaby", "m-y", "a-old"]),
+        // Fix I1: the owner's own playlist that happens to share a flow's name, and an empty one.
+        "pl-mine": ("Discover Weekly", ["m-x", "m-y"]),
+        "pl-empty": ("Trending Mix", []),
     ]
     let songs: [String: Entry] = [
         "a-lullaby": Entry(id: "a-lullaby", title: "Lullaby", artist: "Low", duration: 251, mbid: rec, library: 2),
@@ -59,8 +63,12 @@ final class DiscoverNavidrome: @unchecked Sendable {
         "m-halo": Entry(id: "m-halo", title: "Halo", artist: "Low", duration: 0, mbid: nil, library: 1),
         "m-x": Entry(id: "m-x", title: "X", artist: "Q", duration: 100, mbid: nil, library: 1),
         "m-y": Entry(id: "m-y", title: "Y", artist: "Q", duration: 100, mbid: nil, library: 1),
+        // Fix I2: an Aurral copy rotated out of every flow, still in Aurral's library (the owner's playlist holds it).
+        "a-old": Entry(id: "a-old", title: "Old", artist: "Low", duration: 300, mbid: rec2, library: 2),
+        "m-old": Entry(id: "m-old", title: "Old", artist: "Low", duration: 300, mbid: rec2, library: 1),
     ]
     private(set) var updates: [URLRequest] = []
+    private(set) var lookups: [URLRequest] = []
 
     private func child(_ e: Entry) -> String {
         #"{"id":"\#(e.id)","title":"\#(e.title)","artist":"\#(e.artist)","album":"A","albumId":"al-\#(e.id)","duration":\#(e.duration)\#(e.mbid.map { #","musicBrainzId":"\#($0)""# } ?? "")}"#
@@ -94,7 +102,10 @@ final class DiscoverNavidrome: @unchecked Sendable {
         t.stub(pathSuffix: "/api/song") { r in
             let rows: [Entry]
             if let mbid = value(r, "mbz_recording_id") { rows = self.songs.values.filter { $0.mbid == mbid }.sorted { $0.id < $1.id } }
-            else { rows = [] }
+            else if let library = value(r, "library_id").flatMap(Int.init) {
+                rows = self.songs.values.filter { $0.library == library }.sorted { $0.id < $1.id }
+            } else { rows = [] }
+            self.lock.withLock { self.lookups.append(r) }
             return .init(status: 200, body: Data("[\(rows.map(self.native).joined(separator: ","))]".utf8),
                          headers: ["X-Total-Count": "\(rows.count)"])
         }
@@ -136,6 +147,10 @@ final class DiscoverNavidrome: @unchecked Sendable {
                   durationMs: 251_000, finalPath: "/data/downloads/aurral/_flows/flow-dw/Low/Single/Lullaby.flac"),
             .init(flowId: "flow-dw", artistName: "Low", trackName: "Words", artistMbid: artistMbid,
                   finalPath: "/data/downloads/aurral/_flows/flow-dw/Low/Single/Words.flac"),
+            .init(flowId: "flow-dw", artistName: "Nobody", trackName: "Unknown Song", durationMs: 180_000,
+                  finalPath: "/data/downloads/aurral/_flows/flow-dw/Nobody/Single/Unknown Song.mp3"),
+            .init(flowId: "flow-dw", artistName: "Low", trackName: "Halo",
+                  finalPath: "/data/downloads/aurral/_flows/flow-dw/Low/Single/Halo.mp3"),
         ])
         let model = AppModel(store: store, lidarrStore: MemoryLidarrStore(), tokenStore: MemoryTokenStore(),
                              aurralStore: aurralStore, matchIndexDirectory: nil, dataDirectory: tmp, transport: transport,
@@ -222,13 +237,13 @@ final class DiscoverNavidrome: @unchecked Sendable {
                 if case .playlist(let p) = item { return p.id } else { return nil }
             } ?? []
         }
-        #expect(ids(.playlists) == ["pl-road"])
+        #expect(ids(.playlists) == ["pl-mine", "pl-road", "pl-empty"], "fix I1: same-named but not Aurral's")
         #expect(ids(.discover) == ["pl-dw"])
-        #expect(try await model.editablePlaylists().map(\.id) == ["pl-road"])
+        #expect(try await model.editablePlaylists().map(\.id) == ["pl-mine", "pl-road", "pl-empty"])
         let dw = Playlist(id: "pl-dw", name: "Discover Weekly", songCount: 4, duration: 0, owner: "admin", readOnly: false)
         #expect(!model.canEdit(dw), "Aurral's playlist, though the server names the owner")
         let car = CarPlayLibraryAdapter(model: model)
-        #expect(try await car.playlists().map(\.id) == ["pl-road"])
+        #expect(try await car.playlists().map(\.id) == ["pl-empty", "pl-mine", "pl-road"])
         #expect(try await car.discoverPlaylists().map(\.id) == ["pl-dw"])
         // Saved for this account: kept out before Aurral answers again.
         #expect(defaults.stringArray(forKey: AppModel.discoverPlaylistsKey(try #require(model.navidromeScope))) == ["pl-dw"])
@@ -271,8 +286,7 @@ final class DiscoverNavidrome: @unchecked Sendable {
     @Test func aurralsLibraryLearntFromJobPaths() async throws {
         let model = try await signedIn()
         defer { model.signOut() }
-        #expect(model.listedLibraryIds == nil, "two libraries, none known yet: both listed")
-        _ = try await model.discoverPage(playlistId: "pl-dw")
+        // Fix I2: learnt when Discover is first read (connecting), so Aurral's library is known before any page.
         #expect(model.discoverLibraryIds == [2])
         #expect(model.listedLibraryIds == [1])
         #expect(model.mainLibraryId == 1)
@@ -287,18 +301,18 @@ final class DiscoverNavidrome: @unchecked Sendable {
         defer { model.signOut() }
         let road = try #require(try await model.editablePlaylists().first { $0.id == "pl-road" })
         let (_, songs) = try await model.request { try await $0.playlist(id: "pl-road") }
-        #expect(await model.aurralCopiesInOwnPlaylist(road, songs: songs).mapValues(\.id) == [1: "m-lullaby"])
-        #expect(try await model.useLibraryCopies(in: road) == 1)
+        #expect(await model.aurralCopiesInOwnPlaylist(road, songs: songs).mapValues(\.id) == [1: "m-lullaby", 3: "m-old"])
+        #expect(try await model.useLibraryCopies(in: road) == 2)
         #expect(nav.updates.count == 1, "one send")
         let update = try #require(nav.updates.first)
         #expect(value(update, "playlistId") == "pl-road")
-        #expect(items(update).filter { $0.name == "songIndexToRemove" }.map(\.value) == ["0", "1", "2"])
-        #expect(items(update).filter { $0.name == "songIdToAdd" }.map(\.value) == ["m-x", "m-lullaby", "m-y"])
-        #expect(nav.lists["pl-road"]?.songs == ["m-x", "m-lullaby", "m-y"])
+        #expect(items(update).filter { $0.name == "songIndexToRemove" }.map(\.value) == ["0", "1", "2", "3"])
+        #expect(items(update).filter { $0.name == "songIdToAdd" }.map(\.value) == ["m-x", "m-lullaby", "m-y", "m-old"])
+        #expect(nav.lists["pl-road"]?.songs == ["m-x", "m-lullaby", "m-y", "m-old"])
         #expect(try await model.useLibraryCopies(in: road) == 0, "nothing left: nothing sent")
         #expect(nav.updates.count == 1)
         // Someone else's playlist: refused by X3's ownership check, nothing sent.
-        let theirs = Playlist(id: "pl-road", name: "Road trip", songCount: 3, duration: 0, owner: "someone", readOnly: false)
+        let theirs = Playlist(id: "pl-road", name: "Road trip", songCount: 4, duration: 0, owner: "someone", readOnly: false)
         await #expect(throws: PlaylistEditError.notYours) { try await model.useLibraryCopies(in: theirs) }
         #expect(nav.updates.count == 1)
     }
@@ -367,9 +381,90 @@ final class DiscoverNavidrome: @unchecked Sendable {
         #expect(DiscoverCopy.progress(AurralProgress(done: 3, total: 20)) == "Getting songs: 3 of 20")
     }
 
+
+    // MARK: - Fix round 1
+
+    /// I1: the owner's own "Discover Weekly" (library songs) and an empty "Trending Mix" stay normal playlists: listed,
+    /// editable, no Refresh; only Aurral's (its songs are the flow's) is Discover.
+    @Test func sameNamedOwnPlaylistStaysNormal() async throws {
+        let model = try await signedIn()
+        defer { model.signOut() }
+        #expect(model.discover.playlists.map(\.playlist.id) == ["pl-dw"])
+        #expect(!model.isDiscoverPlaylist(id: "pl-mine") && !model.isDiscoverPlaylist(id: "pl-empty"))
+        let mine = Playlist(id: "pl-mine", name: "Discover Weekly", songCount: 2, duration: 0, owner: "admin", readOnly: false)
+        #expect(model.canEdit(mine))
+        #expect(model.discoverFlow(playlistId: "pl-mine") == nil, "no Refresh Flow on it")
+        try await model.add(["m-x"], to: mine)
+        #expect(nav.lists["pl-mine"]?.songs == ["m-x", "m-y", "m-x"])
+        #expect(try await model.discoverPlaylists().map(\.id) == ["pl-dw"])
+    }
+
+    /// I2: an Aurral copy that has left every flow is still recognised (by Aurral's library, read and saved), also after
+    /// a relaunch with Aurral down.
+    @Test func rotatedOutCopyIsStillSwapped() async throws {
+        let model = try await signedIn()
+        defer { model.signOut() }
+        let scope = try #require(model.navidromeScope)
+        #expect(Set(defaults.stringArray(forKey: AppModel.aurralSongsKey(scope)) ?? []).isSuperset(of: ["a-old", "a-lullaby"]))
+        let road = try #require(try await model.editablePlaylists().first { $0.id == "pl-road" })
+        let (_, songs) = try await model.request { try await $0.playlist(id: "pl-road") }
+        #expect(await model.aurralCopiesInOwnPlaylist(road, songs: songs).mapValues(\.id)[3] == "m-old")
+        model.discover.forgetReads()   // as after a relaunch
+        aurral.setDown(true)
+        #expect(await model.aurralCopiesInOwnPlaylist(road, songs: songs).mapValues(\.id) == [1: "m-lullaby", 3: "m-old"])
+    }
+
+    /// I3: a start never seen running lets go after 2 minutes; a run that finished between reads lets go at once.
+    @Test func refreshLatchExpires() async throws {
+        let model = try await signedIn()
+        defer { model.signOut() }
+        let start = Date()
+        model.discover.now = { start }
+        aurral.setStartBehaviour(.neverSeen)
+        try await model.refreshFlow("flow-dw")
+        #expect(model.isFlowRunActive("flow-dw"), "held while Aurral may not show it yet")
+        await #expect(throws: AurralError.runActive) { try await model.refreshFlow("flow-dw") }
+        model.discover.now = { start.addingTimeInterval(119) }
+        await model.refreshDiscoverStatus()
+        #expect(model.isFlowRunActive("flow-dw"))
+        model.discover.now = { start.addingTimeInterval(121) }
+        await model.refreshDiscoverStatus()
+        #expect(!model.isFlowRunActive("flow-dw"), "never seen: let go after 2 minutes")
+        aurral.setStartBehaviour(.finishesAtOnce)
+        try await model.refreshFlow("flow-dw")
+        #expect(aurral.asked.filter { $0.hasPrefix("POST") }.count == 2)
+        #expect(!model.isFlowRunActive("flow-dw"), "Aurral's last run moved: finished, Refresh is back")
+    }
+
+    /// M1: each song's lookup is kept for the session; pull to refresh looks again.
+    @Test func lookupsAreCached() async throws {
+        let model = try await signedIn()
+        defer { model.signOut() }
+        _ = try await model.discoverPage(playlistId: "pl-dw")
+        let before = nav.lookups.count + navidromeAsked.filter { $0.hasSuffix("search3") }.count
+        let again = try await model.discoverPage(playlistId: "pl-dw")
+        #expect(nav.lookups.count + navidromeAsked.filter { $0.hasSuffix("search3") }.count == before, "nothing asked again")
+        #expect(again.entries.map(\.song.id) == ["m-lullaby", "m-words", "a-other", "a-nameonly"])
+        _ = try await model.discoverPage(playlistId: "pl-dw", fresh: true)
+        #expect(nav.lookups.count + navidromeAsked.filter { $0.hasSuffix("search3") }.count > before)
+    }
+
+    /// M6: a connection never prints its key.
+    @Test func connectionsHideTheirKeys() {
+        let aurralConnection = AurralConnection(base: URL(string: "http://aurral:3001")!, apiKey: "secret-aurral-key")
+        let lidarrConnection = LidarrConnection(base: URL(string: "http://lidarr:8686")!, apiKey: "secret-lidarr-key")
+        for text in [String(describing: aurralConnection), String(reflecting: aurralConnection), "\(aurralConnection)",
+                     String(describing: lidarrConnection), String(reflecting: lidarrConnection)] {
+            #expect(!text.contains("secret"), "\(text)")
+        }
+    }
+
     @Test func signOutForgetsAurral() async throws {
         let model = try await signedIn()
         model.signOut()
+        let keys = defaults.dictionaryRepresentation().keys
+        #expect(!keys.contains { $0.hasPrefix(AppModel.discoverPlaylistsKeyPrefix) || $0.hasPrefix(AppModel.discoverLibrariesKeyPrefix)
+                                 || $0.hasPrefix(AppModel.aurralSongsKeyPrefix) }, "M7: the account's Discover keys go")
         #expect(aurralStore.load() == nil && !model.aurralSetUp)
         #expect(model.discover.playlists.isEmpty)
     }

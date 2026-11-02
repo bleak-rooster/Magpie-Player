@@ -568,6 +568,9 @@ final class AppModel {
             appDefaults.removeObject(forKey: Self.musicFoldersKey(navidromeScope))
             appDefaults.removeObject(forKey: Self.autoMainLibraryKey(navidromeScope))
             appDefaults.removeObject(forKey: Self.lidarrLibrariesKey(navidromeScope))
+            for key in [Self.discoverPlaylistsKey, Self.discoverLibrariesKey, Self.aurralSongsKey] {   // Y6 fix M7
+                appDefaults.removeObject(forKey: key(navidromeScope))
+            }
             let prefix = Self.findSongIdsKeyPrefix + navidromeScope + "."
             for key in appDefaults.dictionaryRepresentation().keys where key.hasPrefix(prefix) {
                 appDefaults.removeObject(forKey: key)
