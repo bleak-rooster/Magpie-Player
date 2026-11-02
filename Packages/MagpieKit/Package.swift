@@ -27,7 +27,7 @@ let package = Package(
         .target(name: "Requests", dependencies: ["MagpieCore", "LidarrKit", "ListenBrainzKit", "NavidromeKit", "MatchIndex"]),
         .target(name: "Playback", dependencies: ["MagpieCore"]),
         .target(name: "DesignSystem", dependencies: ["MagpieCore"]),
-        .target(name: "CarPlayUI", dependencies: ["MagpieCore", "Playback", "DesignSystem"]),
+        .target(name: "CarPlayUI", dependencies: ["MagpieCore", "Playback", "DesignSystem", "Search"]),
         .target(name: "MagpieTestSupport", dependencies: ["MagpieCore"]),
         .testTarget(name: "MagpieCoreTests", dependencies: ["MagpieCore", "MagpieTestSupport"]),
         .testTarget(name: "NavidromeKitTests",
@@ -49,6 +49,8 @@ let package = Package(
                                    "Playback", "Requests", "MagpieCore", "MagpieTestSupport"],
                     resources: [.copy("../Fixtures/navidrome"), .copy("../Fixtures/lidarr"),
                                 .copy("../Fixtures/listenbrainz"), .copy("../Fixtures/musicbrainz")]),
+        // Y2: the car's A–Z lists (pure models; run on macOS like the other package suites).
+        .testTarget(name: "CarPlayUITests", dependencies: ["CarPlayUI", "MagpieCore", "Search"]),
         .testTarget(name: "SearchTests",
                     dependencies: ["Search", "MatchIndex", "MagpieCore", "LidarrKit", "ListenBrainzKit", "MagpieTestSupport"]),
     ],

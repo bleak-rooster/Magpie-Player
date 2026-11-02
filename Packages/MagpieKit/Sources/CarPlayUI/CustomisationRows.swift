@@ -189,31 +189,35 @@ extension CarPlayRows {
         return sections.isEmpty ? state(.empty) : sections
     }
 
-    /// An album on the phone (a leaf): Shuffle and its tracks, all from the phone.
+    /// An album on the phone (a leaf): Play, Shuffle (2c) and its tracks, all from the phone.
     public static func downloadedAlbum(_ album: Album, playingId: String?) -> [CPSectionModel] {
         let songs = album.songs ?? []
         guard !songs.isEmpty else { return state(.empty) }
-        let shuffle = CPRowModel(id: "album.shuffle", title: "Shuffle", detail: songCount(songs.count),
-                                 action: .play(.shuffle(songs)))
         let tracks = songs.enumerated().map { i, song in
             CPRowModel(id: "track.\(i).\(song.id)", title: display(song.title, untitled), detail: duration(song.duration),
                        playing: song.id == playingId, action: .play(.songs(songs, startAt: i)))
         }
-        return [CPSectionModel(header: nil, rows: [shuffle]), CPSectionModel(header: album.artist, rows: tracks)]
+        return [playShuffle(id: "album", detail: songCount(songs.count), play: .songs(songs, startAt: 0), shuffle: .shuffle(songs)),
+                CPSectionModel(header: album.artist, rows: tracks)]
     }
 
-    /// An artist's albums on the phone (a leaf): Shuffle of them all, then each album, which plays from its start.
-    public static func downloadedArtist(_ artist: Artist, albums: [Album]) -> [CPSectionModel] {
+    /// An artist's albums on the phone (a leaf): Play and Shuffle of them all (2c), then each album, which plays from
+    /// its start.
+    /// Fix round 1 (I2): albums open their downloaded page when the depth allows (`albumsOpen`).
+    public static func downloadedArtist(_ artist: Artist, albums: [Album], albumsOpen: Bool = false) -> [CPSectionModel] {
         let albums = unique(albums, \.id).filter { !($0.songs ?? []).isEmpty }
         guard !albums.isEmpty else { return state(.empty) }
         let all = albums.flatMap { $0.songs ?? [] }
-        let shuffle = CPRowModel(id: "artist.shuffle", title: "Shuffle", detail: display(artist.name, unknownArtist),
-                                 action: .play(.shuffle(all)))
         let rows = albums.map { album in
-            CPRowModel(id: "album.\(album.id)", title: display(album.name, untitledAlbum), detail: album.year.map(String.init),
-                       artworkKey: album.coverArtId, action: .play(.songs(album.songs ?? [], startAt: 0)))
+            let name = display(album.name, untitledAlbum)
+            return CPRowModel(id: "album.\(album.id)", title: name, detail: album.year.map(String.init),
+                              artworkKey: album.coverArtId,
+                              action: albumsOpen ? .open(.downloadedAlbum(id: album.id, title: name))
+                                  : .play(.songs(album.songs ?? [], startAt: 0)))
         }
-        return [CPSectionModel(header: nil, rows: [shuffle]), CPSectionModel(header: "Albums", rows: rows)]
+        return [playShuffle(id: "artist", detail: display(artist.name, unknownArtist), play: .songs(all, startAt: 0),
+                            shuffle: .shuffle(all)),
+                CPSectionModel(header: "Albums", rows: rows)]
     }
 
     /// Library › Favourites (depth 2): starred songs, which play from the one tapped, then starred albums, which open.
@@ -247,9 +251,29 @@ extension CarPlayRows {
                 return row
             }
         }
-        return nonEmpty(rows)
+        // Fix round 1: Play and Shuffle here too (2c), over the playlist's library songs.
+        guard !rows.isEmpty else { return state(.empty) }
+        let tracks = CPSectionModel(header: nil, rows: rows)
+        guard !songs.isEmpty else { return [tracks] }
+        return [playShuffle(id: "madeForYou", detail: songCount(songs.count), play: .songs(songs, startAt: 0),
+                            shuffle: .shuffle(songs)), tracks]
     }
 
-    /// What the car says when the sleep button is tapped (only then: critique M3).
-    public static func sleepTimerMessage(active: Bool) -> String { active ? "Sleep timer on" : "Sleep timer off" }
+    /// What the car says after a tap on Now Playing's star (Y2), only when it didn't go through.
+    public static func favouriteMessage(_ result: CPFavouriteResult) -> String? {
+        switch result {
+        case .done: nil
+        case .offline: "You're offline"
+        case .failed(let adding): adding ? "Couldn't add to your favourites" : "Couldn't remove from your favourites"
+        }
+    }
+}
+
+/// How a favourite change from the car went (Y2).
+public enum CPFavouriteResult: Sendable, Hashable {
+    case done
+    /// Nothing was sent.
+    case offline
+    /// The server said no (or didn't answer); the star is back to the real state.
+    case failed(adding: Bool)
 }
