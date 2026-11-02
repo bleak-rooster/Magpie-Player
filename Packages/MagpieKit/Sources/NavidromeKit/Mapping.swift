@@ -14,13 +14,16 @@ enum Mapping {
     }
 
     static func song(_ d: SubsonicSong) -> Song {
-        Song(id: d.id, title: d.title ?? "", artist: d.artist ?? "", artistId: d.artistId,
+        var song = Song(id: d.id, title: d.title ?? "", artist: d.artist ?? "", artistId: d.artistId,
              album: d.album ?? "", albumId: d.albumId, track: d.track, disc: d.discNumber,
              duration: d.duration ?? 0, suffix: d.suffix, bitRate: d.bitRate, coverArtId: d.coverArt,
              recordingMBID: mbid(d.musicBrainzId), isrcs: d.isrc ?? [], libraryId: nil,
              starred: d.starred != nil, genre: d.genre,
              replayGain: replayGain(d.replayGain?.trackGain, d.replayGain?.albumGain,
                                     d.replayGain?.trackPeak, d.replayGain?.albumPeak))
+        song.samplingRate = d.samplingRate.flatMap { $0 > 0 ? $0 : nil }
+        song.bitDepth = d.bitDepth.flatMap { $0 > 0 ? $0 : nil }
+        return song
     }
 
     static func song(_ d: NativeSong) -> Song {

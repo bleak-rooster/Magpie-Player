@@ -29,6 +29,8 @@ struct SubsonicBody: Decodable {
         let line: [Line]?
     }
     struct ScanStatus: Decodable { let scanning: Bool? }
+    struct MusicFolders: Decodable { let musicFolder: [SubsonicMusicFolder]? }
+    struct RandomSongs: Decodable { let song: [SubsonicSong]? }
 
     let status: String
     let error: APIError?
@@ -47,6 +49,13 @@ struct SubsonicBody: Decodable {
     let openSubsonicExtensions: [Extension]?
     let lyricsList: LyricsList?
     let scanStatus: ScanStatus?
+    let musicFolders: MusicFolders?
+    let randomSongs: RandomSongs?
+}
+
+struct SubsonicMusicFolder: Decodable {
+    let id: Int
+    let name: String?
 }
 
 struct SubsonicSong: Decodable {

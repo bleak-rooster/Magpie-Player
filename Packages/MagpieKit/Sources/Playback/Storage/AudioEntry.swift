@@ -32,18 +32,27 @@ public struct AudioMetadata: Codable, Hashable, Sendable {
     /// How many songs the album had when it was downloaded as an album (P1): its marks call it whole only when all of
     /// them are on the phone. Nil when not downloaded with an album, or saved before this was kept.
     public var albumSongCount: Int?
+    /// The original file's bit rate, sample rate and bit depth (round 12 Y3: Now Playing's "On this iPhone" label).
+    /// Nil when the server didn't say, or saved before these were kept.
+    public var bitRate: Int?
+    public var samplingRate: Int?
+    public var bitDepth: Int?
 
     public init(_ song: Song) {
         songId = song.id; title = song.title; artist = song.artist; artistId = song.artistId
         album = song.album; albumId = song.albumId; track = song.track; disc = song.disc
         duration = song.duration; genre = song.genre; coverArtId = song.coverArtId; suffix = song.suffix
         replayGain = song.replayGain
+        bitRate = song.bitRate; samplingRate = song.samplingRate; bitDepth = song.bitDepth
     }
 
     public var song: Song {
-        Song(id: songId, title: title, artist: artist, artistId: artistId, album: album, albumId: albumId,
-             track: track, disc: disc, duration: duration, suffix: suffix, coverArtId: coverArtId,
-             genre: genre, replayGain: replayGain)
+        var song = Song(id: songId, title: title, artist: artist, artistId: artistId, album: album, albumId: albumId,
+                        track: track, disc: disc, duration: duration, suffix: suffix, bitRate: bitRate,
+                        coverArtId: coverArtId, genre: genre, replayGain: replayGain)
+        song.samplingRate = samplingRate
+        song.bitDepth = bitDepth
+        return song
     }
 }
 
@@ -133,5 +142,8 @@ extension AudioMetadata {
         replayGain = try? c.decodeIfPresent(ReplayGain.self, forKey: .replayGain)
         albumCoverArtId = try? c.decodeIfPresent(String.self, forKey: .albumCoverArtId)
         albumSongCount = try? c.decodeIfPresent(Int.self, forKey: .albumSongCount)
+        bitRate = (try? c.decodeIfPresent(Int.self, forKey: .bitRate)).flatMap { $0 }
+        samplingRate = (try? c.decodeIfPresent(Int.self, forKey: .samplingRate)).flatMap { $0 }
+        bitDepth = (try? c.decodeIfPresent(Int.self, forKey: .bitDepth)).flatMap { $0 }
     }
 }
