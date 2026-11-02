@@ -63,6 +63,33 @@ import UIKit
         try Self.render(window, "now-playing-375x667-hint-error.png")
     }
 
+    /// Round 12 Y3 (item 11): with the "what you hear" line under the scrubber, the hint and the error all showing,
+    /// the page still fits the smallest phone without scrolling.
+    @Test func smallestPhoneFitsWithHearingLineHintAndError() async throws {
+        let name = "now-playing-small-hearing-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: name)!
+        defer { defaults.removePersistentDomain(forName: name) }
+        let model = makeModel(defaults)
+        var flac = Song(id: "f1", title: "North by Northwest", artist: "The Midnight Cartographers",
+                        album: "Atlas of Small Hours", duration: 200, suffix: "flac", bitRate: 2800)
+        flac.samplingRate = 96000
+        flac.bitDepth = 24
+        model.updatePreferences { $0.playback.wifi = .opusMedium }
+        model.player.play([flac, Song(id: "s2", title: "Compass Rose", artist: "The Midnight Cartographers",
+                                      album: "Atlas of Small Hours", duration: 180)], startAt: 0)
+        #expect(model.hearing(flac).text?.hasPrefix("Transcoded") == true)
+        model.playbackHint = AppModel.transcodeHint
+        let entry = try #require(model.player.queue.current?.id)
+        model.player.handle(.failed(entry, "The server stopped answering."))
+
+        let frames = Frames()
+        let (window, host) = try await Self.host(model, frames)
+        defer { window.isHidden = true }
+        #expect(!Self.containsScrollView(host.view), "the page scrolls at the default text size")
+        Self.expectFits(frames, in: window.bounds, order: ["top", "art", "meta", "scrubber", "hint", "error", "transport", "bottom"])
+        try Self.render(window, "now-playing-375x667-hearing.png")
+    }
+
     /// Every part in `order` laid out, inside `bounds`, each below the one before; the art at least 120 pt.
     private static func expectFits(_ frames: Frames, in bounds: CGRect, order: [String]) {
         var previous: (String, CGRect)?

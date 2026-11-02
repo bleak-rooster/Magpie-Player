@@ -335,7 +335,7 @@ private let noNetwork = NetworkStatus(isConnected: false, isCellular: false, isC
         #expect(car.homeSections == [.downloaded] && car.libraryRows == [.genres, .downloads])
         #expect(car.isOffline)
         let carHome = CarPlayRows.home(try await car.homeShelves(car.homeSections, size: CarPlayRows.homeShelfMaxSize))
-        #expect(carHome.map(\.header) == ["Downloaded"])
+        #expect(carHome.map(\.header) == ["Recently downloaded"])   // Y3: the shelf's new name
         let carRows = carHome.flatMap(\.rows)
         #expect(carRows.map(\.id) == ["home.downloaded.al-1"])
         #expect(carRows.first?.action == .open(.downloadedAlbum(id: "al-1", title: carRows.first?.title ?? "")))

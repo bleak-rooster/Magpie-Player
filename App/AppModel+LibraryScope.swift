@@ -51,9 +51,10 @@ extension AppModel {
     }
 
     /// Reads the server's libraries (best effort: a failure keeps the last list) and scopes the client again.
+    /// Offline (Task 14) nothing is asked.
     func refreshMusicFolders() async {
-        guard let client = session?.client, let scope = navidromeScope,
-              let folders = try? await client.musicFolders(), session?.client === client else { return }
+        guard !isOffline, let scope = navidromeScope,
+              let folders = try? await request({ try await $0.musicFolders() }), navidromeScope == scope else { return }
         appDefaults.set(folders.map(\.id), forKey: Self.musicFoldersKey(scope))
         syncLibraryScope()
     }
