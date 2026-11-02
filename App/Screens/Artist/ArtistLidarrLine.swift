@@ -26,7 +26,7 @@ struct ArtistLidarrPresentation: Equatable {
 
     /// Nil for no line (no Lidarr, or it couldn't be read).
     static func make(_ state: ArtistLidarrState?, offline: Bool, changesAllowed: Bool, canAdd: Bool,
-                     justAdded: Bool = false) -> ArtistLidarrPresentation? {
+                     justAdded: Bool = false, permanent: Bool = false) -> ArtistLidarrPresentation? {
         if offline { return .offline }
         guard let state else { return nil }
         switch state {
@@ -42,6 +42,13 @@ struct ArtistLidarrPresentation: Equatable {
                 else { line.action = .addMore }
             }
             return line
+        case .find(_, let find):
+            // Y5 (item 8): one of Magpie's finds. "Add to your library" is the page's Finds line (OnlyInFindsLine).
+            // Y5 follow-up 2: "This can't be undone." when Lidarr's recycle bin is off.
+            return ArtistLidarrPresentation(text: FindCopy.status(find, permanent: permanent), symbol: FindCopy.symbol(find))
+        case .unmatched:
+            // Y5 (item 9.9): a name alone is never acted on.
+            return ArtistLidarrPresentation(text: FindCopy.unmatched, symbol: "questionmark.circle")
         case .notInLidarr:
             // Without the library's MBID the add asks Lidarr's search on the tap, and the owner picks the exact
             // artist in the Add sheet ("Which <artist>?", I3).
@@ -76,6 +83,8 @@ struct ArtistLidarrPresentation: Equatable {
 @MainActor @Observable final class ArtistLidarrModel {
     private(set) var state: ArtistLidarrState?
     private(set) var justAdded = false
+    /// Y5 follow-up 2: Lidarr's recycle bin is off, so the MP3's removal can't be undone.
+    private(set) var permanent = false
     private(set) var working = false
     var error: String?
     /// The Add the page presents (`.addFlow`, which clears it as it shows).
@@ -97,7 +106,7 @@ struct ArtistLidarrPresentation: Equatable {
     var presentation: ArtistLidarrPresentation? {
         guard model.lidarr != nil else { return nil }   // without Lidarr nothing is shown
         return ArtistLidarrPresentation.make(state, offline: model.isOffline, changesAllowed: model.changesAllowed,
-                                             canAdd: model.canAddArtists, justAdded: justAdded)
+                                             canAdd: model.canAddArtists, justAdded: justAdded, permanent: permanent)
     }
 
     /// Reads Lidarr, unless offline (no request then) or there's no Lidarr. A failed read shows no line.
@@ -106,6 +115,7 @@ struct ArtistLidarrPresentation: Equatable {
         do {
             let fresh = try await model.artistLidarrState(name: name, mbid: mbid ?? resolvedMBID)
             state = fresh
+            if case .find(_, .inLibrary(.waiting(_?)))? = fresh { permanent = await model.mp3RemovalIsPermanent() }
             // Lidarr's own state shows from now on, so "Searching…" never sticks after its search ended.
             if case .monitored? = fresh { justAdded = false }
         } catch {

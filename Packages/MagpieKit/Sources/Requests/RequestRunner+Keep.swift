@@ -32,8 +32,11 @@ import MagpieCore
 /// by MBID in the folder it moved to.
 ///
 /// M6: the Keep is saved (request and ledger) before every write, so a relaunch only follows it, never writes the
-/// move twice. The ledger says "kept" from just before the write (Not for me refuses kept albums, G3.4) until the
-/// Keep verifiably failed. A failed move puts back what the PUT changed (`magpie-find`, the quality profile, and the
+/// move twice. Y5 (item 9.4): the ledger records an *intent* (`keepIntentAt`, with the find's files, C3) before the
+/// write, and says "kept" (`keptAt`) only at the commit, after a fresh read proved the move (one atomic save, I10).
+/// Every refusing reader treats the intent as kept (C5), so nothing deletes a find whose move may be in flight.
+/// Item 9.5: while Lidarr's queue is busy the intent waits (`.queued`) and goes when it's free. C1: a folder of the
+/// artist's name already in the main root refuses (nothing written, nothing kept): there is no untag-only Keep. A failed move puts back what the PUT changed (`magpie-find`, the quality profile, and the
 /// artist path when Lidarr saved the new one but never moved the files), so the find can be kept again. What can't
 /// be settled within the limits ends in "needs attention": the ledger keeps saying kept, nothing more is written.
 extension RequestRunner {
@@ -60,6 +63,8 @@ extension RequestRunner {
         case keptInPlace
         /// Lidarr is still moving it; later ticks follow it (and never send it again).
         case stillMoving
+        /// Y5: Lidarr is busy; the Keep is saved and goes when it's free ("Adding when your server is free…").
+        case queued
     }
 
     public enum KeepError: Error, Equatable {
@@ -75,6 +80,8 @@ extension RequestRunner {
         case moveFailed
         /// The Keep couldn't be settled from here; it needs the owner's look (`keepNeedsAttention`).
         case needsAttention
+        /// C1: the main root already has a folder of the artist's name. Nothing was written; it stays a find.
+        case collision
     }
 
     /// Between checks of a move in progress.
@@ -132,15 +139,12 @@ extension RequestRunner {
         guard let r = request(id) else { throw KeepError.notAFind }
         guard let artistId = r.keep?.artistId ?? r.lidarrArtistId else { throw KeepError.notAFind }
         // Not for me is deleting (or couldn't finish deleting) this artist's find: never move it meanwhile.
-        if lettingGoArtists.contains(artistId)
-            || list.contains(where: { $0.lidarrArtistId == artistId && ($0.notForMe != nil || $0.notForMeNeedsAttention) }) {
-            throw KeepError.notAFind
-        }
-        // One Keep per artist: the whole artist moves.
-        guard !keepingArtists.contains(artistId) else { return .stillMoving }
-        keepingArtists.insert(artistId)
+        if lettingGoNow(artistId) { throw KeepError.notAFind }
+        // One Keep per artist: the whole artist moves (a lease, I1: also against another runner).
+        guard tryAcquireArtist(artistId) else { return .stillMoving }   // fix I5: one atomic check-and-insert
         defer { keepingArtists.remove(artistId) }
-        // M6: already written. Only see how it went; never write it again.
+        // Queued: send it if Lidarr is free now. M6: already written: only see how it went; never write it again.
+        if r.keep?.phase == .queued { return try await sendQueued(id) }
         if r.keep != nil { return try await followKeep(id, inline: true) }
         guard r.state == .ready, !r.keepNeedsAttention else { throw KeepError.notAFind }
         if list.contains(where: { $0.id != id && $0.keep?.artistId == artistId }) { return .stillMoving }
@@ -152,13 +156,12 @@ extension RequestRunner {
             throw KeepError.unavailable
         }
         guard entries.contains(where: \.createdArtist) else { throw KeepError.notAFind }
-        // Kept already, or a Keep of it that isn't settled (needs attention): never a second move.
-        guard !entries.contains(where: { $0.keptAt != nil }) else { throw KeepError.notAFind }
-        let roots: [String], artist: LidarrArtist, commands: [CommandStatus]
+        // Kept already, or a Keep of it under way or not settled (needs attention): never a second move (C5).
+        guard !entries.contains(where: \.isKeptOrKeeping) else { throw KeepError.notAFind }
+        let roots: [String], artist: LidarrArtist
         do {
             roots = try await lidarr.rootFolders().map(\.path)
             artist = try await lidarr.artist(id: artistId)
-            commands = try await lidarr.commands()
         } catch LidarrError.http(status: 404) {
             throw KeepError.notAFind
         } catch {
@@ -166,17 +169,57 @@ extension RequestRunner {
         }
         lastLidarrContact = now()
         guard entries.contains(where: { $0.created(artist) }),   // the same artist, not a reused id
-              Self.mayKeep(artist, request: r, setup: setup, roots: roots), let from = artist.path,
-              let mbid = artist.foreignArtistId else {
+              Self.mayKeep(artist, request: r, setup: setup, roots: roots), let from = artist.path else {
             throw KeepError.notAFind
         }
-        // Something is already moving this artist (not Magpie's Keep, or one whose record was lost): leave it.
-        // FL3: nor while Lidarr's queue is busy, so the move runs right after the destination was checked.
-        guard !commands.contains(where: { Self.isMove($0, of: artistId) && !Self.isFinished($0) }),
-              !commands.contains(where: Self.holdsTheQueue) else {
+        // C1: a folder of the artist's name in the main root already: refuse, nothing written.
+        guard try await !destinationTaken(artist, setup: setup) else {
+            await mutate(id) { $0.collision = true }
+            throw KeepError.collision
+        }
+        // C3: the find's lossy files, recorded with the intent (what the MP3 rule may delete later).
+        let files: [FindFile]
+        do { files = try await findFiles(artistId: artistId, folder: from) } catch { throw KeepError.unavailable }
+        let progress = KeepProgress(
+            phase: .queued, startedAt: now(), artistId: artistId, fromPath: from,
+            findsRoot: setup.findsRoot, mainRoot: setup.mainRoot, findTagId: setup.findTagId,
+            priorQualityProfileId: artist.qualityProfileId, commandBaseline: 0)
+        // M6 + item 9.4: the intent is on disk (ledger and request) before anything can reach Lidarr; never "kept".
+        do {
+            let at = serverNow()
+            // Fix I1: each file's record goes on its album's entry only (files of an album without an entry on the
+            // lowest album's entry), so the record is stored once per artist.
+            let withEntry = Set(entries.compactMap(\.albumId))
+            let catchAll = withEntry.min()
+            try await ledger.update(artistId: artistId) { e in
+                e.keepIntentAt = at
+                var mine = files.filter { $0.albumId == e.albumId }
+                if e.albumId == catchAll { mine += files.filter { !withEntry.contains($0.albumId) } }
+                e.findFiles = mine.isEmpty ? nil : mine
+            }
+            if crashed(.intentSaved) { throw KeepError.unavailable }
+            await mutate(id) {
+                $0.keep = progress
+                $0.keepFailed = false
+                $0.collision = false
+            }
+            try await persist()
+        } catch {
+            if !stopped { await nothingKept(id, artistId) }
             throw KeepError.unavailable
         }
-        // G4: where the editor would put it, and whether anything is there already.
+        return try await sendQueued(id)
+    }
+
+    /// M5: a Not for me holds or needs the artist.
+    func lettingGoNow(_ artistId: Int) -> Bool {
+        lettingGoArtists.contains(artistId)
+            || list.contains(where: { $0.lidarrArtistId == artistId && ($0.notForMe != nil || $0.notForMeNeedsAttention) })
+    }
+
+    /// G4/C1: the editor would put the artist where a folder already is (or Lidarr's name for it drifted).
+    private func destinationTaken(_ artist: LidarrArtist, setup: KeepSetup) async throws -> Bool {
+        guard let mbid = artist.foreignArtistId, let from = artist.path else { return true }
         let named: String?, existing: [String]
         do {
             named = try await lidarr.artistLookup(mbid: mbid)?.folder
@@ -184,47 +227,77 @@ extension RequestRunner {
         } catch {
             throw KeepError.unavailable
         }
-        let current = Self.lastComponent(from)
-        let untagOnly = Self.mustStayInFinds(current: current, named: named, existing: existing.map(Self.lastComponent))
+        return Self.mustStayInFinds(current: Self.lastComponent(from), named: named, existing: existing.map(Self.lastComponent))
+    }
 
-        let progress = KeepProgress(
-            phase: untagOnly ? .untagging : .moving, startedAt: now(), artistId: artistId, fromPath: from,
-            findsRoot: setup.findsRoot, mainRoot: setup.mainRoot, findTagId: setup.findTagId,
-            priorQualityProfileId: artist.qualityProfileId, commandBaseline: commands.map(\.id).max() ?? 0)
-        // M6: the Keep is on disk, and the ledger says kept, before anything can reach Lidarr.
-        do {
-            try await setKept(artistId, at: now())
-            await mutate(id) {
-                $0.keep = progress
-                $0.keepFailed = false
-            }
-            try await persist()
-        } catch {
-            await nothingKept(id, artistId)
+    /// The find's lossy track files inside its folder, with their track and path below the folder (C3).
+    func findFiles(artistId: Int, folder: String) async throws -> [FindFile] {
+        var out: [FindFile] = []
+        let files = try await lidarr.trackFiles(artistId: artistId)
+        var tracks: [Int: [LidarrTrack]] = [:]
+        for file in files where WriteConfinement.isLossy(file.quality) {
+            guard let album = file.albumId, let size = file.size,
+                  let relative = WriteConfinement.relative(file.path, under: folder) else { continue }
+            if tracks[album] == nil { tracks[album] = try await lidarr.tracks(albumId: album) }
+            let track = tracks[album]?.first { $0.trackFileId == file.id }
+            out.append(FindFile(id: file.id, albumId: album, foreignTrackId: track?.foreignTrackId,
+                                relativePath: relative, size: size, quality: file.quality))
+        }
+        return out
+    }
+
+    /// A queued Keep (item 9.5): sends the move when Lidarr's queue is free (FL3), after checking the find and the
+    /// destination once more. Busy: stays queued. The caller holds the artist.
+    func sendQueued(_ id: RequestID) async throws -> KeepOutcome {
+        guard let r = request(id), let p = r.keep, p.phase == .queued, let setup = await keepSetup() else {
             throw KeepError.unavailable
         }
-        // FL3: checked again right before the PUT. A folder of either name that turned up in the main root, or a
-        // busy queue, and nothing is sent (the next Keep decides afresh).
-        if !untagOnly {
-            let unchanged: Bool
-            do {
-                let queue = try await lidarr.commands()
-                let now = try await lidarr.directories(in: setup.mainRoot)
-                unchanged = !queue.contains(where: { Self.isMove($0, of: artistId) && !Self.isFinished($0) })
-                    && !queue.contains(where: Self.holdsTheQueue)
-                    && !Self.mustStayInFinds(current: current, named: named, existing: now.map(Self.lastComponent))
-            } catch {
-                unchanged = false
-            }
-            guard unchanged else {
-                await nothingKept(id, artistId)
-                throw KeepError.unavailable
-            }
+        let artistId = p.artistId
+        guard !lettingGoNow(artistId) else {
+            await nothingKept(id, artistId)
+            throw KeepError.notAFind
         }
-        let body: any Encodable & Sendable = untagOnly
-            ? UntagBody(artistIds: [artistId], tags: [setup.findTagId], applyTags: "remove")
-            : MoveBody(artistIds: [artistId], rootFolderPath: setup.mainRoot, moveFiles: true,
-                       qualityProfileId: setup.losslessProfileId, tags: [setup.findTagId], applyTags: "remove")
+        guard await gate.enabled else { return .queued }
+        let commands: [CommandStatus], artist: LidarrArtist, roots: [String]
+        do {
+            commands = try await lidarr.commands()
+            artist = try await lidarr.artist(id: artistId)
+            roots = try await lidarr.rootFolders().map(\.path)
+        } catch {
+            return .queued
+        }
+        lastLidarrContact = now()
+        // Something is moving this artist, or Lidarr's queue holds a command (FL3): wait.
+        if commands.contains(where: { Self.isMove($0, of: artistId) && !Self.isFinished($0) })
+            || commands.contains(where: Self.holdsTheQueue) {
+            return .queued
+        }
+        guard Self.mayKeep(artist, request: r, setup: setup, roots: roots), let from = artist.path,
+              Self.sameBytes(from, p.fromPath) else {
+            await nothingKept(id, artistId)
+            throw KeepError.notAFind
+        }
+        let taken: Bool
+        do { taken = try await destinationTaken(artist, setup: setup) } catch { return .queued }
+        guard !taken else {
+            await nothingKept(id, artistId)
+            await mutate(id) { $0.collision = true }
+            throw KeepError.collision
+        }
+        // I2: the grace and limits count from the send; the baseline is read right before it.
+        await mutate(id) {
+            $0.keep?.phase = .moving
+            $0.keep?.sentAt = self.now()
+            $0.keep?.commandBaseline = commands.map(\.id).max() ?? 0
+            $0.keep?.priorQualityProfileId = artist.qualityProfileId
+        }
+        do { try await persist() } catch {
+            await mutate(id) { $0.keep?.phase = .queued; $0.keep?.sentAt = nil }
+            return .queued
+        }
+        let body = MoveBody(artistIds: [artistId], rootFolderPath: setup.mainRoot, moveFiles: true,
+                            qualityProfileId: setup.losslessProfileId, tags: [setup.findTagId], applyTags: "remove")
+        if crashed(.beforePut) { throw KeepError.unavailable }
         do {
             _ = try await gate.send("PUT", "artist/editor", body: body)
         } catch let refusal as WriteGateError {
@@ -236,16 +309,14 @@ extension RequestRunner {
             }
         } catch let error where Self.isDefinitiveRejection(error) {
             await nothingKept(id, artistId)   // Lidarr answered 4xx: nothing applied
+            await mutate(id) { $0.keepFailed = true }
             throw KeepError.moveFailed
         } catch {
             // No answer (timeout, 5xx): it may have landed. Followed like a sent one; never sent again.
             Log.logger("requests").error("Keep: no answer from Lidarr; following the move")
             return try await followKeep(id, inline: true)
         }
-        if untagOnly {
-            await finishInPlace(id, artistId: artistId)
-            return .keptInPlace
-        }
+        if crashed(.afterPut) { throw KeepError.unavailable }
         return try await followKeep(id, inline: true)
     }
 
@@ -258,6 +329,7 @@ extension RequestRunner {
                 if r.state == .kept { return r.keptInPlace ? .keptInPlace : .moved }
                 throw r.keepNeedsAttention ? KeepError.needsAttention : KeepError.moveFailed
             }
+            if progress.phase == .queued { return .queued }
             switch await checkKeep(id, progress) {
             case .done(let outcome): return outcome
             case .failed: throw request(id)?.keepNeedsAttention == true ? KeepError.needsAttention : KeepError.moveFailed
@@ -265,6 +337,7 @@ extension RequestRunner {
                 await mutate(id) { $0.keep?.lastCheckAt = self.now() }
                 guard now() < deadline else { return .stillMoving }
                 await sleep(Self.keepPollInterval)
+                renewLeases()   // fix I5: the heartbeat inside the wait
             }
         }
     }
@@ -278,6 +351,8 @@ extension RequestRunner {
         case .restoring:
             await restore(id, p)
             return .failed
+        case .queued:
+            return .pending
         }
     }
 
@@ -297,7 +372,7 @@ extension RequestRunner {
         let mine = commands.filter { $0.id > p.commandBaseline && Self.isMove($0, of: p.artistId) }
         if mine.contains(where: { !Self.isFinished($0) }) { return await stillPending(id, p) }
         let finished = mine.max { $0.id < $1.id }
-        let started = now().timeIntervalSince(p.startedAt) >= Self.keepStartGrace
+        let started = now().timeIntervalSince(p.since) >= Self.keepStartGrace
         let main = Self.mainGuard(p)
         let inMain = artist.path.map(main.isInside) ?? false
         if inMain, finished.map({ $0.status.lowercased() == "completed" }) ?? started {
@@ -385,14 +460,14 @@ extension RequestRunner {
 
     /// Can't settle it now: try again later, until `keepMoveLimit` after the write (then needs attention).
     private func notYet(_ id: RequestID, _ p: KeepProgress) async {
-        guard now().timeIntervalSince(p.startedAt) >= Self.keepMoveLimit else { return }
+        guard now().timeIntervalSince(p.since) >= Self.keepMoveLimit else { return }
         Log.logger("requests").error("Keep: couldn't put the find back in time")
         await needsAttention(id)
     }
 
     /// Still moving: pending, until `keepMoveLimit` after the write (then needs attention).
     private func stillPending(_ id: RequestID, _ p: KeepProgress) async -> KeepCheck {
-        guard now().timeIntervalSince(p.startedAt) >= Self.keepMoveLimit else { return .pending }
+        guard now().timeIntervalSince(p.since) >= Self.keepMoveLimit else { return .pending }
         Log.logger("requests").error("Keep: the move didn't finish in time")
         await needsAttention(id)
         return .failed
@@ -417,7 +492,7 @@ extension RequestRunner {
             await finishInPlace(id, artistId: p.artistId)
             return .done(.keptInPlace)
         }
-        guard now().timeIntervalSince(p.startedAt) >= Self.keepStartGrace else { return .pending }
+        guard now().timeIntervalSince(p.since) >= Self.keepStartGrace else { return .pending }
         await nothingKept(id, p.artistId)
         await mutate(id) { $0.keepFailed = true }
         return .failed
@@ -470,7 +545,7 @@ extension RequestRunner {
             if let prior = p.priorQualityProfileId, artist.qualityProfileId != prior { body.qualityProfileId = prior }
             guard body.tags != nil || body.qualityProfileId != nil || body.rootFolderPath != nil else {
                 // A find again: Not for me may remove it later.
-                try? await setKept(p.artistId, at: nil)
+                await clearIntent(p.artistId)
                 return await mutate(id) {
                     $0.keep = nil
                     $0.keepFailed = true
@@ -507,25 +582,70 @@ extension RequestRunner {
     /// The move is confirmed: this request and every other ready request for the artist are kept; both folders
     /// are scanned (A3); the songs are looked up again by MBID.
     private func finishMove(_ id: RequestID, _ p: KeepProgress, to path: String) async {
+        // Item 9.4 + I10: "kept" only now, after the move was proven, in one save for the whole artist.
+        guard await commitKept(p.artistId) else { return }
+        if crashed(.ledgerCommitted) { return }
+        let tapped = p.sentAt != nil && request(id)?.keep?.phase != .queued
+        // Fix I3: the watch is saved in the same change that says kept (§5: the MP3 rule only for a Keep the owner
+        // tapped under Y5, C2); its commands go after it's on disk.
+        let entries = (try? await ledger.entries.filter { $0.lidarrArtistId == p.artistId }) ?? []
+        let watch = request(id).flatMap { makeWatch($0, entries: entries, autoDelete: tapped) }
         let kept = list.filter { $0.lidarrArtistId == p.artistId && ($0.id == id || ($0.state == .ready && $0.keep == nil)) }
         for r in kept {
-            await apply(r.id, .keep)
-            await mutate(r.id) {
-                $0.keep = nil
-                $0.keepFailed = false
-                $0.relinkPending = true
-                $0.movedAt = self.now()
-                $0.movedTo = path
-            }
+            guard var updated = request(r.id) else { continue }
+            let (next, _) = RequestMachine.step(updated.state, .keep, now: now(), prior: updated.priorWait)
+            updated.state = next
+            updated.keep = nil
+            updated.keepFailed = false
+            updated.relinkPending = true
+            updated.movedAt = now()
+            updated.movedTo = path
+            if r.id == id, updated.lossless == nil { updated.lossless = watch }
+            await mutate(r.id) { $0 = updated }
         }
+        if crashed(.requestCommitted) { return }
         do { try await library.rescanMoved(p.fromPath, path) } catch {
             Log.logger("requests").error("Keep: scan failed: \(Log.category(of: error), privacy: .public)")
         }
         for r in kept { await relink(r.id) }
+        await kickLosslessWatch(id, artistId: p.artistId)
+    }
+
+    /// The commit: `keptAt` on, the intent off, for every entry of the artist in one save. False: not saved (the
+    /// intent stays, the Keep is followed again).
+    func commitKept(_ artistId: Int) async -> Bool {
+        let at = serverNow()
+        do {
+            try await ledger.update(artistId: artistId) {
+                if $0.keptAt == nil { $0.keptAt = at }
+                $0.keepIntentAt = nil
+            }
+            return true
+        } catch {
+            Log.logger("requests").error("Keep: the commit wasn't saved; checked again")
+            return false
+        }
+    }
+
+    /// The intent is off and nothing says kept (the intent's file record goes with it). False: not saved (fix I2: the
+    /// next pass's orphan-intent recovery tries again).
+    @discardableResult
+    func clearIntent(_ artistId: Int) async -> Bool {
+        do {
+            try await ledger.update(artistId: artistId) {
+                $0.keepIntentAt = nil
+                if $0.keptAt == nil { $0.findFiles = nil }
+            }
+            return true
+        } catch {
+            Log.logger("requests").error("Keep: the intent couldn't be cleared; tried again")
+            return false
+        }
     }
 
     /// Kept where it is: this request and every other ready request of the (now untagged) artist.
     private func finishInPlace(_ id: RequestID, artistId: Int) async {
+        guard await commitKept(artistId) else { return }
         let kept = list.filter { $0.lidarrArtistId == artistId && ($0.id == id || ($0.state == .ready && $0.keep == nil)) }
         for r in kept {
             await apply(r.id, .keep)
@@ -538,17 +658,9 @@ extension RequestRunner {
     }
 
     /// Nothing reached Lidarr (or it verifiably didn't apply): the request and ledger are as before the Keep.
-    private func nothingKept(_ id: RequestID, _ artistId: Int) async {
-        try? await setKept(artistId, at: nil)
+    func nothingKept(_ id: RequestID, _ artistId: Int) async {
+        await clearIntent(artistId)
         await mutate(id) { $0.keep = nil }
-    }
-
-    /// Sets (or clears) `keptAt` on every ledger entry of the artist: Keep moves the whole artist.
-    private func setKept(_ artistId: Int, at date: Date?) async throws {
-        for var entry in try await ledger.entries where entry.lidarrArtistId == artistId && entry.keptAt != date {
-            entry.keptAt = date
-            try await ledger.record(entry)
-        }
     }
 
     // MARK: - After the move (A3: re-resolve song ids by MBID)
@@ -564,13 +676,22 @@ extension RequestRunner {
         }
         let found: Song?
         do { found = try await library.keptSong(recording, folder) } catch { found = nil }
-        guard let song = found else {
+        // Y5: after the lossless upgrade, only the lossless song counts (Navidrome may still list the MP3 until its scan).
+        let wantsLossless = r.lossless?.losslessAt != nil
+        let usable = found.flatMap { song in
+            !wantsLossless || ["flac", "alac", "wav", "ape", "wv", "aiff", "aif"].contains(song.suffix?.lowercased() ?? "") ? song : nil
+        }
+        guard let song = usable else {
+            // Y5 fix I7: the library hasn't listed the lossless file yet: the artist folder's scan is asked for once,
+            // coalesced across requests and bounded by `flushFolderScans`.
+            if wantsLossless { requestFolderScan(folder) }
             if now().timeIntervalSince(r.movedAt ?? r.updatedAt) >= Self.relinkLimit {
                 await mutate(id) { $0.relinkPending = false }
             }
             return
         }
         let before = r.songId
+        if wantsLossless { folderScanned(folder) }
         await mutate(id) {
             $0.songId = song.id
             $0.songSuffix = song.suffix
@@ -580,17 +701,32 @@ extension RequestRunner {
     }
 
     /// `tick()`: follows Keeps still settling (at most every `keepCheckInterval`) and looks kept songs up again.
+    public static let keepQueueLimit: TimeInterval = 24 * 3600
+
     func followKeeps() async {
         for r in list {
-            guard let artistId = r.keep?.artistId, !keepingArtists.contains(artistId) else { continue }
+            guard let p = r.keep else { continue }
+            let artistId = p.artistId
+            if p.phase == .queued {
+                guard tryAcquireArtist(artistId) else { continue }
+                if now().timeIntervalSince(p.startedAt) >= Self.keepQueueLimit {
+                    // Item 9.5: never sent; after a day it's dropped ("Couldn't add it yet. Try again.").
+                    await nothingKept(r.id, artistId)
+                    await mutate(r.id) { $0.keepFailed = true }
+                } else {
+                    _ = try? await sendQueued(r.id)
+                }
+                keepingArtists.remove(artistId)
+                continue
+            }
             // A last check "in the future" (the clock went back) is due now.
-            if let last = r.keep?.lastCheckAt, (0..<Self.keepCheckInterval).contains(now().timeIntervalSince(last)) { continue }
-            keepingArtists.insert(artistId)
+            if let last = p.lastCheckAt, (0..<Self.keepCheckInterval).contains(now().timeIntervalSince(last)) { continue }
+            guard tryAcquireArtist(artistId) else { continue }
             _ = try? await followKeep(r.id, inline: false)
             keepingArtists.remove(artistId)
         }
         for r in list where r.relinkPending == true {
-            if let artistId = r.lidarrArtistId, keepingArtists.contains(artistId) { continue }
+            if let artistId = r.lidarrArtistId, artistBusy(artistId) { continue }
             if let last = relinkChecks[r.id], now().timeIntervalSince(last) < Self.relinkInterval { continue }
             await relink(r.id)
         }

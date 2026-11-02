@@ -134,8 +134,7 @@ extension RequestRunner {
                         follow: Bool, types: ReleaseTypes? = nil, qualityProfileId: Int? = nil) async throws -> BringInResult {
         let target = try await bringInTarget(id)
         let artistId = target.artist.id
-        guard !keepingArtists.contains(artistId) else { throw BringInError.unavailable }
-        keepingArtists.insert(artistId)
+        guard tryAcquireArtist(artistId) else { throw BringInError.unavailable }   // Y5 fix I5: atomic
         defer { keepingArtists.remove(artistId) }
 
         // R18: the release types and quality first. They await Lidarr (a read, maybe writes), so they come before
@@ -279,7 +278,7 @@ extension RequestRunner {
         let entries: [LedgerEntry]
         do { entries = try await ledger.entries } catch { throw BringInError.unavailable }
         let artistEntries = entries.filter { $0.lidarrArtistId == artistId }
-        guard artistEntries.contains(where: \.createdArtist), artistEntries.contains(where: { $0.keptAt != nil }) else {
+        guard artistEntries.contains(where: \.createdArtist), artistEntries.contains(where: \.isConfirmedKept) else {
             throw BringInError.notKept
         }
         let artist: LidarrArtist, albums: [LidarrAlbum]
@@ -295,7 +294,7 @@ extension RequestRunner {
         guard let expected = r.plan?.artistMBID, artist.foreignArtistId == expected,
               artistEntries.contains(where: { $0.created(artist) }),
               // Kept, said of this very artist (not of an earlier one under a reused id).
-              artistEntries.contains(where: { $0.keptAt != nil && $0.created(artist) }) else { throw BringInError.notKept }
+              artistEntries.contains(where: { $0.isConfirmedKept && $0.created(artist) }) else { throw BringInError.notKept }
         let main = PathGuard(findsRoot: setup.mainRoot, otherRoots: [setup.findsRoot], caseInsensitive: false)
         guard !artist.tags.contains(setup.findTagId), let path = artist.path, main.isInside(path) else {
             throw BringInError.notKept

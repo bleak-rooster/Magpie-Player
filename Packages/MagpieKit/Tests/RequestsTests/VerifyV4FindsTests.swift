@@ -32,8 +32,8 @@ import MagpieCore
         #expect(log.dropFirst().allSatisfy { $0.bodySummary.contains(#""applyTags":"add""#) })
         let r = try #require(await h.request(id))
         #expect(r.keepNeedsAttention && r.keep == nil)
-        // The ledger keeps saying kept: Not for me will never delete it.
-        #expect(try await h.ledger.entries.filter { $0.lidarrArtistId == 42 }.allSatisfy { $0.keptAt != nil })
+        // The ledger keeps saying keeping (C5: treated as kept): Not for me will never delete it.
+        #expect(try await h.ledger.entries.filter { $0.lidarrArtistId == 42 }.allSatisfy(\.isKeptOrKeeping))
     }
 
     /// §3g Bring in more "offered ids only": ids the sheet never offered, or that aren't eligible now (already

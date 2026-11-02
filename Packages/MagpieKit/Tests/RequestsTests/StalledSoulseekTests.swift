@@ -14,6 +14,7 @@ import MagpieCore
     private func searching(albumMonitored: Bool = false) async throws -> (Harness, RequestID) {
         let h = await Harness()
         h.server.ownerHasArtist(albumMonitored: albumMonitored)
+        await h.runner.setStallLimit(60)   // these tests use the 1-minute choice; the default is 3 (Y5, `stallLimitSetting`)
         let id = try await h.runner.tryRecording(h.recording(recAlbumOnly), tier: .standard)
         await h.runner.settle()
         #expect(await h.state(id) == .searching)
@@ -54,9 +55,11 @@ import MagpieCore
         #expect(r.sourceStalledAt == h.clock.now)
         #expect(r.isSourceStalled)
         #expect(await h.gate.changeLog().contains { $0.method == "DELETE" && $0.path == "/api/v1/queue/901?" + Self.deleteQuery })
-        // The download clients are read once per session (cached).
+        // Y5 item 9.6: the download clients are read again every pass (at most once in a pass).
+        let reads = h.server.with { $0.downloadClientReads }
+        h.server.with { $0.queue = [self.soulseek(902)] }   // a new copy to look at
         await h.runner.tick()
-        #expect(h.server.with { $0.downloadClientReads } == 1)
+        #expect(h.server.with { $0.downloadClientReads } == reads + 1)
     }
 
     /// R20 (owner's ruling over the appraisal): the clock starts when the item appears in the queue, so a copy queued
@@ -94,19 +97,19 @@ import MagpieCore
         #expect(h.server.writeBodies().map(\.0) == ["PUT album/monitor", "POST command"])
     }
 
-    /// Progress (sizeleft, or status / trackedDownloadState) restarts the clock.
+    /// Progress (sizeleft) restarts the clock. Y5 item 9.6: a status flip (ok ↔ warning, as slskd does) doesn't.
     @Test func anyChangeRestartsTheClock() async throws {
         let (h, _) = try await searching()
         h.server.with { $0.queue = [self.soulseek(901, sizeleft: 60)] }
         await h.runner.tick()
         h.clock.advance(50); h.server.with { $0.queue = [self.soulseek(901, sizeleft: 55)] }
         await h.runner.tick()
-        h.clock.advance(50); h.server.with { $0.queue[0].status = "queued" }
+        h.clock.advance(30); h.server.with { $0.queue[0].status = "warning" }
         await h.runner.tick()
-        h.clock.advance(59); await h.runner.tick()
-        #expect(deletes(h).isEmpty)
+        h.clock.advance(29); await h.runner.tick()
+        #expect(deletes(h).isEmpty, "59 s since the last progress")
         h.clock.advance(1); await h.runner.tick()
-        #expect(deletes(h).count == 1)
+        #expect(deletes(h).count == 1, "the status flip didn't restart the clock")
     }
 
     /// Fix round 1 I1: a copy that's complete, waiting to import, being imported or blocked from importing is never
@@ -220,13 +223,17 @@ import MagpieCore
         #expect(await h.request(id)?.isActive == true, "still live until its normal expiry")
     }
 
-    /// Settings › Requests: "Stalled downloads give up after" 1, 2, 5 or 10 minutes, 1 by default; the runner uses it.
+    /// Settings › Requests: "Stalled downloads give up after" 1, 2, 3, 5 or 10 minutes; Y5 item 9.6: 3 by default (a
+    /// saved choice stays, I11: `StallLimit(seconds:)` reads 60 as 1 minute); the runner uses it.
     @Test func stallLimitSetting() async throws {
-        #expect(StallLimit.allCases.map(\.seconds) == [60, 120, 300, 600])
-        #expect(StallLimit.allCases.map(\.title) == ["1 minute", "2 minutes", "5 minutes", "10 minutes"])
-        #expect(StallLimit.standard == .oneMinute)
+        #expect(StallLimit.allCases.map(\.seconds) == [60, 120, 180, 300, 600])
+        #expect(StallLimit.allCases.map(\.title) == ["1 minute", "2 minutes", "3 minutes", "5 minutes", "10 minutes"])
+        #expect(StallLimit.standard == .threeMinutes)
         #expect(StallLimit(seconds: 300) == .fiveMinutes)
-        #expect(StallLimit(seconds: 7) == .oneMinute, "anything else reads as the default")
+        #expect(StallLimit(seconds: 60) == .oneMinute, "an owner's saved 1 minute is kept, never migrated")
+        #expect(StallLimit(seconds: 7) == .threeMinutes, "anything else reads as the default")
+        let fresh = await Harness()
+        #expect(await fresh.runner.stallLimit == 180, "a new runner uses 3 minutes")
 
         let (h, _) = try await searching()
         await h.runner.setStallLimit(StallLimit.twoMinutes.seconds)

@@ -20,6 +20,10 @@ enum KeepCopy {
     static let keptInPlace = CPKeepResult.keptInPlace.message
     static let stillMoving = CPKeepResult.stillMoving.message
     static let moveFailed = "Couldn't keep it this time. It's still in your Finds, so you can try again."
+    /// Y5 item 9.5: saved, and sent when Lidarr is free.
+    static let queued = FindCopy.addingQueued
+    /// Y5 C1: refused, nothing written.
+    static let collision = FindCopy.collision
     static let notAFind = CPKeepResult.notAFind.message
     static let unavailable = "Can't keep it right now. Try again in a moment."
     static let changesOff = "Keeping finds is switched off. Turn it on in Settings."
@@ -36,6 +40,7 @@ enum KeepCopy {
         case .moved: moved
         case .keptInPlace: keptInPlace
         case .stillMoving: stillMoving
+        case .queued: queued
         }
     }
 
@@ -46,6 +51,7 @@ enum KeepCopy {
         case .notAFind?: notAFind
         case .moveFailed?: moveFailed
         case .needsAttention?: needsAttention
+        case .collision?: collision
         case .unavailable?, nil: unavailable
         }
     }
@@ -81,6 +87,8 @@ extension AppModel {
         if outcome == .moved { Task { await refreshFinds() } }
         return outcome
     }
+
+    nonisolated static let losslessSuffixes: Set<String> = ["flac", "alac", "wav", "ape", "wv", "aiff", "aif"]
 
     /// Songs kept from Finds that aren't lossless yet: "Lossless soon".
     func quality(of song: Song) -> Quality {
@@ -144,7 +152,9 @@ extension AppModel {
               let (library, folder) = Self.keptLocation(artistPath, findsLibrary: findsLibrary, mapping: finds.mapping,
                                                         libraries: try await navidromeLibraries()) else { return nil }
         let id = library.id
-        return try await request { try await $0.songs(recordingMBID: recording, inLibrary: id, under: folder) }.first
+        // Y5: after Lidarr's upgrade both copies may be listed until Navidrome's scan ends: the lossless one wins.
+        let songs = try await request { try await $0.songs(recordingMBID: recording, inLibrary: id, under: folder) }
+        return songs.first { Self.losslessSuffixes.contains($0.suffix?.lowercased() ?? "") } ?? songs.first
     }
 
     /// The runner found the kept song in the library: queue slots now hold the library song, and the finds

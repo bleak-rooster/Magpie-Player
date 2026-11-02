@@ -11,8 +11,14 @@ import MagpieCore
 ///   points back at the current Finds root (otherwise, which moves no files);
 /// - `DELETE /artist/{id}`: only an artist Magpie created, nothing of it kept, carrying `magpie-find` and strictly
 ///   inside the Finds root right now;
-/// - `DELETE /trackfile/{id}` and `/trackfile/bulk`: every id is read first; each must belong to such an artist and
-///   lie strictly inside both the Finds root and that artist's folder;
+/// - `DELETE /trackfile/{id}` and `/trackfile/bulk`: every id is read first. One rule per call (Y5 C4):
+///   - **findDelete**: each must belong to such an artist and lie strictly inside both the Finds root and that
+///     artist's folder;
+///   - **keptLossyDelete** (Y5, the MP3 rule): each must belong to an artist Magpie created whose Keep is confirmed
+///     (`keptAt`, no intent), now strictly inside the main root, sit at `<artist folder>/<relativePath>` of a `FindFile`
+///     the ledger recorded for the same album, be that file's track (`foreignTrackId`), keep its recorded size, and
+///     have a lossy quality (`isLossy`; anything unknown refuses);
+///   ids needing both rules refuse;
 /// - `PUT /album/monitor` (H2b fix 1): `monitored: true` only for albums the ledger has an entry for (Magpie records
 ///   each album before it monitors it: a Try, a Bring in more); `monitored: false` only for albums the ledger says
 ///   Magpie monitored (not monitored before) and that aren't kept. Ledger only, no Lidarr read;
@@ -53,9 +59,22 @@ public struct WriteConfinement: Sendable {
     /// At most this many track files in one delete (each is read first).
     static let maxTrackFiles = 500
 
+    /// Which rule let a confined write through: each has its own last-moment ledger check (`lastCheck`, C4).
+    enum Rule: Equatable, Sendable {
+        /// An artist delete or a find's file delete: none of its artists may be kept or keeping.
+        case findDelete
+        /// A kept find's MP3 (Y5): every artist must still be confirmed kept with no Keep under way.
+        case keptLossyDelete
+        /// Everything else (editor, album monitor, queue delete): no last-moment check.
+        case other
+        /// D49: a restart of any download; its albums may get one `restartSearch` (Y5 fix I9).
+        case queueRestart(albums: Set<Int>)
+    }
+
     enum Verdict: Equatable {
-        /// May be sent. `artists`: the artists a delete touches, whose kept state is read again right before it goes.
-        case confined(artists: Set<Int>)
+        /// May be sent. `artists`: the artists a delete touches, whose kept state is read again right before it goes
+        /// by `rule`'s own check.
+        case confined(artists: Set<Int>, rule: Rule)
         case refused(String)
         /// Something couldn't be read: not sent.
         case unknown
@@ -76,6 +95,8 @@ public struct WriteConfinement: Sendable {
         case albumMonitor(albumIds: [Int], monitored: Bool)
         /// `DELETE /queue/{id}` (R17).
         case queueDelete(Int)
+        /// Y5 fix I9: `POST /command` AlbumSearch (its album ids) or RefreshArtist (its artist id).
+        case command(name: String, albumIds: [Int], artistId: Int?)
         /// The same request, named `ConfinedShape.queueRestartAny` by Settings › Downloads in Lidarr (D49).
         case queueRestartAny(Int)
     }
@@ -91,17 +112,36 @@ public struct WriteConfinement: Sendable {
             switch write {
             case .editor(let body):
                 try await context.editor(body)
-                return .confined(artists: [])
+                return .confined(artists: [], rule: .other)
             case .artistDelete(let id):
                 try await context.artistDelete(id)
-                return .confined(artists: [id])
+                return .confined(artists: [id], rule: .findDelete)
             case .trackFileDelete(let ids):
-                return .confined(artists: try await context.trackFileDelete(ids))
+                if try await context.trackFileRule(ids) == .keptLossyDelete {
+                    return .confined(artists: try await context.keptLossyDelete(ids), rule: .keptLossyDelete)
+                }
+                return .confined(artists: try await context.trackFileDelete(ids), rule: .findDelete)
             case .albumMonitor(let ids, let monitored):
                 try context.albumMonitor(ids, monitored: monitored)
-                return .confined(artists: [])
+                return .confined(artists: [], rule: .other)
             case .queueDelete, .queueRestartAny:
                 return .unknown   // handled above
+            case .command(let name, let albumIds, let artistId):
+                // Y5 fix I9: a search can make Lidarr grab and replace files, so only albums the ledger knows (Magpie
+                // recorded each before it monitored or searched it); a refresh only for an artist the ledger knows.
+                switch name.lowercased() {
+                case "albumsearch":
+                    guard !albumIds.isEmpty, albumIds.allSatisfy({ id in entries.contains { $0.albumId == id } }) else {
+                        return .refused("a search only for albums Magpie asked for")
+                    }
+                case "refreshartist":
+                    guard let artistId, entries.contains(where: { $0.lidarrArtistId == artistId }) else {
+                        return .refused("a refresh only for an artist Magpie asked for")
+                    }
+                default:
+                    break
+                }
+                return .confined(artists: [], rule: .other)
             }
         } catch let refusal as Refusal {
             return .refused(refusal.reason)
@@ -125,7 +165,7 @@ public struct WriteConfinement: Sendable {
         let entries: [LedgerEntry]
         do { entries = try await ledger.entries } catch { return .unknown }
         let mine = entries.filter { e in
-            e.isOpen && e.isApplied && e.keptAt == nil && e.albumId != nil
+            e.isOpen && e.isApplied && !e.isKeptOrKeeping && e.albumId != nil
                 && (e.createdArtist || !e.wasMonitoredBefore) && e.requestId.map(live.contains) == true
         }
         guard !mine.isEmpty else { return .refused("no live request of Magpie's has a download") }
@@ -151,7 +191,7 @@ public struct WriteConfinement: Sendable {
                 return .refused("the owner monitored this album")
             }
         }
-        return .confined(artists: [])
+        return .confined(artists: [], rule: .other)
     }
 
     /// D49 (round 12 item 6): Settings › Downloads in Lidarr may restart any download, the owner's too. From a fresh read
@@ -186,14 +226,62 @@ public struct WriteConfinement: Sendable {
         } catch {
             return .unknown
         }
-        return .confined(artists: [])
+        return .confined(artists: [], rule: .queueRestart(albums: Set(items.filter { $0.downloadId == downloadId }.compactMap(\.albumId))))
     }
 
-    /// Right before a delete is sent: none of `artists` is kept in the ledger now. Nil: the ledger can't be read.
-    func stillUnkept(_ artists: Set<Int>) async -> Bool? {
-        guard !artists.isEmpty else { return true }
+    /// Right before a confined write is sent, the ledger once more, by rule (C4). findDelete: none of `artists` is
+    /// kept or keeping now. keptLossyDelete: every one is still confirmed kept, no Keep under way. Nil: the ledger
+    /// can't be read.
+    func lastCheck(_ rule: Rule, _ artists: Set<Int>) async -> Bool? {
+        guard !artists.isEmpty, rule == .findDelete || rule == .keptLossyDelete else { return true }
         guard let entries = try? await ledger.entries else { return nil }
-        return !entries.contains { artists.contains($0.lidarrArtistId) && $0.keptAt != nil }
+        switch rule {
+        case .findDelete:
+            return !entries.contains { artists.contains($0.lidarrArtistId) && $0.isKeptOrKeeping }
+        case .keptLossyDelete:
+            return artists.allSatisfy { Self.confirmedKept($0, in: entries) }
+        case .other, .queueRestart:
+            return true
+        }
+    }
+
+    /// The artist's Keep is confirmed: some entry says kept, and none has a Keep under way.
+    public static func confirmedKept(_ artistId: Int, in entries: [LedgerEntry]) -> Bool {
+        let mine = entries.filter { $0.lidarrArtistId == artistId }
+        return mine.contains { $0.keptAt != nil } && !mine.contains { $0.keepIntentAt != nil }
+    }
+
+    /// M2: the qualities a kept find's MP3 may have (Lidarr's names). Lossless or unknown qualities refuse.
+    public static func isLossy(_ quality: String?) -> Bool {
+        guard let q = quality?.trimmingCharacters(in: .whitespaces) else { return false }
+        return q.hasPrefix("MP3-") || q.hasPrefix("AAC-") || q.hasPrefix("OGG Vorbis") || q == "WMA"
+            || q.lowercased().hasPrefix("opus")
+    }
+
+    /// A lossless quality (Lidarr's names).
+    public static func isLossless(_ quality: String?) -> Bool {
+        guard let q = quality?.uppercased() else { return false }
+        return q.hasPrefix("FLAC") || q.hasPrefix("ALAC") || q == "WAV" || q == "APE" || q == "WAVPACK"
+    }
+
+    /// M3: two paths are the same file for the MP3 rule: standardised, and equal ignoring case and Unicode form.
+    public static func looselySame(_ a: String, _ b: String) -> Bool {
+        func fold(_ s: String) -> String? {
+            let parts = s.precomposedStringWithCanonicalMapping.lowercased().split(separator: "/", omittingEmptySubsequences: true)
+            guard !parts.isEmpty, !parts.contains(where: { $0 == "." || $0 == ".." }) else { return nil }
+            return (s.hasPrefix("/") ? "/" : "") + parts.joined(separator: "/")
+        }
+        guard let x = fold(a), let y = fold(b) else { return false }
+        return x == y
+    }
+
+    /// The path of `file` below `folder` (loose prefix match, M3); nil when it isn't inside.
+    public static func relative(_ file: String, under folder: String) -> String? {
+        guard let f = PathGuard.standardize(file), let d = PathGuard.standardize(folder) else { return nil }
+        let fc = f.precomposedStringWithCanonicalMapping, dc = d.precomposedStringWithCanonicalMapping
+        let prefix = dc.hasSuffix("/") ? dc : dc + "/"
+        guard fc.lowercased().hasPrefix(prefix.lowercased()), fc.count > prefix.count else { return nil }
+        return String(fc.dropFirst(prefix.count))
     }
 
     /// One confined write's view: the ledger as read, the owner's roots, and fresh Lidarr reads (cached per write).
@@ -215,8 +303,9 @@ public struct WriteConfinement: Sendable {
             return entries.contains { $0.created(fresh) }
         }
 
+        /// C5: kept, or a Keep under way.
         func kept(_ artistId: Int) -> Bool {
-            entries.contains { $0.lidarrArtistId == artistId && $0.keptAt != nil }
+            entries.contains { $0.lidarrArtistId == artistId && $0.isKeptOrKeeping }
         }
 
         /// A 404 refuses (nothing there to confine); any other failure is unreadable.
@@ -280,8 +369,8 @@ public struct WriteConfinement: Sendable {
             }
             let fresh = try await lidarrRoots()
             for id in ids {
-                let file = try await read { try await lidarr.trackFile(id: id) }
-                guard file.id == id, let artistId = file.artistId else { throw Refusal(reason: "track file without an artist") }
+                let file = try await trackFile(id)
+                guard let artistId = file.artistId else { throw Refusal(reason: "track file without an artist") }
                 guard !kept(artistId) else { throw Refusal(reason: "the artist is kept") }
                 let (folder, finds) = try await findArtist(artistId)
                 let artistGuard = PathGuard(findsRoot: folder,
@@ -296,12 +385,109 @@ public struct WriteConfinement: Sendable {
             return artists
         }
 
+        /// C4: which rule a track file delete falls under. Every file is read: a file of a tagged find inside the Finds
+        /// root is findDelete, any other keptLossyDelete. Both in one call refuse (each rule is then checked in full).
+        func trackFileRule(_ ids: [Int]) async throws -> Rule {
+            guard !ids.isEmpty, ids.count <= WriteConfinement.maxTrackFiles else {
+                throw Refusal(reason: "track file delete needs 1 to 500 ids")
+            }
+            var finds = 0
+            for id in ids {
+                let file = try await trackFile(id)
+                guard let artistId = file.artistId else { throw Refusal(reason: "track file without an artist") }
+                let artist = try await artist(artistId)
+                if let findsRoot = roots.findsRoot, let tag = roots.findTagId, let path = artist.path, artist.tags.contains(tag) {
+                    let others = try await lidarrRoots().filter { !Self.sameBytes($0, findsRoot) } + [roots.mainRoot].compactMap { $0 }
+                    if PathGuard(findsRoot: findsRoot, otherRoots: others, caseInsensitive: false).isInside(path) { finds += 1 }
+                }
+            }
+            guard finds == 0 || finds == ids.count else {
+                throw Refusal(reason: "a find's files and a kept find's files in one delete")
+            }
+            return finds == 0 ? .keptLossyDelete : .findDelete
+        }
+
+        private var files: [Int: TrackFile] = [:]
+        private var tracks: [Int: [LidarrTrack]] = [:]
+
+        func trackFile(_ id: Int) async throws -> TrackFile {
+            if let known = files[id] { return known }
+            let read = try await read { try await lidarr.trackFile(id: id) }
+            guard read.id == id else { throw Refusal(reason: "Lidarr answered for another track file") }
+            files[id] = read
+            return read
+        }
+
+        func albumTracks(_ albumId: Int) async throws -> [LidarrTrack] {
+            if let known = tracks[albumId] { return known }
+            let read = try await read { try await lidarr.tracks(albumId: albumId) }
+            tracks[albumId] = read
+            return read
+        }
+
+        /// Y5 keptLossyDelete (see the type comment). Returns the artists.
+        func keptLossyDelete(_ ids: [Int]) async throws -> Set<Int> {
+            guard let main = roots.mainRoot else { throw Refusal(reason: "no main root folder") }
+            let fresh = try await lidarrRoots()
+            guard fresh.contains(where: { Self.sameBytes($0, main) }) else {
+                throw Refusal(reason: "the main root isn't a Lidarr root folder")
+            }
+            let mainGuard = PathGuard(findsRoot: main, otherRoots: fresh.filter { !Self.sameBytes($0, main) },
+                                      caseInsensitive: false)
+            var artists = Set<Int>()
+            for id in ids {
+                let file = try await trackFile(id)
+                guard let artistId = file.artistId, let albumId = file.albumId else {
+                    throw Refusal(reason: "track file without an artist or album")
+                }
+                guard try await created(artistId) else { throw Refusal(reason: "not an artist Magpie added") }
+                guard WriteConfinement.confirmedKept(artistId, in: entries) else {
+                    throw Refusal(reason: "only a kept find's files")
+                }
+                let artist = try await artist(artistId)
+                guard let folder = artist.path, mainGuard.isInside(folder) else {
+                    throw Refusal(reason: "the artist isn't in the main root folder")
+                }
+                guard WriteConfinement.isLossy(file.quality) else { throw Refusal(reason: "only a lossy file") }
+                guard mainGuard.isInside(file.path), let relative = WriteConfinement.relative(file.path, under: folder) else {
+                    throw Refusal(reason: "a track file outside the artist's folder")
+                }
+                // Y5 fix I1: the record may sit on more than one entry of the artist; one *distinct* record must match,
+                // and copies that disagree (size, track) refuse.
+                let matching = entries.filter { $0.lidarrArtistId == artistId }.flatMap { $0.findFiles ?? [] }
+                    .filter { $0.albumId == albumId && WriteConfinement.looselySame($0.relativePath, relative) }
+                var recorded: [FindFile] = []
+                for f in matching where !recorded.contains(where: { $0.size == f.size && $0.foreignTrackId == f.foreignTrackId }) {
+                    recorded.append(f)
+                }
+                guard recorded.count == 1, let find = recorded.first else {
+                    throw Refusal(reason: "not a file Magpie's find brought in")
+                }
+                guard let size = file.size, size == find.size else { throw Refusal(reason: "the file changed") }
+                let albumTracks = try await albumTracks(albumId)
+                guard let foreign = find.foreignTrackId else { throw Refusal(reason: "not the find's track") }
+                if let track = albumTracks.first(where: { $0.trackFileId == id }) {
+                    guard track.foreignTrackId == foreign else { throw Refusal(reason: "not the find's track") }
+                } else {
+                    // Y5 follow-up 3: an MP3 no track points to any more, left beside the lossless file that took the
+                    // recorded track (Lidarr's upgrade didn't remove it).
+                    guard let upgraded = albumTracks.first(where: { $0.foreignTrackId == foreign && $0.hasFile }),
+                          let other = upgraded.trackFileId, other != id,
+                          WriteConfinement.isLossless(try await trackFile(other).quality) else {
+                        throw Refusal(reason: "not the find's track")
+                    }
+                }
+                artists.insert(artistId)
+            }
+            return artists
+        }
+
         func albumMonitor(_ ids: [Int], monitored: Bool) throws {
             for id in ids {
                 let entry = entries.filter { $0.albumId == id }
                 guard !entry.isEmpty else { throw Refusal(reason: "not an album Magpie asked for") }
                 if !monitored {
-                    guard entry.allSatisfy({ !$0.wasMonitoredBefore && $0.keptAt == nil }) else {
+                    guard entry.allSatisfy({ !$0.wasMonitoredBefore && !$0.isKeptOrKeeping }) else {
                         throw Refusal(reason: "Magpie only unmonitors albums it monitored and nobody kept")
                     }
                 }

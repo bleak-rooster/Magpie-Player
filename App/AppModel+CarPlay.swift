@@ -152,7 +152,7 @@ extension CPKeepResult {
         switch outcome {
         case .moved: self = .moved
         case .keptInPlace: self = .keptInPlace
-        case .stillMoving: self = .stillMoving
+        case .stillMoving, .queued: self = .stillMoving   // Y5: queued reads as "it'll be there soon" in the car
         }
     }
 
@@ -163,6 +163,7 @@ extension CPKeepResult {
         case .notAFind?: self = .notAFind
         case .moveFailed?: self = .moveFailed
         case .needsAttention?: self = .needsAttention
+        case .collision?: self = .notAFind   // Y5 C1: "This one can't be kept from here."; the phone says why
         case .unavailable?, nil: self = .unavailable
         }
     }

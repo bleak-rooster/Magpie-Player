@@ -558,6 +558,24 @@ public actor NavidromeClient {
         }.map(Mapping.song)
     }
 
+    /// Y5 (item 9.2): songs whose title contains `title` (`/api/song?title=`), in library `libraryId` under `folder`
+    /// (compared on bytes, as above), with their path relative to the library. For matching a find whose files carry
+    /// no MusicBrainz tags, by Lidarr's file path or by title + artist + duration; never outside the artist's folder.
+    public func songs(titled title: String, inLibrary libraryId: Int, under folder: String) async throws
+        -> [(song: Song, path: String)] {
+        let components = { (p: String) in p.utf8.split(separator: UInt8(ascii: "/")).map(Array.init) }
+        let prefix = components(folder)
+        guard !prefix.isEmpty, !title.isEmpty else { return [] }
+        let query = [URLQueryItem(name: "title", value: title), int("_start", 0), int("_end", 100),
+                     URLQueryItem(name: "_sort", value: "id"), URLQueryItem(name: "_order", value: "ASC")]
+        let (data, _) = try await native("api/song", query)
+        return try Self.decode([NativeSong].self, data).compactMap { row in
+            guard row.missing != true, row.libraryId == libraryId, let path = row.path,
+                  components(path).count > prefix.count, Array(components(path).prefix(prefix.count)) == prefix else { return nil }
+            return (Mapping.song(row), path)
+        }
+    }
+
     private func recordingRows(_ recording: MBID) async throws -> [NativeSong] {
         let query = [URLQueryItem(name: "mbz_recording_id", value: recording.rawValue), int("_start", 0), int("_end", 50),
                      URLQueryItem(name: "_sort", value: "id"), URLQueryItem(name: "_order", value: "ASC")]

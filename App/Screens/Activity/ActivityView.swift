@@ -13,6 +13,9 @@ struct ActivityView: View {
     @State private var keeping: Set<RequestID> = []
     @State private var keepMessage: String?
     @State private var addingMore: AddFlowRequest?
+    /// Y5: "Remove the MP3 now" asks first (and says when it can't be undone, I7).
+    @State private var removingMP3: MagpieRequest?
+    @State private var mp3Permanent = true
     private let themed = Themed()
 
     var body: some View {
@@ -51,6 +54,27 @@ struct ActivityView: View {
         .alert(keepMessage ?? "", isPresented: Binding(get: { keepMessage != nil }, set: { if !$0 { keepMessage = nil } })) {
             Button("OK", role: .cancel) {}
         }
+        .confirmationDialog(FindCopy.removeMP3Title,
+                            isPresented: Binding(get: { removingMP3 != nil }, set: { if !$0 { removingMP3 = nil } }),
+                            titleVisibility: .visible, presenting: removingMP3) { request in
+            Button("Remove", role: .destructive) {
+                Task { keepMessage = await model.removeMP3Now(request.id) }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: { _ in
+            Text(FindCopy.confirmMessage(permanent: mp3Permanent))
+        }
+    }
+
+    /// Y5: "Remove the MP3 now" on a kept find whose MP3 Magpie recorded.
+    private func removeMP3Action(_ request: MagpieRequest) -> (() -> Void)? {
+        guard !model.isOffline, model.canRemoveMP3(request) else { return nil }
+        return {
+            Task {
+                mp3Permanent = await model.mp3RemovalIsPermanent()
+                removingMP3 = request
+            }
+        }
     }
 
     /// R20: Keep on a Ready find's row (leading swipe, never a full swipe), as on the Finds shelf.
@@ -86,12 +110,16 @@ struct ActivityView: View {
         }
         .accessibilityActions {
             if let keep = keepAction(request) { Button(RequestCopy.keep, action: keep) }
+            if let remove = removeMP3Action(request) { Button(FindCopy.removeMP3, action: remove) }
         }
     }
 
     @ViewBuilder private func swipeActions(_ request: MagpieRequest) -> some View {
         if request.isNotListed {
             Button("Check again") { Task { await model.checkAgain(request.id) } }
+        }
+        if let remove = removeMP3Action(request) {
+            Button(FindCopy.removeMP3, systemImage: "trash", action: remove).tint(.orange)
         }
         if RequestCopy.canCancel(request.state) {
             Button("Stop looking", role: .destructive) { Task { await model.cancelRequest(request.id) } }

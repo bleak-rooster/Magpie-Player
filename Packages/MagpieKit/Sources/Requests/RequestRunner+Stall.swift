@@ -5,9 +5,10 @@ import MagpieCore
 /// Settings › New music "Give up on a stuck copy after" (R17; R20's words). Soulseek downloads only. The clock
 /// starts when the item appears in the queue (R20: the owner's "no change for 1 minute", not the first progress).
 public enum StallLimit: Int, CaseIterable, Sendable, Identifiable {
-    case oneMinute = 60, twoMinutes = 120, fiveMinutes = 300, tenMinutes = 600
+    case oneMinute = 60, twoMinutes = 120, threeMinutes = 180, fiveMinutes = 300, tenMinutes = 600
 
-    public static let standard = StallLimit.oneMinute
+    /// Y5 (item 9.6): 3 minutes; a minute gave up on slow transfers that were still alive. A saved choice is kept (I11).
+    public static let standard = StallLimit.threeMinutes
 
     public var id: Int { rawValue }
     public var seconds: TimeInterval { TimeInterval(rawValue) }
@@ -23,7 +24,19 @@ public enum StallLimit: Int, CaseIterable, Sendable, Identifiable {
 /// How one Soulseek download looked when it last changed (R17). The signature is shared with the request-independent
 /// `QueueStallWatch` (round 12 item 6).
 struct StallWatch: Sendable, Equatable {
-    typealias Signature = QueueSignature
+    struct Signature: Sendable, Equatable {
+        var sizeleft: Double
+        var status: String
+        var tracked: String
+        var client: String?
+
+        /// Y5 (item 9.6): only what shows progress. A status flipping between ok and warning (slskd does) isn't
+        /// progress, so it no longer restarts the clock.
+        init(_ item: QueueItem) {
+            sizeleft = item.sizeleft; status = ""
+            tracked = ""; client = item.downloadClient?.lowercased()
+        }
+    }
 
     var albumId: Int
     var signature: Signature
@@ -93,9 +106,11 @@ extension RequestRunner {
 
     // MARK: - Soulseek
 
-    /// The Soulseek clients' names (lower-cased), read once per runner. Nil while Lidarr can't be read.
+    /// The Soulseek clients' names (lower-cased), read again every poll pass (item 9.6: the owner may rename or add
+    /// a client), reused within the pass. Nil while Lidarr can't be read.
     func soulseekNames() async -> Set<String>? {
-        if let soulseekClients { return soulseekClients }
+        if let soulseekClients, clientsReadInPass == passCount { return soulseekClients }
+        clientsReadInPass = passCount
         guard let clients = try? await lidarr.downloadClients() else { return nil }
         lastLidarrContact = now()
         let names = Set(clients.filter(\.isSoulseek).map { $0.name.lowercased() })
@@ -159,7 +174,7 @@ extension RequestRunner {
 
     /// The stalled downloads, re-read fresh: removed (blocklisted) and searched again. True when it did.
     private func giveUp(on stalled: [QueueItem], for id: RequestID) async -> Bool {
-        guard !busy.contains(id), let r = request(id), let albumId = r.albumId else { return false }
+        guard !requestBusy(id), let r = request(id), let albumId = r.albumId else { return false }
         busy.insert(id)
         defer { busy.remove(id) }
         do {
@@ -194,7 +209,7 @@ extension RequestRunner {
     /// `maxStallRetries` as the automatic ones, and never starts the count over (fix round 1 I3): once they're used up
     /// it throws `limitReached`.
     public func searchAgain(_ id: RequestID, removingDownload confirmed: Bool) async throws {
-        guard !stopped, let r = request(id), r.canSearchAgain, let albumId = r.albumId, !busy.contains(id) else {
+        guard !stopped, let r = request(id), r.canSearchAgain, let albumId = r.albumId, !requestBusy(id) else {
             throw SearchAgainError.notNow
         }
         guard !r.removalsUsedUp else { throw SearchAgainError.limitReached }
@@ -244,7 +259,7 @@ extension RequestRunner {
     func mayRemoveDownloads(_ r: MagpieRequest) async throws -> Bool {
         guard let albumId = r.albumId, let entry = try await ledger.entry(albumId: albumId) else { return false }
         let live = liveRequestIds
-        return entry.isOpen && entry.isApplied && entry.keptAt == nil && (entry.createdArtist || !entry.wasMonitoredBefore)
+        return entry.isOpen && entry.isApplied && !entry.isKeptOrKeeping && (entry.createdArtist || !entry.wasMonitoredBefore)
             && entry.requestId.map(live.contains) == true && entry.lidarrArtistId == r.lidarrArtistId
     }
 

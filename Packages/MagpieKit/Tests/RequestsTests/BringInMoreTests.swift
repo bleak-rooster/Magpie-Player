@@ -322,8 +322,9 @@ import MagpieCore
         let id = try await KeepTests.readyFind(h)
         await #expect(throws: RequestRunner.BringInError.notKept) { _ = try await h.runner.bringInOffer(id) }
 
-        h.server.with { $0.folders = [KeepTests.keptPath] }
-        #expect(try await h.runner.keep(id) == .keptInPlace)
+        // Y5: a Keep still queued (only an intent) isn't a kept find either.
+        h.server.with { $0.commands.append(FakeLidarr.Command(id: 71, name: "RssSync", status: "queued", artistIds: [])) }
+        #expect(try await h.runner.keep(id) == .queued)
         let before = h.server.writes.count
         await #expect(throws: RequestRunner.BringInError.notKept) { _ = try await h.runner.bringInOffer(id) }
         await #expect(throws: RequestRunner.BringInError.notKept) {

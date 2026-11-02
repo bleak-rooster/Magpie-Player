@@ -24,7 +24,7 @@ struct OnlyInFindsLine: View {
                 .accessibilityIdentifier("artist-only-in-finds")
             switch model.artistKeepState(songIds: songs) {
             case .keepable:
-                CapsuleButton(NewMusicCopy.keepArtist(artist), symbol: "checkmark.seal") {
+                CapsuleButton(NewMusicCopy.addTitle(artist), symbol: "checkmark.seal") {   // Y5 item 8: "Add to your library"
                     model.newMusic.keeping = KeepFlowRequest(host: host, songIds: songs, artist: artist)
                 }
                 .accessibilityIdentifier("artist-keep")

@@ -73,6 +73,9 @@ public enum ConfinedShape: Sendable, Equatable {
     /// confined by `WriteConfinement.queueRestartAny` (a fresh read of the whole queue) instead of the ledger.
     /// `scripts/check-writes.sh` pins where it may be named.
     case queueRestartAny
+    /// D49 with Y5 fix I9: the AlbumSearch that follows a `queueRestartAny`, only for the albums of a download this gate
+    /// itself removed in the last 10 minutes (the confined AlbumSearch is otherwise for ledger albums only).
+    case restartSearch
 }
 
 /// One line of the Lidarr change log: what Magpie asked Lidarr to change. Never carries secrets.
@@ -232,6 +235,14 @@ enum ForbiddenWrites {
     /// also pass (`WriteConfinement`). Nil for every other write.
     static func confined(_ t: WriteTarget, json: Any?) -> WriteConfinement.Write? {
         let key = t.key
+        // Y5 fix I9: AlbumSearch and RefreshArtist are confined to what the ledger knows.
+        if t.method == "POST", key == ["command"], let object = json as? [String: Any] {
+            let value = { (name: String) in object.first { $0.key.lowercased() == name }?.value }
+            let name = (value("name") as? String ?? "").lowercased()
+            guard ["albumsearch", "refreshartist"].contains(name) else { return nil }
+            let ids = (value("albumids") as? [Any] ?? []).compactMap { ($0 as? NSNumber)?.intValue }
+            return .command(name: name, albumIds: ids, artistId: (value("artistid") as? NSNumber)?.intValue)
+        }
         guard key.count == 2 else { return nil }
         switch (t.method, key[0]) {
         case ("PUT", "artist") where key[1] == "editor":
@@ -552,6 +563,18 @@ public actor LidarrWriteGate {
         defaults.set(on, forKey: Self.enabledKey(scope: connection.instanceScope))
     }
 
+    /// Y5 fix I2: a line in the change log for something Magpie did without a write to Lidarr (it cleared a Keep that
+    /// never reached Lidarr). Method `NOTE`; nothing is sent.
+    public func note(_ text: String) {
+        let entry = ChangeLogEntry(date: now(), method: "NOTE", path: "/magpie", bodySummary: String(text.prefix(Self.maxBodySummary)))
+        try? Self.logLock.withLock { [logURL] in
+            var log = try Self.readLog(logURL)
+            log.append(entry)
+            if log.count > Self.maxLogEntries { log.removeFirst(log.count - Self.maxLogEntries) }
+            try LocalFile.save(log, to: logURL)
+        }
+    }
+
     /// The change log as saved on disk. Empty when there is none or it cannot be read right now.
     public func changeLog() -> [ChangeLogEntry] {
         (try? Self.logLock.withLock { [logURL] in try Self.readLog(logURL) }) ?? []
@@ -591,29 +614,52 @@ public actor LidarrWriteGate {
         }
         if confined != nil, confinement == nil { throw refused(target, "deletes and artist edits need the ledger") }
         guard enabled else { throw WriteGateError.disabled }
+        if shape == .restartSearch {
+            guard case .command(let name, let albumIds, _)? = confined, name == "albumsearch", !albumIds.isEmpty else {
+                throw refused(target, "restartSearch is an AlbumSearch only")
+            }
+            let t = now()
+            restartedAlbums = restartedAlbums.filter { t.timeIntervalSince($0.value) < 600 }
+            guard albumIds.allSatisfy({ restartedAlbums[$0] != nil }) else {
+                throw refused(target, "a search only for albums of a download just restarted")
+            }
+            for id in albumIds { restartedAlbums[id] = nil }
+            return try await deliver(target, data)
+        }
         guard let confined, let confinement else { return try await deliver(target, data) }
         // FM1: checked from the ledger and fresh reads, after the switch (so nothing is read while it's off). H2b fix
         // 1: confined writes go one at a time, from their checks to Lidarr's answer, so no other confined write can
         // slip in between a check and its send.
         await takeConfinedTurn()
         defer { passConfinedTurn() }
-        let artists: Set<Int>
+        let artists: Set<Int>, rule: WriteConfinement.Rule
         switch await confinement.check(confined, lidarr: reader) {
-        case .confined(let touched): artists = touched
+        case .confined(let touched, let which): artists = touched; rule = which
         case .refused(let why): throw refused(target, why)
         case .unknown:
             Log.logger("lidarr").error("not confirmed \(target.method, privacy: .public) \(target.logPath, privacy: .public)")
             throw WriteGateError.unconfirmed
         }
         guard enabled else { throw WriteGateError.disabled }   // turned off during the reads
-        // The ledger once more, right before a delete: kept meanwhile (Keep saves "kept" before it writes) refuses.
-        switch await confinement.stillUnkept(artists) {
+        // The ledger once more, right before a delete, by the rule that let it through (C4): a find delete refuses an
+        // artist kept or keeping meanwhile (Keep saves its intent before it writes); a kept MP3 delete refuses one
+        // whose Keep isn't confirmed now.
+        switch await confinement.lastCheck(rule, artists) {
         case true?: break
-        case false?: throw refused(target, "the artist was kept meanwhile")
+        case false?:
+            throw refused(target, rule == .keptLossyDelete ? "the Keep isn't confirmed now" : "the artist was kept meanwhile")
         case nil: throw WriteGateError.unconfirmed
         }
-        return try await deliver(target, data)
+        let answer = try await deliver(target, data)
+        if case .queueRestart(let albums) = rule {
+            let t = now()
+            for id in albums { restartedAlbums[id] = t }
+        }
+        return answer
     }
+
+    /// Albums of downloads a `queueRestartAny` removed, and when (their `restartSearch` may follow for 10 minutes).
+    private var restartedAlbums: [Int: Date] = [:]
 
     private var confinedBusy = false
     private var confinedWaiting: [CheckedContinuation<Void, Never>] = []

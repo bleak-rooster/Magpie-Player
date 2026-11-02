@@ -9,7 +9,9 @@ extension AppModel {
     /// Lidarr's view of the artist; nil without a connected Lidarr. Never asked offline (`ArtistLidarrModel` checks).
     func artistLidarrState(name: String, mbid: MBID?) async throws -> ArtistLidarrState? {
         guard let client = lidarrClient, let ledger else { return nil }
-        return try await ArtistLidarr.read(name: name, mbid: mbid, lidarr: client, ledger: ledger)
+        // Y5: Magpie's requests and the Finds setup decide the find states (FindResolver).
+        return try await ArtistLidarr.read(name: name, mbid: mbid, lidarr: client, ledger: ledger, requests: requests,
+                                           findTagId: lidarrSetup?.findTagId, findsRoot: findsSetup?.findsRoot)
     }
 
     /// Magpie's profiles, tag and main root are ready (Settings › Requests › Set up Magpie in Lidarr, and a root).

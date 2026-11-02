@@ -115,6 +115,9 @@ extension AppModel {
             onReady: { [weak self] request in Task { @MainActor in self?.requestBecameReady(request) } },
             onRelinked: { [weak self] request, before, song in
                 Task { @MainActor in self?.keptSongRelinked(request, before: before, song: song) }
+            },
+            onMP3Removed: { [weak self] request, songId in
+                Task { @MainActor in self?.mp3Removed(request, songId: songId) }   // Y5 M1
             })
         self.gate = gate
         self.runner = runner
@@ -158,7 +161,9 @@ extension AppModel {
             refreshIndex: { [weak self] in try await self?.refreshMatchIndex() },
             songId: { [weak self] recording in await self?.matchIndex?.index.librarySong(for: recording) },
             rescanMoved: { [weak self] from, to in try await self?.rescanMoved(from: from, to: to) },
-            keptSong: { [weak self] recording, artistPath in try await self?.keptSong(recording, artistPath: artistPath) })
+            keptSong: { [weak self] recording, artistPath in try await self?.keptSong(recording, artistPath: artistPath) },
+            songsTitled: { [weak self] title, folder in await self?.songsTitled(title, artistFolder: folder) },   // Y5 9.2
+            scanFolder: { [weak self] folder in await self?.scanArtistFolder(folder) ?? false })   // Y5 fix I7
     }
 
     /// Polls while any request is on its way: every 5 s in the foreground, 30 s otherwise. Stops by itself

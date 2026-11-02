@@ -42,7 +42,9 @@ import MagpieCore
 
         #expect(outcome == .moved)
         let writes = h.server.writeBodies().dropFirst(before)
-        #expect(writes.map(\.0) == ["PUT artist/editor"], "one write, no second move")
+        #expect(writes.map(\.0) == ["PUT artist/editor", "POST command", "POST command"],
+                "one move, then (Y5) a rescan and the lossless search")
+        #expect(writes.dropFirst().map { $0.1["name"] as? String } == ["RefreshArtist", "AlbumSearch"])
         let body = try #require(writes.first?.1)
         #expect(Set(body.keys) == ["artistIds", "rootFolderPath", "moveFiles", "qualityProfileId", "tags", "applyTags"])
         #expect(body["artistIds"] as? [Int] == [42])
@@ -102,28 +104,24 @@ import MagpieCore
         #expect(Self.editorWrites(h).count == 1)
     }
 
-    /// G4: the owner already has a folder for this artist in the main root. No move: only magpie-find comes
-    /// off, and the find stays where it is.
-    @Test func destinationExistsUntagsOnly() async throws {
+    /// Y5 C1 (was: untag only): the owner already has a folder for this artist in the main root. Refused: nothing is
+    /// written, nothing is kept or keeping, and the find stays a find (the page says why).
+    @Test func destinationExistsRefuses() async throws {
         let h = await Harness(setup: Harness.findsSetup)
         let id = try await Self.readyFind(h)
         h.server.with { $0.folders = [Self.keptPath] }
+        try await Self.expectCollision(h, id)
+    }
+
+    static func expectCollision(_ h: Harness, _ id: RequestID, sourceLocation: SourceLocation = #_sourceLocation) async throws {
         let before = h.server.writes.count
-
-        let outcome = try await h.runner.keep(id)
-
-        #expect(outcome == .keptInPlace)
-        let writes = h.server.writeBodies().dropFirst(before)
-        #expect(writes.map(\.0) == ["PUT artist/editor"])
-        let body = try #require(writes.first?.1)
-        #expect(Set(body.keys) == ["artistIds", "tags", "applyTags"])
-        #expect(body["artistIds"] as? [Int] == [42] && body["tags"] as? [Int] == [2])
-        #expect(body["applyTags"] as? String == "remove")
-        #expect(h.server.with { $0.artists.first?.currentPath } == Self.findPath, "not moved")
-        #expect(h.library.state.withLock { $0.rescans.isEmpty })
+        await #expect(throws: RequestRunner.KeepError.collision, sourceLocation: sourceLocation) { _ = try await h.runner.keep(id) }
+        #expect(h.server.writes.count == before, "nothing written", sourceLocation: sourceLocation)
+        #expect(h.server.with { $0.artists.first?.currentPath } == Self.findPath, "not moved", sourceLocation: sourceLocation)
         let r = try #require(await h.request(id))
-        #expect(r.state == .kept && r.keptInPlace && r.songId == "find-1")
-        #expect(try await h.ledger.entries.filter { $0.lidarrArtistId == 42 }.allSatisfy { $0.keptAt != nil })
+        #expect(r.state == .ready && r.collision && r.keep == nil && !r.keptInPlace, sourceLocation: sourceLocation)
+        #expect(try await h.ledger.entries.filter { $0.lidarrArtistId == 42 }.allSatisfy { !$0.isKeptOrKeeping },
+                sourceLocation: sourceLocation)
     }
 
     /// G4: an artist the ledger doesn't say Magpie created is never moved (here: the requests survived, the
@@ -305,9 +303,11 @@ import MagpieCore
         let id = try await Self.readyFind(h)
         h.server.with { $0.commands.append(busy) }
         let before = h.server.writes.count
-        await #expect(throws: RequestRunner.KeepError.unavailable) { _ = try await h.runner.keep(id) }
+        // Y5 item 9.5: queued (the intent is saved), never refused for being busy; nothing written yet.
+        #expect(try await h.runner.keep(id) == .queued)
         #expect(h.server.writes.count == before)
-        #expect(try await h.ledger.entries.filter { $0.lidarrArtistId == 42 }.allSatisfy { $0.keptAt == nil })
+        #expect(await h.request(id)?.keep?.phase == .queued)
+        #expect(try await h.ledger.entries.filter { $0.lidarrArtistId == 42 }.allSatisfy { $0.keptAt == nil && $0.keepIntentAt != nil })
         h.server.with { $0.commands.removeAll { $0.id == 71 } }
         #expect(try await h.runner.keep(id) == .moved, "once the queue is quiet it goes")
     }
@@ -318,7 +318,8 @@ import MagpieCore
     func changeJustBeforeThePutWritesNothing(_ queued: Bool) async throws {
         let h = await Harness(setup: Harness.findsSetup)
         let id = try await Self.readyFind(h)
-        h.server.with { $0.hold = ("/api/v1/command", 2); $0.holdMethod = "GET" }
+        // Y5: the queue and the destination are read in `sendQueued`, right before the PUT (its first /command read).
+        h.server.with { $0.hold = ("/api/v1/command", 1); $0.holdSeen = 0; $0.holdMethod = "GET" }
         let before = h.server.writes.count
         let keep = Task { try await h.runner.keep(id) }
         await h.server.latch.waitArrived()
@@ -330,10 +331,16 @@ import MagpieCore
             }
         }
         await h.server.latch.release()
-        await #expect(throws: RequestRunner.KeepError.unavailable) { _ = try await keep.value }
+        if queued {
+            #expect(try await keep.value == .queued)
+            #expect(await h.request(id)?.keep?.phase == .queued)
+        } else {
+            await #expect(throws: RequestRunner.KeepError.collision) { _ = try await keep.value }
+            #expect(await h.request(id)?.keep == nil)
+            #expect(try await h.ledger.entries.filter { $0.lidarrArtistId == 42 }.allSatisfy { !$0.isKeptOrKeeping })
+        }
         #expect(h.server.writes.count == before)
         #expect(try await h.ledger.entries.filter { $0.lidarrArtistId == 42 }.allSatisfy { $0.keptAt == nil })
-        #expect(await h.request(id)?.keep == nil)
         #expect(await h.request(id)?.state == .ready)
     }
 
@@ -385,7 +392,8 @@ import MagpieCore
             in: h.dir, instance: LidarrClient(base: URL(string: "https://music.example/lidarr")!, apiKey: "k",
                                               transport: h.server.clientTransport).instanceScope)).load()
         #expect(saved.first { $0.id == id }?.keep != nil)
-        #expect(try await h.ledger.entries.filter { $0.lidarrArtistId == 42 }.allSatisfy { $0.keptAt != nil })
+        // Y5 item 9.4: an intent before the write, never "kept" before the commit.
+        #expect(try await h.ledger.entries.filter { $0.lidarrArtistId == 42 }.allSatisfy { $0.keepIntentAt != nil && $0.keptAt == nil })
 
         await h.runner.stop()
         await h.server.latch.release()
@@ -484,7 +492,7 @@ import MagpieCore
         #expect(Self.editorWrites(h).count == 1, "only the move: no point-back")
         let r = try #require(await h.request(id))
         #expect(r.keep == nil && r.keepNeedsAttention)
-        #expect(try await h.ledger.entries.filter { $0.lidarrArtistId == 42 }.allSatisfy { $0.keptAt != nil })
+        #expect(try await h.ledger.entries.filter { $0.lidarrArtistId == 42 }.allSatisfy(\.isKeptOrKeeping))
         #expect(await h.gate.changeLog().filter { $0.path == "/api/v1/artist/editor" }.count == 1, "not even tried")
     }
 
@@ -533,30 +541,26 @@ import MagpieCore
         #expect(Self.editorWrites(h).count == 1)
         let r = try #require(await h.request(id))
         #expect(r.state == .ready && r.keepNeedsAttention && r.keep == nil)
-        #expect(try await h.ledger.entries.filter { $0.lidarrArtistId == 42 }.allSatisfy { $0.keptAt != nil },
+        #expect(try await h.ledger.entries.filter { $0.lidarrArtistId == 42 }.allSatisfy(\.isKeptOrKeeping),
                 "still says kept: nothing deletes it")
     }
 
     /// G4: Lidarr's naming gives a different folder now (a MusicBrainz rename or a new folder format): the move
     /// would land in an unchecked folder, so only magpie-find comes off.
-    @Test func renamedArtistUntagsOnly() async throws {
+    @Test func renamedArtistRefuses() async throws {
         let h = await Harness(setup: Harness.findsSetup)
         let id = try await Self.readyFind(h)
         h.server.with { $0.lookupFolder = "Aurora Field (UK band)" }
-        #expect(try await h.runner.keep(id) == .keptInPlace)
-        let body = try #require(Self.editorWrites(h).last)
-        #expect(Set(body.keys) == ["artistIds", "tags", "applyTags"])
-        #expect(h.server.with { $0.artists.first?.currentPath } == Self.findPath)
+        try await Self.expectCollision(h, id)
     }
 
     /// G4: the owner's folder differs only in case (a case-insensitive volume would merge them): it counts.
     @Test(arguments: ["/music/library/aurora field", "/music/library/AURORA FIELD", "/music/library/Aurora Fíeld"])
-    func caseVariantFolderUntagsOnly(folder: String) async throws {
+    func caseVariantFolderRefuses(folder: String) async throws {
         let h = await Harness(setup: Harness.findsSetup)
         let id = try await Self.readyFind(h)
         h.server.with { $0.folders = [folder] }
-        #expect(try await h.runner.keep(id) == .keptInPlace)
-        #expect(Set(try #require(Self.editorWrites(h).last).keys) == ["artistIds", "tags", "applyTags"])
+        try await Self.expectCollision(h, id)
     }
 
     @Test func looseFolderComparison() {
@@ -593,8 +597,8 @@ import MagpieCore
         #expect(Self.editorWrites(h).count == 1)
     }
 
-    /// Kept in place: the other ready finds of the now-untagged artist are kept too (no Keep offered on them).
-    @Test func keptInPlaceKeepsTheSiblings() async throws {
+    /// C1: a refused Keep keeps nothing: the artist's other ready finds stay ready.
+    @Test func aRefusedKeepLeavesTheSiblings() async throws {
         let h = await Harness(setup: Harness.findsSetup)
         let first = try await Self.readyFind(h)
         let second = try await h.runner.tryRecording(h.recording(recAlbumOnly, title: "Other"), tier: .standard)
@@ -602,9 +606,9 @@ import MagpieCore
         h.library.state.withLock { $0.indexed[recAlbumOnly] = "find-2" }
         await h.runner.tick()
         h.server.with { $0.folders = [Self.keptPath] }
-        #expect(try await h.runner.keep(first) == .keptInPlace)
+        await #expect(throws: RequestRunner.KeepError.collision) { _ = try await h.runner.keep(first) }
         let r = try #require(await h.request(second))
-        #expect(r.state == .kept && r.keptInPlace)
+        #expect(r.state == .ready && !r.keptInPlace)
     }
 
     /// Bounded: a move still running `keepMoveLimit` after the write is followed no further. Needs attention, the
@@ -625,7 +629,7 @@ import MagpieCore
         #expect(h.server.with { $0.commandReads.count } == reads, "followed no further")
         await #expect(throws: RequestRunner.KeepError.notAFind) { try await h.runner.keep(id) }
         #expect(Self.editorWrites(h).count == 1)
-        #expect(try await h.ledger.entries.filter { $0.lidarrArtistId == 42 }.allSatisfy { $0.keptAt != nil })
+        #expect(try await h.ledger.entries.filter { $0.lidarrArtistId == 42 }.allSatisfy(\.isKeptOrKeeping))
     }
 
     /// Bounded: putting the find back is refused (4xx): needs attention at once, never retried.
@@ -650,13 +654,11 @@ import MagpieCore
     // MARK: - Fix round 2
 
     /// G4: Lidarr's name differs from the current folder only in case: the folder would change, so untag only.
-    @Test func caseOnlyRenameUntagsOnly() async throws {
+    @Test func caseOnlyRenameRefuses() async throws {
         let h = await Harness(setup: Harness.findsSetup)
         let id = try await Self.readyFind(h)
         h.server.with { $0.lookupFolder = "aurora field" }
-        #expect(try await h.runner.keep(id) == .keptInPlace)
-        #expect(Set(try #require(Self.editorWrites(h).last).keys) == ["artistIds", "tags", "applyTags"])
-        #expect(h.server.with { $0.artists.first?.currentPath } == Self.findPath)
+        try await Self.expectCollision(h, id)
     }
 
     /// The point-back lands on another path than the find's folder: never counted as restored. Needs attention,
@@ -673,7 +675,7 @@ import MagpieCore
         await h.runner.tick()
         let r = try #require(await h.request(id))
         #expect(r.keepNeedsAttention && r.keep == nil && r.state == .ready)
-        #expect(try await h.ledger.entries.filter { $0.lidarrArtistId == 42 }.allSatisfy { $0.keptAt != nil })
+        #expect(try await h.ledger.entries.filter { $0.lidarrArtistId == 42 }.allSatisfy(\.isKeptOrKeeping))
         #expect(Self.editorWrites(h).count == 2, "the move and one point-back, nothing more")
     }
 

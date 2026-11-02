@@ -203,12 +203,17 @@ import MagpieCore
         #expect(b.restartable.map(\.id) == [3])
     }
 
+    /// The page's signature counts a status change; the runner's R17 stall clock (Y5 item 9.6, D53) doesn't: a status
+    /// flip (ok ↔ warning, as slskd does) isn't progress there.
     @Test func signatureIsShared() {
         let a = item(1)
-        #expect(StallWatch.Signature(a) == QueueSignature(a))
         var b = a
         b.status = "Queued"
         #expect(QueueSignature(b) != QueueSignature(a))
+        #expect(StallWatch.Signature(b) == StallWatch.Signature(a))
+        var c = a
+        c.sizeleft -= 1
+        #expect(StallWatch.Signature(c) != StallWatch.Signature(a) && QueueSignature(c) != QueueSignature(a))
     }
 
     /// I1: the same rule on a fresh read decides whether a row is still restartable.

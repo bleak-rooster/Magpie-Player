@@ -8,6 +8,24 @@ public enum LedgerMode: String, Sendable, Codable {
     case finds
 }
 
+/// Y5 (C3): one lossy track file of a find, recorded when the owner taps Add to your library (Keep's intent), from the
+/// files inside the Finds folder. Trackfile ids go stale after Lidarr's move, so the MP3 is found again later by its
+/// path relative to the artist folder and its track (`foreignTrackId`), and only deleted at the same size.
+public struct FindFile: Sendable, Equatable, Codable {
+    public var id: Int
+    public var albumId: Int
+    public var foreignTrackId: String?
+    /// The path below the artist folder (`Album (2001)/01 - Song.mp3`).
+    public var relativePath: String
+    public var size: Int64
+    public var quality: String?
+
+    public init(id: Int, albumId: Int, foreignTrackId: String?, relativePath: String, size: Int64, quality: String?) {
+        self.id = id; self.albumId = albumId; self.foreignTrackId = foreignTrackId
+        self.relativePath = relativePath; self.size = size; self.quality = quality
+    }
+}
+
 /// Whether Magpie's monitor write for an entry reached Lidarr (fix rounds 3–4: "when in doubt, don't write").
 public enum MonitorSend: String, Sendable, Codable {
     /// Verifiably not in Lidarr: refused by the gate before anything left the device, or a GET after a
@@ -39,8 +57,13 @@ public struct LedgerEntry: Sendable, Equatable, Codable {
     /// Root folder the artist lived in when the request was made.
     public var root: String
     public var mode: LedgerMode
-    /// Set when the owner kept the album.
+    /// Set when the owner kept the album, only once the Keep is confirmed (Y5: never before the write).
     public var keptAt: Date?
+    /// Y5: a Keep of this artist is under way (saved before its write); cleared at the commit or when it verifiably
+    /// didn't apply. Every reader that *refuses* on kept treats it as kept (`isKeptOrKeeping`, C5).
+    public var keepIntentAt: Date?
+    /// Y5 (C3): the find's lossy files as recorded at the Keep's intent: what the MP3 rule may later delete.
+    public var findFiles: [FindFile]?
     /// The Lidarr server this entry belongs to (`LidarrClient.instanceScope`). Ids are only meaningful on
     /// that server; a `Ledger` scoped to another server never sees this entry.
     public var instance: String?
@@ -64,6 +87,11 @@ public struct LedgerEntry: Sendable, Equatable, Codable {
 
     public var isApplied: Bool { send == .applied }
 
+    /// C5: kept, or a Keep under way. Every check that refuses on "kept" uses this.
+    public var isKeptOrKeeping: Bool { keptAt != nil || keepIntentAt != nil }
+    /// A confirmed Keep and nothing under way: what Bring in more and the kept-MP3 delete require.
+    public var isConfirmedKept: Bool { keptAt != nil && keepIntentAt == nil }
+
     /// Magpie created `artist`: this entry says so, for the same Lidarr id *and* the same artist MBID. Lidarr may
     /// reuse a deleted artist's id for another artist; an entry without an MBID never counts (fails safe).
     public func created(_ artist: LidarrArtist) -> Bool {
@@ -73,7 +101,7 @@ public struct LedgerEntry: Sendable, Equatable, Codable {
 
     private enum CodingKeys: String, CodingKey {
         case lidarrArtistId, albumId, rgMbid, createdArtist, wasMonitoredBefore, root, mode, keptAt, instance
-        case send, requestId, closedAt, artistMbid
+        case send, requestId, closedAt, artistMbid, keepIntentAt, findFiles
     }
 
     /// Fix round 4: a missing or unknown `send` decodes as `unclear`, never as applied. That includes entries
@@ -95,6 +123,8 @@ public struct LedgerEntry: Sendable, Equatable, Codable {
         requestId = try c.decodeIfPresent(String.self, forKey: .requestId)
         closedAt = try c.decodeIfPresent(Date.self, forKey: .closedAt)
         artistMbid = try? c.decodeIfPresent(MBID.self, forKey: .artistMbid)
+        keepIntentAt = try? c.decodeIfPresent(Date.self, forKey: .keepIntentAt)
+        findFiles = try? c.decodeIfPresent([FindFile].self, forKey: .findFiles)
     }
 }
 
@@ -153,6 +183,15 @@ public actor Ledger {
     }
 
     private static func upserting(_ e: LedgerEntry, into list: [LedgerEntry]) -> [LedgerEntry] {
+        // Y5 fix I4: a record that replaces an entry (the same album, or the placeholder it supersedes) never drops the
+        // Keep's state: a kept time, a Keep under way or the find's file record is carried over when the new entry has
+        // none. Only `update(artistId:)` clears them (the Keep's own commit and clean-up).
+        var e = e
+        for old in list where old.instance == e.instance && replaces(e, old) {
+            if e.keptAt == nil { e.keptAt = old.keptAt }
+            if e.keepIntentAt == nil { e.keepIntentAt = old.keepIntentAt }
+            if e.findFiles == nil { e.findFiles = old.findFiles }
+        }
         var next = list.filter { old in
             guard old.instance == e.instance else { return true }
             if let albumId = e.albumId {
@@ -164,6 +203,44 @@ public actor Ledger {
         }
         next.append(e)
         return next
+    }
+
+    private static func replaces(_ e: LedgerEntry, _ old: LedgerEntry) -> Bool {
+        if let albumId = e.albumId, old.albumId == albumId { return true }
+        return old.albumId == nil && old.lidarrArtistId == e.lidarrArtistId && old.rgMbid == e.rgMbid
+    }
+
+    /// I10: changes every entry of this server for the artist in one read-modify-write and one save, so a crash
+    /// leaves either all of them changed or none (Keep's intent and commit). Returns how many changed.
+    @discardableResult
+    public func update(artistId: Int, _ change: (inout LedgerEntry) -> Void) throws -> Int {
+        guard let fileURL else {
+            var n = 0
+            memory = Self.changing(memory, artistId: artistId, instance: instance, &n, change)
+            return n
+        }
+        return try withoutActuallyEscaping(change) { change in
+            try Self.fileLock.withLockUnchecked {
+                var n = 0
+                let next = Self.changing(try Self.read(fileURL), artistId: artistId, instance: instance, &n, change)
+                if n > 0 { try LocalFile.save(next, to: fileURL) }
+                return n
+            }
+        }
+    }
+
+    private static func changing(_ list: [LedgerEntry], artistId: Int, instance: String?, _ changed: inout Int,
+                                 _ change: (inout LedgerEntry) -> Void) -> [LedgerEntry] {
+        var out: [LedgerEntry] = []
+        for old in list {
+            guard old.instance == instance, old.lidarrArtistId == artistId else { out.append(old); continue }
+            var e = old
+            change(&e)
+            e.instance = instance
+            if e != old { changed += 1 }
+            out.append(e)
+        }
+        return out
     }
 
     public func entry(albumId: Int) throws -> LedgerEntry? {

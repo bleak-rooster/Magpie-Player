@@ -114,11 +114,11 @@ import MagpieCore
         }
         #expect(h.server.writes.count == before)
 
-        // Kept for real (the main root has a folder already: kept in place, still in the Finds folder).
+        // Y5 C5: a Keep under way (only its intent, Lidarr busy) refuses too.
         let h2 = await Harness(setup: Harness.findsSetup)
         let kept = try await Self.readyFind(h2)
-        h2.server.with { $0.folders = [KeepTests.keptPath] }
-        #expect(try await h2.runner.keep(kept) == .keptInPlace)
+        h2.server.with { $0.commands.append(FakeLidarr.Command(id: 71, name: "RssSync", status: "queued", artistIds: [])) }
+        #expect(try await h2.runner.keep(kept) == .queued)
         let before2 = h2.server.writes.count
         await #expect(throws: RequestRunner.NotForMeError.notAFind) {
             _ = try await h2.runner.notForMe(kept, permanentConfirmed: true)

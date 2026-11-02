@@ -459,7 +459,7 @@ public actor LidarrDownloadRestarter {
         let rest = albums.filter { $0 != searched }
         guard !rest.isEmpty else { return .restarted }
         do {
-            _ = try await gate.send("POST", "command", body: SearchBody(name: "AlbumSearch", albumIds: rest))
+            _ = try await gate.send("POST", "command", body: SearchBody(name: "AlbumSearch", albumIds: rest), confinedAs: .restartSearch)
             return .restarted
         } catch {
             Log.logger("requests").error("restart: search not started: \(Log.category(of: error), privacy: .public)")
