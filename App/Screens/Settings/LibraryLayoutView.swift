@@ -11,6 +11,7 @@ struct LibraryLayoutView: View {
         switch row {
         case .finds: "Shows once your Finds folder is set up"
         case .requests: "Shows when Lidarr is connected"
+        case .discover: "Shows once Discover is set up in Settings \u{203A} New music"
         default: nil
         }
     }
@@ -19,7 +20,7 @@ struct LibraryLayoutView: View {
     static func summary(_ model: AppModel) -> String {
         let count = model.preferences.layout.visibleLibraryRows(
             offline: false, findsSetUp: model.findsSetup?.library != nil, lidarrConnected: model.lidarr != nil,
-            carPlay: false).count
+            carPlay: false, discoverSetUp: model.aurralSetUp).count
         return count == 1 ? "1 row" : "\(count) rows"
     }
 

@@ -32,7 +32,7 @@ extension AppModel {
 
     /// Y6 hook: the Aurral library ("Aurral Playlists"), shown only under Discover, found from Aurral's job paths
     /// (never from its name). None until Aurral is set up.
-    var discoverLibraryIds: Set<Int> { [] }
+    var discoverLibraryIds: Set<Int> { savedDiscoverLibraryIds }
 
     /// The library picked from Lidarr's root for this account, if any (cleared when the owner chooses one).
     var autoMainLibraryId: Int? {

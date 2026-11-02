@@ -119,6 +119,7 @@ struct PlaylistView: View {
                 }
                 DownloadNote(reason: .playlist(page.playlist.id), songs: songs)
             }
+            if editable { LibraryCopyBanner(playlist: page.playlist, songs: songs) }   // Y6
         }
         .padding(.vertical, Tokens.Spacing.l)
         .frame(maxWidth: .infinity)

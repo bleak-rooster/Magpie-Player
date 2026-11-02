@@ -6,8 +6,9 @@ import Testing
     @Test func defaultsMatchSpec() {
         let p = Preferences.standard
         #expect(p.layout.home.entries.map(\.item) == [.jumpBackIn, .madeForYou, .recentlyAdded, .mostPlayed, .favourites,
-                                                      .randomAlbums, .playlists, .genres, .downloaded])
-        #expect(p.layout.home.entries.map(\.visible) == [true, true, true, true, false, false, false, false, false])
+                                                      .randomAlbums, .playlists, .genres, .downloaded, .discover])
+        // Y6: Discover is on, and shows only once Aurral is set up.
+        #expect(p.layout.home.entries.map(\.visible) == [true, true, true, true, false, false, false, false, false, true])
         #expect(p.layout.library.entries.map(\.item) == LibraryRow.allCases && p.layout.library.entries.allSatisfy(\.visible))
         #expect(p.layout.showsRecentlyAdded)
         #expect(p.playback.wifi == .original && p.playback.cellular == .aacMedium && p.playback.replayGain == .track)
@@ -118,7 +119,7 @@ import Testing
         let json = #"{"version":1,"home":[{"id":"mostPlayed","visible":true},{"id":"karaoke","visible":true},{"id":"mostPlayed","visible":false},{"id":42}]}"#
         let layout = LayoutPreferences.decode(Data(json.utf8))
         #expect(layout.home.entries.first == .init(item: .mostPlayed, visible: true))
-        #expect(layout.home.entries.count == 9)
+        #expect(layout.home.entries.count == 10)   // Y6: with Discover
         #expect(layout.home.entries.filter { $0.item == .mostPlayed }.count == 1)
         #expect(layout.home.entries.first { $0.item == .favourites }?.visible == false, "missing items keep default visibility")
     }
@@ -174,7 +175,7 @@ import Testing
     @Test func orderedVisibilityEditing() {
         var v = LayoutPreferences.defaultValue.home
         v.move(fromOffsets: IndexSet(integer: 3), toOffset: 0)
-        #expect(v.visibleItems == [.mostPlayed, .jumpBackIn, .madeForYou, .recentlyAdded])
+        #expect(v.visibleItems == [.mostPlayed, .jumpBackIn, .madeForYou, .recentlyAdded, .discover])   // Y6: Discover is on (shown once set up)
         v.moveDown(.mostPlayed); #expect(v.entries.map(\.item).prefix(2) == [.jumpBackIn, .mostPlayed])
         v.moveUp(.jumpBackIn); #expect(v.entries.first?.item == .jumpBackIn, "moveUp at the top is a no-op")
         let shown = v.set(.favourites, visible: true, keepingOneOf: [])
@@ -206,6 +207,21 @@ import Testing
         #expect(l.visibleLibraryRows(offline: false, findsSetUp: true, lidarrConnected: false, carPlay: false)
                 == [.playlists, .artists, .albums, .songs, .genres, .favourites, .downloads, .finds])
         #expect(l.visibleLibraryRows(offline: true, findsSetUp: true, lidarrConnected: true, carPlay: false) == [.genres, .downloads])
+    }
+
+    /// Round 12 Y6: Discover (Home and Library, the phone and the car) only while Aurral is set up, never offline.
+    @Test func discoverOnlyOnceSetUp() {
+        let l = LayoutPreferences.defaultValue
+        #expect(HomeSection.discover.title == "Discover" && LibraryRow.discover.title == "Discover")
+        #expect(!l.visibleHomeSections(offline: false, hasListenBrainzToken: false).contains(.discover))
+        #expect(l.visibleHomeSections(offline: false, hasListenBrainzToken: false, discoverSetUp: true)
+                == [.jumpBackIn, .recentlyAdded, .mostPlayed, .discover])
+        #expect(l.visibleHomeSections(offline: true, hasListenBrainzToken: false, discoverSetUp: true) == [.downloaded])
+        #expect(!l.visibleLibraryRows(offline: false, findsSetUp: true, lidarrConnected: true, carPlay: false).contains(.discover))
+        #expect(l.visibleLibraryRows(offline: false, findsSetUp: false, lidarrConnected: false, carPlay: true, discoverSetUp: true)
+                == [.playlists, .artists, .albums, .genres, .favourites, .downloads, .discover])
+        #expect(l.visibleLibraryRows(offline: true, findsSetUp: false, lidarrConnected: false, carPlay: false, discoverSetUp: true)
+                == [.genres, .downloads])
     }
 
     /// Offline (one rule for the phone and the car): Downloads, which always shows, and Genres (read from the phone)

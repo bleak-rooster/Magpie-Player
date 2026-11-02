@@ -2,9 +2,15 @@ import Foundation
 import MagpieCore
 
 /// The owner's Lidarr: its address and API key.
-struct LidarrConnection: Codable, Sendable, Equatable {
+struct LidarrConnection: Codable, Sendable, Equatable, CustomStringConvertible, CustomDebugStringConvertible,
+                        CustomReflectable {
     var base: URL
     var apiKey: String
+
+    // Y6 fix M6: never prints the key.
+    var description: String { "LidarrConnection(\(Redactor.sanitize(base)))" }
+    var debugDescription: String { description }
+    var customMirror: Mirror { Mirror(self, children: ["base": Redactor.sanitize(base)]) }
 }
 
 /// Where the Lidarr connection is kept. Tests substitute their own.

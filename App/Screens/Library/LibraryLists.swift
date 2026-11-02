@@ -264,6 +264,7 @@ struct PlaylistsListView: View {
         do {
             // A–Z for the letter index (P2).
             let sorted = try await model.request { try await $0.playlists() }
+                .filter { !model.isDiscoverPlaylist($0) }   // Y6: Discover's are under Discover
                 .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
             sections = LetterIndex.sections(sorted, name: \.name)
             playlists = .loaded(sorted)

@@ -145,6 +145,8 @@ final class AppModel {
     @ObservationIgnored private let store: any SessionStoring
     @ObservationIgnored private let lidarrStore: any LidarrConnectionStoring
     @ObservationIgnored let tokenStore: any ListenBrainzTokenStoring
+    /// Round 12 Y6: Discover (Aurral), AppModel+Discover.swift.
+    let discover: DiscoverState
     @ObservationIgnored let setupStore: LidarrSetupStore
     @ObservationIgnored let findsStore: FindsSetupStore
     /// R18: Add with my defaults, When you add an artist, and the Keep a menu asked for (AppModel+NewMusic.swift).
@@ -260,6 +262,7 @@ final class AppModel {
     init(store: any SessionStoring = SessionStore.standard,
          lidarrStore: any LidarrConnectionStoring = LidarrConnectionStore.standard,
          tokenStore: any ListenBrainzTokenStoring = ListenBrainzTokenStore.standard,
+         aurralStore: any AurralConnectionStoring = AurralConnectionStore.standard,
          matchIndexDirectory: URL? = URL.applicationSupportDirectory,
          dataDirectory: URL? = URL.applicationSupportDirectory,
          gateDefaultsSuite: String? = nil,
@@ -281,6 +284,7 @@ final class AppModel {
         self.store = store
         self.lidarrStore = lidarrStore
         self.tokenStore = tokenStore
+        self.discover = DiscoverState(store: aurralStore)
         self.matchIndexDirectory = matchIndexDirectory
         self.lidarr = lidarrStore.load()
         self.transport = transport
@@ -564,6 +568,9 @@ final class AppModel {
             appDefaults.removeObject(forKey: Self.musicFoldersKey(navidromeScope))
             appDefaults.removeObject(forKey: Self.autoMainLibraryKey(navidromeScope))
             appDefaults.removeObject(forKey: Self.lidarrLibrariesKey(navidromeScope))
+            for key in [Self.discoverPlaylistsKey, Self.discoverLibrariesKey, Self.aurralSongsKey] {   // Y6 fix M7
+                appDefaults.removeObject(forKey: key(navidromeScope))
+            }
             let prefix = Self.findSongIdsKeyPrefix + navidromeScope + "."
             for key in appDefaults.dictionaryRepresentation().keys where key.hasPrefix(prefix) {
                 appDefaults.removeObject(forKey: key)
@@ -598,6 +605,7 @@ final class AppModel {
         lidarrSetup = nil
         lidarrStatus = nil
         rebuildRunner()
+        forgetDiscover()   // Y6
         RecentSearches(defaults: appDefaults).clear()   // shared with the car
         // Every Lidarr's requests, and the ledgers with nothing open, now. Never the change log (the owner's undo map).
         let data = dataDirectory

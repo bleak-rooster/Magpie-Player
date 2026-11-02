@@ -94,14 +94,21 @@ final class CarPlayLibraryAdapter: CarPlayLibrary {
 
     func playlists() async throws -> [Playlist] {
         if model.isOffline { return await model.offlineCatalog.playlists() }
-        return try await model.request { try await $0.playlists() }
+        return try await model.request { try await $0.playlists() }.filter { !model.isDiscoverPlaylist($0) }   // Y6
     }
+
+    /// Y6: Library › Discover.
+    func discoverPlaylists() async throws -> [Playlist] { try await model.discoverPlaylists() }
 
     /// Offline, a downloaded playlist with its songs on the phone (Downloads opens playlists this way).
     func playlist(id: String) async throws -> (Playlist, [Song]) {
         if model.isOffline {
             guard let page = await downloadedPlaylist(id: id) else { throw AppModel.forcedOfflineError }
             return page
+        }
+        if model.isDiscoverPlaylist(id: id) {   // Y6: the library's copies in place, as on the phone
+            let page = try await model.discoverPage(playlistId: id)
+            return (page.playlist, page.songs)
         }
         let result = try await model.request { client in
             let (playlist, songs) = try await client.playlist(id: id)

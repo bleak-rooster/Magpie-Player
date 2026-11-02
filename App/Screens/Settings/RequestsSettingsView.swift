@@ -23,6 +23,7 @@ struct RequestsSettingsView: View {
             }
             Group { lidarrSections }.disabled(model.isOffline)
             if model.lidarr != nil { NewMusicDefaultsSection() }   // R18 + R20
+            AurralSettingsSection().disabled(model.isOffline)   // Y6: Discover
         }
         .navigationTitle("New music")
         .navigationBarTitleDisplayMode(.inline)

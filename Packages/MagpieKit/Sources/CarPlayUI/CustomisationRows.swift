@@ -132,6 +132,7 @@ extension CarPlayRows {
             case .favourites: .favourites
             case .downloads: .downloads
             case .finds: hasFindsTab ? nil : .finds
+            case .discover: .discover   // Y6
             case .songs, .requests: nil
             }
             return destination.map { CPRowModel(id: "library.\(row.rawValue)", title: row.title, action: .open($0)) }
