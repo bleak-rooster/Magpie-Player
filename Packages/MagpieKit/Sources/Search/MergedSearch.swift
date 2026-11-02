@@ -39,12 +39,14 @@ public struct MergedSearch: Sendable {
     /// Most rows per kind in the "Not in your library" band.
     public static let limits = (songs: 10, albums: 8, artists: 5)
 
-    private let library: @Sendable (String) async throws -> LibrarySearchResult
+    private let library: @Sendable (String) async throws -> (LibrarySearchResult, SearchPaging?)
+    private let pager: LibraryPager?
     private let libraryTimeout: Duration
     private let sources: [Source]
     private let index: @Sendable () async -> MatchIndex
     private let sleep: Sleep
 
+    /// A library searched by text alone, one batch, no split queries and no paging (tests).
     /// - Parameters:
     ///   - index: the library's match index (a snapshot may be empty while the first one builds).
     ///   - sleep: the clock for the time limits (tests inject one).
@@ -53,8 +55,33 @@ public struct MergedSearch: Sendable {
                 sources: [Source],
                 index: @escaping @Sendable () async -> MatchIndex,
                 sleep: @escaping Sleep = { try await Task.sleep(for: $0) }) {
-        self.library = library; self.libraryTimeout = libraryTimeout; self.sources = sources
+        self.library = { (try await library($0), nil) }
+        self.pager = nil
+        self.libraryTimeout = libraryTimeout; self.sources = sources
         self.index = index; self.sleep = sleep
+    }
+
+    /// The library through `search3` with counts and offsets (round 12): the whole query plus its split queries
+    /// (`SearchPlan`), and sections that page (`more`).
+    public init(libraryPage: @escaping LibraryPager.Page,
+                libraryTimeout: Duration = MergedSearch.libraryTimeout,
+                sources: [Source],
+                index: @escaping @Sendable () async -> MatchIndex,
+                sleep: @escaping Sleep = { try await Task.sleep(for: $0) }) {
+        let pager = LibraryPager(page: libraryPage)
+        self.library = { q in
+            let (found, paging) = try await pager.first(q)
+            return (found, paging)
+        }
+        self.pager = pager
+        self.libraryTimeout = libraryTimeout; self.sources = sources
+        self.index = index; self.sleep = sleep
+    }
+
+    /// The next batch of one library section (plan item 3), for `SearchSections.append`. Cancellation is rethrown.
+    public func more(_ kind: LibraryKind, paging: SearchPaging) async throws -> MoreResults {
+        guard let pager else { return MoreResults(kind: kind, paging: paging) }
+        return try await pager.more(kind, paging: paging)
     }
 
     public func run(_ q: String) async -> SearchSections {
@@ -72,7 +99,7 @@ public struct MergedSearch: Sendable {
         let query = q.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return .empty }
         let library = self.library, sleep = self.sleep, libraryTimeout = self.libraryTimeout, sources = self.sources
-        async let libraryResult: Result<LibrarySearchResult, Error> = Self.capture {
+        async let libraryResult: Result<(LibrarySearchResult, SearchPaging?), Error> = Self.capture {
             try await Self.withDeadline(libraryTimeout, sleep: sleep) { try await library(query) }
         }
         async let outside: [ExternalHits] = withTaskGroup(of: (Int, ExternalHits).self) { group in
@@ -87,21 +114,33 @@ public struct MergedSearch: Sendable {
             return all.sorted { $0.0 < $1.0 }.map(\.1)    // source order, not arrival order
         }
         let lib = await libraryResult
-        if let libraryFirst, case .success(let found) = lib {
-            await libraryFirst(SearchSections.library(found, query: query))
+        if let libraryFirst, case .success(let (found, paging)) = lib {
+            await libraryFirst(Self.librarySections(found, paging: paging, query: query))
         }
         let ext = await outside
-        let merged = Self.merge(query: query, library: (try? lib.get()) ?? LibrarySearchResult(),
-                                outside: ext, index: await index())
+        let (found, paging) = (try? lib.get()) ?? (LibrarySearchResult(), nil)
+        let merged = Self.merge(query: query, library: found, paging: paging, outside: ext, index: await index())
         if case .failure(let error) = lib, merged.notYet.isEmpty { throw error }
         return merged
     }
 
     // MARK: - Merging
 
-    static func merge(query: String, library: LibrarySearchResult, outside: [ExternalHits],
+    /// The library's sections, ranked, with the best song's artist and album (plan item 1.3) and the paging state
+    /// (which counts those rows as shown).
+    static func librarySections(_ library: LibrarySearchResult, paging: SearchPaging?, query: String) -> SearchSections {
+        var sections = SearchSections.library(library, query: query, withSongsArtist: true)
+        if var paging {
+            paging.insert(sections.artists.map(\.id), into: .artists)
+            paging.insert(sections.albums.map(\.id), into: .albums)
+            sections.paging = paging
+        }
+        return sections
+    }
+
+    static func merge(query: String, library: LibrarySearchResult, paging: SearchPaging? = nil, outside: [ExternalHits],
                       index: MatchIndex) -> SearchSections {
-        var sections = SearchSections.library(library, query: query)
+        var sections = librarySections(library, paging: paging, query: query)
         // The index may be empty or stale (first launch, mid-scan): the rows on screen count too.
         let shown = MatchIndex(songs: library.songs)
         func inLibrary(_ r: ExternalRecording) -> Bool {
@@ -119,21 +158,27 @@ public struct MergedSearch: Sendable {
                 }
         }
 
+        // Every candidate, in source order, without repeats; then ranked (round 12: the same scorer as the library;
+        // equal scores keep source order) and cut to the limits.
         var notYet = NotYetSections()
         var seen = Set<String>()
         for hits in outside {
-            for r in hits.songs where notYet.songs.count < limits.songs && !inLibrary(r) {
+            for r in hits.songs where !inLibrary(r) {
                 // One row per artist + title, however many recordings share it (review H3.3).
                 if seen.insert("s" + Normalize.key(artist: r.artist, title: r.title)).inserted { notYet.songs.append(r) }
             }
-            for a in hits.albums where notYet.albums.count < limits.albums && !a.title.isEmpty && !hasAlbum(a) {
+            for a in hits.albums where !a.title.isEmpty && !hasAlbum(a) {
                 let id = a.mbid?.rawValue ?? Normalize.key(artist: a.artist, title: a.title)
                 if seen.insert("l" + id).inserted { notYet.albums.append(a) }
             }
-            for a in hits.artists where notYet.artists.count < limits.artists && !a.name.isEmpty && !hasArtist(a) {
+            for a in hits.artists where !a.name.isEmpty && !hasArtist(a) {
                 if seen.insert("a" + (a.mbid?.rawValue ?? Normalize.name(a.name))).inserted { notYet.artists.append(a) }
             }
         }
+        let q = SearchRanker.Query(query)
+        notYet.songs = Array(SearchRanker.rank(notYet.songs, q, SearchRanker.score(recording:_:)).prefix(limits.songs))
+        notYet.albums = Array(SearchRanker.rank(notYet.albums, q, SearchRanker.score(notYetAlbum:_:)).prefix(limits.albums))
+        notYet.artists = Array(SearchRanker.rank(notYet.artists, q, SearchRanker.score(notYetArtist:_:)).prefix(limits.artists))
         sections.notYet = notYet
         return sections
     }

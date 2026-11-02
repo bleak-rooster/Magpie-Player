@@ -255,11 +255,16 @@ public actor NavidromeClient {
         return (Mapping.playlist(playlist), (playlist.entry ?? []).map(Mapping.song))
     }
 
-    public func search(_ q: String, songCount: Int = 20, albumCount: Int = 10, artistCount: Int = 5) async throws -> LibrarySearchResult {
-        let body = try await subsonic("search3", [
-            URLQueryItem(name: "query", value: q), int("songCount", songCount),
-            int("albumCount", albumCount), int("artistCount", artistCount),
-        ])
+    /// `search3`. Offsets page one section (round 12); a zero offset is left out.
+    public func search(_ q: String, songCount: Int = 20, albumCount: Int = 10, artistCount: Int = 5,
+                       songOffset: Int = 0, albumOffset: Int = 0, artistOffset: Int = 0) async throws -> LibrarySearchResult {
+        var items = [URLQueryItem(name: "query", value: q), int("songCount", songCount),
+                     int("albumCount", albumCount), int("artistCount", artistCount)]
+        for (name, offset) in [("songOffset", songOffset), ("albumOffset", albumOffset), ("artistOffset", artistOffset)]
+            where offset > 0 {
+            items.append(int(name, offset))
+        }
+        let body = try await subsonic("search3", items)
         let r = body.searchResult3
         return LibrarySearchResult(songs: (r?.song ?? []).map(Mapping.song),
                                    albums: (r?.album ?? []).map { Mapping.album($0) },
