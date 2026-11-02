@@ -1,6 +1,7 @@
 import DesignSystem
 import Foundation
 import MagpieCore
+import Search
 
 // Value models for CarPlay lists. Built off the main thread, then applied to `CPListTemplate`s on
 // it (see `CarPlayController`). Pure, so the rules (limits, diffing, depth) are unit-tested.
@@ -26,6 +27,8 @@ public enum CPDestination: Sendable, Hashable {
     case searchResults(query: String)
     /// The system search template (keyboard).
     case search
+    /// Round 12 (Y2): one group of a long list's letters screen ("A", "X–Z", "S (1 of 3)"), its rows built already.
+    case letterGroup(title: String, sections: [CPSectionModel])
 
     public var title: String {
         switch self {
@@ -41,6 +44,7 @@ public enum CPDestination: Sendable, Hashable {
         case .artist(_, let name), .genreGroup(_, let name), .downloadedArtist(_, let name): name
         case .searchResults(let query): query
         case .search: "Search"
+        case .letterGroup(let title, _): title
         }
     }
 }
@@ -55,6 +59,8 @@ public enum CPPlayRequest: Sendable, Hashable {
     case genreGroup(id: String, shuffled: Bool)
     /// These songs, shuffled: the Shuffle of an album or artist on the phone (nothing is asked of the server).
     case shuffle([Song])
+    /// A playlist from its start (a playlist row in a letter group's list, Y2).
+    case playlist(id: String)
 }
 
 /// What tapping a row does. `.none` rows are shown disabled.
@@ -92,9 +98,11 @@ public struct CPRowModel: Sendable, Hashable, Identifiable {
 public struct CPSectionModel: Sendable, Hashable {
     public var header: String?
     public var rows: [CPRowModel]
+    /// The section's letter in CarPlay's letter scrubber (Y2: A–Z lists); nil for other lists.
+    public var indexTitle: String?
 
-    public init(header: String?, rows: [CPRowModel]) {
-        self.header = header; self.rows = rows
+    public init(header: String?, rows: [CPRowModel], indexTitle: String? = nil) {
+        self.header = header; self.rows = rows; self.indexTitle = indexTitle
     }
 }
 
@@ -230,25 +238,40 @@ public enum CarPlayRows {
 
     // MARK: Lists (depth 2)
 
-    public static func playlists(_ playlists: [Playlist]) -> [CPSectionModel] {
-        nonEmpty(unique(playlists, \.id).map {
+    /// Y2: Playlists, Artists and Albums are A–Z (`lettered`): letter sections within the car's limits, otherwise a
+    /// letters screen. Without limits (the defaults) always letter sections. Playlists keep leading articles, as the
+    /// phone's Playlists; artists and albums drop Navidrome's, as the phone's A–Z does.
+    public static func playlists(_ playlists: [Playlist], maxItems: Int = .max, maxSections: Int = .max) -> [CPSectionModel] {
+        lettered(unique(playlists, \.id).map {
             let name = display($0.name, "Untitled playlist")
-            return CPRowModel(id: "playlist.\($0.id)", title: name, detail: songCount($0.songCount),
-                              artworkKey: $0.coverArtId, action: .open(.playlist(id: $0.id, title: name)))
-        })
+            let row = CPRowModel(id: "playlist.\($0.id)", title: name, detail: songCount($0.songCount),
+                                 artworkKey: $0.coverArtId, action: .open(.playlist(id: $0.id, title: name)))
+            var leaf = row
+            leaf.action = .play(.playlist(id: $0.id))
+            return letterEntry(name: $0.name, articles: [], row: row, leaf: leaf)
+        }, kind: .playlists, maxItems: maxItems, maxSections: maxSections)
     }
 
-    public static func artists(_ artists: [Artist]) -> [CPSectionModel] {
-        nonEmpty(unique(artists, \.id).map {
+    public static func artists(_ artists: [Artist], maxItems: Int = .max, maxSections: Int = .max) -> [CPSectionModel] {
+        lettered(unique(artists, \.id).map {
             let name = display($0.name, unknownArtist)
-            return CPRowModel(id: "artist.\($0.id)", title: name,
-                              detail: $0.albumCount == 1 ? "1 album" : "\($0.albumCount) albums",
-                              artworkKey: $0.coverArtId, action: .open(.artist(id: $0.id, name: name)))
-        })
+            let albums = $0.albumCount == 1 ? "1 album" : "\($0.albumCount) albums"
+            let row = CPRowModel(id: "artist.\($0.id)", title: name, detail: albums,
+                                 artworkKey: $0.coverArtId, action: .open(.artist(id: $0.id, name: name)))
+            var leaf = row
+            leaf.detail = "Shuffle \u{00B7} \(albums)"
+            leaf.action = .play(.artistShuffle(id: $0.id))
+            return letterEntry(name: $0.name, articles: LetterIndex.navidromeArticles, row: row, leaf: leaf)
+        }, kind: .artists, maxItems: maxItems, maxSections: maxSections)
     }
 
-    public static func albums(_ albums: [Album]) -> [CPSectionModel] {
-        nonEmpty(unique(albums, \.id).map { albumRow($0, id: "album.\($0.id)") })
+    public static func albums(_ albums: [Album], maxItems: Int = .max, maxSections: Int = .max) -> [CPSectionModel] {
+        lettered(unique(albums, \.id).map {
+            let row = albumRow($0, id: "album.\($0.id)")
+            var leaf = row
+            leaf.action = .play(.album(id: $0.id, shuffled: false))
+            return letterEntry(name: $0.name, articles: LetterIndex.navidromeArticles, row: row, leaf: leaf)
+        }, kind: .albums, maxItems: maxItems, maxSections: maxSections)
     }
 
     /// A recent search re-run: library songs, then albums, then songs not in the library (D4: library first).
