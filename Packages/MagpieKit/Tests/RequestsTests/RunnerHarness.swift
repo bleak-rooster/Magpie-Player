@@ -583,7 +583,7 @@ final class FakeLidarr: @unchecked Sendable {
                                                 "implementationName": $0.name, "protocol": $0.protocolName] as [String: Any] }
             })
         }
-        for id in 901...920 {
+        for id in 901...940 {   // Y4: the bulk restart cap needs more than 25
             t.stub(method: "DELETE", pathSuffix: "/api/v1/queue/\(id)") { [self] _ in
                 with { s in
                     s.queue.removeAll { $0.id == id }
@@ -707,6 +707,8 @@ struct Harness {
     let ledger: Ledger
     let store: RequestStore
     let runner: RequestRunner
+    /// The runner's Lidarr client (Y4: the Downloads in Lidarr restarter reads through it too).
+    let lidarrClient: LidarrClient
     let suite = "magpie-runner-\(UUID().uuidString)"
 
     static let setup = RequestRunner.Setup(rootFolderPath: "/music/library", qualityProfileId: 4,
@@ -728,6 +730,7 @@ struct Harness {
         let lidarr = existing ?? FakeLidarr()
         library = FakeLibrary(events: lidarr.events)
         let client = LidarrClient(base: base, apiKey: "k", transport: lidarr.clientTransport)
+        lidarrClient = client
         ledger = Ledger(fileURL: dir.appending(path: "ledger.json"), instance: client.instanceScope)
         // FM1: the gate confines deletes and artist edits from the ledger and the owner's setup, like the app's; R17:
         // queue deletes from the runner's live requests too.

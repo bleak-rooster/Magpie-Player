@@ -20,19 +20,10 @@ public enum StallLimit: Int, CaseIterable, Sendable, Identifiable {
     }
 }
 
-/// How one Soulseek download looked when it last changed (R17).
+/// How one Soulseek download looked when it last changed (R17). The signature is shared with the request-independent
+/// `QueueStallWatch` (round 12 item 6).
 struct StallWatch: Sendable, Equatable {
-    struct Signature: Sendable, Equatable {
-        var sizeleft: Double
-        var status: String
-        var tracked: String
-        var client: String?
-
-        init(_ item: QueueItem) {
-            sizeleft = item.sizeleft; status = item.status.lowercased()
-            tracked = item.trackedDownloadState.lowercased(); client = item.downloadClient?.lowercased()
-        }
-    }
+    typealias Signature = QueueSignature
 
     var albumId: Int
     var signature: Signature
@@ -261,8 +252,10 @@ extension RequestRunner {
     /// anything is sent (M6: a crash never refunds one), then `DELETE /queue/{id}` with exactly `queueRemoval` for
     /// each item, through the gate. Returns how many were removed. When none was (the gate refused or couldn't
     /// confirm), the count is rolled back (fix round 1 M2) and the error passed on; after one or more, a later
-    /// refusal is logged and the count stands.
-    private func removeCounting(_ items: [QueueItem], for id: RequestID, manual: Bool = false) async throws -> Int {
+    /// refusal is logged and the count stands. `restartAny` (round 12 item 6, D49): Settings › Downloads in Lidarr's
+    /// restart, sent as the gate's `queueRestartAny` shape (same request, confined by a fresh queue read).
+    func removeCounting(_ items: [QueueItem], for id: RequestID, manual: Bool = false,
+                        restartAny: Bool = false) async throws -> Int {
         let before = request(id)
         // N2: one count per copy removed, and never past the cap: only as many copies as are left to it.
         let items = Array(items.prefix(max(0, Self.maxStallRetries - (before?.stalls ?? 0))))
@@ -276,7 +269,11 @@ extension RequestRunner {
             try await persist()
             for item in items {
                 guard let queueId = item.id else { continue }
-                _ = try await gate.send("DELETE", "queue/\(queueId)?\(Self.queueRemoval)", body: nil)
+                if restartAny {
+                    _ = try await gate.send("DELETE", "queue/\(queueId)?\(Self.queueRemoval)", body: nil, confinedAs: .queueRestartAny)
+                } else {
+                    _ = try await gate.send("DELETE", "queue/\(queueId)?\(Self.queueRemoval)", body: nil)
+                }
                 stallWatch[queueId] = nil
                 removed += 1
             }
@@ -299,7 +296,7 @@ extension RequestRunner {
 
     /// Back to searching: the runner's own AlbumSearch (`startSearch`). The blocklisting delete makes Lidarr record the
     /// download as failed; that failure is this search's start, not a new one to wait on.
-    private func searchAgainNow(_ id: RequestID) async {
+    func searchAgainNow(_ id: RequestID) async {
         searchAfterRemoval.insert(id)   // N1: this search goes out, even right after the fifth removal
         await mutate(id) {
             $0.skipNextSearch = false
