@@ -56,8 +56,8 @@ public protocol CarPlayCustomisationLibrary: AnyObject {
 }
 
 /// Home and Library from the owner's layout (spec §3, Task 22), the new rows' screens, genre play, the offline watch
-/// (Task 23) and Now Playing's star (round 12 item 2b). A change on the phone, or going offline, reloads Home and redraws the Library tab; a list
-/// being browsed keeps its shape until it is off screen (`apply`).
+/// (Task 23) and Now Playing's star (round 12 item 2b). A change on the phone, or going offline, reloads Home and redraws
+/// the Library tab; a list being browsed keeps its shape until it is off screen (`apply`).
 extension CarPlayController {
     /// Home: the shelves of the sections shown, sized together by `CarPlayRows.home` to fit the car's list.
     func loadCustomHome() {
