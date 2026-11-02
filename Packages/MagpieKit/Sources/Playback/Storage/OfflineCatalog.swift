@@ -52,6 +52,49 @@ public struct OfflineCatalog: Sendable {
         return (Self.albumKey(meta), Self.artistKey(meta.artistId, meta.artist))
     }
 
+    // MARK: - Recently downloaded (round 12 Y3)
+
+    /// One "Recently downloaded" tile: an album, or a downloaded playlist as itself.
+    public enum RecentDownload: Sendable, Hashable, Identifiable {
+        case album(Album)
+        case playlist(Playlist)
+
+        public var id: String {
+            switch self {
+            case .album(let album): "album-\(album.id)"
+            case .playlist(let playlist): "playlist-\(playlist.id)"
+            }
+        }
+    }
+
+    /// The downloads newest first, by when their songs landed (the latest song of each). A downloaded playlist is
+    /// listed as itself; a song held only by playlists makes no album tile, so a playlist never shows up as the
+    /// partial albums its songs come from. The same moment: by name, then id.
+    public func recentlyDownloaded() -> [RecentDownload] {
+        var dated: [(item: RecentDownload, at: Date, name: String)] = []
+        let listed = Set(savedPlaylists.map(\.id))
+        let ownAlbum = downloads.filter { entry in
+            entry.reasons.contains { reason in
+                if case .playlist(let id) = reason { return !listed.contains(id) }   // a playlist no longer saved
+                return true
+            }
+        }
+        for (id, entries) in Dictionary(grouping: ownAlbum, by: { Self.albumKey($0.metadata) }) {
+            let album = Self.album(id: id, entries.map(\.metadata))
+            dated.append((.album(album), entries.map(\.downloadedAt).max()!, album.name))
+        }
+        let landed = Dictionary(downloads.map { ($0.songId, $0.downloadedAt) }, uniquingKeysWith: max)
+        for playlist in playlists() {
+            let ids = savedPlaylists.first { $0.id == playlist.id }?.songIds ?? []
+            guard let at = ids.compactMap({ landed[$0] }).max() else { continue }
+            dated.append((.playlist(playlist), at, playlist.name))
+        }
+        return dated.sorted { a, b in
+            if a.at != b.at { return a.at > b.at }
+            return Self.ordered(a.name, a.item.id, b.name, b.item.id)
+        }.map(\.item)
+    }
+
     // MARK: - Artists
 
     /// The artists of the downloads, sorted by name; `albumCount` counts their downloaded albums.

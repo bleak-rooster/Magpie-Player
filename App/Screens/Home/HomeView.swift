@@ -150,18 +150,25 @@ struct HomeView: View {
     }
 }
 
-/// One shelf; each tile opens what it is (an album, a playlist, a genre group).
+/// One shelf; each tile opens what it is (an album, a playlist, a genre group). Y3: Recently downloaded has "See all"
+/// (Downloads), and its playlists open the phone's copy.
 private struct ShelfView: View {
     @Environment(AppModel.self) private var model
+    @Environment(TabNavigator.self) private var navigator: TabNavigator?
     let shelf: HomeShelf
 
     var body: some View {
-        ShelfSection(shelf.section.title) {
+        ShelfSection(shelf.section.title, onSeeAll: seeAll) {
             ForEach(shelf.items) { item in
                 tile(item)
             }
         }
         .accessibilityIdentifier("home-\(shelf.section.rawValue)")
+    }
+
+    private var seeAll: (() -> Void)? {
+        guard shelf.section == .downloaded, let navigator else { return nil }
+        return { navigator.push(.downloads) }
     }
 
     @ViewBuilder private func tile(_ item: HomeShelf.Item) -> some View {
@@ -172,10 +179,11 @@ private struct ShelfView: View {
             }
             .buttonStyle(.plain)
         case .playlist(let playlist):
-            NavigationLink(value: Route.playlist(id: playlist.id)) {
+            // Y3: a playlist looks like one (stacked frame, "Playlist · N songs"), not like another album.
+            NavigationLink(value: shelf.section == .downloaded ? Route.downloadedPlaylist(id: playlist.id)
+                                                               : Route.playlist(id: playlist.id)) {
                 Artwork(playlist.coverArtId, side: 140) { image in
-                    AlbumTile(title: playlist.name, subtitle: playlist.songCount == 1 ? "1 song" : "\(playlist.songCount) songs",
-                              artwork: image, mark: model.downloadIndex.mark(playlistId: playlist.id))
+                    PlaylistTile(playlist: playlist, artwork: image, mark: model.downloadIndex.mark(playlistId: playlist.id))
                 }
                 .collectionMenu(.playlist(playlist.id), coverArtId: playlist.coverArtId)   // R12, P4
             }

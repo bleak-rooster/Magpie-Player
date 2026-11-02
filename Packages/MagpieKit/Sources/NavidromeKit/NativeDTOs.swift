@@ -42,6 +42,8 @@ struct NativeSong: Decodable {
     let rgAlbumGain: Double?
     let rgTrackPeak: Double?
     let rgAlbumPeak: Double?
+    let sampleRate: Int?
+    let bitDepth: Int?
 }
 
 /// `/api/library` row (Navidrome 0.58+; verified against 0.64.2).
@@ -60,6 +62,14 @@ public struct NavidromeLibrary: Sendable, Equatable, Hashable, Codable, Identifi
     public init(id: Int, name: String, path: String) {
         self.id = id; self.name = name; self.path = path
     }
+}
+
+/// A library as the Subsonic API lists it (`getMusicFolders`): readable by every account, without its path.
+public struct MusicFolder: Sendable, Equatable, Hashable, Codable, Identifiable {
+    public var id: Int
+    public var name: String
+
+    public init(id: Int, name: String) { self.id = id; self.name = name }
 }
 
 /// One row of `/api/artist` (every role: album artists and track-only artists).
