@@ -94,6 +94,7 @@ import UIKit
             .environment(model)
             .environment(\.songIsDownloaded, model.songIsDownloaded)
             .magpieTheme(theme)
+            .tint(theme.colors(for: scheme == .dark || theme.character == .immersive ? .dark : .light).accentInkColor)   // as RootView
             .environment(\.dynamicTypeSize, typeSize)
             .modifier(ProbeModifier(probe: probe))
         let host = UIHostingController(rootView: root)

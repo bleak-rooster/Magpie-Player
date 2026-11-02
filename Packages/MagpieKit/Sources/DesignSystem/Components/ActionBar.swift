@@ -130,7 +130,19 @@ public enum ActionStyle {
 
     public static func colors(_ prominence: ActionProminence, theme: Theme, scheme: ColorScheme) -> Colors {
         let p = theme.colors(for: scheme)
-        // Immersive capsules are always solid: a tint over art can drop to 1.9:1 (a11y C1).
+        // Immersive capsules are always solid: a tint over art can drop to 1.9:1 (a11y C1). Y7 audit: so Shuffle
+        // doesn't look like Play there, its capsule is an opaque deep shade of the accent with a white label, deep
+        // enough that the label clears AA even over its progress.
+        if prominence == .secondary, theme.character == .immersive {
+            let shade = PaletteColor(hex: 0x000000, alpha: 0.25)
+            var fill = p.accent
+            for step in 0...20 {
+                let t = 0.45 + Double(step) * 0.025
+                fill.red = p.accent.red * (1 - t); fill.green = p.accent.green * (1 - t); fill.blue = p.accent.blue * (1 - t)
+                if Contrast.ratio(p.ink, on: fill) >= 4.6 { break }
+            }
+            return Colors(label: p.ink, fill: fill, progress: shade)
+        }
         let solid = prominence == .primary || theme.character == .immersive
         if solid {
             // The done part lightens the fill under its dark label, or darkens it under a light one.

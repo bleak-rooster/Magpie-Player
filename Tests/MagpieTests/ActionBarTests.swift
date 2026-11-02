@@ -75,9 +75,23 @@ import UIKit
             #expect(ActionStyle.colors(.primary, theme: theme, scheme: .light).fill == p.accent)
             #expect(ActionStyle.colors(.secondary, theme: theme, scheme: .light).fill.alpha < 0.5)
         }
-        // Immersive capsules are always solid: a tint over art can drop to 1.9:1 (a11y C1).
+        // Immersive capsules are always solid: a tint over art can drop to 1.9:1 (a11y C1). Y7 audit: Shuffle was the
+        // same fill as Play there, so secondary is a deeper, opaque shade of the accent.
         let immersive = Theme(character: .immersive)
-        #expect(ActionStyle.colors(.secondary, theme: immersive, scheme: .dark).fill.alpha == 1)
+        let primary = ActionStyle.colors(.primary, theme: immersive, scheme: .dark)
+        let secondary = ActionStyle.colors(.secondary, theme: immersive, scheme: .dark)
+        #expect(secondary.fill.alpha == 1)
+        #expect(secondary.fill != primary.fill)
+        #expect(secondary.fill.relativeLuminance < primary.fill.relativeLuminance)
+    }
+
+    /// Y7 audit: at accessibility sizes album tiles widen to 220 pt, so a phone-width grid shows one column (two
+    /// overlapped and ran off the screen).
+    @Test func albumGridIsOneColumnAtAccessibilitySizes() {
+        #expect(AlbumGrid.columnCount(width: 362, accessibility: false) == 2)
+        #expect(AlbumGrid.columnCount(width: 362, accessibility: true) == 1)
+        #expect(AlbumGrid.columnCount(width: 700, accessibility: true) == 3)
+        #expect(AlbumGrid.columnCount(width: 700, accessibility: false) == 4)
     }
 
     // MARK: Hosted
