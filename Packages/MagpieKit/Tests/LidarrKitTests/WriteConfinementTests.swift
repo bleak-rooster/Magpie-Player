@@ -29,7 +29,8 @@ private let findMBID = "42424242-4242-4242-8242-424242424242"
         init(roots: [String] = ["/music/library", "/music/samples"], ledgerInstance: String? = nil,
              findTags: [Int] = [2], findPath: String = "/music/samples/Find", kept: Bool = false,
              rootsDown: Bool = false, hold: (method: String, suffix: String)? = nil,
-             findArtistMBID: String = findMBID) async throws {
+             findArtistMBID: String = findMBID, mainFolders: [String] = ["Owner"],
+             lookupFolder: String? = "Find", movePreflightDown: Bool = false) async throws {
             client = LidarrClient(base: testBase, apiKey: testKey,
                                   transport: HoldTransport(inner: transport, hold: hold, latch: latch))
             ledger = Ledger(fileURL: nil, instance: ledgerInstance ?? client.instanceScope)
@@ -55,6 +56,13 @@ private let findMBID = "42424242-4242-4242-8242-424242424242"
                 "id": 42, "artistName": "Find", "foreignArtistId": findArtistMBID, "path": findPath,
                 "rootFolderPath": "/music/samples", "monitored": true, "tags": findTags]))
             t.stub(pathSuffix: "/api/v1/artist/99", status: 404)
+            // Round 12 M4: the move's destination check reads Lidarr's folder name and the main root's folders.
+            var lookupRow: [String: Any] = ["artistName": "Find", "foreignArtistId": findArtistMBID]
+            if let lookupFolder { lookupRow["folder"] = lookupFolder }
+            t.stub(pathSuffix: "/api/v1/artist/lookup", status: movePreflightDown ? 503 : 200, body: reply([lookupRow]))
+            t.stub(pathSuffix: "/api/v1/filesystem", status: movePreflightDown ? 503 : 200, body: reply([
+                "parent": "/music/", "files": [Any](),
+                "directories": mainFolders.map { ["path": "/music/library/\($0)/", "name": $0] }]))
             t.stub(pathSuffix: "/api/v1/trackfile/9", body: reply([
                 "id": 9, "artistId": 7, "albumId": 31, "path": "/music/library/Owner/Album/01.flac"]))
             t.stub(pathSuffix: "/api/v1/trackfile/10", body: reply([

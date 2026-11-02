@@ -77,6 +77,34 @@ import MagpieTestSupport
         #expect(fake.writes.isEmpty)
     }
 
+    // MARK: M4
+
+    static let keepMove = WriteGateTests.Call("PUT", "artist/editor",
+        #"{"artistIds":[42],"rootFolderPath":"/music/library","moveFiles":true,"qualityProfileId":9,"tags":[2],"applyTags":"remove"}"#)
+
+    /// The Keep move only goes when the main root has no folder of the find's name (loosely) and Lidarr's folder name
+    /// is the find's current one, both read fresh at send time; an unreadable check refuses too.
+    @Test(arguments: [
+        (["Owner", "Find"], "Find", false), (["Owner", "find"], "Find", false), (["FÏND"], "Find", false),
+        (["Owner"], "Find2", false), (["Owner"], nil, false), (["Owner"], "Find", true),
+    ] as [([String], String?, Bool)])
+    func keepMoveRefusedWhenTheDestinationIsTaken(_ folders: [String], _ named: String?, _ down: Bool) async throws {
+        let fake = try await WriteConfinementTests.Fake(mainFolders: folders, lookupFolder: named, movePreflightDown: down)
+        let gate = await fake.gate()
+        do {
+            _ = try await gate.send(Self.keepMove.method, Self.keepMove.path, body: WriteConfinementTests.body(Self.keepMove))
+            Issue.record("sent the move with \(folders) / \(named ?? "nil") / down \(down)")
+        } catch {}
+        #expect(fake.writes.isEmpty)
+    }
+
+    @Test func keepMoveGoesWhenTheDestinationIsFree() async throws {
+        let fake = try await WriteConfinementTests.Fake()
+        let gate = await fake.gate()
+        _ = try await gate.send(Self.keepMove.method, Self.keepMove.path, body: WriteConfinementTests.body(Self.keepMove))
+        #expect(fake.writes.count == 1)
+    }
+
     /// The exact shapes still go (the ledger knows album 50 and created artist 42).
     @Test func exactBodiesAreSent() async throws {
         let fake = try await Fake()
