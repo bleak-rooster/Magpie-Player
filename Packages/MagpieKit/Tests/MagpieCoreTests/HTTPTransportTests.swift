@@ -73,7 +73,7 @@ import Testing
         let to = "https://lidarr.example/api/v1/artist/5?deleteFiles=true"
         var components = URLComponents(string: "https://lidarr.example/redirect")!
         components.queryItems = [URLQueryItem(name: "status", value: "\(status)"), URLQueryItem(name: "to", value: to)]
-        var request = URLRequest(url: components.url!)
+        var request = URLRequest(url: components.url!)   // into RedirectStub only
         request.httpMethod = "DELETE"
         request.setValue("SECRETKEY", forHTTPHeaderField: "X-Api-Key")
         _ = try? await transport.send(request)
@@ -105,6 +105,7 @@ import Testing
 
     @Test func redirectPolicyRequestRules() {
         func req(_ method: String, _ headers: [String: String] = [:]) -> URLRequest {
+            // Never sent: a policy check only (allowlisted with the RedirectStub tests).
             var r = URLRequest(url: URL(string: "https://music.example/a")!)
             r.httpMethod = method
             for (k, v) in headers { r.setValue(v, forHTTPHeaderField: k) }
