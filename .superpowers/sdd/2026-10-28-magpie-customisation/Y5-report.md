@@ -199,3 +199,28 @@ code was set aside with a reversible patch while the RED run was recorded). The 
     Navidrome never saw the FLAC. The upgrade run also showed the MP3 still in place once; that was not reproduced.
   - With the hook added (artist folder only), `FindFlowIT` passed 3/3 in 309 s.
 - The simulator is deleted and the worktree's dev links are removed.
+
+## Follow-ups (before re-review)
+
+Each item was RED first.
+- **Re-monitoring:** only an album that was monitored right before Magpie's own delete and is unmonitored afterwards.
+  An album the owner unmonitored is never re-monitored. Both cases are tested.
+- **Artist page:** the line shows "This can't be undone." when Lidarr's recycle bin is off (`permanent` is read on
+  refresh).
+- **MP3 left in place (diagnosis):**
+  - In FindFlowIT's first run Lidarr ended with **one** track file, the MP3. The FLAC import never applied, so it was
+    not a two-file state.
+  - A kept album *can* still end with both: Lidarr links the FLAC to the track but fails to remove the old file (a stale
+    record, or the file couldn't be deleted). The MP3 stays as a track file no track points to.
+  - The watch now detects lossy files that no track points to:
+    - a recorded one is deleted through keptLossyDelete. The gate accepts an unmapped file only when the recorded track
+      now has a lossless file; the path, size and lossy rules are unchanged;
+    - an unrecorded one makes the request "needs a look".
+  - Both cases are tested.
+- **warningWatch:** pruned to the queue items still present.
+
+**Results**
+- Requests and LidarrKit suites: 320 + 138, all pass.
+- FindFlowIT 3× on the dev stack: 3/3 each run (305 s, 316 s, 315 s).
+- App suite: 944, all pass.
+- The simulator is deleted and the dev links are removed.
