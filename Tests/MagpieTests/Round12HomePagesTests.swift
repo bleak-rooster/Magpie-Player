@@ -215,7 +215,68 @@ private func queryValue(_ request: URLRequest, _ name: String) -> String? {
         defaults.set(3, forKey: AppModel.findsLibraryKey(scope))
         await model.refreshMusicFolders()
         #expect(model.libraryScope == 1)
-        #expect(model.mainLibraryPickedAutomatically)
+        #expect(model.mainLibraryPick == .mostAlbums && model.mainLibraryPickedAutomatically)
+        // N1: a fallback pick is never saved.
+        #expect(defaults.object(forKey: AppModel.autoMainLibraryKey(scope)) == nil)
+    }
+
+    // MARK: - Fix round 2 (N1): the pick follows Lidarr and Finds as they arrive
+
+    /// A fresh install: sign in (no Lidarr, Finds unknown), then Lidarr, then Finds. The fallback's first guess
+    /// (library 3, the most albums) is only a guess: Lidarr's root replaces it, and it's saved only then.
+    @Test func freshInstallSignInThenLidarrThenFinds() async throws {
+        stubLibraries()
+        let model = try await signedInModel()
+        let scope = try #require(model.navidromeScope)
+        #expect(model.libraryScope == 3 && model.mainLibraryPick == .mostAlbums)
+        #expect(defaults.object(forKey: AppModel.autoMainLibraryKey(scope)) == nil, "a guess is kept in memory only")
+
+        model.lidarrSetup = LidarrSetup(base: URL(string: "http://127.0.0.1:8686")!, scope: "lidarr", rootFolderPath: "/music")
+        #expect(await eventually { model.libraryScope == 1 }, "Lidarr's root decides as soon as it's there")
+        #expect(model.mainLibraryPick == .lidarrRoot)
+        #expect(defaults.object(forKey: AppModel.autoMainLibraryKey(scope)) as? Int == 1)
+
+        var setup = FindsSetup(lidarrScope: "lidarr", navidromeScope: scope)
+        setup.library = NavidromeLibrary(id: 3, name: "Finds", path: "/finds")
+        model.findsSetup = setup
+        #expect(await eventually { model.findsSetup?.mainLibrary?.id == 1 }, "the Lidarr pick shows in Settings")
+        #expect(model.libraryScope == 1 && model.mainLibraryPickedAutomatically)
+    }
+
+    /// The fallback never picks the remembered Finds library, and learning it redoes the pick.
+    @Test func fallbackRedoneWhenFindsIsLearned() async throws {
+        stubLibraries()
+        let model = try await signedInModel()
+        let scope = try #require(model.navidromeScope)
+        #expect(model.libraryScope == 3)
+        defaults.set(3, forKey: AppModel.findsLibraryKey(scope))
+        model.findsLibraryLearned()
+        #expect(await eventually { model.libraryScope == 1 })
+    }
+
+    /// The owner's own choice is never replaced by a pick.
+    @Test func ownersChoiceIsNeverReplaced() async throws {
+        stubLibraries()
+        let model = try await signedInModel()
+        let scope = try #require(model.navidromeScope)
+        var setup = FindsSetup(lidarrScope: "lidarr", navidromeScope: scope)
+        setup.library = NavidromeLibrary(id: 3, name: "Finds", path: "/finds")
+        model.findsSetup = setup
+        model.chooseMainLibrary(NavidromeLibrary(id: 2, name: "Aurral Playlists", path: "/aurral"))
+        model.lidarrSetup = LidarrSetup(base: URL(string: "http://127.0.0.1:8686")!, scope: "lidarr", rootFolderPath: "/music")
+        await model.autoPickMainLibrary()
+        #expect(model.libraryScope == 2 && model.mainLibraryPick == .chosen)
+    }
+
+    /// m1: a Lidarr root that's in no library picks nothing (no guess either), and Settings says so.
+    @Test func lidarrRootInNoLibraryPicksNothing() async throws {
+        stubLibraries()
+        let model = try await signedInModel()
+        model.lidarrSetup = LidarrSetup(base: URL(string: "http://127.0.0.1:8686")!, scope: "lidarr", rootFolderPath: "/data/elsewhere")
+        await model.autoPickMainLibrary()
+        #expect(model.libraryScope == nil && model.mainLibraryPick == .none)
+        #expect(MainLibraryCopy.note(.none) == "No main library yet: Home, Library and Search show every library.")
+        #expect(MainLibraryCopy.note(.lidarrRoot) != nil && MainLibraryCopy.note(.chosen) == nil)
     }
 
     // MARK: - Fix round 1: CarPlay, refresh, match index, label

@@ -74,11 +74,20 @@ final class AppModel {
     /// "Allow Magpie to change Lidarr" (G1): mirrors the write gate's persisted switch. Off by default.
     var changesAllowed: Bool
     /// Provisioning results and the main root folder for the connected Lidarr.
-    var lidarrSetup: LidarrSetup?
+    var lidarrSetup: LidarrSetup? {
+        didSet { if oldValue?.rootFolderPath != lidarrSetup?.rootFolderPath { mainLibraryInputsChanged() } }   // Y3 N1
+    }
     /// The connected Lidarr's setup as last read (speed tier, root folders). Nil until read.
     var lidarrStatus: LidarrAudit?
     /// Finds mode's setup for this Lidarr and Navidrome account (AppModel+Finds.swift). Nil unless both are connected.
-    var findsSetup: FindsSetup? { didSet { syncFindsIdentity(); syncLibraryScope() } }
+    var findsSetup: FindsSetup? {
+        didSet {
+            syncFindsIdentity()
+            syncLibraryScope()
+            // Y3 N1: a Finds library or path mapping that arrived or changed may decide the main library.
+            if oldValue?.library != findsSetup?.library || oldValue?.mapping != findsSetup?.mapping { mainLibraryInputsChanged() }
+        }
+    }
     /// The songs of the Finds library, as last read (`refreshFinds`).
     var findSongs: [Song] = [] { didSet { syncFindsIdentity() } }
     /// Finds let go (Not for me, Task 6.2c) that the Finds library may still list until its scan catches up:
@@ -118,6 +127,8 @@ final class AppModel {
     @ObservationIgnored var homeFeedSlot: HomeFeed?
     /// Round 12 Y3: the library Home, Library, Search and the car read (`AppModel+LibraryScope.swift`); nil for all.
     var libraryScope: Int?
+    /// Y3 N1: the "most albums" guess, kept in memory only (never saved); Lidarr's root or the owner replaces it.
+    var fallbackMainLibraryId: Int?
     /// Changes each time the server answers again after it didn't: Home reads what failed (P5).
     var serverAnsweredGeneration = 0
     /// The scene is active: requests poll every 5 s, otherwise every 30 s.
