@@ -658,6 +658,12 @@ extension RequestRunner {
             !wantsLossless || ["flac", "alac", "wav", "ape", "wv", "aiff", "aif"].contains(song.suffix?.lowercased() ?? "") ? song : nil
         }
         guard let song = usable else {
+            // Y5: the library hasn't listed the lossless file yet (a scan may have been skipped while another ran):
+            // ask for the folder's scan again, at most once a minute.
+            if wantsLossless, r.lastScanAt.map({ now().timeIntervalSince($0) >= 60 }) ?? true {
+                await mutate(id) { $0.lastScanAt = self.now() }
+                try? await library.rescanMoved(folder, folder)
+            }
             if now().timeIntervalSince(r.movedAt ?? r.updatedAt) >= Self.relinkLimit {
                 await mutate(id) { $0.relinkPending = false }
             }
