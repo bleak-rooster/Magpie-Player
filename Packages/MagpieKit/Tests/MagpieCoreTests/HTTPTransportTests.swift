@@ -62,6 +62,66 @@ import Testing
         #expect(RedirectStub.landedHosts.isEmpty)
     }
 
+    // MARK: - Round 12 security M1: no redirect for writes or keyed requests, even on the same origin
+
+    /// The gate's allowed `DELETE /api/v1/queue/7` answered with a same-origin 307 to
+    /// `/api/v1/artist/5?deleteFiles=true` must never be followed as that DELETE.
+    @Test(arguments: [301, 302, 307, 308])
+    func sameOriginRedirectOfKeyedDeleteIsRefused(_ status: Int) async throws {
+        RedirectStub.reset()
+        let transport = URLSessionTransport(session: URLSession(configuration: RedirectStub.configuration()))
+        let to = "https://lidarr.example/api/v1/artist/5?deleteFiles=true"
+        var components = URLComponents(string: "https://lidarr.example/redirect")!
+        components.queryItems = [URLQueryItem(name: "status", value: "\(status)"), URLQueryItem(name: "to", value: to)]
+        var request = URLRequest(url: components.url!)
+        request.httpMethod = "DELETE"
+        request.setValue("SECRETKEY", forHTTPHeaderField: "X-Api-Key")
+        _ = try? await transport.send(request)
+        #expect(RedirectStub.landedPaths.isEmpty, "landed at \(RedirectStub.landedPaths)")
+    }
+
+    /// Any non-GET is refused even with no key (the login POST, a PUT, a POST to Aurral).
+    @Test(arguments: ["POST", "PUT", "DELETE", "PATCH"])
+    func sameOriginRedirectOfNonGetIsRefused(_ method: String) async throws {
+        RedirectStub.reset()
+        let transport = URLSessionTransport(session: URLSession(configuration: RedirectStub.configuration()))
+        var request = URLRequest(url: URL(string: "https://music.example/redirect?status=307&to=https://music.example/api/settings")!)
+        request.httpMethod = method
+        _ = try? await transport.send(request)
+        #expect(RedirectStub.landedPaths.isEmpty, "\(method) landed at \(RedirectStub.landedPaths)")
+    }
+
+    /// A GET carrying a key or an auth header is not followed either (Lidarr, Aurral, Navidrome native,
+    /// ListenBrainz): its target never went through the gate or the allow-list.
+    @Test(arguments: ["X-Api-Key", "X-ND-Authorization", "Authorization"])
+    func sameOriginRedirectOfKeyedGetIsRefused(_ header: String) async throws {
+        RedirectStub.reset()
+        let transport = URLSessionTransport(session: URLSession(configuration: RedirectStub.configuration()))
+        var request = URLRequest(url: URL(string: "https://aurral.example/redirect?status=302&to=https://aurral.example/api/auth/api-key")!)
+        request.setValue("SECRET", forHTTPHeaderField: header)
+        _ = try? await transport.send(request)
+        #expect(RedirectStub.landedPaths.isEmpty, "\(header) landed at \(RedirectStub.landedPaths)")
+    }
+
+    @Test func redirectPolicyRequestRules() {
+        func req(_ method: String, _ headers: [String: String] = [:]) -> URLRequest {
+            var r = URLRequest(url: URL(string: "https://music.example/a")!)
+            r.httpMethod = method
+            for (k, v) in headers { r.setValue(v, forHTTPHeaderField: k) }
+            return r
+        }
+        let same = URL(string: "https://music.example/b")
+        #expect(SameOriginRedirects.allows(original: req("GET"), to: same))
+        #expect(SameOriginRedirects.allows(original: req("HEAD"), to: same))
+        #expect(!SameOriginRedirects.allows(original: req("GET"), to: URL(string: "https://evil.example/b")))
+        #expect(!SameOriginRedirects.allows(original: req("DELETE"), to: same))
+        #expect(!SameOriginRedirects.allows(original: req("POST"), to: same))
+        #expect(!SameOriginRedirects.allows(original: req("get", ["x-api-key": "k"]), to: same))
+        #expect(!SameOriginRedirects.allows(original: req("GET", ["X-ND-Authorization": "Bearer x"]), to: same))
+        #expect(!SameOriginRedirects.allows(original: req("GET", ["Authorization": "Token x"]), to: same))
+        #expect(!SameOriginRedirects.allows(original: nil, to: same))
+    }
+
     @Test func sameOriginRedirectIsFollowed() async throws {
         RedirectStub.reset()
         let transport = URLSessionTransport(session: URLSession(configuration: RedirectStub.configuration()))
@@ -77,8 +137,13 @@ import Testing
 /// URLSession does) and anything else with 200 "landed", recording the host it landed on.
 final class RedirectStub: URLProtocol, @unchecked Sendable {
     private static let landed = OSAllocatedUnfairLock(initialState: [String]())
+    private static let landedPathList = OSAllocatedUnfairLock(initialState: [String]())
     static var landedHosts: [String] { landed.withLock { $0 } }
-    static func reset() { landed.withLock { $0 = [] } }
+    static var landedPaths: [String] { landedPathList.withLock { $0 } }
+    static func reset() {
+        landed.withLock { $0 = [] }
+        landedPathList.withLock { $0 = [] }
+    }
 
     static func configuration() -> URLSessionConfiguration {
         let config = URLSessionTransport.defaultConfiguration()
@@ -105,6 +170,7 @@ final class RedirectStub: URLProtocol, @unchecked Sendable {
             return
         }
         Self.landed.withLock { $0.append(url.host() ?? "") }
+        Self.landedPathList.withLock { $0.append(url.path) }
         let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: [:])!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: Data("landed".utf8))
