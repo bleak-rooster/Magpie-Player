@@ -62,7 +62,7 @@ public enum CarPlayAvailability: Sendable, Hashable {
 /// back until the list is off screen, so browsing never jumps (Amperfy #647).
 @MainActor
 public final class CarPlayController: NSObject {
-    private let interface: any CarPlayInterface
+    let interface: any CarPlayInterface
     let library: any CarPlayLibrary
     let player: Player
     private var sessionConfiguration: CPSessionConfiguration?
@@ -90,15 +90,12 @@ public final class CarPlayController: NSObject {
     /// Y2: songs whose favourite change from the car's star is with the server.
     var favouriting: Set<String> = []
     /// Y2 (2d): where Now Playing's album/artist button goes for the song playing, and the read that works it out.
-    private(set) var nowPlayingLinks = CPNowPlayingLinks()
-    private var linksTask: Task<Void, Never>?
+    var nowPlayingLinks = CPNowPlayingLinks()
+    var linksTask: Task<Void, Never>?
+    var favouriteTask: Task<Void, Never>?   // Y2: the star's change with the server (cancelled on disconnect)
     /// The plain record shown for a not-yet row (no cover to put on its label).
     private var blankRecord: UIImage?
 
-    /// Navidrome's largest album-list page.
-    private static let albumListSize = 500
-    /// Most albums the car's Albums reads (Y2): ten pages.
-    static let albumsMax = 5000
     /// Artwork requests in flight per list.
     private static let artworkConcurrency = 4
 
@@ -133,6 +130,7 @@ public final class CarPlayController: NSObject {
     public func disconnect() {
         CPNowPlayingTemplate.shared.remove(self)
         linksTask?.cancel()
+        favouriteTask?.cancel()
         watches.forEach { $0.cancel() }
         watches = []
         resetBindings()
@@ -222,7 +220,7 @@ public final class CarPlayController: NSObject {
     // MARK: - Navigation
 
     /// Browse depth counting the tab root as 1, whichever way the system reports the tab bar.
-    private var browseDepth: Int {
+    var browseDepth: Int {
         let roots = [home, libraryRoot, findsRoot, searchRoot].compactMap { $0?.template }
         let pushed = interface.templates.filter { t in
             !(t is CPTabBarTemplate) && !(t is CPNowPlayingTemplate) && !roots.contains { $0 === t }
@@ -264,6 +262,7 @@ public final class CarPlayController: NSObject {
         let template = CPListTemplate(title: destination.title, sections: [])
         template.showsSpinnerWhileEmpty = true
         let binding = bind(template)
+        binding.destination = destination
         interface.pushTemplate(template, animated: true, completion: nil)
         load(binding, fetcher(for: destination))
     }
@@ -271,35 +270,9 @@ public final class CarPlayController: NSObject {
     typealias Content = @Sendable (String?) -> [CPSectionModel]
 
     private func fetcher(for destination: CPDestination) -> @MainActor () async throws -> Content {
+        if let az = azFetcher(for: destination) { return az }   // Y2: the A–Z lists (CarPlayController+AZ.swift)
         let library = library
-        // Y2: the A–Z lists open with a letters screen when they wouldn't fit the car's list.
-        let maxItems = Int(CPListTemplate.maximumItemCount), maxSections = Int(CPListTemplate.maximumSectionCount)
         switch destination {
-        case .playlists:
-            return {
-                let p = try await library.playlists()
-                return { _ in CarPlayRows.playlists(p, maxItems: maxItems, maxSections: maxSections) }
-            }
-        case .artists:
-            return {
-                let a = try await library.artists()
-                return { _ in CarPlayRows.artists(a, maxItems: maxItems, maxSections: maxSections) }
-            }
-        case .albums:
-            let size = Self.albumListSize
-            return {
-                // Y2: page past the server's 500 (the car's own item limit), so a big library reaches the letters screen.
-                var albums: [Album] = []
-                while albums.count < Self.albumsMax {
-                    let page = try await library.albumsAZ(offset: albums.count, size: size)
-                    albums += page
-                    if page.count < size { break }
-                }
-                let a = albums
-                return { _ in CarPlayRows.albums(a, maxItems: maxItems, maxSections: maxSections) }
-            }
-        case .letterGroup(_, let sections):
-            return { { _ in sections } }
         case .album(let id, _):
             return { let a = try await library.album(id: id); return { CarPlayRows.album(a, playingId: $0) } }
         case .playlist(let id, _):
@@ -308,9 +281,10 @@ public final class CarPlayController: NSObject {
                 return { CarPlayRows.playlist(p, songs: songs, playingId: $0) }
             }
         case .artist(let id, _):
+            let albumsOpen = CPNavigator.allowsPush(atDepth: browseDepth)   // I2: the album page fits below this one
             return {
                 let (a, albums) = try await library.artist(id: id)
-                return { _ in CarPlayRows.artist(a, albums: albums) }
+                return { _ in CarPlayRows.artist(a, albums: albums, albumsOpen: albumsOpen) }
             }
         case .searchResults(let query):
             return {
@@ -353,19 +327,6 @@ public final class CarPlayController: NSObject {
         default:
             playCustom(request)
         }
-    }
-
-    /// All the artist's songs, album by album in the artist page's order (2c: Play is in that order).
-    private func artistSongs(_ id: String) async throws -> [Song] {
-        let library = library
-        let (_, albums) = try await library.artist(id: id)
-        let byAlbum = try await withThrowingTaskGroup(of: (Int, [Song]).self) { group in
-            for (i, album) in albums.enumerated() { group.addTask { (i, try await library.album(id: album.id).songs ?? []) } }
-            var found: [Int: [Song]] = [:]
-            for try await (i, songs) in group { found[i] = songs }
-            return found
-        }
-        return albums.indices.flatMap { byAlbum[$0] ?? [] }
     }
 
     func start(_ songs: [Song], at index: Int, shuffled: Bool) {
@@ -506,16 +467,7 @@ public final class CarPlayController: NSObject {
 
     private func watchPlayer() {
         let player = player
-        let links = library
-        watches.append(Task { [weak self] in
-            // 2d: the song, and offline (which pages exist), decide the album/artist button.
-            let keys = Observations { @MainActor in "\(player.queue.current?.song.id ?? "")|\(links.isOffline)" }
-            var last: String?
-            for await key in keys where key != last {
-                last = key
-                self?.refreshNowPlayingLinks()
-            }
-        })
+        watchNowPlayingLinks()   // 2d (CarPlayController+NowPlayingLinks.swift)
         watches.append(Task { [weak self] in
             let current = Observations { @MainActor in player.queue.current?.song.id }
             var last: String??
@@ -863,74 +815,12 @@ extension CarPlayController: CPSearchTemplateDelegate {
     }
 }
 
-// MARK: - Now Playing's album and artist (round 12 item 2d)
-
-extension CarPlayController: CPNowPlayingTemplateObserver {
-    /// Works out the song's pages (offline: only those on the phone) and turns the button on when there is one.
-    func refreshNowPlayingLinks() {
-        linksTask?.cancel()
-        let song = player.queue.current?.song
-        let offline = library.isOffline
-        let library = library
-        linksTask = Task { [weak self] in
-            var albumOnPhone = false, artistOnPhone = false
-            if offline, let song {
-                if let id = song.albumId { albumOnPhone = await library.downloadedAlbum(id: id) != nil }
-                if let id = song.artistId { artistOnPhone = await library.downloadedArtist(id: id) != nil }
-            }
-            guard !Task.isCancelled, let self, self.player.queue.current?.song.id == song?.id else { return }
-            self.nowPlayingLinks = CarPlayRows.nowPlayingLinks(song, offline: offline, albumOnPhone: albumOnPhone,
-                                                               artistOnPhone: artistOnPhone)
-            CPNowPlayingTemplate.shared.isAlbumArtistButtonEnabled = !self.nowPlayingLinks.isEmpty
-        }
-    }
-
-    /// Both known: "Go to album" / "Go to artist" (modal, no push). Only one: straight there.
-    public nonisolated func nowPlayingTemplateAlbumArtistButtonTapped(_ nowPlayingTemplate: CPNowPlayingTemplate) {
-        MainActor.assumeIsolated { albumArtistTapped() }
-    }
-
-    public nonisolated func nowPlayingTemplateUpNextButtonTapped(_ nowPlayingTemplate: CPNowPlayingTemplate) {}
-
-    private func albumArtistTapped() {
-        let links = nowPlayingLinks
-        switch (links.album, links.artist) {
-        case (let album?, let artist?):
-            guard interface.presentedTemplate == nil else { return }
-            func choice(_ title: String, _ destination: CPDestination) -> CPAlertAction {
-                CPAlertAction(title: title, style: .default) { [weak self] _ in
-                    self?.interface.dismissTemplate(animated: true) { _, _ in
-                        Task { @MainActor in self?.go(to: destination) }
-                    }
-                }
-            }
-            let cancel = CPAlertAction(title: CPNowPlayingLinkCopy.cancel, style: .cancel) { [weak self] _ in
-                self?.interface.dismissTemplate(animated: true, completion: nil)
-            }
-            interface.presentTemplate(CPActionSheetTemplate(title: nil, message: nil, actions: [
-                choice(CPNowPlayingLinkCopy.album, album), choice(CPNowPlayingLinkCopy.artist, artist), cancel,
-            ]), animated: true, completion: nil)
-        case (let only?, nil), (nil, let only?):
-            go(to: only)
-        case (nil, nil):
-            break
-        }
-    }
-
-    /// Opens the page from the tab bar, so it has the whole depth budget (the browse stack under Now Playing goes).
-    func go(to destination: CPDestination) {
-        guard let tabBar else { return }
-        interface.pop(to: tabBar, animated: false) { [weak self] _, _ in
-            MainActor.assumeIsolated { self?.open(destination) }
-        }
-    }
-}
-
 extension CarPlayController: CPSessionConfigurationDelegate {
     public nonisolated func sessionConfiguration(_ sessionConfiguration: CPSessionConfiguration,
                                                  limitedUserInterfacesChanged limitedUserInterfaces: CPLimitableUserInterface) {
         let limited = limitedUserInterfaces.contains(.keyboard)
         Task { @MainActor in
+            self.reloadAZLists()   // Y2: the car's list limits may have changed with it
             guard limited != self.keyboardLimited else { return }
             self.keyboardLimited = limited
             self.refreshSearchRoot()   // same rows: updated in place
@@ -944,6 +834,8 @@ extension CarPlayController: CPSessionConfigurationDelegate {
 @MainActor
 final class ListBinding {
     let template: CPListTemplate
+    /// What a pushed list shows (Y2: the A–Z lists are read again when the car's limits change).
+    var destination: CPDestination?
     /// The models currently on screen (after clamping).
     var shown: [CPSectionModel] = []
     /// Showing loading or a state row, not real content: may be replaced even while on screen.

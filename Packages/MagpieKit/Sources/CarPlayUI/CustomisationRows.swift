@@ -203,13 +203,17 @@ extension CarPlayRows {
 
     /// An artist's albums on the phone (a leaf): Play and Shuffle of them all (2c), then each album, which plays from
     /// its start.
-    public static func downloadedArtist(_ artist: Artist, albums: [Album]) -> [CPSectionModel] {
+    /// Fix round 1 (I2): albums open their downloaded page when the depth allows (`albumsOpen`).
+    public static func downloadedArtist(_ artist: Artist, albums: [Album], albumsOpen: Bool = false) -> [CPSectionModel] {
         let albums = unique(albums, \.id).filter { !($0.songs ?? []).isEmpty }
         guard !albums.isEmpty else { return state(.empty) }
         let all = albums.flatMap { $0.songs ?? [] }
         let rows = albums.map { album in
-            CPRowModel(id: "album.\(album.id)", title: display(album.name, untitledAlbum), detail: album.year.map(String.init),
-                       artworkKey: album.coverArtId, action: .play(.songs(album.songs ?? [], startAt: 0)))
+            let name = display(album.name, untitledAlbum)
+            return CPRowModel(id: "album.\(album.id)", title: name, detail: album.year.map(String.init),
+                              artworkKey: album.coverArtId,
+                              action: albumsOpen ? .open(.downloadedAlbum(id: album.id, title: name))
+                                  : .play(.songs(album.songs ?? [], startAt: 0)))
         }
         return [playShuffle(id: "artist", detail: display(artist.name, unknownArtist), play: .songs(all, startAt: 0),
                             shuffle: .shuffle(all)),
@@ -247,7 +251,12 @@ extension CarPlayRows {
                 return row
             }
         }
-        return nonEmpty(rows)
+        // Fix round 1: Play and Shuffle here too (2c), over the playlist's library songs.
+        guard !rows.isEmpty else { return state(.empty) }
+        let tracks = CPSectionModel(header: nil, rows: rows)
+        guard !songs.isEmpty else { return [tracks] }
+        return [playShuffle(id: "madeForYou", detail: songCount(songs.count), play: .songs(songs, startAt: 0),
+                            shuffle: .shuffle(songs)), tracks]
     }
 
     /// What the car says after a tap on Now Playing's star (Y2), only when it didn't go through.

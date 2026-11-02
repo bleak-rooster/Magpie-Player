@@ -103,8 +103,13 @@ extension CarPlayRows {
 
     /// Sorts `entries` by letter ("#" first, as the phone's index) then name, and lays them out: letter sections when
     /// they fit the car's limits, otherwise the letters screen.
-    static func lettered(_ entries: [CPLetterEntry], kind: CPLetterKind, maxItems: Int, maxSections: Int) -> [CPSectionModel] {
+    /// - Parameter note: a last row saying the list is incomplete ("Showing 5000 of 6100"); it takes one of the rows.
+    static func lettered(_ entries: [CPLetterEntry], kind: CPLetterKind, maxItems: Int, maxSections: Int,
+                         note: String? = nil) -> [CPSectionModel] {
         guard !entries.isEmpty else { return state(.empty) }
+        let noteRow = note.map { CPRowModel(id: "az.more", title: $0, action: .none) }
+        let maxItems = noteRow == nil ? maxItems : max(1, maxItems - 1)
+        let maxSections = noteRow == nil ? maxSections : max(1, maxSections - 1)
         let order = Dictionary(uniqueKeysWithValues: LetterIndex.letters.enumerated().map { ($1, $0) })
         let sorted = entries.enumerated().sorted { l, r in
             let (a, b) = (l.element, r.element)
@@ -117,8 +122,9 @@ extension CarPlayRows {
         for entry in sorted {
             if let last = runs.last, last.0 == entry.key { runs[runs.count - 1].1 += 1 } else { runs.append((entry.key, 1)) }
         }
+        let noteSection = noteRow.map { [CPSectionModel(header: nil, rows: [$0])] } ?? []
         if sorted.count <= maxItems, runs.count <= maxSections {
-            return letterSections(sorted)
+            return letterSections(sorted) + noteSection
         }
         let groups = letterGroups(runs, maxItems: maxItems)
         let rows = groups.map { group -> CPRowModel in
@@ -128,7 +134,7 @@ extension CarPlayRows {
             return CPRowModel(id: group.id, title: group.title, detail: detail,
                               action: .open(.letterGroup(title: group.title, sections: letterSections(members))))
         }
-        return [CPSectionModel(header: nil, rows: rows)]
+        return [CPSectionModel(header: nil, rows: rows + (noteRow.map { [$0] } ?? []))]
     }
 
     /// One section per letter, headed and indexed by it.

@@ -68,7 +68,8 @@ extension CarPlayLibraryAdapter {
     // MARK: - Albums A–Z (Y2)
 
     func albumsAZ(offset: Int, size: Int) async throws -> [Album] {
-        if model.isOffline { return Array(await model.offlineCatalog.albums().dropFirst(offset).prefix(size)) }
+        // Offline the phone's albums all come at once (M6: one catalog read; the car sorts them).
+        if model.isOffline { return offset == 0 ? await model.offlineCatalog.albums() : [] }
         return try await model.request { try await $0.albumList(.alphabeticalByName, size: size, offset: offset) }
     }
 

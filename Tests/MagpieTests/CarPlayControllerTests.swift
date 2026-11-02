@@ -499,8 +499,11 @@ final class FakeCarInterface: CarPlayInterface {
 
         controller.nowPlayingTemplateAlbumArtistButtonTapped(CPNowPlayingTemplate.shared)
         #expect(alertTitles(car.presentedTemplate) == ["Go to album", "Go to artist", "Cancel"])
-        car.dismissTemplate(animated: false, completion: nil)
-        controller.go(to: .album(id: "al1", title: "One"))
+        // Fix round 1: the real path, the sheet's choice (dismiss, then go).
+        let choice = try #require((car.presentedTemplate as? CPActionSheetTemplate)?.actions.first)
+        choice.handler(choice)
+        #expect(car.presentedTemplate == nil)
+        #expect(await eventually { car.topList?.title == "One" })
         #expect(car.topList?.title == "One")
         #expect(await eventually { FakeCarInterface.texts(car.topList).first == "Play" })
         #expect(car.templates.count == 2, "from the tab bar, so the page has the whole depth budget")
@@ -543,7 +546,7 @@ final class FakeCarInterface: CarPlayInterface {
         #expect(await eventually { model.isOffline })
         let away = Song(id: "x1", title: "Away", artist: "B", artistId: "ar9", album: "Gone", albumId: "al9", duration: 60)
         model.player.play([away], startAt: 0)
-        try await Task.sleep(for: .milliseconds(200))
+        #expect(await eventually { controller.nowPlayingLinks.songId == "x1" }, "the links for this song were worked out")
         #expect(!CPNowPlayingTemplate.shared.isAlbumArtistButtonEnabled, "not on the phone: off")
 
         controller.perform(.play(.songs([s1], startAt: 0)))
@@ -553,6 +556,72 @@ final class FakeCarInterface: CarPlayInterface {
         car.dismissTemplate(animated: false, completion: nil)
         controller.go(to: .downloadedAlbum(id: "al-1", title: "Continuum"))
         #expect(await eventually { FakeCarInterface.texts(car.topList) == ["Play", "Shuffle", "T1"] })
+    }
+
+    // MARK: - Fix round 1
+
+    /// I2: an artist page's albums open their page when that fits CarPlay's depth (here the artist page is the third
+    /// screen); on the fourth they play.
+    @Test func artistAlbumsOpenWhenTheDepthAllows() async throws {
+        stubAlbumsAndArtist()
+        let model = try await signedInModel()
+        let car = FakeCarInterface()
+        let controller = CarPlayController(interfaceController: car, library: CarPlayLibraryAdapter(model: model),
+                                           player: model.player)
+        defer { controller.disconnect() }
+        controller.setAvailability(.ready(account: "one"))
+        let artists = CarPlayRows.artists([Artist(id: "ar1", name: "A", albumCount: 2)])
+
+        controller.perform(.open(.letterGroup(title: "A", sections: artists)))   // 2
+        #expect(await eventually { FakeCarInterface.texts(car.topList) == ["A"] })
+        car.tap("A", in: car.topList)                                            // 3: the artist page
+        #expect(await eventually { FakeCarInterface.texts(car.topList) == ["Play", "Shuffle", "One", "Two"] })
+        car.tap("One", in: car.topList)                                          // 4: the album page
+        #expect(car.topList?.title == "One")
+        #expect(await eventually { FakeCarInterface.texts(car.topList) == ["Play", "Shuffle", "a1", "a2", "a3"] })
+        #expect(car.templates.count == 4 && model.player.queue.current == nil, "opened, nothing played")
+
+        car.pop(to: car.tabs!, animated: false, completion: nil)
+        controller.perform(.open(.letterGroup(title: "Letters", sections: [])))  // 2
+        controller.perform(.open(.letterGroup(title: "A", sections: artists)))   // 3
+        #expect(await eventually { FakeCarInterface.texts(car.topList) == ["A"] })
+        car.tap("A", in: car.topList)                                            // 4: the artist page
+        #expect(await eventually { FakeCarInterface.texts(car.topList) == ["Play", "Shuffle", "One", "Two"] })
+        car.tap("One", in: car.topList)
+        #expect(await eventually { model.player.queue.main.map(\.song.id) == ["a1", "a2", "a3"] }, "the album plays")
+        #expect(car.topTemplate === CPNowPlayingTemplate.shared && car.templates.count == 5, "Now Playing is the fifth")
+    }
+
+    /// M4: albums past the car's read cap are counted, and the list says how many it shows.
+    @Test func albumsPastTheCapSayHowManyShow() async throws {
+        azAlbums.withLock { $0 = 5200 }
+        let model = try await signedInModel()
+        let car = FakeCarInterface()
+        let controller = CarPlayController(interfaceController: car, library: CarPlayLibraryAdapter(model: model),
+                                           player: model.player)
+        defer { controller.disconnect() }
+        controller.setAvailability(.ready(account: "one"))
+        car.tap("Albums", in: car.tab(1))
+        #expect(await eventually(20) { FakeCarInterface.texts(car.topList).last == "Showing 5000 of 5200" })
+        #expect(FakeCarInterface.texts(car.topList).count <= Int(CPListTemplate.maximumItemCount))
+    }
+
+    /// M9: a favourite change still with the server when the car disconnects says nothing afterwards.
+    @Test func favouriteAfterDisconnectSaysNothing() async throws {
+        let refused = Data(#"{"subsonic-response":{"status":"failed","version":"1.16.1","error":{"code":0,"message":"no"}}}"#.utf8)
+        transport.inner.stub(pathSuffix: "/rest/star", body: refused)
+        let model = try await signedInModel()
+        let car = FakeCarInterface()
+        let controller = CarPlayController(interfaceController: car, library: CarPlayLibraryAdapter(model: model),
+                                           player: model.player)
+        model.player.play([plain], startAt: 0)
+        #expect(await eventually { self.starButton()?.isEnabled == true })
+        controller.favouriteTapped()
+        controller.disconnect()
+        #expect(await eventually { !self.starRequests("/rest/star").isEmpty })
+        #expect(await eventually { !model.isFavourite(.song("s1")) }, "the phone rolled back")
+        try await Task.sleep(for: .milliseconds(100))   // a late alert would come right after the rollback
+        #expect(car.presented.isEmpty)
     }
 
     /// What the car reports for its list limits on this simulator (recorded in the Y2 report).

@@ -263,10 +263,14 @@ public enum CarPlayRows {
         }, kind: .artists, maxItems: maxItems, maxSections: maxSections)
     }
 
-    public static func albums(_ albums: [Album], maxItems: Int = .max, maxSections: Int = .max) -> [CPSectionModel] {
-        lettered(unique(albums, \.id).map {
+    /// - Parameter total: how many albums the library has when only some were read (fix round 1: "Showing 5000 of N").
+    public static func albums(_ albums: [Album], maxItems: Int = .max, maxSections: Int = .max,
+                              total: Int? = nil) -> [CPSectionModel] {
+        let shown = unique(albums, \.id)
+        let note = total.flatMap { $0 > shown.count ? "Showing \(shown.count) of \($0)" : nil }
+        return lettered(shown.map {
             letterEntry(name: $0.name, articles: LetterIndex.navidromeArticles, row: albumRow($0, id: "album.\($0.id)"))
-        }, kind: .albums, maxItems: maxItems, maxSections: maxSections)
+        }, kind: .albums, maxItems: maxItems, maxSections: maxSections, note: note)
     }
 
     /// A recent search re-run: library songs, then albums, then songs not in the library (D4: library first).
@@ -382,12 +386,14 @@ public enum CarPlayRows {
         })]
     }
 
-    /// Albums play when tapped (no tracklist push here: this screen is already at depth 3).
-    public static func artist(_ artist: Artist, albums: [Album]) -> [CPSectionModel] {
+    /// Fix round 1 (I2): albums open their page when one more push fits the depth budget (`albumsOpen`, decided by the
+    /// controller for where this page sits); otherwise they play when tapped.
+    public static func artist(_ artist: Artist, albums: [Album], albumsOpen: Bool = false) -> [CPSectionModel] {
         guard !albums.isEmpty else { return state(.empty) }
         let rows = unique(albums, \.id).map {
-            CPRowModel(id: "album.\($0.id)", title: display($0.name, untitledAlbum), detail: $0.year.map(String.init),
-                       artworkKey: $0.coverArtId, action: .play(.album(id: $0.id, shuffled: false)))
+            let name = display($0.name, untitledAlbum)
+            return CPRowModel(id: "album.\($0.id)", title: name, detail: $0.year.map(String.init), artworkKey: $0.coverArtId,
+                              action: albumsOpen ? .open(.album(id: $0.id, title: name)) : .play(.album(id: $0.id, shuffled: false)))
         }
         return [playShuffle(id: "artist", detail: display(artist.name, unknownArtist), play: .artistInOrder(id: artist.id),
                             shuffle: .artistShuffle(id: artist.id)),

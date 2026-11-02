@@ -131,9 +131,10 @@ extension CarPlayController {
                 return { CarPlayRows.downloadedAlbum(album, playingId: $0) }
             }
         case .downloadedArtist(let id, _):
+            let albumsOpen = CPNavigator.allowsPush(atDepth: browseDepth)   // fix round 1 (I2)
             return {
                 guard let page = await library.downloadedArtist(id: id) else { return { _ in CarPlayRows.state(.empty) } }
-                return { _ in CarPlayRows.downloadedArtist(page.0, albums: page.1) }
+                return { _ in CarPlayRows.downloadedArtist(page.0, albums: page.1, albumsOpen: albumsOpen) }
             }
         case .downloadedPlaylist(let id, _):
             return {
@@ -202,11 +203,12 @@ extension CarPlayController {
         favouriting.insert(id)
         updateNowPlayingButtons()
         let library = library
-        Task {
+        favouriteTask = Task { [weak self] in
             let result = await library.setFavourite(songId: id, on)
-            favouriting.remove(id)
-            updateNowPlayingButtons()
-            if let message = CarPlayRows.favouriteMessage(result) { showMessage(message) }
+            guard !Task.isCancelled, let self else { return }   // disconnected: the car's buttons aren't ours any more
+            self.favouriting.remove(id)
+            self.updateNowPlayingButtons()
+            if let message = CarPlayRows.favouriteMessage(result) { self.showMessage(message) }
         }
     }
 }
