@@ -427,8 +427,9 @@ import MagpieCore
         let artists = h.server.with { $0.artists }.map {
             LidarrArtist(id: $0.id, artistName: "A", foreignArtistId: $0.mbid, monitored: false, tags: $0.tags)
         }
-        let state = ArtistLidarr.state(name: "A", mbid: artistA, artists: artists, commands: [],
-                                       ledger: try await Self.entries(h))
+        // ArtistLidarr's "Monitor" / "Add more" check (an artist added straight into the library): an intent counts.
+        let added = try await Self.entries(h).map { e -> LedgerEntry in var x = e; x.mode = .fallback; return x }
+        let state = ArtistLidarr.state(name: "A", mbid: artistA, artists: artists, commands: [], ledger: added)
         #expect(state == .notMonitored(lidarrId: 42, magpieAdded: false))
         #expect(h.server.writes.count == before)
     }

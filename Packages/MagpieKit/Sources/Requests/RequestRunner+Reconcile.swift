@@ -1,6 +1,7 @@
 import Foundation
 import LidarrKit
 import MagpieCore
+import MatchIndex
 
 /// Y5 (plan item 9): the pass derives what it can from the servers instead of trusting saved steps.
 ///
@@ -47,6 +48,48 @@ extension RequestRunner {
                 continue
             }
         }
+    }
+
+    // MARK: - Matching without MusicBrainz tags (item 9.2)
+
+    static let fallbackInterval: TimeInterval = 60
+
+    /// An imported request the library doesn't list by MBID (Soulseek files often carry no tags): its song by
+    /// Lidarr's track file path, else by title + artist + duration (±3 s), only in the artist's folder, only when
+    /// exactly one song fits. Never by name alone.
+    func matchWithoutTags(_ id: RequestID) async {
+        let t = now()
+        guard let r = request(id), let albumId = r.albumId, let artistId = r.lidarrArtistId else { return }
+        if let last = fallbackChecks[id], (0..<Self.fallbackInterval).contains(t.timeIntervalSince(last)) { return }
+        fallbackChecks[id] = t
+        guard let folder = try? await lidarr.artist(id: artistId).path else { return }
+        var filePath: String?
+        if let recording = r.recording.recordingMBID ?? r.plan?.recordingMBID,
+           let track = try? await lidarr.tracks(albumId: albumId).first(where: { $0.foreignRecordingId == recording.rawValue && $0.hasFile }),
+           let file = try? await lidarr.trackFile(id: track.trackFileId ?? 0) {
+            filePath = file.path
+        }
+        guard let candidates = await library.songsTitled(r.recording.title, folder),
+              let songId = Self.fallbackMatch(r.recording, filePath: filePath, folder: folder, candidates: candidates) else { return }
+        await apply(id, .visibleInLibrary(songId: songId))
+    }
+
+    /// The pure rule (tested on its own): path first, then title + artist + duration within 3 s, inside `folder`.
+    public static func fallbackMatch(_ recording: ExternalRecording, filePath: String?, folder: String,
+                                     candidates: [(song: Song, lidarrPath: String)]) -> String? {
+        let inside = candidates.filter { WriteConfinement.relative($0.lidarrPath, under: folder) != nil }
+        if let filePath {
+            let byPath = inside.filter { WriteConfinement.looselySame($0.lidarrPath, filePath) }
+            if byPath.count == 1 { return byPath[0].song.id }
+        }
+        guard let duration = recording.duration else { return nil }
+        let title = Normalize.name(recording.title), artist = Normalize.name(recording.artist)
+        guard !title.isEmpty, !artist.isEmpty else { return nil }
+        let fits = inside.filter {
+            Normalize.name($0.song.title) == title && Normalize.name($0.song.artist) == artist
+                && abs($0.song.duration - duration) <= 3
+        }
+        return fits.count == 1 ? fits[0].song.id : nil
     }
 
     // MARK: - Adopted finds (C2)

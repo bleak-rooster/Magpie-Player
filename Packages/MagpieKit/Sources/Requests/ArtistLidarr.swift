@@ -13,6 +13,11 @@ public enum ArtistLidarrState: Sendable, Equatable {
     /// "Not in Lidarr". `mbid`: the library's MusicBrainz id, the only one an add uses; nil: an add first asks Lidarr's
     /// search (`ArtistLidarr.candidates`) and the owner confirms the exact artist.
     case notInLidarr(mbid: MBID?)
+    /// Y5 (item 8): one of Magpie's finds ("In your Finds", "Adding to your library…", "In your library · lossless
+    /// soon"…), from `FindResolver`.
+    case find(lidarrId: Int, state: FindState)
+    /// Y5 (item 9.9): the library has no MBID and only the name matched. Never acted on: "Couldn't match this artist".
+    case unmatched
 }
 
 public enum ArtistLidarrError: Error, Sendable, Equatable {
@@ -57,10 +62,26 @@ public enum ArtistLidarr {
         return same.count == 1 ? same[0] : nil
     }
 
-    /// The state from what was read: Lidarr's artists, its commands and this server's ledger.
+    /// The state from what was read: Lidarr's artists, its commands, this server's ledger and (Y5) Magpie's requests
+    /// and Finds setup, for the find states.
     public static func state(name: String, mbid: MBID?, artists: [LidarrArtist], commands: [CommandStatus],
-                             ledger entries: [LedgerEntry]) -> ArtistLidarrState {
-        guard let artist = match(name: name, mbid: mbid, in: artists) else { return .notInLidarr(mbid: mbid) }
+                             ledger entries: [LedgerEntry], requests: [MagpieRequest] = [], findTagId: Int? = nil,
+                             findsRoot: String? = nil) -> ArtistLidarrState {
+        let found: LidarrArtist?
+        if let mbid {
+            found = match(name: name, mbid: mbid, in: artists)
+        } else if let own = ownFind(name: name, artists: artists, entries: entries, requests: requests) {
+            // I9: one of Magpie's own finds (tagless files: no MBID in the library) resolves through its request.
+            found = own
+        } else {
+            // Item 9.9: a name alone is never enough to act on.
+            return match(name: name, mbid: nil, in: artists) == nil ? .notInLidarr(mbid: nil) : .unmatched
+        }
+        guard let artist = found else { return .notInLidarr(mbid: mbid) }
+        if let find = FindResolver.resolve(artist: artist, entries: entries, requests: requests, findTagId: findTagId,
+                                           findsRoot: findsRoot) {
+            return .find(lidarrId: artist.id, state: find)
+        }
         if artist.monitored {
             let searching = commands.contains {
                 searchCommands.contains($0.name.lowercased()) && isRunning($0) && $0.artistIds.contains(artist.id)
@@ -72,16 +93,28 @@ public enum ArtistLidarr {
         return .notMonitored(lidarrId: artist.id, magpieAdded: !kept && entries.contains { $0.created(artist) })
     }
 
+    /// I9: the Lidarr artist of one of Magpie's requests for this artist name (the request's artist id, the ledger says
+    /// Magpie created it with the request's artist MBID). Exactly one, or none.
+    static func ownFind(name: String, artists: [LidarrArtist], entries: [LedgerEntry], requests: [MagpieRequest]) -> LidarrArtist? {
+        let key = Normalize.name(name)
+        guard !key.isEmpty else { return nil }
+        let ids = Set(requests.filter { Normalize.name($0.recording.artist) == key }.compactMap(\.lidarrArtistId))
+        let own = artists.filter { a in ids.contains(a.id) && entries.contains { $0.created(a) } }
+        return own.count == 1 ? own[0] : nil
+    }
+
     static func isRunning(_ c: CommandStatus) -> Bool { ["queued", "started"].contains(c.status.lowercased()) }
 
     /// Reads Lidarr (GETs only) and the ledger. Never searches by name (I3: an add by name waits for the owner's tap,
     /// `candidates`), so a page view asks nothing of Lidarr's remote metadata.
-    public static func read(name: String, mbid: MBID?, lidarr: LidarrClient, ledger: Ledger) async throws
+    public static func read(name: String, mbid: MBID?, lidarr: LidarrClient, ledger: Ledger,
+                            requests: [MagpieRequest] = [], findTagId: Int? = nil, findsRoot: String? = nil) async throws
         -> ArtistLidarrState {
         let artists = try await lidarr.artists()
         let commands = (try? await lidarr.commands()) ?? []
         let entries = (try? await ledger.entries) ?? []   // unreadable: nothing counts as Magpie's (fails safe)
-        return state(name: name, mbid: mbid, artists: artists, commands: commands, ledger: entries)
+        return state(name: name, mbid: mbid, artists: artists, commands: commands, ledger: entries, requests: requests,
+                     findTagId: findTagId, findsRoot: findsRoot)
     }
 
     // MARK: - Candidates (no MBID in the library)

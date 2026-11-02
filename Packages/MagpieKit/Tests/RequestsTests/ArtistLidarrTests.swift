@@ -88,8 +88,8 @@ import Testing
         #expect(state("Owner", Self.ownerMBID) == .notMonitored(lidarrId: 20, magpieAdded: false))
         #expect(state("Mine", Self.magpieMBID) == .notMonitored(lidarrId: 30, magpieAdded: true))
         #expect(state("New Artist", Self.newMBID) == .notInLidarr(mbid: Self.newMBID))
-        // By name when the library has no MBID: the match index's normalised name, one Lidarr artist only.
-        #expect(state("watched!", nil) == .monitored(lidarrId: 40, searching: false))
+        // Y5 item 9.9: by name alone (no MBID in the library) it's never acted on: "Couldn't match this artist".
+        #expect(state("watched!", nil) == .unmatched)
         #expect(state("Nobody", nil) == .notInLidarr(mbid: nil))
         // An MBID decides: a same-named artist with another MBID isn't this one.
         #expect(state("Owner", Self.newMBID) == .notInLidarr(mbid: Self.newMBID))
@@ -159,7 +159,11 @@ import Testing
         let kept = LedgerEntry(lidarrArtistId: 30, albumId: 31, rgMbid: Self.newMBID, createdArtist: true,
                                wasMonitoredBefore: false, root: "/music/library", mode: .finds, keptAt: Date(),
                                artistMbid: Self.magpieMBID)
+        // Y5: a kept find reads as one of Magpie's finds, in the library (no Monitor or Add more is offered for it).
         #expect(ArtistLidarr.state(name: "Mine", mbid: Self.magpieMBID, artists: [mine], commands: [], ledger: [kept])
+                == .find(lidarrId: 30, state: .inLibrary(.waiting(removedOn: nil))))
+        var fallback = kept; fallback.mode = .fallback
+        #expect(ArtistLidarr.state(name: "Mine", mbid: Self.magpieMBID, artists: [mine], commands: [], ledger: [fallback])
                 == .notMonitored(lidarrId: 30, magpieAdded: false))
     }
 

@@ -19,6 +19,9 @@ public struct LibraryAccess: Sendable {
     /// After Keep's move: the recording's song in the folder the artist moved to (Lidarr's path); nil while not
     /// listed there. Never the owner's own copy of the recording elsewhere.
     public var keptSong: @Sendable (MBID, _ artistPath: String) async throws -> Song?
+    /// Y5 (item 9.2): the library's songs titled like `title` inside Lidarr's artist folder, each with its path in
+    /// Lidarr's terms (mapped from Navidrome's). Nil: can't tell. For files without MusicBrainz tags.
+    public var songsTitled: @Sendable (_ title: String, _ artistFolder: String) async -> [(song: Song, lidarrPath: String)]?
 
     /// `rescanMoved` nil: one plain quick scan. `keptSong` nil: never found (the request keeps its song id).
     public init(startScan: @escaping @Sendable () async throws -> Void,
@@ -26,9 +29,11 @@ public struct LibraryAccess: Sendable {
                 refreshIndex: @escaping @Sendable () async throws -> Void,
                 songId: @escaping @Sendable (ExternalRecording) async -> String?,
                 rescanMoved: (@Sendable (_ from: String, _ to: String) async throws -> Void)? = nil,
-                keptSong: (@Sendable (MBID, _ artistPath: String) async throws -> Song?)? = nil) {
+                keptSong: (@Sendable (MBID, _ artistPath: String) async throws -> Song?)? = nil,
+                songsTitled: (@Sendable (_ title: String, _ artistFolder: String) async -> [(song: Song, lidarrPath: String)]?)? = nil) {
         self.startScan = startScan; self.isScanning = isScanning
         self.refreshIndex = refreshIndex; self.songId = songId
+        self.songsTitled = songsTitled ?? { _, _ in nil }
         self.rescanMoved = rescanMoved ?? { _, _ in try await startScan() }
         self.keptSong = keptSong ?? { _, _ in nil }
     }
@@ -155,6 +160,7 @@ public actor RequestRunner {
     /// Y5 throttles (in memory: a relaunch only checks sooner).
     var factChecks: [RequestID: Date] = [:]
     var adoptedChecks: [RequestID: Date] = [:]
+    var fallbackChecks: [RequestID: Date] = [:]
     /// R17 (RequestRunner+Stall.swift): each Soulseek download being watched, by queue id; the Soulseek clients'
     /// names (read once per runner); how long a download may sit unchanged.
     var stallWatch: [Int: StallWatch] = [:]
@@ -1237,6 +1243,8 @@ public actor RequestRunner {
         for r in list where r.isActive && !requestBusy(r.id) {
             if let songId = await library.songId(r.recording) {
                 await apply(r.id, .visibleInLibrary(songId: songId))
+            } else if r.state == .importing, r.notListedAt == nil {
+                await matchWithoutTags(r.id)   // Y5 item 9.2
             }
         }
     }
