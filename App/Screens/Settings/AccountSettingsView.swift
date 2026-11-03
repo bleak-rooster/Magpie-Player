@@ -30,7 +30,7 @@ struct AccountSettingsView: View {
             }
             if let libraries, libraries.count > 1 {
                 librariesSection(libraries)
-                if model.findsSetup != nil {
+                if model.findsSetup?.library != nil {   // fix M7: as before, once the Finds library is chosen
                     MainLibrarySection(libraries: libraries)   // R18 (the choice needs Lidarr's set-up)
                 }
             }

@@ -249,6 +249,53 @@ final class DiscoverNavidrome: @unchecked Sendable {
         #expect(aurralStore.load()?.password == "changed")
     }
 
+    /// Z1 fix I1: a refused password (and its token) is forgotten in the Keychain, so a relaunch shows "Sign in
+    /// again" and sends no login at all.
+    @Test func refusedPasswordIsNotTriedAfterRelaunch() async throws {
+        let model = try await signedIn()
+        defer { model.signOut() }
+        aurral.setPassword("changed", for: StubAurral.defaultUsername)
+        aurral.expireAllSessions()
+        await #expect(throws: AurralError.signInNeeded) { _ = try await model.testAurral() }
+        #expect(await eventually { self.aurralStore.load()?.password == nil })
+        let saved = try #require(aurralStore.load())
+        #expect(saved.password == nil && saved.login == nil, "nothing left to send")
+        #expect(saved.base == aurral.base && saved.username == StubAurral.defaultUsername, "kept to sign in again")
+        // A cold start on the same store.
+        let before = aurral.loginCount
+        let relaunched = DiscoverState(store: aurralStore)
+        #expect(relaunched.needsSignIn)
+        let fresh = AppModel(store: store, lidarrStore: MemoryLidarrStore(), tokenStore: MemoryTokenStore(),
+                             aurralStore: aurralStore, matchIndexDirectory: nil, dataDirectory: tmp, transport: transport,
+                             probeTransport: transport, engine: FakeEngine(), defaults: defaults,
+                             systemNowPlaying: false, notifications: false, network: FakeNetwork(.wifi),
+                             audioFetcher: FakeFetcher())
+        #expect(AurralCopy.summary(fresh) == "Sign in again")
+        await fresh.refreshDiscover(force: true)
+        await #expect(throws: AurralError.signInNeeded) { _ = try await fresh.testAurral() }
+        #expect(aurral.loginCount == before, "no login on a cold start after a refusal")
+    }
+
+    /// Z1 fix M1: consent is per secret. An address allowed for plain http before (round 12's API key, or another
+    /// service) still asks before the Aurral password goes there; once allowed for it, it doesn't.
+    @Test func passwordConsentIsItsOwn() async throws {
+        let model = try await signedIn(aurralSetUp: false)
+        defer { model.signOut() }
+        let plain = URL(string: "http://aurral.example.com:3001")!
+        model.allowPlainHTTP([plain])   // allowed in round 12, for the key
+        let before = aurral.requests.count
+        await #expect(throws: PlainHTTPConsentRequired.self) {
+            _ = try await model.connectAurral(base: plain, username: "jordan", password: "pw")
+        }
+        #expect(aurral.requests.count == before, "nothing sent")
+        #expect(AurralCopy.plainHTTPWarning(plain) != nil, "the sign-in form warns while the address is plain http")
+        #expect(AurralCopy.plainHTTPWarning(aurral.base) == nil, "a home address doesn't")
+        model.allowAurralPassword(plain)
+        // Consent given: it goes (to a host nothing here serves, so it fails after sending).
+        _ = try? await model.connectAurral(base: plain, username: "jordan", password: "pw")
+        #expect(transport.navidrome.requests.contains { $0.url?.host == "aurral.example.com" })
+    }
+
     /// Round 13: Sign out ends the session in Aurral and forgets everything on the phone.
     @Test func signOutOfAurralLogsOut() async throws {
         let model = try await signedIn()

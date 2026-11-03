@@ -12,7 +12,8 @@ struct AurralConnection: Codable, Sendable, Equatable, CustomStringConvertible, 
                         CustomReflectable {
     var base: URL
     var username: String
-    /// Kept only to log in again on a 401 or after `login.expiresAt`; nil once Aurral refused it.
+    /// Kept only to log in again on a 401 or after `login.expiresAt`; nil once Aurral refused it (Z1 fix I1: saved
+    /// so, with `login` nil too, so nothing is sent again until the owner signs in).
     var password: String?
     /// The session token and the user Aurral named, as last logged in.
     var login: AurralLogin?
@@ -131,19 +132,36 @@ struct AurralConnectionStore: AurralConnectionStoring {
         self.upgradedAddress = store.removeLegacyKey()
         self.connection = store.load()
         self.session = connection.map(makeSession)
+        self.needsSignIn = connection.map { $0.password == nil && $0.login == nil } ?? false   // fix I1: after a refusal
     }
 
     /// A session for `connection`; each new login is saved to the Keychain (for the same account only).
     func makeSession(_ connection: AurralConnection) -> AurralSession {
         AurralSession(username: connection.username, password: connection.password, login: connection.login,
-                      onLogin: { [weak self] login in Task { @MainActor in self?.renewed(login, for: connection.account) } })
+                      onLogin: { [weak self] login in Task { @MainActor in self?.renewed(login, for: connection.account) } },
+                      onRefused: { [weak self] in Task { @MainActor in self?.refused(for: connection.account) } })
+    }
+
+    /// Z1 fix I1: Aurral refused the saved password. It and the token are forgotten in the Keychain (the address and
+    /// username stay, to sign in again), so no later launch sends it again.
+    func refused(for account: AurralConnection.Account) {
+        needsSignIn = true
+        guard var current = connection, current.account == account else { return }
+        current.password = nil
+        current.login = nil
+        do { try store.save(current) } catch {
+            Log.logger("aurral").error("couldn't save the signed-out Aurral: \(Log.category(of: error), privacy: .public)")
+        }
+        connection = current
     }
 
     /// Aurral logged Magpie in again: the new session replaces the old one in the Keychain.
     func renewed(_ login: AurralLogin, for account: AurralConnection.Account) {
         guard var current = connection, current.account == account else { return }
         current.login = login
-        try? store.save(current)
+        do { try store.save(current) } catch {   // fix M6
+            Log.logger("aurral").error("couldn't save the renewed Aurral session: \(Log.category(of: error), privacy: .public)")
+        }
         connection = current
         needsSignIn = false
     }

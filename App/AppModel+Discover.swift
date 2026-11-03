@@ -33,13 +33,28 @@ extension AppModel {
     /// owner allows it in Settings.
     var aurralAwaitingConsent: Bool {
         _ = plainHTTPConsentRevision
-        return discover.connection.map { !plainHTTPConsent.allows($0.base) } ?? false
+        return discover.connection.map { !aurralAllows($0.base) } ?? false
+    }
+
+    /// Z1 fix M1: consent is per secret. The Aurral password (and its session) go over plain http to a public address
+    /// only with the owner's OK for that address *and* for the Aurral password: a round-12 OK (given for the API key)
+    /// or another service's doesn't count.
+    var aurralPasswordConsent: PlainHTTPConsent {
+        PlainHTTPConsent(defaults: appDefaults, key: "magpie.plainHTTPConsent.aurralPassword")
+    }
+
+    func aurralAllows(_ url: URL) -> Bool { plainHTTPConsent.allows(url) && aurralPasswordConsent.allows(url) }
+
+    /// The owner said yes to sending the Aurral password and session to `url` over plain http.
+    func allowAurralPassword(_ url: URL) {
+        aurralPasswordConsent.grant([url])
+        allowPlainHTTP([url])
     }
 
     /// A client for the saved Aurral, signed in as its user; nil without one, or while its address waits for consent
     /// (the password and the token are never sent unencrypted to a public address without the owner's say-so).
     var aurralClient: AurralClient? {
-        guard let connection = discover.connection, plainHTTPConsent.allows(connection.base),
+        guard let connection = discover.connection, aurralAllows(connection.base),
               let session = discover.session else { return nil }
         return AurralClient(base: connection.base, session: session, transport: transport)
     }
@@ -51,7 +66,7 @@ extension AppModel {
     /// tries, `.notFound` for something that isn't Aurral.
     func connectAurral(base: URL, username: String, password: String) async throws -> AurralHealth {
         if atsBlocks(base) { throw Self.atsError(base) }
-        guard plainHTTPConsent.allows(base) else { throw PlainHTTPConsentRequired(urls: [base]) }
+        guard aurralAllows(base) else { throw PlainHTTPConsentRequired(urls: [base]) }
         let username = username.trimmingCharacters(in: .whitespacesAndNewlines)
         let probe = AurralClient(base: base, session: AurralSession(username: username, password: nil, login: nil),
                                  transport: transport)
@@ -59,9 +74,16 @@ extension AppModel {
         let login = try await AurralClient.signIn(base: base, username: username, password: password, transport: transport)
         let connection = AurralConnection(base: base, username: username, password: password, login: login)
         let session = discover.makeSession(connection)
-        let status = try await AurralClient(base: base, session: session, transport: transport).status()
-        if let previous = discover.connection, previous.account != connection.account { endAurralSession() }
-        try discover.store.save(connection)
+        let fresh = AurralClient(base: base, session: session, transport: transport)
+        let status: AurralStatus
+        do {
+            status = try await fresh.status()
+            if discover.connection != nil { endAurralSession() }   // fix M5: the old session too, same account or not
+            try discover.store.save(connection)
+        } catch {
+            Task { _ = try? await fresh.logout() }   // fix M5: never leave the new session behind
+            throw error
+        }
         if discover.connection?.account != connection.account { forgetDiscoverReads() }
         discover.use(connection)
         discover.health = health
@@ -93,7 +115,7 @@ extension AppModel {
     /// The owner allowed the saved Aurral's plain-http address.
     func allowAurralAddress() {
         guard let base = discover.connection?.base else { return }
-        allowPlainHTTP([base])
+        allowAurralPassword(base)
     }
 
     /// Settings › Aurral › Sign out: ends the session in Aurral (when it can be reached) and forgets the address,

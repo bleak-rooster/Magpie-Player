@@ -117,7 +117,7 @@ struct SettingsServiceRow: View {
                 .truncationMode(.tail)
             }
         } icon: {
-            Image(systemName: symbol)
+            Image(systemName: symbol).accessibilityHidden(true)   // fix M10: decorative
         }
         .frame(minHeight: 32)
         .accessibilityElement(children: .combine)

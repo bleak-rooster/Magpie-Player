@@ -40,7 +40,7 @@ struct AurralSettingsView: View {
             get: { unencrypted != nil }, set: { if !$0 { unencrypted = nil } })
         ) {
             Button(LidarrConnectCopy.plainHTTPConfirm, role: .destructive) {
-                if let url = unencrypted { model.allowPlainHTTP([url]) }
+                if let url = unencrypted { model.allowAurralPassword(url) }
                 unencrypted = nil
                 Task { await signIn() }
             }
@@ -89,6 +89,11 @@ struct AurralSettingsView: View {
                 .accessibilityIdentifier("aurral-password")
         } footer: {
             Text(AurralCopy.signInFooter)
+        }
+        if let warning = AurralCopy.plainHTTPWarning(ServerAddress.check(address).url) {   // fix M1: always said
+            Section {
+                Label(warning, systemImage: "lock.open").accessibilityIdentifier("aurral-plain-http")
+            }
         }
         if let error {
             Section {
@@ -230,7 +235,13 @@ enum AurralCopy {
     static let connectedFooter = "Magpie reads your flows and never changes Aurral, except when you tap Refresh Flow."
     static let signOutFooter = "Signs out of Aurral and forgets the address, your account and your password on this iPhone. Nothing else in Aurral changes."
     static let needsConsent = "This Aurral address isn\u{2019}t encrypted, so Magpie waits for your OK before sending your password."
-    static let plainHTTPMessage = "Your Aurral password will be sent in the clear. Use an https:// address when you can."
+    static let plainHTTPMessage = "Your Aurral password, and the session Magpie keeps for 30 days, will be sent in the clear. Use an https:// address when you can."
+
+    /// Z1 fix M1: said on the sign-in form whenever the address is plain http outside home, whatever was allowed before.
+    static func plainHTTPWarning(_ url: URL?) -> String? {
+        guard let url, ServerAddress.isUnencryptedPublic(url) else { return nil }
+        return "Not encrypted: your password, and the session Magpie keeps for 30 days, would be sent in the clear."
+    }
     static let badLogin = "That username or password didn\u{2019}t work."
     static let rateLimited = "Too many tries. Wait a few minutes, then try again."
     static let signedOut = "Aurral signed you out. Sign in again to keep Discover up to date."
