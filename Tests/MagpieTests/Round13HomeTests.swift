@@ -164,10 +164,81 @@ private func ok(_ body: String) -> Data {
         try await expectRightShelvesTwice(model, "jobs cleared")
     }
 
+    // MARK: - Review I1: a status read that doesn't name the flow never removes a known Discover playlist
+
+    /// Aurral answers but lists no flows (Z1's fail-closed status when the user isn't known): nothing changes.
+    @Test func statusWithNoFlowsKeepsDiscover() async throws {
+        let model = try await signedIn()
+        defer { model.signOut() }
+        relaunched(model)
+        aurral.setFlows([])
+        try await expectRightShelvesTwice(model, "no flows")
+    }
+
+    /// No flows AND the jobs cleared by a run AND new songs: still nothing changes.
+    @Test func noFlowsDuringARunKeepsDiscover() async throws {
+        let model = try await signedIn()
+        defer { model.signOut() }
+        relaunched(model)
+        flowRotated()
+        aurral.setJobs([])
+        aurral.setFlows([])
+        try await expectRightShelvesTwice(model, "no flows, run under way")
+    }
+
+    /// The flow was renamed in Aurral before its playlist was: the playlist (still the flow's songs) stays Discover's,
+    /// under the renamed flow.
+    @Test func flowRenamedBeforeItsPlaylist() async throws {
+        let model = try await signedIn()
+        defer { model.signOut() }
+        relaunched(model)
+        aurral.setFlows([.init(id: "flow-dw", name: "Weekly Picks"), .init(id: "flow-tm", name: "Trending Mix")])
+        try await expectRightShelvesTwice(model, "flow renamed")
+        #expect(model.discoverFlow(playlistId: "pl-dw")?.id == "flow-dw")
+    }
+
+    /// Positive evidence only: Aurral lists its flows, none is named as the playlist, and its songs are no longer
+    /// the flow's (the owner reused it for library songs): it leaves Discover and is an ordinary playlist again.
+    @Test func playlistLeavesDiscoverOnlyOnPositiveEvidence() async throws {
+        let model = try await signedIn()
+        defer { model.signOut() }
+        relaunched(model)
+        aurral.setFlows([.init(id: "flow-dw", name: "Weekly Picks"), .init(id: "flow-tm", name: "Trending Mix")])
+        nav.lists["pl-dw"] = ("Discover Weekly", ["m-x", "m-y"])
+        defaults.removeObject(forKey: AppModel.aurralSongsKey(try #require(model.navidromeScope)))
+        _ = try await model.homeShelves(for: [.discover, .playlists])
+        model.discover.statusReadAt = nil
+        let shelves = try await model.homeShelves(for: [.discover, .playlists])
+        #expect(ids(shelves, .discover) == nil)
+        #expect(ids(shelves, .playlists)?.contains("playlist-pl-dw") == true)
+    }
+
+    /// Review M7: Home updates by itself once a slow Aurral answers (nothing known before: a first launch).
+    @Test func homeUpdatesWhenSlowAurralAnswers() async throws {
+        let model = try await signedIn()
+        defer { transport.setAurralDelay(nil); model.signOut() }
+        let scope = try #require(model.navidromeScope)
+        relaunched(model)
+        defaults.removeObject(forKey: AppModel.discoverPlaylistsKey(scope))
+        model.homeFeedSlot = nil
+        HomeShelfCache.removeAll(root: tmp)
+        transport.setAurralDelay(.seconds(2))   // status + jobs: 4 s, past the 3 s wait
+        let feed = model.homeFeed
+        let key = HomeLoad.Key.make(sections: [.discover, .playlists, .randomAlbums], offline: false, onPhone: nil,
+                                    genres: model.preferences.genres)
+        await feed.show(key)
+        #expect(feed.load?.found[.discover] == nil, "not known yet: no Discover after the wait")
+        for _ in 0..<150 where feed.load?.found[.discover] == nil || feed.isReading {
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        let found = try #require(feed.load?.found)
+        expectRightShelves([.discover, .playlists, .randomAlbums].compactMap { found[$0] }, "after Aurral answered")
+    }
+
     /// Aurral slow: Home doesn't wait for it, and Discover shows the playlists known to be Discover's.
     @Test func aurralSlow() async throws {
         let model = try await signedIn()
-        defer { model.signOut() }
+        defer { transport.setAurralDelay(nil); model.signOut() }
         relaunched(model)
         transport.setAurralDelay(.seconds(30))
         let clock = ContinuousClock()
@@ -244,7 +315,7 @@ private func ok(_ body: String) -> Data {
     /// step and never an album under Discover or Playlists.
     @Test func feedFromBuild12CacheWithAurralSlow() async throws {
         let model = try await signedIn()
-        defer { model.signOut() }
+        defer { transport.setAurralDelay(nil); model.signOut() }
         let scope = try #require(model.navidromeScope)
         relaunched(model)
         let dw = Playlist(id: "pl-dw", name: "Discover Weekly", songCount: 4, duration: 0)
