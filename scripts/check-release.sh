@@ -45,9 +45,10 @@ check_variant() {
     && ! pb UISupportedInterfaceOrientations:1 "$plist" >/dev/null || fail "$variant: iPhone is not portrait-only"
   pb CFBundleIcons:CFBundlePrimaryIcon:CFBundleIconName "$plist" | grep -qx AppIcon || fail "$variant: no AppIcon in Info.plist"
   [ -f "$app/Assets.car" ] || fail "$variant: Assets.car missing"
-  # R14: the 12 alternate icons (Settings › Appearance › App icon) must be declared in the built bundle.
+  # R14: the 12 alternate icons (Settings › Appearance › App icon) must be declared in the built bundle; round 13 adds
+  # the green cover's Ink and Sunset colourways.
   local alt
-  for alt in RecordForest RecordInk RecordSunset MagpieForest MagpieInk MagpieSunset WaveForest WaveInk WaveSunset NestForest NestInk NestSunset; do
+  for alt in DefaultInk DefaultSunset RecordForest RecordInk RecordSunset MagpieForest MagpieInk MagpieSunset WaveForest WaveInk WaveSunset NestForest NestInk NestSunset; do
     pb "CFBundleIcons:CFBundleAlternateIcons:$alt:CFBundleIconName" "$plist" | grep -qx "$alt" || fail "$variant: alternate icon $alt missing"
   done
 
