@@ -123,3 +123,26 @@ Branch `z5-playback`, off v0.0.1-custom, with the latest v0.0.1-custom merged in
 - **The held copy lives in the temp folder.** If the app is killed it is lost, and the song is fetched again on its next play.
 - **Item 8 has no UI test.** It is covered by the hosted layout tests and the model tests. The dev-stack UI tests (MAGPIE_IT) were not run here.
 - **Simulator kills while other workstreams run.** Expect "signal kill before establishing connection" flakes under that load; re-run alone.
+
+## Fix round 1 (Z5 review, 0C/1I)
+- **I1.** Each replacement `Fetch` has a `token`. `isCurrentCacheRefresh` and the run's `defer` compare tokens, so a stopped fetch that unwinds late never clears a newer one.
+  - Test `aStoppedFetchNeverClearsTheNextOne`: A → B → A flip, with the first fetch ignoring cancellation and the second held in its check. The second stays the one under way, a second song can't start, and the second lands.
+- **Owner ruling (M4).** On mobile data (or Low Data Mode) a better cached copy is kept: `wantsReplacement(from:target:onMobile:)`. Only a lower bit rate, or a transcode when the target is the original, is replaced. On Wi-Fi the copy matches exactly.
+  - Tests: `onMobileDataABetterCopyIsKept` (original, AAC 256, and same rate in another format all kept), `onMobileDataAWorseCopyIsReplaced`, `onWiFiTheTargetIsMatchedExactly`.
+  - Recorded in D64.
+- **M1.** `AudioStore.replaceCache` now returns a `CacheReplacement` (the entry plus the old file name). It keeps the old audio but removes the old sidecar.
+  - The manager removes the old file with `removeUnreferencedAudio` only once `isSongInUse` is false, at the swap or on a later queue change.
+  - After a crash, the next load sweeps the orphan.
+  - Tests: `theOldFileStaysWhilePlaybackMightHoldIt`, plus the store tests `replacesACacheEntryAtTheExpectedQuality` and `anOldCopyLeftByACrashIsSweptOnLoad`.
+- **M2.** The new `isConfirmedPlayable` is strict: an unreadable or empty file, or any thrown error, counts as no.
+  - Test: `aCheckThatCannotConfirmKeepsTheOldCopy`.
+- **M3.** `bodyFits` refuses a response whose type is another format than the transcode asked for (for example FLAC sent for an Opus request). Octet-stream passes through to the strict check. Pre-downloads are unchanged: they still store what arrives under the asked-for quality.
+  - Test: `aBodyInAnotherFormatIsNotKept`.
+- **M5.** Held copies now live in `<scope>/swap/`, which is emptied at `start()`.
+  - Test: `heldCopiesFromALastRunAreSwept`.
+- **M7.** The tautological assertion was removed.
+- **Not done (optional):** M6. A fetch started before a pause runs to the end; pausing only stops new ones.
+- **RED evidence.**
+  - Store tests: `AudioEntry has no member 'entry'/'oldFileName'`, `no member 'removeUnreferencedAudio'`.
+  - App: 8 of 23 failed, including `cacheRefreshSongId → nil` and `fetches 5 vs 4` for I1, the better copy replaced on mobile data, and the old file deleted while held.
+- **GREEN.** CacheQualityStoreTests and AudioStoreTests: 34 of 34. CacheQualityTests: 23 of 23. CacheQualityAppTests: 4 of 4.
