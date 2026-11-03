@@ -325,6 +325,20 @@ private let cell = NetworkStatus(isConnected: true, isCellular: true, isConstrai
         #expect(m.status(for: ["s1"]) == .downloaded)
     }
 
+    /// Flake (fastFailingDownloadsProbeSparingly): a download that failed to connect waits for the probe's verdict. A
+    /// network or suspect change meanwhile (`networkChanged`, which the app calls when the server turns suspect) must
+    /// not send it again before the verdict, or it is fetched again without the attempt being counted.
+    @Test func aDownloadAwaitingAVerdictIsntFetchedAgainBeforeIt() async {
+        let (m, f, _) = await makeManager()
+        f.failWith(URLError(.timedOut))
+        m.download(songs("s1"), reason: .song); await m.settled()
+        #expect(f.urls.count == 1)
+        m.networkChanged(); await m.settled()
+        #expect(f.urls.count == 1, "no fetch before the verdict")
+        m.serverAnswered(); await m.settled()
+        #expect(f.urls.count == 2, "the verdict counts the attempt and sends it again")
+    }
+
     /// Minor 6: once `cancelAll` has run and the scope is erased, nothing late (a fetch that ignored the cancel, a
     /// cover) writes the scope back.
     @Test func nothingRecreatesTheScopeAfterSignOut() async {

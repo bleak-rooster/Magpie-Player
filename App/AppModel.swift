@@ -131,6 +131,8 @@ final class AppModel {
     var libraryScope: [Int]?
     /// Changes each time the server answers again after it didn't: Home reads what failed (P5).
     var serverAnsweredGeneration = 0
+    /// The match-index read a change of library scope started (`syncLibraryScope`), so its requests can be waited for.
+    @ObservationIgnored var scopeIndexRefresh: Task<Void, Never>?
     /// The scene is active: requests poll every 5 s, otherwise every 30 s.
     var isForeground = true {
         didSet {
@@ -398,18 +400,28 @@ final class AppModel {
     }
 
     /// Builds the shared model from what the Keychain holds. `-MagpieResetState YES` signs out first
-    /// (UI tests). `-MagpieCharacter classic|signature|immersive` picks the look.
+    /// (UI tests: a full sign-out, which erases the account's downloads). `-MagpieCharacter classic|signature|immersive` picks the look.
     ///
     /// Final fix 2 C-I1 (G0): as the host of hosted unit tests (`XCTestConfigurationFilePath` set) it resumes no
     /// saved session and builds no runner, so tests never talk to whatever server the simulator is signed in to.
     /// A test opts in with `MAGPIE_TEST_HOST_RESTORE=1`.
     static func restore(store: any SessionStoring = SessionStore.standard, defaults: UserDefaults = .standard,
                         environment: [String: String] = ProcessInfo.processInfo.environment) -> AppModel {
-        if defaults.bool(forKey: "MagpieResetState") {
+        let uiTesting = defaults.string(forKey: "MagpieUITesting") == "YES"
+        let resets = defaults.bool(forKey: "MagpieResetState")
+        if resets, !uiTesting {
             store.clear()
             LidarrConnectionStore.standard.clear()
         }
         let model = AppModel(store: store, defaults: defaults, theme: savedTheme(defaults))
+        // UI tests (flake fix): a real sign-out of what the last test left, so its downloads (the audio store, pending
+        // jobs, the background session's tasks) go too and each test starts with nothing downloaded or waiting.
+        if resets, uiTesting {
+            model.resumeSavedSession()
+            if model.session != nil { model.signOut() }
+            store.clear()
+            LidarrConnectionStore.standard.clear()
+        }
         // UI tests only (with `-MagpieUITesting YES`): Home and Library back to their default layout, so a layout test
         // that failed half-way never leaves a section hidden for the next test.
         if defaults.string(forKey: "MagpieUITesting") == "YES", defaults.bool(forKey: "MagpieResetLayouts") {

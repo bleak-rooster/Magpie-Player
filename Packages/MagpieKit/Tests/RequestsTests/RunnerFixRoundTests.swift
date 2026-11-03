@@ -1,4 +1,5 @@
 import Foundation
+import os
 import Testing
 import LidarrKit
 import ListenBrainzKit
@@ -57,6 +58,35 @@ import MagpieCore
         #expect(h.server.writes.isEmpty)
         #expect(await h.request(id)?.cleanupPending == false, "clean-up ran after the step")
         #expect(h.server.with { $0.albums.first { $0.id == 31 }?.monitored } == false)
+    }
+
+    /// Flake (TryAndSettingsTests.tryThenCancelThroughTheApp): Cancel's clean-up and a background pass's clean-up of
+    /// the same request ran side by side (actor re-entrancy across the album GET); both saw the album still monitored
+    /// and both unmonitored it. One clean-up at a time per request: one unmonitor.
+    @Test func cancelAndAPassUnmonitorOnce() async throws {
+        let h = await Harness()
+        h.server.ownerHasArtist(albumMonitored: false)
+        let id = try await h.runner.tryRecording(h.recording(recAlbumOnly), tier: .standard)
+        await h.runner.settle()
+        // Cancel's clean-up has read the album (still monitored) and sent its unmonitor: hold that on the wire.
+        h.server.with { $0.holdMethod = "PUT"; $0.hold = ("/api/v1/album/monitor", 1) }
+        let cancel = Task { await h.runner.cancel(id) }
+        await h.server.latch.waitArrived()
+        // The background pass meanwhile. Before the fix its clean-up read the album (still monitored: the unmonitor is
+        // held) and queued a second unmonitor. Wait for that read, or for the pass to end without one.
+        func albumReads() -> Int {
+            h.server.transport.requests.filter { ($0.httpMethod ?? "GET") == "GET" && $0.url?.path.hasSuffix("/api/v1/album") == true }.count
+        }
+        let reads = albumReads()
+        let passEnded = OSAllocatedUnfairLock(initialState: false)
+        let pass = Task { await h.runner.tick(); passEnded.withLock { $0 = true } }
+        while albumReads() == reads, !passEnded.withLock({ $0 }) { await Task.yield() }
+        await h.server.latch.release()
+        await cancel.value
+        await pass.value
+        await h.runner.settle()
+        #expect(h.server.writeBodies().map(\.0) == ["PUT album/monitor", "POST command", "PUT album/monitor"])
+        #expect(await h.request(id)?.cleanupPending == false)
     }
 
     /// IMPORTANT 2: the POST reached Lidarr but the answer was lost. The retry adopts the artist (no second
