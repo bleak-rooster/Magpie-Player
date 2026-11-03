@@ -65,3 +65,20 @@ Decisions: D63, D64 in docs/decisions.md. Research: docs/research/aurral.md § "
 - The password is stored (needed: Aurral 2.10 has no refresh route). Security look should confirm (planned).
 - Logout at sign-out is best effort; offline or consent-pending, the token just lapses in Aurral (30 days).
 - Plan item 14 names services in row titles, superseding T21b's no-service rule for this section (D64).
+
+## Review fixes (Z1-review.md), "Z1 fix:" commits
+- I1: `AurralSession.onRefused` → the app saves the connection with password and token nil (address and username
+  kept); `needsSignIn` derived at launch (and the session starts signed out), so a cold start sends no login.
+  RED: compile errors (`onRefused`, `allowAurralPassword`, `plainHTTPWarning` missing). Test
+  `refusedPasswordIsNotTriedAfterRelaunch` (new model on the same store: login count unchanged, "Sign in again").
+- M1: the Aurral password has its own plain-http consent list (`magpie.plainHTTPConsent.aurralPassword`); a round-12
+  or other-service OK doesn't count; the sign-in form always warns for a plain-http public address; consent copy
+  mentions the 30-day session. Test `passwordConsentIsItsOwn`.
+- M2: back-off in the session: 15 min after a 429, 30 s after a failed login. Test `backsOffAfterRateLimitAndFailures`.
+- M3: `scoped(to: nil)` returns no flows. Test `scopingFailsClosed`.
+- M5 (stray sessions logged out), M6 (save failures logged), M7 (main library only once the Finds library is
+  chosen), M10 (row icon hidden from VoiceOver). M4: 2.10 jobs carry `playlistId`/`playlistType` per the research;
+  M8/M9 left (cosmetic).
+- Merged v0.0.1-custom (Z3, Z4, Z6): my decisions renumbered D70–D71, review fixes D72. Z3's CarPlay promoted to a
+  top-level row through `link` (Home & Library no longer lists it): 526 pt in 535 at 375 × 667.
+- Package suite 1111 passed; affected app suites green; full app suite: see the reply.
