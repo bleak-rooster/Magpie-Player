@@ -60,7 +60,7 @@ import Testing
         #expect(LidarrDownloadsCopy.summary([.unavailable])?.contains("Try again") == true)
     }
 
-    /// Fix round 2: the two new sections' words, and the one-at-a-time confirmation for a finished copy.
+    /// Fix round 2: the two new sections' words, and the confirmation for a finished copy.
     @Test func couldntImportAndNotStartedCopy() {
         #expect(LidarrDownloadsCopy.couldntImportSection == "Couldn't import")
         #expect(LidarrDownloadsCopy.notStartedSection == "Started by another app")   // fix round 3: glossary
@@ -72,6 +72,28 @@ import Testing
         }
         #expect(LidarrDownloadsCopy.summary([.notStartedByLidarr])
                 == "Another app started that download, so it was left alone.")
+    }
+
+    /// Round 13 item 6 (D63): every row offers Restart; what it asks first depends on the row. Another app's download
+    /// gets the flagged confirmation in the owner's plan's words; Restart all includes another app's only when chosen.
+    @Test func restartAnythingAsksFirst() {
+        #expect(LidarrDownloadsCopy.confirmOne(.none) == nil, "a stalled or failed copy restarts at once")
+        #expect(LidarrDownloadsCopy.confirmOne(.foreign)
+                == "This download wasn't started by your library \u{2014} it may belong to another app. Restart anyway?")
+        #expect(LidarrDownloadsCopy.confirmOne(.couldntImport) == LidarrDownloadsCopy.couldntImportConfirm)
+        #expect(LidarrDownloadsCopy.confirmOne(.stillGoing)?.contains("still going") == true)
+        #expect(LidarrDownloadsCopy.confirmButton(.foreign) == "Restart anyway")
+        #expect(LidarrDownloadsCopy.confirmButton(.stillGoing) == "Restart")
+        #expect(LidarrDownloadsCopy.includeForeign(1) == "Also restart 1 started by another app")
+        #expect(LidarrDownloadsCopy.includeForeign(3) == "Also restart 3 started by another app")
+        #expect(LidarrDownloadsCopy.confirmMessage(3, foreign: 2).contains("unless you include them"))
+        #expect(!LidarrDownloadsCopy.confirmMessage(3).contains("another app"))
+        #expect(!LidarrDownloadsCopy.notStartedFooter.contains("leaves them alone"))
+        #expect(!LidarrDownloadsCopy.couldntImportFooter.contains("leaves them alone"))
+        for text in [LidarrDownloadsCopy.confirmOne(.foreign), LidarrDownloadsCopy.confirmOne(.stillGoing),
+                     LidarrDownloadsCopy.confirmMessage(3, foreign: 2)].compactMap({ $0 }) {
+            #expect(!text.lowercased().contains("blocklist") && !text.contains("Lidarr"), "\(text)")
+        }
     }
 
     /// I3: "Downloads in Lidarr" is a top-level Settings row, only while Lidarr is connected.
