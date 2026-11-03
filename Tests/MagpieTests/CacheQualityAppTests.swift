@@ -115,4 +115,39 @@ private let cell = NetworkStatus(isConnected: true, isCellular: true, isConstrai
         #expect(manager.cacheRefreshSongId == nil && manager.pendingCacheSwapSongId == nil)
         #expect(!f.urls.contains { $0.query?.contains("id=s1") == true && $0.query?.contains("format=aac") == true })
     }
+
+    // MARK: - Item 8: where the song comes from
+
+    /// Now Playing and Song info say Downloaded, From cache or Streaming, with what plays.
+    @Test func sourceLineForEachSource() async throws {
+        let f = FakeFetcher()
+        let model = try await signedInModel(fetcher: f, network: FakeNetwork(.wifi))
+        model.updatePreferences { $0.playback.wifi = .opusMedium; $0.downloads.preDownload = 1 }
+        let manager = try #require(model.downloads)
+        model.download([song("d1")], reason: .song)
+        await manager.settled()
+        model.play([song("s0"), song("c1"), song("d1")], startAt: 0)
+        #expect(await eventually { manager.localQualities["c1"] == .opusMedium })
+        await manager.settled()
+
+        // Streaming: s0 isn't on the phone.
+        #expect(await eventually { model.player.currentURL != nil })
+        #expect(model.playingSource(song("s0")) == .stream(.opusMedium))
+        #expect(model.hearing(song("s0")).text == "Streaming \u{00B7} Transcoded \u{00B7} Opus 160 kbps (from FLAC)")
+        #expect(await model.songInfo(song("s0")).rows.first { $0.label == "Playing" }?.value == model.hearing(song("s0")).text)
+
+        // From cache: c1 was pre-downloaded.
+        model.player.next()
+        #expect(await eventually { model.player.currentURL?.isFileURL == true })
+        #expect(model.playingSource(song("c1")) == .cached(.opusMedium))
+        #expect(model.hearing(song("c1")).text == "From cache \u{00B7} Transcoded \u{00B7} Opus 160 kbps (from FLAC)")
+        #expect(await model.songInfo(song("c1")).rows.first { $0.label == "Playing" }?.value == model.hearing(song("c1")).text)
+
+        // Downloaded: d1 was saved on purpose (Downloads' quality, Original by default).
+        model.player.next()
+        #expect(await eventually { model.player.queue.current?.song.id == "d1" && model.player.currentURL?.isFileURL == true })
+        #expect(model.playingSource(song("d1")) == .downloaded(.original))
+        #expect(model.hearing(song("d1")).text == "Downloaded \u{00B7} Lossless \u{00B7} FLAC")
+        #expect(await model.songInfo(song("d1")).rows.first { $0.label == "Playing" }?.value == model.hearing(song("d1")).text)
+    }
 }
