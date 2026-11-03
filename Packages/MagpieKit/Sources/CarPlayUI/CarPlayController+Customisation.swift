@@ -55,6 +55,13 @@ public protocol CarPlayCustomisationLibrary: AnyObject {
     func madeForYouTracks(id: String) async -> [CPMadeForYouTrack]?
     /// Round 12 Y6: Library › Discover's playlists (Aurral's flows); none by default (CarPlayDiscover.swift).
     func discoverPlaylists() async throws -> [Playlist]
+
+    /// Round 13: the third tab to show (Settings › CarPlay; Playlists when the choice isn't available). Observable.
+    var carPlayTab: CarPlayTab { get }
+    /// Round 13: where Songs' letter groups lie in the server's title order (offline, the phone's songs in that order).
+    func songIndex() async throws -> CPSongIndex
+    /// Round 13: songs in that title order from `offset`, at most `size`.
+    func songsByTitle(offset: Int, size: Int) async throws -> [Song]
 }
 
 /// Home and Library from the owner's layout (spec §3, Task 22), the new rows' screens, genre play, the offline watch
@@ -90,9 +97,15 @@ extension CarPlayController {
                 guard let self, !Task.isCancelled else { return }
                 let change = CPLayoutChange(from: last, to: layout)
                 last = layout
+                if change.rebuildsTabs {   // round 13: a new third tab; the tabs are built again (and this watch with them)
+                    guard self.tabBar != nil else { return }   // Z3 review I1: only while the tabs are showing
+                    self.resetBindings()
+                    self.showTabs()
+                    return
+                }
                 if change.reloadsHome { self.loadCustomHome() }
                 if change.redrawsLibrary, let libraryRoot = self.libraryRoot {
-                    let rows = CarPlayRows.libraryRoot(layout.library, hasFindsTab: self.findsRoot != nil)
+                    let rows = CarPlayRows.libraryRoot(layout.library)
                     self.apply(rows, to: libraryRoot, placeholder: CarPlayRows.isPlaceholder(rows))
                 }
             }
@@ -102,7 +115,7 @@ extension CarPlayController {
     }
 
     private static func layout(of library: any CarPlayLibrary) -> CPLayout {
-        CPLayout(home: library.homeSections, library: library.libraryRows, offline: library.isOffline)
+        CPLayout(home: library.homeSections, library: library.libraryRows, offline: library.isOffline, tab: library.carPlayTab)
     }
 
     /// The screens of the destinations added with the layout. Each reads through the library, which offline reads the

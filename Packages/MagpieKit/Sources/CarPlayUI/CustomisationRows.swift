@@ -30,29 +30,34 @@ public enum CPMadeForYouTrack: Sendable, Hashable {
     case notYet(ExternalRecording)
 }
 
-/// What the car follows of the owner's layout: Home's sections, the Library's rows, and whether it is offline.
+/// What the car follows of the owner's layout: Home's sections, the Library's rows, whether it is offline, and (round
+/// 13) the third tab.
 public struct CPLayout: Sendable, Hashable {
     public var home: [HomeSection]
     public var library: [LibraryRow]
     public var offline: Bool
+    public var tab: CarPlayTab
 
-    public init(home: [HomeSection], library: [LibraryRow], offline: Bool) {
-        self.home = home; self.library = library; self.offline = offline
+    public init(home: [HomeSection], library: [LibraryRow], offline: Bool, tab: CarPlayTab = .playlists) {
+        self.home = home; self.library = library; self.offline = offline; self.tab = tab
     }
 }
 
 /// What a layout change does to the tabs: Home reloads when its sections change or the car goes offline or back
-/// online (the same sections then read elsewhere); the Library tab is redrawn when its rows change.
+/// online (the same sections then read elsewhere); the Library tab is redrawn when its rows change; a new third tab
+/// (round 13) rebuilds the tab bar.
 public struct CPLayoutChange: Sendable, Hashable {
     public var reloadsHome: Bool
     public var redrawsLibrary: Bool
+    public var rebuildsTabs: Bool
 
-    public init(reloadsHome: Bool, redrawsLibrary: Bool) {
-        self.reloadsHome = reloadsHome; self.redrawsLibrary = redrawsLibrary
+    public init(reloadsHome: Bool, redrawsLibrary: Bool, rebuildsTabs: Bool = false) {
+        self.reloadsHome = reloadsHome; self.redrawsLibrary = redrawsLibrary; self.rebuildsTabs = rebuildsTabs
     }
 
     public init(from old: CPLayout, to new: CPLayout) {
-        self.init(reloadsHome: old.home != new.home || old.offline != new.offline, redrawsLibrary: old.library != new.library)
+        self.init(reloadsHome: old.home != new.home || old.offline != new.offline, redrawsLibrary: old.library != new.library,
+                  rebuildsTabs: old.tab != new.tab)
     }
 }
 
@@ -120,20 +125,21 @@ extension CarPlayRows {
         }
     }
 
-    /// The Library tab: the owner's rows in the owner's order. Never Songs or Requests (spec §3: too long for driving,
-    /// and the car's Search covers songs); Finds only when the car has no Finds tab.
-    public static func libraryRoot(_ rows: [LibraryRow], hasFindsTab: Bool) -> [CPSectionModel] {
+    /// The Library tab: the owner's rows in the owner's order. Never Requests. Round 13: Songs shows (it opens on its
+    /// five letter groups), and Finds is a row here (the Finds tab is gone).
+    public static func libraryRoot(_ rows: [LibraryRow]) -> [CPSectionModel] {
         let models = rows.compactMap { row -> CPRowModel? in
             let destination: CPDestination? = switch row {
             case .playlists: .playlists
             case .artists: .artists
             case .albums: .albums
+            case .songs: .songs
             case .genres: .genres
             case .favourites: .favourites
             case .downloads: .downloads
-            case .finds: hasFindsTab ? nil : .finds
+            case .finds: .finds
             case .discover: .discover   // Y6
-            case .songs, .requests: nil
+            case .requests: nil
             }
             return destination.map { CPRowModel(id: "library.\(row.rawValue)", title: row.title, action: .open($0)) }
         }
@@ -281,4 +287,26 @@ public enum CPFavouriteResult: Sendable, Hashable {
     case offline
     /// The server said no (or didn't answer); the star is back to the real state.
     case failed(adding: Bool)
+}
+
+// MARK: - Round 13 item 10: the third tab
+
+extension CarPlayTab {
+    /// The screen the tab shows at its root (depth 1).
+    public var destination: CPDestination {
+        switch self {
+        case .playlists: .playlists
+        case .artists: .artists
+        case .albums: .albums
+        case .songs: .songs
+        case .genres: .genres
+        case .favourites: .favourites
+        case .discover: .discover
+        case .downloads: .downloads
+        }
+    }
+
+    /// Read again each time the tab is chosen (short lists that change); the letter-grouped ones only when they
+    /// couldn't be read.
+    public var reloadsOnSelect: Bool { ![.playlists, .artists, .albums, .songs].contains(self) }
 }

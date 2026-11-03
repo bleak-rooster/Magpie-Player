@@ -6,7 +6,7 @@ import Testing
 /// Round 12 Y6: Discover in the car's Library, like other playlists.
 @Suite struct DiscoverRowsTests {
     @Test func libraryRootHasDiscoverWhenTheLayoutSaysSo() {
-        let rows = CarPlayRows.libraryRoot([.playlists, .discover], hasFindsTab: false).flatMap(\.rows)
+        let rows = CarPlayRows.libraryRoot([.playlists, .discover]).flatMap(\.rows)
         #expect(rows.map(\.title) == ["Playlists", "Discover"])
         #expect(rows.last?.action == .open(.discover))
         #expect(CPDestination.discover.title == "Discover")

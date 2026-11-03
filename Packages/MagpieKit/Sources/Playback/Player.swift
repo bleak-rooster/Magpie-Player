@@ -188,6 +188,16 @@ public final class Player {
         topUpWindow()
     }
 
+    /// Plays the upcoming slot `id` now (round 13: CarPlay's Up Next list): the songs before it count as played, as a
+    /// skip past each would, and the queue's order stays. Anything that isn't upcoming changes nothing.
+    public func jump(to id: UUID) {
+        guard queue.upcoming.contains(where: { $0.id == id }) else { return }
+        stopsAfterCurrent = false
+        while queue.current?.id != id, queue.advance() != nil {}
+        loadCurrent()
+        resume()
+    }
+
     public func previous() {
         if position > Self.restartThreshold || queue.back() == nil {
             seek(0)

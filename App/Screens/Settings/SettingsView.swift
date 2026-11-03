@@ -7,6 +7,10 @@ enum SettingsPage: Hashable {
     case lidarrDownloads
     /// Requests › Finds.
     case findsSetup
+    /// Round 13 (Z3): Settings › CarPlay, the third tab and the car's Home. Not a top-level row yet: with it the top level
+    /// no longer fits 375 × 667 (578 pt in 535 pt with Lidarr connected), so it opens from Home & Library until the
+    /// Accounts & Servers rework (Z1) makes room.
+    case carPlay
 
     /// The top level, in order. Downloads in Lidarr only while Lidarr is connected (Y4).
     static func topLevel(lidarrConnected: Bool) -> [SettingsPage] {
@@ -67,6 +71,9 @@ struct SettingsView: View {
         case .homeAndLibrary:
             SettingsRow(title: "Home & Library", symbol: "square.grid.2x2",
                         summary: SettingsSummary(HomeAndLibraryView.summary(model)))
+        case .carPlay:
+            SettingsRow(title: "CarPlay", symbol: "car", summary: SettingsSummary(
+                CarPlaySettingsView.summary(model.preferences.carPlay, discoverSetUp: model.aurralSetUp)))
         case .appearance:
             SettingsRow(title: "Appearance", symbol: "paintpalette", summary: SettingsSummary(SettingsSummaries.appearance(model.theme)))
         case .requests:
@@ -88,6 +95,7 @@ struct SettingsView: View {
         case .downloads: DownloadsSettingsView()
         case .scrobbling: ScrobblingSettingsView()
         case .homeAndLibrary: HomeAndLibraryView()
+        case .carPlay: CarPlaySettingsView()
         case .appearance: AppearanceView()
         case .requests: RequestsSettingsView()
         case .lidarrDownloads: LidarrDownloadsView()
@@ -104,6 +112,7 @@ struct SettingsView: View {
         case .downloads: "settings-downloads"
         case .scrobbling: "settings-scrobbling"
         case .homeAndLibrary: "settings-home-library"
+        case .carPlay: "settings-carplay"
         case .appearance: "settings-appearance"
         case .requests: "settings-requests"
         case .lidarrDownloads: "settings-lidarr-downloads"
