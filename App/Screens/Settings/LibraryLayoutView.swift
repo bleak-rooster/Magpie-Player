@@ -11,7 +11,7 @@ struct LibraryLayoutView: View {
         switch row {
         case .finds: "Shows once your Finds folder is set up"
         case .requests: "Shows when Lidarr is connected"
-        case .discover: "Shows once Discover is set up in Settings \u{203A} New music"
+        case .discover: "Shows once you sign in to Aurral in Settings"
         default: nil
         }
     }

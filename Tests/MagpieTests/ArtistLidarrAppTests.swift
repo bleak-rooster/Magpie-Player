@@ -164,7 +164,7 @@ private let twinB = MBID("55555555-5555-4555-8555-555555555555")!
         let p = try #require(line.presentation)
         #expect(p.text == "Not in Lidarr" && p.action == nil && p.hint == .turnOnChanges)
         #expect(ArtistLidarrPresentation.hintText(p.hint!)
-                == "Turn on Allow Magpie to change your library in Settings \u{203A} New music to add more.")
+                == "Turn on Allow Magpie to change your library in Settings \u{203A} Lidarr to add more.")
         await line.requestAdd()
         #expect(line.addFlow == nil)
         #expect(lidarrWrites.isEmpty)

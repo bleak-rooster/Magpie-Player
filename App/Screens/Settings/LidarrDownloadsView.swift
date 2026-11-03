@@ -11,7 +11,7 @@ enum LidarrDownloadsCopy {
     static let empty = "Nothing downloading"
     static let emptyDetail = "Everything Lidarr is downloading shows here, whoever asked for it."
     static let unreachable = "Couldn't reach Lidarr. Trying again\u{2026}"
-    static let changesOff = "Turn on \u{201C}Allow Magpie to change your library\u{201D} in New music to restart downloads."
+    static let changesOff = "Turn on \u{201C}Allow Magpie to change your library\u{201D} on the Lidarr page to restart downloads."
     static let restart = "Restart"
     static let restartAll = "Restart all stalled and failed"
     static let footer = "Restart drops the copy, stops Lidarr picking that same copy again, and looks for another. "

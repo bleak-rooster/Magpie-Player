@@ -2,7 +2,8 @@ import ListenBrainzKit
 import MagpieCore
 import SwiftUI
 
-/// Settings › Scrobbling (spec §7): Count plays, where plays go (Navidrome and/or ListenBrainz directly), when a
+/// Settings › Accounts & Servers › ListenBrainz (round 13 item 14; was Settings › Scrobbling, spec §7): the token
+/// first, then Count plays, where plays go (Navidrome and/or ListenBrainz directly), when a
 /// play counts, and the ListenBrainz token.
 struct ScrobblingSettingsView: View {
     @Environment(AppModel.self) private var model
@@ -22,9 +23,12 @@ struct ScrobblingSettingsView: View {
 
     var body: some View {
         Form {
+            listenBrainzToken   // round 13 item 14: the ListenBrainz page leads with its account (the token)
             Section {
                 Toggle("Count plays", isOn: Binding(get: { model.countPlays }, set: { model.setCountPlays($0) }))
                     .accessibilityIdentifier("settings-count-plays")
+            } header: {
+                Text("Scrobbling")
             } footer: {
                 Text(Self.countPlaysFooter)
             }
@@ -33,9 +37,8 @@ struct ScrobblingSettingsView: View {
                 threshold
             }
             .disabled(!model.countPlays)
-            listenBrainzToken
         }
-        .navigationTitle("Scrobbling")
+        .navigationTitle(SettingsCopy.listenBrainz)
         .navigationBarTitleDisplayMode(.inline)
     }
 
@@ -133,7 +136,7 @@ struct ScrobblingSettingsView: View {
                 if let tokenError { Text(tokenError).font(.footnote) }
             }
         } header: {
-            Text("ListenBrainz")
+            Text("Token")
         } footer: {
             Text("Optional. Kept in your Keychain and only sent to ListenBrainz.")
         }

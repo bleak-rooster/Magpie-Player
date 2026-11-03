@@ -56,12 +56,49 @@ import UIKit
         #expect(AboutView.version.hasPrefix("\(AppModel.marketingVersion) ("))
     }
 
-    /// Finish setting up's Review and Try's Open Settings land on Requests; with only Finds left, on Finds set-up.
+    /// Finish setting up's Review and Try's Open Settings land on the Lidarr page; with only Finds left, on Finds
+    /// set-up.
     @Test func entryPointsOpenTheirPage() {
-        #expect(SettingsPage.finishSettingUp(.changesOff) == [.requests])
-        #expect(SettingsPage.finishSettingUp(.addressNotAllowed) == [.requests])
-        #expect(SettingsPage.finishSettingUp(.available(.standard)) == [.requests, .findsSetup])
-        #expect(SettingsPage.topLevel(lidarrConnected: false) == [.account, .playback, .downloads, .scrobbling, .homeAndLibrary, .appearance, .requests, .about])
+        #expect(SettingsPage.finishSettingUp(.changesOff) == [.lidarr])
+        #expect(SettingsPage.finishSettingUp(.addressNotAllowed) == [.lidarr])
+        #expect(SettingsPage.finishSettingUp(.available(.standard)) == [.lidarr, .findsSetup])
+    }
+
+    /// Round 13 item 14: "Accounts & Servers" near the top, one row per service in the owner's order, each opening
+    /// that service's page; the preferences after it. The old rows (Account & Server, New music, Scrobbling, and
+    /// Downloads in Lidarr) are gone from the top level.
+    @Test func accountsAndServersFirst() {
+        #expect(SettingsCopy.accountsAndServers == "Accounts & Servers")
+        #expect(SettingsPage.accountsAndServers == [.account, .lidarr, .aurral, .listenBrainz])
+        #expect(SettingsPage.topLevel == [.account, .lidarr, .aurral, .listenBrainz,
+                                          .playback, .downloads, .homeAndLibrary, .appearance, .about])
+        #expect(SettingsPage.accountsAndServers.map(SettingsView.identifier)
+                == ["settings-account", "settings-lidarr-account", "settings-aurral", "settings-listenbrainz"])
+        #expect([SettingsCopy.navidrome, SettingsCopy.lidarr, SettingsCopy.aurral, SettingsCopy.listenBrainz]
+                == ["Navidrome", "Lidarr", "Aurral", "ListenBrainz"])
+    }
+
+    /// Round 13 item 14: the ListenBrainz row says whether there's a token and where plays go.
+    @Test func listenBrainzSummary() {
+        #expect(SettingsSummaries.listenBrainz(hasToken: false, rejected: false, scrobbling: "Navidrome \u{00B7} 50%")
+                == SettingsSummary("No token"))
+        #expect(SettingsSummaries.listenBrainz(hasToken: true, rejected: false, scrobbling: "Off")
+                == SettingsSummary("Token saved \u{00B7} Plays off"))
+        #expect(SettingsSummaries.listenBrainz(hasToken: true, rejected: true, scrobbling: "Off")
+                == SettingsSummary("Token not accepted", symbol: "exclamationmark.triangle"))
+    }
+
+    /// Round 13 item 14: Navidrome's page says what each library is for.
+    @Test func libraryRoles() {
+        let role = { (id: Int, listed: [Int]?) in
+            AccountCopy.libraryRole(id, main: 1, listed: listed, finds: 3, discover: [2])
+        }
+        #expect(role(1, [1, 4]) == "Main library")
+        #expect(role(2, [1, 4]) == "Discover")
+        #expect(role(3, [1, 4]) == "Finds")
+        #expect(role(4, [1, 4]) == "Shown")
+        #expect(role(5, [1, 4]) == "Not shown")
+        #expect(role(5, nil) == "Shown", "nothing listed: every library shows")
     }
 
     /// Signed in to a long plain-http public address (the "Not encrypted" warning row) with Lidarr connected, and
@@ -98,11 +135,12 @@ import UIKit
         defer { window.isHidden = true }
         let list = try #require(Self.scrollView(in: sheet.view), "the top level is a list")
         let rows = (0..<list.numberOfSections).reduce(0) { $0 + list.numberOfItems(inSection: $1) }
-        #expect(rows == 9, "eight pages, and Downloads in Lidarr while Lidarr is connected (Y4)")
+        #expect(rows == 9, "round 13: four accounts and servers, then five pages")
         let visible = list.bounds.height - list.adjustedContentInset.top - list.adjustedContentInset.bottom
         print("T21b settings: content \(list.contentSize.height) pt in \(visible) pt visible (sheet \(sheet.view.frame))")
         #expect(sheet.view.frame.height < 667, "measured inside the sheet, not the whole window")
         #expect(list.contentSize.height <= visible, "the top level scrolls at the default text size")
+        #expect(visible - list.contentSize.height >= 50, "round 13: room for one more two-line row (Z3's CarPlay)")
         try Self.render(window, "settings-375x667.png")
 
         let (axWindow, _) = try await Self.host(model, typeSize: .accessibility2)

@@ -69,8 +69,8 @@ struct ArtistLidarrPresentation: Equatable {
 
     static func hintText(_ hint: Hint) -> String {
         switch hint {
-        case .turnOnChanges: "Turn on Allow Magpie to change your library in Settings \u{203A} New music to add more."
-        case .setUpFirst: "Set up Magpie in Settings \u{203A} New music to add more."
+        case .turnOnChanges: "Turn on Allow Magpie to change your library in Settings \u{203A} Lidarr to add more."
+        case .setUpFirst: "Set up Magpie in Settings \u{203A} Lidarr to add more."
         }
     }
 
@@ -242,6 +242,6 @@ struct ArtistLidarrLine: View {
         }
         .frame(maxWidth: .infinity)
         .addFlow($line.addFlow) { line.finished($0) }
-        .sheet(isPresented: $showsSettings) { SettingsView(opening: [.requests]) }
+        .sheet(isPresented: $showsSettings) { SettingsView(opening: [.lidarr]) }
     }
 }

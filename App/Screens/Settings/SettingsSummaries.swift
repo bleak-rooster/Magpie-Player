@@ -12,7 +12,8 @@ struct SettingsSummary: Equatable {
     }
 }
 
-/// The summaries of the top-level rows whose pages don't own one (T21b). Row titles name no service (§5).
+/// The summaries of the top-level rows whose pages don't own one (T21b). Round 13: the Accounts & Servers rows name
+/// their service; the others name none (§5).
 enum SettingsSummaries {
     /// "homeserver · jordan"; a Local Network that is off, or a plain-http public address, shows instead.
     static func account(bases: [URL], username: String?, localNetworkDenied: Bool) -> SettingsSummary {
@@ -41,6 +42,19 @@ enum SettingsSummaries {
     @MainActor static func requests(_ model: AppModel) -> SettingsSummary {
         requests(connected: model.lidarr != nil, awaitingConsent: model.lidarrAwaitingConsent, finds: model.findsStatus,
                  offline: model.isOffline)
+    }
+
+    /// Round 13 item 14, the ListenBrainz row (one line): the token, and "plays off" when plays aren't counted; a
+    /// refused token shows instead, with its symbol (D3). Where plays go is on the page.
+    static func listenBrainz(hasToken: Bool, rejected: Bool, scrobbling: String) -> SettingsSummary {
+        if hasToken, rejected { return SettingsSummary("Token not accepted", symbol: "exclamationmark.triangle") }
+        return SettingsSummary((hasToken ? "Token saved" : "No token") + (scrobbling == "Off" ? " \u{00B7} Plays off" : ""))
+    }
+
+    @MainActor static func listenBrainz(_ model: AppModel) -> SettingsSummary {
+        listenBrainz(hasToken: model.hasListenBrainzToken, rejected: model.listenBrainzRejected,
+                     scrobbling: AppModel.scrobblingSummary(model.preferences.scrobbling, countPlays: model.countPlays,
+                                                            hasToken: model.hasListenBrainzToken))
     }
 
     /// The character and the accent, "Signature · Sheen".
@@ -78,6 +92,35 @@ struct SettingsRow: View {
         } icon: {
             Image(systemName: symbol)
         }
+    }
+}
+
+/// Round 13 item 14: an Accounts & Servers row, on one line (the service, then its summary at the trailing edge), so
+/// the four of them and the pages below still fit 375 × 667 (T21b). A warning carries its symbol (D3).
+struct SettingsServiceRow: View {
+    let title: String
+    let symbol: String
+    let summary: SettingsSummary
+
+    var body: some View {
+        Label {
+            HStack(spacing: 8) {
+                Text(title).layoutPriority(1)
+                Spacer(minLength: 4)
+                HStack(spacing: 4) {
+                    if let warning = summary.symbol { Image(systemName: warning).accessibilityHidden(true) }
+                    Text(summary.text)
+                }
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            }
+        } icon: {
+            Image(systemName: symbol)
+        }
+        .frame(minHeight: 32)
+        .accessibilityElement(children: .combine)
     }
 }
 
