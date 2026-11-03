@@ -157,8 +157,7 @@ public struct AurralClient: Sendable, CustomDebugStringConvertible, CustomReflec
     /// The flows and the worker's progress, kept to the signed-in user's flows (Aurral shows an admin everyone's).
     public func status() async throws -> AurralStatus {
         let status = try AurralStatus.decode(try await ok(method: "GET", path: "api/playlists/status"))
-        guard let user = await session.user else { return status }
-        return status.scoped(to: user)
+        return status.scoped(to: await session.user)   // Z1 fix M3: no user, no flows
     }
 
     /// Every flow song Aurral knows. Nil when this Aurral has no such route (404): tolerated.

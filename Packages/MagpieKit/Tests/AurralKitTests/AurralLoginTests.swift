@@ -139,13 +139,81 @@ import Testing
     /// A network failure while logging in again is not a refused password: the session stays usable.
     @Test func networkFailureDuringReloginKeepsTheSession() async throws {
         let first = try await signIn()
-        let session = AurralSession(username: StubAurral.defaultUsername, password: StubAurral.defaultPassword, login: first)
+        let clock = Clock()
+        let session = AurralSession(username: StubAurral.defaultUsername, password: StubAurral.defaultPassword, login: first,
+                                    now: clock.now)
         stub.expireAllSessions()
         stub.setLoginDown(true)
         await #expect(throws: URLError.self) { _ = try await client(session).status() }
         #expect(await !session.needsSignIn)
         stub.setLoginDown(false)
+        clock.advance(31)   // Z1 fix M2: a failed login waits 30 s before the next
         _ = try await client(session).status()
+    }
+
+    /// A settable clock for the session.
+    final class Clock: @unchecked Sendable {
+        private let lock = OSAllocatedUnfairLock(initialState: Date(timeIntervalSince1970: 1_800_000_000))
+        var now: @Sendable () -> Date { { [lock] in lock.withLock { $0 } } }
+        func advance(_ seconds: TimeInterval) { lock.withLock { $0 += seconds } }
+    }
+
+    /// Z1 fix M2: after a 429 no login is tried for 15 minutes, and after a failed one for 30 s, however often the
+    /// status is polled; the call fails at once.
+    @Test func backsOffAfterRateLimitAndFailures() async throws {
+        let first = try await signIn()
+        let clock = Clock()
+        let session = AurralSession(username: StubAurral.defaultUsername, password: StubAurral.defaultPassword, login: first,
+                                    now: clock.now)
+        let client = client(session)
+        stub.expireAllSessions()
+        stub.setLoginRateLimited(true)
+        let before = stub.loginCount
+        await #expect(throws: AurralError.rateLimited) { _ = try await client.status() }
+        for _ in 0..<5 {   // the 5-second poll
+            clock.advance(5)
+            await #expect(throws: AurralError.rateLimited) { _ = try await client.status() }
+        }
+        #expect(stub.loginCount - before == 1, "one login, then it waits")
+        #expect(await !session.needsSignIn, "a 429 isn't a refused password")
+        stub.setLoginRateLimited(false)
+        clock.advance(15 * 60)
+        _ = try await client.status()
+        #expect(stub.loginCount - before == 2)
+        // Network failures: one try per 30 s.
+        stub.expireAllSessions()
+        stub.setLoginDown(true)
+        let again = stub.loginCount
+        for _ in 0..<4 {
+            await #expect(throws: (any Error).self) { _ = try await client.status() }
+            clock.advance(5)
+        }
+        #expect(stub.loginCount - again == 1)
+    }
+
+    /// Z1 fix I1: a refused password is reported once, so the app can forget it (and the token) for good.
+    @Test func refusalIsReported() async throws {
+        let first = try await signIn()
+        let count = OSAllocatedUnfairLock(initialState: 0)
+        let session = AurralSession(username: StubAurral.defaultUsername, password: StubAurral.defaultPassword, login: first,
+                                    onRefused: { count.withLock { $0 += 1 } })
+        stub.setPassword("changed", for: StubAurral.defaultUsername)
+        stub.expireAllSessions()
+        await #expect(throws: AurralError.signInNeeded) { _ = try await client(session).status() }
+        await #expect(throws: AurralError.signInNeeded) { _ = try await client(session).status() }
+        #expect(count.withLock { $0 } == 1)
+        #expect(await session.currentToken == nil)
+    }
+
+    /// Z1 fix M3: with no signed-in user, the flows aren't handed out unscoped.
+    @Test func scopingFailsClosed() async throws {
+        stub.setFlows([.init(id: "a", name: "A", ownerUserId: 2)])
+        let token = stub.issueToken()
+        let session = AurralSession(username: StubAurral.defaultUsername, password: nil,
+                                    login: AurralLogin(token: token, expiresAt: nil, user: StubAurral.defaultUser))
+        let scoped = try await client(session).status()
+        #expect(scoped.flows.isEmpty, "an admin still sees only their own")
+        #expect(AurralStatus(flows: [AurralFlow(id: "a", name: "A")]).scoped(to: nil).flows.isEmpty)
     }
 
     // MARK: - Sign-out

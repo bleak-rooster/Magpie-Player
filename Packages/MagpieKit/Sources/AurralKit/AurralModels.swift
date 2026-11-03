@@ -136,9 +136,10 @@ public struct AurralStatus: Sendable, Equatable {
 
     /// Round 13: only `user`'s flows and their counts (Aurral shows an admin every user's flows; Magpie's playlists
     /// are the signed-in user's). Aurral's own progress (worker, operation queue, hint) is shared and stays.
-    public func scoped(to user: AurralUser) -> AurralStatus {
+    /// Fails closed: with no user (signed out meanwhile), no flows.
+    public func scoped(to user: AurralUser?) -> AurralStatus {
         var scoped = self
-        scoped.flows = flows.filter { $0.belongs(to: user) }
+        scoped.flows = user.map { user in flows.filter { $0.belongs(to: user) } } ?? []
         let ids = Set(scoped.flows.map(\.id))
         scoped.flowStats = flowStats.filter { ids.contains($0.key) }
         return scoped

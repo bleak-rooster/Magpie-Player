@@ -64,20 +64,31 @@ public actor AurralSession: CustomDebugStringConvertible {
     private var login: AurralLogin?
     private var renewing: Task<AurralLogin, Error>?
     private let onLogin: @Sendable (AurralLogin) -> Void
+    private let onRefused: @Sendable () -> Void
     private let now: @Sendable () -> Date
+    /// Z1 fix M2: no login before this (15 minutes after a 429, 30 s after a failed one), with the error to give.
+    private var backoff: (until: Date, error: Error)?
     /// The saved password was refused, or there is none: nothing more is tried until the owner signs in again.
     public private(set) var needsSignIn = false
 
-    /// `onLogin` is told each new login (the app saves it to the Keychain).
+    /// `onLogin` is told each new login (the app saves it to the Keychain); `onRefused`, once, that Aurral refused
+    /// the password (the app forgets it and the token, for good: Z1 fix I1). Without a password or a login there is
+    /// nothing to send: `needsSignIn` from the start, and no request.
     public init(username: String, password: String?, login: AurralLogin?,
                 onLogin: @escaping @Sendable (AurralLogin) -> Void = { _ in },
+                onRefused: @escaping @Sendable () -> Void = {},
                 now: @escaping @Sendable () -> Date = { Date() }) {
         self.username = username
         self.password = password
         self.login = login
         self.onLogin = onLogin
+        self.onRefused = onRefused
         self.now = now
+        self.needsSignIn = password == nil && login == nil
     }
+
+    static let rateLimitBackoff: TimeInterval = 15 * 60
+    static let failureBackoff: TimeInterval = 30
 
     public nonisolated var debugDescription: String { "AurralSession(\(username))" }
 
@@ -100,6 +111,7 @@ public actor AurralSession: CustomDebugStringConvertible {
             needsSignIn = true
             throw AurralError.signInNeeded
         }
+        if let backoff, now() < backoff.until { throw backoff.error }
         let username = username
         let task = Task { try await logIn(username, password) }
         renewing = task
@@ -107,12 +119,20 @@ public actor AurralSession: CustomDebugStringConvertible {
         do {
             let fresh = try await task.value
             login = fresh
+            backoff = nil
             onLogin(fresh)
             return fresh.token
         } catch AurralError.badLogin {
             needsSignIn = true
             login = nil
+            onRefused()
             throw AurralError.signInNeeded
+        } catch AurralError.rateLimited {
+            backoff = (now().addingTimeInterval(Self.rateLimitBackoff), AurralError.rateLimited)
+            throw AurralError.rateLimited
+        } catch {
+            backoff = (now().addingTimeInterval(Self.failureBackoff), error)
+            throw error
         }
     }
 
