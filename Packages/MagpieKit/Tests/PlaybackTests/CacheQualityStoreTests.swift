@@ -32,20 +32,41 @@ import MagpieCore
         let store = AudioStore(root: tmp, scope: "abc")
         let old = try await addCached(store, "s1")
         let incoming = tempFile(bytes: 300)
-        let new = try #require(try await store.replaceCache(songId: "s1", from: .opusMedium, with: incoming,
-                                                            quality: .original, fileExtension: "flac"))
+        let swap = try #require(try await store.replaceCache(songId: "s1", from: .opusMedium, with: incoming,
+                                                             quality: .original, fileExtension: "flac"))
+        let new = swap.entry
         #expect(new.kind == .cache && new.quality == .original && new.size == 300)
         #expect(new.fileName == AudioStore.fileName(songId: "s1", quality: .original, fileExtension: "flac"))
         #expect(await store.entry(songId: "s1") == new)
         let dir = store.directory
         #expect(FileManager.default.fileExists(atPath: dir.appending(path: new.fileName).path))
-        #expect(!FileManager.default.fileExists(atPath: dir.appending(path: old.fileName).path), "the old file goes")
         #expect(!FileManager.default.fileExists(atPath: incoming.path))
+        // Review M1: the old audio stays (its sidecar goes) until the caller knows playback doesn't hold it.
+        #expect(swap.oldFileName == old.fileName)
+        #expect(FileManager.default.fileExists(atPath: dir.appending(path: old.fileName).path))
+        #expect(!FileManager.default.fileExists(atPath: dir.appending(path: old.fileName + ".json").path))
+        await store.removeUnreferencedAudio(fileName: old.fileName)
+        #expect(!FileManager.default.fileExists(atPath: dir.appending(path: old.fileName).path), "the old file goes")
+        // A file an entry still names is never removed this way.
+        await store.removeUnreferencedAudio(fileName: new.fileName)
+        #expect(FileManager.default.fileExists(atPath: dir.appending(path: new.fileName).path))
         // A reload agrees: one entry, at the new quality.
         let reloaded = AudioStore(root: tmp, scope: "abc")
         await reloaded.load()
         #expect(await reloaded.entry(songId: "s1")?.quality == .original)
         #expect(await reloaded.entries().count == 1)
+    }
+
+    /// Killed before the old audio was removed: the next load finds it with no sidecar and no entry, and removes it.
+    @Test func anOldCopyLeftByACrashIsSweptOnLoad() async throws {
+        let store = AudioStore(root: tmp, scope: "abc")
+        let old = try await addCached(store, "s1")
+        _ = try #require(try await store.replaceCache(songId: "s1", from: .opusMedium, with: tempFile(bytes: 300),
+                                                     quality: .original, fileExtension: "flac"))
+        let reloaded = AudioStore(root: tmp, scope: "abc")
+        await reloaded.load()
+        #expect(!FileManager.default.fileExists(atPath: store.directory.appending(path: old.fileName).path))
+        #expect(await reloaded.entry(songId: "s1")?.quality == .original)
     }
 
     @Test func neverReplacesADownload() async throws {

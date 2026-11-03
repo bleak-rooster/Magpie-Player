@@ -103,7 +103,7 @@ final class DownloadManager {
     var partialProgress: [UUID: DownloadProgress] = [:]
     /// R1: runs whose bytes have arrived and are being stored (+Resume, a background launch waits for them).
     @ObservationIgnored var storing = 0
-    @ObservationIgnored private let network: any NetworkStatusProviding
+    @ObservationIgnored let network: any NetworkStatusProviding   // (+CacheQuality)
     @ObservationIgnored private let preferences: @MainActor () -> DownloadPreferences
     @ObservationIgnored let streamURL: @MainActor (Song, StreamQuality) -> URL?   // (+CacheQuality)
     @ObservationIgnored private let coverArtURL: @MainActor (String) -> URL?
@@ -184,6 +184,7 @@ final class DownloadManager {
     /// Loads the store, mirrors its files and queues the manual downloads left from the last run.
     func start() async {
         await store.load()
+        sweepCacheSwapDirectory()   // round 13 item 7: copies held when Magpie last stopped
         await refresh()
         loadPending()
         await reconcilePartials()   // R1: what the system kept across a relaunch, and partials no job wants

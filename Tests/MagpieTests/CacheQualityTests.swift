@@ -18,6 +18,14 @@ private let cell = NetworkStatus(isConnected: true, isCellular: true, isConstrai
     func makeManager(_ prefs: DownloadPreferences = .defaultValue, network: NetworkStatus = .wifi,
                      offline: Bool = false) async -> (DownloadManager, FakeFetcher, FakeNetwork) {
         let fetcher = FakeFetcher(directory: tmp.appending(path: "fetched"))
+        // The type a server sends for each format asked for (the original here is an MP3).
+        fetcher.mimeType { url in
+            guard url.path.hasSuffix("/rest/stream") else { return "image/jpeg" }
+            let query = url.query ?? ""
+            if query.contains("format=opus") { return "audio/ogg" }
+            if query.contains("format=aac") { return "audio/aac" }
+            return "audio/mpeg"
+        }
         let net = FakeNetwork(network)
         let store = AudioStore(root: tmp, scope: "abc")
         let manager = DownloadManager(
@@ -220,7 +228,6 @@ private let cell = NetworkStatus(isConnected: true, isCellular: true, isConstrai
         #expect(m.cacheRefreshSongId == "s1")
         f.release()
         await m.settled()
-        #expect(f.maxInFlight == 1 || fetches(f).count == before + 1)
         #expect(await m.store.entry(songId: "s1")?.quality == .original)
         #expect(await m.store.entry(songId: "s2")?.quality == .opusMedium, "s2 waits for its own next play")
         // Once the first is done, the next play of s2 fetches it.
@@ -274,4 +281,148 @@ private let cell = NetworkStatus(isConnected: true, isCellular: true, isConstrai
         #expect(m.pendingCacheSwapSongId == nil)
         #expect(await m.store.entry(songId: "s1") == nil)
     }
+
+    // MARK: - Review fixes
+
+    /// I1: Wi-Fi → mobile quality → Wi-Fi while the first fetch is still unwinding. The stopped fetch's clean-up never
+    /// touches the new fetch: it stays the one replacement under way, and lands.
+    @Test func aStoppedFetchNeverClearsTheNextOne() async throws {
+        let (m, f, _) = await makeManager()
+        await cache(m, "s1", "s2")
+        let before = fetches(f).count
+        f.ignoresCancellation = true   // the stopped fetch keeps going until released, like a slow unwind
+        f.hold(after: before)
+        m.refreshCacheQuality(songId: "s1", target: .original)   // A
+        #expect(await eventually { f.inFlight == 1 })
+        m.cacheTargetChanged(.opusMedium)                        // B: A stops
+        m.refreshCacheQuality(songId: "s1", target: .original)   // A again: a new fetch
+        #expect(await eventually { f.inFlight == 2 })
+        let gate = CheckGate()
+        m.loadPlayableForCheck = { _ in await gate.wait(); return true }
+        f.release()
+        #expect(await eventually { f.inFlight == 0 })
+        for _ in 0..<50 { await Task.yield() }
+        // The stopped one has unwound; the new one waits in its check.
+        #expect(m.cacheRefreshSongId == "s1", "the new fetch is still the one under way")
+        m.refreshCacheQuality(songId: "s2", target: .original)
+        for _ in 0..<20 { await Task.yield() }
+        #expect(fetches(f).count == before + 2, "still one at a time")
+        gate.open()
+        await m.settled()
+        #expect(await m.store.entry(songId: "s1")?.quality == .original)
+        #expect(m.cacheRefreshSongId == nil && m.pendingCacheSwapSongId == nil)
+    }
+
+    /// Owner ruling: on mobile data a cached copy better than the mobile target plays as it is (no data spent).
+    @Test func onMobileDataABetterCopyIsKept() async {
+        var prefs = DownloadPreferences.defaultValue; prefs.overMobileData = true
+        let (m, f, net) = await makeManager(prefs)
+        await cache(m, "lossless", quality: .original)
+        await cache(m, "aac256", quality: .aacHigh)
+        await cache(m, "same", quality: .aacMedium)
+        net.status = cell
+        let before = f.urls.count
+        m.refreshCacheQuality(songId: "lossless", target: .opusMedium)
+        await m.settled()
+        m.refreshCacheQuality(songId: "aac256", target: .opusMedium)
+        await m.settled()
+        m.refreshCacheQuality(songId: "same", target: .opusMedium)   // same rate, another format: no gain
+        await m.settled()
+        #expect(f.urls.count == before)
+        #expect(await m.store.entry(songId: "lossless")?.quality == .original)
+        #expect(await m.store.entry(songId: "aac256")?.quality == .aacHigh)
+        #expect(await m.store.entry(songId: "same")?.quality == .aacMedium)
+    }
+
+    /// On mobile data a worse copy is replaced: a lower rate, or a transcode when the target is the original.
+    @Test func onMobileDataAWorseCopyIsReplaced() async {
+        var prefs = DownloadPreferences.defaultValue; prefs.overMobileData = true
+        let (m, _, net) = await makeManager(prefs)
+        await cache(m, "low", quality: .mp3Low)
+        await cache(m, "lossy", quality: .aacHigh)
+        net.status = cell
+        m.refreshCacheQuality(songId: "low", target: .aacHigh)
+        await m.settled()
+        #expect(await m.store.entry(songId: "low")?.quality == .aacHigh)
+        m.refreshCacheQuality(songId: "lossy", target: .original)
+        await m.settled()
+        #expect(await m.store.entry(songId: "lossy")?.quality == .original)
+    }
+
+    /// On Wi-Fi the copy matches the Wi-Fi target exactly, even when that means a smaller file.
+    @Test func onWiFiTheTargetIsMatchedExactly() async {
+        let (m, _, _) = await makeManager()
+        await cache(m, "s1", quality: .original)
+        m.refreshCacheQuality(songId: "s1", target: .opusMedium)
+        await m.settled()
+        #expect(await m.store.entry(songId: "s1")?.quality == .opusMedium)
+    }
+
+    /// M2: a check that can't say yes (AVFoundation fails for another reason) keeps the old copy.
+    @Test func aCheckThatCannotConfirmKeepsTheOldCopy() async {
+        let (m, _, _) = await makeManager()
+        await cache(m, "s1")
+        m.loadPlayableForCheck = { _ in throw URLError(.timedOut) }
+        m.refreshCacheQuality(songId: "s1", target: .original)
+        await m.settled()
+        #expect(await m.store.entry(songId: "s1")?.quality == .opusMedium)
+    }
+
+    /// M3: the server sent another format than asked for (transcoding off): it isn't kept under the asked-for label.
+    @Test func aBodyInAnotherFormatIsNotKept() async {
+        let (m, f, _) = await makeManager()
+        await cache(m, "s1", quality: .aacLow)
+        f.mimeType { $0.path.hasSuffix("/rest/stream") ? "audio/flac" : "image/jpeg" }
+        m.refreshCacheQuality(songId: "s1", target: .opusMedium)
+        await m.settled()
+        #expect(await m.store.entry(songId: "s1")?.quality == .aacLow)
+        // Asked for the original, any audio is the original.
+        m.refreshCacheQuality(songId: "s1", target: .original)
+        await m.settled()
+        #expect(await m.store.entry(songId: "s1")?.quality == .original)
+    }
+
+    /// M1: the song enters playback while its copy is swapped: the new copy is in, but the old file stays until
+    /// playback lets go of it.
+    @Test func theOldFileStaysWhilePlaybackMightHoldIt() async throws {
+        let (m, _, _) = await makeManager()
+        await cache(m, "s1")
+        let old = try #require(m.localFiles["s1"])
+        var checks = 0
+        var inUse = true
+        m.isSongInUse = { _ in checks += 1; return checks > 1 && inUse }   // free at the check, held right after
+        m.refreshCacheQuality(songId: "s1", target: .original)
+        await m.settled()
+        #expect(await m.store.entry(songId: "s1")?.quality == .original)
+        #expect(m.localFiles["s1"] != old)
+        #expect(FileManager.default.fileExists(atPath: old.path), "kept while playback may hold it")
+        inUse = false
+        m.applyCacheSwap(target: .original)
+        await m.settled()
+        #expect(!FileManager.default.fileExists(atPath: old.path))
+    }
+
+    /// M5: a copy held when Magpie was killed doesn't stay: the holding folder is emptied at start.
+    @Test func heldCopiesFromALastRunAreSwept() async throws {
+        let (m, _, _) = await makeManager()
+        await cache(m, "s1")
+        m.isSongInUse = { _ in true }
+        m.refreshCacheQuality(songId: "s1", target: .original)
+        await m.settled()
+        let held = try #require(m.cacheRefresh.held?.file)
+        #expect(FileManager.default.fileExists(atPath: held.path))
+        let again = DownloadManager(store: AudioStore(root: tmp, scope: "abc"), fetcher: FakeFetcher(),
+                                    network: FakeNetwork(.wifi), preferences: { .defaultValue }, url: { _, _ in nil },
+                                    coverURL: { _ in nil }, notifications: NotificationCenter())
+        await again.start()
+        #expect(!FileManager.default.fileExists(atPath: held.path))
+    }
+}
+
+/// Holds an async check until `open()`.
+final class CheckGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var isOpen = false
+    func open() { lock.withLock { isOpen = true } }
+    func wait() async { while !lock.withLock({ isOpen }) { try? await Task.sleep(for: .milliseconds(5)) } }
 }

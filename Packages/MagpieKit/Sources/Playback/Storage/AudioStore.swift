@@ -200,6 +200,13 @@ public actor AudioStore {
     @discardableResult
     public func replace(songId: String, with temporaryFile: URL, quality: StreamQuality, fileExtension: String,
                         downloadsLimit: Int64? = nil) throws -> AudioEntry {
+        try replace(songId: songId, with: temporaryFile, quality: quality, fileExtension: fileExtension,
+                    downloadsLimit: downloadsLimit, keepOldAudio: false)
+    }
+
+    /// `keepOldAudio`: the old copy's sidecar goes but its audio stays (`replaceCache`).
+    private func replace(songId: String, with temporaryFile: URL, quality: StreamQuality, fileExtension: String,
+                         downloadsLimit: Int64? = nil, keepOldAudio: Bool) throws -> AudioEntry {
         let fm = FileManager.default
         defer { try? fm.removeItem(at: temporaryFile) }
         try ensureReady()
@@ -229,17 +236,27 @@ public actor AudioStore {
         var entry = old
         entry.quality = quality; entry.fileName = name; entry.size = size; entry.downloadedAt = now()
         try store(entry)
-        if name != old.fileName { deleteFiles(of: old) }
+        if name != old.fileName {
+            if keepOldAudio { try? FileManager.default.removeItem(at: sidecarURL(old.fileName)) } else { deleteFiles(of: old) }
+        }
         return entry
+    }
+
+    /// A cache swap's result: the new entry, and the old audio file left for the caller to remove.
+    public struct CacheReplacement: Sendable, Equatable {
+        public var entry: AudioEntry
+        /// The old copy's audio, kept (its sidecar is gone) until playback can't be holding it; nil when the name
+        /// didn't change. `removeUnreferencedAudio` removes it; a load after a crash sweeps it as an orphan.
+        public var oldFileName: String?
     }
 
     /// Round 13 item 7: swaps a cached copy for one at the right quality. Only a cache entry still at `from` is
     /// replaced (checked here, in one step with the swap); a download, or an entry that changed or went meanwhile, is
-    /// left alone and `temporaryFile` is discarded (nil). Like `replace`, the new file is stored before the old one
-    /// is deleted.
+    /// left alone and `temporaryFile` is discarded (nil). The new file is stored first; the old audio stays for the
+    /// caller to remove once playback can't be holding it (review M1).
     @discardableResult
     public func replaceCache(songId: String, from: StreamQuality, with temporaryFile: URL, quality: StreamQuality,
-                             fileExtension: String) throws -> AudioEntry? {
+                             fileExtension: String) throws -> CacheReplacement? {
         try ensureReady()
         guard Self.allowedExtensions.contains(fileExtension) else {
             try? FileManager.default.removeItem(at: temporaryFile)
@@ -249,7 +266,15 @@ public actor AudioStore {
             try? FileManager.default.removeItem(at: temporaryFile)
             return nil
         }
-        return try replace(songId: songId, with: temporaryFile, quality: quality, fileExtension: fileExtension)
+        let entry = try replace(songId: songId, with: temporaryFile, quality: quality, fileExtension: fileExtension,
+                                keepOldAudio: true)
+        return CacheReplacement(entry: entry, oldFileName: entry.fileName == old.fileName ? nil : old.fileName)
+    }
+
+    /// Removes a stored audio file no entry names any more (a swapped-out cache copy). Anything else is left alone.
+    public func removeUnreferencedAudio(fileName: String) {
+        guard Self.isHashedName(fileName), !index.entries.values.contains(where: { $0.fileName == fileName }) else { return }
+        try? FileManager.default.removeItem(at: directory.appending(path: fileName))
     }
 
     // MARK: - Reasons, plays and removal
