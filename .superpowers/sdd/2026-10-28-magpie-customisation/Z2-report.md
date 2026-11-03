@@ -93,3 +93,27 @@ scan race).
 - Not changed (owned elsewhere): pull to refresh on Requests and Downloads in Lidarr (Settings) and Finds.
 - A build-12 cache may hold a Playlists shelf with the flow playlists in it (saved after a flip); it shows until the
   first read replaces it (seconds now).
+
+## Fix round (Z2-review.md: 0C/2I + minors)
+- RED 1212a79: statusWithNoFlowsKeepsDiscover, noFlowsDuringARunKeepsDiscover, flowRenamedBeforeItsPlaylist failed
+  (Discover nil, pl-dw in Playlists); playlistLeavesDiscoverOnlyOnPositiveEvidence and homeUpdatesWhenSlowAurralAnswers
+  (M7, end to end) passed as guards.
+- b4ce7a1 fixes:
+  - I1 `keptDiscoverPlaylists`: a known Discover playlist that no flow is named as now is read too, and leaves only when
+    the status lists flows, its songs read, and they are neither a flow's (jobs) nor Aurral's copies. No flows / renamed
+    flow / unread songs change nothing; kept flow = the one its songs belong to, else the one it had, else none
+    (`discoverFlow` nil, no Refresh Flow).
+  - I2 Downloads in Lidarr: `showsUnreachable(after:before:)` (cancellation keeps the state) + `RefreshSafety.run`.
+  - M1 `forgetReads` cancels and clears the shared read. M2 every `refreshDiscover` goes through one shared read
+    (`performDiscoverRead` is the body; a forced call follows the running one). M3 the wait polls and stops on
+    cancellation, no lingering waiter. M4 `failing(_:noticeTo:)`: "Couldn't refresh this page." notice on a real
+    failure with content shown. M5 `HomeFeed.discard([.discover])` from `forgetDiscoverReads` (screen + file).
+    M6 noted in D75. M7 tests clear the Aurral delay in defer.
+  - Tests for each (Round13HomeTests minors, Round13RefreshTests I2). Note: I2/minor tests were written with the fix,
+    not strictly RED first.
+- Decisions renumbered D75–D78 (after Z1's D74).
+- Merged v0.0.1-custom bb1e2e4 (Z1): kept Z1's account guards and job filter, my `keptDiscoverPlaylists`, dropped Z1's
+  `unread`; tests moved to user login (`aurralSignedOut` = changed password + expired sessions). DerivedData had to be
+  cleared once (stale AurralKit module after the merge).
+- Affected suites after merge: 96 tests in 6 suites passed. check-writes / check-release OK.
+- Full suite after merge (own sim, MAGPIE_IT=1, app uninstalled first): 1059 tests in 112 suites passed; UI 32 executed, 0 failures, 3 skipped.
