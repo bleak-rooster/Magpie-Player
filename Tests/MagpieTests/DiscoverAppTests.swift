@@ -53,7 +53,7 @@ final class DiscoverNavidrome: @unchecked Sendable {
         "pl-mine": ("Discover Weekly", ["m-x", "m-y"]),
         "pl-empty": ("Trending Mix", []),
     ]
-    let songs: [String: Entry] = [
+    var songs: [String: Entry] = [
         "a-lullaby": Entry(id: "a-lullaby", title: "Lullaby", artist: "Low", duration: 251, mbid: rec, library: 2),
         "a-words": Entry(id: "a-words", title: "Words", artist: "Low", duration: 200, mbid: nil, library: 2),
         "a-other": Entry(id: "a-other", title: "Unknown Song", artist: "Nobody", duration: 180, mbid: nil, library: 2),
