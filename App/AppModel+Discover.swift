@@ -143,6 +143,7 @@ extension AppModel {
 
     private func forgetDiscoverReads() {
         discover.forgetReads()
+        homeFeedSlot?.discard([.discover])   // Round 13 Z2: another Aurral (or user) never shows the last one's shelf
         if let scope = navidromeScope {
             appDefaults.removeObject(forKey: Self.discoverPlaylistsKey(scope))
             appDefaults.removeObject(forKey: Self.discoverLibrariesKey(scope))
@@ -176,7 +177,8 @@ extension AppModel {
     /// the flow's songs (fix I1, `DiscoverRules.confirmedFlowPlaylists`); a playlist that can't be read keeps what it
     /// was. Then Aurral's library is read again (fix I2). At most every 30 s unless `force`. Offline, or without Aurral,
     /// nothing is asked. A failure keeps what was read before.
-    func refreshDiscover(force: Bool = false) async {
+    /// Round 13 Z2: only through `refreshDiscover(force:)` / `refreshDiscover(waitingAtMost:)`, one read at a time.
+    func performDiscoverRead(force: Bool = false) async {
         guard let client = aurralClient, session != nil, !isOffline, let scope = navidromeScope else { return }
         if !force, let at = discover.statusReadAt, discover.now().timeIntervalSince(at) < 30, !discover.playlists.isEmpty { return }
         let account = discover.connection?.account
@@ -191,23 +193,25 @@ extension AppModel {
         if let jobs { discover.jobs = jobs.filter { $0.flowId.map(flowIds.contains) ?? false } }
         let before = discoverPlaylistIds
         let candidates = DiscoverRules.flowPlaylists(flows: status.flows, playlists: all)
-        var entries: [String: [Song]] = [:], unread = Set<String>()
-        for candidate in candidates {
-            if let (_, songs) = try? await request({ [id = candidate.playlist.id] in try await $0.playlist(id: id) }) {
-                entries[candidate.playlist.id] = songs
-            } else {
-                unread.insert(candidate.playlist.id)
+        var entries: [String: [Song]] = [:]
+        // Round 13 Z2: the known Discover playlists no flow is named as now are read too (`discoverPlaylistsToRead`).
+        for id in Self.discoverPlaylistsToRead(candidates: candidates, before: before, all: all) {
+            if let (_, songs) = try? await request({ try await $0.playlist(id: id) }) {
+                entries[id] = songs
             }
         }
         guard navidromeScope == scope, discover.connection?.account == account else { return }
-        let confirmed = DiscoverRules.confirmedFlowPlaylists(candidates, entries: entries, jobs: discover.jobs,
-                                                             aurralSongIds: knownAurralSongIds)
-        let confirmedIds = Set(confirmed.map(\.playlist.id))
-        let matched = candidates.filter { confirmedIds.contains($0.playlist.id) || (unread.contains($0.playlist.id) && before.contains($0.playlist.id)) }
+        // Round 13 Z2: a read that can't confirm a playlist (jobs unreadable, a run under way, a playlist that didn't
+        // read, no flows listed, a flow renamed first) never takes it out of Discover and into Playlists.
+        let matched = keptDiscoverPlaylists(flows: status.flows, all: all, candidates: candidates, entries: entries,
+                                            before: before)
         discover.playlists = matched
         appDefaults.set(matched.map(\.playlist.id), forKey: Self.discoverPlaylistsKey(scope))
         for playlist in matched { noteFlowSongs(entries[playlist.playlist.id] ?? []) }
-        if Set(matched.map(\.playlist.id)) != before { libraryEdits.playlistsRevision += 1 }   // Playlists read again
+        if Set(matched.map(\.playlist.id)) != before {
+            libraryEdits.playlistsRevision += 1   // Playlists read again
+            homeFeedSlot?.sectionsChanged([.discover, .playlists])   // Round 13 Z2: and Home's two shelves
+        }
         await refreshAurralLibrary(entries: matched.flatMap { entries[$0.playlist.id] ?? [] })
     }
 
@@ -244,7 +248,7 @@ extension AppModel {
     /// server's playlists that were Discover's last time.
     func discoverPlaylists() async throws -> [Playlist] {
         guard aurralSetUp, !isOffline else { return [] }
-        await refreshDiscover()
+        await refreshDiscover(waitingAtMost: Self.discoverWait)   // Round 13 Z2: never held up by a slow Aurral
         if !discover.playlists.isEmpty { return discover.playlists.map(\.playlist) }
         let ids = discoverPlaylistIds
         guard !ids.isEmpty else { return [] }
@@ -253,7 +257,8 @@ extension AppModel {
 
     /// The flow a Discover playlist belongs to, if known.
     func discoverFlow(playlistId: String) -> AurralFlow? {
-        discover.playlists.first { $0.playlist.id == playlistId }?.flow
+        // Round 13 Z2: a playlist kept without a known flow (`keptDiscoverPlaylists`) has none: no Refresh Flow.
+        discover.playlists.first { $0.playlist.id == playlistId }?.flow.nonEmpty
     }
 
     // MARK: - A Discover playlist's page

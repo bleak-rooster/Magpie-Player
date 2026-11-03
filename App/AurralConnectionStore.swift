@@ -122,6 +122,8 @@ struct AurralConnectionStore: AurralConnectionStoring {
     @ObservationIgnored var now: () -> Date = { Date() }
     /// A Refresh Flow just sent, per flow, until Aurral's status speaks for it (`AppModel.noteStatus`).
     var refreshing: [String: RefreshLatch] = [:]
+    /// Round 13 Z2: the read of Aurral under way, shared by every screen that asks (`refreshDiscover(waitingAtMost:)`).
+    @ObservationIgnored var refreshTask: (id: UUID, task: Task<Void, Never>)?
     /// Every song in Aurral's library, as last read this session (fix I2; saved per account too).
     var aurralSongIds: Set<String> = []
     /// Each song's library-copy lookup this session (fix M1).
@@ -187,5 +189,7 @@ struct AurralConnectionStore: AurralConnectionStoring {
         refreshing = [:]
         aurralSongIds = []
         lookups = [:]
+        refreshTask?.task.cancel()   // Round 13 Z2: the next account's first ask starts its own read
+        refreshTask = nil
     }
 }

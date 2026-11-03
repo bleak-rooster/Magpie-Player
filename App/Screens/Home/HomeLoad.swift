@@ -68,6 +68,19 @@ struct HomeLoad: Equatable {
         key = want
     }
 
+    /// Round 13 Z2: `sections` count as not read (what they show changed elsewhere): the next read asks for them
+    /// again. Their shelves stay on screen meanwhile.
+    mutating func forget(_ sections: Set<HomeSection>) {
+        done.subtract(sections)
+    }
+
+    /// Round 13 Z2 (review M5): `sections`' shelves go too (they belong to someone else now) and are read again.
+    mutating func drop(_ sections: Set<HomeSection>) {
+        for section in sections { found[section] = nil }
+        done.subtract(sections)
+        failed.subtract(sections)
+    }
+
     /// Whether a read for `want` would still ask for something: a section that failed, or one not read yet (P5).
     func needsRead(_ want: Key) -> Bool { !read(for: want, fresh: false).sections.isEmpty }
 

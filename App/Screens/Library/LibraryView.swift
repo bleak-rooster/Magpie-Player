@@ -11,6 +11,7 @@ struct LibraryView: View {
     @Environment(AppModel.self) private var model
     @State private var recent: Loadable<[Album]> = .loading
     @State private var showsSettings = false
+    @State private var editsLibrary = false
     @ScaledMetric(relativeTo: .title3) private var iconWidth: CGFloat = 28
     private let themed = Themed()
 
@@ -28,10 +29,17 @@ struct LibraryView: View {
             .padding(.vertical, Tokens.Spacing.s)
         }
         .refreshable {
-            if model.isOffline { await model.checkReachability() } else if model.showsRecentlyAddedGrid { await load() }
+            await RefreshSafety.run {   // Round 13 Z2
+                if model.isOffline { await model.checkReachability() } else if model.showsRecentlyAddedGrid { await load() }
+            }
         }
         .magpieLargeTitle("Library")
         .toolbar {
+            // Round 13 Z2 (item 13): the Library's layout editor, as a sheet; changes apply at once.
+            ToolbarItem(placement: .topBarTrailing) {
+                LayoutEditButton(title: "Edit Library") { editsLibrary = true }
+                    .accessibilityIdentifier("library-edit-toolbar")
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 Button { showsSettings = true } label: {
                     Image(systemName: "gearshape")
@@ -41,6 +49,9 @@ struct LibraryView: View {
             }
         }
         .sheet(isPresented: $showsSettings) { SettingsView() }
+        .sheet(isPresented: $editsLibrary) {
+            LayoutEditorSheet(doneIdentifier: "library-edit-done") { LibraryLayoutView() }
+        }
         .magpieScreen()
         .task(id: model.showsRecentlyAddedGrid) { if model.showsRecentlyAddedGrid, recent.value == nil { await load() } }
     }
@@ -134,7 +145,7 @@ struct LibraryView: View {
         do {
             recent = .loaded(try await model.request { try await $0.albumList(.newest, size: 24, offset: 0) })
         } catch {
-            if recent.value == nil { recent = .failed(BrowseErrorCopy.message(for: error)) }
+            recent = recent.failing(error, noticeTo: model)   // Round 13 Z2: also never for a load cut short
         }
     }
 }
