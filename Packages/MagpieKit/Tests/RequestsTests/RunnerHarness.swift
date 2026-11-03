@@ -149,6 +149,8 @@ final class FakeLidarr: @unchecked Sendable {
         var id: Int? = nil; var artistId: Int? = nil; var client: String? = nil
         /// Fix round 1 I2: the download it's part of (rows of one multi-album download share it); nil: "dl-<id>".
         var downloadId: String? = nil
+        /// Round 13 (Z4 fix M1): Lidarr names no album for it (another app's transfer it couldn't match).
+        var noAlbum = false
     }
     struct Event { var albumId: Int; var type: String; var date: Date }
     /// A download client as `GET /downloadclient` lists it (R17).
@@ -652,6 +654,7 @@ final class FakeLidarr: @unchecked Sendable {
                                           "status": q.status, "trackedDownloadState": q.tracked,
                                           "statusMessages": [["title": "t", "messages": q.messages]]]
                 if let id = q.id { row["id"] = id }
+                if q.noAlbum { row["albumId"] = nil }
                 if let artistId = q.artistId { row["artistId"] = artistId }
                 if let client = q.client { row["downloadClient"] = client }
                 if let d = q.downloadId ?? q.id.map({ "dl-\($0)" }) { row["downloadId"] = d }

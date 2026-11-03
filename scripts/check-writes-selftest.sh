@@ -34,6 +34,12 @@ planted=(
   'gate.send("DELETE", "queue/\(queueId)?\(Self.queueRemoval)", body: nil, confinedAs: .queueRestartAny, allowForeign: flag)'
   'restarter.restart(row, allowForeign: true)'
   'restarter.restartAll(rows, includeForeign: true)'
+  'restarter.restart(row, allowForeign: row.foreign)'
+  'screen.restart([row], model: model, allowForeign: x)'
+  'restarter.restartAll(rows, includeForeign: flag)'
+  'restarter.restart(row)'
+  'screen.restartAll(rows, model: model)'
+  'LidarrDownloadRestarter(lidarr: client, gate: gate, runner: nil)'
 )
 failed=0
 for p in "${planted[@]}"; do

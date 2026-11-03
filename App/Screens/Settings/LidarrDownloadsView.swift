@@ -32,11 +32,18 @@ enum LidarrDownloadsCopy {
         + "Restart anyway?"
     static let stillGoingConfirm = "This download is still going. Restart drops it and looks for another copy."
 
-    /// What a row's Restart asks first; nil: it restarts at once (stalled or failed).
-    static func confirmOne(_ ask: LidarrDownloads.Ask) -> String? {
+    /// What a row's Restart asks first; nil: it restarts at once (stalled or failed). Z4 fix M5: a copy that isn't
+    /// moving on purpose or can't be reached says what it's doing, not "still going".
+    static func confirmOne(_ ask: LidarrDownloads.Ask, phase: LidarrDownloads.Phase = .downloading) -> String? {
         switch ask {
         case .none: nil
-        case .stillGoing: stillGoingConfirm
+        case .stillGoing:
+            switch phase {
+            case .paused: "Paused. Restart drops it and looks for another copy."
+            case .queued: "Waiting to start. Restart drops it and looks for another copy."
+            case .clientUnavailable: "Can't reach the download app. Restart drops it and looks for another copy."
+            default: stillGoingConfirm
+            }
         case .couldntImport: couldntImportConfirm
         case .foreign: foreignConfirm
         }
@@ -44,9 +51,15 @@ enum LidarrDownloadsCopy {
 
     static func confirmButton(_ ask: LidarrDownloads.Ask) -> String { ask == .foreign ? "Restart anyway" : restart }
 
-    /// Restart all's second choice: also another app's stalled, failed or couldn't-import downloads.
-    static func includeForeign(_ count: Int) -> String {
-        "Also restart \(min(count, LidarrDownloadRestarter.maxPerTap)) started by another app"
+    /// Z4 fix M2: Restart all does at most `maxPerTap`, Lidarr's own first; this many of another app's fit after them.
+    static func foreignBatch(own: Int, foreign: Int) -> Int {
+        min(foreign, max(0, LidarrDownloadRestarter.maxPerTap - own))
+    }
+
+    /// Restart all's second choice: also `count` of another app's stalled, failed or couldn't-import downloads (already
+    /// capped by `foreignBatch`). `alone` (fix M3): nothing of Lidarr's own is listed, so it's the only choice.
+    static func includeForeign(_ count: Int, alone: Bool = false) -> String {
+        (alone ? "Restart \(count)" : "Also restart \(count)") + " started by another app"
     }
 
     /// The Settings row's summary: how many need attention at the page's last read.
@@ -117,6 +130,10 @@ enum LidarrDownloadsCopy {
         let parts: [String?] = [
             restarted == 0 ? nil : outcomes.count == 1 ? "Restarted." : "Restarted \(restarted).",
             count { $0 == .removedNotSearched } > 0 ? "Lidarr will look again on its own schedule." : nil,
+            // Z4 fix M1: removed, but no album to look for (another app's transfer Lidarr couldn't match).
+            outcomes == [.removedNothingToLookFor] ? "Removed. There was no album to look for."
+                : some(count { $0 == .removedNothingToLookFor }, one: "Removed 1; there was no album to look for.",
+                       many: { "Removed \($0); there were no albums to look for." }),
             some(count { $0 == .skipped }, one: outcomes.count == 1 ? "It started moving again, so it was left alone."
                                                                      : "One started moving again, so it was left alone.",
                  many: { "\($0) started moving again, so they were left alone." }),
@@ -277,7 +294,7 @@ struct LidarrDownloadsView: View {
             }
             if !pendingForeign.isEmpty {
                 // Round 13 (D63): the owner turns another app's on here, and only here.
-                Button(LidarrDownloadsCopy.includeForeign(pendingForeign.count), role: .destructive) {
+                Button(LidarrDownloadsCopy.includeForeign(pendingForeign.count, alone: pendingAll.isEmpty), role: .destructive) {
                     let rows = pendingAll + pendingForeign
                     Task { await screen.restartAll(rows, model: model, includeForeign: true) }
                 }
@@ -307,7 +324,7 @@ struct LidarrDownloadsView: View {
             }
             Button("Cancel", role: .cancel) { pendingOne = nil }
         } message: {
-            Text(pendingOne.flatMap { LidarrDownloadsCopy.confirmOne($0.ask) } ?? "")
+            Text(pendingOne.flatMap { LidarrDownloadsCopy.confirmOne($0.ask, phase: $0.phase) } ?? "")
         }
     }
 
@@ -331,7 +348,9 @@ struct LidarrDownloadsView: View {
                 if anyToRestart {
                     Button(role: .destructive) {
                         pendingAll = board.restartable
-                        pendingForeign = board.restartableForeign
+                        // Fix M2: the cap goes to Lidarr's own first; only another app's that fit are offered.
+                        pendingForeign = Array(board.restartableForeign.prefix(LidarrDownloadsCopy.foreignBatch(
+                            own: board.restartable.count, foreign: board.restartableForeign.count)))
                         confirmsAll = !pendingAll.isEmpty || !pendingForeign.isEmpty
                     } label: {
                         Label(LidarrDownloadsCopy.restartAll, systemImage: "arrow.clockwise")

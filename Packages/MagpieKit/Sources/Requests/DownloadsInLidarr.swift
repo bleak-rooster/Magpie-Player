@@ -399,6 +399,9 @@ public actor LidarrDownloadRestarter {
         case restarted
         /// Removed, but the new search didn't start (Lidarr will still look on its own schedule).
         case removedNotSearched
+        /// Z4 fix M1: removed, and Lidarr names no album it carried, so there is nothing to look for (another app's
+        /// transfer Lidarr couldn't match).
+        case removedNothingToLookFor
         /// I1: it started moving again (or stopped being stuck or failed) since the list was read: left alone.
         case skipped
         /// No longer in the queue.
@@ -513,7 +516,7 @@ public actor LidarrDownloadRestarter {
             return Self.outcome(error)
         }
         let rest = albums.filter { $0 != searched }
-        guard !rest.isEmpty else { return .restarted }
+        guard !rest.isEmpty else { return albums.isEmpty ? .removedNothingToLookFor : .restarted }
         do {
             _ = try await gate.send("POST", "command", body: SearchBody(name: "AlbumSearch", albumIds: rest), confinedAs: .restartSearch)
             return .restarted

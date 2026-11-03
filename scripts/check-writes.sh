@@ -117,23 +117,48 @@ if [ -z "${G1_SRC:-}" ]; then
   done <<< "$shaped"
   grep -qF 'static let queueRemoval = "removeFromClient=true&blocklist=true&skipRedownload=true"' "$restarter" ||
     { echo "G1: $restarter: queueRemoval isn't exactly removeFromClient=true&blocklist=true&skipRedownload=true" >&2; bad=1; }
-  # Round 13 item 6 (D63): `allowForeign: true` (restart another app's download) is spelt out only by the restarter's
-  # one send and by the screen's flagged confirmation; `includeForeign: true` (Restart all with another app's) only by
-  # the screen's Restart all confirmation. Anywhere else it fails.
+  # Round 13 item 6 (D63; Z4 review I1): every `allowForeign:` / `includeForeign:` ARGUMENT in product code, whatever
+  # its value (a literal, a variable, an expression), must be one of these exact lines, each exactly once: the screen's
+  # flagged confirmation and Restart all's second button (the only places it's turned on), the lines that pass it on
+  # (screen → restarter → gate) and the gate's own. Declarations (`allowForeign: Bool`) don't count. And only the
+  # screen makes a restarter or a screen state, or calls restart/restartAll on them.
   view="App/Screens/Settings/LidarrDownloadsView.swift"
-  flagged=$(grep -rnE --include='*.swift' '(allowForeign|includeForeign):[[:space:]]*true' "${product[@]}" |
-            grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' || true)
+  lk="Packages/MagpieKit/Sources/LidarrKit"
+  flagged=$(grep -rnE --include='*.swift' '(allowForeign|includeForeign):' "${product[@]}" |
+            grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' |
+            perl -ne 'my ($f, $n, $t) = /^([^:]+):(\d+):(.*)$/ or next; (my $u = $t) =~ s/(allowForeign|includeForeign):\s*Bool//g;
+                      next unless $u =~ /(allowForeign|includeForeign):/; $t =~ s/^\s+|\s+$//g; print "$f|$t\n"' || true)
+  allowed_flag_lines=(
+    "$view|Task { await screen.restart([row], model: model, allowForeign: true) }"
+    "$view|Task { await screen.restartAll(rows, model: model, includeForeign: true) }"
+    "$view|message = LidarrDownloadsCopy.summary([await restarter.restart(row, allowForeign: allowForeign)])"
+    "$view|message = LidarrDownloadsCopy.summary(await restarter.restartAll(rows, includeForeign: includeForeign))"
+    "$restarter|return await restartOne(row, allowForeign: allowForeign)"
+    "$restarter|let outcome = await restartOne(row, allowForeign: includeForeign && row.foreign)"
+    "$restarter|"'_ = try await gate.send("DELETE", "queue/\(queueId)?\(Self.queueRemoval)", body: nil, confinedAs: .queueRestartAny, allowForeign: true)'
+    "$lk/WriteGate.swift|try await send(method, path, body: body, shape: shape, allowForeign: allowForeign)"
+    "$lk/WriteGate.swift|confined = .queueRestartAny(id, allowForeign: allowForeign)"
+    "$lk/WriteConfinement.swift|return await Self.queueRestartAny(id, allowForeign: allowForeign, lidarr: lidarr)"
+  )
+  seen_flag_lines=""
   while IFS= read -r s; do
     [ -n "$s" ] || continue
-    case "$s" in
-      "$restarter":*'gate.send("DELETE", "queue/\(queueId)?\(Self.queueRemoval)", body: nil, confinedAs: .queueRestartAny, allowForeign: true)') ;;
-      "$view":*'restart([row], model: model, allowForeign: true)'*) ;;
-      "$view":*'restartAll(rows, model: model, includeForeign: true)'*) ;;
-      *) echo "G1: allowForeign/includeForeign set outside the flagged confirmation: ${s%%:*}" >&2; bad=1 ;;
-    esac
+    ok=0
+    for a in "${allowed_flag_lines[@]}"; do [ "$s" = "$a" ] && ok=1 && break; done
+    if [ "$ok" = 0 ]; then
+      echo "G1: allowForeign/includeForeign passed outside its pinned lines: ${s%%|*}" >&2; bad=1
+    elif grep -qxF -- "$s" <<< "$seen_flag_lines"; then
+      echo "G1: a pinned allowForeign/includeForeign line appears twice: ${s%%|*}" >&2; bad=1
+    else
+      seen_flag_lines+="$s"$'\n'
+    fi
   done <<< "$flagged"
-  [ "$(grep -cF 'allowForeign: true)' "$restarter")" = 1 ] ||
-    { echo "G1: $restarter: allowForeign: true on other than its one send" >&2; bad=1; }
+  callers=$(grep -rnE --include='*.swift' '(restarter|screen)\.(restart|restartAll)\(|LidarrDownloadRestarter\(|LidarrDownloadsScreen\(' \
+              "${product[@]}" | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' | grep -v "^$view:" || true)
+  while IFS= read -r s; do
+    [ -n "$s" ] || continue
+    echo "G1: the restarter is made or called outside Downloads in Lidarr's screen: ${s%%:*}" >&2; bad=1
+  done <<< "$callers"
 fi
 if [ -z "${G1_SRC:-}" ]; then
   # Y5: track files are deleted only by Not for me (a find's files) and the MP3 rule (a kept find's recorded MP3); the

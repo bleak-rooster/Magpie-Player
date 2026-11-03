@@ -393,6 +393,23 @@ import MagpieCore
         #expect(h.server.writeBodies().last?.1["albumIds"] as? [Int] == [41])
     }
 
+    /// Z4 fix M1: another app's transfer Lidarr names no album for is only removed: nothing is searched, and the
+    /// outcome says so (not "Restarted").
+    @Test func foreignWithNoAlbumIsOnlyRemoved() async throws {
+        let h = await Harness()
+        h.server.with { s in
+            var q = FakeLidarr.Queued(albumId: 0, size: 100, sizeleft: 40, status: "failed", tracked: "downloadFailed",
+                                      id: 901, artistId: 9, client: "Slskd")
+            q.noAlbum = true
+            s.queue = [q]
+            s.ungrabbed = ["dl-901"]
+        }
+        let row = try #require(try await rows(h).notStarted.first)
+        let restarter = LidarrDownloadRestarter(lidarr: h.lidarrClient, gate: h.gate, runner: h.runner)
+        #expect(await restarter.restart(row, allowForeign: true) == .removedNothingToLookFor)
+        #expect(writes(h) == ["DELETE queue/901"])
+    }
+
     /// Round 13 item 6 (D63): a copy still going (here paused) may be restarted (the screen asks first).
     @Test func pausedRowIsRestarted() async throws {
         let h = await Harness()
