@@ -144,11 +144,15 @@ enum LidarrDownloadsCopy {
             self.board = board
             model.lidarrDownloadsAttention = board.attention
             unreachable = false
-        } catch is CancellationError {
-            return
         } catch {
-            unreachable = true
+            unreachable = Self.showsUnreachable(after: error, before: unreachable)
         }
+    }
+
+    /// Round 13 Z2 (review I2): a read cut short (a pull SwiftUI let go of: `CancellationError` or URLSession's
+    /// `.cancelled`) never says "unreachable"; it leaves the screen as it was.
+    nonisolated static func showsUnreachable(after error: any Error, before: Bool) -> Bool {
+        AppModel.isCancellation(error) ? before : true
     }
 
     /// Reads every `refreshInterval` until the view goes away (its `.task` is cancelled).
@@ -226,7 +230,7 @@ struct LidarrDownloadsView: View {
         .navigationTitle(LidarrDownloadsCopy.title)
         .navigationBarTitleDisplayMode(.inline)
         .task { await screen.follow(model) }
-        .refreshable { await screen.refresh(model) }
+        .refreshable { await RefreshSafety.run { await screen.refresh(model) } }   // Round 13 Z2 (review I2)
         .confirmationDialog(LidarrDownloadsCopy.confirmTitle(pendingAll.count),
                             isPresented: $confirmsAll, titleVisibility: .visible) {
             Button(LidarrDownloadsCopy.restartAll, role: .destructive) {

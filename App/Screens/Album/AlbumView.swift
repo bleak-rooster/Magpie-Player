@@ -125,7 +125,7 @@ struct AlbumView: View {
             model.noteAlbumSongCounts([loaded])   // P1: backfills downloads saved without the album's count
             model.noteFavourite(.album(loaded.id), loaded.starred)   // R7
         } catch {
-            album = album.failing(error)   // Round 13 Z2: never for a load cut short; the album shown stays
+            album = album.failing(error, noticeTo: model)   // Round 13 Z2: never for a load cut short; the album shown stays
         }
     }
 }

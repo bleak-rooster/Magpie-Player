@@ -194,7 +194,7 @@ struct PlaylistView: View {
             await model.refreshDownloadedPlaylist(playlist, songs: songs)
         } catch {
             // Deleted (here or elsewhere): nothing to show; the list behind reads again.
-            page = page.failing(error)   // Round 13 Z2: also never for a load cut short
+            page = page.failing(error, noticeTo: model)   // Round 13 Z2: also never for a load cut short
         }
     }
 }

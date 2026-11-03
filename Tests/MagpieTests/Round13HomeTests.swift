@@ -235,6 +235,76 @@ private func ok(_ body: String) -> Data {
         expectRightShelves([.discover, .playlists, .randomAlbums].compactMap { found[$0] }, "after Aurral answered")
     }
 
+    // MARK: - Review minors
+
+    /// M1: forgetting Aurral's reads (sign-out, another Aurral or user) lets go of the shared read.
+    @Test func forgetReadsLetsGoOfTheSharedRead() async throws {
+        let model = try await signedIn()
+        defer { transport.setAurralDelay(nil); model.signOut() }
+        transport.setAurralDelay(.seconds(30))
+        let read = Task { await model.refreshDiscover(force: true) }
+        await Task.yield()
+        #expect(model.discover.refreshTask != nil)
+        model.discover.forgetReads()
+        #expect(model.discover.refreshTask == nil)
+        let clock = ContinuousClock(), start = clock.now
+        await read.value
+        #expect(clock.now - start < .seconds(5), "the old read was cancelled")
+    }
+
+    /// M2: reads never overlap: callers while one is under way join it.
+    @Test func readsOfAurralAreCoalesced() async throws {
+        let model = try await signedIn()
+        defer { model.signOut() }
+        model.discover.statusReadAt = nil
+        let before = aurral.asked.filter { $0 == "GET /api/playlists/status" }.count
+        async let a: Void = model.refreshDiscover()
+        async let b: Void = model.refreshDiscover()
+        async let c: Void = model.refreshDiscover(waitingAtMost: .seconds(3))
+        _ = await (a, b, c)
+        #expect(aurral.asked.filter { $0 == "GET /api/playlists/status" }.count == before + 1, "one read")
+    }
+
+    /// M3: the 3 s wait ends at once when its caller is cancelled.
+    @Test func waitForAurralHonoursCancellation() async throws {
+        let model = try await signedIn()
+        defer { transport.setAurralDelay(nil); model.signOut() }
+        model.discover.statusReadAt = nil
+        transport.setAurralDelay(.seconds(30))
+        let clock = ContinuousClock(), start = clock.now
+        let wait = Task { await model.refreshDiscover(waitingAtMost: .seconds(3)) }
+        try await Task.sleep(for: .milliseconds(200))
+        wait.cancel()
+        await wait.value
+        #expect(clock.now - start < .seconds(1), "waited \(clock.now - start)")
+    }
+
+    /// M4: a real reload failure with the page showing gives a quiet notice; a cut-short one says nothing.
+    @Test func realReloadFailureGivesANotice() async throws {
+        let model = try await signedIn()
+        defer { model.signOut() }
+        let shown: Loadable<Int> = .loaded(1)
+        #expect(shown.failing(URLError(.cancelled), noticeTo: model).value == 1)
+        #expect(model.libraryEdits.notice == nil)
+        #expect(shown.failing(URLError(.timedOut), noticeTo: model).value == 1)
+        #expect(model.libraryEdits.notice?.text == RefreshSafety.notRefreshed)
+    }
+
+    /// M5: another Aurral or user: the saved Discover shelf leaves the screen and the file at once.
+    @Test func discoverShelfGoesWithTheAurralUser() async throws {
+        let cache = HomeShelfCache(root: tmp, scope: "m5")
+        let dw = Playlist(id: "pl-dw", name: "Discover Weekly", songCount: 4, duration: 0)
+        let road = Playlist(id: "pl-road", name: "Road trip", songCount: 4, duration: 0)
+        cache.save([HomeShelf(section: .discover, items: [.playlist(dw)]), HomeShelf(section: .playlists, items: [.playlist(road)])])
+        let feed = HomeFeed(cache: cache, read: { _ in AppModel.HomeRead(shelves: [], failed: []) },
+                            sleep: { _ in try await Task.sleep(for: .seconds(600)) })
+        #expect(feed.load?.found[.discover] != nil)
+        feed.discard([.discover])
+        #expect(feed.load?.found[.discover] == nil)
+        #expect(cache.load().map(\.section) == [.playlists])
+        feed.stop()
+    }
+
     /// Aurral slow: Home doesn't wait for it, and Discover shows the playlists known to be Discover's.
     @Test func aurralSlow() async throws {
         let model = try await signedIn()
@@ -352,6 +422,14 @@ extension DiscoverNavidrome {
         #expect(shown.failing(URLError(.cancelled)).value == 7)
         #expect(shown.failing(URLError(.timedOut)).value == 7, "what is shown stays when a reload fails")
         #expect(isFailed(loading.failing(URLError(.timedOut))), "nothing to show: the error")
+    }
+
+    /// Review I2: Downloads in Lidarr: a pull cut short never says "unreachable".
+    @Test func lidarrDownloadsCutShortIsNotUnreachable() {
+        #expect(!LidarrDownloadsScreen.showsUnreachable(after: URLError(.cancelled), before: false))
+        #expect(!LidarrDownloadsScreen.showsUnreachable(after: CancellationError(), before: false))
+        #expect(LidarrDownloadsScreen.showsUnreachable(after: URLError(.cancelled), before: true), "unchanged")
+        #expect(LidarrDownloadsScreen.showsUnreachable(after: URLError(.timedOut), before: false))
     }
 
     @Test func pullWorkOutlivesTheCancelledPull() async {

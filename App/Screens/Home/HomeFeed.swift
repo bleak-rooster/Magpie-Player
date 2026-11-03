@@ -138,6 +138,22 @@ import Observation
         restart(key, fresh: false)
     }
 
+    /// Round 13 Z2 (review M5): `sections`' shelves belong to something no longer there (another Aurral, or another
+    /// of its users): they leave the screen and the saved shelves now, and are read again.
+    func discard(_ sections: Set<HomeSection>) {
+        guard !isStopped, var state = load else { return }
+        state.drop(sections)
+        load = state
+        if lastKey?.offline != true, let cache {   // the saved file loads by section, so any order will do
+            let shelves = (lastKey?.sections ?? HomeSection.allCases).compactMap { state.found[$0] }
+            lastSaved = shelves
+            cache.save(shelves)
+        }
+        guard let key = lastKey else { return }
+        if readTask != nil { staleSections.formUnion(sections) }
+        restart(key, fresh: false)
+    }
+
     /// To the background: no retry waits meanwhile (the read under way, if any, finishes).
     func backgrounded() {
         isPaused = true

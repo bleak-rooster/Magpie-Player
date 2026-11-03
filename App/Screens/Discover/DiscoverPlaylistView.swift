@@ -189,7 +189,7 @@ struct DiscoverPlaylistView: View {
             if model.discover.playlists.isEmpty { await model.refreshDiscover() }
             page = .loaded(try await model.discoverPage(playlistId: playlistId, fresh: fresh))
         } catch {
-            page = page.failing(error)   // Round 13 Z2: also never for a load cut short
+            page = page.failing(error, noticeTo: model)   // Round 13 Z2: also never for a load cut short
         }
     }
 }
@@ -240,7 +240,7 @@ struct DiscoverListView: View {
 
     private func load() async {
         do { playlists = .loaded(try await model.discoverPlaylists()) } catch {
-            playlists = playlists.failing(error)   // Round 13 Z2: also never for a load cut short
+            playlists = playlists.failing(error, noticeTo: model)   // Round 13 Z2: also never for a load cut short
         }
     }
 }

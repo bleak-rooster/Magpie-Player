@@ -178,7 +178,7 @@ struct GenresView: View {
                 genres = .loaded(try await model.allGenres())
             }
         } catch {
-            sections = sections.failing(error)   // Round 13 Z2: also never for a load cut short
+            sections = sections.failing(error, noticeTo: model)   // Round 13 Z2: also never for a load cut short
             genres = genres.failing(error)
         }
     }

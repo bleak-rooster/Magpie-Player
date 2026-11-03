@@ -145,7 +145,7 @@ struct LibraryView: View {
         do {
             recent = .loaded(try await model.request { try await $0.albumList(.newest, size: 24, offset: 0) })
         } catch {
-            recent = recent.failing(error)   // Round 13 Z2: also never for a load cut short
+            recent = recent.failing(error, noticeTo: model)   // Round 13 Z2: also never for a load cut short
         }
     }
 }

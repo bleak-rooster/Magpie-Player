@@ -111,7 +111,7 @@ struct FavouritesView: View {
         do {
             starred = .loaded(try await model.favourites())
         } catch {
-            starred = starred.failing(error)   // Round 13 Z2: also never for a load cut short
+            starred = starred.failing(error, noticeTo: model)   // Round 13 Z2: also never for a load cut short
         }
     }
 }

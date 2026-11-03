@@ -218,7 +218,7 @@ struct ArtistView: View {
             async let inLidarr: Void = loadLidarrLine(artist)
             _ = await (top, notYet, inLidarr)
         } catch {
-            page = page.failing(error)   // Round 13 Z2: never for a load cut short; the page shown stays
+            page = page.failing(error, noticeTo: model)   // Round 13 Z2: never for a load cut short; the page shown stays
         }
     }
 

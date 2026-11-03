@@ -12,6 +12,9 @@ import Foundation
 /// (2) a load cut short is never an error, and a page that shows something keeps it when a reload fails: the error
 /// shows only when there is nothing else to show.
 enum RefreshSafety {
+    /// The notice when a reload really failed and the page keeps what it showed.
+    static let notRefreshed = "Couldn\u{2019}t refresh this page."
+
     /// Runs a pull's work in a task SwiftUI can't cancel, and waits for it (the spinner stays until it is done).
     @MainActor static func run(_ work: @escaping @MainActor () async -> Void) async {
         await Task { @MainActor in await work() }.value
@@ -19,6 +22,15 @@ enum RefreshSafety {
 }
 
 extension Loadable {
+    /// Review M4: as `failing(_:)`, and when a real failure leaves what is shown on screen, a quiet one-line notice
+    /// says the page wasn't refreshed (a cut-short load says nothing).
+    @MainActor func failing(_ error: any Error, noticeTo model: AppModel) -> Loadable {
+        if value != nil, !AppModel.isCancellation(error) {
+            model.libraryEdits.notify(RefreshSafety.notRefreshed, symbol: "exclamationmark.triangle")
+        }
+        return failing(error)
+    }
+
     /// What a page shows after its load threw `error`: unchanged when the load was cut short (a cancellation is
     /// never an error) or something is already on screen; otherwise the failure.
     func failing(_ error: any Error) -> Loadable {
