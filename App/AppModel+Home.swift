@@ -33,7 +33,9 @@ struct HomeShelf: Identifiable, Equatable, Sendable {
         switch (section, item) {
         case (.jumpBackIn, .album), (.recentlyAdded, .album), (.mostPlayed, .album), (.favourites, .album),
              (.randomAlbums, .album): true
-        case (.playlists, .playlist): true
+        // Round 13 Z2: Discover's shelf is playlists too. Left out, a saved Discover shelf was thrown away at every
+        // launch, so Home opened without Discover (the next shelf in its place) until Aurral answered.
+        case (.playlists, .playlist), (.discover, .playlist): true
         case (.genres, .genreGroup): true
         case (.downloaded, .downloadedAlbum), (.downloaded, .playlist): true
         default: false

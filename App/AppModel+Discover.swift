@@ -137,23 +137,25 @@ extension AppModel {
         if let jobs { discover.jobs = jobs }
         let before = discoverPlaylistIds
         let candidates = DiscoverRules.flowPlaylists(flows: status.flows, playlists: all)
-        var entries: [String: [Song]] = [:], unread = Set<String>()
+        var entries: [String: [Song]] = [:]
         for candidate in candidates {
             if let (_, songs) = try? await request({ [id = candidate.playlist.id] in try await $0.playlist(id: id) }) {
                 entries[candidate.playlist.id] = songs
-            } else {
-                unread.insert(candidate.playlist.id)
             }
         }
         guard navidromeScope == scope, discover.connection == connection else { return }
         let confirmed = DiscoverRules.confirmedFlowPlaylists(candidates, entries: entries, jobs: discover.jobs,
                                                              aurralSongIds: knownAurralSongIds)
-        let confirmedIds = Set(confirmed.map(\.playlist.id))
-        let matched = candidates.filter { confirmedIds.contains($0.playlist.id) || (unread.contains($0.playlist.id) && before.contains($0.playlist.id)) }
+        // Round 13 Z2: a read that can't confirm a playlist (jobs unreadable, a run under way, a playlist that didn't
+        // read) no longer takes it out of Discover and into Playlists (`keptFlowPlaylists`).
+        let matched = Self.keptFlowPlaylists(candidates, confirmed: confirmed, before: before)
         discover.playlists = matched
         appDefaults.set(matched.map(\.playlist.id), forKey: Self.discoverPlaylistsKey(scope))
         for playlist in matched { noteFlowSongs(entries[playlist.playlist.id] ?? []) }
-        if Set(matched.map(\.playlist.id)) != before { libraryEdits.playlistsRevision += 1 }   // Playlists read again
+        if Set(matched.map(\.playlist.id)) != before {
+            libraryEdits.playlistsRevision += 1   // Playlists read again
+            homeFeedSlot?.sectionsChanged([.discover, .playlists])   // Round 13 Z2: and Home's two shelves
+        }
         await refreshAurralLibrary(entries: matched.flatMap { entries[$0.playlist.id] ?? [] })
     }
 
@@ -190,7 +192,7 @@ extension AppModel {
     /// server's playlists that were Discover's last time.
     func discoverPlaylists() async throws -> [Playlist] {
         guard aurralSetUp, !isOffline else { return [] }
-        await refreshDiscover()
+        await refreshDiscover(waitingAtMost: Self.discoverWait)   // Round 13 Z2: never held up by a slow Aurral
         if !discover.playlists.isEmpty { return discover.playlists.map(\.playlist) }
         let ids = discoverPlaylistIds
         guard !ids.isEmpty else { return [] }

@@ -178,6 +178,50 @@ private func ok(_ body: String) -> Data {
         transport.setAurralDelay(nil)
     }
 
+    /// Discover's playlists changed while Home was reading (the read of Aurral finished after the wait): Home reads
+    /// Discover and Playlists once more, and only those.
+    @Test func homeReadsDiscoverAndPlaylistsAgainWhenDiscoverChanges() async throws {
+        let dw = Playlist(id: "pl-dw", name: "Discover Weekly", songCount: 4, duration: 0)
+        let road = Playlist(id: "pl-road", name: "Road trip", songCount: 4, duration: 0)
+        let album = Album(id: "al-r1", name: "Random 1", artist: "R", songCount: 1, duration: 60)
+        var calls: [[HomeSection]] = []
+        var feed: HomeFeed?
+        feed = HomeFeed(cache: nil, read: { sections in
+            calls.append(sections)
+            if calls.count == 1 {
+                feed?.sectionsChanged([.discover, .playlists])   // Aurral's read ends during Home's
+                return AppModel.HomeRead(shelves: [HomeShelf(section: .playlists, items: [.playlist(dw), .playlist(road)]),
+                                                   HomeShelf(section: .randomAlbums, items: [.album(album)])], failed: [])
+            }
+            return AppModel.HomeRead(shelves: [HomeShelf(section: .discover, items: [.playlist(dw)]),
+                                               HomeShelf(section: .playlists, items: [.playlist(road)])], failed: [])
+        }, sleep: { _ in try await Task.sleep(for: .seconds(600)) })
+        let home = try #require(feed)
+        let key = HomeLoad.Key.make(sections: [.discover, .playlists, .randomAlbums], offline: false, onPhone: nil,
+                                    genres: .defaultValue)
+        await home.show(key)
+        for _ in 0..<200 where home.isReading || calls.count < 2 { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(calls == [[.discover, .playlists, .randomAlbums], [.discover, .playlists]])
+        #expect(home.load?.found[.discover]?.items.map(\.id) == ["playlist-pl-dw"])
+        #expect(home.load?.found[.playlists]?.items.map(\.id) == ["playlist-pl-road"])
+        #expect(home.load?.found[.randomAlbums]?.items.map(\.id) == ["album-al-r1"], "kept, not read again")
+        home.stop()
+    }
+
+    /// The rule on its own: confirmed now, or Discover's before and still named after its flow with no other
+    /// playlist confirmed for it.
+    @Test func keptFlowPlaylistsRule() {
+        let dw = AurralFlow(id: "flow-dw", name: "Discover Weekly")
+        func candidate(_ id: String) -> DiscoverPlaylist {
+            DiscoverPlaylist(flow: dw, playlist: Playlist(id: id, name: "Discover Weekly", songCount: 1, duration: 0))
+        }
+        let old = candidate("pl-old"), new = candidate("pl-new"), mine = candidate("pl-mine")
+        #expect(AppModel.keptFlowPlaylists([old, mine], confirmed: [], before: ["pl-old"]) == [old], "unconfirmed: kept")
+        #expect(AppModel.keptFlowPlaylists([old, mine], confirmed: [], before: []) == [], "never confirmed: never Discover")
+        #expect(AppModel.keptFlowPlaylists([old, new], confirmed: [new], before: ["pl-old"]) == [new], "another confirmed")
+        #expect(AppModel.keptFlowPlaylists([mine], confirmed: [], before: ["pl-old"]) == [], "renamed away: gone")
+    }
+
     // MARK: - Home's saved shelves from build 12
 
     /// Build 12 saved Discover's shelf (playlists) with the others; at launch it shows at once, in its place.

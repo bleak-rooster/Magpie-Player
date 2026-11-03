@@ -51,6 +51,8 @@ import Observation
     /// A trigger (reconnect, a stale foreground) that arrived while a read was under way (fix N2): one read follows
     /// it, everything again when `true`. At most one is queued.
     @ObservationIgnored private var followUp: Bool?
+    /// Round 13 Z2: sections that changed while a read was under way (`sectionsChanged`): not read once it settles.
+    @ObservationIgnored private var staleSections: Set<HomeSection> = []
     /// Retry tasks alive now (tests: never more than one).
     @ObservationIgnored private(set) var liveRetries = 0
 
@@ -122,6 +124,20 @@ import Observation
         restart(key, fresh: true)
     }
 
+    /// Round 13 Z2: what `sections` show changed elsewhere (Discover's playlists, and so Playlists): they are read
+    /// again, silently, their shelves staying on screen meanwhile. A read under way may have read them before the
+    /// change, so one more read follows it.
+    func sectionsChanged(_ sections: Set<HomeSection>) {
+        guard !isStopped else { return }
+        if var state = load {
+            state.forget(sections)
+            load = state
+        }
+        guard let key = lastKey else { return }
+        if readTask != nil { staleSections.formUnion(sections) }
+        restart(key, fresh: false)
+    }
+
     /// To the background: no retry waits meanwhile (the read under way, if any, finishes).
     func backgrounded() {
         isPaused = true
@@ -163,6 +179,7 @@ import Observation
         readTask?.cancel()
         cancelRetry()
         followUp = nil   // this read covers it
+        staleSections = []   // and reads them: `load` already counts them as not read
         generation += 1
         let mine = generation
         let task = Task { [weak self] () -> Void in await self?.perform(key, fresh: fresh, asked: asked, generation: mine) }
@@ -209,6 +226,11 @@ import Observation
     /// After a read: done (save what is on screen), or retry on the backoff, or say what failed.
     private func settle(_ want: HomeLoad.Key, asked: Bool) {
         guard !isStopped else { return }
+        if !staleSections.isEmpty, var state = load {   // read before they changed: the follow-up reads them again
+            state.forget(staleSections)
+            load = state
+        }
+        staleSections = []
         save(want)
         if let fresh = followUp {   // a trigger arrived during this read: read once more, now (fix N2)
             attempt = 0
