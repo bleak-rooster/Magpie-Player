@@ -90,6 +90,79 @@ final class Round13UITests: XCTestCase {
         add(shot)
     }
 
+    /// Item 13: Home's and Library's top-right button opens the same editor as Settings, as a sheet; a change shows
+    /// at once on the page behind, and Settings' entry is still there. Starts and ends at the default layouts
+    /// (-MagpieResetLayouts, then Reset to default order).
+    @MainActor func testReorderButtonsOnHomeAndLibrary() throws {
+        let app = try launchSignedIn()
+        let reset = app.buttons["layout-reset"]
+        func flip(_ id: String) {
+            let s = app.switches[id]
+            for _ in 0..<4 where !s.isHittable { app.swipeUp() }
+            s.switches.firstMatch.exists ? s.switches.firstMatch.tap() : s.tap()
+        }
+        func resetAndClose(_ done: String) {
+            for _ in 0..<4 where !reset.exists || !reset.isHittable { app.swipeUp() }
+            if reset.isEnabled { reset.tap() }
+            XCTAssertFalse(reset.isEnabled, "the default order")
+            app.buttons[done].tap()
+        }
+
+        // Home: Random albums on from the toolbar's editor.
+        let homeTab = app.tabBars.buttons["Home"]
+        let editHome = app.buttons["home-edit-toolbar"]
+        for _ in 0..<3 where !editHome.exists {
+            homeTab.tap()
+            _ = editHome.waitForExistence(timeout: 5)
+        }
+        XCTAssertTrue(editHome.exists, "Home's top-right button")
+        XCTAssertEqual(editHome.label, "Edit Home")
+        editHome.tap()
+        XCTAssertTrue(app.switches["layout-randomAlbums"].waitForExistence(timeout: 10), "the Home editor, as a sheet")
+        flip("layout-randomAlbums")
+        XCTAssertEqual(app.switches["layout-randomAlbums"].value as? String, "1")
+        app.buttons["home-edit-done"].tap()
+        for _ in 0..<6 where !app.staticTexts["home-randomAlbums"].exists { app.swipeUp() }
+        XCTAssertTrue(app.staticTexts["home-randomAlbums"].waitForExistence(timeout: 20), "Home follows at once")
+        let shot = XCTAttachment(screenshot: app.screenshot())
+        shot.name = "home-after-toolbar-edit"
+        shot.lifetime = .keepAlways
+        add(shot)
+        for _ in 0..<6 { app.swipeDown() }
+        editHome.tap()
+        XCTAssertTrue(app.switches["layout-randomAlbums"].waitForExistence(timeout: 10))
+        resetAndClose("home-edit-done")
+
+        // Library: Songs off from the toolbar's editor.
+        let libraryTab = app.tabBars.buttons["Library"]
+        let editLibrary = app.buttons["library-edit-toolbar"]
+        for _ in 0..<3 where !editLibrary.exists {
+            libraryTab.tap()
+            _ = editLibrary.waitForExistence(timeout: 5)
+        }
+        XCTAssertTrue(editLibrary.exists, "Library's top-right button")
+        XCTAssertEqual(editLibrary.label, "Edit Library")
+        XCTAssertTrue(app.buttons["open-settings"].exists, "Settings stays")
+        XCTAssertTrue(app.buttons["library-songs"].exists)
+        editLibrary.tap()
+        XCTAssertTrue(app.switches["layout-songs"].waitForExistence(timeout: 10), "the Library editor, as a sheet")
+        flip("layout-songs")
+        XCTAssertEqual(app.switches["layout-songs"].value as? String, "0")
+        app.buttons["library-edit-done"].tap()
+        XCTAssertTrue(app.buttons["library-songs"].waitForNonExistence(timeout: 10), "Library follows at once")
+        editLibrary.tap()
+        XCTAssertTrue(app.switches["layout-songs"].waitForExistence(timeout: 10))
+        resetAndClose("library-edit-done")
+        XCTAssertTrue(app.buttons["library-songs"].waitForExistence(timeout: 10))
+
+        // The Settings entry is still there.
+        app.buttons["open-settings"].tap()
+        let hub = app.buttons["settings-home-library"]
+        for _ in 0..<4 where !hub.exists || !hub.isHittable { app.swipeUp() }
+        XCTAssertTrue(hub.waitForExistence(timeout: 10), "Settings › Home & Library stays")
+        app.buttons["settings-done"].tap()
+    }
+
     /// Item 2: pull to refresh on an album and an artist never shows an error and keeps the page.
     @MainActor func testPullToRefreshKeepsThePage() throws {
         let app = try launchSignedIn()

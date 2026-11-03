@@ -28,6 +28,13 @@ struct HomeView: View {
             await made
         }
         .magpieLargeTitle("Home")
+        // Round 13 Z2 (item 13): the layout editor from the top of Home too, as a sheet; changes apply at once.
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                LayoutEditButton(title: "Edit Home") { editsHome = true }
+                    .accessibilityIdentifier("home-edit-toolbar")
+            }
+        }
         // H3 M7: a solid bar in the page colour once scrolled, so covers don't show through under the title and
         // the status bar.
         .toolbarBackground(themed.palette.bgColor, for: .navigationBar)
@@ -50,15 +57,7 @@ struct HomeView: View {
             if model.madeForYouShelf.isEmpty, !model.isOffline { await model.refreshMadeForYou() }
         }
         .sheet(isPresented: $editsHome) {
-            NavigationStack {
-                HomeLayoutView()
-                    .toolbar {
-                        ToolbarItem(placement: .confirmationAction) {
-                            Button("Done") { editsHome = false }.accessibilityIdentifier("home-edit-done")
-                        }
-                    }
-                    .magpieScreen()   // Task 21: the app's theme in the sheet too
-            }
+            LayoutEditorSheet(doneIdentifier: "home-edit-done") { HomeLayoutView() }
         }
     }
 

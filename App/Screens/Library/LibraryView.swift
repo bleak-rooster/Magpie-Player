@@ -11,6 +11,7 @@ struct LibraryView: View {
     @Environment(AppModel.self) private var model
     @State private var recent: Loadable<[Album]> = .loading
     @State private var showsSettings = false
+    @State private var editsLibrary = false
     @ScaledMetric(relativeTo: .title3) private var iconWidth: CGFloat = 28
     private let themed = Themed()
 
@@ -34,6 +35,11 @@ struct LibraryView: View {
         }
         .magpieLargeTitle("Library")
         .toolbar {
+            // Round 13 Z2 (item 13): the Library's layout editor, as a sheet; changes apply at once.
+            ToolbarItem(placement: .topBarTrailing) {
+                LayoutEditButton(title: "Edit Library") { editsLibrary = true }
+                    .accessibilityIdentifier("library-edit-toolbar")
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 Button { showsSettings = true } label: {
                     Image(systemName: "gearshape")
@@ -43,6 +49,9 @@ struct LibraryView: View {
             }
         }
         .sheet(isPresented: $showsSettings) { SettingsView() }
+        .sheet(isPresented: $editsLibrary) {
+            LayoutEditorSheet(doneIdentifier: "library-edit-done") { LibraryLayoutView() }
+        }
         .magpieScreen()
         .task(id: model.showsRecentlyAddedGrid) { if model.showsRecentlyAddedGrid, recent.value == nil { await load() } }
     }
