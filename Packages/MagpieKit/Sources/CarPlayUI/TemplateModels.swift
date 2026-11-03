@@ -31,6 +31,10 @@ public enum CPDestination: Sendable, Hashable {
     case search
     /// Round 12 (Y2): one group of a long list's letters screen ("A", "X–Z", "S (1 of 3)"), its rows built already.
     case letterGroup(title: String, sections: [CPSectionModel])
+    /// Round 13 (item 3): every song, on its five letter groups.
+    case songs
+    /// Round 13: one song group (or a page of it): offsets in the server's title order, read when it opens.
+    case songRange(title: String, ranges: [Range<Int>])
 
     public var title: String {
         switch self {
@@ -47,7 +51,8 @@ public enum CPDestination: Sendable, Hashable {
         case .artist(_, let name), .genreGroup(_, let name), .downloadedArtist(_, let name): name
         case .searchResults(let query): query
         case .search: "Search"
-        case .letterGroup(let title, _): title
+        case .letterGroup(let title, _), .songRange(let title, _): title
+        case .songs: "Songs"
         }
     }
 }
