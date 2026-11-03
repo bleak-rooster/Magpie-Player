@@ -233,6 +233,25 @@ public actor AudioStore {
         return entry
     }
 
+    /// Round 13 item 7: swaps a cached copy for one at the right quality. Only a cache entry still at `from` is
+    /// replaced (checked here, in one step with the swap); a download, or an entry that changed or went meanwhile, is
+    /// left alone and `temporaryFile` is discarded (nil). Like `replace`, the new file is stored before the old one
+    /// is deleted.
+    @discardableResult
+    public func replaceCache(songId: String, from: StreamQuality, with temporaryFile: URL, quality: StreamQuality,
+                             fileExtension: String) throws -> AudioEntry? {
+        try ensureReady()
+        guard Self.allowedExtensions.contains(fileExtension) else {
+            try? FileManager.default.removeItem(at: temporaryFile)
+            throw AudioStoreError.invalidFile
+        }
+        guard let old = index.entries[songId], old.kind == .cache, old.quality == from, from != quality else {
+            try? FileManager.default.removeItem(at: temporaryFile)
+            return nil
+        }
+        return try replace(songId: songId, with: temporaryFile, quality: quality, fileExtension: fileExtension)
+    }
+
     // MARK: - Reasons, plays and removal
 
     /// Adds `reason` to a stored song in one step; a cached song becomes a download only if it fits the downloads
