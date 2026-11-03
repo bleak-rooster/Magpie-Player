@@ -96,6 +96,16 @@ struct FindsIT {
                 // Same paths for Lidarr and Navidrome on the dev stack: the artist folder inside the main library.
                 let folder = artistPath.split(separator: "/").last.map(String.init) ?? ""
                 return try await navidrome.songs(recordingMBID: id, inLibrary: main.id, under: folder).first
+            },
+            songExists: { songId in
+                do {
+                    _ = try await navidrome.song(id: songId)
+                    return true
+                } catch NavidromeError.api(code: 70, _) {
+                    return false
+                } catch {
+                    return nil
+                }
             })
         let runner = RequestRunner(lidarr: client, gate: confinedGate, ledger: ledger, mb: mb, library: library,
                                    store: RequestStore(fileURL: dir.appending(path: "requests.json")),
@@ -153,6 +163,14 @@ struct FindsIT {
             let findSong = try #require(try await Self.settledSongs(navidrome, excludingLibrary: nil).first,
                                         "the ready find isn't listed in Navidrome")
             #expect(findSong.libraryId == finds.id)
+            // The ready find holds the song's id now, even when Navidrome re-identified it after Ready (the reconcile
+            // pass looks again, after its `refindInterval`).
+            for _ in 0..<45 where request.songId != findSong.id {
+                try await Task.sleep(for: .seconds(2))
+                await runner.tick()
+                request = try #require(await runner.requests.first { $0.id == id })
+            }
+            #expect(request.songId == findSong.id, "the ready find's song id is the library's")
 
             if letGo {
                 try await notForMe(runner, id, client: client, gate: gate, ledger: ledger, artistId: artistId,

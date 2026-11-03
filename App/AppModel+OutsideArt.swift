@@ -37,7 +37,7 @@ extension AppModel {
     func readyCoverArtId(_ request: MagpieRequestCover) async -> String? {
         guard let songId = request.songId else { return nil }
         if let known = ReadyCovers.shared.ids[songId] { return known }
-        guard let song = try? await self.request({ try await $0.song(id: songId) }), let id = song.coverArtId else { return nil }
+        guard let song = await librarySong(songId), let id = song.coverArtId else { return nil }   // a gone id: looked up again
         ReadyCovers.shared.ids[songId] = id
         return id
     }
