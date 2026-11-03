@@ -4,6 +4,8 @@ Status: proposal for owner review · 2026-10-26 · pairs with `design-language.m
 
 Artboards (canvas, 800×480 each): `CP-Home`, `CP-Library`, `CP-Album`, `CP-Search`, `CP-SearchResults`, `CP-TryAlert`, `CP-NowPlaying`, `CP-NowPlaying-Sample`, `CP-ReadyToTry`, `CP-States`. File names are kept so links don't break: `CP-ReadyToTry` is the **Finds** tab and `CP-NowPlaying-Sample` is Now Playing for a find.
 
+> **Round 13 (D63–D68).** The tabs are Home · Library · a third tab chosen in Settings › CarPlay (Playlists by default; Finds moved into the Library) · Search. Artists, Songs and Albums open on five letter groups (A–E … U–Z & #); Albums start with Newest. Now Playing's Up Next lists the queue. The car's Home has its own shelves (the phone's until changed).
+
 ## 1. What we can and can't change
 
 CarPlay audio apps draw nothing of their own. Everything is a system template. We control five things:
