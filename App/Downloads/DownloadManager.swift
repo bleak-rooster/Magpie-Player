@@ -96,7 +96,7 @@ final class DownloadManager {
     /// P1: the scene is active (+Activity); "Keep screen on while downloading" holds the idle timer only then.
     var isAppActive = true
 
-    @ObservationIgnored private let fetcher: any AudioFetching
+    @ObservationIgnored let fetcher: any AudioFetching   // (+CacheQuality)
     /// R1: downloads and pre-downloads go through it while "Download in the background" is on (nil in most tests).
     @ObservationIgnored let backgroundFetcher: (any ResumableAudioFetching)?
     /// R1: bytes held for a stopped job (job id), for "Paused · 2.1 of 8.4 MB" (+Resume).
@@ -105,7 +105,7 @@ final class DownloadManager {
     @ObservationIgnored var storing = 0
     @ObservationIgnored private let network: any NetworkStatusProviding
     @ObservationIgnored private let preferences: @MainActor () -> DownloadPreferences
-    @ObservationIgnored private let streamURL: @MainActor (Song, StreamQuality) -> URL?
+    @ObservationIgnored let streamURL: @MainActor (Song, StreamQuality) -> URL?   // (+CacheQuality)
     @ObservationIgnored private let coverArtURL: @MainActor (String) -> URL?
     @ObservationIgnored private let limitBytes: (DownloadPreferences) -> Int64?
     /// Offline (Task 14): manual downloads and covers wait, as for Wi-Fi, and go when the server is back.
@@ -114,7 +114,7 @@ final class DownloadManager {
     /// (+Removal, read only)
     @ObservationIgnored private(set) var tasks: [UUID: Task<Void, Never>] = [:]
     /// Job runs still unwinding, cancelled or not (run id → song id): these hold the concurrency slots.
-    @ObservationIgnored private var activeRuns: [UUID: String] = [:]
+    @ObservationIgnored private(set) var activeRuns: [UUID: String] = [:]   // (+CacheQuality, read only)
     @ObservationIgnored private var generation = 0
     @ObservationIgnored private var networkWatch: Task<Void, Never>?
     /// Covers to fetch once manual downloads may use the network.
@@ -142,6 +142,10 @@ final class DownloadManager {
     /// P1: holds the idle timer off while downloads run with Magpie open (+Activity).
     @ObservationIgnored var idleTimer = IdleTimerHold()
     @ObservationIgnored var keepAwakeWatch: Task<Void, Never>?
+    /// Round 13 item 7 (+CacheQuality): the one cache replacement fetching, or held for its swap.
+    @ObservationIgnored var cacheRefresh = CacheRefreshState()
+    /// Whether playback holds a song now (the current one, or the engine's window): its cached file isn't swapped.
+    @ObservationIgnored var isSongInUse: @MainActor (String) -> Bool = { _ in false }
 
     /// A removal the store refused with `notReady`: `reason` off `songIds` (nil: every song).
     struct Removal: Equatable {
@@ -425,6 +429,7 @@ final class DownloadManager {
     /// its result.
     func cancelAll() {
         generation += 1
+        dropCacheRefresh()
         for task in tasks.values { task.cancel() }
         jobs = []
         stoppedByFull = []
@@ -502,6 +507,9 @@ final class DownloadManager {
         songIds.filter { kinds[$0] == .download && reasons[$0]?.contains(reason) != true }.count
     }
 
+    /// Whether a stored song is a download or a cached copy (nil: not on the phone).
+    func kind(of songId: String) -> AudioKind? { kinds[songId] }
+
     /// Why a song is kept (empty when it isn't downloaded).
     func reasons(for songId: String) -> Set<DownloadReason> { reasons[songId] ?? [] }
 
@@ -523,10 +531,10 @@ final class DownloadManager {
 
     static func isImage(_ mimeType: String?) -> Bool { mimeType?.lowercased().hasPrefix("image/") == true }
 
-    private func isLive(_ gen: Int) -> Bool { gen == generation }
+    func isLive(_ gen: Int) -> Bool { gen == generation }   // (+CacheQuality)
 
     /// Whether manual downloads may use the network right now (never offline).
-    private func manualAllowed(_ prefs: DownloadPreferences) -> Bool {
+    func manualAllowed(_ prefs: DownloadPreferences) -> Bool {   // (+CacheQuality)
         let status = network.status
         return status.isConnected && !isOffline() && (!status.isCellular || prefs.overMobileData)
     }
@@ -534,6 +542,7 @@ final class DownloadManager {
     /// The network or offline mode changed: what waits goes if it may now, and manual work that may not waits.
     func networkChanged() {
         let prefs = preferences().normalised()
+        stopCacheRefreshIfNotAllowed()   // round 13 item 7: no replacement on mobile data when downloads may not
         if manualAllowed(prefs) {
             for i in jobs.indices where jobs[i].state == .waiting { jobs[i].state = .queued }
             fetchCovers()
@@ -580,12 +589,15 @@ final class DownloadManager {
         }
     }
 
-    private func track(_ operation: @escaping @MainActor (_ generation: Int) async -> Void) {
+    /// Returns the task's key in `tasks` (+CacheQuality cancels its fetch by it).
+    @discardableResult
+    func track(_ operation: @escaping @MainActor (_ generation: Int) async -> Void) -> UUID {
         let key = UUID(), gen = generation
         tasks[key] = Task { [weak self] in
             await operation(gen)
             self?.taskEnded(key)
         }
+        return key
     }
 
     private func taskEnded(_ key: UUID) {

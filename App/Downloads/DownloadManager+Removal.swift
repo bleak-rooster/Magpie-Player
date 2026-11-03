@@ -96,6 +96,7 @@ extension DownloadManager {
 
     /// "Clear cache": pre-downloads stop and every cached song goes. Downloads stay.
     func clearCache() async {
+        dropCacheRefresh()   // round 13 item 7: a replacement fetching or held goes too
         cancelRunning { $0.kind == .cache }
         jobs.removeAll { $0.kind == .cache }
         prunePartials()
