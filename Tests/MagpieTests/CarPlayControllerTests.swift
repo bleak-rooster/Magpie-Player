@@ -42,7 +42,11 @@ final class FakeCarInterface: CarPlayInterface {
         completion?(true, nil)
     }
 
+    /// Z3 review M5: a pop the car refuses (nothing changes, the completion says so).
+    var failsPops = false
+
     func pop(to targetTemplate: CPTemplate, animated: Bool, completion: ((Bool, (any Error)?) -> Void)?) {
+        if failsPops { completion?(false, nil); return }
         if let index = templates.firstIndex(where: { $0 === targetTemplate }) { templates = Array(templates.prefix(index + 1)) }
         completion?(true, nil)
     }
@@ -173,9 +177,9 @@ final class FakeCarInterface: CarPlayInterface {
             $0.layout.home.set(.genres, visible: true, keepingOneOf: [])
             $0.layout.setLibraryRow(.artists, visible: false)
         }
-        // Round 13: the car's Home follows the phone's until changed, without Genres (it stays in the car's Library).
+        // Round 13: the car's Home follows the phone's until changed (Genres included).
         #expect(await eventually {
-            FakeCarInterface.headers(self.shown(car, controller, tab: 0)) == ["Jump back in", "Most played"]
+            FakeCarInterface.headers(self.shown(car, controller, tab: 0)) == ["Jump back in", "Most played", "Genres"]
         })
         #expect(await eventually {
             FakeCarInterface.texts(self.shown(car, controller, tab: 1)) == ["Playlists", "Albums", "Songs", "Genres", "Favourites",

@@ -40,9 +40,11 @@ public enum CarPlayTab: String, CaseIterable, Codable, Hashable, Sendable {
     }
 }
 
-/// One shelf the car's Home may show (the plan's nine; Genres stays in the Library).
+/// One shelf the car's Home may show: the plan's nine, then Genres (as the car showed it before round 13).
 public enum CarPlayHomeShelf: String, CaseIterable, Codable, Hashable, Sendable {
     case discover, playlists, recentlyAdded, downloaded, mostPlayed, jumpBackIn, favourites, randomAlbums, madeForYou
+    /// Review (Z3): the car showed a Genres shelf before round 13; it stays an option.
+    case genres
 
     /// The phone's Home section it reads (same raw value).
     public var section: HomeSection {
@@ -56,6 +58,7 @@ public enum CarPlayHomeShelf: String, CaseIterable, Codable, Hashable, Sendable 
         case .favourites: .favourites
         case .randomAlbums: .randomAlbums
         case .madeForYou: .madeForYou
+        case .genres: .genres
         }
     }
 

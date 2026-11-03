@@ -14,16 +14,16 @@ import Testing
                                                      "Discover", "Downloads"])
     }
 
-    /// The plan's nine shelves, in its order (Genres isn't one of them).
-    @Test func theCarsHomeOffersNineShelves() {
+    /// The plan's nine shelves, in its order, and (review) Genres as the car showed it before: an optional tenth.
+    @Test func theCarsHomeOffersTenShelves() {
         #expect(CarPlayHomeShelf.allCases.map(\.title) == ["Discover", "Playlists", "Recently added", "Recently downloaded",
                                                            "Most played", "Jump back in", "Favourites", "Random albums",
-                                                           "Made for you"])
+                                                           "Made for you", "Genres"])
         #expect(CarPlayHomeShelf.allCases.map(\.section) == [.discover, .playlists, .recentlyAdded, .downloaded, .mostPlayed,
-                                                             .jumpBackIn, .favourites, .randomAlbums, .madeForYou])
+                                                             .jumpBackIn, .favourites, .randomAlbums, .madeForYou, .genres])
     }
 
-    /// The default copies the phone's layout: its order and switches, without Genres.
+    /// The default copies the phone's layout: its order and switches, Genres included.
     @Test func followingThePhoneCopiesItsOrderAndSwitches() {
         var phone = LayoutPreferences.defaultValue
         phone.home.moveDown(.jumpBackIn)   // madeForYou, jumpBackIn, …
@@ -32,9 +32,9 @@ import Testing
         let car = CarPlayPreferences.defaultValue
         let list = car.homeList(following: phone.home)
         #expect(list.entries.map(\.item) == [.madeForYou, .jumpBackIn, .recentlyAdded, .mostPlayed, .favourites,
-                                             .randomAlbums, .playlists, .downloaded, .discover])
+                                             .randomAlbums, .playlists, .genres, .downloaded, .discover])
         #expect(car.visibleHomeSections(phone: phone, offline: false, hasListenBrainzToken: true, discoverSetUp: true)
-                == [.madeForYou, .jumpBackIn, .recentlyAdded, .mostPlayed, .playlists, .discover])
+                == [.madeForYou, .jumpBackIn, .recentlyAdded, .mostPlayed, .playlists, .genres, .discover])
     }
 
     /// Once changed, the car keeps its own list: the phone's changes don't move it.
@@ -63,9 +63,9 @@ import Testing
         let data = try #require(car.encoded())
         #expect(CarPlayPreferences.decode(data) == car)
         #expect(CarPlayPreferences.decode(Data(#"{"thirdTab":"finds"}"#.utf8)) == .defaultValue, "an unknown tab: the default")
-        let partial = CarPlayPreferences.decode(Data(#"{"home":[{"id":"playlists","visible":true},{"id":"genres","visible":true}]}"#.utf8))
+        let partial = CarPlayPreferences.decode(Data(#"{"home":[{"id":"playlists","visible":true},{"id":"nope","visible":true}]}"#.utf8))
         #expect(partial.home?.entries.first == .init(item: .playlists, visible: true))
-        #expect(partial.home?.entries.count == CarPlayHomeShelf.allCases.count, "missing shelves come back, hidden")
+        #expect(partial.home?.entries.count == CarPlayHomeShelf.allCases.count, "an unknown shelf is dropped; missing shelves come back, hidden")
         #expect(partial.home?.entries.dropFirst().allSatisfy { !$0.visible } == true)
     }
 

@@ -99,6 +99,11 @@ public final class CarPlayController: NSObject {
     /// The plain record shown for a not-yet row (no cover to put on its label).
     private var blankRecord: UIImage?
 
+    /// The car's list limits now (read at runtime; tests set their own). Z3 review I2.
+    var listLimits: () -> (items: Int, sections: Int) = {
+        (Int(CPListTemplate.maximumItemCount), Int(CPListTemplate.maximumSectionCount))
+    }
+
     /// Artwork requests in flight per list.
     private static let artworkConcurrency = 4
 
@@ -183,7 +188,7 @@ public final class CarPlayController: NSObject {
     private func loadThirdTab() {
         guard let thirdRoot, let thirdTab else { return }
         thirdRoot.destination = thirdTab.destination
-        load(thirdRoot, fetcher(for: thirdTab.destination))
+        load(thirdRoot, fetcher(for: thirdTab.destination, into: thirdRoot))
     }
 
     private func tabRoot(_ title: String, symbol: String) -> CPListTemplate {
@@ -254,13 +259,14 @@ public final class CarPlayController: NSObject {
         let binding = bind(template)
         binding.destination = destination
         interface.pushTemplate(template, animated: true, completion: nil)
-        load(binding, fetcher(for: destination))
+        load(binding, fetcher(for: destination, into: binding))
     }
 
     typealias Content = @Sendable (String?) -> [CPSectionModel]
 
-    private func fetcher(for destination: CPDestination) -> @MainActor () async throws -> Content {
-        if let az = azFetcher(for: destination) { return az }   // Y2: the A–Z lists (CarPlayController+AZ.swift)
+    private func fetcher(for destination: CPDestination, into binding: ListBinding? = nil)
+        -> @MainActor () async throws -> Content {
+        if let az = azFetcher(for: destination, into: binding) { return az }   // Y2: the A–Z lists (CarPlayController+AZ.swift)
         let library = library
         switch destination {
         case .album(let id, _):
@@ -496,6 +502,12 @@ public final class CarPlayController: NSObject {
     }
 
     func resetBindings() {
+        // Z3 review I1: the layout watch goes with the tabs, so it can never bring them back over a state screen.
+        if let old = layoutWatch {
+            old.cancel()
+            watches.removeAll { $0 == old }
+            layoutWatch = nil
+        }
         for binding in bindings.values { binding.cancel() }
         bindings = [:]
         tabBar = nil
@@ -828,6 +840,9 @@ final class ListBinding {
     let template: CPListTemplate
     /// What a pushed list shows (Y2: the A–Z lists are read again when the car's limits change).
     var destination: CPDestination?
+    /// Z3 review I2: the list limits an A–Z list was laid out for, and how to lay out what was read for other limits.
+    var limits: (items: Int, sections: Int)?
+    var relayout: ((_ items: Int, _ sections: Int) async -> [CPSectionModel])?
     /// The models currently on screen (after clamping).
     var shown: [CPSectionModel] = []
     /// Showing loading or a state row, not real content: may be replaced even while on screen.

@@ -98,6 +98,7 @@ extension CarPlayController {
                 let change = CPLayoutChange(from: last, to: layout)
                 last = layout
                 if change.rebuildsTabs {   // round 13: a new third tab; the tabs are built again (and this watch with them)
+                    guard self.tabBar != nil else { return }   // Z3 review I1: only while the tabs are showing
                     self.resetBindings()
                     self.showTabs()
                     return

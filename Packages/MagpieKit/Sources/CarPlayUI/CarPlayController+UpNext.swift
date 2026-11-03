@@ -13,10 +13,13 @@ extension CarPlayController {
             return
         }
         guard let tabBar else { return }
-        interface.pop(to: tabBar, animated: false) { [weak self] _, _ in
+        // Z3 review M5: each step only once the one before went through, so Now Playing is never pushed twice.
+        interface.pop(to: tabBar, animated: false) { [weak self] popped, _ in
             MainActor.assumeIsolated {
-                self?.interface.pushTemplate(CPNowPlayingTemplate.shared, animated: false, completion: nil)
-                self?.pushUpNext()
+                guard popped, let self, self.interface.topTemplate === tabBar else { return }
+                self.interface.pushTemplate(CPNowPlayingTemplate.shared, animated: false) { [weak self] pushed, _ in
+                    MainActor.assumeIsolated { if pushed { self?.pushUpNext() } }
+                }
             }
         }
     }

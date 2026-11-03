@@ -38,8 +38,9 @@ private func subsonic(_ body: String) -> Data {
             let items = request.url.flatMap { URLComponents(url: $0, resolvingAgainstBaseURL: false) }?.queryItems ?? []
             func value(_ name: String) -> Int { Int(items.first { $0.name == name }?.value ?? "0") ?? 0 }
             let titles = Self.songTitles
+            // "Bee" is a missing file: it holds its place in the order, and `songsPage` drops it.
             let rows = titles.indices.dropFirst(value("_start")).prefix(max(0, value("_end") - value("_start"))).map {
-                #"{"id":"s\#($0)","title":"\#(titles[$0])","artist":"A","album":"B","duration":60}"#
+                #"{"id":"s\#($0)","title":"\#(titles[$0])","artist":"A","album":"B","duration":60,"missing":\#($0 == 2)}"#
             }
             return MockTransport.Response(status: 200, body: Data("[\(rows.joined(separator: ","))]".utf8),
                                           headers: ["X-Total-Count": "\(titles.count)"])
@@ -199,6 +200,56 @@ private func subsonic(_ body: String) -> Data {
         controller.nowPlayingTemplateUpNextButtonTapped(CPNowPlayingTemplate.shared)
         #expect(car.templates.count == 3)
         #expect(car.templates[1] === CPNowPlayingTemplate.shared && car.topList?.title == "Up Next")
+    }
+
+    // MARK: Z3 review
+
+    /// I2: a change between driving and parked with the same list limits reads nothing again; new limits lay out the
+    /// list already read again, without reading it.
+    @Test func aLimitsFlipReadsNothingAgain() async throws {
+        let model = try await signedInModel()
+        model.updatePreferences { $0.carPlay.thirdTab = .albums }
+        let (car, controller) = car(model)
+        defer { controller.disconnect() }
+        #expect(await eventually { FakeCarInterface.texts(car.tab(2)) == ["Newest"] + Self.bands })
+        func reads() -> Int {
+            transport.inner.requests.filter { $0.url?.query?.contains("alphabeticalByName") == true }.count
+        }
+        let before = reads()
+        let session = CPSessionConfiguration(delegate: controller)
+        controller.sessionConfiguration(session, limitedUserInterfacesChanged: [.keyboard])
+        controller.sessionConfiguration(session, limitedUserInterfacesChanged: [])
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(reads() == before, "same limits: nothing read again")
+
+        controller.listLimits = { (items: 4, sections: 12) }
+        controller.sessionConfiguration(session, limitedUserInterfacesChanged: [.keyboard])
+        #expect(await eventually { controller.thirdRoot?.limits?.items == 4 }, "laid out again for the new limits")
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(reads() == before, "from what was read already")
+        #expect(FakeCarInterface.texts(car.tab(2)) == ["Newest"] + Self.bands)
+    }
+
+    /// M3: a page shortened by a missing file doesn't end its range: the rest of the range is still read.
+    @Test func aShortPageDoesntEndTheRange() async throws {
+        let model = try await signedInModel()
+        let (songs, total) = try await CarPlayController.readSongs(CarPlayLibraryAdapter(model: model), ranges: [1..<6],
+                                                                   limit: 100, pageSize: 2)
+        #expect(songs.map(\.id) == ["s1", "s3", "s4", "s5"])
+        #expect(total == 5, "the count includes the missing file")
+    }
+
+    /// M5: when the car refuses the pop back to the tabs, Up Next pushes nothing (Now Playing never twice).
+    @Test func upNextPushesNothingWhenThePopFails() async throws {
+        let model = try await signedInModel()
+        let (car, controller) = car(model)
+        defer { controller.disconnect() }
+        for title in ["One", "Two", "Three"] { controller.perform(.open(.letterGroup(title: title, sections: []))) }
+        controller.start([Song(id: "q0", title: "Song 0", artist: "A", album: "B", duration: 60)], at: 0, shuffled: false)
+        car.failsPops = true
+        controller.nowPlayingTemplateUpNextButtonTapped(CPNowPlayingTemplate.shared)
+        #expect(car.templates.count == 5)
+        #expect(car.templates.filter { $0 === CPNowPlayingTemplate.shared }.count == 1)
     }
 
     // MARK: Item 11: the car's Home

@@ -167,15 +167,15 @@ private func subsonic(_ body: String) -> Data {
         await model.downloads!.settled()
         model.updatePreferences { for s in HomeSection.allCases { $0.layout.home.set(s, visible: true, keepingOneOf: []) } }
         let adapter = CarPlayLibraryAdapter(model: model)
-        // Round 13: the car's Home (the phone's until changed) has no Genres shelf; Genres stays in its Library.
+        // Round 13: the car's Home is the phone's until changed (Genres included).
         #expect(adapter.homeSections == [.jumpBackIn, .madeForYou, .recentlyAdded, .mostPlayed, .favourites, .randomAlbums,
-                                         .playlists, .downloaded])
+                                         .playlists, .genres, .downloaded])
         let shelves = try await adapter.homeShelves(adapter.homeSections, size: CarPlayRows.homeShelfMaxSize)
         #expect(shelves.map(\.section) == adapter.homeSections, "every section has tiles")
         #expect(shelves.allSatisfy { $0.items.count <= CarPlayRows.homeShelfMaxSize })
         let home = CarPlayRows.home(shelves, maxItems: 12, maxSections: 12)
         #expect(home.map(\.header) == adapter.homeSections.map(\.title))
-        #expect(home.map(\.rows.count) == [2, 1, 2, 2, 2, 1, 1, 1], "12 tiles, earlier shelves first")
+        #expect(home.map(\.rows.count) == [2, 1, 2, 2, 1, 1, 1, 1, 1], "12 tiles, earlier shelves first")
         #expect(clamp(home, maxItems: 12, maxSections: 12) == home)
         #expect(home[1].rows.map(\.action) == [.open(.madeForYou(id: "5a2b8c4e-7a0b-4f61-9a0e-0c8f2d1e9b11",
                                                                  title: "Weekly Exploration"))])
