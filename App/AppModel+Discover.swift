@@ -26,7 +26,7 @@ struct DiscoverPage: Equatable {
 extension AppModel {
     // MARK: - Connection
 
-    /// Aurral is set up (an address and key are saved). Discover shows only then.
+    /// Aurral is set up (signed in: an address, a user and a session are saved). Discover shows only then.
     var aurralSetUp: Bool { discover.connection != nil }
 
     /// The saved Aurral is plain http to a public host without consent (a reinstall): nothing is sent to it until the
@@ -36,39 +36,58 @@ extension AppModel {
         return discover.connection.map { !plainHTTPConsent.allows($0.base) } ?? false
     }
 
-    /// A client for the saved Aurral; nil without one, or while its address waits for consent (the key is never sent
-    /// unencrypted to a public address without the owner's say-so).
+    /// A client for the saved Aurral, signed in as its user; nil without one, or while its address waits for consent
+    /// (the password and the token are never sent unencrypted to a public address without the owner's say-so).
     var aurralClient: AurralClient? {
-        guard let connection = discover.connection, plainHTTPConsent.allows(connection.base) else { return nil }
-        return AurralClient(base: connection.base, apiKey: connection.apiKey, transport: transport)
+        guard let connection = discover.connection, plainHTTPConsent.allows(connection.base),
+              let session = discover.session else { return nil }
+        return AurralClient(base: connection.base, session: session, transport: transport)
     }
 
-    /// Checks the address (`/api/health`) and key (`/api/playlists/status`), then saves both to the Keychain. Throws
-    /// `PlainHTTPConsentRequired` for a public plain-http address the owner hasn't allowed (nothing sent), the ATS
-    /// error, `AurralError.unauthorized` for a wrong key, `AurralError.notFound` for something that isn't Aurral.
-    func connectAurral(base: URL, apiKey: String) async throws -> AurralHealth {
+    /// Round 13 item 1: signs in to Aurral as a user. Checks the address (`/api/health`), logs in
+    /// (`POST /api/auth/login`), reads the user's flows, then saves the address, user, session and password to the
+    /// Keychain. Throws `PlainHTTPConsentRequired` for a public plain-http address the owner hasn't allowed (nothing
+    /// sent), the ATS error, `AurralError.badLogin` for a wrong username or password, `.rateLimited` after too many
+    /// tries, `.notFound` for something that isn't Aurral.
+    func connectAurral(base: URL, username: String, password: String) async throws -> AurralHealth {
         if atsBlocks(base) { throw Self.atsError(base) }
         guard plainHTTPConsent.allows(base) else { throw PlainHTTPConsentRequired(urls: [base]) }
-        let connection = AurralConnection(base: base, apiKey: apiKey.trimmingCharacters(in: .whitespacesAndNewlines))
-        let client = AurralClient(base: connection.base, apiKey: connection.apiKey, transport: transport)
-        let health = try await client.health()
-        let status = try await client.status()
+        let username = username.trimmingCharacters(in: .whitespacesAndNewlines)
+        let probe = AurralClient(base: base, session: AurralSession(username: username, password: nil, login: nil),
+                                 transport: transport)
+        let health = try await probe.health()
+        let login = try await AurralClient.signIn(base: base, username: username, password: password, transport: transport)
+        let connection = AurralConnection(base: base, username: username, password: password, login: login)
+        let session = discover.makeSession(connection)
+        let status = try await AurralClient(base: base, session: session, transport: transport).status()
+        if let previous = discover.connection, previous.account != connection.account { endAurralSession() }
         try discover.store.save(connection)
-        if discover.connection != connection { forgetDiscoverReads() }
-        discover.connection = connection
+        if discover.connection?.account != connection.account { forgetDiscoverReads() }
+        discover.use(connection)
         discover.health = health
         noteStatus(status)
         await refreshDiscover(force: true)
         return health
     }
 
-    /// Settings › Aurral's "Test connection": the version, and whether the key still works.
+    /// Settings › Aurral's "Test connection": the version, and whether the session still works (logging in again if
+    /// Aurral ended it).
     func testAurral() async throws -> AurralHealth {
-        guard let client = aurralClient else { throw AurralError.unauthorized }
-        let health = try await client.health()
-        discover.health = health
-        noteStatus(try await client.status())
-        return health
+        guard let client = aurralClient else { throw AurralError.signInNeeded }
+        do {
+            let health = try await client.health()
+            discover.health = health
+            noteStatus(try await client.status())
+            return health
+        } catch {
+            noteAurralError(error)
+            throw error
+        }
+    }
+
+    /// Aurral ended the session and it can't be renewed: Settings asks to sign in again (Discover keeps what it read).
+    func noteAurralError(_ error: Error) {
+        if case AurralError.signInNeeded? = error as? AurralError { discover.needsSignIn = true }
     }
 
     /// The owner allowed the saved Aurral's plain-http address.
@@ -77,17 +96,27 @@ extension AppModel {
         allowPlainHTTP([base])
     }
 
-    /// Forgets the address and key on this iPhone (nothing in Aurral changes); Discover goes, and Aurral's library is
-    /// listed again as any other library would be.
+    /// Settings › Aurral › Sign out: ends the session in Aurral (when it can be reached) and forgets the address,
+    /// user, session and password on this iPhone. Discover goes, and Aurral's library is listed again as any other
+    /// library would be. Nothing else in Aurral changes.
     func disconnectAurral() {
+        endAurralSession()
         discover.store.clear()
-        discover.connection = nil
+        discover.use(nil)
         forgetDiscoverReads()
     }
 
     /// Sign-out: the Aurral connection goes with the account.
     func forgetDiscover() {
         disconnectAurral()
+    }
+
+    /// `POST /api/auth/logout` for the saved session, sent and forgotten (never a new login for it; offline, or
+    /// waiting for consent, nothing is sent and the session simply lapses in Aurral).
+    private func endAurralSession() {
+        guard let client = aurralClient, !isOffline else { return }
+        let task = Task { _ = try? await client.logout() }
+        discover.pendingLogout = task
     }
 
     private func forgetDiscoverReads() {
@@ -128,13 +157,16 @@ extension AppModel {
     func refreshDiscover(force: Bool = false) async {
         guard let client = aurralClient, session != nil, !isOffline, let scope = navidromeScope else { return }
         if !force, let at = discover.statusReadAt, discover.now().timeIntervalSince(at) < 30, !discover.playlists.isEmpty { return }
-        let connection = discover.connection
-        guard let status = try? await client.status(),
-              let all = try? await request({ try await $0.playlists() }) else { return }
+        let account = discover.connection?.account
+        let status: AurralStatus
+        do { status = try await client.status() } catch { noteAurralError(error); return }
+        guard let all = try? await request({ try await $0.playlists() }) else { return }
         let jobs = (try? await client.jobs()) ?? nil
-        guard navidromeScope == scope, discover.connection == connection else { return }   // another account or Aurral
+        guard navidromeScope == scope, discover.connection?.account == account else { return }   // another account or Aurral
         noteStatus(status)
-        if let jobs { discover.jobs = jobs }
+        // Round 13: only the signed-in user's flows' songs (Aurral shows an admin everyone's).
+        let flowIds = Set(status.flows.map(\.id))
+        if let jobs { discover.jobs = jobs.filter { $0.flowId.map(flowIds.contains) ?? false } }
         let before = discoverPlaylistIds
         let candidates = DiscoverRules.flowPlaylists(flows: status.flows, playlists: all)
         var entries: [String: [Song]] = [:], unread = Set<String>()
@@ -145,7 +177,7 @@ extension AppModel {
                 unread.insert(candidate.playlist.id)
             }
         }
-        guard navidromeScope == scope, discover.connection == connection else { return }
+        guard navidromeScope == scope, discover.connection?.account == account else { return }
         let confirmed = DiscoverRules.confirmedFlowPlaylists(candidates, entries: entries, jobs: discover.jobs,
                                                              aurralSongIds: knownAurralSongIds)
         let confirmedIds = Set(confirmed.map(\.playlist.id))
@@ -414,6 +446,8 @@ enum DiscoverCopy {
     static let refreshConfirm = "Replaces this playlist\u{2019}s songs"
     static let refreshing = "Getting new songs\u{2026}"
     static let runActive = "A refresh is already under way. Try again when it\u{2019}s done."
+    /// Round 13: the session ended and Magpie couldn't sign in again by itself.
+    static let signInAgain = "Discover\u{2019}s server signed you out. Sign in again in Settings."
     static let inYourLibrary = "In your library"
     static let artistsInPlaylist = "Artists in this playlist"
     static let empty = "No Discover playlists yet."
@@ -432,7 +466,9 @@ enum DiscoverCopy {
     static func message(for error: Error) -> String {
         switch error as? AurralError {
         case .runActive?: runActive
-        case .unauthorized?: "Discover\u{2019}s server refused the key. Check it in Settings \u{203A} New music."
+        case .unauthorized?: "Discover\u{2019}s server said no. Check your account in Settings."
+        case .signInNeeded?, .badLogin?: signInAgain
+        case .rateLimited?: AurralCopy.rateLimited
         case .notFound?: "That flow isn\u{2019}t there any more."
         case .forbidden?: "Magpie doesn\u{2019}t send that."
         default: AppModel.isConnectionError(error) ? "Discover\u{2019}s server isn\u{2019}t answering right now." : BrowseErrorCopy.message(for: error)
