@@ -57,8 +57,10 @@ final class AppIconUITests: XCTestCase {
             }
             XCTAssertTrue(icon.isSelected, "\(id) is the chosen icon")
         }
-        // Each of the 13 has a preview in the grid.
+        // Each of the 15 has a preview in the grid; the green cover's family comes first.
         XCTAssertTrue(app.buttons["app-icon-Default"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["app-icon-DefaultInk"].exists)
+        XCTAssertTrue(app.buttons["app-icon-DefaultSunset"].exists)
         pick("NestSunset")
         let shot = XCTAttachment(screenshot: app.screenshot()); shot.name = "app-icon-picker"; shot.lifetime = .keepAlways
         add(shot)
