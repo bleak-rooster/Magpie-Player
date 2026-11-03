@@ -61,7 +61,7 @@ struct DiscoverArtistsView: View {
         NavigationStack {
             List {
                 if model.lidarr == nil {
-                    Text("Set up adding music in Settings \u{203A} New music to add these artists.")
+                    Text("Set up adding music in Settings \u{203A} Lidarr to add these artists.")
                         .font(.footnote).foregroundStyle(themed.palette.ink2Color)
                 }
                 ForEach(artists) { artist in

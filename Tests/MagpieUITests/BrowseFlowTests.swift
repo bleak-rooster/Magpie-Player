@@ -544,7 +544,7 @@ final class BrowseFlowTests: XCTestCase {
             _ = settings.waitForExistence(timeout: 5)
         }
         settings.tap()
-        let requests = app.buttons["settings-requests"]
+        let requests = app.buttons["settings-lidarr-account"]
         XCTAssertTrue(requests.waitForExistence(timeout: 10))
         requests.tap()
         let connect = app.buttons["settings-connect-lidarr"]
@@ -562,10 +562,11 @@ final class BrowseFlowTests: XCTestCase {
             XCTAssertTrue(version.waitForExistence(timeout: 20))
             app.buttons["Done"].firstMatch.tap()
         }
-        // Fix round 1 I3: a top-level Settings row while Lidarr is connected.
-        app.navigationBars.buttons.firstMatch.tap()   // › Settings
+        // Round 13 item 14: Downloads in Lidarr opens from the Lidarr page (no longer a top-level row).
+        XCTAssertFalse(app.navigationBars["Settings"].exists)
         let downloads = app.buttons["settings-lidarr-downloads"]
-        XCTAssertTrue(downloads.waitForExistence(timeout: 10), "Settings lists Downloads in Lidarr")
+        for _ in 0..<8 where !downloads.isHittable { app.swipeUp() }
+        XCTAssertTrue(downloads.waitForExistence(timeout: 10), "the Lidarr page links Downloads in Lidarr")
         downloads.tap()
         XCTAssertTrue(app.navigationBars["Downloads in Lidarr"].waitForExistence(timeout: 10))
         let empty = app.descendants(matching: .any)["lidarr-downloads-empty"]
@@ -592,7 +593,7 @@ final class BrowseFlowTests: XCTestCase {
             _ = settings.waitForExistence(timeout: 5)
         }
         settings.tap()
-        let requests = app.buttons["settings-requests"]
+        let requests = app.buttons["settings-lidarr-account"]
         XCTAssertTrue(requests.waitForExistence(timeout: 10))
         requests.tap()
         app.buttons["settings-connect-lidarr"].tap()
@@ -630,7 +631,7 @@ final class BrowseFlowTests: XCTestCase {
         // R18 + R20: Add with my defaults, as the test needs it.
         let mine = app.switches["settings-add-with-my-defaults"]
         for _ in 0..<6 where !mine.isHittable { app.swipeUp() }
-        XCTAssertTrue(mine.exists, "Settings › New music has Add with my defaults")
+        XCTAssertTrue(mine.exists, "Settings › Lidarr has Add with my defaults")
         if (mine.value as? String == "1") != withMyDefaults { mine.switches.firstMatch.exists ? mine.switches.firstMatch.tap() : mine.tap() }
         XCTAssertTrue(XCTWaiter.wait(for: [XCTNSPredicateExpectation(
             predicate: NSPredicate(format: "value == %@", withMyDefaults ? "1" : "0"), object: mine)], timeout: 5) == .completed)
@@ -707,8 +708,8 @@ final class BrowseFlowTests: XCTestCase {
         XCTAssertTrue(add.waitForExistence(timeout: 5))
     }
 
-    /// Library › Settings › Requests with the dev Lidarr connected: the G1 switch (off), set-up and change log;
-    /// Settings › Scrobbling has Count plays; Library has a Requests row. Reads only: nothing is switched on.
+    /// Library › Settings › Lidarr with the dev Lidarr connected: the G1 switch (off), set-up and change log;
+    /// Settings › ListenBrainz has Count plays; Library has a Requests row. Reads only: nothing is switched on.
     @MainActor func testSettingsShowLidarrControlsAndRequests() throws {
         let env = ProcessInfo.processInfo.environment
         guard let lidarrURL = env["MAGPIE_IT_LIDARR_URL"], let key = env["MAGPIE_IT_LIDARR_KEY"],
@@ -726,7 +727,7 @@ final class BrowseFlowTests: XCTestCase {
         }
         XCTAssertFalse(app.buttons["library-requests"].exists, "T21: Requests shows only with Lidarr connected")
         settings.tap()
-        // T21b: the top level is a short list of pages; Account & Server, then Requests holds the Lidarr controls.
+        // T21b + round 13: the top level is a short list of pages; Navidrome, then Lidarr holds the Lidarr controls.
         let account = app.buttons["settings-account"]
         XCTAssertTrue(account.waitForExistence(timeout: 10))
         attachScreenshot(app, "settings-top")
@@ -734,7 +735,7 @@ final class BrowseFlowTests: XCTestCase {
         XCTAssertTrue(app.buttons["settings-sign-out"].waitForExistence(timeout: 10))
         attachScreenshot(app, "settings-account")
         app.navigationBars.buttons.firstMatch.tap()   // › Settings
-        let requests = app.buttons["settings-requests"]
+        let requests = app.buttons["settings-lidarr-account"]
         XCTAssertTrue(requests.waitForExistence(timeout: 10))
         requests.tap()
 
@@ -763,10 +764,10 @@ final class BrowseFlowTests: XCTestCase {
         for _ in 0..<4 where !log.isHittable { app.swipeUp() }
         log.tap()
         XCTAssertTrue(app.navigationBars["Lidarr change log"].waitForExistence(timeout: 10))
-        app.navigationBars.buttons.firstMatch.tap()   // › New music
-        XCTAssertTrue(app.navigationBars["New music"].waitForExistence(timeout: 10))
+        app.navigationBars.buttons.firstMatch.tap()   // › Lidarr
+        XCTAssertTrue(app.navigationBars["Lidarr"].waitForExistence(timeout: 10))
         app.navigationBars.buttons.firstMatch.tap()   // › Settings
-        let scrobbling = app.buttons["settings-scrobbling"]   // T17: Count plays lives in Settings › Scrobbling
+        let scrobbling = app.buttons["settings-listenbrainz"]   // T17 + round 13: Count plays lives in Settings › ListenBrainz
         for _ in 0..<4 where !scrobbling.isHittable { app.swipeUp() }
         scrobbling.tap()
         XCTAssertTrue(app.switches["settings-count-plays"].waitForExistence(timeout: 10))
@@ -783,10 +784,53 @@ final class BrowseFlowTests: XCTestCase {
             _ = card.waitForExistence(timeout: 5)
         }
         card.tap()
-        XCTAssertTrue(app.switches["settings-allow-changes"].waitForExistence(timeout: 10), "Review lands on Requests")
-        XCTAssertTrue(app.navigationBars["New music"].exists)
+        XCTAssertTrue(app.switches["settings-allow-changes"].waitForExistence(timeout: 10), "Review lands on Lidarr")
+        XCTAssertTrue(app.navigationBars["Lidarr"].exists)
         app.navigationBars.buttons.firstMatch.tap()   // › Settings
-        XCTAssertTrue(app.buttons["settings-account"].waitForExistence(timeout: 10), "Settings lies under Requests")
+        XCTAssertTrue(app.buttons["settings-account"].waitForExistence(timeout: 10), "Settings lies under Lidarr")
+        app.buttons["settings-done"].tap()
+    }
+
+    /// Round 13 item 14: Settings › Accounts & Servers holds one row per service, near the top, and each opens its
+    /// page with that service's settings (Navidrome's sign-out and libraries, Lidarr's Connect, Aurral's username and
+    /// password with no API key, ListenBrainz's token and Count plays). The old top-level rows are gone. Reads only.
+    @MainActor func testAccountsAndServersPages() throws {
+        let app = try launchSignedIn()
+        let settings = app.buttons["open-settings"]
+        for _ in 0..<3 where !settings.exists {
+            app.tabBars.buttons["Library"].tap()
+            _ = settings.waitForExistence(timeout: 5)
+        }
+        settings.tap()
+        XCTAssertTrue(app.staticTexts["Accounts & Servers"].waitForExistence(timeout: 10)
+                      || app.descendants(matching: .any)["settings-accounts-header"].waitForExistence(timeout: 5))
+        for gone in ["settings-requests", "settings-scrobbling", "settings-lidarr-downloads"] {
+            XCTAssertFalse(app.buttons[gone].exists, "\(gone) moved under Accounts & Servers")
+        }
+        attachScreenshot(app, "settings-accounts-and-servers")
+        XCTAssertTrue(app.buttons["settings-carplay"].exists, "CarPlay is a top-level row")
+        func open(_ id: String, title: String, shows element: XCUIElement) {
+            let row = app.buttons[id]
+            XCTAssertTrue(row.waitForExistence(timeout: 10), id)
+            row.tap()
+            XCTAssertTrue(app.navigationBars[title].waitForExistence(timeout: 10), title)
+            for _ in 0..<4 where !element.exists { app.swipeUp() }
+            XCTAssertTrue(element.waitForExistence(timeout: 10), "\(title) shows its settings")
+            attachScreenshot(app, "settings-\(title.lowercased())")
+            app.navigationBars.buttons.firstMatch.tap()   // › Settings
+            XCTAssertTrue(app.buttons["settings-done"].waitForExistence(timeout: 10))
+        }
+        open("settings-account", title: "Navidrome", shows: app.buttons["settings-sign-out"])
+        open("settings-lidarr-account", title: "Lidarr", shows: app.buttons["settings-connect-lidarr"])
+        open("settings-aurral", title: "Aurral", shows: app.secureTextFields["aurral-password"])
+        XCTAssertFalse(app.secureTextFields["aurral-api-key"].exists)
+        open("settings-listenbrainz", title: "ListenBrainz", shows: app.switches["settings-count-plays"])
+        // The Aurral page asks for a username and password (round 13 item 1).
+        app.buttons["settings-aurral"].tap()
+        XCTAssertTrue(app.textFields["aurral-username"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.textFields["aurral-address"].exists)
+        XCTAssertFalse(app.buttons["aurral-sign-in"].isEnabled, "nothing to sign in with yet")
+        app.navigationBars.buttons.firstMatch.tap()
         app.buttons["settings-done"].tap()
     }
 

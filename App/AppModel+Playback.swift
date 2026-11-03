@@ -23,6 +23,7 @@ extension AppModel {
                 guard quality != self.qualityBox.value else { continue }   // a change that keeps the quality
                 self.qualityBox.set(quality)
                 self.player.upcomingURLsChanged()
+                self.cacheQualityTargetChanged()   // round 13 item 7
             }
         }
         hintWatch = Task { [weak self, player] in

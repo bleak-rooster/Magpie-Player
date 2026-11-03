@@ -1,7 +1,7 @@
 import MagpieCore
 import SwiftUI
 
-/// Settings › Home & Library: one page per area's layout, Home and Library, and (round 13) CarPlay's.
+/// Settings › Home & Library: one page per area's layout, Home and Library. (CarPlay's is a top-level row, round 13.)
 struct HomeAndLibraryView: View {
     @Environment(AppModel.self) private var model
 
@@ -32,15 +32,6 @@ struct HomeAndLibraryView: View {
                     LabeledContent("Library", value: LibraryLayoutView.summary(model))
                 }
                 .accessibilityIdentifier("settings-library-layout")
-            }
-            Section {   // round 13 (Z3): the car's third tab and Home
-                NavigationLink {
-                    CarPlaySettingsView()
-                } label: {
-                    LabeledContent("CarPlay", value: CarPlaySettingsView.summary(model.preferences.carPlay,
-                                                                                 discoverSetUp: model.aurralSetUp))
-                }
-                .accessibilityIdentifier(SettingsView.identifier(.carPlay))
             }
         }
         .navigationTitle("Home & Library")

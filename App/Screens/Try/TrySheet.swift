@@ -74,7 +74,7 @@ struct TrySheet: View {
                 }
             }
         }
-        .sheet(isPresented: $showsSettings) { SettingsView(opening: [.requests]) }   // T21b: every reason Try names is on New music
+        .sheet(isPresented: $showsSettings) { SettingsView(opening: [.lidarr]) }   // T21b: every reason Try names is on New music
         .onAppear {
             // R17: a song already on its way opens its request, never a second Try.
             if phase == .choosing, let live = Self.existingPhase(for: recording, album: albumGroup, releaseGroup: releaseGroup,

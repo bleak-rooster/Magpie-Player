@@ -120,7 +120,7 @@ struct ConnectLidarrView: View {
         Section {
             LabeledContent("Address", value: connection.base.absoluteString)
         } footer: {
-            Text("Magpie can now show music that's not in your library. It changes nothing in Lidarr until you turn on \u{201C}Allow Magpie to change your library\u{201D} in Settings \u{203A} New music.")
+            Text("Magpie can now show music that's not in your library. It changes nothing in Lidarr until you turn on \u{201C}Allow Magpie to change your library\u{201D} in Settings \u{203A} Lidarr.")
         }
         if let audit {
             Section("Setup") {

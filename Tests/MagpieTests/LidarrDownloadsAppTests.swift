@@ -119,13 +119,11 @@ import Testing
         #expect(LidarrDownloadsCopy.confirmOne(.foreign, phase: .paused) == LidarrDownloadsCopy.foreignConfirm)
     }
 
-    /// I3: "Downloads in Lidarr" is a top-level Settings row, only while Lidarr is connected.
-    @Test func topLevelRowWhileConnected() {
-        #expect(SettingsPage.topLevel(lidarrConnected: false)
-                == [.account, .playback, .downloads, .scrobbling, .homeAndLibrary, .appearance, .requests, .about])
-        #expect(SettingsPage.topLevel(lidarrConnected: true)
-                == [.account, .playback, .downloads, .scrobbling, .homeAndLibrary, .appearance, .requests,
-                    .lidarrDownloads, .about])
+    /// I3, superseded by round 13 item 14: "Downloads in Lidarr" opens from Accounts & Servers › Lidarr (shown there
+    /// while Lidarr is connected), no longer a top-level row.
+    @Test func openedFromTheLidarrPage() {
+        #expect(!SettingsPage.topLevel.contains(.lidarrDownloads))
+        #expect(SettingsPage.topLevel.contains(.lidarr))
         #expect(SettingsView.identifier(.lidarrDownloads) == "settings-lidarr-downloads")
         #expect(LidarrDownloadsCopy.attention(nil).text == "Stalled and failed downloads")
         #expect(LidarrDownloadsCopy.attention(0).text == "Nothing stalled or failed")

@@ -77,6 +77,7 @@ extension AppModel {
         // Offline nothing leaves the cache: it can't come back until the server does.
         let gone = snapshot.keepRecentlyPlayed || isOffline ? [] : played.subtracting(protecting)
         runCacheUpkeep(manager: manager, markPlayed: currentChanged ? current : nil, gone: gone, protecting: protecting)
+        cacheQualityQueueChanged(current: current, currentChanged: currentChanged, manager: manager)   // round 13 item 7
     }
 
     /// Marks `markPlayed` played, drops `gone` from the cache, and evicts the cache to its limit. Upkeeps run one after

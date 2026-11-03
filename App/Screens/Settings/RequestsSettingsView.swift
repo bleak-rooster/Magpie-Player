@@ -3,8 +3,11 @@ import LidarrKit
 import Requests
 import SwiftUI
 
-/// Settings › New music (R20; was Settings › Requests): Lidarr (connect, set up, the G1 switch, the main root folder, Finds, the change log), and
-/// the T2 "Allow This Address" step. Offline (Task 14) every Lidarr action is disabled, under "You're offline".
+/// Settings › Accounts & Servers › Lidarr (round 13 item 14; was Settings › New music, R20, and before that
+/// Requests): the address and API key (Connect Lidarr), the T2 "Allow This Address" step, the G1 switch, Magpie's
+/// set-up and the change log, the main root folder, Finds set-up, the stuck-copy limit, Add with my defaults (R18/R20)
+/// and the link to Downloads in Lidarr (Y4, no longer a top-level row). Offline (Task 14) every Lidarr action is
+/// disabled, under "You're offline". Aurral moved to its own page (Accounts & Servers › Aurral).
 struct RequestsSettingsView: View {
     @Environment(AppModel.self) private var model
     @State private var showsConnect = false
@@ -22,10 +25,17 @@ struct RequestsSettingsView: View {
                 Section { OfflineNotice() }   // just above the Lidarr sections it disables
             }
             Group { lidarrSections }.disabled(model.isOffline)
-            if model.lidarr != nil { NewMusicDefaultsSection() }   // R18 + R20
-            AurralSettingsSection().disabled(model.isOffline)   // Y6: Discover
+            if model.lidarr != nil {
+                NewMusicDefaultsSection()   // R18 + R20
+                Section {   // Y4: was a top-level row while Lidarr is connected
+                    NavigationLink(value: SettingsPage.lidarrDownloads) {
+                        LabeledContent(LidarrDownloadsCopy.title, value: model.lidarrDownloadsAttention.map { LidarrDownloadsCopy.attention($0).text } ?? "")
+                    }
+                    .accessibilityIdentifier("settings-lidarr-downloads")
+                }
+            }
         }
-        .navigationTitle("New music")
+        .navigationTitle(SettingsCopy.lidarr)
         .navigationBarTitleDisplayMode(.inline)
         .sheet(isPresented: $showsConnect) { ConnectLidarrView() }
         .alert(LidarrConnectCopy.plainHTTPTitle, isPresented: $asksLidarrConsent) {

@@ -2,36 +2,51 @@ import AurralKit
 import DesignSystem
 import SwiftUI
 
-/// Round 12 Y6: Settings › New music › Aurral (the services page, beside Lidarr). Off until set up: address and API key
-/// (Keychain only; the key is never shown or logged), Test connection, Disconnect. Plain http to a public address waits
-/// for the owner's OK, as Lidarr does; a Tailscale or home address needs none.
-struct AurralSettingsSection: View {
+/// Round 13 items 1 and 14: Settings › Accounts & Servers › Aurral. Off until set up: the address, a username and a
+/// password (Aurral's playlists are per user, so Magpie signs in as one; the API key is gone). The session and the
+/// password stay in the Keychain and are never shown or logged. Signed in: who, the version, Test connection, and
+/// Sign out. Plain http to a public address waits for the owner's OK, as Lidarr does; a Tailscale or home address
+/// needs none.
+struct AurralSettingsView: View {
     @Environment(AppModel.self) private var model
+    @State private var address = ""
+    @State private var username = ""
+    @State private var password = ""
+    @State private var isWorking = false
+    @State private var error: String?
+    @State private var result: String?
+    @State private var unencrypted: URL?
     @State private var asksConsent = false
+    @State private var signsInAgain = false
 
     var body: some View {
-        Section {
-            NavigationLink {
-                AurralSettingsView()
-            } label: {
-                LabeledContent("Aurral") {
-                    AddressValue(value: AurralCopy.summary(model), base: model.discover.connection?.base)
-                }
-                .accessibilityElement(children: .combine)
+        Form {
+            if model.isOffline {
+                Section { OfflineNotice() }
             }
-            .accessibilityIdentifier("settings-aurral")
-            if model.aurralAwaitingConsent {
-                Button {
-                    asksConsent = true
-                } label: {
-                    Label(LidarrConnectCopy.allowAddress, systemImage: "lock.open")
+            Group {
+                if let connection = model.discover.connection, !signsInAgain {
+                    connected(connection)
+                } else {
+                    signInForm
                 }
-                .accessibilityIdentifier("settings-aurral-allow")
             }
-        } header: {
-            Text(DiscoverCopy.title)
-        } footer: {
-            Text(model.aurralAwaitingConsent ? AurralCopy.needsConsent : AurralCopy.footer)
+            .disabled(model.isOffline)
+        }
+        .navigationTitle("Aurral")
+        .navigationBarTitleDisplayMode(.inline)
+        .onAppear(perform: prefill)
+        .alert(LidarrConnectCopy.plainHTTPTitle, isPresented: Binding(
+            get: { unencrypted != nil }, set: { if !$0 { unencrypted = nil } })
+        ) {
+            Button(LidarrConnectCopy.plainHTTPConfirm, role: .destructive) {
+                if let url = unencrypted { model.allowAurralPassword(url) }
+                unencrypted = nil
+                Task { await signIn() }
+            }
+            Button("Cancel", role: .cancel) { unencrypted = nil }
+        } message: {
+            Text(AurralCopy.plainHTTPMessage + "\n\n" + (unencrypted.map { $0.host ?? $0.absoluteString } ?? ""))
         }
         .alert(LidarrConnectCopy.plainHTTPTitle, isPresented: $asksConsent) {
             Button(LidarrConnectCopy.plainHTTPConfirm, role: .destructive) { model.allowAurralAddress() }
@@ -40,43 +55,22 @@ struct AurralSettingsSection: View {
             Text(AurralCopy.plainHTTPMessage)
         }
     }
-}
 
-/// Settings › New music › Aurral.
-struct AurralSettingsView: View {
-    @Environment(AppModel.self) private var model
-    @State private var address = ""
-    @State private var apiKey = ""
-    @State private var isWorking = false
-    @State private var error: String?
-    @State private var result: String?
-    @State private var unencrypted: URL?
-
-    var body: some View {
-        Form {
-            if let connection = model.discover.connection {
-                connected(connection)
-            } else {
-                connectForm
-            }
+    /// The address and user of the saved (or upgraded) connection, so signing in again is only the password.
+    private func prefill() {
+        if address.isEmpty {
+            address = (model.discover.connection?.base ?? model.discover.upgradedAddress)?.absoluteString ?? ""
         }
-        .navigationTitle("Aurral")
-        .navigationBarTitleDisplayMode(.inline)
-        .alert(LidarrConnectCopy.plainHTTPTitle, isPresented: Binding(
-            get: { unencrypted != nil }, set: { if !$0 { unencrypted = nil } })
-        ) {
-            Button(LidarrConnectCopy.plainHTTPConfirm, role: .destructive) {
-                if let url = unencrypted { model.allowPlainHTTP([url]) }
-                unencrypted = nil
-                Task { await connect() }
-            }
-            Button("Cancel", role: .cancel) { unencrypted = nil }
-        } message: {
-            Text(AurralCopy.plainHTTPMessage + "\n\n" + (unencrypted.map { $0.host ?? $0.absoluteString } ?? ""))
-        }
+        if username.isEmpty { username = model.discover.connection?.username ?? "" }
     }
 
-    @ViewBuilder private var connectForm: some View {
+    @ViewBuilder private var signInForm: some View {
+        if model.discover.upgradedAddress != nil, model.discover.connection == nil {
+            Section {
+                Label(AurralCopy.upgraded, systemImage: "person.crop.circle.badge.exclamationmark")
+                    .accessibilityIdentifier("aurral-upgraded")
+            }
+        }
         Section {
             TextField("http://192.168.1.20:3001", text: $address)
                 .textContentType(.URL)
@@ -85,12 +79,21 @@ struct AurralSettingsView: View {
                 .autocorrectionDisabled()
                 .accessibilityLabel("Aurral address")
                 .accessibilityIdentifier("aurral-address")
-            SecureField("API key", text: $apiKey)
+            TextField("Username", text: $username)
+                .textContentType(.username)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
-                .accessibilityIdentifier("aurral-api-key")
+                .accessibilityIdentifier("aurral-username")
+            SecureField("Password", text: $password)
+                .textContentType(.password)
+                .accessibilityIdentifier("aurral-password")
         } footer: {
-            Text(AurralCopy.connectFooter)
+            Text(AurralCopy.signInFooter)
+        }
+        if let warning = AurralCopy.plainHTTPWarning(ServerAddress.check(address).url) {   // fix M1: always said
+            Section {
+                Label(warning, systemImage: "lock.open").accessibilityIdentifier("aurral-plain-http")
+            }
         }
         if let error {
             Section {
@@ -100,25 +103,60 @@ struct AurralSettingsView: View {
         }
         Section {
             Button {
-                Task { await connect() }
+                Task { await signIn() }
             } label: {
                 HStack {
-                    Text("Test and Connect")
+                    Text("Sign In")
                     if isWorking { Spacer(); ProgressView() }
                 }
             }
-            .disabled(isWorking || address.trimmingCharacters(in: .whitespaces).isEmpty || apiKey.isEmpty)
-            .accessibilityIdentifier("aurral-connect")
+            .disabled(isWorking || address.trimmingCharacters(in: .whitespaces).isEmpty
+                      || username.trimmingCharacters(in: .whitespaces).isEmpty || password.isEmpty)
+            .accessibilityIdentifier("aurral-sign-in")
+            if signsInAgain {
+                Button("Cancel") { signsInAgain = false; error = nil; password = "" }
+                    .accessibilityIdentifier("aurral-sign-in-cancel")
+            }
         }
     }
 
     @ViewBuilder private func connected(_ connection: AurralConnection) -> some View {
         Section {
             LabeledContent("Address") { AddressValue(value: connection.base.absoluteString, base: connection.base) }
+            LabeledContent("Signed in as", value: connection.login?.user.username ?? connection.username)
+                .accessibilityIdentifier("aurral-user")
             LabeledContent("Version", value: AurralCopy.version(model.discover.health))
             LabeledContent("Flows", value: "\(model.discover.playlists.count)")
+        } header: {
+            Text(DiscoverCopy.title)
         } footer: {
             Text(AurralCopy.compatibilityNote(model.discover.health) ?? AurralCopy.connectedFooter)
+        }
+        if model.aurralAwaitingConsent {
+            Section {
+                Button {
+                    asksConsent = true
+                } label: {
+                    Label(LidarrConnectCopy.allowAddress, systemImage: "lock.open")
+                }
+                .accessibilityIdentifier("settings-aurral-allow")
+            } footer: {
+                Text(AurralCopy.needsConsent)
+            }
+        }
+        if model.discover.needsSignIn {
+            Section {
+                Label(AurralCopy.signedOut, systemImage: "person.crop.circle.badge.exclamationmark")
+                    .accessibilityIdentifier("aurral-signed-out")
+                Button("Sign In Again") {
+                    error = nil
+                    password = ""
+                    address = connection.base.absoluteString
+                    username = connection.username
+                    signsInAgain = true
+                }
+                .accessibilityIdentifier("aurral-sign-in-again")
+            }
         }
         if let error {
             Section {
@@ -140,18 +178,19 @@ struct AurralSettingsView: View {
             .accessibilityIdentifier("aurral-test")
         }
         Section {
-            Button("Disconnect Aurral", role: .destructive) {
+            Button("Sign Out of Aurral", role: .destructive) {
                 error = nil
                 result = nil
+                password = ""
                 model.disconnectAurral()
             }
             .accessibilityIdentifier("aurral-disconnect")
         } footer: {
-            Text("Forgets the address and key on this iPhone. Nothing in Aurral changes.")
+            Text(AurralCopy.signOutFooter)
         }
     }
 
-    private func connect() async {
+    private func signIn() async {
         let url: URL
         switch ServerAddress.check(address) {
         case .url(let parsed): url = parsed
@@ -166,8 +205,9 @@ struct AurralSettingsView: View {
         isWorking = true
         defer { isWorking = false }
         do {
-            _ = try await model.connectAurral(base: url, apiKey: apiKey)
-            apiKey = ""
+            _ = try await model.connectAurral(base: url, username: username, password: password)
+            password = ""
+            signsInAgain = false
         } catch is PlainHTTPConsentRequired {
             unencrypted = url
         } catch {
@@ -191,18 +231,32 @@ struct AurralSettingsView: View {
 
 /// Settings' words about Aurral (the page names its service, as Lidarr's does).
 enum AurralCopy {
-    static let footer = "Aurral makes Discover playlists for you. Off until you set it up."
-    static let connectFooter = "The API key is in Aurral under Settings. It gives full control of Aurral, so it stays on this iPhone and Magpie only reads Aurral, except when you tap Refresh Flow. Use an https:// address for anything outside your home."
-    static let connectedFooter = "Magpie reads Aurral\u{2019}s flows and never changes Aurral, except when you tap Refresh Flow."
-    static let needsConsent = "This Aurral address isn\u{2019}t encrypted, so Magpie waits for your OK before sending its API key."
-    static let plainHTTPMessage = "Your Aurral API key will be sent in the clear, and it gives full control of Aurral. Use an https:// address when you can."
-    static let badKey = "That API key didn\u{2019}t work. Copy it again from Aurral\u{2019}s Settings."
+    static let signInFooter = "Sign in with your Aurral account: Discover shows your own flows. Your password stays on this iPhone so Magpie can sign in again when Aurral asks. Magpie only reads Aurral, except when you tap Refresh Flow. Use an https:// address for anything outside your home."
+    static let connectedFooter = "Magpie reads your flows and never changes Aurral, except when you tap Refresh Flow."
+    static let signOutFooter = "Signs out of Aurral and forgets the address, your account and your password on this iPhone. Nothing else in Aurral changes."
+    static let needsConsent = "This Aurral address isn\u{2019}t encrypted, so Magpie waits for your OK before sending your password."
+    static let plainHTTPMessage = "Your Aurral password, and the session Magpie keeps for 30 days, will be sent in the clear. Use an https:// address when you can."
+
+    /// Z1 fix M1: said on the sign-in form whenever the address is plain http outside home, whatever was allowed before.
+    static func plainHTTPWarning(_ url: URL?) -> String? {
+        guard let url, ServerAddress.isUnencryptedPublic(url) else { return nil }
+        return "Not encrypted: your password, and the session Magpie keeps for 30 days, would be sent in the clear."
+    }
+    static let badLogin = "That username or password didn\u{2019}t work."
+    static let rateLimited = "Too many tries. Wait a few minutes, then try again."
+    static let signedOut = "Aurral signed you out. Sign in again to keep Discover up to date."
+    static let upgraded = "Aurral now signs in with your username and password. Sign in to see Discover again."
     static let notAurral = "That address answered, but it doesn\u{2019}t look like Aurral."
 
+    /// The Accounts & Servers row's value: "Off", "Waiting for your OK", "Sign in again", or "jordan · 2.10.0".
     @MainActor static func summary(_ model: AppModel) -> String {
-        guard model.discover.connection != nil else { return "Off" }
+        guard let connection = model.discover.connection else {
+            return model.discover.upgradedAddress != nil ? "Sign in again" : "Off"
+        }
         if model.aurralAwaitingConsent { return "Waiting for your OK" }
-        return version(model.discover.health) == "Unknown" ? "On" : "On \u{00B7} " + version(model.discover.health)
+        if model.discover.needsSignIn { return "Sign in again" }
+        let user = connection.login?.user.username ?? connection.username
+        return version(model.discover.health) == "Unknown" ? user : user + " \u{00B7} " + version(model.discover.health)
     }
 
     static func version(_ health: AurralHealth?) -> String {
@@ -221,7 +275,9 @@ enum AurralCopy {
 
     static func message(for error: Error) -> String {
         switch error as? AurralError {
-        case .unauthorized?: badKey
+        case .badLogin?: badLogin
+        case .rateLimited?: rateLimited
+        case .signInNeeded?: signedOut
         case .notFound?, .decoding?: notAurral
         default: DiscoverCopy.message(for: error)
         }
