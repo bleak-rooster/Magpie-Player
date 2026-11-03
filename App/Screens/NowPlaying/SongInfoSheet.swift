@@ -12,10 +12,26 @@ struct SongInfo: Equatable {
         var id: String { label }
     }
 
-    /// Where the sound comes from: a file on the phone in `quality`, or a stream in `quality`.
+    /// Where the sound comes from (round 13 item 8): a download, a cached copy, or a stream, each in `quality`.
     enum Source: Equatable {
-        case onPhone(StreamQuality)
+        case downloaded(StreamQuality)
+        case cached(StreamQuality)
         case stream(StreamQuality)
+
+        var quality: StreamQuality {
+            switch self {
+            case .downloaded(let q), .cached(let q), .stream(let q): q
+            }
+        }
+
+        /// The words Now Playing and Song info start with.
+        var place: String {
+            switch self {
+            case .downloaded: "Downloaded"
+            case .cached: "From cache"
+            case .stream: "Streaming"
+            }
+        }
     }
 
     let rows: [Row]
@@ -31,25 +47,15 @@ struct SongInfo: Equatable {
         add("Year", details?.year.map(String.init))
         add("Genre", details?.song.genre ?? song.genre)
         add("Duration", song.duration > 0 ? DurationText.clock(song.duration) : nil)
-        add("Playing", Self.playing(source, originalSuffix: suffix))
+        // Round 13 item 8: the same line as Now Playing's ("Streaming · Transcoded · Opus 160 kbps (from FLAC)").
+        add("Playing", HearingLabel(source: source, suffix: suffix, bitRate: details?.bitRate ?? song.bitRate,
+                                    samplingRate: details?.samplingRate ?? song.samplingRate,
+                                    bitDepth: details?.bitDepth ?? song.bitDepth).text)
         add("Original format", Self.original(suffix: suffix, bitRate: details?.bitRate ?? song.bitRate,
                                               samplingRate: details?.samplingRate, bitDepth: details?.bitDepth))
         add("File size", details?.size.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) })
         add("Plays", details?.playCount.map(String.init))
         self.rows = rows
-    }
-
-    /// "AAC 160 kbps, streaming"; "Original (FLAC), on this iPhone".
-    static func playing(_ source: Source, originalSuffix: String?) -> String {
-        let quality: StreamQuality
-        let place: String
-        switch source {
-        case .onPhone(let q): quality = q; place = "on this iPhone"
-        case .stream(let q): quality = q; place = "streaming"
-        }
-        let what = quality == .original ? "Original" + (originalSuffix.map { " (\($0.uppercased()))" } ?? "")
-                                        : quality.shortTitle
-        return "\(what), \(place)"
     }
 
     /// "FLAC · 1,011 kbps · 44.1 kHz · 16-bit".
@@ -66,19 +72,11 @@ struct SongInfo: Equatable {
 }
 
 extension AppModel {
-    /// Song info for `song`: the server's facts when it answers, and where the sound comes from now.
+    /// Song info for `song`: the server's facts when it answers, and where the sound comes from now: the same answer
+    /// as Now Playing's line (round 13 item 8).
     func songInfo(_ song: Song) async -> SongInfo {
         let details = isOffline ? nil : try? await request { try await $0.songDetails(id: song.id) }
-        let local = await downloads?.store.entry(songId: song.id)
-        let source: SongInfo.Source
-        if let local {
-            source = .onPhone(local.quality)
-        } else if player.lastFallbackSongId == song.id {
-            source = .stream(.original)   // the transcode failed, so the original plays (Task 7)
-        } else {
-            source = .stream(currentStreamQuality)
-        }
-        return SongInfo(song: song, details: details, source: source)
+        return SongInfo(song: song, details: details, source: playingSource(song))
     }
 }
 
@@ -91,7 +89,7 @@ struct SongInfoSheet: View {
     var body: some View {
         NavigationStack {
             List {
-                ForEach((info ?? SongInfo(song: song, details: nil, source: .stream(model.currentStreamQuality))).rows) { row in
+                ForEach((info ?? SongInfo(song: song, details: nil, source: model.playingSource(song))).rows) { row in
                     LabeledContent(row.label, value: row.value)
                         .accessibilityIdentifier("song-info-\(row.label)")
                 }

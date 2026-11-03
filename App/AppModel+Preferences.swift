@@ -58,6 +58,7 @@ extension AppModel {
             qualityBox.set(currentStreamQuality)
             replayGainBox.set(preferences.playback.replayGain)
             player.upcomingURLsChanged()
+            if currentStreamQuality != oldQuality { cacheQualityTargetChanged() }   // round 13 item 7
         }
         if preferences.scrobbling != old.scrobbling { scrobbleSettings.set(preferences.scrobbling) }
         // Downloads: a setting may let waiting downloads go (mobile data, a bigger limit); favourites follow the toggle.

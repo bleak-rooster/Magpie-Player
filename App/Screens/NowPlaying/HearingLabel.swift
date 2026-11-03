@@ -1,39 +1,34 @@
 import DesignSystem
 import MagpieCore
+import Playback
 import SwiftUI
 
 /// Round 12 Y3 (plan item 11): what Now Playing says under the scrubber, about what you actually hear, and the
 /// hallmark that goes with it. The hallmark used to show the original file's quality even while a transcode played.
 ///
+/// Round 13 item 8 (D71): the line starts with where the sound comes from: "Downloaded" (saved on this iPhone),
+/// "From cache" (a temporary copy) or "Streaming". Then what plays:
 /// - "Lossless · FLAC 24/96": the original lossless file.
 /// - "MP3 320": a lossy original.
-/// - "Transcoded · Opus 160 kbps (from FLAC)": the server converts it.
-/// - "On this iPhone · …": a download (or a song kept from playing), in the quality it was saved in.
+/// - "Transcoded · Opus 160 kbps (from FLAC)": a conversion (the server's now, or the copy's on the phone).
+///
+/// For example "Streaming · Transcoded · Opus 160 kbps (from FLAC)" or "Downloaded · Lossless · FLAC 16/44.1".
 ///
 /// A transcode the server can't do falls back to the original (`SongInfo.Source.stream(.original)`): the label then
 /// says the original, and the fallback hint above stays.
 struct HearingLabel: Equatable {
-    /// The line under the scrubber; nil when nothing is known about the file (no line).
+    /// The line under the scrubber: the source, then what plays when the file is known ("Streaming" alone if not).
     var text: String?
     /// Whether the sound is a conversion, not the file itself: then there's no Lossless hallmark.
     var transcoded: Bool
 
     init(source: SongInfo.Source, suffix: String?, bitRate: Int?, samplingRate: Int?, bitDepth: Int?) {
-        let original = Self.original(suffix: suffix, bitRate: bitRate, samplingRate: samplingRate, bitDepth: bitDepth)
-        switch source {
-        case .stream(let quality):
-            if Self.isConversion(quality, suffix: suffix, bitRate: bitRate) {
-                transcoded = true
-                text = "Transcoded \u{00B7} " + Self.converted(quality, suffix: suffix)
-            } else {
-                transcoded = false
-                text = original
-            }
-        case .onPhone(let quality):
-            transcoded = Self.isConversion(quality, suffix: suffix, bitRate: bitRate)
-            let what = transcoded ? Self.converted(quality, suffix: suffix) : original
-            text = ["On this iPhone", what].compactMap { $0 }.joined(separator: " \u{00B7} ")
-        }
+        let quality = source.quality
+        transcoded = Self.isConversion(quality, suffix: suffix, bitRate: bitRate)
+        let what = transcoded
+            ? "Transcoded \u{00B7} " + Self.converted(quality, suffix: suffix)
+            : Self.original(suffix: suffix, bitRate: bitRate, samplingRate: samplingRate, bitDepth: bitDepth)
+        text = [source.place, what].compactMap { $0 }.joined(separator: " \u{00B7} ")
     }
 
     /// Whether `quality` changes the file: Original never does, and the server sends the file as it is when it's
@@ -77,14 +72,20 @@ extension AppModel {
     func playingSource(_ song: Song) -> SongInfo.Source {
         // Fix round 1: the playing entry's own URL says what is heard, whatever the quality is set to now.
         if player.queue.current?.song.id == song.id, let url = player.currentURL {
-            if url.isFileURL { return .onPhone(downloads?.localQualities[song.id] ?? .original) }
+            if url.isFileURL { return Self.onPhone(downloads?.kind(of: song.id), downloads?.localQualities[song.id] ?? .original) }
             if let quality = Self.streamQuality(of: url) { return .stream(quality) }
         }
         if let downloads, downloads.localFiles[song.id] != nil, let quality = downloads.localQualities[song.id] {
-            return .onPhone(quality)
+            return Self.onPhone(downloads.kind(of: song.id), quality)
         }
         if player.lastFallbackSongId == song.id { return .stream(.original) }   // the transcode failed (Task 7)
         return .stream(currentStreamQuality)
+    }
+
+    /// A copy on the phone: a download, or a cached copy (round 13 item 8). A copy whose kind isn't known any more
+    /// (it left the store as it played) reads as the cache's: it's temporary either way.
+    nonisolated static func onPhone(_ kind: AudioKind?, _ quality: StreamQuality) -> SongInfo.Source {
+        kind == .download ? .downloaded(quality) : .cached(quality)
     }
 
     /// The quality a server stream URL asks for (`format`, `maxBitRate`); nil for one Magpie didn't build.

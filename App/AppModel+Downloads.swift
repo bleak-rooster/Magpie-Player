@@ -45,6 +45,8 @@ extension AppModel {
         }
         // A download couldn't connect: probe the server, so the failure counts as a drop or as an attempt.
         manager.onUnreachable = { [weak self] in self?.downloadCouldNotConnect() }
+        // Round 13 item 7: a cached copy playback holds (playing, or in the engine's window) is never swapped.
+        manager.isSongInUse = { [weak self] id in self?.player.windowSongIds.contains(id) ?? false }
         let previous = downloadsTeardown, root = dataDirectory
         let ready = Task {
             await previous?.value

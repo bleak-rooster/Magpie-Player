@@ -476,28 +476,33 @@ private func queryValue(_ request: URLRequest, _ name: String) -> String? {
         func label(_ source: SongInfo.Source, _ suffix: String?, _ bitRate: Int? = nil, _ rate: Int? = nil, _ depth: Int? = nil) -> HearingLabel {
             HearingLabel(source: source, suffix: suffix, bitRate: bitRate, samplingRate: rate, bitDepth: depth)
         }
+        // Round 13 item 8: every line starts with where the sound comes from.
         // The original, lossless.
-        #expect(label(.stream(.original), "flac", 2800, 96000, 24).text == "Lossless \u{00B7} FLAC 24/96")
-        #expect(label(.stream(.original), "flac", 900, 44100, 16).text == "Lossless \u{00B7} FLAC 16/44.1")
-        #expect(label(.stream(.original), "flac").text == "Lossless \u{00B7} FLAC")
+        #expect(label(.stream(.original), "flac", 2800, 96000, 24).text == "Streaming \u{00B7} Lossless \u{00B7} FLAC 24/96")
+        #expect(label(.stream(.original), "flac", 900, 44100, 16).text == "Streaming \u{00B7} Lossless \u{00B7} FLAC 16/44.1")
+        #expect(label(.stream(.original), "flac").text == "Streaming \u{00B7} Lossless \u{00B7} FLAC")
         // A lossy original.
-        #expect(label(.stream(.original), "mp3", 320).text == "MP3 320")
+        #expect(label(.stream(.original), "mp3", 320).text == "Streaming \u{00B7} MP3 320")
         // Transcoded: no Lossless hallmark.
         let opus = label(.stream(.opusMedium), "flac", 900, 44100, 16)
-        #expect(opus.text == "Transcoded \u{00B7} Opus 160 kbps (from FLAC)" && opus.transcoded)
+        #expect(opus.text == "Streaming \u{00B7} Transcoded \u{00B7} Opus 160 kbps (from FLAC)" && opus.transcoded)
         #expect(opus.hallmark(.lossless) == .standard)
         // A file already in that format at no more than that rate is sent as it is.
-        #expect(label(.stream(.mp3High), "mp3", 256).text == "MP3 256")
-        #expect(label(.stream(.mp3Low), "mp3", 320).text == "Transcoded \u{00B7} MP3 128 kbps (from MP3)")
+        #expect(label(.stream(.mp3High), "mp3", 256).text == "Streaming \u{00B7} MP3 256")
+        #expect(label(.stream(.mp3Low), "mp3", 320).text == "Streaming \u{00B7} Transcoded \u{00B7} MP3 128 kbps (from MP3)")
         // Fallback to the original after a failed transcode: the original, and its hallmark.
         let fallback = label(.stream(.original), "flac", 900, 44100, 16)
         #expect(!fallback.transcoded && fallback.hallmark(.lossless) == .lossless)
         // Downloaded.
-        #expect(label(.onPhone(.original), "flac", 900, 96000, 24).text == "On this iPhone \u{00B7} Lossless \u{00B7} FLAC 24/96")
-        #expect(label(.onPhone(.aacHigh), "flac").text == "On this iPhone \u{00B7} AAC 256 kbps (from FLAC)")
-        #expect(label(.onPhone(.original), nil).text == "On this iPhone")
-        // Nothing known about a stream: no line.
-        #expect(label(.stream(.original), nil).text == nil)
+        #expect(label(.downloaded(.original), "flac", 900, 96000, 24).text == "Downloaded \u{00B7} Lossless \u{00B7} FLAC 24/96")
+        #expect(label(.downloaded(.aacHigh), "flac").text == "Downloaded \u{00B7} Transcoded \u{00B7} AAC 256 kbps (from FLAC)")
+        #expect(label(.downloaded(.original), nil).text == "Downloaded")
+        // From the cache.
+        #expect(label(.cached(.original), "flac", 900, 44100, 16).text == "From cache \u{00B7} Lossless \u{00B7} FLAC 16/44.1")
+        #expect(label(.cached(.opusMedium), "flac").text == "From cache \u{00B7} Transcoded \u{00B7} Opus 160 kbps (from FLAC)")
+        #expect(label(.cached(.original), nil).text == "From cache")
+        // Nothing known about a stream: where it comes from, and nothing else.
+        #expect(label(.stream(.original), nil).text == "Streaming")
         // A kept find's "Lossless soon" stays while the original plays.
         #expect(label(.stream(.original), "mp3", 320).hallmark(.losslessSoon) == .losslessSoon)
     }
@@ -508,10 +513,10 @@ private func queryValue(_ request: URLRequest, _ name: String) -> String? {
         model.updatePreferences { $0.playback.wifi = .opusMedium }
         let streamed = Song(id: "st", title: "S", artist: "A", album: "B", duration: 60, suffix: "flac")
         #expect(model.playingSource(streamed) == .stream(.opusMedium))
-        #expect(model.hearing(streamed).text == "Transcoded \u{00B7} Opus 160 kbps (from FLAC)")
+        #expect(model.hearing(streamed).text == "Streaming \u{00B7} Transcoded \u{00B7} Opus 160 kbps (from FLAC)")
         let local = Song(id: "dl", title: "D", artist: "A", album: "B", duration: 60, suffix: "flac")
         model.download([local], reason: .song); await model.downloads!.settled()
         #expect(await eventually { model.downloads?.localQualities["dl"] != nil })
-        guard case .onPhone = model.playingSource(local) else { Issue.record("a download plays from the phone"); return }
+        guard case .downloaded = model.playingSource(local) else { Issue.record("a download plays from the phone"); return }
     }
 }
