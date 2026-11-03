@@ -5,6 +5,9 @@ import Playback
 // Round 13 item 9: Now Playing's Up Next button (top right) opens the queue as a list.
 
 extension CarPlayRows {
+    /// The button's title and the list's.
+    public static let upNextTitle = "Up Next"
+
     /// The queue: the song playing (marked), then what plays after it in order (Play Next's songs first), each a tap
     /// away from playing. Within `maxItems` rows; a longer queue ends with "Showing N of M" (songs shown of the queue's
     /// current and upcoming). The mark follows `playingId` in place (the first row of that song).

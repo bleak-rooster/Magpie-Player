@@ -212,7 +212,8 @@ public struct LayoutPreferences: PreferenceArea {
     }
 
     /// The Library rows to show, in the owner's order. Offline (the phone and the car alike): Downloads, which always
-    /// shows, and Genres (read from the phone) when switched on. The car never shows Songs or Requests (spec §3).
+    /// shows, and Genres (read from the phone) when switched on. The car never shows Requests (spec §3); round 13: Songs
+    /// shows in the car too (it opens on letter groups).
     /// Y6: Discover only while Aurral is set up (`discoverSetUp`), in the car too.
     public func visibleLibraryRows(offline: Bool, findsSetUp: Bool, lidarrConnected: Bool, carPlay: Bool,
                                    discoverSetUp: Bool = false) -> [LibraryRow] {
@@ -223,7 +224,6 @@ public struct LayoutPreferences: PreferenceArea {
             switch row {
             case .finds: findsSetUp
             case .requests: lidarrConnected && !carPlay
-            case .songs: !carPlay
             case .discover: discoverSetUp
             default: true
             }

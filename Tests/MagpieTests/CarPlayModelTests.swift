@@ -134,9 +134,14 @@ import UIKit
             // Y2: each A–Z list both under the car's limits (letter sections) and over them (a letters screen).
             case .playlists:
                 CarPlayRows.playlists(twoPlaylists) + CarPlayRows.playlists(twoPlaylists, maxItems: 1, maxSections: 1)
+            // Round 13: Artists, Albums and Songs on their five letter groups, paged or not.
             case .artists:
-                CarPlayRows.artists(twoArtists) + CarPlayRows.artists(twoArtists, maxItems: 1, maxSections: 1)
-            case .albums: CarPlayRows.albums([a, b]) + CarPlayRows.albums([a, b], maxItems: 1, maxSections: 1)
+                CarPlayRows.artistBands(twoArtists) + CarPlayRows.artistBands(twoArtists + [Artist(id: "u", name: "Rx", albumCount: 1)],
+                                                                              maxItems: 1)
+            case .albums: CarPlayRows.albumBands([a, b]) + CarPlayRows.albumBands([a, b], maxItems: 1)
+            case .songs: CarPlayRows.songBands(CPSongIndex(total: 9, starts: [1, 3, 4, 5, 6, 8]))
+                + CarPlayRows.songBands(CPSongIndex(total: 9, starts: [1, 3, 4, 5, 6, 8]), maxItems: 1)
+            case .songRange: CarPlayRows.songPage([song("s"), song("t")], total: 3, playingId: nil)
             case .letterGroup(_, let sections): sections
             case .album: CarPlayRows.album(a, playingId: nil)
             case .playlist: CarPlayRows.playlist(Playlist(id: "p", name: "P", songCount: 1, duration: 9),
@@ -175,7 +180,9 @@ import UIKit
                                                   .madeForYou(id: "m", title: "Daily Jams")])
         })
         walk(home, depth: 1)
-        walk(CarPlayRows.libraryRoot(LibraryRow.allCases, hasFindsTab: false), depth: 1)
+        walk(CarPlayRows.libraryRoot(LibraryRow.allCases), depth: 1)
+        // Round 13: whichever third tab is chosen, its root is depth 1.
+        for tab in CarPlayTab.allCases { walk(screen(tab.destination, depth: 1), depth: 1) }
         walk(CarPlayRows.searchRoot(recents: ["glass"], keyboardLimited: false), depth: 1)
         // Finds (D12): a find plays; a not-yet song offers Try in a modal sheet. Neither pushes.
         let finds = CPFindsShelf(newFinds: [CPFind(song: song("n"), daysLeft: 7, isNew: true)],
@@ -382,7 +389,7 @@ import UIKit
         for state in [CarPlayState.locked, .notSetUp, .outOfReach, .failed, .empty, .findsOff] {
             #expect(CarPlayRows.isPlaceholder(CarPlayRows.state(state)))
         }
-        #expect(!CarPlayRows.isPlaceholder(CarPlayRows.libraryRoot(LibraryRow.allCases, hasFindsTab: true)))
+        #expect(!CarPlayRows.isPlaceholder(CarPlayRows.libraryRoot(LibraryRow.allCases)))
         #expect(!CarPlayRows.isPlaceholder([]))
     }
 

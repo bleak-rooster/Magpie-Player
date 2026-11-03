@@ -69,8 +69,10 @@ public struct CPSongIndex: Sendable, Hashable {
     func count(_ band: CPLetterBand) -> Int { ranges(band).reduce(0) { $0 + $1.count } }
 
     /// Reads the index by seeks over the server's title order (`nameAt`: the title at an offset, nil past the end):
-    /// about log2 of the song count single-row reads per boundary, the six seeks side by side.
-    public static func read(total: Int, nameAt: @escaping @Sendable (Int) async throws -> String?) async throws -> CPSongIndex {
+    /// about log2 of the song count single-row reads per boundary, the six seeks side by side. Without `total` (a proxy
+    /// dropped the count header) the end is found first, the same way.
+    public static func read(total: Int?, nameAt: @escaping @Sendable (Int) async throws -> String?) async throws -> CPSongIndex {
+        let total = if let total { total } else { try await end(nameAt: nameAt) }
         async let a = LetterIndex.seek("A", total: total, nameAt: nameAt)
         async let f = LetterIndex.seek("F", total: total, nameAt: nameAt)
         async let k = LetterIndex.seek("K", total: total, nameAt: nameAt)
@@ -78,6 +80,22 @@ public struct CPSongIndex: Sendable, Hashable {
         async let u = LetterIndex.seek("U", total: total, nameAt: nameAt)
         async let pastZ = LetterIndex.seekPastZ(total: total, nameAt: nameAt)
         return CPSongIndex(total: total, starts: try await [a, f, k, p, u, pastZ])
+    }
+
+    /// The first offset past the end: gallop, then halve (at most about 2·log2 of the count reads).
+    static func end(nameAt: @Sendable (Int) async throws -> String?) async throws -> Int {
+        guard try await nameAt(0) != nil else { return 0 }
+        var low = 1, high = 1
+        while try await nameAt(high) != nil {
+            low = high + 1
+            guard high < 1 << 40 else { return low }
+            high *= 2
+        }
+        while low < high {
+            let mid = low + (high - low) / 2
+            if try await nameAt(mid) == nil { high = mid } else { low = mid + 1 }
+        }
+        return low
     }
 
     /// Offline: the phone's songs put in the server's title order (folded, articles kept; "#" below "a" first, other

@@ -163,6 +163,10 @@ import Testing
             titles.indices.contains(offset) ? titles[offset] : nil
         }
         #expect(index == CPSongIndex(total: 9, starts: [1, 3, 4, 5, 6, 8]))
+        let unknownTotal = try await CPSongIndex.read(total: nil) { offset in
+            titles.indices.contains(offset) ? titles[offset] : nil
+        }
+        #expect(unknownTotal == index, "without the count header the end is found by seeks too")
     }
 
     /// Offline the phone's songs are put in the server's order first, so the same index applies.
