@@ -69,3 +69,15 @@ D63–D68 are in docs/decisions.md; renumber them at merge if another stream too
 3. **Song offsets.** `songTitle(at:)` counts missing files but `songsPage` skips them, so a page can come up a song short when files are missing.
 4. **Up Next doesn't reshape while on screen** (the existing never-reshape rule). Songs added meanwhile show the next time it is opened.
 5. **No XCUITest for the new Settings page.** It is covered only by the summary check and the build.
+
+## Review fixes (Z3-review.md)
+- **I1.** `resetBindings` now cancels the layout watch, and a tab rebuild happens only while the tabs are showing. RED → GREEN with `signingOutWithDiscoverAsTheCarsTabKeepsTheSignedOutScreen`.
+- **I2.** A binding keeps what it read, together with the limits it was laid out for. `reloadAZLists` lays the list out again only when the limits really changed, and reads nothing. RED → GREEN with `aLimitsFlipReadsNothingAgain`.
+- **Genres** is now an optional tenth CarPlay Home shelf. RED → GREEN with `theCarsHomeOffersTenShelves`. The car Home tests are back to including Genres.
+- **M5.** The Up Next re-root pushes Now Playing only after the pop succeeds, and pushes Up Next only after that push succeeds. RED → GREEN with `upNextPushesNothingWhenThePopFails`.
+- **M3.** Only an empty page ends a song range. RED → GREEN with `aShortPageDoesntEndTheRange`.
+- **Decisions** are renumbered D64–D69 after Z4's D63, with the review notes added (including M2 and M11). Merged v0.0.1-custom (Z4, Z6).
+- **Runs:**
+  - Affected app suites: 111 tests passed.
+  - Package suites (CarPlayUI, MagpieCore, HostileData): all passed.
+  - Full app suite: 999 tests ran, and 1 failed: `OfflineAppTests.fastFailingDownloadsProbeSparingly`. It is a timing-sensitive test in an area this branch doesn't touch, and it passed 2 of 2 times when run alone.
