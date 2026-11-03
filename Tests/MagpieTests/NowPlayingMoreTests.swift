@@ -55,15 +55,17 @@ import Testing
                                            "Original format", "File size", "Plays"])
         #expect(byLabel["Title"] == "Harbour Lights" && byLabel["Artist"] == "Judie Tzuke" && byLabel["Album"] == "The Cat Is Out")
         #expect(byLabel["Year"] == "1985" && byLabel["Genre"] == "Pop" && byLabel["Duration"] == "3:52")
-        #expect(byLabel["Playing"] == "AAC 160 kbps, streaming")
+        #expect(byLabel["Playing"] == "Streaming \u{00B7} Transcoded \u{00B7} AAC 160 kbps (from FLAC)")
         #expect(byLabel["Original format"] == "FLAC · \(1011.formatted()) kbps · 44.1 kHz · 16-bit")
         #expect(byLabel["File size"] == ByteCountFormatter.string(fromByteCount: 34_567_890, countStyle: .file))
         #expect(byLabel["Plays"] == "12")
         #expect(!info.rows.contains { $0.label.localizedCaseInsensitiveContains("path") })
 
         // On the phone, in the original; offline (no details): what the song itself says, nothing invented.
-        let local = SongInfo(song: song, details: nil, source: .onPhone(.original))
-        #expect(local.rows.first { $0.label == "Playing" }?.value == "Original (FLAC), on this iPhone")
+        let local = SongInfo(song: song, details: nil, source: .downloaded(.original))
+        #expect(local.rows.first { $0.label == "Playing" }?.value.hasPrefix("Downloaded \u{00B7} ") == true)
+        let cached = SongInfo(song: song, details: nil, source: .cached(.original))
+        #expect(cached.rows.first { $0.label == "Playing" }?.value.hasPrefix("From cache \u{00B7} ") == true)
         #expect(local.rows.map(\.label) == ["Title", "Artist", "Album", "Genre", "Duration", "Playing", "Original format"])
         #expect(SongInfo.original(suffix: nil, bitRate: nil, samplingRate: nil, bitDepth: nil) == nil)
         #expect(SongInfo.original(suffix: "mp3", bitRate: 320, samplingRate: 48000, bitDepth: nil) == "MP3 · 320 kbps · 48 kHz")
@@ -74,9 +76,9 @@ import Testing
         model.player.play([song], startAt: 0)
         model.updatePreferences { $0.downloads.offlineMode = .on }   // nothing asked of the server
         let info = await model.songInfo(song)
-        #expect(info.rows.first { $0.label == "Playing" }?.value
-                == SongInfo.playing(.stream(model.currentStreamQuality), originalSuffix: "flac"))
-        #expect(info.rows.first { $0.label == "Playing" }?.value.hasSuffix(", streaming") == true)
+        // Round 13 item 8: Song info says what Now Playing says.
+        #expect(info.rows.first { $0.label == "Playing" }?.value == model.hearing(song).text)
+        #expect(info.rows.first { $0.label == "Playing" }?.value.hasPrefix("Streaming") == true)
         #expect(!info.rows.contains { $0.label == "File size" || $0.label == "Plays" })
     }
 

@@ -66,7 +66,7 @@ final class DownloadManager {
     var storeDirectory: URL { store.directory }
     /// Every stored song (downloads and cache), for playback to prefer over a stream.
     private(set) var localFiles: [String: URL] = [:]
-    /// Y3: the quality each stored song was saved in (Now Playing says what is heard: "On this iPhone · …").
+    /// Y3: the quality each stored song was saved in (Now Playing says what is heard: "Downloaded · …", "From cache · …").
     private(set) var localQualities: [String: StreamQuality] = [:]
     @ObservationIgnored var onLocalFilesChanged: (@MainActor () -> Void)?
     /// A manual download failed to reach the server (Task 14, I3): it waits, and the app checks the server.
