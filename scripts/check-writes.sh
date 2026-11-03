@@ -107,6 +107,9 @@ if [ -z "${G1_SRC:-}" ]; then
     esac
     case "$s" in
       *'gate.send("DELETE", "queue/\(queueId)?\(Self.queueRemoval)", body: nil, confinedAs: .queueRestartAny)'*) ;;
+      # Round 13 item 6 (D63): another app's download, only by the restarter, the flag a literal `true` (the restarter
+      # sets it only when its caller passed `allowForeign`, which only the flagged confirmation does; pinned below).
+      "$restarter":*'gate.send("DELETE", "queue/\(queueId)?\(Self.queueRemoval)", body: nil, confinedAs: .queueRestartAny, allowForeign: true)') ;;
       # Y5 fix I9 merge: the restart's AlbumSearch, by the restarter only (the gate allows only albums it just restarted).
       "$restarter":*'gate.send("POST", "command", body: SearchBody(name: "AlbumSearch", albumIds: rest), confinedAs: .restartSearch)'*) ;;
       *) echo "G1: queueRestartAny not exactly a queue delete with the one query: ${s%%:*}" >&2; bad=1 ;;
@@ -114,6 +117,23 @@ if [ -z "${G1_SRC:-}" ]; then
   done <<< "$shaped"
   grep -qF 'static let queueRemoval = "removeFromClient=true&blocklist=true&skipRedownload=true"' "$restarter" ||
     { echo "G1: $restarter: queueRemoval isn't exactly removeFromClient=true&blocklist=true&skipRedownload=true" >&2; bad=1; }
+  # Round 13 item 6 (D63): `allowForeign: true` (restart another app's download) is spelt out only by the restarter's
+  # one send and by the screen's flagged confirmation; `includeForeign: true` (Restart all with another app's) only by
+  # the screen's Restart all confirmation. Anywhere else it fails.
+  view="App/Screens/Settings/LidarrDownloadsView.swift"
+  flagged=$(grep -rnE --include='*.swift' '(allowForeign|includeForeign):[[:space:]]*true' "${product[@]}" |
+            grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' || true)
+  while IFS= read -r s; do
+    [ -n "$s" ] || continue
+    case "$s" in
+      "$restarter":*'gate.send("DELETE", "queue/\(queueId)?\(Self.queueRemoval)", body: nil, confinedAs: .queueRestartAny, allowForeign: true)') ;;
+      "$view":*'restart([row], model: model, allowForeign: true)'*) ;;
+      "$view":*'restartAll(rows, model: model, includeForeign: true)'*) ;;
+      *) echo "G1: allowForeign/includeForeign set outside the flagged confirmation: ${s%%:*}" >&2; bad=1 ;;
+    esac
+  done <<< "$flagged"
+  [ "$(grep -cF 'allowForeign: true)' "$restarter")" = 1 ] ||
+    { echo "G1: $restarter: allowForeign: true on other than its one send" >&2; bad=1; }
 fi
 if [ -z "${G1_SRC:-}" ]; then
   # Y5: track files are deleted only by Not for me (a find's files) and the MP3 rule (a kept find's recorded MP3); the
