@@ -177,6 +177,9 @@ public actor RequestRunner {
     private var loading: Task<[MagpieRequest], Error>?
     /// Requests with a step running (internal for R17's stall handling and Search again).
     var busy: Set<RequestID> = [] { didSet { if busy != oldValue { saveLeases() } } }
+    /// Requests whose clean-up is running: Cancel's and a pass's must not run side by side (both would read the album
+    /// still monitored across the GET and both unmonitor it: a double write).
+    var cleaningUp: Set<RequestID> = []
     /// Y5 (RunnerState.swift): this runner's id for its leases, where they and Lidarr's clock are kept, and the last
     /// copy read or written.
     let process = UUID().uuidString
@@ -1302,7 +1305,10 @@ public actor RequestRunner {
     /// shows it still monitored. For an artist Magpie just added, it keeps checking for `addSettleTime`:
     /// Lidarr applies `albumsToMonitor` when its refresh finishes, possibly after the Cancel.
     private func cleanup(_ id: RequestID) async {
-        guard let r = request(id), r.cleanupPending else { return }
+        // One at a time per request (actor re-entrancy across the awaits below); a later pass picks up what's left.
+        guard !cleaningUp.contains(id), let r = request(id), r.cleanupPending else { return }
+        cleaningUp.insert(id)
+        defer { cleaningUp.remove(id) }
         func done() async { await mutate(id) { $0.cleanupPending = false } }
         guard let rg = r.plan?.releaseGroupMBID else { return await done() }
         let shared = list.contains { other in
