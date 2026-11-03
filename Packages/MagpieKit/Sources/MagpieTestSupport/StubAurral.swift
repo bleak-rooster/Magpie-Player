@@ -5,17 +5,22 @@ import os
 /// Round 12 Y6: a stub Aurral (v2.10.0 shapes, from docs/research/aurral.md) for tests, in process. Never the owner's
 /// Aurral: it answers only its own host (`aurral-stub` by default: a single-label name, so a home address) and fails every other request without sending it.
 ///
-/// It serves the five routes Magpie may call (health, playlists status and jobs, library lookup, a flow's start) and
-/// answers 404 to anything else, recording every request so tests can check what was (and wasn't) asked. A wrong or
-/// missing `X-Api-Key` gets 401. Starting a flow makes a run active (`operationQueue.processing`) until `finishRun()`.
+/// It serves the seven routes Magpie may call (health, playlists status and jobs, library lookup, a flow's start, and
+/// round 13's login and logout) and answers 404 to anything else, recording every request so tests can check what was
+/// (and wasn't) asked. Round 13: Aurral 2.10's user sessions. `POST /api/auth/login` checks a user's password and
+/// hands out a Bearer token; every other call but `/api/health` needs a live token (401 otherwise, as Aurral's
+/// `SESSION_INVALID`), and an API key is never accepted. Like Aurral, an admin sees every user's flows and a user only
+/// their own. Starting a flow makes a run active (`operationQueue.processing`) until `finishRun()`.
 public final class StubAurral: HTTPTransport, @unchecked Sendable {
     public struct Flow: Sendable {
         public var id: String
         public var name: String
         public var enabled: Bool
         public var size: Int
-        public init(id: String, name: String, enabled: Bool = true, size: Int = 20) {
-            self.id = id; self.name = name; self.enabled = enabled; self.size = size
+        /// The Aurral user who owns it (nil: a flow from before users, an admin's).
+        public var ownerUserId: Int?
+        public init(id: String, name: String, enabled: Bool = true, size: Int = 20, ownerUserId: Int? = 1) {
+            self.id = id; self.name = name; self.enabled = enabled; self.size = size; self.ownerUserId = ownerUserId
         }
     }
 
@@ -42,7 +47,20 @@ public final class StubAurral: HTTPTransport, @unchecked Sendable {
     /// (`lastRunAt` moves, never seen active), or one never seen at all (failed at once).
     public enum StartBehaviour: Sendable { case runs, finishesAtOnce, neverSeen }
 
+    public struct User: Sendable {
+        public var id: Int
+        public var username: String
+        public var password: String
+        public var role: String
+    }
+
     private struct State {
+        var users = [User(id: 1, username: StubAurral.defaultUsername, password: StubAurral.defaultPassword, role: "admin")]
+        /// Live sessions: token → user id.
+        var sessions: [String: Int] = [:]
+        var logins = 0
+        var loginRateLimited = false
+        var loginDown = false
         var start = StartBehaviour.runs
         var lastRunAt: [String: String] = [:]
         var version: String? = "2.10.0"
@@ -55,13 +73,14 @@ public final class StubAurral: HTTPTransport, @unchecked Sendable {
         var down = false
     }
 
+    public static let defaultUsername = "magpie"
+    public static let defaultPassword = "stub-aurral-password"
+
     public let host: String
-    public let apiKey: String
     private let state = OSAllocatedUnfairLock(initialState: State())
 
-    public init(host: String = "aurral-stub", apiKey: String = "stub-aurral-key") {
+    public init(host: String = "aurral-stub") {
         self.host = host
-        self.apiKey = apiKey
     }
 
     public var base: URL { URL(string: "http://\(host):3001")! }
@@ -82,6 +101,34 @@ public final class StubAurral: HTTPTransport, @unchecked Sendable {
     public func setArtistInAurralLibrary(_ mbid: String) { state.withLock { _ = $0.inAurralLibrary.insert(mbid) } }
     /// Down: every request fails with "can't connect".
     public func setDown(_ down: Bool) { state.withLock { $0.down = down } }
+
+    // MARK: - Users and sessions (round 13)
+
+    public func addUser(id: Int, username: String, password: String, role: String = "user") {
+        state.withLock { $0.users.append(User(id: id, username: username, password: password, role: role)) }
+    }
+    public func setPassword(_ password: String, for username: String) {
+        state.withLock { s in
+            for i in s.users.indices where s.users[i].username == username { s.users[i].password = password }
+        }
+    }
+    /// Aurral forgets every session (they expired, or the owner signed out everywhere).
+    public func expireAllSessions() { state.withLock { $0.sessions = [:] } }
+    /// The login answers 429 (Aurral allows 10 logins in 15 minutes).
+    public func setLoginRateLimited(_ on: Bool) { state.withLock { $0.loginRateLimited = on } }
+    /// Only the login fails with "can't connect".
+    public func setLoginDown(_ on: Bool) { state.withLock { $0.loginDown = on } }
+    /// A live session for the user, as if they had logged in (without a request).
+    public func issueToken(username: String = StubAurral.defaultUsername) -> String {
+        state.withLock { s in
+            let token = UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: "")
+            s.sessions[token] = s.users.first { $0.username == username }?.id ?? 0
+            return token
+        }
+    }
+    public func isSessionLive(_ token: String) -> Bool { state.withLock { $0.sessions[token] != nil } }
+    /// How many logins were asked for (right or wrong).
+    public var loginCount: Int { state.withLock { $0.logins } }
 
     // MARK: - What was asked
 
@@ -113,20 +160,51 @@ public final class StubAurral: HTTPTransport, @unchecked Sendable {
             if let version = snapshot.version { body["appVersion"] = version }
             return answer(200, body)
         }
-        guard request.value(forHTTPHeaderField: "X-Api-Key") == apiKey else { return answer(401, ["error": "Unauthorized"]) }
+        if path == "/api/auth/login", method != "GET" {
+            state.withLock { $0.logins += 1 }
+            if snapshot.loginDown { throw URLError(.cannotConnectToHost) }
+            if snapshot.loginRateLimited { return answer(429, ["error": "Too many requests"]) }
+            let body = request.httpBody.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:]
+            let username = (body["username"] as? String ?? "").trimmingCharacters(in: .whitespaces).lowercased()
+            let password = body["password"] as? String ?? ""
+            guard !username.isEmpty, !password.isEmpty else { return answer(400, ["error": "Username and password are required"]) }
+            guard let user = snapshot.users.first(where: { $0.username.lowercased() == username && $0.password == password }) else {
+                return answer(401, ["error": "Invalid username or password"])
+            }
+            let token = issueToken(username: user.username)
+            let expiresAt = (Date().timeIntervalSince1970 + 30 * 86_400) * 1000
+            return answer(200, ["token": token, "expiresAt": expiresAt,
+                                "user": ["id": user.id, "username": user.username, "role": user.role, "permissions": [:]]])
+        }
+        let header = request.value(forHTTPHeaderField: "Authorization") ?? ""
+        let bearer = header.hasPrefix("Bearer ") ? String(header.dropFirst(7)) : nil
+        guard let bearer, let userId = state.withLock({ $0.sessions[bearer] }),
+              let user = snapshot.users.first(where: { $0.id == userId }) else {
+            return answer(401, ["error": "Unauthorized", "code": bearer == nil ? "AUTH_REQUIRED" : "SESSION_INVALID"])
+        }
+        func visible(_ flowId: String?) -> Bool {
+            if user.role == "admin" { return true }   // Aurral: an admin sees everything
+            return snapshot.flows.first(where: { $0.id == flowId })?.ownerUserId == user.id
+        }
         switch (method, path) {
+        case (let m, "/api/auth/logout") where m != "GET":
+            state.withLock { _ = $0.sessions.removeValue(forKey: bearer) }
+            return answer(200, ["success": true])
         case ("GET", "/api/playlists/status"):
-            return answer(200, statusBody(snapshot))
+            var scoped = snapshot
+            scoped.flows = snapshot.flows.filter { visible($0.id) }
+            return answer(200, statusBody(scoped))
         case ("GET", "/api/playlists/jobs"):
             guard snapshot.jobsRoute else { return answer(404, ["error": "Not found"]) }
-            return answer(200, snapshot.jobs.enumerated().map { Self.jobBody($0.element, index: $0.offset) })
+            return answer(200, snapshot.jobs.enumerated().filter { visible($0.element.flowId) }
+                .map { Self.jobBody($0.element, index: $0.offset) })
         case (_, let p) where p.hasPrefix("/api/library/lookup/") && method == "GET":
             let mbid = String(p.dropFirst("/api/library/lookup/".count))
             let exists = snapshot.inAurralLibrary.contains(mbid)
             return answer(200, ["exists": exists, "artist": exists ? ["foreignArtistId": mbid] : NSNull(), "albums": []])
         case (let m, let p) where p.hasPrefix("/api/playlists/start/") && m != "GET":
             let flowId = String(p.dropFirst("/api/playlists/start/".count))
-            guard snapshot.flows.contains(where: { $0.id == flowId }) else { return answer(404, ["error": "Flow not found"]) }
+            guard snapshot.flows.contains(where: { $0.id == flowId }), visible(flowId) else { return answer(404, ["error": "Flow not found"]) }
             state.withLock { s in
                 switch s.start {
                 case .runs: s.running.insert(flowId)
@@ -161,7 +239,9 @@ public final class StubAurral: HTTPTransport, @unchecked Sendable {
             "slskd": ["configured": true, "connected": true],
             "flowStats": flowStats,
             "flows": s.flows.map { f in
-                ["id": f.id, "name": f.name, "ownerUsername": "admin", "enabled": f.enabled, "size": f.size,
+                ["id": f.id, "name": f.name, "ownerUserId": f.ownerUserId.map { $0 as Any } ?? NSNull(),
+                 "ownerUsername": (s.users.first { $0.id == f.ownerUserId }?.username).map { $0 as Any } ?? NSNull(), "enabled": f.enabled,
+                 "size": f.size,
                  "scheduleDays": [5], "scheduleTime": "00:00", "nextRunAt": "2026-11-06T00:00:00.000Z",
                  "lastRunAt": s.lastRunAt[f.id] ?? "2026-10-30T00:00:00.000Z", "mix": ["discover": 100], "lidarrFeedToken": "secret-feed-token"]
             },

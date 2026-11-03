@@ -214,3 +214,26 @@ Without any writes: when showing a flow playlist (and search/artist/album views)
 favourites and scrobbles go to the library copy; hide the Aurral copy when both appear. The
 Aurral file is removed by the next flow run (Fridays 00:00 on the owner's server), provided no
 other playlist references it.
+
+## User sign-in (round 13, 2026-11-03)
+
+Source read at tag v2.10.0 (commit 832ae3d): `backend/routes/auth.js`, `backend/config/session-helpers.js`,
+`backend/middleware/auth.js`, `backend/middleware/requirePermission.js`, `backend/server.js`,
+`backend/services/weeklyFlow/weeklyFlowPlaylistConfig.js`. No request was sent to the owner's Aurral.
+
+- **Login:** `POST /api/auth/login`, JSON `{username, password}`; Aurral trims and lower-cases the username. 200 →
+  `{token, expiresAt, user{id, username, role, permissions}}`; 400 when either is missing; 401 "Invalid username or
+  password". Side effect: Aurral stores the password as the user's Subsonic password (its own `/rest` server).
+- **Rate limit:** 10 requests per 15 minutes on `/api/auth/login` (express-rate-limit, per client) → 429.
+- **Session:** `crypto.randomBytes(32)` hex token in Aurral's SQLite `sessions` table (survives restarts), sent as
+  `Authorization: Bearer <token>`. Lifetime `SESSION_EXPIRY_HOURS` (default 720 h = 30 days); `expiresAt` is ms since
+  1970. No cookie, no JWT, **no refresh route**: a new login is the only renewal. Unknown or expired token → 401
+  `{error:"Unauthorized", code:"SESSION_INVALID"}`.
+- **Logout:** `POST /api/auth/logout` (Bearer, requires auth) deletes the token.
+- Other auth Aurral accepts (Magpie uses none): `X-Api-Key`/`?api_key` (admin), HTTP Basic, proxy headers, a
+  local-network bypass, OIDC (`/api/auth/oidc/*`). `GET /api/auth/me` returns the session's user.
+- **Scoping:** the playlists router needs `accessFlow`. Flows and shared playlists are owner-scoped: an admin sees
+  all; a user only those whose `ownerUserId` is theirs (an ownerless flow: admins only). `/api/playlists/status` and
+  `/api/playlists/jobs` filter by that; `POST /api/playlists/start/:flowId` answers 404 for a flow the user can't see.
+- Magpie (D63): logs in, keeps the token and the password in the Keychain, renews on 401 or at expiry (one shared
+  login; a refused password is never retried), keeps only the signed-in user's flows, logs out at sign-out.

@@ -33,7 +33,16 @@ struct FindsSetupView: View {
             if setup?.useFindsFolder == true {
                 rootSection
                 if setup?.findsRoot != nil { librarySection }
-                if setup?.library != nil, let libraries { MainLibrarySection(libraries: libraries) }   // R18
+                if setup?.library != nil {   // R18's main library: round 13 moved it to Accounts & Servers › Navidrome
+                    Section {
+                        NavigationLink(value: SettingsPage.account) {
+                            LabeledContent(NewMusicCopy.mainLibrary, value: setup?.mainLibrary.map { $0.name.isEmpty ? $0.path : $0.name } ?? "Choose\u{2026}")
+                        }
+                        .accessibilityIdentifier("finds-main-library-link")
+                    } footer: {
+                        Text(NewMusicCopy.mainLibraryFooter)
+                    }
+                }
                 if mappingFor != nil { mappingSection }
                 if model.findsNeedsRecycleBinWarning {
                     Section {

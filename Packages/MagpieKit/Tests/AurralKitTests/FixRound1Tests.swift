@@ -68,7 +68,7 @@ private func song(_ id: String, _ title: String, _ artist: String, _ duration: T
     /// Aurral's real flow ids are UUIDs: allowed; anything with "/", "?" or "%" isn't.
     @Test func uuidFlowIdsAreAllowed() async throws {
         let stub = StubAurral()
-        let client = AurralClient(base: stub.base, apiKey: stub.apiKey, transport: stub, log: { _ in })
+        let client = AurralClient(base: stub.base, session: stub.signedInSession(), transport: stub, log: { _ in })
         let id = "8f0c2a4e-1b7d-4f7a-9a51-3c2e6d0b9f12"
         stub.setFlows([.init(id: id, name: "Discover Weekly")])
         #expect(try await client.startFlow(id).queued)

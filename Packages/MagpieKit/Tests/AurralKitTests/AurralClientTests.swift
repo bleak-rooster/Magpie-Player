@@ -15,11 +15,12 @@ final class LogSink: @unchecked Sendable {
 @Suite struct AurralClientTests {
     let stub = StubAurral()
     let log = LogSink()
-    var client: AurralClient { AurralClient(base: stub.base, apiKey: stub.apiKey, transport: stub, log: log.sink) }
+    var client: AurralClient { AurralClient(base: stub.base, session: stub.signedInSession(), transport: stub, log: log.sink) }
 
     // MARK: - The allow-list
 
-    /// Exactly five calls may be sent; every other one is refused in code, before anything leaves the phone.
+    /// Exactly seven calls may be sent (round 13 added the login and logout); every other one is refused in code,
+    /// before anything leaves the phone.
     @Test func everyOtherPathIsRefusedAndNothingIsSent() async throws {
         let refused: [(String, String)] = [
             ("GET", "api/settings"), ("GET", "api/settings/playback"), ("GET", "api/auth/api-key"),
@@ -40,6 +41,10 @@ final class LogSink: @unchecked Sendable {
             ("GET", "api/library/lookup/0383dadf-2a4e-4d10-a46a-e9e041da8eb3/extra"),
             ("GET", "/api/health"), ("GET", "api//health"), ("GET", "API/HEALTH"), ("GET", "api/health?x=1"),
             ("GET", "https://elsewhere.example/api/health"), ("HEAD", "api/playlists/status"),
+            // Round 13: the login and logout, only as POST and only exactly.
+            ("GET", "api/auth/login"), ("PUT", "api/auth/login"), ("GET", "api/auth/logout"), ("DELETE", "api/auth/logout"),
+            ("POST", "api/auth/login/x"), ("POST", "api/auth/oidc/login"), ("POST", "api/auth/oidc/exchange"),
+            ("POST", "api/auth/api-key/rotate"), ("POST", "api/auth"), ("POST", "api/users/me/password"),
         ]
         for (method, path) in refused {
             #expect(!AurralRoute.isAllowed(method: method, path: path), "\(method) \(path)")
@@ -50,13 +55,13 @@ final class LogSink: @unchecked Sendable {
         #expect(stub.requests.isEmpty, "nothing was sent")
     }
 
-    @Test func theFiveAllowedCalls() async throws {
+    @Test func theSevenAllowedCalls() async throws {
         for (method, path) in [("GET", "api/health"), ("GET", "api/playlists/status"), ("GET", "api/playlists/jobs"),
                                ("GET", "api/library/lookup/0383dadf-2a4e-4d10-a46a-e9e041da8eb3"),
-                               ("POST", "api/playlists/start/flow-1")] {
+                               ("POST", "api/playlists/start/flow-1"), ("POST", "api/auth/login"), ("POST", "api/auth/logout")] {
             #expect(AurralRoute.isAllowed(method: method, path: path), "\(method) \(path)")
         }
-        #expect(AurralRoute.allCases.count == 5)
+        #expect(AurralRoute.allCases.count == 7)
     }
 
     /// Never the settings route (it returns every secret in clear), whatever the client is asked to do.
@@ -83,28 +88,31 @@ final class LogSink: @unchecked Sendable {
         #expect(stub.requests.isEmpty)
     }
 
-    // MARK: - The key
+    // MARK: - The token
 
-    @Test func keySentOnlyAsTheHeaderAndNeverLogged() async throws {
+    /// Round 13: the session token goes only in the `Authorization` header (never a URL, never `X-Api-Key`), and is
+    /// logged only redacted. A token Aurral refuses with no password to log in again reads as "sign in again".
+    @Test func tokenSentOnlyAsTheHeaderAndNeverLogged() async throws {
         stub.setFlows([.init(id: "flow-1", name: "Discover Weekly")])
+        let session = stub.signedInSession()
+        let token = try #require(await session.currentToken)
+        let client = AurralClient(base: stub.base, session: session, transport: stub, log: log.sink)
         _ = try await client.status()
         _ = try await client.startFlow("flow-1")
-        let unauthorised = AurralClient(base: stub.base, apiKey: "wrong-key-123", transport: stub, log: log.sink)
-        await #expect(throws: AurralError.unauthorized) { _ = try await unauthorised.status() }
+        let stale = AurralClient(base: stub.base, session: AurralSession(username: StubAurral.defaultUsername, password: nil,
+            login: AurralLogin(token: "stale-token-123", expiresAt: nil, user: StubAurral.defaultUser)), transport: stub, log: log.sink)
+        await #expect(throws: AurralError.signInNeeded) { _ = try await stale.status() }
         for request in stub.requests {
-            #expect(request.url?.absoluteString.contains(stub.apiKey) == false, "never in the URL")
-            #expect(request.url?.query?.contains("api_key") != true)
+            #expect(request.url?.absoluteString.contains(token) == false, "never in the URL")
+            #expect(request.value(forHTTPHeaderField: "X-Api-Key") == nil, "never an API key")
         }
-        #expect(stub.requests.first?.value(forHTTPHeaderField: "X-Api-Key") == stub.apiKey)
+        #expect(stub.requests.first?.value(forHTTPHeaderField: "Authorization") == "Bearer \(token)")
         #expect(log.all.count == 3, "each request is logged once")
         for line in log.all {
-            #expect(!line.contains(stub.apiKey) && !line.contains("wrong-key-123"), "logged: \(line)")
+            #expect(!line.contains(token) && !line.contains("stale-token-123"), "logged: \(line)")
         }
-        #expect(log.all.allSatisfy { $0.contains("X-Api-Key: \(Redactor.mask)") })
-        // Errors carry no key either.
-        let error = AurralError.unauthorized
-        #expect(!"\(error)".contains("wrong-key-123") && !String(reflecting: error).contains("wrong-key-123"))
-        #expect(!String(reflecting: client).contains(stub.apiKey), "the client's description hides the key")
+        #expect(log.all.allSatisfy { $0.contains("Authorization: \(Redactor.mask)") })
+        #expect(!String(reflecting: client).contains(token), "the client's description hides the token")
     }
 
     // MARK: - Reading

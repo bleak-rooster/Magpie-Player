@@ -10,6 +10,9 @@ enum ServerAddress {
         /// `user:password@host`: credentials don't belong in an address (security M5: it would be saved,
         /// shown and logged).
         case containsCredentials
+
+        /// The address, when it is one.
+        var url: URL? { if case .url(let url) = self { url } else { nil } }
     }
 
     /// `192.168.1.20:4533` → `http://192.168.1.20:4533`; `music.example.com` → `https://music.example.com`
@@ -163,8 +166,10 @@ enum ServerAddress {
 struct PlainHTTPConsent {
     let defaults: UserDefaults
     static let key = "magpie.plainHTTPConsent"
+    /// Z1 fix M1: consent is per secret; the Aurral password has its own list.
+    var key: String = Self.key
 
-    private var granted: Set<String> { Set(defaults.stringArray(forKey: Self.key) ?? []) }
+    private var granted: Set<String> { Set(defaults.stringArray(forKey: key) ?? []) }
 
     /// Credentials may go to `url`: it is encrypted, private, or the owner said yes to it.
     func allows(_ url: URL) -> Bool {
@@ -173,7 +178,7 @@ struct PlainHTTPConsent {
 
     func grant(_ urls: [URL]) {
         let all = granted.union(urls.filter(ServerAddress.isUnencryptedPublic).map(ServerAddress.origin))
-        defaults.set(all.sorted(), forKey: Self.key)
+        defaults.set(all.sorted(), forKey: key)
     }
 }
 
