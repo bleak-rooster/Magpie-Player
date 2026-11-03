@@ -66,16 +66,26 @@ public struct AurralFlow: Sendable, Equatable, Hashable {
     public var id: String
     public var name: String
     public var enabled: Bool
+    /// Round 13: the Aurral user who owns it (`ownerUserId`; nil on a flow from before Aurral had users).
+    public var ownerUserId: Int?
     public var ownerUsername: String?
     public var size: Int?
     public var nextRunAt: Date?
     /// When the flow's last run happened (a change says a run finished: Refresh Flow's latch, fix I3).
     public var lastRunAt: Date?
 
-    public init(id: String, name: String, enabled: Bool = true, ownerUsername: String? = nil, size: Int? = nil,
-                nextRunAt: Date? = nil, lastRunAt: Date? = nil) {
-        self.id = id; self.name = name; self.enabled = enabled; self.ownerUsername = ownerUsername; self.size = size
-        self.nextRunAt = nextRunAt; self.lastRunAt = lastRunAt
+    public init(id: String, name: String, enabled: Bool = true, ownerUserId: Int? = nil, ownerUsername: String? = nil,
+                size: Int? = nil, nextRunAt: Date? = nil, lastRunAt: Date? = nil) {
+        self.id = id; self.name = name; self.enabled = enabled; self.ownerUserId = ownerUserId
+        self.ownerUsername = ownerUsername; self.size = size; self.nextRunAt = nextRunAt; self.lastRunAt = lastRunAt
+    }
+
+    /// Round 13: the flow is `user`'s. By its owner's id; failing that, its owner's name (case folded); a flow with no
+    /// owner at all is from before Aurral had users, so an admin's (Aurral itself shows it only to admins).
+    public func belongs(to user: AurralUser) -> Bool {
+        if let ownerUserId { return ownerUserId == user.id }
+        if let ownerUsername { return ownerUsername.lowercased() == user.username.lowercased() }
+        return user.isAdmin
     }
 }
 
@@ -124,6 +134,16 @@ public struct AurralStatus: Sendable, Equatable {
         self.operationPending = operationPending; self.hint = hint
     }
 
+    /// Round 13: only `user`'s flows and their counts (Aurral shows an admin every user's flows; Magpie's playlists
+    /// are the signed-in user's). Aurral's own progress (worker, operation queue, hint) is shared and stays.
+    public func scoped(to user: AurralUser) -> AurralStatus {
+        var scoped = self
+        scoped.flows = flows.filter { $0.belongs(to: user) }
+        let ids = Set(scoped.flows.map(\.id))
+        scoped.flowStats = flowStats.filter { ids.contains($0.key) }
+        return scoped
+    }
+
     /// A run is under way for this flow (or Aurral is busy generating one): Refresh Flow is refused. A flow is busy
     /// while it has songs pending or downloading; Aurral as a whole while its operation queue works or waits.
     public func isRunActive(flowId: String) -> Bool {
@@ -146,7 +166,8 @@ public struct AurralStatus: Sendable, Equatable {
         func date(_ text: String?) -> Date? { text.flatMap { iso.date(from: $0) ?? plain.date(from: $0) } }
         let flows = (o["flows"] as? [Any] ?? []).compactMap { item -> AurralFlow? in
             guard let f = item as? [String: Any], let id = f.string("id"), let name = f.string("name") else { return nil }
-            return AurralFlow(id: id, name: name, enabled: f.bool("enabled") ?? true, ownerUsername: f.string("ownerUsername"),
+            return AurralFlow(id: id, name: name, enabled: f.bool("enabled") ?? true, ownerUserId: f.int("ownerUserId"),
+                              ownerUsername: f.string("ownerUsername"),
                               size: f.int("size"), nextRunAt: date(f.string("nextRunAt")), lastRunAt: date(f.string("lastRunAt")))
         }
         var stats: [String: AurralFlowStats] = [:]

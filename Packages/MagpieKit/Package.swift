@@ -31,7 +31,7 @@ let package = Package(
         .target(name: "Playback", dependencies: ["MagpieCore"]),
         .target(name: "DesignSystem", dependencies: ["MagpieCore"]),
         .target(name: "CarPlayUI", dependencies: ["MagpieCore", "Playback", "DesignSystem", "Search"]),
-        .target(name: "MagpieTestSupport", dependencies: ["MagpieCore"]),
+        .target(name: "MagpieTestSupport", dependencies: ["MagpieCore", "AurralKit"]),
         .testTarget(name: "MagpieCoreTests", dependencies: ["MagpieCore", "MagpieTestSupport"]),
         .testTarget(name: "NavidromeKitTests",
                     dependencies: ["NavidromeKit", "MagpieCore", "MagpieTestSupport"],

@@ -19,7 +19,10 @@
 #       client) enforces D29.
 #   Packages/MagpieKit/Sources/AurralKit/AurralClient.swift  G1 allowlist: aurral start flow
 #       Round 12 Y6 (D56): Aurral's Refresh Flow, `POST /api/playlists/start/:flowId`, the one write Magpie sends to
-#       Aurral; the client's allow-list (`AurralRoute`) refuses every other call. Pinned below.
+#       Aurral's data; the client's allow-list (`AurralRoute`) refuses every other call. Pinned below.
+#   Packages/MagpieKit/Sources/AurralKit/AurralClient.swift  G1 allowlist: aurral session
+#       Round 13 (D63): Aurral's `POST /api/auth/login` and `POST /api/auth/logout` (Magpie signs in as a user; they
+#       change only Aurral's own sessions). Pinned below.
 #   Packages/MagpieKit/Tests/RequestsTests/FindsIT.swift  G1 allowlist: devLidarr
 #       Raw requests to the dev Lidarr for IT set-up and clean-up (manual import, removing the test artist), after
 #       TryDevStack verified the host is local and the dev marker matches (G0). Never product code.
@@ -47,6 +50,7 @@ allow=(
   "Packages/MagpieKit/Sources/ListenBrainzKit/ListenBrainzClient+Submit.swift|G1 allowlist: listenbrainz submit-listens"
   "Packages/MagpieKit/Tests/RequestsTests/FindsIT.swift|G1 allowlist: devLidarr"
   "Packages/MagpieKit/Sources/AurralKit/AurralClient.swift|G1 allowlist: aurral start flow"
+  "Packages/MagpieKit/Sources/AurralKit/AurralClient.swift|G1 allowlist: aurral session"
   "Packages/MagpieKit/Tests/MagpieCoreTests/HTTPTransportTests.swift|RedirectStub"
   "Packages/MagpieKit/Tests/MagpieCoreTests/SharedLoginTransportTests.swift|auth/login"
 )
@@ -155,8 +159,9 @@ if [ -z "${G1_SRC:-}" ]; then
   done
 fi
 if [ -z "${G1_SRC:-}" ]; then
-  # Round 12 Y6 (D56): Aurral. The client allows exactly five calls (GET health, playlists status, playlists jobs,
-  # library lookup; POST playlists start), and nothing in the product names Aurral's dangerous routes.
+  # Round 12 Y6 (D56): Aurral. The client allows exactly seven calls (GET health, playlists status, playlists jobs,
+  # library lookup; POST playlists start; round 13 (D63): POST auth login and logout), and nothing in the product names
+  # Aurral's dangerous routes.
   aurral="Packages/MagpieKit/Sources/AurralKit/AurralClient.swift"
   for want in 'case 1 where rest[0] == "health": .health' \
               'case 2 where rest == ["playlists", "status"]: .playlistsStatus' \
@@ -165,12 +170,22 @@ if [ -z "${G1_SRC:-}" ]; then
               'case 3 where rest[0] == "playlists" && rest[1] == "start" && isPlainId(rest[2]): .startFlow' \
               'case .health, .playlistsStatus, .playlistsJobs, .libraryLookup: "GET"' \
               'case .startFlow: Self.startMethod' \
+              'case 2 where rest == ["auth", "login"]: .login' \
+              'case 2 where rest == ["auth", "logout"]: .logout' \
+              'case .login, .logout: Self.sessionMethod' \
+              'static let sessionMethod = "POST"' \
+              'case .health, .login: false' \
               'guard AurralRoute.isAllowed(method: method, path: path),'; do
     grep -qF -- "$want" "$aurral" || { echo "G1: $aurral: the Aurral allow-list changed (missing: $want)" >&2; bad=1; }
   done
-  [ "$(grep -cE 'case [0-9] where' "$aurral")" = 5 ] || { echo "G1: $aurral: the Aurral allow-list isn't exactly five routes" >&2; bad=1; }
+  [ "$(grep -cE 'case [0-9] where' "$aurral")" = 7 ] || { echo "G1: $aurral: the Aurral allow-list isn't exactly seven routes" >&2; bad=1; }
+  # Round 13 (D63): the API key is gone. No product code sends an X-Api-Key to Aurral, and only the Aurral client sends
+  # its Bearer token.
+  if grep -nE 'X-Api-Key|apiKey' "$aurral" | grep -vE '^[0-9]+:[[:space:]]*//' | grep -q .; then
+    echo "G1: $aurral: the Aurral client names an API key again" >&2; bad=1
+  fi
   # Nobody names Aurral's settings, key, discover, add or track-delete routes (the stub for tests aside).
-  if grep -rnE --include='*.swift' 'api/settings|api/auth/api-key|api/discover|api/library/tracks|api/library/artists|lidarr-import-list' \
+  if grep -rnE --include='*.swift' 'api/settings|api/auth/api-key|api/auth/oidc|api/users|api/discover|api/library/tracks|api/library/artists|lidarr-import-list' \
        "${product[@]}" | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' | grep -v '^Packages/MagpieKit/Sources/MagpieTestSupport/' | grep -q .; then
     echo "G1: a forbidden Aurral route is named in product code" >&2; bad=1
   fi
