@@ -131,6 +131,8 @@ final class AppModel {
     var libraryScope: [Int]?
     /// Changes each time the server answers again after it didn't: Home reads what failed (P5).
     var serverAnsweredGeneration = 0
+    /// The match-index read a change of library scope started (`syncLibraryScope`), so its requests can be waited for.
+    @ObservationIgnored var scopeIndexRefresh: Task<Void, Never>?
     /// The scene is active: requests poll every 5 s, otherwise every 30 s.
     var isForeground = true {
         didSet {

@@ -29,6 +29,8 @@ extension AppModel {
             coverURL: { [weak self] id in self?.coverArtURL(id, size: DownloadManager.coverSize) },
             // Manual downloads also wait while the server is suspect (Task 14): they'd only fail.
             isOffline: { [weak self] in self.map { $0.isOffline || $0.reachability.isSuspect } ?? false },
+            // Only suspect (flake fix): a download already running isn't cut off because another one timed out.
+            isOnlySuspect: { [weak self] in self.map { !$0.isOffline && $0.reachability.isSuspect } ?? false },
             backgroundFetcher: backgroundAudioFetcher)
         downloads = manager
         // R1: a launch for the background session's events stores what they delivered before the system is told.

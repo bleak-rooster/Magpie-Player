@@ -441,6 +441,9 @@ final class DiscoverNavidrome: @unchecked Sendable {
         let model = try await signedIn()
         defer { model.signOut() }
         _ = try await model.discoverPage(playlistId: "pl-dw")
+        // The first page learns Aurral's library, which rescopes the client and reads the match index again in the
+        // background (`/api/song`, which `nav.lookups` counts too): wait for it, so it can't land after `before`.
+        await model.scopeIndexRefresh?.value
         let before = nav.lookups.count + navidromeAsked.filter { $0.hasSuffix("search3") }.count
         let again = try await model.discoverPage(playlistId: "pl-dw")
         #expect(nav.lookups.count + navidromeAsked.filter { $0.hasSuffix("search3") }.count == before, "nothing asked again")

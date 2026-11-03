@@ -110,6 +110,9 @@ final class DownloadManager {
     @ObservationIgnored private let limitBytes: (DownloadPreferences) -> Int64?
     /// Offline (Task 14): manual downloads and covers wait, as for Wi-Fi, and go when the server is back.
     @ObservationIgnored private let isOffline: @MainActor () -> Bool
+    /// The only reason manual downloads may not go is a suspect server (the network allows them, not offline): fetches
+    /// already running carry on, since a failure is counted by the probe's verdict, while new ones wait (flake fix).
+    @ObservationIgnored private let isOnlySuspect: @MainActor () -> Bool
     /// Job runs and short store tasks; `settled()` waits for all of them.
     /// (+Removal, read only)
     @ObservationIgnored private(set) var tasks: [UUID: Task<Void, Never>] = [:]
@@ -155,6 +158,7 @@ final class DownloadManager {
          coverURL: @escaping @MainActor (String) -> URL?,
          limitBytes: @escaping (DownloadPreferences) -> Int64? = { $0.downloadsLimit.bytes },
          isOffline: @escaping @MainActor () -> Bool = { false },
+         isOnlySuspect: @escaping @MainActor () -> Bool = { false },
          notifications: NotificationCenter = .default, storeRetryInterval: Duration = .seconds(30),
          backgroundFetcher: (any ResumableAudioFetching)? = nil) {
         self.store = store
@@ -166,6 +170,7 @@ final class DownloadManager {
         self.coverArtURL = coverURL
         self.limitBytes = limitBytes
         self.isOffline = isOffline
+        self.isOnlySuspect = isOnlySuspect
         self.notifications = notifications
         self.storeRetryInterval = storeRetryInterval
     }
@@ -531,13 +536,21 @@ final class DownloadManager {
         return status.isConnected && !isOffline() && (!status.isCellular || prefs.overMobileData)
     }
 
+    /// The network itself allows manual downloads (connected; mobile data only when allowed).
+    private func networkAllowsManual(_ prefs: DownloadPreferences) -> Bool {
+        let status = network.status
+        return status.isConnected && (!status.isCellular || prefs.overMobileData)
+    }
+
     /// The network or offline mode changed: what waits goes if it may now, and manual work that may not waits.
     func networkChanged() {
         let prefs = preferences().normalised()
         if manualAllowed(prefs) {
-            for i in jobs.indices where jobs[i].state == .waiting { jobs[i].state = .queued }
+            // A download that failed to connect waits for the probe's verdict (`serverAnswered`/`serverDropConfirmed`):
+            // sent again before it, its next failure wouldn't count as an attempt (flake: fetched past the limit).
+            for i in jobs.indices where jobs[i].state == .waiting && !jobs[i].awaitingVerdict { jobs[i].state = .queued }
             fetchCovers()
-        } else {
+        } else if !(networkAllowsManual(prefs) && isOnlySuspect()) {
             for i in jobs.indices where jobs[i].isManual && jobs[i].needsNetwork {
                 guard case let .running(run) = jobs[i].state else { continue }
                 jobs[i].state = .waiting

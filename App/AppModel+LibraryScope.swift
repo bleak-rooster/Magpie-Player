@@ -126,7 +126,7 @@ extension AppModel {
         libraryScope = ids
         homeFeedSlot?.libraryChanged()
         if session != nil, matchIndex != nil {   // m4: what counts as yours follows the scope
-            Task { [weak self] in try? await self?.refreshMatchIndex() }
+            scopeIndexRefresh = Task { [weak self] in try? await self?.refreshMatchIndex() }
         }
     }
 
