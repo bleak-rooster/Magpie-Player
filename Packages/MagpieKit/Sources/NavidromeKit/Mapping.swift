@@ -76,7 +76,8 @@ enum Mapping {
         // Subsonic `musicBrainzId` on an album is the release id, not the release group: leave RG nil.
         return Album(id: d.id, name: d.name ?? "", artist: artist, artistId: d.artistId, year: d.year,
                      songCount: d.songCount ?? songs?.count ?? 0, duration: d.duration ?? 0,
-                     coverArtId: d.coverArt, releaseGroupMBID: nil, songs: songs, starred: d.starred != nil)
+                     coverArtId: d.coverArt, releaseGroupMBID: nil, songs: songs, starred: d.starred != nil,
+                     created: date(d.created))
     }
 
     static func artist(_ d: SubsonicArtist) -> Artist {

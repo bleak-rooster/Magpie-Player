@@ -78,7 +78,19 @@ public enum LetterIndex {
     /// emoji after "z". Those rank 0 and 27 here so the order stays monotone.
     public static func seek(_ letter: String, total: Int?, ignoringArticles articles: [String] = [],
                             maxProbes: Int = 64, nameAt: @Sendable (Int) async throws -> String?) async throws -> Int {
-        let wanted = letters.firstIndex(of: letter) ?? 0
+        try await seek(rank: letters.firstIndex(of: letter) ?? 0, total: total, ignoringArticles: articles,
+                       maxProbes: maxProbes, nameAt: nameAt)
+    }
+
+    /// Round 13: the first offset whose name sorts after "z" (other scripts, emoji; `rank` 27), as `seek` finds a
+    /// letter's: the car's "#" songs that come last in the server's order.
+    public static func seekPastZ(total: Int?, maxProbes: Int = 64,
+                                 nameAt: @Sendable (Int) async throws -> String?) async throws -> Int {
+        try await seek(rank: 27, total: total, ignoringArticles: [], maxProbes: maxProbes, nameAt: nameAt)
+    }
+
+    private static func seek(rank wanted: Int, total: Int?, ignoringArticles articles: [String],
+                             maxProbes: Int, nameAt: @Sendable (Int) async throws -> String?) async throws -> Int {
         guard wanted > 0 else { return 0 }
         var probes = 0
         func reaches(_ offset: Int) async throws -> Bool {
@@ -141,8 +153,9 @@ public enum LetterIndex {
 
     // MARK: - Folding
 
-    /// 0: files under "#" and sorts before "a"; 1–26: A–Z; 27: other scripts, emoji and symbols after "z".
-    static func rank(_ name: String, _ articles: [String]) -> Int {
+    /// 0: files under "#" and sorts before "a"; 1–26: A–Z; 27: other scripts, emoji and symbols after "z". Round 13:
+    /// public, so the car can put the phone's songs in the server's order offline.
+    public static func rank(_ name: String, _ articles: [String] = []) -> Int {
         guard let scalar = firstFolded(name, articles) else { return 0 }
         if let i = letterIndex(scalar) { return i }
         return scalar.value < 0x61 ? 0 : 27

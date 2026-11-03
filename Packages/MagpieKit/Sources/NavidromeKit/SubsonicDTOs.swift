@@ -110,6 +110,7 @@ struct SubsonicAlbum: Decodable {
     let isCompilation: Bool?
     let song: [SubsonicSong]?
     let starred: String?
+    let created: String?
 }
 
 struct SubsonicArtist: Decodable {

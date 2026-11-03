@@ -2,7 +2,7 @@ import Foundation
 import MagpieCore
 import Playback
 
-/// Round 13 item 7 (D64): playback's side of replacing a cached copy at the wrong quality (`DownloadManager+CacheQuality`).
+/// Round 13 item 7 (D70): playback's side of replacing a cached copy at the wrong quality (`DownloadManager+CacheQuality`).
 extension AppModel {
     /// On each queue change: a held copy goes in once its song is no longer playing (or waiting in the engine), and a
     /// song that has just started playing from the cache is checked against the current network's quality.

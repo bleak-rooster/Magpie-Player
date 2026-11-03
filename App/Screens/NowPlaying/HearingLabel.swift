@@ -6,7 +6,7 @@ import SwiftUI
 /// Round 12 Y3 (plan item 11): what Now Playing says under the scrubber, about what you actually hear, and the
 /// hallmark that goes with it. The hallmark used to show the original file's quality even while a transcode played.
 ///
-/// Round 13 item 8 (D65): the line starts with where the sound comes from: "Downloaded" (saved on this iPhone),
+/// Round 13 item 8 (D71): the line starts with where the sound comes from: "Downloaded" (saved on this iPhone),
 /// "From cache" (a temporary copy) or "Streaming". Then what plays:
 /// - "Lossless · FLAC 24/96": the original lossless file.
 /// - "MP3 320": a lossy original.

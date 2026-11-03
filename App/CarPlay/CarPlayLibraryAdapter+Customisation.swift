@@ -8,10 +8,15 @@ import Playback
 /// never disagree. Task 23: Genres, Favourites, Downloads and Made for you, offline, and (Y2) the favourite star, each
 /// the phone's own. Offline, every read here is the phone's and nothing is asked of the server.
 extension CarPlayLibraryAdapter {
-    /// The phone's Home sections (Made for you with a token, as on the phone). Offline: Downloaded.
-    var homeSections: [HomeSection] { model.homeSections }
+    /// The car's Home sections (round 13: Settings › CarPlay › Home, the phone's Home until changed there; Made for you
+    /// with a token, Discover with Aurral, as on the phone). Offline: Downloaded.
+    var homeSections: [HomeSection] {
+        model.preferences.carPlay.visibleHomeSections(phone: model.preferences.layout, offline: model.isOffline,
+                                                      hasListenBrainzToken: model.hasListenBrainzToken,
+                                                      discoverSetUp: model.aurralSetUp)
+    }
 
-    /// The phone's Library rows without Songs and Requests. Offline: Downloads, and Genres when shown.
+    /// The phone's Library rows without Requests. Offline: Downloads, and Genres when shown.
     var libraryRows: [LibraryRow] { model.libraryRows(carPlay: true) }
 
     /// The phone's shelves (offline, nothing is asked of the server), each cut to `size`, with Made for you's from its

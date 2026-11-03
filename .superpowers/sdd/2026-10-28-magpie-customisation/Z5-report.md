@@ -4,7 +4,7 @@ Branch `z5-playback`, off v0.0.1-custom, with the latest v0.0.1-custom merged in
 
 ## What was built
 
-### Item 7: replace a cached copy that isn't at the right quality (D64)
+### Item 7: replace a cached copy that isn't at the right quality (D70)
 - **`AudioStore.replaceCache(songId:from:with:quality:fileExtension:)`** (MagpieKit/Playback). Inside the actor, in one step, it replaces an entry only when it is still a *cache* entry at `from` and `from != quality`. Otherwise it returns nil and discards the incoming file: a download (or a cached song promoted meanwhile), an entry whose quality changed, or one that was evicted. It goes through `replace`, which stores the new file first and deletes the old one after. An extension off the allowlist throws `invalidFile`.
 - **`App/Downloads/DownloadManager+CacheQuality.swift`** (new).
   - `refreshCacheQuality(songId:target:)` starts one background fetch. It uses the foreground fetcher, with `allowsCellular = overMobileData`.
@@ -35,7 +35,7 @@ Branch `z5-playback`, off v0.0.1-custom, with the latest v0.0.1-custom merged in
   - `activeRuns`, read only.
 - **Added to `DownloadManager`:** `kind(of:)`, and the stored `cacheRefresh` and `isSongInUse`.
 
-### Item 8: where the song comes from (D65)
+### Item 8: where the song comes from (D71)
 - `SongInfo.Source` is now `.downloaded(q)`, `.cached(q)` or `.stream(q)`. It also has `quality`, and `place`: "Downloaded", "From cache" or "Streaming".
 - `HearingLabel` puts the place in front of Y3's text, for example:
   - "Streaming · Transcoded · Opus 160 kbps (from FLAC)";
@@ -107,12 +107,12 @@ Branch `z5-playback`, off v0.0.1-custom, with the latest v0.0.1-custom merged in
   - App/AppModel+PreDownload.swift, App/AppModel+Playback.swift, App/AppModel+Preferences.swift, App/AppModel+Downloads.swift
   - App/Screens/NowPlaying/HearingLabel.swift, App/Screens/NowPlaying/SongInfoSheet.swift
   - Tests: Round12HomePagesTests, NowPlayingMoreTests, NowPlayingSmallPhoneTests
-  - docs/decisions.md (D64, D65)
+  - docs/decisions.md (D70, D71)
 
 ## Decisions
-- **D64:** the cache-quality replacement, with the rules above.
-- **D65:** the source line, and Up next making way on the smallest phone.
-- **Calls made within D64:**
+- **D70:** the cache-quality replacement, with the rules above.
+- **D71:** the source line, and Up next making way on the smallest phone.
+- **Calls made within D70:**
   - "One fetch at a time" means at most one replacement fetching *or held*. There is no queue; other mismatches wait for their own next play.
   - "Respects the cellular setting" uses Downloads › "Download on mobile data" (`overMobileData`).
   - On Low Data Mode Wi-Fi the target is the mobile quality, and the fetch is allowed because the connection isn't cellular.
@@ -129,7 +129,7 @@ Branch `z5-playback`, off v0.0.1-custom, with the latest v0.0.1-custom merged in
   - Test `aStoppedFetchNeverClearsTheNextOne`: A → B → A flip, with the first fetch ignoring cancellation and the second held in its check. The second stays the one under way, a second song can't start, and the second lands.
 - **Owner ruling (M4).** On mobile data (or Low Data Mode) a better cached copy is kept: `wantsReplacement(from:target:onMobile:)`. Only a lower bit rate, or a transcode when the target is the original, is replaced. On Wi-Fi the copy matches exactly.
   - Tests: `onMobileDataABetterCopyIsKept` (original, AAC 256, and same rate in another format all kept), `onMobileDataAWorseCopyIsReplaced`, `onWiFiTheTargetIsMatchedExactly`.
-  - Recorded in D64.
+  - Recorded in D70.
 - **M1.** `AudioStore.replaceCache` now returns a `CacheReplacement` (the entry plus the old file name). It keeps the old audio but removes the old sidecar.
   - The manager removes the old file with `removeUnreferencedAudio` only once `isSongInUse` is false, at the swap or on a later queue change.
   - After a crash, the next load sweeps the orphan.

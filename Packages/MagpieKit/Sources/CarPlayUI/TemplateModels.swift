@@ -31,6 +31,10 @@ public enum CPDestination: Sendable, Hashable {
     case search
     /// Round 12 (Y2): one group of a long list's letters screen ("A", "X–Z", "S (1 of 3)"), its rows built already.
     case letterGroup(title: String, sections: [CPSectionModel])
+    /// Round 13 (item 3): every song, on its five letter groups.
+    case songs
+    /// Round 13: one song group (or a page of it): offsets in the server's title order, read when it opens.
+    case songRange(title: String, ranges: [Range<Int>])
 
     public var title: String {
         switch self {
@@ -47,7 +51,8 @@ public enum CPDestination: Sendable, Hashable {
         case .artist(_, let name), .genreGroup(_, let name), .downloadedArtist(_, let name): name
         case .searchResults(let query): query
         case .search: "Search"
-        case .letterGroup(let title, _): title
+        case .letterGroup(let title, _), .songRange(let title, _): title
+        case .songs: "Songs"
         }
     }
 }
@@ -75,6 +80,8 @@ public enum RowAction: Sendable, Hashable {
     case tryNext(ExternalRecording)
     /// A not-yet song already on its way (R20): says so ("On its way"), never a second Try.
     case onItsWay
+    /// Round 13 (item 9): a song in Up Next; a tap plays the queue from there.
+    case queueEntry(UUID)
 }
 
 public struct CPRowModel: Sendable, Hashable, Identifiable {
@@ -111,7 +118,7 @@ public struct CPSectionModel: Sendable, Hashable {
 
 /// The depth budget (critique H1, D12 as revised by the owner in round 12): a tab root plus at most three pushes
 /// (tab → letters → group → page), so Now Playing (5) fits from any browse screen within CarPlay's template depth limit
-/// for audio apps. Up Next stays off.
+/// for audio apps. Round 13: Up Next is on; it goes above Now Playing only while that fits (`upNextFits`).
 public struct CPNavigator: Sendable {
     /// Counting the tab root as 1.
     public static let maxBrowseDepth = 4
@@ -126,6 +133,10 @@ public struct CPNavigator: Sendable {
 
     /// Whether a browse screen may be pushed on top of a stack `depth` templates deep.
     public static func allowsPush(atDepth depth: Int) -> Bool { depth < maxBrowseDepth }
+
+    /// Whether Up Next may be pushed on a stack `stackDepth` templates deep (the tab bar and Now Playing counted); when
+    /// it can't, the car goes back to the tab and opens Now Playing then Up Next.
+    public static func upNextFits(stackDepth: Int) -> Bool { stackDepth < carPlayTemplateDepthLimit }
 
     /// Pushes `destination` unless that would go past the budget.
     @discardableResult

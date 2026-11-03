@@ -2,7 +2,7 @@ import Foundation
 import MagpieCore
 import Playback
 
-/// Round 13 item 7 (D64): the one cache replacement under way. At most one is fetching or held at a time.
+/// Round 13 item 7 (D70): the one cache replacement under way. At most one is fetching or held at a time.
 struct CacheRefreshState {
     struct Fetch {
         /// This fetch's identity (review I1): a stopped fetch's clean-up only ever touches its own state.
@@ -31,7 +31,7 @@ struct CacheRefreshState {
     var oldFiles: [String: String] = [:]
 }
 
-/// Round 13 item 7 (D64): a song played from the cache at a quality other than the current network's target is
+/// Round 13 item 7 (D70): a song played from the cache at a quality other than the current network's target is
 /// fetched again at the target, in the background, and swapped in on its next play.
 ///
 /// - Only the cache: a download keeps the quality it was saved in (checked again by the store at the swap).

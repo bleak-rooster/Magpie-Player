@@ -54,8 +54,9 @@ public enum CarPlayAvailability: Sendable, Hashable {
     case ready(account: String)
 }
 
-/// Drives the CarPlay templates: tab roots Home · Library · Finds · Search (all `CPListTemplate`, C3, D12),
-/// pushed lists within the depth budget, the system search template, and Now Playing (Keep for finds).
+/// Drives the CarPlay templates: tab roots Home · Library · the owner's third tab · Search (all `CPListTemplate`, C3,
+/// D12; round 13: the third tab replaced Finds), pushed lists within the depth budget, the system search template, and
+/// Now Playing (Keep for finds, Up Next).
 ///
 /// Lists are built as value models off the main thread and applied on it. A list on screen is
 /// only ever updated in place (same rows, new text/playing/artwork); a change of shape is held
@@ -72,7 +73,9 @@ public final class CarPlayController: NSObject {
     var tabBar: CPTabBarTemplate?
     var home: ListBinding?
     var libraryRoot: ListBinding?
-    var findsRoot: ListBinding?
+    /// Round 13: the third tab, chosen in Settings › CarPlay (Playlists by default).
+    var thirdRoot: ListBinding?
+    var thirdTab: CarPlayTab?
     private var searchRoot: ListBinding?
     var bindings: [ObjectIdentifier: ListBinding] = [:]
     var watches: [Task<Void, Never>] = []
@@ -96,6 +99,11 @@ public final class CarPlayController: NSObject {
     /// The plain record shown for a not-yet row (no cover to put on its label).
     private var blankRecord: UIImage?
 
+    /// The car's list limits now (read at runtime; tests set their own). Z3 review I2.
+    var listLimits: () -> (items: Int, sections: Int) = {
+        (Int(CPListTemplate.maximumItemCount), Int(CPListTemplate.maximumSectionCount))
+    }
+
     /// Artwork requests in flight per list.
     private static let artworkConcurrency = 4
 
@@ -110,7 +118,6 @@ public final class CarPlayController: NSObject {
         keyboardLimited = configuration.limitedUserInterfaces.contains(.keyboard)
         configureNowPlaying()
         watchPlayer()
-        watchFinds()
     }
 
     /// Shows the tabs when ready, otherwise a list that describes why not. Rebuilds only when the
@@ -151,28 +158,37 @@ public final class CarPlayController: NSObject {
         interface.setRootTemplate(template, animated: false, completion: nil)
     }
 
-    private func showTabs() {
+    func showTabs() {
         let homeList = tabRoot("Home", symbol: "house.fill")
         let libraryList = tabRoot("Library", symbol: "square.stack.fill")
         let searchList = tabRoot("Search", symbol: "magnifyingglass")
-        // Four tabs where the car allows four (read at runtime); otherwise Finds is the one left out.
-        let findsList = CPTabBarTemplate.maximumTabCount >= 4 ? tabRoot("Finds", symbol: "record.circle") : nil
-        let tabs = CPTabBarTemplate(templates: [homeList, libraryList, findsList, searchList].compactMap { $0 })
+        // Four tabs where the car allows four (read at runtime); otherwise the third tab is the one left out.
+        let tab = library.carPlayTab
+        let thirdList = CPTabBarTemplate.maximumTabCount >= 4 ? tabRoot(tab.title, symbol: tab.symbol) : nil
+        let tabs = CPTabBarTemplate(templates: [homeList, libraryList, thirdList, searchList].compactMap { $0 })
         tabs.delegate = self
         tabBar = tabs
         home = bind(homeList)
         libraryRoot = bind(libraryList)
-        findsRoot = findsList.map(bind)
+        thirdRoot = thirdList.map(bind)
+        thirdTab = thirdList == nil ? nil : tab
         searchRoot = bind(searchList)
         if let libraryRoot {
-            let rows = CarPlayRows.libraryRoot(library.libraryRows, hasFindsTab: findsList != nil)
+            let rows = CarPlayRows.libraryRoot(library.libraryRows)
             apply(rows, to: libraryRoot, placeholder: CarPlayRows.isPlaceholder(rows))
         }
-        refreshFindsRoot()
+        loadThirdTab()
         refreshSearchRoot()
         loadHome()
         watchLayout()
         interface.setRootTemplate(tabs, animated: false, completion: nil)
+    }
+
+    /// The third tab shows its screen at the root (depth 1); its lists are read again when the car's limits change.
+    private func loadThirdTab() {
+        guard let thirdRoot, let thirdTab else { return }
+        thirdRoot.destination = thirdTab.destination
+        load(thirdRoot, fetcher(for: thirdTab.destination, into: thirdRoot))
     }
 
     private func tabRoot(_ title: String, symbol: String) -> CPListTemplate {
@@ -187,28 +203,6 @@ public final class CarPlayController: NSObject {
         loadCustomHome()
     }
 
-    /// The Finds tab shows the phone's shelf as it is now (days left are counted again on each refresh).
-    private func refreshFindsRoot() {
-        guard let findsRoot else { return }
-        let shelf = library.findsShelf
-        findsRoot.content = { CarPlayRows.finds(shelf, playingId: $0) }
-        Task { await refresh(findsRoot) }
-    }
-
-    /// Follows the shelf (a find arrived, was played, kept or let go): rows update in place, and a change of shape
-    /// waits until the tab is off screen (M2).
-    private func watchFinds() {
-        let library = library
-        watches.append(Task { [weak self] in
-            let shelves = Observations { @MainActor in library.findsShelf }
-            var last: CPFindsShelf??
-            for await shelf in shelves where shelf != last {
-                last = shelf
-                self?.refreshFindsRoot()
-            }
-        })
-    }
-
     private func refreshSearchRoot() {
         guard let searchRoot else { return }
         let recents = library.recentSearches
@@ -221,7 +215,7 @@ public final class CarPlayController: NSObject {
 
     /// Browse depth counting the tab root as 1, whichever way the system reports the tab bar.
     var browseDepth: Int {
-        let roots = [home, libraryRoot, findsRoot, searchRoot].compactMap { $0?.template }
+        let roots = [home, libraryRoot, thirdRoot, searchRoot].compactMap { $0?.template }
         let pushed = interface.templates.filter { t in
             !(t is CPTabBarTemplate) && !(t is CPNowPlayingTemplate) && !roots.contains { $0 === t }
         }
@@ -235,6 +229,7 @@ public final class CarPlayController: NSObject {
         case .play(let request): play(request)
         case .tryNext(let recording): offerTry(recording)
         case .onItsWay: showOnItsWay()
+        case .queueEntry(let id): playQueueEntry(id)   // round 13: Up Next (CarPlayController+UpNext.swift)
         }
     }
 
@@ -264,13 +259,14 @@ public final class CarPlayController: NSObject {
         let binding = bind(template)
         binding.destination = destination
         interface.pushTemplate(template, animated: true, completion: nil)
-        load(binding, fetcher(for: destination))
+        load(binding, fetcher(for: destination, into: binding))
     }
 
     typealias Content = @Sendable (String?) -> [CPSectionModel]
 
-    private func fetcher(for destination: CPDestination) -> @MainActor () async throws -> Content {
-        if let az = azFetcher(for: destination) { return az }   // Y2: the A–Z lists (CarPlayController+AZ.swift)
+    private func fetcher(for destination: CPDestination, into binding: ListBinding? = nil)
+        -> @MainActor () async throws -> Content {
+        if let az = azFetcher(for: destination, into: binding) { return az }   // Y2: the A–Z lists (CarPlayController+AZ.swift)
         let library = library
         switch destination {
         case .album(let id, _):
@@ -340,7 +336,7 @@ public final class CarPlayController: NSObject {
         showNowPlaying()
     }
 
-    private func showNowPlaying() {
+    func showNowPlaying() {
         let nowPlaying = CPNowPlayingTemplate.shared
         if interface.topTemplate === nowPlaying { return }
         if interface.templates.contains(where: { $0 === nowPlaying }) {
@@ -403,7 +399,8 @@ public final class CarPlayController: NSObject {
     /// repeat and Favourite (round 12 item 2b: the star replaced the sleep timer, which stays on the phone).
     private func configureNowPlaying() {
         let nowPlaying = CPNowPlayingTemplate.shared
-        nowPlaying.isUpNextButtonEnabled = false
+        nowPlaying.isUpNextButtonEnabled = false   // round 13: on while there is a queue (`updateNowPlayingButtons`)
+        nowPlaying.upNextTitle = CarPlayRows.upNextTitle
         nowPlaying.isAlbumArtistButtonEnabled = false   // on once the song playing has a page to go to (2d)
         nowPlaying.add(self)
         nowPlaying.allowsMiniPlayer = true
@@ -433,6 +430,7 @@ public final class CarPlayController: NSObject {
         }
         repeatButton.isSelected = selection.repeating
         CPNowPlayingTemplate.shared.updateNowPlayingButtons(buttons + [shuffle, repeatButton, favouriteButton()])
+        CPNowPlayingTemplate.shared.isUpNextButtonEnabled = player.queue.current != nil
     }
 
     private var keepButton: CPKeepButton {
@@ -497,19 +495,26 @@ public final class CarPlayController: NSObject {
 
     // MARK: - Lists
 
-    private func bind(_ template: CPListTemplate) -> ListBinding {
+    func bind(_ template: CPListTemplate) -> ListBinding {
         let binding = ListBinding(template: template)
         bindings[ObjectIdentifier(template)] = binding
         return binding
     }
 
-    private func resetBindings() {
+    func resetBindings() {
+        // Z3 review I1: the layout watch goes with the tabs, so it can never bring them back over a state screen.
+        if let old = layoutWatch {
+            old.cancel()
+            watches.removeAll { $0 == old }
+            layoutWatch = nil
+        }
         for binding in bindings.values { binding.cancel() }
         bindings = [:]
         tabBar = nil
         home = nil
         libraryRoot = nil
-        findsRoot = nil
+        thirdRoot = nil
+        thirdTab = nil
         searchRoot = nil
     }
 
@@ -710,7 +715,7 @@ extension CarPlayController: CPInterfaceControllerDelegate {
         }
         let id = ObjectIdentifier(aTemplate)
         guard let binding = bindings[id] else { return }
-        let isTabRoot = [home, libraryRoot, findsRoot, searchRoot].contains { $0 === binding }
+        let isTabRoot = [home, libraryRoot, thirdRoot, searchRoot].contains { $0 === binding }
         if !isTabRoot, !interface.templates.contains(where: { $0 === aTemplate }) {
             binding.cancel()   // popped
             bindings[id] = nil
@@ -722,15 +727,14 @@ extension CarPlayController: CPInterfaceControllerDelegate {
 
 extension CarPlayController: CPTabBarTemplateDelegate {
     public func tabBarTemplate(_ tabBarTemplate: CPTabBarTemplate, didSelect selectedTemplate: CPTemplate) {
-        for binding in [home, libraryRoot, findsRoot, searchRoot] where binding?.template !== selectedTemplate {
+        for binding in [home, libraryRoot, thirdRoot, searchRoot] where binding?.template !== selectedTemplate {
             flushPending(binding)
         }
         if selectedTemplate === home?.template {
             loadHome()
-        } else if selectedTemplate === findsRoot?.template {
-            refreshFindsRoot()
-            let library = library
-            Task { await library.refreshFinds() }   // the shelf watch shows what it reads
+        } else if let thirdRoot, selectedTemplate === thirdRoot.template, let thirdTab,
+                  thirdTab.reloadsOnSelect || thirdRoot.isPlaceholder {
+            loadThirdTab()
         } else if selectedTemplate === searchRoot?.template {
             refreshSearchRoot()
         }
@@ -836,6 +840,9 @@ final class ListBinding {
     let template: CPListTemplate
     /// What a pushed list shows (Y2: the A–Z lists are read again when the car's limits change).
     var destination: CPDestination?
+    /// Z3 review I2: the list limits an A–Z list was laid out for, and how to lay out what was read for other limits.
+    var limits: (items: Int, sections: Int)?
+    var relayout: ((_ items: Int, _ sections: Int) async -> [CPSectionModel])?
     /// The models currently on screen (after clamping).
     var shown: [CPSectionModel] = []
     /// Showing loading or a state row, not real content: may be replaced even while on screen.
