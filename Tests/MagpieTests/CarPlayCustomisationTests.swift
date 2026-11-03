@@ -99,15 +99,17 @@ private func subsonic(_ body: String) -> Data {
 
     @Test func emptyHomeIsEmptyState() { #expect(CarPlayRows.home([]) == CarPlayRows.state(.empty)) }
 
-    @Test func libraryRootFollowsRowsWithoutRequestsOrSongs() {
-        let titles = CarPlayRows.libraryRoot([.albums, .songs, .requests, .playlists, .genres], hasFindsTab: true)
-            .flatMap(\.rows).map(\.title)
-        #expect(titles == ["Albums", "Playlists", "Genres"])
+    /// Round 13: Songs shows (on its letter groups); Requests never does.
+    @Test func libraryRootFollowsRowsWithoutRequests() {
+        let rows = CarPlayRows.libraryRoot([.albums, .songs, .requests, .playlists, .genres]).flatMap(\.rows)
+        #expect(rows.map(\.title) == ["Albums", "Songs", "Playlists", "Genres"])
+        #expect(rows[1].action == .open(.songs))
     }
 
-    @Test func findsRowOnlyWithoutFindsTab() {
-        #expect(CarPlayRows.libraryRoot([.finds], hasFindsTab: false).flatMap(\.rows).map(\.title) == ["Finds"])
-        #expect(CarPlayRows.libraryRoot([.finds, .albums], hasFindsTab: true).flatMap(\.rows).map(\.title) == ["Albums"])
+    /// Round 13: the Finds tab is gone, so Finds is always a Library row.
+    @Test func findsIsALibraryRow() {
+        #expect(CarPlayRows.libraryRoot([.finds]).flatMap(\.rows).map(\.title) == ["Finds"])
+        #expect(CarPlayRows.libraryRoot([.finds, .albums]).flatMap(\.rows).map(\.title) == ["Finds", "Albums"])
     }
 
     @Test func homeRowsOpenTheirScreens() {
@@ -127,7 +129,7 @@ private func subsonic(_ body: String) -> Data {
         model.updatePreferences { $0.layout.home.move(fromOffsets: IndexSet(integer: 3), toOffset: 0) }
         #expect(model.homeSections == [.mostPlayed, .jumpBackIn, .madeForYou, .recentlyAdded])
         #expect(adapter.homeSections == model.homeSections)
-        #expect(adapter.libraryRows == [.playlists, .artists, .albums, .genres, .favourites, .downloads])
+        #expect(adapter.libraryRows == [.playlists, .artists, .albums, .songs, .genres, .favourites, .downloads])
     }
 
     @Test func adapterShelvesCutToSize() async throws {
@@ -138,7 +140,7 @@ private func subsonic(_ body: String) -> Data {
 
     // MARK: - Controller additions
 
-    /// The Library follows the owner's order and switches; Finds shows as a row only where the car has no Finds tab.
+    /// The Library follows the owner's order and switches (round 13: Songs too).
     @Test func adapterLibraryFollowsOrderAndSwitches() async throws {
         let model = try await signedInModel(fetcher: FakeFetcher())
         model.updatePreferences {
@@ -146,10 +148,11 @@ private func subsonic(_ body: String) -> Data {
             $0.layout.setLibraryRow(.artists, visible: false)
         }
         let adapter = CarPlayLibraryAdapter(model: model)
-        #expect(adapter.libraryRows == [.downloads, .playlists, .albums, .genres, .favourites])
-        let rows = CarPlayRows.libraryRoot(adapter.libraryRows, hasFindsTab: false).flatMap(\.rows)
-        #expect(rows.map(\.title) == ["Downloads", "Playlists", "Albums", "Genres", "Favourites"])
-        #expect(rows.map(\.action) == [.open(.downloads), .open(.playlists), .open(.albums), .open(.genres), .open(.favourites)])
+        #expect(adapter.libraryRows == [.downloads, .playlists, .albums, .songs, .genres, .favourites])
+        let rows = CarPlayRows.libraryRoot(adapter.libraryRows).flatMap(\.rows)
+        #expect(rows.map(\.title) == ["Downloads", "Playlists", "Albums", "Songs", "Genres", "Favourites"])
+        #expect(rows.map(\.action) == [.open(.downloads), .open(.playlists), .open(.albums), .open(.songs), .open(.genres),
+                                       .open(.favourites)])
     }
 
     /// Every section switched on and every one with tiles, Made for you included (T22 parked minor 1): one shelf each in
@@ -164,6 +167,7 @@ private func subsonic(_ body: String) -> Data {
         await model.downloads!.settled()
         model.updatePreferences { for s in HomeSection.allCases { $0.layout.home.set(s, visible: true, keepingOneOf: []) } }
         let adapter = CarPlayLibraryAdapter(model: model)
+        // Round 13: the car's Home is the phone's until changed (Genres included).
         #expect(adapter.homeSections == [.jumpBackIn, .madeForYou, .recentlyAdded, .mostPlayed, .favourites, .randomAlbums,
                                          .playlists, .genres, .downloaded])
         let shelves = try await adapter.homeShelves(adapter.homeSections, size: CarPlayRows.homeShelfMaxSize)
@@ -222,9 +226,9 @@ private func subsonic(_ body: String) -> Data {
     @Test func layoutChangesReachTheCar() async throws {
         let model = try await signedInModel(fetcher: FakeFetcher())
         let adapter = CarPlayLibraryAdapter(model: model)
-        let before = CarPlayRows.libraryRoot(adapter.libraryRows, hasFindsTab: true)
+        let before = CarPlayRows.libraryRoot(adapter.libraryRows)
         model.updatePreferences { $0.layout.setLibraryRow(.genres, visible: false) }
-        let after = CarPlayRows.libraryRoot(adapter.libraryRows, hasFindsTab: true)
+        let after = CarPlayRows.libraryRoot(adapter.libraryRows)
         #expect(before.flatMap(\.rows).map(\.id).contains("library.genres"))
         #expect(!after.flatMap(\.rows).map(\.id).contains("library.genres"))
         #expect(needsRebuild(old: before, new: after), "a shape change: held until the tab is off screen")

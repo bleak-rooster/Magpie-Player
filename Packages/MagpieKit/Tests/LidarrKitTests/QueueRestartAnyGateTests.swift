@@ -105,6 +105,18 @@ import MagpieTestSupport
         }
     }
 
+    private func restartForeign(_ gate: LidarrWriteGate, _ id: Int) async -> String? {
+        do {
+            _ = try await gate.send("DELETE", "queue/\(id)" + Self.shape, body: nil as JSONValue?, confinedAs: .queueRestartAny,
+                                    allowForeign: true)
+            return nil
+        } catch WriteGateError.forbidden(let why) {
+            return why
+        } catch {
+            return "other: \(error)"
+        }
+    }
+
     /// The owner's own download (nothing in the ledger, no live request): sent in the exact shape, after one fresh read,
     /// and logged with its query.
     @Test func anyDownloadIsRestarted() async throws {
@@ -187,15 +199,15 @@ import MagpieTestSupport
         #expect(fake.writes.isEmpty)
     }
 
-    /// Fix round 1 C1 (second layer): a copy that's queued, paused, delayed or whose client can't be reached isn't
-    /// stuck; the gate never restarts it, whatever the screen thought.
-    @Test func refusesWaitingPausedOrUnreachableCopies() async throws {
+    /// Round 13 item 6 (D63, supersedes fix round 1 C1's second layer): the owner may restart ANY row that isn't
+    /// importing or imported: a copy that's queued, paused, delayed or whose client can't be reached is sent too.
+    @Test func waitingPausedOrUnreachableCopiesAreRestarted() async throws {
         let fake = Fake()
         let gate = await fake.gate()
         for id in [611, 612, 613, 614] {
-            #expect(await refused(gate, id) != nil, "\(id)")
+            #expect(await refused(gate, id) == nil, "\(id)")
         }
-        #expect(fake.writes.isEmpty)
+        #expect(fake.writes.compactMap(\.url?.path) == [611, 612, 613, 614].map { "/lidarr/api/v1/queue/\($0)" })
     }
 
     /// Fix round 2 N1: a download Lidarr never grabbed (another tool's transfer) is never restarted: refused on its
@@ -260,5 +272,76 @@ import MagpieTestSupport
         let gate = await fake.gate(confined: false)
         #expect(await refused(gate, 601) != nil)
         #expect(fake.writes.isEmpty)
+    }
+
+    // MARK: - Round 13 item 6 (D63): another app's download, with the flagged confirmation's `allowForeign`
+
+    /// A download Lidarr never grabbed is refused without the flag, and sent with it: on its message (615) and on its
+    /// history (616). The flag needs no history read, so an unreadable history doesn't stop it.
+    @Test func foreignDownloadIsSentOnlyWithTheFlag() async throws {
+        let fake = Fake()
+        let gate = await fake.gate()
+        #expect(await refused(gate, 615) != nil)
+        #expect(await refused(gate, 616) != nil)
+        #expect(fake.writes.isEmpty)
+        #expect(await restartForeign(gate, 615) == nil)
+        #expect(await restartForeign(gate, 616) == nil)
+        #expect(fake.writes.compactMap(\.url?.path) == ["/lidarr/api/v1/queue/615", "/lidarr/api/v1/queue/616"])
+        let query = URLComponents(url: try #require(fake.writes.first?.url), resolvingAgainstBaseURL: false)?.queryItems ?? []
+        #expect(Set(query.map { "\($0.name)=\($0.value ?? "")" })
+                == ["removeFromClient=true", "blocklist=true", "skipRedownload=true"])
+        let historyDown = Fake(historyDown: true)
+        #expect(await restartForeign(await historyDown.gate(), 615) == nil)
+        #expect(historyDown.writes.count == 1)
+    }
+
+    /// The flag widens nothing else: importing, imported, complete, shared with an import, unnamed or gone are still
+    /// refused; the query is still exact; the switch still applies.
+    @Test func flagStillRefusesImportingOrDone() async throws {
+        let fake = Fake()
+        let gate = await fake.gate()
+        for id in [604, 605, 606, 607, 608, 610, 699] {
+            #expect(await restartForeign(gate, id) != nil, "\(id)")
+        }
+        await #expect(throws: WriteGateError.self) {
+            _ = try await gate.send("DELETE", "queue/615?removeFromClient=true&blocklist=false&skipRedownload=true",
+                                    body: nil as JSONValue?, confinedAs: .queueRestartAny, allowForeign: true)
+        }
+        #expect(fake.writes.isEmpty)
+        let off = Fake()
+        let offGate = await off.gate(enabled: false)
+        await #expect(throws: WriteGateError.disabled) {
+            _ = try await offGate.send("DELETE", "queue/615" + Self.shape, body: nil as JSONValue?,
+                                       confinedAs: .queueRestartAny, allowForeign: true)
+        }
+        #expect(off.writes.isEmpty)
+    }
+
+    /// The flag only goes with `queueRestartAny`: named with the restart's search, it's refused unsent.
+    @Test func flagOnlyForTheQueueRestart() async throws {
+        struct Search: Encodable, Sendable { var name: String; var albumIds: [Int] }
+        let fake = Fake()
+        fake.transport.stub(method: "POST", pathSuffix: "/api/v1/command", body: json("{\"id\": 1}"))
+        let gate = await fake.gate()
+        try await restart(gate, 601)   // album 41's search would now be allowed without the flag
+        await #expect(throws: WriteGateError.self) {
+            _ = try await gate.send("POST", "command", body: Search(name: "AlbumSearch", albumIds: [41]),
+                                    confinedAs: .restartSearch, allowForeign: true)
+        }
+        #expect(fake.writes.count == 1)
+    }
+
+    /// The search that follows runs only for an album the removed download's rows named (615 names album 55).
+    @Test func searchFollowsAForeignRestartOnlyForItsAlbum() async throws {
+        struct Search: Encodable, Sendable { var name: String; var albumIds: [Int] }
+        let fake = Fake()
+        fake.transport.stub(method: "POST", pathSuffix: "/api/v1/command", body: json("{\"id\": 1}"))
+        let gate = await fake.gate()
+        #expect(await restartForeign(gate, 615) == nil)
+        await #expect(throws: WriteGateError.self) {
+            _ = try await gate.send("POST", "command", body: Search(name: "AlbumSearch", albumIds: [56]), confinedAs: .restartSearch)
+        }
+        _ = try await gate.send("POST", "command", body: Search(name: "AlbumSearch", albumIds: [55]), confinedAs: .restartSearch)
+        #expect(fake.writes.map { $0.httpMethod ?? "" } == ["DELETE", "POST"])
     }
 }

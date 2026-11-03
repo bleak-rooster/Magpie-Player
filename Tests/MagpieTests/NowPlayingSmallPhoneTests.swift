@@ -35,7 +35,10 @@ import UIKit
         let (window, host) = try await Self.host(model, frames)
         defer { window.isHidden = true }
         #expect(!Self.containsScrollView(host.view), "the page scrolls at the default text size")
-        Self.expectFits(frames, in: window.bounds, order: ["top", "art", "meta", "scrubber", "transport", "upNext", "bottom"])
+        // Round 13 item 8: the source line ("Streaming") always shows now, as Y3's quality line already did for every
+        // song whose format is known; on this phone Up next makes way for it (D43, Queue still reaches it).
+        #expect(model.hearing(model.player.queue.current!.song).text == "Streaming")
+        Self.expectFits(frames, in: window.bounds, order: ["top", "art", "meta", "scrubber", "transport", "bottom"])
         try Self.render(window, "now-playing-375x667.png")
 
         // At accessibility sizes the page scrolls instead, so no text is clipped (D15).
@@ -77,7 +80,8 @@ import UIKit
         model.updatePreferences { $0.playback.wifi = .opusMedium }
         model.player.play([flac, Song(id: "s2", title: "Compass Rose", artist: "The Midnight Cartographers",
                                       album: "Atlas of Small Hours", duration: 180)], startAt: 0)
-        #expect(model.hearing(flac).text?.hasPrefix("Transcoded") == true)
+        // Round 13 item 8: the longest line, with its source in front, still fits on one line.
+        #expect(model.hearing(flac).text == "Streaming \u{00B7} Transcoded \u{00B7} Opus 160 kbps (from FLAC)")
         model.playbackHint = AppModel.transcodeHint
         let entry = try #require(model.player.queue.current?.id)
         model.player.handle(.failed(entry, "The server stopped answering."))

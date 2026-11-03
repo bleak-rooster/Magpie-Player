@@ -11,18 +11,56 @@ enum LidarrDownloadsCopy {
     static let empty = "Nothing downloading"
     static let emptyDetail = "Everything Lidarr is downloading shows here, whoever asked for it."
     static let unreachable = "Couldn't reach Lidarr. Trying again\u{2026}"
-    static let changesOff = "Turn on \u{201C}Allow Magpie to change your library\u{201D} in New music to restart downloads."
+    static let changesOff = "Turn on \u{201C}Allow Magpie to change your library\u{201D} on the Lidarr page to restart downloads."
     static let restart = "Restart"
-    static let restartAll = "Restart all stalled and failed"
+    /// Round 13 (D63): stalled, failed and couldn't-import copies (what "need attention" counts).
+    static let restartAll = "Restart all that need attention"
     static let footer = "Restart drops the copy, stops Lidarr picking that same copy again, and looks for another. "
         + "It never touches music already in your library."
-    /// Fix round 2: finished copies Lidarr couldn't import; restarted one at a time, after their own confirmation.
+    /// Fix round 2: finished copies Lidarr couldn't import; restarted after their own confirmation, or by Restart all
+    /// (round 13, D63).
     static let couldntImportSection = "Couldn't import"
-    static let couldntImportFooter = "These finished downloading, but Lidarr couldn't file them. Restart all leaves them alone."
+    static let couldntImportFooter = "These finished downloading, but Lidarr couldn't file them."
     static let couldntImportConfirm = "Removes this copy so it isn't picked again, and looks for another."
-    /// Fix round 2 N1 (round 3: the glossary's words): transfers Lidarr lists but never grabbed; read-only.
+    /// Fix round 2 N1 (round 3: the glossary's words): transfers Lidarr lists but never grabbed. Round 13 (D63): they
+    /// may be restarted, after the flagged confirmation.
     static let notStartedSection = "Started by another app"
-    static let notStartedFooter = "Another app started these in your download app. Magpie leaves them alone."
+    static let notStartedFooter = "Another app started these in your download app. Restart asks first."
+    /// Round 13 (D63): the flagged confirmation, in the owner's plan's words. The only place a restart of another
+    /// app's download is allowed (`allowForeign`).
+    static let foreignConfirm = "This download wasn't started by your library \u{2014} it may belong to another app. "
+        + "Restart anyway?"
+    static let stillGoingConfirm = "This download is still going. Restart drops it and looks for another copy."
+
+    /// What a row's Restart asks first; nil: it restarts at once (stalled or failed). Z4 fix M5: a copy that isn't
+    /// moving on purpose or can't be reached says what it's doing, not "still going".
+    static func confirmOne(_ ask: LidarrDownloads.Ask, phase: LidarrDownloads.Phase = .downloading) -> String? {
+        switch ask {
+        case .none: nil
+        case .stillGoing:
+            switch phase {
+            case .paused: "Paused. Restart drops it and looks for another copy."
+            case .queued: "Waiting to start. Restart drops it and looks for another copy."
+            case .clientUnavailable: "Can't reach the download app. Restart drops it and looks for another copy."
+            default: stillGoingConfirm
+            }
+        case .couldntImport: couldntImportConfirm
+        case .foreign: foreignConfirm
+        }
+    }
+
+    static func confirmButton(_ ask: LidarrDownloads.Ask) -> String { ask == .foreign ? "Restart anyway" : restart }
+
+    /// Z4 fix M2: Restart all does at most `maxPerTap`, Lidarr's own first; this many of another app's fit after them.
+    static func foreignBatch(own: Int, foreign: Int) -> Int {
+        min(foreign, max(0, LidarrDownloadRestarter.maxPerTap - own))
+    }
+
+    /// Restart all's second choice: also `count` of another app's stalled, failed or couldn't-import downloads (already
+    /// capped by `foreignBatch`). `alone` (fix M3): nothing of Lidarr's own is listed, so it's the only choice.
+    static func includeForeign(_ count: Int, alone: Bool = false) -> String {
+        (alone ? "Restart \(count)" : "Also restart \(count)") + " started by another app"
+    }
 
     /// The Settings row's summary: how many need attention at the page's last read.
     static func attention(_ count: Int?) -> SettingsSummary {
@@ -37,10 +75,12 @@ enum LidarrDownloadsCopy {
         count == 1 ? "Restart 1 download?" : "Restart \(min(count, LidarrDownloadRestarter.maxPerTap)) downloads?"
     }
 
-    static func confirmMessage(_ count: Int) -> String {
+    static func confirmMessage(_ count: Int, foreign: Int = 0) -> String {
         let cap = LidarrDownloadRestarter.maxPerTap
-        let base = "Each one is dropped and looked for again."
-        return count > cap ? base + " The first \(cap) now; the rest next time." : base
+        var text = "Each one is dropped and looked for again."
+        if count > cap { text += " The first \(cap) now; the rest next time." }
+        if foreign > 0 { text += " Downloads another app started are left alone unless you include them." }
+        return text
     }
 
     /// The status line for a row (always text, with `symbol`, D3).
@@ -90,6 +130,10 @@ enum LidarrDownloadsCopy {
         let parts: [String?] = [
             restarted == 0 ? nil : outcomes.count == 1 ? "Restarted." : "Restarted \(restarted).",
             count { $0 == .removedNotSearched } > 0 ? "Lidarr will look again on its own schedule." : nil,
+            // Z4 fix M1: removed, but no album to look for (another app's transfer Lidarr couldn't match).
+            outcomes == [.removedNothingToLookFor] ? "Removed. There was no album to look for."
+                : some(count { $0 == .removedNothingToLookFor }, one: "Removed 1; there was no album to look for.",
+                       many: { "Removed \($0); there were no albums to look for." }),
             some(count { $0 == .skipped }, one: outcomes.count == 1 ? "It started moving again, so it was left alone."
                                                                      : "One started moving again, so it was left alone.",
                  many: { "\($0) started moving again, so they were left alone." }),
@@ -163,13 +207,22 @@ enum LidarrDownloadsCopy {
         }
     }
 
-    /// Each row is re-checked on a fresh read before it's restarted (fix round 1 I1).
-    func restart(_ rows: [LidarrDownloads.Row], model: AppModel) async {
+    /// One row; re-checked on a fresh read before it's restarted (fix round 1 I1). `allowForeign` (round 13, D63):
+    /// only from the flagged confirmation.
+    func restart(_ rows: [LidarrDownloads.Row], model: AppModel, allowForeign: Bool = false) async {
+        guard let row = rows.first, rows.count == 1, let restarter = restarter(model) else { return }
+        restarting = true
+        defer { restarting = false }
+        message = LidarrDownloadsCopy.summary([await restarter.restart(row, allowForeign: allowForeign)])
+        await refresh(model)
+    }
+
+    /// Restart all, after its confirmation. `includeForeign` (round 13, D63): the owner chose to include another app's.
+    func restartAll(_ rows: [LidarrDownloads.Row], model: AppModel, includeForeign: Bool = false) async {
         guard !rows.isEmpty, let restarter = restarter(model) else { return }
         restarting = true
         defer { restarting = false }
-        let outcomes = rows.count == 1 ? [await restarter.restart(rows[0])] : await restarter.restartAll(rows)
-        message = LidarrDownloadsCopy.summary(outcomes)
+        message = LidarrDownloadsCopy.summary(await restarter.restartAll(rows, includeForeign: includeForeign))
         await refresh(model)
     }
 
@@ -183,14 +236,17 @@ enum LidarrDownloadsCopy {
 }
 
 /// Settings › Downloads in Lidarr: everything in Lidarr's queue, whoever asked for it (D49), as Active,
-/// Stalled and Failed, with Restart on the stalled and failed ones and Restart all (one confirmation, 25 at a time).
+/// Stalled and Failed, with Restart on every row not importing (round 13, D63; some ask first) and Restart all (one
+/// confirmation, 25 at a time; another app's only when chosen there).
 struct LidarrDownloadsView: View {
     @Environment(AppModel.self) private var model
     @State private var screen = LidarrDownloadsScreen()
     @State private var confirmsAll = false
-    /// The rows Restart all was tapped for (minor M5: the dialog counts what it will do, not a later read).
+    /// The rows Restart all was tapped for (minor M5: the dialog counts what it will do, not a later read), Lidarr's
+    /// own and another app's (round 13, D63: included only when chosen in the dialog).
     @State private var pendingAll: [LidarrDownloads.Row] = []
-    /// Fix round 2: a finished copy that couldn't be imported asks first, on its own.
+    @State private var pendingForeign: [LidarrDownloads.Row] = []
+    /// A row whose Restart asks first (still going, couldn't import, or another app's: the flagged confirmation).
     @State private var pendingOne: LidarrDownloads.Row?
 
     var body: some View {
@@ -231,49 +287,75 @@ struct LidarrDownloadsView: View {
         .navigationBarTitleDisplayMode(.inline)
         .task { await screen.follow(model) }
         .refreshable { await RefreshSafety.run { await screen.refresh(model) } }   // Round 13 Z2 (review I2)
-        .confirmationDialog(LidarrDownloadsCopy.confirmTitle(pendingAll.count),
+        .confirmationDialog(LidarrDownloadsCopy.confirmTitle(pendingAll.isEmpty ? pendingForeign.count : pendingAll.count),
                             isPresented: $confirmsAll, titleVisibility: .visible) {
-            Button(LidarrDownloadsCopy.restartAll, role: .destructive) {
-                let rows = pendingAll
-                Task { await screen.restart(rows, model: model) }
+            if !pendingAll.isEmpty {
+                Button(LidarrDownloadsCopy.restartAll, role: .destructive) {
+                    let rows = pendingAll
+                    Task { await screen.restartAll(rows, model: model) }
+                }
+                .accessibilityIdentifier("lidarr-downloads-restart-all-confirm")
             }
-            .accessibilityIdentifier("lidarr-downloads-restart-all-confirm")
+            if !pendingForeign.isEmpty {
+                // Round 13 (D63): the owner turns another app's on here, and only here.
+                Button(LidarrDownloadsCopy.includeForeign(pendingForeign.count, alone: pendingAll.isEmpty), role: .destructive) {
+                    let rows = pendingAll + pendingForeign
+                    Task { await screen.restartAll(rows, model: model, includeForeign: true) }
+                }
+                .accessibilityIdentifier("lidarr-downloads-restart-all-foreign-confirm")
+            }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text(LidarrDownloadsCopy.confirmMessage(pendingAll.count))
+            Text(LidarrDownloadsCopy.confirmMessage(pendingAll.count, foreign: pendingForeign.count))
         }
         .confirmationDialog(LidarrDownloadsCopy.restart + "?", isPresented: Binding(
             get: { pendingOne != nil }, set: { if !$0 { pendingOne = nil } }), titleVisibility: .visible) {
-            Button(LidarrDownloadsCopy.restart, role: .destructive) {
-                if let row = pendingOne { Task { await screen.restart([row], model: model) } }
-                pendingOne = nil
+            if let row = pendingOne {
+                if row.ask == .foreign {
+                    // The flagged confirmation: the only place a restart of another app's download is allowed.
+                    Button(LidarrDownloadsCopy.confirmButton(.foreign), role: .destructive) {
+                        Task { await screen.restart([row], model: model, allowForeign: true) }
+                        pendingOne = nil
+                    }
+                    .accessibilityIdentifier("lidarr-downloads-restart-foreign-confirm")
+                } else {
+                    Button(LidarrDownloadsCopy.confirmButton(row.ask), role: .destructive) {
+                        Task { await screen.restart([row], model: model) }
+                        pendingOne = nil
+                    }
+                    .accessibilityIdentifier("lidarr-downloads-restart-one-confirm")
+                }
             }
-            .accessibilityIdentifier("lidarr-downloads-restart-one-confirm")
             Button("Cancel", role: .cancel) { pendingOne = nil }
         } message: {
-            Text(LidarrDownloadsCopy.couldntImportConfirm)
+            Text(pendingOne.flatMap { LidarrDownloadsCopy.confirmOne($0.ask, phase: $0.phase) } ?? "")
         }
     }
 
-    /// One row's Restart: a finished copy that couldn't be imported asks first; another app's transfer never restarts.
+    /// One row's Restart (round 13, D63): a stalled or failed copy restarts at once; one still going, one that couldn't
+    /// import and another app's ask first (the last with the flagged confirmation).
     private func tapRestart(_ row: LidarrDownloads.Row) {
-        guard row.canRestart, row.section != .notStarted else { return }
-        if row.section == .couldntImport {
-            pendingOne = row
-        } else {
+        guard row.canRestart else { return }
+        if LidarrDownloadsCopy.confirmOne(row.ask) == nil {
             Task { await screen.restart([row], model: model) }
+        } else {
+            pendingOne = row
         }
     }
 
     private var canChange: Bool { model.changesAllowed && !model.isOffline && !screen.restarting }
 
     @ViewBuilder private func restartAllSection(_ board: LidarrDownloads) -> some View {
-        if !board.restartable.isEmpty || !model.changesAllowed {
+        let anyToRestart = !board.restartable.isEmpty || !board.restartableForeign.isEmpty
+        if anyToRestart || !model.changesAllowed {
             Section {
-                if !board.restartable.isEmpty {
+                if anyToRestart {
                     Button(role: .destructive) {
                         pendingAll = board.restartable
-                        confirmsAll = !pendingAll.isEmpty
+                        // Fix M2: the cap goes to Lidarr's own first; only another app's that fit are offered.
+                        pendingForeign = Array(board.restartableForeign.prefix(LidarrDownloadsCopy.foreignBatch(
+                            own: board.restartable.count, foreign: board.restartableForeign.count)))
+                        confirmsAll = !pendingAll.isEmpty || !pendingForeign.isEmpty
                     } label: {
                         Label(LidarrDownloadsCopy.restartAll, systemImage: "arrow.clockwise")
                     }

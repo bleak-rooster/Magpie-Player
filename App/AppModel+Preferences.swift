@@ -42,6 +42,7 @@ extension AppModel {
         if old.downloads != launch.downloads { merged.downloads = old.downloads }
         if old.scrobbling != launch.scrobbling { merged.scrobbling = old.scrobbling }
         if old.genres != launch.genres { merged.genres = old.genres }
+        if old.carPlay != launch.carPlay { merged.carPlay = old.carPlay }
         merged = merged.normalised()
         preferencesStore.save(merged, previous: saved)
         guard merged != old else { return }
@@ -57,6 +58,7 @@ extension AppModel {
             qualityBox.set(currentStreamQuality)
             replayGainBox.set(preferences.playback.replayGain)
             player.upcomingURLsChanged()
+            if currentStreamQuality != oldQuality { cacheQualityTargetChanged() }   // round 13 item 7
         }
         if preferences.scrobbling != old.scrobbling { scrobbleSettings.set(preferences.scrobbling) }
         // Downloads: a setting may let waiting downloads go (mobile data, a bigger limit); favourites follow the toggle.

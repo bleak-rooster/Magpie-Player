@@ -247,7 +247,7 @@ final class MonkeyTests: XCTestCase {
             if !app.buttons["open-settings"].exists { _ = tapIfHittable(app.tabBars.buttons["Library"]) }
             return tapIfHittable(app.buttons["open-settings"]) ? "open" : "-"
         case .settingsPage:
-            let page = ["playback", "downloads", "scrobbling", "home-library", "appearance", "about"].randomElement(using: &rng)!
+            let page = ["playback", "downloads", "listenbrainz", "home-library", "appearance", "about"].randomElement(using: &rng)!
             if tapIfHittable(app.buttons["settings-\(page)"]) { return page }
             let sub = ["settings-home-layout", "settings-library-layout"].randomElement(using: &rng)!
             return tapIfHittable(app.buttons[sub]) ? sub : "-"

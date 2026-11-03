@@ -13,6 +13,7 @@ final class MemoryAurralStore: AurralConnectionStoring, @unchecked Sendable {
     func save(_ connection: AurralConnection) throws { saved.withLock { $0 = connection } }
     func load() -> AurralConnection? { saved.withLock { $0 } }
     func clear() { saved.withLock { $0 = nil } }
+    func removeLegacyKey() -> URL? { nil }
 }
 
 /// The stub Aurral on its host; everything else to the Navidrome mock. Never the owner's Aurral.
@@ -159,9 +160,15 @@ final class DiscoverNavidrome: @unchecked Sendable {
                              audioFetcher: FakeFetcher())
         try await model.signIn(urls: [server], username: "admin", password: "pw")
         await model.refreshMusicFolders()
-        if aurralSetUp { _ = try await model.connectAurral(base: aurral.base, apiKey: aurral.apiKey) }
+        if aurralSetUp {
+            _ = try await model.connectAurral(base: aurral.base, username: StubAurral.defaultUsername,
+                                              password: StubAurral.defaultPassword)
+        }
         return model
     }
+
+    /// What Magpie wrote to Aurral's data (its own login and logout aside, round 13).
+    private var aurralWrites: [String] { aurral.asked.filter { $0.hasPrefix("POST") && !$0.hasPrefix("POST /api/auth/") } }
 
     private var navidromeAsked: [String] { transport.navidrome.requests.compactMap { $0.url?.path } }
 
@@ -178,25 +185,166 @@ final class DiscoverNavidrome: @unchecked Sendable {
         #expect(AurralCopy.summary(model) == "Off")
     }
 
-    /// The key goes to the Keychain store only (never the app's settings), and checks the address and key first.
-    @Test func connectSavesToTheKeychainOnly() async throws {
+    /// Round 13: signing in saves the address, user, session and password to the Keychain store only (never the
+    /// app's settings), after checking the address and logging in.
+    @Test func signInSavesToTheKeychainOnly() async throws {
         let model = try await signedIn()
         defer { model.signOut() }
-        #expect(aurralStore.load() == AurralConnection(base: aurral.base, apiKey: aurral.apiKey))
+        let saved = try #require(aurralStore.load())
+        #expect(saved.base == aurral.base && saved.username == StubAurral.defaultUsername)
+        #expect(saved.password == StubAurral.defaultPassword, "kept to log in again (Aurral has no refresh route)")
+        let token = try #require(saved.login?.token)
+        #expect(aurral.isSessionLive(token))
+        #expect(aurral.asked.prefix(3) == ["GET /api/health", "POST /api/auth/login", "GET /api/playlists/status"])
         #expect(model.aurralSetUp)
         #expect(model.homeSections.contains(.discover) && model.libraryRows.contains(.discover))
         #expect(model.libraryRows(carPlay: true).contains(.discover), "the car's Library too")
         for (key, value) in defaults.dictionaryRepresentation() {
-            #expect(!"\(key)\(value)".contains(aurral.apiKey), "the key is never in the app's settings: \(key)")
+            for secret in [StubAurral.defaultPassword, token] {
+                #expect(!"\(key)\(value)".contains(secret), "no secret in the app's settings: \(key)")
+            }
         }
         #expect(model.discover.health?.compatibility == .supported("2.10.0"))
-        #expect(AurralCopy.summary(model) == "On \u{00B7} 2.10.0")
-        // A wrong key: nothing saved.
+        #expect(AurralCopy.summary(model) == "\(StubAurral.defaultUsername) \u{00B7} 2.10.0")
+        // A wrong password: nothing saved, and the copy says so.
         model.disconnectAurral()
-        await #expect(throws: AurralError.unauthorized) {
-            _ = try await model.connectAurral(base: self.aurral.base, apiKey: "wrong")
+        await #expect(throws: AurralError.badLogin) {
+            _ = try await model.connectAurral(base: self.aurral.base, username: StubAurral.defaultUsername, password: "wrong")
         }
         #expect(aurralStore.load() == nil && !model.aurralSetUp)
+        #expect(AurralCopy.message(for: AurralError.badLogin) == "That username or password didn\u{2019}t work.")
+    }
+
+    /// Round 13: Aurral ended the session; the next read logs in again with the saved password and saves the new
+    /// session, without the owner noticing.
+    @Test func expiredSessionRenewsAndIsSaved() async throws {
+        let model = try await signedIn()
+        defer { model.signOut() }
+        let first = try #require(aurralStore.load()?.login?.token)
+        aurral.expireAllSessions()
+        _ = try await model.testAurral()
+        #expect(await eventually { self.aurralStore.load()?.login?.token != first })
+        let renewed = try #require(aurralStore.load()?.login?.token)
+        #expect(aurral.isSessionLive(renewed))
+        #expect(model.discover.connection?.login?.token == renewed)
+        #expect(!model.discover.needsSignIn)
+    }
+
+    /// Round 13: the saved password stopped working: Discover keeps what it read, Settings asks to sign in again,
+    /// and Magpie doesn't keep trying.
+    @Test func changedPasswordAsksToSignInAgain() async throws {
+        let model = try await signedIn()
+        defer { model.signOut() }
+        aurral.setPassword("changed", for: StubAurral.defaultUsername)
+        aurral.expireAllSessions()
+        let before = aurral.loginCount
+        await #expect(throws: AurralError.signInNeeded) { _ = try await model.testAurral() }
+        await model.refreshDiscover(force: true)
+        #expect(aurral.loginCount - before == 1)
+        #expect(model.discover.needsSignIn)
+        #expect(AurralCopy.summary(model) == "Sign in again")
+        #expect(model.discover.playlists.map(\.playlist.id) == ["pl-dw"], "what was read stays")
+        _ = try await model.connectAurral(base: aurral.base, username: StubAurral.defaultUsername, password: "changed")
+        #expect(!model.discover.needsSignIn)
+        #expect(aurralStore.load()?.password == "changed")
+    }
+
+    /// Z1 fix I1: a refused password (and its token) is forgotten in the Keychain, so a relaunch shows "Sign in
+    /// again" and sends no login at all.
+    @Test func refusedPasswordIsNotTriedAfterRelaunch() async throws {
+        let model = try await signedIn()
+        defer { model.signOut() }
+        aurral.setPassword("changed", for: StubAurral.defaultUsername)
+        aurral.expireAllSessions()
+        await #expect(throws: AurralError.signInNeeded) { _ = try await model.testAurral() }
+        #expect(await eventually { self.aurralStore.load()?.password == nil })
+        let saved = try #require(aurralStore.load())
+        #expect(saved.password == nil && saved.login == nil, "nothing left to send")
+        #expect(saved.base == aurral.base && saved.username == StubAurral.defaultUsername, "kept to sign in again")
+        // A cold start on the same store.
+        let before = aurral.loginCount
+        let relaunched = DiscoverState(store: aurralStore)
+        #expect(relaunched.needsSignIn)
+        let fresh = AppModel(store: store, lidarrStore: MemoryLidarrStore(), tokenStore: MemoryTokenStore(),
+                             aurralStore: aurralStore, matchIndexDirectory: nil, dataDirectory: tmp, transport: transport,
+                             probeTransport: transport, engine: FakeEngine(), defaults: defaults,
+                             systemNowPlaying: false, notifications: false, network: FakeNetwork(.wifi),
+                             audioFetcher: FakeFetcher())
+        #expect(AurralCopy.summary(fresh) == "Sign in again")
+        await fresh.refreshDiscover(force: true)
+        await #expect(throws: AurralError.signInNeeded) { _ = try await fresh.testAurral() }
+        #expect(aurral.loginCount == before, "no login on a cold start after a refusal")
+    }
+
+    /// Z1 fix M1: consent is per secret. An address allowed for plain http before (round 12's API key, or another
+    /// service) still asks before the Aurral password goes there; once allowed for it, it doesn't.
+    @Test func passwordConsentIsItsOwn() async throws {
+        let model = try await signedIn(aurralSetUp: false)
+        defer { model.signOut() }
+        let plain = URL(string: "http://aurral.example.com:3001")!
+        model.allowPlainHTTP([plain])   // allowed in round 12, for the key
+        let before = aurral.requests.count
+        await #expect(throws: PlainHTTPConsentRequired.self) {
+            _ = try await model.connectAurral(base: plain, username: "jordan", password: "pw")
+        }
+        #expect(aurral.requests.count == before, "nothing sent")
+        #expect(AurralCopy.plainHTTPWarning(plain) != nil, "the sign-in form warns while the address is plain http")
+        #expect(AurralCopy.plainHTTPWarning(aurral.base) == nil, "a home address doesn't")
+        model.allowAurralPassword(plain)
+        // Consent given: it goes (to a host nothing here serves, so it fails after sending).
+        _ = try? await model.connectAurral(base: plain, username: "jordan", password: "pw")
+        #expect(transport.navidrome.requests.contains { $0.url?.host == "aurral.example.com" })
+    }
+
+    /// Round 13: Sign out ends the session in Aurral and forgets everything on the phone.
+    @Test func signOutOfAurralLogsOut() async throws {
+        let model = try await signedIn()
+        defer { model.signOut() }
+        let token = try #require(aurralStore.load()?.login?.token)
+        model.disconnectAurral()
+        await model.discover.pendingLogout?.value
+        #expect(aurral.asked.last == "POST /api/auth/logout")
+        #expect(!aurral.isSessionLive(token))
+        #expect(aurralStore.load() == nil && !model.aurralSetUp && model.discover.session == nil)
+    }
+
+    /// Round 13: only the signed-in user's flows are Discover's (Aurral shows an admin everyone's).
+    @Test func onlyTheSignedInUsersFlows() async throws {
+        aurral.addUser(id: 2, username: "sam", password: "sam-pw")
+        let model = try await signedIn(aurralSetUp: false)
+        defer { model.signOut() }
+        aurral.setFlows([.init(id: "flow-dw", name: "Discover Weekly", ownerUserId: 2),
+                         .init(id: "flow-tm", name: "Trending Mix", ownerUserId: 1)])
+        _ = try await model.connectAurral(base: aurral.base, username: StubAurral.defaultUsername,
+                                          password: StubAurral.defaultPassword)
+        #expect(model.discover.status?.flows.map(\.id) == ["flow-tm"])
+        #expect(model.discover.playlists.isEmpty, "Sam's Discover Weekly isn't this user's")
+        #expect(model.discover.jobs.isEmpty, "nor its songs")
+        model.disconnectAurral()
+        _ = try await model.connectAurral(base: aurral.base, username: "sam", password: "sam-pw")
+        #expect(model.discover.status?.flows.map(\.id) == ["flow-dw"])
+        #expect(model.discover.playlists.map(\.playlist.id) == ["pl-dw"])
+    }
+
+    /// Round 13: a round-12 connection (address and API key) is deleted on upgrade; its address is offered for
+    /// signing in.
+    @Test func upgradeDeletesTheOldKey() throws {
+        let keychain = KeychainStore(service: "com.bleak-rooster.magpie.tests.\(UUID().uuidString)")
+        defer { try? keychain.remove("aurral.connection") }
+        let old = Data(#"{"base":"http:\/\/aurral:3001","apiKey":"old-secret-key"}"#.utf8)
+        try keychain.set(old, for: "aurral.connection")
+        let store = AurralConnectionStore(keychain: keychain)
+        let state = DiscoverState(store: store)
+        #expect(state.connection == nil)
+        #expect(state.upgradedAddress == URL(string: "http://aurral:3001"))
+        #expect(try keychain.get("aurral.connection") == nil, "the key is gone from the Keychain")
+        #expect(store.removeLegacyKey() == nil, "once")
+        // A round-13 connection is left alone.
+        let new = AurralConnection(base: URL(string: "http://aurral:3001")!, username: "jordan", password: "pw",
+                                   login: AurralLogin(token: "t", expiresAt: nil, user: AurralUser(id: 1, username: "jordan", role: "admin")))
+        try store.save(new)
+        #expect(store.removeLegacyKey() == nil)
+        #expect(store.load() == new)
     }
 
     /// Plain http to a public address waits for the owner's OK (nothing sent); a Tailscale or home address doesn't.
@@ -205,7 +353,7 @@ final class DiscoverNavidrome: @unchecked Sendable {
         defer { model.signOut() }
         let before = aurral.requests.count
         await #expect(throws: PlainHTTPConsentRequired.self) {
-            _ = try await model.connectAurral(base: URL(string: "http://aurral.example.com:3001")!, apiKey: "k")
+            _ = try await model.connectAurral(base: URL(string: "http://aurral.example.com:3001")!, username: "jordan", password: "pw")
         }
         #expect(aurral.requests.count == before)
         #expect(model.plainHTTPConsent.allows(URL(string: "http://homeserver:3001")!), "a Tailscale name needs no OK")
@@ -276,7 +424,8 @@ final class DiscoverNavidrome: @unchecked Sendable {
         #expect(page.entries.map(\.inYourLibrary) == [true, true, false, false])
         #expect(page.entries.map(\.original.id) == ["a-lullaby", "a-words", "a-other", "a-nameonly"])
         #expect(nav.updates.isEmpty, "no write to the flow playlist")
-        #expect(aurral.asked.allSatisfy { $0.hasPrefix("GET ") }, "only reads of Aurral")
+        #expect(aurralWrites.isEmpty && aurral.asked.allSatisfy { $0.hasPrefix("GET ") || $0 == "POST /api/auth/login" },
+               "only reads of Aurral (and its login)")
         // The car plays the same (its adapter's playlist).
         let car = CarPlayLibraryAdapter(model: model)
         #expect(try await car.playlist(id: "pl-dw").1.map(\.id) == ["m-lullaby", "m-words", "a-other", "a-nameonly"])
@@ -325,15 +474,15 @@ final class DiscoverNavidrome: @unchecked Sendable {
         defer { model.signOut() }
         aurral.setRunning("flow-dw", true)
         await #expect(throws: AurralError.runActive) { try await model.refreshFlow("flow-dw") }
-        #expect(!aurral.asked.contains { $0.hasPrefix("POST") })
+        #expect(aurralWrites.isEmpty)
         #expect(DiscoverCopy.message(for: AurralError.runActive) == DiscoverCopy.runActive)
         aurral.finishRun()
         try await model.refreshFlow("flow-dw")
-        #expect(aurral.asked.filter { $0.hasPrefix("POST") } == ["POST /api/playlists/start/flow-dw"])
+        #expect(aurralWrites == ["POST /api/playlists/start/flow-dw"])
         #expect(model.isFlowRunActive("flow-dw"))
         #expect(model.discover.status?.progress(flowId: "flow-dw") == AurralProgress(done: 8, total: 20))
         await #expect(throws: AurralError.runActive) { try await model.refreshFlow("flow-dw") }
-        #expect(aurral.asked.filter { $0.hasPrefix("POST") }.count == 1, "a second tap sends nothing")
+        #expect(aurralWrites.count == 1, "a second tap sends nothing")
         #expect(DiscoverCopy.refreshConfirm == "Replaces this playlist\u{2019}s songs")
     }
 
@@ -373,7 +522,8 @@ final class DiscoverNavidrome: @unchecked Sendable {
                      DiscoverCopy.useLibraryCopy, DiscoverCopy.libraryCopies(1), DiscoverCopy.libraryCopies(2),
                      DiscoverCopy.usedLibraryCopies(2), DiscoverCopy.tooLong,
                      DiscoverCopy.progress(AurralProgress(done: 3, total: 20)),
-                     DiscoverCopy.message(for: AurralError.unauthorized), DiscoverCopy.message(for: URLError(.timedOut))]
+                     DiscoverCopy.message(for: AurralError.unauthorized), DiscoverCopy.message(for: URLError(.timedOut)),
+                     DiscoverCopy.signInAgain, DiscoverCopy.message(for: AurralError.signInNeeded)]
         for text in texts {
             for name in ["Lidarr", "Navidrome", "Aurral", "MusicBrainz"] { #expect(!text.contains(name), "\(text)") }
             #expect(!text.contains("'") && !text.contains("\""), "curly quotes: \(text)")
@@ -432,7 +582,7 @@ final class DiscoverNavidrome: @unchecked Sendable {
         #expect(!model.isFlowRunActive("flow-dw"), "never seen: let go after 2 minutes")
         aurral.setStartBehaviour(.finishesAtOnce)
         try await model.refreshFlow("flow-dw")
-        #expect(aurral.asked.filter { $0.hasPrefix("POST") }.count == 2)
+        #expect(aurralWrites.count == 2)
         #expect(!model.isFlowRunActive("flow-dw"), "Aurral's last run moved: finished, Refresh is back")
     }
 
@@ -449,9 +599,12 @@ final class DiscoverNavidrome: @unchecked Sendable {
         #expect(nav.lookups.count + navidromeAsked.filter { $0.hasSuffix("search3") }.count > before)
     }
 
-    /// M6: a connection never prints its key.
+    /// M6: a connection never prints its key, password or token (round 13).
     @Test func connectionsHideTheirKeys() {
-        let aurralConnection = AurralConnection(base: URL(string: "http://aurral:3001")!, apiKey: "secret-aurral-key")
+        let aurralConnection = AurralConnection(base: URL(string: "http://aurral:3001")!, username: "jordan",
+                                                password: "secret-aurral-password",
+                                                login: AurralLogin(token: "secret-aurral-token", expiresAt: nil,
+                                                                   user: AurralUser(id: 1, username: "jordan", role: "admin")))
         let lidarrConnection = LidarrConnection(base: URL(string: "http://lidarr:8686")!, apiKey: "secret-lidarr-key")
         for text in [String(describing: aurralConnection), String(reflecting: aurralConnection), "\(aurralConnection)",
                      String(describing: lidarrConnection), String(reflecting: lidarrConnection)] {
@@ -467,5 +620,7 @@ final class DiscoverNavidrome: @unchecked Sendable {
                                  || $0.hasPrefix(AppModel.aurralSongsKeyPrefix) }, "M7: the account's Discover keys go")
         #expect(aurralStore.load() == nil && !model.aurralSetUp)
         #expect(model.discover.playlists.isEmpty)
+        await model.discover.pendingLogout?.value
+        #expect(aurral.asked.last == "POST /api/auth/logout", "round 13: the Aurral session ends too")
     }
 }

@@ -618,16 +618,25 @@ public actor LidarrWriteGate {
         try await send(method, path, body: body, shape: shape)
     }
 
+    /// Round 13 item 6 (D63): the same, with `allowForeign`, set only by Settings › Downloads in Lidarr's flagged
+    /// confirmation ("This download wasn't started by your library…"): a `queueRestartAny` of a download Lidarr never
+    /// grabbed. Any other shape named with the flag is refused. `scripts/check-writes.sh` pins where it may be named.
+    public func send(_ method: String, _ path: String, body: (any Encodable & Sendable)?,
+                     confinedAs shape: ConfinedShape, allowForeign: Bool) async throws -> Data {
+        try await send(method, path, body: body, shape: shape, allowForeign: allowForeign)
+    }
+
     private func send(_ method: String, _ path: String, body: (any Encodable & Sendable)?,
-                      shape: ConfinedShape?) async throws -> Data {
+                      shape: ConfinedShape?, allowForeign: Bool = false) async throws -> Data {
         let target = try WriteTarget(method: method, path: path)
+        if allowForeign, shape != .queueRestartAny { throw refused(target, "allowForeign goes with queueRestartAny only") }
         let data = try body.map { try JSONEncoder().encode($0) }
         if let why = ForbiddenWrites.reason(target, body: data) { throw refused(target, why) }
         let json = data.flatMap { try? JSONSerialization.jsonObject(with: $0, options: [.fragmentsAllowed]) }
         var confined = ForbiddenWrites.confined(target, json: json)
         if shape == .queueRestartAny {
             guard case .queueDelete(let id)? = confined else { throw refused(target, "queueRestartAny is a queue delete only") }
-            confined = .queueRestartAny(id)
+            confined = .queueRestartAny(id, allowForeign: allowForeign)
         }
         if confined != nil, confinement == nil { throw refused(target, "deletes and artist edits need the ledger") }
         guard enabled else { throw WriteGateError.disabled }

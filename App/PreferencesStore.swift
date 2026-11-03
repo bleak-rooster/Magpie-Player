@@ -1,7 +1,7 @@
 import Foundation
 import MagpieCore
 
-/// Reads and writes the five preference areas, one UserDefaults key each. A missing, corrupt or partly bad area
+/// Reads and writes the preference areas, one UserDefaults key each. A missing, corrupt or partly bad area
 /// loads as far as it can (`PreferenceArea.decode`); a save writes only the areas that changed.
 struct PreferencesStore {
     let defaults: UserDefaults
@@ -9,7 +9,7 @@ struct PreferencesStore {
     init(defaults: UserDefaults) { self.defaults = defaults }
 
     func load() -> Preferences {
-        Preferences(layout: read(), playback: read(), downloads: read(), scrobbling: read(), genres: read())
+        Preferences(layout: read(), playback: read(), downloads: read(), scrobbling: read(), genres: read(), carPlay: read())
     }
 
     func save(_ new: Preferences, previous: Preferences) {
@@ -18,6 +18,7 @@ struct PreferencesStore {
         write(new.downloads, previous.downloads)
         write(new.scrobbling, previous.scrobbling)
         write(new.genres, previous.genres)
+        write(new.carPlay, previous.carPlay)   // round 13: Settings › CarPlay
     }
 
     private func read<A: PreferenceArea>() -> A { A.decode(defaults.data(forKey: A.key)) }

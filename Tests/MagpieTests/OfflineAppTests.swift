@@ -339,7 +339,7 @@ private let noNetwork = NetworkStatus(isConnected: false, isCellular: false, isC
         let carRows = carHome.flatMap(\.rows)
         #expect(carRows.map(\.id) == ["home.downloaded.al-1"])
         #expect(carRows.first?.action == .open(.downloadedAlbum(id: "al-1", title: carRows.first?.title ?? "")))
-        #expect(CarPlayRows.libraryRoot(car.libraryRows, hasFindsTab: true).flatMap(\.rows).map(\.title) == ["Genres", "Downloads"])
+        #expect(CarPlayRows.libraryRoot(car.libraryRows).flatMap(\.rows).map(\.title) == ["Genres", "Downloads"])
         // Every car destination (T23) reads the phone, or nothing: Genres, Downloads (albums, artists, playlists), an
         // album or playlist opened from search, Favourites, Made for you, genre Play and Shuffle, and the Finds shelf.
         #expect(try await car.genreGroups().isEmpty)

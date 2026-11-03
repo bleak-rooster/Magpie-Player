@@ -1,7 +1,7 @@
 import MagpieCore
 import SwiftUI
 
-/// Settings › Home & Library: one page per area's layout, Home and Library.
+/// Settings › Home & Library: one page per area's layout, Home and Library. (CarPlay's is a top-level row, round 13.)
 struct HomeAndLibraryView: View {
     @Environment(AppModel.self) private var model
 

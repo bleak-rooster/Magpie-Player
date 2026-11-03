@@ -202,8 +202,9 @@ import Testing
         // The car shows Made for you too (T23 ruling): one rule for the phone and the car.
         #expect(l.visibleHomeSections(offline: false, hasListenBrainzToken: true) == [.jumpBackIn, .madeForYou, .recentlyAdded, .mostPlayed])
         #expect(l.visibleHomeSections(offline: true, hasListenBrainzToken: true) == [.downloaded])
+        // Round 13: Songs shows in the car too (letter groups); Requests never does.
         #expect(l.visibleLibraryRows(offline: false, findsSetUp: false, lidarrConnected: true, carPlay: true)
-                == [.playlists, .artists, .albums, .genres, .favourites, .downloads])
+                == [.playlists, .artists, .albums, .songs, .genres, .favourites, .downloads])
         #expect(l.visibleLibraryRows(offline: false, findsSetUp: true, lidarrConnected: false, carPlay: false)
                 == [.playlists, .artists, .albums, .songs, .genres, .favourites, .downloads, .finds])
         #expect(l.visibleLibraryRows(offline: true, findsSetUp: true, lidarrConnected: true, carPlay: false) == [.genres, .downloads])
@@ -219,7 +220,7 @@ import Testing
         #expect(l.visibleHomeSections(offline: true, hasListenBrainzToken: false, discoverSetUp: true) == [.downloaded])
         #expect(!l.visibleLibraryRows(offline: false, findsSetUp: true, lidarrConnected: true, carPlay: false).contains(.discover))
         #expect(l.visibleLibraryRows(offline: false, findsSetUp: false, lidarrConnected: false, carPlay: true, discoverSetUp: true)
-                == [.playlists, .artists, .albums, .genres, .favourites, .downloads, .discover])
+                == [.playlists, .artists, .albums, .songs, .genres, .favourites, .downloads, .discover])
         #expect(l.visibleLibraryRows(offline: true, findsSetUp: false, lidarrConnected: false, carPlay: false, discoverSetUp: true)
                 == [.genres, .downloads])
     }

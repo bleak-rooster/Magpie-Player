@@ -74,7 +74,8 @@ private func ok(_ body: String) -> Data {
                              audioFetcher: FakeFetcher())
         try await model.signIn(urls: [URL(string: "http://192.168.1.2:4533")!], username: "admin", password: "pw")
         await model.refreshMusicFolders()
-        _ = try await model.connectAurral(base: aurral.base, apiKey: aurral.apiKey)
+        _ = try await model.connectAurral(base: aurral.base, username: StubAurral.defaultUsername,
+                                          password: StubAurral.defaultPassword)
         #expect(model.discover.playlists.map(\.playlist.id) == ["pl-dw"])
         return model
     }
@@ -138,8 +139,9 @@ private func ok(_ body: String) -> Data {
         let model = try await signedIn()
         defer { model.signOut() }
         relaunched(model)
-        // Aurral now refuses the saved sign-in (401 on everything but health).
-        model.discover.connection = AurralConnection(base: aurral.base, apiKey: "revoked")
+        // Aurral now refuses the saved sign-in: the session expired and the saved password no longer works.
+        aurral.setPassword("changed", for: StubAurral.defaultUsername)
+        aurral.expireAllSessions()
         expectRightShelves(try await model.homeShelves(for: [.discover, .playlists, .randomAlbums]), "Aurral signed out")
     }
 
