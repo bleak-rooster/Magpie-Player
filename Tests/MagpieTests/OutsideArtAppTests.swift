@@ -233,6 +233,27 @@ private let recordingMBID = MBID("c2272a15-8f3a-4cdc-8f32-7e723352d44d")!
         model.signOut()
     }
 
+    /// A ready find's song id the library re-identified: Navidrome answers code 70 ("Song not found"). The runner's
+    /// pass reads that as gone (false), any other failure as "can't tell" (nil); the art read gives no cover for it.
+    @Test func goneSongIdIsToldApartFromUnreadable() async throws {
+        let model = try await signedIn()
+        let tag = self.tag
+        transport.inner.stub(pathSuffix: "/rest/getSong") { req in
+            let id = URLComponents(url: req.url!, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "id" }?.value
+            let body = switch id {
+            case "\(tag)gone": #"{"subsonic-response":{"status":"failed","version":"1.16.1","error":{"code":70,"message":"Song not found"}}}"#
+            case "\(tag)s1": #"{"subsonic-response":{"status":"ok","version":"1.16.1","song":{"id":"\#(tag)s1","title":"S","artist":"A","album":"B","duration":200}}}"#
+            default: #"{"subsonic-response":{"status":"failed","version":"1.16.1","error":{"code":0,"message":"Something"}}}"#
+            }
+            return MockTransport.Response(status: 200, body: Data(body.utf8))
+        }
+        #expect(await model.librarySongExists("\(tag)gone") == false)
+        #expect(await model.readyCoverArtId(MagpieRequestCover(songId: "\(tag)gone", outside: nil, artist: nil)) == nil)
+        #expect(await model.librarySongExists("\(tag)x") == nil)
+        #expect(await model.librarySongExists("\(tag)s1") == true)
+        model.signOut()
+    }
+
     // MARK: - R16: away from the screen
 
     /// Try, open its wait screen, leave at once: the request keeps going (the runner is the model's, not the view's).

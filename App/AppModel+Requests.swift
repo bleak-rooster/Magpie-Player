@@ -118,6 +118,9 @@ extension AppModel {
             },
             onMP3Removed: { [weak self] request, songId in
                 Task { @MainActor in self?.mp3Removed(request, songId: songId) }   // Y5 M1
+            },
+            onRefound: { [weak self] request, before in
+                Task { @MainActor in await self?.readyFindRefound(request, before: before) }
             })
         self.gate = gate
         self.runner = runner
@@ -163,7 +166,8 @@ extension AppModel {
             rescanMoved: { [weak self] from, to in try await self?.rescanMoved(from: from, to: to) },
             keptSong: { [weak self] recording, artistPath in try await self?.keptSong(recording, artistPath: artistPath) },
             songsTitled: { [weak self] title, folder in await self?.songsTitled(title, artistFolder: folder) },   // Y5 9.2
-            scanFolder: { [weak self] folder in await self?.scanArtistFolder(folder) ?? false })   // Y5 fix I7
+            scanFolder: { [weak self] folder in await self?.scanArtistFolder(folder) ?? false },   // Y5 fix I7
+            songExists: { [weak self] songId in await self?.librarySongExists(songId) })
     }
 
     /// Polls while any request is on its way: every 5 s in the foreground, 30 s otherwise. Stops by itself
@@ -357,9 +361,58 @@ extension AppModel {
     var onTheirWay: Int { requests.reduce(0) { $0 + $1.activePlaces } }
 
     /// The library song a Ready request became.
+    /// A ready find whose id the library no longer has is looked up again first (the runner's `songNotFound`).
     func readySong(_ request: MagpieRequest) async -> Song? {
         guard let songId = request.songId else { return nil }
-        return try? await self.request { try await $0.song(id: songId) }
+        return await librarySong(songId)
+    }
+
+    /// The song by id; a not-found for a ready find's song: the find is looked up again and read under its id now.
+    func librarySong(_ songId: String) async -> Song? {
+        do {
+            return try await self.request { try await $0.song(id: songId) }
+        } catch let error as NavidromeError where Self.isNotFound(error) {
+            guard let now = await runner?.songNotFound(songId) else { return nil }
+            return try? await self.request { try await $0.song(id: now) }
+        } catch {
+            return nil
+        }
+    }
+
+    nonisolated static func isNotFound(_ error: NavidromeError) -> Bool {
+        if case .api(code: 70, _) = error { return true }
+        return false
+    }
+
+    /// The runner's reconcile pass: whether the library still has this song id. Nil: can't tell now.
+    func librarySongExists(_ songId: String) async -> Bool? {
+        do {
+            _ = try await request { try await $0.song(id: songId) }
+            return true
+        } catch let error as NavidromeError where Self.isNotFound(error) {
+            return false
+        } catch {
+            return nil
+        }
+    }
+
+    /// A ready find's song was re-identified by the library (`before` is gone): everything holding the old id
+    /// follows, as after a Keep's relink (Finds identity, the queue, art, the phone's downloads).
+    func readyFindRefound(_ request: MagpieRequest, before: String) async {
+        guard let songId = request.songId else { return }
+        findsIdentity.markLanded(songId)
+        syncRequestFinds()
+        ReadyCovers.shared.ids[before] = nil
+        guard let song = await librarySong(songId) else { return }
+        if readySongs[request.id] != nil { readySongs[request.id] = song }
+        player.replaceSong(id: before, with: song)
+        if let downloads {
+            for reason in downloads.reasons(for: before) {
+                downloads.download([song], reason: reason)
+                await downloads.remove(reason, songIds: [before])
+            }
+        }
+        Task { await refreshFinds() }
     }
 
     /// D6: it lands by the one landing rule (AppModel+Landing.swift). D7: a local notification, only while the app

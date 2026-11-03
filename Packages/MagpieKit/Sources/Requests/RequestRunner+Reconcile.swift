@@ -62,16 +62,21 @@ extension RequestRunner {
         guard let r = request(id), let albumId = r.albumId, let artistId = r.lidarrArtistId else { return }
         if let last = fallbackChecks[id], (0..<Self.fallbackInterval).contains(t.timeIntervalSince(last)) { return }
         fallbackChecks[id] = t
-        guard let folder = try? await lidarr.artist(id: artistId).path else { return }
+        guard let songId = await tagFreeSongId(r, albumId: albumId, artistId: artistId) else { return }
+        await apply(id, .visibleInLibrary(songId: songId))
+    }
+
+    /// Item 9.2's match for one request: Lidarr's artist folder and track file path, then `fallbackMatch`.
+    func tagFreeSongId(_ r: MagpieRequest, albumId: Int, artistId: Int) async -> String? {
+        guard let folder = try? await lidarr.artist(id: artistId).path else { return nil }
         var filePath: String?
         if let recording = r.recording.recordingMBID ?? r.plan?.recordingMBID,
            let track = try? await lidarr.tracks(albumId: albumId).first(where: { $0.foreignRecordingId == recording.rawValue && $0.hasFile }),
            let file = try? await lidarr.trackFile(id: track.trackFileId ?? 0) {
             filePath = file.path
         }
-        guard let candidates = await library.songsTitled(r.recording.title, folder),
-              let songId = Self.fallbackMatch(r.recording, filePath: filePath, folder: folder, candidates: candidates) else { return }
-        await apply(id, .visibleInLibrary(songId: songId))
+        guard let candidates = await library.songsTitled(r.recording.title, folder) else { return nil }
+        return Self.fallbackMatch(r.recording, filePath: filePath, folder: folder, candidates: candidates)
     }
 
     /// The pure rule (tested on its own): path first, then title + artist + duration within 3 s, inside `folder`.
@@ -250,5 +255,78 @@ extension RequestRunner {
             Log.logger("requests").error("legacy Keep lock not cleared: ledger unavailable")
             return false
         }
+    }
+}
+
+// MARK: - Ready finds keep a live song id
+
+extension RequestRunner {
+    /// The first wait after a look at a ready find's song id; it doubles up to `refindMaxInterval` while nothing
+    /// changes.
+    public static let refindInterval: TimeInterval = 60
+    static let refindMaxInterval: TimeInterval = 30 * 60
+    /// The app's not-found looks again at most this often per find.
+    static let refindMinInterval: TimeInterval = 10
+
+    /// A ready find (not being kept or let go of) and its song id.
+    private func readyFind(_ r: MagpieRequest) -> String? {
+        guard r.state == .ready, r.isFind, r.keep == nil, r.notForMe == nil, !r.keepNeedsAttention,
+              !r.notForMeNeedsAttention, !requestBusy(r.id) else { return nil }
+        return r.songId
+    }
+
+    /// The reconcile pass: each ready find whose look is due, once. Its song id still listed: left alone; gone: looked
+    /// up again (`refind`).
+    func followReadyFinds() async {
+        let t = now()
+        for r in list {
+            guard let songId = readyFind(r) else { continue }
+            if let c = refindChecks[r.id], (0..<c.wait).contains(t.timeIntervalSince(c.last)) { continue }
+            switch await library.songExists(songId) {
+            case nil:   // can't tell now: look again after the wait
+                backOff(r.id, at: t)
+            case true?:
+                backOff(r.id, at: t)
+            case false?:
+                await refind(r.id, gone: songId, at: t)
+            }
+        }
+    }
+
+    /// The app's play or art read got a not-found for `songId`. Looks the ready find holding it up again now (at most
+    /// once per `refindMinInterval`); returns its song id when that changed.
+    public func songNotFound(_ songId: String) async -> String? {
+        let t = now()
+        guard let r = list.first(where: { readyFind($0) == songId }) else { return nil }
+        if let c = refindChecks[r.id], (0..<Self.refindMinInterval).contains(t.timeIntervalSince(c.last)) { return nil }
+        guard await refind(r.id, gone: songId, at: t) else { return nil }
+        return request(r.id)?.songId
+    }
+
+    /// By recording MBID (the library's match, as for Ready), else Y5's path / title + artist + duration match;
+    /// never by name only. Found: the id changes and the app is told; not: backing off.
+    @discardableResult
+    private func refind(_ id: RequestID, gone: String, at t: Date) async -> Bool {
+        guard let r = request(id) else { return false }
+        var found = await library.songId(r.recording)
+        if found == nil || found == gone, let albumId = r.albumId, let artistId = r.lidarrArtistId {
+            found = await tagFreeSongId(r, albumId: albumId, artistId: artistId)
+        }
+        // Changed meanwhile (Keep, Not for me, another look): leave it.
+        guard let songId = found, songId != gone, let now = request(id), readyFind(now) == gone else {
+            backOff(id, at: t)
+            return false
+        }
+        await mutate(id) { $0.songId = songId }
+        refindChecks[id] = (t, Self.refindInterval)
+        Log.logger("requests").info("a ready find's song was re-identified by the library; its id follows")
+        if let updated = request(id) { onRefound(updated, gone) }
+        return true
+    }
+
+    /// The next look waits twice as long as the last (from `refindInterval` up to `refindMaxInterval`).
+    private func backOff(_ id: RequestID, at t: Date) {
+        let wait = refindChecks[id].map { min($0.wait * 2, Self.refindMaxInterval) } ?? Self.refindInterval
+        refindChecks[id] = (t, wait)
     }
 }

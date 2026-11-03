@@ -756,6 +756,13 @@ final class FakeLibrary: @unchecked Sendable {
         /// Y5 fix I7: targeted folder scans asked for, and whether a folder can be placed in a library.
         var folderScans: [String] = []
         var foldersPlaceable = true
+        /// Song ids the library no longer has (a scan re-identified them); `existsUnknown`: it can't be read now.
+        var gone: Set<String> = []
+        var existsUnknown = false
+        var existsReads: [String] = []
+        /// Y5 9.2: what a title read in an artist folder lists (nil: can't tell).
+        var titled: [(song: Song, lidarrPath: String)]?
+        var titledReads = 0
     }
 
     let state = OSAllocatedUnfairLock(initialState: State())
@@ -783,11 +790,18 @@ final class FakeLibrary: @unchecked Sendable {
                     return $0.mainSongs[id]
                 }
             },
+            songsTitled: { [self] _, _ in state.withLock { $0.titledReads += 1; return $0.titled } },
             scanFolder: { [self] folder in
                 state.withLock { s in
                     guard s.foldersPlaceable else { return false }
                     s.folderScans.append(folder)
                     return true
+                }
+            },
+            songExists: { [self] id in
+                state.withLock { s in
+                    s.existsReads.append(id)
+                    return s.existsUnknown ? nil : !s.gone.contains(id)
                 }
             })
     }
@@ -826,6 +840,8 @@ struct Harness {
                                                    losslessProfileId: 9, findTagId: 2)
     /// `onRelinked` calls: (request, the song id before, the song after).
     let relinked = OSAllocatedUnfairLock(initialState: [(RequestID, String?, Song)]())
+    /// `onRefound` calls: (request, the dead song id before). The request carries the id now.
+    let refound = OSAllocatedUnfairLock(initialState: [(RequestID, String, String?)]())
 
     init(changesOn: Bool = true, directory: URL? = nil, lidarr existing: FakeLidarr? = nil,
          base: URL = URL(string: "https://music.example/lidarr")!, setup: RequestRunner.Setup = Harness.setup,
@@ -849,12 +865,13 @@ struct Harness {
         store = RequestStore(fileURL: RequestStore.defaultURL(in: dir, instance: client.instanceScope))
         let mb = MusicBrainzClient(transport: lidarr.clientTransport, userAgent: MusicBrainzClient.userAgent(version: "test"),
                                    limiter: RateLimiter(perSecond: 1_000, sleep: { _ in }))
-        let clock = self.clock, ready = self.ready, relinked = self.relinked
+        let clock = self.clock, ready = self.ready, relinked = self.relinked, refound = self.refound
         runner = RequestRunner(lidarr: client, gate: gate, ledger: ledger, mb: mb, library: library.access,
                                store: store, setup: { setup }, keepSetup: { keep }, now: { clock.now },
                                sleep: { d in clock.advance(Double(d.components.seconds) + Double(d.components.attoseconds) / 1e18) },
                                onReady: { r in ready.withLock { $0.append(r.id) } },
-                               onRelinked: { r, before, song in relinked.withLock { $0.append((r.id, before, song)) } })
+                               onRelinked: { r, before, song in relinked.withLock { $0.append((r.id, before, song)) } },
+                               onRefound: { r, before in refound.withLock { $0.append((r.id, before, r.songId)) } })
         runnerRef.runner = runner
         self.server = lidarr
         self.dir = dir

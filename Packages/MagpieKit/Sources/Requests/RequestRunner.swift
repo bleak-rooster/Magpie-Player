@@ -25,6 +25,8 @@ public struct LibraryAccess: Sendable {
     /// Y5 (item 9.2): the library's songs titled like `title` inside Lidarr's artist folder, each with its path in
     /// Lidarr's terms (mapped from Navidrome's). Nil: can't tell. For files without MusicBrainz tags.
     public var songsTitled: @Sendable (_ title: String, _ artistFolder: String) async -> [(song: Song, lidarrPath: String)]?
+    /// Whether the library still has the song with this id (a scan can re-identify a song). Nil: can't tell.
+    public var songExists: @Sendable (_ songId: String) async -> Bool?
 
     /// `rescanMoved` nil: one plain quick scan. `keptSong` nil: never found (the request keeps its song id).
     public init(startScan: @escaping @Sendable () async throws -> Void,
@@ -34,8 +36,10 @@ public struct LibraryAccess: Sendable {
                 rescanMoved: (@Sendable (_ from: String, _ to: String) async throws -> Void)? = nil,
                 keptSong: (@Sendable (MBID, _ artistPath: String) async throws -> Song?)? = nil,
                 songsTitled: (@Sendable (_ title: String, _ artistFolder: String) async -> [(song: Song, lidarrPath: String)]?)? = nil,
-                scanFolder: (@Sendable (_ artistFolder: String) async -> Bool)? = nil) {
+                scanFolder: (@Sendable (_ artistFolder: String) async -> Bool)? = nil,
+                songExists: (@Sendable (_ songId: String) async -> Bool?)? = nil) {
         self.scanFolder = scanFolder ?? { _ in false }
+        self.songExists = songExists ?? { _ in nil }
         self.startScan = startScan; self.isScanning = isScanning
         self.refreshIndex = refreshIndex; self.songId = songId
         self.songsTitled = songsTitled ?? { _, _ in nil }
@@ -146,6 +150,9 @@ public actor RequestRunner {
     let onRelinked: @Sendable (MagpieRequest, _ before: String?, Song) -> Void
     /// Y5 (M1): the kept find's MP3 was removed: the app drops queue entries and the phone's download of that song.
     let onMP3Removed: @Sendable (MagpieRequest, _ songId: String?) -> Void
+    /// A ready find's song was found again under another id (the library re-identified it; `before` is gone). The
+    /// request carries the id now.
+    let onRefound: @Sendable (MagpieRequest, _ before: String) -> Void
     /// Tests and the dev-stack IT: a shorter MP3 grace than 7 days.
     var mp3GraceOverride: TimeInterval?
     /// Fix I7: artist folders waiting for Navidrome's scan (since when), the last scan, and its backoff.
@@ -190,6 +197,8 @@ public actor RequestRunner {
     var factChecks: [RequestID: Date] = [:]
     var adoptedChecks: [RequestID: Date] = [:]
     var fallbackChecks: [RequestID: Date] = [:]
+    /// Ready finds' song ids: when each was last looked at and how long until the next look (backoff).
+    var refindChecks: [RequestID: (last: Date, wait: TimeInterval)] = [:]
     /// R17 (RequestRunner+Stall.swift): each Soulseek download being watched, by queue id; the Soulseek clients'
     /// names (read once per runner); how long a download may sit unchanged.
     var stallWatch: [Int: StallWatch] = [:]
@@ -229,11 +238,12 @@ public actor RequestRunner {
                 sleep: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) },
                 onReady: @escaping @Sendable (MagpieRequest) -> Void = { _ in },
                 onRelinked: @escaping @Sendable (MagpieRequest, _ before: String?, Song) -> Void = { _, _, _ in },
-                onMP3Removed: @escaping @Sendable (MagpieRequest, _ songId: String?) -> Void = { _, _ in }) {
+                onMP3Removed: @escaping @Sendable (MagpieRequest, _ songId: String?) -> Void = { _, _ in },
+                onRefound: @escaping @Sendable (MagpieRequest, _ before: String) -> Void = { _, _ in }) {
         self.lidarr = lidarr; self.gate = gate; self.ledger = ledger; self.mb = mb
         self.library = library; self.store = store; self.setup = setup; self.keepSetup = keepSetup
         self.now = now; self.sleep = sleep; self.onReady = onReady; self.onRelinked = onRelinked
-        self.onMP3Removed = onMP3Removed
+        self.onMP3Removed = onMP3Removed; self.onRefound = onRefound
         self.lastLidarrContact = now()
         // Critical: ids are only meaningful on their own server. A ledger for another Lidarr disables the runner.
         if ledger.instance != lidarr.instanceScope {
@@ -423,6 +433,8 @@ public actor RequestRunner {
         await followKeeps()
         if shouldStop() { return }
         await followAdopted()
+        if shouldStop() { return }
+        await followReadyFinds()
         if shouldStop() { return }
         await followLossless()
         if shouldStop() { return }
