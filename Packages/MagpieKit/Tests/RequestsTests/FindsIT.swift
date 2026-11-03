@@ -110,16 +110,16 @@ struct FindsIT {
         }
         let before = folders()
 
-        let id = try await runner.tryRecording(
-            ExternalRecording(recordingMBID: TryIT.recording, title: "Harbour Lights", artist: "Judie Tzuke",
-                              source: .listenBrainz),
-            tier: .patient)
-        await runner.settle()
-
         var createdArtistId: Int?
         var artistFolder: String?
+        var failure: (any Error)?
         let downloads = TryDevStack.repoRoot.appending(path: "dev/data/downloads/magpie-findsit-\(UUID().uuidString)")
         do {
+            let id = try await runner.tryRecording(
+                ExternalRecording(recordingMBID: TryIT.recording, title: "Harbour Lights", artist: "Judie Tzuke",
+                                  source: .listenBrainz),
+                tier: .patient)
+            await runner.settle()
             var request = try #require(await runner.requests.first { $0.id == id })
             for _ in 0..<90 where request.albumId == nil {
                 try await Task.sleep(for: .seconds(2))
@@ -150,7 +150,8 @@ struct FindsIT {
                 request = try #require(await runner.requests.first { $0.id == id })
             }
             try #require(request.state == .ready, "the find never showed up in Navidrome (state \(request.state))")
-            let findSong = try #require(try await navidrome.songs(recordingMBID: TryIT.recording, excludingLibrary: nil).first)
+            let findSong = try #require(try await Self.settledSongs(navidrome, excludingLibrary: nil).first,
+                                        "the ready find isn't listed in Navidrome")
             #expect(findSong.libraryId == finds.id)
 
             if letGo {
@@ -190,7 +191,7 @@ struct FindsIT {
             }
             #expect(request.state == .kept)
             let librarySong = try #require(
-                try await navidrome.songs(recordingMBID: TryIT.recording, excludingLibrary: finds.id).first,
+                try await Self.settledSongs(navidrome, excludingLibrary: finds.id).first,
                 "the kept song isn't in the main library")
             #expect(librarySong.libraryId == main.id)
             #expect(request.songId == librarySong.id)
@@ -216,17 +217,38 @@ struct FindsIT {
             #expect(following.path == kept.path, "not moved")
         } catch is Done {
         } catch {
-            Issue.record(error)
+            // Rethrown after the clean-up (an `ExpectationFailedError` from `#require` is already recorded; passing
+            // it to `Issue.record` is an API misuse).
+            failure = error
         }
 
-        // Clean up: the artist Magpie created (files kept by Lidarr: deleteFiles=false), then its folder on the dev
-        // data volume, then a scan so Navidrome lets the songs go.
+        // Clean up, whatever failed above: the artist Magpie created (files kept by Lidarr: deleteFiles=false), then
+        // its folder on the dev data volume, then a scan so Navidrome lets the songs go.
         try? FileManager.default.removeItem(at: downloads)
+        // The test artist wasn't in the dev Lidarr before this run (checked above), so whatever has its MBID now was
+        // added by this run, even when the add's request never reported its id (a failure before that).
+        if createdArtistId == nil {
+            createdArtistId = try? await client.artists().first { $0.foreignArtistId == TryIT.artist }?.id
+        }
         // Straight to the dev Lidarr (`devLidarr`): the gate (FM1) refuses deleting a kept artist, by design.
-        if let createdArtistId {
-            try await TryIT.waitForRefresh(client)
-            _ = try await Self.devLidarr("DELETE", "artist/\(createdArtistId)",
-                                         query: ["deleteFiles": "false", "addImportListExclusion": "false"])
+        // A refresh still running re-creates a deleted artist ("Adding missing parent artist"): wait for refreshes
+        // first (up to 5 minutes: the external metadata server can be slow), and check it stayed gone.
+        if createdArtistId != nil {
+            do {
+                for attempt in 0..<2 {
+                    try await Self.refreshesFinished(client)
+                    guard let artistId = try await client.artists().first(where: { $0.foreignArtistId == TryIT.artist })?.id
+                    else { break }
+                    _ = try await Self.devLidarr("DELETE", "artist/\(artistId)",
+                                                 query: ["deleteFiles": "false", "addImportListExclusion": "false"])
+                    if attempt == 0 { try await Task.sleep(for: .seconds(5)) }
+                }
+                if try await client.artists().contains(where: { $0.foreignArtistId == TryIT.artist }) {
+                    Issue.record("clean-up: the test artist is still in the dev Lidarr")
+                }
+            } catch {
+                Issue.record("clean-up: couldn't remove the test artist from the dev Lidarr: \(error)")
+            }
         }
         _ = artistFolder
         var removed = false
@@ -236,7 +258,45 @@ struct FindsIT {
                 removed = true
             }
         }
-        if removed { try? await navidrome.startScan(target: nil) }
+        if removed {
+            try? await navidrome.startScan(target: nil)
+            try? await Self.scanFinished(navidrome)   // the next test starts on a quiet library
+        }
+        if let failure { throw failure }
+    }
+
+    /// The recording's songs once Navidrome's scan is over. A scan can re-identify a song: its move detection merges
+    /// a just-imported row into an older, missing row of the same recording (another library's, left by an earlier
+    /// Keep), so a read while it runs can miss the song. Waits for the scan to finish (up to 60 s), then reads, and
+    /// reads again briefly while the listing is empty (the scanner's watcher may still be catching up).
+    static func settledSongs(_ navidrome: NavidromeClient, excludingLibrary: Int?) async throws -> [Song] {
+        try await scanFinished(navidrome)
+        var songs: [Song] = []
+        for attempt in 0..<5 {
+            songs = try await navidrome.songs(recordingMBID: TryIT.recording, excludingLibrary: excludingLibrary)
+            if !songs.isEmpty || attempt == 4 { break }
+            try await Task.sleep(for: .seconds(1))
+        }
+        return songs
+    }
+
+    /// Until Lidarr has no artist or album refresh queued or running (up to 5 minutes).
+    static func refreshesFinished(_ client: LidarrClient) async throws {
+        for _ in 0..<150 {
+            let busy = try await client.commands().contains { c in
+                ["refreshartist", "refreshalbum"].contains(c.name.lowercased())
+                    && ["queued", "started"].contains(c.status.lowercased())
+            }
+            if !busy { return }
+            try await Task.sleep(for: .seconds(2))
+        }
+    }
+
+    static func scanFinished(_ navidrome: NavidromeClient) async throws {
+        for _ in 0..<60 {
+            if try await !navidrome.scanStatus() { return }
+            try await Task.sleep(for: .seconds(1))
+        }
     }
 
     private struct Done: Error {}
@@ -256,7 +316,8 @@ struct FindsIT {
         try #require(try await client.recycleBin() == nil, "the dev Lidarr has a recycle bin set; unset it")
         #expect(check.permanent)
         var outcome = try await runner.notForMe(id, permanentConfirmed: check.permanent)
-        for _ in 0..<30 where outcome == .stillGoing {
+        // Up to 5 minutes: the artist goes only after Lidarr's refresh of it (the add's own) has finished.
+        for _ in 0..<150 where outcome == .stillGoing {
             try await Task.sleep(for: .seconds(2))
             outcome = try await runner.notForMe(id, permanentConfirmed: check.permanent)
         }
