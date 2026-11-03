@@ -71,7 +71,8 @@ import UIKit
         #expect(SettingsCopy.accountsAndServers == "Accounts & Servers")
         #expect(SettingsPage.accountsAndServers == [.account, .lidarr, .aurral, .listenBrainz])
         #expect(SettingsPage.topLevel == [.account, .lidarr, .aurral, .listenBrainz,
-                                          .playback, .downloads, .homeAndLibrary, .appearance, .about])
+                                          .playback, .downloads, .homeAndLibrary, .carPlay, .appearance, .about])
+        #expect(SettingsView.identifier(.carPlay) == "settings-carplay", "Z3's CarPlay, promoted to the top level")
         #expect(SettingsPage.accountsAndServers.map(SettingsView.identifier)
                 == ["settings-account", "settings-lidarr-account", "settings-aurral", "settings-listenbrainz"])
         #expect([SettingsCopy.navidrome, SettingsCopy.lidarr, SettingsCopy.aurral, SettingsCopy.listenBrainz]
@@ -135,12 +136,12 @@ import UIKit
         defer { window.isHidden = true }
         let list = try #require(Self.scrollView(in: sheet.view), "the top level is a list")
         let rows = (0..<list.numberOfSections).reduce(0) { $0 + list.numberOfItems(inSection: $1) }
-        #expect(rows == 9, "round 13: four accounts and servers, then five pages")
+        #expect(rows == 10, "round 13: four accounts and servers, then six pages (CarPlay among them)")
         let visible = list.bounds.height - list.adjustedContentInset.top - list.adjustedContentInset.bottom
         print("T21b settings: content \(list.contentSize.height) pt in \(visible) pt visible (sheet \(sheet.view.frame))")
         #expect(sheet.view.frame.height < 667, "measured inside the sheet, not the whole window")
         #expect(list.contentSize.height <= visible, "the top level scrolls at the default text size")
-        #expect(visible - list.contentSize.height >= 50, "round 13: room for one more two-line row (Z3's CarPlay)")
+
         try Self.render(window, "settings-375x667.png")
 
         let (axWindow, _) = try await Self.host(model, typeSize: .accessibility2)

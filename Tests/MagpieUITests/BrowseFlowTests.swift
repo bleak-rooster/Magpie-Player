@@ -808,6 +808,7 @@ final class BrowseFlowTests: XCTestCase {
             XCTAssertFalse(app.buttons[gone].exists, "\(gone) moved under Accounts & Servers")
         }
         attachScreenshot(app, "settings-accounts-and-servers")
+        XCTAssertTrue(app.buttons["settings-carplay"].exists, "CarPlay is a top-level row")
         func open(_ id: String, title: String, shows element: XCUIElement) {
             let row = app.buttons[id]
             XCTAssertTrue(row.waitForExistence(timeout: 10), id)

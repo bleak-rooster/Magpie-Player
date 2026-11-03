@@ -115,14 +115,17 @@ public struct WriteConfinement: Sendable {
         case queueDelete(Int)
         /// Y5 fix I9: `POST /command` AlbumSearch (its album ids) or RefreshArtist (its artist id).
         case command(name: String, albumIds: [Int], artistId: Int?)
-        /// The same request, named `ConfinedShape.queueRestartAny` by Settings › Downloads in Lidarr (D49).
-        case queueRestartAny(Int)
+        /// The same request, named `ConfinedShape.queueRestartAny` by Settings › Downloads in Lidarr (D49); round 13
+        /// (D63): `allowForeign` from its flagged confirmation, for a download Lidarr never grabbed.
+        case queueRestartAny(Int, allowForeign: Bool)
     }
 
     func check(_ write: Write, lidarr: LidarrClient) async -> Verdict {
         guard ledger.instance == lidarr.instanceScope else { return .refused("the ledger belongs to another Lidarr") }
         if case .queueDelete(let id) = write { return await queueDelete(id, lidarr: lidarr) }
-        if case .queueRestartAny(let id) = write { return await Self.queueRestartAny(id, lidarr: lidarr) }
+        if case .queueRestartAny(let id, let allowForeign) = write {
+            return await Self.queueRestartAny(id, allowForeign: allowForeign, lidarr: lidarr)
+        }
         do {
             let entries: [LedgerEntry]
             do { entries = try await ledger.entries } catch { throw Unreadable() }
@@ -221,26 +224,25 @@ public struct WriteConfinement: Sendable {
     /// of the whole queue (never from the caller):
     /// - the queue lists item `id` now, and names its download (`downloadId`), so every row it takes along is known;
     /// - that row isn't importing, imported or complete (`QueueItem.isImportingOrDone`): a finished copy is never lost;
-    /// - no other row of the same download is either (removing one row removes the whole download).
+    /// - no other row of the same download is either (removing one row removes the whole download);
+    /// - Lidarr grabbed that download (no "wasn't grabbed" message, and a grab in its history, read fresh), unless
+    ///   `allowForeign`: round 13 item 6 (D63), set only by the screen's flagged confirmation.
+    /// Round 13 (D63) supersedes fix round 1 C1's second layer: a copy that's queued, paused, held back or whose client
+    /// can't be reached may be restarted too (the owner's "restart anything"); the screen asks first for those.
     /// The queue only, before import: it never touches library files.
-    static let waitingStatuses: Set<String> = ["queued", "paused", "delay", "downloadclientunavailable", "fallback"]
-
-    static func queueRestartAny(_ id: Int, lidarr: LidarrClient) async -> Verdict {
+    static func queueRestartAny(_ id: Int, allowForeign: Bool = false, lidarr: LidarrClient) async -> Verdict {
         let items: [QueueItem]
         do { items = try await lidarr.queueDetails(albumIds: []) } catch { return .unknown }
         guard let item = items.first(where: { $0.id == id }) else { return .refused("not in the queue now") }
         guard let downloadId = item.downloadId else { return .refused("the queue doesn't say which download it is") }
         guard !item.isImportingOrDone else { return .refused("that copy is importing or done") }
-        // Fix round 1 C1 (second layer): waiting its turn, paused, held back by Lidarr or its client unreachable isn't
-        // stuck; never restarted, whatever the screen thought.
-        guard !Self.waitingStatuses.contains(item.status.lowercased()) else {
-            return .refused("that copy is waiting, paused or can't reach its download app")
-        }
         guard !items.contains(where: { $0.downloadId == downloadId && $0.isImportingOrDone }) else {
             return .refused("another album of that download is importing or done")
         }
-        // Fix round 2 N1: only a download Lidarr itself grabbed. Another tool's transfer that Lidarr only lists has no
-        // grab (its blocklist would do nothing, and the search would bring in music nobody asked Lidarr for).
+        let albums = Set(items.filter { $0.downloadId == downloadId }.compactMap(\.albumId))
+        if allowForeign { return .confined(artists: [], rule: .queueRestart(albums: albums)) }
+        // Fix round 2 N1: without the flag, only a download Lidarr itself grabbed. Another tool's transfer that Lidarr
+        // only lists has no grab.
         guard !items.contains(where: { $0.downloadId == downloadId && $0.saysNotGrabbedByLidarr }) else {
             return .refused("Lidarr didn't start that download")
         }
@@ -249,7 +251,7 @@ public struct WriteConfinement: Sendable {
         } catch {
             return .unknown
         }
-        return .confined(artists: [], rule: .queueRestart(albums: Set(items.filter { $0.downloadId == downloadId }.compactMap(\.albumId))))
+        return .confined(artists: [], rule: .queueRestart(albums: albums))
     }
 
     /// Right before a confined write is sent, the ledger once more, by rule (C4). findDelete: none of `artists` is

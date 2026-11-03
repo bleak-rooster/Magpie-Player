@@ -4,16 +4,19 @@ import UIKit
 
 /// R14: the app icons Settings › Appearance › App icon offers. `default` is the green cover (AppIcon); the others are
 /// 4 designs x 3 colourways, rendered by scripts/render-alternate-icons.swift and listed in project.yml's
-/// ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES.
+/// ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES. Round 13: `original` is the green cover recoloured in Ink or Sunset
+/// (DefaultInk, DefaultSunset; scripts/render-app-icon.swift), listed right after the default.
 enum AppIconChoice: Hashable, CaseIterable, Identifiable {
     case `default`
+    /// The green cover in another colourway (Forest is `default` itself).
+    case original(colourway: Colourway)
     case alternate(design: Design, colourway: Colourway)
 
     enum Design: String, CaseIterable { case record = "Record", magpie = "Magpie", wave = "Wave", nest = "Nest" }
     enum Colourway: String, CaseIterable { case forest = "Forest", ink = "Ink", sunset = "Sunset" }
 
     static var allCases: [AppIconChoice] {
-        [.default] + Design.allCases.flatMap { d in Colourway.allCases.map { .alternate(design: d, colourway: $0) } }
+        [.default, .original(colourway: .ink), .original(colourway: .sunset)] + Design.allCases.flatMap { d in Colourway.allCases.map { .alternate(design: d, colourway: $0) } }
     }
 
     var id: String { iconName ?? "Default" }
@@ -22,6 +25,7 @@ enum AppIconChoice: Hashable, CaseIterable, Identifiable {
     var iconName: String? {
         switch self {
         case .default: nil
+        case .original(let colourway): "Default" + colourway.rawValue
         case .alternate(let design, let colourway): design.rawValue + colourway.rawValue
         }
     }
@@ -37,6 +41,7 @@ enum AppIconChoice: Hashable, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .default: "Green cover"
+        case .original(let colourway): "Cover, \(colourway.rawValue)"
         case .alternate(let design, let colourway): "\(design.rawValue), \(colourway.rawValue)"
         }
     }

@@ -94,14 +94,16 @@ public struct Album: Sendable, Hashable, Codable {
     public var songs: [Song]?
     /// The user starred ("favourited") it (round 11 R7).
     public var starred: Bool
+    /// When the server first listed it (Subsonic `created`), when it says. Round 13: the car's Newest, after the year.
+    public var created: Date?
 
     public init(id: String, name: String, artist: String, artistId: String? = nil, year: Int? = nil,
                 songCount: Int, duration: TimeInterval, coverArtId: String? = nil,
-                releaseGroupMBID: MBID? = nil, songs: [Song]? = nil, starred: Bool = false) {
+                releaseGroupMBID: MBID? = nil, songs: [Song]? = nil, starred: Bool = false, created: Date? = nil) {
         self.id = id; self.name = name; self.artist = artist; self.artistId = artistId
         self.year = year; self.songCount = songCount; self.duration = duration
         self.coverArtId = coverArtId; self.releaseGroupMBID = releaseGroupMBID; self.songs = songs
-        self.starred = starred
+        self.starred = starred; self.created = created
     }
 }
 

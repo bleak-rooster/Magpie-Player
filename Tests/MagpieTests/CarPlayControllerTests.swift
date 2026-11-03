@@ -42,7 +42,11 @@ final class FakeCarInterface: CarPlayInterface {
         completion?(true, nil)
     }
 
+    /// Z3 review M5: a pop the car refuses (nothing changes, the completion says so).
+    var failsPops = false
+
     func pop(to targetTemplate: CPTemplate, animated: Bool, completion: ((Bool, (any Error)?) -> Void)?) {
+        if failsPops { completion?(false, nil); return }
         if let index = templates.firstIndex(where: { $0 === targetTemplate }) { templates = Array(templates.prefix(index + 1)) }
         completion?(true, nil)
     }
@@ -159,7 +163,8 @@ final class FakeCarInterface: CarPlayInterface {
         #expect(await eventually {
             FakeCarInterface.headers(self.shown(car, controller, tab: 0)) == ["Jump back in", "Recently added", "Most played"]
         })
-        #expect(FakeCarInterface.texts(car.tab(1)) == ["Playlists", "Artists", "Albums", "Genres", "Favourites", "Downloads"])
+        #expect(FakeCarInterface.texts(car.tab(1)) == ["Playlists", "Artists", "Albums", "Songs", "Genres", "Favourites",
+                                                       "Downloads"])
         let watches = controller.watches.count
         let first = try #require(controller.layoutWatch)
 
@@ -172,11 +177,13 @@ final class FakeCarInterface: CarPlayInterface {
             $0.layout.home.set(.genres, visible: true, keepingOneOf: [])
             $0.layout.setLibraryRow(.artists, visible: false)
         }
+        // Round 13: the car's Home follows the phone's until changed (Genres included).
         #expect(await eventually {
             FakeCarInterface.headers(self.shown(car, controller, tab: 0)) == ["Jump back in", "Most played", "Genres"]
         })
         #expect(await eventually {
-            FakeCarInterface.texts(self.shown(car, controller, tab: 1)) == ["Playlists", "Albums", "Genres", "Favourites", "Downloads"]
+            FakeCarInterface.texts(self.shown(car, controller, tab: 1)) == ["Playlists", "Albums", "Songs", "Genres", "Favourites",
+                                                                            "Downloads"]
         })
         #expect(controller.watches.count == watches)
     }
@@ -403,8 +410,9 @@ final class FakeCarInterface: CarPlayInterface {
         #expect(await eventually { model.player.queue.current?.song.id == "b1" })
     }
 
-    /// Albums are read past Navidrome's 500-per-page answer, so a big library reaches the letters screen (it was cut at
-    /// 500 before, exactly the car's item limit, so albums after it were never shown).
+    /// Albums are read past Navidrome's 500-per-page answer, so a big library reaches its last album (it was cut at 500
+    /// before, exactly the car's item limit, so albums after it were never shown). Round 13: through the letter groups,
+    /// a group over the car's limit split into pages.
     @Test func albumsPastTheFirstPageReachTheLettersScreen() async throws {
         azAlbums.withLock { $0 = 1200 }
         let model = try await signedInModel()
@@ -416,8 +424,8 @@ final class FakeCarInterface: CarPlayInterface {
         car.tap("Albums", in: car.tab(1))
         let limit = Int(CPListTemplate.maximumItemCount)
         try #require(limit < 1200, "this simulator's limit is \(limit)")
-        #expect(await eventually { FakeCarInterface.texts(car.topList).first?.hasPrefix("A (1 of ") == true })
-        let pages = FakeCarInterface.texts(car.topList)
+        #expect(await eventually { FakeCarInterface.texts(car.topList).contains { $0.hasPrefix("A\u{2013}E (1 of ") } })
+        let pages = FakeCarInterface.texts(car.topList).filter { $0.hasPrefix("A\u{2013}E (") }
         #expect(pages.count == (1200 + limit - 1) / limit)
         car.tap(try #require(pages.last), in: car.topList)
         #expect(await eventually { FakeCarInterface.texts(car.topList).last == "Album 1199" })

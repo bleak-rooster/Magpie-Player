@@ -43,7 +43,10 @@ extension CarPlayController: CPNowPlayingTemplateObserver {
         MainActor.assumeIsolated { albumArtistTapped() }
     }
 
-    public nonisolated func nowPlayingTemplateUpNextButtonTapped(_ nowPlayingTemplate: CPNowPlayingTemplate) {}
+    /// Round 13 item 9 (CarPlayController+UpNext.swift).
+    public nonisolated func nowPlayingTemplateUpNextButtonTapped(_ nowPlayingTemplate: CPNowPlayingTemplate) {
+        MainActor.assumeIsolated { upNextTapped() }
+    }
 
     private func albumArtistTapped() {
         let links = nowPlayingLinks

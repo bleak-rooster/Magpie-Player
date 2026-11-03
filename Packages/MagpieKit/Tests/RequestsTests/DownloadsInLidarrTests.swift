@@ -75,7 +75,14 @@ import MagpieCore
         #expect(b.active.first { $0.id == 4 }?.canRestart == false)
         #expect(b.active.first { $0.id == 4 }?.phase == .importing)
         #expect(b.failed.filter { !$0.canRestart }.isEmpty)
-        #expect(b.restartable.map(\.id) == [5, 3])
+        // Round 13 item 6 (D63): Restart all takes couldn't-import copies too; every row but the importing one offers
+        // Restart, a stalled or failed one directly, one still going after a confirmation.
+        #expect(b.restartable.map(\.id) == [5, 3, 2])
+        #expect(b.active.filter(\.canRestart).map(\.id) == [1, 6, 7])
+        #expect(b.active.filter(\.canRestart).allSatisfy { $0.ask == .stillGoing && !$0.foreign })
+        #expect(b.stalled.first?.ask == LidarrDownloads.Ask.none)
+        #expect(b.failed.first?.ask == LidarrDownloads.Ask.none)
+        #expect(b.couldntImport.first?.ask == .couldntImport)
         #expect(b.active.first?.artist == "Owner Artist")
         #expect(b.active.first?.album == "Album 41")
         #expect(b.active.first?.client == "SABnzbd")
@@ -117,10 +124,13 @@ import MagpieCore
         #expect(b.couldntImport.map(\.canRestart) == [true, true, false, false])
         #expect(b.couldntImport.first?.message == "Has missing tracks")
         #expect(b.notStarted.map(\.id) == [1, 4])
-        #expect(b.notStarted.allSatisfy { !$0.canRestart && $0.phase == .notStarted })
+        // Round 13 item 6 (D63): another app's copy offers Restart behind the flagged confirmation.
+        #expect(b.notStarted.allSatisfy { $0.canRestart && $0.foreign && $0.ask == .foreign && $0.phase == .notStarted })
+        #expect(b.notStarted.map(\.underlying) == [.couldntImport, .failed])
         #expect(b.notStarted.first?.message?.hasPrefix("Artist name mismatch") == true)
         #expect(b.failed.isEmpty && b.stalled.isEmpty)
-        #expect(b.restartable.isEmpty, "Restart all never takes a finished copy or another tool's transfer")
+        #expect(b.restartable.map(\.id) == [2, 3], "Restart all takes grabbed couldn't-import copies, never another app's")
+        #expect(b.restartableForeign.map(\.id) == [1, 4], "only when the owner turns that on in its confirmation")
         #expect(b.attention == 2, "only grabbed copies that can be restarted need attention")
     }
 
@@ -134,8 +144,9 @@ import MagpieCore
         cache.record("dl-3", grabbed: true, at: t0)
         let b = board(items, grabs: cache)
         #expect(b.notStarted.map(\.id) == [1])
+        #expect(b.notStarted.first?.canRestart == true && b.notStarted.first?.foreign == true)
         #expect(b.stalled.map(\.id) == [2])
-        #expect(b.stalled.first?.canRestart == false)
+        #expect(b.stalled.first?.canRestart == false, "not known yet: can't tell whose it is")
         #expect(b.restartable.map(\.id) == [3])
         #expect(b.attention == 1)
     }
@@ -150,6 +161,8 @@ import MagpieCore
         #expect(b.active.map(\.id) == [1, 2, 3, 4, 5, 6])
         #expect(b.stalled.isEmpty && b.failed.isEmpty && b.restartable.isEmpty)
         #expect(b.active.map(\.phase) == [.queued, .paused, .queued, .clientUnavailable, .queued, .queued])
+        // Round 13 item 6 (D63): each may still be restarted, after the "still going" confirmation; never by Restart all.
+        #expect(b.active.allSatisfy { $0.canRestart && $0.ask == .stillGoing })
     }
 
     /// The no-progress timer: a copy downloading with `sizeleft` unchanged. Soulseek copies after the owner's limit
@@ -200,6 +213,7 @@ import MagpieCore
                        item(2, album: 42, sizeleft: 0, status: "completed", tracked: "importing", download: "x"),
                        item(3, status: "failed", tracked: "downloadFailed", download: nil)])
         #expect(b.failed.first { $0.id == 1 }?.canRestart == false)
+        #expect(b.active.first { $0.id == 2 }?.canRestart == false)
         #expect(b.restartable.map(\.id) == [3])
     }
 
@@ -236,6 +250,12 @@ import MagpieCore
         let failedRow = try! #require(board([failed]).failed.first)
         #expect(LidarrDownloads.stillRestartable(failed, as: failedRow))
         #expect(!LidarrDownloads.stillRestartable(item(3), as: failedRow))
+        // Round 13 item 6 (D63): a row still going stays restartable until it's importing or done.
+        let pausedItem = item(8, status: "paused")
+        let pausedRow = try! #require(board([pausedItem]).active.first)
+        #expect(LidarrDownloads.stillRestartable(pausedItem, as: pausedRow))
+        #expect(LidarrDownloads.stillRestartable(item(8), as: pausedRow))
+        #expect(!LidarrDownloads.stillRestartable(item(8, sizeleft: 0, status: "completed", tracked: "importing"), as: pausedRow))
     }
 
     // MARK: - Restart (owner's downloads)
@@ -277,8 +297,9 @@ import MagpieCore
         #expect(await cache.lookUp(items, soulseekClients: Self.soulseek, lidarr: h.lidarrClient, now: t0) == GrabCache.perRefresh)
         #expect(historyReads(h).count == GrabCache.perRefresh)
         while await cache.lookUp(items, soulseekClients: Self.soulseek, lidarr: h.lidarrClient, now: t0) > 0 {}
-        #expect(historyReads(h).count == 30)
-        #expect(!historyReads(h).contains("dl-931"), "an active row is never asked about")
+        // Round 13 item 6 (D63): an active row may be restarted too, so it's asked about, after the stuck ones.
+        #expect(historyReads(h).count == 31)
+        #expect(historyReads(h).last == "dl-931", "an active row is asked about after the stuck ones")
         #expect(cache.status("dl-901") == false && cache.status("dl-902") == true)
         // Nothing more within the minute; then only the "no grab" one again.
         #expect(await cache.lookUp(items, soulseekClients: Self.soulseek, lidarr: h.lidarrClient, now: t0.addingTimeInterval(59)) == 0)
@@ -323,9 +344,9 @@ import MagpieCore
         #expect(h.server.writes.isEmpty)
     }
 
-    /// Fix round 2: a finished copy that couldn't be imported is restarted one at a time (the screen asks first), and
-    /// only when Lidarr grabbed it; with no grab in the history (another tool's transfer) nothing is sent.
-    @Test func couldntImportRestartsOneAtATimeOnlyIfLidarrGrabbedIt() async throws {
+    /// Round 13 item 6 (D63, replaces fix round 2's "one at a time"): Restart all takes a finished copy that couldn't
+    /// be imported when Lidarr grabbed it; another app's only when the owner turned that on in its confirmation.
+    @Test func couldntImportJoinsRestartAllButForeignOnlyWhenTurnedOn() async throws {
         let h = await Harness()
         h.server.with { s in
             s.queue = [901, 902].map { FakeLidarr.Queued(albumId: 41 + $0 - 901, size: 100, sizeleft: 0, status: "completed",
@@ -334,23 +355,25 @@ import MagpieCore
             s.ungrabbed = ["dl-902"]
         }
         let board = try await rows(h)
-        // N2: 902 has no grab in the history, so the board already lists it as another app's.
         #expect(board.couldntImport.map(\.id) == [901])
         #expect(board.notStarted.map(\.id) == [902])
-        #expect(board.restartable.isEmpty)
+        #expect(board.restartable.map(\.id) == [901])
+        #expect(board.restartableForeign.map(\.id) == [902])
         let restarter = LidarrDownloadRestarter(lidarr: h.lidarrClient, gate: h.gate, runner: h.runner)
-        #expect(await restarter.restartAll(board.couldntImport) == [.skipped], "never through Restart all")
-        #expect(h.server.writes.isEmpty)
-        var forced = try #require(board.notStarted.first)   // the restarter's own history check still holds
-        forced.canRestart = true; forced.section = .couldntImport
-        #expect(await restarter.restart(forced) == .notStartedByLidarr)
-        #expect(h.server.writes.isEmpty)
-        #expect(await restarter.restart(board.couldntImport[0]) == .restarted)
+        #expect(await restarter.restartAll(board.restartable + board.restartableForeign) == [.restarted, .notStartedByLidarr])
         #expect(writes(h) == ["DELETE queue/901", "POST command"])
+        var forced = try #require(board.notStarted.first)   // a foreign row passed off as Lidarr's: still needs the flag
+        forced.foreign = false; forced.section = .couldntImport
+        #expect(await restarter.restart(forced) == .notStartedByLidarr)
+        #expect(writes(h).count == 2)
+        #expect(await restarter.restartAll(board.restartableForeign, includeForeign: true) == [.restarted])
+        #expect(writes(h) == ["DELETE queue/901", "POST command", "DELETE queue/902", "POST command"])
+        #expect(h.server.writes.last { $0.httpMethod == "DELETE" }?.url?.query == Self.deleteQuery)
     }
 
-    /// N1: a "not started by your library" row is never restarted, even if handed to the restarter.
-    @Test func notStartedIsNeverRestarted() async throws {
+    /// Round 13 item 6 (D63): a download Lidarr never grabbed is restarted only with `allowForeign` (set only by the
+    /// flagged confirmation); without it nothing is sent.
+    @Test func foreignNeedsTheFlag() async throws {
         let h = await Harness()
         h.server.with { s in
             s.queue = [FakeLidarr.Queued(albumId: 41, size: 100, sizeleft: 40, status: "failed",
@@ -360,12 +383,46 @@ import MagpieCore
         }
         let board = try await rows(h)
         let row = try #require(board.notStarted.first)
-        var forced = row
-        forced.canRestart = true
+        #expect(row.canRestart && row.foreign && row.ask == .foreign)
         let restarter = LidarrDownloadRestarter(lidarr: h.lidarrClient, gate: h.gate, runner: h.runner)
-        #expect(await restarter.restart(row) == .skipped)
-        #expect(await restarter.restart(forced) == .notStartedByLidarr)
+        #expect(await restarter.restart(row) == .notStartedByLidarr)
         #expect(h.server.writes.isEmpty)
+        #expect(await restarter.restart(row, allowForeign: true) == .restarted)
+        #expect(writes(h) == ["DELETE queue/901", "POST command"])
+        #expect(h.server.writes.first?.url?.query == Self.deleteQuery)
+        #expect(h.server.writeBodies().last?.1["albumIds"] as? [Int] == [41])
+    }
+
+    /// Z4 fix M1: another app's transfer Lidarr names no album for is only removed: nothing is searched, and the
+    /// outcome says so (not "Restarted").
+    @Test func foreignWithNoAlbumIsOnlyRemoved() async throws {
+        let h = await Harness()
+        h.server.with { s in
+            var q = FakeLidarr.Queued(albumId: 0, size: 100, sizeleft: 40, status: "failed", tracked: "downloadFailed",
+                                      id: 901, artistId: 9, client: "Slskd")
+            q.noAlbum = true
+            s.queue = [q]
+            s.ungrabbed = ["dl-901"]
+        }
+        let row = try #require(try await rows(h).notStarted.first)
+        let restarter = LidarrDownloadRestarter(lidarr: h.lidarrClient, gate: h.gate, runner: h.runner)
+        #expect(await restarter.restart(row, allowForeign: true) == .removedNothingToLookFor)
+        #expect(writes(h) == ["DELETE queue/901"])
+    }
+
+    /// Round 13 item 6 (D63): a copy still going (here paused) may be restarted (the screen asks first).
+    @Test func pausedRowIsRestarted() async throws {
+        let h = await Harness()
+        h.server.with { s in
+            s.queue = [FakeLidarr.Queued(albumId: 41, size: 100, sizeleft: 50, status: "paused", id: 901, artistId: 9,
+                                         client: "SABnzbd")]
+        }
+        let row = try #require(try await rows(h).active.first)
+        #expect(row.canRestart && row.ask == .stillGoing)
+        let restarter = LidarrDownloadRestarter(lidarr: h.lidarrClient, gate: h.gate, runner: h.runner)
+        #expect(await restarter.restartAll([row]) == [.skipped], "never by Restart all")
+        #expect(await restarter.restart(row) == .restarted)
+        #expect(writes(h) == ["DELETE queue/901", "POST command"])
     }
 
     /// I1: a row that started moving again between the board and the tap (here: mid-batch) is skipped, not removed.
@@ -477,6 +534,23 @@ import MagpieCore
         #expect(await h.request(id)?.stallRetries == 1)
         let searches = h.server.writeBodies().filter { $0.0 == "POST command" }.dropFirst().compactMap { $0.1["albumIds"] as? [Int] }
         #expect(Set(searches) == [[31], [35]])
+        #expect(h.server.writes.filter { $0.httpMethod == "DELETE" }.count == 1)
+    }
+
+    /// Round 13 item 6 (D63): another app's download of an album a Magpie request is waiting on isn't the request's copy:
+    /// it's removed directly (flagged), never counted toward the request's five removals.
+    @Test func foreignNeverGoesThroughTheRunner() async throws {
+        let (h, id) = try await searching()
+        h.server.with { s in
+            s.queue = [FakeLidarr.Queued(albumId: 31, size: 100, sizeleft: 60, status: "failed", tracked: "downloadFailed",
+                                         id: 901, artistId: 7, client: "Slskd")]
+            s.ungrabbed = ["dl-901"]
+        }
+        let row = try #require(try await rows(h).notStarted.first)
+        let restarter = LidarrDownloadRestarter(lidarr: h.lidarrClient, gate: h.gate, runner: h.runner)
+        #expect(await restarter.restart(row, allowForeign: true) == .restarted)
+        await h.runner.settle()
+        #expect((await h.request(id)?.stallRetries ?? 0) == 0)
         #expect(h.server.writes.filter { $0.httpMethod == "DELETE" }.count == 1)
     }
 }

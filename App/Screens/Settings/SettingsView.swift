@@ -10,11 +10,14 @@ enum SettingsPage: Hashable {
     case lidarrDownloads
     /// Lidarr › Finds.
     case findsSetup
+    /// Round 13 (Z3): Settings › CarPlay, the third tab and the car's Home. A top-level row since Z1's Accounts &
+    /// Servers rework made room (it first opened from Home & Library).
+    case carPlay
 
     /// Round 13 item 14: the Accounts & Servers section, near the top, in this order.
     static let accountsAndServers: [SettingsPage] = [.account, .lidarr, .aurral, .listenBrainz]
     /// The pages under it.
-    static let preferences: [SettingsPage] = [.playback, .downloads, .homeAndLibrary, .appearance, .about]
+    static let preferences: [SettingsPage] = [.playback, .downloads, .homeAndLibrary, .carPlay, .appearance, .about]
 
     /// The top level, in order.
     static var topLevel: [SettingsPage] { accountsAndServers + preferences }
@@ -69,7 +72,7 @@ struct SettingsView: View {
     private func link(_ page: SettingsPage) -> some View {
         NavigationLink(value: page) { row(page) }
             // Two-line rows 50 pt, one-line rows 44 pt (D15), so the whole list fits 375 × 667 with room for one more
-            // two-line row (Z3's CarPlay: add it through `link`).
+            // two-line row.
             .listRowInsets(.vertical, 3)
             .accessibilityIdentifier(Self.identifier(page))
     }
@@ -93,6 +96,9 @@ struct SettingsView: View {
         case .homeAndLibrary:
             SettingsRow(title: "Home & Library", symbol: "square.grid.2x2",
                         summary: SettingsSummary(HomeAndLibraryView.summary(model)))
+        case .carPlay:
+            SettingsRow(title: "CarPlay", symbol: "car", summary: SettingsSummary(
+                CarPlaySettingsView.summary(model.preferences.carPlay, discoverSetUp: model.aurralSetUp)))
         case .appearance:
             SettingsRow(title: "Appearance", symbol: "paintpalette", summary: SettingsSummary(SettingsSummaries.appearance(model.theme)))
         case .about:
@@ -111,6 +117,7 @@ struct SettingsView: View {
         case .playback: PlaybackSettingsView()
         case .downloads: DownloadsSettingsView()
         case .homeAndLibrary: HomeAndLibraryView()
+        case .carPlay: CarPlaySettingsView()
         case .appearance: AppearanceView()
         case .lidarrDownloads: LidarrDownloadsView()
         case .about: AboutView()
@@ -128,6 +135,7 @@ struct SettingsView: View {
         case .playback: "settings-playback"
         case .downloads: "settings-downloads"
         case .homeAndLibrary: "settings-home-library"
+        case .carPlay: "settings-carplay"
         case .appearance: "settings-appearance"
         case .lidarrDownloads: "settings-lidarr-downloads"
         case .about: "settings-about"

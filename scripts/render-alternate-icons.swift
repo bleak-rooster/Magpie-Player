@@ -2,7 +2,8 @@
 // (no gradients, no gloss, no shadows). Writes, from the repo root:
 //   - App/Resources/Assets.xcassets/<Name>.appiconset (1024 x 1024 opaque PNG + Contents.json) for each icon;
 //   - App/Resources/Assets.xcassets/IconPreview-<Name>.imageset (180 px) for Settings › Appearance › App icon,
-//     plus IconPreview-Default from the default AppIcon.png;
+//     plus IconPreview-Default, -DefaultInk and -DefaultSunset from the green cover and its two colourways, which
+//     scripts/render-app-icon.swift renders (run it first);
 //   - docs/storyboard/app-icons-preview.png, the sheet for the owner (each icon large and at 60 px).
 //   DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcrun swift scripts/render-alternate-icons.swift
 // Names must match AppIconChoice (App/Screens/Settings/AppIconChoice.swift) and project.yml's
@@ -213,11 +214,18 @@ for design in designs {
     }
 }
 
-// The default icon's preview, from the asset catalog's own art.
-let defaultURL = assets.appending(path: "AppIcon.appiconset/AppIcon.png")
-let defaultSource = CGImageSourceCreateWithURL(defaultURL as CFURL, nil)!
-let defaultImage = CGImageSourceCreateImageAtIndex(defaultSource, 0, nil)!
-previewSet("Default", defaultImage)
+// The green cover's previews, from the asset catalog's own art (scripts/render-app-icon.swift): the default icon and
+// (round 13) its Ink and Sunset colourways.
+func loadPNG(_ path: String) -> CGImage {
+    let source = CGImageSourceCreateWithURL(assets.appending(path: path) as CFURL, nil)!
+    return CGImageSourceCreateImageAtIndex(source, 0, nil)!
+}
+let originals: [(name: String, image: CGImage)] = [
+    ("Default", loadPNG("AppIcon.appiconset/AppIcon.png")),
+    ("DefaultInk", loadPNG("DefaultInk.appiconset/DefaultInk.png")),
+    ("DefaultSunset", loadPNG("DefaultSunset.appiconset/DefaultSunset.png")),
+]
+for original in originals { previewSet(original.name, original.image) }
 
 // MARK: Preview sheet
 
@@ -254,17 +262,19 @@ func drawIcon(_ image: CGImage, x: CGFloat, y: CGFloat, size: CGFloat) {
 }
 
 label("Magpie app icons", CGFloat(margin), 64, size: 40, bold: true)
-label("4 designs x 3 colourways, flat and matte, 3 colours each. Large and at 60 px.", CGFloat(margin), 100, size: 20)
+label("The green cover in 3 colourways; 4 designs x 3 colourways, flat and matte. Large and at 60 px.",
+      CGFloat(margin), 100, size: 20)
 
-let entries = [("Default", defaultImage)] + rendered.map { ($0.name, $0.image) }
+let entries = originals.map { ($0.name, $0.image) } + rendered.map { ($0.name, $0.image) }
 for (i, entry) in entries.enumerated() {
-    // Row 0: the default alone; then one row per design.
-    let row = i == 0 ? 0 : 1 + (i - 1) / cols
-    let col = i == 0 ? 0 : (i - 1) % cols
+    // Row 0: the green cover in its colourways; then one row per design.
+    let row = i / cols
+    let col = i % cols
     let x = CGFloat(margin + col * cell), y = CGFloat(header + margin + row * cell)
     drawIcon(entry.1, x: x, y: y, size: CGFloat(big))
     drawIcon(scaled(entry.1, to: small * 2), x: x + CGFloat(big + 16), y: y + CGFloat(big - small), size: CGFloat(small))
     let title = entry.0 == "Default" ? "Default (green cover)"
+        : entry.0.hasPrefix("Default") ? "Cover · " + entry.0.dropFirst("Default".count)
         : entry.0.replacingOccurrences(of: "(?<=[a-z])(?=[A-Z])", with: " · ", options: .regularExpression)
     label(title, x, y + CGFloat(big + 34), size: 22)
 }

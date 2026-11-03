@@ -21,7 +21,7 @@
 #       Round 12 Y6 (D56): Aurral's Refresh Flow, `POST /api/playlists/start/:flowId`, the one write Magpie sends to
 #       Aurral's data; the client's allow-list (`AurralRoute`) refuses every other call. Pinned below.
 #   Packages/MagpieKit/Sources/AurralKit/AurralClient.swift  G1 allowlist: aurral session
-#       Round 13 (D63): Aurral's `POST /api/auth/login` and `POST /api/auth/logout` (Magpie signs in as a user; they
+#       Round 13 (D70): Aurral's `POST /api/auth/login` and `POST /api/auth/logout` (Magpie signs in as a user; they
 #       change only Aurral's own sessions). Pinned below.
 #   Packages/MagpieKit/Tests/RequestsTests/FindsIT.swift  G1 allowlist: devLidarr
 #       Raw requests to the dev Lidarr for IT set-up and clean-up (manual import, removing the test artist), after
@@ -111,6 +111,9 @@ if [ -z "${G1_SRC:-}" ]; then
     esac
     case "$s" in
       *'gate.send("DELETE", "queue/\(queueId)?\(Self.queueRemoval)", body: nil, confinedAs: .queueRestartAny)'*) ;;
+      # Round 13 item 6 (D63): another app's download, only by the restarter, the flag a literal `true` (the restarter
+      # sets it only when its caller passed `allowForeign`, which only the flagged confirmation does; pinned below).
+      "$restarter":*'gate.send("DELETE", "queue/\(queueId)?\(Self.queueRemoval)", body: nil, confinedAs: .queueRestartAny, allowForeign: true)') ;;
       # Y5 fix I9 merge: the restart's AlbumSearch, by the restarter only (the gate allows only albums it just restarted).
       "$restarter":*'gate.send("POST", "command", body: SearchBody(name: "AlbumSearch", albumIds: rest), confinedAs: .restartSearch)'*) ;;
       *) echo "G1: queueRestartAny not exactly a queue delete with the one query: ${s%%:*}" >&2; bad=1 ;;
@@ -118,6 +121,48 @@ if [ -z "${G1_SRC:-}" ]; then
   done <<< "$shaped"
   grep -qF 'static let queueRemoval = "removeFromClient=true&blocklist=true&skipRedownload=true"' "$restarter" ||
     { echo "G1: $restarter: queueRemoval isn't exactly removeFromClient=true&blocklist=true&skipRedownload=true" >&2; bad=1; }
+  # Round 13 item 6 (D63; Z4 review I1): every `allowForeign:` / `includeForeign:` ARGUMENT in product code, whatever
+  # its value (a literal, a variable, an expression), must be one of these exact lines, each exactly once: the screen's
+  # flagged confirmation and Restart all's second button (the only places it's turned on), the lines that pass it on
+  # (screen → restarter → gate) and the gate's own. Declarations (`allowForeign: Bool`) don't count. And only the
+  # screen makes a restarter or a screen state, or calls restart/restartAll on them.
+  view="App/Screens/Settings/LidarrDownloadsView.swift"
+  lk="Packages/MagpieKit/Sources/LidarrKit"
+  flagged=$(grep -rnE --include='*.swift' '(allowForeign|includeForeign):' "${product[@]}" |
+            grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' |
+            perl -ne 'my ($f, $n, $t) = /^([^:]+):(\d+):(.*)$/ or next; (my $u = $t) =~ s/(allowForeign|includeForeign):\s*Bool//g;
+                      next unless $u =~ /(allowForeign|includeForeign):/; $t =~ s/^\s+|\s+$//g; print "$f|$t\n"' || true)
+  allowed_flag_lines=(
+    "$view|Task { await screen.restart([row], model: model, allowForeign: true) }"
+    "$view|Task { await screen.restartAll(rows, model: model, includeForeign: true) }"
+    "$view|message = LidarrDownloadsCopy.summary([await restarter.restart(row, allowForeign: allowForeign)])"
+    "$view|message = LidarrDownloadsCopy.summary(await restarter.restartAll(rows, includeForeign: includeForeign))"
+    "$restarter|return await restartOne(row, allowForeign: allowForeign)"
+    "$restarter|let outcome = await restartOne(row, allowForeign: includeForeign && row.foreign)"
+    "$restarter|"'_ = try await gate.send("DELETE", "queue/\(queueId)?\(Self.queueRemoval)", body: nil, confinedAs: .queueRestartAny, allowForeign: true)'
+    "$lk/WriteGate.swift|try await send(method, path, body: body, shape: shape, allowForeign: allowForeign)"
+    "$lk/WriteGate.swift|confined = .queueRestartAny(id, allowForeign: allowForeign)"
+    "$lk/WriteConfinement.swift|return await Self.queueRestartAny(id, allowForeign: allowForeign, lidarr: lidarr)"
+  )
+  seen_flag_lines=""
+  while IFS= read -r s; do
+    [ -n "$s" ] || continue
+    ok=0
+    for a in "${allowed_flag_lines[@]}"; do [ "$s" = "$a" ] && ok=1 && break; done
+    if [ "$ok" = 0 ]; then
+      echo "G1: allowForeign/includeForeign passed outside its pinned lines: ${s%%|*}" >&2; bad=1
+    elif grep -qxF -- "$s" <<< "$seen_flag_lines"; then
+      echo "G1: a pinned allowForeign/includeForeign line appears twice: ${s%%|*}" >&2; bad=1
+    else
+      seen_flag_lines+="$s"$'\n'
+    fi
+  done <<< "$flagged"
+  callers=$(grep -rnE --include='*.swift' '(restarter|screen)\.(restart|restartAll)\(|LidarrDownloadRestarter\(|LidarrDownloadsScreen\(' \
+              "${product[@]}" | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' | grep -v "^$view:" || true)
+  while IFS= read -r s; do
+    [ -n "$s" ] || continue
+    echo "G1: the restarter is made or called outside Downloads in Lidarr's screen: ${s%%:*}" >&2; bad=1
+  done <<< "$callers"
 fi
 if [ -z "${G1_SRC:-}" ]; then
   # Y5: track files are deleted only by Not for me (a find's files) and the MP3 rule (a kept find's recorded MP3); the
@@ -160,7 +205,7 @@ if [ -z "${G1_SRC:-}" ]; then
 fi
 if [ -z "${G1_SRC:-}" ]; then
   # Round 12 Y6 (D56): Aurral. The client allows exactly seven calls (GET health, playlists status, playlists jobs,
-  # library lookup; POST playlists start; round 13 (D63): POST auth login and logout), and nothing in the product names
+  # library lookup; POST playlists start; round 13 (D70): POST auth login and logout), and nothing in the product names
   # Aurral's dangerous routes.
   aurral="Packages/MagpieKit/Sources/AurralKit/AurralClient.swift"
   for want in 'case 1 where rest[0] == "health": .health' \
@@ -179,7 +224,7 @@ if [ -z "${G1_SRC:-}" ]; then
     grep -qF -- "$want" "$aurral" || { echo "G1: $aurral: the Aurral allow-list changed (missing: $want)" >&2; bad=1; }
   done
   [ "$(grep -cE 'case [0-9] where' "$aurral")" = 7 ] || { echo "G1: $aurral: the Aurral allow-list isn't exactly seven routes" >&2; bad=1; }
-  # Round 13 (D63): the API key is gone. No product code sends an X-Api-Key to Aurral, and only the Aurral client sends
+  # Round 13 (D70): the API key is gone. No product code sends an X-Api-Key to Aurral, and only the Aurral client sends
   # its Bearer token.
   if grep -nE 'X-Api-Key|apiKey' "$aurral" | grep -vE '^[0-9]+:[[:space:]]*//' | grep -q .; then
     echo "G1: $aurral: the Aurral client names an API key again" >&2; bad=1

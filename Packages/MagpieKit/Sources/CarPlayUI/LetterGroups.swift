@@ -11,15 +11,26 @@ import Search
 /// What a lettered list holds, for the letters screen's counts.
 public enum CPLetterKind: Sendable, Hashable {
     case artists, albums, playlists
+    /// Round 13: Songs' letter groups.
+    case songs
 
     func count(_ n: Int) -> String {
-        let noun = switch self {
-        case .artists: n == 1 ? "artist" : "artists"
-        case .albums: n == 1 ? "album" : "albums"
-        case .playlists: n == 1 ? "playlist" : "playlists"
-        }
-        return "\(n) \(noun)"
+        "\(n) \(n == 1 ? singular : plural)"
     }
+
+    /// Round 13: an empty letter group's line ("No artists").
+    var none: String { "No \(plural)" }
+
+    private var singular: String {
+        switch self {
+        case .artists: "artist"
+        case .albums: "album"
+        case .playlists: "playlist"
+        case .songs: "song"
+        }
+    }
+
+    private var plural: String { singular + "s" }
 }
 
 /// One row of the letters screen: a run of the sorted list.
@@ -138,7 +149,7 @@ extension CarPlayRows {
     }
 
     /// One section per letter, headed and indexed by it.
-    private static func letterSections(_ entries: [CPLetterEntry]) -> [CPSectionModel] {
+    static func letterSections(_ entries: [CPLetterEntry]) -> [CPSectionModel] {
         var sections: [CPSectionModel] = []
         for entry in entries {
             if sections.last?.header == entry.key {
