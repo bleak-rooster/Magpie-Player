@@ -44,8 +44,10 @@ struct DiscoverPlaylistView: View {
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .refreshable {
-            await model.refreshDiscover(force: true)
-            await load(fresh: true)
+            await RefreshSafety.run {   // Round 13 Z2
+                await model.refreshDiscover(force: true)
+                await load(fresh: true)
+            }
         }
         .navigationTitle(page.value?.playlist.name ?? DiscoverCopy.title)
         .navigationBarTitleDisplayMode(.inline)
@@ -187,7 +189,7 @@ struct DiscoverPlaylistView: View {
             if model.discover.playlists.isEmpty { await model.refreshDiscover() }
             page = .loaded(try await model.discoverPage(playlistId: playlistId, fresh: fresh))
         } catch {
-            if page.value == nil { page = .failed(BrowseErrorCopy.message(for: error)) }
+            page = page.failing(error)   // Round 13 Z2: also never for a load cut short
         }
     }
 }
@@ -225,8 +227,10 @@ struct DiscoverListView: View {
             }
         }
         .refreshable {
-            await model.refreshDiscover(force: true)
-            await load()
+            await RefreshSafety.run {   // Round 13 Z2
+                await model.refreshDiscover(force: true)
+                await load()
+            }
         }
         .navigationTitle(DiscoverCopy.title)
         .navigationBarTitleDisplayMode(.inline)
@@ -236,7 +240,7 @@ struct DiscoverListView: View {
 
     private func load() async {
         do { playlists = .loaded(try await model.discoverPlaylists()) } catch {
-            if playlists.value == nil { playlists = .failed(BrowseErrorCopy.message(for: error)) }
+            playlists = playlists.failing(error)   // Round 13 Z2: also never for a load cut short
         }
     }
 }

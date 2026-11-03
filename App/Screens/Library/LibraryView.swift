@@ -28,7 +28,9 @@ struct LibraryView: View {
             .padding(.vertical, Tokens.Spacing.s)
         }
         .refreshable {
-            if model.isOffline { await model.checkReachability() } else if model.showsRecentlyAddedGrid { await load() }
+            await RefreshSafety.run {   // Round 13 Z2
+                if model.isOffline { await model.checkReachability() } else if model.showsRecentlyAddedGrid { await load() }
+            }
         }
         .magpieLargeTitle("Library")
         .toolbar {
@@ -134,7 +136,7 @@ struct LibraryView: View {
         do {
             recent = .loaded(try await model.request { try await $0.albumList(.newest, size: 24, offset: 0) })
         } catch {
-            if recent.value == nil { recent = .failed(BrowseErrorCopy.message(for: error)) }
+            recent = recent.failing(error)   // Round 13 Z2: also never for a load cut short
         }
     }
 }

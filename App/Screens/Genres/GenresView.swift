@@ -54,8 +54,10 @@ struct GenresView: View {
         }
         }
         .refreshable {
-            if model.isOffline { await model.checkReachability() }
-            await load()
+            await RefreshSafety.run {   // Round 13 Z2
+                if model.isOffline { await model.checkReachability() }
+                await load()
+            }
         }
         .navigationTitle("Genres")
         .magpieScreen()
@@ -176,9 +178,8 @@ struct GenresView: View {
                 genres = .loaded(try await model.allGenres())
             }
         } catch {
-            let message = BrowseErrorCopy.message(for: error)
-            if sections.value == nil { sections = .failed(message) }
-            if genres.value == nil { genres = .failed(message) }
+            sections = sections.failing(error)   // Round 13 Z2: also never for a load cut short
+            genres = genres.failing(error)
         }
     }
 }

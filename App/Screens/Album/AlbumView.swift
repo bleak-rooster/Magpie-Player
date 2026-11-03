@@ -19,7 +19,10 @@ struct AlbumView: View {
             }
         }
         // Y3 (item 4): the album again, its cover colours forgotten, after a quick scan picks up new downloads.
-        .refreshable { await model.refreshPage(coverArtIds: [album.value?.coverArtId]) { await load() } }
+        // Round 13 Z2: in a task of its own, and a load cut short never shows an error (RefreshSafety).
+        .refreshable {
+            await RefreshSafety.run { await model.refreshPage(coverArtIds: [album.value?.coverArtId]) { await load() } }
+        }
         .navigationTitle(album.value?.name ?? "")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -122,7 +125,7 @@ struct AlbumView: View {
             model.noteAlbumSongCounts([loaded])   // P1: backfills downloads saved without the album's count
             model.noteFavourite(.album(loaded.id), loaded.starred)   // R7
         } catch {
-            album = .failed(BrowseErrorCopy.message(for: error))
+            album = album.failing(error)   // Round 13 Z2: never for a load cut short; the album shown stays
         }
     }
 }

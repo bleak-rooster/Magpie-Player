@@ -36,10 +36,13 @@ struct ArtistView: View {
             }
         }
         // Y3 (item 4): the page again, its saved Popular and cover colours forgotten, after a quick scan.
+        // Round 13 Z2: in a task of its own, and a load cut short never shows an error (RefreshSafety).
         .refreshable {
-            await model.refreshPage(artistId: artistId, coverArtIds: [page.value?.artist.coverArtId]) {
-                popular = nil   // the saved list is gone: read the server's afresh
-                await load()
+            await RefreshSafety.run {
+                await model.refreshPage(artistId: artistId, coverArtIds: [page.value?.artist.coverArtId]) {
+                    popular = nil   // the saved list is gone: read the server's afresh
+                    await load()
+                }
             }
         }
         .navigationTitle(page.value?.artist.name ?? "")
@@ -215,7 +218,7 @@ struct ArtistView: View {
             async let inLidarr: Void = loadLidarrLine(artist)
             _ = await (top, notYet, inLidarr)
         } catch {
-            page = .failed(BrowseErrorCopy.message(for: error))
+            page = page.failing(error)   // Round 13 Z2: never for a load cut short; the page shown stays
         }
     }
 

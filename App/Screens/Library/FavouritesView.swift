@@ -23,7 +23,7 @@ struct FavouritesView: View {
                 }
             }
         }
-        .refreshable { await load() }
+        .refreshable { await RefreshSafety.run { await load() } }   // Round 13 Z2
         .navigationTitle("Favourites")
         .navigationBarTitleDisplayMode(.inline)
         .magpieScreen()
@@ -111,7 +111,7 @@ struct FavouritesView: View {
         do {
             starred = .loaded(try await model.favourites())
         } catch {
-            if starred.value == nil { starred = .failed(BrowseErrorCopy.message(for: error)) }
+            starred = starred.failing(error)   // Round 13 Z2: also never for a load cut short
         }
     }
 }

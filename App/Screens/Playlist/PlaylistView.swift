@@ -40,7 +40,10 @@ struct PlaylistView: View {
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
         // Y3 (item 4): the playlist again, its cover colours forgotten, after a quick scan picks up new downloads.
-        .refreshable { await model.refreshPage(coverArtIds: [page.value?.playlist.coverArtId]) { await load() } }
+        // Round 13 Z2: in a task of its own, and a load cut short never shows an error (RefreshSafety).
+        .refreshable {
+            await RefreshSafety.run { await model.refreshPage(coverArtIds: [page.value?.playlist.coverArtId]) { await load() } }
+        }
         .navigationTitle(page.value?.playlist.name ?? "")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -191,7 +194,7 @@ struct PlaylistView: View {
             await model.refreshDownloadedPlaylist(playlist, songs: songs)
         } catch {
             // Deleted (here or elsewhere): nothing to show; the list behind reads again.
-            if page.value == nil { page = .failed(BrowseErrorCopy.message(for: error)) }
+            page = page.failing(error)   // Round 13 Z2: also never for a load cut short
         }
     }
 }

@@ -269,3 +269,30 @@ private func ok(_ body: String) -> Data {
 extension DiscoverNavidrome {
     func addSongs(_ entries: [Entry]) { for entry in entries { songs[entry.id] = entry } }
 }
+
+/// Round 13 item 2: a pull's load cut short is never an error, and the pull's work outlives SwiftUI letting go of it.
+@MainActor struct Round13RefreshTests {
+    private func isFailed<T>(_ state: Loadable<T>) -> Bool { if case .failed = state { true } else { false } }
+
+    @Test func aLoadCutShortIsNeverAnError() {
+        let loading: Loadable<Int> = .loading, shown: Loadable<Int> = .loaded(7)
+        #expect(!isFailed(loading.failing(CancellationError())))
+        #expect(!isFailed(loading.failing(URLError(.cancelled))))
+        #expect(shown.failing(URLError(.cancelled)).value == 7)
+        #expect(shown.failing(URLError(.timedOut)).value == 7, "what is shown stays when a reload fails")
+        #expect(isFailed(loading.failing(URLError(.timedOut))), "nothing to show: the error")
+    }
+
+    @Test func pullWorkOutlivesTheCancelledPull() async {
+        var finished = false
+        let pull = Task { @MainActor in
+            await RefreshSafety.run {
+                try? await Task.sleep(for: .milliseconds(200))
+                finished = !Task.isCancelled
+            }
+        }
+        pull.cancel()   // SwiftUI letting go of the refresh
+        await pull.value
+        #expect(finished)
+    }
+}
