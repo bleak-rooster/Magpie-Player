@@ -4,6 +4,10 @@
 // the asset catalog. Brand sheet: docs/storyboard/canvas/Brand-Magpie.dc.html, "App icon".
 //   DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcrun swift scripts/render-app-icon.swift [output-dir]
 // art-4 CSS: radial-gradient(ellipse at 50% 110%, #B7E4C7 0 35%, transparent 36%), linear-gradient(135deg, #1B4332, #40916C)
+// Round 13 (Z6): the same cover recoloured in the alternate icons' Ink and Sunset colourways
+// (scripts/render-alternate-icons.swift), written beside AppIcon.appiconset as DefaultInk.appiconset and
+// DefaultSunset.appiconset (one 1024 px opaque PNG each, like the other alternate icons). Run this script before
+// render-alternate-icons.swift, which makes their Settings previews and the preview sheet from these files.
 import CoreGraphics
 import Foundation
 import ImageIO
@@ -16,6 +20,8 @@ func rgb(_ v: UInt32, _ a: CGFloat = 1) -> CGColor {
 
 struct Variant {
     var file: String
+    /// Set for an alternate icon: its own appiconset beside AppIcon.appiconset, named after the file.
+    var alternate = false
     var fieldFrom: CGColor, fieldTo: CGColor
     var domeTop: CGColor, domeBottom: CGColor
     var glow: CGColor
@@ -28,6 +34,12 @@ let variants = [
             domeTop: rgb(0xB7E4C7), domeBottom: rgb(0x74C69D), glow: rgb(0x74C69D, 0.18)),
     Variant(file: "AppIcon-Tinted.png", fieldFrom: rgb(0x151517), fieldTo: rgb(0x2A2A2E),
             domeTop: rgb(0xF0F0F5, 0.95), domeBottom: rgb(0xF0F0F5, 0.70), glow: rgb(0xF0F0F5, 0.10)),
+    // Ink (navy, bone, coral): navy into a dusky coral, a bone dome warmed by the coral.
+    Variant(file: "DefaultInk.png", alternate: true, fieldFrom: rgb(0x1D2A44), fieldTo: rgb(0x8C4F5A),
+            domeTop: rgb(0xF6F1E7), domeBottom: rgb(0xEFD3C6), glow: rgb(0xEFD3C6, 0.22)),
+    // Sunset (charcoal, sand, rust): charcoal into rust, a sand dome low on the horizon.
+    Variant(file: "DefaultSunset.png", alternate: true, fieldFrom: rgb(0x2B2A29), fieldTo: rgb(0xC4532D),
+            domeTop: rgb(0xF5E6CB), domeBottom: rgb(0xEAD2AC), glow: rgb(0xEAD2AC, 0.22)),
 ]
 
 let size = 1024
@@ -67,10 +79,33 @@ for v in variants {
     ctx.drawLinearGradient(domeGrad, start: CGPoint(x: cx, y: cy - ry), end: CGPoint(x: cx, y: s), options: [])
     ctx.restoreGState()
 
+    let name = String(v.file.dropLast(".png".count))
+    let dir = v.alternate ? out.deletingLastPathComponent().appending(path: "\(name).appiconset") : out
+    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
     guard let image = ctx.makeImage(),
-          let dest = CGImageDestinationCreateWithURL(out.appending(path: v.file) as CFURL, UTType.png.identifier as CFString,
+          let dest = CGImageDestinationCreateWithURL(dir.appending(path: v.file) as CFURL, UTType.png.identifier as CFString,
                                                      1, nil) else { fatalError("image \(v.file)") }
     CGImageDestinationAddImage(dest, image, nil)
     guard CGImageDestinationFinalize(dest) else { fatalError("write \(v.file)") }
-    print("wrote \(out.appending(path: v.file).path)")
+    print("wrote \(dir.appending(path: v.file).path)")
+    if v.alternate {
+        // The same Contents.json as render-alternate-icons.swift writes for its icons.
+        try! """
+        {
+          "images" : [
+            {
+              "filename" : "\(v.file)",
+              "idiom" : "universal",
+              "platform" : "ios",
+              "size" : "1024x1024"
+            }
+          ],
+          "info" : {
+            "author" : "xcode",
+            "version" : 1
+          }
+        }
+
+        """.write(to: dir.appending(path: "Contents.json"), atomically: true, encoding: .utf8)
+    }
 }

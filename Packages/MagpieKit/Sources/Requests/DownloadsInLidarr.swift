@@ -10,6 +10,12 @@ import MagpieCore
 // while downloading), or `sizeleft` hasn't changed past the limit. A copy that's queued, paused, held back by Lidarr
 // (delay) or whose client can't be reached is never Stalled nor restartable (the gate refuses it too). Failed is a
 // failed download or a blocked import. Each restart re-checks the row on a fresh read by the same rule.
+//
+// Round 13 item 6 (D63, supersedes D49's refusals): every row that isn't importing or imported offers Restart, another
+// app's too. A row still going (downloading, waiting, paused, client unreachable) asks first; a stalled or failed one
+// restarts at once; a copy that couldn't import keeps its own confirmation; a download Lidarr never grabbed asks with
+// the flagged confirmation, the only place `allowForeign` is set. Restart all takes stalled, failed and couldn't-import
+// copies, and another app's only when the owner turns that on in its confirmation.
 
 /// How a queue row looked when it last changed: what R17's stall rule compares (`StallWatch.Signature` is this).
 public struct QueueSignature: Sendable, Equatable {
@@ -57,7 +63,9 @@ public struct QueueStallWatch: Sendable, Equatable {
                 speed = moved >= 0 ? moved / now.timeIntervalSince(last.at) : nil
             }
             nextReads[id] = Read(sizeleft: item.sizeleft, at: now, speed: speed)
-            guard LidarrDownloads.isDownloading(item, soulseek: LidarrDownloads.isSoulseek(item, soulseekClients)) else {
+            // Round 13 (D63): another app's copy may be restarted too, so its clock runs as well.
+            guard LidarrDownloads.isDownloading(item, soulseek: LidarrDownloads.isSoulseek(item, soulseekClients),
+                                                ignoringGrab: true) else {
                 continue
             }
             let signature = QueueSignature(item)
@@ -106,29 +114,29 @@ public struct GrabCache: Sendable, Equatable {
         }
     }
 
-    /// Looks up the downloads of rows that are stalled, failed or couldn't import (as `watch` and `stallLimit` say) and
-    /// aren't known yet, or had no grab more than `recheckNoGrab` ago; at most `perRefresh`. Returns how many it asked
-    /// about. A lookup that fails stays unknown (not restartable).
+    /// Looks up the downloads of rows that aren't known yet, or had no grab more than `recheckNoGrab` ago; at most
+    /// `perRefresh`. Rows that are stalled, failed or couldn't import (as `watch` and `stallLimit` say) first, then the
+    /// rest that could be restarted (round 13, D63: any row not importing or done). Returns how many it asked about. A
+    /// lookup that fails stays unknown (not restartable).
     @discardableResult
     public mutating func lookUp(_ items: [QueueItem], soulseekClients: Set<String>, lidarr: LidarrClient, now: Date,
                                 watch: QueueStallWatch = QueueStallWatch(),
                                 stallLimit: TimeInterval = .infinity) async -> Int {
-        var wanted: [String] = []
+        var stuck: [String] = [], rest: [String] = []
         for item in items {
-            guard let id = item.id, let downloadId = item.downloadId, !item.saysNotGrabbedByLidarr,
-                  !wanted.contains(downloadId) else { continue }
-            let soulseek = LidarrDownloads.isSoulseek(item, soulseekClients)
-            let (section, _, _) = LidarrDownloads.classify(item, soulseek: soulseek, unchanged: watch.unchangedFor(id, at: now),
-                                                           limit: stallLimit)
-            guard [.stalled, .failed, .couldntImport].contains(section) else { continue }
+            guard let id = item.id, let downloadId = item.downloadId, !item.saysNotGrabbedByLidarr, !item.isImportingOrDone,
+                  !stuck.contains(downloadId), !rest.contains(downloadId) else { continue }
             switch status(downloadId) {
             case true?: continue
             case false?: if let last = noGrab[downloadId], now.timeIntervalSince(last) < Self.recheckNoGrab { continue }
             case nil: break
             }
-            wanted.append(downloadId)
-            if wanted.count == Self.perRefresh { break }
+            let soulseek = LidarrDownloads.isSoulseek(item, soulseekClients)
+            let (section, _, _) = LidarrDownloads.classify(item, soulseek: soulseek, unchanged: watch.unchangedFor(id, at: now),
+                                                           limit: stallLimit)
+            if [.stalled, .failed, .couldntImport].contains(section) { stuck.append(downloadId) } else { rest.append(downloadId) }
         }
+        let wanted = Array((stuck + rest).prefix(Self.perRefresh))
         var answers: [(String, Bool)] = []
         for batch in stride(from: 0, to: wanted.count, by: Self.concurrency) {
             let ids = Array(wanted[batch..<min(batch + Self.concurrency, wanted.count)])
@@ -155,6 +163,18 @@ public struct LidarrDownloads: Sendable, Equatable {
              notStarted
     }
 
+    /// Round 13 (D63): what a row's Restart asks first.
+    public enum Ask: Sendable, Equatable {
+        /// Stalled or failed: restarts at once.
+        case none
+        /// Still going (downloading, waiting, paused, client unreachable): "Restart it anyway?"
+        case stillGoing
+        /// A finished copy Lidarr couldn't import: its own confirmation (fix round 2).
+        case couldntImport
+        /// Lidarr never grabbed it: the flagged confirmation, the only place `allowForeign` is set.
+        case foreign
+    }
+
     /// Why a row is Stalled.
     public enum StallReason: Sendable, Equatable {
         /// Lidarr says so: a warning while downloading (e.g. a torrent with no connections). Shown at once.
@@ -176,8 +196,8 @@ public struct LidarrDownloads: Sendable, Equatable {
         public var stall: StallReason?
         /// Its client is a Soulseek one.
         public var soulseek: Bool
-        /// Stalled or failed, Lidarr names its download, and nothing of that download is importing or done (the
-        /// gate checks the same again from its own read).
+        /// Round 13 (D63): Lidarr names its download, nothing of that download is importing or done, and whether
+        /// Lidarr grabbed it is known (the restarter and the gate check again from their own reads).
         public var canRestart: Bool
         public var artist: String
         public var album: String
@@ -187,10 +207,18 @@ public struct LidarrDownloads: Sendable, Equatable {
         public var speed: Double?
         /// Lidarr's own words for a stalled or failed copy.
         public var message: String?
+        /// Round 13 (D63): Lidarr never grabbed it (its message, or no grab in its history): another app's.
+        public var foreign: Bool
+        /// What the row is, whoever started it: never `.notStarted` (another app's stuck copy is `.stalled`, `.failed`
+        /// or `.couldntImport` here; Restart all and the re-check go by this).
+        public var underlying: Section
+        public var ask: Ask
 
         public init(id: Int, item: QueueItem, section: Section, phase: Phase, stall: StallReason? = nil,
                     soulseek: Bool = false, canRestart: Bool, artist: String, album: String, client: String?,
-                    progress: Double?, speed: Double? = nil, message: String?) {
+                    progress: Double?, speed: Double? = nil, message: String?, foreign: Bool = false,
+                    underlying: Section? = nil, ask: Ask = .none) {
+            self.foreign = foreign; self.underlying = underlying ?? section; self.ask = ask
             self.id = id; self.item = item; self.section = section; self.phase = phase; self.stall = stall
             self.soulseek = soulseek; self.canRestart = canRestart; self.artist = artist; self.album = album
             self.client = client; self.progress = progress; self.speed = speed; self.message = message
@@ -203,7 +231,8 @@ public struct LidarrDownloads: Sendable, Equatable {
     public var couldntImport: [Row] = []
     public var notStarted: [Row] = []
 
-    /// Rows that need the owner (N2): stalled, failed or couldn't import, grabbed by Lidarr and restartable now.
+    /// Rows that need the owner (N2): stalled, failed or couldn't import, grabbed by Lidarr and restartable now (another
+    /// app's are in `notStarted`).
     public var attention: Int { (stalled + failed + couldntImport).filter(\.canRestart).count }
 
     public init() {}
@@ -217,20 +246,27 @@ public struct LidarrDownloads: Sendable, Equatable {
         for item in items {
             guard let id = item.id else { continue }   // can't be named to Lidarr, so not shown
             let soulseek = Self.isSoulseek(item, soulseekClients)
-            var (section, phase, stall) = Self.classify(item, soulseek: soulseek,
-                                                        unchanged: watch.unchangedFor(id, at: now), limit: stallLimit)
-            let grabbed = item.downloadId.flatMap(grabs.status)
-            if [.stalled, .failed, .couldntImport].contains(section), grabbed == false {
-                (section, phase, stall) = (.notStarted, .notStarted, nil)
+            // Round 13 (D63): what it is whoever started it, then whose it is.
+            let (underlying, underlyingPhase, stall) = Self.classify(item, soulseek: soulseek,
+                                                                     unchanged: watch.unchangedFor(id, at: now),
+                                                                     limit: stallLimit, ignoringGrab: true)
+            let grabbed: Bool? = item.saysNotGrabbedByLidarr ? false : item.downloadId.flatMap(grabs.status)
+            let foreign = grabbed == false
+            var (section, phase) = (underlying, underlyingPhase)
+            if foreign, item.saysNotGrabbedByLidarr || [.stalled, .failed, .couldntImport].contains(underlying) {
+                (section, phase) = (.notStarted, .notStarted)
             }
-            let canRestart = ![.active, .notStarted].contains(section) && grabbed == true
-                && item.downloadId.map { !done.contains($0) } == true
+            // Not importing or done (nor anything of its download), and whose it is is known.
+            let canRestart = grabbed != nil && item.downloadId.map { !done.contains($0) } == true
+            let ask: Ask = foreign ? .foreign : underlying == .couldntImport ? .couldntImport
+                : underlying == .active ? .stillGoing : .none
             let message = (item.statusMessages.first ?? item.errorMessage).flatMap { $0.isEmpty ? nil : $0 }
             let row = Row(id: id, item: item, section: section, phase: phase, stall: stall, soulseek: soulseek,
                           canRestart: canRestart, artist: item.artistName ?? "", album: item.albumTitle ?? item.title ?? "",
                           client: item.downloadClient, progress: item.progress,
                           speed: phase == .downloading ? watch.speed(id) : nil,
-                          message: section == .active && stall == nil ? nil : message)
+                          message: section == .active && stall == nil ? nil : message, foreign: foreign,
+                          underlying: underlying, ask: ask)
             switch section {
             case .active: active.append(row)
             case .stalled: stalled.append(row)
@@ -261,23 +297,24 @@ public struct LidarrDownloads: Sendable, Equatable {
         ["importblocked", "importfailed"].contains(item.trackedDownloadState.lowercased())
     }
 
-    /// Failed, couldn't import, or not Lidarr's: never "downloading" nor "stalled".
-    static func isBroken(_ item: QueueItem) -> Bool {
-        isFailed(item) || couldntImport(item) || item.saysNotGrabbedByLidarr
+    /// Failed, couldn't import, or not Lidarr's: never "downloading" nor "stalled". `ignoringGrab` (round 13): what
+    /// the copy is doing whoever started it.
+    static func isBroken(_ item: QueueItem, ignoringGrab: Bool = false) -> Bool {
+        isFailed(item) || couldntImport(item) || (!ignoringGrab && item.saysNotGrabbedByLidarr)
     }
 
     /// Actually downloading before import: Lidarr tracks it as downloading and the client says downloading (or, for a
     /// Soulseek copy, "warning", which it shows all along; R17).
-    static func isDownloading(_ item: QueueItem, soulseek: Bool) -> Bool {
-        guard item.isDownloadingBeforeImport, !isBroken(item) else { return false }
+    static func isDownloading(_ item: QueueItem, soulseek: Bool, ignoringGrab: Bool = false) -> Bool {
+        guard item.isDownloadingBeforeImport, !isBroken(item, ignoringGrab: ignoringGrab) else { return false }
         let status = item.status.lowercased()
         return status == "downloading" || (soulseek && status == "warning")
     }
 
     /// Lidarr itself says the copy is stuck: a warning (or "stalled") while downloading. Not for Soulseek, whose
     /// warning is always on; the timer looks after those.
-    static func lidarrSaysStalled(_ item: QueueItem, soulseek: Bool) -> Bool {
-        guard !soulseek, item.isDownloadingBeforeImport, !isBroken(item) else { return false }
+    static func lidarrSaysStalled(_ item: QueueItem, soulseek: Bool, ignoringGrab: Bool = false) -> Bool {
+        guard !soulseek, item.isDownloadingBeforeImport, !isBroken(item, ignoringGrab: ignoringGrab) else { return false }
         let status = item.status.lowercased(), trackedStatus = item.trackedDownloadStatus.lowercased()
         if waitingStatuses.contains(status) { return false }
         return ["warning", "stalled"].contains(status) || ["warning", "stalled"].contains(trackedStatus)
@@ -287,11 +324,13 @@ public struct LidarrDownloads: Sendable, Equatable {
         soulseek ? stallLimit : max(stallLimit, nonSoulseekMinimum)
     }
 
-    static func classify(_ item: QueueItem, soulseek: Bool, unchanged: TimeInterval?, limit stallLimit: TimeInterval)
-        -> (Section, Phase, StallReason?) {
+    /// `ignoringGrab` (round 13, D63): what the copy is doing, even when it says Lidarr didn't grab it (never
+    /// `.notStarted` then).
+    static func classify(_ item: QueueItem, soulseek: Bool, unchanged: TimeInterval?, limit stallLimit: TimeInterval,
+                         ignoringGrab: Bool = false) -> (Section, Phase, StallReason?) {
         let status = item.status.lowercased(), tracked = item.trackedDownloadState.lowercased()
-        // Fix round 2 N1: another tool's transfer Lidarr only lists. Read-only, whatever else it says.
-        if item.saysNotGrabbedByLidarr { return (.notStarted, .notStarted, nil) }
+        // Fix round 2 N1: another tool's transfer Lidarr only lists.
+        if !ignoringGrab, item.saysNotGrabbedByLidarr { return (.notStarted, .notStarted, nil) }
         // Waiting to import with a warning: shown with the ones that couldn't import, but Lidarr may still import it,
         // so it isn't restartable (its download is importing or done).
         if tracked == "importpending", item.trackedDownloadStatus.lowercased() == "warning" {
@@ -309,8 +348,9 @@ public struct LidarrDownloads: Sendable, Equatable {
             default: return (.active, .queued, nil)
             }
         }
-        if lidarrSaysStalled(item, soulseek: soulseek) { return (.stalled, .stalled, .lidarr) }
-        if isDownloading(item, soulseek: soulseek), let unchanged, unchanged >= limit(stallLimit, soulseek: soulseek) {
+        if lidarrSaysStalled(item, soulseek: soulseek, ignoringGrab: ignoringGrab) { return (.stalled, .stalled, .lidarr) }
+        if isDownloading(item, soulseek: soulseek, ignoringGrab: ignoringGrab), let unchanged,
+           unchanged >= limit(stallLimit, soulseek: soulseek) {
             return (.stalled, .stalled, .noProgress)
         }
         return (.active, .downloading, nil)
@@ -318,21 +358,30 @@ public struct LidarrDownloads: Sendable, Equatable {
 
     /// I1: `fresh` (just read) is still what `row` was when the board was made: still failed; still stalled by Lidarr's
     /// word; or still downloading with nothing changed since (same signature). Anything that moved or stopped
-    /// downloading is left alone.
+    /// downloading is left alone. Round 13 (D63): a row that was still going stays restartable until it's importing or
+    /// done (the owner confirmed restarting it as it was). Whose it is, the restarter checks on its own.
     public static func stillRestartable(_ fresh: QueueItem, as row: Row) -> Bool {
-        guard !fresh.isImportingOrDone, !fresh.saysNotGrabbedByLidarr else { return false }
-        switch (row.section, row.stall) {
+        guard !fresh.isImportingOrDone else { return false }
+        switch (row.underlying, row.stall) {
+        case (.active, _): return true
         case (.failed, _): return isFailed(fresh)
         case (.couldntImport, _): return couldntImport(fresh)
-        case (.stalled, .lidarr?): return lidarrSaysStalled(fresh, soulseek: row.soulseek)
+        case (.stalled, .lidarr?): return lidarrSaysStalled(fresh, soulseek: row.soulseek, ignoringGrab: true)
         case (.stalled, .noProgress?):
-            return isDownloading(fresh, soulseek: row.soulseek) && QueueSignature(fresh) == QueueSignature(row.item)
+            return isDownloading(fresh, soulseek: row.soulseek, ignoringGrab: true)
+                && QueueSignature(fresh) == QueueSignature(row.item)
         default: return false
         }
     }
 
-    /// Restart all: the stalled and failed rows that may be restarted, stalled first.
-    public var restartable: [Row] { (stalled + failed).filter(\.canRestart) }
+    /// Restart all (round 13, D63): the stalled, failed and couldn't-import rows Lidarr grabbed that may be restarted.
+    public var restartable: [Row] { (stalled + failed + couldntImport).filter(\.canRestart) }
+
+    /// Another app's stalled, failed and couldn't-import rows that may be restarted: in Restart all only when the owner
+    /// turns that on in its confirmation.
+    public var restartableForeign: [Row] {
+        notStarted.filter { $0.canRestart && [.stalled, .failed, .couldntImport].contains($0.underlying) }
+    }
 }
 
 /// Restart: `DELETE /queue/{id}?removeFromClient=true&blocklist=true&skipRedownload=true` through the gate's
@@ -350,6 +399,9 @@ public actor LidarrDownloadRestarter {
         case restarted
         /// Removed, but the new search didn't start (Lidarr will still look on its own schedule).
         case removedNotSearched
+        /// Z4 fix M1: removed, and Lidarr names no album it carried, so there is nothing to look for (another app's
+        /// transfer Lidarr couldn't match).
+        case removedNothingToLookFor
         /// I1: it started moving again (or stopped being stuck or failed) since the list was read: left alone.
         case skipped
         /// No longer in the queue.
@@ -389,25 +441,28 @@ public actor LidarrDownloadRestarter {
         self.lidarr = lidarr; self.gate = gate; self.runner = runner
     }
 
-    /// Restarts one row, if it's still what the board showed.
-    public func restart(_ row: LidarrDownloads.Row) async -> Outcome {
+    /// Restarts one row, if it's still what the board showed. `allowForeign` (round 13, D63): only from the flagged
+    /// confirmation; without it a download Lidarr never grabbed is left alone.
+    public func restart(_ row: LidarrDownloads.Row, allowForeign: Bool = false) async -> Outcome {
         await takeTurn()
         defer { passTurn() }
-        return await restartOne(row)
+        return await restartOne(row, allowForeign: allowForeign)
     }
 
     /// Restart all: the first `maxPerTap` rows, one after another (each re-checked, deleted and searched before the
-    /// next). Stops when changes are switched off, or after two in a row couldn't reach Lidarr.
-    public func restartAll(_ rows: [LidarrDownloads.Row]) async -> [Outcome] {
+    /// next). Stops when changes are switched off, or after two in a row couldn't reach Lidarr. Round 13 (D63): stalled,
+    /// failed and couldn't-import rows; another app's only with `includeForeign` (the owner turned that on in the
+    /// confirmation).
+    public func restartAll(_ rows: [LidarrDownloads.Row], includeForeign: Bool = false) async -> [Outcome] {
         await takeTurn()
         defer { passTurn() }
         var outcomes: [Outcome] = []
         var unavailableInARow = 0
         for row in rows.prefix(Self.maxPerTap) {
-            // Fix round 2: a finished copy that couldn't be imported is only ever restarted on its own (after its own
-            // confirmation), and another tool's transfer never.
-            guard [.stalled, .failed].contains(row.section) else { outcomes.append(.skipped); continue }
-            let outcome = await restartOne(row)
+            // A copy still going is only restarted on its own, after its confirmation.
+            guard [.stalled, .failed, .couldntImport].contains(row.underlying) else { outcomes.append(.skipped); continue }
+            guard !row.foreign || includeForeign else { outcomes.append(.notStartedByLidarr); continue }
+            let outcome = await restartOne(row, allowForeign: includeForeign && row.foreign)
             outcomes.append(outcome)
             if outcome == .changesOff { break }
             unavailableInARow = outcome == .unavailable ? unavailableInARow + 1 : 0
@@ -425,7 +480,7 @@ public actor LidarrDownloadRestarter {
         if waiting.isEmpty { running = false } else { waiting.removeFirst().resume() }
     }
 
-    private func restartOne(_ row: LidarrDownloads.Row) async -> Outcome {
+    private func restartOne(_ row: LidarrDownloads.Row, allowForeign: Bool) async -> Outcome {
         guard row.canRestart else { return .skipped }
         guard await gate.enabled else { return .changesOff }
         let queueId = row.id
@@ -435,20 +490,24 @@ public actor LidarrDownloadRestarter {
         guard let downloadId = item.downloadId else { return .unnamed }
         let rows = queue.filter { $0.downloadId == downloadId }
         guard !rows.contains(where: \.isImportingOrDone) else { return .importingOrDone }
-        // Fix round 2 N1: only a download Lidarr grabbed itself (its message, then its grab history, read fresh; the
-        // gate checks both again).
-        guard !rows.contains(where: \.saysNotGrabbedByLidarr) else { return .notStartedByLidarr }
-        do {
-            guard try await lidarr.grabbed(downloadId: downloadId) else { return .notStartedByLidarr }
-        } catch {
-            return .unavailable
+        // Fix round 2 N1: whose it is, read fresh (its message, then its grab history; the gate checks both again).
+        // Round 13 (D63): another app's only with `allowForeign`, from the flagged confirmation.
+        let foreign: Bool
+        if rows.contains(where: \.saysNotGrabbedByLidarr) {
+            foreign = true
+        } else {
+            do { foreign = try await !lidarr.grabbed(downloadId: downloadId) } catch { return .unavailable }
         }
+        guard !foreign || allowForeign else { return .notStartedByLidarr }
         guard LidarrDownloads.stillRestartable(item, as: row) else { return .skipped }
         var albums: [Int] = []
         for album in rows.compactMap(\.albumId) where !albums.contains(album) { albums.append(album) }
         var searched: Int?
         do {
-            if let runner, let album = try await runner.restartFromDownloads(item, albums: Set(albums)) {
+            if foreign {
+                // Another app's copy is never a Magpie request's grab: removed directly, never counted.
+                _ = try await gate.send("DELETE", "queue/\(queueId)?\(Self.queueRemoval)", body: nil, confinedAs: .queueRestartAny, allowForeign: true)
+            } else if let runner, let album = try await runner.restartFromDownloads(item, albums: Set(albums)) {
                 searched = album
             } else {
                 _ = try await gate.send("DELETE", "queue/\(queueId)?\(Self.queueRemoval)", body: nil, confinedAs: .queueRestartAny)
@@ -457,7 +516,7 @@ public actor LidarrDownloadRestarter {
             return Self.outcome(error)
         }
         let rest = albums.filter { $0 != searched }
-        guard !rest.isEmpty else { return .restarted }
+        guard !rest.isEmpty else { return albums.isEmpty ? .removedNothingToLookFor : .restarted }
         do {
             _ = try await gate.send("POST", "command", body: SearchBody(name: "AlbumSearch", albumIds: rest), confinedAs: .restartSearch)
             return .restarted
