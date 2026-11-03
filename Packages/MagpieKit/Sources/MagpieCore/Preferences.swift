@@ -384,22 +384,25 @@ public struct Preferences: Hashable, Sendable {
     public var downloads: DownloadPreferences
     public var scrobbling: ScrobblePreferences
     public var genres: GenrePreferences
+    /// Round 13: Settings › CarPlay (the third tab and the car's Home).
+    public var carPlay: CarPlayPreferences
 
     public static let standard = Preferences(layout: .defaultValue, playback: .defaultValue, downloads: .defaultValue,
                                              scrobbling: .defaultValue, genres: .defaultValue)
 
     public init(layout: LayoutPreferences, playback: PlaybackPreferences, downloads: DownloadPreferences,
-                scrobbling: ScrobblePreferences, genres: GenrePreferences) {
+                scrobbling: ScrobblePreferences, genres: GenrePreferences, carPlay: CarPlayPreferences = .defaultValue) {
         self.layout = layout
         self.playback = playback
         self.downloads = downloads
         self.scrobbling = scrobbling
         self.genres = genres
+        self.carPlay = carPlay
     }
 
     /// Every area through its own `normalised()`.
     public func normalised() -> Preferences {
         Preferences(layout: layout.normalised(), playback: playback.normalised(), downloads: downloads.normalised(),
-                    scrobbling: scrobbling.normalised(), genres: genres.normalised())
+                    scrobbling: scrobbling.normalised(), genres: genres.normalised(), carPlay: carPlay.normalised())
     }
 }
