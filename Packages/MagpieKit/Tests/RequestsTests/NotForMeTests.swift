@@ -60,6 +60,33 @@ import MagpieCore
         #expect(h.server.with { $0.deletedArtists } == [42])
     }
 
+    /// A refresh of the artist still running (the add's own, slow metadata server): Lidarr re-creates a deleted artist
+    /// when it reaches an album ("Adding missing parent artist", seen on the dev stack). The artist goes only after it.
+    @Test func artistWaitsForItsRefresh() async throws {
+        for name in ["RefreshArtist", "RefreshAlbum"] {
+            let h = await Harness(setup: Harness.findsSetup)
+            let id = try await Self.readyFind(h)
+            h.server.with { $0.commands.append(FakeLidarr.Command(id: 81, name: name, status: "started",
+                                                                  artistIds: name == "RefreshArtist" ? [42] : [])) }
+            let before = h.server.writes.count
+
+            #expect(try await h.runner.notForMe(id, permanentConfirmed: false) == .stillGoing)
+            #expect(Self.writePaths(h, after: before) == ["DELETE trackfile/bulk", "PUT album/monitor"], "\(name)")
+            #expect(h.server.with { $0.deletedArtists }.isEmpty)
+
+            h.server.with { s in for i in s.commands.indices where s.commands[i].id == 81 { s.commands[i].status = "completed" } }
+            h.clock.advance(120)
+            await h.runner.tick()
+            #expect(h.server.with { $0.deletedArtists } == [42], "\(name)")
+            #expect(try #require(await h.request(id)).state == .dismissed)
+        }
+        // Another artist's refresh doesn't hold it up.
+        let h = await Harness(setup: Harness.findsSetup)
+        let id = try await Self.readyFind(h)
+        h.server.with { $0.commands.append(FakeLidarr.Command(id: 82, name: "RefreshArtist", status: "started", artistIds: [7])) }
+        #expect(try await h.runner.notForMe(id, permanentConfirmed: false) == .removed)
+    }
+
     /// Final fix 2 A-M2: the gate couldn't confirm the delete for a moment (its own root-folder read failed): not a
     /// refusal, nothing was sent, so Not for me waits and goes through on a later look (bounded, like Keep's restore).
     @Test func unconfirmedDeleteWaits() async throws {

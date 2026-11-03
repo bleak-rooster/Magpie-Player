@@ -482,11 +482,28 @@ extension RequestRunner {
                   !(try await lidarr.albums(artistId: p.artistId)).contains(where: { $0.id != p.albumId && $0.monitored })
             else { return .no }
             let empty = try await folderIsEmpty(path, guard: Self.artistGuard(path, setup: setup, roots: roots))
-            return empty ? .yes(()) : .no
+            guard empty else { return .no }
+            // A refresh still running for the artist (the add's own RefreshArtist can outlast a quick download when
+            // the metadata server is slow) re-creates it after the DELETE ("Adding missing parent artist"): a find
+            // Magpie no longer tracks would be left in Lidarr. Wait for it to finish.
+            if try await lidarr.commands().contains(where: { Self.refreshes($0, artistId: p.artistId) && !Self.isFinished($0) }) {
+                return .unknown
+            }
+            return .yes(())
         } catch LidarrError.http(status: 404) {
             return .no
         } catch {
             return .unknown
+        }
+    }
+
+    /// A Lidarr refresh that may touch the artist: `RefreshArtist` of it (or of every artist: no ids), or any
+    /// `RefreshAlbum` (its body names an album, not the artist).
+    static func refreshes(_ c: CommandStatus, artistId: Int) -> Bool {
+        switch c.name.lowercased() {
+        case "refreshartist": c.artistIds.isEmpty || c.artistIds.contains(artistId)
+        case "refreshalbum": true
+        default: false
         }
     }
 
