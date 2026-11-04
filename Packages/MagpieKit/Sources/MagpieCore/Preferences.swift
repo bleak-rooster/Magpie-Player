@@ -244,11 +244,13 @@ public struct LayoutPreferences: PreferenceArea {
     public var becauseYouLikeRows: Int
     /// Round 14 A4 fix round 1: Trending's country (Settings › Home & Library › Charts country).
     public var chartsCountry: ChartsCountry
+    /// Round 14 A3 (owner answer 6): where every artist page's Top songs come from.
+    public var artistTopSongs: ArtistTopSongsSource
 
     public init(home: OrderedVisibility<HomeSection>, library: OrderedVisibility<LibraryRow>, showsRecentlyAdded: Bool,
                 albumArtistsOnly: Bool = true, homeStyles: [String: HomeSectionStyle] = [:],
                 becauseYouLikeRows: Int = HomeSectionStyle.becauseYouLikeRange.upperBound,
-                chartsCountry: ChartsCountry = .automatic) {
+                chartsCountry: ChartsCountry = .automatic, artistTopSongs: ArtistTopSongsSource = .automatic) {
         self.home = home
         self.library = library
         self.showsRecentlyAdded = showsRecentlyAdded
@@ -256,6 +258,7 @@ public struct LayoutPreferences: PreferenceArea {
         self.homeStyles = homeStyles
         self.becauseYouLikeRows = becauseYouLikeRows
         self.chartsCountry = chartsCountry
+        self.artistTopSongs = artistTopSongs
     }
 
     /// Hides or shows a Library row; false (no change) when it would leave none of the always-available rows visible.
@@ -278,7 +281,7 @@ public struct LayoutPreferences: PreferenceArea {
                                  showsRecentlyAdded: showsRecentlyAdded, albumArtistsOnly: albumArtistsOnly,
                                  homeStyles: HomeSectionStyle.normalised(homeStyles),
                                  becauseYouLikeRows: clamp(becauseYouLikeRows, HomeSectionStyle.becauseYouLikeRange),
-                                 chartsCountry: chartsCountry)
+                                 chartsCountry: chartsCountry, artistTopSongs: artistTopSongs)
     }
 
     /// The Home sections to show, in the owner's order, for the phone and the car alike (the car shows Made for you too,

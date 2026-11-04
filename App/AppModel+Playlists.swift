@@ -1,6 +1,7 @@
 import Foundation
 import MagpieCore
 import NavidromeKit
+import os
 
 /// Round 11 R8 copy, in the UX appraisal's words (R20: docs/reviews/ux-appraisal-round-11.md §6, §9).
 enum PlaylistCopy {
@@ -117,21 +118,31 @@ extension AppModel {
         }
     }
 
-    /// A new playlist called `name` (trimmed) holding `songIds`.
-    func createPlaylist(named name: String, songIds: [String]) async throws {
+    /// A new playlist called `name` (trimmed) holding `songIds`. Returns its id (round 14 A3 fix M2): the server's
+    /// answer, else the one playlist of that name that wasn't there before; nil when neither tells.
+    @discardableResult
+    func createPlaylist(named name: String, songIds: [String]) async throws -> String? {
         let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty else { return }
+        guard !name.isEmpty else { return nil }
         // A double tap on Create makes one playlist (re-review N4): a second Create while one is under way does nothing.
-        guard !libraryEdits.creatingPlaylist else { return }
+        guard !libraryEdits.creatingPlaylist else { return nil }
         libraryEdits.creatingPlaylist = true
         defer { libraryEdits.creatingPlaylist = false }
         let user = session?.username ?? ""
         let before = Set(try await request { try await $0.playlists() }.map(\.id))
-        try await sendOnce({ _ = try await $0.createPlaylist(name: name, songIds: songIds) }, landed: {
+        let made = OSAllocatedUnfairLock<String?>(initialState: nil)
+        try await sendOnce({ client in
+            let id = try await client.createPlaylist(name: name, songIds: songIds)?.id
+            made.withLock { $0 = id }
+        }, landed: {
             try await self.request { try await $0.playlists() }
                 .contains { !before.contains($0.id) && $0.name == name && Self.isOwn($0, by: user) }
         })
         playlistsChanged(songIds.isEmpty ? nil : PlaylistCopy.added(to: name))
+        if let id = made.withLock({ $0 }) { return id }
+        let fresh = try? await request { try await $0.playlists() }
+            .filter { !before.contains($0.id) && $0.name == name && Self.isOwn($0, by: user) }
+        return fresh?.count == 1 ? fresh?.first?.id : nil
     }
 
     func renamePlaylist(_ playlist: Playlist, to name: String) async throws {

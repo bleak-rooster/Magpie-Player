@@ -152,6 +152,7 @@ struct PlaylistView: View {
                               ? RowDestructiveAction(title: "Remove from playlist", symbol: "minus.circle") { remove(at: index, song) }
                               : nil)
         }
+        if !fromPhone, !model.isOffline { ComingRows(playlistId: page.playlist.id) }   // round 14 A3: "Coming"
         Color.clear.frame(height: Tokens.Spacing.l)
     }
 

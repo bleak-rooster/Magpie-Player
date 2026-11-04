@@ -46,6 +46,15 @@ struct HomeAndLibraryView: View {
                     .accessibilityIdentifier("settings-charts-country")
                 }
             }
+            // Round 14 A3 (owner answer 6): where every artist page's Top songs come from.
+            Section {
+                NavigationLink {
+                    ArtistTopSongsView()
+                } label: {
+                    LabeledContent(ArtistTopSongsView.title, value: ArtistTopSongsView.summary(model))
+                }
+                .accessibilityIdentifier("settings-artist-top-songs")
+            }
         }
         .navigationTitle("Home & Library")
         .navigationBarTitleDisplayMode(.inline)
