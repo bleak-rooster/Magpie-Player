@@ -70,6 +70,37 @@ import Testing
         _ = try? await client.logout()
     }
 
+    /// Round 14 A7 fix round 1, over the real `AurralOpenTransport` against the localhost stub: an Aurral that answers
+    /// the preview or a picture with a 302 is refused (never followed: the target would answer), and an answer past the
+    /// cap is refused while it is read.
+    @Test(.enabled(if: stubURL != nil, "set MAGPIE_IT=1 (scripts/test-app.sh starts dev/aurral-stub)"))
+    func theRealOpenTransportRefusesRedirectsAndOversizedAnswers() async throws {
+        let root = try #require(Self.stubURL)
+        let preview = AurralPreview(trackId: "3135556")!
+        // The default scenario plays (so the refusals below are the transport's, not a broken stub).
+        guard case .clip = try await PreviewResolver(base: root.appending(path: "s/default")).resolve(preview) else {
+            Issue.record("the default clip didn't play"); return
+        }
+        await #expect(throws: PreviewError.refused) {
+            _ = try await PreviewResolver(base: root.appending(path: "s/redirects")).resolve(preview)
+        }
+        await #expect(throws: PreviewError.refused) {
+            _ = try await PreviewResolver(base: root.appending(path: "s/oversized")).resolve(preview)
+        }
+
+        let client = try await Self.client(root.appending(path: "s/default"))
+        let art = try #require(try await client.trending().songs?.items.first?.artwork)
+        let local = try await client.proxyImage(art)
+        #expect(!(try await AurralImageProxy.fetch(local, base: client.base, transport: AurralOpenTransport())).isEmpty)
+        for scenario in ["redirects", "oversized"] {
+            await #expect(throws: (any Error).self, "\(scenario)") {
+                _ = try await AurralImageProxy.fetch(local, base: root.appending(path: "s/\(scenario)"),
+                                                     transport: AurralOpenTransport())
+            }
+        }
+        _ = try? await client.logout()
+    }
+
     /// The scenarios UI tests pick by address: no accessFlow (flows 403), and 2.10 (no capabilities).
     @Test(.enabled(if: stubURL != nil, "set MAGPIE_IT=1 (scripts/test-app.sh starts dev/aurral-stub)"))
     func scenariosByAddress() async throws {

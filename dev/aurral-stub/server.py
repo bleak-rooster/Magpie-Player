@@ -50,7 +50,10 @@ PREVIEW_CLIP = b"ID3" + b"\xff" * 2045
 PROXIED_PICTURE = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")
 SCENARIOS = {"default", "aurral210", "no-access-flow", "no-downloader", "region-us", "missing-sections",
-             "genre-not-ready", "slow", "failing"}
+             "genre-not-ready", "slow", "failing", "redirects", "oversized"}
+# Round 14 A7 fix round 1: "redirects" answers the preview's ?download and the image proxy's pictures with a 302 (an
+# Aurral that redirects anyway: Magpie must refuse it, never follow); "oversized" sends 5 MB for both (past the caps).
+OVERSIZED = b"ID3" + b"\xff" * (5 * 1024 * 1024)
 
 LOCK = threading.Lock()
 STATE = {"sessions": {}, "log": [], "added": {}}
@@ -371,6 +374,10 @@ class Handler(BaseHTTPRequestHandler):
             if not re.match(r"^\d{1,20}\.mp3$", track) or track.startswith("3135560"):
                 return self.reply(404, {"error": "Preview not found"})
             if "download" in query:   # round 14 A7: Aurral sends the clip itself
+                if scenario == "redirects":
+                    return self.reply(302, None, {"Location": f"/s/default{path}?download", "Cache-Control": "no-store"})
+                if scenario == "oversized":
+                    return self.reply_bytes(200, OVERSIZED, "audio/mpeg")
                 return self.reply_bytes(200, PREVIEW_CLIP, "audio/mpeg")
             return self.reply(302, None, {"Location": PREVIEW_TARGET, "Cache-Control": "no-store"})
         # Round 14 A7: the image proxy's file route is open (2.13 guards.ts isOpen).
@@ -380,6 +387,10 @@ class Handler(BaseHTTPRequestHandler):
                 cached = m.group(1) in STATE.setdefault("images", {})
             if not cached:
                 return self.reply(404, {"error": "Image not found"})
+            if scenario == "redirects":
+                return self.reply(302, None, {"Location": f"/s/default{path}"})
+            if scenario == "oversized":
+                return self.reply_bytes(200, OVERSIZED, "image/png")
             return self.reply_bytes(200, PROXIED_PICTURE, "image/png")
         if not signed_in:
             return self.reply(401, {"error": "Unauthorized", "code": "AUTH_REQUIRED" if token is None else "SESSION_INVALID"})
