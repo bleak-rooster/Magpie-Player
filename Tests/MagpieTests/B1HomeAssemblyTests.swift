@@ -147,6 +147,19 @@ private func ok(_ body: String) -> Data {
         #expect(saved[.recommended] == ["outside-artist-mbid-1"])
     }
 
+    /// D121: shelves saved by builds 13 and 14 (file version 1) are not shown: build 14 saved other sections' tiles
+    /// under Jump back in, Recently added and the quick grid. Home reads them fresh once instead.
+    @Test func savedShelvesFromBuild14AreNotShown() throws {
+        let root = tmp.appending(path: "v1")
+        let cache = HomeShelfCache(root: root, scope: "abc")
+        try FileManager.default.createDirectory(at: cache.url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let v1 = #"{"version":1,"shelves":[{"section":"jumpBackIn","items":[{"kind":"album","id":"rnd-1","title":"Volo","subtitle":"Goblin"}]}]}"#
+        try Data(v1.utf8).write(to: cache.url)
+        #expect(cache.load().isEmpty, "a build-14 file is dropped")
+        cache.save([HomeShelf(section: .jumpBackIn, items: [Self.album("recent-1")])])
+        #expect(cache.load().map(\.section) == [.jumpBackIn], "this build's own file reads back")
+    }
+
     /// A provider that never answers Recommended holds nothing up: the library's shelves and New this week arrive,
     /// Recommended counts as not read (retried later, never "Couldn't load").
     @Test func aSilentProviderNeverHoldsHomeUp() async throws {
