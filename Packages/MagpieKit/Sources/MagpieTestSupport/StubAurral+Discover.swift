@@ -284,8 +284,14 @@ public extension StubAurral {
     internal func previewAnswer(method: String, path: String, url: URL) -> (Data, HTTPURLResponse)? {
         guard method == "GET", path.hasPrefix("/api/deezer/preview/"), features != nil else { return nil }
         let (target, status) = discover.withLock { ($0.previewTarget, $0.previewStatus) }
+        // Like CFNetwork, the answer's URL is canonical (scheme and host lower-cased), not an echo of the request's.
+        var canonical = URLComponents(url: url, resolvingAgainstBaseURL: false) ?? URLComponents()
+        let scheme = canonical.scheme?.lowercased(), lowerHost = canonical.host?.lowercased()
+        canonical.scheme = scheme
+        canonical.host = lowerHost
+        let answerURL = canonical.url ?? url
         func reply(_ code: Int, _ headers: [String: String], _ body: Data = Data()) -> (Data, HTTPURLResponse) {
-            (body, HTTPURLResponse(url: url, statusCode: code, httpVersion: "HTTP/1.1", headerFields: headers)!)
+            (body, HTTPURLResponse(url: answerURL, statusCode: code, httpVersion: "HTTP/1.1", headerFields: headers)!)
         }
         let file = path.dropFirst("/api/deezer/preview/".count)
         guard file.hasSuffix(".mp3"), file.dropLast(4).allSatisfy(\.isNumber), !file.dropLast(4).isEmpty, !file.hasPrefix("3135560") else {

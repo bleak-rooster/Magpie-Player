@@ -170,7 +170,7 @@ public final class StubAurral: HTTPTransport, @unchecked Sendable {
     // MARK: - Serving
 
     public func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
-        guard let url = request.url, url.host == host else {
+        guard let url = request.url, url.host?.lowercased() == host.lowercased() else {
             throw URLError(.cannotFindHost)   // never anywhere else: not sent
         }
         let snapshot = state.withLock { s -> State in

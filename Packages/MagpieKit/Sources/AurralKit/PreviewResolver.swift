@@ -11,8 +11,8 @@ public enum PreviewResolution: Sendable, Equatable {
 
 /// Why a preview wasn't resolved.
 public enum PreviewError: Error, Sendable, Equatable {
-    /// Not a single 302 to Deezer's HTTPS audio hosts (another host, plain http, a relative link, a redirect the
-    /// transport followed itself, the bytes instead of a redirect, another redirect code).
+    /// Not a single 302 to Deezer's HTTPS audio hosts (another host, plain http, a relative link, the bytes instead of
+    /// a redirect, as a transport that followed the redirect itself gives, another redirect code).
     case refused
     /// Aurral or Deezer had a problem (502 when Deezer is down, 5xx).
     case unavailable(status: Int)
@@ -44,7 +44,9 @@ public struct PreviewResolver: Sendable {
         request.setValue("*/*", forHTTPHeaderField: "Accept")
         Log.request(request, category: "aurral")
         let (_, response) = try await transport.send(request)
-        guard response.url == nil || response.url == url else { throw PreviewError.refused }   // followed elsewhere
+        // Fix I1: decided by the status alone. URLSession hands back the answer's URL canonical (lower-cased scheme and
+        // host), so comparing it with the asked URL refused every Aurral saved with capital letters; a transport that
+        // followed the redirect itself can't hand back Aurral's 302 (it gives the bytes, a 200: refused below).
         switch response.statusCode {
         case 302:
             guard let location = response.value(forHTTPHeaderField: "Location"), let target = URL(string: location),

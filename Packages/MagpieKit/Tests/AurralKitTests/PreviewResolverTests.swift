@@ -92,7 +92,19 @@ import Testing
         }
     }
 
-    /// A transport that followed the redirect itself (the answer's URL isn't the one asked) is refused.
+    /// Fix I1: an Aurral saved with capital letters (`http://Aurral-Stub:3001`) still plays: URLSession hands back the
+    /// answer's URL canonical (lower-cased scheme and host), which must not read as "moved".
+    @Test func aMixedCaseBaseStillResolves() async throws {
+        let mixed = PreviewResolver(base: URL(string: "HTTP://Aurral-Stub:3001")!, transport: stub)
+        let result = try await mixed.resolve(preview)
+        guard case .playable(let url) = result else { Issue.record("\(result)"); return }
+        #expect(url.host() == "cdnt-preview.dzcdn.net")
+        #expect(stub.requests.first?.url?.host == "Aurral-Stub", "asked as configured")
+        stub.setPreviewTarget(nil)
+        #expect(try await mixed.resolve(preview) == .noPreview)
+    }
+
+    /// A transport that followed the redirect itself hands back the bytes (200), not Aurral's 302: refused.
     @Test func aFollowedRedirectIsRefused() async throws {
         let mock = MockTransport()
         mock.stub(pathSuffix: "/3135556.mp3") { _ in .init(status: 200, body: Data([0xFF, 0xFB])) }
