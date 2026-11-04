@@ -37,6 +37,8 @@ public struct StubAurralDiscover: Sendable {
     var imageProxyFileStatus: Int?
     /// Round 14 A7: the image proxy's cache (key → source), as Aurral keeps it on disk.
     var imageProxyCache: [String: String] = [:]
+    /// B1 fix round: the cover link the album search names for its first album (nil: none).
+    var albumSearchCover: String?
     /// What was written: "METHOD /path" and its JSON body.: "METHOD /path" and its JSON body.
     var writes: [(String, Data)] = []
 
@@ -206,12 +208,13 @@ public struct StubAurralDiscover: Sendable {
             let limit = max(1, Int(query["limit"] ?? "") ?? 24)
             let range = offset < total ? Array(offset..<min(total, offset + limit)) : []
             if query["scope"] == "album" {
+                let cover: Any = albumSearchCover ?? NSNull()
                 return (200, ["scope": "album", "query": q, "sort": "relevance", "count": total, "offset": offset,
                               "hasMore": offset + range.count < total,
                               "items": range.map { i in ["type": "album", "id": String(format: "00000000-0000-4000-8000-%012d", i),
                                                          "title": "\(q) album \(i)", "artistName": "Stub Arrows",
                                                          "artistMbid": Self.artistA, "primaryType": "Album", "secondaryTypes": [],
-                                                         "releaseDate": NSNull(), "coverUrl": NSNull(), "inLibrary": i == 0,
+                                                         "releaseDate": NSNull(), "coverUrl": i == 0 ? cover : NSNull(), "inLibrary": i == 0,
                                                          "status": "missing", "score": 100 - i] }])
             }
             return (200, ["scope": "artist", "query": q, "count": total, "offset": offset,
@@ -270,6 +273,8 @@ public extension StubAurral {
     /// Round 14 A7: Aurral forgets its cached pictures (its cache was cleared): the file route answers 404 until the
     /// source is asked for again.
     func clearImageProxyCache() { discover.withLock { $0.imageProxyCache = [:] } }
+    /// B1 fix round: the album search names this cover for its first album (`00000000-0000-4000-8000-000000000000`).
+    public func setAlbumSearchCover(_ link: String?) { discover.withLock { $0.albumSearchCover = link } }
     /// Round 14 A7: the `src` of each `POST /api/image-proxy`, in order.
     var imageProxySources: [String] {
         requests.filter { $0.httpMethod != "GET" && $0.url?.path == "/api/image-proxy" }.compactMap { request in

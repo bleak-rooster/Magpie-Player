@@ -202,12 +202,9 @@ extension AppModel {
         case .artist(let id):
             return try await request { client in
                 let ids = try await client.artist(id: id).1.map(\.id)
-                return try await withThrowingTaskGroup(of: (Int, [Song]).self) { group in
-                    for (i, id) in ids.enumerated() { group.addTask { (i, try await client.album(id: id).songs ?? []) } }
-                    var byIndex: [Int: [Song]] = [:]
-                    for try await (i, songs) in group { byIndex[i] = songs }
-                    return ids.indices.flatMap { byIndex[$0] ?? [] }
-                }
+                // B1 fix round (D120): answers by album id, never by position.
+                let byId = try await KeyedGather.values(ids) { id in try await client.album(id: id).songs ?? [] }
+                return ids.flatMap { byId[$0] ?? [] }
             }
         }
     }

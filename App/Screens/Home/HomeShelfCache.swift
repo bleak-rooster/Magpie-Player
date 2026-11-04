@@ -60,7 +60,9 @@ struct HomeShelfCache {
     }
 
     private struct File: Codable {
-        static let currentVersion = 1
+        /// 2 since B1 (D121): build 14 saved other sections' tiles under its shelves (its Release read mislabelled them),
+        /// so files from builds 13 and 14 (version 1) are dropped once and Home reads afresh.
+        static let currentVersion = 2
         var version: Int
         var shelves: [Shelf]
     }

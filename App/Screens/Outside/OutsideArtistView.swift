@@ -18,11 +18,27 @@ struct OutsideArtistView: View {
     @State private var tryError: String?
     /// Round 14 A3 (owner answer 6): the artist's Top songs, from the chosen source (the page's Popular).
     @State private var topSongs: TopSongsResult?
+    /// B1: bumped by a pull to refresh, so every picture that didn't load is asked for again.
+    @State private var artAttempt = 0
     private let themed = Themed()
 
     var body: some View {
         ScrollView {
             if let model { content(model) }
+        }
+        // B1 (owner item 6, D77): pull to refresh reads the albums, the top songs and every missing picture again.
+        .refreshable {
+            await RefreshSafety.run {
+                guard !app.isOffline else { return }
+                artAttempt += 1
+                // Second fix round (re-review minor 6): top songs have their own bound too.
+                let (name, mbid) = (artist.name, artist.mbid)
+                async let songs = Deadline.run(OutsideArtistModel.defaultLoadTimeout) { @MainActor in
+                    await app.artistTopSongs(name: name, mbid: mbid)
+                }
+                if let model { await model.load(fresh: true) }
+                if case .success(let fresh?) = await songs { topSongs = fresh }
+            }
         }
         .navigationTitle(artist.name)
         .navigationBarTitleDisplayMode(.inline)
@@ -31,7 +47,11 @@ struct OutsideArtistView: View {
         // One task builds and loads (review I2); again when offline mode flips ("You're offline", then the page).
         .task(id: app.isOffline) {
             if art == nil { art = app.makeOutsideArt() }
-            _ = await OutsideArtistModel.open(model, app: app, artist: artist) { model = $0 }
+            let opened = await OutsideArtistModel.open(model, app: app, artist: artist) { shown in
+                shown.willShowSections = { sections in noteAlbums(sections) }   // before the rows ask for covers
+                model = shown
+            }
+            noteAlbums(opened.sections)
         }
         .task(id: app.isOffline) { if !app.isOffline { topSongs = await app.artistTopSongs(name: artist.name, mbid: artist.mbid) } }
         .onDisappear { art?.reset() }   // R15: the outside art goes with the page
@@ -41,7 +61,7 @@ struct OutsideArtistView: View {
         let p = themed.palette
         return VStack(alignment: .leading, spacing: Tokens.Spacing.xxl) {
             VStack(spacing: Tokens.Spacing.m) {
-                OutsideArtwork(art, key: artist.mbid.map(OutsideArtKey.artist)) { image in
+                OutsideArtwork(art, key: artist.mbid.map(OutsideArtKey.artist), attempt: artAttempt) { image in
                     SleeveArt(image: image, placeholder: p.surfaceColor, side: 180)
                         .overlay { if image == nil { ArtistMonogram(name: artist.name) } }
                         .clipShape(Circle())
@@ -134,7 +154,7 @@ struct OutsideArtistView: View {
                 .buttonStyle(.plain)
         } else {
             NavigationLink(value: Route.outsideAlbum(album)) {
-                OutsideArtwork(art, key: .releaseGroup(item.id)) { image in
+                OutsideArtwork(art, key: .releaseGroup(item.id), attempt: artAttempt) { image in
                     NotYetAlbumRow(title: item.title, detail: detail,
                                    label: [item.title, item.kind, item.year.map(String.init)].compactMap { $0 }.joined(separator: ", "),
                                    artwork: image)
@@ -148,6 +168,13 @@ struct OutsideArtistView: View {
                     Button(TrySheet.tryAlbumTitle, systemImage: "sparkles") { Task { await tryAlbum(album) } }
                 }
             }
+        }
+    }
+
+    /// D125: each album's title and artist, for the cover source that finds covers by name.
+    private func noteAlbums(_ s: OutsideArtistSections) {
+        for item in s.albums + s.eps + s.singles + s.more {
+            art?.note(item.id, OutsideAlbumHint(title: item.title, artist: artist.name))
         }
     }
 

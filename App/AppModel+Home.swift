@@ -50,6 +50,13 @@ struct HomeShelf: Identifiable, Equatable, Sendable {
     }
 }
 
+/// One section's answer in Home's read (B1): where it goes, what it was read for, and what came back.
+struct HomeSectionAnswer: Sendable {
+    let index: Int
+    let section: HomeSection
+    let result: Result<[HomeShelf.Item], any Error>
+}
+
 extension HomeSection {
     /// Round 14 A6: a section Home's feed reads a shelf for. Made for you keeps its own; the greeting and the chips are
     /// part of the page.
@@ -88,15 +95,25 @@ extension AppModel {
     /// `homeShelves(for:)`, naming the sections that couldn't be read.
     func homeRead(for sections: [HomeSection]) async throws -> HomeRead {
         let wanted = sections.filter(\.readsShelf)
-        let results = await withTaskGroup(of: (Int, Result<[HomeShelf.Item], any Error>).self) { group in
+        // B1 (build 14): the section's answer is awaited into its own constant before it is paired with its position.
+        // Written as one `return` pairing `index` with an inline `.success(try await …)` inside do/catch, the optimised
+        // (Release) build lost `index` across the await: every answer landed on the first section asked, so each shelf
+        // showed another section's tiles (random albums under Recommended, Jump back in, Recently added) and the rest
+        // never loaded. Debug builds were right. scripts/check-release.sh now refuses that shape (D120).
+        let results = await withTaskGroup(of: HomeSectionAnswer.self) { group in
             for (index, section) in wanted.enumerated() {
                 group.addTask { [weak self] in
-                    guard let self else { return (index, .success([])) }
-                    do { return (index, .success(try await self.homeItems(section))) } catch { return (index, .failure(error)) }
+                    guard let self else { return HomeSectionAnswer(index: index, section: section, result: .success([])) }
+                    let result = await self.homeResult(section)
+                    return HomeSectionAnswer(index: index, section: section, result: result)
                 }
             }
             var results = [Result<[HomeShelf.Item], any Error>?](repeating: nil, count: wanted.count)
-            for await (index, result) in group where results.indices.contains(index) { results[index] = result }
+            for await answer in group {
+                // Belt and braces: an answer is kept only at the position of the section it was read for.
+                guard results.indices.contains(answer.index), wanted[answer.index] == answer.section else { continue }
+                results[answer.index] = answer.result
+            }
             return results
         }
         // A cancelled read reports nothing rather than "every section failed".
@@ -139,6 +156,25 @@ extension AppModel {
 
     /// Downloaded reads the phone only; every other section asks the server.
     private static func asksServer(_ section: HomeSection) -> Bool { section != .downloaded }
+
+    /// The longest Home waits for a provided section (B1): past it the section counts as not read (its saved shelf
+    /// stays and it is read again later), so a slow or silent provider never holds back the library's shelves.
+    nonisolated static let providedWait: Duration = .seconds(8)
+
+    /// One section's read as a value, so the task group never builds its answer around an `await` (B1).
+    private func homeResult(_ section: HomeSection) async -> Result<[HomeShelf.Item], any Error> {
+        let result: Result<[HomeShelf.Item], any Error>
+        if section.isProvided {
+            // Past the wait it is "not read yet" (a cancellation to Home), never a failure.
+            result = await Deadline.run(Self.providedWait) { @MainActor [weak self] in
+                guard let self else { throw CancellationError() }
+                return try await self.homeItems(section)
+            }.mapError { error -> any Error in error is Deadline.Exceeded ? CancellationError() : error }
+        } else {
+            do { result = .success(try await homeItems(section)) } catch { result = .failure(error) }
+        }
+        return result.map { items in items.filter { HomeShelf.fits($0, in: section) } }   // B1: never another kind
+    }
 
     /// One section's tiles, at most `homeShelfSize`.
     private func homeItems(_ section: HomeSection) async throws -> [HomeShelf.Item] {

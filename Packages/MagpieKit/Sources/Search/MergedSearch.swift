@@ -228,58 +228,15 @@ public struct MergedSearch: Sendable {
     }
 
     /// Runs `op` until `limit` passes on `sleep`'s clock, then throws `SearchTimedOut`. The loser is
-    /// cancelled and not waited for, so a source that ignores cancellation can't hold search up.
+    /// cancelled and not waited for, so a source that ignores cancellation can't hold search up. B1 fix round: one
+    /// shared helper (`Deadline.run`).
     static func withDeadline<T: Sendable>(_ limit: Duration, sleep: @escaping Sleep,
                                           _ op: @escaping @Sendable () async throws -> T) async throws -> T {
-        let race = Race<T>()
-        return try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { (c: CheckedContinuation<T, Error>) in
-                race.start(c, tasks: [
-                    Task { race.finish(await capture(op)) },
-                    Task {
-                        do {
-                            try await sleep(limit)
-                            race.finish(.failure(SearchTimedOut()))
-                        } catch {}   // cancelled: the work won
-                    },
-                ])
-            }
-        } onCancel: {
-            race.finish(.failure(CancellationError()))
+        switch await Deadline.run(limit, sleep: sleep, op) {
+        case .success(let value): return value
+        case .failure(let error) where error is Deadline.Exceeded: throw SearchTimedOut()
+        case .failure(let error): throw error
         }
-    }
-}
-
-/// First result wins; both tasks are then cancelled.
-private final class Race<T: Sendable>: @unchecked Sendable {
-    private let lock = NSLock()
-    private var continuation: CheckedContinuation<T, Error>?
-    private var result: Result<T, Error>?
-    private var tasks: [Task<Void, Never>] = []
-
-    func start(_ c: CheckedContinuation<T, Error>, tasks new: [Task<Void, Never>]) {
-        lock.lock()
-        if let result {
-            lock.unlock()
-            new.forEach { $0.cancel() }
-            c.resume(with: result)
-            return
-        }
-        continuation = c
-        tasks = new
-        lock.unlock()
-    }
-
-    func finish(_ r: Result<T, Error>) {
-        lock.lock()
-        guard result == nil else { lock.unlock(); return }
-        result = r
-        let c = continuation, ts = tasks
-        continuation = nil
-        tasks = []
-        lock.unlock()
-        ts.forEach { $0.cancel() }
-        c?.resume(with: r)
     }
 }
 

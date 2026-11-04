@@ -92,5 +92,13 @@ for config in Debug Release; do
   pb com.apple.developer.carplay-audio "$sim_ent" >/dev/null || fail "simulator $config entitlements ($sim_ent) lack carplay-audio"
 done
 
+# B1 (D120): the optimised build loses a value paired with an awaited Result inside do/catch, as in
+# `do { return (index, .success(try await f())) } catch { … }` (every Home shelf showed another section's tiles in
+# build 14). Await into a constant first, then build the pair.
+if grep -rnE '\(\s*[A-Za-z_][A-Za-z0-9_]*\s*,\s*\.success\(\s*try\s+await' App Packages/MagpieKit/Sources >/dev/null; then
+  grep -rnE '\(\s*[A-Za-z_][A-Za-z0-9_]*\s*,\s*\.success\(\s*try\s+await' App Packages/MagpieKit/Sources >&2
+  fail "a task answer pairs a value with .success(try await …) (B1: lost in Release)"
+fi
+
 if [ "$fails" -gt 0 ]; then echo "check-release: $fails failure(s)" >&2; exit 1; fi
 echo "check-release: OK"

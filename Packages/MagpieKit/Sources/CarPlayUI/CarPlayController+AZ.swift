@@ -147,13 +147,9 @@ extension CarPlayController {
     func artistSongs(_ id: String) async throws -> [Song] {
         let library = library
         let (_, albums) = try await library.artist(id: id)
-        let byAlbum = try await withThrowingTaskGroup(of: (Int, [Song]).self) { group in
-            for (i, album) in albums.enumerated() { group.addTask { (i, try await library.album(id: album.id).songs ?? []) } }
-            var found: [Int: [Song]] = [:]
-            for try await (i, songs) in group { found[i] = songs }
-            return found
-        }
-        return albums.indices.flatMap { byAlbum[$0] ?? [] }
+        // B1 fix round (D120): answers by album id, never by position.
+        let byAlbum = try await KeyedGather.values(albums.map(\.id)) { id in try await library.album(id: id).songs ?? [] }
+        return albums.flatMap { byAlbum[$0.id] ?? [] }
     }
 }
 #endif

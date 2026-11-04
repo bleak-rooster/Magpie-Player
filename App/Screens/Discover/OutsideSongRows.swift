@@ -42,13 +42,29 @@ struct AurralArt: View {
     let image: AurralImage?
     let side: CGFloat
     var circle = false
+    /// B1 (owner item 4): an artist's MBID: without a picture from the server, the one the artist page shows (kept on
+    /// the phone, so it is there at once next time).
+    var artist: MBID? = nil
+    /// B1: bumped by a pull to refresh, so a picture that failed is asked for again.
+    var attempt = 0
     @State private var picture: UIImage?
 
     var body: some View {
-        SleeveArt(image: picture.map { Image(uiImage: $0) }, side: side)
+        // Fix round (review minor 2): only memory while drawing; the phone's copy is read in the task.
+        SleeveArt(image: (picture ?? artist.flatMap { model.recommendedArt.peek(.artist($0)) }.map { UIImage(cgImage: $0) })
+                    .map { Image(uiImage: $0) }, side: side)
             .clipShape(circle ? AnyShape(Circle()) : AnyShape(Rectangle()))
             .accessibilityHidden(true)
-            .task(id: image?.raw) { picture = await model.aurralArtwork(image, side: side) }
+            .task(id: "\(image?.raw ?? "")|\(artist?.rawValue ?? "")#\(attempt)") {
+                // The copy on the phone first (review minor 3: also when the server named a picture), then the server's
+                // picture, then the one the artist page shows.
+                if let artist, let onPhone = await model.recommendedArt.cached(.artist(artist)) {
+                    picture = UIImage(cgImage: onPhone)
+                }
+                if let found = await model.aurralArtwork(image, side: side) { picture = found; return }
+                guard picture == nil, let artist, !model.isOffline else { return }
+                if let found = await model.recommendedArt.image(.artist(artist)) { picture = UIImage(cgImage: found) }
+            }
     }
 }
 
