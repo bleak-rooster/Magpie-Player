@@ -363,6 +363,52 @@ if [ -z "${G1_SRC:-}" ]; then
   fi
   grep -qF 'if method == "GET" { await session.noteImageSources(AurralImageProxy.pictureLinks(in: data)) }' "$aurral" ||
     { echo "G1: $aurral: the picture links are no longer learnt from Aurral's reads only" >&2; bad=1; }
+  # S14 L5 (D119): the parts the allow-list leans on are pinned whole too: the id validators' bodies (a looser one
+  # would let an id name another route), Not for me's whole body (only Aurral's own fields), the picture fetch's own
+  # allow-list check, and (S14 M1, D115) every Aurral answer read through the 8 MB cap.
+  block_of() {   # the body of `<decl> {` in file $2 up to its closing brace at the same indentation
+    awk -v decl="$1" 'index($0, decl) && !on { on = 1; match($0, /^ */); ind = RLENGTH; next }
+                      on { match($0, /^ */); if (RLENGTH == ind && $0 ~ /^ *}$/) exit; print }' "$2"
+  }
+  want_image_key='        let parts = s.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count == 1 || parts.count == 2, parts[0].count == 64,
+              parts[0].unicodeScalars.allSatisfy({ ("0"..."9").contains($0) || ("a"..."f").contains($0) }) else { return false }
+        guard parts.count == 2 else { return true }
+        return (1...5).contains(parts[1].count)
+            && parts[1].unicodeScalars.allSatisfy { ("a"..."z").contains($0) || ("0"..."9").contains($0) }'
+  want_plain_id='        !s.isEmpty && s.count <= 100 && s.unicodeScalars.allSatisfy {
+            ("a"..."z").contains($0) || ("A"..."Z").contains($0) || ("0"..."9").contains($0) || $0 == "-" || $0 == "_"
+        }'
+  want_digits='        !s.isEmpty && s.count <= max && s.unicodeScalars.allSatisfy { ("0"..."9").contains($0) }'
+  want_preview_file='        s.hasSuffix(".mp3") && isDigits(s.dropLast(4), max: 20)'
+  want_feedback='        guard let name = queryText(artist.name) else { return nil }
+        var o: [String: Any] = ["action": "block_artist", "artistName": name, "sourceContext": "recommended",
+                                "tagContext": Array(artist.matchedTags.prefix(8)),
+                                "seedContext": Array(artist.supportingSeeds.prefix(8))]
+        if let mbid = artist.mbid { o["artistId"] = mbid.rawValue }
+        return try? JSONSerialization.data(withJSONObject: o, options: [.sortedKeys, .withoutEscapingSlashes])'
+  [ "$(block_of 'static func isImageProxyKey(_ s: Substring) -> Bool {' "$aurral")" = "$want_image_key" ] ||
+    { echo "G1: $aurral: isImageProxyKey changed" >&2; bad=1; }
+  [ "$(block_of 'static func isPlainId(_ s: Substring) -> Bool {' "$aurral")" = "$want_plain_id" ] ||
+    { echo "G1: $aurral: isPlainId changed" >&2; bad=1; }
+  [ "$(block_of 'static func isDigits(_ s: Substring, max: Int) -> Bool {' "$aurral")" = "$want_digits" ] ||
+    { echo "G1: $aurral: isDigits changed" >&2; bad=1; }
+  [ "$(block_of 'static func isPreviewFile(_ s: Substring) -> Bool {' "$aurral")" = "$want_preview_file" ] ||
+    { echo "G1: $aurral: isPreviewFile changed" >&2; bad=1; }
+  [ "$(block_of 'static func feedbackBody(_ artist: AurralRecommendedArtist) -> Data? {' "$aurral_discover")" = "$want_feedback" ] ||
+    { echo "G1: $aurral_discover: Not for me's body changed" >&2; bad=1; }
+  [ "$(grep -cF 'static func isMBID(_ s: Substring) -> Bool { MBID(String(s)) != nil && UUID(uuidString: String(s)) != nil }' "$aurral")" = 1 ] ||
+    { echo "G1: $aurral: isMBID changed" >&2; bad=1; }
+  for want in 'guard AurralRoute.isAllowed(method: "GET", path: path, query: []),' \
+              'let url = ServerEndpoint(bases: [base]).url(base, path: path) else { throw AurralError.forbidden("image-proxy") }'; do
+    grep -qF -- "$want" "$image_proxy" || { echo "G1: $image_proxy: the picture fetch's allow-list check changed (missing: $want)" >&2; bad=1; }
+  done
+  for want in 'return try await transport.send(request, maxBytes: maxResponseBytes)' \
+              'public static let maxResponseBytes = 8 * 1024 * 1024'; do
+    grep -qF -- "$want" "$aurral" || { echo "G1: $aurral: Aurral's answers are no longer capped (missing: $want)" >&2; bad=1; }
+  done
+  [ "$(grep -cE 'transport\.send\(' "$aurral")" = 1 ] ||
+    { echo "G1: $aurral: an Aurral call is sent other than through the one capped send" >&2; bad=1; }
   # Round 13 (D70): the API key is gone. No product code sends an X-Api-Key to Aurral, and only the Aurral client sends
   # its Bearer token.
   if grep -nE 'X-Api-Key|apiKey' "$aurral" | grep -vE '^[0-9]+:[[:space:]]*//' | grep -q .; then

@@ -58,13 +58,21 @@ public enum OutsideSongMatch {
     /// A release group's chosen release with its tracklist (`OutsideCatalog.release(releaseGroup:)`).
     public typealias Release = @Sendable (MBID) async throws -> MBReleaseDetail?
 
-    public static func resolve(_ song: OutsideSong, links: Links, release: Release) async throws -> ExternalRecording {
+    /// S14 M2 (D116): Lidarr's name for an artist MBID (`artist/lookup?term=lidarr:<mbid>`); nil when it knows none.
+    public typealias ArtistName = @Sendable (MBID) async throws -> String?
+
+    /// `artistName` checks the artist the links name (S14 M2): the recording keeps it only when Lidarr's name for it is
+    /// the song's artist; otherwise it carries none, and the request takes MusicBrainz's own artist for the recording.
+    public static func resolve(_ song: OutsideSong, links: Links, release: Release,
+                               artistName: ArtistName = { _ in nil }) async throws -> ExternalRecording {
         if let known = song.recording { return known }
         var artistMBID = song.artistMBID
         var group = song.releaseGroupMBID
         if group == nil || artistMBID == nil {
             guard let found = try? await links(song.artist, song.album, song.deezerAlbumId) else { throw Failure.unmatched }
-            artistMBID = artistMBID ?? found.artist
+            if artistMBID == nil, let linked = found.artist, await names(linked, song.artist, artistName) {
+                artistMBID = linked
+            }
             group = group ?? found.album
         }
         guard let group, let detail = try? await release(group),
@@ -78,13 +86,33 @@ public enum OutsideSongMatch {
                                  releaseMBID: detail.id)
     }
 
-    /// The artist's MBID alone (Add artist).
-    public static func artist(_ song: OutsideSong, links: Links) async throws -> MBID {
+    /// The artist's MBID alone (Add artist, Whole artist): the song's own, else the one the links name, but only when
+    /// Lidarr's name for that MBID is the song's artist (S14 M2, D116: never an artist the server alone vouches for).
+    public static func artist(_ song: OutsideSong, links: Links, artistName: ArtistName) async throws -> MBID {
         if let known = song.artistMBID { return known }
-        guard let found = try? await links(song.artist, song.album, song.deezerAlbumId), let mbid = found.artist else {
+        guard let found = try? await links(song.artist, song.album, song.deezerAlbumId), let mbid = found.artist,
+              await names(mbid, song.artist, artistName) else {
             throw Failure.unmatched
         }
         return mbid
+    }
+
+    /// Whether Lidarr's name for `mbid` is `artist`, or the primary artist of a featured or joined credit ("X feat. Y",
+    /// "X & Y": X), compared whole and folded (case, accents, "Tides, The"); never a part after the first, never a
+    /// substring. Any failure is no.
+    static func names(_ mbid: MBID, _ artist: String, _ artistName: ArtistName) async -> Bool {
+        let keys = Set([artist, primaryArtist(artist)].map(SongIdentity.artistKey)).subtracting([""])
+        guard !keys.isEmpty, let named = try? await artistName(mbid) else { return false }
+        return keys.contains(SongIdentity.artistKey(named))
+    }
+
+    /// Where a credit's featured or joined artists start (case-insensitive).
+    static let creditSeparators = [" feat. ", " ft. ", " featuring ", " with ", " x ", " & ", ", "]
+
+    /// The credit up to its first featured or joined part ("X feat. Y & Z" → "X"); the whole credit when it has none.
+    static func primaryArtist(_ credit: String) -> String {
+        let cut = creditSeparators.compactMap { credit.range(of: $0, options: .caseInsensitive)?.lowerBound }.min()
+        return cut.map { String(credit[..<$0]) } ?? credit
     }
 }
 

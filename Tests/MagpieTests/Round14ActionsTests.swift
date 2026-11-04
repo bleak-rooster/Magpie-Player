@@ -78,6 +78,12 @@ private func queryValue(_ r: URLRequest, _ name: String) -> String? {
         })
     }
 
+    /// S14 M2: Lidarr's lookup of the server's linked artist answers with `name`.
+    private func lidarrNames(_ name: String) {
+        let body = Data("[{\"foreignArtistId\":\"\(stubArtist.rawValue)\",\"artistName\":\"\(name)\"}]".utf8)
+        transport.navidrome.stub(pathSuffix: "/api/v1/artist/lookup", body: body)
+    }
+
     private var playlistWrites: [URLRequest] { transport.navidrome.requests.filter { $0.url?.path.hasSuffix("/rest/updatePlaylist") == true } }
 
     // MARK: - Setups (owner answer 9)
@@ -106,6 +112,7 @@ private func queryValue(_ r: URLRequest, _ name: String) -> String? {
         let model = try await model(lidarr: true)
         defer { model.signOut() }
         catalog(model, length: 197)
+        lidarrNames("Stub Arrows")
         await model.listenToFullSong(harbour)
         let target = try #require(model.songActions.trying)
         #expect(target.recording.recordingMBID == harbourRecording && target.recording.artistMBID == stubArtist)
@@ -147,6 +154,7 @@ private func queryValue(_ r: URLRequest, _ name: String) -> String? {
             Issue.record("Whole artist never reads MusicBrainz")
             return []
         })
+        lidarrNames("Stub Arrows")
         let playlist = try #require(try await model.editablePlaylists().first { $0.id == "pl-road" })
         #expect(await model.save(harbour, choice: .wholeArtist, to: playlist) == nil)
         // Fix round 1: the Add waits for the picker to finish closing (the presenter's onDismiss hands it over).
@@ -158,6 +166,49 @@ private func queryValue(_ r: URLRequest, _ name: String) -> String? {
         // Magpie isn't set up in this Lidarr: the Add fails, so nothing waits.
         let outcome = await add.commit(model.newMusic.whenYouAdd, add.candidates.first, nil)
         #expect(!outcome.succeeded && model.songActions.pending.isEmpty)
+    }
+
+    // MARK: - S14 M2 (D116): the server's linked artist is checked against Lidarr's name for it
+
+    @Test func wholeArtistRefusesALinkedArtistLidarrNamesOtherwise() async throws {
+        let model = try await model(lidarr: true)
+        defer { model.signOut() }
+        lidarrNames("Somebody Else")
+        let playlist = try #require(try await model.editablePlaylists().first { $0.id == "pl-road" })
+        #expect(await model.save(harbour, choice: .wholeArtist, to: playlist) == SongActionsCopy.unmatchedArtist)
+        model.songActions.presentQueuedAdd()
+        #expect(model.songActions.wholeArtistAdd == nil && model.songActions.pending.isEmpty)
+        let lookups = transport.navidrome.requests.filter { $0.url?.path.hasSuffix("/api/v1/artist/lookup") == true }
+        #expect(lookups.contains { queryValue($0, "term") == "lidarr:" + stubArtist.rawValue })
+    }
+
+    @Test func wholeArtistRefusesALinkedArtistLidarrDoesntKnow() async throws {
+        let model = try await model(lidarr: true)
+        defer { model.signOut() }
+        transport.navidrome.stub(pathSuffix: "/api/v1/artist/lookup", body: Data("[]".utf8))
+        let playlist = try #require(try await model.editablePlaylists().first { $0.id == "pl-road" })
+        #expect(await model.save(harbour, choice: .wholeArtist, to: playlist) == SongActionsCopy.unmatchedArtist)
+    }
+
+    @Test func addArtistDropsALinkedArtistLidarrNamesOtherwise() async throws {
+        let model = try await model(lidarr: true)
+        defer { model.signOut() }
+        lidarrNames("Somebody Else")
+        await model.addArtist(of: harbour)
+        let ids = Set(model.songActions.adder.lines.keys)
+        #expect(!ids.contains(stubArtist.rawValue), "the unchecked MBID is never used")
+        #expect(ids == [DiscoverArtist(name: "Stub Arrows", mbid: nil).id], "Lidarr's search by the exact name instead")
+    }
+
+    @Test func listenKeepsTheLinkedArtistOnlyWhenItChecksOut() async throws {
+        let model = try await model(lidarr: true)
+        defer { model.signOut() }
+        catalog(model, length: 197)
+        lidarrNames("Somebody Else")
+        await model.listenToFullSong(harbour)
+        let target = try #require(model.songActions.trying)
+        #expect(target.recording.recordingMBID == harbourRecording && target.recording.artistMBID == nil,
+                "the request takes MusicBrainz's own artist for the recording")
     }
 
     // MARK: - Pending adds (Decision 5)

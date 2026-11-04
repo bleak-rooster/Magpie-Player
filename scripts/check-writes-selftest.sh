@@ -128,5 +128,37 @@ done
 cp "$work/RefusedMediaHosts.orig" "$hosts_src"; cp "$work/OutsideArt.orig" "$art_src"
 weakened+=("${host_weakened[@]}")
 
+# S14 L5 (D119): the id validators, Not for me's body, the picture fetch's allow-list check and the 8 MB cap weakened.
+discover_src="$work/Packages/MagpieKit/Sources/AurralKit/AurralClient+Discover.swift"
+proxy_src="$work/Packages/MagpieKit/Sources/AurralKit/AurralImageProxy.swift"
+for f in "$aurral_src" "$discover_src" "$proxy_src"; do cp "$f" "$f.orig"; done
+s14_weakened=(
+  "$aurral_src|s/!s.isEmpty \&\& s.count <= 100 \&\& s.unicodeScalars.allSatisfy {/!s.isEmpty \&\& s.count <= 100 \&\& s.unicodeScalars.allSatisfy { \$0 == \"\/\" ||/"
+  "$aurral_src|s/            (\"a\"...\"z\").contains(\$0) || (\"A\"...\"Z\").contains(\$0) || (\"0\"...\"9\").contains(\$0) || \$0 == \"-\" || \$0 == \"_\"/            (\"a\"...\"z\").contains(\$0) || (\"A\"...\"Z\").contains(\$0) || (\"0\"...\"9\").contains(\$0) || \$0 == \"-\" || \$0 == \"_\" || \$0 == \".\"/"
+  "$aurral_src|s/!s.isEmpty \&\& s.count <= max \&\& s.unicodeScalars.allSatisfy { (\"0\"...\"9\").contains(\$0) }/!s.isEmpty \&\& s.count <= max/"
+  "$aurral_src|s/        s.hasSuffix(\".mp3\") \&\& isDigits(s.dropLast(4), max: 20)/        s.hasSuffix(\".mp3\")/"
+  "$aurral_src|s/        guard parts.count == 2 else { return true }/        guard parts.count >= 2 else { return true }/"
+  "$aurral_src|s/static func isMBID(_ s: Substring) -> Bool { MBID(String(s)) != nil \&\& UUID(uuidString: String(s)) != nil }/static func isMBID(_ s: Substring) -> Bool { !s.isEmpty }/"
+  "$aurral_src|s/return try await transport.send(request, maxBytes: maxResponseBytes)/return try await transport.send(request)/"
+  "$aurral_src|s/public static let maxResponseBytes = 8 \* 1024 \* 1024/public static let maxResponseBytes = 800 * 1024 * 1024/"
+  "$discover_src|s/        if let mbid = artist.mbid { o\[\"artistId\"\] = mbid.rawValue }/        if let mbid = artist.mbid { o[\"artistId\"] = mbid.rawValue }\n        o[\"reset\"] = true/"
+  "$discover_src|s/\"sourceContext\": \"recommended\",/\"sourceContext\": artist.name,/"
+  "$proxy_src|s/        guard AurralRoute.isAllowed(method: \"GET\", path: path, query: \[\]),/        guard true,/"
+)
+for w in "${s14_weakened[@]}"; do
+  file="${w%%|*}" expr="${w#*|}"
+  for f in "$aurral_src" "$discover_src" "$proxy_src"; do cp "$f.orig" "$f"; done
+  cp "$file" "$work/before"
+  sed -i '' "$expr" "$file"
+  if cmp -s "$work/before" "$file"; then echo "selftest: the weakening didn't apply: $expr" >&2; failed=1; continue; fi
+  if out=$("$work/scripts/check-writes.sh" 2>&1); then
+    echo "selftest: NOT caught: $expr" >&2; failed=1
+  elif ! grep -qE 'G1:' <<< "$out"; then
+    echo "selftest: failed without a G1 reason: $expr" >&2; failed=1
+  fi
+done
+for f in "$aurral_src" "$discover_src" "$proxy_src"; do cp "$f.orig" "$f"; rm -f "$f.orig"; done
+weakened+=("${s14_weakened[@]}")
+
 [ "$failed" = 0 ] || exit 1
 echo "check-writes selftest: all ${#planted[@]} planted violations and ${#weakened[@]} allow-list weakenings caught; the clean tree passes"

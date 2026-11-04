@@ -201,6 +201,10 @@ public struct AurralClient: Sendable, CustomDebugStringConvertible, CustomReflec
         self.log = log ?? Self.defaultLog
     }
 
+    /// S14 M1 (D115): the most of any Aurral answer Magpie reads (its JSON runs to tens of KB; a bigger one is refused
+    /// as it streams, before it is parsed).
+    public static let maxResponseBytes = 8 * 1024 * 1024
+
     static let defaultLog: @Sendable (String) -> Void = { line in Log.logger("aurral").debug("\(line, privacy: .public)") }
 
     public var debugDescription: String { "AurralClient(\(Redactor.sanitize(base)))" }
@@ -222,7 +226,9 @@ public struct AurralClient: Sendable, CustomDebugStringConvertible, CustomReflec
                                               token: nil, body: body, transport: transport, log: log)
         switch response.statusCode {
         case 200..<300: return try AurralLogin.decode(data)
-        case 400, 401, 403: throw AurralError.badLogin
+        // S14 L1 (D117): only 400/401 say the username or password is wrong. A 403 (a proxy or firewall in front of
+        // Aurral, a blocked address) is another failure: the saved password is kept and the session backs off.
+        case 400, 401: throw AurralError.badLogin
         case 429: throw AurralError.rateLimited
         case 404: throw AurralError.notFound
         default: throw AurralError.http(status: response.statusCode)
@@ -327,6 +333,10 @@ public struct AurralClient: Sendable, CustomDebugStringConvertible, CustomReflec
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         }
         log(Log.describe(request))
-        return try await transport.send(request)
+        do {
+            return try await transport.send(request, maxBytes: maxResponseBytes)
+        } catch is ResponseTooLarge {
+            throw AurralError.decoding   // S14 M1 (D115): no Aurral answer Magpie reads is anywhere near this big
+        }
     }
 }

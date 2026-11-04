@@ -40,7 +40,7 @@ private func song(_ title: String = "Harbour Lights", duration: TimeInterval? = 
             await calls.release(group)
             return release([MBTrack(recording: otherRecording, title: "Undertow", length: 180),
                             MBTrack(recording: recordingMBID, title: "Harbour Lights (Remastered)", length: 199)])
-        })
+        }, artistName: { _ in "The Tides" })
         #expect(r.recordingMBID == recordingMBID && r.artistMBID == artistMBID && r.releaseMBID == releaseMBID)
         #expect(r.title == "Harbour Lights (Remastered)" && r.artist == "The Tides" && r.releaseTitle == "Wide Open")
         #expect(r.duration == 199 && r.source == .lidarr)
@@ -88,13 +88,15 @@ private func song(_ title: String = "Harbour Lights", duration: TimeInterval? = 
     }
 
     @Test func theArtistAloneForAddArtist() async throws {
-        let mbid = try await OutsideSongMatch.artist(song(), links: { _, _, _ in (artistMBID, nil) })
+        let mbid = try await OutsideSongMatch.artist(song(), links: { _, _, _ in (artistMBID, nil) },
+                                                     artistName: { _ in "The Tides" })
         #expect(mbid == artistMBID)
         var known = song()
         known.artistMBID = artistMBID
-        #expect(try await OutsideSongMatch.artist(known, links: { _, _, _ in Issue.record("asked"); return (nil, nil) }) == artistMBID)
+        #expect(try await OutsideSongMatch.artist(known, links: { _, _, _ in Issue.record("asked"); return (nil, nil) },
+                                                  artistName: { _ in nil }) == artistMBID)
         await #expect(throws: OutsideSongMatch.Failure.unmatched) {
-            try await OutsideSongMatch.artist(song(), links: { _, _, _ in (nil, groupMBID) })
+            try await OutsideSongMatch.artist(song(), links: { _, _, _ in (nil, groupMBID) }, artistName: { _ in "The Tides" })
         }
     }
 
