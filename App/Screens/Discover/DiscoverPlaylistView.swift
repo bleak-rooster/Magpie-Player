@@ -109,7 +109,7 @@ struct DiscoverPlaylistView: View {
             .padding(.horizontal, Tokens.Spacing.largeTitleMargin)
             // Y7 phase 2: the same ActionBars as every page: Play and Shuffle, then this page's own actions (tinted).
             VStack(spacing: Tokens.Spacing.s) {
-                ActionBar { PlayShuffleButtons(songs: songs) }
+                ActionBar { PlayShuffleButtons(songs: songs, recent: .playlist(page.playlist)) }   // round 14: quick grid
                 ActionBar {
                     if page.flow != nil {
                         ActionButton(runActive ? DiscoverCopy.refreshing : DiscoverCopy.refresh, symbol: "arrow.clockwise",
@@ -130,7 +130,10 @@ struct DiscoverPlaylistView: View {
 
         ForEach(Array(page.entries.enumerated()), id: \.offset) { index, entry in
             VStack(alignment: .leading, spacing: 0) {
-                Button { model.play(songs, startAt: index) } label: {
+                Button {
+                    model.noteRecentlyPlayed(.playlist(page.playlist))   // round 14: Home's quick grid
+                    model.play(songs, startAt: index)
+                } label: {
                     VStack(alignment: .leading, spacing: 2) {
                         Artwork(entry.song.coverArtId, side: 48) { image in
                             SongRow(song: entry.song, state: .library, artwork: image)

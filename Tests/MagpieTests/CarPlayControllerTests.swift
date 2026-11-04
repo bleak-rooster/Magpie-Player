@@ -142,7 +142,10 @@ final class FakeCarInterface: CarPlayInterface {
         let model = makeModel(store: store)
         try await model.signIn(urls: [home], username: "admin", password: "pw")
         await model.downloads!.settled()
-        model.updatePreferences { $0.downloads.preDownload = 0 }
+        model.updatePreferences {
+            $0.downloads.preDownload = 0
+            $0.layout.home = .build13   // round 14: these tests are about the car, from build 13's phone Home
+        }
         return model
     }
 
@@ -653,6 +656,7 @@ final class FakeCarInterface: CarPlayInterface {
 
         // What the owner saved, readable only now (UserDefaults can't be read before first unlock).
         var saved = model.preferences
+        saved.layout.home = .build13   // round 14: build 13's phone Home, Most played moved to the top
         saved.layout.home.move(fromOffsets: IndexSet(integer: 3), toOffset: 0)
         saved.layout.library.move(fromOffsets: IndexSet(integer: 6), toOffset: 0)
         PreferencesStore(defaults: defaults).save(saved, previous: model.preferences)

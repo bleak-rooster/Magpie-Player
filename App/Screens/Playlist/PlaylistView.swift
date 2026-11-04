@@ -116,7 +116,7 @@ struct PlaylistView: View {
 
             VStack(spacing: Tokens.Spacing.s) {
                 ActionBar {
-                    PlayShuffleButtons(songs: songs)
+                    PlayShuffleButtons(songs: songs, recent: fromPhone ? nil : .playlist(page.playlist))   // round 14
                     DownloadButton(reason: .playlist(page.playlist.id), songs: songs, playlist: snapshot(page),
                                    coverArtId: page.playlist.coverArtId)
                 }
@@ -130,7 +130,10 @@ struct PlaylistView: View {
 
         ForEach(Array(songs.enumerated()), id: \.offset) { index, song in
             VStack(spacing: 0) {
-                Button { model.play(songs, startAt: index) } label: {
+                Button {
+                    if !fromPhone { model.noteRecentlyPlayed(.playlist(page.playlist)) }   // round 14: the quick grid
+                    model.play(songs, startAt: index)
+                } label: {
                     Artwork(song.coverArtId, side: 48) { image in
                         SongRow(song: song, state: .library, artwork: image)
                     }

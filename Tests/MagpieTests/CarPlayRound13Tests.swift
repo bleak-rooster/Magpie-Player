@@ -76,7 +76,10 @@ private func subsonic(_ body: String) -> Data {
                              network: FakeNetwork(.wifi), audioFetcher: FakeFetcher())
         try await model.signIn(urls: [home], username: "admin", password: "pw")
         await model.downloads!.settled()
-        model.updatePreferences { $0.downloads.preDownload = 0 }
+        model.updatePreferences {
+            $0.downloads.preDownload = 0
+            $0.layout.home = .build13   // round 14: these tests are about the car, from build 13's phone Home
+        }
         return model
     }
 

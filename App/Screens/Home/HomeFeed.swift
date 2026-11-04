@@ -56,13 +56,19 @@ import Observation
     /// Retry tasks alive now (tests: never more than one).
     @ObservationIgnored private(set) var liveRetries = 0
 
-    init(scope: String? = nil, cache: HomeShelfCache?, read: @escaping Reader,
+    /// Round 14 A6: albums, playlists and flows played on this phone, newest first (Home's quick grid).
+    private(set) var recentPlays: [RecentPlay] = []
+    @ObservationIgnored private let recentStore: QuickAccessStore?
+
+    init(scope: String? = nil, cache: HomeShelfCache?, recentStore: QuickAccessStore? = nil, read: @escaping Reader,
          sleep: @escaping Sleep = { try await Task.sleep(for: $0) }, now: @escaping () -> Date = Date.init) {
         self.scope = scope
         self.cache = cache
+        self.recentStore = recentStore
         self.read = read
         self.sleep = sleep
         self.now = now
+        recentPlays = recentStore?.load() ?? []
         if let saved = cache?.load(), !saved.isEmpty {
             load = HomeLoad(cached: saved)
             lastSaved = saved
@@ -152,6 +158,15 @@ import Observation
         guard let key = lastKey else { return }
         if readTask != nil { staleSections.formUnion(sections) }
         restart(key, fresh: false)
+    }
+
+    /// Round 14 A6: `play` heads the quick grid now, and is saved (never once stopped: signed out, another account).
+    func notePlayed(_ play: RecentPlay) {
+        guard !isStopped else { return }
+        var play = play
+        play.playedAt = play.playedAt ?? now()
+        recentPlays = QuickAccess.noting(play, in: recentPlays)
+        recentStore?.save(recentPlays)
     }
 
     /// To the background: no retry waits meanwhile (the read under way, if any, finishes).
@@ -299,6 +314,7 @@ extension AppModel {
         if let feed = homeFeedSlot, feed.scope == scope { return feed }
         homeFeedSlot?.stop()
         let feed = HomeFeed(scope: scope, cache: scope.map { HomeShelfCache(root: dataDirectory, scope: $0) },
+                            recentStore: scope.map { QuickAccessStore(root: dataDirectory, scope: $0) },
                             read: { [weak self] sections in
                                 guard let self else { throw CancellationError() }
                                 return try await self.homeRead(for: sections)
