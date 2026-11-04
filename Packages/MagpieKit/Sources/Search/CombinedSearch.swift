@@ -207,12 +207,18 @@ public actor SharedOutsideSearch {
         self.init(timeout: timeout) { q in MergedSearch.Source.hits(from: try await lidarr.search(term: q)) }
     }
 
+    /// A caller cancelled (the search moved on) cancels the shared request too, so typing never leaves Lidarr
+    /// searches running.
     public func hits(_ query: String) async throws -> ExternalHits {
-        if let task = running[query] { return try await task.value }
-        let search = self.search, timeout = self.timeout, sleep = self.sleep
-        let task = Task { try await MergedSearch.withDeadline(timeout, sleep: sleep) { try await search(query) } }
-        running[query] = task
-        return try await task.value
+        let task: Task<ExternalHits, Error>
+        if let running = running[query] {
+            task = running
+        } else {
+            let search = self.search, timeout = self.timeout, sleep = self.sleep
+            task = Task { try await MergedSearch.withDeadline(timeout, sleep: sleep) { try await search(query) } }
+            running[query] = task
+        }
+        return try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
     }
 }
 

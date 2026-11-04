@@ -178,6 +178,22 @@ final class AsyncGate: @unchecked Sendable {
         #expect(calls.count("mb") == 0)
     }
 
+    @Test func aCancelledSearchCancelsTheSharedLidarrRequest() async throws {
+        let started = AsyncGate(), ended = Calls()
+        let shared = SharedOutsideSearch(timeout: .seconds(5), sleep: never) { _ in
+            started.open()
+            do { try await Task.sleep(for: .seconds(2)) } catch { ended.add("cancelled"); throw error }
+            ended.add("ran on")
+            return ExternalHits()
+        }
+        let caller = Task { try await shared.hits("x") }
+        await started.wait()
+        caller.cancel()
+        _ = try? await caller.value
+        for _ in 0..<300 where ended.all.isEmpty { try? await Task.sleep(for: .milliseconds(10)) }
+        #expect(ended.all == ["cancelled"])
+    }
+
     @Test func noBackupMeansNoSongs() async throws {
         let calls = Calls()
         let reader = TracklistSongs(release: { _ in nil }, sleep: never)
