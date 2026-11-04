@@ -28,6 +28,7 @@ public struct AurralOpenTransport: HTTPTransport {
     static let session = URLSession(configuration: sessionConfiguration(), delegate: NoRedirects.shared, delegateQueue: nil)
 
     public func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        try Task.checkCancellation()
         let download = CappedDownload()
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
@@ -55,16 +56,23 @@ public struct AurralOpenTransport: HTTPTransport {
         private var continuation: CheckedContinuation<(Data, HTTPURLResponse), Error>?
         private var task: URLSessionDataTask?
         private var tooLarge = false
+        private var cancelled = false
 
+        /// Fix round 1 M1: a call cancelled before it starts sends nothing.
         func start(_ request: URLRequest, session: URLSession,
                    continuation: CheckedContinuation<(Data, HTTPURLResponse), Error>) {
             let task = session.dataTask(with: request)
             task.delegate = self
-            lock.withLock { self.continuation = continuation; self.task = task }
+            let go = lock.withLock { () -> Bool in
+                guard !cancelled else { return false }
+                self.continuation = continuation; self.task = task
+                return true
+            }
+            guard go else { return continuation.resume(throwing: CancellationError()) }
             task.resume()
         }
 
-        func cancel() { lock.withLock { task }?.cancel() }
+        func cancel() { lock.withLock { cancelled = true; return task }?.cancel() }
 
         func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
                         newRequest request: URLRequest) async -> URLRequest? { nil }

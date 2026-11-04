@@ -433,16 +433,17 @@ extension AppModel {
 }
 
 /// Round 14 A7: one image proxy per Aurral server (and data directory), shared by every screen, so the bound of four
-/// holds across them.
+/// holds across them. Keyed and compared on the same normalised address (fix round 1 M2: one actor per server, however
+/// its address is spelt).
 enum AurralImageProxies {
     private static let all = OSAllocatedUnfairLock(initialState: [String: AurralImageProxy]())
 
-    static func key(_ base: URL) -> String { base.absoluteString.lowercased() }
+    static func key(_ base: URL) -> String { AurralImageProxy.serverKey(base) }
 
     static func proxy(for base: URL, dataDirectory: URL, transport: HTTPTransport) -> AurralImageProxy {
         let id = dataDirectory.path + "|" + key(base)
         return all.withLock { proxies in
-            if let proxy = proxies[id], proxy.base == base { return proxy }
+            if let proxy = proxies[id], proxy.server == key(base) { return proxy }
             let proxy = AurralImageProxy(base: base, directory: dataDirectory.appending(path: "aurral-image-proxy"),
                                          openTransport: transport)
             proxies[id] = proxy

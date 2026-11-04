@@ -140,15 +140,33 @@ public actor AurralSession: CustomDebugStringConvertible {
     // MARK: - Round 14 A7 (D111): picture links Aurral returned this session
 
     /// Every absolute picture link an Aurral answer named this session: the only `src` values the image proxy may be
-    /// asked for (never one from a saved copy, a URL the phone made up, or another server).
-    private var imageSources: Set<String> = []
+    /// asked for (never one from a saved copy, a URL the phone made up, or another server). Bounded by forgetting the
+    /// least recently named (fix round 1 M3), never by refusing new pictures. Each link maps to when it was last named.
+    private var imageSources: [String: Int] = [:]
+    /// (link, stamp) in naming order; an entry whose stamp is no longer the link's is stale and skipped.
+    private var imageSourceOrder: [(String, Int)] = []
+    private var imageSourceStamp = 0
     static let maxImageSources = 20_000
 
-    func noteImageSources(_ sources: [String]) {
-        for source in sources where imageSources.count < Self.maxImageSources { imageSources.insert(source) }
+    func noteImageSources(_ sources: [String], limit: Int = AurralSession.maxImageSources) {
+        for source in sources {
+            imageSourceStamp += 1
+            imageSources[source] = imageSourceStamp
+            imageSourceOrder.append((source, imageSourceStamp))
+        }
+        var drop = 0
+        while imageSources.count > limit, drop < imageSourceOrder.count {
+            let (oldest, stamp) = imageSourceOrder[drop]
+            if imageSources[oldest] == stamp { imageSources[oldest] = nil }
+            drop += 1
+        }
+        if drop > 0 { imageSourceOrder.removeFirst(drop) }
+        if imageSourceOrder.count > 4 * max(limit, 1) {   // compact the stale entries now and then
+            imageSourceOrder = imageSourceOrder.filter { imageSources[$0.0] == $0.1 }
+        }
     }
 
-    public func knowsImageSource(_ source: String) -> Bool { imageSources.contains(source) }
+    public func knowsImageSource(_ source: String) -> Bool { imageSources[source] != nil }
 
     /// A token to send: the current one while it's live, else a new login.
     func token(logIn: @escaping @Sendable (String, String) async throws -> AurralLogin) async throws -> String {

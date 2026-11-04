@@ -47,6 +47,8 @@ public actor AurralImageProxy {
     public static let maxBytes = 2 * 1024 * 1024
 
     public nonisolated let base: URL
+    /// The server, however its address is spelt (fix round 1 M2).
+    public nonisolated let server: String
     private let file: URL?
     private let openTransport: HTTPTransport
     private var mappings: [String: String]?
@@ -58,13 +60,14 @@ public actor AurralImageProxy {
     /// follows a redirect and keeps no cookie or cache).
     public init(base: URL, directory: URL?, openTransport: HTTPTransport = AurralOpenTransport()) {
         self.base = base
-        self.file = directory?.appending(path: Self.serverKey(base) + ".json")
+        self.server = Self.serverKey(base)
+        self.file = directory?.appending(path: server + ".json")
         self.openTransport = openTransport
     }
 
     /// The picture's bytes, through Aurral; nil when it can't be had (the placeholder).
     public func imageData(for image: AurralImage, client: AurralClient) async -> Data? {
-        guard client.base == base else { return nil }
+        guard Self.serverKey(client.base) == server else { return nil }
         if image.raw.hasPrefix("/") {
             // Already a picture on Aurral (its image-proxy path); no other Aurral path is a picture Magpie fetches.
             guard let proxied = AurralProxiedImage(path: image.raw) else { return nil }
@@ -220,7 +223,7 @@ public actor AurralImageProxy {
     }
 
     /// One file per server: a hash of its address (scheme, host and port lower-cased, and its path).
-    static func serverKey(_ base: URL) -> String {
+    public static func serverKey(_ base: URL) -> String {
         var parts = URLComponents(url: base, resolvingAgainstBaseURL: false) ?? URLComponents()
         parts.scheme = parts.scheme?.lowercased()
         parts.host = parts.host?.lowercased()

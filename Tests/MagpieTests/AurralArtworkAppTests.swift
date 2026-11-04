@@ -44,6 +44,17 @@ extension DiscoverAppTests {
         #expect(aurral.imageProxySources.isEmpty && outsideAsks.isEmpty)
     }
 
+    /// Fix round 1 M2: one image proxy (one bound of four) per server, however its address is spelt.
+    @Test func oneImageProxyPerServer() {
+        let directory = tmp
+        let a = AurralImageProxies.proxy(for: URL(string: "http://Aurral.Home:3001/")!, dataDirectory: directory, transport: transport)
+        let b = AurralImageProxies.proxy(for: URL(string: "http://aurral.home:3001")!, dataDirectory: directory, transport: transport)
+        let c = AurralImageProxies.proxy(for: URL(string: "http://aurral.home:3001")!, dataDirectory: directory, transport: transport)
+        #expect(a === b && b === c)
+        let other = AurralImageProxies.proxy(for: URL(string: "http://aurral.home:3002")!, dataDirectory: directory, transport: transport)
+        #expect(other !== a)
+    }
+
     /// No Aurral, offline, or Aurral failing: the placeholder, and nothing asked of anyone else.
     @Test func withoutAurralOrOfflineThePlaceholder() async throws {
         let art = try #require(AurralImage("https://cdn-images.dzcdn.net/images/cover/3135557/250x250-000000-80-0-0.jpg"))
