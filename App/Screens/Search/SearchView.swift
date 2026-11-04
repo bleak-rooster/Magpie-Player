@@ -187,94 +187,20 @@ private struct SearchContent: View {
                 moreFooter(.albums, in: sections, count: sections.albums.count)
             }
         }
-        ownedSongs(sections.notYet.owned)
-        if model.phase == .searching, !sections.libraryIsEmpty, app.searchLooksOutside {
-            // Round 14 (D97): the library's rows are in; outside sources are still answering.
-            HStack(spacing: Tokens.Spacing.s) {
-                ProgressView()
-                Text("Still looking outside your library\u{2026}").font(.footnote).foregroundStyle(themed.palette.ink2Color)
-            }
-            .frame(maxWidth: .infinity, minHeight: Tokens.minHitSize)
-            .accessibilityElement(children: .combine)
-            .accessibilityIdentifier("search-outside-pending")
-            .listRowBackground(Color.clear)
-            .listRowSeparator(.hidden)
-        }
-        notYetBand(sections.notYet)
-    }
-
-    /// Round 14 (D96): songs on an outside album's tracklist that the library has but its search didn't list: "In your
-    /// library", played from the library. Apart from the band, which only holds what isn't here.
-    @ViewBuilder private func ownedSongs(_ owned: [OwnedOutsideSong]) -> some View {
-        if scope == .all || scope == .songs, !owned.isEmpty {
+        // Round 14 (D96): songs the library has that its search didn't list (rows in SearchOutside.swift).
+        if scope == .all || scope == .songs, !sections.notYet.owned.isEmpty {
             Section {
                 header("Also in your library").accessibilityIdentifier("search-owned-header")
-                ForEach(Array(owned.enumerated()), id: \.element.songId) { index, item in
-                    ownedSongRow(item).accessibilityIdentifier("search-owned-song-\(index)")
+                ForEach(Array(sections.notYet.owned.enumerated()), id: \.element.songId) { index, item in
+                    OwnedSongRow(item: item, model: model) { remember(model.query) }
+                        .accessibilityIdentifier("search-owned-song-\(index)")
                 }
             }
         }
-    }
-
-    private func ownedSongRow(_ item: OwnedOutsideSong) -> some View {
-        let r = item.recording
-        return Button {
-            remember(model.query)
-            Task { if let song = await app.librarySong(id: item.songId) { app.play([song], startAt: 0) } }
-        } label: {
-            HStack(spacing: Tokens.Spacing.m) {
-                OutsideArtwork(model.outsideArt, key: .cover(releaseGroup: nil, release: r.releaseMBID)) { art in
-                    SleeveArt(image: art, side: 48)
-                }
-                .accessibilityHidden(true)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(r.title).font(.callout).lineLimit(1)
-                    Text(r.artist).font(.footnote).foregroundStyle(themed.palette.ink2Color).lineLimit(1)
-                    Label(SearchCopy.inYourLibrary, systemImage: "checkmark.circle")
-                        .font(.caption).foregroundStyle(themed.palette.ink2Color)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .padding(.horizontal, Tokens.Spacing.margin)
-            .frame(minHeight: 60)
-            .contentShape(Rectangle())
+        if model.phase == .searching, !sections.libraryIsEmpty, app.searchLooksOutside {
+            OutsidePendingRow()   // D97
         }
-        .buttonStyle(.plain)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(r.title), \(r.artist)")
-        .accessibilityValue(SearchCopy.inYourLibrary)
-        .accessibilityAddTraits(.isButton)
-        .listRowInsets(EdgeInsets())
-        .listRowBackground(Color.clear)
-    }
-
-    /// Round 14 (D98): the end of one kind in the band: More (a tap, never on scroll: an outside page can mean
-    /// MusicBrainz reads), a spinner while it loads, or Try again after a failure.
-    @ViewBuilder private func outsideMoreFooter(_ kind: OutsideKind, in sections: SearchSections) -> some View {
-        if model.phase == .done, sections.hasMoreOutside(kind) {
-            switch model.outsideMoreState(kind) {
-            case .loading:
-                ProgressView()
-                    .frame(maxWidth: .infinity, minHeight: Tokens.minHitSize)
-                    .accessibilityLabel("Loading more")
-                    .accessibilityIdentifier("search-notyet-more-\(kind.rawValue)")
-                    .listRowBackground(Color.clear)
-                    .listRowSeparator(.hidden)
-            case .idle, .failed:
-                Button { model.loadMoreOutside(kind) } label: {
-                    Label(model.outsideMoreState(kind) == .failed ? "Couldn\u{2019}t load more. Try again"
-                                                                  : SearchCopy.more(kind),
-                          systemImage: model.outsideMoreState(kind) == .failed ? "arrow.clockwise" : "chevron.down")
-                        .font(.subheadline)
-                        .frame(maxWidth: .infinity, minHeight: Tokens.minHitSize)
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(themed.palette.ink2Color)
-                .accessibilityIdentifier("search-notyet-more-\(kind.rawValue)")
-                .listRowBackground(Color.clear)
-                .listRowSeparator(.hidden)
-            }
-        }
+        notYetBand(sections)
     }
 
     /// Round 12 (Y1, plan item 3): the end of a library section. While it has more, a spinner that loads the next
@@ -361,34 +287,36 @@ private struct SearchContent: View {
 
     /// Below every library row, never interleaved (D4). Each row says "Not in your library" in text
     /// with a symbol, not by its round art alone (D3).
-    @ViewBuilder private func notYetBand(_ band: NotYetSections) -> some View {
-        let songs = scope == .all || scope == .songs ? band.songs : []
-        let artists = scope == .all || scope == .artists ? band.artists : []
-        let albums = scope == .all || scope == .albums ? band.albums : []
-        let kinds = [songs.isEmpty, artists.isEmpty, albums.isEmpty].filter { !$0 }.count
+    @ViewBuilder private func notYetBand(_ sections: SearchSections) -> some View {
+        let band = sections.notYet, done = model.phase == .done
+        // Fix round 1 (I2): a kind with no rows yet but more to look through still shows, with its More.
+        let showsSongs = (scope == .all || scope == .songs) && SearchBand.shows(.songs, in: sections, done: done)
+        let showsArtists = (scope == .all || scope == .artists) && SearchBand.shows(.artists, in: sections, done: done)
+        let showsAlbums = (scope == .all || scope == .albums) && SearchBand.shows(.albums, in: sections, done: done)
+        let kinds = [showsSongs, showsArtists, showsAlbums].filter { $0 }.count
         if kinds > 0 {
             Section {
                 header("Not in your library").accessibilityIdentifier("search-notyet-header")
-                if !songs.isEmpty {
+                if showsSongs {
                     if kinds > 1 { subheader("Songs") }
-                    ForEach(Array(songs.enumerated()), id: \.offset) { index, recording in
+                    ForEach(Array(band.songs.enumerated()), id: \.offset) { index, recording in
                         notYetSongRow(recording, index: index)
                     }
-                    outsideMoreFooter(.songs, in: model.results)
+                    OutsideMoreFooter(model: model, kind: .songs, sections: sections)
                 }
-                if !artists.isEmpty {
+                if showsArtists {
                     if kinds > 1 { subheader("Artists") }
-                    ForEach(Array(artists.enumerated()), id: \.offset) { index, artist in
+                    ForEach(Array(band.artists.enumerated()), id: \.offset) { index, artist in
                         notYetArtistRow(artist).accessibilityIdentifier("search-notyet-artist-\(index)")
                     }
-                    outsideMoreFooter(.artists, in: model.results)
+                    OutsideMoreFooter(model: model, kind: .artists, sections: sections)
                 }
-                if !albums.isEmpty {
+                if showsAlbums {
                     if kinds > 1 { subheader("Albums") }
-                    ForEach(Array(albums.enumerated()), id: \.offset) { index, album in
+                    ForEach(Array(band.albums.enumerated()), id: \.offset) { index, album in
                         notYetAlbumRow(album).accessibilityIdentifier("search-notyet-album-\(index)")
                     }
-                    outsideMoreFooter(.albums, in: model.results)
+                    OutsideMoreFooter(model: model, kind: .albums, sections: sections)
                 }
             }
         }

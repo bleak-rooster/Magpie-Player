@@ -212,7 +212,23 @@ final class SearchModel {
 
     /// The query changed. Results for the previous query are cleared at once (they would be tappable
     /// and wrong while the new search runs); an empty (or blank) query goes back to idle.
+    // MARK: - "Also in your library" (round 14, D96; fix round 1, M2)
+
+    /// Library songs whose lookup failed: their row says so (a tap tries again).
+    private(set) var ownedFailed: Set<String> = []
+
+    /// Plays an "Also in your library" song: fetched by its id, else its row says it couldn't.
+    func playOwned(_ id: String, lookup: (String) async -> Song?, play: (Song) -> Void) async {
+        guard let song = await lookup(id) else {
+            ownedFailed.insert(id)
+            return
+        }
+        ownedFailed.remove(id)
+        play(song)
+    }
+
     func update(query newQuery: String) {
+        ownedFailed = []
         query = newQuery
         task?.cancel()
         moreTasks.values.forEach { $0.cancel() }
