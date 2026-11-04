@@ -117,7 +117,8 @@ private let lidarrScope = LidarrClient(base: lidarrBase, apiKey: "key", transpor
         #expect(car.library.songs.map(\.id) == ["jt-1"])
         #expect(car.library.albums.map(\.id) == ["al-1"])
         #expect(car.library.artists.isEmpty)
-        #expect(car.notYet.map(\.title) == ["Song for Judie"])
+        // Fix round 1 (I3): the car keeps ListenBrainz's songs beside the album's tracklist song.
+        #expect(Set(car.notYet.map(\.title)) == ["Harbour Wall", "Song for Judie"])
         cleanUp(model)
     }
 }

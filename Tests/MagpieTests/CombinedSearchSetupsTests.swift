@@ -131,6 +131,19 @@ private let release = Data(#"""
         #expect(model.searchLooksOutside)
     }
 
+    /// Fix round 1 (I3, controller's ruling): the car keeps today's ListenBrainz songs. On its short deadline they race
+    /// the tracklist read, and whatever answers in time shows.
+    @Test func theCarKeepsListenBrainzSongsBesideTheTracklists() async throws {
+        let model = try await model(lidarr: true, aurral: false)
+        let car = try await model.carPlaySearch("harbour")
+        #expect(car.notYet.map(\.title).contains("Harbour Song From LB"))
+        #expect(asked("/recording-search/json") == 1)
+        // The phone keeps ListenBrainz as the backup only.
+        mark()
+        _ = await model.mergedSearch().run("harbour")
+        #expect(asked("/recording-search/json") == 0)
+    }
+
     @Test func withLidarrButNoAlbumHitListenBrainzIsTheBackup() async throws {
         lidarrHasNoAlbum.withLock { $0 = true }
         let model = try await model(lidarr: true, aurral: false)

@@ -27,10 +27,16 @@ extension AppModel {
             let listenBrainz = ListenBrainzClient(transport: transport, token: tokenStore.load(),
                                                   clientVersion: Self.marketingVersion)
             sources.append(.lidarr(shared, timeout: sourceTimeout))
-            // The songs wait for Lidarr's search and then a tracklist read; the car's short deadline stays short.
-            let songsTimeout = sourceTimeout >= MergedSearch.sourceTimeout ? MergedSearch.songsTimeout : sourceTimeout
-            sources.append(.songs(lidarr: shared, tracklists: tracklists,
-                                  backup: { try await listenBrainz.searchRecordings($0) }, timeout: songsTimeout))
+            if sourceTimeout >= MergedSearch.sourceTimeout {
+                // The phone: the songs wait for Lidarr's search and then tracklist reads; ListenBrainz is the backup.
+                sources.append(.songs(lidarr: shared, tracklists: tracklists,
+                                      backup: { try await listenBrainz.searchRecordings($0) }, timeout: MergedSearch.songsTimeout))
+            } else {
+                // Fix round 1 (I3, Decision 10: CarPlay unchanged this round): on the car's short deadline ListenBrainz's
+                // songs run beside the tracklist read, as before, and whichever answers in time shows.
+                sources.append(.listenBrainz(listenBrainz, timeout: sourceTimeout))
+                sources.append(.songs(lidarr: shared, tracklists: tracklists, backup: nil, timeout: sourceTimeout))
+            }
             more.tracklists = tracklists
         }
         return (sources, more)
