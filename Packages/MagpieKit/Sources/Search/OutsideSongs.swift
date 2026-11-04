@@ -129,8 +129,8 @@ public enum TopSongsPlan {
     }
 
     /// The first source in `order` that reads with songs; a failing or empty one passes to the next. Nil: none had any.
-    public static func load<Row: Sendable>(_ order: [TopSongsProvider],
-                                           read: (TopSongsProvider) async throws -> [Row]) async -> (provider: TopSongsProvider, rows: [Row])? {
+    public static func load<Row>(_ order: [TopSongsProvider], isolation: isolated (any Actor)? = #isolation,
+                                read: (TopSongsProvider) async throws -> [Row]) async -> (provider: TopSongsProvider, rows: [Row])? {
         for provider in order {
             guard !Task.isCancelled else { return nil }
             if let rows = try? await read(provider), !rows.isEmpty { return (provider, rows) }

@@ -16,6 +16,8 @@ struct OutsideArtistView: View {
     @State private var showsMore = false
     @State private var trying: TryTarget?
     @State private var tryError: String?
+    /// Round 14 A3 (owner answer 6): the artist's Top songs, from the chosen source (the page's Popular).
+    @State private var topSongs: TopSongsResult?
     private let themed = Themed()
 
     var body: some View {
@@ -31,6 +33,7 @@ struct OutsideArtistView: View {
             if art == nil { art = app.makeOutsideArt() }
             _ = await OutsideArtistModel.open(model, app: app, artist: artist) { model = $0 }
         }
+        .task(id: app.isOffline) { if !app.isOffline { topSongs = await app.artistTopSongs(name: artist.name, mbid: artist.mbid) } }
         .onDisappear { art?.reset() }   // R15: the outside art goes with the page
     }
 
@@ -65,6 +68,7 @@ struct OutsideArtistView: View {
             case .failed:
                 OutsideFailed { Task { await model.load() } }
             case .loaded:
+                if let topSongs { TopSongsSection(result: topSongs) }
                 sections(model)
             }
         }
