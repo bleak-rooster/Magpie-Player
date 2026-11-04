@@ -165,8 +165,9 @@ signed-in user's permissions from `/api/auth/me` and hides any action the user c
      broken.
    - In the Home editor, those sections are listed greyed out with "Needs Aurral" or "Needs Lidarr".
    - Without Aurral, the Artist top songs setting offers Automatic, ListenBrainz and Your library only.
-   - Signing Aurral out (or it going down) never empties Home: its sections keep their last copy, or
-     hide when there was none.
+   - Aurral's session ending or the server going down never empties Home: its sections keep their last
+     copy, or hide when there was none. An explicit **sign-out in Settings** disconnects Aurral, so its
+     sections hide and their saved copies are removed (controller ruling, A4 review I3).
    - **Tests:** UI tests run Home, Search, an artist page and the song menu in all four setups, using
      stubs.
 
