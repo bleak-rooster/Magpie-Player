@@ -8,7 +8,7 @@ latest release) and the earlier `docs/research/aurral.md` (2.10). Calls marked *
 ## What the owner wants
 - Three Aurral sections on **Home** and in **Library**:
   - **Discover**: the Aurral playlists that are already in Navidrome with downloaded music;
-  - **Trending**: Aurral's charts, including Australian top songs, top charts by genre and top albums;
+  - **Trending**: Aurral's charts, including top songs for your country, top charts by genre and top albums;
   - **Recommended**: new artists and albums to find.
 - **Discover Playlists**: browse Aurral's Discover Playlists, see their songs, and add one to Aurral
   so it downloads and shows up in Magpie.
@@ -24,7 +24,7 @@ latest release) and the earlier `docs/research/aurral.md` (2.10). Calls marked *
 | Need | Aurral 2.13 | Gap and fix |
 |---|---|---|
 | Recommended | `GET /api/discover`, a per-user list of **artists** only, with MBIDs, match %, "because you like" seeds, and depth | There are no recommended albums. Each artist's page shows their albums, and the top 6 songs have previews (`GET /api/artists/:mbid/preview`). |
-| Trending | `GET /api/discover/trending`: top 100 songs (with previews), 25 albums (Apple), 25 artists, and genre tiles. `GET /api/discover/trending/genres/:id`: 50 songs per genre (Pop, Rap/Hip Hop, Rock, Dance, R&B, Alternative, Electro, Jazz, Metal). | The country is the **Aurral server's own location** (no parameter). A home server in Australia gives "Top Australia". If it reports another region, Magpie loads Top Australia straight from Deezer's public chart (no account needed). |
+| Trending | `GET /api/discover/trending`: top 100 songs (with previews), 25 albums (Apple), 25 artists, and genre tiles. `GET /api/discover/trending/genres/:id`: 50 songs per genre (Pop, Rap/Hip Hop, Rock, Dance, R&B, Alternative, Electro, Jazz, Metal). | The country is the **Aurral server's own location** (no parameter). Magpie adds a **Charts country** setting and reads other countries' Deezer "Top <Country>" playlists through Aurral (Decision 11). |
 | Previews | `/api/deezer/preview/<id>.mp3` needs no login. It redirects to a signed Deezer MP3 that expires after about 15 minutes. | Apple album items have no previews; an album's songs get previews from the artist preview or the matching Deezer song. |
 | Discover Playlists | `GET /api/discover/editorial` (For you, plus 8 per genre) and `GET /api/discover/editorial/:id` (the songs, with previews) | There is **no route that turns one into a Flow**. Aurral's "Add" (`POST /api/discover/editorial/:id/library`) makes a **synced playlist**: it downloads every song, publishes the playlist to Navidrome, and re-syncs every 24 h. To the owner that behaves like a Flow. |
 | Search | `GET /api/search/unified` (artists and albums with MBIDs, "in library" flag) and `GET /api/search?scope=&offset=` for paging | **Aurral has no song search.** See owner answer 5. |
@@ -69,7 +69,7 @@ signed-in user's permissions from `/api/auth/me` and hides any action the user c
      alone, as Finds already do), Magpie adds it to the playlist and the row turns normal.
    - If the request fails, the row says so, with Retry and Remove.
 6. **Chart country.**
-   - Trending follows Aurral's region. Australia is expected, because the owner's server is at home.
+   - *Superseded by Decision 11 (charts for any country, all through Aurral).* Originally:
    - If Aurral reports another region, Magpie shows **Top Australia** from Deezer's public chart
      playlist and the AU album chart from Apple's public feed.
    - Genre charts are worldwide (Deezer has no country version), and they are labelled that way.
@@ -165,8 +165,9 @@ signed-in user's permissions from `/api/auth/me` and hides any action the user c
      broken.
    - In the Home editor, those sections are listed greyed out with "Needs Aurral" or "Needs Lidarr".
    - Without Aurral, the Artist top songs setting offers Automatic, ListenBrainz and Your library only.
-   - Signing Aurral out (or it going down) never empties Home: its sections keep their last copy, or
-     hide when there was none.
+   - Aurral's session ending or the server going down never empties Home: its sections keep their last
+     copy, or hide when there was none. An explicit **sign-out in Settings** disconnects Aurral, so its
+     sections hide and their saved copies are removed (controller ruling, A4 review I3).
    - **Tests:** UI tests run Home, Search, an artist page and the song menu in all four setups, using
      stubs.
 
@@ -199,6 +200,35 @@ signed-in user's permissions from `/api/auth/me` and hides any action the user c
       - with Lidarr linked or not → no Magpie-sent Lidarr writes;
       - a failed song → Retry;
       - Navidrome-only and Navidrome + Lidarr setups → Add flow is hidden.
+
+11. **No direct calls to Deezer or Apple from the phone** (owner, 2026-11-04). Everything goes through
+    the Aurral server; this supersedes the public Deezer/Apple fallbacks in Decisions 3 and 6. All
+    three routes below were verified in the v2.13.0 source:
+    - **Charts for any country, not Australia** (owner, 2026-11-04: the app is for users worldwide). The
+      setting is Settings › Home & Library › **Charts country**:
+      - **Automatic** = the phone's region when Deezer has a "Top <Country>" chart for it, else the
+        server's region;
+      - or **Your server's region**;
+      - or any country from the list.
+    - **Top songs for a country other than the server's** are Deezer's "Top <Country>" playlist, read
+      through Aurral with `GET /api/discover/editorial/<id>`. Aurral accepts any Deezer playlist id.
+      - The country → playlist ids come from a bundled table, generated at dev time by a script in
+        `scripts/` using Aurral's own rule (charts user 637006841, "Top <Country>").
+      - If the read fails, the server's chart is shown, with a note naming it.
+    - **Top albums** exist only for the server's region (Aurral has no other route). They are labelled
+      "Top albums · <region>" when that differs from the chosen country.
+    - Labels use localised country names; nothing is Australia-specific.
+    - **Previews:** `GET /api/deezer/preview/<id>.mp3?download`. Aurral fetches the clip and sends it
+      itself (200 `audio/mpeg`), so the phone never contacts Deezer's CDN. No redirect is followed at
+      all; the clip must come from the Aurral host.
+    - **Artwork:** for Deezer and Apple cover links that Aurral returns, the phone asks Aurral's image
+      proxy for them:
+      - `POST /api/image-proxy {src}` caches the image on the server and returns a local url;
+      - `GET /api/image-proxy/<key>` serves it;
+      - Aurral refuses private hosts.
+      Magpie only sends `src` values that Aurral itself returned, and remembers the mapping.
+    - check-writes bans Deezer/Apple hosts in app code.
+    - Workstream **A7** (previews and artwork) follows A4.
 
 ## Home (Spotify-style, fully customisable)
 - **Top of the page, in order:**
@@ -301,7 +331,7 @@ Aurral, so stubs cover it. Then **build 14** goes to TestFlight.
   - a redirect to a non-Deezer host refused.
 - **Trending:**
   - region AU from Aurral;
-  - a non-AU region falls back to Deezer Top Australia;
+  - Charts country: Automatic (phone region with/without a chart), server region, a chosen country, editorial read failure → server chart;
   - a genre chart not available yet (404);
   - per-section failure.
 - **Home:**
