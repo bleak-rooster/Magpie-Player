@@ -100,7 +100,7 @@ public struct ListenBrainzClient: Sendable {
     }
 
     /// A GET to `api.listenbrainz.org` with the token (when set), spaced by the limiter, within `apiTimeout`.
-    private func api(_ path: String, query: [URLQueryItem] = []) async throws -> Data {
+    func api(_ path: String, query: [URLQueryItem] = []) async throws -> Data {
         guard let url = ServerEndpoint(bases: [Self.apiBase]).url(Self.apiBase, path: path, query: query) else {
             throw URLError(.badURL)
         }

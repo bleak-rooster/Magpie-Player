@@ -28,6 +28,10 @@ if [ "${MAGPIE_IT:-}" = "1" ]; then
     "") ;;
     *) echo "LIDARR_URL ($lidarr_url) is not local; refusing" >&2; exit 1 ;;
   esac
+  # Round 14: the localhost stub Aurral 2.13 (dev/aurral-stub; the dev stack has no Aurral), started if not running.
+  aurral_url="$(dev/aurral-stub/start.sh)"
+  export TEST_RUNNER_MAGPIE_IT_AURRAL_URL="$aurral_url"
+  export TEST_RUNNER_MAGPIE_AURRAL_STUB_URL="$aurral_url"
 fi
 
 # C-I1 (G0): hosted tests launch the real app and UI tests reset its Keychain, so they run only on the dedicated

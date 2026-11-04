@@ -9,6 +9,13 @@ A local Navidrome + Lidarr pair with a generated fixture library, for building a
 | Lidarr | `lscr.io/linuxserver/lidarr:develop-3.2.0.5144-ls269` (3.2.x is only on the develop channel; `latest` is 3.1.6) | http://127.0.0.1:8686 |
 | slskd (optional profile `quickfetch`) | `slskd/slskd:0.26.2`, offline (`SLSKD_NO_CONNECT`) and no auth | http://127.0.0.1:5030 |
 
+## Stub Aurral (round 14)
+
+The dev stack has no Aurral. `dev/aurral-stub/start.sh` starts a small stdlib-Python stub Aurral 2.13 on
+http://127.0.0.1:3901 (if it isn't running) serving the same fixtures as `MagpieTestSupport.StubAurral`; pick a scenario
+by address, e.g. `http://127.0.0.1:3901/s/no-access-flow` (list in `dev/aurral-stub/server.py`). `MAGPIE_IT=1
+scripts/test-app.sh` and `scripts/it.sh` start it. Tests and dev only: it is never part of the app.
+
 ## Run it
 
 ```sh

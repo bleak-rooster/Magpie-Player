@@ -104,6 +104,15 @@ struct AurralConnectionStore: AurralConnectionStoring {
     @ObservationIgnored var pendingLogout: Task<Void, Never>?
     /// `/api/health`, as last read (Settings shows the version).
     var health: AurralHealth?
+    /// Round 14 fix M3: `/api/health/bootstrap`, as last read signed in (capabilities, the user's permissions, the
+    /// download sources: `AppModel+AurralCapabilities.swift`).
+    var bootstrap: AurralBootstrap?
+    /// When `bootstrap` was read.
+    @ObservationIgnored var bootstrapReadAt: Date?
+    /// Round 14 (D79 amendment): Aurral 2.13 refused the flow reads (403: this user has no accessFlow). Discover's
+    /// shelves hide quietly; what was learnt (its playlists, its library) is kept, so they stay out of Playlists and
+    /// the lists (D75, D76). Cleared by the next read Aurral allows.
+    var flowsNotPermitted = false
     /// `/api/playlists/status`, as last read (the flows, the worker's progress).
     var status: AurralStatus?
     /// When `status` was read.
@@ -179,6 +188,9 @@ struct AurralConnectionStore: AurralConnectionStoring {
     /// Forgets everything read for the account (sign-out, another Aurral).
     func forgetReads() {
         health = nil
+        bootstrap = nil
+        bootstrapReadAt = nil
+        flowsNotPermitted = false
         status = nil
         statusReadAt = nil
         jobs = []

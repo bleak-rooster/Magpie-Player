@@ -292,7 +292,10 @@ import Testing
         let json = Data(#"{"token":"abc","expiresAt":1767225600000,"user":{"id":7,"username":"jordan","role":"admin","permissions":{}}}"#.utf8)
         let login = try AurralLogin.decode(json)
         #expect(login.token == "abc")
-        #expect(login.user == AurralUser(id: 7, username: "jordan", role: "admin"))
+        // Round 14: an empty `permissions` reads as none granted (an admin passes every check anyway).
+        #expect(login.user == AurralUser(id: 7, username: "jordan", role: "admin",
+                                         permissions: .init(accessFlow: false, addArtist: false, addAlbum: false)))
+        #expect(login.user.canAddFlow)
         #expect(login.expiresAt == Date(timeIntervalSince1970: 1_767_225_600))
         let again = try JSONDecoder().decode(AurralLogin.self, from: JSONEncoder().encode(login))
         #expect(again == login)

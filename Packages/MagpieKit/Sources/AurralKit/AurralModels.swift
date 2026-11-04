@@ -4,24 +4,7 @@ import MagpieCore
 // Aurral 2.10.0's answers (docs/research/aurral.md), read leniently: every field optional, a bad element dropped, never
 // a crash on a newer or older shape. Measured before parsing (JSONNesting), like every other client.
 
-private func object(_ data: Data) -> Any? { JSONNesting.object(with: data) }
-
-private extension Dictionary where Key == String, Value == Any {
-    func string(_ key: String) -> String? { (self[key] as? String).flatMap { $0.isEmpty ? nil : $0 } }
-    func int(_ key: String) -> Int? {
-        if let n = self[key] as? NSNumber, CFGetTypeID(n) != CFBooleanGetTypeID() {
-            let d = n.doubleValue
-            return d.isFinite && abs(d) < 1e12 ? Int(d) : nil
-        }
-        return nil
-    }
-    func bool(_ key: String) -> Bool? {
-        if let n = self[key] as? NSNumber, CFGetTypeID(n) == CFBooleanGetTypeID() { return n.boolValue }
-        return nil
-    }
-    func dict(_ key: String) -> [String: Any]? { self[key] as? [String: Any] }
-    func mbid(_ key: String) -> MBID? { string(key).flatMap(MBID.init) }
-}
+// The lenient readers (`object`, `string`, `int`, ...) live in AurralJSON.swift.
 
 /// The version Magpie is built for.
 public enum AurralVersion {

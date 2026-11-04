@@ -126,6 +126,28 @@ private func song(_ id: String, _ title: String, _ artist: String, _ duration: T
         #expect(DiscoverRules.discoverLibraries(entries: entries, rows: rows, jobs: [], listed: [1]) == [],
                 "no job paths: unknown")
     }
+
+    /// Round 14 fix (D79 amendment): Aurral 2.13 no longer names its files (`toPublicJob` drops `finalPath`). When no job carries
+    /// a path, the library is the one holding the Discover playlists' own songs, any the owner lists still excluded
+    /// (a reused Lidarr file lives in one), and an entry is never matched to another library's copy.
+    @Test func libraryFromPlaylistSongsWhenAurralHidesPaths() {
+        let jobs = [AurralJob(id: "1", flowId: "f1", artistName: "Low", trackName: "Lullaby", trackMBID: rec1, status: "done"),
+                    AurralJob(id: "2", flowId: "f1", artistName: "Low", trackName: "Words", status: "done")]
+        let entries = [song("e1", "Lullaby", "Low", 251, mbid: rec1), song("e2", "Words", "Low", 200),
+                       song("e3", "Reused", "Low", 200), song("e4", "Unread", "Low", 200)]
+        let rows: [String: [Song]] = [
+            "e1": [song("m1", "Lullaby", "Low", 251, mbid: rec1, library: 1), song("e1", "Lullaby", "Low", 251, mbid: rec1, library: 2)],
+            "e2": [song("e2", "Words", "Low", 200, library: 2)],
+            "e3": [song("e3", "Reused", "Low", 200, library: 1)],
+            "e4": [song("x4", "Unread", "Low", 200, library: 3)],
+        ]
+        #expect(DiscoverRules.discoverLibraries(entries: entries, rows: rows, jobs: jobs, listed: [1]) == [2])
+        #expect(DiscoverRules.discoverLibraries(entries: entries, rows: rows, jobs: jobs, listed: [1, 2]) == [])
+        // While any job names its file (2.10), only Aurral's own files count, as before.
+        let withPath = jobs + [AurralJob(id: "3", flowId: "f1", artistName: "A", trackName: "B",
+                                         finalPath: "/music/A/B.flac", status: "done")]
+        #expect(DiscoverRules.discoverLibraries(entries: entries, rows: rows, jobs: withPath, listed: [1]) == [])
+    }
 }
 
 @Suite struct DiscoverArtistsTests {

@@ -40,6 +40,16 @@ planted=(
   'restarter.restart(row)'
   'screen.restartAll(rows, model: model)'
   'LidarrDownloadRestarter(lidarr: client, gate: gate, runner: nil)'
+  # Round 14 A1: Aurral routes outside the exact allow-list.
+  'aurral.ok(method: "GET", path: "api/discover/refresh")'
+  'aurral.ok(method: "GET", path: "api/discover/blocked-tags")'
+  'aurral.ok(method: "GET", path: "api/discover/preferences")'
+  'aurral.ok(method: "GET", path: "api/discover/editorial/1/library/x")'
+  'aurral.ok(method: "GET", path: "api/library/downloads/track")'
+  'aurral.ok(method: "GET", path: "api/library/albums/request")'
+  'aurral.ok(method: "GET", path: "api/playlists/flows/" + id + "/tracks")'
+  'aurral.ok(method: "GET", path: "api/playlists/shared-playlists/" + id + "/sync")'
+  'aurral.ok(method: AurralRoute.discoverWriteMethod, path: "api/discover/feedback/reset")'
 )
 failed=0
 for p in "${planted[@]}"; do
@@ -51,5 +61,34 @@ for p in "${planted[@]}"; do
   fi
 done
 rm -f "$work/App/PlantedViolation.swift"
+
+# Fix M1: weakenings of the Aurral allow-list itself (one at a time, each on a fresh copy of AurralClient.swift) must be
+# caught too: a read moved to a write verb, a route with a new query name, a token dropped or added, the retry route's
+# continuation loosened.
+aurral_src="$work/Packages/MagpieKit/Sources/AurralKit/AurralClient.swift"
+cp "$aurral_src" "$work/AurralClient.orig"
+weakened=(
+  's/             .deezerPreview: "GET"/             .deezerPreview: Self.startMethod/'
+  's/        case .editorialAdd, .discoverFeedback, .flowDownload, .trackResearch: Self.discoverWriteMethod/        case .editorialAdd, .discoverFeedback, .flowDownload, .trackResearch, .trending: Self.discoverWriteMethod/'
+  's/        case .recommendations: \["limit", "offset"\]/        case .recommendations: ["limit", "offset", "refresh"]/'
+  's/        case .artistPreview: \["artistName"\]/        case .artistPreview: ["artistName"]\n        case .trending: ["download"]/'
+  's/        case .health, .login, .deezerPreview: false/        case .health, .login, .deezerPreview, .bootstrap: false/'
+  's/            \&\& isPlainId(rest\[4\]) \&\& rest\[5\] == "research": .trackResearch/            \&\& rest[5] == "research": .trackResearch/'
+  's/return Set(names).count == names.count \&\& names.allSatisfy(route.queryNames.contains)/return true/'
+)
+for w in "${weakened[@]}"; do
+  cp "$work/AurralClient.orig" "$aurral_src"
+  sed -i '' "$w" "$aurral_src"
+  if cmp -s "$work/AurralClient.orig" "$aurral_src"; then
+    echo "selftest: the weakening didn't apply: $w" >&2; failed=1; continue
+  fi
+  if out=$("$work/scripts/check-writes.sh" 2>&1); then
+    echo "selftest: NOT caught: $w" >&2; failed=1
+  elif ! grep -qE 'G1:' <<< "$out"; then
+    echo "selftest: failed without a G1 reason: $w" >&2; failed=1
+  fi
+done
+cp "$work/AurralClient.orig" "$aurral_src"
+
 [ "$failed" = 0 ] || exit 1
-echo "check-writes selftest: all ${#planted[@]} planted violations caught; the clean tree passes"
+echo "check-writes selftest: all ${#planted[@]} planted violations and ${#weakened[@]} allow-list weakenings caught; the clean tree passes"

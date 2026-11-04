@@ -15,8 +15,9 @@ struct DiscoverPage: Equatable {
 
 /// Round 12 Y6 (plan item 7): Aurral's flows as Discover.
 ///
-/// - Aurral is asked only through `AurralClient`'s five calls; nothing is ever written to Aurral except Refresh Flow on
-///   the owner's confirmed tap, refused while a run is active.
+/// - Aurral is asked only through `AurralClient`'s allow-listed calls (`AurralRoute`); nothing is ever written to
+///   Aurral except on the owner's tap: Refresh Flow (refused while a run is active) and round 14's Add flow, Not for me,
+///   Download songs and Retry a song.
 /// - Discover is the Navidrome playlists named after Aurral's flows; they are kept out of Playlists (Home, Library,
 ///   the car, Add to playlist), and no playlist edit is ever sent to one.
 /// - Aurral's library (found from its job paths) is kept out of Home, Library, Search and the car (Y3's scope).
@@ -76,8 +77,12 @@ extension AppModel {
         let session = discover.makeSession(connection)
         let fresh = AurralClient(base: base, session: session, transport: transport)
         let status: AurralStatus
+        var flowsNotPermitted = false
         do {
-            status = try await fresh.status()
+            do { status = try await fresh.status() } catch AurralError.notPermitted {
+                status = AurralStatus(flows: [])   // round 14: no accessFlow; still signed in (Recommended, Trending)
+                flowsNotPermitted = true
+            }
             if discover.connection != nil { endAurralSession() }   // fix M5: the old session too, same account or not
             try discover.store.save(connection)
         } catch {
@@ -87,7 +92,9 @@ extension AppModel {
         if discover.connection?.account != connection.account { forgetDiscoverReads() }
         discover.use(connection)
         discover.health = health
+        discover.flowsNotPermitted = flowsNotPermitted
         noteStatus(status)
+        await refreshAurralCapabilities(force: true)   // round 14 fix M3: this user's permissions, fresh
         await refreshDiscover(force: true)
         return health
     }
@@ -183,7 +190,13 @@ extension AppModel {
         if !force, let at = discover.statusReadAt, discover.now().timeIntervalSince(at) < 30, !discover.playlists.isEmpty { return }
         let account = discover.connection?.account
         let status: AurralStatus
-        do { status = try await client.status() } catch { noteAurralError(error); return }
+        do { status = try await client.status() } catch {
+            // Round 14: no accessFlow: Discover hides quietly, nothing learnt is wiped (D75, D76).
+            if case AurralError.notPermitted? = error as? AurralError { discover.flowsNotPermitted = true }
+            noteAurralError(error)
+            return
+        }
+        discover.flowsNotPermitted = false
         guard let all = try? await request({ try await $0.playlists() }) else { return }
         let jobs = (try? await client.jobs()) ?? nil
         guard navidromeScope == scope, discover.connection?.account == account else { return }   // another account or Aurral
@@ -249,6 +262,7 @@ extension AppModel {
     func discoverPlaylists() async throws -> [Playlist] {
         guard aurralSetUp, !isOffline else { return [] }
         await refreshDiscover(waitingAtMost: Self.discoverWait)   // Round 13 Z2: never held up by a slow Aurral
+        guard !discover.flowsNotPermitted else { return [] }   // round 14: no accessFlow, Discover hides
         if !discover.playlists.isEmpty { return discover.playlists.map(\.playlist) }
         let ids = discoverPlaylistIds
         guard !ids.isEmpty else { return [] }
@@ -494,6 +508,7 @@ enum DiscoverCopy {
         switch error as? AurralError {
         case .runActive?: runActive
         case .unauthorized?: "Discover\u{2019}s server said no. Check your account in Settings."
+        case .notPermitted?: "Your account on Discover\u{2019}s server isn\u{2019}t allowed to do that."
         case .signInNeeded?, .badLogin?: signInAgain
         case .rateLimited?: AurralCopy.rateLimited
         case .notFound?: "That flow isn\u{2019}t there any more."
