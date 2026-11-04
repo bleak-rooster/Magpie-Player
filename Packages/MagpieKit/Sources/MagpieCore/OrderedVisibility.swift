@@ -48,9 +48,26 @@ public struct OrderedVisibility<Item: CaseIterable & RawRepresentable & Hashable
 
     /// Drops duplicates (first wins), then appends items missing from `defaults` with their default visibility.
     public func normalised(against defaults: OrderedVisibility) -> OrderedVisibility {
+        normalised(against: defaults, insertingAfterPredecessor: [])
+    }
+
+    /// As `normalised(against:)`, except that a missing item in `afterPredecessor` goes right after the nearest item
+    /// before it in `defaults` (round 14 A4: Library's Trending and Recommended after Discover), once the others have
+    /// been appended; with none of its predecessors present, it goes first.
+    public func normalised(against defaults: OrderedVisibility, insertingAfterPredecessor afterPredecessor: Set<Item>)
+        -> OrderedVisibility {
         var seen = Set<Item>()
         var result = entries.filter { seen.insert($0.item).inserted }
-        for entry in defaults.entries where !seen.contains(entry.item) { result.append(entry) }
+        for entry in defaults.entries where !seen.contains(entry.item) && !afterPredecessor.contains(entry.item) {
+            result.append(entry)
+            seen.insert(entry.item)
+        }
+        for (index, entry) in defaults.entries.enumerated() where !seen.contains(entry.item) {
+            let before = defaults.entries[..<index].reversed().first { d in seen.contains(d.item) }
+            let at = before.flatMap { b in result.firstIndex { $0.item == b.item } }.map { $0 + 1 } ?? 0
+            result.insert(entry, at: at)
+            seen.insert(entry.item)
+        }
         return OrderedVisibility(result)
     }
 
