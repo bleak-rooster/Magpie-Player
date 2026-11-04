@@ -24,7 +24,18 @@ public actor RateLimiter {
     public func wait() async throws {
         let t = now()
         let start = max(t, nextSlot ?? t)
-        nextSlot = start + interval
-        if start > t { try await sleep(start - t) }
+        let slot = start + interval
+        nextSlot = slot
+        guard start > t else { return }
+        do {
+            try await sleep(start - t)
+        } catch {
+            // Round 14 (D99): cancelled before its turn (search typed on): the slot goes back when no one queued
+            // behind it, so cancelled searches don't push the next one's requests into the future.
+            if nextSlot == slot { nextSlot = start }
+            throw error
+        }
     }
+
+    var nextSlotForTests: TimeInterval? { nextSlot }
 }

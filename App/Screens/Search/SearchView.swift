@@ -43,6 +43,8 @@ struct SearchView: View {
                                 },
                                 // Round 12 (Y1): the next batch of a section, at its end.
                                 more: { kind, paging in try await app.mergedSearch().more(kind, paging: paging) },
+                                // Round 14 (D98): the band's next page of one kind, on a tap.
+                                outsideMore: { kind, sections in try await app.mergedSearch().moreOutside(kind, in: sections) },
                                 errorMessage: BrowseErrorCopy.message(for:))
             model?.outsideArt = app.makeOutsideArt()   // R15
         }
@@ -185,7 +187,20 @@ private struct SearchContent: View {
                 moreFooter(.albums, in: sections, count: sections.albums.count)
             }
         }
-        notYetBand(sections.notYet)
+        // Round 14 (D96): songs the library has that its search didn't list (rows in SearchOutside.swift).
+        if scope == .all || scope == .songs, !sections.notYet.owned.isEmpty {
+            Section {
+                header("Also in your library").accessibilityIdentifier("search-owned-header")
+                ForEach(Array(sections.notYet.owned.enumerated()), id: \.element.songId) { index, item in
+                    OwnedSongRow(item: item, model: model) { remember(model.query) }
+                        .accessibilityIdentifier("search-owned-song-\(index)")
+                }
+            }
+        }
+        if model.phase == .searching, !sections.libraryIsEmpty, app.searchLooksOutside {
+            OutsidePendingRow()   // D97
+        }
+        notYetBand(sections)
     }
 
     /// Round 12 (Y1, plan item 3): the end of a library section. While it has more, a spinner that loads the next
@@ -272,31 +287,36 @@ private struct SearchContent: View {
 
     /// Below every library row, never interleaved (D4). Each row says "Not in your library" in text
     /// with a symbol, not by its round art alone (D3).
-    @ViewBuilder private func notYetBand(_ band: NotYetSections) -> some View {
-        let songs = scope == .all || scope == .songs ? band.songs : []
-        let artists = scope == .all || scope == .artists ? band.artists : []
-        let albums = scope == .all || scope == .albums ? band.albums : []
-        let kinds = [songs.isEmpty, artists.isEmpty, albums.isEmpty].filter { !$0 }.count
+    @ViewBuilder private func notYetBand(_ sections: SearchSections) -> some View {
+        let band = sections.notYet, done = model.phase == .done
+        // Fix round 1 (I2): a kind with no rows yet but more to look through still shows, with its More.
+        let showsSongs = (scope == .all || scope == .songs) && SearchBand.shows(.songs, in: sections, done: done)
+        let showsArtists = (scope == .all || scope == .artists) && SearchBand.shows(.artists, in: sections, done: done)
+        let showsAlbums = (scope == .all || scope == .albums) && SearchBand.shows(.albums, in: sections, done: done)
+        let kinds = [showsSongs, showsArtists, showsAlbums].filter { $0 }.count
         if kinds > 0 {
             Section {
                 header("Not in your library").accessibilityIdentifier("search-notyet-header")
-                if !songs.isEmpty {
+                if showsSongs {
                     if kinds > 1 { subheader("Songs") }
-                    ForEach(Array(songs.enumerated()), id: \.offset) { index, recording in
+                    ForEach(Array(band.songs.enumerated()), id: \.offset) { index, recording in
                         notYetSongRow(recording, index: index)
                     }
+                    OutsideMoreFooter(model: model, kind: .songs, sections: sections)
                 }
-                if !artists.isEmpty {
+                if showsArtists {
                     if kinds > 1 { subheader("Artists") }
-                    ForEach(Array(artists.enumerated()), id: \.offset) { index, artist in
+                    ForEach(Array(band.artists.enumerated()), id: \.offset) { index, artist in
                         notYetArtistRow(artist).accessibilityIdentifier("search-notyet-artist-\(index)")
                     }
+                    OutsideMoreFooter(model: model, kind: .artists, sections: sections)
                 }
-                if !albums.isEmpty {
+                if showsAlbums {
                     if kinds > 1 { subheader("Albums") }
-                    ForEach(Array(albums.enumerated()), id: \.offset) { index, album in
+                    ForEach(Array(band.albums.enumerated()), id: \.offset) { index, album in
                         notYetAlbumRow(album).accessibilityIdentifier("search-notyet-album-\(index)")
                     }
+                    OutsideMoreFooter(model: model, kind: .albums, sections: sections)
                 }
             }
         }
@@ -324,6 +344,7 @@ private struct SearchContent: View {
                         onTry: { trying = TryTarget(recording: recording) })
             }
         }
+            .searchPreviewSlot(recording)   // Round 14: A3's preview goes here
             .accessibilityIdentifier("search-notyet-song-\(index)")
             .listRowInsets(EdgeInsets())
             .listRowBackground(Color.clear)

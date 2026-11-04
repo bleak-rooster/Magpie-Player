@@ -40,7 +40,14 @@ private let lidarrScope = LidarrClient(base: lidarrBase, apiKey: "key", transpor
           "song":[{"id":"jt-1","title":"Stay With Me Till Dawn","artist":"Judie Tzuke","album":"Welcome to the Cruise","duration":240}],
           "album":[{"id":"al-1","name":"Welcome to the Cruise","artist":"Judie Tzuke","songCount":1,"duration":240}]}}}
         """#.utf8))
-        // Outside: one song from ListenBrainz labs; an artist and an album from Lidarr's search.
+        // Outside: an artist and an album from Lidarr's search, and (round 14, A5) the album's song that matches, from
+        // its tracklist on MusicBrainz. ListenBrainz labs is only the backup when Lidarr has no album.
+        t.stub(pathSuffix: "/ws/2/release", body: Data(#"""
+        {"release-count":1,"releases":[{"id":"5c0b9a3e-6a55-4f0e-9a43-36f1c1b7f0a1","title":"Red Room Sessions","status":"Official",
+         "media":[{"position":1,"tracks":[
+          {"position":1,"title":"Song for Judie","length":200000,"recording":{"id":"7d3c4a7e-2c1f-4e7b-8f0d-3a9b6c5d4e21"}},
+          {"position":2,"title":"Red Room","length":210000,"recording":{"id":"8e4d5b8f-3d2a-4f8c-9a1e-4b0c7d6e5f32"}}]}]}]}
+        """#.utf8))
         t.stub(pathSuffix: "/recording-search/json", body: Data(#"""
         [{"recording_name":"Harbour Wall","recording_mbid":"4d8175ea-cc33-4565-8a8e-6b0f6c7a3f11","artist_credit_name":"Ines Morrow"}]
         """#.utf8))
@@ -110,7 +117,8 @@ private let lidarrScope = LidarrClient(base: lidarrBase, apiKey: "key", transpor
         #expect(car.library.songs.map(\.id) == ["jt-1"])
         #expect(car.library.albums.map(\.id) == ["al-1"])
         #expect(car.library.artists.isEmpty)
-        #expect(car.notYet.map(\.title) == ["Harbour Wall"])
+        // Fix round 1 (I3): the car keeps ListenBrainz's songs beside the album's tracklist song.
+        #expect(Set(car.notYet.map(\.title)) == ["Harbour Wall", "Song for Judie"])
         cleanUp(model)
     }
 }

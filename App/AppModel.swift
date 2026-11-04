@@ -971,18 +971,16 @@ final class AppModel {
 
     // MARK: - Search
 
-    /// Library search merged with ListenBrainz and (when connected) Lidarr. Built per search so it
-    /// follows the current session, Lidarr connection and match index.
+    /// Library search merged with what's outside it: Lidarr (its artists and albums, and its albums' songs, with
+    /// ListenBrainz as the songs' backup) and Aurral 2.13's search, when set up (round 14). Built per search so it
+    /// follows the current session, connections and match index.
     /// - Parameters:
     ///   - libraryTimeout: the library search's deadline (CarPlay passes a longer one).
     ///   - sourceTimeout: each outside source's deadline (CarPlay passes a shorter one).
     func mergedSearch(libraryTimeout: Duration = MergedSearch.libraryTimeout,
                       sourceTimeout: Duration = MergedSearch.sourceTimeout) -> MergedSearch {
-        // A9: the token only ever goes to api.listenbrainz.org; the client never sends it to labs.
-        var sources: [MergedSearch.Source] = isOffline ? [] : [   // offline: no outside source (Task 14)
-            .listenBrainz(ListenBrainzClient(transport: transport, token: tokenStore.load(), clientVersion: Self.marketingVersion),
-                          timeout: sourceTimeout)]
-        if !isOffline, let lidarr = lidarrClient { sources.append(.lidarr(lidarr, timeout: sourceTimeout)) }
+        // Round 14 (A5): which outside sources this setup has (AppModel+CombinedSearch).
+        let (sources, outsideMore) = outsideSearchSources(sourceTimeout: sourceTimeout)
         let index = matchIndex
         return MergedSearch(
             // Round 12 (Y1): the whole query and its splits, each a paged search3 (`LibraryQuery` carries it all).
@@ -996,11 +994,13 @@ final class AppModel {
             pageSize: SearchPageSize.override(appDefaults),
             libraryTimeout: libraryTimeout,
             sources: sources,
+            outsideMore: outsideMore,
             index: { await index?.index ?? .empty })
     }
 
     /// The one MusicBrainz client (1 request per second across the whole app), made on first use.
-    /// Try (A8) and the outside artist and album pages (R19) use it, never a search row.
+    /// Try (A8), the outside artist and album pages (R19) and Search's album tracklists (round 14, D95: at most three
+    /// releases a search, after Lidarr answered) use it; never one call per search row.
     var musicBrainz: MusicBrainzClient {
         if let musicBrainzClient { return musicBrainzClient }
         let client = MusicBrainzClient(transport: transport, userAgent: MusicBrainzClient.userAgent(version: Self.marketingVersion))
