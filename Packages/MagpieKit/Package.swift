@@ -26,7 +26,7 @@ let package = Package(
         // Round 12 Y6: Aurral (Discover). Its own module: an allow-listed client, and the pure Discover rules.
         .target(name: "AurralKit", dependencies: ["MagpieCore"]),
         .target(name: "MatchIndex", dependencies: ["MagpieCore", "NavidromeKit"]),
-        .target(name: "Search", dependencies: ["MagpieCore", "MatchIndex", "ListenBrainzKit", "LidarrKit"]),
+        .target(name: "Search", dependencies: ["MagpieCore", "MatchIndex", "ListenBrainzKit", "LidarrKit", "AurralKit"]),
         .target(name: "Requests", dependencies: ["MagpieCore", "LidarrKit", "ListenBrainzKit", "NavidromeKit", "MatchIndex"]),
         // Round 14 A2: AurralKit for the one Deezer-audio host check (`PreviewResolver.isDeezerAudio`, D88).
         .target(name: "Playback", dependencies: ["MagpieCore", "AurralKit"]),
@@ -57,7 +57,7 @@ let package = Package(
         // Y2: the car's A–Z lists (pure models; run on macOS like the other package suites).
         .testTarget(name: "CarPlayUITests", dependencies: ["CarPlayUI", "MagpieCore", "Search"]),
         .testTarget(name: "SearchTests",
-                    dependencies: ["Search", "MatchIndex", "MagpieCore", "LidarrKit", "ListenBrainzKit", "MagpieTestSupport"]),
+                    dependencies: ["Search", "MatchIndex", "MagpieCore", "LidarrKit", "ListenBrainzKit", "AurralKit", "MagpieTestSupport"]),
     ],
     swiftLanguageModes: [.v6]
 )
