@@ -105,6 +105,8 @@ struct SavePick: Identifiable {
     @ObservationIgnored var evaluating = false
     /// Finds this session already asked to keep (the runner proves each Keep again; never asked twice from here).
     @ObservationIgnored var keepAsked: Set<RequestID> = []
+    /// Every Keep asked from here, in order (tests).
+    @ObservationIgnored var keepAttempts: [RequestID] = []
     @ObservationIgnored var lookedUpAt: [UUID: Date] = [:]
     @ObservationIgnored var now: () -> Date = Date.init
 
@@ -308,7 +310,14 @@ extension AppModel {
             case .keep(let id):
                 guard !songActions.keepAsked.contains(id) else { continue }
                 songActions.keepAsked.insert(id)
-                _ = try? await keepFind(id)   // the runner proves it on fresh state; a refusal shows as failed next pass
+                songActions.keepAttempts.append(id)
+                // The runner proves the Keep on fresh state. Not possible right now: asked again on a later pass; refused
+                // (switched off, not set up, a collision is handled by the step): the row says so, with Retry.
+                do { _ = try await keepFind(id) } catch RequestRunner.KeepError.unavailable {
+                    songActions.keepAsked.remove(id)
+                } catch {
+                    if !(magpieRequest(id)?.collision ?? false) { update(add.id) { $0.failedAt = now }; dirty = true }
+                }
             case .add(let songId):
                 if await apply(add, songId: songId) { dirty = true }
             case .lookUp:

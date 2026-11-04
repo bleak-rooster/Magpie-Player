@@ -201,7 +201,7 @@ private func queryValue(_ r: URLRequest, _ name: String) -> String? {
         model.requests = [find]
         model.songActions.pending = [pending(request: find.id)]
         await model.evaluatePendingAdds()
-        #expect(model.songActions.keepAsked.contains(find.id), "Just this song: kept on arrival (Decision 4)")
+        #expect(model.songActions.keepAttempts.first == find.id, "Just this song: kept on arrival (Decision 4)")
         #expect(playlistWrites.isEmpty, "not added while it's still a find")
         var kept = find
         kept.state = .kept
