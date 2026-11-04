@@ -18,11 +18,23 @@ struct OutsideArtistView: View {
     @State private var tryError: String?
     /// Round 14 A3 (owner answer 6): the artist's Top songs, from the chosen source (the page's Popular).
     @State private var topSongs: TopSongsResult?
+    /// B1: bumped by a pull to refresh, so every picture that didn't load is asked for again.
+    @State private var artAttempt = 0
     private let themed = Themed()
 
     var body: some View {
         ScrollView {
             if let model { content(model) }
+        }
+        // B1 (owner item 6, D77): pull to refresh reads the albums, the top songs and every missing picture again.
+        .refreshable {
+            await RefreshSafety.run {
+                guard !app.isOffline else { return }
+                artAttempt += 1
+                async let songs = app.artistTopSongs(name: artist.name, mbid: artist.mbid)
+                if let model { await model.load(fresh: true) }
+                if let fresh = await songs { topSongs = fresh }
+            }
         }
         .navigationTitle(artist.name)
         .navigationBarTitleDisplayMode(.inline)
@@ -41,7 +53,7 @@ struct OutsideArtistView: View {
         let p = themed.palette
         return VStack(alignment: .leading, spacing: Tokens.Spacing.xxl) {
             VStack(spacing: Tokens.Spacing.m) {
-                OutsideArtwork(art, key: artist.mbid.map(OutsideArtKey.artist)) { image in
+                OutsideArtwork(art, key: artist.mbid.map(OutsideArtKey.artist), attempt: artAttempt) { image in
                     SleeveArt(image: image, placeholder: p.surfaceColor, side: 180)
                         .overlay { if image == nil { ArtistMonogram(name: artist.name) } }
                         .clipShape(Circle())
@@ -134,7 +146,7 @@ struct OutsideArtistView: View {
                 .buttonStyle(.plain)
         } else {
             NavigationLink(value: Route.outsideAlbum(album)) {
-                OutsideArtwork(art, key: .releaseGroup(item.id)) { image in
+                OutsideArtwork(art, key: .releaseGroup(item.id), attempt: artAttempt) { image in
                     NotYetAlbumRow(title: item.title, detail: detail,
                                    label: [item.title, item.kind, item.year.map(String.init)].compactMap { $0 }.joined(separator: ", "),
                                    artwork: image)

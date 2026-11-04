@@ -213,6 +213,7 @@ import UIKit
                 let fresh = RecommendedSnapshot(try await client.recommendations(limit: 100))
                 guard scope == scopeAtStart, !Task.isCancelled else { return }
                 recommended = fresh
+                prefetchHomeArtists()
             case .editorial:
                 let fresh = EditorialSnapshot(try await client.editorialShelf())
                 guard scope == scopeAtStart, !Task.isCancelled else { return }
@@ -289,6 +290,17 @@ import UIKit
         return items
     }
 
+    /// B1 (owner item 4): the pictures of Home's recommended artists, fetched behind the read (a few at a time, kept on
+    /// the phone), so Home's circles are filled when they show.
+    private func prefetchHomeArtists() {
+        guard let model, let rails = recommended?.rails(now: now(), hidden: hidden) else { return }
+        let artists = ([rails.topPick].compactMap { $0 } + rails.all + rails.newThisWeek
+                       + rails.becauseYouLike.flatMap(\.artists)).filter { $0.image == nil }.compactMap(\.mbid)
+        var seen = Set<MBID>()
+        let wanted = Array(artists.filter { seen.insert($0).inserted }.prefix(60))
+        Task { await model.prefetchArtistPictures(wanted) }
+    }
+
     /// A section's tiles from the feed as it stands.
     func homeItems(_ section: HomeSection, limit: Int) -> [HomeOutsideItem] {
         let limit = max(0, limit)
@@ -349,7 +361,11 @@ import UIKit
     }
 
     func artwork(for item: HomeOutsideItem, side: CGFloat) async -> UIImage? {
-        await model?.aurralArtwork(item.artworkKey.flatMap(AurralImage.init), side: side)
+        guard let model else { return nil }
+        if let picture = await model.aurralArtwork(item.artworkKey.flatMap(AurralImage.init), side: side) { return picture }
+        // B1 (owner item 4): an artist without the server's picture shows the one its page shows (kept on the phone).
+        guard item.kind == .artist, let mbid = MBID(item.key), !model.isOffline else { return nil }
+        return await model.recommendedArt.image(.artist(mbid)).map { UIImage(cgImage: $0) }
     }
 }
 

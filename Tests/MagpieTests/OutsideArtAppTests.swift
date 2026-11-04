@@ -28,8 +28,8 @@ private let release = MBID("b5cdfb5f-35a5-4bc5-bbca-57839a71813a")!
 private let artistMBID = MBID("64db764c-2251-4f95-aa40-10fc91d509d8")!
 private let recordingMBID = MBID("c2272a15-8f3a-4cdc-8f32-7e723352d44d")!
 
-/// R15 and R16 in the app: outside artwork for search (phone and car), Try and the request screens, never cached and
-/// never on disk, while library artwork keeps the P4 cache; and requests that keep going away from their screen and
+/// R15 and R16 in the app: outside artwork for search (phone and car), Try and the request screens (B1, D122: kept in its
+/// own folder on the phone, never in P4), while library artwork keeps the P4 cache; and requests that keep going away from their screen and
 /// in the background. Every request goes to a stub (G0): nothing reaches coverartarchive.org or Lidarr's image host.
 @MainActor @Suite(.serialized) final class OutsideArtAppTests {
     let tmp = FileManager.default.temporaryDirectory.appending(path: "OutsideArtAppTests-\(UUID().uuidString)")
@@ -136,7 +136,7 @@ private let recordingMBID = MBID("c2272a15-8f3a-4cdc-8f32-7e723352d44d")!
 
     // MARK: - R15: phone search
 
-    @Test func aNewSearchDropsTheArtAndFetchesItAgain() async throws {
+    @Test func aNewSearchDropsTheArtFromMemoryAndShowsItFromThePhone() async throws {
         let model = try await signedIn()
         let search = SearchModel(search: { _, _ in .empty }, sleep: { _ in })
         search.outsideArt = model.makeOutsideArt()
@@ -144,9 +144,10 @@ private let recordingMBID = MBID("c2272a15-8f3a-4cdc-8f32-7e723352d44d")!
         _ = await loader.image(.releaseGroup(rg))
         #expect(loader.cachedCount == 1)
         search.update(query: "harbour")
-        #expect(loader.cachedCount == 0, "a new search drops it")
+        #expect(loader.cachedCount == 0, "a new search drops it from memory")
         _ = await loader.image(.releaseGroup(rg))
-        #expect(outside.requests.count == 2, "and fetches it again")
+        // B1 (D122, owner): a picture that loaded is kept on the phone, so the next search shows it without asking.
+        #expect(outside.requests.count == 1, "from the phone, not fetched again")
         model.signOut()
     }
 
@@ -390,5 +391,113 @@ private let recordingMBID = MBID("c2272a15-8f3a-4cdc-8f32-7e723352d44d")!
     @Test func backgroundPollingKeepsItsCadence() {
         #expect(RequestRunner.pollInterval(foreground: false) == .seconds(30))
         #expect(RequestRunner.pollInterval(foreground: true) == .seconds(5))
+    }
+}
+
+// MARK: - B1 (owner items 4–6): pictures that fill every time, pull to refresh that never sticks
+
+private func b1Group(_ id: String, _ title: String) -> MBReleaseGroupSummary {
+    MBReleaseGroupSummary(id: MBID(id)!, title: title, primaryType: "Album", secondaryTypes: [], firstReleaseDate: "2020")
+}
+
+/// What an outside artist page reads, scripted per call (a wait, then the albums or a failure; no wait: never answers).
+private final class ScriptedGroups: @unchecked Sendable {
+    typealias Step = (wait: Duration?, groups: [MBReleaseGroupSummary]?)
+    private let script: [Step]
+    private let calls = OSAllocatedUnfairLock(initialState: 0)
+    init(_ script: [Step]) { self.script = script }
+    var count: Int { calls.withLock { $0 } }
+    func next(_: MBID) async throws -> [MBReleaseGroupSummary] {
+        let n = calls.withLock { $0 += 1; return $0 - 1 }
+        let step = script.indices.contains(n) ? script[n] : script[script.count - 1]
+        if let wait = step.wait { try await Task.sleep(for: wait) } else { try await Task.sleep(for: .seconds(600)) }
+        guard let groups = step.groups else { throw URLError(.notConnectedToInternet) }
+        return groups
+    }
+}
+
+extension OutsideArtAppTests {
+    /// Item 4: Recommended's circles are filled without opening each artist: the artist page's picture (Lidarr's
+    /// lookup) is fetched for every artist, kept on the phone, and shown at once on the next open; sign-out removes it.
+    @Test func recommendedArtistsPicturesArePrefetchedAndKept() async throws {
+        let model = try await signedIn()
+        try await withLidarr(model)
+        let ids = (1...6).map { MBID(String(format: "%08d-1111-4111-8111-111111111111", $0))! }
+        transport.inner.stub(pathSuffix: "/api/v1/artist/lookup") { request in
+            let term = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?
+                .first { $0.name == "term" }?.value ?? ""
+            let mbid = term.replacingOccurrences(of: "lidarr:", with: "")
+            return .init(status: 200, body: Data(#"""
+            [{"artistName":"A","foreignArtistId":"\#(mbid)","images":[{"coverType":"poster","remoteUrl":"https://images.lidarr.audio/cache/\#(mbid).jpg"}]}]
+            """#.utf8))
+        }
+        await model.prefetchArtistPictures(ids)
+        #expect(Set(outsideRequests) == Set(ids.map { "https://images.lidarr.audio/cache/\($0.rawValue).jpg" }))
+        let nextOpen = model.makeOutsideArt()
+        #expect(ids.allSatisfy { nextOpen.cached(.artist($0)) != nil }, "at once on the next open, from the phone")
+        let before = outside.requests.count
+        _ = await model.recommendedArt.image(.artist(ids[0]))
+        #expect(outside.requests.count == before, "nothing asked again")
+        model.signOut()
+        #expect(model.outsideArtDisk.count == 0, "sign-out removes the pictures")
+    }
+
+    /// Item 6: a pull to refresh while the first load is still under way supersedes it; the slower first answer never
+    /// replaces the newer one, and nothing says it failed.
+    @Test func aRefreshDuringALoadSupersedesIt() async throws {
+        let model = try await signedIn()
+        let first = [b1Group("11111111-2222-4333-8444-555555555555", "Old")]
+        let second = first + [b1Group("21111111-2222-4333-8444-555555555555", "New")]
+        let script = ScriptedGroups([(.milliseconds(400), first), (.milliseconds(10), second)])
+        model.outsideCatalogStore = OutsideCatalog(releaseGroups: { try await script.next($0) }, releases: { _ in [] })
+        let page = OutsideArtistModel(app: model, artist: NotYetArtist(name: "A", mbid: artistMBID))
+        async let slow: Void = page.load()
+        try await Task.sleep(for: .milliseconds(50))
+        await page.load(fresh: true)
+        await slow
+        #expect(page.phase == .loaded)
+        #expect(page.sections.albums.map(\.title).sorted() == ["New", "Old"], "the newer answer stays")
+        #expect(script.count == 2)
+        model.signOut()
+    }
+
+    /// Item 6: a source that never answers times out: with nothing shown the page says it couldn't load (and Try again
+    /// works); with the albums shown they stay, with the quiet notice. Never a spinner for good.
+    @Test func aSilentSourceTimesOutWithoutFreezingThePage() async throws {
+        let model = try await signedIn()
+        let albums = [b1Group("11111111-2222-4333-8444-555555555555", "Kept")]
+        let script = ScriptedGroups([(nil, nil), (.milliseconds(10), albums), (nil, nil)])
+        model.outsideCatalogStore = OutsideCatalog(releaseGroups: { try await script.next($0) }, releases: { _ in [] })
+        let page = OutsideArtistModel(app: model, artist: NotYetArtist(name: "A", mbid: artistMBID))
+        page.loadTimeout = .milliseconds(200)
+        let start = ContinuousClock.now
+        await page.load()
+        #expect(ContinuousClock.now - start < .seconds(3))
+        #expect(page.phase == .failed, "nothing to show: Couldn't load this page")
+        await page.load()   // Try again
+        #expect(page.phase == .loaded && page.sections.albums.map(\.title) == ["Kept"])
+        await page.load(fresh: true)   // a pull to refresh that meets the silent source
+        #expect(page.phase == .loaded && page.sections.albums.map(\.title) == ["Kept"], "what was shown stays")
+        model.signOut()
+    }
+
+    /// Item 5: a cover the Cover Art Archive doesn't have comes from Lidarr's album lookup (after the album's releases);
+    /// never the placeholder while a source has one.
+    @Test func everyAlbumFillsThroughTheFallbacks() async throws {
+        let model = try await signedIn()
+        try await withLidarr(model)
+        let fresh = MockTransport()
+        fresh.stub(pathSuffix: "/front-250") { _ in .init(status: 404, body: Data()) }
+        fresh.stub(pathSuffix: "/lidarr-cover.jpg", body: Self.png)
+        AppModel.outsideArtTransportForTesting = fresh
+        defer { AppModel.outsideArtTransportForTesting = outside }
+        transport.inner.stub(pathSuffix: "/api/v1/album/lookup", body: Data(#"""
+        [{"title":"T","foreignAlbumId":"\#(rg.rawValue)","images":[{"coverType":"cover","url":"/MediaCoverProxy/x/cover.jpg","remoteUrl":"https://images.lidarr.audio/cache/lidarr-cover.jpg"}]}]
+        """#.utf8))
+        let loader = model.makeOutsideArt()
+        #expect(await loader.image(.releaseGroup(rg)) != nil, "Lidarr's named cover, last before the placeholder")
+        #expect(fresh.requests.first?.url?.absoluteString == "https://coverartarchive.org/release-group/\(rg.rawValue)/front-250")
+        #expect(fresh.requests.last?.url?.absoluteString == "https://images.lidarr.audio/cache/lidarr-cover.jpg")
+        model.signOut()
     }
 }

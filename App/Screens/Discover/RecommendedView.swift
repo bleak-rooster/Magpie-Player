@@ -10,6 +10,8 @@ import SwiftUI
 struct RecommendedView: View {
     @Environment(AppModel.self) private var model
     @State private var sort = RecommendedRails.Sort.rank
+    /// B1: a pull to refresh asks again for every picture that didn't load.
+    @State private var artAttempt = 0
     private let themed = Themed()
 
     private var feeds: AurralFeeds { model.aurralFeeds }
@@ -29,11 +31,20 @@ struct RecommendedView: View {
             }
             .padding(.vertical, Tokens.Spacing.l)
         }
-        .refreshable { await RefreshSafety.run { await feeds.refresh(.recommended, force: true) } }
+        .refreshable {
+            await RefreshSafety.run {
+                await feeds.refresh(.recommended, force: true)
+                artAttempt += 1
+                await prefetchPictures()
+            }
+        }
         .navigationTitle(DiscoverPagesCopy.recommended)
         .navigationBarTitleDisplayMode(.inline)
         .magpieScreen()
-        .task { await feeds.refresh(.recommended) }
+        .task {
+            await feeds.refresh(.recommended)
+            await prefetchPictures()
+        }
     }
 
     @ViewBuilder private func content(_ rails: RecommendedRails) -> some View {
@@ -42,7 +53,7 @@ struct RecommendedView: View {
                 PageSectionTitle(title: DiscoverPagesCopy.topPick)
                 NavigationLink(value: route(top)) {
                     HStack(spacing: Tokens.Spacing.m) {
-                        AurralArt(image: top.image, side: 96, circle: true)
+                        AurralArt(image: top.image, side: 96, circle: true, artist: top.mbid, attempt: artAttempt)
                         VStack(alignment: .leading, spacing: Tokens.Spacing.xs) {
                             Text(top.name).magpieDisplay(.title3)
                             if let line = RecommendedRails.subtitle(top) {
@@ -74,7 +85,7 @@ struct RecommendedView: View {
                 ForEach(Array(artists.enumerated()), id: \.offset) { _, artist in
                     NavigationLink(value: route(artist)) {
                         VStack(spacing: Tokens.Spacing.xs) {
-                            AurralArt(image: artist.image, side: 110, circle: true)
+                            AurralArt(image: artist.image, side: 110, circle: true, artist: artist.mbid, attempt: artAttempt)
                             Text(artist.name).font(.subheadline.weight(.semibold)).lineLimit(2).multilineTextAlignment(.center)
                             if let line = RecommendedRails.subtitle(artist) {
                                 Text(line).font(.caption).foregroundStyle(themed.palette.ink2Color).lineLimit(2)
@@ -104,7 +115,7 @@ struct RecommendedView: View {
             ForEach(Array(rails.sorted(sort).enumerated()), id: \.offset) { index, artist in
                 NavigationLink(value: route(artist)) {
                     HStack(spacing: Tokens.Spacing.m) {
-                        AurralArt(image: artist.image, side: 48, circle: true)
+                        AurralArt(image: artist.image, side: 48, circle: true, artist: artist.mbid, attempt: artAttempt)
                         VStack(alignment: .leading, spacing: 1) {
                             Text(artist.name).font(.body)
                             if let line = RecommendedRails.subtitle(artist) {
@@ -124,6 +135,15 @@ struct RecommendedView: View {
                 .accessibilityIdentifier("recommended-all-\(index)")
             }
         }
+    }
+
+    /// B1 (owner item 4): every artist's picture is fetched when the page opens (four at a time, kept on the phone),
+    /// so the circles are filled without opening each artist, and at once on later opens.
+    private func prefetchPictures() async {
+        guard let rails = feeds.recommended?.rails(now: Date(), hidden: feeds.hidden) else { return }
+        let ordered = ([rails.topPick].compactMap { $0 } + rails.newThisWeek + rails.becauseYouLike.flatMap(\.artists)
+                       + rails.closeToHome + rails.furtherOut + rails.sorted(sort))
+        await model.prefetchArtistPictures(ordered.filter { $0.image == nil }.compactMap(\.mbid))
     }
 
     private func route(_ artist: AurralRecommendedArtist) -> Route {

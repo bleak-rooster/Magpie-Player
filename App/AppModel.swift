@@ -134,6 +134,8 @@ final class AppModel {
     var madeForYouShelf: [MadeForYou.Playlist] = []
     /// Home's feed for the signed-in account (P5, HomeFeed.swift).
     @ObservationIgnored var homeFeedSlot: HomeFeed?
+    /// B1: recommended artists' pictures (AppModel+OutsideArt.swift).
+    @ObservationIgnored var recommendedArtSlot: OutsideArtLoader?
     /// Round 14 A6: Home's provided sections (Recommended, Trending…); none until round 14 A4 supplies a provider.
     var homeAurralShelves: any HomeAurralShelves = NoHomeAurralShelves()
     /// Round 14 A4: Trending, Recommended and Discover playlists, each loaded on its own and kept on disk
@@ -633,6 +635,7 @@ final class AppModel {
         box.set(nil)
         ArtworkCache.shared.removeAll()
         forgetHomeShelves()
+        forgetOutsideArt()   // B1
         stopMatchIndex(erase: true)
         forgetLidarrPermissions()
         lidarrStore.clear()

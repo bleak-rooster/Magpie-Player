@@ -46,17 +46,38 @@ enum OutsidePhase: Equatable {
         OutsideAlbumModel.canTryAlbum(kind: item.kind, artist: lidarrLine.state)
     }
 
-    func load() async {
-        guard !app.isOffline else { phase = .offline; return }
+    /// The longest the page waits for MusicBrainz (B1, owner item 6): past it the load counts as failed, so the page
+    /// never sits on a spinner.
+    nonisolated static let defaultLoadTimeout: Duration = .seconds(30)
+    @ObservationIgnored var loadTimeout = OutsideArtistModel.defaultLoadTimeout
+    /// Bumped by every load; only the newest one changes the page (B1: a refresh during a load supersedes it).
+    @ObservationIgnored private var generation = 0
+
+    /// D77 (B1, owner item 6): a load cut short or superseded is never an error; what is shown stays when a reload
+    /// fails ("Couldn't refresh this page."); "Couldn't load this page" only when there is nothing to show.
+    func load(fresh: Bool = false) async {
+        guard !app.isOffline else { if phase != .loaded { phase = .offline }; return }
+        generation += 1
+        let mine = generation
         if phase != .loaded { phase = .loading }
         if let mbid = artist.mbid {
-            do {
-                sections = OutsideArtistSections.make(try await app.outsideCatalog.releaseGroups(artist: mbid))
+            let catalog = app.outsideCatalog
+            if fresh { await catalog.forget(artist: mbid) }
+            let result = await HomeDeadline.run(loadTimeout) { try await catalog.releaseGroups(artist: mbid) }
+            guard mine == generation, !Task.isCancelled else { return }   // superseded, or the page went away
+            switch result {
+            case .success(let groups):
+                sections = OutsideArtistSections.make(groups)
                 phase = .loaded
-            } catch {
-                phase = app.isOffline ? .offline : .failed
+            case .failure:
+                // A cancellation here is the timeout (the page itself wasn't cancelled): a real failure.
+                if phase == .loaded {
+                    app.libraryEdits.notify(RefreshSafety.notRefreshed, symbol: "exclamationmark.triangle")
+                } else {
+                    phase = app.isOffline ? .offline : .failed
+                }
             }
-        } else {
+        } else if phase != .loaded {
             phase = .failed
         }
         await lidarrLine.refresh()

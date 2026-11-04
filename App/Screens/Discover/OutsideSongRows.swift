@@ -42,13 +42,28 @@ struct AurralArt: View {
     let image: AurralImage?
     let side: CGFloat
     var circle = false
+    /// B1 (owner item 4): an artist's MBID: without a picture from the server, the one the artist page shows (kept on
+    /// the phone, so it is there at once next time).
+    var artist: MBID? = nil
+    /// B1: bumped by a pull to refresh, so a picture that failed is asked for again.
+    var attempt = 0
     @State private var picture: UIImage?
 
     var body: some View {
-        SleeveArt(image: picture.map { Image(uiImage: $0) }, side: side)
+        SleeveArt(image: (picture ?? cachedArtist).map { Image(uiImage: $0) }, side: side)
             .clipShape(circle ? AnyShape(Circle()) : AnyShape(Rectangle()))
             .accessibilityHidden(true)
-            .task(id: image?.raw) { picture = await model.aurralArtwork(image, side: side) }
+            .task(id: "\(image?.raw ?? "")|\(artist?.rawValue ?? "")#\(attempt)") {
+                if let found = await model.aurralArtwork(image, side: side) { picture = found; return }
+                guard let artist, !model.isOffline else { return }
+                if let found = await model.recommendedArt.image(.artist(artist)) { picture = UIImage(cgImage: found) }
+            }
+    }
+
+    /// The artist's picture already on the phone, shown before any task runs.
+    private var cachedArtist: UIImage? {
+        guard picture == nil, image == nil, let artist else { return nil }
+        return model.recommendedArt.cached(.artist(artist)).map { UIImage(cgImage: $0) }
     }
 }
 

@@ -109,6 +109,11 @@ public actor OutsideCatalog {
         return picked
     }
 
+    /// B1: a pull to refresh on an artist's page reads its albums again.
+    public func forget(artist: MBID) {
+        groups[artist] = nil
+    }
+
     /// Drops what was read (public MusicBrainz data, not tied to an account; the app keeps it for the session).
     public func reset() {
         groups = [:]
