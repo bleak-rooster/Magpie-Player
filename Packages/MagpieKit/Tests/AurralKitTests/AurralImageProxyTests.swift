@@ -160,6 +160,82 @@ import Testing
     }
 }
 
+extension AurralImageProxyTests {
+    /// Fix round 1 I1: a waiter cancelled while four run (a row scrolled away) takes no slot and frees none: the bound
+    /// still holds for the waiters behind it.
+    @Test func aCancelledWaiterNeverStretchesTheBound() async throws {
+        let gate = GatedTransport()
+        let loader = proxy(transport: gate)
+        func picture(_ n: Int) -> AurralImage { AurralImage("/api/image-proxy/\(String(format: "%064x", n)).png")! }
+        let running = (1...4).map { n in Task { await loader.imageData(for: picture(n), client: client) } }
+        try await gate.waitUntil { $0 == 4 }
+        let cancelled = Task { await loader.imageData(for: picture(5), client: client) }
+        let next = Task { await loader.imageData(for: picture(6), client: client) }
+        try await waitFor { await loader.waiting == 2 }
+        cancelled.cancel()
+        _ = await cancelled.value
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(gate.peak <= 4, "peak \(gate.peak) after a cancelled waiter")
+        #expect(await loader.waiting == 1, "the other waiter still waits")
+        gate.openOne()
+        try await gate.waitUntil { _ in gate.started == 5 }
+        #expect(gate.peak <= 4, "peak \(gate.peak)")
+        gate.openAll()
+        for task in running { _ = await task.value }
+        _ = await next.value
+        #expect(gate.started == 5, "the cancelled one asked nothing")
+    }
+
+    func waitFor(_ condition: () async -> Bool) async throws {
+        for _ in 0..<500 { if await condition() { return }; try await Task.sleep(for: .milliseconds(2)) }
+        Issue.record("timed out")
+    }
+}
+
+/// Holds every request until opened, and records how many were in flight at once.
+final class GatedTransport: HTTPTransport, Sendable {
+    private struct State { var now = 0, peak = 0, started = 0, open = 0, all = false
+        var waiting: [CheckedContinuation<Void, Never>] = [] }
+    private let state = Mutex(State())
+    var peak: Int { state.withLock { $0.peak } }
+    var started: Int { state.withLock { $0.started } }
+
+    func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+            let go = state.withLock { s -> Bool in
+                s.now += 1; s.started += 1; s.peak = max(s.peak, s.now)
+                if s.all || s.open > 0 { if !s.all { s.open -= 1 }; return true }
+                s.waiting.append(c); return false
+            }
+            if go { c.resume() }
+        }
+        state.withLock { $0.now -= 1 }
+        let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1",
+                                       headerFields: ["Content-Type": "image/png"])!
+        return (StubAurral.proxiedPicture, response)
+    }
+
+    func openOne() {
+        let c = state.withLock { s -> CheckedContinuation<Void, Never>? in
+            if s.waiting.isEmpty { s.open += 1; return nil }
+            return s.waiting.removeFirst()
+        }
+        c?.resume()
+    }
+
+    func openAll() {
+        let all = state.withLock { s -> [CheckedContinuation<Void, Never>] in
+            s.all = true; defer { s.waiting = [] }; return s.waiting
+        }
+        all.forEach { $0.resume() }
+    }
+
+    func waitUntil(_ condition: (Int) -> Bool) async throws {
+        for _ in 0..<500 { if condition(state.withLock { $0.now }) { return }; try await Task.sleep(for: .milliseconds(2)) }
+        Issue.record("timed out")
+    }
+}
+
 /// Holds each image-proxy request a little and records how many were in flight at once.
 final class SlowCountingTransport: HTTPTransport, Sendable {
     let inner: HTTPTransport

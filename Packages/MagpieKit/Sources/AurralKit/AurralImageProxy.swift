@@ -52,7 +52,7 @@ public actor AurralImageProxy {
     private var mappings: [String: String]?
     private var order: [String] = []
     private var running = 0
-    private var waiters: [(id: UUID, continuation: CheckedContinuation<Void, Never>)] = []
+    private var waiters: [(id: UUID, continuation: CheckedContinuation<Bool, Never>)] = []
 
     /// `directory` holds the mappings (nil: in memory only); `openTransport` fetches the pictures (its default never
     /// follows a redirect and keeps no cookie or cache).
@@ -135,32 +135,39 @@ public actor AurralImageProxy {
 
     // MARK: - The bound
 
+    /// Callers waiting for a slot (tests).
+    var waiting: Int { waiters.count }
+
+    /// Runs `work` in one of the slots. A caller cancelled while it waited takes no slot and frees none (fix round 1
+    /// I1: the bound holds however many rows scroll away).
     private func limited(_ work: () async -> Data?) async -> Data? {
-        await acquire()
+        guard await acquire() else { return nil }
         defer { release() }
         guard !Task.isCancelled else { return nil }
         return await work()
     }
 
-    private func acquire() async {
-        if running < Self.maxConcurrent { running += 1; return }
+    /// True with a slot held (the caller must `release()` it); false when the caller was cancelled while waiting
+    /// (it holds nothing).
+    private func acquire() async -> Bool {
+        if running < Self.maxConcurrent { running += 1; return true }
         let id = UUID()
-        await withTaskCancellationHandler {
+        return await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in waiters.append((id, continuation)) }
         } onCancel: {
             Task { await self.leave(id) }
         }
     }
 
-    /// A cancelled waiter leaves the line (it then asks nothing).
+    /// A cancelled waiter leaves the line without a slot (it then asks nothing and releases nothing).
     private func leave(_ id: UUID) {
         guard let index = waiters.firstIndex(where: { $0.id == id }) else { return }
-        running += 1   // handed a slot, released at once by its caller
-        waiters.remove(at: index).continuation.resume()
+        waiters.remove(at: index).continuation.resume(returning: false)
     }
 
+    /// Hands the slot to the next waiter (it then holds it), or frees it.
     private func release() {
-        if waiters.isEmpty { running -= 1 } else { waiters.removeFirst().continuation.resume() }
+        if waiters.isEmpty { running -= 1 } else { waiters.removeFirst().continuation.resume(returning: true) }
     }
 
     // MARK: - The mapping, on disk per server
