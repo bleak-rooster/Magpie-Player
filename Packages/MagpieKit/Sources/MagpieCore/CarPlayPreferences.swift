@@ -62,7 +62,8 @@ public enum CarPlayHomeShelf: String, CaseIterable, Codable, Hashable, Sendable 
         }
     }
 
-    public var title: String { section.title }
+    /// The car keeps "Discover" (round 14 changes only the phone's Home, which calls it "Your flows").
+    public var title: String { self == .discover ? "Discover" : section.title }
 
     init?(_ section: HomeSection) { self.init(rawValue: section.rawValue) }
 }
@@ -70,6 +71,14 @@ public enum CarPlayHomeShelf: String, CaseIterable, Codable, Hashable, Sendable 
 public struct CarPlayPreferences: PreferenceArea {
     public static let key = "magpie.prefs.carplay"
     public static let defaultValue = CarPlayPreferences(thirdTab: .playlists, home: nil)
+    /// The phone's default Home before round 14, which the car keeps following while the phone's is the default.
+    static let build13Phone = OrderedVisibility(HomeSection.build13Order.map {
+        .init(item: $0, visible: HomeSection.build13Visible.contains($0))
+    })
+    /// A phone layout's entries for the car's ten shelves, in order.
+    static func carShelves(of phone: OrderedVisibility<HomeSection>) -> [OrderedVisibility<HomeSection>.Entry] {
+        phone.entries.filter { CarPlayHomeShelf($0.item) != nil }
+    }
     /// Shelves missing from a saved list come back hidden.
     static let hiddenShelves = OrderedVisibility(CarPlayHomeShelf.allCases.map { .init(item: $0, visible: false) })
 
@@ -91,9 +100,26 @@ public struct CarPlayPreferences: PreferenceArea {
         thirdTab == .discover && !discoverSetUp ? .playlists : thirdTab
     }
 
+    /// Round 14 fix round 1 (I1, D109): the car's own list, taken from the phone's layout as saved before round 14,
+    /// when that layout is about to be migrated (D106 may reorder it) and the car still follows the phone. nil when
+    /// there is nothing to keep: no saved layout, a layout that needs no migration, or a car with its own list. The
+    /// app saves the result once, so the car's Home stays as it was.
+    public func keepingRound13Home(storedLayout: Data?) -> CarPlayPreferences? {
+        guard home == nil, let stored = LayoutPreferences.storedHome(storedLayout),
+              HomeSection.defaultOrder.contains(where: { section in !stored.entries.contains { $0.item == section } })
+        else { return nil }
+        var kept = self
+        kept.home = homeList(following: stored)
+        return kept
+    }
+
     /// The car's Home list: its own, else a copy of the phone's order and switches (without Genres).
     public func homeList(following phone: OrderedVisibility<HomeSection>) -> OrderedVisibility<CarPlayHomeShelf> {
         if let home { return home }
+        // Round 14 (plan decision 10, D109): the car's Home doesn't change this round. While the phone's car shelves (their
+        // order and switches; the phone-only sections don't count) are as in the new Spotify-style default, the car
+        // follows the default it had (build 13's order and switches).
+        let phone = Self.carShelves(of: phone) == Self.carShelves(of: HomeSection.defaultHome) ? Self.build13Phone : phone
         let copied = phone.entries.compactMap { entry in
             CarPlayHomeShelf(entry.item).map { OrderedVisibility<CarPlayHomeShelf>.Entry(item: $0, visible: entry.visible) }
         }

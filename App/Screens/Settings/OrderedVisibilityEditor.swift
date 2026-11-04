@@ -14,16 +14,29 @@ struct OrderedVisibilityEditor<Item: CaseIterable & RawRepresentable & Hashable 
     private let footer: (Item) -> String?
     private let keepingOneOf: Set<Item>
     private let extra: AnyView
+    /// Round 14 A6: a row listed greyed (its service is missing; `footer` says which).
+    private let greyed: (Item) -> Bool
+    /// Round 14 A6: a row's own settings (Home: card size and count), shown after its switch.
+    private let accessory: (Item) -> AnyView?
+    /// Round 14 A6: what Reset does and whether there is anything to reset, when more than the list resets (Home).
+    private let reset: (() -> Void)?
+    private let isDefault: Bool?
 
     init(title: String, list: Binding<OrderedVisibility<Item>>, defaults: OrderedVisibility<Item>,
          label: @escaping (Item) -> String, footer: @escaping (Item) -> String? = { _ in nil },
-         keepingOneOf: Set<Item> = [], @ViewBuilder extra: () -> some View = { EmptyView() }) {
+         keepingOneOf: Set<Item> = [], @ViewBuilder extra: () -> some View = { EmptyView() },
+         greyed: @escaping (Item) -> Bool = { _ in false }, accessory: @escaping (Item) -> AnyView? = { _ in nil },
+         reset: (() -> Void)? = nil, isDefault: Bool? = nil) {
         self.title = title
         self._list = list
         self.defaults = defaults
         self.label = label
         self.footer = footer
         self.keepingOneOf = keepingOneOf
+        self.greyed = greyed
+        self.accessory = accessory
+        self.reset = reset
+        self.isDefault = isDefault
         self.extra = AnyView(extra())
     }
 
@@ -55,8 +68,8 @@ struct OrderedVisibilityEditor<Item: CaseIterable & RawRepresentable & Hashable 
             }
             extra
             Section {
-                Button("Reset to default order") { list = defaults }
-                    .disabled(list == defaults)
+                Button("Reset to default order") { if let reset { reset() } else { list = defaults } }
+                    .disabled(isDefault ?? (list == defaults))
                     .accessibilityIdentifier("layout-reset")
             }
         }
@@ -69,14 +82,15 @@ struct OrderedVisibilityEditor<Item: CaseIterable & RawRepresentable & Hashable 
         let item = entry.item
         let entries = list.entries
         let index = entries.firstIndex { $0.item == item } ?? 0
-        return Toggle(isOn: Binding(
+        let isGreyed = greyed(item)
+        let toggle = Toggle(isOn: Binding(
             get: { entry.visible },
             set: { on in
                 var changed = list
                 if changed.set(item, visible: on, keepingOneOf: keepingOneOf) { list = changed }
             })) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(label(item))
+                Text(label(item)).foregroundStyle(isGreyed ? .secondary : .primary)
                 if let note = footer(item) {
                     Text(note).font(.footnote).foregroundStyle(.secondary)
                 }
@@ -99,6 +113,10 @@ struct OrderedVisibilityEditor<Item: CaseIterable & RawRepresentable & Hashable 
                     AccessibilityNotification.Announcement(Self.movedDown).post()
                 }
             }
+        }
+        return HStack(spacing: 8) {
+            toggle
+            if let extra = accessory(item) { extra }
         }
     }
 }

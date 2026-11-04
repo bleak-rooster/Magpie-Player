@@ -42,13 +42,14 @@ struct HomeLoad: Equatable {
     }
 
     /// What a read for `want` asks for: the sections not read yet (all of them when fresh), Downloaded again when the
-    /// songs on the phone changed, Genres again when the genre preferences changed. Made for you has its own shelf.
+    /// songs on the phone changed, Genres again when the genre preferences changed. Made for you has its own shelf;
+    /// round 14: the greeting and the chips are no shelf at all (`readsShelf`).
     func read(for want: Key, fresh: Bool) -> Read {
         let fresh = fresh || key == nil || want.offline != key?.offline
         var kept = fresh ? [] : done
         if want.onPhone != key?.onPhone { kept.remove(.downloaded) }
         if want.genres != key?.genres { kept.remove(.genres) }
-        return Read(sections: want.sections.filter { $0 != .madeForYou && !kept.contains($0) }, kept: kept, fresh: fresh)
+        return Read(sections: want.sections.filter { $0.readsShelf && !kept.contains($0) }, kept: kept, fresh: fresh)
     }
 
     /// Records what `read` found. A failed section keeps any shelf already on screen and isn't marked read. An

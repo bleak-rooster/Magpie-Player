@@ -9,7 +9,17 @@ struct PreferencesStore {
     init(defaults: UserDefaults) { self.defaults = defaults }
 
     func load() -> Preferences {
-        Preferences(layout: read(), playback: read(), downloads: read(), scrobbling: read(), genres: read(), carPlay: read())
+        Preferences(layout: read(), playback: read(), downloads: read(), scrobbling: read(), genres: read(), carPlay: carPlay())
+    }
+
+    /// The car's area. Round 14 fix round 1 (I1, D109): when the phone's saved Home predates round 14 (it is about to
+    /// be migrated, D106) and the car follows it, the car's list as it was is saved now, once, so the car's Home
+    /// doesn't move with the phone's new order.
+    private func carPlay() -> CarPlayPreferences {
+        let car: CarPlayPreferences = read()
+        guard let kept = car.keepingRound13Home(storedLayout: defaults.data(forKey: LayoutPreferences.key)) else { return car }
+        write(kept, car)
+        return kept
     }
 
     func save(_ new: Preferences, previous: Preferences) {
