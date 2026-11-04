@@ -6,8 +6,9 @@ import os
 /// Round 12 Y6: a stub Aurral (v2.10.0 shapes, from docs/research/aurral.md) for tests, in process. Never the owner's
 /// Aurral: it answers only its own host (`aurral-stub` by default: a single-label name, so a home address) and fails every other request without sending it.
 ///
-/// It serves the seven routes Magpie may call (health, playlists status and jobs, library lookup, a flow's start, and
-/// round 13's login and logout) and answers 404 to anything else, recording every request so tests can check what was
+/// It serves the routes Magpie may call (health, playlists status and jobs, library lookup, a flow's start, round 13's
+/// login and logout, and after `useAurral213()` round 14's 2.13 routes: StubAurral+Discover.swift) and answers 404 to
+/// anything else, recording every request so tests can check what was
 /// (and wasn't) asked. Round 13: Aurral 2.10's user sessions. `POST /api/auth/login` checks a user's password and
 /// hands out a Bearer token; every other call but `/api/health` needs a live token (401 otherwise, as Aurral's
 /// `SESSION_INVALID`), and an API key is never accepted. Like Aurral, an admin sees every user's flows and a user only

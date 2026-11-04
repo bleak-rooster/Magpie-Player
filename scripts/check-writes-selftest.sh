@@ -40,6 +40,16 @@ planted=(
   'restarter.restart(row)'
   'screen.restartAll(rows, model: model)'
   'LidarrDownloadRestarter(lidarr: client, gate: gate, runner: nil)'
+  # Round 14 A1: Aurral routes outside the exact allow-list.
+  'aurral.ok(method: "GET", path: "api/discover/refresh")'
+  'aurral.ok(method: "GET", path: "api/discover/blocked-tags")'
+  'aurral.ok(method: "GET", path: "api/discover/preferences")'
+  'aurral.ok(method: "GET", path: "api/discover/editorial/1/library/x")'
+  'aurral.ok(method: "GET", path: "api/library/downloads/track")'
+  'aurral.ok(method: "GET", path: "api/library/albums/request")'
+  'aurral.ok(method: "GET", path: "api/playlists/flows/" + id + "/tracks")'
+  'aurral.ok(method: "GET", path: "api/playlists/shared-playlists/" + id + "/sync")'
+  'aurral.ok(method: AurralRoute.discoverWriteMethod, path: "api/discover/feedback/reset")'
 )
 failed=0
 for p in "${planted[@]}"; do

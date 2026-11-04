@@ -23,6 +23,11 @@
 #   Packages/MagpieKit/Sources/AurralKit/AurralClient.swift  G1 allowlist: aurral session
 #       Round 13 (D70): Aurral's `POST /api/auth/login` and `POST /api/auth/logout` (Magpie signs in as a user; they
 #       change only Aurral's own sessions). Pinned below.
+#   Packages/MagpieKit/Sources/AurralKit/AurralClient.swift  G1 allowlist: aurral discover writes
+#       Round 14 A1 (D82): Add flow (`POST /api/discover/editorial/:id/library`), Not for me
+#       (`POST /api/discover/feedback`), Download songs (`POST /api/playlists/flows/:flowId/download`) and Retry a song
+#       (`POST /api/playlists/shared-playlists/:playlistId/tracks/:jobId/research`), each only on the owner's tap.
+#       Pinned below.
 #   Packages/MagpieKit/Tests/RequestsTests/FindsIT.swift  G1 allowlist: devLidarr
 #       Raw requests to the dev Lidarr for IT set-up and clean-up (manual import, removing the test artist), after
 #       TryDevStack verified the host is local and the dev marker matches (G0). Never product code.
@@ -51,6 +56,7 @@ allow=(
   "Packages/MagpieKit/Tests/RequestsTests/FindsIT.swift|G1 allowlist: devLidarr"
   "Packages/MagpieKit/Sources/AurralKit/AurralClient.swift|G1 allowlist: aurral start flow"
   "Packages/MagpieKit/Sources/AurralKit/AurralClient.swift|G1 allowlist: aurral session"
+  "Packages/MagpieKit/Sources/AurralKit/AurralClient.swift|G1 allowlist: aurral discover writes"
   "Packages/MagpieKit/Tests/MagpieCoreTests/HTTPTransportTests.swift|RedirectStub"
   "Packages/MagpieKit/Tests/MagpieCoreTests/SharedLoginTransportTests.swift|auth/login"
 )
@@ -204,10 +210,12 @@ if [ -z "${G1_SRC:-}" ]; then
   done
 fi
 if [ -z "${G1_SRC:-}" ]; then
-  # Round 12 Y6 (D56): Aurral. The client allows exactly seven calls (GET health, playlists status, playlists jobs,
-  # library lookup; POST playlists start; round 13 (D70): POST auth login and logout), and nothing in the product names
-  # Aurral's dangerous routes.
+  # Round 12 Y6 (D56), round 13 (D70), round 14 A1 (D81): Aurral. The client allows exactly the calls below, each its
+  # own `case N where` line (25 routes: the round-12/13 seven plus round 14's 2.13 reads and four writes), and nothing
+  # in the product names Aurral's dangerous routes.
   aurral="Packages/MagpieKit/Sources/AurralKit/AurralClient.swift"
+  aurral_discover="Packages/MagpieKit/Sources/AurralKit/AurralClient+Discover.swift"
+  preview_resolver="Packages/MagpieKit/Sources/AurralKit/PreviewResolver.swift"
   for want in 'case 1 where rest[0] == "health": .health' \
               'case 2 where rest == ["playlists", "status"]: .playlistsStatus' \
               'case 2 where rest == ["playlists", "jobs"]: .playlistsJobs' \
@@ -219,21 +227,89 @@ if [ -z "${G1_SRC:-}" ]; then
               'case 2 where rest == ["auth", "logout"]: .logout' \
               'case .login, .logout: Self.sessionMethod' \
               'static let sessionMethod = "POST"' \
-              'case .health, .login: false' \
-              'guard AurralRoute.isAllowed(method: method, path: path),'; do
+              'case .health, .login, .deezerPreview: false' \
+              'case 2 where rest == ["health", "bootstrap"]: .bootstrap' \
+              'case 2 where rest == ["auth", "me"]: .authMe' \
+              'case 1 where rest[0] == "discover": .recommendations' \
+              'case 2 where rest == ["discover", "trending"]: .trending' \
+              'case 4 where rest[0] == "discover" && rest[1] == "trending" && rest[2] == "genres" && isDigits(rest[3], max: 6): .trendingGenre' \
+              'case 2 where rest == ["discover", "editorial"]: .editorialShelf' \
+              'case 3 where rest == ["discover", "editorial", "links"]: .editorialLinks' \
+              'case 3 where rest[0] == "discover" && rest[1] == "editorial" && isDigits(rest[2], max: 20): .editorialPlaylist' \
+              'case 4 where rest[0] == "discover" && rest[1] == "editorial" && isDigits(rest[2], max: 20) && rest[3] == "library": .editorialAdd' \
+              'case 2 where rest == ["discover", "feedback"]: .discoverFeedback' \
+              'case 3 where rest[0] == "artists" && isMBID(rest[1]) && rest[2] == "preview": .artistPreview' \
+              'case 4 where rest[0] == "artists" && rest[1] == "release-group" && isMBID(rest[2]) && rest[3] == "tracks": .releaseGroupTracks' \
+              'case 1 where rest[0] == "search": .search' \
+              'case 2 where rest == ["search", "unified"]: .searchUnified' \
+              'case 3 where rest[0] == "playlists" && rest[1] == "jobs" && isPlainId(rest[2]): .playlistJobsById' \
+              'case 4 where rest[0] == "playlists" && rest[1] == "flows" && isPlainId(rest[2]) && rest[3] == "download": .flowDownload' \
+              'case 6 where rest[0] == "playlists" && rest[1] == "shared-playlists" && isPlainId(rest[2]) && rest[3] == "tracks"' \
+              'case 3 where rest[0] == "deezer" && rest[1] == "preview" && isPreviewFile(rest[2]): .deezerPreview' \
+              'case .editorialAdd, .discoverFeedback, .flowDownload, .trackResearch: Self.discoverWriteMethod' \
+              'static let discoverWriteMethod = "POST"' \
+              'guard AurralRoute.isAllowed(method: method, path: path),' \
+              'AurralRoute.isAllowed(method: method, path: path, query: query),'; do
     grep -qF -- "$want" "$aurral" || { echo "G1: $aurral: the Aurral allow-list changed (missing: $want)" >&2; bad=1; }
   done
-  [ "$(grep -cE 'case [0-9] where' "$aurral")" = 7 ] || { echo "G1: $aurral: the Aurral allow-list isn't exactly seven routes" >&2; bad=1; }
+  [ "$(grep -cE 'case [0-9] where' "$aurral")" = 25 ] || { echo "G1: $aurral: the Aurral allow-list isn't exactly 25 routes" >&2; bad=1; }
+  # Round 14 A1 (D82): the four discover writes are sent only from these four exact lines (each path a literal, no
+  # body but the feedback's), and Not for me's action is exactly block_artist.
+  writes=$(grep -rnF --include='*.swift' 'AurralRoute.discoverWriteMethod' "${product[@]}" | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' || true)
+  [ "$(printf '%s\n' "$writes" | grep -c .)" = 4 ] || { echo "G1: Aurral's discover writes aren't exactly four sends" >&2; bad=1; }
+  while IFS= read -r w; do
+    [ -n "$w" ] || continue
+    [ "${w%%:*}" = "$aurral_discover" ] || { echo "G1: an Aurral discover write outside $aurral_discover: ${w%%:*}" >&2; bad=1; }
+  done <<< "$writes"
+  for want in 'try await ok(method: AurralRoute.discoverWriteMethod, path: "api/discover/editorial/" + id + "/library"))' \
+              '_ = try await ok(method: AurralRoute.discoverWriteMethod, path: "api/discover/feedback", body: body)' \
+              'try await ok(method: AurralRoute.discoverWriteMethod, path: "api/playlists/flows/" + flowId + "/download"))' \
+              'path: "api/playlists/shared-playlists/" + playlistId + "/tracks/" + jobId + "/research"))' \
+              'var o: [String: Any] = ["action": "block_artist", "artistName": name, "sourceContext": "recommended",'; do
+    grep -qF -- "$want" "$aurral_discover" || { echo "G1: $aurral_discover: an Aurral write changed (missing: $want)" >&2; bad=1; }
+  done
+  # Round 14 A1 (D83): the preview resolver sends no login or cookie, follows no redirect, and accepts only https
+  # *.dzcdn.net.
+  if grep -nE 'Authorization|Bearer|X-Api-Key|Cookie"|session\.token|currentToken' "$preview_resolver" | grep -vE '^[0-9]+:[[:space:]]*//' | grep -q .; then
+    echo "G1: $preview_resolver: the preview fetch names a login" >&2; bad=1
+  fi
+  for want in 'request.httpShouldHandleCookies = false' 'config.httpCookieStorage = nil' 'config.urlCache = nil' \
+              'newRequest request: URLRequest) async -> URLRequest? { nil }' 'guard url.scheme?.lowercased() == "https"' \
+              'return host == "dzcdn.net" || host.hasSuffix(".dzcdn.net")' 'case 302:'; do
+    grep -qF -- "$want" "$preview_resolver" || { echo "G1: $preview_resolver: the preview's safety changed (missing: $want)" >&2; bad=1; }
+  done
   # Round 13 (D70): the API key is gone. No product code sends an X-Api-Key to Aurral, and only the Aurral client sends
   # its Bearer token.
   if grep -nE 'X-Api-Key|apiKey' "$aurral" | grep -vE '^[0-9]+:[[:space:]]*//' | grep -q .; then
     echo "G1: $aurral: the Aurral client names an API key again" >&2; bad=1
   fi
-  # Nobody names Aurral's settings, key, discover, add or track-delete routes (the stub for tests aside).
-  if grep -rnE --include='*.swift' 'api/settings|api/auth/api-key|api/auth/oidc|api/users|api/discover|api/library/tracks|api/library/artists|lidarr-import-list' \
+  # Nobody names Aurral's settings, key, users, admin Discover, blocked-tags, add, download or track-delete routes (the
+  # stub for tests aside).
+  if grep -rnE --include='*.swift' 'api/settings|api/auth/api-key|api/auth/oidc|api/users|api/discover/refresh|api/discover/clear|blocked-tags|api/library/tracks|api/library/artists|api/library/albums|api/library/downloads|lidarr-import-list' \
        "${product[@]}" | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' | grep -v '^Packages/MagpieKit/Sources/MagpieTestSupport/' | grep -q .; then
     echo "G1: a forbidden Aurral route is named in product code" >&2; bad=1
   fi
+  # Round 14 A1 (D81): `api/discover` only as one of the allowed spellings, and the flow write routes only in the
+  # Aurral client (the stub for tests aside).
+  discover_names=$(grep -rnoE --include='*.swift' 'api/discover[A-Za-z0-9/_.?&=-]*' "${product[@]}" |
+                   grep -v '^Packages/MagpieKit/Sources/MagpieTestSupport/' || true)
+  while IFS= read -r d; do
+    [ -n "$d" ] || continue
+    file="${d%%:*}" rest="${d#*:}" line="${rest%%:*}" name="${rest#*:}"
+    sed -n "${line}p" "$file" | grep -qE '^[[:space:]]*//' && continue
+    case "$name" in
+      api/discover|api/discover/trending|api/discover/trending/genres/|api/discover/editorial|api/discover/editorial/|\
+      api/discover/editorial/links|api/discover/feedback) ;;
+      *) echo "G1: an Aurral Discover route outside the allow-list: $file:$line: $name" >&2; bad=1 ;;
+    esac
+  done <<< "$discover_names"
+  for f in $(grep -rlE --include='*.swift' 'api/playlists/flows|shared-playlists|api/deezer/preview' "${product[@]}" | sort -u || true); do
+    case "$f" in
+      "$aurral_discover"|"$aurral"|Packages/MagpieKit/Sources/AurralKit/AurralPreview.swift|Packages/MagpieKit/Sources/MagpieTestSupport/*) ;;
+      *) grep -nE 'api/playlists/flows|shared-playlists|api/deezer/preview' "$f" | grep -vE '^[0-9]+:[[:space:]]*//' | grep -q . &&
+           { echo "G1: an Aurral flow or preview route named outside AurralKit: $f" >&2; bad=1; } ;;
+    esac
+  done
   # Playlist writes (X3's checked path) are sent only from the owner's playlist edits and Y6's "Use your library's
   # copy" (AppModel+DiscoverSwap.swift: the whole list rewritten in place, after X3's ownership check, never on a
   # Discover playlist). Both go through `ownPlaylist`, which refuses Discover's (Aurral's) playlists.

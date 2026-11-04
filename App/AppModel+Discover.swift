@@ -15,8 +15,9 @@ struct DiscoverPage: Equatable {
 
 /// Round 12 Y6 (plan item 7): Aurral's flows as Discover.
 ///
-/// - Aurral is asked only through `AurralClient`'s five calls; nothing is ever written to Aurral except Refresh Flow on
-///   the owner's confirmed tap, refused while a run is active.
+/// - Aurral is asked only through `AurralClient`'s allow-listed calls (`AurralRoute`); nothing is ever written to
+///   Aurral except on the owner's tap: Refresh Flow (refused while a run is active) and round 14's Add flow, Not for me,
+///   Download songs and Retry a song.
 /// - Discover is the Navidrome playlists named after Aurral's flows; they are kept out of Playlists (Home, Library,
 ///   the car, Add to playlist), and no playlist edit is ever sent to one.
 /// - Aurral's library (found from its job paths) is kept out of Home, Library, Search and the car (Y3's scope).
