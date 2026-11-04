@@ -55,6 +55,8 @@ public actor AurralImageProxy {
     private var order: [String] = []
     private var running = 0
     private var waiters: [(id: UUID, continuation: CheckedContinuation<Bool, Never>)] = []
+    /// S14 L3 (D118): signed out of Aurral (or another user): the mapping is gone and never written again.
+    private var erased = false
 
     /// `directory` holds the mappings (nil: in memory only); `openTransport` fetches the pictures (its default never
     /// follows a redirect and keeps no cookie or cache).
@@ -175,6 +177,14 @@ public actor AurralImageProxy {
 
     // MARK: - The mapping, on disk per server
 
+    /// S14 L3 (D118): forgets the mapping and deletes its file, for good (the app drops this proxy at the same time).
+    public func erase() {
+        erased = true
+        mappings = [:]
+        order = []
+        if let file { try? FileManager.default.removeItem(at: file) }
+    }
+
     private func mapping(for src: String) -> String? {
         load()
         return mappings?[src]
@@ -200,7 +210,7 @@ public actor AurralImageProxy {
     }
 
     private func load() {
-        guard mappings == nil else { return }
+        guard mappings == nil, !erased else { return }
         mappings = [:]
         guard let file, let data = try? Data(contentsOf: file), data.count <= 4 * 1024 * 1024,
               let saved = try? JSONDecoder().decode(Saved.self, from: data) else { return }
@@ -212,11 +222,18 @@ public actor AurralImageProxy {
     }
 
     private func save() {
-        guard let file, let mappings else { return }
+        guard !erased, let file, let mappings else { return }
         let saved = Saved(entries: order.compactMap { src in mappings[src].map { [src, $0] } })
         do {
-            try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+            var directory = file.deletingLastPathComponent()
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             try JSONEncoder().encode(saved).write(to: file, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+            // S14 L3 (D118): which pictures were looked at is not for an iCloud or computer backup.
+            var values = URLResourceValues()
+            values.isExcludedFromBackup = true
+            var savedFile = file
+            try savedFile.setResourceValues(values)
+            try directory.setResourceValues(values)
         } catch {
             Log.logger("aurral").error("couldn't save the image mapping: \(Log.category(of: error), privacy: .public)")
         }

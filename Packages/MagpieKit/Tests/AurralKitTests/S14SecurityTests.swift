@@ -74,4 +74,30 @@ import Testing
         await #expect(throws: AurralError.http(status: 403)) { _ = try await client.status() }
         #expect(transport.caps.count == sent, "backed off: no second login straight away")
     }
+
+    // MARK: - L3 (D118): the picture mapping is kept out of backups and goes with the account
+
+    @Test func theMappingIsExcludedFromBackupAndErased() async throws {
+        let stub = StubAurral()
+        stub.useAurral213()
+        let client = AurralClient(base: stub.base, session: stub.signedInSession(), transport: stub)
+        let directory = FileManager.default.temporaryDirectory.appending(path: "s14-image-proxy-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let proxy = AurralImageProxy(base: stub.base, directory: directory, openTransport: stub)
+        _ = try await client.trending()
+        let art = try #require(AurralImage(AurralImageProxyTests.songArt))
+        #expect(await proxy.imageData(for: art, client: client) != nil)
+        let file = directory.appending(path: proxy.server + ".json")
+        #expect(FileManager.default.fileExists(atPath: file.path))
+        #expect(try file.resourceValues(forKeys: [.isExcludedFromBackupKey]).isExcludedFromBackup == true)
+        #expect(try directory.resourceValues(forKeys: [.isExcludedFromBackupKey]).isExcludedFromBackup == true)
+
+        await proxy.erase()
+        #expect(!FileManager.default.fileExists(atPath: file.path))
+        // Erased for good: a later picture is neither looked up in nor written to the mapping.
+        let posts = stub.imageProxySources.count
+        _ = await proxy.imageData(for: art, client: client)
+        #expect(!FileManager.default.fileExists(atPath: file.path))
+        #expect(stub.imageProxySources.count == posts + 1, "asked afresh, not from the erased mapping")
+    }
 }

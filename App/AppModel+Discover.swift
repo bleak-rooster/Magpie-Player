@@ -151,6 +151,7 @@ extension AppModel {
     private func forgetDiscoverReads() {
         discover.forgetReads()
         aurralFeeds?.forget()   // round 14 A4: Trending, Recommended and Discover playlists go with the user
+        AurralImageProxies.eraseAll(dataDirectory: dataDirectory)   // S14 L3: the picture mapping and memory copies too
         homeFeedSlot?.discard(Set(HomeSection.allCases.filter { $0 == .discover || $0.isProvided }))   // Round 13 Z2: another Aurral (or user) never shows the last one's shelf
         if let scope = navidromeScope {
             appDefaults.removeObject(forKey: Self.discoverPlaylistsKey(scope))

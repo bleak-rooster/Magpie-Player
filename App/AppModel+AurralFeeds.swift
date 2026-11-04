@@ -444,12 +444,29 @@ enum AurralImageProxies {
         let id = dataDirectory.path + "|" + key(base)
         return all.withLock { proxies in
             if let proxy = proxies[id], proxy.server == key(base) { return proxy }
-            let proxy = AurralImageProxy(base: base, directory: dataDirectory.appending(path: "aurral-image-proxy"),
+            let proxy = AurralImageProxy(base: base, directory: directory(dataDirectory),
                                          openTransport: transport)
             proxies[id] = proxy
             return proxy
         }
     }
+
+    /// S14 L3 (D118): signed out of Aurral, or another Aurral user: every proxy for `dataDirectory` is dropped and
+    /// erased (its mapping file deleted and never written again), the mapping folder deleted, and the pictures kept in
+    /// memory forgotten.
+    static func eraseAll(dataDirectory: URL) {
+        let prefix = dataDirectory.path + "|"
+        let dropped = all.withLock { proxies in
+            let gone = proxies.filter { $0.key.hasPrefix(prefix) }
+            for key in gone.keys { proxies[key] = nil }
+            return Array(gone.values)
+        }
+        for proxy in dropped { Task { await proxy.erase() } }
+        try? FileManager.default.removeItem(at: directory(dataDirectory))
+        AurralArtworkCache.shared.removeAllObjects()
+    }
+
+    static func directory(_ dataDirectory: URL) -> URL { dataDirectory.appending(path: "aurral-image-proxy") }
 }
 
 /// Discover's pictures for this session, in memory only.
