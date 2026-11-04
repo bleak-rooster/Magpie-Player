@@ -58,6 +58,37 @@ import UIKit
         }
     }
 
+    /// Fix I3 (D3, owner answer 7): "No preview available" and "Preview unavailable right now" are shown as words in place
+    /// of the play button, not as a glyph alone. The words grow with Dynamic Type (to AX5) and wrap within the phone.
+    @Test func noPreviewAndUnavailableShowTheirWords() {
+        func fit(_ status: PreviewStatus, _ size: DynamicTypeSize, width: CGFloat = 375) -> CGSize {
+            UIHostingController(rootView: PreviewButton(status: status) {}.environment(\.dynamicTypeSize, size))
+                .sizeThatFits(in: CGSize(width: width, height: CGFloat.infinity))
+        }
+        for status in [PreviewStatus.noPreview, .unavailable] {
+            #expect(status.showsWords)
+            let large = fit(status, .large)
+            #expect(large.width > 100, "\(status.label) is written out: \(large)")
+            let ax5 = fit(status, .accessibility5)
+            #expect(ax5.height > large.height, "the words grow with Dynamic Type")
+            #expect(ax5.width <= 375.5)
+            #expect(ax5.height >= 44)
+        }
+        for status in [PreviewStatus.ready, .loading, .playing(progress: 0.2, secondsLeft: 24)] {
+            #expect(!status.showsWords)
+            #expect(fit(status, .large).width < 60, "play, stop and loading stay a round button")
+        }
+        // In a row at AX5 the words still fit a 375-point phone beside nothing cut off.
+        for status in [PreviewStatus.noPreview, .unavailable] {
+            let row = PreviewRow(title: "Harbour Lights", artist: "Stub Arrows", status: status, onPreview: {}) {
+                Button("Listen to the full song") {}
+            }
+            let host = UIHostingController(rootView: row.environment(\.dynamicTypeSize, .accessibility5))
+            let size = host.sizeThatFits(in: CGSize(width: 375, height: CGFloat.infinity))
+            #expect(size.width <= 375.5 && size.height > 0)
+        }
+    }
+
     // MARK: - Lock screen
 
     @MainActor final class Silent: PreviewEngine {

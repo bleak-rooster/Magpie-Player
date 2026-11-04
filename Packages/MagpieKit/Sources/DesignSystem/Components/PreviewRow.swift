@@ -20,8 +20,15 @@ public struct PreviewRow<MenuItems: View>: View {
 
     public init(title: String, artist: String, artwork: Image? = nil, inLibrary: Bool = false, status: PreviewStatus?,
                 onPreview: @escaping () -> Void, @ViewBuilder menu: () -> MenuItems) {
+        self.init(title: title, artist: artist, artwork: artwork, inLibrary: inLibrary, status: status,
+                  onPreview: onPreview, menuItems: menu())
+    }
+
+    /// The one place the row's fields are set (both public initialisers come here).
+    fileprivate init(title: String, artist: String, artwork: Image?, inLibrary: Bool, status: PreviewStatus?,
+                     onPreview: @escaping () -> Void, menuItems: MenuItems?) {
         self.title = title; self.artist = artist; self.artwork = artwork; self.inLibrary = inLibrary
-        self.status = status; self.onPreview = onPreview; self.menu = menu()
+        self.status = status; self.onPreview = onPreview; self.menu = menuItems
     }
 
     public static func accessibilityLabel(title: String, artist: String, inLibrary: Bool) -> String {
@@ -29,32 +36,25 @@ public struct PreviewRow<MenuItems: View>: View {
     }
 
     public var body: some View {
-        let p = themed.palette
         let ax = typeSize.isAccessibilitySize
-        HStack(spacing: Tokens.Spacing.m) {
-            if let status { PreviewButton(status: status, action: onPreview) }
-            let text = VStack(alignment: .leading, spacing: 1) {
-                Text(title).font(.callout).lineLimit(ax ? nil : 1)
-                HStack(spacing: 6) {
-                    Text(artist).font(.footnote).foregroundStyle(p.ink2Color).lineLimit(ax ? nil : 1)
-                    if inLibrary {
-                        Label("In your library", systemImage: "checkmark.circle.fill")
-                            .labelStyle(.iconOnly)
-                            .font(.footnote)
-                            .foregroundStyle(p.accentInkColor)
+        // The round button leads the row; words ("No preview available") go under the song's text, where they have room
+        // to wrap (fix I3). At accessibility sizes the art sits above the text.
+        let wordsBelow = status?.showsWords == true
+        HStack(alignment: ax ? .top : .center, spacing: Tokens.Spacing.m) {
+            if let status, !wordsBelow { PreviewButton(status: status, action: onPreview) }
+            VStack(alignment: .leading, spacing: Tokens.Spacing.xs) {
+                Group {
+                    if ax {
+                        VStack(alignment: .leading, spacing: Tokens.Spacing.s) { SleeveArt(image: artwork, side: thumb); text }
+                    } else {
+                        HStack(spacing: Tokens.Spacing.m) { SleeveArt(image: artwork, side: thumb); text }
                     }
                 }
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(Self.accessibilityLabel(title: title, artist: artist, inLibrary: inLibrary))
+                if let status, wordsBelow { PreviewButton(status: status, action: onPreview) }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            Group {
-                if ax {
-                    VStack(alignment: .leading, spacing: Tokens.Spacing.s) { SleeveArt(image: artwork, side: thumb); text }
-                } else {
-                    HStack(spacing: Tokens.Spacing.m) { SleeveArt(image: artwork, side: thumb); text }
-                }
-            }
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel(Self.accessibilityLabel(title: title, artist: artist, inLibrary: inLibrary))
             if let menu {
                 Menu { menu } label: {
                     Image(systemName: "ellipsis")
@@ -67,9 +67,27 @@ public struct PreviewRow<MenuItems: View>: View {
             }
         }
         .padding(.horizontal, Tokens.Spacing.margin)
+        .padding(.vertical, Tokens.Spacing.xs)
         .frame(minHeight: 60)
-        .foregroundStyle(p.inkColor)
+        .foregroundStyle(themed.palette.inkColor)
         .accessibilityElement(children: .contain)
+    }
+
+    private var text: some View {
+        let ax = typeSize.isAccessibilitySize
+        return VStack(alignment: .leading, spacing: 1) {
+            Text(title).font(.callout).lineLimit(ax ? nil : 1)
+            HStack(spacing: 6) {
+                Text(artist).font(.footnote).foregroundStyle(themed.palette.ink2Color).lineLimit(ax ? nil : 1)
+                if inLibrary {
+                    Label("In your library", systemImage: "checkmark.circle.fill")
+                        .labelStyle(.iconOnly)
+                        .font(.footnote)
+                        .foregroundStyle(themed.palette.accentInkColor)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -77,8 +95,8 @@ public extension PreviewRow where MenuItems == EmptyView {
     /// A row with no ⋯ menu.
     init(title: String, artist: String, artwork: Image? = nil, inLibrary: Bool = false, status: PreviewStatus?,
          onPreview: @escaping () -> Void) {
-        self.title = title; self.artist = artist; self.artwork = artwork; self.inLibrary = inLibrary
-        self.status = status; self.onPreview = onPreview; self.menu = nil
+        self.init(title: title, artist: artist, artwork: artwork, inLibrary: inLibrary, status: status,
+                  onPreview: onPreview, menuItems: nil)
     }
 }
 

@@ -39,14 +39,21 @@ public enum PreviewStatus: Sendable, Equatable {
 
     var isEnabled: Bool { self != .noPreview }
 
+    /// Shown as words in place of the play button (fix I3); the others are a round button.
+    public var showsWords: Bool { self == .noPreview || self == .unavailable }
+
     var progress: Double {
         guard case .playing(let p, _) = self, p.isFinite else { return 0 }
         return min(max(p, 0), 1)
     }
 }
 
-/// Round 14 A2 (D89): play or stop a song's 30-second preview, with a ring that fills over the 30 seconds. Disabled, and
-/// saying "No preview available", for a song without one. At least 44 points to tap; the glyph scales with Dynamic Type.
+/// Round 14 A2 (D89): play or stop a song's 30-second preview, with a ring that fills over 30 seconds. At least 44 points
+/// to tap; the glyph scales with Dynamic Type.
+///
+/// Fix I3 (D3, owner answer 7): a song without a preview shows the words "No preview available" (disabled), and one that
+/// couldn't play right now "Preview unavailable right now" (tap to try again), as text with a symbol in place of the round
+/// button; the words grow with Dynamic Type and wrap.
 public struct PreviewButton: View {
     private let status: PreviewStatus
     private let action: () -> Void
@@ -60,8 +67,33 @@ public struct PreviewButton: View {
     }
 
     public var body: some View {
+        if status.showsWords { words } else { round }
+    }
+
+    /// The two states that are words, not a shape.
+    private var words: some View {
         let p = themed.palette
-        Button(action: action) {
+        return Button(action: action) {
+            Label {
+                Text(status.label).multilineTextAlignment(.leading).fixedSize(horizontal: false, vertical: true)
+            } icon: {
+                Image(systemName: status.symbol)
+            }
+            .font(.footnote)
+            .foregroundStyle(status.isEnabled ? p.inkColor : p.ink2Color)
+            .frame(minHeight: Tokens.minHitSize)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!status.isEnabled)
+        .accessibilityLabel(status.label)
+        .accessibilityHint(status == .unavailable ? "Tries the preview again" : "")
+        .accessibilityIdentifier("preview-status")
+    }
+
+    private var round: some View {
+        let p = themed.palette
+        return Button(action: action) {
             ZStack {
                 Circle().stroke(p.sepColor, lineWidth: 2.5)
                 if case .loading = status {
