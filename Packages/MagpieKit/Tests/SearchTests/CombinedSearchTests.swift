@@ -272,7 +272,7 @@ final class AsyncGate: @unchecked Sendable {
     }
 
     @Test func aFailingSourceNeverHidesTheOther() async throws {
-        let aurral = MergedSearch.Source(timeout: .seconds(5)) { _ in throw AurralError.unreachable }
+        let aurral = MergedSearch.Source(timeout: .seconds(5)) { _ in throw URLError(.cannotConnectToHost) }
         let lidarr = MergedSearch.Source(timeout: .seconds(5)) { _ in ExternalHits(artists: [NotYetArtist(name: "Ines Morrow")]) }
         let s = try await search([aurral, lidarr]).runReportingLibraryFailure("ines")
         #expect(s.notYet.artists.map(\.name) == ["Ines Morrow"])
@@ -326,7 +326,7 @@ final class AsyncGate: @unchecked Sendable {
         let reader = TracklistSongs(release: { group in
             calls.add("mb")
             return MBReleaseDetail(id: group, title: "R", date: nil, status: "Official",
-                                   tracks: [MBTrack(recording: group, title: "Song", length: 100)])
+                                   tracks: [MBTrack(recording: group, title: "Song " + group.rawValue.suffix(2), length: 100)])
         }, sleep: never)
         let source = MergedSearch.Source(timeout: .seconds(5)) { _ in
             ExternalHits(cursor: OutsideCursor(unreadAlbums: (1...4).map { album("A\($0)", by: "X", $0) }))
@@ -344,7 +344,7 @@ final class AsyncGate: @unchecked Sendable {
     }
 
     @Test func aFailedMorePageThrowsAndKeepsTheOffset() async throws {
-        let more = MergedSearch.OutsideMore(albums: { _, _ in throw AurralError.unreachable })
+        let more = MergedSearch.OutsideMore(albums: { _, _ in throw URLError(.cannotConnectToHost) })
         let source = MergedSearch.Source(timeout: .seconds(5)) { _ in ExternalHits(cursor: OutsideCursor(aurralAlbumsOffset: 24)) }
         let search = search([source], more: more)
         let s = try await search.runReportingLibraryFailure("x")

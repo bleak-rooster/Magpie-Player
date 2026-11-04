@@ -40,12 +40,16 @@ public struct NotYetSections: Equatable, Sendable {
     public var songs: [ExternalRecording]
     public var albums: [NotYetAlbum]
     public var artists: [NotYetArtist]
+    /// Round 14 (D96): songs found outside (an album's tracklist) that the library has but its search didn't list.
+    /// Shown "In your library", apart from the band.
+    public var owned: [OwnedOutsideSong]
 
-    public init(songs: [ExternalRecording] = [], albums: [NotYetAlbum] = [], artists: [NotYetArtist] = []) {
-        self.songs = songs; self.albums = albums; self.artists = artists
+    public init(songs: [ExternalRecording] = [], albums: [NotYetAlbum] = [], artists: [NotYetArtist] = [],
+                owned: [OwnedOutsideSong] = []) {
+        self.songs = songs; self.albums = albums; self.artists = artists; self.owned = owned
     }
 
-    public var isEmpty: Bool { songs.isEmpty && albums.isEmpty && artists.isEmpty }
+    public var isEmpty: Bool { songs.isEmpty && albums.isEmpty && artists.isEmpty && owned.isEmpty }
 }
 
 /// What Search shows for a query, in display order: Top result, then the library's Songs, Artists and
@@ -60,11 +64,14 @@ public struct SearchSections: Equatable, Sendable {
     public var recentlyPlayed: [Song]
     /// Where each library section is up to (round 12, plan item 3); nil when the results don't page (offline).
     public var paging: SearchPaging?
+    /// Round 14 (D98): where the band's outside rows are up to; nil until the outside sources answered.
+    public var outside: OutsidePaging?
 
     public init(top: SearchItem? = nil, songs: [Song] = [], artists: [Artist] = [], albums: [Album] = [],
-                notYet: NotYetSections = NotYetSections(), recentlyPlayed: [Song] = [], paging: SearchPaging? = nil) {
+                notYet: NotYetSections = NotYetSections(), recentlyPlayed: [Song] = [], paging: SearchPaging? = nil,
+                outside: OutsidePaging? = nil) {
         self.top = top; self.songs = songs; self.artists = artists; self.albums = albums; self.notYet = notYet
-        self.recentlyPlayed = recentlyPlayed; self.paging = paging
+        self.recentlyPlayed = recentlyPlayed; self.paging = paging; self.outside = outside
     }
 
     public static let empty = SearchSections()
