@@ -234,14 +234,19 @@ public struct LibraryPager: Sendable {
                 let i = next, q = requests[i]
                 next += 1
                 group.addTask {
+                    // B1 (D120): the answer is awaited into a constant, then paired. An inline `.success(try await …)`
+                    // in the returned pair loses `i` in the optimised build (every page landed on the first request).
+                    let result: Result<LibrarySearchResult, Error>
                     do {
                         if let deadline {
-                            return (i, .success(try await MergedSearch.withDeadline(deadline, sleep: sleep) { try await page(q) }))
+                            result = .success(try await MergedSearch.withDeadline(deadline, sleep: sleep) { try await page(q) })
+                        } else {
+                            result = .success(try await page(q))
                         }
-                        return (i, .success(try await page(q)))
                     } catch {
-                        return (i, .failure(error))
+                        result = .failure(error)
                     }
+                    return (i, result)
                 }
             }
             for _ in 0..<min(maxConcurrent, requests.count) { add() }
