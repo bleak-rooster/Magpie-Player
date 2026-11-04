@@ -201,6 +201,10 @@ public struct AurralClient: Sendable, CustomDebugStringConvertible, CustomReflec
         self.log = log ?? Self.defaultLog
     }
 
+    /// S14 M1 (D115): the most of any Aurral answer Magpie reads (its JSON runs to tens of KB; a bigger one is refused
+    /// as it streams, before it is parsed).
+    public static let maxResponseBytes = 8 * 1024 * 1024
+
     static let defaultLog: @Sendable (String) -> Void = { line in Log.logger("aurral").debug("\(line, privacy: .public)") }
 
     public var debugDescription: String { "AurralClient(\(Redactor.sanitize(base)))" }
@@ -327,6 +331,10 @@ public struct AurralClient: Sendable, CustomDebugStringConvertible, CustomReflec
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         }
         log(Log.describe(request))
-        return try await transport.send(request)
+        do {
+            return try await transport.send(request, maxBytes: maxResponseBytes)
+        } catch is ResponseTooLarge {
+            throw AurralError.decoding   // S14 M1 (D115): no Aurral answer Magpie reads is anywhere near this big
+        }
     }
 }
