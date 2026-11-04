@@ -101,6 +101,10 @@ struct DiscoverPlaylistView: View {
                     .accessibilityAddTraits(.isHeader)
                 Text("\(songs.count) \(songs.count == 1 ? "song" : "songs") · \(minutes) min")
                     .font(theme.numberFont(.footnote)).foregroundStyle(p.ink2Color)
+                // Round 14 A4 fix round 1 (M7): Add flow's playlist shows its download progress here too.
+                if model.aurralCanAddFlow, let synced = model.discoverSyncedPlaylist(playlistId: page.playlist.id) {
+                    SyncedProgressLine(playlistId: synced.id)
+                }
                 if let line = statusLine(page) {
                     Label(line.text, systemImage: line.symbol).font(.footnote).foregroundStyle(p.ink2Color)
                         .accessibilityIdentifier("discover-progress")
@@ -121,6 +125,18 @@ struct DiscoverPlaylistView: View {
                     }
                     ActionButton(DiscoverCopy.artistsInPlaylist, symbol: "person.2") { showsArtists = true }
                         .accessibilityIdentifier("discover-artists")
+                    // Round 14 A4 (owner answer 10): a flow made with auto-download off.
+                    if let flow = page.flow, flow.autoDownload == false, model.aurralCanAddFlow {
+                        ActionButton(DiscoverPagesCopy.downloadSongs, symbol: "arrow.down.circle") {
+                            Task {
+                                do { try await model.downloadFlowSongs(flowId: flow.id) } catch {
+                                    message = error as? AurralError == .noDownloader ? DiscoverPagesCopy.noDownloader
+                                        : DiscoverCopy.message(for: error)
+                                }
+                            }
+                        }
+                        .accessibilityIdentifier("discover-download-songs")
+                    }
                 }
             }
         }
@@ -222,10 +238,16 @@ struct DiscoverListView: View {
                 }
             }
             .listRowSeparatorTint(themed.palette.sepColor)
+            // Round 14 A4 (owner answer 1): For you underneath, then Browse more playlists.
+            ForYouSection()
+                .padding(.vertical, Tokens.Spacing.l)
+                .listRowInsets(EdgeInsets())
+                .listRowSeparator(.hidden)
+                .listRowBackground(Color.clear)
         }
         .listStyle(.plain)
         .overlay {
-            if playlists.value?.isEmpty == true {
+            if playlists.value?.isEmpty == true, model.aurralFeeds?.can.editorial != true {
                 ContentUnavailableView(DiscoverCopy.empty, systemImage: LibraryRow.discover.symbol)
             }
         }

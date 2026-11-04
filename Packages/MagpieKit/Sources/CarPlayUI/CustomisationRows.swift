@@ -140,6 +140,7 @@ extension CarPlayRows {
             case .finds: .finds
             case .discover: .discover   // Y6
             case .requests: nil
+            case .trending, .recommended: nil   // round 14 A4: CarPlay is unchanged this round
             }
             return destination.map { CPRowModel(id: "library.\(row.rawValue)", title: row.title, action: .open($0)) }
         }

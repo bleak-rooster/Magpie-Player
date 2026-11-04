@@ -43,6 +43,13 @@ public enum LibraryRow: String, CaseIterable, Codable, Hashable, Sendable {
     case playlists, artists, albums, songs, genres, favourites, downloads, finds, requests
     /// Round 12 Y6: Aurral's flow playlists, only while Aurral is set up.
     case discover
+    /// Round 14 A4 (D93): Aurral's charts and recommended artists, only while Aurral is set up and can give them;
+    /// never in the car (CarPlay is unchanged this round).
+    case trending, recommended
+
+    /// Round 14 A4: rows a saved layout gains right after their default predecessor (Trending after Discover), not at
+    /// the end.
+    public static let insertedAfterPredecessor: Set<LibraryRow> = [.trending, .recommended]
 
     public var title: String {
         switch self {
@@ -56,6 +63,8 @@ public enum LibraryRow: String, CaseIterable, Codable, Hashable, Sendable {
         case .finds: "Finds"
         case .requests: "Requests"
         case .discover: "Discover"
+        case .trending: "Trending"
+        case .recommended: "Recommended"
         }
     }
 
@@ -71,7 +80,44 @@ public enum LibraryRow: String, CaseIterable, Codable, Hashable, Sendable {
         case .finds: "sparkles"
         case .requests: "tray.and.arrow.down"
         case .discover: "binoculars"
+        case .trending: "chart.line.uptrend.xyaxis"
+        case .recommended: "person.crop.circle.badge.plus"
         }
+    }
+}
+
+/// Round 14 A4 fix round 1 (owner): whose top songs Trending shows. Stored as "automatic", "server" or an ISO 3166 code;
+/// anything else reads as Automatic.
+public enum ChartsCountry: Hashable, Sendable, Codable {
+    /// The phone's region when there is a chart for it, else the server's.
+    case automatic
+    /// The server's own region (Aurral's chart).
+    case server
+    case country(String)
+
+    public init(stored: String) {
+        switch stored {
+        case "server": self = .server
+        case let code where code.count == 2 && code.allSatisfy({ $0.isASCII && $0.isLetter }): self = .country(code.uppercased())
+        default: self = .automatic
+        }
+    }
+
+    public var stored: String {
+        switch self {
+        case .automatic: "automatic"
+        case .server: "server"
+        case .country(let code): code
+        }
+    }
+
+    public init(from decoder: Decoder) throws {
+        self.init(stored: (try? decoder.singleValueContainer().decode(String.self)) ?? "automatic")
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(stored)
     }
 }
 
@@ -196,16 +242,20 @@ public struct LayoutPreferences: PreferenceArea {
     public var homeStyles: [String: HomeSectionStyle]
     /// Round 14 A6: how many "Because you like" rows Home shows (0–3; 0 hides the section).
     public var becauseYouLikeRows: Int
+    /// Round 14 A4 fix round 1: Trending's country (Settings › Home & Library › Charts country).
+    public var chartsCountry: ChartsCountry
 
     public init(home: OrderedVisibility<HomeSection>, library: OrderedVisibility<LibraryRow>, showsRecentlyAdded: Bool,
                 albumArtistsOnly: Bool = true, homeStyles: [String: HomeSectionStyle] = [:],
-                becauseYouLikeRows: Int = HomeSectionStyle.becauseYouLikeRange.upperBound) {
+                becauseYouLikeRows: Int = HomeSectionStyle.becauseYouLikeRange.upperBound,
+                chartsCountry: ChartsCountry = .automatic) {
         self.home = home
         self.library = library
         self.showsRecentlyAdded = showsRecentlyAdded
         self.albumArtistsOnly = albumArtistsOnly
         self.homeStyles = homeStyles
         self.becauseYouLikeRows = becauseYouLikeRows
+        self.chartsCountry = chartsCountry
     }
 
     /// Hides or shows a Library row; false (no change) when it would leave none of the always-available rows visible.
@@ -216,7 +266,8 @@ public struct LayoutPreferences: PreferenceArea {
 
     /// Stored data keeps the "one Library row stays visible" rule too: with none showing, the defaults come back.
     public func normalised() -> LayoutPreferences {
-        var library = library.normalised(against: Self.defaultValue.library)
+        var library = library.normalised(against: Self.defaultValue.library,
+                                         insertingAfterPredecessor: LibraryRow.insertedAfterPredecessor)
         let required = Self.alwaysAvailableRows
         if !library.entries.contains(where: { required.contains($0.item) && $0.visible }) {
             for entry in Self.defaultValue.library.entries where entry.visible && required.contains(entry.item) {
@@ -226,7 +277,8 @@ public struct LayoutPreferences: PreferenceArea {
         return LayoutPreferences(home: HomeSection.migrated(home), library: library,
                                  showsRecentlyAdded: showsRecentlyAdded, albumArtistsOnly: albumArtistsOnly,
                                  homeStyles: HomeSectionStyle.normalised(homeStyles),
-                                 becauseYouLikeRows: clamp(becauseYouLikeRows, HomeSectionStyle.becauseYouLikeRange))
+                                 becauseYouLikeRows: clamp(becauseYouLikeRows, HomeSectionStyle.becauseYouLikeRange),
+                                 chartsCountry: chartsCountry)
     }
 
     /// The Home sections to show, in the owner's order, for the phone and the car alike (the car shows Made for you too,
@@ -246,9 +298,11 @@ public struct LayoutPreferences: PreferenceArea {
     /// The Library rows to show, in the owner's order. Offline (the phone and the car alike): Downloads, which always
     /// shows, and Genres (read from the phone) when switched on. The car never shows Requests (spec §3); round 13: Songs
     /// shows in the car too (it opens on letter groups).
-    /// Y6: Discover only while Aurral is set up (`discoverSetUp`), in the car too.
+    /// Y6: Discover only while Aurral is set up (`discoverSetUp`), in the car too. Round 14 A4: Trending and Recommended
+    /// only while Aurral is set up and can give them (`trendingSetUp`, `recommendedSetUp`), never in the car.
     public func visibleLibraryRows(offline: Bool, findsSetUp: Bool, lidarrConnected: Bool, carPlay: Bool,
-                                   discoverSetUp: Bool = false) -> [LibraryRow] {
+                                   discoverSetUp: Bool = false, trendingSetUp: Bool = false,
+                                   recommendedSetUp: Bool = false) -> [LibraryRow] {
         if offline {
             return library.entries.filter { $0.item == .downloads || ($0.item == .genres && $0.visible) }.map(\.item)
         }
@@ -257,6 +311,8 @@ public struct LayoutPreferences: PreferenceArea {
             case .finds: findsSetUp
             case .requests: lidarrConnected && !carPlay
             case .discover: discoverSetUp
+            case .trending: discoverSetUp && trendingSetUp && !carPlay
+            case .recommended: discoverSetUp && recommendedSetUp && !carPlay
             default: true
             }
         }

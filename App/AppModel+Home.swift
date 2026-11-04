@@ -42,6 +42,8 @@ struct HomeShelf: Identifiable, Equatable, Sendable {
         case (.genres, .genreGroup): true
         case (.downloaded, .downloadedAlbum), (.downloaded, .playlist): true
         case (.quickAccess, .album): true   // round 14 A6: the server's recently played albums
+        // Round 14 A4: Your flows ends with the For you playlists (Discover playlists not added yet).
+        case (.discover, .outside(let item)): item.kind == .playlist
         case (let section, .outside): section.isProvided
         default: false
         }
@@ -178,7 +180,8 @@ extension AppModel {
             return try await homeAurralShelves.items(for: section, limit: size * rows).prefix(size * rows)
                 .map(HomeShelf.Item.outside)
         case .discover:   // Y6: Aurral's flow playlists (AppModel+Discover.swift)
-            return try await discoverPlaylists().prefix(size).map(HomeShelf.Item.playlist)
+            let flows = try await discoverPlaylists().prefix(size).map(HomeShelf.Item.playlist)
+            return flows + (await forYouOnHome(limit: size - flows.count)).map(HomeShelf.Item.outside)   // round 14 A4
         }
     }
 
@@ -229,7 +232,9 @@ extension AppModel {
     func libraryRows(carPlay: Bool) -> [LibraryRow] {
         preferences.layout.visibleLibraryRows(offline: isOffline, findsSetUp: findsSetup?.library != nil,
                                               lidarrConnected: lidarr != nil, carPlay: carPlay,
-                                              discoverSetUp: aurralSetUp)   // Y6
+                                              discoverSetUp: aurralSetUp,   // Y6
+                                              trendingSetUp: aurralFeeds?.can.trending ?? false,   // round 14 A4
+                                              recommendedSetUp: aurralFeeds?.can.recommendations ?? false)
     }
 
     /// The Recently added grid at the bottom of the Library: its own switch, and never offline.

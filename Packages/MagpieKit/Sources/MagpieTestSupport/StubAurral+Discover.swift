@@ -21,6 +21,8 @@ public struct StubAurralDiscover: Sendable {
     var failure: Int?
     /// Deezer playlist ids already added (Add flow answers `alreadyAdded`).
     var added: [String: String] = [:]
+    /// Round 14 A4 fix round 1: Discover playlists (Deezer ids) Aurral can't read (404).
+    var editorialMissing: Set<String> = []
     /// Where the preview redirects: a URL (302), or nil (404 "Preview not found").
     var previewTarget: String? = "https://cdnt-preview.dzcdn.net/api/1/1/a/b/c/preview.mp3?hdnea=exp=1790000000~hmac=stub"
     /// The preview answers this status instead (502: Deezer down; 200: the bytes).
@@ -132,12 +134,13 @@ public struct StubAurralDiscover: Sendable {
                                                                         "message": "artistName is required"]) }
             return (200, ["artistMbid": Self.artistA, "albumMbid": query["album"] == nil ? NSNull() as Any : Self.releaseGroup])
         case ("GET", let p) where p.count == 4 && p[2] == "editorial":
+            if editorialMissing.contains(p[3]) { return (404, ["error": "Playlist not found"]) }
             let tracks = Self.songs.prefix(4).map { s -> [String: Any] in
                 var t = s
                 t["key"] = nil; t["largeArtworkUrl"] = nil; t["position"] = nil; t["movement"] = nil
                 return t
             }
-            return (200, ["id": p[3], "name": "Indie Pop Picks", "description": "Fresh indie pop", "curator": "Deezer Pop Editor",
+            return (200, ["id": p[3], "name": p[3] == "1313616925" ? "Top Australia" : "Indie Pop Picks", "description": "Fresh indie pop", "curator": "Deezer Pop Editor",
                           "artworkUrl": "https://cdn-images.dzcdn.net/images/playlist/\(p[3])/1000x1000.jpg",
                           "tracks": tracks, "libraryPlaylistId": added[p[3]].map { $0 as Any } ?? NSNull()])
         case (let m, let p) where m != "GET" && p.count == 5 && p[2] == "editorial" && p[4] == "library":
@@ -147,7 +150,7 @@ public struct StubAurralDiscover: Sendable {
             if let existing = added[p[3]] {
                 return (200, ["playlistId": existing, "name": "Indie Pop Picks", "alreadyAdded": true])
             }
-            return (200, ["playlistId": "static-\(p[3])", "name": "Indie Pop Picks", "alreadyAdded": false, "tracksQueued": 4])
+            return (200, ["playlistId": StubAurral.syncedId(p[3]), "name": "Indie Pop Picks", "alreadyAdded": false, "tracksQueued": 4])
         case (let m, ["api", "discover", "feedback"]) where m != "GET":
             let actions = ["more_like_this", "less_like_this", "block_artist"]
             guard let action = body["action"] as? String, actions.contains(action),
@@ -241,6 +244,8 @@ public extension StubAurral {
     /// The preview answers this status instead of its redirect (nil: the redirect again).
     func setPreviewStatus(_ status: Int?) { discover.withLock { $0.previewStatus = status } }
     /// The Deezer playlist is already in the user's flows (Add flow answers `alreadyAdded`).
+    func setEditorialMissing(_ deezerId: String) { discover.withLock { _ = $0.editorialMissing.insert(deezerId) } }
+    /// Round 14 A4: Add flow already made a playlist for this Deezer playlist.
     func setEditorialAdded(_ deezerId: String, as playlistId: String) { discover.withLock { $0.added[deezerId] = playlistId } }
     /// The round-14 writes, as "METHOD /path" and their JSON bodies.
     var discoverWrites: [(String, [String: Any])] {
@@ -269,11 +274,23 @@ public extension StubAurral {
         let answer = discover.withLock { $0 }.answer(method: method, path: path, query: query, body: body, user: user,
                                                      hasDownloader: hasDownloader)
         if method != "GET", let answer, (200..<300).contains(answer.0) {
+            // Round 14 A4: a new synced playlist queues its songs; a retried song is searched for again.
+            let p = path.split(separator: "/").map(String.init)
+            if p.count == 5, p[2] == "editorial", p[4] == "library", discover.withLock({ $0.added[p[3]] }) == nil {
+                let songs = StubAurralDiscover.songs.prefix(4).compactMap { s -> (String, String, Int)? in
+                    guard let t = s["trackName"] as? String, let a = s["artistName"] as? String,
+                          let d = s["durationMs"] as? Int else { return nil }
+                    return (t, a, d)
+                }
+                addSynced(id: StubAurral.syncedId(p[3]), name: p[3] == "1313616925" ? "Top Australia" : "Indie Pop Picks", owner: user.id,
+                          songs: songs.map { (title: $0.0, artist: $0.1, durationMs: $0.2) })
+            }
+            if p.count == 7, p[2] == "shared-playlists", p[6] == "research" { retryJob(p[5]) }
             discover.withLock { d in
                 d.writes.append(("\(method) \(path)", request.httpBody ?? Data()))
                 let parts = path.split(separator: "/").map(String.init)
                 if parts.count == 5, parts[2] == "editorial", parts[4] == "library", d.added[parts[3]] == nil {
-                    d.added[parts[3]] = "static-\(parts[3])"
+                    d.added[parts[3]] = StubAurral.syncedId(parts[3])
                 }
             }
         }
