@@ -158,13 +158,19 @@ public enum DiscoverRules {
     /// name. A flow song whose job's file is Aurral's own (in its `_flows` folder) is matched by recording id to the
     /// playlist entry; the entry's row (`rows[entry.id]`, Navidrome's lookup by that recording id) names its library.
     /// A library the owner lists is never Discover's (a reused Lidarr file lives there).
+    /// Round 14 (D79 amendment): Aurral 2.13 no longer names its files (`toPublicJob` drops `finalPath`). When Aurral
+    /// listed jobs but none carries a path, the library is the one holding the Discover playlists' own songs (each
+    /// entry's own row), with the same exclusions; never learnt from Aurral's `libraryOwned`.
     public static func discoverLibraries(entries: [Song], rows: [String: [Song]], jobs: [AurralJob],
                                          listed: Set<Int>) -> Set<Int> {
+        let pathsHidden = !jobs.isEmpty && jobs.allSatisfy { $0.finalPath == nil }
         let ownFiles = Set(jobs.filter(\.isAurralsOwnFile).compactMap(\.trackMBID))
         var found = Set<Int>()
         for entry in entries {
-            guard let recording = entry.recordingMBID, ownFiles.contains(recording),
-                  let row = rows[entry.id]?.first(where: { $0.id == entry.id }), let library = row.libraryId,
+            if !pathsHidden {
+                guard let recording = entry.recordingMBID, ownFiles.contains(recording) else { continue }
+            }
+            guard let row = rows[entry.id]?.first(where: { $0.id == entry.id }), let library = row.libraryId,
                   !listed.contains(library) else { continue }
             found.insert(library)
         }

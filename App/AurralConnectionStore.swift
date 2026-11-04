@@ -109,6 +109,10 @@ struct AurralConnectionStore: AurralConnectionStoring {
     var bootstrap: AurralBootstrap?
     /// When `bootstrap` was read.
     @ObservationIgnored var bootstrapReadAt: Date?
+    /// Round 14 (D79 amendment): Aurral 2.13 refused the flow reads (403: this user has no accessFlow). Discover's
+    /// shelves hide quietly; what was learnt (its playlists, its library) is kept, so they stay out of Playlists and
+    /// the lists (D75, D76). Cleared by the next read Aurral allows.
+    var flowsNotPermitted = false
     /// `/api/playlists/status`, as last read (the flows, the worker's progress).
     var status: AurralStatus?
     /// When `status` was read.
@@ -186,6 +190,7 @@ struct AurralConnectionStore: AurralConnectionStoring {
         health = nil
         bootstrap = nil
         bootstrapReadAt = nil
+        flowsNotPermitted = false
         status = nil
         statusReadAt = nil
         jobs = []

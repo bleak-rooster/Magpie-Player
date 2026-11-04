@@ -233,6 +233,10 @@ public final class StubAurral: HTTPTransport, @unchecked Sendable {
             return answer(200, ["success": true])
         case ("GET", "/api/auth/me"):
             return answer(200, ["user": Self.userBody(user), "expiresAt": NSNull()])
+        // Round 14: Aurral 2.13 guards the flow reads with accessFlow (`requireFlowAccess`; an admin passes).
+        case ("GET", "/api/playlists/status") where !Self.mayAccessFlows(user, snapshot),
+             ("GET", "/api/playlists/jobs") where !Self.mayAccessFlows(user, snapshot):
+            return answer(403, ["error": "Forbidden", "message": "Missing permission: accessFlow"])
         case ("GET", "/api/playlists/status"):
             var scoped = snapshot
             scoped.flows = snapshot.flows.filter { visible($0.id) }
@@ -240,7 +244,7 @@ public final class StubAurral: HTTPTransport, @unchecked Sendable {
         case ("GET", "/api/playlists/jobs"):
             guard snapshot.jobsRoute else { return answer(404, ["error": "Not found"]) }
             return answer(200, snapshot.jobs.enumerated().filter { visible($0.element.flowId) }
-                .map { Self.jobBody($0.element, index: $0.offset) })
+                .map { Self.jobBody($0.element, index: $0.offset, hidePaths: snapshot.features != nil) })
         case (_, let p) where p.hasPrefix("/api/library/lookup/") && method == "GET":
             let mbid = String(p.dropFirst("/api/library/lookup/".count))
             let exists = snapshot.inAurralLibrary.contains(mbid)
@@ -275,7 +279,9 @@ public final class StubAurral: HTTPTransport, @unchecked Sendable {
         let s = state.withLock { $0 }
         let mine = user.role == "admin" || s.flows.first(where: { $0.id == flowId })?.ownerUserId == user.id
         guard mine else { return (404, ["error": "Playlist not found"]) }
-        return (200, s.jobs.enumerated().filter { $0.element.flowId == flowId }.map { Self.jobBody($0.element, index: $0.offset) })
+        guard Self.mayAccessFlows(user, s) else { return (403, ["error": "Forbidden"]) }
+        return (200, s.jobs.enumerated().filter { $0.element.flowId == flowId }
+            .map { Self.jobBody($0.element, index: $0.offset, hidePaths: true) })
     }
 
     /// The user as Aurral's login, `/api/auth/me` and bootstrap name them (2.13: with permissions).
@@ -344,14 +350,20 @@ public final class StubAurral: HTTPTransport, @unchecked Sendable {
         ]
     }
 
-    private static func jobBody(_ j: Job, index: Int) -> [String: Any] {
+    /// 2.10 lets every signed-in user read flows; 2.13 needs accessFlow (an admin passes).
+    private static func mayAccessFlows(_ user: User, _ s: State) -> Bool {
+        s.features == nil || user.role == "admin" || user.permissions?["accessFlow"] == true
+    }
+
+    /// One job as Aurral answers it. Round 14: Aurral 2.13's `toPublicJob` drops `finalPath` (`hidePaths`).
+    private static func jobBody(_ j: Job, index: Int, hidePaths: Bool = false) -> [String: Any] {
         var body: [String: Any] = ["id": "job-\(index)", "artistName": j.artistName, "trackName": j.trackName,
                                    "albumName": j.albumName, "playlistId": j.flowId, "playlistType": j.flowId,
                                    "managedBy": "aurral", "status": j.status, "downloadSource": "slskd"]
         if let v = j.artistMbid { body["artistMbid"] = v }
         if let v = j.trackMbid { body["trackMbid"] = v }
         if let v = j.durationMs { body["durationMs"] = v }
-        if let v = j.finalPath { body["finalPath"] = v }
+        if let v = j.finalPath, !hidePaths { body["finalPath"] = v }
         return body
     }
 }
