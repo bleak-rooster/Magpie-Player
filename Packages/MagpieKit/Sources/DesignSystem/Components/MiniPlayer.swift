@@ -11,15 +11,19 @@ public struct MiniPlayer: View {
     private let onPlayPause: () -> Void
     private let onNext: () -> Void
     private let onOpen: () -> Void
+    /// Round 14 A2 (D86): previews paused this song: the play button says Resume.
+    private let offersResume: Bool
     private let themed = ThemedPalette()
     @Environment(\.magpieTheme) private var theme
     @Environment(\.dynamicTypeSize) private var typeSize
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     public init(title: String, artist: String, artwork: Image? = nil, isPlaying: Bool,
-                onPlayPause: @escaping () -> Void, onNext: @escaping () -> Void, onOpen: @escaping () -> Void = {}) {
+                onPlayPause: @escaping () -> Void, onNext: @escaping () -> Void, onOpen: @escaping () -> Void = {},
+                offersResume: Bool = false) {
         self.title = title; self.artist = artist; self.artwork = artwork; self.isPlaying = isPlaying
         self.onPlayPause = onPlayPause; self.onNext = onNext; self.onOpen = onOpen
+        self.offersResume = offersResume && !isPlaying
     }
 
     public var body: some View {
@@ -44,13 +48,21 @@ public struct MiniPlayer: View {
             .accessibilityHint("Opens Now Playing")
 
             Button(action: onPlayPause) {
-                Image(systemName: isPlaying ? "pause.fill" : "play.fill")
-                    .font(.title3).dynamicTypeSize(...DynamicTypeSize.xxxLarge)
-                    .frame(width: Tokens.minHitSize, height: Tokens.minHitSize).contentShape(Rectangle())
+                if offersResume, !ax {
+                    Label("Resume", systemImage: "play.fill")
+                        .font(.subheadline.weight(.semibold)).dynamicTypeSize(...DynamicTypeSize.xxxLarge)
+                        .padding(.horizontal, 12).frame(minHeight: Tokens.minHitSize)
+                        .background(Capsule().fill(.thinMaterial))
+                        .contentShape(Capsule())
+                } else {
+                    Image(systemName: isPlaying ? "pause.fill" : "play.fill")
+                        .font(.title3).dynamicTypeSize(...DynamicTypeSize.xxxLarge)
+                        .frame(width: Tokens.minHitSize, height: Tokens.minHitSize).contentShape(Rectangle())
+                }
             }
             .buttonStyle(.plain)
             .accessibilityShowsLargeContentViewer()
-            .accessibilityLabel(isPlaying ? "Pause" : "Play")
+            .accessibilityLabel(isPlaying ? "Pause" : offersResume ? "Resume" : "Play")
             .accessibilityAddTraits(isPlaying ? [] : .startsMediaSession)
 
             if !ax {   // at accessibility sizes Next is offered as an action instead
