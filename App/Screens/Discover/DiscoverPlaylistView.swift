@@ -101,6 +101,10 @@ struct DiscoverPlaylistView: View {
                     .accessibilityAddTraits(.isHeader)
                 Text("\(songs.count) \(songs.count == 1 ? "song" : "songs") · \(minutes) min")
                     .font(theme.numberFont(.footnote)).foregroundStyle(p.ink2Color)
+                // Round 14 A4 fix round 1 (M7): Add flow's playlist shows its download progress here too.
+                if model.aurralCanAddFlow, let synced = model.discoverSyncedPlaylist(playlistId: page.playlist.id) {
+                    SyncedProgressLine(playlistId: synced.id)
+                }
                 if let line = statusLine(page) {
                     Label(line.text, systemImage: line.symbol).font(.footnote).foregroundStyle(p.ink2Color)
                         .accessibilityIdentifier("discover-progress")

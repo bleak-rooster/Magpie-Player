@@ -37,6 +37,8 @@ import UIKit
     private(set) var hidden: Set<String> = []
     /// Discover playlists (and charts) added with Add flow: the Deezer playlist id → the user's synced playlist id.
     private(set) var added: [String: String] = [:]
+    /// Fix round 1 (I1): when Add flow made each synced playlist (by its id): it may stay queued on the server a while.
+    private(set) var addedAt: [String: Date] = [:]
     private(set) var known = Known()
     /// The feeds whose last read failed (the page keeps its copy and says so quietly).
     private(set) var failed: Set<Feed> = []
@@ -49,6 +51,18 @@ import UIKit
     @ObservationIgnored private var inFlight: [Feed: Task<Void, Never>] = [:]
     @ObservationIgnored private(set) var scope: String?
     @ObservationIgnored var now: () -> Date = Date.init
+    /// Fix round 1 (owner): the phone's region, for Automatic charts (tests set it).
+    @ObservationIgnored var phoneRegion: () -> String? = { Locale.current.region?.identifier }
+
+    /// Fix round 1 (owner): Deezer's "Top <Country>" chart playlist for each country (ISO code → Deezer playlist id),
+    /// bundled (`ChartPlaylists.json`, made at dev time by scripts/gen-chart-playlists.swift; never fetched by the app).
+    nonisolated static let chartPlaylists: [String: String] = {
+        guard let url = Bundle.main.url(forResource: "ChartPlaylists", withExtension: "json"),
+              let data = try? Data(contentsOf: url), data.count < 64 * 1024,
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let charts = object["charts"] as? [String: String] else { return [:] }
+        return charts.filter { $0.key.count == 2 && !$0.value.isEmpty && $0.value.count <= 20 && $0.value.allSatisfy(\.isNumber) }
+    }()
 
     /// How long a good read is used before reading again (Aurral itself refreshes charts every 5 hours).
     nonisolated static let freshFor: [Feed: TimeInterval] = [.trending: 30 * 60, .recommended: 10 * 60, .editorial: 30 * 60]
@@ -77,6 +91,7 @@ import UIKit
         var genreCharts: [Int: [ChartSong]]
         var hidden: Set<String>
         var added: [String: String]
+        var addedAt: [String: Date]?
     }
 
     nonisolated static let maxBytes = 2 * 1024 * 1024
@@ -101,12 +116,13 @@ import UIKit
         genreCharts = file.genreCharts.filter { !$0.value.isEmpty }
         hidden = file.hidden
         added = file.added
+        addedAt = file.addedAt ?? [:]
     }
 
     private func save() {
         guard let url = fileURL else { return }
         let file = File(known: known, trending: trending, recommended: recommended, editorial: editorial,
-                        genreCharts: genreCharts, hidden: hidden, added: added)
+                        genreCharts: genreCharts, hidden: hidden, added: added, addedAt: addedAt)
         do {
             try AtomicFile.write(file, to: url)
             var values = URLResourceValues()
@@ -125,7 +141,7 @@ import UIKit
         readAt = [:]
         lookups = [:]
         trending = nil; recommended = nil; editorial = nil
-        genreCharts = [:]; notReadyGenres = []; hidden = []; added = [:]; known = Known()
+        genreCharts = [:]; notReadyGenres = []; hidden = []; added = [:]; addedAt = [:]; known = Known()
         failed = []; reading = []
     }
 
@@ -159,12 +175,19 @@ import UIKit
     /// Aurral, or when Aurral can't give it, nothing is asked.
     func refresh(_ feed: Feed, force: Bool = false) async {
         guard let model, model.aurralSetUp, !model.isOffline, model.aurralClient != nil, can.has(feed) else { return }
-        if !force, let at = readAt[feed], now().timeIntervalSince(at) < Self.freshFor[feed] ?? 600, has(feed) { return }
+        if !force, let at = readAt[feed], now().timeIntervalSince(at) < Self.freshFor[feed] ?? 600, has(feed),
+           !needsChartRead(feed) { return }
         if let running = inFlight[feed] { await running.value; return }
         let task = Task<Void, Never> { [weak self] in await self?.read(feed) }
         inFlight[feed] = task
         await task.value
         if inFlight[feed] == task { inFlight[feed] = nil }
+    }
+
+    /// Fix round 1: the saved Trending is for another Charts country setting: read again at once.
+    private func needsChartRead(_ feed: Feed) -> Bool {
+        guard feed == .trending, let model, let trending else { return false }
+        return trending.forSetting != model.preferences.layout.chartsCountry.stored
     }
 
     func has(_ feed: Feed) -> Bool {
@@ -238,6 +261,7 @@ import UIKit
 
     func noteAdded(_ deezerPlaylistId: String, as playlistId: String) {
         added[deezerPlaylistId] = playlistId
+        if addedAt[playlistId] == nil { addedAt[playlistId] = now() }
         save()
     }
 
@@ -254,7 +278,12 @@ import UIKit
 
     func items(for section: HomeSection, limit: Int) async throws -> [HomeOutsideItem] {
         guard let feed = Feed(section) else { return [] }
-        await refresh(feed)
+        // Fix round 1 (M5): with a copy, it shows at once and the read goes on behind it; without one, Home waits for it.
+        if has(feed) {
+            Task { await self.refresh(feed) }
+        } else {
+            await refresh(feed)
+        }
         guard has(feed) else { throw HomeSectionNotOffered() }   // never read: Home keeps its own copy and retries
         let items = homeItems(section, limit: limit)
         return items

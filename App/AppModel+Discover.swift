@@ -205,7 +205,10 @@ extension AppModel {
         // Round 13: only the signed-in user's flows' songs (Aurral shows an admin everyone's).
         // Round 14 A4 (D94, amends D75): Add flow's synced playlists are Discover's too, matched like flows (named
         // after one and holding its songs); they never get Refresh Flow (`discoverFlow(playlistId:)`).
-        let flows = status.flows + status.sharedPlaylists
+        // Fix round 1 (I2): only Add flow's: a Deezer playlist (`importSource.provider` "deezer-playlist", what Discover
+        // playlists and charts are) or one this phone added. Spotify or YouTube imports and hand-made shared playlists
+        // stay in Playlists.
+        let flows = status.flows + status.sharedPlaylists.filter(isAddFlowsPlaylist)
         let flowIds = Set(flows.map(\.id))
         if let jobs { discover.jobs = jobs.filter { $0.flowId.map(flowIds.contains) ?? false } }
         let before = discoverPlaylistIds
@@ -291,6 +294,11 @@ extension AppModel {
 
     func isSyncedPlaylist(flowId: String) -> Bool {
         discover.status?.sharedPlaylists.contains { $0.id == flowId } ?? false
+    }
+
+    /// Round 14 A4 fix round 1 (I2): a shared playlist Add flow made (a Deezer playlist, or one this phone added).
+    func isAddFlowsPlaylist(_ playlist: AurralFlow) -> Bool {
+        playlist.importProvider == "deezer-playlist" || (aurralFeeds?.added.values.contains(playlist.id) ?? false)
     }
 
     // MARK: - A Discover playlist's page

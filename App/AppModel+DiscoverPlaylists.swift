@@ -64,8 +64,12 @@ extension AppModel {
         guard aurralCanAddFlow, let client = aurralClient else { throw AurralError.notPermitted }
         let result = try await client.addEditorialPlaylist(id)
         aurralFeeds.noteAdded(id, as: result.playlistId)
-        await refreshDiscover(force: true)   // its playlist joins Your flows as Aurral publishes it
-        homeFeedSlot?.sectionsChanged([.discover])
+        // Fix round 1 (M8): "Adding…" ends when the server answers; Your flows reads again behind it (the playlist joins
+        // as the server creates and publishes it).
+        Task { [weak self] in
+            await self?.refreshDiscover(force: true)
+            self?.homeFeedSlot?.sectionsChanged([.discover])
+        }
         return result
     }
 
@@ -96,15 +100,54 @@ extension AppModel {
         await refreshDiscoverStatus()
     }
 
-    /// Add flow's state on a page: hidden without accessFlow (or Aurral's Discover playlists), then Add flow, Adding,
-    /// Downloading 12/40 (Waiting for a downloader without one), In your flows.
-    nonisolated static func addFlowPhase(canAdd: Bool, adding: Bool, playlistId: String?, progress: SyncedProgress?,
-                                         hasDownloader: Bool?) -> AddFlowPhase {
+    /// How long a just-added playlist may stay queued on the server before the page stops asking (fix round 1, I1).
+    nonisolated static let addFlowSetUpLimit: TimeInterval = 10 * 60
+
+    /// Add flow's state on a page (fix round 1, I1). Hidden without accessFlow (nothing can be read or sent); Add flow;
+    /// Adding…; then, once added: **Setting up** while the server hasn't created it yet (2.13 queues the creation: it
+    /// isn't listed and its songs answer 404), **Still setting up** after `addFlowSetUpLimit`; Downloading 12/40 (or
+    /// Waiting for a downloader); **In your flows** only once the server lists it with its songs, all in or failed.
+    nonisolated static func addFlowPhase(canAdd: Bool, adding: Bool, playlistId: String?, listed: Bool,
+                                         progress: SyncedProgress?, hasDownloader: Bool?,
+                                         settingUpFor: TimeInterval?) -> AddFlowPhase {
         if adding { return .adding }
-        guard playlistId != nil else { return canAdd ? .ready : .hidden }
-        guard let progress, progress.waiting > 0 else { return .inYourFlows }
-        if hasDownloader == false { return .waitingForDownloader }
-        return .downloading(done: progress.done, total: progress.total)
+        guard canAdd else { return .hidden }
+        guard playlistId != nil else { return .ready }
+        guard listed, let progress, progress.total > 0 else {
+            return (settingUpFor ?? .infinity) < addFlowSetUpLimit ? .preparing : .stillSettingUp
+        }
+        guard progress.waiting > 0 else { return .inYourFlows }
+        return hasDownloader == false ? .waitingForDownloader : .downloading(done: progress.done, total: progress.total)
+    }
+
+    /// The state now: the server's status (is it listed yet?) and its songs, read fresh.
+    func addFlowState(playlistId: String?) async -> AddFlowPhase {
+        guard let playlistId else {
+            return Self.addFlowPhase(canAdd: aurralCanAddFlow, adding: false, playlistId: nil, listed: false, progress: nil,
+                                     hasDownloader: aurralHasDownloader, settingUpFor: nil)
+        }
+        guard aurralCanAddFlow else { return .hidden }
+        await refreshDiscoverStatus()
+        let listed = discover.status?.sharedPlaylists.contains { $0.id == playlistId } ?? false
+        let progress = listed ? await syncedProgress(playlistId: playlistId) : nil
+        let since = aurralFeeds.addedAt[playlistId].map { aurralFeeds.now().timeIntervalSince($0) }
+        return Self.addFlowPhase(canAdd: true, adding: false, playlistId: playlistId, listed: listed, progress: progress,
+                                 hasDownloader: aurralHasDownloader, settingUpFor: since)
+    }
+
+    /// Follows a just-added (or downloading) playlist while its page is open: the state every `every` (30 s on screen)
+    /// until it is in your flows, still not set up after the limit, or hidden. Cancelled with the page.
+    func followAddFlow(playlistId: String, every: Duration = .seconds(30),
+                       onPhase: @MainActor (AddFlowPhase) -> Void) async {
+        while !Task.isCancelled {
+            let phase = await addFlowState(playlistId: playlistId)
+            onPhase(phase)
+            switch phase {
+            case .preparing, .downloading, .waitingForDownloader: break
+            default: return
+            }
+            do { try await Task.sleep(for: every) } catch { return }
+        }
     }
 }
 
@@ -127,16 +170,31 @@ extension AppModel {
 }
 
 enum AddFlowPhase: Equatable, Sendable {
-    case hidden, ready, adding, downloading(done: Int, total: Int), waitingForDownloader, inYourFlows
+    case hidden, ready, adding, preparing, stillSettingUp, downloading(done: Int, total: Int), waitingForDownloader,
+         inYourFlows
 
     var label: String? {
         switch self {
         case .hidden: nil
         case .ready: DiscoverPagesCopy.addFlow
         case .adding: DiscoverPagesCopy.adding
+        case .preparing: DiscoverPagesCopy.settingUp
+        case .stillSettingUp: DiscoverPagesCopy.stillSettingUp
         case .downloading(let done, let total): DiscoverPagesCopy.downloading(done, total)
         case .waitingForDownloader: DiscoverPagesCopy.waitingForDownloader
         case .inYourFlows: DiscoverPagesCopy.inYourFlows
+        }
+    }
+
+    /// Each state its own symbol, always beside its words (D3: never a shape alone).
+    var symbol: String {
+        switch self {
+        case .hidden, .ready: "plus.circle"
+        case .adding, .preparing: "clock"
+        case .stillSettingUp: "clock.badge.exclamationmark"
+        case .downloading: "arrow.down.circle.dotted"
+        case .waitingForDownloader: "hourglass"
+        case .inYourFlows: "checkmark.circle"
         }
     }
 }
@@ -152,6 +210,9 @@ enum DiscoverPagesCopy {
     static func downloading(_ done: Int, _ total: Int) -> String { "Downloading \(done)/\(total)" }
     static let waitingForDownloader = "Waiting for a downloader"
     static let inYourFlows = "In your flows"
+    static let settingUp = "Setting up\u{2026}"
+    static let stillSettingUp = "Still setting up. Check back later."
+    static let couldntDownloadSymbol = "exclamationmark.triangle"
     static let noDownloaderTitle = "No downloader set up"
     static let noDownloader = "Songs already in your library will appear; others can\u{2019}t be downloaded until a downloader is set up on your server."
     static let couldntDownload = "Couldn\u{2019}t download"
@@ -160,7 +221,15 @@ enum DiscoverPagesCopy {
     static let updating = "Updating\u{2026} Check back in a little while."
     static let notReady = "Not ready yet. Check back later."
     static let couldntUpdate = "Couldn\u{2019}t update just now. Showing the last copy."
-    static let topAustralia = "Top Australia"
+    /// A country's name in the phone's language (never a hard-coded one).
+    static func regionName(_ code: String) -> String { Locale.current.localizedString(forRegionCode: code) ?? code }
+    static func topSongs(region: String?) -> String { region.map { "\(topSongs) \u{00B7} \(regionName($0))" } ?? topSongs }
+    static func topAlbums(region: String?) -> String { region.map { "\(topAlbums) \u{00B7} \(regionName($0))" } ?? topAlbums }
+    static func showingServer(region: String) -> String { "Showing \(regionName(region)) charts" }
+    static let chartsCountry = "Charts country"
+    static let chartsAutomatic = "Automatic"
+    static let chartsAutomaticNote = "Your phone\u{2019}s region, when it has a chart"
+    static let chartsServer = "Your server\u{2019}s region"
     static let worldwide = "Worldwide"
     static let topSongs = "Top songs"
     static let topAlbums = "Top albums"

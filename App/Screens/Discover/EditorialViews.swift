@@ -140,55 +140,39 @@ struct EditorialPlaylistView: View {
     }
 }
 
-/// Add flow (owner answer 10): hidden without accessFlow; Add flow → Adding → Downloading 12/40 (or Waiting for a
-/// downloader) → In your flows. Before adding without a download source it explains first. While open, progress is read
-/// every 30 s; a song that couldn't download offers Retry.
+/// Add flow (owner answer 10, fix round 1): hidden without accessFlow; Add flow → Adding… → Setting up… (the server
+/// queues the playlist's creation) → Downloading 12/40 (or Waiting for a downloader) → In your flows. Before adding
+/// without a download source it explains first. While open, the state is read every 30 s until it settles; a song that
+/// couldn't download offers Retry. Each state shows its words with its own symbol.
 struct AddFlowControl: View {
     @Environment(AppModel.self) private var model
     let deezerPlaylistId: String
     let libraryPlaylistId: String?
     @State private var adding = false
     @State private var added: String?
-    @State private var progress: SyncedProgress?
+    @State private var phase: AddFlowPhase?
     @State private var explaining = false
     @State private var message: String?
 
     private var playlistId: String? { added ?? model.aurralFeeds.added[deezerPlaylistId] ?? libraryPlaylistId }
 
-    private var phase: AddFlowPhase {
-        AppModel.addFlowPhase(canAdd: model.aurralCanAddFlow, adding: adding, playlistId: playlistId, progress: progress,
-                              hasDownloader: model.aurralHasDownloader)
-    }
-
     var body: some View {
         VStack(alignment: .leading, spacing: Tokens.Spacing.s) {
-            if let label = phase.label {
-                switch phase {
-                case .ready:
-                    CapsuleButton(label, symbol: "plus.circle") {
+            let shown: AddFlowPhase = adding ? .adding
+                : playlistId == nil ? (model.aurralCanAddFlow ? .ready : .hidden) : (phase ?? .preparing)
+            if let label = shown.label, model.aurralCanAddFlow {
+                if shown == .ready {
+                    CapsuleButton(label, symbol: shown.symbol) {
                         if model.aurralHasDownloader == false { explaining = true } else { Task { await add() } }
                     }
                     .accessibilityIdentifier("add-flow")
-                default:
-                    Label(label, systemImage: phase == .inYourFlows ? "checkmark.circle" : "arrow.down.circle.dotted")
+                } else {
+                    Label(label, systemImage: shown.symbol)
                         .font(.subheadline.weight(.semibold))
                         .accessibilityIdentifier("add-flow-state")
                 }
             }
-            if let progress, let playlistId, model.aurralCanAddFlow {
-                ForEach(progress.failed, id: \.id) { job in
-                    HStack {
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(job.trackName).font(.footnote.weight(.semibold))
-                            Text(DiscoverPagesCopy.couldntDownload).font(.caption)
-                        }
-                        Spacer()
-                        Button(DiscoverPagesCopy.retry) { Task { await retry(job, playlistId) } }
-                            .font(.footnote.weight(.semibold))
-                            .accessibilityIdentifier("retry-\(job.id)")
-                    }
-                }
-            }
+            if let playlistId { SyncedFailures(playlistId: playlistId, phase: phase) }
         }
         .alert(DiscoverPagesCopy.noDownloaderTitle, isPresented: $explaining) {
             Button(DiscoverPagesCopy.addFlow) { Task { await add() } }
@@ -199,14 +183,9 @@ struct AddFlowControl: View {
         .alert(message ?? "", isPresented: Binding(get: { message != nil }, set: { if !$0 { message = nil } })) {
             Button("OK", role: .cancel) {}
         }
-        // Progress while visible: at once, then every 30 s while songs are still to come.
         .task(id: playlistId) {
             guard let playlistId else { return }
-            while !Task.isCancelled {
-                progress = await model.syncedProgress(playlistId: playlistId)
-                guard (progress?.waiting ?? 0) > 0 else { return }
-                try? await Task.sleep(for: .seconds(30))
-            }
+            await model.followAddFlow(playlistId: playlistId) { phase = $0 }
         }
     }
 
@@ -215,18 +194,75 @@ struct AddFlowControl: View {
         defer { adding = false }
         do {
             let result = try await model.addFlow(deezerPlaylistId: deezerPlaylistId)
+            phase = .preparing
             added = result.playlistId
         } catch {
             message = DiscoverCopy.message(for: error)
         }
     }
+}
 
-    private func retry(_ job: AurralJob, _ playlistId: String) async {
+/// The songs of a synced playlist that couldn't download, each "Couldn't download" (with its symbol) and Retry.
+struct SyncedFailures: View {
+    @Environment(AppModel.self) private var model
+    let playlistId: String
+    let phase: AddFlowPhase?
+    @State private var failed: [AurralJob] = []
+    @State private var message: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Tokens.Spacing.xs) {
+            ForEach(failed, id: \.id) { job in
+                HStack {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(job.trackName).font(.footnote.weight(.semibold))
+                        Label(DiscoverPagesCopy.couldntDownload, systemImage: DiscoverPagesCopy.couldntDownloadSymbol)
+                            .font(.caption)
+                    }
+                    Spacer()
+                    Button(DiscoverPagesCopy.retry) { Task { await retry(job) } }
+                        .font(.footnote.weight(.semibold))
+                        .accessibilityIdentifier("retry-\(job.id)")
+                }
+            }
+        }
+        .alert(message ?? "", isPresented: Binding(get: { message != nil }, set: { if !$0 { message = nil } })) {
+            Button("OK", role: .cancel) {}
+        }
+        .task(id: phase) { await load() }
+    }
+
+    private func load() async {
+        guard model.aurralCanAddFlow, let progress = await model.syncedProgress(playlistId: playlistId) else { return }
+        failed = progress.failed
+    }
+
+    private func retry(_ job: AurralJob) async {
         do {
             try await model.retrySong(playlistId: playlistId, job: job)
-            progress = await model.syncedProgress(playlistId: playlistId)
+            await load()
         } catch {
             message = DiscoverCopy.message(for: error)
         }
+    }
+}
+
+/// A synced playlist's progress on its own page under Your flows (fix round 1, M7): its state, read every 30 s while
+/// it settles, and the songs that couldn't download.
+struct SyncedProgressLine: View {
+    @Environment(AppModel.self) private var model
+    let playlistId: String
+    @State private var phase: AddFlowPhase?
+    private let themed = Themed()
+
+    var body: some View {
+        VStack(spacing: Tokens.Spacing.xs) {
+            if let phase, let label = phase.label {
+                Label(label, systemImage: phase.symbol).font(.footnote).foregroundStyle(themed.palette.ink2Color)
+                    .accessibilityIdentifier("discover-synced-progress")
+            }
+            SyncedFailures(playlistId: playlistId, phase: phase)
+        }
+        .task(id: playlistId) { await model.followAddFlow(playlistId: playlistId) { phase = $0 } }
     }
 }
