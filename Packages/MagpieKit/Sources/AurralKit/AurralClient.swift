@@ -226,7 +226,9 @@ public struct AurralClient: Sendable, CustomDebugStringConvertible, CustomReflec
                                               token: nil, body: body, transport: transport, log: log)
         switch response.statusCode {
         case 200..<300: return try AurralLogin.decode(data)
-        case 400, 401, 403: throw AurralError.badLogin
+        // S14 L1 (D117): only 400/401 say the username or password is wrong. A 403 (a proxy or firewall in front of
+        // Aurral, a blocked address) is another failure: the saved password is kept and the session backs off.
+        case 400, 401: throw AurralError.badLogin
         case 429: throw AurralError.rateLimited
         case 404: throw AurralError.notFound
         default: throw AurralError.http(status: response.statusCode)
