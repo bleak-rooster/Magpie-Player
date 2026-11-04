@@ -2,8 +2,9 @@ import Foundation
 import ImageIO
 
 // R15 / R16: artwork for music that isn't in the library yet. Songs and albums show their Cover Art Archive front,
-// artists their Lidarr lookup picture. Never cached (owner): an ephemeral session with no URLCache and no cookies,
-// held in memory for the current results only, fetched again for every new search or screen, never on disk.
+// artists their Lidarr lookup picture, through an ephemeral session with no URLCache and no cookies. B1 (D122, owner,
+// replacing R15's memory-only rule): a picture that loaded is also kept in its own folder on the phone
+// (`OutsideArtDiskCache`); a miss never is. An album's cover falls back to a release's front, then Lidarr's named cover.
 
 /// What outside artwork is for.
 public enum OutsideArtKey: Hashable, Sendable {
