@@ -103,14 +103,14 @@ private func queryValue(_ request: URLRequest, _ name: String) -> String? {
     /// Settings › Home & Library: "N sections · M rows" (online counts).
     @Test func homeAndLibrarySummaryCountsRows() async throws {
         let model = try await signedInModel(fetcher: FakeFetcher())
-        #expect(HomeAndLibraryView.summary(model) == "3 sections · 7 rows")
+        #expect(HomeAndLibraryView.summary(model) == "9 sections · 7 rows")   // round 14: the Spotify-style Home
         #expect(LibraryLayoutView.summary(model) == "7 rows")
         model.updatePreferences {
             for row in LibraryRow.allCases where row != .albums {
                 $0.layout.library.set(row, visible: false, keepingOneOf: LayoutPreferences.alwaysAvailableRows)
             }
         }
-        #expect(HomeAndLibraryView.summary(model) == "3 sections · 1 row")
+        #expect(HomeAndLibraryView.summary(model) == "9 sections · 1 row")
         #expect(!OrderedVisibilityEditor<LibraryRow>.canToggle(.albums, in: model.preferences.layout.library,
                                                                keepingOneOf: LayoutPreferences.alwaysAvailableRows),
                 "at least one row stays visible")

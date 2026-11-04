@@ -30,7 +30,7 @@ struct HomeShelfCache {
         var seen = Set<HomeSection>()
         return file.shelves.prefix(HomeSection.allCases.count).compactMap { shelf in
             guard shelf.section != .madeForYou, seen.insert(shelf.section).inserted else { return nil }
-            let items = shelf.items.prefix(AppModel.homeShelfSize).map(\.item)
+            let items = shelf.items.prefix(Self.maxItems(shelf.section)).map(\.item)
             guard items.allSatisfy({ HomeShelf.fits($0, in: shelf.section) }) else { return nil }
             return items.isEmpty ? nil : HomeShelf(section: shelf.section, items: Array(items))
         }
@@ -54,6 +54,11 @@ struct HomeShelfCache {
     /// A real file is a few kilobytes; anything far bigger isn't ours.
     static let maxBytes = 256 * 1024
 
+    /// Tiles kept per shelf: a shelf's most; Because you like holds up to three rows of them (round 14 A6).
+    static func maxItems(_ section: HomeSection) -> Int {
+        AppModel.homeShelfSize * (section == .becauseYouLike ? HomeSectionStyle.becauseYouLikeRange.upperBound : 1)
+    }
+
     private struct File: Codable {
         static let currentVersion = 1
         var version: Int
@@ -67,17 +72,24 @@ struct HomeShelfCache {
 
     /// One tile: what it opens and what it shows.
     private struct Item: Codable {
-        enum Kind: String, Codable { case album, downloadedAlbum, playlist, genreGroup }
+        enum Kind: String, Codable { case album, downloadedAlbum, playlist, genreGroup, outside }
         var kind: Kind
         var id: String
         var title: String
         var subtitle: String?
         var artistId: String?
+        /// An outside tile's `artworkKey` (round 14 A6): a handle, never a URL.
         var coverArtId: String?
         var count: Int?
+        /// Round 14 A6: an outside tile's kind and row (`HomeOutsideItem`).
+        var outsideKind: String?
+        var group: String?
 
         init(_ item: HomeShelf.Item) {
             switch item {
+            case .outside(let o):
+                kind = .outside; id = o.key; title = o.title; subtitle = o.subtitle; coverArtId = o.artworkKey
+                outsideKind = o.kind.rawValue; group = o.group
             case .album(let a), .downloadedAlbum(let a):
                 if case .album = item { kind = .album } else { kind = .downloadedAlbum }
                 id = a.id; title = a.name; subtitle = a.artist; artistId = a.artistId; coverArtId = a.coverArtId
@@ -101,6 +113,9 @@ struct HomeShelfCache {
             case .genreGroup:
                 return .genreGroup(GenreGroupSection(group: GenreGroup(id: id, name: title), genres: [], albumCount: count,
                                                      songCount: 0))
+            case .outside:
+                return .outside(HomeOutsideItem(kind: outsideKind.flatMap(HomeOutsideItem.Kind.init) ?? .artist, key: id,
+                                                title: title, subtitle: subtitle, artworkKey: coverArtId, group: group))
             }
         }
     }

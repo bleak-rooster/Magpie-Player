@@ -118,7 +118,10 @@ final class Round13UITests: XCTestCase {
         XCTAssertTrue(editHome.exists, "Home's top-right button")
         XCTAssertEqual(editHome.label, "Edit Home")
         editHome.tap()
-        XCTAssertTrue(app.switches["layout-randomAlbums"].waitForExistence(timeout: 10), "the Home editor, as a sheet")
+        // Round 14: the editor lists 21 sections; Random albums is far down the (lazy) list.
+        XCTAssertTrue(app.switches["layout-greeting"].waitForExistence(timeout: 10), "the Home editor, as a sheet")
+        for _ in 0..<6 where !app.switches["layout-randomAlbums"].isHittable { app.swipeUp() }
+        XCTAssertTrue(app.switches["layout-randomAlbums"].exists)
         flip("layout-randomAlbums")
         XCTAssertEqual(app.switches["layout-randomAlbums"].value as? String, "1")
         app.buttons["home-edit-done"].tap()
@@ -130,7 +133,7 @@ final class Round13UITests: XCTestCase {
         add(shot)
         for _ in 0..<6 { app.swipeDown() }
         editHome.tap()
-        XCTAssertTrue(app.switches["layout-randomAlbums"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.switches["layout-greeting"].waitForExistence(timeout: 10))
         resetAndClose("home-edit-done")
 
         // Library: Songs off from the toolbar's editor.

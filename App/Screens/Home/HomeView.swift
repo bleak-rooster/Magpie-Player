@@ -7,9 +7,14 @@ import SwiftUI
 /// (Settings › Home & Library › Home, or Edit Home at the bottom). Made for you shows only with a listening-history
 /// token (Task 7.1c) and fills in after the library's shelves. Empty sections are left out. Offline (Task 14): "You're
 /// offline", then the Downloaded shelf (albums on the phone).
+/// Round 14 A6 (Spotify-style): the greeting, the filter chips and the quick grid lead by default; each
+/// shelf has its own card size and count, and the provided sections (Recommended, Trending…) come from
+/// `HomeAurralShelves`.
 struct HomeView: View {
     @Environment(AppModel.self) private var model
     @State private var editsHome = false
+    /// The chip picked (not saved: Home opens on All).
+    @State private var filter: HomeFilter = .all
     private let themed = Themed()
 
     private var key: HomeLoad.Key {
@@ -71,18 +76,27 @@ struct HomeView: View {
                     .padding(.horizontal, Tokens.Spacing.margin)
             }
             LoadableView(state: model.homeFeed.state, retry: { await model.homeFeed.refresh(key) }) { read in
-                let sections = model.homeSections.filter { shows($0, read) }
-                if sections.isEmpty {
+                let shown = model.homeSections
+                let chips = HomeFilter.offered(for: shown.filter { shows($0, read) })
+                let picked = chips.contains(filter) ? filter : .all
+                let sections = picked.apply(shown).filter { shows($0, read, chips: chips) }
+                if !sections.contains(where: { !$0.isChrome }) {
                     empty
                 } else {
                     VStack(alignment: .leading, spacing: Tokens.Spacing.xxl) {
                         ForEach(sections, id: \.self) { section in
-                            if section == .madeForYou {
-                                madeForYouShelf
-                            } else if let shelf = read.found[section] {
-                                ShelfView(shelf: shelf)
-                            } else {
-                                failure(section)
+                            switch section {
+                            case .madeForYou: madeForYouShelf
+                            case .greeting: HomeGreeting()
+                            case .filterChips: HomeFilterChips(chips: chips, picked: picked) { filter = $0 }
+                            case .quickAccess: QuickAccessGrid(tiles: quickTiles(read))
+                            default:
+                                if let shelf = read.found[section] {
+                                    ShelfView(shelf: shelf, style: model.preferences.layout.style(for: section),
+                                              rows: model.preferences.layout.becauseYouLikeRows)
+                                } else {
+                                    failure(section)
+                                }
                             }
                         }
                     }
@@ -102,9 +116,24 @@ struct HomeView: View {
         .padding(.vertical, Tokens.Spacing.l)
     }
 
-    private func shows(_ section: HomeSection, _ read: HomeLoad) -> Bool {
-        section == .madeForYou ? !model.madeForYouShelf.isEmpty
-                               : read.found[section] != nil || model.homeFeed.showsFailure(section)
+    /// Whether `section` has something to show. The greeting always does; the chips when there is more than All to
+    /// pick; the quick grid when it has a tile. A section never stands in for another (round 13).
+    private func shows(_ section: HomeSection, _ read: HomeLoad, chips: [HomeFilter] = HomeFilter.allCases) -> Bool {
+        switch section {
+        case .greeting: true
+        case .filterChips: chips.count > 1
+        case .quickAccess: !quickTiles(read).isEmpty
+        case .madeForYou: !model.madeForYouShelf.isEmpty
+        default: read.found[section] != nil || model.homeFeed.showsFailure(section)
+        }
+    }
+
+    /// The quick grid: this phone's plays first, then the server's recently played albums (round 14 A6).
+    private func quickTiles(_ read: HomeLoad) -> [RecentPlay] {
+        let albums = read.found[.quickAccess]?.items.compactMap { item -> Album? in
+            if case .album(let album) = item { album } else { nil }
+        } ?? []
+        return model.quickAccessTiles(recentAlbums: albums)
     }
 
     /// A section that couldn't be read: its title, and a line saying so.
@@ -149,21 +178,37 @@ struct HomeView: View {
     }
 }
 
-/// One shelf; each tile opens what it is (an album, a playlist, a genre group). Y3: Recently downloaded has "See all"
-/// (Downloads), and its playlists open the phone's copy.
+/// One shelf; each tile opens what it is (an album, a playlist, a genre group, a provided tile). Y3: Recently
+/// downloaded has "See all" (Downloads), and its playlists open the phone's copy. Round 14 A6: the owner's card size
+/// and count (`style`); Because you like is one row per seed artist, up to `rows`.
 private struct ShelfView: View {
     @Environment(AppModel.self) private var model
     @Environment(TabNavigator.self) private var navigator: TabNavigator?
     let shelf: HomeShelf
+    let style: HomeSectionStyle
+    let rows: Int
 
     var body: some View {
-        ShelfSection(shelf.section.title, onSeeAll: seeAll) {
-            ForEach(shelf.items) { item in
-                tile(item)
+        if shelf.section == .becauseYouLike {
+            VStack(alignment: .leading, spacing: Tokens.Spacing.xxl) {
+                ForEach(HomeShelfLayout.becauseYouLikeRows(shelf.items, rows: rows), id: \.seed) { row in
+                    ShelfSection(HomeCopy.becauseYouLike(row.seed)) {
+                        ForEach(row.items.prefix(style.count)) { tile($0) }
+                    }
+                }
             }
+            .accessibilityIdentifier("home-\(shelf.section.rawValue)")
+        } else {
+            ShelfSection(shelf.section.title, onSeeAll: seeAll) {
+                ForEach(shelf.items.prefix(style.count)) { item in
+                    tile(item)
+                }
+            }
+            .accessibilityIdentifier("home-\(shelf.section.rawValue)")
         }
-        .accessibilityIdentifier("home-\(shelf.section.rawValue)")
     }
+
+    private var width: CGFloat { HomeShelfLayout.width(style.size) }
 
     private var seeAll: (() -> Void)? {
         guard shelf.section == .downloaded, let navigator else { return nil }
@@ -174,15 +219,16 @@ private struct ShelfView: View {
         switch item {
         case .album(let album), .downloadedAlbum(let album):
             NavigationLink(value: Route.album(id: album.id)) {
-                AlbumTileView(album: album, subtitle: album.artist)
+                AlbumTileView(album: album, subtitle: album.artist, width: width)
             }
             .buttonStyle(.plain)
         case .playlist(let playlist):
             // Y3: a playlist looks like one (stacked frame, "Playlist · N songs"), not like another album.
             NavigationLink(value: shelf.section == .downloaded ? Route.downloadedPlaylist(id: playlist.id)
                                                                : Route.playlist(id: playlist.id)) {
-                Artwork(playlist.coverArtId, side: 140) { image in
-                    PlaylistTile(playlist: playlist, artwork: image, mark: model.downloadIndex.mark(playlistId: playlist.id))
+                Artwork(playlist.coverArtId, side: width) { image in
+                    PlaylistTile(playlist: playlist, artwork: image, width: width,
+                                 mark: model.downloadIndex.mark(playlistId: playlist.id))
                 }
                 .collectionMenu(.playlist(playlist.id), coverArtId: playlist.coverArtId)   // R12, P4
             }
@@ -190,9 +236,11 @@ private struct ShelfView: View {
         case .genreGroup(let section):
             NavigationLink(value: Route.genreGroup(id: section.group.id)) {
                 AlbumTile(title: section.group.name,
-                          subtitle: section.albumCount == 1 ? "1 album" : "\(section.albumCount) albums")
+                          subtitle: section.albumCount == 1 ? "1 album" : "\(section.albumCount) albums", width: width)
             }
             .buttonStyle(.plain)
+        case .outside(let outside):
+            OutsideTile(item: outside, section: shelf.section, size: style.size)
         }
     }
 }

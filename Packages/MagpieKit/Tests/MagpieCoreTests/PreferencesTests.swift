@@ -5,10 +5,10 @@ import Testing
 @Suite struct PreferencesTests {
     @Test func defaultsMatchSpec() {
         let p = Preferences.standard
-        #expect(p.layout.home.entries.map(\.item) == [.jumpBackIn, .madeForYou, .recentlyAdded, .mostPlayed, .favourites,
-                                                      .randomAlbums, .playlists, .genres, .downloaded, .discover])
+        // Round 14 A6: the Spotify-style order (HomeLayoutTests); everything on but Random albums and Recently downloaded.
         // Y6: Discover is on, and shows only once Aurral is set up.
-        #expect(p.layout.home.entries.map(\.visible) == [true, true, true, true, false, false, false, false, false, true])
+        #expect(p.layout.home.entries.map(\.item) == HomeSection.defaultOrder)
+        #expect(p.layout.home.entries.filter { !$0.visible }.map(\.item) == [.downloaded, .randomAlbums])
         #expect(p.layout.library.entries.map(\.item) == LibraryRow.allCases && p.layout.library.entries.allSatisfy(\.visible))
         #expect(p.layout.showsRecentlyAdded)
         #expect(p.playback.wifi == .original && p.playback.cellular == .aacMedium && p.playback.replayGain == .track)
@@ -118,10 +118,11 @@ import Testing
     @Test func unknownAndDuplicateSectionsDropped() {
         let json = #"{"version":1,"home":[{"id":"mostPlayed","visible":true},{"id":"karaoke","visible":true},{"id":"mostPlayed","visible":false},{"id":42}]}"#
         let layout = LayoutPreferences.decode(Data(json.utf8))
-        #expect(layout.home.entries.first == .init(item: .mostPlayed, visible: true))
-        #expect(layout.home.entries.count == 10)   // Y6: with Discover
+        // Round 14 A6: the missing sections go in after their default predecessors; the header at the top.
+        #expect(layout.home.entries.first { $0.item == .mostPlayed } == .init(item: .mostPlayed, visible: true), "the first wins")
+        #expect(layout.home.entries.count == HomeSection.allCases.count)
         #expect(layout.home.entries.filter { $0.item == .mostPlayed }.count == 1)
-        #expect(layout.home.entries.first { $0.item == .favourites }?.visible == false, "missing items keep default visibility")
+        #expect(layout.home.entries.first { $0.item == .randomAlbums }?.visible == false, "missing items keep default visibility")
     }
 
     @Test func outOfRangeValuesClamp() {
@@ -173,7 +174,11 @@ import Testing
     }
 
     @Test func orderedVisibilityEditing() {
-        var v = LayoutPreferences.defaultValue.home
+        // Round 14: the mechanics on the build-13 list (the default is now the Spotify-style one).
+        var v = OrderedVisibility<HomeSection>([HomeSection.jumpBackIn, .madeForYou, .recentlyAdded, .mostPlayed, .favourites,
+                                                .randomAlbums, .playlists, .genres, .downloaded, .discover].map {
+            .init(item: $0, visible: [.jumpBackIn, .madeForYou, .recentlyAdded, .mostPlayed, .discover].contains($0))
+        })
         v.move(fromOffsets: IndexSet(integer: 3), toOffset: 0)
         #expect(v.visibleItems == [.mostPlayed, .jumpBackIn, .madeForYou, .recentlyAdded, .discover])   // Y6: Discover is on (shown once set up)
         v.moveDown(.mostPlayed); #expect(v.entries.map(\.item).prefix(2) == [.jumpBackIn, .mostPlayed])
@@ -198,9 +203,11 @@ import Testing
 
     @Test func visibleSectionRules() {
         let l = LayoutPreferences.defaultValue
-        #expect(l.visibleHomeSections(offline: false, hasListenBrainzToken: false) == [.jumpBackIn, .recentlyAdded, .mostPlayed])
+        // Round 14 A6: the Spotify-style default.
+        let library: [HomeSection] = [.greeting, .filterChips, .quickAccess, .jumpBackIn, .recentlyAdded, .favourites, .mostPlayed]
+        #expect(l.visibleHomeSections(offline: false, hasListenBrainzToken: false) == library + [.playlists, .genres])
         // The car shows Made for you too (T23 ruling): one rule for the phone and the car.
-        #expect(l.visibleHomeSections(offline: false, hasListenBrainzToken: true) == [.jumpBackIn, .madeForYou, .recentlyAdded, .mostPlayed])
+        #expect(l.visibleHomeSections(offline: false, hasListenBrainzToken: true) == library + [.madeForYou, .playlists, .genres])
         #expect(l.visibleHomeSections(offline: true, hasListenBrainzToken: true) == [.downloaded])
         // Round 13: Songs shows in the car too (letter groups); Requests never does.
         #expect(l.visibleLibraryRows(offline: false, findsSetUp: false, lidarrConnected: true, carPlay: true)
@@ -213,10 +220,11 @@ import Testing
     /// Round 12 Y6: Discover (Home and Library, the phone and the car) only while Aurral is set up, never offline.
     @Test func discoverOnlyOnceSetUp() {
         let l = LayoutPreferences.defaultValue
-        #expect(HomeSection.discover.title == "Discover" && LibraryRow.discover.title == "Discover")
+        #expect(HomeSection.discover.title == "Your flows" && LibraryRow.discover.title == "Discover")   // round 14
         #expect(!l.visibleHomeSections(offline: false, hasListenBrainzToken: false).contains(.discover))
         #expect(l.visibleHomeSections(offline: false, hasListenBrainzToken: false, discoverSetUp: true)
-                == [.jumpBackIn, .recentlyAdded, .mostPlayed, .discover])
+                == [.greeting, .filterChips, .quickAccess, .discover, .jumpBackIn, .recentlyAdded, .favourites, .mostPlayed,
+                    .playlists, .genres])
         #expect(l.visibleHomeSections(offline: true, hasListenBrainzToken: false, discoverSetUp: true) == [.downloaded])
         #expect(!l.visibleLibraryRows(offline: false, findsSetUp: true, lidarrConnected: true, carPlay: false).contains(.discover))
         #expect(l.visibleLibraryRows(offline: false, findsSetUp: false, lidarrConnected: false, carPlay: true, discoverSetUp: true)

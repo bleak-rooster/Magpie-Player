@@ -41,11 +41,12 @@ extension CarPlayLibraryAdapter {
                 return madeForYou.isEmpty ? nil : CPHomeShelf(section: section, items: madeForYou)
             }
             guard let shelf = shelves.first(where: { $0.section == section }) else { return nil }
-            return CPHomeShelf(section: section, items: shelf.items.prefix(count).map { item in
+            return CPHomeShelf(section: section, items: shelf.items.prefix(count).compactMap { item -> CPHomeShelf.Item? in
                 switch item {
                 case .album(let album), .downloadedAlbum(let album): .album(album)
                 case .playlist(let playlist): .playlist(playlist)
                 case .genreGroup(let group): .genreGroup(id: group.group.id, name: group.group.name, albumCount: group.albumCount)
+                case .outside: nil   // round 14: the car has no provided shelves (not a car section)
                 }
             })
         }

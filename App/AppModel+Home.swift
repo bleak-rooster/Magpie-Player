@@ -12,6 +12,8 @@ struct HomeShelf: Identifiable, Equatable, Sendable {
         /// An album on the phone (Recently downloaded): it opens offline too. A downloaded playlist there is a
         /// `.playlist` (its page reads the phone's copy offline).
         case downloadedAlbum(Album)
+        /// Round 14 A6: a tile of a provided section (`HomeAurralShelves`).
+        case outside(HomeOutsideItem)
 
         /// What the tile is (Task 21): stable across reads, unlike its position.
         var id: String {
@@ -19,6 +21,7 @@ struct HomeShelf: Identifiable, Equatable, Sendable {
             case .album(let album), .downloadedAlbum(let album): "album-\(album.id)"
             case .playlist(let playlist): "playlist-\(playlist.id)"
             case .genreGroup(let section): "group-\(section.group.id)"
+            case .outside(let item): "outside-\(item.id)"
             }
         }
     }
@@ -38,21 +41,30 @@ struct HomeShelf: Identifiable, Equatable, Sendable {
         case (.playlists, .playlist), (.discover, .playlist): true
         case (.genres, .genreGroup): true
         case (.downloaded, .downloadedAlbum), (.downloaded, .playlist): true
+        case (.quickAccess, .album): true   // round 14 A6: the server's recently played albums
+        case (let section, .outside): section.isProvided
         default: false
         }
     }
 }
 
+extension HomeSection {
+    /// Round 14 A6: a section Home's feed reads a shelf for. Made for you keeps its own; the greeting and the chips are
+    /// part of the page.
+    var readsShelf: Bool { self != .madeForYou && !isChrome }
+}
+
 /// Home layout (spec §3, Task 20): the sections the owner shows, in the owner's order, each fetched only when shown.
 extension AppModel {
-    /// Tiles per shelf (not configurable).
-    nonisolated static let homeShelfSize = 12
+    /// Tiles read per shelf: the most a shelf can show (round 14 A6: each shows its own count, `HomeSectionStyle`).
+    nonisolated static let homeShelfSize = HomeSectionStyle.countRange.upperBound
 
-    /// The sections Home shows now, on the phone and in the car: the owner's order and switches; Made for you only with
-    /// a token; offline, Downloaded.
+    /// The sections Home shows now, on the phone: the owner's order and switches; Made for you only with a token;
+    /// Discover and the provided sections only with Aurral (round 14 A6: and a provider, `homeOutsideSections`);
+    /// offline, Downloaded.
     var homeSections: [HomeSection] {
         preferences.layout.visibleHomeSections(offline: isOffline, hasListenBrainzToken: hasListenBrainzToken,
-                                               discoverSetUp: aurralSetUp)   // Y6
+                                               discoverSetUp: aurralSetUp, outside: homeOutsideSections)   // Y6
     }
 
     /// A read of Home's sections: the shelves with something in them, in the order asked, and the sections that
@@ -73,7 +85,7 @@ extension AppModel {
 
     /// `homeShelves(for:)`, naming the sections that couldn't be read.
     func homeRead(for sections: [HomeSection]) async throws -> HomeRead {
-        let wanted = sections.filter { $0 != .madeForYou }
+        let wanted = sections.filter(\.readsShelf)
         let results = await withTaskGroup(of: (Int, Result<[HomeShelf.Item], any Error>).self) { group in
             for (index, section) in wanted.enumerated() {
                 group.addTask { [weak self] in
@@ -153,7 +165,18 @@ extension AppModel {
                 case .playlist(let playlist): .playlist(playlist)
                 }
             }
-        case .madeForYou: return []
+        case .madeForYou, .greeting, .filterChips: return []
+        // Round 14 A6: the quick grid's fallback, the server's recently played albums (`QuickAccess.tiles`).
+        case .quickAccess: return try await albums(.recent)
+        case .recommended, .newThisWeek, .becauseYouLike, .morePlaylists, .closeToHome, .furtherOut, .trending,
+             .genreCharts:
+            // Round 14 A6 (D109): from the provider, never from Aurral directly; nothing while it doesn't offer it.
+            guard !isOffline, homeOutsideSections.contains(section) else { return [] }
+            // Shown from its saved shelf, not named yet (I2): not loaded, so the saved copy stays and it is retried.
+            guard homeAurralShelves.availableSections.contains(section) else { throw HomeSectionNotOffered() }
+            let rows = section == .becauseYouLike ? HomeSectionStyle.becauseYouLikeRange.upperBound : 1
+            return try await homeAurralShelves.items(for: section, limit: size * rows).prefix(size * rows)
+                .map(HomeShelf.Item.outside)
         case .discover:   // Y6: Aurral's flow playlists (AppModel+Discover.swift)
             return try await discoverPlaylists().prefix(size).map(HomeShelf.Item.playlist)
         }

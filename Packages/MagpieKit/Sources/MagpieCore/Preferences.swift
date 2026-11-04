@@ -4,8 +4,13 @@ import Foundation
 
 public enum HomeSection: String, CaseIterable, Codable, Hashable, Sendable {
     case jumpBackIn, madeForYou, recentlyAdded, mostPlayed, favourites, randomAlbums, playlists, genres, downloaded
-    /// Round 12 Y6: Aurral's flow playlists, only while Aurral is set up.
+    /// Round 12 Y6: Aurral's flow playlists, only while Aurral is set up. Round 14: titled "Your flows"; the stored
+    /// name stays `discover`, so saved layouts keep it.
     case discover
+    /// Round 14 A6 (Spotify-style Home): the top of the page. See `HomeLayout.swift`.
+    case greeting, filterChips, quickAccess
+    /// Round 14 A6: shelves provided through the app's `HomeAurralShelves` (round 14 A4), hidden until one is.
+    case recommended, newThisWeek, becauseYouLike, morePlaylists, closeToHome, furtherOut, trending, genreCharts
 
     public var title: String {
         switch self {
@@ -18,7 +23,18 @@ public enum HomeSection: String, CaseIterable, Codable, Hashable, Sendable {
         case .playlists: "Playlists"
         case .genres: "Genres"
         case .downloaded: "Recently downloaded"
-        case .discover: "Discover"
+        case .discover: "Your flows"
+        case .greeting: "Greeting"
+        case .filterChips: "Filters"
+        case .quickAccess: "Quick access"
+        case .recommended: "Recommended for you"
+        case .newThisWeek: "New this week"
+        case .becauseYouLike: "Because you like"
+        case .morePlaylists: "More playlists for you"
+        case .closeToHome: "Close to home"
+        case .furtherOut: "Further out"
+        case .trending: "Trending"
+        case .genreCharts: "Charts by genre"
         }
     }
 }
@@ -165,7 +181,7 @@ public struct LayoutPreferences: PreferenceArea {
     public static let key = "magpie.prefs.layout"
     public static let alwaysAvailableRows: Set<LibraryRow> = [.playlists, .artists, .albums, .songs, .genres, .favourites, .downloads]
     public static let defaultValue = LayoutPreferences(
-        home: OrderedVisibility(HomeSection.allCases.map { .init(item: $0, visible: [.jumpBackIn, .madeForYou, .recentlyAdded, .mostPlayed, .discover].contains($0)) }),
+        home: HomeSection.defaultHome,   // round 14 A6: the Spotify-style order (HomeLayout.swift)
         library: OrderedVisibility(LibraryRow.allCases.map { .init(item: $0, visible: true) }),
         showsRecentlyAdded: true)
 
@@ -175,13 +191,21 @@ public struct LayoutPreferences: PreferenceArea {
     /// Round 11 R11: Artists lists only album artists (on, the default) or every artist, track-only ones too; the
     /// phone and the car alike.
     public var albumArtistsOnly: Bool
+    /// Round 14 A6: each Home shelf's card size and item count, by the section's stored name; a section not here has
+    /// its default (`HomeSection.defaultStyle`). See `style(for:)`.
+    public var homeStyles: [String: HomeSectionStyle]
+    /// Round 14 A6: how many "Because you like" rows Home shows (0–3; 0 hides the section).
+    public var becauseYouLikeRows: Int
 
     public init(home: OrderedVisibility<HomeSection>, library: OrderedVisibility<LibraryRow>, showsRecentlyAdded: Bool,
-                albumArtistsOnly: Bool = true) {
+                albumArtistsOnly: Bool = true, homeStyles: [String: HomeSectionStyle] = [:],
+                becauseYouLikeRows: Int = HomeSectionStyle.becauseYouLikeRange.upperBound) {
         self.home = home
         self.library = library
         self.showsRecentlyAdded = showsRecentlyAdded
         self.albumArtistsOnly = albumArtistsOnly
+        self.homeStyles = homeStyles
+        self.becauseYouLikeRows = becauseYouLikeRows
     }
 
     /// Hides or shows a Library row; false (no change) when it would leave none of the always-available rows visible.
@@ -199,16 +223,24 @@ public struct LayoutPreferences: PreferenceArea {
                 library.set(entry.item, visible: true, keepingOneOf: [])
             }
         }
-        return LayoutPreferences(home: home.normalised(against: Self.defaultValue.home), library: library,
-                                 showsRecentlyAdded: showsRecentlyAdded, albumArtistsOnly: albumArtistsOnly)
+        return LayoutPreferences(home: HomeSection.migrated(home), library: library,
+                                 showsRecentlyAdded: showsRecentlyAdded, albumArtistsOnly: albumArtistsOnly,
+                                 homeStyles: HomeSectionStyle.normalised(homeStyles),
+                                 becauseYouLikeRows: clamp(becauseYouLikeRows, HomeSectionStyle.becauseYouLikeRange))
     }
 
     /// The Home sections to show, in the owner's order, for the phone and the car alike (the car shows Made for you too,
     /// T23): Made for you only with a ListenBrainz token; offline, Downloaded.
-    /// Y6: Discover only while Aurral is set up (`discoverSetUp`).
-    public func visibleHomeSections(offline: Bool, hasListenBrainzToken: Bool, discoverSetUp: Bool = false) -> [HomeSection] {
+    /// Y6: Discover only while Aurral is set up (`discoverSetUp`). Round 14 A6: a provided section (`isProvided`) only
+    /// while Aurral is set up and its provider offers it (`outside`); Because you like not at 0 rows.
+    public func visibleHomeSections(offline: Bool, hasListenBrainzToken: Bool, discoverSetUp: Bool = false,
+                                    outside: Set<HomeSection> = []) -> [HomeSection] {
         if offline { return [.downloaded] }
-        return home.visibleItems.filter { ($0 != .madeForYou || hasListenBrainzToken) && ($0 != .discover || discoverSetUp) }
+        return home.visibleItems.filter { section in
+            if section.isProvided { return discoverSetUp && outside.contains(section)
+                                       && (section != .becauseYouLike || becauseYouLikeRows > 0) }
+            return (section != .madeForYou || hasListenBrainzToken) && (section != .discover || discoverSetUp)
+        }
     }
 
     /// The Library rows to show, in the owner's order. Offline (the phone and the car alike): Downloads, which always

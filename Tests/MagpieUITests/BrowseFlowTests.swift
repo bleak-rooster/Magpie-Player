@@ -871,7 +871,7 @@ final class BrowseFlowTests: XCTestCase {
         XCTAssertEqual(jump.value as? String, "0")
         flip("layout-randomAlbums")
         flip("layout-genres")
-        XCTAssertEqual(app.switches["layout-genres"].value as? String, "1")
+        XCTAssertEqual(app.switches["layout-genres"].value as? String, "0", "round 14: Genres is on by default, so the flip turns it off")
         // Most played to the top, by its drag handle.
         for _ in 0..<4 where !jump.isHittable { app.swipeDown() }
         let handle = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Reorder' AND label CONTAINS 'Most played'")).firstMatch
