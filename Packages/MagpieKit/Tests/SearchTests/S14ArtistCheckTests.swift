@@ -69,4 +69,22 @@ private func detail() -> MBReleaseDetail {
                                                          release: { _ in detail() }, artistName: { _ in throw URLError(.timedOut) })
         #expect(unknown.artistMBID == nil)
     }
+
+    /// Fix: a featured or joined credit matches on the full name or the primary artist, never a part or a substring.
+    @Test func thePrimaryArtistOfAFeaturedCreditMatches() async throws {
+        func check(_ credit: String, _ lidarr: String) async -> Bool {
+            let song = OutsideSong(title: "T", artist: credit, duration: 100)
+            return (try? await OutsideSongMatch.artist(song, links: { _, _, _ in (linkedArtist, nil) },
+                                                       artistName: { _ in lidarr })) == linkedArtist
+        }
+        for credit in ["X feat. Y", "X ft. Y", "X Featuring Y", "X with Y", "X x Y", "X & Y", "X, Y", "X FEAT. Y & Z"] {
+            #expect(await check(credit, "X"), "\(credit) ↔ X")
+            #expect(!(await check(credit, "Y")), "\(credit) ↔ Y")
+        }
+        #expect(await check("Simon & Garfunkel", "Simon & Garfunkel"), "the full name")
+        #expect(await check("X feat. Y", "X feat. Y"))
+        #expect(!(await check("Xavier feat. Y", "X")), "never a substring")
+        #expect(!(await check("The Xx", "X")))
+        #expect(!(await check("X feat. Y", "X feat")))
+    }
 }

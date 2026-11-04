@@ -97,11 +97,22 @@ public enum OutsideSongMatch {
         return mbid
     }
 
-    /// Whether Lidarr's name for `mbid` is `artist` (folded: case, accents, "Tides, The"); any failure is no.
+    /// Whether Lidarr's name for `mbid` is `artist`, or the primary artist of a featured or joined credit ("X feat. Y",
+    /// "X & Y": X), compared whole and folded (case, accents, "Tides, The"); never a part after the first, never a
+    /// substring. Any failure is no.
     static func names(_ mbid: MBID, _ artist: String, _ artistName: ArtistName) async -> Bool {
-        let key = SongIdentity.artistKey(artist)
-        guard !key.isEmpty, let named = try? await artistName(mbid) else { return false }
-        return SongIdentity.artistKey(named) == key
+        let keys = Set([artist, primaryArtist(artist)].map(SongIdentity.artistKey)).subtracting([""])
+        guard !keys.isEmpty, let named = try? await artistName(mbid) else { return false }
+        return keys.contains(SongIdentity.artistKey(named))
+    }
+
+    /// Where a credit's featured or joined artists start (case-insensitive).
+    static let creditSeparators = [" feat. ", " ft. ", " featuring ", " with ", " x ", " & ", ", "]
+
+    /// The credit up to its first featured or joined part ("X feat. Y & Z" → "X"); the whole credit when it has none.
+    static func primaryArtist(_ credit: String) -> String {
+        let cut = creditSeparators.compactMap { credit.range(of: $0, options: .caseInsensitive)?.lowerBound }.min()
+        return cut.map { String(credit[..<$0]) } ?? credit
     }
 }
 
