@@ -253,6 +253,46 @@ if [ -z "${G1_SRC:-}" ]; then
     grep -qF -- "$want" "$aurral" || { echo "G1: $aurral: the Aurral allow-list changed (missing: $want)" >&2; bad=1; }
   done
   [ "$(grep -cE 'case [0-9] where' "$aurral")" = 25 ] || { echo "G1: $aurral: the Aurral allow-list isn't exactly 25 routes" >&2; bad=1; }
+  # Fix M1: the verb, token and query-name switches are pinned whole (each read GET, only the seven writes POST, only
+  # health, login and the preview without the token, the six routes with queries and exactly their names), and the
+  # trackResearch route's continuation line too.
+  aurral_block() {   # the body of `<decl> {` up to its closing brace at the same indentation
+    awk -v decl="$1" 'index($0, decl) && !on { on = 1; match($0, /^ */); ind = RLENGTH; next }
+                      on { match($0, /^ */); if (RLENGTH == ind && $0 ~ /^ *}$/) exit; print }' "$aurral"
+  }
+  want_method='        switch self {
+        case .health, .playlistsStatus, .playlistsJobs, .libraryLookup: "GET"
+        case .startFlow: Self.startMethod
+        case .login, .logout: Self.sessionMethod
+        case .bootstrap, .authMe, .recommendations, .trending, .trendingGenre, .editorialShelf, .editorialLinks,
+             .editorialPlaylist, .artistPreview, .releaseGroupTracks, .search, .searchUnified, .playlistJobsById,
+             .deezerPreview: "GET"
+        case .editorialAdd, .discoverFeedback, .flowDownload, .trackResearch: Self.discoverWriteMethod
+        }'
+  want_authorised='        switch self {
+        case .health, .login, .deezerPreview: false
+        default: true
+        }'
+  want_queries='        switch self {
+        case .recommendations: ["limit", "offset"]
+        case .search: ["q", "scope", "limit", "offset"]
+        case .searchUnified: ["q", "mode", "limit"]
+        case .editorialLinks: ["artist", "album", "albumId"]
+        case .artistPreview: ["artistName"]
+        case .releaseGroupTracks: ["artistMbid", "artistName", "albumTitle", "deezerAlbumId"]
+        default: []
+        }'
+  [ "$(aurral_block 'var method: String {')" = "$want_method" ] ||
+    { echo "G1: $aurral: AurralRoute.method changed (each read GET, only the seven writes POST)" >&2; bad=1; }
+  [ "$(aurral_block 'var isAuthorised: Bool {')" = "$want_authorised" ] ||
+    { echo "G1: $aurral: AurralRoute.isAuthorised changed" >&2; bad=1; }
+  [ "$(aurral_block 'public var queryNames: [String] {')" = "$want_queries" ] ||
+    { echo "G1: $aurral: AurralRoute.queryNames changed" >&2; bad=1; }
+  for want in '            && isPlainId(rest[4]) && rest[5] == "research": .trackResearch' \
+              'return Set(names).count == names.count && names.allSatisfy(route.queryNames.contains)' \
+              'static let startMethod = "POST"'; do
+    grep -qF -- "$want" "$aurral" || { echo "G1: $aurral: the Aurral allow-list changed (missing: $want)" >&2; bad=1; }
+  done
   # Round 14 A1 (D82): the four discover writes are sent only from these four exact lines (each path a literal, no
   # body but the feedback's), and Not for me's action is exactly block_artist.
   writes=$(grep -rnF --include='*.swift' 'AurralRoute.discoverWriteMethod' "${product[@]}" | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' || true)
