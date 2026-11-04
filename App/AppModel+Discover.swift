@@ -495,6 +495,7 @@ enum DiscoverCopy {
         switch error as? AurralError {
         case .runActive?: runActive
         case .unauthorized?: "Discover\u{2019}s server said no. Check your account in Settings."
+        case .notPermitted?: "Your account on Discover\u{2019}s server isn\u{2019}t allowed to do that."
         case .signInNeeded?, .badLogin?: signInAgain
         case .rateLimited?: AurralCopy.rateLimited
         case .notFound?: "That flow isn\u{2019}t there any more."

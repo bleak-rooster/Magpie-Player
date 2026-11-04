@@ -5,8 +5,11 @@ import MagpieCore
 public enum AurralError: Error, Sendable, Equatable {
     /// Not one of `AurralRoute`'s allowed calls: refused in code, nothing sent.
     case forbidden(String)
-    /// Refused (403, or a 401 a fresh login didn't cure).
+    /// Refused: a 401 a fresh login didn't cure.
     case unauthorized
+    /// Fix M2: Aurral knows the user but doesn't let them do this (403: a permission, such as accessFlow, is off).
+    /// Not a lost session: never a new login, never "sign in again".
+    case notPermitted
     /// Round 13: the username or password is wrong (the login answered 400 or 401).
     case badLogin
     /// Round 13: the session ended and Magpie can't log in again by itself (no saved password, or Aurral refused it):
@@ -268,7 +271,8 @@ public struct AurralClient: Sendable, CustomDebugStringConvertible, CustomReflec
         }
         switch response.statusCode {
         case 200..<300: return data
-        case 401, 403: throw AurralError.unauthorized
+        case 401: throw AurralError.unauthorized
+        case 403: throw AurralError.notPermitted
         case 404: throw AurralError.notFound
         default: throw AurralError.http(status: response.statusCode)
         }

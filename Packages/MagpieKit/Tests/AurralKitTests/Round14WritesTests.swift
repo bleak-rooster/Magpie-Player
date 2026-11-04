@@ -34,12 +34,15 @@ import Testing
         }
     }
 
-    /// Without Aurral's accessFlow Aurral refuses (403); Magpie hides the button (`canAddFlow`) and reads the refusal.
+    /// Without Aurral's accessFlow Aurral refuses (403); Magpie hides the button (`canAddFlow`) and reads the refusal
+    /// as `notPermitted` (fix M2), never as "signed out".
     @Test func addFlowWithoutPermissionIsRefused() async throws {
         stub.addUser(id: 2, username: "kid", password: "pw", role: "user")
         let kid = AurralClient(base: stub.base, session: AurralSession(username: "kid", password: "pw", login: nil), transport: stub)
         #expect(try await kid.me().canAddFlow == false)
-        await #expect(throws: AurralError.unauthorized) { _ = try await kid.addEditorialPlaylist("908622995") }
+        await #expect(throws: AurralError.notPermitted) { _ = try await kid.addEditorialPlaylist("908622995") }
+        await #expect(throws: AurralError.notPermitted) { _ = try await kid.downloadFlow("flow-1") }
+        #expect(stub.loginCount == 1, "a 403 is not a lost session: no second login")
         #expect(stub.discoverWrites.isEmpty)
     }
 
@@ -48,6 +51,17 @@ import Testing
             await #expect(throws: AurralError.self, "\(id)") { _ = try await client.addEditorialPlaylist(id) }
         }
         #expect(stub.requests.isEmpty)
+    }
+
+    /// Fix M2: a 401 that a fresh login doesn't cure stays `unauthorized` (signed out); a 403 is `notPermitted`.
+    @Test func a401AndA403AreTold() async throws {
+        let stale = AurralClient(base: stub.base, session: AurralSession(username: StubAurral.defaultUsername, password: nil,
+            login: AurralLogin(token: "stale", expiresAt: nil, user: StubAurral.defaultUser)), transport: stub)
+        await #expect(throws: AurralError.signInNeeded) { _ = try await stale.trending() }
+        stub.setDiscoverFailure(403)
+        await #expect(throws: AurralError.notPermitted) { _ = try await client.trending() }
+        stub.setDiscoverFailure(401)
+        await #expect(throws: AurralError.unauthorized) { _ = try await client.trending() }
     }
 
     // MARK: - Not for me
