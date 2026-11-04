@@ -137,20 +137,23 @@ public struct TracklistSongs: Sendable {
         let t = " " + Normalize.name(title) + " "
         let q = Normalize.name(query)
         guard !q.isEmpty, t.count > 2 else { return false }
-        var terms = [q]
+        // Fix round 1 (I1, M6): only the longest form of the artist's name that the query holds is taken out ("the
+        // national", else "national"), and what's left must say something: not empty, not the artist's name again, not
+        // only small words ("the national" left "the", which matched every title with "the" in it).
         let a = Normalize.name(artist)
-        for name in [a, a.hasPrefix("the ") ? String(a.dropFirst(4)) : ""] where !name.isEmpty {
-            let padded = " " + q + " "
-            if padded.contains(" " + name + " ") {
-                let rest = padded.replacingOccurrences(of: " " + name + " ", with: " ")
-                    .split(separator: " ").joined(separator: " ")
-                terms.append(rest)
-            }
+        let forms = [a, a.hasPrefix("the ") ? String(a.dropFirst(4)) : ""].filter { !$0.isEmpty }
+        var term = q
+        if let form = forms.first(where: { (" " + q + " ").contains(" " + $0 + " ") }) {
+            term = (" " + q + " ").replacingOccurrences(of: " " + form + " ", with: " ")
+                .split(separator: " ").joined(separator: " ")
         }
-        return terms.contains { term in
-            !term.isEmpty && term != a && t.contains(" " + term + " ")
-        }
+        let words = term.split(separator: " ").map(String.init)
+        guard !words.isEmpty, !forms.contains(term), !words.allSatisfy(stopWords.contains) else { return false }
+        return t.contains(" " + term + " ")
     }
+
+    /// Words that say nothing on their own.
+    static let stopWords: Set<String> = ["the", "a", "an", "and", "of", "to", "in", "on", "by", "for", "with", "feat"]
 
     /// Reads up to `albumsPerRead` albums in order, within the budget. Returns the matching songs and the albums not
     /// read (an album cut off by the budget is read again next time). An album that fails is skipped.

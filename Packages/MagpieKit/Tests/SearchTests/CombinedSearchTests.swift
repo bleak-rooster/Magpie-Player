@@ -53,6 +53,18 @@ private let never: MergedSearch.Sleep = { _ in try await Task.sleep(for: .second
         #expect(!TracklistSongs.matches(title: "Fake Empire", query: "empire state", artist: "The National"))
     }
 
+    /// Fix round 1 (I1, M6): the artist's name alone, with or without its "The", matches nothing, and a remainder of
+    /// stop words doesn't either.
+    @Test func theArtistsNameAloneNeverMatchesAnyTitle() {
+        #expect(!TracklistSongs.matches(title: "The Geese of Beverly Road", query: "the national", artist: "The National"))
+        #expect(!TracklistSongs.matches(title: "Beatles Medley", query: "beatles", artist: "The Beatles"))
+        #expect(!TracklistSongs.matches(title: "Come Together", query: "the beatles", artist: "The Beatles"))
+        #expect(!TracklistSongs.matches(title: "The End", query: "the beatles the", artist: "The Beatles"))
+        #expect(!TracklistSongs.matches(title: "The End", query: "the", artist: "The Beatles"))
+        #expect(TracklistSongs.matches(title: "The End", query: "the beatles the end", artist: "The Beatles"))
+        #expect(TracklistSongs.matches(title: "Bloodbuzz Ohio", query: "national bloodbuzz", artist: "The National"))
+    }
+
     @Test func albumsToReadHaveMBIDsComeBestFirstAndAreCapped() {
         let albums = (0..<20).map { album("Album \($0)", by: "Someone", $0) }
             + [NotYetAlbum(title: "No id", artist: "Someone")]
