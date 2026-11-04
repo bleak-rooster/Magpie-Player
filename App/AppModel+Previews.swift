@@ -10,8 +10,9 @@ import Playback
 ///   (2.13 with Discover or Trending, as last read from its bootstrap), and Magpie isn't offline. Otherwise no preview
 ///   control renders at all (`PreviewControl`, `PlayPreviewsButton`), and the calls below do nothing.
 /// - Each play resolves the preview just before it plays, through `PreviewResolver` on the saved Aurral base (its one
-///   address: M4), with no login. The signed link it pins is handed to the preview engine and never kept or logged; the
-///   engine follows further redirects to https only (D88; the pin covers Aurral's own hop, not every hop after it).
+///   address: M4), with no login. A7 (D110, plan decision 11): Aurral sends the clip itself (`?download`), never through
+///   a redirect and only from its own host, so the phone never contacts Deezer; the bytes go to the preview engine and
+///   are never kept, written or logged.
 extension AppModel {
     /// Preview controls may show.
     var previewsAvailable: Bool {
@@ -35,23 +36,27 @@ extension AppModel {
     }
 
     /// An Aurral song (chart, Discover playlist, an artist's top songs) as a preview item. Its Deezer id keys it.
+    /// A7 (D113): `artworkURL` is only ever a picture on Aurral itself (an `/api/...` path on the base); a Deezer or
+    /// Apple link is never handed on, since anything that loaded it would contact them directly. Rows show the
+    /// picture through `aurralArtwork` (Aurral's image proxy).
     func previewItem(for song: AurralSong) -> PreviewItem {
         let base = discover.connection?.base
         let key = song.key ?? song.preview?.trackId ?? "\(song.artistName)|\(song.trackName)"
+        let onAurral = song.artwork.flatMap { $0.raw.hasPrefix("/") ? $0 : nil }
         return PreviewItem(id: "aurral-\(key)", previewId: song.preview?.trackId, title: song.trackName,
                            artist: song.artistName, album: song.albumName,
-                           artworkURL: base.flatMap { song.artwork?.url(on: $0) })
+                           artworkURL: base.flatMap { onAurral?.url(on: $0) })
     }
 
     /// Resolves a preview through Aurral right now (D87): 404 is "No preview available"; a 5xx, a timeout, a refused
-    /// redirect or no usable Aurral is "Preview unavailable right now".
+    /// answer (a redirect, another host) or no usable Aurral is "Preview unavailable right now".
     func lookUpPreview(_ previewId: String) async -> PreviewLookup {
         guard previewsAvailable, let base = discover.connection?.base, let preview = AurralPreview(trackId: previewId) else {
             return .unavailable
         }
         do {
             switch try await PreviewResolver(base: base, transport: previewTransport).resolve(preview) {
-            case .playable(let url): return .playable(url)
+            case .clip(let clip): return .playable(clip)
             case .noPreview: return .noPreview
             }
         } catch {

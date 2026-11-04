@@ -25,11 +25,11 @@ public struct PreviewItem: Sendable, Hashable, Identifiable {
 
 /// What resolving a preview gave, just before it plays (D87).
 public enum PreviewLookup: Sendable, Equatable {
-    /// The signed link to play now; never kept (it expires in about 15 minutes).
-    case playable(URL)
+    /// The clip to play now, as Aurral sent it (A7: never a link to Deezer); held only while it plays.
+    case playable(Data)
     /// There is no preview for this song (404): "No preview available".
     case noPreview
-    /// It couldn't be resolved right now (5xx, a timeout, a refused redirect, no Aurral): "Preview unavailable right now".
+    /// It couldn't be resolved right now (5xx, a timeout, a refused answer, no Aurral): "Preview unavailable right now".
     case unavailable
 }
 
@@ -40,7 +40,7 @@ public enum PreviewEngineEvent: Sendable, Equatable {
     case started(token: Int)
     case time(token: Int, TimeInterval, duration: TimeInterval?)
     case ended(token: Int)
-    /// The clip couldn't be fetched or played (an expired link, the network, bytes that aren't audio).
+    /// The clip couldn't be played (bytes that aren't audio, a player that wouldn't start).
     case failed(token: Int)
     /// The system took the audio (a call): the clip is paused.
     case interrupted
@@ -52,12 +52,12 @@ public enum PreviewEngineEvent: Sendable, Equatable {
     case mediaServicesReset
 }
 
-/// Plays one preview clip at a time. `PreviewPlayer` owns the list; the engine only sees a URL and a token.
+/// Plays one preview clip at a time. `PreviewPlayer` owns the list; the engine only sees the clip's bytes and a token.
 @MainActor
 public protocol PreviewEngine: AnyObject {
     var events: AsyncStream<PreviewEngineEvent> { get }
-    /// Fetches and plays the clip at `url` from `at` seconds, replacing whatever was loaded.
-    func load(_ url: URL, token: Int, at: TimeInterval)
+    /// Plays `clip` (the bytes Aurral sent, kept in memory only) from `at` seconds, replacing whatever was loaded.
+    func load(_ clip: Data, token: Int, at: TimeInterval)
     func pause()
     func resume()
     /// Stops and lets go of the clip (its bytes too).

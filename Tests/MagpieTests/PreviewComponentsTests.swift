@@ -94,7 +94,7 @@ import UIKit
     @MainActor final class Silent: PreviewEngine {
         let events = AsyncStream<PreviewEngineEvent> { $0.finish() }
         var loads: [Int] = []
-        func load(_ url: URL, token: Int, at: TimeInterval) { loads.append(token) }
+        func load(_ clip: Data, token: Int, at: TimeInterval) { loads.append(token) }
         func pause() {}
         func resume() {}
         func stop() {}
@@ -103,7 +103,7 @@ import UIKit
     @Test func theLockScreenShowsThePreviewWhileItPlays() async throws {
         let engine = Silent()
         let preview = PreviewPlayer(engine: engine, mainPlayer: nil)
-        preview.lookup = { _ in .playable(URL(string: "https://cdnt-preview.dzcdn.net/x.mp3")!) }
+        preview.lookup = { _ in .playable(Data("clip".utf8)) }
         #expect(NowPlayingBridge.previewInfo(preview) == nil, "nothing previewing: the main player's info")
         #expect(!NowPlayingBridge.previewTakes(.togglePlayPause, preview))
 

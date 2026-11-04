@@ -50,6 +50,14 @@ planted=(
   'aurral.ok(method: "GET", path: "api/playlists/flows/" + id + "/tracks")'
   'aurral.ok(method: "GET", path: "api/playlists/shared-playlists/" + id + "/sync")'
   'aurral.ok(method: AurralRoute.discoverWriteMethod, path: "api/discover/feedback/reset")'
+  # Round 14 A7: a Deezer or Apple host anywhere in product code, a second image-proxy send.
+  'URLSession.shared.data(from: URL(string: "https://cdnt-preview.dzcdn.net/a.mp3")!)'
+  'URLSession.shared.data(from: URL(string: "https://e-cdns-images.DZCDN.net/images/cover/1/1.jpg")!)'
+  'URLSession.shared.data(from: URL(string: "https://api.deezer.com/chart")!)'
+  'URLSession.shared.data(from: URL(string: "https://is1-ssl.mzstatic.com/image/thumb/a.jpg")!)'
+  'URLSession.shared.data(from: URL(string: "https://rss.applemarketingtools.com/api/v2/au")!)'
+  'URLSession.shared.data(from: URL(string: "https://itunes.apple.com/lookup?id=1")!)'
+  'aurral.ok(method: AurralRoute.imageProxyMethod, path: "api/image-proxy", body: other)'
 )
 failed=0
 for p in "${planted[@]}"; do
@@ -68,11 +76,14 @@ rm -f "$work/App/PlantedViolation.swift"
 aurral_src="$work/Packages/MagpieKit/Sources/AurralKit/AurralClient.swift"
 cp "$aurral_src" "$work/AurralClient.orig"
 weakened=(
-  's/             .deezerPreview: "GET"/             .deezerPreview: Self.startMethod/'
+  's/             .deezerPreview, .imageProxyFile: "GET"/             .deezerPreview: "GET"\n        case .imageProxyFile: Self.startMethod/'
+  's/        case .health, .login, .deezerPreview, .imageProxyFile: false/        case .health, .login, .deezerPreview, .imageProxyFile, .imageProxy: false/'
+  's/        case 2 where rest\[0\] == "image-proxy" \&\& isImageProxyKey(rest\[1\]): .imageProxyFile/        case 2 where rest[0] == "image-proxy": .imageProxyFile/'
+  's/        case .deezerPreview: \["download"\]/        case .deezerPreview: ["download", "url"]/'
   's/        case .editorialAdd, .discoverFeedback, .flowDownload, .trackResearch: Self.discoverWriteMethod/        case .editorialAdd, .discoverFeedback, .flowDownload, .trackResearch, .trending: Self.discoverWriteMethod/'
   's/        case .recommendations: \["limit", "offset"\]/        case .recommendations: ["limit", "offset", "refresh"]/'
   's/        case .artistPreview: \["artistName"\]/        case .artistPreview: ["artistName"]\n        case .trending: ["download"]/'
-  's/        case .health, .login, .deezerPreview: false/        case .health, .login, .deezerPreview, .bootstrap: false/'
+  's/        case .health, .login, .deezerPreview, .imageProxyFile: false/        case .health, .login, .deezerPreview, .imageProxyFile, .bootstrap: false/'
   's/            \&\& isPlainId(rest\[4\]) \&\& rest\[5\] == "research": .trackResearch/            \&\& rest[5] == "research": .trackResearch/'
   's/return Set(names).count == names.count \&\& names.allSatisfy(route.queryNames.contains)/return true/'
 )
@@ -89,6 +100,33 @@ for w in "${weakened[@]}"; do
   fi
 done
 cp "$work/AurralClient.orig" "$aurral_src"
+
+# A7 fix round 1: the one refused-host list weakened (a host dropped, a host named on another line, subdomains let
+# through), outside art's refusal dropped, and a Deezer host named in another MagpieCore file.
+hosts_src="$work/Packages/MagpieKit/Sources/MagpieCore/RefusedMediaHosts.swift"
+art_src="$work/Packages/MagpieKit/Sources/MagpieCore/OutsideArt.swift"
+cp "$hosts_src" "$work/RefusedMediaHosts.orig"; cp "$art_src" "$work/OutsideArt.orig"
+host_weakened=(
+  "$hosts_src|s/\"mzstatic.com\", \"apple.com\"\]/\"mzstatic.com\"]/"
+  "$hosts_src|s/^public enum RefusedMediaHosts {/public enum RefusedMediaHosts {\n    static let extra = \"cdn.dzcdn.net\"/"
+  "$hosts_src|s/return domains.contains { name == \$0 || name.hasSuffix(\".\" + \$0) }/return domains.contains { name == \$0 }/"
+  "$art_src|s/, !RefusedMediaHosts.refuses(host: host) else { return nil }/ else { return nil }/"
+  "$art_src|s/^public enum OutsideArtPolicy {/public enum OutsideArtPolicy {\n    static let deezer = \"e-cdns-images.dzcdn.net\"/"
+)
+for w in "${host_weakened[@]}"; do
+  file="${w%%|*}" expr="${w#*|}"
+  cp "$work/RefusedMediaHosts.orig" "$hosts_src"; cp "$work/OutsideArt.orig" "$art_src"
+  cp "$file" "$work/before"
+  sed -i '' "$expr" "$file"
+  if cmp -s "$work/before" "$file"; then echo "selftest: the weakening didn't apply: $expr" >&2; failed=1; continue; fi
+  if out=$("$work/scripts/check-writes.sh" 2>&1); then
+    echo "selftest: NOT caught: $expr" >&2; failed=1
+  elif ! grep -qE 'G1:' <<< "$out"; then
+    echo "selftest: failed without a G1 reason: $expr" >&2; failed=1
+  fi
+done
+cp "$work/RefusedMediaHosts.orig" "$hosts_src"; cp "$work/OutsideArt.orig" "$art_src"
+weakened+=("${host_weakened[@]}")
 
 [ "$failed" = 0 ] || exit 1
 echo "check-writes selftest: all ${#planted[@]} planted violations and ${#weakened[@]} allow-list weakenings caught; the clean tree passes"

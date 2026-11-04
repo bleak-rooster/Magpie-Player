@@ -3,28 +3,33 @@ import MagpieCore
 
 /// What a preview resolved to.
 public enum PreviewResolution: Sendable, Equatable {
-    /// Deezer's signed MP3 link: hand it straight to the player, and never keep it (it expires in about 15 minutes).
-    case playable(URL)
+    /// The clip's bytes, as Aurral sent them: hand them straight to the player, held in memory only while it plays.
+    case clip(Data)
     /// Aurral has no preview for the song (404): show "No preview available".
     case noPreview
 }
 
 /// Why a preview wasn't resolved.
 public enum PreviewError: Error, Sendable, Equatable {
-    /// Not a single 302 to Deezer's HTTPS audio hosts (another host, plain http, a relative link, the bytes instead of
-    /// a redirect, as a transport that followed the redirect itself gives, another redirect code).
+    /// Not the clip from the configured Aurral: any redirect, an answer from another host, another status, an empty
+    /// body, something that isn't audio, or more than a preview's size.
     case refused
     /// Aurral or Deezer had a problem (502 when Deezer is down, 5xx).
     case unavailable(status: Int)
 }
 
-/// Round 14 A1 (D83, plan decision 3): turns an `AurralPreview` into something the player can play, safely.
-/// - Fetches `<Aurral base>/api/deezer/preview/<id>.mp3` (open on Aurral) with no login, no cookie and no cache.
-/// - Never follows a redirect itself; accepts exactly one 302 whose `Location` is `https://<host>.dzcdn.net/<path>`
-///   (or `dzcdn.net` itself) on the default port, without user info.
-/// - 404 → `.noPreview`; 5xx → `unavailable`; anything else is refused.
-/// - Keeps nothing: every call asks Aurral again (A2's player resolves just before it plays).
+/// Round 14 A1 (D83), A7 (D110, plan decision 11: no direct calls to Deezer from the phone): fetches a preview clip
+/// through Aurral. `GET <Aurral base>/api/deezer/preview/<id>.mp3?download` (open on Aurral): Aurral fetches the clip
+/// from Deezer itself and answers 200 `audio/mpeg` with the bytes, so the phone never contacts Deezer's CDN.
+/// - No login, no cookie, no cache; its own transport (`AurralOpenTransport`), which never follows a redirect.
+/// - Any 3xx is refused; the answer must come from the configured Aurral host (scheme, host case-insensitively, port).
+/// - 200 with audio, not empty, at most `maxBytes` → `.clip`; 404 → `.noPreview`; 5xx → `unavailable`; anything else
+///   is refused.
+/// - Keeps nothing and logs no bytes: every call asks Aurral again (the player resolves just before it plays).
 public struct PreviewResolver: Sendable {
+    /// A 30-second MP3 is about 0.5 MB; anything past this isn't a preview.
+    public static let maxBytes = 4 * 1024 * 1024
+
     public let base: URL
     private let transport: HTTPTransport
 
@@ -35,68 +40,37 @@ public struct PreviewResolver: Sendable {
     }
 
     public func resolve(_ preview: AurralPreview) async throws -> PreviewResolution {
-        guard AurralRoute.route(method: "GET", path: preview.path) == .deezerPreview, let url = preview.url(on: base) else {
-            throw PreviewError.refused
-        }
+        guard AurralRoute.isAllowed(method: "GET", path: preview.path, query: AurralPreview.downloadQuery),
+              let url = preview.url(on: base) else { throw PreviewError.refused }
         var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalAndRemoteCacheData)
         request.httpMethod = "GET"
         request.httpShouldHandleCookies = false
-        request.setValue("*/*", forHTTPHeaderField: "Accept")
+        request.setValue("audio/*", forHTTPHeaderField: "Accept")
         Log.request(request, category: "aurral")
-        let (_, response) = try await transport.send(request)
-        // Fix I1: decided by the status alone. URLSession hands back the answer's URL canonical (lower-cased scheme and
-        // host), so comparing it with the asked URL refused every Aurral saved with capital letters; a transport that
-        // followed the redirect itself can't hand back Aurral's 302 (it gives the bytes, a 200: refused below).
+        let data: Data, response: HTTPURLResponse
+        do {
+            (data, response) = try await transport.send(request)
+        } catch is AurralOpenTransport.TooLarge {
+            throw PreviewError.refused
+        }
+        // The answer must be Aurral's own (a transport that followed a redirect names where it landed). Compared as an
+        // origin: URLSession hands the answer's URL back canonical (lower-cased scheme and host; fix I1).
+        if let landed = response.url, !landed.isSameOrigin(as: url) { throw PreviewError.refused }
         switch response.statusCode {
-        case 302:
-            guard let location = response.value(forHTTPHeaderField: "Location"), let target = URL(string: location),
-                  Self.isDeezerAudio(target) else { throw PreviewError.refused }
-            return .playable(target)
+        case 200:
+            let type = response.value(forHTTPHeaderField: "Content-Type")?.lowercased() ?? ""
+            guard type.hasPrefix("audio/"), !data.isEmpty, data.count <= Self.maxBytes else { throw PreviewError.refused }
+            return .clip(data)
         case 404: return .noPreview
         case 500..<600: throw PreviewError.unavailable(status: response.statusCode)
-        default: throw PreviewError.refused
+        default: throw PreviewError.refused   // every 3xx included: never followed
         }
-    }
-
-    /// `https://*.dzcdn.net/<path>` (or `https://dzcdn.net/<path>`), on the default port, without user info.
-    public static func isDeezerAudio(_ url: URL) -> Bool {
-        guard url.scheme?.lowercased() == "https", let host = url.host()?.lowercased(), !host.isEmpty,
-              url.user == nil, url.password == nil, url.port == nil || url.port == 443,
-              url.path().count > 1 else { return false }
-        return host == "dzcdn.net" || host.hasSuffix(".dzcdn.net")
     }
 
     // MARK: - The real transport
 
     /// Ephemeral, no cookies, no cache.
-    public static func sessionConfiguration() -> URLSessionConfiguration {
-        let config = URLSessionConfiguration.ephemeral
-        config.httpCookieStorage = nil
-        config.httpShouldSetCookies = false
-        config.httpCookieAcceptPolicy = .never
-        config.urlCache = nil
-        config.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
-        config.timeoutIntervalForRequest = 10
-        return config
-    }
+    public static func sessionConfiguration() -> URLSessionConfiguration { AurralOpenTransport.sessionConfiguration() }
 
-    public static func defaultTransport() -> HTTPTransport { Transport() }
-
-    private struct Transport: HTTPTransport {
-        static let session = URLSession(configuration: PreviewResolver.sessionConfiguration(), delegate: NoRedirects.shared,
-                                        delegateQueue: nil)
-        func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
-            let (data, response) = try await Self.session.data(for: request, delegate: NoRedirects.shared)
-            guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
-            return (data, http)
-        }
-    }
-
-    /// Never follows a redirect: URLSession then hands back the 3xx itself, for `resolve` to check.
-    public final class NoRedirects: NSObject, URLSessionTaskDelegate, Sendable {
-        public static let shared = NoRedirects()
-
-        public func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
-                               newRequest request: URLRequest) async -> URLRequest? { nil }
-    }
+    public static func defaultTransport() -> HTTPTransport { AurralOpenTransport() }
 }

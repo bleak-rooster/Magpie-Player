@@ -2,8 +2,9 @@ import AVFoundation
 import Foundation
 import MagpieCore
 
-/// Round 14 A2 (D86, D88): the preview engine. Fetches the clip into memory (`PreviewClipFetcher`: https only, no cookie,
-/// no cache) and plays it with an `AVAudioPlayer` of its own, never the main `AVQueueEngine`.
+/// Round 14 A2 (D86, D88), A7 (D110): the preview engine. Plays the clip Aurral sent (`PreviewResolver` fetched it into
+/// memory through Aurral; the phone never contacts Deezer) with an `AVAudioPlayer` of its own, never the main
+/// `AVQueueEngine`. The bytes are never written to disk and go with Stop.
 ///
 /// On iOS it shares the app's `.playback` audio session (the main engine set its category). It activates the session before
 /// playing (off the main thread, as the main engine does), and follows interruptions: a call pauses the clip, and the
@@ -12,7 +13,6 @@ import MagpieCore
 public final class AVPreviewEngine: PreviewEngine {
     public let events: AsyncStream<PreviewEngineEvent>
     private let continuation: AsyncStream<PreviewEngineEvent>.Continuation
-    private let fetcher: PreviewClipFetcher
     private var player: AVAudioPlayer?
     private var delegate: Delegate?
     private var token = 0
@@ -23,8 +23,7 @@ public final class AVPreviewEngine: PreviewEngine {
     private var ticker: Task<Void, Never>?
     private var notificationTokens: [NSObjectProtocol] = []
 
-    public init(fetcher: PreviewClipFetcher = PreviewClipFetcher()) {
-        self.fetcher = fetcher
+    public init() {
         (events, continuation) = AsyncStream.makeStream(bufferingPolicy: .bufferingNewest(64))
         #if os(iOS)
         observeSession()
@@ -37,22 +36,19 @@ public final class AVPreviewEngine: PreviewEngine {
         for token in notificationTokens { NotificationCenter.default.removeObserver(token) }
     }
 
-    public func load(_ url: URL, token: Int, at: TimeInterval) {
+    public func load(_ clip: Data, token: Int, at: TimeInterval) {
         stop()
         self.token = token
         wantsToPlay = true
-        let fetcher = self.fetcher
         loading = Task { [weak self] in
             do {
-                let data = try await fetcher.fetch(url)
-                try Task.checkCancellation()
                 await Self.activateSession()
                 guard let self, !Task.isCancelled, self.token == token else { return }
-                try self.start(data, token: token, at: at)
+                try self.start(clip, token: token, at: at)
             } catch is CancellationError {
                 return
             } catch {
-                // The category only: never the signed link.
+                // The category only.
                 Log.logger("playback").error("preview failed: \(Log.category(of: error), privacy: .public)")
                 guard let self, self.token == token else { return }
                 self.continuation.yield(.failed(token: token))
@@ -100,7 +96,7 @@ public final class AVPreviewEngine: PreviewEngine {
         self.player = player
         self.delegate = delegate
         if wantsToPlay {
-            guard player.play() else { throw PreviewClipError.refused }
+            guard player.play() else { throw PreviewEngineError.wouldNotPlay }
             startTicking(token: token)
         }
         continuation.yield(.started(token: token))
@@ -209,3 +205,6 @@ public final class AVPreviewEngine: PreviewEngine {
         }
     }
 }
+
+/// Why the preview engine couldn't play a clip.
+enum PreviewEngineError: Error { case wouldNotPlay }

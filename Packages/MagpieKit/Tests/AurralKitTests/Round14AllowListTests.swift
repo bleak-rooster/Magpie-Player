@@ -35,6 +35,9 @@ import Testing
         ("POST", "api/playlists/flows/flow-1/download", .flowDownload),
         ("POST", "api/playlists/shared-playlists/pl-1/tracks/job-1/research", .trackResearch),
         ("GET", "api/deezer/preview/3135556.mp3", .deezerPreview),
+        // Round 14 A7 (D111): Aurral's image proxy.
+        ("POST", "api/image-proxy", .imageProxy),
+        ("GET", "api/image-proxy/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.jpg", .imageProxyFile),
     ]
 
     @Test func theExactAllowedCalls() {
@@ -45,16 +48,18 @@ import Testing
         #expect(Set(Self.allowed.map(\.2)) == Set(AurralRoute.allCases), "each route its own case")
     }
 
-    /// Who carries the session token: never the preview (it goes to Deezer's CDN next), the version check or the login.
+    /// Who carries the session token: never the preview or the image proxy's pictures (open on Aurral), the version
+    /// check or the login.
     @Test func onlyThePublicCallsGoWithoutTheToken() {
         let open = AurralRoute.allCases.filter { !$0.isAuthorised }
-        #expect(Set(open) == [.health, .login, .deezerPreview])
+        #expect(Set(open) == [.health, .login, .deezerPreview, .imageProxyFile])
     }
 
-    /// The writes are exactly the seven POSTs.
-    @Test func theWritesAreExactlySeven() {
+    /// The writes are exactly the eight POSTs (A7: the image proxy's cache step is the eighth).
+    @Test func theWritesAreExactlyEight() {
         let writes = AurralRoute.allCases.filter { $0.method != "GET" }
-        #expect(Set(writes) == [.startFlow, .login, .logout, .editorialAdd, .discoverFeedback, .flowDownload, .trackResearch])
+        #expect(Set(writes) == [.startFlow, .login, .logout, .editorialAdd, .discoverFeedback, .flowDownload, .trackResearch,
+                                .imageProxy])
     }
 
     @Test func bannedAndTwistedCallsAreRefused() async throws {
@@ -97,6 +102,8 @@ import Testing
             ("GET", "api/deezer/preview/1.mp3x"), ("GET", "api/deezer/preview/abc.mp3"), ("GET", "api/deezer/preview/.mp3"),
             ("GET", "api/deezer/preview/123456789012345678901.mp3"), ("GET", "api/deezer/preview/1.MP3"),
             ("GET", "api/deezer/preview/1"), ("GET", "api/deezer/preview/1.mp3/x"),
+            ("GET", "api/image-proxy"), ("POST", "api/image-proxy/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"), ("GET", "api/image-proxy/abc.jpg"),
+            ("GET", "api/image-proxy/../settings"), ("DELETE", "api/image-proxy/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
             ("GET", "api//discover"), ("GET", "/api/discover"), ("GET", "API/DISCOVER"), ("GET", "api/discover/"),
         ]
         let stub = StubAurral()
@@ -118,8 +125,9 @@ import Testing
         #expect(AurralRoute.editorialLinks.queryNames == ["artist", "album", "albumId"])
         #expect(AurralRoute.artistPreview.queryNames == ["artistName"])
         #expect(AurralRoute.releaseGroupTracks.queryNames == ["artistMbid", "artistName", "albumTitle", "deezerAlbumId"])
+        #expect(AurralRoute.deezerPreview.queryNames == ["download"])   // A7 (D110)
         for route in AurralRoute.allCases where ![.recommendations, .search, .searchUnified, .editorialLinks, .artistPreview,
-                                                  .releaseGroupTracks].contains(route) {
+                                                  .releaseGroupTracks, .deezerPreview].contains(route) {
             #expect(route.queryNames.isEmpty, "\(route)")
         }
         let stub = StubAurral()

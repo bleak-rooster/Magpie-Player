@@ -4,7 +4,7 @@
 Serves the same 2.13.0 shapes and fixtures as MagpieTestSupport's StubAurral (StubAurral+Discover.swift):
 health, bootstrap, login/logout, auth/me, playlists status/jobs, Recommended, Trending, genre charts, Discover
 playlists (editorial), editorial links, artist preview, search (unified and paged), release-group tracks, the four
-writes, and the preview's 302. `MagpieTests/AurralStubServerTests` checks it decodes as StubAurral's does.
+writes, the preview's 302 (and its `?download` clip), and the image proxy (A7). `MagpieTests/AurralStubServerTests` checks it decodes as StubAurral's does.
 
 Python standard library only. Listens on 127.0.0.1 only (default port 3901, `AURRAL_STUB_PORT`).
 
@@ -22,6 +22,8 @@ sends no custom header) can be pointed at one; a test runner may instead send `X
 Control (never sent by the app): GET /__stub/ping, GET /__stub/log (the requests seen, newest last, as
 "METHOD /path" without the scenario prefix and without query), POST /__stub/reset.
 """
+import base64
+import hashlib
 import json
 import os
 import re
@@ -42,8 +44,16 @@ ARTIST_B = "f59c5520-5f46-4d2c-b2c4-822eabf53419"
 ARTIST_C = "8538e728-ca0b-4321-b7e5-cff6565dd4c0"
 RELEASE_GROUP = "1dc4c347-a1db-32aa-b14f-bc9cc507b843"
 PREVIEW_TARGET = "https://cdnt-preview.dzcdn.net/api/1/1/a/b/c/preview.mp3?hdnea=exp=1790000000~hmac=stub"
+# Round 14 A7: the clip `?download` sends (Aurral fetches it from Deezer and sends the bytes itself).
+PREVIEW_CLIP = b"ID3" + b"\xff" * 2045
+# Round 14 A7: the image proxy serves this 1x1 PNG for every cached picture.
+PROXIED_PICTURE = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")
 SCENARIOS = {"default", "aurral210", "no-access-flow", "no-downloader", "region-us", "missing-sections",
-             "genre-not-ready", "slow", "failing"}
+             "genre-not-ready", "slow", "failing", "redirects", "oversized"}
+# Round 14 A7 fix round 1: "redirects" answers the preview's ?download and the image proxy's pictures with a 302 (an
+# Aurral that redirects anyway: Magpie must refuse it, never follow); "oversized" sends 5 MB for both (past the caps).
+OVERSIZED = b"ID3" + b"\xff" * (5 * 1024 * 1024)
 
 LOCK = threading.Lock()
 STATE = {"sessions": {}, "log": [], "added": {}}
@@ -293,6 +303,14 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):  # quiet; the request log is /__stub/log
         pass
 
+    def reply_bytes(self, status, data, content_type):
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
     def reply(self, status, obj=None, headers=None):
         data = b"" if obj is None else json.dumps(obj).encode()
         self.send_response(status)
@@ -315,7 +333,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(200, {"requests": list(STATE["log"])})
         if path == "/__stub/reset" and method == "POST":
             with LOCK:
-                STATE.update(sessions={}, log=[], added={})
+                STATE.update(sessions={}, log=[], added={}, images={})
             return self.reply(200, {"ok": True})
         scenario = self.headers.get("X-Stub-Scenario") or "default"
         m = re.match(r"^/s/([a-z0-9-]+)(/.*)$", path)
@@ -355,13 +373,39 @@ class Handler(BaseHTTPRequestHandler):
             track = path[len("/api/deezer/preview/"):]
             if not re.match(r"^\d{1,20}\.mp3$", track) or track.startswith("3135560"):
                 return self.reply(404, {"error": "Preview not found"})
+            if "download" in query:   # round 14 A7: Aurral sends the clip itself
+                if scenario == "redirects":
+                    return self.reply(302, None, {"Location": f"/s/default{path}?download", "Cache-Control": "no-store"})
+                if scenario == "oversized":
+                    return self.reply_bytes(200, OVERSIZED, "audio/mpeg")
+                return self.reply_bytes(200, PREVIEW_CLIP, "audio/mpeg")
             return self.reply(302, None, {"Location": PREVIEW_TARGET, "Cache-Control": "no-store"})
+        # Round 14 A7: the image proxy's file route is open (2.13 guards.ts isOpen).
+        m = re.match(r"^/api/image-proxy/([a-f0-9]{64})(?:\.[a-z0-9]+)?$", path)
+        if method == "GET" and m:
+            with LOCK:
+                cached = m.group(1) in STATE.setdefault("images", {})
+            if not cached:
+                return self.reply(404, {"error": "Image not found"})
+            if scenario == "redirects":
+                return self.reply(302, None, {"Location": f"/s/default{path}"})
+            if scenario == "oversized":
+                return self.reply_bytes(200, OVERSIZED, "image/png")
+            return self.reply_bytes(200, PROXIED_PICTURE, "image/png")
         if not signed_in:
             return self.reply(401, {"error": "Unauthorized", "code": "AUTH_REQUIRED" if token is None else "SESSION_INVALID"})
         if method == "POST" and path == "/api/auth/logout":
             with LOCK:
                 STATE["sessions"].pop(token, None)
             return self.reply(200, {"success": True})
+        if method == "POST" and path == "/api/image-proxy":   # round 14 A7
+            src = str(body.get("src") or "").strip()
+            if not re.match(r"^https?://", src, re.I):
+                return self.reply(400, {"error": "An http or https image URL is required"})
+            key = hashlib.sha256(src.encode()).hexdigest()
+            with LOCK:
+                STATE.setdefault("images", {})[key] = src
+            return self.reply(200, {"url": f"/api/image-proxy/{key}.png"})
         if method == "GET" and path == "/api/auth/me":
             return self.reply(200, {"user": user, "expiresAt": None})
         flow_reads = (method == "GET" and path in ("/api/playlists/status", "/api/playlists/jobs"))

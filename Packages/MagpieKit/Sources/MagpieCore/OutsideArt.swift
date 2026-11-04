@@ -70,9 +70,11 @@ public enum OutsideArtPolicy {
         host == "coverartarchive.org" || host == "archive.org" || host.hasSuffix(".archive.org")
     }
 
+    /// HTTPS, no user info, and never Deezer's or Apple's hosts (round 14 A7 fix round 1: the owner's rule holds for
+    /// outside art too, both for the first request and every redirect).
     private static func httpsHost(_ url: URL) -> String? {
         guard url.scheme?.lowercased() == "https", url.user == nil, url.password == nil,
-              let host = url.host()?.lowercased(), !host.isEmpty else { return nil }
+              let host = url.host()?.lowercased(), !host.isEmpty, !RefusedMediaHosts.refuses(host: host) else { return nil }
         return host
     }
 

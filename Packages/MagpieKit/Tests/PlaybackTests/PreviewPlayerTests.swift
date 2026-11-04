@@ -12,10 +12,10 @@ import Testing
     /// Records what the preview player asked of its engine.
     @MainActor final class FakePreviewEngine: PreviewEngine {
         let events: AsyncStream<PreviewEngineEvent>
-        private(set) var loads: [(url: URL, token: Int, at: TimeInterval)] = []
+        private(set) var loads: [(clip: Data, token: Int, at: TimeInterval)] = []
         private(set) var pauses = 0, resumes = 0, stops = 0
         init() { events = AsyncStream { $0.finish() } }
-        func load(_ url: URL, token: Int, at: TimeInterval) { loads.append((url, token, at)) }
+        func load(_ clip: Data, token: Int, at: TimeInterval) { loads.append((clip, token, at)) }
         func pause() { pauses += 1 }
         func resume() { resumes += 1 }
         func stop() { stops += 1 }
@@ -31,7 +31,7 @@ import Testing
             asked.append(id)
             if let answer = answers[id] { return answer }
             serial += 1
-            return .playable(URL(string: "https://cdnt-preview.dzcdn.net/\(id).mp3?hdnea=exp~\(serial)")!)
+            return .playable(Data("clip-\(id)-\(serial)".utf8))
         }
     }
 
@@ -238,7 +238,7 @@ import Testing
         preview.handle(.failed(token: token))
         await settle { engine.loads.count == 2 }
         #expect(lookups.asked == ["1", "1"])
-        #expect(engine.loads[1].url != engine.loads[0].url, "a fresh signed link")
+        #expect(engine.loads[1].clip != engine.loads[0].clip, "the clip fetched afresh")
         #expect(engine.loads[1].at == 12, "from where it was")
         #expect(preview.phase == .loading)
         // A second failure is final: "Preview unavailable right now".
@@ -310,7 +310,7 @@ import Testing
         let gate = AsyncStream<Void>.makeStream()
         preview.lookup = { id in
             for await _ in gate.stream { break }
-            return .playable(URL(string: "https://cdnt-preview.dzcdn.net/\(id).mp3")!)
+            return .playable(Data("clip-\(id)".utf8))
         }
         preview.play([Self.item("1")])
         #expect(preview.phase == .loading)
@@ -321,10 +321,10 @@ import Testing
         #expect(preview.phase == .idle)
     }
 
-    /// A link that isn't https is never handed to the engine.
-    @Test func onlyHTTPSLinksPlay() async throws {
+    /// Round 14 A7: an empty clip is never handed to the engine.
+    @Test func anEmptyClipNeverPlays() async throws {
         let (preview, engine, lookups) = make()
-        lookups.answers["1"] = .playable(URL(string: "http://cdnt-preview.dzcdn.net/1.mp3")!)
+        lookups.answers["1"] = .playable(Data())
         preview.play([Self.item("1")])
         await settle { preview.phase == .unavailable }
         #expect(preview.phase == .unavailable)
