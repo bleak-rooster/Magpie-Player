@@ -80,6 +80,8 @@ struct LibraryView: View {
         case .finds: .finds
         case .requests: .requests
         case .discover: .discover
+        case .trending: .trending   // round 14 A4
+        case .recommended: .recommended
         }
     }
 

@@ -150,7 +150,8 @@ extension AppModel {
 
     private func forgetDiscoverReads() {
         discover.forgetReads()
-        homeFeedSlot?.discard([.discover])   // Round 13 Z2: another Aurral (or user) never shows the last one's shelf
+        aurralFeeds?.forget()   // round 14 A4: Trending, Recommended and Discover playlists go with the user
+        homeFeedSlot?.discard(Set(HomeSection.allCases.filter { $0 == .discover || $0.isProvided }))   // Round 13 Z2: another Aurral (or user) never shows the last one's shelf
         if let scope = navidromeScope {
             appDefaults.removeObject(forKey: Self.discoverPlaylistsKey(scope))
             appDefaults.removeObject(forKey: Self.discoverLibrariesKey(scope))
@@ -202,10 +203,13 @@ extension AppModel {
         guard navidromeScope == scope, discover.connection?.account == account else { return }   // another account or Aurral
         noteStatus(status)
         // Round 13: only the signed-in user's flows' songs (Aurral shows an admin everyone's).
-        let flowIds = Set(status.flows.map(\.id))
+        // Round 14 A4 (D94, amends D75): Add flow's synced playlists are Discover's too, matched like flows (named
+        // after one and holding its songs); they never get Refresh Flow (`discoverFlow(playlistId:)`).
+        let flows = status.flows + status.sharedPlaylists
+        let flowIds = Set(flows.map(\.id))
         if let jobs { discover.jobs = jobs.filter { $0.flowId.map(flowIds.contains) ?? false } }
         let before = discoverPlaylistIds
-        let candidates = DiscoverRules.flowPlaylists(flows: status.flows, playlists: all)
+        let candidates = DiscoverRules.flowPlaylists(flows: flows, playlists: all)
         var entries: [String: [Song]] = [:]
         // Round 13 Z2: the known Discover playlists no flow is named as now are read too (`discoverPlaylistsToRead`).
         for id in Self.discoverPlaylistsToRead(candidates: candidates, before: before, all: all) {
@@ -216,7 +220,7 @@ extension AppModel {
         guard navidromeScope == scope, discover.connection?.account == account else { return }
         // Round 13 Z2: a read that can't confirm a playlist (jobs unreadable, a run under way, a playlist that didn't
         // read, no flows listed, a flow renamed first) never takes it out of Discover and into Playlists.
-        let matched = keptDiscoverPlaylists(flows: status.flows, all: all, candidates: candidates, entries: entries,
+        let matched = keptDiscoverPlaylists(flows: flows, all: all, candidates: candidates, entries: entries,
                                             before: before)
         discover.playlists = matched
         appDefaults.set(matched.map(\.playlist.id), forKey: Self.discoverPlaylistsKey(scope))
@@ -272,7 +276,21 @@ extension AppModel {
     /// The flow a Discover playlist belongs to, if known.
     func discoverFlow(playlistId: String) -> AurralFlow? {
         // Round 13 Z2: a playlist kept without a known flow (`keptDiscoverPlaylists`) has none: no Refresh Flow.
-        discover.playlists.first { $0.playlist.id == playlistId }?.flow.nonEmpty
+        // Round 14 A4: nor has a synced playlist (Add flow's: Aurral re-syncs it daily itself).
+        guard let flow = discover.playlists.first(where: { $0.playlist.id == playlistId })?.flow.nonEmpty,
+              !isSyncedPlaylist(flowId: flow.id) else { return nil }
+        return flow
+    }
+
+    /// Round 14 A4: the synced playlist (Add flow's) a Discover playlist is, if it is one.
+    func discoverSyncedPlaylist(playlistId: String) -> AurralFlow? {
+        guard let flow = discover.playlists.first(where: { $0.playlist.id == playlistId })?.flow.nonEmpty,
+              isSyncedPlaylist(flowId: flow.id) else { return nil }
+        return flow
+    }
+
+    func isSyncedPlaylist(flowId: String) -> Bool {
+        discover.status?.sharedPlaylists.contains { $0.id == flowId } ?? false
     }
 
     // MARK: - A Discover playlist's page

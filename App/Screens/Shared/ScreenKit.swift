@@ -33,6 +33,12 @@ enum Route: Hashable {
     case outsideAlbum(NotYetAlbum)
     /// Round 12 Y6: Library › Discover (Aurral's flow playlists).
     case discover
+    /// Round 14 A4: Trending, a genre's chart, Recommended, Browse more playlists and one Discover playlist.
+    case trending
+    case genreChart(id: Int, name: String)
+    case recommended
+    case browsePlaylists
+    case discoverPlaylist(id: String)
 }
 
 extension View {
@@ -60,6 +66,11 @@ extension View {
             case .favourites: FavouritesView()
             case .outsideArtist(let artist): OutsideArtistView(artist: artist)
             case .outsideAlbum(let album): OutsideAlbumView(album: album)
+            case .trending: TrendingView()
+            case .genreChart(let id, let name): GenreChartView(genreId: id, name: name)
+            case .recommended: RecommendedView()
+            case .browsePlaylists: BrowsePlaylistsView()
+            case .discoverPlaylist(let id): EditorialPlaylistView(playlistId: id)
             }
         }
     }

@@ -136,6 +136,9 @@ final class AppModel {
     @ObservationIgnored var homeFeedSlot: HomeFeed?
     /// Round 14 A6: Home's provided sections (Recommended, Trending…); none until round 14 A4 supplies a provider.
     var homeAurralShelves: any HomeAurralShelves = NoHomeAurralShelves()
+    /// Round 14 A4: Trending, Recommended and Discover playlists, each loaded on its own and kept on disk
+    /// (AppModel+AurralFeeds.swift); also Home's provider (set in `init`).
+    @ObservationIgnored var aurralFeeds: AurralFeeds!
     /// Round 12 Y3: the library Home, Library, Search and the car read (`AppModel+LibraryScope.swift`); nil for all.
     var libraryScope: [Int]?
     /// Changes each time the server answers again after it didn't: Home reads what failed (P5).
@@ -382,6 +385,7 @@ final class AppModel {
         watchFindPlays()
         watchBanner()
         wirePreviews()
+        wireAurralFeeds()   // round 14 A4
         readLidarrPermissions()
     }
 
