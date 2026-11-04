@@ -190,6 +190,22 @@ final class AsyncGate: @unchecked Sendable {
         #expect(calls.count("mb") == 0)
     }
 
+    /// Fix round 1 (I2): the first three albums match nothing; the search keeps reading albums (within its time) until
+    /// one does, so Songs isn't empty with the answer one album further down.
+    @Test func keepsReadingAlbumsUntilASongMatches() async throws {
+        let calls = Calls()
+        let albums = (1...8).map { album("Album \($0)", by: "The National", $0) }
+        let reader = TracklistSongs(release: { group in
+            calls.add("mb")
+            return group == mb(5, 2) ? release(5, [("Bloodbuzz Ohio", 50, 276)]) : release(1, [("Other", 1, 100)])
+        }, sleep: never)
+        let s = MergedSearch.Source.songs(lidarr: lidarr(albums, calls: calls), tracklists: reader, backup: nil)
+        let hits = try await s.fetch("the national bloodbuzz")
+        #expect(hits.songs.map(\.title) == ["Bloodbuzz Ohio"])
+        #expect(calls.count("mb") == 6, "reads whole batches: albums 1–6")
+        #expect(hits.cursor.unreadAlbums.count == 2)
+    }
+
     @Test func aCancelledSearchCancelsTheSharedLidarrRequest() async throws {
         let started = AsyncGate(), ended = Calls()
         let shared = SharedOutsideSearch(timeout: .seconds(5), sleep: never) { _ in
@@ -369,6 +385,33 @@ final class AsyncGate: @unchecked Sendable {
         #expect(s.notYet.songs.count == 4)
         #expect(!s.hasMoreOutside(.songs))
         #expect(calls.count("mb") == 4)
+    }
+
+    /// Fix round 1 (M4): one More tap has one overall deadline; what came in time is kept, the rest stays for the next.
+    @Test func aMoreTapForSongsHasOneDeadline() async throws {
+        let gate = AsyncGate()
+        let reader = TracklistSongs(release: { group in
+            if group != mb(1, 2) { await gate.wait() }   // every album after the first hangs; the first has no match
+            return MBReleaseDetail(id: group, title: "R", date: nil, status: "Official",
+                                   tracks: [MBTrack(recording: group, title: "Other", length: 100)])
+        }, sleep: { try await self.clock.sleep($0) })
+        let source = MergedSearch.Source(timeout: .seconds(5)) { _ in
+            ExternalHits(cursor: OutsideCursor(unreadAlbums: (1...9).map { album("A\($0)", by: "X", $0) }))
+        }
+        let search = search([source], more: MergedSearch.OutsideMore(tracklists: reader, timeout: .seconds(5)))
+        let s = try await search.runReportingLibraryFailure("song")
+        let done = Calls()
+        let page = Task { let p = try await search.moreOutside(.songs, in: s); done.add("done"); return p }
+        await clock.until(waiting: 1)
+        for _ in 0..<200 { await Task.yield() }
+        clock.advance(by: .seconds(5))
+        for _ in 0..<2_000 where done.all.isEmpty { await Task.yield() }
+        #expect(done.all == ["done"], "one tap ends at its deadline")
+        for _ in 0..<5 { clock.advance(by: .seconds(5)); for _ in 0..<200 { await Task.yield() } }   // unblock a RED run
+        let got = try await page.value
+        #expect(got.songs.isEmpty)
+        #expect(got.paging.cursor.unreadAlbums.count == 8, "only the first album was read")
+        gate.open()
     }
 
     @Test func aFailedMorePageThrowsAndKeepsTheOffset() async throws {

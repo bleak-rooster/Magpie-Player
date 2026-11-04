@@ -157,13 +157,19 @@ public struct TracklistSongs: Sendable {
 
     /// Reads up to `albumsPerRead` albums in order, within the budget. Returns the matching songs and the albums not
     /// read (an album cut off by the budget is read again next time). An album that fails is skipped.
-    public func read(query: String, albums: [NotYetAlbum]) async -> (songs: [ExternalRecording], unread: [NotYetAlbum]) {
-        let batch = Array(albums.prefix(Self.albumsPerRead))
+    ///
+    /// Fix round 1 (I2, M4): with `untilFound`, it goes on to the next batch of `albumsPerRead` while nothing has
+    /// matched, up to `limit` albums, all within the one `budget`.
+    public func read(query: String, albums: [NotYetAlbum], upTo limit: Int = TracklistSongs.albumsPerRead,
+                     untilFound: Bool = false, budget: Duration? = nil)
+        async -> (songs: [ExternalRecording], unread: [NotYetAlbum]) {
+        let batch = Array(albums.prefix(limit))
         guard !batch.isEmpty else { return ([], albums) }
         let box = ReadBox()
         let release = self.release
-        _ = try? await MergedSearch.withDeadline(budget, sleep: sleep) {
-            for album in batch {
+        _ = try? await MergedSearch.withDeadline(budget ?? self.budget, sleep: sleep) {
+            for (i, album) in batch.enumerated() {
+                if i > 0, i % Self.albumsPerRead == 0, !untilFound || box.hasSongs { break }
                 try Task.checkCancellation()
                 var songs: [ExternalRecording] = []
                 if let id = album.mbid, let picked = try? await release(id) {
@@ -185,6 +191,7 @@ private final class ReadBox: @unchecked Sendable {
     private var done = 0
     func finish(_ found: [ExternalRecording]) { lock.withLock { songs += found; done += 1 } }
     var snapshot: ([ExternalRecording], Int) { lock.withLock { (songs, done) } }
+    var hasSongs: Bool { lock.withLock { !songs.isEmpty } }
 }
 
 // MARK: - One Lidarr search for two sources
@@ -231,8 +238,11 @@ extension MergedSearch {
     /// A song search by text (ListenBrainz's, the backup).
     public typealias SongSearch = @Sendable (String) async throws -> [ExternalRecording]
 
-    /// The songs source's deadline: Lidarr's search, then a tracklist read (or the backup).
-    public static let songsTimeout: Duration = .seconds(10)
+    /// The songs source's deadline: Lidarr's search (up to `sourceTimeout`), then tracklist reads (up to
+    /// `songsReadBudget`), or the backup.
+    public static let songsTimeout: Duration = .seconds(11)
+    /// How long a search reads tracklists, batch after batch, while nothing has matched (fix round 1, I2).
+    public static let songsReadBudget: Duration = .seconds(5)
 
     /// What Load more asks the outside sources for, past the first page.
     public struct OutsideMore: Sendable {
@@ -285,7 +295,8 @@ extension MergedSearch.Source {
                 guard let backup else { return ExternalHits() }
                 return ExternalHits(songs: try await backup(q))
             }
-            let read = await tracklists.read(query: q, albums: albums)
+            let read = await tracklists.read(query: q, albums: albums, upTo: TracklistSongs.maxAlbums, untilFound: true,
+                                             budget: MergedSearch.songsReadBudget)
             return ExternalHits(songs: read.songs, cursor: OutsideCursor(unreadAlbums: read.unread))
         }
     }
@@ -394,9 +405,10 @@ extension MergedSearch {
             var rows = Self.take(&paging.queued.songs, limit)
             var seen = Set((band.songs + rows + paging.queued.songs).flatMap(LibraryCheck.songKeys))
             var ownedIds = Set(band.owned.map(\.songId))
-            while rows.count < limit, !paging.cursor.unreadAlbums.isEmpty, let reader = outsideMore.tracklists {
-                let before = paging.cursor.unreadAlbums.count
-                let read = await reader.read(query: query, albums: paging.cursor.unreadAlbums)
+            // Fix round 1 (M4): one read per tap, batch after batch while nothing matches, within one deadline.
+            if rows.count < limit, !paging.cursor.unreadAlbums.isEmpty, let reader = outsideMore.tracklists {
+                let read = await reader.read(query: query, albums: paging.cursor.unreadAlbums, upTo: TracklistSongs.maxAlbums,
+                                             untilFound: true, budget: outsideMore.timeout)
                 try Task.checkCancellation()
                 paging.cursor.unreadAlbums = read.unread
                 var fresh: [ExternalRecording] = []
@@ -413,8 +425,6 @@ extension MergedSearch {
                 let room = limit - rows.count
                 rows += fresh.prefix(room)
                 paging.queued.songs += fresh.dropFirst(room)
-                // One read per tap once something came; none read (MusicBrainz slow or down): the footer stays.
-                if read.unread.count >= before || !rows.isEmpty || !result.owned.isEmpty { break }
             }
             if outsideMore.tracklists == nil { paging.cursor.unreadAlbums = [] }
             result.songs = rows
