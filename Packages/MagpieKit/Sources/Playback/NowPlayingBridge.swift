@@ -245,8 +245,13 @@ public final class NowPlayingBridge {
         add(c.changePlaybackPositionCommand) { p, input in
             if case .position(let t) = input, !Self.previewTakes(.seek(t), preview) { p.seek(t) }
         }
-        add(c.changeShuffleModeCommand, Self.shuffleCommandAction)
-        add(c.changeRepeatModeCommand, Self.repeatCommandAction)
+        // Fix round 1: during a preview, shuffle and repeat don't change the hidden main queue.
+        add(c.changeShuffleModeCommand) { p, input in
+            if !Self.previewTakes(.shuffle, preview) { Self.shuffleCommandAction(p, input) }
+        }
+        add(c.changeRepeatModeCommand) { p, input in
+            if !Self.previewTakes(.repeatMode, preview) { Self.repeatCommandAction(p, input) }
+        }
         add(c.likeCommand) { [weak self] p, _ in
             guard !Self.previewTakes(.like, preview), let song = p.queue.current?.song else { return }
             self?.onLike(song)

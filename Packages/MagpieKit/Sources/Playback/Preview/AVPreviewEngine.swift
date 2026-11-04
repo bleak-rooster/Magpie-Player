@@ -16,6 +16,9 @@ public final class AVPreviewEngine: PreviewEngine {
     private var player: AVAudioPlayer?
     private var delegate: Delegate?
     private var token = 0
+    /// What the preview player last asked for (fix round 1): a pause during the fetch or the session activation holds,
+    /// and a clip that finishes loading then only gets ready.
+    private var wantsToPlay = false
     private var loading: Task<Void, Never>?
     private var ticker: Task<Void, Never>?
     private var notificationTokens: [NSObjectProtocol] = []
@@ -37,6 +40,7 @@ public final class AVPreviewEngine: PreviewEngine {
     public func load(_ url: URL, token: Int, at: TimeInterval) {
         stop()
         self.token = token
+        wantsToPlay = true
         let fetcher = self.fetcher
         loading = Task { [weak self] in
             do {
@@ -57,15 +61,18 @@ public final class AVPreviewEngine: PreviewEngine {
     }
 
     public func pause() {
+        wantsToPlay = false
         player?.pause()
-        ticker?.cancel()
+        stopTicking()
     }
 
     public func resume() {
-        guard let player else { return }
+        wantsToPlay = true
+        guard let player else { return }   // still loading: it plays when it is ready
         Task { [weak self] in
             await Self.activateSession()
-            guard let self, self.player === player else { return }
+            // A pause (or a stop, or another clip) that came during the activation wins.
+            guard let self, self.player === player, self.wantsToPlay else { return }
             player.play()
             self.startTicking(token: self.token)
         }
@@ -73,10 +80,10 @@ public final class AVPreviewEngine: PreviewEngine {
 
     public func stop() {
         token += 1
+        wantsToPlay = false
         loading?.cancel()
         loading = nil
-        ticker?.cancel()
-        ticker = nil
+        stopTicking()
         player?.stop()
         player = nil   // the clip's bytes go with it
         delegate = nil
@@ -90,11 +97,18 @@ public final class AVPreviewEngine: PreviewEngine {
         player.delegate = delegate
         player.prepareToPlay()
         if at > 0, at.isFinite, at < player.duration { player.currentTime = at }
-        guard player.play() else { throw PreviewClipError.refused }
         self.player = player
         self.delegate = delegate
+        if wantsToPlay {
+            guard player.play() else { throw PreviewClipError.refused }
+            startTicking(token: token)
+        }
         continuation.yield(.started(token: token))
-        startTicking(token: token)
+    }
+
+    private func stopTicking() {
+        ticker?.cancel()
+        ticker = nil
     }
 
     /// Reports the position four times a second while the clip plays.
@@ -139,7 +153,7 @@ public final class AVPreviewEngine: PreviewEngine {
             let context = note.userInfo?[AVAudioSession.resumptionContextKey] as? AVAudioSession.ResumptionContext
             let shouldResume = context?.recommendation == .shouldResume
             MainActor.assumeIsolated {
-                guard let self, self.player != nil else { return }
+                guard let self, self.isLive else { return }
                 self.continuation.yield(.resumption(shouldResume: shouldResume))
             }
         })
@@ -148,17 +162,33 @@ public final class AVPreviewEngine: PreviewEngine {
             let reason = (note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt)
                 .flatMap(AVAudioSession.RouteChangeReason.init(rawValue:))
             MainActor.assumeIsolated {
-                // Headphones unplugged: pause rather than play out of the speaker (as the main engine does).
-                guard reason == .oldDeviceUnavailable else { return }
-                self?.interrupted()
+                // Headphones unplugged: pause rather than play out of the speaker (as the main engine does). Not a call:
+                // its own event, so no later recommendation resumes it.
+                guard reason == .oldDeviceUnavailable, let self, self.isLive else { return }
+                self.pause()
+                self.continuation.yield(.routeLost)
+            }
+        })
+        notificationTokens.append(center.addObserver(forName: AVAudioSession.mediaServicesWereResetNotification,
+                                                     object: session, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                // Every AV object is dead: drop the player; the preview player loads the clip again.
+                guard let self, self.isLive else { return }
+                self.stop()
+                self.continuation.yield(.mediaServicesReset)
             }
         })
     }
 
+    /// A clip is loading or loaded.
+    private var isLive: Bool { player != nil || loading != nil }
+
+    /// A call (or another app) took the audio, while the clip plays or still loads.
     private func interrupted() {
-        guard let player, player.isPlaying || ticker != nil else { return }
-        player.pause()
-        ticker?.cancel()
+        guard isLive, wantsToPlay else { return }
+        wantsToPlay = false
+        player?.pause()
+        stopTicking()
         continuation.yield(.interrupted)
     }
     #endif

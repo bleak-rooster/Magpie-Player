@@ -193,6 +193,7 @@ import Testing
         let (preview, engine, _) = make()
         preview.play([Self.item("1")])
         await settle { engine.loads.count == 1 }
+        preview.handle(.started(token: engine.lastToken))
         preview.handle(.time(token: engine.lastToken, 10, duration: 20))
         #expect(preview.progress == 0.5)
     }
@@ -217,6 +218,7 @@ import Testing
         preview.play([Self.item("1")])
         await settle { engine.loads.count == 1 }
         let token = engine.lastToken
+        preview.handle(.started(token: token))
         preview.handle(.time(token: token, 5, duration: nil))
         for t in [Double.nan, .infinity, -.infinity] { preview.handle(.time(token: token, t, duration: t)) }
         #expect(preview.position == 5)
@@ -382,5 +384,105 @@ import Testing
         #expect(preview.handleRemote(.seek(10)), "seeking a preview is swallowed")
         #expect(preview.handleRemote(.like), "a preview can't be favourited")
         #expect(main.queue.current?.song.id == "a" && !main.isPlaying)
+    }
+
+    // MARK: - Fix round 1
+
+    /// I2: a pause (lock screen, headphones, CarPlay) while the preview loads holds: the clip that then starts is paused
+    /// at once, and its ticks don't move the ring until it plays.
+    @Test func aPauseWhileLoadingHolds() async throws {
+        let (preview, engine, _) = make()
+        preview.play([Self.item("1")])
+        #expect(preview.phase == .loading)
+        #expect(preview.handleRemote(.pause))
+        #expect(preview.phase == .paused)
+        await settle { engine.loads.count == 1 }
+        let token = engine.lastToken
+        let pausesBefore = engine.pauses
+        preview.handle(.started(token: token))
+        #expect(preview.phase == .paused)
+        #expect(engine.pauses == pausesBefore + 1, "the clip that just started is paused")
+        preview.handle(.time(token: token, 4, duration: 30))
+        #expect(preview.position == 0, "no ticks while paused")
+        preview.resume()
+        #expect(preview.phase == .playing && engine.resumes == 1)
+        preview.handle(.time(token: token, 4, duration: 30))
+        #expect(preview.position == 4)
+    }
+
+    /// A call while the preview loads: it starts paused, and resumes when the system says so.
+    @Test func aCallWhileLoadingHolds() async throws {
+        let (preview, engine, _) = make()
+        preview.play([Self.item("1")])
+        preview.handle(.interrupted)
+        #expect(preview.phase == .paused)
+        await settle { engine.loads.count == 1 }
+        preview.handle(.started(token: engine.lastToken))
+        #expect(preview.phase == .paused && engine.pauses == 1)
+        preview.handle(.resumption(shouldResume: true))
+        #expect(preview.phase == .playing && engine.resumes == 1)
+    }
+
+    /// Headphones unplugged pause the preview; it isn't a call, so nothing later resumes it out of the speaker.
+    @Test func headphonesUnpluggedPauseForGood() async throws {
+        let (preview, engine, _) = make()
+        preview.play([Self.item("1")])
+        await settle { engine.loads.count == 1 }
+        preview.handle(.started(token: engine.lastToken))
+        preview.handle(.routeLost)
+        #expect(preview.phase == .paused)
+        preview.handle(.interrupted)
+        preview.handle(.resumption(shouldResume: true))
+        #expect(preview.phase == .paused, "a recommendation after another interruption doesn't resume it")
+        #expect(engine.resumes == 0)
+    }
+
+    /// Media services reset: the engine's player is gone. A playing preview is loaded again from where it was (resolved
+    /// afresh); a paused one comes back paused.
+    @Test func mediaServicesResetReloads() async throws {
+        let (preview, engine, lookups) = make()
+        preview.play([Self.item("1")])
+        await settle { engine.loads.count == 1 }
+        var token = engine.lastToken
+        preview.handle(.started(token: token))
+        preview.handle(.time(token: token, 7, duration: 30))
+        preview.handle(.mediaServicesReset)
+        await settle { engine.loads.count == 2 }
+        #expect(engine.loads[1].at == 7 && lookups.asked.count == 2)
+        token = engine.lastToken
+        preview.handle(.started(token: token))
+        #expect(preview.phase == .playing)
+        preview.pause()
+        preview.handle(.mediaServicesReset)
+        #expect(preview.phase == .paused)
+        await settle { engine.loads.count == 3 }
+        let pauses = engine.pauses
+        preview.handle(.started(token: engine.lastToken))
+        #expect(preview.phase == .paused && engine.pauses == pauses + 1)
+    }
+
+    /// Shuffle and repeat don't reach the hidden main queue while a preview plays.
+    @Test func shuffleAndRepeatAreIgnoredDuringAPreview() async throws {
+        let (preview, engine, _) = make()
+        #expect(!preview.handleRemote(.shuffle) && !preview.handleRemote(.repeatMode))
+        preview.play([Self.item("1")])
+        await settle { engine.loads.count == 1 }
+        #expect(preview.handleRemote(.shuffle) && preview.handleRemote(.repeatMode))
+        #expect(preview.phase == .loading)
+    }
+
+    /// The sleep timer firing calls its hook (the app stops a preview with it).
+    @Test func theSleepTimerFiringCallsItsHook() async throws {
+        let (main, _, _) = mainPlayer()
+        main.play([Self.song("a")], startAt: 0)
+        var clock = Date()
+        let timer = SleepTimer(player: main, now: { clock }, sleep: { _ in })
+        var fired = 0
+        timer.onFire = { fired += 1 }
+        timer.start(.m15)
+        clock = clock.addingTimeInterval(16 * 60)
+        await timer.settled()
+        #expect(fired == 1)
+        #expect(!main.isPlaying)
     }
 }

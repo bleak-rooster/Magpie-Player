@@ -67,6 +67,8 @@ public final class PreviewPlayer {
     @ObservationIgnored private var retried = false
     /// Paused by an interruption (a call), not by the owner: a resumption recommendation may start it again.
     @ObservationIgnored private var pausedByInterruption = false
+    /// The engine reported the current clip started (fix I2: until then a pause is held and applied when it starts).
+    @ObservationIgnored private var clipStarted = false
     @ObservationIgnored private var watches: [Task<Void, Never>] = []
 
     public init(engine: any PreviewEngine, mainPlayer: Player?) {
@@ -169,7 +171,7 @@ public final class PreviewPlayer {
         pausedByInterruption = false
         claimMainPlayer()
         engine.resume()
-        phase = .playing
+        phase = clipStarted ? .playing : .loading
     }
 
     public func next() {
@@ -217,7 +219,7 @@ public final class PreviewPlayer {
         case .togglePlayPause: phase == .paused ? resume() : pause()
         case .nextTrack: next()
         case .previousTrack: previous()
-        case .seek, .like: break
+        case .seek, .like, .shuffle, .repeatMode: break   // nothing to seek or favourite; the main queue isn't touched
         }
         return true
     }
@@ -228,10 +230,15 @@ public final class PreviewPlayer {
     public func handle(_ event: PreviewEngineEvent) {
         switch event {
         case .started(let t):
-            guard t == token, phase == .loading else { return }
-            phase = .playing
+            guard t == token, isActive else { return }
+            clipStarted = true
+            if phase == .paused {
+                engine.pause()   // fix I2: paused (by the owner or a call) while it loaded: it stays paused
+            } else {
+                phase = .playing
+            }
         case .time(let t, let seconds, let duration):
-            guard t == token, isActive, seconds.isFinite else { return }
+            guard t == token, phase == .playing, seconds.isFinite else { return }
             if let duration, duration.isFinite, duration > 1 { clipDuration = min(duration, Self.clipLength) }
             position = min(max(seconds, 0), Self.clipLength)
             if seconds >= Self.clipLength { clipEnded() }
@@ -247,7 +254,7 @@ public final class PreviewPlayer {
                 resolveAndLoad(item, at: position)
             }
         case .interrupted:
-            guard phase == .playing else { return }
+            guard phase == .playing || phase == .loading else { return }
             phase = .paused
             pausedByInterruption = true
         case .resumption(let shouldResume):
@@ -256,8 +263,20 @@ public final class PreviewPlayer {
             if shouldResume {
                 claimMainPlayer()
                 engine.resume()
-                phase = .playing
+                phase = clipStarted ? .playing : .loading
             }
+        case .routeLost:
+            // Headphones unplugged: paused, and not by a call, so no recommendation resumes it out of the speaker.
+            guard phase == .playing || phase == .loading else { return }
+            engine.pause()
+            phase = .paused
+            pausedByInterruption = false
+        case .mediaServicesReset:
+            // The engine's player is gone: load the clip again (resolved afresh) from where it was, paused if it was.
+            guard isActive, let item = current else { return }
+            let wasPaused = phase == .paused
+            resolveAndLoad(item, at: position)
+            if wasPaused { phase = .paused }
         }
     }
 
@@ -294,6 +313,7 @@ public final class PreviewPlayer {
         token += 1
         let mine = token
         phase = .loading
+        clipStarted = false
         resolving?.cancel()
         let lookup = self.lookup
         resolving = Task { [weak self] in

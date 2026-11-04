@@ -17,6 +17,8 @@ public final class SleepTimer {
     static let fadeSteps = 10
     static let fadeStep: Duration = .milliseconds(500)
 
+    /// Round 14 A2: called when a minutes timer fires (the app stops a preview with it).
+    @ObservationIgnored public var onFire: (@MainActor () -> Void)?
     @ObservationIgnored private let player: Player
     @ObservationIgnored private let now: () -> Date
     @ObservationIgnored private let sleep: @Sendable (Duration) async throws -> Void
@@ -65,6 +67,7 @@ public final class SleepTimer {
             } catch { return }
             guard let self, !Task.isCancelled else { return }
             if self.player.isPlaying { self.player.toggle() }
+            self.onFire?()
             self.player.volume = 1
             self.mode = .off
         }

@@ -3,7 +3,9 @@ import Foundation
 import MagpieCore
 import MagpieTestSupport
 import Playback
+import SwiftUI
 import Testing
+import UIKit
 @testable import Magpie
 
 /// Round 14 A2 (D85–D89): previews in the app. They show only with an Aurral that can preview (2.13 with Discover or
@@ -66,6 +68,9 @@ extension DiscoverAppTests {
         #expect(model.aurralSetUp)
         #expect(!model.previewsAvailable)
         model.togglePreview(Self.previewSong)
+        model.playPreviews([Self.previewSong])
+        await settle { !engine.loads.isEmpty || !previewAsks.isEmpty || model.previewPlayer.phase != .idle }
+        #expect(model.previewPlayer.phase == .idle)
         #expect(engine.loads.isEmpty && previewAsks.isEmpty)
     }
 
@@ -197,5 +202,42 @@ extension DiscoverAppTests {
         #expect(items.first?.title == "Harbour Lights" && items.first?.artist == "Stub Arrows")
         #expect(items.first?.artworkURL?.host() == "cdn-images.dzcdn.net")
         #expect(Set(items.map(\.id)).count == items.count)
+    }
+
+    // MARK: - Fix round 1
+
+    /// The toggle's gate can't be got round through a song whose preview already failed: once Aurral is gone, tapping it
+    /// neither pauses the main player nor asks anything.
+    @Test func aFailedPreviewCannotBypassTheGate() async throws {
+        let (model, engine) = try await previewModel()
+        defer { model.signOut() }
+        aurral.setPreviewTarget(nil)
+        model.togglePreview(Self.previewSong)
+        await settle { model.previewPlayer.phase == .noPreview }
+        model.disconnectAurral()
+        #expect(!model.previewsAvailable)
+        model.player.play([Song(id: "s1", title: "Lullaby", artist: "Low", album: "Single", duration: 200)], startAt: 0)
+        let asks = previewAsks.count
+        model.togglePreview(Self.previewSong)
+        await settle { !model.player.isPlaying || previewAsks.count > asks }
+        #expect(model.player.isPlaying, "the main player isn't paused")
+        #expect(previewAsks.count == asks && engine.loads.isEmpty)
+    }
+
+    /// The controls screens use render nothing at all without previews, and something with them.
+    @Test func controlsRenderNothingWithoutPreviews() async throws {
+        let (model, _) = try await previewModel(aurralSetUp: false)
+        defer { model.signOut() }
+        func size(_ view: some View) -> CGSize {
+            UIHostingController(rootView: view.environment(model)).sizeThatFits(in: CGSize(width: 375, height: 800))
+        }
+        let items = [Self.previewSong]
+        #expect(size(PreviewControl(item: Self.previewSong)) == .zero)
+        #expect(size(PlayPreviewsButton(items: items)) == .zero)
+        _ = try await model.connectAurral(base: aurral.base, username: StubAurral.defaultUsername,
+                                          password: StubAurral.defaultPassword)
+        #expect(model.previewsAvailable)
+        #expect(size(PreviewControl(item: Self.previewSong)).width >= 44)
+        #expect(size(PlayPreviewsButton(items: items)).width > 0)
     }
 }

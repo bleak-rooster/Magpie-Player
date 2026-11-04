@@ -46,6 +46,10 @@ public enum PreviewEngineEvent: Sendable, Equatable {
     case interrupted
     /// The interruption ended; resume only when the system recommends it.
     case resumption(shouldResume: Bool)
+    /// The audio route went away (headphones unplugged): the clip is paused, and nothing resumes it by itself.
+    case routeLost
+    /// The system's media services restarted: the engine's player is gone.
+    case mediaServicesReset
 }
 
 /// Plays one preview clip at a time. `PreviewPlayer` owns the list; the engine only sees a URL and a token.
@@ -62,5 +66,5 @@ public protocol PreviewEngine: AnyObject {
 
 /// A remote command (lock screen, Control Center, CarPlay, headphones) the preview may take while it plays.
 public enum PreviewRemoteCommand: Sendable, Equatable {
-    case play, pause, togglePlayPause, nextTrack, previousTrack, seek(TimeInterval), like
+    case play, pause, togglePlayPause, nextTrack, previousTrack, seek(TimeInterval), like, shuffle, repeatMode
 }

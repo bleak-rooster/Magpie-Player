@@ -22,7 +22,9 @@ extension AppModel {
 
     /// A preview button: plays this song's preview alone, or stops it when it is the one previewing.
     func togglePreview(_ item: PreviewItem) {
-        guard previewsAvailable || previewPlayer.current?.id == item.id else { return }
+        // Without previews, only Stop on the preview still playing gets through (never a new play that pauses the main
+        // player for a lookup that can't work).
+        guard previewsAvailable || (previewPlayer.isActive && previewPlayer.current?.id == item.id) else { return }
         previewPlayer.toggle(item)
     }
 
@@ -61,6 +63,8 @@ extension AppModel {
     /// offline, a capability gone).
     func wirePreviews() {
         previewPlayer.lookup = { [weak self] id in await self?.lookUpPreview(id) ?? .unavailable }
+        // The sleep timer firing stops a preview too (it pauses the main player, already paused under a preview).
+        sleepTimer.onFire = { [weak self] in self?.previewPlayer.stop() }
         previewWatch = Task { [weak self] in
             let available = Observations { @MainActor [weak self] in self?.previewsAvailable ?? false }
             for await on in available where !on {
