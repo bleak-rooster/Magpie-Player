@@ -22,10 +22,10 @@ import Testing
 
     @Test func addFlowSendsNoBodyAndReadsTheAnswer() async throws {
         let first = try await client.addEditorialPlaylist("908622995")
-        #expect(first == AurralEditorialAddResult(playlistId: "static-908622995", name: "Indie Pop Picks", alreadyAdded: false,
+        #expect(first == AurralEditorialAddResult(playlistId: StubAurral.syncedId("908622995"), name: "Indie Pop Picks", alreadyAdded: false,
                                                   tracksQueued: 4))
         let again = try await client.addEditorialPlaylist("908622995")
-        #expect(again.alreadyAdded && again.playlistId == "static-908622995" && again.tracksQueued == nil)
+        #expect(again.alreadyAdded && again.playlistId == StubAurral.syncedId("908622995") && again.tracksQueued == nil)
         #expect(stub.asked == ["POST /api/discover/editorial/908622995/library", "POST /api/discover/editorial/908622995/library"])
         for request in stub.requests {
             #expect(request.httpBody == nil, "no body")
@@ -98,10 +98,10 @@ import Testing
     @Test func downloadSongsAndRetryAreBodilessPosts() async throws {
         let queued = try await client.downloadFlow("flow-1")
         #expect(queued == AurralQueued(queued: true, operationId: "op-download"))
-        let retried = try await client.retrySong(playlistId: "static-908622995", jobId: "job-7")
+        let retried = try await client.retrySong(playlistId: StubAurral.syncedId("908622995"), jobId: "job-7")
         #expect(retried.queued)
         #expect(stub.asked == ["POST /api/playlists/flows/flow-1/download",
-                               "POST /api/playlists/shared-playlists/static-908622995/tracks/job-7/research"])
+                               "POST /api/playlists/shared-playlists/\(StubAurral.syncedId("908622995"))/tracks/job-7/research"])
         #expect(stub.requests.allSatisfy { $0.httpBody == nil })
     }
 

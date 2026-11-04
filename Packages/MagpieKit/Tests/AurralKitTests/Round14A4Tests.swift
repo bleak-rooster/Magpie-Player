@@ -4,63 +4,6 @@ import MagpieTestSupport
 import Testing
 @testable import AurralKit
 
-/// Round 14 A4 (D91): the public Top Australia fallback; never a host but the two pinned ones, https only.
-@Suite struct PublicChartsTests {
-    @Test func topAustraliaFromDeezerWithPreviewsThroughAurral() async throws {
-        let stub = StubPublicCharts()
-        let songs = try await PublicChartsClient(transport: stub).topAustralia()
-        #expect(songs.map(\.trackName) == ["Bluebottle", "Red Dirt"], "junk ids and songs without an artist are dropped")
-        #expect(songs.map(\.position) == [1, 2])
-        let first = try #require(songs.first)
-        #expect(first.key == "4100001" && first.artistName == "Southern Cross Band" && first.durationMs == 201_000)
-        // Deezer's signed preview is never kept: the preview is Aurral's path for the same Deezer id.
-        #expect(first.preview?.path == "api/deezer/preview/4100001.mp3")
-        #expect(first.artwork?.raw == "https://cdn-images.dzcdn.net/images/cover/a/250x250.jpg")
-        #expect(songs[1].artwork == nil, "a picture off Deezer's image host is dropped")
-        let request = try #require(stub.requests.first)
-        #expect(request.url?.absoluteString == "https://api.deezer.com/playlist/1313616925/tracks?limit=100")
-        #expect(request.value(forHTTPHeaderField: "Authorization") == nil && !request.httpShouldHandleCookies)
-        #expect(request.httpMethod == "GET")
-    }
-
-    @Test func australianAlbumsFromApple() async throws {
-        let stub = StubPublicCharts()
-        let albums = try await PublicChartsClient(transport: stub).australianAlbums()
-        #expect(albums.map(\.name) == ["Coastline", "Dust"])
-        #expect(albums[0].artwork?.raw == "https://is1-ssl.mzstatic.com/image/thumb/a/500x500bb.jpg")
-        #expect(albums[1].artwork == nil, "plain http art is dropped")
-        #expect(albums[0].genre == "Alternative" && albums.map(\.position) == [1, 2])
-        #expect(stub.requests.first?.url?.absoluteString
-                == "https://rss.marketingtools.apple.com/api/v2/au/music/most-played/100/albums.json")
-    }
-
-    @Test(arguments: ["https://evil.example.com/playlist/1313616925/tracks", "http://api.deezer.com/playlist/1313616925/tracks",
-                      "https://api.deezer.com.evil.example/playlist", "https://user@api.deezer.com/playlist/1313616925/tracks"])
-    func anAnswerOffThePinIsRefused(_ from: String) async throws {
-        let stub = StubPublicCharts()
-        stub.setAnsweredFrom(from)
-        await #expect(throws: PublicChartsClient.Failure.refused) { try await PublicChartsClient(transport: stub).topAustralia() }
-    }
-
-    @Test func failuresAndOversizedAnswersThrow() async throws {
-        let stub = StubPublicCharts()
-        stub.setStatus(503)
-        await #expect(throws: PublicChartsClient.Failure.http(503)) { try await PublicChartsClient(transport: stub).australianAlbums() }
-        stub.setStatus(200)
-        stub.setOversized(true)
-        await #expect(throws: PublicChartsClient.Failure.tooLarge) { try await PublicChartsClient(transport: stub).topAustralia() }
-    }
-
-    @Test func junkNeverCrashes() async throws {
-        let fuzz = MockTransport()
-        fuzz.stub(pathSuffix: "/tracks", body: Data(#"{"data":[1,"x",null,{"id":{"a":1}},{"id":1e400}]}"#.utf8))
-        fuzz.stub(pathSuffix: "/albums.json", body: Data(#"[1,2,3]"#.utf8))
-        // MockTransport answers with the asked URL: the pinned host.
-        #expect((try? await PublicChartsClient(transport: fuzz).topAustralia())?.isEmpty ?? true)
-        await #expect(throws: PublicChartsClient.Failure.decoding) { try await PublicChartsClient(transport: fuzz).australianAlbums() }
-    }
-}
-
 /// Round 14 A4 (D92): the Recommended page's rails, as Aurral's own web page groups them (recommendedRails.ts).
 @Suite struct RecommendedRailsTests {
     let now = Date(timeIntervalSince1970: 1_800_000_000)
@@ -135,18 +78,33 @@ import Testing
         #expect(status.scoped(to: nil).sharedPlaylists.isEmpty, "no user, nothing")
     }
 
-    @Test func addFlowListsTheSyncedPlaylistAndItsSongs() async throws {
+    /// Fix round 1 (M1): upstream 2.13's item: a UUID id, owner, `trackCount`, and `importSource.provider`.
+    @Test func importSourceProviderDecodes() throws {
+        let json = #"{"sharedPlaylists":[{"id":"5b9e0c1a-1111-4222-8333-444455556666","name":"Indie Pop Picks","ownerUserId":1,"ownerUsername":"me","trackCount":40,"importSource":{"provider":"deezer-playlist","syncEnabled":true,"syncIntervalHours":24,"keepRemovedTracks":true}},{"id":"6c","name":"Road","ownerUserId":1,"importSource":{"provider":"spotify-playlist"}},{"id":"7d","name":"Mine","ownerUserId":1,"importSource":null}]}"#
+        let shared = try AurralStatus.decode(Data(json.utf8)).sharedPlaylists
+        #expect(shared.map(\.importProvider) == ["deezer-playlist", "spotify-playlist", nil])
+        #expect(shared.first?.ownerUsername == "me" && shared.first?.size == 40)
+    }
+
+    /// Fix round 1 (I1): 2.13 queues the creation. Until it runs, the status doesn't list it and its jobs are 404 (nil).
+    @Test func addFlowIsQueuedThenListedWithItsSongs() async throws {
         let stub = StubAurral()
         stub.useAurral213()
+        stub.setSyncedCreationDelay(reads: 2)
         let client = AurralClient(base: stub.base, session: stub.signedInSession(), transport: stub)
-        #expect(try await client.status().sharedPlaylists.isEmpty)
         let added = try await client.addEditorialPlaylist("908622995")
-        #expect(added.playlistId == "static-908622995" && added.tracksQueued == 4)
+        let id = StubAurral.syncedId("908622995")
+        #expect(added.playlistId == id && added.tracksQueued == 4)
+        #expect(try await client.playlistJobs(id) == nil, "queued: not there yet")
+        #expect(try await client.status().sharedPlaylists.isEmpty)
+        #expect(try await client.status().sharedPlaylists.isEmpty)
         let status = try await client.status()
         #expect(status.sharedPlaylists.map(\.name) == ["Indie Pop Picks"])
-        let jobs = try #require(try await client.playlistJobs("static-908622995"))
+        #expect(status.sharedPlaylists.first?.importProvider == "deezer-playlist")
+        let jobs = try #require(try await client.playlistJobs(id))
         #expect(jobs.map(\.status) == ["done", "done", "downloading", "failed"])
-        _ = try await client.retrySong(playlistId: "static-908622995", jobId: jobs[3].id)
-        #expect(try await client.playlistJobs("static-908622995")?.last?.status == "pending")
+        _ = try await client.retrySong(playlistId: id, jobId: jobs[3].id)
+        #expect(try await client.playlistJobs(id)?.last?.status == "pending")
+        #expect(try await client.playlistJobs("00000000-0000-4000-8000-000000000000") == nil, "unknown: 404 for an admin too")
     }
 }

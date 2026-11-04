@@ -84,6 +84,64 @@ public final class StubAurral: HTTPTransport, @unchecked Sendable {
         /// Round 14 A4: synced playlists made by Add flow (status `sharedPlaylists`), and their songs' job statuses.
         var synced: [Flow] = []
         var syncedJobStatuses = ["done", "done", "downloading", "failed"]
+        /// Fix round 1 (I1, M1): each static playlist's `importSource.provider` (nil: made by hand), and the Add flow
+        /// creations Aurral has queued but not run yet (2.13 queues `shared-playlist-create`): each waits this many
+        /// status reads, and until then its jobs answer 404 and the status doesn't list it.
+        var syncedProviders: [String: String] = [:]
+        var pendingSynced: [PendingSynced] = []
+        var creationDelayReads = 1
+    }
+
+    struct PendingSynced {
+        var flow: Flow
+        var provider: String?
+        var songs: [(title: String, artist: String, durationMs: Int)]
+        var readsLeft: Int
+    }
+
+    /// Fix round 1 (I1): how many status reads an Add flow's playlist stays queued before Aurral creates it (0: at once).
+    public func setSyncedCreationDelay(reads: Int) { state.withLock { $0.creationDelayReads = max(0, reads) } }
+
+    /// Fix round 1 (I2): a static playlist made another way (`provider` "spotify-playlist", "youtube-playlist", or nil
+    /// for one made by hand), with every song done, as Aurral 2.13 lists it too.
+    public func addSharedPlaylist(id: String, name: String, provider: String?, owner: Int = 1,
+                                  songs: [(title: String, artist: String, durationMs: Int)]) {
+        state.withLock { s in
+            Self.create(&s, flow: Flow(id: id, name: name, size: songs.count, ownerUserId: owner), provider: provider,
+                        songs: songs, statuses: songs.map { _ in "done" })
+        }
+    }
+
+    /// Upstream-shaped id for the playlist Add flow makes from Deezer playlist `deezerId` (2.13: a random UUID).
+    public static func syncedId(_ deezerId: String) -> String {
+        "a4000000-0000-4000-8000-" + String(repeating: "0", count: max(0, 12 - deezerId.count)) + deezerId.suffix(12)
+    }
+
+    private static func create(_ s: inout State, flow: Flow, provider: String?,
+                               songs: [(title: String, artist: String, durationMs: Int)], statuses: [String]) {
+        guard !s.synced.contains(where: { $0.id == flow.id }) else { return }
+        s.synced.append(flow)
+        if let provider { s.syncedProviders[flow.id] = provider }
+        for (index, song) in songs.enumerated() {
+            s.jobs.append(Job(flowId: flow.id, artistName: song.artist, trackName: song.title, durationMs: song.durationMs,
+                              status: index < statuses.count ? statuses[index] : "pending"))
+        }
+    }
+
+    /// One status read: a queued creation's wait goes down; one whose wait is over is created now.
+    private func advanceCreations() {
+        state.withLock { s in
+            var waiting: [PendingSynced] = []
+            for var p in s.pendingSynced {
+                if p.readsLeft <= 0 {
+                    Self.create(&s, flow: p.flow, provider: p.provider, songs: p.songs, statuses: s.syncedJobStatuses)
+                } else {
+                    p.readsLeft -= 1
+                    waiting.append(p)
+                }
+            }
+            s.pendingSynced = waiting
+        }
     }
 
     /// Round 14 A4: what each of a new synced playlist's songs is doing (its jobs, in the editorial fixture's order).
@@ -104,14 +162,17 @@ public final class StubAurral: HTTPTransport, @unchecked Sendable {
     }
 
     /// Round 14 A4: Add flow made a synced playlist `id` named `name` for `owner`: Aurral queues every song (its jobs).
+    /// Fix round 1: queued as 2.13 does; created after `creationDelayReads` status reads (at once with 0).
     func addSynced(id: String, name: String, owner: Int, songs: [(title: String, artist: String, durationMs: Int)]) {
         state.withLock { s in
-            guard !s.synced.contains(where: { $0.id == id }) else { return }
-            s.synced.append(Flow(id: id, name: name, size: songs.count, ownerUserId: owner))
-            for (index, song) in songs.enumerated() {
-                let status = index < s.syncedJobStatuses.count ? s.syncedJobStatuses[index] : "pending"
-                s.jobs.append(Job(flowId: id, artistName: song.artist, trackName: song.title, durationMs: song.durationMs,
-                                  status: status))
+            guard !s.synced.contains(where: { $0.id == id }), !s.pendingSynced.contains(where: { $0.flow.id == id })
+            else { return }
+            let flow = Flow(id: id, name: name, size: songs.count, ownerUserId: owner)
+            if s.creationDelayReads == 0 {
+                Self.create(&s, flow: flow, provider: "deezer-playlist", songs: songs, statuses: s.syncedJobStatuses)
+            } else {
+                s.pendingSynced.append(PendingSynced(flow: flow, provider: "deezer-playlist", songs: songs,
+                                                     readsLeft: s.creationDelayReads))
             }
         }
     }
@@ -273,7 +334,8 @@ public final class StubAurral: HTTPTransport, @unchecked Sendable {
              ("GET", "/api/playlists/jobs") where !Self.mayAccessFlows(user, snapshot):
             return answer(403, ["error": "Forbidden", "message": "Missing permission: accessFlow"])
         case ("GET", "/api/playlists/status"):
-            var scoped = snapshot
+            advanceCreations()   // round 14 A4 fix round 1: a queued Add flow is created after its reads
+            var scoped = state.withLock { $0 }
             scoped.flows = snapshot.flows.filter { visible($0.id) }
             return answer(200, statusBody(scoped))
         case ("GET", "/api/playlists/jobs"):
@@ -312,8 +374,10 @@ public final class StubAurral: HTTPTransport, @unchecked Sendable {
     /// Round 14: `GET /api/playlists/jobs/:playlistId`, one flow's songs (as the user may see them; 404 otherwise).
     func jobsAnswer(flowId: String, user: User) -> (Int, Any) {
         let s = state.withLock { $0 }
-        let mine = user.role == "admin" || s.flows.first(where: { $0.id == flowId })?.ownerUserId == user.id
-            || s.synced.first(where: { $0.id == flowId })?.ownerUserId == user.id   // round 14 A4
+        // Round 14 A4 fix round 1: a playlist Aurral doesn't have (yet) is 404 for everyone (2.13 canAccessPlaylistType).
+        let known = s.flows.contains { $0.id == flowId } || s.synced.contains { $0.id == flowId }
+        let mine = known && (user.role == "admin" || s.flows.first(where: { $0.id == flowId })?.ownerUserId == user.id
+            || s.synced.first(where: { $0.id == flowId })?.ownerUserId == user.id)
         guard mine else { return (404, ["error": "Playlist not found"]) }
         guard Self.mayAccessFlows(user, s) else { return (403, ["error": "Forbidden"]) }
         return (200, s.jobs.enumerated().filter { $0.element.flowId == flowId }
@@ -381,10 +445,16 @@ public final class StubAurral: HTTPTransport, @unchecked Sendable {
                  "lastRunAt": s.lastRunAt[f.id] ?? "2026-10-30T00:00:00.000Z", "mix": ["discover": 100], "lidarrFeedToken": "secret-feed-token"]
             },
             // Round 14 A4: the synced playlists Add flow made (Aurral 2.13 lists them beside the flows).
+            // Fix round 1 (M1): upstream 2.13's shape (playlistStatusSnapshot.ts staticPlaylistsWithOwners).
             "sharedPlaylists": s.synced.map { p in
                 ["id": p.id, "name": p.name, "ownerUserId": p.ownerUserId.map { $0 as Any } ?? NSNull(),
-                 "source": "deezer-playlist", "syncEnabled": true,
-                 "trackCount": s.jobs.filter { $0.flowId == p.id }.count]
+                 "ownerUsername": (s.users.first { $0.id == p.ownerUserId }?.username).map { $0 as Any } ?? NSNull(),
+                 "trackCount": s.jobs.filter { $0.flowId == p.id }.count, "sourceName": p.name, "sourceFlowId": NSNull(),
+                 "importedAt": "2026-11-04T00:00:00.000Z", "createdAt": "2026-11-04T00:00:00.000Z",
+                 "recordHistory": false, "showTrackAvailability": true, "artworkRevision": 1,
+                 "importSource": s.syncedProviders[p.id].map { provider -> Any in
+                     ["provider": provider, "syncEnabled": true, "syncIntervalHours": 24, "keepRemovedTracks": true]
+                 } ?? NSNull()] as [String: Any]
             },
             "operationQueue": ["processing": busy, "pending": 0, "currentLabel": busy ? "Generating flow" : NSNull()],
             "hint": ["phase": busy ? "running" : "idle", "message": busy ? "Getting songs" : "Next update in 5 days"],

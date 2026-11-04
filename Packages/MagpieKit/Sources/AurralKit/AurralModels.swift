@@ -59,6 +59,9 @@ public struct AurralFlow: Sendable, Equatable, Hashable {
     /// Round 14 A4: Aurral queues the flow's songs itself (`autoDownload`); false: Magpie offers Download songs. nil:
     /// not said (2.10, a synced playlist).
     public var autoDownload: Bool?
+    /// Round 14 A4 fix round 1 (I2): a static playlist's source (`importSource.provider`): "deezer-playlist" for Add flow's
+    /// (Discover playlists and charts), "spotify-playlist" and others for imports; nil for a flow or a hand-made one.
+    public var importProvider: String?
 
     public init(id: String, name: String, enabled: Bool = true, ownerUserId: Int? = nil, ownerUsername: String? = nil,
                 size: Int? = nil, nextRunAt: Date? = nil, lastRunAt: Date? = nil) {
@@ -164,6 +167,7 @@ public struct AurralStatus: Sendable, Equatable {
                                       ownerUsername: f.string("ownerUsername"), size: f.int("size") ?? f.int("trackCount"),
                                       nextRunAt: date(f.string("nextRunAt")), lastRunAt: date(f.string("lastRunAt")))
                 flow.autoDownload = f.bool("autoDownload")
+                flow.importProvider = f.dict("importSource")?.string("provider").map { String($0.prefix(64)) }
                 return flow
             }
         }

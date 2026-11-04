@@ -56,6 +56,20 @@ import Testing
         #expect(LayoutPreferences.decode(try #require(moved.encoded())).library.entries.last?.item == .trending)
     }
 
+    /// Fix round 1 (owner): Settings › Home & Library › Charts country: Automatic by default, the server's region, or a
+    /// country (ISO 3166 code); anything else stored reads as Automatic.
+    @Test func chartsCountry() throws {
+        #expect(LayoutPreferences.defaultValue.chartsCountry == .automatic)
+        for (stored, expected) in [("\"server\"", ChartsCountry.server), ("\"de\"", .country("DE")), ("\"US\"", .country("US")),
+                                   ("\"automatic\"", .automatic), ("\"xyz\"", .automatic), ("\"\"", .automatic), ("7", .automatic)] {
+            let json = #"{"chartsCountry":\#(stored)}"#
+            #expect(LayoutPreferences.decode(Data(json.utf8)).chartsCountry == expected, "\(stored)")
+        }
+        var layout = LayoutPreferences.defaultValue
+        layout.chartsCountry = .country("JP")
+        #expect(LayoutPreferences.decode(try #require(layout.encoded())).chartsCountry == .country("JP"))
+    }
+
     /// A build 11 layout (before Discover): Discover goes last as before, the new rows after it.
     @Test func aLayoutWithoutDiscoverGetsAllThreeAtTheEnd() {
         let saved = #"{"library":[{"id":"albums","visible":true},{"id":"playlists","visible":true}]}"#

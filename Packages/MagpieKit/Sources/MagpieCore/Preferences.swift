@@ -86,6 +86,41 @@ public enum LibraryRow: String, CaseIterable, Codable, Hashable, Sendable {
     }
 }
 
+/// Round 14 A4 fix round 1 (owner): whose top songs Trending shows. Stored as "automatic", "server" or an ISO 3166 code;
+/// anything else reads as Automatic.
+public enum ChartsCountry: Hashable, Sendable, Codable {
+    /// The phone's region when there is a chart for it, else the server's.
+    case automatic
+    /// The server's own region (Aurral's chart).
+    case server
+    case country(String)
+
+    public init(stored: String) {
+        switch stored {
+        case "server": self = .server
+        case let code where code.count == 2 && code.allSatisfy({ $0.isASCII && $0.isLetter }): self = .country(code.uppercased())
+        default: self = .automatic
+        }
+    }
+
+    public var stored: String {
+        switch self {
+        case .automatic: "automatic"
+        case .server: "server"
+        case .country(let code): code
+        }
+    }
+
+    public init(from decoder: Decoder) throws {
+        self.init(stored: (try? decoder.singleValueContainer().decode(String.self)) ?? "automatic")
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(stored)
+    }
+}
+
 public enum ReplayGainMode: String, CaseIterable, Codable, Hashable, Sendable { case off, track, album }
 
 public enum SleepTimerOption: String, CaseIterable, Codable, Hashable, Sendable {
@@ -207,16 +242,20 @@ public struct LayoutPreferences: PreferenceArea {
     public var homeStyles: [String: HomeSectionStyle]
     /// Round 14 A6: how many "Because you like" rows Home shows (0–3; 0 hides the section).
     public var becauseYouLikeRows: Int
+    /// Round 14 A4 fix round 1: Trending's country (Settings › Home & Library › Charts country).
+    public var chartsCountry: ChartsCountry
 
     public init(home: OrderedVisibility<HomeSection>, library: OrderedVisibility<LibraryRow>, showsRecentlyAdded: Bool,
                 albumArtistsOnly: Bool = true, homeStyles: [String: HomeSectionStyle] = [:],
-                becauseYouLikeRows: Int = HomeSectionStyle.becauseYouLikeRange.upperBound) {
+                becauseYouLikeRows: Int = HomeSectionStyle.becauseYouLikeRange.upperBound,
+                chartsCountry: ChartsCountry = .automatic) {
         self.home = home
         self.library = library
         self.showsRecentlyAdded = showsRecentlyAdded
         self.albumArtistsOnly = albumArtistsOnly
         self.homeStyles = homeStyles
         self.becauseYouLikeRows = becauseYouLikeRows
+        self.chartsCountry = chartsCountry
     }
 
     /// Hides or shows a Library row; false (no change) when it would leave none of the always-available rows visible.
@@ -238,7 +277,8 @@ public struct LayoutPreferences: PreferenceArea {
         return LayoutPreferences(home: HomeSection.migrated(home), library: library,
                                  showsRecentlyAdded: showsRecentlyAdded, albumArtistsOnly: albumArtistsOnly,
                                  homeStyles: HomeSectionStyle.normalised(homeStyles),
-                                 becauseYouLikeRows: clamp(becauseYouLikeRows, HomeSectionStyle.becauseYouLikeRange))
+                                 becauseYouLikeRows: clamp(becauseYouLikeRows, HomeSectionStyle.becauseYouLikeRange),
+                                 chartsCountry: chartsCountry)
     }
 
     /// The Home sections to show, in the owner's order, for the phone and the car alike (the car shows Made for you too,
