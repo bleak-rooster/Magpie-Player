@@ -6,13 +6,53 @@ public struct AurralUser: Sendable, Equatable, Hashable, Codable {
     public var id: Int
     public var username: String
     public var role: String?
+    /// Round 14 A1 (D80): what Aurral lets this user do (`permissions` on the login, `/api/auth/me` and the
+    /// bootstrap). Nil when Aurral didn't say (a user saved before round 14 decodes with nil).
+    public var permissions: AurralPermissions?
 
-    public init(id: Int, username: String, role: String?) {
-        self.id = id; self.username = username; self.role = role
+    public init(id: Int, username: String, role: String?, permissions: AurralPermissions? = nil) {
+        self.id = id; self.username = username; self.role = role; self.permissions = permissions
     }
 
     /// Aurral shows an admin every user's flows (Magpie keeps only this user's: `AurralFlow.belongs(to:)`).
     public var isAdmin: Bool { role == "admin" }
+
+    /// Round 14 (D80): Add flow (a Discover playlist into the user's flows) needs Aurral's `accessFlow`. An admin
+    /// passes every check, as in Aurral's `hasPermission`; permissions Aurral didn't send fail closed.
+    public var canAddFlow: Bool { isAdmin || permissions?.accessFlow == true }
+    public var canAddArtist: Bool { isAdmin || permissions?.addArtist == true }
+    public var canAddAlbum: Bool { isAdmin || permissions?.addAlbum == true }
+
+    /// A user object (`{id, username, role, permissions}`); nil without an id or a name.
+    static func decode(_ any: Any?) -> AurralUser? {
+        guard let u = any as? [String: Any], let username = u.string("username"), username.count <= 200,
+              let id = u.int("id") else { return nil }
+        return AurralUser(id: id, username: username, role: u.string("role"),
+                          permissions: u.dict("permissions").map(AurralPermissions.init(json:)))
+    }
+
+    /// `GET /api/auth/me`: `{user, expiresAt}`.
+    public static func decodeMe(_ data: Data) throws -> AurralUser {
+        guard let user = AurralUser.decode((object(data) as? [String: Any])?["user"]) else { throw AurralError.decoding }
+        return user
+    }
+}
+
+/// Round 14 A1 (D80): the Aurral permissions Magpie acts on (Aurral 2.13 `db/helpers/users.ts`; non-admin defaults
+/// are addArtist and addAlbum on, accessFlow off). Only a JSON `true` counts.
+public struct AurralPermissions: Sendable, Equatable, Hashable, Codable {
+    public var accessFlow: Bool
+    public var addArtist: Bool
+    public var addAlbum: Bool
+
+    public init(accessFlow: Bool, addArtist: Bool, addAlbum: Bool) {
+        self.accessFlow = accessFlow; self.addArtist = addArtist; self.addAlbum = addAlbum
+    }
+
+    init(json p: [String: Any]) {
+        self.init(accessFlow: p.bool("accessFlow") == true, addArtist: p.bool("addArtist") == true,
+                  addAlbum: p.bool("addAlbum") == true)
+    }
 }
 
 /// Round 13 item 1: a signed-in Aurral session. Aurral 2.10.0 (`backend/routes/auth.js`, `config/session-helpers.js`)
@@ -50,7 +90,9 @@ public struct AurralLogin: Sendable, Equatable, Codable, CustomStringConvertible
             iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
             expires = iso.date(from: text) ?? ISO8601DateFormatter().date(from: text)
         }
-        return AurralLogin(token: token, expiresAt: expires, user: AurralUser(id: id, username: username, role: u["role"] as? String))
+        return AurralLogin(token: token, expiresAt: expires, user: AurralUser(
+            id: id, username: username, role: u["role"] as? String,
+            permissions: (u["permissions"] as? [String: Any]).map(AurralPermissions.init(json:))))
     }
 }
 

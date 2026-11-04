@@ -19,15 +19,15 @@ final class LogSink: @unchecked Sendable {
 
     // MARK: - The allow-list
 
-    /// Exactly seven calls may be sent (round 13 added the login and logout); every other one is refused in code,
-    /// before anything leaves the phone.
+    /// Only the allow-listed calls may be sent (round 13 added the login and logout, round 14 the 2.13 Discover
+    /// routes: `Round14AllowListTests`); every other one is refused in code, before anything leaves the phone.
     @Test func everyOtherPathIsRefusedAndNothingIsSent() async throws {
         let refused: [(String, String)] = [
             ("GET", "api/settings"), ("GET", "api/settings/playback"), ("GET", "api/auth/api-key"),
-            ("POST", "api/auth/api-key"), ("GET", "api/auth/me"), ("GET", "api/discover"), ("POST", "api/discover/refresh"),
+            ("POST", "api/auth/api-key"), ("POST", "api/discover/refresh"),
             ("DELETE", "api/library/tracks/12"), ("GET", "api/library/tracks/12"), ("POST", "api/library/artists"),
-            ("POST", "api/library/downloads/track"), ("GET", "api/health/bootstrap"), ("GET", "api/health/live"),
-            ("GET", "api/playlists/jobs/flow-1"), ("GET", "api/playlists/worker/settings"),
+            ("POST", "api/library/downloads/track"), ("GET", "api/health/live"),
+            ("GET", "api/playlists/worker/settings"),
             ("PUT", "api/playlists/flows/flow-1/enabled"), ("POST", "api/playlists/flows/flow-1/tracks/job-1/research"),
             ("GET", "api/playlists/flows/flow-1/lidarr-import-list"), ("POST", "api/playlists/reset"),
             ("POST", "api/playlists/research-missing"), ("DELETE", "api/playlists/shared-playlists/p/tracks/j"),
@@ -55,13 +55,13 @@ final class LogSink: @unchecked Sendable {
         #expect(stub.requests.isEmpty, "nothing was sent")
     }
 
-    @Test func theSevenAllowedCalls() async throws {
+    /// The round-12/13 calls stay allowed (round 14's exact set: `Round14AllowListTests.theExactAllowedCalls`).
+    @Test func theRound13CallsStayAllowed() async throws {
         for (method, path) in [("GET", "api/health"), ("GET", "api/playlists/status"), ("GET", "api/playlists/jobs"),
                                ("GET", "api/library/lookup/0383dadf-2a4e-4d10-a46a-e9e041da8eb3"),
                                ("POST", "api/playlists/start/flow-1"), ("POST", "api/auth/login"), ("POST", "api/auth/logout")] {
             #expect(AurralRoute.isAllowed(method: method, path: path), "\(method) \(path)")
         }
-        #expect(AurralRoute.allCases.count == 7)
     }
 
     /// Never the settings route (it returns every secret in clear), whatever the client is asked to do.

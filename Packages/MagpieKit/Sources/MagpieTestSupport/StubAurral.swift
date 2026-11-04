@@ -1,4 +1,5 @@
 import Foundation
+import AurralKit
 import MagpieCore
 import os
 
@@ -52,6 +53,8 @@ public final class StubAurral: HTTPTransport, @unchecked Sendable {
         public var username: String
         public var password: String
         public var role: String
+        /// Round 14: Aurral's permissions for the user (nil: Aurral 2.13's non-admin defaults).
+        public var permissions: [String: Bool]? = nil
     }
 
     private struct State {
@@ -71,6 +74,10 @@ public final class StubAurral: HTTPTransport, @unchecked Sendable {
         var inAurralLibrary: Set<String> = []
         var requests: [URLRequest] = []
         var down = false
+        /// Round 14: the API contract's features (`api.features`); nil: no contract (2.10).
+        var features: [String]?
+        /// Round 14: whether a download source is configured (the bootstrap's `downloadSources`).
+        var downloadSourcesConfigured = true
     }
 
     public static let defaultUsername = "magpie"
@@ -78,6 +85,8 @@ public final class StubAurral: HTTPTransport, @unchecked Sendable {
 
     public let host: String
     private let state = OSAllocatedUnfairLock(initialState: State())
+    /// Round 14: the Discover fixtures and their switches (StubAurral+Discover.swift).
+    let discover = OSAllocatedUnfairLock(initialState: StubAurralDiscover())
 
     public init(host: String = "aurral-stub") {
         self.host = host
@@ -88,6 +97,27 @@ public final class StubAurral: HTTPTransport, @unchecked Sendable {
     // MARK: - Set-up
 
     public func setVersion(_ version: String?) { state.withLock { $0.version = version } }
+    /// Round 14: Aurral 2.13.0, with its API contract (every Discover route served).
+    public func useAurral213() {
+        state.withLock { $0.version = "2.13.0"; $0.features = Self.features213 }
+    }
+    /// Round 14: the API contract's feature list (nil: none, as 2.10).
+    public func setFeatures(_ features: [String]?) { state.withLock { $0.features = features } }
+    /// Round 14: a download source configured (Soulseek) or none at all.
+    public func setDownloadSources(configured: Bool) { state.withLock { $0.downloadSourcesConfigured = configured } }
+    /// Round 14: the user's Aurral permissions.
+    public func setPermissions(_ permissions: AurralPermissions, for username: String) {
+        state.withLock { s in
+            for i in s.users.indices where s.users[i].username == username {
+                s.users[i].permissions = ["accessFlow": permissions.accessFlow, "addArtist": permissions.addArtist,
+                                          "addAlbum": permissions.addAlbum, "changeMonitoring": false]
+            }
+        }
+    }
+
+    /// Aurral 2.13.0's `config/apiContract.ts`.
+    public static let features213 = ["discover", "flows", "playlistCoverTemplates", "activity", "review", "trackDownloads",
+                                     "linkSearch", "downloadCancel", "shareImports", "trending", "flowAutoDownload"]
     public func setFlows(_ flows: [Flow]) { state.withLock { $0.flows = flows } }
     public func setJobs(_ jobs: [Job]) { state.withLock { $0.jobs = jobs } }
     /// Off: `/api/playlists/jobs` answers 404 (an Aurral without the route).
@@ -173,11 +203,17 @@ public final class StubAurral: HTTPTransport, @unchecked Sendable {
             }
             let token = issueToken(username: user.username)
             let expiresAt = (Date().timeIntervalSince1970 + 30 * 86_400) * 1000
-            return answer(200, ["token": token, "expiresAt": expiresAt,
-                                "user": ["id": user.id, "username": user.username, "role": user.role, "permissions": [:]]])
+            return answer(200, ["token": token, "expiresAt": expiresAt, "user": Self.userBody(user)])
         }
         let header = request.value(forHTTPHeaderField: "Authorization") ?? ""
         let bearer = header.hasPrefix("Bearer ") ? String(header.dropFirst(7)) : nil
+        // Round 14: the bootstrap is open; signed in, it also names the user and the download sources.
+        if path == "/api/health/bootstrap", method == "GET" {
+            let caller = bearer.flatMap { b in state.withLock { $0.sessions[b] } }.flatMap { id in snapshot.users.first { $0.id == id } }
+            return answer(200, Self.bootstrapBody(snapshot, user: caller))
+        }
+        // Round 14: the preview is open too (Aurral answers with a redirect to Deezer's CDN).
+        if let preview = previewAnswer(method: method, path: path, url: url) { return preview }
         guard let bearer, let userId = state.withLock({ $0.sessions[bearer] }),
               let user = snapshot.users.first(where: { $0.id == userId }) else {
             return answer(401, ["error": "Unauthorized", "code": bearer == nil ? "AUTH_REQUIRED" : "SESSION_INVALID"])
@@ -190,6 +226,8 @@ public final class StubAurral: HTTPTransport, @unchecked Sendable {
         case (let m, "/api/auth/logout") where m != "GET":
             state.withLock { _ = $0.sessions.removeValue(forKey: bearer) }
             return answer(200, ["success": true])
+        case ("GET", "/api/auth/me"):
+            return answer(200, ["user": Self.userBody(user), "expiresAt": NSNull()])
         case ("GET", "/api/playlists/status"):
             var scoped = snapshot
             scoped.flows = snapshot.flows.filter { visible($0.id) }
@@ -214,8 +252,58 @@ public final class StubAurral: HTTPTransport, @unchecked Sendable {
             }
             return answer(200, ["success": true, "flowId": flowId, "queued": true, "operationId": "op-1"])
         default:
+            if let (status, body) = try await discoverAnswer(method: method, path: path, url: url, request: request,
+                                                             user: user, version: snapshot.version) {
+                return answer(status, body)
+            }
             return answer(404, ["error": "Not found"])
         }
+    }
+
+    /// Round 14: the API contract's features (nil before `useAurral213()`).
+    var features: [String]? { state.withLock { $0.features } }
+    /// Round 14: a download source is configured.
+    var hasDownloadSource: Bool { state.withLock { $0.downloadSourcesConfigured } }
+
+    /// Round 14: `GET /api/playlists/jobs/:playlistId`, one flow's songs (as the user may see them; 404 otherwise).
+    func jobsAnswer(flowId: String, user: User) -> (Int, Any) {
+        let s = state.withLock { $0 }
+        let mine = user.role == "admin" || s.flows.first(where: { $0.id == flowId })?.ownerUserId == user.id
+        guard mine else { return (404, ["error": "Playlist not found"]) }
+        return (200, s.jobs.enumerated().filter { $0.element.flowId == flowId }.map { Self.jobBody($0.element, index: $0.offset) })
+    }
+
+    /// The user as Aurral's login, `/api/auth/me` and bootstrap name them (2.13: with permissions).
+    private static func userBody(_ user: User) -> [String: Any] {
+        let defaults: [String: Bool] = ["accessFlow": false, "addArtist": true, "addAlbum": true, "changeMonitoring": false]
+        return ["id": user.id, "username": user.username, "role": user.role, "permissions": user.permissions ?? defaults]
+    }
+
+    private static func bootstrapBody(_ s: State, user: User?) -> [String: Any] {
+        var body: [String: Any] = ["status": "ok", "authRequired": true, "onboardingRequired": false,
+                                   "timestamp": "2026-11-04T00:00:00.000Z"]
+        if let version = s.version { body["appVersion"] = version }
+        if let features = s.features {
+            body["api"] = ["version": 1, "features": features]
+            body["matcher"] = ["available": true, "policyVersion": "aurral-native-6"]
+        }
+        if let user {
+            body["user"] = userBody(user)
+            body["authUser"] = user.username
+            if s.features != nil {
+                let on = s.downloadSourcesConfigured
+                body["downloadSources"] = [
+                    "slskd": ["id": "slskd", "label": "Soulseek", "enabled": on, "configured": on, "priority": 1],
+                    "usenet": ["id": "usenet", "label": "Usenet", "enabled": false, "configured": false, "priority": 2,
+                               "prowlarrConfigured": false, "nzbgetConfigured": false, "sabnzbdConfigured": false,
+                               "tidarrConfigured": false],
+                    "deemix": ["id": "deemix", "label": "Deemix", "enabled": false, "configured": false, "priority": 3],
+                    "ytdlp": ["id": "ytdlp", "label": "yt-dlp", "enabled": false, "configured": false, "priority": 4],
+                ]
+                body["slskdConfigured"] = on
+            }
+        }
+        return body
     }
 
     private func statusBody(_ s: State) -> [String: Any] {
