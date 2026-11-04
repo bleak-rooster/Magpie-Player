@@ -1,3 +1,4 @@
+import AurralKit
 import DesignSystem
 import MagpieCore
 import Search
@@ -146,9 +147,41 @@ extension View {
     }
 }
 
-/// A3's hook: an outside song in Search (it carries its recording MBID, title, artist and release).
+/// Round 14 A3: an outside song in Search gets its preview when the server can preview the same song (owner answer 7:
+/// the artist's top songs, loaded charts and Discover playlists; else "No preview available"; no controls at all
+/// without previews), and the outside song's ⋯ menu (only with Lidarr).
 struct SearchPreviewSlot: ViewModifier {
+    @Environment(AppModel.self) private var app
     let recording: ExternalRecording
+    @State private var match: AurralSong?
+    @State private var looked = false
 
-    func body(content: Content) -> some View { content }
+    func body(content: Content) -> some View {
+        HStack(spacing: Tokens.Spacing.xs) {
+            content
+            if app.previewsAvailable {
+                if let match {
+                    PreviewControl(item: app.previewItem(for: match))
+                } else if looked {
+                    Text(SongActionsCopy.noPreview).font(.caption).foregroundStyle(.secondary)
+                        .frame(maxWidth: 72).multilineTextAlignment(.trailing)
+                        .accessibilityIdentifier("search-no-preview")
+                }
+            }
+            if app.outsideSongMenuAvailable {
+                Menu { OutsideSongMenu(song: OutsideSong(recording, previewId: match?.preview?.trackId)) } label: {
+                    Image(systemName: "ellipsis").frame(minWidth: Tokens.minHitSize, minHeight: Tokens.minHitSize)
+                        .contentShape(Rectangle())
+                }
+                .accessibilityLabel("More for \(recording.title)")
+                .accessibilityIdentifier("search-song-menu")
+                .padding(.trailing, Tokens.Spacing.s)
+            }
+        }
+        .task(id: app.previewsAvailable ? recording : nil) {
+            guard app.previewsAvailable else { return }
+            match = await app.previewSong(for: recording)
+            looked = true
+        }
+    }
 }

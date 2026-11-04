@@ -49,6 +49,7 @@ extension AppModel {
         guard let client = aurralClient, !isOffline else { throw AurralError.signInNeeded }
         do {
             let p = try await client.editorialPlaylist(id)
+            songActions.remember(p.tracks)   // round 14 A3: their previews may match a ListenBrainz song (owner answer 7)
             return EditorialPage(id: p.id, name: p.name, description: p.description, curator: p.curator, artwork: p.artwork,
                                  songs: p.tracks.map(ChartSong.init),
                                  libraryPlaylistId: p.libraryPlaylistId ?? aurralFeeds.added[id])

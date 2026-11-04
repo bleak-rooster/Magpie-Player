@@ -47,11 +47,21 @@ struct SearchView: View {
                                 outsideMore: { kind, sections in try await app.mergedSearch().moreOutside(kind, in: sections) },
                                 errorMessage: BrowseErrorCopy.message(for:))
             model?.outsideArt = app.makeOutsideArt()   // R15
+            if let query = app.songActions.searchQuery {   // round 14 A3: Search instead, on a first open
+                app.songActions.searchQuery = nil
+                model?.update(query: query)
+            }
         }
         // R15: search closed; outside artwork goes with it (fetched again next time).
         .onDisappear { model?.outsideArt?.reset() }
         // The same query again from the other source when offline mode changes.
         .onChange(of: app.isOffline) { if let model { model.update(query: model.query) } }
+        // Round 14 A3: "Couldn't match this song" › Search instead.
+        .onChange(of: app.songActions.searchQuery, initial: true) {
+            guard let query = app.songActions.searchQuery, let model else { return }
+            app.songActions.searchQuery = nil
+            model.update(query: query)
+        }
     }
 }
 

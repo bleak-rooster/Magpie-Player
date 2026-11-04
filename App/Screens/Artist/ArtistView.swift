@@ -15,6 +15,8 @@ struct ArtistView: View {
     @State private var loadedOffline: Bool?
     /// R3: Popular, from this account's saved list at once, then the server's when it differs.
     @State private var popular: PopularSongs?
+    /// Round 14 A3: Top songs from the server or ListenBrainz (Settings › Home & Library › Artist top songs).
+    @State private var outsideTop: TopSongsResult?
     @State private var notYetAlbums: [NotYetAlbum] = []
     @State private var gathering = false
     @State private var playError: String?
@@ -127,7 +129,9 @@ struct ArtistView: View {
             }
             .frame(maxWidth: .infinity)
 
-            if let topSongs = popular?.songs, !topSongs.isEmpty {
+            if let outsideTop {   // round 14 A3: Top songs from the chosen source (owner answer 6)
+                TopSongsSection(result: outsideTop)
+            } else if let topSongs = popular?.songs, !topSongs.isEmpty {
                 VStack(alignment: .leading, spacing: Tokens.Spacing.s) {
                     Text("Popular").magpieDisplay(.title2).accessibilityAddTraits(.isHeader)
                         .padding(.horizontal, Tokens.Spacing.margin)
@@ -213,7 +217,7 @@ struct ArtistView: View {
             model.noteFavourite(.artist(artist.id), artist.starred)   // R7
             let name = artist.name
             // Both fill in after the page; neither waits for the other.
-            async let top: Void = loadTopSongs(name)
+            async let top: Void = loadTopSongs(name, mbid: artist.mbid)
             async let notYet: Void = loadNotYetAlbums(artist, library: albums)
             async let inLidarr: Void = loadLidarrLine(artist)
             _ = await (top, notYet, inLidarr)
@@ -222,8 +226,22 @@ struct ArtistView: View {
         }
     }
 
-    private func loadTopSongs(_ name: String) async {
-        if let popular { await model.refreshPopular(popular, artistName: name) }
+    private func loadTopSongs(_ name: String, mbid: MBID?) async {
+        // Round 14 A3 (D104): only the library to ask (the setup or the setting): Popular as before. Otherwise the
+        // chosen source with its fallback; the library's answer still goes through Popular (its saved list).
+        guard model.topSongsProviders(mbid: mbid) != [.library] else {
+            outsideTop = nil
+            if let popular { await model.refreshPopular(popular, artistName: name) }
+            return
+        }
+        let result = await model.artistTopSongs(name: name, mbid: mbid)
+        guard !Task.isCancelled else { return }
+        if let result, result.provider != .library {
+            outsideTop = result
+        } else {
+            outsideTop = nil
+            if let popular, let result { await popular.refresh { result.rows.compactMap(\.library) } }
+        }
     }
 
     private func loadLidarrLine(_ artist: Artist) async {
