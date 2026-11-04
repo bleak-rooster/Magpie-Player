@@ -203,6 +203,33 @@ private func ok(_ body: String) -> Data {
         #expect(model.preferences.layout.isDefaultHome)
     }
 
+    /// Fix round 1 (I1): loading a build-13 layout that will be migrated saves the car's list as it was, once, so the
+    /// car's Home stays build 13's after the phone's is reordered and saved again.
+    @Test func loadingABuild13LayoutKeepsTheCarsHome() throws {
+        let suite = "Round14HomeTests.car.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let on: Set<HomeSection> = [.madeForYou, .recentlyAdded, .favourites, .discover]
+        let old: [HomeSection] = [.jumpBackIn, .madeForYou, .recentlyAdded, .mostPlayed, .favourites, .randomAlbums,
+                                  .playlists, .genres, .downloaded, .discover]
+        let json = #"{"version":1,"home":["# + old.map { #"{"id":"\#($0.rawValue)","visible":\#(on.contains($0))}"# }
+            .joined(separator: ",") + "]}"
+        defaults.set(Data(json.utf8), forKey: LayoutPreferences.key)
+        let store = PreferencesStore(defaults: defaults)
+        let first = store.load()
+        let carShelves: [CarPlayHomeShelf] = [.jumpBackIn, .madeForYou, .recentlyAdded, .mostPlayed, .favourites,
+                                              .randomAlbums, .playlists, .genres, .downloaded, .discover]
+        #expect(first.carPlay.home?.entries.map(\.item) == carShelves)
+        #expect(defaults.data(forKey: CarPlayPreferences.key) != nil, "saved at once")
+        var changed = first
+        changed.layout.home.set(.greeting, visible: false, keepingOneOf: [])
+        store.save(changed, previous: first)   // the migrated phone layout is now saved
+        let again = store.load()
+        #expect(again.carPlay == first.carPlay)
+        #expect(again.carPlay.visibleHomeSections(phone: again.layout, offline: false, hasListenBrainzToken: true,
+                                                   discoverSetUp: true) == [.madeForYou, .recentlyAdded, .favourites, .discover])
+    }
+
     /// Sections whose service is missing: greyed with "Needs Aurral"; with it, no note.
     @Test func editorNeedsNotes() {
         #expect(HomeLayoutView.note(.trending, aurralSetUp: false, lidarrConnected: false) == "Needs Aurral")

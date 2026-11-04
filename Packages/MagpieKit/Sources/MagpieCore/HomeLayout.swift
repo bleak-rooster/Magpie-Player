@@ -159,6 +159,16 @@ public struct HomeSectionStyle: Codable, Hashable, Sendable {
 }
 
 extension LayoutPreferences {
+    /// The Home list as saved in `data` (this area's stored JSON), before any normalising or migration; nil when there is
+    /// none or it doesn't read.
+    public static func storedHome(_ data: Data?) -> OrderedVisibility<HomeSection>? {
+        guard let data, let object = JSONNesting.object(with: data) as? [String: Any], let home = object["home"],
+              JSONSerialization.isValidJSONObject(["home": home]),
+              let encoded = try? JSONSerialization.data(withJSONObject: ["home": home]) else { return nil }
+        struct Stored: Decodable { var home: OrderedVisibility<HomeSection> }
+        return (try? JSONDecoder().decode(Stored.self, from: encoded))?.home
+    }
+
     /// `section`'s card size and count: the owner's, else its default.
     public func style(for section: HomeSection) -> HomeSectionStyle {
         homeStyles[section.rawValue] ?? section.defaultStyle

@@ -35,6 +35,43 @@ import Testing
         #expect(CarPlayHomeShelf.allCases.allSatisfy { !$0.section.isProvided && !$0.section.isChrome })
     }
 
+    static let build13Car: [CarPlayHomeShelf] = [.jumpBackIn, .madeForYou, .recentlyAdded, .mostPlayed, .favourites,
+                                                 .randomAlbums, .playlists, .genres, .downloaded, .discover]
+
+    /// Fix round 1 (I1): a phone-only change (the greeting, the chips, the quick grid, a provided section) never moves
+    /// the car: only the car's own ten shelves are compared with the default.
+    @Test func phoneOnlyChangesLeaveTheCarAlone() {
+        var phone = LayoutPreferences.defaultValue
+        phone.home.set(.greeting, visible: false, keepingOneOf: [])
+        phone.home.set(.trending, visible: false, keepingOneOf: [])
+        phone.home.moveDown(.filterChips)
+        let car = CarPlayPreferences.defaultValue
+        #expect(car.homeList(following: phone.home).entries.map(\.item) == Self.build13Car)
+        #expect(car.visibleHomeSections(phone: phone, offline: false, hasListenBrainzToken: true, discoverSetUp: true)
+                == [.jumpBackIn, .madeForYou, .recentlyAdded, .mostPlayed, .discover])
+    }
+
+    /// Fix round 1 (I1): a build-13 layout migrated to the new order (switches changed, D106) leaves the car on its
+    /// build-13 list: the car's list is kept from the layout as it was saved, before the migration.
+    @Test func aMigratedPhoneLayoutKeepsTheCarsList() throws {
+        let on: Set<HomeSection> = [.madeForYou, .recentlyAdded, .favourites, .discover]   // Jump back in off, Favourites on
+        let old: [HomeSection] = [.jumpBackIn, .madeForYou, .recentlyAdded, .mostPlayed, .favourites, .randomAlbums,
+                                  .playlists, .genres, .downloaded, .discover]
+        let json = #"{"version":1,"home":["# + old.map { #"{"id":"\#($0.rawValue)","visible":\#(on.contains($0))}"# }
+            .joined(separator: ",") + "]}"
+        let stored = Data(json.utf8)
+        let phone = LayoutPreferences.decode(stored)
+        #expect(phone.home.entries.first?.item == .greeting, "the phone takes the new order (D106)")
+        let car = try #require(CarPlayPreferences.defaultValue.keepingRound13Home(storedLayout: stored))
+        #expect(car.home?.entries.map(\.item) == Self.build13Car)
+        #expect(car.visibleHomeSections(phone: phone, offline: false, hasListenBrainzToken: true, discoverSetUp: true)
+                == [.madeForYou, .recentlyAdded, .favourites, .discover], "the owner's build-13 switches, in build 13's order")
+        // Nothing to keep: no saved layout, a round-14 layout, or a car with its own list.
+        #expect(CarPlayPreferences.defaultValue.keepingRound13Home(storedLayout: nil) == nil)
+        #expect(CarPlayPreferences.defaultValue.keepingRound13Home(storedLayout: LayoutPreferences.defaultValue.encoded()) == nil)
+        #expect(car.keepingRound13Home(storedLayout: stored) == nil)
+    }
+
     /// The default copies the phone's layout: its order and switches, Genres included.
     @Test func followingThePhoneCopiesItsOrderAndSwitches() {
         var phone = LayoutPreferences.defaultValue
