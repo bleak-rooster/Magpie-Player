@@ -3,6 +3,14 @@ set -euo pipefail
 export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 cd "$(dirname "$0")/.."
 
+# B1 (D120): `--release` runs the hosted suite in the optimised Release configuration (what TestFlight ships), with
+# testability on. Build 14's Home bug showed only there. UI tests are left to the Debug run.
+release=()
+if [ "${1:-}" = "--release" ]; then
+  release=(-configuration Release ENABLE_TESTABILITY=YES SWIFT_ACTIVE_COMPILATION_CONDITIONS=DEBUG -skip-testing:MagpieUITests)
+  shift
+fi
+
 # MAGPIE_IT=1: hand the dev-stack address and credentials to the UI tests (xcodebuild passes
 # TEST_RUNNER_-prefixed variables to the test runner without the prefix). Guard G0: the file must
 # carry the dev-stack marker and point at localhost. Credentials stay in dev/.env.local (git-ignored).
@@ -39,4 +47,5 @@ fi
 sim="$(scripts/test-sim.sh)"
 
 xcodegen generate
-xcodebuild test -project Magpie.xcodeproj -scheme Magpie -destination "platform=iOS Simulator,id=$sim" -quiet
+xcodebuild test -project Magpie.xcodeproj -scheme Magpie -destination "platform=iOS Simulator,id=$sim" -quiet \
+  ${release[@]+"${release[@]}"}

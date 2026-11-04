@@ -165,10 +165,11 @@ extension AppModel {
     private func homeResult(_ section: HomeSection) async -> Result<[HomeShelf.Item], any Error> {
         let result: Result<[HomeShelf.Item], any Error>
         if section.isProvided {
-            result = await HomeDeadline.run(Self.providedWait) { @MainActor [weak self] in
+            // Past the wait it is "not read yet" (a cancellation to Home), never a failure.
+            result = await Deadline.run(Self.providedWait) { @MainActor [weak self] in
                 guard let self else { throw CancellationError() }
                 return try await self.homeItems(section)
-            }
+            }.mapError { error -> any Error in error is Deadline.Exceeded ? CancellationError() : error }
         } else {
             do { result = .success(try await homeItems(section)) } catch { result = .failure(error) }
         }
@@ -286,64 +287,5 @@ extension AppModel {
         let starred = try await request { try await $0.starred() }
         noteFavourites(starred)
         return starred
-    }
-}
-
-/// B1: runs `op` for at most `limit`. Past it the answer is a `CancellationError` (Home's "not read yet") and `op` is
-/// cancelled without being waited for, so an answer that never comes can't hold a read up.
-enum HomeDeadline {
-    static func run<T: Sendable>(_ limit: Duration, sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
-                                 _ op: @escaping @Sendable () async throws -> T) async -> Result<T, any Error> {
-        let once = Once<T>()
-        return await withTaskCancellationHandler {
-            await withCheckedContinuation { (continuation: CheckedContinuation<Result<T, any Error>, Never>) in
-                let work = Task {
-                    let result: Result<T, any Error>
-                    do { result = .success(try await op()) } catch { result = .failure(error) }
-                    once.finish(result)
-                }
-                let timer = Task {
-                    do { try await sleep(limit) } catch { return }
-                    once.finish(.failure(CancellationError()))
-                }
-                once.start(continuation, cancelling: [work, timer])
-            }
-        } onCancel: {
-            once.finish(.failure(CancellationError()))
-        }
-    }
-
-    /// The first answer wins; then both tasks are cancelled.
-    private final class Once<T: Sendable>: @unchecked Sendable {
-        private let lock = NSLock()
-        private var continuation: CheckedContinuation<Result<T, any Error>, Never>?
-        private var early: Result<T, any Error>?
-        private var tasks: [Task<Void, Never>] = []
-        private var done = false
-
-        func start(_ continuation: CheckedContinuation<Result<T, any Error>, Never>, cancelling tasks: [Task<Void, Never>]) {
-            lock.lock()
-            if let early {
-                lock.unlock()
-                tasks.forEach { $0.cancel() }
-                continuation.resume(returning: early)
-                return
-            }
-            self.continuation = continuation
-            self.tasks = tasks
-            lock.unlock()
-        }
-
-        func finish(_ result: Result<T, any Error>) {
-            lock.lock()
-            guard !done else { lock.unlock(); return }
-            done = true
-            guard let continuation else { early = result; lock.unlock(); return }
-            self.continuation = nil
-            let tasks = self.tasks
-            lock.unlock()
-            tasks.forEach { $0.cancel() }
-            continuation.resume(returning: result)
-        }
     }
 }

@@ -32,7 +32,7 @@ struct OutsideArtistView: View {
                 guard !app.isOffline else { return }
                 artAttempt += 1
                 async let songs = app.artistTopSongs(name: artist.name, mbid: artist.mbid)
-                if let model { await model.load(fresh: true) }
+                if let model { await model.load(fresh: true); noteAlbums(model) }
                 if let fresh = await songs { topSongs = fresh }
             }
         }
@@ -43,7 +43,8 @@ struct OutsideArtistView: View {
         // One task builds and loads (review I2); again when offline mode flips ("You're offline", then the page).
         .task(id: app.isOffline) {
             if art == nil { art = app.makeOutsideArt() }
-            _ = await OutsideArtistModel.open(model, app: app, artist: artist) { model = $0 }
+            let opened = await OutsideArtistModel.open(model, app: app, artist: artist) { model = $0 }
+            noteAlbums(opened)
         }
         .task(id: app.isOffline) { if !app.isOffline { topSongs = await app.artistTopSongs(name: artist.name, mbid: artist.mbid) } }
         .onDisappear { art?.reset() }   // R15: the outside art goes with the page
@@ -160,6 +161,14 @@ struct OutsideArtistView: View {
                     Button(TrySheet.tryAlbumTitle, systemImage: "sparkles") { Task { await tryAlbum(album) } }
                 }
             }
+        }
+    }
+
+    /// D125: each album's title and artist, for the cover source that finds covers by name.
+    private func noteAlbums(_ model: OutsideArtistModel) {
+        let s = model.sections
+        for item in s.albums + s.eps + s.singles + s.more {
+            art?.note(item.id, OutsideAlbumHint(title: item.title, artist: artist.name))
         }
     }
 

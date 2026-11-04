@@ -41,8 +41,21 @@ extension AppModel {
                 lidarrCover: { [weak self] rg in
                     guard let client = await self?.lidarrClient else { return nil }
                     return try await client.albumCoverURL(releaseGroup: rg)
-                }),
+                },
+                aurralCover: { [weak self] rg, hint in try await self?.aurralAlbumCover(rg, hint) }),
             disk: outsideArtDisk, limiter: Self.outsideArtLimiter)
+    }
+
+    /// B1 fix round (review 1, D125): the last source before the placeholder: the cover Aurral's catalog search names
+    /// for the album (`GET /api/search?scope=album`, already allowed), matched by its MBID (never by name alone), fetched
+    /// through Aurral's image proxy (D111/D118: a link Aurral named). Only with Aurral set up and able to search.
+    func aurralAlbumCover(_ releaseGroup: MBID, _ hint: OutsideAlbumHint) async throws -> Data? {
+        guard !isOffline, aurralSetUp, aurralCapabilities.search, let client = aurralClient else { return nil }
+        let query = "\(hint.artist) \(hint.title)"
+        let page = try await client.searchAlbums(query, limit: 10)
+        guard let cover = page.items.first(where: { $0.mbid == releaseGroup })?.cover else { return nil }
+        let proxy = AurralImageProxies.proxy(for: client.base, dataDirectory: dataDirectory, transport: previewTransport)
+        return await proxy.imageData(for: cover, client: client)
     }
 
     /// B1: outside pictures on the phone (`Application Support/Magpie/OutsideArt`), removed on sign-out.
@@ -61,13 +74,16 @@ extension AppModel {
     }
 
     /// B1: loads the pictures of `artists` (those with an MBID) a few at a time, so every circle has one when it shows.
-    func prefetchArtistPictures(_ artists: [MBID]) async {
-        guard !isOffline, lidarr != nil else { return }
-        await recommendedArt.prefetch(artists.map(OutsideArtKey.artist))
+    /// Fix round: Home's prefetch runs as `background`, so a page on screen always goes first; nothing after sign-out.
+    func prefetchArtistPictures(_ artists: [MBID], priority: OutsideArtPriority = .visible) async {
+        guard !isOffline, session != nil, lidarr != nil else { return }
+        await recommendedArt.prefetch(artists.map(OutsideArtKey.artist), priority: priority)
     }
 
     /// Sign-out: the pictures go with the account.
     func forgetOutsideArt() {
+        recommendedPictures?.cancel()
+        recommendedPictures = nil
         recommendedArtSlot?.reset()
         recommendedArtSlot = nil
         outsideArtDisk.removeAll()
@@ -127,12 +143,14 @@ struct OutsideArtwork<Content: View>: View {
 
     var body: some View {
         // B1: a picture already on the phone shows at once, before the task runs.
-        let shown = (loaded?.key == key ? loaded?.image : nil) ?? key.flatMap { loader?.cached($0) }
+        // Fix round (review minor 2): only memory while drawing; the disk copy is read in the task, off the main thread.
+        let shown = (loaded?.key == key ? loaded?.image : nil) ?? key.flatMap { loader?.peek($0) }
         content(shown.map { Image(decorative: $0, scale: 1) })
             .task(id: TaskKey(key: key, fallback: fallback, loader: loader.map(ObjectIdentifier.init), attempt: attempt)) {
                 guard let loader else { loaded = nil; return }
                 // A row scrolled away cancels this wait, not the load: the picture is kept for when it comes back. A
                 // refresh that fails keeps the picture already shown.
+                if let key, let onPhone = await loader.cached(key) { loaded = (key, onPhone); return }
                 if let found = await loader.image(key, fallback: fallback) { loaded = (key, found) }
             }
     }

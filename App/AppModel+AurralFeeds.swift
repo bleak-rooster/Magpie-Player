@@ -266,6 +266,11 @@ import UIKit
         save()
     }
 
+    #if DEBUG
+    /// Tests: a recommendations read as if it had just come in.
+    func setRecommendedForTesting(_ recommendations: AurralRecommendations) { recommended = RecommendedSnapshot(recommendations) }
+    #endif
+
     // MARK: - HomeAurralShelves
 
     var availableSections: Set<HomeSection> {
@@ -298,7 +303,7 @@ import UIKit
                        + rails.becauseYouLike.flatMap(\.artists)).filter { $0.image == nil }.compactMap(\.mbid)
         var seen = Set<MBID>()
         let wanted = Array(artists.filter { seen.insert($0).inserted }.prefix(60))
-        Task { await model.prefetchArtistPictures(wanted) }
+        Task { await model.prefetchArtistPictures(wanted, priority: .background) }   // a page on screen goes first
     }
 
     /// A section's tiles from the feed as it stands.
@@ -492,4 +497,23 @@ enum AurralArtworkCache {
         cache.countLimit = 300
         return cache
     }()
+}
+
+extension AppModel {
+    /// B1 (owner item 4): every recommended artist's picture, fetched when Recommended opens (four at a time, kept on
+    /// the phone), so the circles are filled without opening each artist, and at once on later opens.
+    func prefetchRecommendedPictures() async {
+        guard let feeds = aurralFeeds, let rails = feeds.recommended?.rails(now: Date(), hidden: feeds.hidden) else { return }
+        let ordered = [rails.topPick].compactMap { $0 } + rails.newThisWeek + rails.becauseYouLike.flatMap(\.artists)
+            + rails.closeToHome + rails.furtherOut + rails.all
+        await prefetchArtistPictures(ordered.filter { $0.image == nil }.compactMap(\.mbid))
+    }
+
+    /// Recommended's pull to refresh (fix round, review 3): returns once the feed is read again; the pictures are
+    /// fetched behind it, so the spinner never waits on them.
+    func refreshRecommendedPage() async {
+        await aurralFeeds?.refresh(.recommended, force: true)
+        recommendedPictures?.cancel()
+        recommendedPictures = Task { [weak self] in await self?.prefetchRecommendedPictures() }
+    }
 }

@@ -1,3 +1,4 @@
+import AurralKit
 import BackgroundTasks
 import CarPlay
 import CarPlayUI
@@ -434,7 +435,7 @@ extension OutsideArtAppTests {
         await model.prefetchArtistPictures(ids)
         #expect(Set(outsideRequests) == Set(ids.map { "https://images.lidarr.audio/cache/\($0.rawValue).jpg" }))
         let nextOpen = model.makeOutsideArt()
-        #expect(ids.allSatisfy { nextOpen.cached(.artist($0)) != nil }, "at once on the next open, from the phone")
+        for id in ids { #expect(await nextOpen.cached(.artist(id)) != nil, "at once on the next open, from the phone") }
         let before = outside.requests.count
         _ = await model.recommendedArt.image(.artist(ids[0]))
         #expect(outside.requests.count == before, "nothing asked again")
@@ -499,5 +500,63 @@ extension OutsideArtAppTests {
         #expect(fresh.requests.first?.url?.absoluteString == "https://coverartarchive.org/release-group/\(rg.rawValue)/front-250")
         #expect(fresh.requests.last?.url?.absoluteString == "https://images.lidarr.audio/cache/lidarr-cover.jpg")
         model.signOut()
+    }
+}
+
+// MARK: - B1 fix round
+
+extension OutsideArtAppTests {
+    /// Review 3: Recommended's pull to refresh returns once the feed is read; the pictures (slow Lidarr lookups here)
+    /// carry on behind it and still arrive.
+    @Test func recommendedsRefreshNeverWaitsForPictures() async throws {
+        let model = try await signedIn()
+        try await withLidarr(model)
+        let ids = (1...4).map { String(format: "%08d-3333-4333-8333-333333333333", $0) }
+        let json = #"{"recommendations":["# + ids.map { #"{"id":"\#($0)","name":"A\#($0.prefix(8))","image":null}"# }
+            .joined(separator: ",") + "]}"
+        model.aurralFeeds.setRecommendedForTesting(try AurralRecommendations.decode(Data(json.utf8)))
+        transport.inner.stub(pathSuffix: "/api/v1/artist/lookup") { request in
+            let term = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?
+                .first { $0.name == "term" }?.value ?? ""
+            let mbid = term.replacingOccurrences(of: "lidarr:", with: "")
+            return .init(status: 200, body: Data(#"""
+            [{"artistName":"A","foreignArtistId":"\#(mbid)","images":[{"coverType":"poster","remoteUrl":"https://images.lidarr.audio/cache/\#(mbid).jpg"}]}]
+            """#.utf8))
+        }
+        transport.setHook { request in
+            if request.url?.path.hasSuffix("/artist/lookup") == true { try? await Task.sleep(for: .seconds(2)) }
+        }
+        defer { transport.setHook(nil) }
+        let start = ContinuousClock.now
+        await model.refreshRecommendedPage()
+        #expect(ContinuousClock.now - start < .seconds(1), "the spinner waits for the feed, not the pictures")
+        await model.recommendedPictures?.value
+        for id in ids { #expect(await model.recommendedArt.cached(.artist(MBID(id)!)) != nil, "the pictures still arrive") }
+        model.signOut()
+    }
+
+    /// Review minor 1: a load still in flight at sign-out never writes the folder again.
+    @Test func signOutStopsLoadsInFlightFromWriting() async throws {
+        let model = try await signedIn()
+        let slow = SlowOutside(delay: .milliseconds(400), png: Self.png)
+        AppModel.outsideArtTransportForTesting = slow
+        defer { AppModel.outsideArtTransportForTesting = outside }
+        let loader = model.makeOutsideArt()
+        async let late = loader.image(.releaseGroup(rg))
+        try await Task.sleep(for: .milliseconds(100))
+        model.signOut()
+        _ = await late
+        #expect(!FileManager.default.fileExists(atPath: OutsideArtDiskCache.directory(root: tmp).path))
+    }
+}
+
+/// Answers every picture after `delay`.
+private final class SlowOutside: HTTPTransport, @unchecked Sendable {
+    let delay: Duration
+    let png: Data
+    init(delay: Duration, png: Data) { self.delay = delay; self.png = png }
+    func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        try await Task.sleep(for: delay)
+        return (png, HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
     }
 }

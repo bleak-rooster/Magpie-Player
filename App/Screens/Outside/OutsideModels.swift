@@ -63,7 +63,7 @@ enum OutsidePhase: Equatable {
         if let mbid = artist.mbid {
             let catalog = app.outsideCatalog
             if fresh { await catalog.forget(artist: mbid) }
-            let result = await HomeDeadline.run(loadTimeout) { try await catalog.releaseGroups(artist: mbid) }
+            let result = await Deadline.run(loadTimeout) { try await catalog.releaseGroups(artist: mbid) }
             guard mine == generation, !Task.isCancelled else { return }   // superseded, or the page went away
             switch result {
             case .success(let groups):

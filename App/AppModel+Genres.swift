@@ -242,13 +242,17 @@ extension AppModel {
     private func inOrder<Item: Sendable, T: Sendable>(
         _ items: [Item], _ op: @escaping @Sendable @MainActor (Item) async throws -> T
     ) async throws -> [T] {
-        try await withThrowingTaskGroup(of: (Int, T).self) { group in
+        // B1 fix round (D120): each answer is awaited into a constant before it is paired with its position.
+        try await withThrowingTaskGroup(of: GenreAnswer<T>.self) { group in
             var results = [T?](repeating: nil, count: items.count)
             for (index, item) in items.enumerated() {
-                if index >= Self.fetchWidth, let (done, value) = try await group.next() { results[done] = value }
-                group.addTask { (index, try await op(item)) }
+                if index >= Self.fetchWidth, let done = try await group.next() { results[done.index] = done.value }
+                group.addTask {
+                    let value = try await op(item)
+                    return GenreAnswer(index: index, value: value)
+                }
             }
-            for try await (done, value) in group { results[done] = value }
+            for try await done in group { results[done.index] = done.value }
             // Positions must line up with `items` (callers zip them): a gap means the read was cut short, so stop
             // rather than shift later results onto the wrong genre (same failure as the build 8 Home crash).
             guard results.allSatisfy({ $0 != nil }) else { throw CancellationError() }
@@ -282,4 +286,10 @@ extension AppModel {
         guard let genre = song.genre?.trimmingCharacters(in: .whitespacesAndNewlines) else { return false }
         return genres.contains(genre)
     }
+}
+
+/// One genre read's answer and where it goes (B1 fix round, D120).
+private struct GenreAnswer<T: Sendable>: Sendable {
+    let index: Int
+    let value: T
 }

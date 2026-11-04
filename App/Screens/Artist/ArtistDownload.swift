@@ -68,14 +68,9 @@ extension View {
         defer { gathering = false }
         do {
             let songs = try await model.request { client in
-                try await withThrowingTaskGroup(of: (Int, [Song]).self) { group in
-                    for (i, album) in list.enumerated() {
-                        group.addTask { (i, try await client.album(id: album.id).songs ?? []) }
-                    }
-                    var byIndex: [Int: [Song]] = [:]
-                    for try await (i, songs) in group { byIndex[i] = songs }
-                    return list.indices.map { byIndex[$0] ?? [] }
-                }
+                // B1 fix round (D120): answers by album id, never by position.
+                let byId = try await KeyedGather.values(list.map(\.id)) { id in try await client.album(id: id).songs ?? [] }
+                return list.map { byId[$0.id] ?? [] }
             }
             let albums = zip(list, songs).map { (album: $0, songs: $1) }.filter { !$0.songs.isEmpty }
             guard !albums.isEmpty else { return }

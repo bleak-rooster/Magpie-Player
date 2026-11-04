@@ -31,11 +31,11 @@ struct RecommendedView: View {
             }
             .padding(.vertical, Tokens.Spacing.l)
         }
+        // Fix round (review 3): the spinner waits for the feed only; the pictures follow behind it.
         .refreshable {
             await RefreshSafety.run {
-                await feeds.refresh(.recommended, force: true)
+                await model.refreshRecommendedPage()
                 artAttempt += 1
-                await prefetchPictures()
             }
         }
         .navigationTitle(DiscoverPagesCopy.recommended)
@@ -43,7 +43,7 @@ struct RecommendedView: View {
         .magpieScreen()
         .task {
             await feeds.refresh(.recommended)
-            await prefetchPictures()
+            await model.prefetchRecommendedPictures()
         }
     }
 
@@ -135,15 +135,6 @@ struct RecommendedView: View {
                 .accessibilityIdentifier("recommended-all-\(index)")
             }
         }
-    }
-
-    /// B1 (owner item 4): every artist's picture is fetched when the page opens (four at a time, kept on the phone),
-    /// so the circles are filled without opening each artist, and at once on later opens.
-    private func prefetchPictures() async {
-        guard let rails = feeds.recommended?.rails(now: Date(), hidden: feeds.hidden) else { return }
-        let ordered = ([rails.topPick].compactMap { $0 } + rails.newThisWeek + rails.becauseYouLike.flatMap(\.artists)
-                       + rails.closeToHome + rails.furtherOut + rails.sorted(sort))
-        await model.prefetchArtistPictures(ordered.filter { $0.image == nil }.compactMap(\.mbid))
     }
 
     private func route(_ artist: AurralRecommendedArtist) -> Route {

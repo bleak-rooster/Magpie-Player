@@ -177,12 +177,12 @@ private func ok(_ body: String) -> Data {
 
     /// The deadline itself: an answer in time is returned; a silent one is cut off as "not read".
     @Test func homeDeadline() async {
-        let quick = await HomeDeadline.run(.seconds(5)) { 7 }
+        let quick = await Deadline.run(.seconds(5)) { 7 }
         #expect((try? quick.get()) == 7)
-        let silent = await HomeDeadline.run(.milliseconds(50)) { () async throws -> Int in
+        let silent = await Deadline.run(.milliseconds(50)) { () async throws -> Int in
             try await Task.sleep(for: .seconds(600))
             return 1
         }
-        if case .failure(let error) = silent { #expect(AppModel.isCancellation(error)) } else { Issue.record("no deadline") }
+        if case .failure(let error) = silent { #expect(error is Deadline.Exceeded) } else { Issue.record("no deadline") }
     }
 }
