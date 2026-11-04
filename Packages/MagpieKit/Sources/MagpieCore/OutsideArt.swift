@@ -98,6 +98,70 @@ public enum OutsideArtPolicy {
         return !local.contains { name.hasSuffix($0) }
     }
 
+    /// S14 L4 (D119): whether a looked-up address (4 bytes IPv4, 16 bytes IPv6) is a usable public one: never this
+    /// network, loopback, private (RFC 1918), CGNAT, link-local, multicast or reserved, unique-local IPv6, or an IPv4 one of
+    /// those inside IPv4-mapped or NAT64 IPv6. Anything else (not 4 or 16 bytes) is refused.
+    public static func isPublicAddress(_ bytes: [UInt8]) -> Bool {
+        if bytes.count == 16 {
+            let prefix = Array(bytes[0..<12])
+            if prefix == [UInt8](repeating: 0, count: 10) + [0xff, 0xff]               // ::ffff:a.b.c.d
+                || prefix == [0x00, 0x64, 0xff, 0x9b] + [UInt8](repeating: 0, count: 8) {   // 64:ff9b::a.b.c.d
+                return isPublicAddress(Array(bytes[12..<16]))
+            }
+            if bytes.allSatisfy({ $0 == 0 }) || bytes == [UInt8](repeating: 0, count: 15) + [1] { return false }   // :: and ::1
+            if bytes[0] & 0xfe == 0xfc { return false }                     // fc00::/7 unique local
+            if bytes[0] == 0xfe, bytes[1] & 0xc0 == 0x80 { return false }   // fe80::/10 link-local
+            if bytes[0] == 0xfe, bytes[1] & 0xc0 == 0xc0 { return false }   // fec0::/10 site-local (deprecated)
+            if bytes[0] == 0xff { return false }                            // multicast
+            if prefix.prefix(12).allSatisfy({ $0 == 0 }) { return false }   // ::a.b.c.d (IPv4-compatible, deprecated)
+            return true
+        }
+        guard bytes.count == 4 else { return false }
+        let (a, b) = (bytes[0], bytes[1])
+        switch a {
+        case 0, 10, 127: return false
+        case 100 where b & 0xc0 == 64: return false        // 100.64.0.0/10 CGNAT
+        case 169 where b == 254: return false              // link-local
+        case 172 where b & 0xf0 == 16: return false        // 172.16.0.0/12
+        case 192 where b == 168: return false              // 192.168.0.0/16
+        case 192 where b == 0 && bytes[2] == 0: return false   // 192.0.0.0/24 protocol assignments
+        case 198 where b & 0xfe == 18: return false        // 198.18.0.0/15 benchmarking
+        case 224...255: return false                       // multicast, reserved, broadcast
+        default: return true
+        }
+    }
+
+    /// S14 L4: the host's addresses as the system resolves them (nil when it can't). Blocking: call off the main thread.
+    public static func systemResolve(_ host: String) -> [[UInt8]]? {
+        var hints = addrinfo()
+        hints.ai_family = AF_UNSPEC
+        hints.ai_socktype = SOCK_STREAM
+        var list: UnsafeMutablePointer<addrinfo>?
+        guard getaddrinfo(host, "443", &hints, &list) == 0, let first = list else { return nil }
+        defer { freeaddrinfo(first) }
+        var addresses: [[UInt8]] = []
+        var next: UnsafeMutablePointer<addrinfo>? = first
+        while let info = next {
+            if let addr = info.pointee.ai_addr {
+                switch Int32(info.pointee.ai_family) {
+                case AF_INET:
+                    addr.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { sin in
+                        var a = sin.pointee.sin_addr
+                        addresses.append(withUnsafeBytes(of: &a) { Array($0) })
+                    }
+                case AF_INET6:
+                    addr.withMemoryRebound(to: sockaddr_in6.self, capacity: 1) { sin6 in
+                        var a = sin6.pointee.sin6_addr
+                        addresses.append(withUnsafeBytes(of: &a) { Array($0) })
+                    }
+                default: break
+                }
+            }
+            next = info.pointee.ai_next
+        }
+        return addresses
+    }
+
     /// Whether a redirect from `original` to `target` is followed: HTTPS only, to archive.org's servers or the same
     /// host. Nowhere else, and never down to http.
     public static func allowsRedirect(from original: URL, to target: URL) -> Bool {
@@ -249,18 +313,42 @@ public struct OutsideArtTransport: HTTPTransport {
     private static let shared = URLSession(configuration: configuration, delegate: OutsideArtRedirects.shared,
                                            delegateQueue: nil)
     private let session: URLSession
+    private let resolve: @Sendable (String) -> [[UInt8]]?
 
-    public init() { session = Self.shared }
+    public init() {
+        session = Self.shared
+        resolve = OutsideArtPolicy.systemResolve
+    }
 
-    /// Tests: the same transport over `configuration` (a local URLProtocol stub in place of the internet).
-    public init(configuration: URLSessionConfiguration) {
+    /// Tests: the same transport over `configuration` (a local URLProtocol stub in place of the internet), and the host
+    /// lookup given (S14 L4: tests never ask DNS).
+    public init(configuration: URLSessionConfiguration,
+                resolve: @escaping @Sendable (String) -> [[UInt8]]? = OutsideArtPolicy.systemResolve) {
         session = URLSession(configuration: configuration, delegate: OutsideArtRedirects.shared, delegateQueue: nil)
+        self.resolve = resolve
+    }
+
+    /// S14 L4 (D119): an artist picture's host (any host but the Cover Art Archive's, which are fixed) is looked up
+    /// first; when it can't be, or any of its addresses is on the owner's network, nothing is sent. (The system looks
+    /// the host up again to connect, so a name that changes its answer in between isn't caught: the name rules in
+    /// `isPublicHost` and HTTPS stay the main guard.)
+    private func refusesHost(of url: URL?) async -> Bool {
+        guard let host = url?.host()?.lowercased(), !host.isEmpty else { return true }
+        if host == "coverartarchive.org" || OutsideArtPolicy.isArchiveHost(host) { return false }
+        let resolve = resolve
+        let addresses = await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async { continuation.resume(returning: resolve(host)) }
+        }
+        guard let addresses, !addresses.isEmpty else { return true }
+        return !addresses.allSatisfy(OutsideArtPolicy.isPublicAddress)
     }
 
     /// The configuration in use (tests check it keeps nothing).
     public var sessionConfiguration: URLSessionConfiguration { session.configuration }
 
     public func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        if await refusesHost(of: request.url) { throw URLError(.cannotFindHost) }
+        try Task.checkCancellation()
         let (bytes, response) = try await session.bytes(for: request, delegate: OutsideArtRedirects.shared)
         guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
         guard http.statusCode == 200 else { return (Data(), http) }
