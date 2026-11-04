@@ -35,6 +35,10 @@ from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
+# The sha256 of this file, reported by /__stub/ping so start.sh can tell a stub left running from older code and restart it.
+with open(os.path.abspath(__file__), "rb") as _f:
+    SOURCE_SHA = hashlib.sha256(_f.read()).hexdigest()
+
 USERNAME = "magpie"
 PASSWORD = "stub-aurral-password"
 FEATURES_213 = ["discover", "flows", "playlistCoverTemplates", "activity", "review", "trackDownloads", "linkSearch",
@@ -327,7 +331,7 @@ class Handler(BaseHTTPRequestHandler):
         path = split.path
         query = {k: v[0] for k, v in parse_qs(split.query, keep_blank_values=True).items()}
         if path == "/__stub/ping":
-            return self.reply(200, {"ok": True})
+            return self.reply(200, {"ok": True, "source": SOURCE_SHA})
         if path == "/__stub/log":
             with LOCK:
                 return self.reply(200, {"requests": list(STATE["log"])})
