@@ -92,6 +92,7 @@ extension AppModel {
         ledger = nil
         requestStore = nil
         if let retired { Task { await retired.stop() } }
+        songActions.requestsLoaded = false   // round 14 A3 (I1): not until the new runner publishes its list
         guard session != nil, let client = lidarrClient else {
             requests = []
             followPendingAdds(instance: nil)   // round 14 A3
@@ -133,6 +134,7 @@ extension AppModel {
                 guard let self, self.runner === runner else { return }
                 let wasWaiting = self.hasUnavailableWait
                 self.requests = list
+                self.songActions.requestsLoaded = true   // round 14 A3 (I1): this runner's list is in
                 if !self.songActions.pending.isEmpty { Task { await self.evaluatePendingAdds() } }   // round 14 A3
                 // I4: a request just started waiting: re-check the connection so a rejected key is named.
                 if !wasWaiting, self.hasUnavailableWait, !self.isOffline { Task { _ = await self.lidarrAudit() } }

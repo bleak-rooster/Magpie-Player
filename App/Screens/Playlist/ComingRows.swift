@@ -37,7 +37,7 @@ private struct ComingRow: View {
 
     var body: some View {
         let p = themed.palette
-        let failed = step == .failed
+        let failed = step == .failed || step == .requestGone   // requestGone only once the list is in (pendingStep)
         let status = SongActionsCopy.status(step, playlistGone: add.playlistGone == true)
         HStack(spacing: Tokens.Spacing.m) {
             SleeveArt(image: nil, side: 48).opacity(0.5).accessibilityHidden(true)

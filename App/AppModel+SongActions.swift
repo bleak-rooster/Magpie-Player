@@ -27,6 +27,8 @@ enum SongActionsCopy {
     static let coming = "Coming"
     static let noPreview = "No preview available"
     static let couldntSave = "Couldn\u{2019}t save it this time. Try again in a moment."
+    static func alreadyComing(_ playlist: String) -> String { "Already coming to \(playlist)" }
+    static func alreadyIn(_ playlist: String) -> String { "Already in \(playlist)" }
 
     static func savedComing(_ playlist: String) -> String { "Coming \u{00B7} joins \(playlist) when it\u{2019}s here" }
 
@@ -34,6 +36,7 @@ enum SongActionsCopy {
     static func status(_ step: PendingAddStep, playlistGone: Bool) -> String {
         switch step {
         case .failed: playlistGone ? "That playlist can\u{2019}t take it any more" : "Couldn\u{2019}t bring it in"
+        case .requestGone: "Couldn\u{2019}t bring it in"
         case .waiting(let state?): RequestCopy.status(state)
         case .waiting(nil), .lookUp: "Coming with the artist"
         case .keep: "Adding to your library\u{2026}"
@@ -88,6 +91,9 @@ struct SavePick: Identifiable {
     let adder = DiscoverArtistAdder()
     /// Save to playlist, Whole artist: the Add, then the pending add.
     var wholeArtistAdd: AddFlowRequest?
+    /// Fix round 1: Whole artist's Add, held until the playlist picker has finished closing (its `onDismiss`), so the
+    /// Add is never presented during the picker's dismissal (SwiftUI drops it then).
+    @ObservationIgnored var queuedAdd: AddFlowRequest?
     /// The Just this song / Whole artist question.
     var choosing: OutsideSong?
     var picking: SavePick?
@@ -103,6 +109,17 @@ struct SavePick: Identifiable {
     @ObservationIgnored var store: PlaylistAddStore?
     @ObservationIgnored var loadedScope: String?
     @ObservationIgnored var evaluating = false
+    /// Fix round 1 (M4): a check asked for while one runs; it runs next.
+    @ObservationIgnored var evaluateAgain = false
+    @ObservationIgnored var forceAgain = false
+    /// Fix round 1 (I1): the current runner has published its requests at least once. Until then a request missing from
+    /// the list means "not read yet", never "stopped"; nothing is checked.
+    var requestsLoaded = false
+    /// Fix round 1 (M3): how often Whole artist adds are checked even when nothing else happens, and how long one
+    /// waits between two library lookups.
+    @ObservationIgnored var checkEvery: Duration = .seconds(300)
+    @ObservationIgnored var lookUpEvery: TimeInterval = 600
+    @ObservationIgnored var timer: Task<Void, Never>?
     /// Finds this session already asked to keep (the runner proves each Keep again; never asked twice from here).
     @ObservationIgnored var keepAsked: Set<RequestID> = []
     /// Every Keep asked from here, in order (tests).
@@ -134,7 +151,15 @@ struct SavePick: Identifiable {
         playlistSongs = Array((fresh + playlistSongs).prefix(2_000))
     }
 
+    /// The picker has closed: Whole artist's Add, if one waits, now.
+    func presentQueuedAdd() {
+        guard let add = queuedAdd else { return }
+        queuedAdd = nil
+        wholeArtistAdd = add
+    }
+
     func forget() {
+        timer?.cancel(); timer = nil; queuedAdd = nil; requestsLoaded = false; evaluateAgain = false
         pending = []; store = nil; loadedScope = nil; keepAsked = []; lookedUpAt = [:]
         artistPreviews = [:]; playlistSongs = []; previewReads.values.forEach { $0.cancel() }; previewReads = [:]
         trying = nil; wholeArtistAdd = nil; choosing = nil; picking = nil; unmatched = nil
@@ -215,6 +240,17 @@ extension AppModel {
     @discardableResult
     func save(_ song: OutsideSong, choice: SaveChoice, to playlist: Playlist) async -> String? {
         guard canEdit(playlist) else { return PlaylistEditError.notYours.message }
+        // Fix round 1 (M5): the same song for the same playlist is already coming, or already there.
+        let asked = ExternalRecording(recordingMBID: song.recordingMBID, artistMBID: song.artistMBID, title: song.title,
+                                      artist: song.artist, releaseTitle: song.album, duration: song.duration, source: .lidarr)
+        if songActions.pending.contains(where: { $0.playlistId == playlist.id && Self.sameSong($0.recording, asked) }) {
+            return SongActionsCopy.alreadyComing(playlist.name)
+        }
+        // A song the library has already goes straight on (no Find, no Add).
+        if let copy = await libraryCopy(of: asked) {
+            if let ids = try? await songIds(in: playlist), ids.contains(copy.id) { return SongActionsCopy.alreadyIn(playlist.name) }
+            do { try await add([copy.id], to: playlist); return nil } catch { return PlaylistEditError.message(for: error) }
+        }
         switch choice {
         case .justThisSong:
             guard justThisSongAvailable else { return SongActionsCopy.noJustThisSong }
@@ -232,17 +268,15 @@ extension AppModel {
                 return TryCopy.message(for: error)
             }
         case .wholeArtist:
-            let recording = (try? await resolveOutsideSong(song))
-                ?? ExternalRecording(artistMBID: song.artistMBID, title: song.title, artist: song.artist,
-                                     releaseTitle: song.album, duration: song.duration, source: .lidarr)
-            guard let mbid = try? await OutsideSongMatch.artist(OutsideSong(recording),
-                                                                links: editorialLinks ?? { _, _, _ in (nil, nil) }) else {
+            // Only the artist's MBID is needed (the server's links); the song is then looked for by artist, title and
+            // length when it lands. No MusicBrainz read for it.
+            guard let mbid = try? await OutsideSongMatch.artist(song, links: editorialLinks ?? { _, _, _ in (nil, nil) }) else {
                 return SongActionsCopy.unmatchedArtist
             }
-            let pending = PendingPlaylistAdd(playlistId: playlist.id, playlistName: playlist.name, recording: recording,
+            let pending = PendingPlaylistAdd(playlistId: playlist.id, playlistName: playlist.name, recording: asked,
                                              requestId: nil, createdAt: songActions.now())
-            songActions.wholeArtistAdd = addRequest(artist: song.artist,
-                                                    candidates: [ArtistLidarr.Candidate(mbid: mbid, name: song.artist)]) { [weak self] mbid, choices in
+            songActions.queuedAdd = addRequest(artist: song.artist,
+                                               candidates: [ArtistLidarr.Candidate(mbid: mbid, name: song.artist)]) { [weak self] mbid, choices in
                 guard let self else { throw ArtistLidarrError.failed }
                 do {
                     _ = try await self.addArtist(mbid: mbid, choices: choices)
@@ -255,11 +289,21 @@ extension AppModel {
         }
     }
 
+    /// The same song for M5: the same recording MBID when both have one, else artist, title and length (3 s).
+    nonisolated static func sameSong(_ a: ExternalRecording, _ b: ExternalRecording) -> Bool {
+        if let x = a.recordingMBID, let y = b.recordingMBID { return x == y }
+        return SongIdentity.same(title: a.title, artist: a.artist, duration: a.duration,
+                                 as: b.title, artist: b.artist, duration: b.duration)
+    }
+
     // MARK: - Pending playlist adds (Decision 5, D101)
 
-    /// Follows the connected Lidarr's file (called when the runner is rebuilt).
-    func followPendingAdds(instance: String?) {
-        guard songActions.loadedScope != instance else { return }
+    /// Follows the connected Lidarr's file (called when the runner is rebuilt), and checks Whole artist adds every
+    /// `checkEvery` while there is one (fix round 1, M3: their songs land with no request moving).
+    func followPendingAdds(instance: String?, restart: Bool = false) {
+        guard songActions.loadedScope != instance || restart else { return }
+        songActions.timer?.cancel()
+        songActions.timer = nil
         songActions.pending = []
         songActions.keepAsked = []
         songActions.loadedScope = instance
@@ -271,6 +315,16 @@ extension AppModel {
             guard let self, self.songActions.store === store else { return }
             self.songActions.pending = saved + self.songActions.pending.filter { p in !saved.contains { $0.id == p.id } }
             await self.evaluatePendingAdds()
+        }
+        let every = songActions.checkEvery
+        songActions.timer = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: every)
+                guard !Task.isCancelled, let self else { return }
+                if self.songActions.pending.contains(where: { $0.requestId == nil && !$0.isFailed }) {
+                    await self.evaluatePendingAdds()
+                }
+            }
         }
     }
 
@@ -288,40 +342,62 @@ extension AppModel {
 
     /// The pending adds for one playlist (its "Coming" rows), with what each is doing.
     func pendingAdds(for playlistId: String) -> [(add: PendingPlaylistAdd, step: PendingAddStep)] {
-        songActions.pending.filter { $0.playlistId == playlistId }.map { add in
-            (add, PendingPlaylistAdds.step(add, request: add.requestId.flatMap(magpieRequest), now: songActions.now()))
-        }
+        songActions.pending.filter { $0.playlistId == playlistId }.map { add in (add, pendingStep(add)) }
+    }
+
+    /// The add's step; a missing request reads as waiting until the runner's list is in (fix round 1, I1).
+    func pendingStep(_ add: PendingPlaylistAdd) -> PendingAddStep {
+        let step = PendingPlaylistAdds.step(add, request: add.requestId.flatMap(magpieRequest), now: songActions.now())
+        return step == .requestGone && !songActions.requestsLoaded ? .waiting(nil) : step
     }
 
     /// One pass over the pending adds: keep arrived finds, add arrived songs, look Whole artist songs up (every 10 min),
     /// mark the stopped ones. After each requests update, and when a playlist page opens.
     func evaluatePendingAdds(force: Bool = false) async {
-        guard !songActions.evaluating, session != nil, !isOffline, !songActions.pending.isEmpty else { return }
+        guard session != nil, !isOffline, !songActions.pending.isEmpty else { return }
+        // Fix round 1 (M4): asked for while a pass runs: it runs next (one more pass, however many asks).
+        guard !songActions.evaluating else {
+            songActions.evaluateAgain = true
+            songActions.forceAgain = songActions.forceAgain || force
+            return
+        }
         songActions.evaluating = true
         defer { songActions.evaluating = false }
+        var force = force
+        repeat {
+            songActions.evaluateAgain = false
+            await evaluatePass(force: force)
+            force = songActions.forceAgain
+            songActions.forceAgain = false
+        } while songActions.evaluateAgain
+    }
+
+    private func evaluatePass(force: Bool) async {
         var dirty = false
         for add in songActions.pending {
             let now = songActions.now()
             switch PendingPlaylistAdds.step(add, request: add.requestId.flatMap(magpieRequest), now: now) {
-            case .waiting:
-                continue
+            case .waiting, .requestGone:
+                continue   // I1: a missing request is never saved as failed
             case .failed:
                 if add.failedAt == nil { update(add.id) { $0.failedAt = now }; dirty = true }
             case .keep(let id):
-                guard !songActions.keepAsked.contains(id) else { continue }
+                // I1: only on the current runner's list.
+                guard songActions.requestsLoaded, !songActions.keepAsked.contains(id) else { continue }
                 songActions.keepAsked.insert(id)
                 songActions.keepAttempts.append(id)
                 // The runner proves the Keep on fresh state. Not possible right now: asked again on a later pass; refused
-                // (switched off, not set up, a collision is handled by the step): the row says so, with Retry.
+                // (switched off, not set up): the row says so, with Retry.
                 do { _ = try await keepFind(id) } catch RequestRunner.KeepError.unavailable {
                     songActions.keepAsked.remove(id)
                 } catch {
                     if !(magpieRequest(id)?.collision ?? false) { update(add.id) { $0.failedAt = now }; dirty = true }
                 }
             case .add(let songId):
+                guard songActions.requestsLoaded else { continue }
                 if await apply(add, songId: songId) { dirty = true }
             case .lookUp:
-                if !force, let at = songActions.lookedUpAt[add.id], now.timeIntervalSince(at) < 600 { continue }
+                if !force, let at = songActions.lookedUpAt[add.id], now.timeIntervalSince(at) < songActions.lookUpEvery { continue }
                 songActions.lookedUpAt[add.id] = now
                 if let song = await libraryCopy(of: add.recording), await apply(add, songId: song.id) { dirty = true }
             }
@@ -348,10 +424,14 @@ extension AppModel {
             }
             return false
         }
-        // Sent before (a relaunch, a dropped answer): read first, never add twice.
-        if add.sendingSongId == songId, let ids = try? await songIds(in: playlist), ids.contains(songId) {
-            songActions.pending.removeAll { $0.id == add.id }
-            return true
+        // Sent before (a relaunch, a dropped answer): read first, never add twice. Fix round 1 (M1): a read that fails
+        // sends nothing; the next pass reads again.
+        if add.sendingSongId == songId {
+            guard let ids = try? await songIds(in: playlist) else { return false }
+            if ids.contains(songId) {
+                songActions.pending.removeAll { $0.id == add.id }
+                return true
+            }
         }
         update(add.id) { $0.sendingSongId = songId }
         await savePending()

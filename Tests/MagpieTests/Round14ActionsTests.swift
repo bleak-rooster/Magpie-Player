@@ -5,6 +5,7 @@ import ListenBrainzKit
 import MagpieCore
 import MagpieTestSupport
 import NavidromeKit
+import os
 import Requests
 import Search
 import Testing
@@ -142,9 +143,15 @@ private func queryValue(_ r: URLRequest, _ name: String) -> String? {
     @Test func wholeArtistAsksTheUsualAddAndWaitsOnlyOnceItWentThrough() async throws {
         let model = try await model(lidarr: true)
         defer { model.signOut() }
-        catalog(model, length: 196)
+        model.outsideCatalogStore = OutsideCatalog(releaseGroups: { _ in [] }, releases: { _ in
+            Issue.record("Whole artist never reads MusicBrainz")
+            return []
+        })
         let playlist = try #require(try await model.editablePlaylists().first { $0.id == "pl-road" })
         #expect(await model.save(harbour, choice: .wholeArtist, to: playlist) == nil)
+        // Fix round 1: the Add waits for the picker to finish closing (the presenter's onDismiss hands it over).
+        #expect(model.songActions.wholeArtistAdd == nil)
+        model.songActions.presentQueuedAdd()
         let add = try #require(model.songActions.wholeArtistAdd)
         #expect(add.artist == "Stub Arrows" && add.candidates.map(\.mbid) == [stubArtist])
         #expect(model.songActions.pending.isEmpty, "nothing waits before the Add is confirmed")
@@ -185,6 +192,7 @@ private func queryValue(_ r: URLRequest, _ name: String) -> String? {
         addSong("m-harbour", duration: 196)
         let request = readyRequest()
         model.requests = [request]
+        model.songActions.requestsLoaded = true   // the list stands in for a runner's published one
         model.songActions.pending = [pending(request: request.id)]
         #expect(model.pendingAdds(for: "pl-road").first?.step == .add(songId: "m-harbour"))
         await model.evaluatePendingAdds()
@@ -199,6 +207,7 @@ private func queryValue(_ r: URLRequest, _ name: String) -> String? {
         defer { model.signOut() }
         let find = readyRequest(find: true)
         model.requests = [find]
+        model.songActions.requestsLoaded = true
         model.songActions.pending = [pending(request: find.id)]
         await model.evaluatePendingAdds()
         #expect(model.songActions.keepAttempts.first == find.id, "Just this song: kept on arrival (Decision 4)")
@@ -218,6 +227,7 @@ private func queryValue(_ r: URLRequest, _ name: String) -> String? {
         defer { model.signOut() }
         let failed = readyRequest(state: .failed(reason: .noRelease))
         model.requests = [failed]
+        model.songActions.requestsLoaded = true
         let add = pending(request: failed.id)
         model.songActions.pending = [add]
         await model.evaluatePendingAdds()
@@ -233,6 +243,7 @@ private func queryValue(_ r: URLRequest, _ name: String) -> String? {
         defer { model.signOut() }
         addSong("m-live", duration: 230)   // same title and artist, a longer (live) take
         let add = pending(request: nil, mbid: nil)
+        model.songActions.requestsLoaded = true
         model.songActions.pending = [add]
         await model.evaluatePendingAdds(force: true)
         #expect(playlistWrites.isEmpty && model.songActions.pending.count == 1)
@@ -249,6 +260,7 @@ private func queryValue(_ r: URLRequest, _ name: String) -> String? {
         nav.lists["pl-road"]?.songs.append("m-harbour")   // the add landed; its answer was lost
         let request = readyRequest()
         model.requests = [request]
+        model.songActions.requestsLoaded = true   // the list stands in for a runner's published one
         var add = pending(request: request.id)
         add.sendingSongId = "m-harbour"
         model.songActions.pending = [add]
@@ -262,6 +274,7 @@ private func queryValue(_ r: URLRequest, _ name: String) -> String? {
         addSong("m-harbour", duration: 196)
         let request = readyRequest()
         model.requests = [request]
+        model.songActions.requestsLoaded = true   // the list stands in for a runner's published one
         var add = pending(request: request.id)
         add.playlistId = "pl-gone"
         model.songActions.pending = [add]
@@ -361,6 +374,164 @@ private func queryValue(_ r: URLRequest, _ name: String) -> String? {
         model.updatePreferences { $0.layout.artistTopSongs = .aurral }
         #expect(ArtistTopSongsView.summary(model) == "Automatic", "a saved Aurral reads as what happens")
         #expect(ArtistTopSongsSource.choices(aurral: false).map(SongActionsCopy.sourceTitle) == ["Automatic", "ListenBrainz", "Your library"])
+    }
+
+    // MARK: - Fix round 1
+
+    private func scope(_ base: URL) -> String {
+        LidarrClient(base: base, apiKey: "dev-key", transport: transport).instanceScope
+    }
+
+    /// Saved as a previous run left them: a request and the add linked to it, for the Lidarr at `base`.
+    private func saveRun(_ request: MagpieRequest, _ add: PendingPlaylistAdd, base: URL = lidarrBase) async throws {
+        try await RequestStore(fileURL: RequestStore.defaultURL(in: tmp, instance: scope(base))).save([request])
+        try await PlaylistAddStore(fileURL: PlaylistAddStore.defaultURL(in: tmp, instance: scope(base))).save([add])
+    }
+
+    private func savedAdds(base: URL = lidarrBase) async throws -> [PendingPlaylistAdd] {
+        try await PlaylistAddStore(fileURL: PlaylistAddStore.defaultURL(in: tmp, instance: scope(base))).load()
+    }
+
+    /// I1: after a relaunch the adds file is read before the runner has published its requests. The add waits (never
+    /// saved as failed) and is added once the runner's list shows the song Ready. No hand-set `requests`.
+    @Test func afterARelaunchALinkedAddWaitsForTheRunnersListThenIsAdded() async throws {
+        addSong("m-harbour", duration: 196)
+        let request = readyRequest()
+        try await saveRun(request, pending(request: request.id))
+        let model = try await model(lidarr: true)
+        defer { model.signOut() }
+        #expect(await eventually(10) { self.playlistWrites.count == 1 }, "added once the runner's list is in")
+        #expect(queryValue(try #require(playlistWrites.first), "songIdToAdd") == "m-harbour")
+        #expect(model.songActions.pending.isEmpty && model.songActions.requestsLoaded)
+    }
+
+    /// I1: a reconnect, and a switch to another Lidarr and back, never mark an add whose request is still on its way.
+    @Test func aReconnectOrSwitchNeverMarksAWaitingAddFailed() async throws {
+        let other = URL(string: "http://192.168.1.3:8686")!
+        transport.navidrome.stub(pathSuffix: "/api/v1/system/status",
+                                 body: Data(#"{"version":"3.2.0","instanceName":"Lidarr","authentication":"forms"}"#.utf8))
+        let request = readyRequest(state: .downloading(progress: 0.3))
+        let add = pending(request: request.id)
+        try await saveRun(request, add)
+        let model = try await model(lidarr: true)
+        defer { model.signOut() }
+        #expect(await eventually(10) { model.songActions.requestsLoaded && model.songActions.pending.count == 1 })
+        await model.evaluatePendingAdds(force: true)
+        #expect(model.pendingAdds(for: "pl-road").first?.step == .waiting(.downloading(progress: 0.3)))
+        model.disconnectLidarr()
+        _ = try await model.connectLidarr(base: lidarrBase, apiKey: "dev-key")
+        #expect(await eventually(10) { model.songActions.requestsLoaded && model.songActions.pending.count == 1 })
+        _ = try await model.connectLidarr(base: other, apiKey: "dev-key")
+        #expect(await eventually(10) { model.songActions.requestsLoaded })
+        #expect(model.songActions.pending.isEmpty, "the other Lidarr has none")
+        _ = try await model.connectLidarr(base: lidarrBase, apiKey: "dev-key")
+        #expect(await eventually(10) { model.songActions.requestsLoaded && model.songActions.pending.count == 1 })
+        await model.evaluatePendingAdds(force: true)
+        #expect(model.songActions.pending.first?.failedAt == nil)
+        #expect(try await savedAdds().first?.failedAt == nil, "never saved as failed")
+        #expect(playlistWrites.isEmpty)
+    }
+
+    /// I1: before the runner's list is in, a missing request reads as waiting; after, as stopped (Retry, Remove), and
+    /// still nothing is saved as failed.
+    @Test func aMissingRequestWaitsUntilTheListIsIn() async throws {
+        let model = try await model()
+        defer { model.signOut() }
+        let add = pending(request: RequestID())
+        model.songActions.pending = [add]
+        #expect(model.pendingAdds(for: "pl-road").first?.step == .waiting(nil))
+        model.songActions.requestsLoaded = true
+        await model.evaluatePendingAdds()
+        #expect(model.pendingAdds(for: "pl-road").first?.step == .requestGone)
+        #expect(model.songActions.pending.first?.failedAt == nil)
+    }
+
+    /// M1: when the read-first can't be done, nothing is sent; the next pass reads again.
+    @Test func aFailedReadFirstSendsNothing() async throws {
+        let reads = OSAllocatedUnfairLock(initialState: 0)
+        transport.navidrome.stub(pathSuffix: "/rest/getPlaylist") { r in
+            let n = reads.withLock { $0 += 1; return $0 }
+            if n == 1 { return .init(status: 500) }
+            return .init(status: 200, body: okBody(#""playlist":{"id":"pl-road","name":"Road trip","owner":"admin","readonly":false,"entry":[]}"#))
+        }
+        let model = try await model()
+        defer { model.signOut() }
+        addSong("m-harbour", duration: 196)
+        let request = readyRequest()
+        model.requests = [request]
+        model.songActions.requestsLoaded = true
+        var add = pending(request: request.id)
+        add.sendingSongId = "m-harbour"
+        model.songActions.pending = [add]
+        await model.evaluatePendingAdds()
+        #expect(playlistWrites.isEmpty && model.songActions.pending.count == 1)
+    }
+
+    /// M2: New playlist… uses the id the new playlist got, never a playlist of the same name.
+    @Test func aNewPlaylistIsKnownByItsIdNotItsName() async throws {
+        transport.navidrome.stub(pathSuffix: "/rest/createPlaylist") { r in
+            let name = queryValue(r, "name") ?? ""
+            self.nav.lists["pl-new"] = (name, [])
+            return .init(status: 200, body: okBody(#""playlist":{"id":"pl-new","name":"\#(name)","owner":"admin","songCount":0}"#))
+        }
+        let model = try await model()
+        defer { model.signOut() }
+        let id = try await model.createPlaylist(named: "Road trip", songIds: [])
+        #expect(id == "pl-new", "not the older Road trip (pl-road)")
+    }
+
+    /// M3: a Whole artist add is checked on a timer too, not only when requests move or the page opens.
+    @Test func wholeArtistAddsAreCheckedOnATimer() async throws {
+        let model = try await model(lidarr: true)
+        defer { model.signOut() }
+        #expect(await eventually(10) { model.songActions.requestsLoaded })
+        model.songActions.checkEvery = .milliseconds(200)
+        model.songActions.lookUpEvery = 0
+        model.followPendingAdds(instance: "timer", restart: true)
+        try await Task.sleep(for: .milliseconds(500))   // the file's read (and its one check) are done: only the timer is left
+        addSong("m-harbour", duration: 196)
+        model.songActions.pending = [pending(request: nil, mbid: nil)]
+        #expect(await eventually(10) { self.playlistWrites.count == 1 })
+    }
+
+    /// M4: a check asked for while one runs is run next, not dropped.
+    @Test func aCheckAskedForDuringOneRunsNext() async throws {
+        let model = try await model()
+        defer { model.signOut() }
+        model.songActions.requestsLoaded = true
+        model.songActions.evaluating = true
+        addSong("m-harbour", duration: 196)
+        model.songActions.pending = [pending(request: nil, mbid: nil)]
+        await model.evaluatePendingAdds()
+        #expect(model.songActions.evaluateAgain && playlistWrites.isEmpty)
+        model.songActions.evaluating = false
+        await model.evaluatePendingAdds()
+        #expect(!model.songActions.evaluateAgain && playlistWrites.count == 1)
+    }
+
+    /// M5: saving the same song to the same playlist again does nothing: already coming, or already there.
+    @Test func savingTheSameSongTwiceIsANoOp() async throws {
+        let model = try await model(lidarr: true)
+        defer { model.signOut() }
+        let playlist = try #require(try await model.editablePlaylists().first { $0.id == "pl-road" })
+        model.songActions.pending = [pending(request: nil, mbid: nil)]
+        #expect(await model.save(harbour, choice: .wholeArtist, to: playlist) == SongActionsCopy.alreadyComing("Road trip"))
+        #expect(model.songActions.queuedAdd == nil && model.songActions.pending.count == 1)
+        model.songActions.pending = []
+        addSong("m-harbour", duration: 196)
+        nav.lists["pl-road"]?.songs.append("m-harbour")
+        #expect(await model.save(harbour, choice: .wholeArtist, to: playlist) == SongActionsCopy.alreadyIn("Road trip"))
+        #expect(model.songActions.queuedAdd == nil && playlistWrites.isEmpty)
+    }
+
+    /// M5: a song the library already has goes straight onto the playlist (no Find, no Add).
+    @Test func aSongTheLibraryHasIsAddedAtOnce() async throws {
+        let model = try await model(lidarr: true)
+        defer { model.signOut() }
+        let playlist = try #require(try await model.editablePlaylists().first { $0.id == "pl-road" })
+        addSong("m-harbour", duration: 197)
+        #expect(await model.save(harbour, choice: .wholeArtist, to: playlist) == nil)
+        #expect(playlistWrites.count == 1 && model.songActions.queuedAdd == nil && model.songActions.pending.isEmpty)
     }
 
     // MARK: - Words

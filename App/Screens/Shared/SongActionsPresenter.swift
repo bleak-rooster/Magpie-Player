@@ -15,7 +15,8 @@ struct SongActionsPresenter: ViewModifier {
         @Bindable var adder = model.songActions.adder
         content
             .sheet(item: $actions.trying) { TrySheet(target: $0) }
-            .sheet(item: $actions.picking) { SaveToPlaylistSheet(pick: $0) }
+            // Fix round 1: Whole artist's Add is presented once the picker has finished closing.
+            .sheet(item: $actions.picking, onDismiss: { actions.presentQueuedAdd() }) { SaveToPlaylistSheet(pick: $0) }
             .addFlow($adder.addFlow) { adder.finished($0); notify($0) }
             .addFlow($actions.wholeArtistAdd) { notify($0) }
             .onChange(of: adder.message) {
@@ -146,8 +147,10 @@ struct SaveToPlaylistSheet: View {
         guard !name.isEmpty, !busy else { return }
         busy = true
         do {
-            try await model.createPlaylist(named: name, songIds: [])
-            let made = try await model.editablePlaylists().first { $0.name == name }
+            // Fix round 1 (M2): by the id the new playlist got, never by its name (an older one may share it).
+            let id = try await model.createPlaylist(named: name, songIds: [])
+            var made: Playlist?
+            if let id { made = try await model.editablePlaylists().first { $0.id == id } }
             busy = false
             if let made { await save(to: made) } else { failure = SongActionsCopy.couldntSave }
         } catch {
