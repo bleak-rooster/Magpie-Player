@@ -60,30 +60,18 @@ extension HomeCopy {
     }
 }
 
-/// The top of Home: "Good evening" and the Edit Home button.
+/// The top of Home: "Good evening". Edit Home is the toolbar's button and the one at the bottom (fix round 1: no third).
 struct HomeGreeting: View {
-    let edit: () -> Void
     private let themed = Themed()
 
     var body: some View {
         TimelineView(.everyMinute) { context in
-            HStack(alignment: .firstTextBaseline) {
-                Text(HomeCopy.greeting(hour: Calendar.current.component(.hour, from: context.date)))
-                    .magpieDisplay(.title)
-                    .accessibilityAddTraits(.isHeader)
-                    .accessibilityIdentifier("home-greeting")
-                Spacer(minLength: Tokens.Spacing.s)
-                Button(action: edit) {
-                    Image(systemName: "slider.horizontal.3")
-                        .font(.title3)
-                        .frame(minWidth: Tokens.minHitSize, minHeight: Tokens.minHitSize)
-                        .contentShape(Rectangle())
-                }
-                .foregroundStyle(themed.palette.accentInkColor)
-                .accessibilityLabel("Edit Home")
-                .accessibilityIdentifier("home-greeting-edit")
-            }
-            .foregroundStyle(themed.palette.inkColor)
+            Text(HomeCopy.greeting(hour: Calendar.current.component(.hour, from: context.date)))
+                .magpieDisplay(.title)
+                .foregroundStyle(themed.palette.inkColor)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityAddTraits(.isHeader)
+                .accessibilityIdentifier("home-greeting")
         }
         .padding(.horizontal, Tokens.Spacing.margin)
     }
@@ -132,6 +120,9 @@ struct QuickAccessGrid: View {
                     Button { Task { await start(play, shuffled: false) } } label: { Label("Play", systemImage: "play.fill") }
                     Button { Task { await start(play, shuffled: true) } } label: { Label("Shuffle", systemImage: "shuffle") }
                 }
+                // Fix round 1 (D15): the long press's actions straight from VoiceOver's actions rotor.
+                .accessibilityAction(named: "Play") { Task { await start(play, shuffled: false) } }
+                .accessibilityAction(named: "Shuffle") { Task { await start(play, shuffled: true) } }
                 .accessibilityIdentifier("quick-\(index)")
             }
         }

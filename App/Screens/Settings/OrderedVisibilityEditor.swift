@@ -16,7 +16,7 @@ struct OrderedVisibilityEditor<Item: CaseIterable & RawRepresentable & Hashable 
     private let extra: AnyView
     /// Round 14 A6: a row listed greyed (its service is missing; `footer` says which).
     private let greyed: (Item) -> Bool
-    /// Round 14 A6: a row's own settings (Home: card size and count), shown before its switch.
+    /// Round 14 A6: a row's own settings (Home: card size and count), shown after its switch.
     private let accessory: (Item) -> AnyView?
     /// Round 14 A6: what Reset does and whether there is anything to reset, when more than the list resets (Home).
     private let reset: (() -> Void)?

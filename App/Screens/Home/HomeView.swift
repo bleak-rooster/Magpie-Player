@@ -7,7 +7,7 @@ import SwiftUI
 /// (Settings › Home & Library › Home, or Edit Home at the bottom). Made for you shows only with a listening-history
 /// token (Task 7.1c) and fills in after the library's shelves. Empty sections are left out. Offline (Task 14): "You're
 /// offline", then the Downloaded shelf (albums on the phone).
-/// Round 14 A6 (Spotify-style): the greeting with Edit Home, the filter chips and the quick grid lead by default; each
+/// Round 14 A6 (Spotify-style): the greeting, the filter chips and the quick grid lead by default; each
 /// shelf has its own card size and count, and the provided sections (Recommended, Trending…) come from
 /// `HomeAurralShelves`.
 struct HomeView: View {
@@ -87,7 +87,7 @@ struct HomeView: View {
                         ForEach(sections, id: \.self) { section in
                             switch section {
                             case .madeForYou: madeForYouShelf
-                            case .greeting: HomeGreeting { editsHome = true }
+                            case .greeting: HomeGreeting()
                             case .filterChips: HomeFilterChips(chips: chips, picked: picked) { filter = $0 }
                             case .quickAccess: QuickAccessGrid(tiles: quickTiles(read))
                             default:

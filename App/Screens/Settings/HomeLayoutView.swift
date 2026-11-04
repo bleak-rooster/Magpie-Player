@@ -1,3 +1,4 @@
+import DesignSystem
 import MagpieCore
 import SwiftUI
 
@@ -78,7 +79,7 @@ struct HomeSectionSettingsMenu: View {
         } label: {
             Image(systemName: "ellipsis.circle")
                 .font(.title3)
-                .frame(minWidth: 44, minHeight: 44)
+                .frame(minWidth: Tokens.minHitSize, minHeight: Tokens.minHitSize)
                 .contentShape(Rectangle())
         }
         .accessibilityLabel("\(section.title) settings")

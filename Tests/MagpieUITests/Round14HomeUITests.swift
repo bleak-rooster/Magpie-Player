@@ -81,7 +81,9 @@ final class Round14HomeUITests: XCTestCase {
         shot(app, "home-spotify-style")
 
         // Edit Home from the greeting: Filters off, Recently added's cards large.
-        app.buttons["home-greeting-edit"].tap()
+        // Fix round 1: the greeting carries no Edit Home of its own; the toolbar button (and the bottom one) open it.
+        XCTAssertFalse(app.buttons["home-greeting-edit"].exists, "no third Edit Home control")
+        app.buttons["home-edit-toolbar"].tap()
         let chips = app.switches["layout-filterChips"]
         XCTAssertTrue(chips.waitForExistence(timeout: 10), "the Home editor, as a sheet")
         XCTAssertEqual(chips.value as? String, "1")
@@ -108,7 +110,7 @@ final class Round14HomeUITests: XCTestCase {
         XCTAssertTrue(greeting.exists)
 
         // Reset restores the order, the switches and the settings.
-        app.buttons["home-greeting-edit"].tap()
+        app.buttons["home-edit-toolbar"].tap()
         let reset = app.buttons["layout-reset"]
         XCTAssertTrue(chips.waitForExistence(timeout: 10))
         for _ in 0..<8 where !reset.isHittable { app.swipeUp() }

@@ -140,7 +140,9 @@ import Testing
         #expect(!HomeSection.greeting.hasCardSettings && !HomeSection.filterChips.hasCardSettings)
         #expect(!HomeSection.quickAccess.hasCardSettings && HomeSection.quickAccess.hasCountSetting)
         #expect(HomeSection.recentlyAdded.hasCardSettings && HomeSection.trending.hasCardSettings)
-        #expect(!HomeSection.becauseYouLike.hasCountSetting || HomeSection.becauseYouLike.hasCardSettings)
+        #expect(HomeSection.becauseYouLike.hasCardSettings && HomeSection.becauseYouLike.hasCountSetting)
+        #expect(!HomeSection.greeting.hasCountSetting && !HomeSection.filterChips.hasCountSetting, "chrome has no settings")
+        #expect(HomeSection.allCases.filter(\.hasCardSettings).count == HomeSection.allCases.count - 3, "all but the header")
     }
 
     // MARK: Setups
