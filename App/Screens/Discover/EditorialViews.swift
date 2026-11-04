@@ -153,14 +153,14 @@ struct AddFlowControl: View {
     @State private var phase: AddFlowPhase?
     @State private var explaining = false
     @State private var message: String?
+    @State private var attempt = 0
 
     private var playlistId: String? { added ?? model.aurralFeeds.added[deezerPlaylistId] ?? libraryPlaylistId }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Tokens.Spacing.s) {
-            let shown: AddFlowPhase = adding ? .adding
-                : playlistId == nil ? (model.aurralCanAddFlow ? .ready : .hidden) : (phase ?? .preparing)
-            if let label = shown.label, model.aurralCanAddFlow {
+            if let shown = Self.shown(adding: adding, playlistId: playlistId, canAdd: model.aurralCanAddFlow, phase: phase),
+               let label = shown.label {
                 if shown == .ready {
                     CapsuleButton(label, symbol: shown.symbol) {
                         if model.aurralHasDownloader == false { explaining = true } else { Task { await add() } }
@@ -170,6 +170,11 @@ struct AddFlowControl: View {
                     Label(label, systemImage: shown.symbol)
                         .font(.subheadline.weight(.semibold))
                         .accessibilityIdentifier("add-flow-state")
+                    if shown == .unreadable {   // fix round 2 (N1)
+                        Button(DiscoverPagesCopy.retry) { attempt += 1 }
+                            .font(.footnote.weight(.semibold))
+                            .accessibilityIdentifier("add-flow-retry-read")
+                    }
                 }
             }
             if let playlistId { SyncedFailures(playlistId: playlistId, phase: phase) }
@@ -183,10 +188,19 @@ struct AddFlowControl: View {
         .alert(message ?? "", isPresented: Binding(get: { message != nil }, set: { if !$0 { message = nil } })) {
             Button("OK", role: .cancel) {}
         }
-        .task(id: playlistId) {
+        .task(id: "\(playlistId ?? "")#\(attempt)") {
             guard let playlistId else { return }
             await model.followAddFlow(playlistId: playlistId) { phase = $0 }
         }
+    }
+
+    /// What the control shows (fix round 2, N4): nothing for an added playlist until its first read lands (no
+    /// "Setting up…" flash), nothing without accessFlow.
+    static func shown(adding: Bool, playlistId: String?, canAdd: Bool, phase: AddFlowPhase?) -> AddFlowPhase? {
+        guard canAdd else { return nil }
+        if adding { return .adding }
+        guard playlistId != nil else { return .ready }
+        return phase
     }
 
     private func add() async {

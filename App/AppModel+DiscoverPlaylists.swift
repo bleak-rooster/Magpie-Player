@@ -113,37 +113,53 @@ extension AppModel {
         if adding { return .adding }
         guard canAdd else { return .hidden }
         guard playlistId != nil else { return .ready }
-        guard listed, let progress, progress.total > 0 else {
-            return (settingUpFor ?? .infinity) < addFlowSetUpLimit ? .preparing : .stillSettingUp
-        }
+        let settingUp: AddFlowPhase = (settingUpFor ?? .infinity) < addFlowSetUpLimit ? .preparing : .stillSettingUp
+        guard listed else { return settingUp }
+        // Fix round 2 (N1): listed but its songs can't be read (a dropped connection, a 5xx): say so, never "Still
+        // setting up".
+        guard let progress else { return .unreadable }
+        guard progress.total > 0 else { return settingUp }
         guard progress.waiting > 0 else { return .inYourFlows }
         return hasDownloader == false ? .waitingForDownloader : .downloading(done: progress.done, total: progress.total)
     }
 
     /// The state now: the server's status (is it listed yet?) and its songs, read fresh.
-    func addFlowState(playlistId: String?) async -> AddFlowPhase {
+    func addFlowState(playlistId: String?) async -> AddFlowPhase { await addFlowRead(playlistId: playlistId).phase }
+
+    /// The state, and whether the server lists the playlist yet.
+    func addFlowRead(playlistId: String?) async -> (phase: AddFlowPhase, listed: Bool) {
         guard let playlistId else {
-            return Self.addFlowPhase(canAdd: aurralCanAddFlow, adding: false, playlistId: nil, listed: false, progress: nil,
-                                     hasDownloader: aurralHasDownloader, settingUpFor: nil)
+            return (Self.addFlowPhase(canAdd: aurralCanAddFlow, adding: false, playlistId: nil, listed: false, progress: nil,
+                                      hasDownloader: aurralHasDownloader, settingUpFor: nil), false)
         }
-        guard aurralCanAddFlow else { return .hidden }
+        guard aurralCanAddFlow else { return (.hidden, false) }
         await refreshDiscoverStatus()
         let listed = discover.status?.sharedPlaylists.contains { $0.id == playlistId } ?? false
         let progress = listed ? await syncedProgress(playlistId: playlistId) : nil
         let since = aurralFeeds.addedAt[playlistId].map { aurralFeeds.now().timeIntervalSince($0) }
-        return Self.addFlowPhase(canAdd: true, adding: false, playlistId: playlistId, listed: listed, progress: progress,
-                                 hasDownloader: aurralHasDownloader, settingUpFor: since)
+        return (Self.addFlowPhase(canAdd: true, adding: false, playlistId: playlistId, listed: listed, progress: progress,
+                                  hasDownloader: aurralHasDownloader, settingUpFor: since), listed)
     }
 
     /// Follows a just-added (or downloading) playlist while its page is open: the state every `every` (30 s on screen)
     /// until it is in your flows, still not set up after the limit, or hidden. Cancelled with the page.
     func followAddFlow(playlistId: String, every: Duration = .seconds(30),
                        onPhase: @MainActor (AddFlowPhase) -> Void) async {
+        var wasListed: Bool?
         while !Task.isCancelled {
-            let phase = await addFlowState(playlistId: playlistId)
+            let (phase, listed) = await addFlowRead(playlistId: playlistId)
+            // Fix round 2 (N3): the queued playlist was just created: Your flows and Home's shelf read again (the shared
+            // read, D75/D76 rules), so it joins as its songs arrive.
+            if listed, wasListed == false {
+                Task { [weak self] in
+                    await self?.refreshDiscover(force: true)
+                    self?.homeFeedSlot?.sectionsChanged([.discover])
+                }
+            }
+            wasListed = listed
             onPhase(phase)
             switch phase {
-            case .preparing, .downloading, .waitingForDownloader: break
+            case .preparing, .downloading, .waitingForDownloader, .unreadable: break
             default: return
             }
             do { try await Task.sleep(for: every) } catch { return }
@@ -171,7 +187,7 @@ extension AppModel {
 
 enum AddFlowPhase: Equatable, Sendable {
     case hidden, ready, adding, preparing, stillSettingUp, downloading(done: Int, total: Int), waitingForDownloader,
-         inYourFlows
+         inYourFlows, unreadable
 
     var label: String? {
         switch self {
@@ -183,6 +199,7 @@ enum AddFlowPhase: Equatable, Sendable {
         case .downloading(let done, let total): DiscoverPagesCopy.downloading(done, total)
         case .waitingForDownloader: DiscoverPagesCopy.waitingForDownloader
         case .inYourFlows: DiscoverPagesCopy.inYourFlows
+        case .unreadable: DiscoverPagesCopy.unreadable
         }
     }
 
@@ -195,6 +212,7 @@ enum AddFlowPhase: Equatable, Sendable {
         case .downloading: "arrow.down.circle.dotted"
         case .waitingForDownloader: "hourglass"
         case .inYourFlows: "checkmark.circle"
+        case .unreadable: "exclamationmark.arrow.circlepath"
         }
     }
 }
@@ -212,6 +230,7 @@ enum DiscoverPagesCopy {
     static let inYourFlows = "In your flows"
     static let settingUp = "Setting up\u{2026}"
     static let stillSettingUp = "Still setting up. Check back later."
+    static let unreadable = "Couldn\u{2019}t check the download just now."
     static let couldntDownloadSymbol = "exclamationmark.triangle"
     static let noDownloaderTitle = "No downloader set up"
     static let noDownloader = "Songs already in your library will appear; others can\u{2019}t be downloaded until a downloader is set up on your server."
@@ -223,9 +242,16 @@ enum DiscoverPagesCopy {
     static let couldntUpdate = "Couldn\u{2019}t update just now. Showing the last copy."
     /// A country's name in the phone's language (never a hard-coded one).
     static func regionName(_ code: String) -> String { Locale.current.localizedString(forRegionCode: code) ?? code }
-    static func topSongs(region: String?) -> String { region.map { "\(topSongs) \u{00B7} \(regionName($0))" } ?? topSongs }
-    static func topAlbums(region: String?) -> String { region.map { "\(topAlbums) \u{00B7} \(regionName($0))" } ?? topAlbums }
-    static func showingServer(region: String) -> String { "Showing \(regionName(region)) charts" }
+    static func topSongs(region: String?) -> String { named(region).map { "\(topSongs) \u{00B7} \($0)" } ?? topSongs }
+    static func topAlbums(region: String?) -> String { named(region).map { "\(topAlbums) \u{00B7} \($0)" } ?? topAlbums }
+    /// Fix round 2 (N2): never an empty name; "your server's" when the server didn't say its region.
+    static func showingServer(region: String?) -> String {
+        named(region).map { "Showing \($0) charts" } ?? "Showing your server\u{2019}s charts"
+    }
+    private static func named(_ region: String?) -> String? {
+        guard let region, !region.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
+        return regionName(region)
+    }
     static let chartsCountry = "Charts country"
     static let chartsAutomatic = "Automatic"
     static let chartsAutomaticNote = "Your phone\u{2019}s region, when it has a chart"

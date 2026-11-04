@@ -43,7 +43,7 @@ struct TrendingView: View {
             spotlight(first, days: t.daysAtTop)
             VStack(alignment: .leading, spacing: Tokens.Spacing.m) {
                 PageSectionTitle(title: DiscoverPagesCopy.topSongs(region: t.songsRegion),
-                                 subtitle: t.showingServerInstead.map(DiscoverPagesCopy.showingServer(region:)))
+                                 subtitle: t.showingServerInstead.map { DiscoverPagesCopy.showingServer(region: $0) })
                     .accessibilityIdentifier("trending-top-songs")
                 HStack(spacing: Tokens.Spacing.s) {
                     PlayPreviewsButton(items: songs.map(model.previewItem(for:)))

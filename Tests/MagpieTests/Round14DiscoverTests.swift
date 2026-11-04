@@ -369,6 +369,63 @@ private let lidarrBase = URL(string: "http://192.168.1.2:8686")!
         #expect(phases.contains(.downloading(done: 2, total: 4)) && phases.last == .inYourFlows, "\(phases)")
     }
 
+    /// Fix round 2 (N3): once the queued playlist is listed, Your flows (and Home's Discover shelf) are read again, so it
+    /// joins without waiting for the next full read.
+    @Test func aQueuedPlaylistJoinsYourFlowsOnceListed() async throws {
+        aurral.setSyncedCreationDelay(reads: 2)
+        publishPicks()
+        let model = try await model()
+        defer { model.signOut() }
+        _ = try await model.addFlow(deezerPlaylistId: "908622995")
+        try await waitUntil { model.discover.refreshTask == nil }   // Add flow's own read, before the server created it
+        #expect(!model.isDiscoverPlaylist(id: "pl-ipp"))
+        let stub = aurral
+        await model.followAddFlow(playlistId: synced, every: .milliseconds(20)) { phase in
+            if phase == .downloading(done: 2, total: 4) { stub.setSyncedJobs(to: "done") }
+        }
+        try await waitUntil { model.isDiscoverPlaylist(id: "pl-ipp") }
+    }
+
+    /// Fix round 2 (N1): a listed playlist whose songs can't be read says so (with Retry), never "Still setting up",
+    /// and keeps being asked.
+    @Test func aListedPlaylistWhoseSongsCantBeReadSaysSoAndKeepsAsking() async throws {
+        aurral.setSyncedCreationDelay(reads: 0)
+        let model = try await model()
+        defer { model.signOut() }
+        _ = try await model.addFlow(deezerPlaylistId: "908622995")
+        aurral.setDiscoverFailure(503)   // the jobs route; the status still answers
+        let later = Date().addingTimeInterval(11 * 60)
+        model.aurralFeeds.now = { later }
+        #expect(await model.addFlowState(playlistId: synced) == .unreadable)
+        #expect(AddFlowPhase.unreadable.label == "Couldn\u{2019}t check the download just now.")
+        let recorder = PhaseRecorder()
+        let stub = aurral
+        await model.followAddFlow(playlistId: synced, every: .milliseconds(10)) { phase in
+            recorder.phases.append(phase)
+            if recorder.phases.count == 3 { stub.setDiscoverFailure(nil); stub.setSyncedJobs(to: "done") }
+        }
+        #expect(recorder.phases.prefix(3) == [.unreadable, .unreadable, .unreadable] && recorder.phases.last == .inYourFlows)
+    }
+
+    /// Fix round 2 (N4): an already-added playlist's page starts from nothing, never a "Setting up…" flash.
+    @Test func anAddedPlaylistNeverFlashesSettingUp() {
+        #expect(AddFlowControl.shown(adding: false, playlistId: "x", canAdd: true, phase: nil) == nil)
+        #expect(AddFlowControl.shown(adding: false, playlistId: nil, canAdd: true, phase: nil) == .ready)
+        #expect(AddFlowControl.shown(adding: true, playlistId: "x", canAdd: true, phase: .inYourFlows) == .adding)
+        #expect(AddFlowControl.shown(adding: false, playlistId: "x", canAdd: false, phase: .inYourFlows) == nil)
+    }
+
+    /// Fix round 2 (N2): no empty region name.
+    @Test func anUnknownServerRegionIsNamedPlainly() async throws {
+        aurral.setEditorialMissing("1313621735")
+        let model = try await chartModel(phone: "US", server: "")
+        defer { model.signOut() }
+        let t = try #require(model.aurralFeeds.trending)
+        #expect(DiscoverPagesCopy.showingServer(region: t.showingServerInstead) == "Showing your server\u{2019}s charts")
+        #expect(DiscoverPagesCopy.showingServer(region: "") == "Showing your server\u{2019}s charts")
+        #expect(DiscoverPagesCopy.topSongs(region: "") == "Top songs" && DiscoverPagesCopy.topAlbums(region: "") == "Top albums")
+    }
+
     /// I1: still not there after 10 minutes: "Still setting up", and asking stops.
     @Test func aCreationThatNeverRunsStopsAsking() async throws {
         aurral.setSyncedCreationDelay(reads: 1_000)
