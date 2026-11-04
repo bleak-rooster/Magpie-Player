@@ -23,6 +23,18 @@ import Testing
                                                              .jumpBackIn, .favourites, .randomAlbums, .madeForYou, .genres])
     }
 
+    /// Round 14 (D109): the car's Home doesn't change this round: while the phone's Home is the new default, the car
+    /// follows build 13's default, and the provided sections never reach it.
+    @Test func theCarKeepsItsHomeThisRound() {
+        let car = CarPlayPreferences.defaultValue
+        let list = car.homeList(following: LayoutPreferences.defaultValue.home)
+        #expect(list.entries.map(\.item) == [.jumpBackIn, .madeForYou, .recentlyAdded, .mostPlayed, .favourites,
+                                             .randomAlbums, .playlists, .genres, .downloaded, .discover])
+        #expect(car.visibleHomeSections(phone: .defaultValue, offline: false, hasListenBrainzToken: true, discoverSetUp: true)
+                == [.jumpBackIn, .madeForYou, .recentlyAdded, .mostPlayed, .discover])
+        #expect(CarPlayHomeShelf.allCases.allSatisfy { !$0.section.isProvided && !$0.section.isChrome })
+    }
+
     /// The default copies the phone's layout: its order and switches, Genres included.
     @Test func followingThePhoneCopiesItsOrderAndSwitches() {
         var phone = LayoutPreferences.defaultValue
@@ -49,8 +61,7 @@ import Testing
         var phone = LayoutPreferences.defaultValue
         phone.home.set(.randomAlbums, visible: true, keepingOneOf: [])
         let shown = car.visibleHomeSections(phone: phone, offline: false, hasListenBrainzToken: false, discoverSetUp: false)
-        #expect(shown == [.recentlyAdded, .favourites, .mostPlayed, .playlists, .genres],
-                "no token: no Made for you; no Aurral: no Discover")
+        #expect(shown == [.recentlyAdded, .mostPlayed, .playlists], "no token: no Made for you; no Aurral: no Discover")
         #expect(!shown.contains(.randomAlbums))
         #expect(car.visibleHomeSections(phone: phone, offline: true, hasListenBrainzToken: true, discoverSetUp: true)
                 == [.downloaded], "offline the car shows what's on the phone, as the phone does")

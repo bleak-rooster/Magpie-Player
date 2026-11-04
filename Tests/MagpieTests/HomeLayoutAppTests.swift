@@ -143,9 +143,15 @@ private func queryValue(_ request: URLRequest, _ name: String) -> String? {
 
     @Test func homeSectionsFollowPreferences() async throws {
         let model = try await signedInModel(fetcher: FakeFetcher())
-        #expect(model.homeSections == [.jumpBackIn, .recentlyAdded, .mostPlayed], "Made for you only with a token")
+        // Round 14 A6: the Spotify-style default from the library.
+        #expect(model.homeSections == [.greeting, .filterChips, .quickAccess, .jumpBackIn, .recentlyAdded, .favourites,
+                                       .mostPlayed, .playlists, .genres], "Made for you only with a token")
         model.updatePreferences {
-            $0.layout.home.move(fromOffsets: IndexSet(integer: 3), toOffset: 0)
+            for s in [HomeSection.greeting, .filterChips, .quickAccess, .favourites, .playlists, .genres] {
+                $0.layout.home.set(s, visible: false, keepingOneOf: [])
+            }
+            let from = $0.layout.home.entries.firstIndex { $0.item == .mostPlayed } ?? 0
+            $0.layout.home.move(fromOffsets: IndexSet(integer: from), toOffset: 0)
             $0.layout.home.set(.randomAlbums, visible: true, keepingOneOf: [])
         }
         #expect(model.homeSections == [.mostPlayed, .jumpBackIn, .recentlyAdded, .randomAlbums])
@@ -168,9 +174,11 @@ private func queryValue(_ request: URLRequest, _ name: String) -> String? {
         let model = try await signedInModel(fetcher: FakeFetcher())
         model.download([song("s1")], reason: .album("a1")); await model.downloads!.settled()
         let shelves = try await model.homeShelves(for: HomeSection.allCases)
+        // Round 14 A6: the quick grid reads the recently played albums; the greeting and chips read nothing; the
+        // provided sections nothing without Aurral and a provider.
         #expect(shelves.map(\.section) == [.jumpBackIn, .recentlyAdded, .mostPlayed, .favourites, .randomAlbums,
-                                           .playlists, .genres, .downloaded], "Made for you has its own shelf")
-        #expect(shelves.map(\.items.count) == [1, 1, 1, 1, 1, 1, 1, 1])
+                                           .playlists, .genres, .downloaded, .quickAccess], "Made for you has its own shelf")
+        #expect(shelves.map(\.items.count) == [1, 1, 1, 1, 1, 1, 1, 1, 1])
         #expect(shelves[4].items == [.album(album("x1"))])
     }
 
@@ -212,9 +220,9 @@ private func queryValue(_ request: URLRequest, _ name: String) -> String? {
     /// Settings › Home & Library: the count of Home sections that show.
     @Test func homeAndLibrarySummary() async throws {
         let model = try await signedInModel(fetcher: FakeFetcher())
-        #expect(HomeAndLibraryView.homeSummary(model) == "3 sections")
+        #expect(HomeAndLibraryView.homeSummary(model) == "9 sections")   // round 14 A6: the Spotify-style default
         model.updatePreferences { $0.layout.home.set(.jumpBackIn, visible: false, keepingOneOf: []) }
-        model.updatePreferences { for s in [HomeSection.recentlyAdded, .mostPlayed] { $0.layout.home.set(s, visible: false, keepingOneOf: []) } }
+        model.updatePreferences { for s in HomeSection.allCases where s != .genres { $0.layout.home.set(s, visible: false, keepingOneOf: []) } }
         model.updatePreferences { $0.layout.home.set(.genres, visible: true, keepingOneOf: []) }
         #expect(HomeAndLibraryView.homeSummary(model) == "1 section")
     }

@@ -77,13 +77,13 @@ struct AlbumView: View {
 
             VStack(spacing: Tokens.Spacing.s) {
                 ActionBar {
-                    PlayShuffleButtons(songs: songs)
+                    PlayShuffleButtons(songs: songs, recent: .album(album))
                     DownloadButton(reason: .album(album.id), songs: songs, coverArtId: album.coverArtId)
                 }
                 DownloadNote(reason: .album(album.id), songs: songs)
             }
 
-            TrackList(songs: songs)
+            TrackList(songs: songs, recent: .album(album))
 
             if !songs.isEmpty {
                 let minutes = DurationText.minutes(album.duration > 0 ? album.duration : songs.reduce(0) { $0 + $1.duration })
@@ -134,9 +134,17 @@ struct AlbumView: View {
 struct PlayShuffleButtons: View {
     @Environment(AppModel.self) private var model
     let songs: [Song]
+    /// Round 14 A6: the album, playlist or flow this plays, for Home's quick grid.
+    var recent: RecentPlay?
 
     var body: some View {
-        PlayShuffleActions(disabled: songs.isEmpty) { model.play(songs, startAt: 0) } shuffle: { model.shuffle(songs) }
+        PlayShuffleActions(disabled: songs.isEmpty) {
+            model.noteRecentlyPlayed(recent)
+            model.play(songs, startAt: 0)
+        } shuffle: {
+            model.noteRecentlyPlayed(recent)
+            model.shuffle(songs)
+        }
     }
 }
 
@@ -164,6 +172,8 @@ private struct TrackList: View {
     @Environment(AppModel.self) private var model
     @Environment(\.magpieTheme) private var theme
     let songs: [Song]
+    /// Round 14 A6: the album, for Home's quick grid.
+    var recent: RecentPlay?
     @State private var removing: Song?
     private let themed = Themed()
 
@@ -191,6 +201,7 @@ private struct TrackList: View {
         let isCurrent = model.player.queue.current?.song.id == song.id
         let mark: DownloadMark = model.downloadIndex.isDownloaded(song.id) ? .downloaded : .none
         return Button {
+            model.noteRecentlyPlayed(recent)
             model.play(songs, startAt: index)
         } label: {
             HStack(spacing: Tokens.Spacing.m) {

@@ -71,6 +71,10 @@ public enum CarPlayHomeShelf: String, CaseIterable, Codable, Hashable, Sendable 
 public struct CarPlayPreferences: PreferenceArea {
     public static let key = "magpie.prefs.carplay"
     public static let defaultValue = CarPlayPreferences(thirdTab: .playlists, home: nil)
+    /// The phone's default Home before round 14, which the car keeps following while the phone's is the default.
+    static let build13Phone = OrderedVisibility(HomeSection.build13Order.map {
+        .init(item: $0, visible: HomeSection.build13Visible.contains($0))
+    })
     /// Shelves missing from a saved list come back hidden.
     static let hiddenShelves = OrderedVisibility(CarPlayHomeShelf.allCases.map { .init(item: $0, visible: false) })
 
@@ -95,6 +99,9 @@ public struct CarPlayPreferences: PreferenceArea {
     /// The car's Home list: its own, else a copy of the phone's order and switches (without Genres).
     public func homeList(following phone: OrderedVisibility<HomeSection>) -> OrderedVisibility<CarPlayHomeShelf> {
         if let home { return home }
+        // Round 14 (plan decision 10, D109): the car's Home doesn't change this round. While the phone's Home is the new
+        // Spotify-style default, the car follows the default it had (build 13's order and switches).
+        let phone = phone == HomeSection.defaultHome ? Self.build13Phone : phone
         let copied = phone.entries.compactMap { entry in
             CarPlayHomeShelf(entry.item).map { OrderedVisibility<CarPlayHomeShelf>.Entry(item: $0, visible: entry.visible) }
         }
