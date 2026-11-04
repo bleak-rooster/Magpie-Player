@@ -1,3 +1,4 @@
+import AurralKit
 import DesignSystem
 import Foundation
 import LidarrKit
@@ -48,6 +49,12 @@ final class AppModel {
 
     private(set) var session: Session? { didSet { homeFeedSessionChanged(); syncLibraryScope() } }
     let player: Player
+    /// Round 14 A2 (D85): 30-second previews of songs not in the library, on their own engine (`AppModel+Previews`).
+    let previewPlayer: PreviewPlayer
+    /// What preview links are resolved through (Aurral's open preview route; tests pass a stub).
+    @ObservationIgnored let previewTransport: HTTPTransport
+    /// Stops a preview when previews can no longer work (`wirePreviews`).
+    @ObservationIgnored var previewWatch: Task<Void, Never>?
     /// Sleep timer (fade out, then pause, or stop after the current song).
     let sleepTimer: SleepTimer
     var theme: Theme
@@ -271,6 +278,8 @@ final class AppModel {
          transport: HTTPTransport = URLSessionTransport(),
          probeTransport: HTTPTransport = URLSessionTransport(timeout: 6),
          engine: (any PlaybackEngine)? = nil,
+         previewEngine: (any PreviewEngine)? = nil,
+         previewTransport: HTTPTransport? = nil,
          defaults: UserDefaults = .standard,
          theme: Theme = Theme(),
          systemNowPlaying: Bool = true,
@@ -349,6 +358,8 @@ final class AppModel {
                              gain: { replayGain.mode.volume(for: $0.replayGain) },
                              scrobbleRule: { scrobbleSettings.value.rule })
         self.sleepTimer = SleepTimer(player: player)
+        self.previewPlayer = PreviewPlayer(engine: previewEngine ?? AVPreviewEngine(), mainPlayer: player)
+        self.previewTransport = previewTransport ?? PreviewResolver.defaultTransport()
         applyEngineWindow()
         localFiles.setOnDamaged { [weak self] in self?.downloads?.dropBadFile(songId: $0) }
         scrobbles.setOnListenBrainzRejected { [weak self] in Task { @MainActor in self?.listenBrainzRejected = true } }
@@ -360,13 +371,15 @@ final class AppModel {
                 artworkURL: { _ in nil },   // superseded by `artworkImage` (P4)
                 onLike: { [weak self] song in Task { await self?.toggleStar(song) } },
                 isLiked: { [weak self] song in self?.isStarred(song) ?? song.starred },
-                artworkImage: { [weak self] song in await self?.nowPlayingArtwork(song) })   // P4
+                artworkImage: { [weak self] song in await self?.nowPlayingArtwork(song) },   // P4
+                preview: previewPlayer)   // round 14 A2
         }
         #endif
         watchPlaybackErrors()
         watchPlaybackQuality()
         watchFindPlays()
         watchBanner()
+        wirePreviews()
         readLidarrPermissions()
     }
 
