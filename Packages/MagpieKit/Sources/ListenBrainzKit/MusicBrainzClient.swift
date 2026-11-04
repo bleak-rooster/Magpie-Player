@@ -58,8 +58,8 @@ public struct MBRecording: Sendable, Hashable {
     }
 }
 
-/// MusicBrainz WS/2. Called on a Try tap (A8) or an outside page opened (R19), never per search row. Calls are spaced
-/// at 1 per second.
+/// MusicBrainz WS/2. Called on a Try tap (A8), an outside page opened (R19) or a search's album tracklists (round 14,
+/// D95: at most three releases per search), never per search row. Calls are spaced at 1 per second.
 public actor MusicBrainzClient {
     /// MusicBrainz asks for an app name, version and contact URL. The caller passes the app's own version.
     public static func userAgent(version: String) -> String { "Magpie/\(version) ( https://github.com/bleak-rooster )" }

@@ -980,7 +980,8 @@ final class AppModel {
     }
 
     /// The one MusicBrainz client (1 request per second across the whole app), made on first use.
-    /// Try (A8) and the outside artist and album pages (R19) use it, never a search row.
+    /// Try (A8), the outside artist and album pages (R19) and Search's album tracklists (round 14, D95: at most three
+    /// releases a search, after Lidarr answered) use it; never one call per search row.
     var musicBrainz: MusicBrainzClient {
         if let musicBrainzClient { return musicBrainzClient }
         let client = MusicBrainzClient(transport: transport, userAgent: MusicBrainzClient.userAgent(version: Self.marketingVersion))
