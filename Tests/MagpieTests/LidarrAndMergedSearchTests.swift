@@ -79,16 +79,20 @@ private let lidarrSearch = Data(#"""
         try await model.signIn(urls: [home], username: "admin", password: "pw")
         await model.matchIndexSettled()
 
+        // Round 14 (A5, the plan's setups): Navidrome only searches the library only.
         let s = await model.mergedSearch().run("harbour")
         #expect(s.libraryIsEmpty)
-        #expect(s.notYet.songs.map(\.title) == ["Harbour Wall"], "Harbour Lights is in the library (match index)")
+        #expect(s.notYet.isEmpty)
         #expect(!transport.inner.requests.contains { $0.url?.path.hasSuffix("/api/v1/search") == true })
-        let labsRequest = try #require(transport.inner.requests.first { $0.url?.path.hasSuffix("/recording-search/json") == true })
-        #expect(labsRequest.value(forHTTPHeaderField: "Authorization") == nil)
+        #expect(!transport.inner.requests.contains { $0.url?.path.hasSuffix("/recording-search/json") == true })
 
         _ = try await model.connectLidarr(base: lidarrBase, apiKey: " key ")
         let withLidarr = await model.mergedSearch().run("ines")
         #expect(withLidarr.notYet.artists.map(\.name) == ["Ines Morrow"])
+        // Lidarr has no album for it, so ListenBrainz is the backup for songs; the library's own song is dropped.
+        #expect(withLidarr.notYet.songs.map(\.title) == ["Harbour Wall"], "Harbour Lights is in the library (match index)")
+        let labsRequest = try #require(transport.inner.requests.first { $0.url?.path.hasSuffix("/recording-search/json") == true })
+        #expect(labsRequest.value(forHTTPHeaderField: "Authorization") == nil)
         let lidarrRequest = try #require(transport.inner.requests.last { $0.url?.path.hasSuffix("/api/v1/search") == true })
         #expect(lidarrRequest.httpMethod == "GET")
         #expect(lidarrRequest.value(forHTTPHeaderField: "X-Api-Key") == "key")

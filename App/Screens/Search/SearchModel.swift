@@ -30,11 +30,17 @@ final class SearchModel {
     /// The next batch of one library section (round 12, plan item 3).
     typealias More = @Sendable (LibraryKind, SearchPaging) async throws -> MoreResults
 
+    /// Round 14 (D98): the next page of one kind of row in the "Not in your library" band.
+    typealias OutsideMore = @Sendable (OutsideKind, SearchSections) async throws -> OutsideMoreResults
+
     /// A section's load-more: none running, one running, or the last one failed (the footer offers to try again).
     enum MoreState: Equatable { case idle, loading, failed }
 
     @ObservationIgnored private let search: Search
     @ObservationIgnored private let more: More?
+    @ObservationIgnored private let outsideMore: OutsideMore?
+    @ObservationIgnored private var outsideTasks: [OutsideKind: Task<Void, Never>] = [:]
+    private var outsideStates: [OutsideKind: MoreState] = [:]
     @ObservationIgnored private let sleep: @Sendable (Duration) async throws -> Void
     @ObservationIgnored private let debounce: Duration
     @ObservationIgnored private let errorMessage: (Error) -> String
@@ -47,11 +53,13 @@ final class SearchModel {
 
     init(search: @escaping Search,
          more: More? = nil,
+         outsideMore: OutsideMore? = nil,
          sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
          debounce: Duration = SearchModel.debounce,
          errorMessage: @escaping (Error) -> String = { _ in "Search didn't work. Try again in a moment." }) {
         self.search = search
         self.more = more
+        self.outsideMore = outsideMore
         self.sleep = sleep
         self.debounce = debounce
         self.errorMessage = errorMessage
@@ -146,6 +154,46 @@ final class SearchModel {
     /// Waits for every running load-more (tests).
     func settleMore() async {
         for task in moreTasks.values { await task.value }
+        for task in outsideTasks.values { await task.value }
+    }
+
+    // MARK: - The band's Load more (round 14, D98)
+
+    func outsideMoreState(_ kind: OutsideKind) -> MoreState { outsideStates[kind] ?? .idle }
+
+    /// The band's More for one kind was tapped: its next page, one at a time, added at the end (nothing on screen
+    /// moves). Only on a tap: an outside page can mean MusicBrainz reads, which are rationed.
+    func loadMoreOutside(_ kind: OutsideKind) {
+        guard phase == .done, let outsideMore, results.hasMoreOutside(kind), outsideMoreState(kind) != .loading else { return }
+        outsideStates[kind] = .loading
+        let q = query, snapshot = results
+        outsideTasks[kind] = Task { [weak self] in
+            do {
+                let found = try await outsideMore(kind, snapshot)
+                try Task.checkCancellation()
+                self?.finishOutside(found, for: q)
+            } catch is CancellationError {
+                return
+            } catch let error as URLError where error.code == .cancelled {
+                return
+            } catch {
+                guard !Task.isCancelled else { return }
+                self?.failOutside(kind, for: q)
+            }
+        }
+    }
+
+    private func finishOutside(_ found: OutsideMoreResults, for q: String) {
+        guard q == query, phase == .done else { return }
+        results.append(found)
+        outsideStates[found.kind] = .idle
+        outsideTasks[found.kind] = nil
+    }
+
+    private func failOutside(_ kind: OutsideKind, for q: String) {
+        guard q == query else { return }
+        outsideStates[kind] = .failed
+        outsideTasks[kind] = nil
     }
 
     private func finishMore(_ found: MoreResults, for q: String) {
@@ -169,6 +217,8 @@ final class SearchModel {
         task?.cancel()
         moreTasks.values.forEach { $0.cancel() }
         moreStates = [:]
+        outsideTasks.values.forEach { $0.cancel() }
+        outsideStates = [:]
         scrolled = false
         visibleRows = [:]
         outsideArt?.reset()

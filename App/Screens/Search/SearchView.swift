@@ -43,6 +43,8 @@ struct SearchView: View {
                                 },
                                 // Round 12 (Y1): the next batch of a section, at its end.
                                 more: { kind, paging in try await app.mergedSearch().more(kind, paging: paging) },
+                                // Round 14 (D98): the band's next page of one kind, on a tap.
+                                outsideMore: { kind, sections in try await app.mergedSearch().moreOutside(kind, in: sections) },
                                 errorMessage: BrowseErrorCopy.message(for:))
             model?.outsideArt = app.makeOutsideArt()   // R15
         }
@@ -185,7 +187,94 @@ private struct SearchContent: View {
                 moreFooter(.albums, in: sections, count: sections.albums.count)
             }
         }
+        ownedSongs(sections.notYet.owned)
+        if model.phase == .searching, !sections.libraryIsEmpty, app.searchLooksOutside {
+            // Round 14 (D97): the library's rows are in; outside sources are still answering.
+            HStack(spacing: Tokens.Spacing.s) {
+                ProgressView()
+                Text("Still looking outside your library\u{2026}").font(.footnote).foregroundStyle(themed.palette.ink2Color)
+            }
+            .frame(maxWidth: .infinity, minHeight: Tokens.minHitSize)
+            .accessibilityElement(children: .combine)
+            .accessibilityIdentifier("search-outside-pending")
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+        }
         notYetBand(sections.notYet)
+    }
+
+    /// Round 14 (D96): songs on an outside album's tracklist that the library has but its search didn't list: "In your
+    /// library", played from the library. Apart from the band, which only holds what isn't here.
+    @ViewBuilder private func ownedSongs(_ owned: [OwnedOutsideSong]) -> some View {
+        if scope == .all || scope == .songs, !owned.isEmpty {
+            Section {
+                header("Also in your library").accessibilityIdentifier("search-owned-header")
+                ForEach(Array(owned.enumerated()), id: \.element.songId) { index, item in
+                    ownedSongRow(item).accessibilityIdentifier("search-owned-song-\(index)")
+                }
+            }
+        }
+    }
+
+    private func ownedSongRow(_ item: OwnedOutsideSong) -> some View {
+        let r = item.recording
+        return Button {
+            remember(model.query)
+            Task { if let song = await app.librarySong(id: item.songId) { app.play([song], startAt: 0) } }
+        } label: {
+            HStack(spacing: Tokens.Spacing.m) {
+                OutsideArtwork(model.outsideArt, key: .cover(releaseGroup: nil, release: r.releaseMBID)) { art in
+                    SleeveArt(image: art, side: 48)
+                }
+                .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(r.title).font(.callout).lineLimit(1)
+                    Text(r.artist).font(.footnote).foregroundStyle(themed.palette.ink2Color).lineLimit(1)
+                    Label(SearchCopy.inYourLibrary, systemImage: "checkmark.circle")
+                        .font(.caption).foregroundStyle(themed.palette.ink2Color)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(.horizontal, Tokens.Spacing.margin)
+            .frame(minHeight: 60)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(r.title), \(r.artist)")
+        .accessibilityValue(SearchCopy.inYourLibrary)
+        .accessibilityAddTraits(.isButton)
+        .listRowInsets(EdgeInsets())
+        .listRowBackground(Color.clear)
+    }
+
+    /// Round 14 (D98): the end of one kind in the band: More (a tap, never on scroll: an outside page can mean
+    /// MusicBrainz reads), a spinner while it loads, or Try again after a failure.
+    @ViewBuilder private func outsideMoreFooter(_ kind: OutsideKind, in sections: SearchSections) -> some View {
+        if model.phase == .done, sections.hasMoreOutside(kind) {
+            switch model.outsideMoreState(kind) {
+            case .loading:
+                ProgressView()
+                    .frame(maxWidth: .infinity, minHeight: Tokens.minHitSize)
+                    .accessibilityLabel("Loading more")
+                    .accessibilityIdentifier("search-notyet-more-\(kind.rawValue)")
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
+            case .idle, .failed:
+                Button { model.loadMoreOutside(kind) } label: {
+                    Label(model.outsideMoreState(kind) == .failed ? "Couldn\u{2019}t load more. Try again"
+                                                                  : SearchCopy.more(kind),
+                          systemImage: model.outsideMoreState(kind) == .failed ? "arrow.clockwise" : "chevron.down")
+                        .font(.subheadline)
+                        .frame(maxWidth: .infinity, minHeight: Tokens.minHitSize)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(themed.palette.ink2Color)
+                .accessibilityIdentifier("search-notyet-more-\(kind.rawValue)")
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+            }
+        }
     }
 
     /// Round 12 (Y1, plan item 3): the end of a library section. While it has more, a spinner that loads the next
@@ -285,18 +374,21 @@ private struct SearchContent: View {
                     ForEach(Array(songs.enumerated()), id: \.offset) { index, recording in
                         notYetSongRow(recording, index: index)
                     }
+                    outsideMoreFooter(.songs, in: model.results)
                 }
                 if !artists.isEmpty {
                     if kinds > 1 { subheader("Artists") }
                     ForEach(Array(artists.enumerated()), id: \.offset) { index, artist in
                         notYetArtistRow(artist).accessibilityIdentifier("search-notyet-artist-\(index)")
                     }
+                    outsideMoreFooter(.artists, in: model.results)
                 }
                 if !albums.isEmpty {
                     if kinds > 1 { subheader("Albums") }
                     ForEach(Array(albums.enumerated()), id: \.offset) { index, album in
                         notYetAlbumRow(album).accessibilityIdentifier("search-notyet-album-\(index)")
                     }
+                    outsideMoreFooter(.albums, in: model.results)
                 }
             }
         }
@@ -324,6 +416,7 @@ private struct SearchContent: View {
                         onTry: { trying = TryTarget(recording: recording) })
             }
         }
+            .searchPreviewSlot(recording)   // Round 14: A3's preview goes here
             .accessibilityIdentifier("search-notyet-song-\(index)")
             .listRowInsets(EdgeInsets())
             .listRowBackground(Color.clear)
