@@ -106,6 +106,10 @@ public final class StubAurral: HTTPTransport, @unchecked Sendable {
     public func setFeatures(_ features: [String]?) { state.withLock { $0.features = features } }
     /// Round 14: a download source configured (Soulseek) or none at all.
     public func setDownloadSources(configured: Bool) { state.withLock { $0.downloadSourcesConfigured = configured } }
+    /// Round 14: the user's role ("admin" passes every permission).
+    public func setRole(_ role: String, for username: String) {
+        state.withLock { s in for i in s.users.indices where s.users[i].username == username { s.users[i].role = role } }
+    }
     /// Round 14: the user's Aurral permissions.
     public func setPermissions(_ permissions: AurralPermissions, for username: String) {
         state.withLock { s in

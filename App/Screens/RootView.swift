@@ -34,6 +34,8 @@ struct RootView: View {
             model.requestsScenePhaseChanged(phase)   // R16: a background pass while requests are on their way
             // T3 fix round 2: each activation (cold launches too) while Local Network is off re-checks silently.
             if phase == .active { Task { await model.localNetwork.recheckIfDenied() } }
+            // Round 14 fix M3: Aurral's capabilities and this user's permissions, fresh at launch and on return.
+            if phase == .active { Task { await model.refreshAurralCapabilities() } }
         }
         // T3 (spec §8): once per install, whatever the first screen is, so Magpie is listed under Local Network.
         .task { await model.localNetwork.requestAtFirstLaunch() }

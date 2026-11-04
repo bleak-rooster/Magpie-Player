@@ -89,6 +89,7 @@ extension AppModel {
         discover.use(connection)
         discover.health = health
         noteStatus(status)
+        await refreshAurralCapabilities(force: true)   // round 14 fix M3: this user's permissions, fresh
         await refreshDiscover(force: true)
         return health
     }
