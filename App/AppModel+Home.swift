@@ -172,6 +172,8 @@ extension AppModel {
              .genreCharts:
             // Round 14 A6 (D109): from the provider, never from Aurral directly; nothing while it doesn't offer it.
             guard !isOffline, homeOutsideSections.contains(section) else { return [] }
+            // Shown from its saved shelf, not named yet (I2): not loaded, so the saved copy stays and it is retried.
+            guard homeAurralShelves.availableSections.contains(section) else { throw HomeSectionNotOffered() }
             let rows = section == .becauseYouLike ? HomeSectionStyle.becauseYouLikeRange.upperBound : 1
             return try await homeAurralShelves.items(for: section, limit: size * rows).prefix(size * rows)
                 .map(HomeShelf.Item.outside)

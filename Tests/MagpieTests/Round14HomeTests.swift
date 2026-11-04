@@ -3,13 +3,14 @@ import Foundation
 import MagpieCore
 import MagpieTestSupport
 import NavidromeKit
+import os
 import Playback
 import Testing
 import UIKit
 @testable import Magpie
 
 /// A provider of Home's provided sections for tests: answers from `items`, or fails while `failing`.
-@MainActor final class FakeHomeShelves: HomeAurralShelves {
+@MainActor @Observable final class FakeHomeShelves: HomeAurralShelves {
     var availableSections: Set<HomeSection>
     var items: [HomeSection: [HomeOutsideItem]] = [:]
     var failing = false
@@ -125,6 +126,40 @@ private func ok(_ body: String) -> Data {
         load.record(load.read(for: key, fresh: false), for: key, shelves: failed.shelves, failed: failed.failed)
         #expect(load.found[.recommended]?.items == [.outside(Self.artist)], "the last good copy stays")
         #expect(!load.showsFailure(.recommended))
+    }
+
+    /// Fix round 1 (I2): a provided shelf saved last time shows at launch, before the provider has answered (no pop-in);
+    /// its read until then fails rather than coming back empty, so the saved copy stays. Without Aurral it hides.
+    @Test func savedProvidedShelfShowsBeforeTheProviderAnswers() async throws {
+        let model = try await signedIn(aurral: true)
+        defer { model.signOut() }
+        let fake = FakeHomeShelves([])   // hasn't answered yet
+        model.homeAurralShelves = fake
+        let scope = try #require(model.navidromeScope)
+        model.homeFeedSlot?.stop()
+        model.homeFeedSlot = nil
+        HomeShelfCache(root: tmp, scope: scope).save([HomeShelf(section: .recommended, items: [.outside(Self.artist)])])
+        #expect(model.homeFeed.load?.found[.recommended] != nil, "the saved shelf, at launch")
+        #expect(model.homeSections.contains(.recommended), "shown before the provider names it")
+        #expect(!model.homeSections.contains(.trending), "nothing saved, nothing named: hidden")
+        let read = try await model.homeRead(for: [.recommended, .quickAccess])
+        #expect(read.failed == [.recommended] && fake.asked.isEmpty, "not asked before it names the section")
+        fake.availableSections = [.recommended]
+        fake.items[.recommended] = [Self.artist]
+        #expect(try await model.homeRead(for: [.recommended]).shelves.first?.items == [.outside(Self.artist)])
+    }
+
+    /// Fix round 1 (I2): the provider is observable: when it names a section, Home's sections change (and Home redraws).
+    @Test func providerChangesReachHome() async throws {
+        let model = try await signedIn(aurral: true)
+        defer { model.signOut() }
+        let fake = FakeHomeShelves([])
+        model.homeAurralShelves = fake
+        let changed = OSAllocatedUnfairLock(initialState: false)
+        withObservationTracking { _ = model.homeSections } onChange: { changed.withLock { $0 = true } }
+        fake.availableSections = [.trending]
+        #expect(changed.withLock { $0 })
+        #expect(model.homeSections.contains(.trending))
     }
 
     /// Provided tiles are saved for launch (no URL), and a saved shelf of the wrong kind is thrown away.
