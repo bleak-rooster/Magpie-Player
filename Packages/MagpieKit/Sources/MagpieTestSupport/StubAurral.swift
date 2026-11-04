@@ -315,10 +315,13 @@ public final class StubAurral: HTTPTransport, @unchecked Sendable {
         }
         // Round 14: the preview is open too (Aurral answers with a redirect to Deezer's CDN).
         if let preview = previewAnswer(method: method, path: path, url: url) { return preview }
+        // Round 14 A7: the image proxy's file route is open as well (2.13 `guards.ts` isOpen).
+        if let file = imageProxyFileAnswer(method: method, path: path, url: url) { return file }
         guard let bearer, let userId = state.withLock({ $0.sessions[bearer] }),
               let user = snapshot.users.first(where: { $0.id == userId }) else {
             return answer(401, ["error": "Unauthorized", "code": bearer == nil ? "AUTH_REQUIRED" : "SESSION_INVALID"])
         }
+        if let (status, body) = imageProxyAnswer(method: method, path: path, request: request) { return answer(status, body) }
         func visible(_ flowId: String?) -> Bool {
             if user.role == "admin" { return true }   // Aurral: an admin sees everything
             return snapshot.flows.first(where: { $0.id == flowId })?.ownerUserId == user.id

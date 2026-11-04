@@ -1,4 +1,5 @@
 import AurralKit
+import CryptoKit
 import Foundation
 
 /// Round 14 A1: StubAurral's Aurral 2.13 Discover routes (shapes from Aurral 2.13.0's source:
@@ -27,7 +28,16 @@ public struct StubAurralDiscover: Sendable {
     var previewTarget: String? = "https://cdnt-preview.dzcdn.net/api/1/1/a/b/c/preview.mp3?hdnea=exp=1790000000~hmac=stub"
     /// The preview answers this status instead (502: Deezer down; 200: the bytes).
     var previewStatus: Int?
-    /// What was written: "METHOD /path" and its JSON body.
+    /// Round 14 A7: the size of the clip `?download` sends (Aurral fetches it from Deezer and sends the bytes itself).
+    var previewClipSize = 2_048
+    /// Round 14 A7: the content type the clip is sent with.
+    var previewClipType = "audio/mpeg"
+    /// Round 14 A7: the image proxy. Sources Aurral refuses (404 "Image not found"), and whether its file route fails.
+    var imageProxyRefused: Set<String> = []
+    var imageProxyFileStatus: Int?
+    /// Round 14 A7: the image proxy's cache (key → source), as Aurral keeps it on disk.
+    var imageProxyCache: [String: String] = [:]
+    /// What was written: "METHOD /path" and its JSON body.: "METHOD /path" and its JSON body.
     var writes: [(String, Data)] = []
 
     public init() {}
@@ -243,6 +253,32 @@ public extension StubAurral {
     func setPreviewTarget(_ target: String?) { discover.withLock { $0.previewTarget = target } }
     /// The preview answers this status instead of its redirect (nil: the redirect again).
     func setPreviewStatus(_ status: Int?) { discover.withLock { $0.previewStatus = status } }
+    /// Round 14 A7: the size of the clip `?download` sends.
+    func setPreviewClipSize(_ size: Int) { discover.withLock { $0.previewClipSize = size } }
+    /// Round 14 A7: the content type the clip is sent with.
+    func setPreviewClipType(_ type: String) { discover.withLock { $0.previewClipType = type } }
+    /// Round 14 A7: a stand-in MP3 clip of `size` bytes (an ID3 header, then frame-sync bytes).
+    static func previewClip(size: Int) -> Data {
+        var data = Data("ID3".utf8)
+        data.append(Data(repeating: 0xFF, count: max(0, size - 3)))
+        return data
+    }
+    /// Round 14 A7: Aurral's image proxy refuses this source (404 "Image not found", as for a private host).
+    func setImageProxyRefused(_ src: String) { discover.withLock { _ = $0.imageProxyRefused.insert(src) } }
+    /// Round 14 A7: `GET /api/image-proxy/<key>` answers this status instead (nil: the picture again).
+    func setImageProxyFileStatus(_ status: Int?) { discover.withLock { $0.imageProxyFileStatus = status } }
+    /// Round 14 A7: Aurral forgets its cached pictures (its cache was cleared): the file route answers 404 until the
+    /// source is asked for again.
+    func clearImageProxyCache() { discover.withLock { $0.imageProxyCache = [:] } }
+    /// Round 14 A7: the `src` of each `POST /api/image-proxy`, in order.
+    var imageProxySources: [String] {
+        requests.filter { $0.httpMethod != "GET" && $0.url?.path == "/api/image-proxy" }.compactMap { request in
+            (request.httpBody.flatMap { try? JSONSerialization.jsonObject(with: $0) } as? [String: Any])?["src"] as? String
+        }
+    }
+    /// Round 14 A7: a 1×1 PNG, the picture the stub's image proxy serves.
+    static let proxiedPicture = Data(base64Encoded:
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")!
     /// The Deezer playlist is already in the user's flows (Add flow answers `alreadyAdded`).
     func setEditorialMissing(_ deezerId: String) { discover.withLock { _ = $0.editorialMissing.insert(deezerId) } }
     /// Round 14 A4: Add flow already made a playlist for this Deezer playlist.
@@ -298,9 +334,14 @@ public extension StubAurral {
     }
 
     /// `GET /api/deezer/preview/<id>.mp3`: open (no session needed), a 302 to Deezer's CDN, 404 without a preview.
+    /// Round 14 A7: with `?download` (2.13 `routes/deezer.ts`) Aurral fetches the clip itself and answers 200
+    /// `audio/mpeg` with the bytes; the phone never meets Deezer's CDN.
     internal func previewAnswer(method: String, path: String, url: URL) -> (Data, HTTPURLResponse)? {
         guard method == "GET", path.hasPrefix("/api/deezer/preview/"), features != nil else { return nil }
-        let (target, status) = discover.withLock { ($0.previewTarget, $0.previewStatus) }
+        let (target, status, clipSize, clipType) = discover.withLock {
+            ($0.previewTarget, $0.previewStatus, $0.previewClipSize, $0.previewClipType)
+        }
+        let download = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.contains { $0.name == "download" } == true
         // Like CFNetwork, the answer's URL is canonical (scheme and host lower-cased), not an echo of the request's.
         var canonical = URLComponents(url: url, resolvingAgainstBaseURL: false) ?? URLComponents()
         let scheme = canonical.scheme?.lowercased(), lowerHost = canonical.host?.lowercased()
@@ -316,6 +357,46 @@ public extension StubAurral {
         }
         if let status { return reply(status, ["Content-Type": status == 200 ? "audio/mpeg" : "application/json"]) }
         guard let target else { return reply(404, ["Content-Type": "application/json"], Data(#"{"error":"Preview not found"}"#.utf8)) }
+        if download {
+            return reply(200, ["Content-Type": clipType, "Cache-Control": "no-store"], StubAurral.previewClip(size: clipSize))
+        }
         return reply(302, ["Location": target, "Cache-Control": "no-store"])
+    }
+
+    /// Round 14 A7: `POST /api/image-proxy {src}` (signed in): Aurral fetches and caches the picture, and answers
+    /// `{url: "/api/image-proxy/<sha256>.<ext>"}`; a source it can't fetch (a private host, a 404) is 404
+    /// "Image not found"; no http(s) source is 400 (2.13 `routes/imageProxy.ts`).
+    internal func imageProxyAnswer(method: String, path: String, request: URLRequest) -> (Int, Any)? {
+        guard method != "GET", method != "HEAD", path == "/api/image-proxy" else { return nil }
+        let body = request.httpBody.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:]
+        let src = (body["src"] as? String ?? "").trimmingCharacters(in: .whitespaces)
+        guard src.lowercased().hasPrefix("http://") || src.lowercased().hasPrefix("https://") else {
+            return (400, ["error": "An http or https image URL is required"])
+        }
+        let key = Self.sha256Hex(src)
+        let cached = discover.withLock { d -> Bool in
+            if d.imageProxyRefused.contains(src) { return false }
+            d.imageProxyCache[key] = src
+            return true
+        }
+        return cached ? (200, ["url": "/api/image-proxy/\(key).png"]) : (404, ["error": "Image not found"])
+    }
+
+    /// Round 14 A7: `GET /api/image-proxy/<key>[.ext]`: open (no session needed), the cached picture or 404.
+    internal func imageProxyFileAnswer(method: String, path: String, url: URL) -> (Data, HTTPURLResponse)? {
+        guard method == "GET" || method == "HEAD", path.hasPrefix("/api/image-proxy/") else { return nil }
+        let raw = path.dropFirst("/api/image-proxy/".count)
+        let key = String(raw.split(separator: ".", maxSplits: 1).first ?? "").lowercased()
+        let (cached, status) = discover.withLock { ($0.imageProxyCache[key] != nil, $0.imageProxyFileStatus) }
+        func reply(_ code: Int, _ type: String, _ body: Data) -> (Data, HTTPURLResponse) {
+            (body, HTTPURLResponse(url: url, statusCode: code, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": type])!)
+        }
+        if let status { return reply(status, "application/json", Data(#"{"error":"Stub"}"#.utf8)) }
+        guard cached else { return reply(404, "application/json", Data(#"{"error":"Image not found"}"#.utf8)) }
+        return reply(200, "image/png", StubAurral.proxiedPicture)
+    }
+
+    static func sha256Hex(_ text: String) -> String {
+        SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
     }
 }

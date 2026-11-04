@@ -38,8 +38,8 @@ public enum AurralError: Error, Sendable, Equatable {
 ///   `GET /api/auth/me`, `GET /api/discover` (Recommended), `GET /api/discover/trending` and `.../genres/:id`,
 ///   `GET /api/discover/editorial`, `.../editorial/links` and `.../editorial/:id`, `GET /api/artists/:mbid/preview`,
 ///   `GET /api/artists/release-group/:mbid/tracks`, `GET /api/search` and `GET /api/search/unified`,
-///   `GET /api/playlists/jobs/:playlistId`, and `GET /api/deezer/preview/<id>.mp3` (open: only `PreviewResolver`
-///   sends it, never with the token).
+///   `GET /api/playlists/jobs/:playlistId`, and `GET /api/deezer/preview/<id>.mp3?download` (open: only
+///   `PreviewResolver` sends it, never with the token; A7: Aurral sends the clip itself, never a redirect).
 /// - Round 14 writes, each only on the owner's tap: `POST /api/discover/editorial/:id/library` (Add flow),
 ///   `POST /api/discover/feedback` (Not for me), `POST /api/playlists/flows/:flowId/download` (Download songs) and
 ///   `POST /api/playlists/shared-playlists/:playlistId/tracks/:jobId/research` (Retry a song).
@@ -65,7 +65,7 @@ public enum AurralRoute: CaseIterable, Sendable {
     }
 
     /// Whether the call carries the session token (`/api/health` is public; the login has nothing to carry yet; the
-    /// preview is open and its redirect leaves Aurral).
+    /// preview is open, and asked with `?download` only: A7).
     var isAuthorised: Bool {
         switch self {
         case .health, .login, .deezerPreview: false
@@ -82,6 +82,7 @@ public enum AurralRoute: CaseIterable, Sendable {
         case .editorialLinks: ["artist", "album", "albumId"]
         case .artistPreview: ["artistName"]
         case .releaseGroupTracks: ["artistMbid", "artistName", "albumTitle", "deezerAlbumId"]
+        case .deezerPreview: ["download"]
         default: []
         }
     }

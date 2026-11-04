@@ -4,8 +4,9 @@ import MagpieTestSupport
 import Testing
 @testable import AurralKit
 
-/// Round 14 A1 (D83, plan decision 3): a preview is fetched with no login attached, its one redirect is followed only
-/// to Deezer's HTTPS audio hosts (`*.dzcdn.net`), and the signed link is handed over, never kept.
+/// Round 14 A1 (D83), A7 (D110, plan decision 11): a preview is the clip Aurral itself sends
+/// (`GET /api/deezer/preview/<id>.mp3?download`, 200 `audio/mpeg`), fetched with no login attached, never through a
+/// redirect, and only as answered by the configured Aurral host. The phone never contacts Deezer.
 @Suite struct PreviewResolverTests {
     let stub: StubAurral
     let resolver: PreviewResolver
@@ -20,19 +21,20 @@ import Testing
     @Test func previewPathsAreAurralsOwnOnly() {
         #expect(AurralPreview(path: "/api/deezer/preview/3135556.mp3")?.trackId == "3135556")
         for bad in ["/api/deezer/preview/abc.mp3", "/api/deezer/preview/1.mp3?download", "/api/deezer/preview/.mp3",
-                    "https://cdnt-preview.dzcdn.net/x.mp3", "/api/deezer/preview/1/2.mp3", "api/deezer/preview/1.mp3",
+                    "https://cdn.example/x.mp3", "/api/deezer/preview/1/2.mp3", "api/deezer/preview/1.mp3",
                     "/api/deezer/preview/123456789012345678901.mp3", "/api/image-proxy/1.mp3", "/api/deezer/preview/1.mp3/"] {
             #expect(AurralPreview(path: bad) == nil, "\(bad)")
         }
         #expect(AurralPreview(trackId: "1")?.url(on: URL(string: "https://music.home/aurral/")!)?.absoluteString
-                == "https://music.home/aurral/api/deezer/preview/1.mp3")
+                == "https://music.home/aurral/api/deezer/preview/1.mp3?download")
     }
 
-    @Test func resolvesTheRedirectToDeezer() async throws {
+    @Test func fetchesTheClipFromAurralWithDownload() async throws {
         let result = try await resolver.resolve(preview)
-        guard case .playable(let url) = result else { Issue.record("\(result)"); return }
-        #expect(url.host() == "cdnt-preview.dzcdn.net" && url.scheme == "https")
+        guard case .clip(let data) = result else { Issue.record("\(result)"); return }
+        #expect(data == StubAurral.previewClip(size: 2_048))
         #expect(stub.asked == ["GET /api/deezer/preview/3135556.mp3"])
+        #expect(stub.requests.first?.url?.query == "download")
     }
 
     /// Nothing that could identify the owner goes with it: no Authorization, no cookie, no API key, even with a
@@ -49,30 +51,23 @@ import Testing
         #expect(request.cachePolicy == .reloadIgnoringLocalAndRemoteCacheData)
     }
 
-    /// Only `https://<anything>.dzcdn.net/...` (or dzcdn.net itself) on the default port, without user info.
-    @Test func redirectHostIsPinned() async throws {
-        let refused = [
-            "http://cdnt-preview.dzcdn.net/a.mp3",                // not https
-            "https://evil.example/a.mp3",
-            "https://dzcdn.net.evil.example/a.mp3",
-            "https://evildzcdn.net/a.mp3",
-            "https://cdnt-preview.dzcdn.net.evil.example/a.mp3",
-            "https://user:pw@cdnt-preview.dzcdn.net/a.mp3",
-            "https://cdnt-preview.dzcdn.net:8443/a.mp3",
-            "/api/deezer/preview/3135556.mp3?download",           // relative: back into Aurral
-            "//cdnt-preview.dzcdn.net/a.mp3",
-            "ftp://cdnt-preview.dzcdn.net/a.mp3",
-            "https://cdnt-preview.dzcdn.net",                     // no path
-            "not a url",
-        ]
-        for target in refused {
-            stub.setPreviewTarget(target)
-            await #expect(throws: PreviewError.refused, "\(target)") { _ = try await resolver.resolve(preview) }
-        }
-        for target in ["https://cdnt-preview.dzcdn.net/api/1/1/a.mp3?hdnea=exp=1~hmac=x", "https://e-cdns-preview-a.dzcdn.net/a.mp3",
-                       "https://CDNT-PREVIEW.DZCDN.NET/a.mp3", "https://dzcdn.net/a.mp3", "https://cdnt-preview.dzcdn.net:443/a.mp3"] {
-            stub.setPreviewTarget(target)
-            #expect(try await resolver.resolve(preview) != .noPreview, "\(target)")
+    /// No redirect at all: Aurral's old 302 to Deezer's CDN (an Aurral ignoring `?download`) and every other 3xx are
+    /// refused, never followed.
+    @Test(arguments: [301, 302, 303, 307, 308])
+    func anyRedirectIsRefused(_ status: Int) async throws {
+        stub.setPreviewStatus(status)
+        await #expect(throws: PreviewError.refused) { _ = try await resolver.resolve(preview) }
+    }
+
+    /// The clip must come from the configured Aurral host: an answer that landed anywhere else (a transport that
+    /// followed a redirect itself) is refused, whatever it holds.
+    @Test(arguments: ["https://cdnt-preview.dzcdn.net/a.mp3", "http://aurral-stub:3002/api/deezer/preview/3135556.mp3",
+                      "https://aurral-stub:3001/api/deezer/preview/3135556.mp3", "http://aurral-stub.evil.example:3001/a.mp3",
+                      "http://evil.example/api/deezer/preview/3135556.mp3"])
+    func anAnswerFromAnotherHostIsRefused(_ landed: String) async throws {
+        let followed = LandingTransport(inner: stub, finalURL: URL(string: landed)!)
+        await #expect(throws: PreviewError.refused) {
+            _ = try await PreviewResolver(base: stub.base, transport: followed).resolve(preview)
         }
     }
 
@@ -81,41 +76,50 @@ import Testing
         #expect(try await resolver.resolve(preview) == .noPreview)
     }
 
-    /// Anything but one 302 or a 404 is refused: Deezer down (502), the bytes (200, also what a transport that followed
-    /// the redirect itself would give), any other redirect code.
+    @Test(arguments: [500, 502, 503])
+    func aurralOrDeezerDownIsUnavailable(_ status: Int) async throws {
+        stub.setPreviewStatus(status)
+        await #expect(throws: PreviewError.unavailable(status: status)) { _ = try await resolver.resolve(preview) }
+    }
+
+    /// Anything but the clip: another status, an empty body, something that isn't audio, more than a preview's size.
     @Test func everythingElseIsRefused() async throws {
-        stub.setPreviewStatus(502)
-        await #expect(throws: PreviewError.unavailable(status: 502)) { _ = try await resolver.resolve(preview) }
-        for status in [200, 301, 303, 307, 308, 401, 500] {
+        for status in [200, 204, 401, 403, 429] {   // the stub's status override sends no bytes
             stub.setPreviewStatus(status)
-            await #expect(throws: PreviewError.self, "\(status)") { _ = try await resolver.resolve(preview) }
+            await #expect(throws: PreviewError.refused, "\(status)") { _ = try await resolver.resolve(preview) }
         }
+        stub.setPreviewStatus(nil)
+        stub.setPreviewClipType("text/html")
+        await #expect(throws: PreviewError.refused) { _ = try await resolver.resolve(preview) }
+        stub.setPreviewClipType("audio/mpeg")
+        stub.setPreviewClipSize(PreviewResolver.maxBytes + 1)
+        await #expect(throws: PreviewError.refused) { _ = try await resolver.resolve(preview) }
+        stub.setPreviewClipSize(PreviewResolver.maxBytes)
+        guard case .clip = try await resolver.resolve(preview) else { Issue.record("a clip at the cap plays"); return }
     }
 
     /// Fix I1: an Aurral saved with capital letters (`http://Aurral-Stub:3001`) still plays: URLSession hands back the
-    /// answer's URL canonical (lower-cased scheme and host), which must not read as "moved".
+    /// answer's URL canonical (lower-cased scheme and host), which must not read as another host.
     @Test func aMixedCaseBaseStillResolves() async throws {
         let mixed = PreviewResolver(base: URL(string: "HTTP://Aurral-Stub:3001")!, transport: stub)
-        let result = try await mixed.resolve(preview)
-        guard case .playable(let url) = result else { Issue.record("\(result)"); return }
-        #expect(url.host() == "cdnt-preview.dzcdn.net")
+        guard case .clip = try await mixed.resolve(preview) else { Issue.record("not a clip"); return }
         #expect(stub.requests.first?.url?.host == "Aurral-Stub", "asked as configured")
         stub.setPreviewTarget(nil)
         #expect(try await mixed.resolve(preview) == .noPreview)
     }
 
-    /// A transport that followed the redirect itself hands back the bytes (200), not Aurral's 302: refused.
-    @Test func aFollowedRedirectIsRefused() async throws {
+    /// An https Aurral is asked over https, a plain-http one over http (as the owner configured it).
+    @Test func theSchemeFollowsTheConfiguredBase() async throws {
         let mock = MockTransport()
-        mock.stub(pathSuffix: "/3135556.mp3") { _ in .init(status: 200, body: Data([0xFF, 0xFB])) }
-        let followed = FollowingTransport(inner: mock, finalURL: URL(string: "https://evil.example/a.mp3")!)
-        await #expect(throws: PreviewError.refused) {
-            _ = try await PreviewResolver(base: stub.base, transport: followed).resolve(preview)
-        }
+        mock.stub(pathSuffix: "/3135556.mp3") { _ in .init(status: 200, body: Data([0x49, 0x44, 0x33]),
+                                                           headers: ["Content-Type": "audio/mpeg"]) }
+        let https = PreviewResolver(base: URL(string: "https://aurral.example.org")!, transport: mock)
+        guard case .clip = try await https.resolve(preview) else { Issue.record("not a clip"); return }
+        #expect(mock.requests.first?.url?.absoluteString == "https://aurral.example.org/api/deezer/preview/3135556.mp3?download")
     }
 
-    /// The signed link is never kept: each resolve asks Aurral again (the link expires after about 15 minutes).
-    @Test func neverCachesTheSignedLink() async throws {
+    /// The clip is never kept: each resolve asks Aurral again.
+    @Test func neverCachesTheClip() async throws {
         _ = try await resolver.resolve(preview)
         _ = try await resolver.resolve(preview)
         #expect(stub.requests.count == 2)
@@ -130,26 +134,29 @@ import Testing
         let session = URLSession(configuration: config)
         let task = session.dataTask(with: URLRequest(url: URL(string: "http://aurral-stub:3001/api/deezer/preview/1.mp3")!))
         let redirect = HTTPURLResponse(url: URL(string: "http://aurral-stub:3001/api/deezer/preview/1.mp3")!, statusCode: 302,
-                                       httpVersion: "HTTP/1.1", headerFields: ["Location": "https://cdnt-preview.dzcdn.net/a.mp3"])!
-        let next = await PreviewResolver.NoRedirects.shared.urlSession(session, task: task, willPerformHTTPRedirection: redirect,
-                                                                       newRequest: URLRequest(url: URL(string: "https://cdnt-preview.dzcdn.net/a.mp3")!))
+                                       httpVersion: "HTTP/1.1", headerFields: ["Location": "http://aurral-stub:3001/b.mp3"])!
+        let next = await AurralOpenTransport.NoRedirects.shared.urlSession(session, task: task, willPerformHTTPRedirection: redirect,
+                                                                           newRequest: URLRequest(url: URL(string: "http://aurral-stub:3001/b.mp3")!))
         #expect(next == nil)
         task.cancel()
         session.invalidateAndCancel()
     }
 
-    /// The preview route is open on Aurral and in the allow-list as such: never sent by the signed-in client.
+    /// The preview route is open on Aurral and in the allow-list as such: never sent by the signed-in client, and only
+    /// with `download`.
     @Test func theSignedInClientNeverSendsIt() {
         #expect(AurralRoute.deezerPreview.isAuthorised == false)
+        #expect(AurralRoute.deezerPreview.queryNames == ["download"])
     }
 }
 
 /// A transport that pretends it followed a redirect: the answer's URL is `finalURL`.
-private struct FollowingTransport: HTTPTransport {
-    let inner: MockTransport
+struct LandingTransport: HTTPTransport {
+    let inner: HTTPTransport
     let finalURL: URL
     func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
         let (data, response) = try await inner.send(request)
-        return (data, HTTPURLResponse(url: finalURL, statusCode: response.statusCode, httpVersion: "HTTP/1.1", headerFields: [:])!)
+        return (data, HTTPURLResponse(url: finalURL, statusCode: response.statusCode, httpVersion: "HTTP/1.1",
+                                      headerFields: response.allHeaderFields as? [String: String])!)
     }
 }

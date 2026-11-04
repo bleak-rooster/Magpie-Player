@@ -4,7 +4,7 @@ import MagpieCore
 /// Round 14 A1 (D83): a song's 30-second preview, as Aurral names it: `preview_url` = `/api/deezer/preview/<id>.mp3`
 /// (Aurral 2.13 `services/apiClients/deezer.ts` `deezerPreviewPath`). Only that exact shape is kept: any other
 /// `preview_url` (another host, another route) is dropped when decoding. The URL is always made on the configured
-/// Aurral base; the signed Deezer link it redirects to is never kept (`PreviewResolver`).
+/// Aurral base, and asked with `?download` so Aurral sends the clip itself (`PreviewResolver`, A7).
 public struct AurralPreview: Sendable, Hashable, Codable {
     /// Deezer's track id (1–20 digits).
     public let trackId: String
@@ -25,8 +25,12 @@ public struct AurralPreview: Sendable, Hashable, Codable {
     /// The path as Magpie sends it (relative to the Aurral base).
     public var path: String { "api/deezer/preview/\(trackId).mp3" }
 
-    /// The preview on the configured Aurral.
-    public func url(on base: URL) -> URL? { ServerEndpoint(bases: [base]).url(base, path: path) }
+    /// Round 14 A7 (D110): `?download`, so Aurral sends the clip itself (200 `audio/mpeg`) instead of a redirect to
+    /// Deezer's CDN.
+    public static let downloadQuery = [URLQueryItem(name: "download", value: nil)]
+
+    /// The clip on the configured Aurral (`…/api/deezer/preview/<id>.mp3?download`).
+    public func url(on base: URL) -> URL? { ServerEndpoint(bases: [base]).url(base, path: path, query: Self.downloadQuery) }
 }
 
 /// Round 14 A1: an image Aurral names: an absolute http(s) URL (Deezer's or Apple's CDN), or a path on Aurral itself

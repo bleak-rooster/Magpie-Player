@@ -52,9 +52,22 @@ import Testing
         let base = try #require(parts.url)
         let resolver = PreviewResolver(base: base)
         let result = try await resolver.resolve(AurralPreview(trackId: "3135556")!)
-        guard case .playable(let url) = result else { Issue.record("\(result)"); return }
-        #expect(url.host() == "cdnt-preview.dzcdn.net")
+        guard case .clip(let clip) = result else { Issue.record("\(result)"); return }
+        #expect(!clip.isEmpty, "A7: the stub sends the clip itself for ?download")
         #expect(try await resolver.resolve(AurralPreview(trackId: "3135560")!) == .noPreview)
+    }
+
+    /// Round 14 A7, over the real network: the image proxy turns an Aurral-named picture into a picture on Aurral.
+    @Test(.enabled(if: stubURL != nil, "set MAGPIE_IT=1 (scripts/test-app.sh starts dev/aurral-stub)"))
+    func imageProxyServesAurralNamedPictures() async throws {
+        let root = try #require(Self.stubURL)
+        let client = try await Self.client(root.appending(path: "s/default"))
+        let trending = try await client.trending()
+        let art = try #require(trending.songs?.items.first?.artwork)
+        let local = try await client.proxyImage(art)
+        let bytes = try await AurralImageProxy.fetch(local, base: client.base, transport: AurralOpenTransport())
+        #expect(!bytes.isEmpty)
+        _ = try? await client.logout()
     }
 
     /// The scenarios UI tests pick by address: no accessFlow (flows 403), and 2.10 (no capabilities).

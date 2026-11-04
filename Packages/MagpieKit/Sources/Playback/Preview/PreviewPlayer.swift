@@ -10,8 +10,8 @@ import Observation
 /// - Hand-off (D86): starting a preview pauses the main player when it is playing; when previews stop (Stop, the end of
 ///   the list, a failure) the main player stays paused and `offersResume` says so, for the mini player's Resume. The
 ///   main player starting by any other way stops the preview.
-/// - Every play resolves the preview just before it plays (`lookup`); a signed link is never kept. A play that fails
-///   is resolved again once, from where it was (an expired link); a second failure is final.
+/// - Every play resolves the preview just before it plays (`lookup`: the clip Aurral sends); no clip is kept. A play
+///   that fails is resolved again once, from where it was; a second failure is final.
 @MainActor @Observable
 public final class PreviewPlayer {
     public enum Phase: Sendable, Equatable {
@@ -307,7 +307,7 @@ public final class PreviewPlayer {
         resolveAndLoad(item, at: 0)
     }
 
-    /// Resolves the item's preview now (never a kept link) and hands it to the engine from `at`.
+    /// Resolves the item's preview now (never a kept clip) and hands it to the engine from `at`.
     private func resolveAndLoad(_ item: PreviewItem, at: TimeInterval) {
         guard let previewId = item.previewId else { return noPreview(item) }
         token += 1
@@ -320,8 +320,8 @@ public final class PreviewPlayer {
             let answer = await lookup(previewId)
             guard let self, !Task.isCancelled, mine == self.token, self.current?.id == item.id else { return }
             switch answer {
-            case .playable(let url) where url.scheme?.lowercased() == "https":
-                self.engine.load(url, token: mine, at: at)
+            case .playable(let clip) where !clip.isEmpty:
+                self.engine.load(clip, token: mine, at: at)
             case .playable, .unavailable:
                 self.becomeUnavailable(item)
             case .noPreview:

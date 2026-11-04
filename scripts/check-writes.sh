@@ -216,6 +216,7 @@ if [ -z "${G1_SRC:-}" ]; then
   aurral="Packages/MagpieKit/Sources/AurralKit/AurralClient.swift"
   aurral_discover="Packages/MagpieKit/Sources/AurralKit/AurralClient+Discover.swift"
   preview_resolver="Packages/MagpieKit/Sources/AurralKit/PreviewResolver.swift"
+  open_transport="Packages/MagpieKit/Sources/AurralKit/AurralOpenTransport.swift"
   for want in 'case 1 where rest[0] == "health": .health' \
               'case 2 where rest == ["playlists", "status"]: .playlistsStatus' \
               'case 2 where rest == ["playlists", "jobs"]: .playlistsJobs' \
@@ -280,6 +281,7 @@ if [ -z "${G1_SRC:-}" ]; then
         case .editorialLinks: ["artist", "album", "albumId"]
         case .artistPreview: ["artistName"]
         case .releaseGroupTracks: ["artistMbid", "artistName", "albumTitle", "deezerAlbumId"]
+        case .deezerPreview: ["download"]
         default: []
         }'
   [ "$(aurral_block 'var method: String {')" = "$want_method" ] ||
@@ -308,16 +310,30 @@ if [ -z "${G1_SRC:-}" ]; then
               'var o: [String: Any] = ["action": "block_artist", "artistName": name, "sourceContext": "recommended",'; do
     grep -qF -- "$want" "$aurral_discover" || { echo "G1: $aurral_discover: an Aurral write changed (missing: $want)" >&2; bad=1; }
   done
-  # Round 14 A1 (D83): the preview resolver sends no login or cookie, follows no redirect, and accepts only https
-  # *.dzcdn.net.
-  if grep -nE 'Authorization|Bearer|X-Api-Key|Cookie"|session\.token|currentToken' "$preview_resolver" | grep -vE '^[0-9]+:[[:space:]]*//' | grep -q .; then
-    echo "G1: $preview_resolver: the preview fetch names a login" >&2; bad=1
-  fi
-  for want in 'request.httpShouldHandleCookies = false' 'config.httpCookieStorage = nil' 'config.urlCache = nil' \
-              'newRequest request: URLRequest) async -> URLRequest? { nil }' 'guard url.scheme?.lowercased() == "https"' \
-              'return host == "dzcdn.net" || host.hasSuffix(".dzcdn.net")' 'case 302:'; do
+  # Round 14 A1 (D83), A7 (D110): the preview resolver sends no login or cookie, asks Aurral for the clip itself
+  # (`?download`), follows no redirect (any 3xx refused) and takes the answer only from the configured Aurral host.
+  # Its open transport (also the image proxy's pictures, D111) keeps no cookie or cache and never follows a redirect.
+  for f in "$preview_resolver" "$open_transport"; do
+    if grep -nE 'Authorization|Bearer|X-Api-Key|Cookie"|session\.token|currentToken' "$f" | grep -vE '^[0-9]+:[[:space:]]*//' | grep -q .; then
+      echo "G1: $f: the open Aurral fetch names a login" >&2; bad=1
+    fi
+  done
+  for want in 'request.httpShouldHandleCookies = false' 'guard AurralRoute.isAllowed(method: "GET", path: preview.path, query: AurralPreview.downloadQuery),' \
+              'if let landed = response.url, !landed.isSameOrigin(as: url) { throw PreviewError.refused }' \
+              'guard type.hasPrefix("audio/"), !data.isEmpty, data.count <= Self.maxBytes else { throw PreviewError.refused }' \
+              'default: throw PreviewError.refused   // every 3xx included: never followed' \
+              'public static func defaultTransport() -> HTTPTransport { AurralOpenTransport() }'; do
     grep -qF -- "$want" "$preview_resolver" || { echo "G1: $preview_resolver: the preview's safety changed (missing: $want)" >&2; bad=1; }
   done
+  for want in 'config.httpCookieStorage = nil' 'config.urlCache = nil' 'config.httpCookieAcceptPolicy = .never' \
+              'newRequest request: URLRequest) async -> URLRequest? { nil }' \
+              'static let session = URLSession(configuration: sessionConfiguration(), delegate: NoRedirects.shared, delegateQueue: nil)'; do
+    grep -qF -- "$want" "$open_transport" || { echo "G1: $open_transport: the open transport's safety changed (missing: $want)" >&2; bad=1; }
+  done
+  [ "$(grep -cF 'newRequest request: URLRequest) async -> URLRequest? { nil }' "$open_transport")" = 2 ] ||
+    { echo "G1: $open_transport: a redirect may be followed" >&2; bad=1; }
+  grep -qF 'public static let downloadQuery = [URLQueryItem(name: "download", value: nil)]' Packages/MagpieKit/Sources/AurralKit/AurralPreview.swift ||
+    { echo "G1: AurralPreview: the preview is no longer asked with ?download" >&2; bad=1; }
   # Round 13 (D70): the API key is gone. No product code sends an X-Api-Key to Aurral, and only the Aurral client sends
   # its Bearer token.
   if grep -nE 'X-Api-Key|apiKey' "$aurral" | grep -vE '^[0-9]+:[[:space:]]*//' | grep -q .; then

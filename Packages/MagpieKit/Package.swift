@@ -28,8 +28,8 @@ let package = Package(
         .target(name: "MatchIndex", dependencies: ["MagpieCore", "NavidromeKit"]),
         .target(name: "Search", dependencies: ["MagpieCore", "MatchIndex", "ListenBrainzKit", "LidarrKit", "AurralKit"]),
         .target(name: "Requests", dependencies: ["MagpieCore", "LidarrKit", "ListenBrainzKit", "NavidromeKit", "MatchIndex"]),
-        // Round 14 A2: AurralKit for the one Deezer-audio host check (`PreviewResolver.isDeezerAudio`, D88).
-        .target(name: "Playback", dependencies: ["MagpieCore", "AurralKit"]),
+        // Round 14 A7: the preview engine plays the bytes Aurral sent (AurralKit's `PreviewResolver` fetches them).
+        .target(name: "Playback", dependencies: ["MagpieCore"]),
         .target(name: "DesignSystem", dependencies: ["MagpieCore"]),
         .target(name: "CarPlayUI", dependencies: ["MagpieCore", "Playback", "DesignSystem", "Search"]),
         .target(name: "MagpieTestSupport", dependencies: ["MagpieCore", "AurralKit"]),

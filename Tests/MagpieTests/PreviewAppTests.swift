@@ -14,10 +14,10 @@ import UIKit
 @MainActor
 final class RecordingPreviewEngine: PreviewEngine {
     let events: AsyncStream<PreviewEngineEvent>
-    private(set) var loads: [(url: URL, token: Int, at: TimeInterval)] = []
+    private(set) var loads: [(clip: Data, token: Int, at: TimeInterval)] = []
     private(set) var stops = 0
     init() { events = AsyncStream { $0.finish() } }
-    func load(_ url: URL, token: Int, at: TimeInterval) { loads.append((url, token, at)) }
+    func load(_ clip: Data, token: Int, at: TimeInterval) { loads.append((clip, token, at)) }
     func pause() {}
     func resume() {}
     func stop() { stops += 1 }
@@ -99,13 +99,14 @@ extension DiscoverAppTests {
         model.togglePreview(Self.previewSong)
         await settle { engine.loads.count == 1 }
         let load = try #require(engine.loads.first)
-        #expect(load.url.host() == "cdnt-preview.dzcdn.net")
+        #expect(load.clip == StubAurral.previewClip(size: 2_048), "the clip Aurral sent itself")
         let ask = try #require(previewAsks.first)
-        #expect(ask.url?.path == "/api/deezer/preview/3135556.mp3")
+        #expect(ask.url?.path == "/api/deezer/preview/3135556.mp3" && ask.url?.query == "download")
+        #expect(ask.url?.host() == aurral.base.host(), "only the Aurral host is asked")
         #expect(ask.value(forHTTPHeaderField: "Authorization") == nil)
         #expect(ask.httpShouldHandleCookies == false)
 
-        // Stopped and played again: Aurral is asked again (the signed link is never kept).
+        // Stopped and played again: Aurral is asked again (the clip is never kept).
         model.togglePreview(Self.previewSong)
         #expect(model.previewPlayer.phase == .idle)
         model.togglePreview(Self.previewSong)
@@ -136,13 +137,12 @@ extension DiscoverAppTests {
         #expect(engine.loads.isEmpty)
     }
 
-    /// A redirect anywhere but Deezer's https audio hosts is refused: nothing plays.
-    @Test(arguments: ["http://cdnt-preview.dzcdn.net/x.mp3", "https://cdn.example.com/x.mp3",
-                      "https://cdnt-preview.dzcdn.net.evil.com/x.mp3"])
-    func aRedirectOffDeezerIsRefused(_ target: String) async throws {
+    /// Round 14 A7 (D110): any redirect is refused (never followed, wherever it points): nothing plays.
+    @Test(arguments: [301, 302, 307])
+    func aRedirectIsRefused(_ status: Int) async throws {
         let (model, engine) = try await previewModel()
         defer { model.signOut() }
-        aurral.setPreviewTarget(target)
+        aurral.setPreviewStatus(status)
         model.togglePreview(Self.previewSong)
         await settle { model.previewPlayer.phase == .unavailable }
         #expect(model.previewPlayer.phase == .unavailable)
@@ -200,7 +200,7 @@ extension DiscoverAppTests {
         let items = songs.map(model.previewItem(for:))
         #expect(items.first?.previewId == "3135556")
         #expect(items.first?.title == "Harbour Lights" && items.first?.artist == "Stub Arrows")
-        #expect(items.first?.artworkURL?.host() == "cdn-images.dzcdn.net")
+        #expect(items.allSatisfy { $0.artworkURL == nil }, "A7 (D113): never a Deezer or Apple link handed on")
         #expect(Set(items.map(\.id)).count == items.count)
     }
 
