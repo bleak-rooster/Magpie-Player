@@ -10,6 +10,9 @@ import UIKit
 @MainActor
 public final class NowPlayingBridge {
     private let player: Player
+    /// Round 14 A2 (D86): while a preview loads, plays or is paused, the lock screen shows it and the remote commands go
+    /// to it; when it stops, the main player's info comes back.
+    private let preview: PreviewPlayer?
     private let artworkURL: (Song) -> URL?
     /// The app's artwork, through its caches (P4); when given, `artworkURL` isn't used.
     private let artworkImage: (@MainActor (Song) async -> UIImage?)?
@@ -32,28 +35,39 @@ public final class NowPlayingBridge {
         var isShuffled: Bool
         var repeatMode: RepeatMode
         var liked: Bool
+        var preview: PreviewSnapshot?
+    }
+
+    /// What the lock screen shows of a preview.
+    private struct PreviewSnapshot: Equatable, Sendable {
+        var itemId: String
+        var isPlaying: Bool
+        var second: Int
     }
 
     public init(player: Player, artworkURL: @escaping (Song) -> URL?, onLike: @escaping (Song) -> Void,
                 isLiked: @escaping (Song) -> Bool = { $0.starred },
-                artworkImage: (@MainActor (Song) async -> UIImage?)? = nil) {
+                artworkImage: (@MainActor (Song) async -> UIImage?)? = nil, preview: PreviewPlayer? = nil) {
         self.player = player
+        self.preview = preview
         self.artworkURL = artworkURL
         self.artworkImage = artworkImage
         self.onLike = onLike
         self.isLiked = isLiked
         registerCommands()
-        observation = Task { [weak self, player, isLiked] in
+        observation = Task { [weak self, player, preview, isLiked] in
             var last: Snapshot?
             let snapshots = Observations { @MainActor in
                 Snapshot(entryId: player.queue.current?.id, isPlaying: player.isPlaying, duration: player.duration,
                          second: NowPlayingBridge.wholeSeconds(player.position), upcomingCount: player.queue.upcomingCount,
                          isShuffled: player.isShuffled, repeatMode: player.repeatMode,
-                         liked: player.queue.current.map { isLiked($0.song) } ?? false)
+                         liked: player.queue.current.map { isLiked($0.song) } ?? false,
+                         preview: NowPlayingBridge.previewSnapshot(preview))
             }
             for await snapshot in snapshots where snapshot != last {
                 guard let self else { return }
-                let entryChanged = snapshot.entryId != last?.entryId
+                // Back from a preview: the main song's artwork is published again too.
+                let entryChanged = snapshot.entryId != last?.entryId || (snapshot.preview == nil && last?.preview != nil)
                 last = snapshot
                 self.publish(loadArtwork: entryChanged)
             }
@@ -77,9 +91,39 @@ public final class NowPlayingBridge {
 
     // MARK: - Now Playing info
 
+    private static func previewSnapshot(_ preview: PreviewPlayer?) -> PreviewSnapshot? {
+        guard let preview, preview.isActive, let item = preview.current else { return nil }
+        return PreviewSnapshot(itemId: item.id, isPlaying: preview.phase == .playing, second: wholeSeconds(preview.position))
+    }
+
+    /// The Now Playing info of the preview playing: its title and artist, 30 seconds long. No artwork, no queue index.
+    public static func previewInfo(_ preview: PreviewPlayer) -> [String: Any]? {
+        guard preview.isActive, let item = preview.current else { return nil }
+        var info: [String: Any] = [
+            MPMediaItemPropertyTitle: item.title,
+            MPMediaItemPropertyArtist: item.artist,
+            MPMediaItemPropertyPlaybackDuration: min(preview.clipDuration, PreviewPlayer.clipLength),
+            MPNowPlayingInfoPropertyElapsedPlaybackTime: preview.position.isFinite ? preview.position : 0,
+            MPNowPlayingInfoPropertyPlaybackRate: preview.phase == .playing ? 1.0 : 0.0,
+            MPNowPlayingInfoPropertyDefaultPlaybackRate: 1.0,
+            MPNowPlayingInfoPropertyMediaType: MPNowPlayingInfoMediaType.audio.rawValue,
+        ]
+        if let album = item.album { info[MPMediaItemPropertyAlbumTitle] = album }
+        if let index = preview.index {
+            info[MPNowPlayingInfoPropertyPlaybackQueueIndex] = index
+            info[MPNowPlayingInfoPropertyPlaybackQueueCount] = preview.items.count
+        }
+        return info
+    }
+
     private func publish(loadArtwork: Bool) {
         Self.syncModes(of: player)
         let center = MPNowPlayingInfoCenter.default()
+        if let preview, let info = Self.previewInfo(preview) {
+            center.nowPlayingInfo = info
+            MPRemoteCommandCenter.shared().likeCommand.isActive = false
+            return
+        }
         guard let entry = player.queue.current else {
             center.nowPlayingInfo = nil
             return
@@ -192,20 +236,31 @@ public final class NowPlayingBridge {
 
     private func registerCommands() {
         let c = MPRemoteCommandCenter.shared()
-        add(c.playCommand) { p, _ in if !p.isPlaying { p.toggle() } }
-        add(c.pauseCommand) { p, _ in if p.isPlaying { p.toggle() } }
-        add(c.togglePlayPauseCommand) { p, _ in p.toggle() }
-        add(c.nextTrackCommand) { p, _ in p.next() }
-        add(c.previousTrackCommand) { p, _ in p.previous() }
+        let preview = self.preview
+        add(c.playCommand) { p, _ in if !Self.previewTakes(.play, preview), !p.isPlaying { p.toggle() } }
+        add(c.pauseCommand) { p, _ in if !Self.previewTakes(.pause, preview), p.isPlaying { p.toggle() } }
+        add(c.togglePlayPauseCommand) { p, _ in if !Self.previewTakes(.togglePlayPause, preview) { p.toggle() } }
+        add(c.nextTrackCommand) { p, _ in if !Self.previewTakes(.nextTrack, preview) { p.next() } }
+        add(c.previousTrackCommand) { p, _ in if !Self.previewTakes(.previousTrack, preview) { p.previous() } }
         add(c.changePlaybackPositionCommand) { p, input in
-            if case .position(let t) = input { p.seek(t) }
+            if case .position(let t) = input, !Self.previewTakes(.seek(t), preview) { p.seek(t) }
         }
-        add(c.changeShuffleModeCommand, Self.shuffleCommandAction)
-        add(c.changeRepeatModeCommand, Self.repeatCommandAction)
+        // Fix round 1: during a preview, shuffle and repeat don't change the hidden main queue.
+        add(c.changeShuffleModeCommand) { p, input in
+            if !Self.previewTakes(.shuffle, preview) { Self.shuffleCommandAction(p, input) }
+        }
+        add(c.changeRepeatModeCommand) { p, input in
+            if !Self.previewTakes(.repeatMode, preview) { Self.repeatCommandAction(p, input) }
+        }
         add(c.likeCommand) { [weak self] p, _ in
-            guard let song = p.queue.current?.song else { return }
+            guard !Self.previewTakes(.like, preview), let song = p.queue.current?.song else { return }
             self?.onLike(song)
         }
+    }
+
+    /// Round 14 A2: a preview loading, playing or paused takes the command; otherwise the main player does.
+    public static func previewTakes(_ command: PreviewRemoteCommand, _ preview: PreviewPlayer?) -> Bool {
+        preview?.handleRemote(command) ?? false
     }
 
     /// What a remote command event carries, copied out so it can cross to the main actor.

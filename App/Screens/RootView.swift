@@ -61,7 +61,7 @@ struct MainTabs: View {
                 SearchView()
             }
         }
-        .tabViewBottomAccessory(isEnabled: model.player.queue.current != nil) {
+        .tabViewBottomAccessory(isEnabled: model.player.queue.current != nil || model.previewPlayer.isActive) {
             MiniPlayerAccessory { showNowPlaying = true }
         }
         .sheet(isPresented: $showNowPlaying) {
@@ -83,12 +83,17 @@ private struct MiniPlayerAccessory: View {
 
     var body: some View {
         let player = model.player
-        if let banner = model.visibleBanner {
+        if model.previewPlayer.isActive {
+            PreviewMiniPlayerAccessory()   // round 14 A2: the preview playing, with Stop
+        } else if let banner = model.visibleBanner {
             PlayNowBannerView(banner: banner, open: open)
         } else if let song = player.queue.current?.song {
+            let preview = model.previewPlayer
             Artwork(song.coverArtId, side: 36) { image in
+                // Round 14 A2: previews paused this song; Resume plays it on (nothing resumes it by itself).
                 MiniPlayer(title: song.title, artist: song.artist, artwork: image, isPlaying: player.isPlaying,
-                           onPlayPause: { player.toggle() }, onNext: { player.next() }, onOpen: open)
+                           onPlayPause: { preview.offersResume ? preview.resumeMain() : player.toggle() },
+                           onNext: { player.next() }, onOpen: open, offersResume: preview.offersResume)
             }
             .accessibilityIdentifier("mini-player")
         }
