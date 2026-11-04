@@ -206,6 +206,44 @@ final class AsyncGate: @unchecked Sendable {
         #expect(hits.cursor.unreadAlbums.count == 2)
     }
 
+    /// Fix round 1 (M1): a search cancelled while Lidarr answers sends no backup request.
+    @Test func aCancelledSearchSendsNoBackup() async throws {
+        let calls = Calls(), started = AsyncGate()
+        let shared = SharedOutsideSearch(timeout: .seconds(5), sleep: never) { _ in
+            started.open()
+            try await Task.sleep(for: .seconds(2))
+            return ExternalHits()
+        }
+        let reader = TracklistSongs(release: { _ in nil }, sleep: never)
+        let source = MergedSearch.Source.songs(lidarr: shared, tracklists: reader, backup: { _ in calls.add("lb"); return [] })
+        let task = Task { try await source.fetch("x") }
+        await started.wait()
+        task.cancel()
+        _ = try? await task.value
+        #expect(calls.count("lb") == 0)
+    }
+
+    /// Fix round 1 (M5): one caller leaving doesn't cancel the shared request for the other.
+    @Test func oneCallerLeavingKeepsTheSharedRequestForTheOther() async throws {
+        let gate = AsyncGate(), started = AsyncGate(), calls = Calls()
+        let shared = SharedOutsideSearch(timeout: .seconds(5), sleep: never) { _ in
+            calls.add("lidarr")
+            started.open()
+            await gate.wait()
+            try Task.checkCancellation()
+            return ExternalHits(artists: [NotYetArtist(name: "Ines Morrow")])
+        }
+        let leaving = Task { try await shared.hits("x") }
+        let staying = Task { try await shared.hits("x") }
+        await started.wait()
+        for _ in 0..<200 { await Task.yield() }
+        leaving.cancel()
+        await #expect(throws: CancellationError.self) { try await leaving.value }
+        gate.open()
+        #expect(try await staying.value.artists.map(\.name) == ["Ines Morrow"])
+        #expect(calls.count("lidarr") == 1)
+    }
+
     @Test func aCancelledSearchCancelsTheSharedLidarrRequest() async throws {
         let started = AsyncGate(), ended = Calls()
         let shared = SharedOutsideSearch(timeout: .seconds(5), sleep: never) { _ in
@@ -412,6 +450,19 @@ final class AsyncGate: @unchecked Sendable {
         #expect(got.songs.isEmpty)
         #expect(got.paging.cursor.unreadAlbums.count == 8, "only the first album was read")
         gate.open()
+    }
+
+    /// Fix round 1 (M3): a page with nothing in it ends paging, whatever `hasMore` said.
+    @Test func anEmptyPageEndsPaging() async throws {
+        let more = MergedSearch.OutsideMore(artists: { _, offset in ([], offset + 24) })
+        let source = MergedSearch.Source(timeout: .seconds(5)) { _ in ExternalHits(cursor: OutsideCursor(aurralArtistsOffset: 24)) }
+        let search = search([source], more: more)
+        var s = try await search.runReportingLibraryFailure("x")
+        s.append(try await search.moreOutside(.artists, in: s))
+        #expect(!s.hasMoreOutside(.artists))
+        #expect(MergedSearch.Source.nextOffset(hasMore: true, count: 0, offset: 24) == nil)
+        #expect(MergedSearch.Source.nextOffset(hasMore: true, count: 5, offset: 24) == 29)
+        #expect(MergedSearch.Source.nextOffset(hasMore: false, count: 5, offset: 24) == nil)
     }
 
     @Test func aFailedMorePageThrowsAndKeepsTheOffset() async throws {

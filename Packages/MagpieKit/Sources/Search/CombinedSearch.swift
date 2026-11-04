@@ -197,14 +197,15 @@ private final class ReadBox: @unchecked Sendable {
 // MARK: - One Lidarr search for two sources
 
 /// Lidarr's search for a query, asked once and shared by the artist/album source and the songs source (which reads
-/// the albums' tracklists). It runs on its own deadline.
+/// the albums' tracklists). It runs on its own deadline. Fix round 1 (M5): a caller that leaves (cancelled) gets
+/// `CancellationError` at once; the request itself is cancelled only when every caller has left.
 public actor SharedOutsideSearch {
     public typealias Search = @Sendable (String) async throws -> ExternalHits
 
     private let search: Search
     private let timeout: Duration
     private let sleep: MergedSearch.Sleep
-    private var running: [String: Task<ExternalHits, Error>] = [:]
+    private var running: [String: SharedRequest] = [:]
 
     public init(timeout: Duration = MergedSearch.sourceTimeout,
                 sleep: @escaping MergedSearch.Sleep = { try await Task.sleep(for: $0) },
@@ -217,18 +218,78 @@ public actor SharedOutsideSearch {
         self.init(timeout: timeout) { q in MergedSearch.Source.hits(from: try await lidarr.search(term: q)) }
     }
 
-    /// A caller cancelled (the search moved on) cancels the shared request too, so typing never leaves Lidarr
-    /// searches running.
     public func hits(_ query: String) async throws -> ExternalHits {
-        let task: Task<ExternalHits, Error>
-        if let running = running[query] {
-            task = running
+        let request: SharedRequest
+        if let known = running[query], !known.wasAbandoned {
+            request = known
         } else {
+            request = SharedRequest()
+            running[query] = request
             let search = self.search, timeout = self.timeout, sleep = self.sleep
-            task = Task { try await MergedSearch.withDeadline(timeout, sleep: sleep) { try await search(query) } }
-            running[query] = task
+            request.start(Task {
+                let r: Result<ExternalHits, Error>
+                do { r = .success(try await MergedSearch.withDeadline(timeout, sleep: sleep) { try await search(query) }) }
+                catch { r = .failure(error) }
+                request.finish(r)
+            })
         }
-        return try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
+        let id = request.join()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { request.attach(id, $0) }
+        } onCancel: {
+            request.leave(id)
+        }
+    }
+}
+
+/// One shared request and the callers waiting for it.
+final class SharedRequest: @unchecked Sendable {
+    private let lock = NSLock()
+    private var task: Task<Void, Never>?
+    private var result: Result<ExternalHits, Error>?
+    private var waiting: [Int: CheckedContinuation<ExternalHits, Error>] = [:]
+    private var joined: Set<Int> = []
+    private var left: Set<Int> = []
+    private var next = 0
+    private var abandoned = false
+
+    /// Every caller left and the request was cancelled: a new caller starts a new one.
+    var wasAbandoned: Bool { lock.withLock { abandoned } }
+
+    func start(_ task: Task<Void, Never>) { lock.withLock { self.task = task } }
+
+    func join() -> Int { lock.withLock { next += 1; joined.insert(next); return next } }
+
+    func attach(_ id: Int, _ c: CheckedContinuation<ExternalHits, Error>) {
+        let now: Result<ExternalHits, Error>? = lock.withLock {
+            if left.contains(id) { return .failure(CancellationError()) }
+            if let result { joined.remove(id); return result }
+            waiting[id] = c
+            return nil
+        }
+        if let now { c.resume(with: now) }
+    }
+
+    func leave(_ id: Int) {
+        let (c, cancel): (CheckedContinuation<ExternalHits, Error>?, Task<Void, Never>?) = lock.withLock {
+            guard joined.remove(id) != nil else { return (nil, nil) }
+            left.insert(id)
+            let c = waiting.removeValue(forKey: id)
+            if joined.isEmpty, result == nil { abandoned = true; return (c, task) }
+            return (c, nil)
+        }
+        c?.resume(throwing: CancellationError())
+        cancel?.cancel()
+    }
+
+    func finish(_ r: Result<ExternalHits, Error>) {
+        let all: [CheckedContinuation<ExternalHits, Error>] = lock.withLock {
+            result = r
+            joined.removeAll()
+            defer { waiting = [:] }
+            return Array(waiting.values)
+        }
+        all.forEach { $0.resume(with: r) }
     }
 }
 
@@ -263,11 +324,11 @@ extension MergedSearch {
                                   tracklists: TracklistSongs? = nil) -> OutsideMore {
             OutsideMore(artists: { q, offset in
                             let page = try await client.searchArtists(q, limit: pageSize, offset: offset)
-                            return (page.items.map(Source.notYet), page.hasMore ? offset + page.items.count : nil)
+                            return (page.items.map(Source.notYet), Source.nextOffset(hasMore: page.hasMore, count: page.items.count, offset: offset))
                         },
                         albums: { q, offset in
                             let page = try await client.searchAlbums(q, limit: pageSize, offset: offset)
-                            return (page.items.map(Source.notYet), page.hasMore ? offset + page.items.count : nil)
+                            return (page.items.map(Source.notYet), Source.nextOffset(hasMore: page.hasMore, count: page.items.count, offset: offset))
                         },
                         tracklists: tracklists)
         }
@@ -293,6 +354,7 @@ extension MergedSearch.Source {
             let albums = TracklistSongs.candidates((try? await shared.hits(q))?.albums ?? [], query: q)
             if albums.isEmpty {
                 guard let backup else { return ExternalHits() }
+                try Task.checkCancellation()   // fix round 1 (M1): a cancelled search asks no backup
                 return ExternalHits(songs: try await backup(q))
             }
             let read = await tracklists.read(query: q, albums: albums, upTo: TracklistSongs.maxAlbums, untilFound: true,
@@ -313,14 +375,19 @@ extension MergedSearch.Source {
             var hits = ExternalHits()
             if case .success(let page) = artists {
                 hits.artists = page.items.map(notYet)
-                hits.cursor.aurralArtistsOffset = page.hasMore ? page.items.count : nil
+                hits.cursor.aurralArtistsOffset = nextOffset(hasMore: page.hasMore, count: page.items.count, offset: 0)
             }
             if case .success(let page) = albums {
                 hits.albums = page.items.map(notYet)
-                hits.cursor.aurralAlbumsOffset = page.hasMore ? page.items.count : nil
+                hits.cursor.aurralAlbumsOffset = nextOffset(hasMore: page.hasMore, count: page.items.count, offset: 0)
             }
             return hits
         }
+    }
+
+    /// Aurral's next offset: none when it says there's no more, or (fix round 1, M3) when the page was empty.
+    public static func nextOffset(hasMore: Bool, count: Int, offset: Int) -> Int? {
+        hasMore && count > 0 ? offset + count : nil
     }
 
     static func notYet(_ a: AurralSearchArtist) -> NotYetArtist { NotYetArtist(name: a.name, mbid: a.mbid) }
@@ -434,7 +501,7 @@ extension MergedSearch {
             if rows.count < limit, let offset = paging.cursor.aurralArtistsOffset {
                 if let fetch = outsideMore.artists {
                     let page = try await Self.withDeadline(outsideMore.timeout, sleep: sleep) { try await fetch(query, offset) }
-                    paging.cursor.aurralArtistsOffset = page.next
+                    paging.cursor.aurralArtistsOffset = page.items.isEmpty ? nil : page.next
                     var seen = Set((band.artists + rows + paging.queued.artists).map(LibraryCheck.artistKey))
                     let fresh = SearchRanker.rank(page.items.filter {
                         !$0.name.isEmpty && !check.hasArtist($0) && seen.insert(LibraryCheck.artistKey($0)).inserted
@@ -453,7 +520,7 @@ extension MergedSearch {
             if rows.count < limit, let offset = paging.cursor.aurralAlbumsOffset {
                 if let fetch = outsideMore.albums {
                     let page = try await Self.withDeadline(outsideMore.timeout, sleep: sleep) { try await fetch(query, offset) }
-                    paging.cursor.aurralAlbumsOffset = page.next
+                    paging.cursor.aurralAlbumsOffset = page.items.isEmpty ? nil : page.next
                     var seen = Set((band.albums + rows + paging.queued.albums).map(LibraryCheck.albumKey))
                     let fresh = SearchRanker.rank(page.items.filter {
                         !$0.title.isEmpty && !check.hasAlbum($0) && seen.insert(LibraryCheck.albumKey($0)).inserted
