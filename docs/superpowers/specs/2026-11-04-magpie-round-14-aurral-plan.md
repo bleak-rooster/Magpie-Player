@@ -201,6 +201,25 @@ signed-in user's permissions from `/api/auth/me` and hides any action the user c
       - a failed song → Retry;
       - Navidrome-only and Navidrome + Lidarr setups → Add flow is hidden.
 
+11. **No direct calls to Deezer or Apple from the phone** (owner, 2026-11-04). Everything goes through
+    the Aurral server; this supersedes the public Deezer/Apple fallbacks in Decisions 3 and 6. All
+    three routes below were verified in the v2.13.0 source:
+    - **Top Australia when the server's region isn't AU:** Deezer's "Top Australia" playlist read
+      through Aurral, `GET /api/discover/editorial/1313616925`. Aurral accepts any Deezer playlist id.
+    - **Top albums for a non-AU region:** shown as Aurral's albums, labelled with their region.
+      Aurral has no Australian album chart.
+    - **Previews:** `GET /api/deezer/preview/<id>.mp3?download`. Aurral fetches the clip and sends it
+      itself (200 `audio/mpeg`), so the phone never contacts Deezer's CDN. No redirect is followed at
+      all; the clip must come from the Aurral host.
+    - **Artwork:** for Deezer and Apple cover links that Aurral returns, the phone asks Aurral's image
+      proxy for them:
+      - `POST /api/image-proxy {src}` caches the image on the server and returns a local url;
+      - `GET /api/image-proxy/<key>` serves it;
+      - Aurral refuses private hosts.
+      Magpie only sends `src` values that Aurral itself returned, and remembers the mapping.
+    - check-writes bans Deezer/Apple hosts in app code.
+    - Workstream **A7** (previews and artwork) follows A4.
+
 ## Home (Spotify-style, fully customisable)
 - **Top of the page, in order:**
   - a greeting ("Good evening") with the Edit Home button;
