@@ -26,15 +26,16 @@ import Testing
     /// The default copies the phone's layout: its order and switches, Genres included.
     @Test func followingThePhoneCopiesItsOrderAndSwitches() {
         var phone = LayoutPreferences.defaultValue
-        phone.home.moveDown(.jumpBackIn)   // madeForYou, jumpBackIn, …
-        phone.home.set(.genres, visible: true, keepingOneOf: [])
-        phone.home.set(.playlists, visible: true, keepingOneOf: [])
+        // Round 14: the phone's default is the Spotify-style order; the car takes only its ten shelves from it.
+        phone.home.moveUp(.mostPlayed)   // … recentlyAdded, mostPlayed, favourites …
+        phone.home.set(.genres, visible: false, keepingOneOf: [])
+        phone.home.set(.randomAlbums, visible: true, keepingOneOf: [])
         let car = CarPlayPreferences.defaultValue
         let list = car.homeList(following: phone.home)
-        #expect(list.entries.map(\.item) == [.madeForYou, .jumpBackIn, .recentlyAdded, .mostPlayed, .favourites,
-                                             .randomAlbums, .playlists, .genres, .downloaded, .discover])
+        #expect(list.entries.map(\.item) == [.discover, .jumpBackIn, .recentlyAdded, .mostPlayed, .favourites,
+                                             .downloaded, .randomAlbums, .madeForYou, .playlists, .genres])
         #expect(car.visibleHomeSections(phone: phone, offline: false, hasListenBrainzToken: true, discoverSetUp: true)
-                == [.madeForYou, .jumpBackIn, .recentlyAdded, .mostPlayed, .playlists, .genres, .discover])
+                == [.discover, .jumpBackIn, .recentlyAdded, .mostPlayed, .favourites, .randomAlbums, .madeForYou, .playlists])
     }
 
     /// Once changed, the car keeps its own list: the phone's changes don't move it.
@@ -48,7 +49,8 @@ import Testing
         var phone = LayoutPreferences.defaultValue
         phone.home.set(.randomAlbums, visible: true, keepingOneOf: [])
         let shown = car.visibleHomeSections(phone: phone, offline: false, hasListenBrainzToken: false, discoverSetUp: false)
-        #expect(shown == [.recentlyAdded, .mostPlayed, .playlists], "no token: no Made for you; no Aurral: no Discover")
+        #expect(shown == [.recentlyAdded, .favourites, .mostPlayed, .playlists, .genres],
+                "no token: no Made for you; no Aurral: no Discover")
         #expect(!shown.contains(.randomAlbums))
         #expect(car.visibleHomeSections(phone: phone, offline: true, hasListenBrainzToken: true, discoverSetUp: true)
                 == [.downloaded], "offline the car shows what's on the phone, as the phone does")

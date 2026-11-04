@@ -62,7 +62,8 @@ public enum CarPlayHomeShelf: String, CaseIterable, Codable, Hashable, Sendable 
         }
     }
 
-    public var title: String { section.title }
+    /// The car keeps "Discover" (round 14 changes only the phone's Home, which calls it "Your flows").
+    public var title: String { self == .discover ? "Discover" : section.title }
 
     init?(_ section: HomeSection) { self.init(rawValue: section.rawValue) }
 }
