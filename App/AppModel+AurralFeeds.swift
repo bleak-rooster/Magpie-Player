@@ -413,31 +413,41 @@ extension AppModel {
 
     // MARK: - Pictures
 
-    /// A Discover, Trending or Recommended picture: only an https picture on a public image host (Deezer's, Apple's
-    /// or another named by Aurral), fetched with no login and no cookies, kept in memory only. An Aurral path (it would
-    /// need the session) shows the placeholder.
+    /// A Discover, Trending, Recommended or Home picture Aurral named (Deezer's or Apple's cover), shown through
+    /// Aurral's image proxy (round 14 A7, D111/D112, plan decision 11: the phone never loads it from Deezer or Apple).
+    /// Only a link an Aurral answer named this session is sent to the proxy; the link → Aurral path mapping is kept on
+    /// disk per server; at most four at once; offline, signed out of Aurral or on any failure: the placeholder (nil).
+    /// The decoded picture is kept in memory only. Callers ask from the visible row's `.task`, so only visible rows load.
     func aurralArtwork(_ image: AurralImage?, side: CGFloat) async -> UIImage? {
-        guard let image, !isOffline, !image.raw.hasPrefix("/"), let url = URL(string: image.raw),
-              url.scheme?.lowercased() == "https", url.user == nil, let host = url.host()?.lowercased(),
-              host.contains("."), !host.hasSuffix(".local"), !host.split(separator: ".").allSatisfy({ $0.allSatisfy(\.isNumber) })
-        else { return nil }
+        guard let image, !isOffline, aurralSetUp, let client = aurralClient else { return nil }
         let scale = 3.0
-        let key = "\(image.raw)#\(Int(side))" as NSString
+        let key = "\(AurralImageProxies.key(client.base))|\(image.raw)#\(Int(side))" as NSString
         if let cached = AurralArtworkCache.shared.object(forKey: key) { return cached }
-        var transport: HTTPTransport = OutsideArtTransport()
-        #if DEBUG
-        if let testing = Self.outsideArtTransportForTesting { transport = testing }
-        #endif
-        var request = URLRequest(url: url)
-        request.httpMethod = "GET"
-        request.httpShouldHandleCookies = false
-        request.setValue("image/*", forHTTPHeaderField: "Accept")
-        guard let (data, response) = try? await transport.send(request), response.statusCode == 200,
-              data.count <= OutsideArtPolicy.maxBytes, response.url?.scheme?.lowercased() == "https",
+        let proxy = AurralImageProxies.proxy(for: client.base, dataDirectory: dataDirectory, transport: previewTransport)
+        guard let data = await proxy.imageData(for: image, client: client),
               let cg = OutsideArtLoader.decode(data, maxPixel: Int(side * scale)) else { return nil }
         let picture = UIImage(cgImage: cg)
         AurralArtworkCache.shared.setObject(picture, forKey: key)
         return picture
+    }
+}
+
+/// Round 14 A7: one image proxy per Aurral server (and data directory), shared by every screen, so the bound of four
+/// holds across them.
+enum AurralImageProxies {
+    private static let all = OSAllocatedUnfairLock(initialState: [String: AurralImageProxy]())
+
+    static func key(_ base: URL) -> String { base.absoluteString.lowercased() }
+
+    static func proxy(for base: URL, dataDirectory: URL, transport: HTTPTransport) -> AurralImageProxy {
+        let id = dataDirectory.path + "|" + key(base)
+        return all.withLock { proxies in
+            if let proxy = proxies[id], proxy.base == base { return proxy }
+            let proxy = AurralImageProxy(base: base, directory: dataDirectory.appending(path: "aurral-image-proxy"),
+                                         openTransport: transport)
+            proxies[id] = proxy
+            return proxy
+        }
     }
 }
 

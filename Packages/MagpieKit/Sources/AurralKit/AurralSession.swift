@@ -137,6 +137,19 @@ public actor AurralSession: CustomDebugStringConvertible {
     public var currentToken: String? { login?.token }
     public var user: AurralUser? { login?.user }
 
+    // MARK: - Round 14 A7 (D111): picture links Aurral returned this session
+
+    /// Every absolute picture link an Aurral answer named this session: the only `src` values the image proxy may be
+    /// asked for (never one from a saved copy, a URL the phone made up, or another server).
+    private var imageSources: Set<String> = []
+    static let maxImageSources = 20_000
+
+    func noteImageSources(_ sources: [String]) {
+        for source in sources where imageSources.count < Self.maxImageSources { imageSources.insert(source) }
+    }
+
+    public func knowsImageSource(_ source: String) -> Bool { imageSources.contains(source) }
+
     /// A token to send: the current one while it's live, else a new login.
     func token(logIn: @escaping @Sendable (String, String) async throws -> AurralLogin) async throws -> String {
         if let login, !isExpired(login) { return login.token }

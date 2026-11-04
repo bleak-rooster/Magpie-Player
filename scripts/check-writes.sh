@@ -28,6 +28,9 @@
 #       (`POST /api/discover/feedback`), Download songs (`POST /api/playlists/flows/:flowId/download`) and Retry a song
 #       (`POST /api/playlists/shared-playlists/:playlistId/tracks/:jobId/research`), each only on the owner's tap.
 #       Pinned below.
+#   Packages/MagpieKit/Sources/AurralKit/AurralClient.swift  G1 allowlist: aurral image proxy
+#       Round 14 A7 (D111): `POST /api/image-proxy` with exactly `{"src": <url>}`, only for a picture link an Aurral
+#       answer named this session; it changes only Aurral's own image cache. Pinned below.
 #   Packages/MagpieKit/Tests/RequestsTests/FindsIT.swift  G1 allowlist: devLidarr
 #       Raw requests to the dev Lidarr for IT set-up and clean-up (manual import, removing the test artist), after
 #       TryDevStack verified the host is local and the dev marker matches (G0). Never product code.
@@ -57,6 +60,7 @@ allow=(
   "Packages/MagpieKit/Sources/AurralKit/AurralClient.swift|G1 allowlist: aurral start flow"
   "Packages/MagpieKit/Sources/AurralKit/AurralClient.swift|G1 allowlist: aurral session"
   "Packages/MagpieKit/Sources/AurralKit/AurralClient.swift|G1 allowlist: aurral discover writes"
+  "Packages/MagpieKit/Sources/AurralKit/AurralClient.swift|G1 allowlist: aurral image proxy"
   "Packages/MagpieKit/Tests/MagpieCoreTests/HTTPTransportTests.swift|RedirectStub"
   "Packages/MagpieKit/Tests/MagpieCoreTests/SharedLoginTransportTests.swift|auth/login"
 )
@@ -228,7 +232,7 @@ if [ -z "${G1_SRC:-}" ]; then
               'case 2 where rest == ["auth", "logout"]: .logout' \
               'case .login, .logout: Self.sessionMethod' \
               'static let sessionMethod = "POST"' \
-              'case .health, .login, .deezerPreview: false' \
+              'case .health, .login, .deezerPreview, .imageProxyFile: false' \
               'case 2 where rest == ["health", "bootstrap"]: .bootstrap' \
               'case 2 where rest == ["auth", "me"]: .authMe' \
               'case 1 where rest[0] == "discover": .recommendations' \
@@ -247,13 +251,16 @@ if [ -z "${G1_SRC:-}" ]; then
               'case 4 where rest[0] == "playlists" && rest[1] == "flows" && isPlainId(rest[2]) && rest[3] == "download": .flowDownload' \
               'case 6 where rest[0] == "playlists" && rest[1] == "shared-playlists" && isPlainId(rest[2]) && rest[3] == "tracks"' \
               'case 3 where rest[0] == "deezer" && rest[1] == "preview" && isPreviewFile(rest[2]): .deezerPreview' \
+              'case 1 where rest[0] == "image-proxy": .imageProxy' \
+              'case 2 where rest[0] == "image-proxy" && isImageProxyKey(rest[1]): .imageProxyFile' \
+              'static let imageProxyMethod = "POST"' \
               'case .editorialAdd, .discoverFeedback, .flowDownload, .trackResearch: Self.discoverWriteMethod' \
               'static let discoverWriteMethod = "POST"' \
               'guard AurralRoute.isAllowed(method: method, path: path),' \
               'AurralRoute.isAllowed(method: method, path: path, query: query),'; do
     grep -qF -- "$want" "$aurral" || { echo "G1: $aurral: the Aurral allow-list changed (missing: $want)" >&2; bad=1; }
   done
-  [ "$(grep -cE 'case [0-9] where' "$aurral")" = 25 ] || { echo "G1: $aurral: the Aurral allow-list isn't exactly 25 routes" >&2; bad=1; }
+  [ "$(grep -cE 'case [0-9] where' "$aurral")" = 27 ] || { echo "G1: $aurral: the Aurral allow-list isn't exactly 27 routes" >&2; bad=1; }
   # Fix M1: the verb, token and query-name switches are pinned whole (each read GET, only the seven writes POST, only
   # health, login and the preview without the token, the six routes with queries and exactly their names), and the
   # trackResearch route's continuation line too.
@@ -267,11 +274,12 @@ if [ -z "${G1_SRC:-}" ]; then
         case .login, .logout: Self.sessionMethod
         case .bootstrap, .authMe, .recommendations, .trending, .trendingGenre, .editorialShelf, .editorialLinks,
              .editorialPlaylist, .artistPreview, .releaseGroupTracks, .search, .searchUnified, .playlistJobsById,
-             .deezerPreview: "GET"
+             .deezerPreview, .imageProxyFile: "GET"
         case .editorialAdd, .discoverFeedback, .flowDownload, .trackResearch: Self.discoverWriteMethod
+        case .imageProxy: Self.imageProxyMethod
         }'
   want_authorised='        switch self {
-        case .health, .login, .deezerPreview: false
+        case .health, .login, .deezerPreview, .imageProxyFile: false
         default: true
         }'
   want_queries='        switch self {
@@ -285,7 +293,7 @@ if [ -z "${G1_SRC:-}" ]; then
         default: []
         }'
   [ "$(aurral_block 'var method: String {')" = "$want_method" ] ||
-    { echo "G1: $aurral: AurralRoute.method changed (each read GET, only the seven writes POST)" >&2; bad=1; }
+    { echo "G1: $aurral: AurralRoute.method changed (each read GET, only the eight writes POST)" >&2; bad=1; }
   [ "$(aurral_block 'var isAuthorised: Bool {')" = "$want_authorised" ] ||
     { echo "G1: $aurral: AurralRoute.isAuthorised changed" >&2; bad=1; }
   [ "$(aurral_block 'public var queryNames: [String] {')" = "$want_queries" ] ||
@@ -334,6 +342,27 @@ if [ -z "${G1_SRC:-}" ]; then
     { echo "G1: $open_transport: a redirect may be followed" >&2; bad=1; }
   grep -qF 'public static let downloadQuery = [URLQueryItem(name: "download", value: nil)]' Packages/MagpieKit/Sources/AurralKit/AurralPreview.swift ||
     { echo "G1: AurralPreview: the preview is no longer asked with ?download" >&2; bad=1; }
+  # Round 14 A7 (D111): the image proxy's one POST, from this exact line, with exactly `{"src": <url>}`, only for a
+  # link an Aurral answer named this session; its pictures are fetched from the Aurral host only, through the open
+  # transport, without the token.
+  image_proxy="Packages/MagpieKit/Sources/AurralKit/AurralImageProxy.swift"
+  proxies=$(grep -rnF --include='*.swift' 'AurralRoute.imageProxyMethod' "${product[@]}" | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' || true)
+  [ "$(printf '%s\n' "$proxies" | grep -c .)" = 1 ] && [ "${proxies%%:*}" = "$image_proxy" ] ||
+    { echo "G1: the Aurral image proxy isn't exactly one send in $image_proxy" >&2; bad=1; }
+  for want in 'let data = try await ok(method: AurralRoute.imageProxyMethod, path: "api/image-proxy", body: body)' \
+              'let body = try JSONSerialization.data(withJSONObject: ["src": image.raw], options: [.withoutEscapingSlashes])' \
+              'guard AurralImageProxy.isLink(image.raw), await session.knowsImageSource(image.raw) else {' \
+              'if let landed = response.url, !landed.isSameOrigin(as: url) { throw AurralError.forbidden("image-proxy: moved") }' \
+              'request.httpShouldHandleCookies = false' \
+              'public init(base: URL, directory: URL?, openTransport: HTTPTransport = AurralOpenTransport()) {' \
+              'public static let maxConcurrent = 4'; do
+    grep -qF -- "$want" "$image_proxy" || { echo "G1: $image_proxy: the image proxy's safety changed (missing: $want)" >&2; bad=1; }
+  done
+  if grep -nE 'Authorization|Bearer|currentToken' "$image_proxy" | grep -vE '^[0-9]+:[[:space:]]*//' | grep -q .; then
+    echo "G1: $image_proxy: the picture fetch names a login" >&2; bad=1
+  fi
+  grep -qF 'if method == "GET" { await session.noteImageSources(AurralImageProxy.pictureLinks(in: data)) }' "$aurral" ||
+    { echo "G1: $aurral: the picture links are no longer learnt from Aurral's reads only" >&2; bad=1; }
   # Round 13 (D70): the API key is gone. No product code sends an X-Api-Key to Aurral, and only the Aurral client sends
   # its Bearer token.
   if grep -nE 'X-Api-Key|apiKey' "$aurral" | grep -vE '^[0-9]+:[[:space:]]*//' | grep -q .; then
@@ -345,11 +374,12 @@ if [ -z "${G1_SRC:-}" ]; then
        "${product[@]}" | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' | grep -v '^Packages/MagpieKit/Sources/MagpieTestSupport/' | grep -q .; then
     echo "G1: a forbidden Aurral route is named in product code" >&2; bad=1
   fi
-  # Round 14 A4 fix round 1 (owner, 2026-11-04): the app never calls Deezer's or Apple's APIs or feeds itself;
-  # everything goes through the Aurral server (the stub for tests aside; pictures and previews are A7's).
-  if grep -rnE --include='*.swift' 'api\.deezer\.com|deezer\.com/|marketingtools\.apple\.com|applemarketingtools|itunes\.apple\.com|music\.apple\.com' \
-       "${product[@]}" | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' | grep -v '^Packages/MagpieKit/Sources/MagpieTestSupport/' | grep -q .; then
-    echo "G1: a direct Deezer or Apple API host is named in product code" >&2; bad=1
+  # Round 14 A4 fix round 1, A7 (owner, 2026-11-04, plan decision 11): the app never contacts Deezer or Apple itself:
+  # APIs, feeds, previews and pictures all go through the Aurral server. No product code names their hosts, comments
+  # included (the stub for tests aside, which plays Aurral handing them out).
+  if grep -rniE --include='*.swift' 'deezer\.com|dzcdn|mzstatic|apple\.com|applemarketingtools|itunes\.' \
+       "${product[@]}" | grep -v '^Packages/MagpieKit/Sources/MagpieTestSupport/' | grep -q .; then
+    echo "G1: a Deezer or Apple host is named in product code" >&2; bad=1
   fi
   # Round 14 A1 (D81): `api/discover` only as one of the allowed spellings, and the flow write routes only in the
   # Aurral client (the stub for tests aside).

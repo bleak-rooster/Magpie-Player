@@ -50,6 +50,14 @@ planted=(
   'aurral.ok(method: "GET", path: "api/playlists/flows/" + id + "/tracks")'
   'aurral.ok(method: "GET", path: "api/playlists/shared-playlists/" + id + "/sync")'
   'aurral.ok(method: AurralRoute.discoverWriteMethod, path: "api/discover/feedback/reset")'
+  # Round 14 A7: a Deezer or Apple host anywhere in product code, a second image-proxy send.
+  'URLSession.shared.data(from: URL(string: "https://cdnt-preview.dzcdn.net/a.mp3")!)'
+  'URLSession.shared.data(from: URL(string: "https://e-cdns-images.DZCDN.net/images/cover/1/1.jpg")!)'
+  'URLSession.shared.data(from: URL(string: "https://api.deezer.com/chart")!)'
+  'URLSession.shared.data(from: URL(string: "https://is1-ssl.mzstatic.com/image/thumb/a.jpg")!)'
+  'URLSession.shared.data(from: URL(string: "https://rss.applemarketingtools.com/api/v2/au")!)'
+  'URLSession.shared.data(from: URL(string: "https://itunes.apple.com/lookup?id=1")!)'
+  'aurral.ok(method: AurralRoute.imageProxyMethod, path: "api/image-proxy", body: other)'
 )
 failed=0
 for p in "${planted[@]}"; do
@@ -68,11 +76,14 @@ rm -f "$work/App/PlantedViolation.swift"
 aurral_src="$work/Packages/MagpieKit/Sources/AurralKit/AurralClient.swift"
 cp "$aurral_src" "$work/AurralClient.orig"
 weakened=(
-  's/             .deezerPreview: "GET"/             .deezerPreview: Self.startMethod/'
+  's/             .deezerPreview, .imageProxyFile: "GET"/             .deezerPreview: "GET"\n        case .imageProxyFile: Self.startMethod/'
+  's/        case .health, .login, .deezerPreview, .imageProxyFile: false/        case .health, .login, .deezerPreview, .imageProxyFile, .imageProxy: false/'
+  's/        case 2 where rest\[0\] == "image-proxy" \&\& isImageProxyKey(rest\[1\]): .imageProxyFile/        case 2 where rest[0] == "image-proxy": .imageProxyFile/'
+  's/        case .deezerPreview: \["download"\]/        case .deezerPreview: ["download", "url"]/'
   's/        case .editorialAdd, .discoverFeedback, .flowDownload, .trackResearch: Self.discoverWriteMethod/        case .editorialAdd, .discoverFeedback, .flowDownload, .trackResearch, .trending: Self.discoverWriteMethod/'
   's/        case .recommendations: \["limit", "offset"\]/        case .recommendations: ["limit", "offset", "refresh"]/'
   's/        case .artistPreview: \["artistName"\]/        case .artistPreview: ["artistName"]\n        case .trending: ["download"]/'
-  's/        case .health, .login, .deezerPreview: false/        case .health, .login, .deezerPreview, .bootstrap: false/'
+  's/        case .health, .login, .deezerPreview, .imageProxyFile: false/        case .health, .login, .deezerPreview, .imageProxyFile, .bootstrap: false/'
   's/            \&\& isPlainId(rest\[4\]) \&\& rest\[5\] == "research": .trackResearch/            \&\& rest[5] == "research": .trackResearch/'
   's/return Set(names).count == names.count \&\& names.allSatisfy(route.queryNames.contains)/return true/'
 )

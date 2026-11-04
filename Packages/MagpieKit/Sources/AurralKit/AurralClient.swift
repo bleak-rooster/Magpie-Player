@@ -40,6 +40,10 @@ public enum AurralError: Error, Sendable, Equatable {
 ///   `GET /api/artists/release-group/:mbid/tracks`, `GET /api/search` and `GET /api/search/unified`,
 ///   `GET /api/playlists/jobs/:playlistId`, and `GET /api/deezer/preview/<id>.mp3?download` (open: only
 ///   `PreviewResolver` sends it, never with the token; A7: Aurral sends the clip itself, never a redirect).
+/// - Round 14 A7 (D111): Aurral's image proxy. `POST /api/image-proxy` with exactly `{"src": <url>}` (signed in; only
+///   a picture link Aurral itself returned this session: `AurralImageProxy`) caches the picture on Aurral and answers
+///   its local path; `GET /api/image-proxy/<sha256>[.ext]` (open) serves it. So the phone never loads Deezer's or
+///   Apple's pictures itself.
 /// - Round 14 writes, each only on the owner's tap: `POST /api/discover/editorial/:id/library` (Add flow),
 ///   `POST /api/discover/feedback` (Not for me), `POST /api/playlists/flows/:flowId/download` (Download songs) and
 ///   `POST /api/playlists/shared-playlists/:playlistId/tracks/:jobId/research` (Retry a song).
@@ -50,7 +54,7 @@ public enum AurralRoute: CaseIterable, Sendable {
     case health, playlistsStatus, playlistsJobs, libraryLookup, startFlow, login, logout
     case bootstrap, authMe, recommendations, trending, trendingGenre, editorialShelf, editorialLinks, editorialPlaylist
     case editorialAdd, discoverFeedback, artistPreview, releaseGroupTracks, search, searchUnified, playlistJobsById
-    case flowDownload, trackResearch, deezerPreview
+    case flowDownload, trackResearch, deezerPreview, imageProxy, imageProxyFile
 
     var method: String {
         switch self {
@@ -59,8 +63,9 @@ public enum AurralRoute: CaseIterable, Sendable {
         case .login, .logout: Self.sessionMethod
         case .bootstrap, .authMe, .recommendations, .trending, .trendingGenre, .editorialShelf, .editorialLinks,
              .editorialPlaylist, .artistPreview, .releaseGroupTracks, .search, .searchUnified, .playlistJobsById,
-             .deezerPreview: "GET"
+             .deezerPreview, .imageProxyFile: "GET"
         case .editorialAdd, .discoverFeedback, .flowDownload, .trackResearch: Self.discoverWriteMethod
+        case .imageProxy: Self.imageProxyMethod
         }
     }
 
@@ -68,7 +73,7 @@ public enum AurralRoute: CaseIterable, Sendable {
     /// preview is open, and asked with `?download` only: A7).
     var isAuthorised: Bool {
         switch self {
-        case .health, .login, .deezerPreview: false
+        case .health, .login, .deezerPreview, .imageProxyFile: false
         default: true
         }
     }
@@ -93,6 +98,18 @@ public enum AurralRoute: CaseIterable, Sendable {
     static let sessionMethod = "POST"
     // G1 allowlist: aurral discover writes (round 14: Add flow, Not for me, Download songs, Retry a song).
     static let discoverWriteMethod = "POST"
+    // G1 allowlist: aurral image proxy (round 14 A7: Aurral caches a picture it named, in its own image cache).
+    static let imageProxyMethod = "POST"
+
+    /// `<sha256 hex>` or `<sha256 hex>.<ext>`, as Aurral's image proxy names its cached pictures.
+    static func isImageProxyKey(_ s: Substring) -> Bool {
+        let parts = s.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count == 1 || parts.count == 2, parts[0].count == 64,
+              parts[0].unicodeScalars.allSatisfy({ ("0"..."9").contains($0) || ("a"..."f").contains($0) }) else { return false }
+        guard parts.count == 2 else { return true }
+        return (1...5).contains(parts[1].count)
+            && parts[1].unicodeScalars.allSatisfy { ("a"..."z").contains($0) || ("0"..."9").contains($0) }
+    }
 
     /// Plain ids only: letters, digits, `-` and `_` (an id with anything else would name another route).
     static func isPlainId(_ s: Substring) -> Bool {
@@ -148,6 +165,8 @@ public enum AurralRoute: CaseIterable, Sendable {
         case 6 where rest[0] == "playlists" && rest[1] == "shared-playlists" && isPlainId(rest[2]) && rest[3] == "tracks"
             && isPlainId(rest[4]) && rest[5] == "research": .trackResearch
         case 3 where rest[0] == "deezer" && rest[1] == "preview" && isPreviewFile(rest[2]): .deezerPreview
+        case 1 where rest[0] == "image-proxy": .imageProxy
+        case 2 where rest[0] == "image-proxy" && isImageProxyKey(rest[1]): .imageProxyFile
         default: nil
         }
         guard let route, route.method == method else { return nil }
@@ -170,7 +189,7 @@ public enum AurralRoute: CaseIterable, Sendable {
 /// `AurralSession` (with the saved password) and sends the call again.
 public struct AurralClient: Sendable, CustomDebugStringConvertible, CustomReflectable {
     public let base: URL
-    private let session: AurralSession
+    let session: AurralSession
     private let transport: HTTPTransport
     private let log: @Sendable (String) -> Void
 
@@ -271,7 +290,10 @@ public struct AurralClient: Sendable, CustomDebugStringConvertible, CustomReflec
             (data, response) = try await send(method: method, path: path, query: query, token: fresh, body: body)
         }
         switch response.statusCode {
-        case 200..<300: return data
+        case 200..<300:
+            // Round 14 A7 (D111): the picture links a read named, the only ones the image proxy may be asked for.
+            if method == "GET" { await session.noteImageSources(AurralImageProxy.pictureLinks(in: data)) }
+            return data
         case 401: throw AurralError.unauthorized
         case 403: throw AurralError.notPermitted
         case 404: throw AurralError.notFound
