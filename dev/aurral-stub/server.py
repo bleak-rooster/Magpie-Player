@@ -19,6 +19,10 @@ sends no custom header) can be pointed at one; a test runner may instead send `X
   genre-not-ready  every genre chart answers 404 "This genre chart isn't available yet"
   slow             each Discover answer waits 2 s
   failing          each Discover answer is a 502
+  redirects        the preview's ?download and the image proxy's pictures answer a 302 (A7)
+  oversized        the preview's ?download and the image proxy's pictures send 5 MB (A7)
+  lidarr-artist    Trending's songs are credited to "Radiohead", the name Lidarr's lookup gives ARTIST_A (the one
+                   artist MBID the editorial links answer), so S14 M2's name check (D116) passes for Whole artist
 Control (never sent by the app): GET /__stub/ping, GET /__stub/log (the requests seen, newest last, as
 "METHOD /path" without the scenario prefix and without query), POST /__stub/reset.
 """
@@ -35,11 +39,17 @@ from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
+# The sha256 of this file, reported by /__stub/ping so start.sh can tell a stub left running from older code and restart it.
+with open(os.path.abspath(__file__), "rb") as _f:
+    SOURCE_SHA = hashlib.sha256(_f.read()).hexdigest()
+
 USERNAME = "magpie"
 PASSWORD = "stub-aurral-password"
 FEATURES_213 = ["discover", "flows", "playlistCoverTemplates", "activity", "review", "trackDownloads", "linkSearch",
                 "downloadCancel", "shareImports", "trending", "flowAutoDownload"]
 ARTIST_A = "a74b1b7f-71a5-4011-9441-d0b5e4122711"
+# ARTIST_A is a real MusicBrainz id; Lidarr's artist/lookup?term=lidarr:<ARTIST_A> names it LIDARR_NAME_A.
+LIDARR_NAME_A = "Radiohead"
 ARTIST_B = "f59c5520-5f46-4d2c-b2c4-822eabf53419"
 ARTIST_C = "8538e728-ca0b-4321-b7e5-cff6565dd4c0"
 RELEASE_GROUP = "1dc4c347-a1db-32aa-b14f-bc9cc507b843"
@@ -50,7 +60,7 @@ PREVIEW_CLIP = b"ID3" + b"\xff" * 2045
 PROXIED_PICTURE = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")
 SCENARIOS = {"default", "aurral210", "no-access-flow", "no-downloader", "region-us", "missing-sections",
-             "genre-not-ready", "slow", "failing", "redirects", "oversized"}
+             "genre-not-ready", "slow", "failing", "redirects", "oversized", "lidarr-artist"}
 # Round 14 A7 fix round 1: "redirects" answers the preview's ?download and the image proxy's pictures with a 302 (an
 # Aurral that redirects anyway: Magpie must refuse it, never follow); "oversized" sends 5 MB for both (past the caps).
 OVERSIZED = b"ID3" + b"\xff" * (5 * 1024 * 1024)
@@ -156,7 +166,9 @@ def trending_body(scenario):
     return {
         "region": "US" if scenario == "region-us" else "AU", "updatedAt": 1793000000000,
         "songs": None if missing else {"playlistId": "1313616925", "playlistName": "Top Australia",
-                                       "libraryPlaylistId": library_playlist, "items": SONGS,
+                                       "libraryPlaylistId": library_playlist,
+                                       "items": [dict(s, artistName=LIDARR_NAME_A) for s in SONGS]
+                                       if scenario == "lidarr-artist" else SONGS,
                                        "spotlight": {"ranks": [3, 2, 1, None, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1], "daysAtTop": 9}},
         "albums": [{"key": "1440857781", "name": "Wide Open", "artistName": "Stub Arrows",
                     "artworkUrl": "https://is1-ssl.mzstatic.com/image/thumb/x/500x500bb.jpg", "releaseDate": "2026-10-01",
@@ -327,7 +339,7 @@ class Handler(BaseHTTPRequestHandler):
         path = split.path
         query = {k: v[0] for k, v in parse_qs(split.query, keep_blank_values=True).items()}
         if path == "/__stub/ping":
-            return self.reply(200, {"ok": True})
+            return self.reply(200, {"ok": True, "source": SOURCE_SHA})
         if path == "/__stub/log":
             with LOCK:
                 return self.reply(200, {"requests": list(STATE["log"])})

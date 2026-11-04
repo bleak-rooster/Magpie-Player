@@ -4,6 +4,10 @@ import XCTest
 /// localhost stub Aurral and the dev Lidarr: once the picker has closed, the usual Add (the sheet, or one confirmation
 /// with your defaults) appears. It is cancelled: nothing is written to Lidarr. The playlist the test makes on the dev
 /// Navidrome is deleted afterwards. Guard G0: localhost only.
+/// FX (S14 M2, D116): Whole artist uses the server's linked artist MBID only when the dev Lidarr's lookup names the
+/// song's own artist. The stub's links always answer ARTIST_A, which Lidarr names "Radiohead", so the test signs in to
+/// the stub's `lidarr-artist` scenario (its chart songs are credited to "Radiohead"); the default scenario's
+/// "Stub Arrows" is correctly refused with "Couldn't match this artist".
 final class Round14ActionsUITests: XCTestCase {
     private struct Stack {
         var url: String
@@ -33,7 +37,7 @@ final class Round14ActionsUITests: XCTestCase {
         return Stack(url: url, user: user, password: password, aurral: aurral, lidarr: lidarr, lidarrKey: key)
     }
 
-    @MainActor private func signIn(_ app: XCUIApplication, _ s: Stack) {
+    @MainActor private func signIn(_ app: XCUIApplication, _ s: Stack, scenario: String = "default") {
         let address = app.textFields["connect-address-0"]
         XCTAssertTrue(address.waitForExistence(timeout: 10))
         address.tap()
@@ -62,7 +66,7 @@ final class Round14ActionsUITests: XCTestCase {
         let aurralAddress = app.textFields["aurral-address"]
         XCTAssertTrue(aurralAddress.waitForExistence(timeout: 10))
         aurralAddress.tap()
-        aurralAddress.typeText(s.aurral.appending(path: "s/default").absoluteString)
+        aurralAddress.typeText(s.aurral.appending(path: "s/\(scenario)").absoluteString)
         app.textFields["aurral-username"].tap()
         app.textFields["aurral-username"].typeText("magpie")
         app.secureTextFields["aurral-password"].tap()
@@ -128,7 +132,7 @@ final class Round14ActionsUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["-MagpieResetState", "YES", "-MagpieUITesting", "YES", "-MagpieNetwork", "wifi"]
         app.launch()
-        signIn(app, s)
+        signIn(app, s, scenario: "lidarr-artist")
 
         app.tabBars.buttons["Library"].tap()
         let trending = app.buttons["library-trending"]
@@ -162,8 +166,10 @@ final class Round14ActionsUITests: XCTestCase {
         // Once the picker has closed: the usual Add (the sheet, or one confirmation with your defaults).
         let sheetCancel = app.buttons["add-cancel"]
         let confirm = app.buttons["add-confirm"]
-        let appeared = NSPredicate { _, _ in sheetCancel.exists || confirm.exists }
+        let unmatched = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "match this artist")).firstMatch
+        let appeared = NSPredicate { _, _ in sheetCancel.exists || confirm.exists || unmatched.exists }
         wait(for: [XCTNSPredicateExpectation(predicate: appeared, object: nil)], timeout: 20)
+        XCTAssertFalse(unmatched.exists, "Lidarr names the linked artist as the song's own (D116), so it matches")
         XCTAssertFalse(app.buttons["save-new-playlist"].exists, "the picker has closed")
         attachScreenshot(app, "whole-artist-add")
         if sheetCancel.exists { sheetCancel.tap() } else { app.alerts.buttons["Cancel"].firstMatch.tap() }   // nothing written

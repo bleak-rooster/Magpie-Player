@@ -877,7 +877,14 @@ final class BrowseFlowTests: XCTestCase {
         let handle = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Reorder' AND label CONTAINS 'Most played'")).firstMatch
         XCTAssertTrue(handle.exists, "drag handle for Most played")
         let top = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Reorder' AND label CONTAINS 'Jump back in'")).firstMatch
-        handle.press(forDuration: 0.6, thenDragTo: top)
+        let recentHandle = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Reorder' AND label CONTAINS 'Recently added'")).firstMatch
+        // FX: a fast drag is sometimes dropped by the List under load (known flaky since X5), so drag slowly, hold at the
+        // target, and check the editor's own order before going on (up to three tries).
+        for _ in 0..<3 where !(handle.frame.minY < recentHandle.frame.minY) {
+            for _ in 0..<4 where !top.isHittable { app.swipeDown() }
+            handle.press(forDuration: 0.8, thenDragTo: top, withVelocity: .slow, thenHoldForDuration: 0.5)
+        }
+        XCTAssertLessThan(handle.frame.minY, recentHandle.frame.minY, "Most played dragged above Recently added in the editor")
         attachScreenshot(app, "home-editor-changed")
         for _ in 0..<4 where !reset.exists || !reset.isHittable { app.swipeUp() }
         XCTAssertTrue(reset.isEnabled, "Reset to default order is offered once the order changed")
