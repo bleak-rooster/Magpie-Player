@@ -55,7 +55,7 @@ final class SlowArtTransport: HTTPTransport, @unchecked Sendable {
                 timeout: Duration = .seconds(30), lookups: Int = .max) -> OutsideArtLoader {
         OutsideArtLoader(transport: t, userAgent: OutsideArtTests.ua, artistImage: artistImage, isOffline: { false },
                          maxArtistLookups: lookups, covers: covers,
-                         disk: disk ? OutsideArtDiskCache(directory: dir) : nil, limiter: limiter, timeout: timeout)
+                         disk: disk ? OutsideArtDiskCache(directory: dir) : nil, limiter: limiter, stepTimeout: timeout)
     }
 
     @Test func aMissingReleaseGroupCoverFallsBackToAReleaseThenLidarr() async throws {
@@ -94,7 +94,7 @@ final class SlowArtTransport: HTTPTransport, @unchecked Sendable {
         #expect(await loader(t).image(.releaseGroup(Self.rg)) != nil)
         let later = MockTransport()
         let next = loader(later)
-        #expect(next.cached(.releaseGroup(Self.rg)) != nil, "from the phone, synchronously")
+        #expect(await next.cached(.releaseGroup(Self.rg)) != nil, "from the phone, without the network")
         #expect(await next.image(.releaseGroup(Self.rg)) != nil)
         #expect(later.requests.isEmpty)
     }
@@ -147,7 +147,7 @@ final class SlowArtTransport: HTTPTransport, @unchecked Sendable {
         #expect(slow.peak <= 4, "bounded: \(slow.peak) at once")
         #expect(OutsideArtDiskCache(directory: dir).count == 12)
         let again = loader(MockTransport())
-        #expect(ids.allSatisfy { again.cached(.artist($0)) != nil }, "shown at once on the next open")
+        for id in ids { #expect(await again.cached(.artist(id)) != nil, "shown at once on the next open") }
     }
 
     @Test func signOutRemovesThePictures() async {

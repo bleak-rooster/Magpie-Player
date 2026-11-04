@@ -176,7 +176,9 @@ import Testing
     @Test func growthTellsQuadraticFromLinear() {
         func work(_ steps: Int) -> Double {
             var sink = 0
-            let seconds = FuzzClock.seconds { for i in 0..<steps { sink &+= i &* 31 } }
+            // B1 fix round: the loop is kept unoptimised, so the Release run (`test-packages.sh --release`) times real
+            // work instead of the closed form the optimiser turns it into.
+            let seconds = FuzzClock.seconds { sink = growthLoop(steps) }
             #expect(sink != 1)   // keeps the loop
             return seconds
         }
@@ -205,4 +207,11 @@ import Testing
         #expect(GenreGroups.total([.max, -5, 1]) == .max && GenreGroups.total([-5, .max, 1]) == .max)
         #expect(GenreGroups.total([3, -2, 4]) == 7)
     }
+}
+
+/// The growth check's work, never optimised away (B1 fix round).
+@_optimize(none) private func growthLoop(_ steps: Int) -> Int {
+    var sink = 0
+    for i in 0..<steps { sink &+= i &* 31 }
+    return sink
 }
