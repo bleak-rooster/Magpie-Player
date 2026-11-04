@@ -136,6 +136,8 @@ final class AppModel {
     @ObservationIgnored var homeFeedSlot: HomeFeed?
     /// B1: recommended artists' pictures (AppModel+OutsideArt.swift).
     @ObservationIgnored var recommendedArtSlot: OutsideArtLoader?
+    /// B1: the outside pictures' disk cache (one per account).
+    @ObservationIgnored var outsideArtDiskSlot: OutsideArtDiskCache?
     /// B1 fix round: Recommended's pictures, fetched behind its pull to refresh.
     @ObservationIgnored var recommendedPictures: Task<Void, Never>?
     /// Round 14 A6: Home's provided sections (Recommended, Trending…); none until round 14 A4 supplies a provider.

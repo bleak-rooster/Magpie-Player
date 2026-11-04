@@ -27,6 +27,10 @@ public final class OutsideArtDiskCache: @unchecked Sendable {
         epoch = Self.epochs.withLock { $0[directory.standardizedFileURL.path, default: 0] }
     }
 
+    /// The size a picture is kept at (long side, pixels): the largest place one shows (the artist page's 180 pt header
+    /// at @3x), whichever loader saved it (second fix round, re-review minor 1).
+    public static let storedPixel = 600
+
     /// `Application Support/Magpie/OutsideArt` under `root`.
     public static func directory(root: URL) -> URL { root.appending(path: "Magpie/OutsideArt", directoryHint: .isDirectory) }
 

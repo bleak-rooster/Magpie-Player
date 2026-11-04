@@ -550,6 +550,24 @@ extension OutsideArtAppTests {
     }
 }
 
+extension OutsideArtAppTests {
+    /// Second fix round (re-review Important 1): the page hears of its albums before they show (so each row's cover
+    /// load knows the album's name), and a slow Lidarr line no longer holds a refresh past the page's bound.
+    @Test func theAlbumsAreNamedBeforeTheyShow() async throws {
+        let model = try await signedIn()
+        let albums = [b1Group("11111111-2222-4333-8444-555555555555", "Named")]
+        let script = ScriptedGroups([(.milliseconds(10), albums)])
+        model.outsideCatalogStore = OutsideCatalog(releaseGroups: { try await script.next($0) }, releases: { _ in [] })
+        let page = OutsideArtistModel(app: model, artist: NotYetArtist(name: "A", mbid: artistMBID))
+        var seen: (shownAlready: Bool, titles: [String])?
+        page.willShowSections = { sections in seen = (!page.sections.albums.isEmpty, sections.albums.map(\.title)) }
+        await page.load()
+        #expect(seen?.titles == ["Named"])
+        #expect(seen?.shownAlready == false, "named before the rows show")
+        model.signOut()
+    }
+}
+
 /// Answers every picture after `delay`.
 private final class SlowOutside: HTTPTransport, @unchecked Sendable {
     let delay: Duration

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Archive Magpie for TestFlight (docs/TESTFLIGHT.md).
 #
-#   scripts/archive.sh --team TEAMID [--build N] [--carplay] [--upload] [--out DIR]
+#   scripts/archive.sh --team TEAMID [--build N] [--carplay] [--upload [--skip-release-tests]] [--out DIR]
 #   scripts/archive.sh --unsigned [--build N] [--carplay] [--out DIR]
 #
 #   --team TEAMID  Apple Developer team id (10 characters; Xcode › Settings › Accounts). Or set MAGPIE_TEAM_ID.
@@ -11,6 +11,10 @@
 #                  before that, no provisioning profile carries it and signing fails.
 #   --upload       Send the build to App Store Connect with the account signed in to Xcode.
 #                  Without it, an .ipa is exported to DIR/export for Xcode Organizer or Transporter.
+#                  B1 (D120): an upload first runs the package and hosted suites in the optimised Release
+#                  configuration (scripts/test-packages.sh --release, scripts/test-app.sh --release) and stops if
+#                  either fails: build 14's Home bug showed only in Release.
+#   --skip-release-tests  Upload without those Release runs (only when they passed on this commit already).
 #   --unsigned     Archive with signing off (no team, no export). For checking the build only.
 #   --out DIR      Where the archive and export go. Default build/testflight.
 #
@@ -25,6 +29,7 @@ team="${MAGPIE_TEAM_ID:-}"
 build="${MAGPIE_BUILD_NUMBER:-}"
 carplay=no
 upload=no
+skip_release_tests=no
 unsigned=no
 out="build/testflight"
 while [ $# -gt 0 ]; do
@@ -33,9 +38,10 @@ while [ $# -gt 0 ]; do
     --build) [ $# -ge 2 ] || die "--build needs a number"; build="$2"; shift 2 ;;
     --carplay) carplay=yes; shift ;;
     --upload) upload=yes; shift ;;
+    --skip-release-tests) skip_release_tests=yes; shift ;;
     --unsigned) unsigned=yes; shift ;;
     --out) [ $# -ge 2 ] || die "--out needs a directory"; out="$2"; shift 2 ;;
-    -h|--help) sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) die "unknown option $1 (see --help)" ;;
   esac
 done
@@ -50,6 +56,13 @@ if [ "$unsigned" = yes ]; then
 else
   [ -n "$team" ] || die "no team id. Pass --team TEAMID (Xcode › Settings › Accounts › your team, or developer.apple.com › Membership details), or set MAGPIE_TEAM_ID"
   [[ "$team" =~ ^[A-Z0-9]{10}$ ]] || die "team id should be 10 capital letters or digits (got '$team')"
+fi
+
+# B1 (D120): what goes to TestFlight is the Release build, so its tests run in Release before an upload.
+if [ "$upload" = yes ] && [ "$skip_release_tests" = no ]; then
+  echo "archive.sh: running the Release test legs before the upload (--skip-release-tests to skip)"
+  scripts/test-packages.sh --release || die "the package suite failed in Release; not uploading"
+  scripts/test-app.sh --release || die "the hosted suite failed in Release; not uploading"
 fi
 
 # Full Xcode, not the Command Line Tools: DEVELOPER_DIR if set, else /Applications/Xcode.app, else xcode-select.

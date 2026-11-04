@@ -50,6 +50,9 @@ enum OutsidePhase: Equatable {
     /// never sits on a spinner.
     nonisolated static let defaultLoadTimeout: Duration = .seconds(30)
     @ObservationIgnored var loadTimeout = OutsideArtistModel.defaultLoadTimeout
+    /// Second fix round (re-review Important 1): told the albums just before they show, so the page's picture loader
+    /// knows each album's name before its row asks for a cover.
+    @ObservationIgnored var willShowSections: ((OutsideArtistSections) -> Void)?
     /// Bumped by every load; only the newest one changes the page (B1: a refresh during a load supersedes it).
     @ObservationIgnored private var generation = 0
 
@@ -67,7 +70,9 @@ enum OutsidePhase: Equatable {
             guard mine == generation, !Task.isCancelled else { return }   // superseded, or the page went away
             switch result {
             case .success(let groups):
-                sections = OutsideArtistSections.make(groups)
+                let made = OutsideArtistSections.make(groups)
+                willShowSections?(made)
+                sections = made
                 phase = .loaded
             case .failure:
                 // A cancellation here is the timeout (the page itself wasn't cancelled): a real failure.
@@ -80,7 +85,9 @@ enum OutsidePhase: Equatable {
         } else if phase != .loaded {
             phase = .failed
         }
-        await lidarrLine.refresh()
+        // Second fix round (re-review minor 6): the Lidarr line has its own bound, so a refresh never waits on it.
+        let line = lidarrLine
+        _ = await Deadline.run(loadTimeout) { @MainActor in await line.refresh() }
     }
 
     /// A row's album, for its page and its Try.

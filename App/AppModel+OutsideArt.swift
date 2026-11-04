@@ -59,7 +59,14 @@ extension AppModel {
     }
 
     /// B1: outside pictures on the phone (`Application Support/Magpie/OutsideArt`), removed on sign-out.
-    var outsideArtDisk: OutsideArtDiskCache { OutsideArtDiskCache(directory: OutsideArtDiskCache.directory(root: dataDirectory)) }
+    /// Second fix round (re-review minor 4): one cache for the folder, so its size total and lock are shared; a new one
+    /// after sign-out.
+    var outsideArtDisk: OutsideArtDiskCache {
+        if let disk = outsideArtDiskSlot { return disk }
+        let disk = OutsideArtDiskCache(directory: OutsideArtDiskCache.directory(root: dataDirectory))
+        outsideArtDiskSlot = disk
+        return disk
+    }
 
     /// B1: every outside picture load in the app takes a turn here (at most four at once).
     static let outsideArtLimiter = AsyncLimiter(limit: 4)
@@ -68,7 +75,7 @@ extension AppModel {
     /// same picture the artist page shows, prefetched, kept on the phone, no per-page lookup cap.
     var recommendedArt: OutsideArtLoader {
         if let loader = recommendedArtSlot { return loader }
-        let loader = makeOutsideArt(maxPixel: 360, maxArtistLookups: .max)
+        let loader = makeOutsideArt(maxPixel: 360, maxArtistLookups: .max)   // kept on the phone at the header's size
         recommendedArtSlot = loader
         return loader
     }
@@ -87,6 +94,7 @@ extension AppModel {
         recommendedArtSlot?.reset()
         recommendedArtSlot = nil
         outsideArtDisk.removeAll()
+        outsideArtDiskSlot = nil
     }
 
     /// R16: the library cover of a request that Navidrome now lists (its song's cover id), through the P4 cache.

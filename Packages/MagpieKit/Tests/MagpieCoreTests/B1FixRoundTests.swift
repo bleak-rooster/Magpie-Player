@@ -64,6 +64,33 @@ import Testing
         #expect(asked.withLock { $0 } == ["Roads to the North"])
     }
 
+    /// Second fix round (re-review Important 1): the artist page names its albums after their rows have started
+    /// loading; a name noted while the load is under way still counts at the Aurral step.
+    @Test func anAlbumNamedAfterItsLoadStartedStillGetsAurralsCover() async {
+        let slow = SlowArtTransport(delay: .milliseconds(200), answer: { _ in 404 })
+        let covers = OutsideCoverFallbacks(aurralCover: { _, _ in b1png() })
+        let art = OutsideArtLoader(transport: slow, userAgent: OutsideArtTests.ua, artistImage: nil, isOffline: { false },
+                                   covers: covers)
+        async let image = art.image(.releaseGroup(Self.rg))
+        try? await Task.sleep(for: .milliseconds(50))
+        art.note(Self.rg, OutsideAlbumHint(title: "Roads to the North", artist: "Panopticon"))
+        #expect(await image != nil, "the name noted mid-load reaches the Aurral step")
+    }
+
+    /// Second fix round (re-review minor 1): the phone keeps a copy big enough for the largest place it shows (the
+    /// artist page's header), whichever loader saved it.
+    @Test func thePhonesCopyIsBigEnoughForTheHeader() async {
+        let t = MockTransport()
+        t.stub(pathSuffix: "/front-250", body: b1png(side: 900))
+        let small = OutsideArtLoader(transport: t, userAgent: OutsideArtTests.ua, artistImage: nil, isOffline: { false },
+                                     maxPixel: 360, disk: OutsideArtDiskCache(directory: dir))
+        _ = await small.image(.releaseGroup(Self.rg))
+        let header = OutsideArtLoader(transport: MockTransport(), userAgent: OutsideArtTests.ua, artistImage: nil,
+                                      isOffline: { false }, maxPixel: 540, disk: OutsideArtDiskCache(directory: dir))
+        let shown = await header.cached(.releaseGroup(Self.rg))
+        #expect((shown?.width ?? 0) >= 540, "kept at \(shown?.width ?? 0) px")
+    }
+
     /// Review 5: bounded in bytes; a picture read recently stays while older ones go.
     @Test func theDiskCopyIsBoundedInBytesAndLeastRecentlyUsedGoesFirst() throws {
         let item = Data(repeating: 7, count: 10_000)
@@ -141,7 +168,9 @@ import Testing
         #if DEBUG
         #expect(got == want)
         #else
-        withKnownIssue("D120: Release loses the index paired with an inline try await", isIntermittent: true) {
+        // Not intermittent (re-review minor 2): a toolchain that fixes it reports "known issue not recorded", so the
+        // workaround and the lint can be revisited.
+        withKnownIssue("D120: Release loses the index paired with an inline try await") {
             #expect(got == want)
         }
         #endif

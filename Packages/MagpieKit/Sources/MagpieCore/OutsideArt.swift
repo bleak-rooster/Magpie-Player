@@ -259,6 +259,8 @@ public final class OutsideArtLoader {
     /// An album's title and artist, for the sources that find covers by name.
     public func note(_ releaseGroup: MBID, _ hint: OutsideAlbumHint) { hints[releaseGroup] = hint }
 
+    private func hint(for releaseGroup: MBID) -> OutsideAlbumHint? { hints[releaseGroup] }
+
     /// The picture held in memory, if any: no disk, no network. Safe to call while a view draws.
     public func peek(_ key: OutsideArtKey) -> CGImage? { images[key] }
 
@@ -297,13 +299,24 @@ public final class OutsideArtLoader {
         let started = generation
         let sources = Sources(transport: transport, userAgent: userAgent, artistImage: artistImage, covers: covers,
                               limiter: limiter, stepTimeout: stepTimeout, priority: priority)
-        let hint: OutsideAlbumHint? = if case .releaseGroup(let rg) = key { hints[rg] } else { nil }
+        // Second fix round (re-review Important 1): the album's name is looked up when the Aurral step runs, not now, so
+        // a name the page notes after its rows started loading still counts.
+        let hint: @Sendable () async -> OutsideAlbumHint? = { [weak self] in
+            guard case .releaseGroup(let rg) = key else { return nil }
+            return await self?.hint(for: rg)
+        }
         let disk = disk, maxPixel = maxPixel
         let task = Task<CGImage?, Never> {
             guard let data = await sources.load(key, hint: hint), !Task.isCancelled,
                   let image = Self.decode(data, maxPixel: maxPixel) else { return nil }
-            // Kept small: the picture as shown, not the download. Never once this load was cancelled (reset, sign-out).
-            if let disk, !Task.isCancelled, let small = Self.encode(image) { disk.save(small, for: key) }
+            // Kept small but big enough for the largest place it shows (re-review minor 1: the artist page's header),
+            // whichever loader saved it. Never once this load was cancelled (reset, sign-out).
+            if let disk, !Task.isCancelled,
+               let stored = maxPixel >= OutsideArtDiskCache.storedPixel ? image
+                   : Self.decode(data, maxPixel: OutsideArtDiskCache.storedPixel),
+               let small = Self.encode(stored) {
+                disk.save(small, for: key)
+            }
             return image
         }
         inFlight[key] = task
@@ -356,7 +369,7 @@ public final class OutsideArtLoader {
         }
 
         /// The first of `key`'s sources that answers with a picture: its bytes, or nil.
-        func load(_ key: OutsideArtKey, hint: OutsideAlbumHint?) async -> Data? {
+        func load(_ key: OutsideArtKey, hint: @Sendable () async -> OutsideAlbumHint?) async -> Data? {
             switch key {
             case .release:
                 guard let url = OutsideArtPolicy.coverURL(key) else { return nil }
@@ -383,7 +396,7 @@ public final class OutsideArtLoader {
                    let data = await fetch(url, allowed: OutsideArtPolicy.isAllowedLidarrCover(url)) {
                     return data
                 }
-                if let aurral = covers.aurralCover, let hint, !Task.isCancelled,
+                if let aurral = covers.aurralCover, !Task.isCancelled, let hint = await hint(),
                    let data = await step({ try await aurral(rg, hint) }) {
                     return data
                 }
