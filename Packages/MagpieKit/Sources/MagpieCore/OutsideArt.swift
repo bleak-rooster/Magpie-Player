@@ -88,6 +88,13 @@ public enum OutsideArtPolicy {
         }
     }
 
+    /// B1 (D122): an album cover Lidarr's lookup named (the last fallback before the placeholder): HTTPS from a public
+    /// host, never Deezer's or Apple's; the transport then looks the host up and refuses the owner's network (D119).
+    public static func isAllowedLidarrCover(_ url: URL) -> Bool {
+        guard let host = httpsHost(url) else { return false }
+        return isPublicHost(host)
+    }
+
     /// A Lidarr answer names the artist picture's host: never an IP address or a local-network name, so a tampered
     /// answer can't point the phone at the owner's network (X5 fix round 1).
     static func isPublicHost(_ host: String) -> Bool {
@@ -171,9 +178,15 @@ public enum OutsideArtPolicy {
     }
 }
 
-/// Loads outside artwork for one result set (a search, a request screen), in memory only. `reset()` when the results
-/// change or the screen closes: everything held is dropped and fetches in flight are cancelled, so the next search
-/// fetches again. Offline (or Offline mode On) nothing is sent. An outage, a 404 or a refusal is nil: the placeholder.
+/// Loads outside artwork for one result set (a search, a request screen, an artist page). `reset()` when the results
+/// change or the screen closes: what is held in memory is dropped and fetches in flight are cancelled. Offline (or
+/// Offline mode On) nothing is sent. An outage, a 404 or a refusal is nil: the placeholder.
+///
+/// B1 (D122, owner): with a `disk` cache, every picture that loaded is kept on the phone and shown at once next time;
+/// a miss is never kept, so a later look (or a pull to refresh) tries again. An album's cover falls back, in order:
+/// the release group's front, a release's front, the cover Lidarr's lookup names, then the placeholder. Network loads
+/// share `limiter` (at most a few at once) and each key's whole chain is bounded by `timeout`. A load is not tied to the
+/// view that asked: a row scrolled away doesn't cancel it, so a cancelled view never leaves a half-fetched picture.
 @MainActor
 public final class OutsideArtLoader {
     /// An artist's picture URL (Lidarr's lookup), or nil.
@@ -184,6 +197,11 @@ public final class OutsideArtLoader {
     private let artistImage: ArtistImage?
     private let isOffline: @MainActor () -> Bool
     private let maxPixel: Int
+    private let maxArtistLookups: Int
+    private let covers: OutsideCoverFallbacks
+    private let disk: OutsideArtDiskCache?
+    private let limiter: AsyncLimiter?
+    private let timeout: Duration
     private var images: [OutsideArtKey: CGImage] = [:]
     private var inFlight: [OutsideArtKey: Task<CGImage?, Never>] = [:]
     private var artistLookups = 0
@@ -193,22 +211,36 @@ public final class OutsideArtLoader {
     ///   - userAgent: the app's MusicBrainz User-Agent; no personal identifier.
     ///   - artistImage: nil without Lidarr: artists keep the placeholder.
     ///   - maxPixel: images are decoded downsampled to at most this many pixels on the long side.
+    ///   - maxArtistLookups: Lidarr lookups per result set (a search's visible artist rows); a page of recommended
+    ///     artists passes more.
     public init(transport: HTTPTransport = OutsideArtTransport(), userAgent: String, artistImage: ArtistImage?,
-                isOffline: @escaping @MainActor () -> Bool, maxPixel: Int = 500) {
+                isOffline: @escaping @MainActor () -> Bool, maxPixel: Int = 500,
+                maxArtistLookups: Int = OutsideArtPolicy.maxArtistLookups, covers: OutsideCoverFallbacks = .init(),
+                disk: OutsideArtDiskCache? = nil, limiter: AsyncLimiter? = nil, timeout: Duration = .seconds(30)) {
         self.transport = transport; self.userAgent = userAgent; self.artistImage = artistImage
-        self.isOffline = isOffline; self.maxPixel = maxPixel
+        self.isOffline = isOffline; self.maxPixel = maxPixel; self.maxArtistLookups = maxArtistLookups
+        self.covers = covers; self.disk = disk; self.limiter = limiter; self.timeout = timeout
     }
 
     /// Images held now (tests).
     public var cachedCount: Int { images.count }
 
-    /// New results, or the screen closed: drop everything and cancel what's in flight.
+    /// New results, or the screen closed: drop what is held in memory and cancel what's in flight (the disk copy,
+    /// if any, stays).
     public func reset() {
         generation += 1
         inFlight.values.forEach { $0.cancel() }
         inFlight = [:]
         images = [:]
         artistLookups = 0
+    }
+
+    /// The picture for `key` without any network: memory, else the disk copy. Lets a page show what it has at once.
+    public func cached(_ key: OutsideArtKey) -> CGImage? {
+        if let hit = images[key] { return hit }
+        guard let data = disk?.data(for: key), let image = Self.decode(data, maxPixel: maxPixel) else { return nil }
+        images[key] = image
+        return image
     }
 
     /// `key`'s image, else `fallback`'s (a request's cover, else its artist's picture), else nil: the placeholder.
@@ -221,37 +253,139 @@ public final class OutsideArtLoader {
     }
 
     public func image(_ key: OutsideArtKey) async -> CGImage? {
-        if let hit = images[key] { return hit }
+        if let hit = cached(key) { return hit }
         if let task = inFlight[key] { return await task.value }
         guard !isOffline() else { return nil }
         if case .artist = key {
-            guard artistImage != nil, artistLookups < OutsideArtPolicy.maxArtistLookups else { return nil }
+            guard artistImage != nil, artistLookups < maxArtistLookups else { return nil }
             artistLookups += 1
         }
         let started = generation
         let transport = transport, userAgent = userAgent, artistImage = artistImage, maxPixel = maxPixel
+        let covers = covers, disk = disk, limiter = limiter, timeout = timeout
         let task = Task<CGImage?, Never> {
-            await Self.load(key, transport: transport, userAgent: userAgent, artistImage: artistImage, maxPixel: maxPixel)
+            let data = await Self.bounded(timeout) {
+                try await Self.loadData(key, transport: transport, userAgent: userAgent, artistImage: artistImage,
+                                        covers: covers, limiter: limiter)
+            }
+            guard let data, let image = Self.decode(data, maxPixel: maxPixel) else { return nil }
+            disk?.save(data, for: key)   // only a picture that loaded and decoded is kept
+            return image
         }
         inFlight[key] = task
         let image = await task.value
         guard generation == started else { return nil }   // a new search meanwhile
         inFlight[key] = nil
-        if let image { images[key] = image }
+        if let image { images[key] = image } else if case .artist = key { artistLookups -= 1 }
         return image
     }
 
-    nonisolated private static func load(_ key: OutsideArtKey, transport: HTTPTransport, userAgent: String,
-                                         artistImage: ArtistImage?, maxPixel: Int) async -> CGImage? {
-        let url: URL
-        if let cover = OutsideArtPolicy.coverURL(key) {
-            url = cover
-        } else if case .artist(let mbid) = key, let artistImage, let picture = try? await artistImage(mbid) {
-            url = picture
-        } else {
+    /// Loads every key not held yet, a few at a time (through `limiter`), so a page's pictures are there before they
+    /// scroll into view. Returns once all have been tried.
+    public func prefetch(_ keys: [OutsideArtKey]) async {
+        var seen = Set<OutsideArtKey>()
+        let wanted = keys.filter { seen.insert($0).inserted && cached($0) == nil }
+        let loads = wanted.map { key in Task { @MainActor in _ = await self.image(key) } }
+        for load in loads { await load.value }
+    }
+
+    /// `op`'s answer, or nil once `limit` passes: the work is cancelled and not waited for, so a source that never
+    /// answers can't hold a page up.
+    nonisolated static func bounded(_ limit: Duration, _ op: @escaping @Sendable () async throws -> Data?) async -> Data? {
+        let once = FirstAnswer()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Data?, Never>) in
+                let work = Task { once.finish((try? await op()) ?? nil) }
+                let timer = Task {
+                    do { try await Task.sleep(for: limit) } catch { return }
+                    once.finish(nil)
+                }
+                once.start(continuation, cancelling: [work, timer])
+            }
+        } onCancel: {
+            once.finish(nil)
+        }
+    }
+
+    /// The first answer wins; both tasks are then cancelled.
+    private final class FirstAnswer: @unchecked Sendable {
+        private let lock = NSLock()
+        private var continuation: CheckedContinuation<Data?, Never>?
+        private var early: Data??
+        private var tasks: [Task<Void, Never>] = []
+        private var done = false
+
+        func start(_ continuation: CheckedContinuation<Data?, Never>, cancelling tasks: [Task<Void, Never>]) {
+            lock.lock()
+            if let early {
+                lock.unlock()
+                tasks.forEach { $0.cancel() }
+                continuation.resume(returning: early)
+                return
+            }
+            self.continuation = continuation
+            self.tasks = tasks
+            lock.unlock()
+        }
+
+        func finish(_ data: Data?) {
+            lock.lock()
+            guard !done else { lock.unlock(); return }
+            done = true
+            guard let continuation else { early = .some(data); lock.unlock(); return }
+            self.continuation = nil
+            let tasks = self.tasks
+            lock.unlock()
+            tasks.forEach { $0.cancel() }
+            continuation.resume(returning: data)
+        }
+    }
+
+    /// The first of `key`'s sources that answers with a picture: its bytes, or nil.
+    nonisolated private static func loadData(_ key: OutsideArtKey, transport: HTTPTransport, userAgent: String,
+                                             artistImage: ArtistImage?, covers: OutsideCoverFallbacks,
+                                             limiter: AsyncLimiter?) async throws -> Data? {
+        func fetch(_ url: URL, allowed: Bool) async -> Data? {
+            guard allowed, !Task.isCancelled else { return nil }
+            if let limiter {
+                return try? await limiter.run { await Self.get(url, transport: transport, userAgent: userAgent) }
+            }
+            return await get(url, transport: transport, userAgent: userAgent)
+        }
+        switch key {
+        case .release:
+            guard let url = OutsideArtPolicy.coverURL(key) else { return nil }
+            return await fetch(url, allowed: OutsideArtPolicy.isAllowed(url, for: key))
+        case .artist(let mbid):
+            guard let artistImage else { return nil }
+            // The lookup takes a turn too, so a page of recommended artists never sends dozens at once.
+            let looked: URL?? = if let limiter { try? await limiter.run { try await artistImage(mbid) } }
+                                else { try? await artistImage(mbid) }
+            guard let picture = looked ?? nil else { return nil }
+            return await fetch(picture, allowed: OutsideArtPolicy.isAllowed(picture, for: key))
+        case .releaseGroup(let rg):
+            if let url = OutsideArtPolicy.coverURL(key), let data = await fetch(url, allowed: OutsideArtPolicy.isAllowed(url, for: key)) {
+                return data
+            }
+            if let releases = covers.releases, let ids = try? await releases(rg) {
+                for release in ids.prefix(OutsideCoverFallbacks.releasesTried) {
+                    let next = OutsideArtKey.release(release)
+                    if let url = OutsideArtPolicy.coverURL(next),
+                       let data = await fetch(url, allowed: OutsideArtPolicy.isAllowed(url, for: next)) { return data }
+                }
+            }
+            if let lidarrCover = covers.lidarrCover {
+                let named: URL?? = if let limiter { try? await limiter.run { try await lidarrCover(rg) } }
+                                   else { try? await lidarrCover(rg) }
+                guard let url = named ?? nil else { return nil }
+                return await fetch(url, allowed: OutsideArtPolicy.isAllowedLidarrCover(url))
+            }
             return nil
         }
-        guard !Task.isCancelled, OutsideArtPolicy.isAllowed(url, for: key) else { return nil }
+    }
+
+    /// One GET: the image bytes when it answered 200 with a picture-sized body from where it may come from.
+    nonisolated private static func get(_ url: URL, transport: HTTPTransport, userAgent: String) async -> Data? {
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.httpShouldHandleCookies = false
@@ -260,11 +394,11 @@ public final class OutsideArtLoader {
         request.setValue("image/*", forHTTPHeaderField: "Accept")
         guard let (data, response) = try? await transport.send(request), response.statusCode == 200,
               response.expectedContentLength <= OutsideArtPolicy.maxBytes, data.count <= OutsideArtPolicy.maxBytes,
-              !Task.isCancelled else { return nil }
+              !data.isEmpty, !Task.isCancelled else { return nil }
         // Belt and braces: an answer that ended up anywhere the redirect policy wouldn't follow is dropped.
         if let final = response.url, final != url, !OutsideArtPolicy.allowsRedirect(from: url, to: final) { return nil }
         if let final = response.url, final.scheme?.lowercased() != "https" { return nil }
-        return decode(data, maxPixel: maxPixel)
+        return data
     }
 
     /// Hostile data: only JPEG, PNG, WebP or HEIC, at most `OutsideArtPolicy.maxDimension` on each side (read from the

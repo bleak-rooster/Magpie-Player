@@ -123,6 +123,21 @@ public struct LidarrClient: Sendable {
         return rows.first { $0["foreignArtistId"]?.stringValue.flatMap(MBID.init) == mbid }
     }
 
+    /// B1 (D122): the album cover Lidarr's lookup names for a release group (`album/lookup?term=lidarr:<mbid>`, a GET):
+    /// the `cover` image's `remoteUrl`, HTTPS only, never Lidarr's own `/MediaCoverProxy` (it would need the key).
+    /// nil when Lidarr knows no such album or names no cover.
+    public func albumCoverURL(releaseGroup: MBID) async throws -> URL? {
+        let data = try await ok("album/lookup", [URLQueryItem(name: "term", value: "lidarr:" + releaseGroup.rawValue)])
+        guard let rows = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]] else { return nil }
+        let row = rows.first { ($0["foreignAlbumId"] as? String).flatMap(MBID.init) == releaseGroup }
+        let images = row?["images"] as? [[String: Any]] ?? []
+        for image in images where (image["coverType"] as? String)?.lowercased() == "cover" {
+            if let s = image["remoteUrl"] as? String, let url = URL(string: s), url.scheme?.lowercased() == "https",
+               url.host()?.isEmpty == false, url.user == nil { return url }
+        }
+        return nil
+    }
+
     /// Text search (A10: flaky SkyHook search). Only artist and album rows are returned.
     public func search(term: String) async throws -> [LidarrSearchHit] {
         try await list(LidarrSearchHit.self, "search", [URLQueryItem(name: "term", value: term)])
