@@ -22,6 +22,8 @@ public enum AurralError: Error, Sendable, Equatable {
     case decoding
     /// Refresh Flow while a run is under way: refused, nothing sent.
     case runActive
+    /// Round 14: the server has no download source set up (Download songs answered 409).
+    case noDownloader
 }
 
 /// Round 12 Y6, round 13, round 14 A1 (D81): the only calls Magpie may send to Aurral; everything else is refused in

@@ -128,4 +128,53 @@ extension AurralClient {
         guard let t = text?.trimmingCharacters(in: .whitespacesAndNewlines), !t.isEmpty else { return nil }
         return String(t.prefix(200))
     }
+
+    // MARK: - The writes (D82): each only on the owner's tap, sent once, exactly as Aurral 2.13 takes it
+
+    /// Add flow: `POST /api/discover/editorial/:id/library` (no body; Aurral's accessFlow). Aurral makes a synced
+    /// playlist, queues every song through its own download sources, publishes it to Navidrome and re-syncs it daily.
+    /// Adding one that is already there answers `alreadyAdded` (nothing new is queued).
+    public func addEditorialPlaylist(_ id: String) async throws -> AurralEditorialAddResult {
+        guard AurralRoute.isDigits(Substring(id), max: 20) else { throw AurralError.forbidden("editorial \(id.count) chars") }
+        return try AurralEditorialAddResult.decode(
+            try await ok(method: AurralRoute.discoverWriteMethod, path: "api/discover/editorial/" + id + "/library"))
+    }
+
+    /// Not for me: `POST /api/discover/feedback` with `action: "block_artist"`, so Aurral leaves the artist out of this
+    /// user's recommendations as Magpie hides it. Only Aurral's own fields: `action`, `artistId` (the MBID, when there
+    /// is one), `artistName`, `sourceContext`, `tagContext` and `seedContext` (each list at most 8, as Aurral keeps).
+    public func notForMe(_ artist: AurralRecommendedArtist) async throws {
+        guard let body = Self.feedbackBody(artist) else { throw AurralError.forbidden("feedback without an artist") }
+        _ = try await ok(method: AurralRoute.discoverWriteMethod, path: "api/discover/feedback", body: body)
+    }
+
+    static func feedbackBody(_ artist: AurralRecommendedArtist) -> Data? {
+        guard let name = queryText(artist.name) else { return nil }
+        var o: [String: Any] = ["action": "block_artist", "artistName": name, "sourceContext": "recommended",
+                                "tagContext": Array(artist.matchedTags.prefix(8)),
+                                "seedContext": Array(artist.supportingSeeds.prefix(8))]
+        if let mbid = artist.mbid { o["artistId"] = mbid.rawValue }
+        return try? JSONSerialization.data(withJSONObject: o, options: [.sortedKeys, .withoutEscapingSlashes])
+    }
+
+    /// Download songs: `POST /api/playlists/flows/:flowId/download` (no body), for a flow made with auto-download
+    /// off. Throws `noDownloader` when the server has no download source set up (Aurral's 409).
+    public func downloadFlow(_ flowId: String) async throws -> AurralQueued {
+        guard AurralRoute.isPlainId(Substring(flowId)) else { throw AurralError.forbidden("download \(flowId.count) chars") }
+        do {
+            return try AurralQueued.decode(
+                try await ok(method: AurralRoute.discoverWriteMethod, path: "api/playlists/flows/" + flowId + "/download"))
+        } catch AurralError.http(status: 409) { throw AurralError.noDownloader }
+    }
+
+    /// Retry a song that couldn't download: `POST /api/playlists/shared-playlists/:playlistId/tracks/:jobId/research`
+    /// (no body). Add flow makes a synced playlist, and Aurral 2.13 re-searches a synced playlist's song on this route
+    /// (the flows route is for rule-based flows). Aurral answers 409 while the song is still being fetched.
+    public func retrySong(playlistId: String, jobId: String) async throws -> AurralQueued {
+        guard AurralRoute.isPlainId(Substring(playlistId)), AurralRoute.isPlainId(Substring(jobId)) else {
+            throw AurralError.forbidden("research \(playlistId.count)/\(jobId.count) chars")
+        }
+        return try AurralQueued.decode(try await ok(method: AurralRoute.discoverWriteMethod,
+            path: "api/playlists/shared-playlists/" + playlistId + "/tracks/" + jobId + "/research"))
+    }
 }
