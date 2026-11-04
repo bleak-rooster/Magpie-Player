@@ -21,6 +21,8 @@ public final class StubAurral: HTTPTransport, @unchecked Sendable {
         public var size: Int
         /// The Aurral user who owns it (nil: a flow from before users, an admin's).
         public var ownerUserId: Int?
+        /// Round 14 A4: Aurral 2.13's `autoDownload` (nil: not sent, as 2.10).
+        public var autoDownload: Bool?
         public init(id: String, name: String, enabled: Bool = true, size: Int = 20, ownerUserId: Int? = 1) {
             self.id = id; self.name = name; self.enabled = enabled; self.size = size; self.ownerUserId = ownerUserId
         }
@@ -79,6 +81,39 @@ public final class StubAurral: HTTPTransport, @unchecked Sendable {
         var features: [String]?
         /// Round 14: whether a download source is configured (the bootstrap's `downloadSources`).
         var downloadSourcesConfigured = true
+        /// Round 14 A4: synced playlists made by Add flow (status `sharedPlaylists`), and their songs' job statuses.
+        var synced: [Flow] = []
+        var syncedJobStatuses = ["done", "done", "downloading", "failed"]
+    }
+
+    /// Round 14 A4: what each of a new synced playlist's songs is doing (its jobs, in the editorial fixture's order).
+    public func setSyncedJobStatuses(_ statuses: [String]) { state.withLock { $0.syncedJobStatuses = statuses } }
+
+    /// Round 14 A4: every job of every synced playlist takes this status now (its songs finished, say).
+    public func setSyncedJobs(to status: String) {
+        state.withLock { s in
+            let ids = Set(s.synced.map(\.id))
+            for i in s.jobs.indices where ids.contains(s.jobs[i].flowId) { s.jobs[i].status = status }
+        }
+    }
+
+    /// Round 14 A4: Retry a song: its job (`job-<index>`) is searched for again (pending).
+    func retryJob(_ jobId: String) {
+        guard jobId.hasPrefix("job-"), let index = Int(jobId.dropFirst(4)) else { return }
+        state.withLock { s in if s.jobs.indices.contains(index) { s.jobs[index].status = "pending" } }
+    }
+
+    /// Round 14 A4: Add flow made a synced playlist `id` named `name` for `owner`: Aurral queues every song (its jobs).
+    func addSynced(id: String, name: String, owner: Int, songs: [(title: String, artist: String, durationMs: Int)]) {
+        state.withLock { s in
+            guard !s.synced.contains(where: { $0.id == id }) else { return }
+            s.synced.append(Flow(id: id, name: name, size: songs.count, ownerUserId: owner))
+            for (index, song) in songs.enumerated() {
+                let status = index < s.syncedJobStatuses.count ? s.syncedJobStatuses[index] : "pending"
+                s.jobs.append(Job(flowId: id, artistName: song.artist, trackName: song.title, durationMs: song.durationMs,
+                                  status: status))
+            }
+        }
     }
 
     public static let defaultUsername = "magpie"
@@ -278,6 +313,7 @@ public final class StubAurral: HTTPTransport, @unchecked Sendable {
     func jobsAnswer(flowId: String, user: User) -> (Int, Any) {
         let s = state.withLock { $0 }
         let mine = user.role == "admin" || s.flows.first(where: { $0.id == flowId })?.ownerUserId == user.id
+            || s.synced.first(where: { $0.id == flowId })?.ownerUserId == user.id   // round 14 A4
         guard mine else { return (404, ["error": "Playlist not found"]) }
         guard Self.mayAccessFlows(user, s) else { return (403, ["error": "Forbidden"]) }
         return (200, s.jobs.enumerated().filter { $0.element.flowId == flowId }
@@ -319,7 +355,7 @@ public final class StubAurral: HTTPTransport, @unchecked Sendable {
 
     private func statusBody(_ s: State) -> [String: Any] {
         var flowStats: [String: Any] = [:]
-        for flow in s.flows {
+        for flow in s.flows + s.synced {
             let jobs = s.jobs.filter { $0.flowId == flow.id }
             func count(_ status: String) -> Int { jobs.filter { $0.status == status }.count }
             let running = s.running.contains(flow.id)
@@ -340,11 +376,16 @@ public final class StubAurral: HTTPTransport, @unchecked Sendable {
             "flows": s.flows.map { f in
                 ["id": f.id, "name": f.name, "ownerUserId": f.ownerUserId.map { $0 as Any } ?? NSNull(),
                  "ownerUsername": (s.users.first { $0.id == f.ownerUserId }?.username).map { $0 as Any } ?? NSNull(), "enabled": f.enabled,
-                 "size": f.size,
+                 "size": f.size, "autoDownload": f.autoDownload.map { $0 as Any } ?? NSNull(),
                  "scheduleDays": [5], "scheduleTime": "00:00", "nextRunAt": "2026-11-06T00:00:00.000Z",
                  "lastRunAt": s.lastRunAt[f.id] ?? "2026-10-30T00:00:00.000Z", "mix": ["discover": 100], "lidarrFeedToken": "secret-feed-token"]
             },
-            "sharedPlaylists": [],
+            // Round 14 A4: the synced playlists Add flow made (Aurral 2.13 lists them beside the flows).
+            "sharedPlaylists": s.synced.map { p in
+                ["id": p.id, "name": p.name, "ownerUserId": p.ownerUserId.map { $0 as Any } ?? NSNull(),
+                 "source": "deezer-playlist", "syncEnabled": true,
+                 "trackCount": s.jobs.filter { $0.flowId == p.id }.count]
+            },
             "operationQueue": ["processing": busy, "pending": 0, "currentLabel": busy ? "Generating flow" : NSNull()],
             "hint": ["phase": busy ? "running" : "idle", "message": busy ? "Getting songs" : "Next update in 5 days"],
         ]

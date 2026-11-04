@@ -269,6 +269,18 @@ public extension StubAurral {
         let answer = discover.withLock { $0 }.answer(method: method, path: path, query: query, body: body, user: user,
                                                      hasDownloader: hasDownloader)
         if method != "GET", let answer, (200..<300).contains(answer.0) {
+            // Round 14 A4: a new synced playlist queues its songs; a retried song is searched for again.
+            let p = path.split(separator: "/").map(String.init)
+            if p.count == 5, p[2] == "editorial", p[4] == "library", discover.withLock({ $0.added[p[3]] }) == nil {
+                let songs = StubAurralDiscover.songs.prefix(4).compactMap { s -> (String, String, Int)? in
+                    guard let t = s["trackName"] as? String, let a = s["artistName"] as? String,
+                          let d = s["durationMs"] as? Int else { return nil }
+                    return (t, a, d)
+                }
+                addSynced(id: "static-\(p[3])", name: p[3] == "1313616925" ? "Top Australia" : "Indie Pop Picks", owner: user.id,
+                          songs: songs.map { (title: $0.0, artist: $0.1, durationMs: $0.2) })
+            }
+            if p.count == 7, p[2] == "shared-playlists", p[6] == "research" { retryJob(p[5]) }
             discover.withLock { d in
                 d.writes.append(("\(method) \(path)", request.httpBody ?? Data()))
                 let parts = path.split(separator: "/").map(String.init)

@@ -30,7 +30,14 @@ public struct RecommendedRails: Sendable, Equatable {
     public static let newWindow: TimeInterval = 7 * 86_400
 
     public init(_ recommendations: AurralRecommendations, now: Date, hidden: Set<String> = [], seedRows: Int = 3) {
-        let all = recommendations.artists.filter { !hidden.contains(Self.key($0)) }
+        self.init(artists: recommendations.artists, basedOn: recommendations.basedOn.map(\.name), now: now, hidden: hidden,
+                  seedRows: seedRows)
+    }
+
+    /// From the artists and Aurral's seed names (a saved copy).
+    public init(artists: [AurralRecommendedArtist], basedOn: [String], now: Date, hidden: Set<String> = [],
+                seedRows: Int = 3) {
+        let all = artists.filter { !hidden.contains(Self.key($0)) }
         self.all = all
         topPick = all.first
         newThisWeek = all.dropFirst().filter { a in
@@ -38,7 +45,7 @@ public struct RecommendedRails: Sendable, Equatable {
         }
         // Seeds: Aurral's named ones first, then any other a pick names, in first-seen order.
         var seeds: [String] = []
-        for seed in recommendations.basedOn.map(\.name) + all.flatMap(Self.seeds) where !seeds.contains(seed) {
+        for seed in basedOn + all.flatMap(Self.seeds) where !seeds.contains(seed) {
             seeds.append(seed)
         }
         var rails: [SeedRail] = []

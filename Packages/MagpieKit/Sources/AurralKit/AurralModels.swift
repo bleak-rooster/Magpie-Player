@@ -56,6 +56,9 @@ public struct AurralFlow: Sendable, Equatable, Hashable {
     public var nextRunAt: Date?
     /// When the flow's last run happened (a change says a run finished: Refresh Flow's latch, fix I3).
     public var lastRunAt: Date?
+    /// Round 14 A4: Aurral queues the flow's songs itself (`autoDownload`); false: Magpie offers Download songs. nil:
+    /// not said (2.10, a synced playlist).
+    public var autoDownload: Bool?
 
     public init(id: String, name: String, enabled: Bool = true, ownerUserId: Int? = nil, ownerUsername: String? = nil,
                 size: Int? = nil, nextRunAt: Date? = nil, lastRunAt: Date? = nil) {
@@ -104,6 +107,10 @@ public struct AurralStatus: Sendable, Equatable {
     public var operationPending: Int
     /// Aurral's own line ("Next update in 5 days").
     public var hint: Hint?
+    /// Round 14 A4 (D94): the user's synced playlists (`sharedPlaylists[]`): Add flow makes one from a Discover
+    /// playlist or a chart (`POST /api/discover/editorial/:id/library`), and Aurral publishes it to Navidrome under its
+    /// name like a flow. Read as flows (id, name, owner); Refresh Flow never applies to them.
+    public var sharedPlaylists: [AurralFlow] = []
 
     public struct Hint: Sendable, Equatable {
         public var phase: String?
@@ -123,7 +130,8 @@ public struct AurralStatus: Sendable, Equatable {
     public func scoped(to user: AurralUser?) -> AurralStatus {
         var scoped = self
         scoped.flows = user.map { user in flows.filter { $0.belongs(to: user) } } ?? []
-        let ids = Set(scoped.flows.map(\.id))
+        scoped.sharedPlaylists = user.map { user in sharedPlaylists.filter { $0.belongs(to: user) } } ?? []   // round 14 A4
+        let ids = Set((scoped.flows + scoped.sharedPlaylists).map(\.id))
         scoped.flowStats = flowStats.filter { ids.contains($0.key) }
         return scoped
     }
@@ -148,12 +156,18 @@ public struct AurralStatus: Sendable, Equatable {
         iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let plain = ISO8601DateFormatter()
         func date(_ text: String?) -> Date? { text.flatMap { iso.date(from: $0) ?? plain.date(from: $0) } }
-        let flows = (o["flows"] as? [Any] ?? []).compactMap { item -> AurralFlow? in
-            guard let f = item as? [String: Any], let id = f.string("id"), let name = f.string("name") else { return nil }
-            return AurralFlow(id: id, name: name, enabled: f.bool("enabled") ?? true, ownerUserId: f.int("ownerUserId"),
-                              ownerUsername: f.string("ownerUsername"),
-                              size: f.int("size"), nextRunAt: date(f.string("nextRunAt")), lastRunAt: date(f.string("lastRunAt")))
+        func flowList(_ key: String) -> [AurralFlow] {
+            (o[key] as? [Any] ?? []).prefix(aurralListCap).compactMap { item -> AurralFlow? in
+                guard let f = item as? [String: Any], let id = f.string("id") ?? f.int("id").map(String.init),
+                      let name = f.string("name") else { return nil }
+                var flow = AurralFlow(id: id, name: name, enabled: f.bool("enabled") ?? true, ownerUserId: f.int("ownerUserId"),
+                                      ownerUsername: f.string("ownerUsername"), size: f.int("size") ?? f.int("trackCount"),
+                                      nextRunAt: date(f.string("nextRunAt")), lastRunAt: date(f.string("lastRunAt")))
+                flow.autoDownload = f.bool("autoDownload")
+                return flow
+            }
         }
+        let flows = flowList("flows")
         var stats: [String: AurralFlowStats] = [:]
         for (id, value) in o.dict("flowStats") ?? [:] {
             guard let s = value as? [String: Any] else { continue }
@@ -163,10 +177,12 @@ public struct AurralStatus: Sendable, Equatable {
         let worker = o.dict("worker") ?? [:]
         let queue = o.dict("operationQueue") ?? [:]
         let hint = o.dict("hint").map { Hint(phase: $0.string("phase"), message: $0.string("message")) }
-        return AurralStatus(flows: flows, flowStats: stats, workerProcessing: worker.bool("processing") ?? false,
-                            workerActiveCount: worker.int("activeCount") ?? 0,
-                            operationProcessing: queue.bool("processing") ?? false,
-                            operationPending: queue.int("pending") ?? 0, hint: hint)
+        var status = AurralStatus(flows: flows, flowStats: stats, workerProcessing: worker.bool("processing") ?? false,
+                                  workerActiveCount: worker.int("activeCount") ?? 0,
+                                  operationProcessing: queue.bool("processing") ?? false,
+                                  operationPending: queue.int("pending") ?? 0, hint: hint)
+        status.sharedPlaylists = flowList("sharedPlaylists")
+        return status
     }
 }
 

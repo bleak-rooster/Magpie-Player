@@ -121,3 +121,32 @@ import Testing
         #expect(RecommendedRails.key(artist("Mixed Case")) == "name:mixed case")
     }
 }
+
+/// Round 14 A4 (D94): Add flow's synced playlists are listed beside the flows (`sharedPlaylists`), the user's only.
+@Suite struct SyncedPlaylistStatusTests {
+    @Test func sharedPlaylistsDecodeAndScope() throws {
+        let json = #"{"flows":[{"id":"f1","name":"Weekly","ownerUserId":1,"autoDownload":false}],"sharedPlaylists":[{"id":"static-9","name":"Indie Pop Picks","ownerUserId":1,"trackCount":40},{"id":7,"name":"Theirs","ownerUserId":2},{"name":"No id"},"junk"],"flowStats":{"static-9":{"total":40,"done":12,"pending":28}}}"#
+        let status = try AurralStatus.decode(Data(json.utf8))
+        #expect(status.flows.first?.autoDownload == false)
+        #expect(status.sharedPlaylists.map(\.id) == ["static-9", "7"])
+        #expect(status.sharedPlaylists.first?.size == 40)
+        let mine = status.scoped(to: AurralUser(id: 1, username: "me", role: "user"))
+        #expect(mine.sharedPlaylists.map(\.id) == ["static-9"] && mine.flowStats["static-9"]?.done == 12)
+        #expect(status.scoped(to: nil).sharedPlaylists.isEmpty, "no user, nothing")
+    }
+
+    @Test func addFlowListsTheSyncedPlaylistAndItsSongs() async throws {
+        let stub = StubAurral()
+        stub.useAurral213()
+        let client = AurralClient(base: stub.base, session: stub.signedInSession(), transport: stub)
+        #expect(try await client.status().sharedPlaylists.isEmpty)
+        let added = try await client.addEditorialPlaylist("908622995")
+        #expect(added.playlistId == "static-908622995" && added.tracksQueued == 4)
+        let status = try await client.status()
+        #expect(status.sharedPlaylists.map(\.name) == ["Indie Pop Picks"])
+        let jobs = try #require(try await client.playlistJobs("static-908622995"))
+        #expect(jobs.map(\.status) == ["done", "done", "downloading", "failed"])
+        _ = try await client.retrySong(playlistId: "static-908622995", jobId: jobs[3].id)
+        #expect(try await client.playlistJobs("static-908622995")?.last?.status == "pending")
+    }
+}
