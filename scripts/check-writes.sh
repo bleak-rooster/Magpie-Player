@@ -376,11 +376,24 @@ if [ -z "${G1_SRC:-}" ]; then
   fi
   # Round 14 A4 fix round 1, A7 (owner, 2026-11-04, plan decision 11): the app never contacts Deezer or Apple itself:
   # APIs, feeds, previews and pictures all go through the Aurral server. No product code names their hosts, comments
-  # included (the stub for tests aside, which plays Aurral handing them out).
+  # included, except the one refusal list (pinned exactly below; outside art refuses them) and the stub for tests,
+  # which plays Aurral handing them out.
+  refused_hosts="Packages/MagpieKit/Sources/MagpieCore/RefusedMediaHosts.swift"
   if grep -rniE --include='*.swift' 'deezer\.com|dzcdn|mzstatic|apple\.com|applemarketingtools|itunes\.' \
-       "${product[@]}" | grep -v '^Packages/MagpieKit/Sources/MagpieTestSupport/' | grep -q .; then
-    echo "G1: a Deezer or Apple host is named in product code" >&2; bad=1
+       "${product[@]}" | grep -v '^Packages/MagpieKit/Sources/MagpieTestSupport/' | grep -v "^$refused_hosts:" | grep -q .; then
+    echo "G1: a Deezer or Apple host is named in product code (only $refused_hosts may)" >&2; bad=1
   fi
+  # A7 fix round 1: the refusal list is exactly Deezer's and Apple's four domains, named on this one line only, and
+  # outside art refuses them (first request and every redirect).
+  want_hosts='    public static let domains = ["deezer.com", "dzcdn.net", "mzstatic.com", "apple.com"]'
+  host_lines=$(grep -niE 'deezer|dzcdn|mzstatic|apple\.com' "$refused_hosts" | grep -vE '^[0-9]+:[[:space:]]*///?' || true)
+  { [ "$(printf '%s\n' "$host_lines" | grep -c .)" = 1 ] && [ "${host_lines#*:}" = "$want_hosts" ]; } ||
+    { echo "G1: $refused_hosts: the refused Deezer/Apple host list changed" >&2; bad=1; }
+  grep -qF 'return domains.contains { name == $0 || name.hasSuffix("." + $0) }' "$refused_hosts" ||
+    { echo "G1: $refused_hosts: the refusal no longer covers subdomains" >&2; bad=1; }
+  grep -qF 'let host = url.host()?.lowercased(), !host.isEmpty, !RefusedMediaHosts.refuses(host: host) else { return nil }' \
+       Packages/MagpieKit/Sources/MagpieCore/OutsideArt.swift ||
+    { echo "G1: OutsideArt.swift: outside art no longer refuses Deezer's and Apple's hosts" >&2; bad=1; }
   # Round 14 A1 (D81): `api/discover` only as one of the allowed spellings, and the flow write routes only in the
   # Aurral client (the stub for tests aside).
   discover_names=$(grep -rnoE --include='*.swift' 'api/discover[A-Za-z0-9/_.?&=-]*' "${product[@]}" |

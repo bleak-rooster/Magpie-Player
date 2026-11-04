@@ -101,5 +101,32 @@ for w in "${weakened[@]}"; do
 done
 cp "$work/AurralClient.orig" "$aurral_src"
 
+# A7 fix round 1: the one refused-host list weakened (a host dropped, a host named on another line, subdomains let
+# through), outside art's refusal dropped, and a Deezer host named in another MagpieCore file.
+hosts_src="$work/Packages/MagpieKit/Sources/MagpieCore/RefusedMediaHosts.swift"
+art_src="$work/Packages/MagpieKit/Sources/MagpieCore/OutsideArt.swift"
+cp "$hosts_src" "$work/RefusedMediaHosts.orig"; cp "$art_src" "$work/OutsideArt.orig"
+host_weakened=(
+  "$hosts_src|s/\"mzstatic.com\", \"apple.com\"\]/\"mzstatic.com\"]/"
+  "$hosts_src|s/^public enum RefusedMediaHosts {/public enum RefusedMediaHosts {\n    static let extra = \"cdn.dzcdn.net\"/"
+  "$hosts_src|s/return domains.contains { name == \$0 || name.hasSuffix(\".\" + \$0) }/return domains.contains { name == \$0 }/"
+  "$art_src|s/, !RefusedMediaHosts.refuses(host: host) else { return nil }/ else { return nil }/"
+  "$art_src|s/^public enum OutsideArtPolicy {/public enum OutsideArtPolicy {\n    static let deezer = \"e-cdns-images.dzcdn.net\"/"
+)
+for w in "${host_weakened[@]}"; do
+  file="${w%%|*}" expr="${w#*|}"
+  cp "$work/RefusedMediaHosts.orig" "$hosts_src"; cp "$work/OutsideArt.orig" "$art_src"
+  cp "$file" "$work/before"
+  sed -i '' "$expr" "$file"
+  if cmp -s "$work/before" "$file"; then echo "selftest: the weakening didn't apply: $expr" >&2; failed=1; continue; fi
+  if out=$("$work/scripts/check-writes.sh" 2>&1); then
+    echo "selftest: NOT caught: $expr" >&2; failed=1
+  elif ! grep -qE 'G1:' <<< "$out"; then
+    echo "selftest: failed without a G1 reason: $expr" >&2; failed=1
+  fi
+done
+cp "$work/RefusedMediaHosts.orig" "$hosts_src"; cp "$work/OutsideArt.orig" "$art_src"
+weakened+=("${host_weakened[@]}")
+
 [ "$failed" = 0 ] || exit 1
 echo "check-writes selftest: all ${#planted[@]} planted violations and ${#weakened[@]} allow-list weakenings caught; the clean tree passes"
