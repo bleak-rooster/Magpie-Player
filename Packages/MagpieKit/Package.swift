@@ -28,7 +28,8 @@ let package = Package(
         .target(name: "MatchIndex", dependencies: ["MagpieCore", "NavidromeKit"]),
         .target(name: "Search", dependencies: ["MagpieCore", "MatchIndex", "ListenBrainzKit", "LidarrKit"]),
         .target(name: "Requests", dependencies: ["MagpieCore", "LidarrKit", "ListenBrainzKit", "NavidromeKit", "MatchIndex"]),
-        .target(name: "Playback", dependencies: ["MagpieCore"]),
+        // Round 14 A2: AurralKit for the one Deezer-audio host check (`PreviewResolver.isDeezerAudio`, D88).
+        .target(name: "Playback", dependencies: ["MagpieCore", "AurralKit"]),
         .target(name: "DesignSystem", dependencies: ["MagpieCore"]),
         .target(name: "CarPlayUI", dependencies: ["MagpieCore", "Playback", "DesignSystem", "Search"]),
         .target(name: "MagpieTestSupport", dependencies: ["MagpieCore", "AurralKit"]),

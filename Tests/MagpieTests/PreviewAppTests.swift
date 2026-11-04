@@ -132,10 +132,12 @@ extension DiscoverAppTests {
     }
 
     /// A redirect anywhere but Deezer's https audio hosts is refused: nothing plays.
-    @Test func aRedirectOffDeezerIsRefused() async throws {
+    @Test(arguments: ["http://cdnt-preview.dzcdn.net/x.mp3", "https://cdn.example.com/x.mp3",
+                      "https://cdnt-preview.dzcdn.net.evil.com/x.mp3"])
+    func aRedirectOffDeezerIsRefused(_ target: String) async throws {
         let (model, engine) = try await previewModel()
         defer { model.signOut() }
-        aurral.setPreviewTarget("http://cdnt-preview.dzcdn.net/x.mp3")
+        aurral.setPreviewTarget(target)
         model.togglePreview(Self.previewSong)
         await settle { model.previewPlayer.phase == .unavailable }
         #expect(model.previewPlayer.phase == .unavailable)

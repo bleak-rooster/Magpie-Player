@@ -21,7 +21,7 @@ import Testing
         #expect(request.url == Self.signed)
     }
 
-    @Test(arguments: ["http://cdnt-preview.dzcdn.net/a.mp3", "ftp://cdnt-preview.dzcdn.net/a.mp3",
+    @Test(arguments: ["http://cdnt-preview.dzcdn.net/a.mp3", "https://cdn.example.com/a.mp3", "https://dzcdn.net.evil.com/a.mp3", "ftp://cdnt-preview.dzcdn.net/a.mp3",
                       "https://user:pw@cdnt-preview.dzcdn.net/a.mp3", "file:///tmp/a.mp3", "https:///a.mp3"])
     func refusesAnythingButHTTPSAndSendsNothing(_ text: String) async throws {
         let transport = MockTransport()
@@ -47,8 +47,8 @@ import Testing
         await #expect(throws: PreviewClipError.refused) { try await PreviewClipFetcher(transport: huge).fetch(Self.signed) }
     }
 
-    /// The real session follows a redirect only to https, never with user info; it keeps no cookie and no cache.
-    @Test func redirectsStayHTTPS() async throws {
+    /// The real session follows a redirect only to Deezer's https audio hosts (fix I1); it keeps no cookie and no cache.
+    @Test func redirectsStayOnDeezersHTTPSHosts() async throws {
         let delegate = PreviewClipFetcher.HTTPSOnlyRedirects.shared
         let session = URLSession(configuration: .ephemeral)
         let task = session.dataTask(with: Self.signed)
@@ -58,7 +58,11 @@ import Testing
                                       newRequest: URLRequest(url: URL(string: text)!))?.url
         }
         #expect(await follow("https://e-cdns-preview-1.dzcdn.net/stream/x.mp3") != nil)
-        #expect(await follow("https://other-cdn.example.com/x.mp3") != nil, "https anywhere: no credential rides along")
+        #expect(await follow("https://dzcdn.net/stream/x.mp3") != nil)
+        #expect(await follow("https://other-cdn.example.com/x.mp3") == nil, "only Deezer's audio hosts (decision 3)")
+        #expect(await follow("https://dzcdn.net.evil.com/x.mp3") == nil)
+        #expect(await follow("https://evildzcdn.net/x.mp3") == nil)
+        #expect(await follow("https://e-cdns-preview-1.dzcdn.net:8443/x.mp3") == nil)
         #expect(await follow("http://e-cdns-preview-1.dzcdn.net/stream/x.mp3") == nil)
         #expect(await follow("https://u:p@e-cdns-preview-1.dzcdn.net/x.mp3") == nil)
         task.cancel()
@@ -68,14 +72,18 @@ import Testing
         #expect(config.requestCachePolicy == .reloadIgnoringLocalAndRemoteCacheData)
     }
 
-    /// A transport that followed a redirect to plain http itself hands back that URL: refused.
-    @Test func aResponseFromPlainHTTPIsRefused() async throws {
-        struct Downgrading: HTTPTransport {
+    /// A transport that followed a redirect itself hands back where it landed: anything but Deezer's https audio hosts
+    /// is refused (plain http, another https host).
+    @Test(arguments: ["http://evil.example.com/x.mp3", "https://other-cdn.example.com/x.mp3",
+                      "http://e-cdns-preview-1.dzcdn.net/x.mp3"])
+    func aResponseLandingOffDeezerIsRefused(_ landed: String) async throws {
+        struct Landing: HTTPTransport {
+            let url: URL
             func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
-                let url = URL(string: "http://evil.example.com/x.mp3")!
-                return (Data(repeating: 1, count: 10), HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+                (Data(repeating: 1, count: 10), HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!)
             }
         }
-        await #expect(throws: PreviewClipError.refused) { try await PreviewClipFetcher(transport: Downgrading()).fetch(Self.signed) }
+        let transport = Landing(url: URL(string: landed)!)
+        await #expect(throws: PreviewClipError.refused) { try await PreviewClipFetcher(transport: transport).fetch(Self.signed) }
     }
 }
