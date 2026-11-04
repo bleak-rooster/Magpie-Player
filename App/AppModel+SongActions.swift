@@ -189,11 +189,20 @@ extension AppModel {
         }
     }
 
-    /// The song's recording: its own MBID, else the editorial links and the album's tracklist (MusicBrainz).
+    /// S14 M2 (D116): Lidarr's name for an artist MBID the server's links named (nil without Lidarr, or when it knows
+    /// none). The links' artist is used only when this names the song's own artist.
+    private var lidarrArtistName: OutsideSongMatch.ArtistName {
+        guard let client = lidarrClient, !isOffline else { return { _ in nil } }
+        return { mbid in try await client.artistLookup(mbid: mbid)?.artistName }
+    }
+
+    /// The song's recording: its own MBID, else the editorial links and the album's tracklist (MusicBrainz). The links'
+    /// artist is kept only when Lidarr names it as the song's artist (S14 M2).
     func resolveOutsideSong(_ song: OutsideSong) async throws -> ExternalRecording {
         let catalog = outsideCatalog
         let links = editorialLinks ?? { _, _, _ in throw OutsideSongMatch.Failure.unmatched }
-        return try await OutsideSongMatch.resolve(song, links: links, release: { try await catalog.release(releaseGroup: $0) })
+        return try await OutsideSongMatch.resolve(song, links: links, release: { try await catalog.release(releaseGroup: $0) },
+                                                  artistName: lidarrArtistName)
     }
 
     // MARK: - The menu's actions (owner answer 8, Decisions 1 and 4)
@@ -211,13 +220,14 @@ extension AppModel {
         }
     }
 
-    /// Add artist: the existing Add for the song's artist (its MBID from the song, else the editorial links, else
-    /// Lidarr's search by exact name), never the server's own add.
+    /// Add artist: the existing Add for the song's artist (its MBID from the song, else the editorial links when Lidarr
+    /// names that MBID as the song's artist (S14 M2), else Lidarr's search by exact name), never the server's own add.
     func addArtist(of song: OutsideSong) async {
         let key = SongActions.key(song) + "|artist"
         guard songActions.begin(key) else { return }
         defer { songActions.end(key) }
-        let mbid = try? await OutsideSongMatch.artist(song, links: editorialLinks ?? { _, _, _ in (nil, nil) })
+        let mbid = try? await OutsideSongMatch.artist(song, links: editorialLinks ?? { _, _, _ in (nil, nil) },
+                                                      artistName: lidarrArtistName)
         songActions.adder.add(DiscoverArtist(name: song.artist, mbid: mbid), model: self)
     }
 
@@ -268,9 +278,10 @@ extension AppModel {
                 return TryCopy.message(for: error)
             }
         case .wholeArtist:
-            // Only the artist's MBID is needed (the server's links); the song is then looked for by artist, title and
-            // length when it lands. No MusicBrainz read for it.
-            guard let mbid = try? await OutsideSongMatch.artist(song, links: editorialLinks ?? { _, _, _ in (nil, nil) }) else {
+            // Only the artist's MBID is needed (the server's links, checked against Lidarr's name for it: S14 M2); the
+            // song is then looked for by artist, title and length when it lands. No MusicBrainz read for it.
+            guard let mbid = try? await OutsideSongMatch.artist(song, links: editorialLinks ?? { _, _, _ in (nil, nil) },
+                                                                artistName: lidarrArtistName) else {
                 return SongActionsCopy.unmatchedArtist
             }
             let pending = PendingPlaylistAdd(playlistId: playlist.id, playlistName: playlist.name, recording: asked,
