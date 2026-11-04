@@ -113,14 +113,14 @@ extension AppModel {
     /// `discoverWait`) only when there is none yet, so Home is never held up.
     func forYouOnHome(limit: Int) async -> [HomeOutsideItem] {
         guard limit > 0, !isOffline, let feeds = aurralFeeds, feeds.can.editorial else { return [] }
-        let read = Task { await feeds.refresh(.editorial) }
-        if !feeds.has(.editorial) {
-            await withTaskGroup(of: Void.self) { group in
-                group.addTask { await read.value }
-                group.addTask { try? await Task.sleep(for: Self.discoverWait) }
-                await group.next()
-                group.cancelAll()
-            }
+        final class Done { var value = false }
+        let done = Done()
+        Task { await feeds.refresh(.editorial); done.value = true }
+        // Polls the read rather than awaiting it (as `refreshDiscover(waitingAtMost:)`), so no wait outlives the limit;
+        // with a saved copy, not at all.
+        let deadline = ContinuousClock.now.advanced(by: Self.discoverWait)
+        while !feeds.has(.editorial), !done.value, ContinuousClock.now < deadline {
+            do { try await Task.sleep(for: .milliseconds(50)) } catch { break }
         }
         return Array(feeds.forYouTiles.prefix(limit))
     }
