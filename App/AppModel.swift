@@ -139,6 +139,9 @@ final class AppModel {
     /// Round 14 A4: Trending, Recommended and Discover playlists, each loaded on its own and kept on disk
     /// (AppModel+AurralFeeds.swift); also Home's provider (set in `init`).
     @ObservationIgnored var aurralFeeds: AurralFeeds!
+    /// Round 14 A3: the outside songs' menus, the pending playlist adds and this session's previews
+    /// (AppModel+SongActions.swift).
+    let songActions = SongActions()
     /// Round 12 Y3: the library Home, Library, Search and the car read (`AppModel+LibraryScope.swift`); nil for all.
     var libraryScope: [Int]?
     /// Changes each time the server answers again after it didn't: Home reads what failed (P5).
@@ -620,6 +623,7 @@ final class AppModel {
         store.clear()
         session = nil
         libraryEdits.reset()
+        songActions.forget()   // round 14 A3
         PopularSongsCache.removeAll(root: dataDirectory)   // R3
         advertisedExtensions = nil
         reconnectTask = nil

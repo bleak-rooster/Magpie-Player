@@ -94,10 +94,12 @@ extension AppModel {
         if let retired { Task { await retired.stop() } }
         guard session != nil, let client = lidarrClient else {
             requests = []
+            followPendingAdds(instance: nil)   // round 14 A3
             return
         }
         // CRITICAL 1: one ledger view and one requests file per Lidarr server.
         let scope = client.instanceScope
+        followPendingAdds(instance: scope)   // round 14 A3 (D101): the playlist adds beside the requests
         let ledger = Ledger(fileURL: Ledger.defaultURL(in: dataDirectory), instance: scope)
         // FM1: the gate confines deletes and artist edits itself, from this ledger and the owner's setup.
         let confinement = WriteConfinement(ledger: ledger, roots: { [weak self] in
@@ -131,6 +133,7 @@ extension AppModel {
                 guard let self, self.runner === runner else { return }
                 let wasWaiting = self.hasUnavailableWait
                 self.requests = list
+                if !self.songActions.pending.isEmpty { Task { await self.evaluatePendingAdds() } }   // round 14 A3
                 // I4: a request just started waiting: re-check the connection so a rejected key is named.
                 if !wasWaiting, self.hasUnavailableWait, !self.isOffline { Task { _ = await self.lidarrAudit() } }
             }

@@ -72,6 +72,7 @@ struct MainTabs: View {
         .environment(navigator)
         .queueActionsPresenter()   // R12
         .findsKeepFlow(host: FindsLibraryMenuItem.main)   // R18/R20: Keep from a song's long-press menu
+        .songActionsPresenter(navigator: navigator)   // round 14 A3: the outside songs' ⋯ menus
     }
 }
 

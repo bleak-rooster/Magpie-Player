@@ -2,15 +2,38 @@ import AurralKit
 import DesignSystem
 import MagpieCore
 import Playback
+import Search
 import SwiftUI
 
-/// Round 14 A4: the hook for a song's ⋯ menu on Trending, the genre charts and the Discover playlists. Round 14 A3
-/// supplies it (Listen to the full song · Add artist · Save to playlist); until `isAvailable`, the rows show no menu.
+/// Round 14 A3 (owner answer 8, Decisions 1 and 4): an outside song's ⋯ menu, on Trending, the genre charts, the
+/// Discover playlists, artist pages' Top songs and Search: **Listen to the full song** ("Goes into your Finds": the
+/// existing Find), **Add artist** (the existing Add) and **Save to playlist** (Just this song / Whole artist, then the
+/// playlist). Hidden without Lidarr (owner answer 9: Navidrome only, or with Aurral alone).
 struct OutsideSongMenu: View {
-    let song: AurralSong
-    static let isAvailable = false
+    @Environment(AppModel.self) private var model
+    let song: OutsideSong
 
-    var body: some View { EmptyView() }
+    init(song: OutsideSong) { self.song = song }
+    init(song: AurralSong) { self.song = OutsideSong(song) }
+
+    @MainActor static func isAvailable(_ model: AppModel) -> Bool { model.outsideSongMenuAvailable }
+
+    var body: some View {
+        if model.outsideSongMenuAvailable {
+            Button { Task { await model.listenToFullSong(song) } } label: {
+                Label { Text(SongActionsCopy.listen); Text(model.listenSubtitle) } icon: { Image(systemName: "sparkles") }
+            }
+            .accessibilityIdentifier("song-menu-listen")
+            Button { Task { await model.addArtist(of: song) } } label: {
+                Label(SongActionsCopy.addArtist, systemImage: "person.badge.plus")
+            }
+            .accessibilityIdentifier("song-menu-add-artist")
+            Button { model.askToSave(song) } label: {
+                Label(SongActionsCopy.saveToPlaylist, systemImage: "text.badge.plus")
+            }
+            .accessibilityIdentifier("song-menu-save")
+        }
+    }
 }
 
 /// A picture Aurral named (Deezer's or Apple's), loaded with no login; the placeholder until then (or for good).
@@ -74,7 +97,7 @@ struct ChartSongRow: View {
             let item = model.previewItem(for: song)
             let status = model.previewsAvailable
                 ? PreviewCopy.status(model.previewPlayer.state(for: item), player: model.previewPlayer) : nil
-            if OutsideSongMenu.isAvailable {
+            if OutsideSongMenu.isAvailable(model) {
                 PreviewRow(title: song.title, artist: song.artist, artwork: art, status: status,
                            onPreview: { model.togglePreview(item) }) { OutsideSongMenu(song: song.song) }
             } else {
