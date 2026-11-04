@@ -90,8 +90,13 @@ struct TrendingSnapshot: Codable, Equatable, Sendable {
     var albums: [ChartAlbum]?
     var artists: [ChartArtist]?
     var genres: [GenreTile] = []
-    /// The songs and albums are Australia's public charts because Aurral's region isn't Australia (D91).
-    var australianFallback = false
+    /// Fix round 1 (owner, D91): the country the top songs are for (the server's, or the owner's chart country read
+    /// through the server); the albums' region when it differs from it (they exist only for the server's); the server's
+    /// region when the chosen country's chart couldn't be read ("Showing <region> charts"); the setting this was read for.
+    var songsRegion: String?
+    var albumsRegion: String?
+    var showingServerInstead: String?
+    var forSetting: String?
 
     init(_ t: AurralTrending) {
         region = t.region
@@ -112,6 +117,7 @@ struct TrendingSnapshot: Codable, Equatable, Sendable {
         if merged.songs == nil {
             merged.songs = older.songs; merged.chartName = older.chartName; merged.chartPlaylistId = older.chartPlaylistId
             merged.libraryPlaylistId = older.libraryPlaylistId; merged.daysAtTop = older.daysAtTop
+            merged.songsRegion = older.songsRegion; merged.showingServerInstead = older.showingServerInstead
         }
         if merged.albums == nil { merged.albums = older.albums }
         if merged.artists == nil { merged.artists = older.artists }

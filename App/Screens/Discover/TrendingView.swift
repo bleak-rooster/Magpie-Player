@@ -42,13 +42,13 @@ struct TrendingView: View {
         if let songs = t.songs, let first = songs.first {
             spotlight(first, days: t.daysAtTop)
             VStack(alignment: .leading, spacing: Tokens.Spacing.m) {
-                PageSectionTitle(title: t.chartName ?? DiscoverPagesCopy.topSongs, subtitle: DiscoverPagesCopy.topSongs)
+                PageSectionTitle(title: DiscoverPagesCopy.topSongs(region: t.songsRegion),
+                                 subtitle: t.showingServerInstead.map(DiscoverPagesCopy.showingServer(region:)))
                     .accessibilityIdentifier("trending-top-songs")
                 HStack(spacing: Tokens.Spacing.s) {
                     PlayPreviewsButton(items: songs.map(model.previewItem(for:)))
                     if let chart = t.chartPlaylistId {
-                        AddFlowControl(deezerPlaylistId: chart,
-                                       libraryPlaylistId: feeds.added[chart] ?? (t.australianFallback ? nil : t.libraryPlaylistId))
+                        AddFlowControl(deezerPlaylistId: chart, libraryPlaylistId: feeds.added[chart] ?? t.libraryPlaylistId)
                     }
                 }
                 .padding(.horizontal, Tokens.Spacing.margin)
@@ -60,7 +60,7 @@ struct TrendingView: View {
                 UpdatingCard()
             }
         }
-        albums(t.albums)
+        albums(t.albums, region: t.albumsRegion)
         artists(t.artists)
         genres(t.genres)
         popularPlaylists
@@ -84,10 +84,10 @@ struct TrendingView: View {
         .accessibilityIdentifier("trending-spotlight")
     }
 
-    @ViewBuilder private func albums(_ albums: [ChartAlbum]?) -> some View {
+    @ViewBuilder private func albums(_ albums: [ChartAlbum]?, region: String?) -> some View {
         if let albums {
             if !albums.isEmpty {
-                ShelfSection(DiscoverPagesCopy.topAlbums) {
+                ShelfSection(DiscoverPagesCopy.topAlbums(region: region)) {
                     ForEach(Array(albums.enumerated()), id: \.offset) { _, album in
                         VStack(alignment: .leading, spacing: Tokens.Spacing.xs) {
                             AurralArt(image: album.artwork, side: 140)

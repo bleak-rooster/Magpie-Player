@@ -329,6 +329,12 @@ if [ -z "${G1_SRC:-}" ]; then
        "${product[@]}" | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' | grep -v '^Packages/MagpieKit/Sources/MagpieTestSupport/' | grep -q .; then
     echo "G1: a forbidden Aurral route is named in product code" >&2; bad=1
   fi
+  # Round 14 A4 fix round 1 (owner, 2026-11-04): the app never calls Deezer's or Apple's APIs or feeds itself;
+  # everything goes through the Aurral server (the stub for tests aside; pictures and previews are A7's).
+  if grep -rnE --include='*.swift' 'api\.deezer\.com|deezer\.com/|marketingtools\.apple\.com|applemarketingtools|itunes\.apple\.com|music\.apple\.com' \
+       "${product[@]}" | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' | grep -v '^Packages/MagpieKit/Sources/MagpieTestSupport/' | grep -q .; then
+    echo "G1: a direct Deezer or Apple API host is named in product code" >&2; bad=1
+  fi
   # Round 14 A1 (D81): `api/discover` only as one of the allowed spellings, and the flow write routes only in the
   # Aurral client (the stub for tests aside).
   discover_names=$(grep -rnoE --include='*.swift' 'api/discover[A-Za-z0-9/_.?&=-]*' "${product[@]}" |

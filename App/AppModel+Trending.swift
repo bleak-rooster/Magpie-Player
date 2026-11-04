@@ -4,33 +4,54 @@ import MagpieCore
 import NavidromeKit
 import Playback
 
-/// Round 14 A4 (D91): Trending. Aurral's charts follow its server's own location; when that isn't Australia, the top
-/// songs and top albums come from Australia's public charts instead (Deezer's Top Australia playlist and Apple's AU
-/// most-played albums), each on its own: one failing keeps Aurral's for that section. Charts by genre stay Aurral's and
-/// are labelled worldwide.
+/// Round 14 A4 (D91, fix round 1, owner): Trending for the owner's chart country (Settings › Home & Library › Charts
+/// country), wherever they are. Aurral's own charts are its server's region. For another country, Top songs are Deezer's
+/// "Top <Country>" playlist read **through Aurral** (`GET /api/discover/editorial/<id>`, Aurral reads any Deezer
+/// playlist); the phone never calls Deezer or Apple. If that read fails, the server's chart shows with "Showing <region>
+/// charts". Top albums exist only for the server's region and say so when it differs; artists and genre charts are
+/// worldwide.
 extension AppModel {
-    /// The country Trending is for.
-    nonisolated static let chartCountry = "AU"
+    /// The country whose top songs to show and its chart playlist (nil: the server's own chart).
+    nonisolated static func chartTarget(_ setting: ChartsCountry, phoneRegion: String?, serverRegion: String?,
+                                        charts: [String: String]) -> (region: String?, playlistId: String?) {
+        let server = serverRegion?.uppercased()
+        let wanted: String?
+        switch setting {
+        case .server: wanted = nil
+        case .country(let code): wanted = code.uppercased()
+        case .automatic: wanted = phoneRegion.map { $0.uppercased() }.flatMap { charts[$0] == nil ? nil : $0 }
+        }
+        guard let wanted, wanted != server, let id = charts[wanted] else { return (server, nil) }
+        return (wanted, id)
+    }
 
-    /// Reads Aurral's charts, with Australia's public charts in place when Aurral's region isn't Australia.
+    /// Reads Aurral's charts, with the chosen country's top songs (through Aurral) when it isn't the server's.
     func loadTrending(client: AurralClient) async throws -> TrendingSnapshot {
         let trending = try await client.trending()
         var snapshot = TrendingSnapshot(trending)
-        guard let region = trending.region?.uppercased(), region != Self.chartCountry else { return snapshot }
-        let charts = PublicChartsClient(transport: transport)
-        async let songs = try? charts.topAustralia()
-        async let albums = try? charts.australianAlbums()
-        if let songs = await songs, !songs.isEmpty {
-            snapshot.songs = songs.map(ChartSong.init)
-            snapshot.chartName = DiscoverPagesCopy.topAustralia
-            snapshot.chartPlaylistId = PublicChartsClient.topAustraliaPlaylist
-            snapshot.libraryPlaylistId = nil
+        let server = trending.region?.uppercased()
+        snapshot.songsRegion = server
+        snapshot.forSetting = preferences.layout.chartsCountry.stored
+        let target = Self.chartTarget(preferences.layout.chartsCountry, phoneRegion: aurralFeeds.phoneRegion(),
+                                      serverRegion: server, charts: AurralFeeds.chartPlaylists)
+        guard let id = target.playlistId, let region = target.region else { return snapshot }
+        do {
+            let chart = try await client.editorialPlaylist(id)
+            guard !chart.tracks.isEmpty else { throw AurralError.notFound }
+            snapshot.songs = chart.tracks.prefix(100).enumerated().map { index, song in
+                var s = ChartSong(song)
+                s.position = index + 1
+                s.movement = nil
+                return s
+            }
+            snapshot.songsRegion = region
+            snapshot.chartName = chart.name
+            snapshot.chartPlaylistId = id
+            snapshot.libraryPlaylistId = chart.libraryPlaylistId
             snapshot.daysAtTop = nil
-            snapshot.australianFallback = true
-        }
-        if let albums = await albums, !albums.isEmpty {
-            snapshot.albums = albums.prefix(25).map(ChartAlbum.init)
-            snapshot.australianFallback = true
+            snapshot.albumsRegion = server
+        } catch {
+            snapshot.showingServerInstead = server ?? ""
         }
         return snapshot
     }
