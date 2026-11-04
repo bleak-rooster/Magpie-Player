@@ -42,6 +42,12 @@ public enum PendingAddStep: Equatable, Sendable {
     /// Whole artist: look the library up for it.
     case lookUp
     case failed
+    /// Its request isn't in the list (fix round 1, I1): the list may not be read yet (a relaunch, a reconnect), or the
+    /// owner removed the request. Shown as stopped only once the runner's list is in; never saved as failed.
+    case requestGone
+
+    /// Only an explicit stop is saved (`failedAt`); a missing request never is.
+    public var persistsFailure: Bool { self == .failed }
 }
 
 public enum PendingPlaylistAdds {
@@ -53,7 +59,7 @@ public enum PendingPlaylistAdds {
         guard let linked = add.requestId else {
             return now.timeIntervalSince(add.createdAt) > wholeArtistLimit ? .failed : .lookUp
         }
-        guard let r = request, r.id == linked else { return .failed }
+        guard let r = request, r.id == linked else { return .requestGone }
         switch r.state {
         case .failed, .cancelled, .dismissed:
             return .failed

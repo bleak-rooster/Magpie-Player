@@ -6,13 +6,36 @@ import Foundation
 public enum SongIdentity {
     public static let durationTolerance: TimeInterval = 3
 
-    /// Case, accents, width and punctuation folded; a trailing " - …" note and bracketed notes dropped.
+    /// Case, accents, width and punctuation folded. A bracketed or trailing " - …" note is dropped only when it is noise
+    /// (featured artists, a remaster, explicit/clean, album or single version: fix round 1, M6); a note that names another
+    /// recording ("Live", "Remix", "Acoustic", "Demo", "Radio Edit"…) stays part of the title.
     public static func titleKey(_ title: String) -> String {
-        var s = title.folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: nil)
-        if let dash = s.range(of: " - ") { s = String(s[..<dash.lowerBound]) }
-        let stripped = removingBrackets(s)
-        if !words(stripped).isEmpty { s = stripped }
-        return words(s)
+        let folded = title.folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: nil)
+        var main = folded
+        var notes: [String] = []
+        if let dash = folded.range(of: " - ") {
+            main = String(folded[..<dash.lowerBound])
+            notes.append(String(folded[dash.upperBound...]))
+        }
+        let (outside, bracketed) = splitBrackets(main)
+        notes = bracketed + notes
+        let kept = notes.filter { !isNoise($0) }.map(words).filter { !$0.isEmpty }
+        let base = words(outside)
+        // A title that is all brackets ("(Untitled)") keeps its words.
+        if base.isEmpty { return words(main) }
+        return ([base] + kept).joined(separator: " ")
+    }
+
+    /// A note that starts with one of these words is featured artists.
+    private static let featuring: Set<String> = ["feat", "ft", "featuring", "with"]
+    private static let noiseWords = ["remaster", "explicit", "clean", "album version", "single version", "lp version",
+                                     "mono version", "stereo version"]
+
+    private static func isNoise(_ note: String) -> Bool {
+        let w = words(note)
+        guard let first = w.split(separator: " ").first else { return true }
+        if featuring.contains(String(first)) { return true }
+        return noiseWords.contains { w.contains($0) }
     }
 
     /// The artist's name folded the same way (a leading "the" kept: names are compared whole).
@@ -36,15 +59,29 @@ public enum SongIdentity {
             && artistKey(artist) == artistKey(otherArtist) && !titleKey(title).isEmpty
     }
 
-    private static func removingBrackets(_ s: String) -> String {
+    /// The text outside brackets, and each bracketed note.
+    private static func splitBrackets(_ s: String) -> (String, [String]) {
         var out = ""
+        var notes: [String] = []
+        var current = ""
         var depth = 0
         for c in s {
-            if c == "(" || c == "[" { depth += 1; continue }
-            if c == ")" || c == "]" { depth = max(0, depth - 1); continue }
-            if depth == 0 { out.append(c) }
+            if c == "(" || c == "[" {
+                if depth == 0 { current = "" } else { current.append(" ") }
+                depth += 1
+                continue
+            }
+            if c == ")" || c == "]" {
+                if depth > 0 {
+                    depth -= 1
+                    if depth == 0 { notes.append(current) }
+                }
+                continue
+            }
+            if depth == 0 { out.append(c) } else { current.append(c) }
         }
-        return out
+        if depth > 0 { notes.append(current) }
+        return (out, notes)
     }
 
     private static func words(_ s: String) -> String {

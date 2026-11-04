@@ -15,6 +15,23 @@ import Testing
         #expect(SongIdentity.titleKey("(Untitled)") == "untitled", "a title that is all brackets keeps its words")
     }
 
+    /// Fix round 1 (M6): only noise goes (featured artists, remaster, explicit/clean, album/single version); a note that
+    /// names another recording stays significant.
+    @Test func versionNotesThatNameAnotherRecordingStay() {
+        let original = SongIdentity.titleKey("Harbour Lights")
+        for other in ["Harbour Lights (Live)", "Harbour Lights - Live at Wembley", "Harbour Lights (Remix)",
+                      "Harbour Lights [Acoustic]", "Harbour Lights (Demo)", "Harbour Lights - Radio Edit",
+                      "Harbour Lights (Instrumental)"] {
+            #expect(SongIdentity.titleKey(other) != original, "\(other)")
+        }
+        for noise in ["Harbour Lights (feat. Someone)", "Harbour Lights [ft. Someone]", "Harbour Lights (with Someone)",
+                      "Harbour Lights - 2011 Remaster", "Harbour Lights (Remastered 2009)", "Harbour Lights (Explicit)",
+                      "Harbour Lights [Clean]", "Harbour Lights - Album Version", "Harbour Lights (Single Version)"] {
+            #expect(SongIdentity.titleKey(noise) == original, "\(noise)")
+        }
+        #expect(SongIdentity.titleKey("Harbour Lights (Live) [Remastered]") == SongIdentity.titleKey("Harbour Lights (Live)"))
+    }
+
     @Test func durationsMustBothBeKnownAndWithinThreeSeconds() {
         #expect(SongIdentity.sameDuration(200, 203))
         #expect(SongIdentity.sameDuration(203, 200))

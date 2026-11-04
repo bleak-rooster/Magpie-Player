@@ -57,7 +57,9 @@ private func request(_ state: RequestState, find: Bool = false, songId: String? 
         let a = add(request: linkedId)
         #expect(PendingPlaylistAdds.step(a, request: request(.failed(reason: .noRelease)), now: now) == .failed)
         #expect(PendingPlaylistAdds.step(a, request: request(.cancelled), now: now) == .failed)
-        #expect(PendingPlaylistAdds.step(a, request: nil, now: now) == .failed, "the request was removed")
+        #expect(PendingPlaylistAdds.step(a, request: nil, now: now) == .requestGone,
+                "not in the list: never persisted as failed (the list may not be read yet; fix I1)")
+        #expect(!PendingAddStep.requestGone.persistsFailure && PendingAddStep.failed.persistsFailure)
         var stuck = request(.ready, find: true)
         stuck.keepNeedsAttention = true
         #expect(PendingPlaylistAdds.step(a, request: stuck, now: now) == .failed)

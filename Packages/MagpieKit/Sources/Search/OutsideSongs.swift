@@ -95,7 +95,7 @@ public enum PreviewMatch {
     public static func find(title: String, artist: String, duration: TimeInterval?, artistSongs: [AurralSong],
                             otherSongs: [AurralSong]) -> AurralSong? {
         let key = SongIdentity.titleKey(title)
-        guard !key.isEmpty, SongIdentity.sameDuration(duration, duration) else { return nil }
+        guard !key.isEmpty, duration.map({ $0.isFinite && $0 > 0 }) == true else { return nil }   // the length must be known
         func fits(_ s: AurralSong) -> Bool {
             s.preview != nil && SongIdentity.titleKey(s.trackName) == key
                 && SongIdentity.sameDuration(s.durationMs.map { TimeInterval($0) / 1000 }, duration)
