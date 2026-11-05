@@ -97,11 +97,75 @@ Branch `c3-library-finds` (from `v0.0.1-custom` 25bed51). Commits:
 
 **Release UI check:** see the bottom of this file.
 
-**Not done (item 6):**
-1. **Reject for a library trial.** It would delete that release's track files. It needs a new gate confinement rule that also proves the album had no files before Magpie monitored it. That means recording the track-file count at monitor time in the ledger, and a check-writes pin for a third track-file-delete caller. Keep (clearing the mark) exists in the model; there is no UI for it yet.
-2. **Library trials in the Finds lists.** FindsShelf reads the Finds library only.
-3. **The singles switch covers only artists Magpie added that don't follow new releases.** An owner-added artist would need a new gate rule. The owner-data rule forbids changing it, so it is explained instead.
-4. **The Release UI check exercises gating only, with Allow changes off.** A real Try or Add needs MusicBrainz, which is public internet, so it isn't run against the dev stack.
+**Gaps closed in the completion round** (commits `e6c3757` package, `2e7468c` app; decisions D146, D147; D140 renumbered D146 because C4 owns D140–D145):
+
+1. **Reject for a library trial (D147).**
+   - At the monitor write, the album is read fresh just before. When it is unmonitored with `trackFileCount` 0, the ledger entry records:
+     - album id and release group;
+     - `trialHadNoFiles`;
+     - `trialExpiresAt` (14 days).
+
+     The request carries the date. An album that had files, or was already monitored, is not a trial.
+   - **Keep** sets the ledger's `trialKeptAt`. The album stays monitored with the artist's profile.
+   - **Reject:**
+     1. The app first runs `trialRejectable`, which only reads.
+     2. Item 7's playlist clean-up runs, with the same message and notification.
+     3. `DELETE trackfile/bulk` goes under the new `ConfinedShape.trialDelete`. The gate checks, against the ledger and fresh reads:
+        - every file belongs to the same one album;
+        - the ledger entry is an open trial;
+        - Lidarr's album is still that release group;
+        - the ids are exactly all of that album's files now;
+        - every file is inside the artist's folder;
+        - a last-moment ledger check passes.
+     4. The album is unmonitored.
+
+     Nothing else of the artist's is touched, and never the artist.
+   - **Expiry** mirrors Finds (D10): the date is shown, and nothing is removed by itself.
+2. **Library trials in Finds (D147).**
+   - A new section, "On trial in your library", shows "On trial · until <date>" with Keep and Not for me.
+   - Finds shows, on the phone and in the car, while there is a trial, even without a Finds folder.
+   - The car lists trials beside the finds. Keep stays on the phone, because the car's Keep is for finds only.
+3. **Singles switch for any artist (D146).**
+   - **Confirmation:** "Singles will be listed for <artist>. Only "<song>" downloads; nothing else changes."
+   - **Steps** in `ArtistLidarr.includeSingles`, each under the new `ConfinedShape.singlesSwitch`:
+     1. A change-log NOTE saves the profile and monitorNewItems. This is the undo.
+     2. monitorNewItems is set to none.
+     3. The artist moves to Magpie's Albums+EPs+Singles profile.
+     4. RefreshArtist runs, and Magpie waits for it.
+     5. Every newly listed, monitored release except the target is unmonitored. The gate refuses to unmonitor any release that has files.
+     6. monitorNewItems goes back to its saved value.
+
+     Then the usual Add to library monitors and searches only the single.
+   - **Undo:** Settings › change log › Undo on that line. The gate allows exactly the saved profile back.
+   - **Failure part-way:** monitorNewItems is put back where possible, and the message says whether it was.
+   - **Pins:** check-writes pins the exact lines and the trial delete's one caller.
+
+**Tests for the gaps:**
+- Package `LibraryFindsTests`, now 23 tests. New ones:
+  - trial recorded with its date;
+  - Reject deletes only that album's files, then unmonitors;
+  - an album with files before is refused, by the runner and directly at the gate;
+  - a re-check on changed state refuses and sends nothing, including partial or extra file ids;
+  - Keep, after which no Reject goes through;
+  - expiry removes nothing;
+  - an owner-added artist following "all" ends with only the target newly monitored, and following restored;
+  - undo restores the saved profile and refuses any other;
+  - a failure mid-way restores following and says so;
+  - changes off sends nothing;
+  - a release with files is never unmonitored by the switch.
+- **RED evidence:** with the trial gate's release-group check disabled, `aRecheckOnChangedStateRefusesAndSendsNothing` failed (3 issues). The singles tests failed to compile before the API existed.
+- Hosted `LibraryFindsAppTests`, now 10 tests: a trial listed in Finds and the car with its date; a Reject that can't go changes no playlist and writes nothing; the new copy.
+- Suites run:
+  - Requests package: 397 tests;
+  - LidarrKit: 169 tests;
+  - hosted: LibraryFinds, FindCleanup, Round14Actions, OutsidePages, CarPlayFinds, FindsShelf, LibraryLayout (108 tests).
+
+  All passed.
+- **Release UI check, passed:** `Round15LetGoUITests.testALibraryTrialShowsInFindsWithKeepAndReject` shows the trial in Finds with its date, Keep and Not for me. It is seeded with the UI-tests-only `-MagpieUITestLibraryTrial`.
+
+**Still not covered:**
+- A hosted end-to-end successful trial Reject. The runner and gate halves have package tests, and the playlist half has item 7's tests.
+- A real Try or Add against the dev stack, because that needs MusicBrainz on the public internet.
 
 **Release UI check (item 6): PASSED.**
 - `Round15LibraryActionsUITests.testATrendingSongOffersTryAndAddToLibraryAndSaysWhyWithChangesOff` ran in Release on the dev stack, the stub Aurral and the dev Lidarr. It took 67.9 s.
