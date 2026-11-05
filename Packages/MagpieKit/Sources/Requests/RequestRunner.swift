@@ -920,7 +920,9 @@ public actor RequestRunner {
     }
 
     /// A6: one atomic `POST /artist` built from the lookup row: Fast Start, "Magpie Finds" metadata, nothing
-    /// new monitored, only this release group, search on add. Finds mode: the Finds root and tags `magpie` +
+    /// new monitored, only this release group, no search on add (round 16, owner 2026-11-05: the runner sends the
+    /// release's own AlbumSearch once Lidarr lists it monitored, `startSearch`, as D135 does for Add to library;
+    /// Lidarr's post-add `MissingAlbumSearch` never reached the owner's downloader). Finds mode: the Finds root and tags `magpie` +
     /// `magpie-find`, if the Finds root still checks out against fresh root folders (`findsRootStillValid`);
     /// otherwise, and in fallback mode, the main root and tag `magpie`.
     ///
@@ -980,7 +982,7 @@ public actor RequestRunner {
         }
         await mutate(id) {
             $0.lidarrArtistId = artistId
-            $0.skipNextSearch = !library   // `searchForMissingAlbums` starts the search; D135: the release first
+            $0.skipNextSearch = false   // round 16 (D135 for a Try too): the runner searches the release once listed
         }
         await discoverAlbum(id)
     }
@@ -1019,7 +1021,7 @@ public actor RequestRunner {
             "tags": .array(setup.tagIds.map { .int($0) }),
             "addOptions": .object([
                 "albumsToMonitor": .array([.string(releaseGroup.rawValue)]),
-                "searchForMissingAlbums": .bool(true),
+                "searchForMissingAlbums": .bool(false),
             ]),
         ]
         // Drop any key that only differs in case, so the body never carries two spellings (the gate refuses those).
@@ -1129,6 +1131,13 @@ public actor RequestRunner {
         // M3 ruling: once five copies were dropped, Magpie sends no searches of its own for this request; Lidarr's
         // own monitoring carries on and the request stays live until its normal expiry.
         let afterRemoval = searchAfterRemoval.remove(id) != nil
+        // Round 16 (owner, 2026-11-05): Magpie's own add sends no search with it; its AlbumSearch waits until Lidarr
+        // lists the album monitored (its refresh of the new artist applies `albumsToMonitor`), never counted as sent.
+        if !r.skipNextSearch, r.addSent, r.joinedTo == nil, !(r.removalsUsedUp && !afterRemoval),
+           !(await addedAlbumSearchable(r)) {
+            if afterRemoval { searchAfterRemoval.insert(id) }
+            return
+        }
         if r.skipNextSearch || r.albumId == nil || (r.removalsUsedUp && !afterRemoval) {
             await mutate(id) {
                 $0.skipNextSearch = false
@@ -1157,6 +1166,19 @@ public actor RequestRunner {
         } catch {
             await apply(id, Self.event(for: error))
         }
+    }
+
+    /// Round 16: the album of Magpie's own add may be searched: Lidarr lists it monitored (its refresh applied
+    /// `albumsToMonitor`), or lists it and the refresh is done or `addSettleTime` passed (searched as it is: the
+    /// owner asked for it). Not yet: false, and a later pass looks again (`discoverAlbum`'s give-up still applies).
+    func addedAlbumSearchable(_ r: MagpieRequest) async -> Bool {
+        guard let albumId = r.albumId, let artistId = r.lidarrArtistId,
+              let albums = try? await lidarr.albums(artistId: artistId) else { return false }
+        lastLidarrContact = now()
+        guard let album = albums.first(where: { $0.id == albumId }) else { return false }
+        if album.monitored { return true }
+        if await addRefresh(r, artistId: artistId) == .completed { return true }
+        return now().timeIntervalSince(r.addedAt ?? r.createdAt) >= Self.addSettleTime
     }
 
     static let finishedCommandStates: Set<String> = ["completed", "failed", "aborted", "cancelled", "orphaned"]
@@ -1354,7 +1376,12 @@ public actor RequestRunner {
         guard !cleaningUp.contains(id), let r = request(id), r.cleanupPending else { return }
         cleaningUp.insert(id)
         defer { cleaningUp.remove(id) }
-        func done() async { await mutate(id) { $0.cleanupPending = false } }
+        func done() async {
+            // Round 16: a stopped find's artist leaves Lidarr when nothing of it is left (`removeStoppedFindArtist`);
+            // until that is settled the clean-up stays pending and a later pass looks again.
+            guard await removeStoppedFindArtist(id) else { return }
+            await mutate(id) { $0.cleanupPending = false }
+        }
         guard let rg = r.plan?.releaseGroupMBID else { return await done() }
         let shared = list.contains { other in
             other.id != id && other.plan?.releaseGroupMBID == rg
@@ -1362,7 +1389,7 @@ public actor RequestRunner {
         }
         if shared { return await done() }   // the entry stays open: the other request still relies on it
         // Item 9.8: settled once Lidarr's refresh of the add completed (it applies `albumsToMonitor`), else by time.
-        let settling = r.addSent && r.joinedTo == nil && r.addRefreshDone != true
+        var settling = r.addSent && r.joinedTo == nil && r.addRefreshDone != true
             && now().timeIntervalSince(r.addedAt ?? r.createdAt) < Self.addSettleTime
         if r.albumId == nil { await discoverAlbum(id) }
         var albumId = request(id)?.albumId, artistId = request(id)?.lidarrArtistId
@@ -1372,6 +1399,9 @@ public actor RequestRunner {
             albumId = mine.albumId
             artistId = mine.lidarrArtistId
         }
+        // Round 16: asked here too, so a Stop looking soon after the add settles once the refresh is done (not after
+        // `addSettleTime`); read before the album, whose monitored flag is final from then on.
+        if settling, let artistId, await addRefresh(request(id) ?? r, artistId: artistId) == .completed { settling = false }
         guard let albumId, let artistId else {
             if !settling { await done() }   // the album may still appear
             return

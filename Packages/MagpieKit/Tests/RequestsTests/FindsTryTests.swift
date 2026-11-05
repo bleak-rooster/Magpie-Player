@@ -16,7 +16,7 @@ import MagpieCore
         await h.runner.settle()
 
         let writes = h.server.writeBodies()
-        #expect(writes.map(\.0) == ["POST artist"])
+        #expect(writes.map(\.0) == ["POST artist", "POST command"])
         let body = writes[0].1
         #expect(body["rootFolderPath"] as? String == "/music/samples")
         #expect(body["tags"] as? [Int] == [1, 2])
@@ -26,7 +26,7 @@ import MagpieCore
         #expect(body["monitorNewItems"] as? String == "none")
         let options = try #require(body["addOptions"] as? [String: Any])
         #expect(options["albumsToMonitor"] as? [String] == [rgSingle.rawValue])
-        #expect(options["searchForMissingAlbums"] as? Bool == true)
+        #expect(options["searchForMissingAlbums"] as? Bool == false, "the runner searches the release itself (round 16)")
         #expect(options["monitor"] == nil, "\"none\" would unmonitor the artist too (verified on Lidarr 3.2)")
 
         let r = try #require(await h.request(id))
@@ -55,7 +55,7 @@ import MagpieCore
         let writes = h.server.writeBodies()
         let expectedFallback = roots != ["/music/library", "/music/samples/"]
         if expectedFallback {
-            #expect(writes.map(\.0) == ["POST artist"])
+            #expect(writes.map(\.0) == ["POST artist", "POST command"])
             #expect(writes[0].1["rootFolderPath"] as? String == "/music/library")
             #expect(writes[0].1["tags"] as? [Int] == [1], "no magpie-find outside the Finds root")
             let r = try #require(await h.request(id))
@@ -121,7 +121,7 @@ import MagpieCore
         await h.runner.settle()
         let other = try await h.runner.tryRecording(h.recording(recAlbumOnly2, title: "Other"), tier: .standard)
         await h.runner.settle()
-        #expect(h.server.writeBodies().map(\.0) == ["POST artist"])
+        #expect(h.server.writeBodies().map(\.0) == ["POST artist", "POST command"])
         #expect(await h.request(first)?.isFind == false)
         let follower = try #require(await h.request(other))
         #expect(follower.joinedTo == first && !follower.isFind)

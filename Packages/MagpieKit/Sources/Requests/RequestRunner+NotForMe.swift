@@ -456,6 +456,70 @@ extension RequestRunner {
         return false
     }
 
+    // MARK: - Stop looking (round 16)
+
+    /// How long a stopped find's clean-up keeps trying to remove its artist (a refresh still running, Lidarr away).
+    static let stoppedFindArtistLimit: TimeInterval = 3600
+
+    /// Round 16 (owner, 2026-11-05): Stop looking for (or the failure of) the last find of an artist Magpie added into
+    /// the Finds folder removes the artist from Lidarr, as Not for me does once nothing is left of it, on the same
+    /// proof (`mayRemoveArtist`): Magpie created it (ledger), nothing of it is kept or wanted by another request, a
+    /// fresh GET shows it tagged `magpie-find` strictly inside the Finds root (so never an artist of the main library),
+    /// Lidarr records no track file and no other monitored album for it, its folder holds no file on disk, and no
+    /// refresh is running. Files are never deleted (`deleteFiles=false`). An artist the owner already had is never a
+    /// candidate (not a find, G6). True: settled (removed, or it stays); false: not yet, a later pass looks again.
+    func removeStoppedFindArtist(_ id: RequestID) async -> Bool {
+        guard let r = request(id), r.isFind, r.notForMe == nil, let artistId = r.lidarrArtistId else { return true }
+        switch r.state {
+        case .cancelled, .failed: break
+        default: return true
+        }
+        guard let setup = await keepSetup() else { return true }   // Finds isn't set up: nothing to prove it against
+        let started = r.artistRemovalSince ?? now()
+        if r.artistRemovalSince == nil { await mutate(id) { $0.artistRemovalSince = started } }
+        guard now().timeIntervalSince(started) < Self.stoppedFindArtistLimit else {
+            Log.logger("requests").error("Stop looking: the artist stays (it couldn't be proven empty in time)")
+            return true
+        }
+        guard !artistBusy(artistId) else { return false }
+        hold(artistId)
+        defer { release(artistId) }
+        let artist: LidarrArtist
+        do { artist = try await lidarr.artist(id: artistId) } catch LidarrError.http(status: 404) {
+            return true   // gone already
+        } catch {
+            return false
+        }
+        lastLidarrContact = now()
+        guard let path = artist.path else { return true }
+        let p = NotForMeProgress(phase: .removingArtist, startedAt: started, artistId: artistId, albumId: r.albumId ?? -1,
+                                 artistPath: path, findsRoot: setup.findsRoot, mainRoot: setup.mainRoot,
+                                 findTagId: setup.findTagId, permanentConfirmed: false, writeBudget: 1)
+        switch await mayRemoveArtist(r, p) {
+        case .unknown: return false
+        case .no: return true
+        case .yes: break
+        }
+        do { try await persist() } catch { return false }
+        do {
+            _ = try await gate.send("DELETE", "artist/\(artistId)?deleteFiles=false&addImportListExclusion=false",
+                                    body: nil)
+            return true
+        } catch let error as WriteGateError {
+            switch error {
+            case .disabled, .logUnavailable, .unconfirmed: return false   // changes off or unchecked: later, bounded
+            case .forbidden, .invalidRequest:
+                Log.logger("requests").error("Stop looking: the artist stays (removing it was refused)")
+                return true
+            }
+        } catch where Self.isDefinitiveRejection(error) {
+            Log.logger("requests").error("Stop looking: the artist stays (removing it was refused)")
+            return true
+        } catch {
+            return false   // no answer: a fresh GET says whether it went (404: gone)
+        }
+    }
+
     private func mayRemoveArtist(_ r: MagpieRequest, _ p: NotForMeProgress) async -> Proven<Void> {
         let entries: [LedgerEntry]
         do {
