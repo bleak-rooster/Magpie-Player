@@ -184,6 +184,30 @@ public struct MagpieRequest: Sendable, Codable, Equatable, Identifiable {
     /// The album was listed by Lidarr at least once (I12/6: `stoppedInLidarr` needs that).
     public var albumSeen: Bool?
 
+    // Round 15 C3 (owner item 6, D135, D139). Optional, so older requests decode.
+
+    /// "Add to library" (permanent). A new artist goes into the main root with the whole discography monitored and the
+    /// lossless-preferred profile (this release searched first, the rest after); a find is kept on arrival (moved into
+    /// the main library); an artist already in the library has this release monitored and searched.
+    public var addToLibrary: Bool {
+        get { intoLibrary ?? false }
+        set { intoLibrary = newValue ? true : nil }
+    }
+    var intoLibrary: Bool?
+    /// Asked for with round 15's Try (temporary, Keep or Reject). On an artist already in the main library (no Finds
+    /// folder for one release, D139) the release is a trial there: `isLibraryTrial`.
+    public var askedAsTry: Bool {
+        get { tryOnly ?? false }
+        set { tryOnly = newValue ? true : nil }
+    }
+    var tryOnly: Bool?
+    /// Add to library of a new artist: the search for the rest of the discography was sent (after this release's).
+    public var discographySearched: Bool?
+    /// The artist was in Lidarr, not as a find, when this was resolved (the existing-artist branch).
+    public var artistExisted: Bool?
+    /// A trial on a library artist that was kept: the mark is cleared, the release stays.
+    public var trialKept: Bool?
+
     public init(id: RequestID = RequestID(), recording: ExternalRecording, tier: Tier, createdAt: Date) {
         self.id = id
         self.recording = recording
@@ -211,6 +235,12 @@ public struct MagpieRequest: Sendable, Codable, Equatable, Identifiable {
 
     /// Headed for (or added to) the Finds folder: a new artist added in Finds mode (Task 6.2a).
     public var isFind: Bool { plan?.mode == .finds }
+
+    /// Round 15 C3 (D139): a Try of a release of an artist already in the main library: it comes into the main library,
+    /// marked as a trial (Keep clears the mark; Reject removes only that release).
+    public var isLibraryTrial: Bool {
+        askedAsTry && !addToLibrary && artistExisted == true && !isFind && trialKept != true
+    }
 
     /// Imported by Lidarr but not listed by the library after the time limit (Needs attention).
     public var isNotListed: Bool { state == .importing && notListedAt != nil }

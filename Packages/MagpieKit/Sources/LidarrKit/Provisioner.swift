@@ -64,6 +64,26 @@ public struct Provisioner: Sendable {
 
     public init() {}
 
+    // MARK: - Round 15 C3 (owner answer 4, D136): the main library's quality
+
+    public static let losslessPreferredName = "Magpie Lossless Preferred"
+    /// FLAC first, MP3-320 / V0 only as a fallback; upgrades on until FLAC.
+    static let losslessPreferredSpec = QualitySpec(name: losslessPreferredName, allowed: ["FLAC", "MP3-320", "MP3-VBR-V0"],
+                                                   cutoff: "FLAC", upgradeAllowed: true)
+
+    /// "Magpie Lossless Preferred"'s id, made through the gate if missing (on the first Add to library of a new artist).
+    /// A same-named profile set up differently is never changed: `ProvisionError.conflict`.
+    public func ensureLosslessPreferred(gate: LidarrWriteGate, client: LidarrClient) async throws -> Int {
+        let spec = Self.losslessPreferredSpec
+        let existing = try await client.json("qualityprofile").arrayValue ?? []
+        if let found = try Self.existing(named: spec.name, in: existing) {
+            guard Self.matches(found, spec), let id = found["id"]?.intValue else { throw ProvisionError.conflict(spec.name) }
+            return id
+        }
+        let body = try Self.qualityBody(spec, schema: try await client.json("qualityprofile/schema"))
+        return try await Self.create(gate, "qualityprofile", body, spec.name)
+    }
+
     public func ensure(gate: LidarrWriteGate, client: LidarrClient) async throws -> ProvisionResult {
         // 1. Read everything and decide, so a conflict stops the run before any write.
         let existingQuality = try await client.json("qualityprofile").arrayValue ?? []

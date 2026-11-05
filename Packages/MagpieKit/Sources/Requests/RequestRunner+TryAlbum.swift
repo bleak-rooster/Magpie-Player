@@ -1,5 +1,36 @@
 import Foundation
+import ListenBrainzKit
 import MagpieCore
+
+/// Round 15 C3 (owner item 6, D135): which release a song brings in, said before anything is sent. Reads only.
+extension RequestRunner {
+    public enum TargetPreview: Sendable, Equatable {
+        /// An artist in Lidarr: the smallest release its listing has that holds the song.
+        case listed(title: String, isAlbum: Bool)
+        /// An artist in Lidarr whose listing has no release holding the song (singles not listed, D140).
+        case notListed(artistId: Int)
+        /// An artist not in Lidarr: the smallest release a new artist's add can monitor.
+        case newArtist(title: String, isAlbum: Bool)
+    }
+
+    public func targetPreview(_ recording: ExternalRecording) async throws -> TargetPreview {
+        guard let recordingId = recording.recordingMBID else { throw MusicBrainzError.notFound }
+        let found = try await mb.recording(recordingId)
+        guard let artistMBID = recording.artistMBID ?? found.artistIds.first else { throw MusicBrainzError.notFound }
+        if let artist = try await lidarr.artists().first(where: { $0.foreignArtistId == artistMBID }) {
+            let albums = try await lidarr.albums(artistId: artist.id)
+            guard let rg = ReleasePicker.smallest(containing: found, available: Set(albums.compactMap(\.foreignAlbumId))),
+                  let album = albums.first(where: { $0.foreignAlbumId == rg }) else {
+                return .notListed(artistId: artist.id)
+            }
+            return .listed(title: album.title, isAlbum: (album.albumType ?? "Album").lowercased() == "album")
+        }
+        let fits = Set(found.releases.filter(Self.fitsFindsProfile).map(\.releaseGroup.id))
+        guard let rg = ReleasePicker.smallest(containing: found, available: fits),
+              let release = found.releases.first(where: { $0.releaseGroup.id == rg }) else { throw MusicBrainzError.notFound }
+        return .newArtist(title: release.title, isAlbum: release.releaseGroup.primaryType?.lowercased() == "album")
+    }
+}
 
 /// R19 "Try this album" and R20's dedupe by release group.
 extension RequestRunner {
