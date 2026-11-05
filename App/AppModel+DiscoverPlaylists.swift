@@ -253,11 +253,43 @@ enum DiscoverPagesCopy {
         guard let region, !region.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
         return regionName(region)
     }
-    static let chartsCountry = "Charts country"
+    static let chartsCountry = "Default chart"   // round 15 C2 fix round M5 (was "Charts country")
     static let chartsAutomatic = "Automatic"
     static let chartsAutomaticNote = "Your phone\u{2019}s region, when it has a chart"
     static let chartsServer = "Your server\u{2019}s region"
     static let worldwide = "Worldwide"
+    // Round 15 C2 (D132–D134): the chart picker and a chart's flow.
+    static let createFlow = "Create flow\u{2026}"
+    static let createFlowTitle = "Create flow"
+    static let editFlow = "Edit flow"
+    static let refreshNow = "Refresh now"
+    static let removeFlow = "Remove flow"
+    static let removeFlowQuestion = "Remove this flow?"
+    static let removeFlowNote = "The playlist goes. Songs this flow downloaded are deleted unless another of your playlists uses them, even if you starred them. Songs you already had stay."
+    static let couldntCreateFlow = "Couldn\u{2019}t create the flow"
+    static let editFlowNote = "A flow can hold fewer songs than this: it skips songs you marked Not for me. Fewer songs: the ones that drop out are deleted unless another of your playlists uses them."
+    static func pinnedNote(_ chart: String) -> String {
+        "Trending now opens on \(chart) wherever you are. Choose Automatic in Settings to follow your phone\u{2019}s region again."
+    }
+    static let create = "Create"
+    static let save = "Save"
+    static let cancel = "Cancel"
+    static func flowSongs(_ n: Int) -> String { "Songs: \(n)" }
+    static func topCount(_ n: Int) -> String { "Top \(n)" }
+    static func flowNote(_ chart: String, _ n: Int) -> String {
+        "The top \(n) \(n == 1 ? "song" : "songs") of \(chart), as a playlist in your flows. Songs you don\u{2019}t have yet are downloaded."
+    }
+    static func flowUpdated(_ date: Date) -> String {
+        "Updated \(date.formatted(.relative(presentation: .named)))"
+    }
+    static let charts = "Charts"
+    static let countries = "Countries"
+    static let genres = "Genres"
+    static let makeDefault = "Make default"
+    static let defaultChart = "Default"
+    static let genreChart = "Genre chart"
+    static func topSongs(chart: String) -> String { "\(topSongs) \u{00B7} \(chart)" }
+    static func chooseChart(_ current: String) -> String { "Chart: \(current)" }
     static let topSongs = "Top songs"
     static let topAlbums = "Top albums"
     static let topArtists = "Top artists"

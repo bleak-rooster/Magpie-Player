@@ -31,9 +31,18 @@
 #   Packages/MagpieKit/Sources/AurralKit/AurralClient.swift  G1 allowlist: aurral image proxy
 #       Round 14 A7 (D111): `POST /api/image-proxy` with exactly `{"src": <url>}`, only for a picture link an Aurral
 #       answer named this session; it changes only Aurral's own image cache. Pinned below.
+#   Packages/MagpieKit/Sources/AurralKit/AurralClient.swift  G1 allowlist: aurral chart flows
+#       Round 15 C2 (D131, fix round): a chart flow (a chart's top N songs) is the user's own Aurral playlist:
+#       `POST /api/playlists/shared-playlists` (Create flow), `POST …/:id/tracks` (songs that come in),
+#       `POST …/:id/track-removals` (songs that leave, with their files) and `DELETE …/:id` (Remove flow), each only
+#       on the owner's tap. Pinned below (the four sends in AurralKit/ChartFlows.swift).
+#   Packages/MagpieKit/Sources/MagpieTestSupport/StubAurral.swift  G1 allowlist: stub aurral chart flows
+#       The in-process stub names the verbs it answers for those routes; it sends nothing.
 #   Packages/MagpieKit/Tests/RequestsTests/FindsIT.swift  G1 allowlist: devLidarr
 #       Raw requests to the dev Lidarr for IT set-up and clean-up (manual import, removing the test artist), after
 #       TryDevStack verified the host is local and the dev marker matches (G0). Never product code.
+#   Tests/MagpieUITests/ChartFlowUITests.swift  G1 allowlist: stub reset
+#       Round 15 C2: the UI test empties the localhost stub Aurral (its own control route) before it runs.
 #   Packages/MagpieKit/Tests/MagpieCoreTests/HTTPTransportTests.swift  RedirectStub
 #       A POST into a URLProtocol stub (redirect policy test); nothing leaves the process.
 #   Packages/MagpieKit/Tests/MagpieCoreTests/SharedLoginTransportTests.swift  auth/login
@@ -61,6 +70,9 @@ allow=(
   "Packages/MagpieKit/Sources/AurralKit/AurralClient.swift|G1 allowlist: aurral session"
   "Packages/MagpieKit/Sources/AurralKit/AurralClient.swift|G1 allowlist: aurral discover writes"
   "Packages/MagpieKit/Sources/AurralKit/AurralClient.swift|G1 allowlist: aurral image proxy"
+  "Packages/MagpieKit/Sources/AurralKit/AurralClient.swift|G1 allowlist: aurral chart flows"
+  "Packages/MagpieKit/Sources/MagpieTestSupport/StubAurral.swift|G1 allowlist: stub aurral chart flows"
+  "Tests/MagpieUITests/ChartFlowUITests.swift|G1 allowlist: stub reset"
   "Packages/MagpieKit/Tests/MagpieCoreTests/HTTPTransportTests.swift|RedirectStub"
   "Packages/MagpieKit/Tests/MagpieCoreTests/SharedLoginTransportTests.swift|auth/login"
 )
@@ -253,6 +265,14 @@ if [ -z "${G1_SRC:-}" ]; then
               'case 3 where rest[0] == "deezer" && rest[1] == "preview" && isPreviewFile(rest[2]): .deezerPreview' \
               'case 1 where rest[0] == "image-proxy": .imageProxy' \
               'case 2 where rest[0] == "image-proxy" && isImageProxyKey(rest[1]): .imageProxyFile' \
+              'case 2 where rest == ["playlists", "shared-playlists"]: .chartFlowCreate' \
+              'case 4 where rest[0] == "playlists" && rest[1] == "shared-playlists" && isPlainId(rest[2]) && rest[3] == "tracks": .chartFlowAppend' \
+              'case 4 where rest[0] == "playlists" && rest[1] == "shared-playlists" && isPlainId(rest[2]) && rest[3] == "track-removals": .chartFlowRemoveSongs' \
+              'case 3 where rest[0] == "playlists" && rest[1] == "shared-playlists" && isPlainId(rest[2]) && method == chartFlowDeleteMethod: .chartFlowDelete' \
+              'static let chartFlowCreateMethod = "POST"' \
+              'static let chartFlowAppendMethod = "POST"' \
+              'static let chartFlowRemoveSongsMethod = "POST"' \
+              'static let chartFlowDeleteMethod = "DELETE"' \
               'static let imageProxyMethod = "POST"' \
               'case .editorialAdd, .discoverFeedback, .flowDownload, .trackResearch: Self.discoverWriteMethod' \
               'static let discoverWriteMethod = "POST"' \
@@ -260,7 +280,7 @@ if [ -z "${G1_SRC:-}" ]; then
               'AurralRoute.isAllowed(method: method, path: path, query: query),'; do
     grep -qF -- "$want" "$aurral" || { echo "G1: $aurral: the Aurral allow-list changed (missing: $want)" >&2; bad=1; }
   done
-  [ "$(grep -cE 'case [0-9] where' "$aurral")" = 27 ] || { echo "G1: $aurral: the Aurral allow-list isn't exactly 27 routes" >&2; bad=1; }
+  [ "$(grep -cE 'case [0-9] where' "$aurral")" = 31 ] || { echo "G1: $aurral: the Aurral allow-list isn't exactly 31 routes" >&2; bad=1; }
   # Fix M1: the verb, token and query-name switches are pinned whole (each read GET, only the seven writes POST, only
   # health, login and the preview without the token, the six routes with queries and exactly their names), and the
   # trackResearch route's continuation line too.
@@ -277,6 +297,10 @@ if [ -z "${G1_SRC:-}" ]; then
              .deezerPreview, .imageProxyFile: "GET"
         case .editorialAdd, .discoverFeedback, .flowDownload, .trackResearch: Self.discoverWriteMethod
         case .imageProxy: Self.imageProxyMethod
+        case .chartFlowCreate: Self.chartFlowCreateMethod
+        case .chartFlowAppend: Self.chartFlowAppendMethod
+        case .chartFlowRemoveSongs: Self.chartFlowRemoveSongsMethod
+        case .chartFlowDelete: Self.chartFlowDeleteMethod
         }'
   want_authorised='        switch self {
         case .health, .login, .deezerPreview, .imageProxyFile: false
@@ -293,7 +317,7 @@ if [ -z "${G1_SRC:-}" ]; then
         default: []
         }'
   [ "$(aurral_block 'var method: String {')" = "$want_method" ] ||
-    { echo "G1: $aurral: AurralRoute.method changed (each read GET, only the eight writes POST)" >&2; bad=1; }
+    { echo "G1: $aurral: AurralRoute.method changed (each read GET, only the eight POSTs and the four chart flow writes)" >&2; bad=1; }
   [ "$(aurral_block 'var isAuthorised: Bool {')" = "$want_authorised" ] ||
     { echo "G1: $aurral: AurralRoute.isAuthorised changed" >&2; bad=1; }
   [ "$(aurral_block 'public var queryNames: [String] {')" = "$want_queries" ] ||
@@ -317,6 +341,28 @@ if [ -z "${G1_SRC:-}" ]; then
               'path: "api/playlists/shared-playlists/" + playlistId + "/tracks/" + jobId + "/research"))' \
               'var o: [String: Any] = ["action": "block_artist", "artistName": name, "sourceContext": "recommended",'; do
     grep -qF -- "$want" "$aurral_discover" || { echo "G1: $aurral_discover: an Aurral write changed (missing: $want)" >&2; bad=1; }
+  done
+  # Round 15 C2 (D131, fix round): the four chart flow writes are sent only from these exact lines in ChartFlows.swift
+  # (each path a literal plus a plain id; the create's and append's bodies are built by chartFlowBody only, the
+  # removal's is exactly {jobIds}). No PUT to a shared playlist (it left removed songs' files behind).
+  chart_flows="Packages/MagpieKit/Sources/AurralKit/ChartFlows.swift"
+  for verb in chartFlowCreateMethod chartFlowAppendMethod chartFlowRemoveSongsMethod chartFlowDeleteMethod; do
+    sends=$(grep -rnF --include='*.swift' "AurralRoute.$verb" "${product[@]}" | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' || true)
+    { [ "$(printf '%s\n' "$sends" | grep -c .)" = 1 ] && [ "${sends%%:*}" = "$chart_flows" ]; } ||
+      { echo "G1: the Aurral chart flow write $verb isn't exactly one send in $chart_flows" >&2; bad=1; }
+  done
+  for want in 'try await ok(method: AurralRoute.chartFlowCreateMethod, path: "api/playlists/shared-playlists", body: body))' \
+              'return try AurralQueued.decode(try await ok(method: AurralRoute.chartFlowAppendMethod,' \
+              'path: "api/playlists/shared-playlists/" + playlistId + "/tracks", body: body))' \
+              'let data = try await ok(method: AurralRoute.chartFlowRemoveSongsMethod,' \
+              'path: "api/playlists/shared-playlists/" + playlistId + "/track-removals", body: body)' \
+              'let body = try? JSONSerialization.data(withJSONObject: ["jobIds": jobIds], options: [.sortedKeys]) else {' \
+              'jobIds.allSatisfy({ AurralRoute.isPlainId(Substring($0)) }),' \
+              '_ = try await ok(method: AurralRoute.chartFlowDeleteMethod, path: "api/playlists/shared-playlists/" + playlistId)' \
+              'guard AurralRoute.isPlainId(Substring(playlistId)), Self.validChartFlowSongs(tracks),' \
+              'guard AurralRoute.isPlainId(Substring(playlistId)) else { throw AurralError.forbidden("chart flow \(playlistId.count) chars") }' \
+              'var o: [String: Any] = ["tracks": tracks.map(\.json)]'; do
+    grep -qF -- "$want" "$chart_flows" || { echo "G1: $chart_flows: a chart flow write changed (missing: $want)" >&2; bad=1; }
   done
   # Round 14 A1 (D83), A7 (D110): the preview resolver sends no login or cookie, asks Aurral for the clip itself
   # (`?download`), follows no redirect (any 3xx refused) and takes the answer only from the configured Aurral host.
@@ -456,7 +502,7 @@ if [ -z "${G1_SRC:-}" ]; then
   done <<< "$discover_names"
   for f in $(grep -rlE --include='*.swift' 'api/playlists/flows|shared-playlists|api/deezer/preview' "${product[@]}" | sort -u || true); do
     case "$f" in
-      "$aurral_discover"|"$aurral"|Packages/MagpieKit/Sources/AurralKit/AurralPreview.swift|Packages/MagpieKit/Sources/MagpieTestSupport/*) ;;
+      "$aurral_discover"|"$aurral"|"$chart_flows"|Packages/MagpieKit/Sources/AurralKit/AurralPreview.swift|Packages/MagpieKit/Sources/MagpieTestSupport/*) ;;
       *) grep -nE 'api/playlists/flows|shared-playlists|api/deezer/preview' "$f" | grep -vE '^[0-9]+:[[:space:]]*//' | grep -q . &&
            { echo "G1: an Aurral flow or preview route named outside AurralKit: $f" >&2; bad=1; } ;;
     esac

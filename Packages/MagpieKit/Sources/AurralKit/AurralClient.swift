@@ -47,6 +47,9 @@ public enum AurralError: Error, Sendable, Equatable {
 /// - Round 14 writes, each only on the owner's tap: `POST /api/discover/editorial/:id/library` (Add flow),
 ///   `POST /api/discover/feedback` (Not for me), `POST /api/playlists/flows/:flowId/download` (Download songs) and
 ///   `POST /api/playlists/shared-playlists/:playlistId/tracks/:jobId/research` (Retry a song).
+/// - Round 15 C2 (D131, fix round), each only on the owner's tap: a chart flow (a chart's top N songs) is the user's own
+///   Aurral playlist: `POST /api/playlists/shared-playlists` (Create flow), `POST …/:id/tracks` (songs that come in),
+///   `POST …/:id/track-removals` (songs that leave, with their files) and `DELETE …/:id` (Remove flow).
 /// Never `/api/settings` (every secret in clear), `/api/auth/api-key`, `/api/users`, `/api/discover/refresh` (admin),
 /// `/api/discover/blocked-tags`, `/api/library/artists` or `/api/library/downloads/*` (adds go through Lidarr), or
 /// `DELETE /api/library/tracks/*` (deletes Lidarr's file).
@@ -55,6 +58,7 @@ public enum AurralRoute: CaseIterable, Sendable {
     case bootstrap, authMe, recommendations, trending, trendingGenre, editorialShelf, editorialLinks, editorialPlaylist
     case editorialAdd, discoverFeedback, artistPreview, releaseGroupTracks, search, searchUnified, playlistJobsById
     case flowDownload, trackResearch, deezerPreview, imageProxy, imageProxyFile
+    case chartFlowCreate, chartFlowAppend, chartFlowRemoveSongs, chartFlowDelete
 
     var method: String {
         switch self {
@@ -66,6 +70,10 @@ public enum AurralRoute: CaseIterable, Sendable {
              .deezerPreview, .imageProxyFile: "GET"
         case .editorialAdd, .discoverFeedback, .flowDownload, .trackResearch: Self.discoverWriteMethod
         case .imageProxy: Self.imageProxyMethod
+        case .chartFlowCreate: Self.chartFlowCreateMethod
+        case .chartFlowAppend: Self.chartFlowAppendMethod
+        case .chartFlowRemoveSongs: Self.chartFlowRemoveSongsMethod
+        case .chartFlowDelete: Self.chartFlowDeleteMethod
         }
     }
 
@@ -100,6 +108,15 @@ public enum AurralRoute: CaseIterable, Sendable {
     static let discoverWriteMethod = "POST"
     // G1 allowlist: aurral image proxy (round 14 A7: Aurral caches a picture it named, in its own image cache).
     static let imageProxyMethod = "POST"
+    // G1 allowlist: aurral chart flows (round 15 C2, D131: a chart's top N as the user's own Aurral playlist; made,
+    // given its songs again and removed only on the owner's tap).
+    static let chartFlowCreateMethod = "POST"
+    // G1 allowlist: aurral chart flows (Songs: N and Refresh now add the songs that come in).
+    static let chartFlowAppendMethod = "POST"
+    // G1 allowlist: aurral chart flows (Songs: N and Refresh now take out the songs that leave, with their files).
+    static let chartFlowRemoveSongsMethod = "POST"
+    // G1 allowlist: aurral chart flows (Remove flow).
+    static let chartFlowDeleteMethod = "DELETE"
 
     /// `<sha256 hex>` or `<sha256 hex>.<ext>`, as Aurral's image proxy names its cached pictures.
     static func isImageProxyKey(_ s: Substring) -> Bool {
@@ -167,6 +184,10 @@ public enum AurralRoute: CaseIterable, Sendable {
         case 3 where rest[0] == "deezer" && rest[1] == "preview" && isPreviewFile(rest[2]): .deezerPreview
         case 1 where rest[0] == "image-proxy": .imageProxy
         case 2 where rest[0] == "image-proxy" && isImageProxyKey(rest[1]): .imageProxyFile
+        case 2 where rest == ["playlists", "shared-playlists"]: .chartFlowCreate
+        case 4 where rest[0] == "playlists" && rest[1] == "shared-playlists" && isPlainId(rest[2]) && rest[3] == "tracks": .chartFlowAppend
+        case 4 where rest[0] == "playlists" && rest[1] == "shared-playlists" && isPlainId(rest[2]) && rest[3] == "track-removals": .chartFlowRemoveSongs
+        case 3 where rest[0] == "playlists" && rest[1] == "shared-playlists" && isPlainId(rest[2]) && method == chartFlowDeleteMethod: .chartFlowDelete
         default: nil
         }
         guard let route, route.method == method else { return nil }

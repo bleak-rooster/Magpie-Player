@@ -300,6 +300,8 @@ extension AppModel {
     /// Round 14 A4 fix round 1 (I2): a shared playlist Add flow made (a Deezer playlist, or one this phone added).
     func isAddFlowsPlaylist(_ playlist: AurralFlow) -> Bool {
         playlist.importProvider == "deezer-playlist" || (aurralFeeds?.added.values.contains(playlist.id) ?? false)
+            || (aurralFeeds?.chartFlows.playlistIds.contains(playlist.id) ?? false)   // round 15 C2: a chart flow (D133)
+            || playlist.sourceName == AurralClient.chartFlowSourceName   // fix round M3: one made on another phone too
     }
 
     // MARK: - A Discover playlist's page

@@ -4,7 +4,11 @@
 Serves the same 2.13.0 shapes and fixtures as MagpieTestSupport's StubAurral (StubAurral+Discover.swift):
 health, bootstrap, login/logout, auth/me, playlists status/jobs, Recommended, Trending, genre charts, Discover
 playlists (editorial), editorial links, artist preview, search (unified and paged), release-group tracks, the four
-writes, the preview's 302 (and its `?download` clip), and the image proxy (A7). `MagpieTests/AurralStubServerTests` checks it decodes as StubAurral's does.
+writes, the preview's 302 (and its `?download` clip), the image proxy (A7), and round 15 C2's chart flows (the user's own
+playlists: `POST /api/playlists/shared-playlists`, and `DELETE /api/playlists/shared-playlists/<id>`, listed in the
+status's `sharedPlaylists`; fix round: the create is queued and a taken name fails silently, as 2.13's worker does;
+`POST …/<id>/tracks` and `POST …/<id>/track-removals` add and remove songs, removals and DELETE delete files; the
+worldwide chart playlist 3155776842 has 30 songs). `MagpieTests/AurralStubServerTests` checks it decodes as StubAurral's does.
 
 Python standard library only. Listens on 127.0.0.1 only (default port 3901, `AURRAL_STUB_PORT`).
 
@@ -26,7 +30,8 @@ sends no custom header) can be pointed at one; a test runner may instead send `X
   playable-clip    the preview's ?download sends 12 s of silence the phone can really play (round 15 C1: the mini
                    player stays up while the UI test looks at its cover)
 Control (never sent by the app): GET /__stub/ping, GET /__stub/log (the requests seen, newest last, as
-"METHOD /path" without the scenario prefix and without query), POST /__stub/reset.
+"METHOD /path" without the scenario prefix and without query), GET /__stub/shared (the user's own playlists and their
+songs), POST /__stub/reset.
 """
 import base64
 import hashlib
@@ -84,7 +89,9 @@ PLAYABLE_CLIP = silent_wav()
 OVERSIZED = b"ID3" + b"\xff" * (5 * 1024 * 1024)
 
 LOCK = threading.Lock()
-STATE = {"sessions": {}, "log": [], "added": {}}
+STATE = {"sessions": {}, "log": [], "added": {}, "shared": {}}
+# Round 15 C2: Deezer's "Top Worldwide" chart playlist (ChartPlaylists.json's `worldwide`).
+WORLDWIDE_CHART = "3155776842"
 
 
 def song(id_, title, artist, position=None, movement=None):
@@ -102,6 +109,88 @@ def song(id_, title, artist, position=None, movement=None):
 SONGS = [song(3135556, "Harbour Lights", "Stub Arrows", 1, 0), song(3135557, "Paper Moon", "Stub Arrows", 2, 3),
          song(3135558, "Night Drive", "Low Tide Club", 3, -1), song(3135559, "Southerly", "Mallee Fowl", 4, "new"),
          song(3135560, "No Preview Song", "Mallee Fowl", 5)]
+
+
+WORLD_SONGS = [song(3140000 + i, f"World Song {i + 1}", f"World Artist {i % 7 + 1}") for i in range(30)]
+
+
+def shared_jobs(pid, playlist):
+    return [{"id": t["jid"], "artistName": t["artistName"], "trackName": t["trackName"],
+             "albumName": t.get("albumName") or "Single", "playlistId": pid, "playlistType": pid, "managedBy": "aurral",
+             "status": "done", "downloadSource": "slskd", "durationMs": t.get("durationMs"), "streamFormat": "flac"}
+            for t in playlist["tracks"]]
+
+
+def clean_tracks(tracks):
+    """The valid songs, each given a stable job id (Aurral's jobs keep theirs as songs come and go)."""
+    out = []
+    for t in tracks if isinstance(tracks, list) else []:
+        if isinstance(t, dict) and str(t.get("artistName") or "").strip() and str(t.get("trackName") or "").strip():
+            STATE["next_job"] = STATE.get("next_job", 0) + 1
+            song = {k: t.get(k) for k in ("artistName", "trackName", "albumName", "durationMs")}
+            song["jid"] = f"sjob-{STATE['next_job']}"
+            out.append(song)
+    return out
+
+
+def song_key(t):
+    return f"{str(t.get('artistName') or '').strip().lower()}|{str(t.get('trackName') or '').strip().lower()}"
+
+
+def shared_answer(method, parts, body, accessflow):
+    """Round 15 C2 (fix round): Aurral 2.13's own playlists (routes/playlists/handlers/staticPlaylists.ts). The create
+    is queued and answers 200 whatever the name; a name the user already has (a playlist or a flow, trimmed and
+    lower-cased) fails in the worker and the playlist never appears. `…/tracks` appends, `…/track-removals` takes songs
+    out and deletes their files, DELETE removes it (and its files)."""
+    if parts[:3] != ["api", "playlists", "shared-playlists"]:
+        return None
+    create = method == "POST" and len(parts) == 3
+    append = method == "POST" and len(parts) == 5 and parts[4] == "tracks"
+    removal = method == "POST" and len(parts) == 5 and parts[4] == "track-removals"
+    delete = method == "DELETE" and len(parts) == 4
+    if not (create or append or removal or delete):
+        return None
+    if not accessflow:
+        return 403, {"error": "Forbidden", "message": "Missing permission: accessFlow"}
+    with LOCK:
+        shared = STATE["shared"]
+        if create:
+            name = str(body.get("name") or "").strip()
+            if not name:
+                return 400, {"error": "name is required"}
+            pid = str(uuid.uuid4())
+            flows, _ = flows_and_jobs()
+            taken = {p["name"].strip().lower() for p in shared.values()} | {f["name"].strip().lower() for f in flows}
+            if name.lower() in taken:
+                STATE.setdefault("failed", []).append(name)   # 2.13: STATIC_PLAYLIST_NAME_CONFLICT in the worker
+            else:
+                shared[pid] = {"name": name, "sourceName": body.get("sourceName"), "tracks": clean_tracks(body.get("tracks"))}
+            return 200, {"success": True, "playlistId": pid, "queued": True, "operationId": "op-create"}
+        pid = parts[3]
+        if pid not in shared:
+            return 404, {"error": "Playlist not found"}
+        playlist = shared[pid]
+        if delete:
+            # 2.13 queues `shared-playlist-delete`: the status lists the playlist for one more read (re-review I3).
+            if "deleting" not in playlist:
+                STATE.setdefault("deleted", []).extend(song_key(t) for t in playlist["tracks"])
+                playlist["deleting"] = 1
+            return 200, {"success": True, "playlistId": pid, "queued": True, "operationId": "op-delete"}
+        if removal:
+            ids = body.get("jobIds") if isinstance(body.get("jobIds"), list) else []
+            if not ids:
+                return 400, {"error": "jobIds must contain at least one track ID"}
+            accepted = [t["jid"] for t in playlist["tracks"] if t["jid"] in ids]
+            STATE.setdefault("deleted", []).extend(song_key(t) for t in playlist["tracks"] if t["jid"] in ids)
+            playlist["tracks"] = [t for t in playlist["tracks"] if t["jid"] not in ids]
+            return 200, {"queued": bool(accepted), "operationId": "op-remove", "acceptedJobIds": accepted,
+                         "rejected": [{"jobId": j, "message": "Track not found in this playlist"} for j in ids if j not in accepted]}
+        have = {song_key(t) for t in playlist["tracks"]}
+        new = [t for t in clean_tracks(body.get("tracks")) if song_key(t) not in have]
+        if not body.get("tracks"):
+            return 400, {"error": "tracks are required", "message": "Add at least one valid track"}
+        playlist["tracks"].extend(new)
+        return 200, {"success": True, "playlistId": pid, "queued": True, "operationId": "op-append"}
 
 
 def editorial_summary(id_, name):
@@ -148,9 +237,24 @@ def flows_and_jobs():
 
 def status_body():
     flows, jobs = flows_and_jobs()
+    with LOCK:
+        for pid in [pid for pid, p in STATE["shared"].items() if "deleting" in p]:   # queued deletes run now
+            if STATE["shared"][pid]["deleting"] > 0:
+                STATE["shared"][pid]["deleting"] -= 1
+            else:
+                del STATE["shared"][pid]
+        shared = {pid: dict(p) for pid, p in STATE["shared"].items()}
+    stats = {"flow-dw": {"total": 2, "pending": 0, "downloading": 0, "done": 1, "failed": 1, "blocked": 0}}
+    for pid, p in shared.items():
+        n = len(p["tracks"])
+        stats[pid] = {"total": n, "pending": 0, "downloading": 0, "done": n, "failed": 0, "blocked": 0}
+    listed = [{"id": pid, "name": p["name"], "ownerUserId": 1, "ownerUsername": USERNAME, "trackCount": len(p["tracks"]),
+               "sourceName": p.get("sourceName"), "sourceFlowId": None, "importedAt": "2026-11-05T00:00:00.000Z",
+               "createdAt": "2026-11-05T00:00:00.000Z", "recordHistory": True, "showTrackAvailability": False,
+               "artworkRevision": 1, "importSource": None} for pid, p in shared.items()]
     return {"worker": {"running": True, "processing": False, "activeCount": 0},
-            "flowStats": {"flow-dw": {"total": 2, "pending": 0, "downloading": 0, "done": 1, "failed": 1, "blocked": 0}},
-            "flows": flows, "sharedPlaylists": [],
+            "flowStats": stats,
+            "flows": flows, "sharedPlaylists": listed,
             "operationQueue": {"processing": False, "pending": 0, "currentLabel": None},
             "hint": {"phase": "idle", "message": "Next update in 5 days"}}
 
@@ -235,10 +339,12 @@ def discover_answer(method, parts, query, body, scenario, user):
             return 400, {"error": "Failed to find this artist or album", "message": "artistName is required"}
         return 200, {"artistMbid": ARTIST_A, "albumMbid": RELEASE_GROUP if "album" in query else None}
     if method == "GET" and len(parts) == 4 and parts[:3] == ["api", "discover", "editorial"]:
-        tracks = [{k: v for k, v in s.items() if k not in ("key", "largeArtworkUrl", "position", "movement")} for s in SONGS[:4]]
+        source = WORLD_SONGS if parts[3] == WORLDWIDE_CHART else SONGS[:4]
+        tracks = [{k: v for k, v in s.items() if k not in ("key", "largeArtworkUrl", "position", "movement")} for s in source]
         with LOCK:
             added = STATE["added"].get(parts[3])
-        return 200, {"id": parts[3], "name": "Indie Pop Picks", "description": "Fresh indie pop", "curator": "Deezer Pop Editor",
+        name = "Top Worldwide" if parts[3] == WORLDWIDE_CHART else "Top Australia" if parts[3] == "1313616925" else "Indie Pop Picks"
+        return 200, {"id": parts[3], "name": name, "description": "Fresh indie pop", "curator": "Deezer Pop Editor",
                      "artworkUrl": f"https://cdn-images.dzcdn.net/images/playlist/{parts[3]}/1000x1000.jpg",
                      "tracks": tracks, "libraryPlaylistId": added}
     if method == "POST" and len(parts) == 5 and parts[:3] == ["api", "discover", "editorial"] and parts[4] == "library":
@@ -309,9 +415,17 @@ def discover_answer(method, parts, query, body, scenario, user):
                      "items": [{"type": "artist", "id": "00000000-0000-4000-9000-%012d" % i, "name": f"{q} {i}",
                                 "sortName": f"{q} {i}", "image": None, "imageUrl": None, "inLibrary": False, "score": 0}
                                for i in rng]}
+    shared = shared_answer(method, parts, body, accessflow)
+    if shared is not None:
+        return shared
     if method == "GET" and len(parts) == 4 and parts[1:3] == ["playlists", "jobs"]:
         if not accessflow:
             return 403, {"error": "Forbidden"}
+        with LOCK:
+            mine = STATE["shared"].get(parts[3])
+            mine = dict(mine) if mine else None
+        if mine is not None:
+            return 200, shared_jobs(parts[3], mine)
         _, jobs = flows_and_jobs()
         return 200, [j for j in jobs if j["playlistId"] == parts[3]]
     if method == "POST" and len(parts) == 5 and parts[1:3] == ["playlists", "flows"] and parts[4] == "download":
@@ -361,9 +475,16 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/__stub/log":
             with LOCK:
                 return self.reply(200, {"requests": list(STATE["log"])})
+        if path == "/__stub/shared":
+            with LOCK:
+                return self.reply(200, {"playlists": [{"id": pid, "name": p["name"], "trackCount": len(p["tracks"]),
+                                                       "tracks": [t["trackName"] for t in p["tracks"]]}
+                                                      for pid, p in STATE["shared"].items() if "deleting" not in p],
+                                        "deletedFiles": list(STATE.get("deleted", [])),
+                                        "failedCreates": list(STATE.get("failed", []))})
         if path == "/__stub/reset" and method == "POST":
             with LOCK:
-                STATE.update(sessions={}, log=[], added={}, images={})
+                STATE.update(sessions={}, log=[], added={}, images={}, shared={}, deleted=[], failed=[])
             return self.reply(200, {"ok": True})
         scenario = self.headers.get("X-Stub-Scenario") or "default"
         m = re.match(r"^/s/([a-z0-9-]+)(/.*)$", path)

@@ -71,6 +71,16 @@ public struct StubAurralDiscover: Sendable {
         song(3135560, "No Preview Song", "Mallee Fowl", position: 5),
     ] }
 
+    /// Round 15 C2: Deezer's "Top Worldwide" chart playlist (ChartPlaylists.json's `worldwide`), served with 30 songs so
+    /// a chart flow can hold 10, 20 or 25 of them.
+    public static let worldwideChart = "3155776842"
+    /// The worldwide chart's songs, moved on by `offset` places (a later day's chart: `setWorldwideChartOffset`).
+    static func worldwideSongs(offset: Int = 0) -> [[String: Any]] {
+        (offset..<(offset + 30)).map { song(3_140_000 + $0, "World Song \($0 + 1)", "World Artist \($0 % 7 + 1)") }
+    }
+    /// Round 15 C2 fix round: how far the worldwide chart has moved on.
+    var worldwideOffset = 0
+
     static func editorialSummary(_ id: String, _ name: String) -> [String: Any] {
         ["id": id, "name": name, "description": "\(name), updated weekly", "trackCount": 4,
          "artworkUrl": "https://cdn-images.dzcdn.net/images/playlist/\(id)/1000x1000.jpg", "curator": "Deezer Pop Editor"]
@@ -147,12 +157,13 @@ public struct StubAurralDiscover: Sendable {
             return (200, ["artistMbid": Self.artistA, "albumMbid": query["album"] == nil ? NSNull() as Any : Self.releaseGroup])
         case ("GET", let p) where p.count == 4 && p[2] == "editorial":
             if editorialMissing.contains(p[3]) { return (404, ["error": "Playlist not found"]) }
-            let tracks = Self.songs.prefix(4).map { s -> [String: Any] in
+            let tracks = (p[3] == Self.worldwideChart ? Self.worldwideSongs(offset: worldwideOffset) : Array(Self.songs.prefix(4))).map { s -> [String: Any] in
                 var t = s
                 t["key"] = nil; t["largeArtworkUrl"] = nil; t["position"] = nil; t["movement"] = nil
                 return t
             }
-            return (200, ["id": p[3], "name": p[3] == "1313616925" ? "Top Australia" : "Indie Pop Picks", "description": "Fresh indie pop", "curator": "Deezer Pop Editor",
+            let name = p[3] == "1313616925" ? "Top Australia" : p[3] == Self.worldwideChart ? "Top Worldwide" : "Indie Pop Picks"
+            return (200, ["id": p[3], "name": name, "description": "Fresh indie pop", "curator": "Deezer Pop Editor",
                           "artworkUrl": "https://cdn-images.dzcdn.net/images/playlist/\(p[3])/1000x1000.jpg",
                           "tracks": tracks, "libraryPlaylistId": added[p[3]].map { $0 as Any } ?? NSNull()])
         case (let m, let p) where m != "GET" && p.count == 5 && p[2] == "editorial" && p[4] == "library":
@@ -248,6 +259,8 @@ public extension StubAurral {
     func setGenreChartReady(_ id: Int, _ ready: Bool) {
         discover.withLock { if ready { $0.genresNotReady.remove(id) } else { $0.genresNotReady.insert(id) } }
     }
+    /// Round 15 C2 fix round: the worldwide chart moves on `offset` places (its top songs drop out, new ones come in).
+    func setWorldwideChartOffset(_ offset: Int) { discover.withLock { $0.worldwideOffset = max(0, offset) } }
     /// Every Discover answer waits this long (a slow Aurral).
     func setDiscoverDelay(_ delay: Duration) { discover.withLock { $0.delay = delay } }
     /// Every Discover answer fails with this status (nil: answers again).

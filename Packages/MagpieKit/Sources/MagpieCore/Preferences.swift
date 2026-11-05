@@ -87,19 +87,36 @@ public enum LibraryRow: String, CaseIterable, Codable, Hashable, Sendable {
 }
 
 /// Round 14 A4 fix round 1 (owner): whose top songs Trending shows. Stored as "automatic", "server" or an ISO 3166 code;
-/// anything else reads as Automatic.
+/// anything else reads as Automatic. Round 15 C2 (D132): it is Trending's **default chart**, the one Trending always
+/// opens on ("Make default" on Trending sets it), so it also takes Worldwide ("worldwide") and a genre chart
+/// ("genre:<id>"); an older build reads those as Automatic.
 public enum ChartsCountry: Hashable, Sendable, Codable {
     /// The phone's region when there is a chart for it, else the server's.
     case automatic
     /// The server's own region (Aurral's chart).
     case server
     case country(String)
+    /// Round 15 C2: the worldwide chart.
+    case worldwide
+    /// Round 15 C2: a genre chart (Aurral's genre id).
+    case genre(Int)
 
     public init(stored: String) {
         switch stored {
         case "server": self = .server
+        case "worldwide": self = .worldwide
         case let code where code.count == 2 && code.allSatisfy({ $0.isASCII && $0.isLetter }): self = .country(code.uppercased())
-        default: self = .automatic
+        default:
+            if case .genre(let id)? = TrendingChart(key: stored) { self = .genre(id) } else { self = .automatic }
+        }
+    }
+
+    /// The setting that opens Trending on `chart` ("Make default").
+    public init(chart: TrendingChart) {
+        switch chart {
+        case .worldwide: self = .worldwide
+        case .country(let code): self = .country(code.uppercased())
+        case .genre(let id): self = .genre(id)
         }
     }
 
@@ -108,6 +125,23 @@ public enum ChartsCountry: Hashable, Sendable, Codable {
         case .automatic: "automatic"
         case .server: "server"
         case .country(let code): code
+        case .worldwide: "worldwide"
+        case .genre(let id): TrendingChart.genre(id).key
+        }
+    }
+
+    /// The chart this setting opens on: Automatic is the phone's region when it has a chart, else the server's; Server
+    /// is the server's region; nil when that region isn't known (the server's own chart, unnamed).
+    public func chart(phoneRegion: String?, serverRegion: String?, countriesWithCharts: Set<String>) -> TrendingChart? {
+        let server = serverRegion.map { $0.uppercased() }.flatMap { TrendingChart.isCountryCode($0) ? TrendingChart.country($0) : nil }
+        switch self {
+        case .automatic:
+            if let phone = phoneRegion?.uppercased(), countriesWithCharts.contains(phone) { return .country(phone) }
+            return server
+        case .server: return server
+        case .country(let code): return .country(code.uppercased())
+        case .worldwide: return .worldwide
+        case .genre(let id): return .genre(id)
         }
     }
 
@@ -118,6 +152,56 @@ public enum ChartsCountry: Hashable, Sendable, Codable {
     public func encode(to encoder: Encoder) throws {
         var container = encoder.singleValueContainer()
         try container.encode(stored)
+    }
+}
+
+/// Round 15 C2 (owner items 5 and 5b, D132): one of Trending's charts: Worldwide, a country's (any, from the bundled
+/// list) or a genre's. Its `key` ("worldwide", "country:AU", "genre:132") names the chart's own flow settings (D133).
+public enum TrendingChart: Hashable, Sendable, Codable {
+    case worldwide
+    case country(String)
+    case genre(Int)
+
+    public var key: String {
+        switch self {
+        case .worldwide: "worldwide"
+        case .country(let code): "country:" + code.uppercased()
+        case .genre(let id): "genre:\(id)"
+        }
+    }
+
+    public init?(key: String) {
+        if key == "worldwide" { self = .worldwide; return }
+        if key.hasPrefix("country:") {
+            let code = String(key.dropFirst("country:".count)).uppercased()
+            guard Self.isCountryCode(code) else { return nil }
+            self = .country(code)
+            return
+        }
+        if key.hasPrefix("genre:") {
+            let digits = key.dropFirst("genre:".count)
+            guard (1...6).contains(digits.count), digits.allSatisfy({ $0.isASCII && $0.isNumber }), let id = Int(digits) else {
+                return nil
+            }
+            self = .genre(id)
+            return
+        }
+        return nil
+    }
+
+    static func isCountryCode(_ code: String) -> Bool { code.count == 2 && code.allSatisfy { $0.isASCII && $0.isLetter } }
+
+    public init(from decoder: Decoder) throws {
+        let key = try decoder.singleValueContainer().decode(String.self)
+        guard let chart = TrendingChart(key: key) else {
+            throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "not a chart"))
+        }
+        self = chart
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(key)
     }
 }
 

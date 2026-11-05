@@ -7,9 +7,20 @@ import SwiftUI
 /// Round 14 A4 (plan "Screens", D91): Trending. The No. 1 song, Top songs (100) with Play previews and Add flow (follow
 /// the chart as a daily-updated flow), Top albums, Top artists, Charts by genre, then Popular playlists. Each section on
 /// its own: one Aurral hasn't loaded says "updating" while the others show. Shows the last copy at once.
+/// Round 15 C2 (owner items 5 and 5b, D132–D134): Trending opens on the default chart; the chart button picks another
+/// (Worldwide, a country, a genre) and **Make default** makes it the one Trending opens on. Each chart has its own
+/// flow: Create flow… (Songs: N) or Edit flow (Songs: N, Refresh now, Remove flow).
 struct TrendingView: View {
     @Environment(AppModel.self) private var model
     private let themed = Themed()
+    /// The chart picked this visit (nil: the default, as the feed holds it).
+    @State private var picked: TrendingChart?
+    @State private var pickedPage: ChartPage?
+    @State private var pickedFailed = false
+    @State private var choosing = false
+    @State private var makingDefault = false
+    /// Fix round M5: Make default on Automatic pinned a fixed country: say so.
+    @State private var pinnedNote: String?
 
     private var feeds: AurralFeeds { model.aurralFeeds }
 
@@ -28,7 +39,11 @@ struct TrendingView: View {
             }
             .padding(.vertical, Tokens.Spacing.l)
         }
-        .refreshable { await RefreshSafety.run { await feeds.refresh(.trending, force: true) } }
+        .refreshable {
+            await RefreshSafety.run {
+                if picked == nil { await feeds.refresh(.trending, force: true) } else { await loadPicked(fresh: true) }
+            }
+        }
         .navigationTitle(DiscoverPagesCopy.trending)
         .navigationBarTitleDisplayMode(.inline)
         .magpieScreen()
@@ -38,22 +53,36 @@ struct TrendingView: View {
         }
     }
 
+    /// The chart the feed holds (the default, or the server's when the default couldn't be read).
+    private func feedChart(_ t: TrendingSnapshot) -> TrendingChart? { t.chart }
+
+    /// The chart on screen: the one picked this visit, else the feed's.
+    private func shownChart(_ t: TrendingSnapshot) -> TrendingChart? { picked ?? t.chart }
+
+    /// The default chart as set (Make default shows unless the chart on screen is it).
+    private func defaultChart(_ t: TrendingSnapshot) -> TrendingChart? {
+        model.preferences.layout.chartsCountry.chart(phoneRegion: feeds.phoneRegion(), serverRegion: t.region,
+                                                    countriesWithCharts: Set(AurralFeeds.chartPlaylists.keys))
+    }
+
     @ViewBuilder private func content(_ t: TrendingSnapshot) -> some View {
-        if let songs = t.songs, let first = songs.first {
-            spotlight(first, days: t.daysAtTop)
-            VStack(alignment: .leading, spacing: Tokens.Spacing.m) {
-                PageSectionTitle(title: DiscoverPagesCopy.topSongs(region: t.songsRegion),
-                                 subtitle: t.showingServerInstead.map { DiscoverPagesCopy.showingServer(region: $0) })
-                    .accessibilityIdentifier("trending-top-songs")
-                HStack(spacing: Tokens.Spacing.s) {
-                    PlayPreviewsButton(items: songs.map(model.previewItem(for:)))
-                    if let chart = t.chartPlaylistId {
-                        AddFlowControl(deezerPlaylistId: chart, libraryPlaylistId: feeds.added[chart] ?? t.libraryPlaylistId)
-                    }
+        chartBar(t)
+        if let picked, picked != t.chart {
+            if let page = pickedPage, page.chart == picked, let first = page.songs.first {
+                topSongs(page: page, first: first, days: nil, subtitle: nil)
+            } else {
+                VStack(alignment: .leading, spacing: Tokens.Spacing.m) {
+                    PageSectionTitle(title: DiscoverPagesCopy.topSongs(chart: model.chartTitle(picked)))
+                    if pickedFailed { UpdatingCard(text: DiscoverPagesCopy.notReady) } else { UpdatingCard() }
                 }
-                .padding(.horizontal, Tokens.Spacing.margin)
-                ChartSongList(songs: songs, showsPosition: true, identifier: "trending-song")
             }
+        } else if let songs = t.songs, let first = songs.first {
+            let page = ChartPage(chart: t.chart ?? .worldwide, name: t.chartName ?? "", songs: songs, playlistId: t.chartPlaylistId,
+                                 libraryPlaylistId: t.libraryPlaylistId)
+            topSongs(page: page, first: first, days: t.daysAtTop,
+                     subtitle: t.showingServerInstead.map { DiscoverPagesCopy.showingServer(region: $0) },
+                     title: t.chart == nil ? DiscoverPagesCopy.topSongs(region: t.songsRegion) : nil,
+                     hasChart: t.chart != nil)
         } else {
             VStack(alignment: .leading, spacing: Tokens.Spacing.m) {
                 PageSectionTitle(title: DiscoverPagesCopy.topSongs)
@@ -64,6 +93,91 @@ struct TrendingView: View {
         artists(t.artists)
         genres(t.genres)
         popularPlaylists
+    }
+
+    /// The chart button ("Chart: Worldwide") and Make default (or "Default" when the chart on screen is it).
+    @ViewBuilder private func chartBar(_ t: TrendingSnapshot) -> some View {
+        let shown = shownChart(t)
+        let isDefault = shown != nil && shown == defaultChart(t)
+        VStack(alignment: .leading, spacing: Tokens.Spacing.xs) {
+        HStack(spacing: Tokens.Spacing.s) {
+            Button { choosing = true } label: {
+                HStack(spacing: Tokens.Spacing.xs) {
+                    Text(DiscoverPagesCopy.chooseChart(shown.map(model.chartTitle) ?? DiscoverPagesCopy.topSongs))
+                        .font(.subheadline.weight(.semibold))
+                    Image(systemName: "chevron.down").font(.caption.weight(.semibold)).accessibilityHidden(true)
+                }
+                .frame(minHeight: Tokens.minHitSize)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("trending-chart-picker")
+            Spacer(minLength: Tokens.Spacing.s)
+            if let shown {
+                if isDefault {
+                    Label(DiscoverPagesCopy.defaultChart, systemImage: "pin.fill")
+                        .font(.footnote).foregroundStyle(themed.palette.ink2Color)
+                        .accessibilityIdentifier("trending-default-badge")
+                } else {
+                    Button(DiscoverPagesCopy.makeDefault) {
+                        makingDefault = true
+                        Task {
+                            pinnedNote = await model.makeDefaultChart(shown)
+                            if feeds.trending?.chart == shown { picked = nil }
+                            makingDefault = false
+                        }
+                    }
+                    .font(.footnote.weight(.semibold))
+                    .frame(minHeight: Tokens.minHitSize)
+                    .disabled(makingDefault)
+                    .accessibilityIdentifier("trending-make-default")
+                }
+            }
+        }
+        if let pinnedNote {
+            Text(pinnedNote)
+                .font(.footnote).foregroundStyle(themed.palette.ink2Color)
+                .accessibilityIdentifier("trending-pinned-note")
+        }
+        }
+        .padding(.horizontal, Tokens.Spacing.margin)
+        .sheet(isPresented: $choosing) {
+            ChartPickerSheet(shown: shown, defaultChart: defaultChart(t)) { chart in
+                picked = chart == t.chart ? nil : chart
+            }
+        }
+        .task(id: picked) { await loadPicked() }
+    }
+
+    private func loadPicked(fresh: Bool = false) async {
+        guard let picked else { pickedPage = nil; return }
+        pickedFailed = false
+        do {
+            let page = try await model.chartPage(picked, fresh: fresh)
+            if self.picked == picked { pickedPage = page }
+        } catch {
+            if self.picked == picked { pickedFailed = true }
+        }
+    }
+
+    /// The No. 1, then Top songs with Play previews, the chart's flow and the songs.
+    @ViewBuilder private func topSongs(page: ChartPage, first: ChartSong, days: Int?, subtitle: String?, title: String? = nil,
+                                       hasChart: Bool = true) -> some View {
+        spotlight(first, days: days)
+        VStack(alignment: .leading, spacing: Tokens.Spacing.m) {
+            PageSectionTitle(title: title ?? DiscoverPagesCopy.topSongs(chart: model.chartTitle(page.chart)), subtitle: subtitle)
+                .accessibilityIdentifier("trending-top-songs")
+            VStack(alignment: .leading, spacing: Tokens.Spacing.s) {
+                PlayPreviewsButton(items: page.songs.map(model.previewItem(for:)))
+                if hasChart { ChartFlowControl(page: page) }
+                // Round 14's Add flow (the whole chart, synced by the server), when one was made: its state only.
+                if let id = page.playlistId, let legacy = feeds.added[id] ?? page.libraryPlaylistId {
+                    AddFlowControl(deezerPlaylistId: id, libraryPlaylistId: legacy)
+                }
+            }
+            .padding(.horizontal, Tokens.Spacing.margin)
+            ChartSongList(songs: page.songs, showsPosition: true, identifier: "trending-song")
+        }
     }
 
     private func spotlight(_ song: ChartSong, days: Int?) -> some View {

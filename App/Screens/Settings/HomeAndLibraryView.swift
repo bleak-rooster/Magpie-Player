@@ -72,6 +72,8 @@ struct ChartsCountryView: View {
         case .automatic: DiscoverPagesCopy.chartsAutomatic
         case .server: DiscoverPagesCopy.chartsServer
         case .country(let code): DiscoverPagesCopy.regionName(code)
+        case .worldwide: DiscoverPagesCopy.worldwide   // round 15 C2: Trending's default chart (D132)
+        case .genre(let id): model.chartTitle(.genre(id))
         }
     }
 
@@ -89,6 +91,12 @@ struct ChartsCountryView: View {
                 choice(DiscoverPagesCopy.chartsAutomatic, note: DiscoverPagesCopy.chartsAutomaticNote, value: .automatic,
                        selected: selected)
                 choice(DiscoverPagesCopy.chartsServer, note: nil, value: .server, selected: selected)
+                if AurralFeeds.worldwideChartPlaylist != nil {
+                    choice(DiscoverPagesCopy.worldwide, note: nil, value: .worldwide, selected: selected)
+                }
+                if case .genre(let id) = selected {   // a genre chart made the default on Trending
+                    choice(model.chartTitle(.genre(id)), note: nil, value: selected, selected: selected)
+                }
             }
             Section {
                 ForEach(shown, id: \.code) { country in

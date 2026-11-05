@@ -38,6 +38,11 @@ import Testing
         // Round 14 A7 (D111): Aurral's image proxy.
         ("POST", "api/image-proxy", .imageProxy),
         ("GET", "api/image-proxy/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.jpg", .imageProxyFile),
+        // Round 15 C2 (D131): a chart flow, the user's own Aurral playlist of a chart's top N.
+        ("POST", "api/playlists/shared-playlists", .chartFlowCreate),
+        ("POST", "api/playlists/shared-playlists/pl-1/tracks", .chartFlowAppend),
+        ("POST", "api/playlists/shared-playlists/pl-1/track-removals", .chartFlowRemoveSongs),
+        ("DELETE", "api/playlists/shared-playlists/pl-1", .chartFlowDelete),
     ]
 
     @Test func theExactAllowedCalls() {
@@ -55,11 +60,12 @@ import Testing
         #expect(Set(open) == [.health, .login, .deezerPreview, .imageProxyFile])
     }
 
-    /// The writes are exactly the eight POSTs (A7: the image proxy's cache step is the eighth).
-    @Test func theWritesAreExactlyEight() {
+    /// The writes are exactly the eight POSTs (A7: the image proxy's cache step is the eighth) and round 15 C2's four
+    /// chart flow writes (D131).
+    @Test func theWritesAreExactlyTwelve() {
         let writes = AurralRoute.allCases.filter { $0.method != "GET" }
         #expect(Set(writes) == [.startFlow, .login, .logout, .editorialAdd, .discoverFeedback, .flowDownload, .trackResearch,
-                                .imageProxy])
+                                .imageProxy, .chartFlowCreate, .chartFlowAppend, .chartFlowRemoveSongs, .chartFlowDelete])
     }
 
     @Test func bannedAndTwistedCallsAreRefused() async throws {
@@ -73,8 +79,7 @@ import Testing
             // Adds and downloads Magpie leaves to Lidarr (D: downloads go through Lidarr).
             ("POST", "api/library/artists"), ("POST", "api/library/albums"), ("POST", "api/library/albums/request"),
             ("POST", "api/library/downloads/track"), ("POST", "api/library/downloads/album"), ("GET", "api/library/downloads"),
-            ("POST", "api/playlists/shared-playlists"), ("POST", "api/playlists/shared-playlists/pl-1/tracks"),
-            ("POST", "api/playlists/shared-playlists/pl-1/sync"), ("DELETE", "api/playlists/shared-playlists/pl-1"),
+            ("PUT", "api/playlists/shared-playlists/pl-1"), ("POST", "api/playlists/shared-playlists/pl-1/sync"),
             ("POST", "api/playlists/flows"), ("PUT", "api/playlists/flows/flow-1"), ("DELETE", "api/playlists/flows/flow-1"),
             ("POST", "api/playlists/flows/flow-1/tracks/job-1/research"),   // 2.13: synced playlists use shared-playlists
             ("GET", "api/playlists/flows/flow-1/lidarr-import-list"), ("POST", "api/playlists/jobs/job-1/retry"),
