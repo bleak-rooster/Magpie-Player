@@ -211,6 +211,9 @@ public struct MagpieRequest: Sendable, Codable, Equatable, Identifiable {
     public var trialExpiresAt: Date?
     /// D147: Reject went through (the release's files deleted, the album unmonitored).
     public var trialRejected: Bool?
+    /// Round 16: when the stopped find's clean-up started looking at removing its artist from Lidarr (the last find of
+    /// an artist Magpie added into the Finds folder); it gives up after `RequestRunner.stoppedFindArtistLimit`.
+    public var artistRemovalSince: Date?
     /// D136 (review M2): a new artist's Add to library: the owner's Add-defaults metadata profile and following.
     public var libraryMetadataProfileId: Int?
     public var libraryFollow: Bool?

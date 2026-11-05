@@ -14,7 +14,7 @@ import MagpieCore
         await h.runner.settle()
 
         let writes = h.server.writeBodies()
-        #expect(writes.map(\.0) == ["POST artist"])
+        #expect(writes.map(\.0) == ["POST artist", "POST command"])
         let options = try #require(writes[0].1["addOptions"] as? [String: Any])
         #expect(options["albumsToMonitor"] as? [String] == [rgAlbum.rawValue])
         #expect(writes[0].1["rootFolderPath"] as? String == "/music/samples", "into Finds when set up")
@@ -65,7 +65,7 @@ import MagpieCore
         await h.runner.settle()
         #expect(track == album)
         #expect(await h.runner.requests.count == 1)
-        #expect(h.server.writeBodies().map(\.0) == ["POST artist"])
+        #expect(h.server.writeBodies().map(\.0) == ["POST artist", "POST command"])
     }
 
     /// Review I1: a single-song request for the album's first track never stands for the album: Try this album then

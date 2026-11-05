@@ -23,7 +23,7 @@ import MagpieCore
                                                  intent: .trial)
         await h.runner.settle()
         let writes = h.server.writeBodies()
-        #expect(writes.map(\.0) == ["POST artist"])
+        #expect(writes.map(\.0) == ["POST artist", "POST command"])
         #expect(writes[0].1["rootFolderPath"] as? String == "/music/samples")
         #expect(writes[0].1["qualityProfileId"] as? Int == 4, "Fast Start")
         let options = try #require(writes[0].1["addOptions"] as? [String: Any])

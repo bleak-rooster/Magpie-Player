@@ -29,7 +29,7 @@ import MagpieCore
         #expect(await h.gate.changeLog().count == 2)
     }
 
-    /// A6: one POST /artist carrying everything, built from the lookup row; no separate monitor or search.
+    /// A6: one POST /artist carrying everything, built from the lookup row; no separate monitor; the release's own AlbumSearch follows once Lidarr lists it monitored (round 16).
     @Test func newArtistSingleAtomicAdd() async throws {
         let h = await Harness()
         h.server.artistIsNew()
@@ -37,7 +37,7 @@ import MagpieCore
         await h.runner.settle()
 
         let writes = h.server.writeBodies()
-        #expect(writes.map(\.0) == ["POST artist"])
+        #expect(writes.map(\.0) == ["POST artist", "POST command"])
         let body = writes[0].1
         #expect(body["foreignArtistId"] as? String == artistA.rawValue)
         #expect(body["artistName"] as? String == "Aurora Field")
@@ -51,7 +51,7 @@ import MagpieCore
         let options = try #require(body["addOptions"] as? [String: Any])
         #expect(options["monitor"] == nil, "\"none\" would unmonitor the artist too (verified on Lidarr 3.2)")
         #expect(options["albumsToMonitor"] as? [String] == [rgSingle.rawValue])
-        #expect(options["searchForMissingAlbums"] as? Bool == true)
+        #expect(options["searchForMissingAlbums"] as? Bool == false, "the runner searches the release itself (round 16)")
 
         let r = try #require(await h.request(id))
         #expect(r.state == .searching && r.albumId == 50 && r.lidarrArtistId == 42 && r.addSent)
@@ -71,7 +71,7 @@ import MagpieCore
         let other = try await h.runner.tryRecording(h.recording(recAlbumOnly2, title: "Other"), tier: .standard)
         await h.runner.settle()
 
-        #expect(h.server.writeBodies().map(\.0) == ["POST artist"])
+        #expect(h.server.writeBodies().map(\.0) == ["POST artist", "POST command"])
         let joined = try #require(await h.request(other))
         #expect(joined.joinedTo == first && joined.albumId == 51 && joined.state == .searching)
         #expect(await h.runner.requests.count == 2)
@@ -85,7 +85,7 @@ import MagpieCore
         _ = try await h.runner.tryRecording(h.recording(recAlbumOnly2, title: "Other"), tier: .standard)
         await h.runner.settle()
         await h.runner.tick()
-        #expect(h.server.writeBodies().map(\.0) == ["POST artist"])
+        #expect(h.server.writeBodies().map(\.0) == ["POST artist", "POST command"])
         #expect(await h.runner.requests.allSatisfy { $0.albumId == 51 && $0.state == .searching })
     }
 
