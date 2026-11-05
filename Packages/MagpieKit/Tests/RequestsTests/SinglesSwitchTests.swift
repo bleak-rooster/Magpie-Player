@@ -358,16 +358,80 @@ final class SinglesLidarr: @unchecked Sendable {
         let dir = FileManager.default.temporaryDirectory.appending(path: "SinglesBad-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let url = dir.appending(path: "singles.json")
-        try Data("not json".utf8).write(to: url)
+        try Data(#"[{"artistId": 20, "step": "followOff", "originalProf"#.utf8).write(to: url)   // cut off mid-write
         let fake = await SinglesLidarr(storeURL: url)
         #expect(try await fake.store.jobs().isEmpty)
         #expect(await fake.store.damagedAt != nil)
+        #expect(await fake.store.lostArtists() == [20], "this Lidarr's lost switch is recorded (re-review 2 N1)")
         let aside = try FileManager.default.contentsOfDirectory(atPath: dir.path).filter { $0.contains("unreadable") }
         #expect(aside.count == 1, "kept aside, not overwritten")
-        fake.state.withLockUnchecked { s in s.follow = "none"; s.profileId = 5 }   // the lost switch left following off
+        // The lost switch left the artist on the superset profile with following off.
+        let superset = SinglesLidarr.profile(30, "Owner Profile + Singles (Magpie)", primary: ["Album", "EP", "Single"],
+                                             secondary: ["Studio", "Live", "Compilation"], statuses: ["Official", "Promotion"])
+        fake.state.withLockUnchecked { s in s.profiles.append(superset); s.follow = "none"; s.profileId = 30 }
         #expect(try await fake.switcher().restoreFromNote(artistId: 20, profileId: 5, follow: "all"))
         #expect(fake.writes.map(\.0) == ["PUT artist/editor", "POST command", "PUT artist/editor"])
-        #expect(fake.state.withLockUnchecked { $0.follow } == "all")
+        #expect(fake.state.withLockUnchecked { ($0.profileId, $0.follow) } == (5, "all"))
+        #expect(await fake.store.lostArtists().isEmpty, "put back: no longer offered")
+    }
+
+    /// Re-review 2 N1: an ordinary sign-out and sign-in (a fresh journal, the old change-log line kept) offers nothing to
+    /// put back; another Lidarr's journal never names this one's artists; nothing is sent.
+    @Test func putBackIsOnlyForThisLidarrsLostSwitches() async throws {
+        let dir = FileManager.default.temporaryDirectory.appending(path: "SinglesFresh-\(UUID().uuidString)")
+        let fake = await SinglesLidarr(storeURL: SinglesSwitchStore.defaultURL(in: dir, instance: "lidarr-a"))
+        #expect(await fake.store.lostArtists().isEmpty)
+        await #expect(throws: SinglesSwitchError.nothingToUndo) {
+            _ = try await fake.switcher().restoreFromNote(artistId: 20, profileId: 5, follow: "all")
+        }
+        let other = SinglesSwitchStore(fileURL: SinglesSwitchStore.defaultURL(in: dir, instance: "lidarr-b"))
+        #expect(await other.lostArtists().isEmpty)
+        #expect(fake.writes.isEmpty)
+    }
+
+    /// Re-review 2 N1: an artist the owner moved off the Magpie profile by hand is refused, with nothing sent.
+    @Test func putBackRefusesAnArtistChangedByHand() async throws {
+        let dir = FileManager.default.temporaryDirectory.appending(path: "SinglesHand-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let url = dir.appending(path: "singles.json")
+        try Data(#"[{"artistId": 20, "step"#.utf8).write(to: url)
+        let fake = await SinglesLidarr(storeURL: url)
+        #expect(await fake.store.lostArtists() == [20])
+        fake.state.withLockUnchecked { $0.profileId = 5 }   // back on the owner's own profile, by hand
+        await #expect(throws: SinglesSwitchError.changedByOwner) {
+            _ = try await fake.switcher().restoreFromNote(artistId: 20, profileId: 5, follow: "all")
+        }
+        #expect(fake.writes.isEmpty)
+    }
+
+    /// Re-review 2: a song whose request failed after it was taken goes back into the journal, and is offered again.
+    @Test func aSongWhoseRequestFailedIsKept() async throws {
+        let fake = await SinglesLidarr()
+        let switcher = fake.switcher()
+        let song = ExternalRecording(recordingMBID: mbid(778), title: "Song", artist: "Owner", source: .lidarr)
+        #expect(try await switcher.start(artistId: 20, target: SinglesLidarr.target, recording: song) == .finished)
+        #expect(await switcher.waitingRecordings() == [20])
+        let taken = try #require(await switcher.takeRecording(20))
+        #expect(await switcher.waitingRecordings().isEmpty)
+        await switcher.giveBackRecording(20, taken)   // the request failed
+        #expect(await switcher.waitingRecordings() == [20])
+        #expect(await switcher.takeRecording(20) == song)
+    }
+
+    /// Re-review 2 N2: a put-back whose profile send fails sends it again on the next pass; it is done only once Lidarr
+    /// has the original profile back.
+    @Test func aFailedProfileRestoreIsSentAgain() async throws {
+        let fake = await SinglesLidarr()
+        let switcher = fake.switcher()
+        _ = try await switcher.start(artistId: 20, target: SinglesLidarr.target)
+        fake.state.withLockUnchecked { $0.failNextEditor = 1 }
+        await #expect(throws: (any Error).self) { try await switcher.undo(artistId: 20) }
+        let half = try #require(try await fake.store.job(20))
+        #expect(half.step == .puttingBack && half.profileRestored != true, "not marked restored")
+        #expect(fake.state.withLockUnchecked { $0.profileId } != 5)
+        try await switcher.undo(artistId: 20)
+        #expect(fake.state.withLockUnchecked { ($0.profileId, $0.follow) } == (5, "all"))
+        #expect(try await fake.store.job(20)?.step == .undone)
     }
 
     /// m5: a pending switch's song survives a relaunch and is handed over once, when it finishes.

@@ -43,6 +43,8 @@ public struct SinglesSwitchJob: Codable, Sendable, Equatable, Identifiable {
     public var recording: ExternalRecording?
     /// A put-back under way ends as this (`rolledBack` or `undone`).
     public var puttingBackTo: Step?
+    /// Re-review 2 N2: in a put-back, the original profile was sent and read back from Lidarr.
+    public var profileRestored: Bool?
 
     public var id: Int { artistId }
     public var isOpen: Bool { step != .done && step != .rolledBack && step != .undone }
@@ -101,13 +103,18 @@ public actor SinglesSwitchStore {
                 do { data = try Data(contentsOf: fileURL) } catch { throw RequestStoreError.unavailable }
                 if let rows = try? JSONDecoder().decode([Lenient].self, from: data) {
                     memory = rows.compactMap(\.value)
-                    if memory.count < rows.count { damagedAt = Date() }
+                    if memory.count < rows.count {
+                        damagedAt = Date()
+                        let kept = Set(memory.map(\.artistId))
+                        recordLost(Self.artistIds(in: data).subtracting(kept))
+                    }
                 } else {
                     let aside = fileURL.deletingLastPathComponent()
                         .appending(path: "\(fileURL.lastPathComponent).unreadable-\(Int(Date().timeIntervalSince1970))")
                     try? FileManager.default.moveItem(at: fileURL, to: aside)
                     damagedAt = Date()
                     memory = []
+                    recordLost(Self.artistIds(in: data))
                 }
             }
             loaded = true
@@ -117,17 +124,65 @@ public actor SinglesSwitchStore {
 
     public func job(_ artistId: Int) throws -> SinglesSwitchJob? { try jobs().first { $0.artistId == artistId } }
 
+    // MARK: - Re-review 2 N1: switches lost with a quarantined journal, this Lidarr's only
+
+    /// `singles-switch-<instance>.lost.json` beside the journal (erased with it on sign-out).
+    nonisolated var lostURL: URL? {
+        fileURL.map { $0.deletingPathExtension().appendingPathExtension("lost.json") }
+    }
+
+    /// The artists whose switch was in this Lidarr's journal when it was quarantined (read from the unreadable bytes,
+    /// best effort; none read: none offered). Only these may be put back from the change log.
+    public func lostArtists() -> Set<Int> {
+        _ = try? jobs()
+        guard let url = lostURL, let data = try? Data(contentsOf: url),
+              let ids = try? JSONDecoder().decode([Int].self, from: data) else { return [] }
+        return Set(ids)
+    }
+
+    public func forgetLost(_ artistId: Int) {
+        let rest = lostArtists().subtracting([artistId])
+        writeLost(rest)
+    }
+
+    private func recordLost(_ ids: Set<Int>) {
+        guard !ids.isEmpty else { return }
+        writeLost(lostArtists().union(ids))
+    }
+
+    private func writeLost(_ ids: Set<Int>) {
+        guard let url = lostURL else { return }
+        _ = try? closedFlag.withLock { closed -> Void in
+            guard !closed else { return }
+            if ids.isEmpty { try? FileManager.default.removeItem(at: url) } else { try AtomicFile.write(ids.sorted(), to: url) }
+        }
+    }
+
+    /// The artist ids a damaged journal's bytes still name.
+    static func artistIds(in data: Data) -> Set<Int> {
+        guard let text = String(data: data, encoding: .utf8),
+              let regex = try? NSRegularExpression(pattern: #""artistId"\s*:\s*(\d+)"#) else { return [] }
+        let range = NSRange(text.startIndex..., in: text)
+        return Set(regex.matches(in: text, range: range).compactMap { m in
+            Range(m.range(at: 1), in: text).flatMap { Int(text[$0]) }
+        })
+    }
+
     /// Saves `job` (replacing the artist's). Throws when it can't be saved, or the store is closed: nothing is sent then.
+    /// Re-review 2: the closed check and the write are under one lock, so a close never lets a write slip in after it.
     public func save(_ job: SinglesSwitchJob) throws {
-        guard !isClosed else { throw StoreError.closed }
-        var all = try jobs().filter { $0.artistId != job.artistId }
-        all.append(job)
-        if let fileURL {
-            try AtomicFile.write(all, to: fileURL)
-            var values = URLResourceValues()
-            values.isExcludedFromBackup = true
-            var file = fileURL
-            try? file.setResourceValues(values)
+        var rows = try jobs().filter { $0.artistId != job.artistId }
+        rows.append(job)
+        let all = rows
+        try closedFlag.withLock { closed in
+            guard !closed else { throw StoreError.closed }
+            if let fileURL {
+                try AtomicFile.write(all, to: fileURL)
+                var values = URLResourceValues()
+                values.isExcludedFromBackup = true
+                var file = fileURL
+                try? file.setResourceValues(values)
+            }
         }
         memory = all
     }
@@ -184,7 +239,8 @@ public actor SinglesSwitcher {
     private var busy: Set<Int> = []
     private var waiting: [Int: [CheckedContinuation<Void, Never>]] = [:]
     /// Re-review R1: retired (a rebuild, sign-out): checked before every send and save.
-    private var stopped = false
+    private let stopFlag = OSAllocatedUnfairLock(initialState: false)
+    private var stopped: Bool { stopFlag.withLock { $0 } }
 
     public init(lidarr: LidarrClient, gate: LidarrWriteGate, store: SinglesSwitchStore, checks: Int = 30,
                 pause: Duration = .seconds(2), now: @escaping @Sendable () -> Date = Date.init) {
@@ -192,7 +248,8 @@ public actor SinglesSwitcher {
     }
 
     /// The runner was torn down or rebuilt: nothing more is sent or saved by this switcher.
-    public func stop() { stopped = true }
+    /// Re-review 2: synchronous, so it holds before the new runner starts.
+    public nonisolated func stop() { stopFlag.withLock { $0 = true } }
 
     private func running() throws {
         if stopped || store.isClosed { throw SinglesSwitchError.stopped }
@@ -242,7 +299,7 @@ public actor SinglesSwitcher {
         try running()
         do { try await store.save(job) } catch { throw SinglesSwitchError.notSaved }
         await gate.note(LidarrWriteGate.singlesNote(artistId: artistId, metadataProfileId: profileId,
-                                                    monitorNewItems: job.originalFollow))
+                                                    monitorNewItems: job.originalFollow, instance: lidarr.instanceScope))
         return await advance(job, current: current)
     }
 
@@ -264,6 +321,19 @@ public actor SinglesSwitcher {
         job.recording = nil
         guard (try? await store.save(job)) != nil else { return nil }
         return recording
+    }
+
+    /// Re-review 2: the song wasn't asked for after all (its request failed): back into the journal, tried again later.
+    public func giveBackRecording(_ artistId: Int, _ recording: ExternalRecording) async {
+        guard !stopped, var job = try? await store.job(artistId), job.recording == nil else { return }
+        job.recording = recording
+        try? await store.save(job)
+    }
+
+    /// The finished switches whose song is still to be asked for (re-review 2: retried until a request is accepted).
+    public func waitingRecordings() async -> [Int] {
+        guard !stopped, let jobs = try? await store.jobs() else { return [] }
+        return jobs.filter { $0.step == .done && $0.recording != nil }.map(\.artistId)
     }
 
     /// Undo of a finished switch: the saved profile back, a confirmed refresh, then following. The journal is the source.
@@ -291,12 +361,26 @@ public actor SinglesSwitcher {
         defer { release(artistId) }
         try running()
         guard await gate.enabled else { throw SinglesSwitchError.changesOff }
+        // Re-review 2 N1: only an artist this Lidarr's quarantined journal named, and only while it is still on a Magpie
+        // "+ Singles" profile that is a superset of the saved one (read fresh); otherwise nothing is sent.
+        guard await store.lostArtists().contains(artistId) else { throw SinglesSwitchError.nothingToUndo }
         if let existing = try? await store.job(artistId), existing.isOpen { throw SinglesSwitchError.nothingToUndo }
+        let artist: LidarrArtist, profiles: [JSONValue]
+        do {
+            artist = try await lidarr.artist(id: artistId)
+            profiles = try await lidarr.metadataProfilesJSON()
+        } catch { throw SinglesSwitchError.unavailable }
+        guard let current = profiles.first(where: { $0["id"]?.intValue == artist.metadataProfileId }),
+              let saved = profiles.first(where: { $0["id"]?.intValue == profileId }),
+              current["name"]?.stringValue?.hasSuffix(Provisioner.singlesSuffix) == true,
+              Provisioner.isSinglesSuperset(current, of: saved) else { throw SinglesSwitchError.changedByOwner }
         var job = SinglesSwitchJob(artistId: artistId, target: MBID("00000000-0000-0000-0000-000000000000")!, originalProfileId: profileId,
                                    originalFollow: follow, beforeAlbumIds: [], beforeReleaseGroups: [], startedAt: now())
         job.puttingBackTo = .rolledBack
         do { try await store.save(job) } catch { throw SinglesSwitchError.notSaved }
-        return try await putBack(&job)
+        let done = try await putBack(&job)
+        if done { await store.forgetLost(artistId) }
+        return done
     }
 
     // MARK: - The steps
@@ -434,9 +518,16 @@ public actor SinglesSwitcher {
             try running()
             job.step = .puttingBack
             job.refreshCommandId = nil
+            job.profileRestored = nil
             try await store.save(job)
+        }
+        // Re-review 2 N2: the profile is sent again on every pass until Lidarr reads back the original; only then saved.
+        if job.profileRestored != true {
             try running()
             _ = try await gate.send("PUT", "artist/editor", body: ProfileBody(artistIds: [job.artistId], metadataProfileId: job.originalProfileId), confinedAs: .singlesSwitch)
+            guard (try? await lidarr.artist(id: job.artistId).metadataProfileId) == job.originalProfileId else { return false }
+            job.profileRestored = true
+            try await store.save(job)
         }
         if job.refreshCommandId == nil {
             try running()

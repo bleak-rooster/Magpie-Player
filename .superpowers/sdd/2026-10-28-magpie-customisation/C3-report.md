@@ -341,3 +341,45 @@ Changed: the rollback test (the profile back, following not until the refresh is
 **Release UI check (Trending song menu), passed:** `testATrendingSongOffersTryAndAddToLibraryAndSaysWhyWithChangesOff` (68.8 s).
 
 check-release: OK.
+
+
+## Re-review 2 fixes (C3-rereview2.md)
+
+### Important
+
+**N1. "Put back" is offered only where it belongs.**
+- When a journal is quarantined, the artist ids it still names are recorded beside it in `singles-switch-<instance>.lost.json`, which is erased at sign-out.
+- Change-log lines for switches now carry the Lidarr instance. Actions appear only on this Lidarr's lines, and only for those recorded artists.
+- `restoreFromNote` reads the artist fresh before any write. The artist must still be on a "+ Singles (Magpie)" profile that is a superset of the saved one; otherwise it refuses (`changedByOwner`) and sends nothing.
+- Tests:
+  - `putBackIsOnlyForThisLidarrsLostSwitches` (a sign-out and sign-in, and another Lidarr);
+  - `putBackRefusesAnArtistChangedByHand`;
+  - `aCorruptJournalIsKeptAsideAndTheArtistCanBePutBack` (updated);
+  - hosted `putBackIsOfferedOnlyOnThisLidarrsLostArtists`.
+
+**N2. A failed profile restore is never reported as done.**
+- While putting back, the original profile is resent on every pass until Lidarr reads the original id back.
+- Only then is `profileRestored` saved.
+- Test: `aFailedProfileRestoreIsSentAgain`.
+
+### Minors
+
+- **R2 status:** a release with no Official release is refused before anything is sent (hosted `aNonOfficialReleaseIsRefused`).
+- **Song request:** if the request for a song fails after it was taken from the journal, it goes back into the journal and is retried (`aSongWhoseRequestFailedIsKept`).
+- **Stop:** the old switcher's stop is now synchronous and nonisolated, called before the new runner starts.
+- **Close and save:** the closed check and the journal write are taken under the same lock.
+
+### Failing runs captured
+
+Each fix was disabled, the tests run, then the fix restored:
+- Lost list, superset guard, profile resend and give-back disabled together: SinglesSwitch tests failed with 14 issues, across N1's three tests, N2's test, the give-back test, and the undo and rollback order tests.
+- Instance filter and Official guard disabled: both hosted tests failed (3 issues).
+
+### Runs
+
+- Requests: 421 tests. LidarrKit: 169 tests.
+- `SinglesSwitchTests`: 23. `LibraryFindsTests`: 24.
+- Hosted `LibraryFindsAppTests` and `FindCleanupAppTests`: 27.
+- check-writes and its selftest pass.
+
+check-release: OK.

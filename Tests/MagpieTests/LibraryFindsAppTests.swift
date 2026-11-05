@@ -321,4 +321,34 @@ private let releaseMBID = MBID("b5cdfb5f-35a5-4bc5-bbca-57839a71813a")!
         #expect(saved?.artistId == 20 && saved?.profileId == 5 && saved?.follow == "all")
         #expect(ChangeLogView.singlesSaved(ChangeLogEntry(date: Date(), method: "PUT", path: "/x", bodySummary: "")) == nil)
     }
+
+    // MARK: - Re-review 2
+
+    /// N1: "Put back" only on this Lidarr's lines, for artists its quarantined journal named.
+    @Test func putBackIsOfferedOnlyOnThisLidarrsLostArtists() {
+        func line(_ artist: Int, _ instance: String?) -> ChangeLogEntry {
+            ChangeLogEntry(date: Date(), method: "NOTE", path: "/magpie",
+                           bodySummary: LidarrWriteGate.singlesNote(artistId: artist, metadataProfileId: 5, monitorNewItems: "all",
+                                                                    instance: instance))
+        }
+        let lines = [line(20, "lidarr-a"), line(20, "lidarr-b"), line(21, "lidarr-a"), line(22, nil)]
+        #expect(AppModel.putBackArtists(lines, lost: [20, 22], instance: "lidarr-a") == [20], "lost here, on this Lidarr's line")
+        #expect(AppModel.putBackArtists(lines, lost: [], instance: "lidarr-a").isEmpty, "after a sign-in: nothing lost")
+        #expect(AppModel.putBackArtists(lines, lost: [20], instance: "lidarr-c").isEmpty, "another Lidarr")
+        #expect(ChangeLogView.singlesSaved(lines[0])?.instance == "lidarr-a")
+    }
+
+    /// R2 status: a release with no Official release is refused before anything is sent.
+    @Test func aNonOfficialReleaseIsRefused() async throws {
+        let model = try await model()
+        defer { model.signOut() }
+        available(model)
+        let before = transport.navidrome.requests.count
+        let recording = ExternalRecording(recordingMBID: firstTrack, title: "Harbour Lights", artist: "Stub Arrows", source: .lidarr)
+        let accepted = await model.sendToLibrary(recording, album: groupMBID, title: "Harbour Lights",
+                                                 preview: .newArtist(title: "Bootleg", isAlbum: true, primaryType: "Album",
+                                                                     secondaryTypes: [], official: false))
+        #expect(!accepted && model.libraryEdits.notice?.text == LibraryFindsCopy.refusedKind)
+        #expect(transport.navidrome.requests.dropFirst(before).allSatisfy { ($0.httpMethod ?? "GET") == "GET" })
+    }
 }

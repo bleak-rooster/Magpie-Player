@@ -12,7 +12,8 @@ extension RequestRunner {
         case notListed(artistId: Int, single: MBID?)
         /// An artist not in Lidarr: the release a new artist's add would monitor (the album asked for, or the smallest a
         /// Finds-profile add can monitor), with its MusicBrainz types: the add's release types must list it (D136, R2).
-        case newArtist(title: String, isAlbum: Bool, primaryType: String?, secondaryTypes: [String])
+        /// `official`: some release of it is Official (Magpie's profiles list Official releases only; re-review 2).
+        case newArtist(title: String, isAlbum: Bool, primaryType: String?, secondaryTypes: [String], official: Bool = true)
     }
 
     /// `album`: an album-page add (that release group); otherwise the song's smallest release.
@@ -33,8 +34,9 @@ extension RequestRunner {
         guard let rg = album ?? ReleasePicker.smallest(containing: found, available: fits),
               let release = found.releases.first(where: { $0.releaseGroup.id == rg }) else { throw MusicBrainzError.notFound }
         let group = release.releaseGroup
+        let official = found.releases.contains { $0.releaseGroup.id == rg && $0.status?.lowercased() == "official" }
         return .newArtist(title: release.title, isAlbum: group.primaryType?.lowercased() == "album",
-                          primaryType: group.primaryType, secondaryTypes: group.secondaryTypes)
+                          primaryType: group.primaryType, secondaryTypes: group.secondaryTypes, official: official)
     }
 }
 

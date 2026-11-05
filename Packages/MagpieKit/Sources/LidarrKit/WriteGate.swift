@@ -594,8 +594,10 @@ public actor LidarrWriteGate {
     }
 
     /// Round 15 C3 (D146): the singles switch's change-log line (information only; the undo is the journal's).
-    public static func singlesNote(artistId: Int, metadataProfileId: Int?, monitorNewItems: String?) -> String {
+    /// Re-review 2 N1: stamped with the Lidarr it is for (the change log is one file for every Lidarr).
+    public static func singlesNote(artistId: Int, metadataProfileId: Int?, monitorNewItems: String?, instance: String? = nil) -> String {
         "singles switch: artist \(artistId) metadataProfileId \(metadataProfileId.map(String.init) ?? "-") monitorNewItems \(monitorNewItems ?? "-")"
+            + (instance.map { " instance \($0)" } ?? "")
     }
 
     /// Y5 fix I2: a line in the change log for something Magpie did without a write to Lidarr (it cleared a Keep that

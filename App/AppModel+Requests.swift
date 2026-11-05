@@ -97,7 +97,7 @@ extension AppModel {
         // journal is closed too, so nothing writes the file again.
         let retiredSwitcher = singlesSwitcher
         singlesSwitcher = nil
-        if let retiredSwitcher { Task { await retiredSwitcher.stop() } }
+        retiredSwitcher?.stop()   // re-review 2: synchronous, before the new runner starts
         let nextScope = session != nil ? lidarrClient?.instanceScope : nil
         if let retiredSwitcher, retiredSwitcher.store.fileURL != nextScope.map({ SinglesSwitchStore.defaultURL(in: dataDirectory, instance: $0) }) {
             retiredSwitcher.store.close()

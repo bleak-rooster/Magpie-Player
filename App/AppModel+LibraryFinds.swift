@@ -196,7 +196,7 @@ extension AppModel {
             return libraryEdits.notify(LibraryFindsCopy.couldntCheck, symbol: "exclamationmark.circle")
         }
         switch preview {
-        case .listed(let title, true), .newArtist(let title, true, _, _):
+        case .listed(let title, true), .newArtist(let title, true, _, _, _):
             songActions.libraryConfirm = LibraryConfirm(kind: .album(preview), title: LibraryFindsCopy.confirmTitle,
                                                         message: LibraryFindsCopy.comesWithAlbum(title), recording: recording)
         case .notListed(let artistId, let single):
@@ -236,23 +236,29 @@ extension AppModel {
 
     /// Sends Add to library. Only a new artist's add needs the main library's profiles (M3): "Magpie Lossless Preferred"
     /// and the owner's own Add defaults' metadata profile and following (D136, M2), made through the gate first.
-    func sendToLibrary(_ recording: ExternalRecording, album: MBID?, title: String, preview: RequestRunner.TargetPreview?) async {
+    /// Returns whether the request was accepted.
+    @discardableResult
+    func sendToLibrary(_ recording: ExternalRecording, album: MBID?, title: String, preview: RequestRunner.TargetPreview?) async -> Bool {
         do {
             var libraryAdd: RequestRunner.LibraryAddProfile?
-            if case .newArtist(_, _, let primary, let secondary)? = preview {
-                guard let types = newMusic.whenYouAdd.types.widened(toInclude: primary, secondaryTypes: secondary) else {
-                    return libraryEdits.notify(LibraryFindsCopy.refusedKind, symbol: "exclamationmark.circle")
+            if case .newArtist(_, _, let primary, let secondary, let official)? = preview {
+                guard official, let types = newMusic.whenYouAdd.types.widened(toInclude: primary, secondaryTypes: secondary) else {
+                    libraryEdits.notify(LibraryFindsCopy.refusedKind, symbol: "exclamationmark.circle")
+                    return false
                 }
                 try await ensureLibraryQuality()
                 libraryAdd = try await newArtistProfile(types: types)
             }
             _ = try await startTry(recording, album: album, releaseGroup: nil, intent: .library, libraryAdd: libraryAdd)
             libraryEdits.notify(LibraryFindsCopy.added(title), symbol: "arrow.down.circle")
+            return true
         } catch let error as ProvisionError {
             libraryEdits.notify(NewMusicCopy.message(for: ArtistLidarrError.profileConflict(Self.conflictName(error))),
                                 symbol: "exclamationmark.circle")
+            return false
         } catch {
             libraryEdits.notify(TryCopy.message(for: error), symbol: "exclamationmark.circle")
+            return false
         }
     }
 
@@ -334,12 +340,18 @@ extension AppModel {
         let now = Date()
         if !force, let last = songActions.singlesResumedAt, now.timeIntervalSince(last) < 60 { return }
         songActions.singlesResumedAt = now
-        for (artistId, outcome) in await switcher.resumeAll() {
+        let outcomes = await switcher.resumeAll()
+        // Finished switches whose song is still to be asked for (just now, or a request that failed before: re-review 2).
+        for artistId in await switcher.waitingRecordings() {
+            guard let job = try? await switcher.store.job(artistId), let recording = await switcher.takeRecording(artistId) else { continue }
+            if !(await sendToLibrary(recording, album: job.target, title: recording.title, preview: nil)) {
+                await switcher.giveBackRecording(artistId, recording)
+            }
+        }
+        for (_, outcome) in outcomes {
             switch outcome {
             case .finished:
-                if let job = try? await switcher.store.job(artistId), let recording = await switcher.takeRecording(artistId) {
-                    await sendToLibrary(recording, album: job.target, title: recording.title, preview: nil)
-                }
+                break
             case .rolledBack:
                 libraryEdits.notify(LibraryFindsCopy.singlesRolledBack, symbol: "exclamationmark.circle")
             case .pending, .alreadyListed:
@@ -362,16 +374,25 @@ extension AppModel {
                 ? LibraryFindsCopy.singlesPutBack : LibraryFindsCopy.singlesPending
         } catch SinglesSwitchError.changesOff {
             return TryAvailability.changesOff.message!
+        } catch SinglesSwitchError.changedByOwner {
+            return LibraryFindsCopy.singlesChangedByOwner
         } catch {
             return LibraryFindsCopy.trialUnavailable
         }
     }
 
-    /// Artists whose switch journal entry is gone (a damaged journal): their change-log line offers "Put back".
-    func singlesWithoutJournal(_ artists: Set<Int>) async -> Set<Int> {
-        guard let store = singlesSwitcher?.store, let jobs = try? await store.jobs() else { return [] }
-        let known = Set(jobs.map(\.artistId))
-        return artists.subtracting(known)
+    /// Re-review 2 N1: the change-log lines offering "Put back": only artists this Lidarr's quarantined journal named, and
+    /// only on lines stamped with this Lidarr.
+    func singlesPutBackArtists(_ entries: [ChangeLogEntry]) async -> Set<Int> {
+        guard let store = singlesSwitcher?.store else { return [] }
+        return Self.putBackArtists(entries, lost: await store.lostArtists(), instance: lidarrScope)
+    }
+
+    nonisolated static func putBackArtists(_ entries: [ChangeLogEntry], lost: Set<Int>, instance: String?) -> Set<Int> {
+        guard let instance else { return [] }
+        return Set(entries.compactMap { e in
+            ChangeLogView.singlesSaved(e).flatMap { $0.instance == instance && lost.contains($0.artistId) ? $0.artistId : nil }
+        })
     }
 
     /// The change log's Undo for a finished singles switch: the saved profile and following back, then a refresh (the
