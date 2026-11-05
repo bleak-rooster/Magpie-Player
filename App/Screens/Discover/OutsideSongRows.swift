@@ -57,13 +57,8 @@ struct AurralArt: View {
             .accessibilityHidden(true)
             .task(id: "\(image?.raw ?? "")|\(artist?.rawValue ?? "")#\(attempt)") {
                 // The copy on the phone first (review minor 3: also when the server named a picture), then the server's
-                // picture, then the one the artist page shows.
-                if let artist, let onPhone = await model.recommendedArt.cached(.artist(artist)) {
-                    picture = UIImage(cgImage: onPhone)
-                }
-                if let found = await model.aurralArtwork(image, side: side) { picture = found; return }
-                guard picture == nil, let artist, !model.isOffline else { return }
-                if let found = await model.recommendedArt.image(.artist(artist)) { picture = UIImage(cgImage: found) }
+                // picture, then the one the artist page shows (shared with Home's circles, round 15 C4).
+                await model.recommendedArtistPicture(image, artist: artist, side: side) { picture = $0 }
             }
     }
 }

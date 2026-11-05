@@ -80,6 +80,17 @@ enum Mapping {
                      created: date(d.created))
     }
 
+    /// A native `/api/album` row (round 15 C4): the same album getAlbumList2 gives, with its release group and plays.
+    static func album(_ d: NativeAlbum) -> Album {
+        let hash = d.imageHash.flatMap { $0.isEmpty ? nil : $0 }
+        return Album(id: d.id, name: d.name ?? "", artist: d.compilation == true ? variousArtists : (d.albumArtist ?? ""),
+                     artistId: d.albumArtistId, year: d.maxYear.flatMap { $0 > 0 ? $0 : nil },
+                     songCount: d.songCount ?? 0, duration: d.duration ?? 0,
+                     coverArtId: "al-\(d.id)" + (hash.map { "_\($0)" } ?? ""),
+                     releaseGroupMBID: mbid(d.mbzReleaseGroupId), songs: nil, starred: d.starred ?? false,
+                     created: date(d.createdAt), playCount: d.playCount)
+    }
+
     static func artist(_ d: SubsonicArtist) -> Artist {
         Artist(id: d.id, name: d.name ?? "", albumCount: d.albumCount ?? d.album?.count ?? 0,
                coverArtId: d.coverArt, mbid: mbid(d.musicBrainzId), starred: d.starred != nil)

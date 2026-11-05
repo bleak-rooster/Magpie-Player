@@ -451,6 +451,15 @@ public struct GenrePreferences: PreferenceArea {
     public var groupNames: [String: String]
     public var hidden: Set<String>
     public var customGroups: [String]
+    /// Round 15 C4 (D143): the last sort picked on a group's page and on a genre's page.
+    public var groupSort: GenreAlbumSort
+    public var genreSort: GenreAlbumSort
+
+    public init(mode: GenreViewMode, assignments: [String: String], groupNames: [String: String], hidden: Set<String>,
+                customGroups: [String], groupSort: GenreAlbumSort = .name, genreSort: GenreAlbumSort = .name) {
+        self.mode = mode; self.assignments = assignments; self.groupNames = groupNames; self.hidden = hidden
+        self.customGroups = customGroups; self.groupSort = groupSort; self.genreSort = genreSort
+    }
 
     /// Hostile or runaway stored data is capped: over-long text is dropped, then the first entries in key order stay.
     public func normalised() -> GenrePreferences {
@@ -465,7 +474,7 @@ public struct GenrePreferences: PreferenceArea {
                                 assignments: capped(assignments, Self.maxAssignments),
                                 groupNames: capped(groupNames, Self.maxGroupNames),
                                 hidden: Set(hidden.filter { $0.count <= limit }.sorted().prefix(Self.maxHidden)),
-                                customGroups: Array(groups))
+                                customGroups: Array(groups), groupSort: groupSort, genreSort: genreSort)
     }
 }
 
