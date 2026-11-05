@@ -112,6 +112,9 @@ struct SubsonicAlbum: Decodable {
     let starred: String?
     let created: String?
     let playCount: Int?
+    /// OpenSubsonic: the original release's date (round 15 C4 fix, the phone's year order).
+    struct ItemDate: Decodable { let year: Int? }
+    let originalReleaseDate: ItemDate?
 }
 
 struct SubsonicArtist: Decodable {

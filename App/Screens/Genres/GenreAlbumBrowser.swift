@@ -65,7 +65,7 @@ struct ServerGenreAlbums: GenreAlbumSource {
         self.genres = genres
         sort = keptSort(model)
         server = nil
-        decades = []
+        decades = decadeKey.flatMap { Self.decadeCache[$0] } ?? []
         await reload()
     }
 
@@ -127,6 +127,7 @@ struct ServerGenreAlbums: GenreAlbumSource {
         generation += 1
         let mine = generation
         loadingMore = false
+        loadMoreFailed = false
         pager = nil
         if albums.value == nil { albums = .loading }
         let asked = askedGenres
@@ -157,7 +158,13 @@ struct ServerGenreAlbums: GenreAlbumSource {
             if decades.isEmpty { await readDecades(server, mine) }
         } catch where AppModel.nativeListUnsupported(error) {
             guard mine == generation else { return }
-            try? await readSubsonic(asked, mine)
+            // Review I2: the Subsonic list failing too says so (or, with albums on screen, the "couldn't refresh" notice).
+            do {
+                try await readSubsonic(asked, mine)
+            } catch {
+                guard mine == generation else { return }
+                albums = albums.failing(error, noticeTo: model)
+            }
         } catch {
             guard mine == generation else { return }
             albums = albums.failing(error, noticeTo: model)
@@ -169,17 +176,25 @@ struct ServerGenreAlbums: GenreAlbumSource {
         guard let pager, pager.hasMore, !loadingMore else { return }
         let mine = generation
         loadingMore = true
+        loadMoreFailed = false
         defer { if mine == generation { loadingMore = false } }
         do {
             try await pager.loadMore()
             guard mine == generation else { return }
             albums = .loaded(pager.albums)
         } catch {
-            // The albums on screen stay; scrolling to the end again asks again.
+            // Review M3: the albums on screen stay, and the grid's end offers Try again instead of a spinner.
+            guard mine == generation, !AppModel.isCancellation(error) else { return }
+            loadMoreFailed = true
         }
     }
 
     var hasMore: Bool { pager?.hasMore ?? false }
+
+    /// The last "more" read failed: the grid's end says so, with Try again.
+    private(set) var loadMoreFailed = false
+
+    func retryMore() async { await loadMore() }
 
     /// No native list (or a genre it can't name): the Subsonic list as before, sorted and filtered on the phone.
     private func readSubsonic(_ asked: [String], _ mine: Int) async throws {
@@ -205,10 +220,23 @@ struct ServerGenreAlbums: GenreAlbumSource {
     }
 
     /// The decades the page's albums span (all its genres), from a few single-album reads.
+    /// Review M1: the decades a page spans are read once per account and set of genres and kept for the session (a
+    /// handful of single-album reads), not on every open.
+    private static var decadeCache: [String: [Int]] = [:]
+
+    private var decadeKey: String? {
+        guard let scope = model?.navidromeScope else { return nil }
+        return "\(scope)|" + genres.map(\.name).sorted().joined(separator: "\u{1F}")
+    }
+
     private func readDecades(_ server: ServerGenreAlbums, _ mine: Int) async {
         let all = GenreAlbumQuery(genres: genres.map(\.name), sort: .oldest)
         guard let span = try? await GenreAlbumPager.yearSpan(server, query: all), mine == generation else { return }
         decades = Decades.spanning(oldest: span.oldest, newest: span.newest)
+        if let key = decadeKey {
+            if Self.decadeCache.count >= 200 { Self.decadeCache.removeAll() }
+            Self.decadeCache[key] = decades
+        }
     }
 }
 
@@ -353,6 +381,7 @@ enum GenreAlbumCopy {
     static let onPhone = "On this phone"
     static let subsonic = "Up to 500 a genre"
     static let noneMatch = "No albums match."
+    static let moreFailed = "Couldn't load more. Try again"
 }
 
 /// A chip that opens a menu (or a plain one inside a button): the same capsule as `FilterChip`.
@@ -395,15 +424,24 @@ struct GenreAlbumList: View {
             } else {
                 VStack(spacing: Tokens.Spacing.l) {
                     AlbumGrid(albums: albums, subtitle: subtitle) { Task { await browser.loadMore() } }
-                    if browser.hasMore { ProgressView().accessibilityLabel("Loading more albums") }
+                    if browser.loadMoreFailed {
+                        Button { Task { await browser.retryMore() } } label: {
+                            Label(GenreAlbumCopy.moreFailed, systemImage: "arrow.clockwise").font(.footnote)
+                        }
+                        .accessibilityIdentifier("genre-load-more-retry")
+                    } else if browser.hasMore {
+                        ProgressView().accessibilityLabel("Loading more albums")
+                    }
                 }
             }
         }
     }
 
-    private func subtitle(_ album: Album) -> String {
-        switch browser.sort {
-        case .newest, .oldest: album.year.map { "\(album.artist) · \($0)" } ?? album.artist
+    private func subtitle(_ album: Album) -> String { Self.subtitle(album, sort: browser.sort) }
+
+    static func subtitle(_ album: Album, sort: GenreAlbumSort) -> String {
+        switch sort {
+        case .newest, .oldest: album.sortYear.map { "\(album.artist) · \($0)" } ?? album.artist
         default: album.artist
         }
     }

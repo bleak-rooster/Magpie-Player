@@ -89,6 +89,8 @@ struct NativeAlbum: Decodable {
     let mbzReleaseGroupId: String?
     let createdAt: String?
     let missing: Bool?
+    /// "1975-06-01", "1975" or empty: Navidrome's year order uses it first (review I1).
+    let originalDate: String?
 }
 
 /// One row of `/api/genre`.

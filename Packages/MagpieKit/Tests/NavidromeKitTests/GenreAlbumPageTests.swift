@@ -97,6 +97,32 @@ import Testing
         #expect(short.total == 3)
     }
 
+    /// Review I1: Navidrome orders by year using the original date first; the album carries that year.
+    @Test func theOriginalYearIsKept() async throws {
+        let rows = [#"{"id":"r1","name":"Remaster","albumArtist":"X","maxYear":2010,"originalDate":"1975-06-01","songCount":1}"#,
+                    #"{"id":"r2","name":"Plain","albumArtist":"X","maxYear":2001,"originalDate":"","songCount":1}"#,
+                    #"{"id":"r3","name":"Year only","albumArtist":"X","maxYear":2003,"originalDate":"1999","songCount":1}"#]
+        let (client, _) = try await connected {
+            $0.stub(pathSuffix: "/api/album", body: Data("[\(rows.joined(separator: ","))]".utf8))
+        }
+        let page = try await client.albumsPage(GenreAlbumQuery(genres: ["G"], sort: .oldest), genreIds: ["g"], start: 0, end: 10)
+        #expect(page.albums.map(\.originalYear) == [1975, nil, 1999])
+        #expect(page.albums.map(\.sortYear) == [1975, 2001, 1999])
+        #expect(page.albums.map(\.year) == [2010, 2001, 2003], "the album's own year is kept for what it is")
+    }
+
+    /// Review I3: Most played's played albums (`recently_played`, Navidrome's `play_count > 0`).
+    @Test func playedOnlyAsksForPlayedAlbums() async throws {
+        let (client, t) = try await connected {
+            $0.stub(pathSuffix: "/api/album", body: Data("[]".utf8), headers: ["X-Total-Count": "0"])
+        }
+        _ = try await client.albumsPage(GenreAlbumQuery(genres: ["G"], sort: .name, playedOnly: true), genreIds: ["g"],
+                                        start: 0, end: 250)
+        #expect(queryValue(try #require(t.requests.last), "recently_played") == "true")
+        _ = try await client.albumsPage(GenreAlbumQuery(genres: ["G"], sort: .name), genreIds: ["g"], start: 0, end: 250)
+        #expect(queryValue(try #require(t.requests.last), "recently_played") == nil)
+    }
+
     @Test func genreIdsByName() async throws {
         let (client, t) = try await connected {
             $0.stub(pathSuffix: "/api/genre", body: Data(#"[{"id":"g1","name":"Rock"},{"id":"g2","name":"Indie Rock"},{"id":"g3"}]"#.utf8),

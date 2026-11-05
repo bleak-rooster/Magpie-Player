@@ -106,9 +106,13 @@ public struct GenreAlbumQuery: Hashable, Sendable {
     public var favouritesOnly: Bool
     /// Random's seed, so its pages follow on from each other (Navidrome's `seed`).
     public var seed: Int
+    /// Only albums played at least once (Navidrome's `recently_played`, which is `play_count > 0`).
+    public var playedOnly: Bool
 
-    public init(genres: [String], sort: GenreAlbumSort, text: String? = nil, favouritesOnly: Bool = false, seed: Int = 0) {
+    public init(genres: [String], sort: GenreAlbumSort, text: String? = nil, favouritesOnly: Bool = false, seed: Int = 0,
+                playedOnly: Bool = false) {
         self.genres = genres; self.sort = sort; self.text = text; self.favouritesOnly = favouritesOnly; self.seed = seed
+        self.playedOnly = playedOnly
     }
 
     /// The same question in year order (oldest first): a decade's window is found in it.
@@ -137,7 +141,7 @@ public enum GenreAlbumOrder {
         let text = filter.searchText.map(fold)
         let kept = albums.filter { album in
             if filter.favouritesOnly, !album.starred { return false }
-            if let decade = filter.decade, Decades.decade(of: album.year) != decade { return false }
+            if let decade = filter.decade, Decades.decade(of: album.sortYear) != decade { return false }
             if let text, !fold(album.name).contains(text), !fold(album.artist).contains(text) { return false }
             return true
         }
@@ -160,7 +164,7 @@ public enum GenreAlbumOrder {
         case .newest, .oldest:
             let newest = sort == .newest
             return albums.sorted { a, b in
-                let (x, y) = (a.year ?? 0, b.year ?? 0)
+                let (x, y) = (a.sortYear ?? 0, b.sortYear ?? 0)
                 if x != y { return newest ? x > y : x < y }
                 return byName(a, b)
             }
@@ -203,7 +207,8 @@ struct SeededGenerator: RandomNumberGenerator {
 /// - With a decade (Navidrome filters by one exact year only): the decade's window is found in the year-ordered list by
 ///   binary search over single-album reads (about 2 × log2 of the count), then read. A window of at most `windowSortCap`
 ///   albums is read whole and put in the chosen order on the phone; a larger one is read a page at a time in year order
-///   (newest first for Newest, else oldest first) and `inYearOrder` says so.
+///   (newest first for Newest, each year in name order; else oldest first) and `inYearOrder` says so. "Year" is the one
+///   Navidrome orders by: the original release's, else the album's own (D142).
 @MainActor public final class GenreAlbumPager {
     public static let pageSize = 100
     public static let windowSortCap = 1000
@@ -217,10 +222,16 @@ struct SeededGenerator: RandomNumberGenerator {
     public private(set) var inYearOrder = false
 
     private let source: GenreAlbumSource
-    /// The next server position to read (forwards), or the window's remaining range (a backwards decade read).
+    /// The server lists read one after another (Most played: its played albums, then everything by name).
+    private var phases: [GenreAlbumQuery] = []
+    private var phase = 0
+    /// The next server position to read in the current list (or, for a decade read newest first, the window's end).
     private var next = 0
     private var window: Range<Int>?
     private var backwards = false
+    /// A decade read newest first: the oldest year read so far, held until the read passes it (D142, review M2).
+    private var pending: [Album] = []
+    private var lastPage: [String] = []
     private var seen = Set<String>()
     private var exhausted = false
 
@@ -232,11 +243,50 @@ struct SeededGenerator: RandomNumberGenerator {
 
     /// The first page (or the decade's window).
     public func loadFirst() async throws {
-        albums = []; seen = []; next = 0; exhausted = false; inYearOrder = false; window = nil; backwards = false
-        guard let decade else {
+        albums = []; seen = []; next = 0; phase = 0; phases = []; pending = []; lastPage = []
+        exhausted = false; inYearOrder = false; window = nil; backwards = false; total = nil
+        if let decade {
+            try await loadDecade(decade)
+        } else if query.sort == .mostPlayed {
+            try await loadMostPlayed()
+        } else {
+            phases = [query]
             try await loadMore()
-            return
         }
+    }
+
+    /// Review I3 (D141): Navidrome orders Most played by `play_count` alone, so its many ties (every unplayed album)
+    /// could come back in a different order on each page and some albums would never show. The played albums
+    /// (`recently_played`, i.e. `play_count > 0`) are read in name order (a stable order) and put in play order on the
+    /// phone; then every album follows by name, the played ones skipped. More than `windowSortCap` played albums are
+    /// read in the server's play order instead (ties among them may still move between pages).
+    private func loadMostPlayed() async throws {
+        var played = query
+        played.playedOnly = true
+        played.sort = .name
+        var all = query
+        all.sort = .name
+        let first = try await source.page(played, start: 0, end: 250)
+        if first.total <= Self.windowSortCap {
+            var read = first.albums
+            var at = 250
+            while at < first.total {
+                let page = try await source.page(played, start: at, end: at + 250)
+                if page.albums.isEmpty { break }
+                read += page.albums
+                at += 250
+            }
+            append(GenreAlbumOrder.sorted(read.filter { ($0.playCount ?? 0) > 0 }, by: .mostPlayed))
+            phases = [all]
+        } else {
+            var byPlays = query
+            byPlays.playedOnly = true
+            phases = [byPlays, all]
+        }
+        try await loadMore()
+    }
+
+    private func loadDecade(_ decade: Int) async throws {
         let yearQuery = query.inYearOrder
         let first = try await source.page(yearQuery, start: 0, end: 1)
         let count = first.total
@@ -255,8 +305,9 @@ struct SeededGenerator: RandomNumberGenerator {
                 if page.albums.isEmpty { break }
                 at = end
             }
-            let inDecade = read.filter { Decades.decade(of: $0.year) == decade && seen.insert($0.id).inserted }
+            let inDecade = read.filter { Decades.decade(of: $0.sortYear) == decade && seen.insert($0.id).inserted }
             albums = GenreAlbumOrder.sorted(inDecade, by: query.sort, seed: query.seed)
+            total = albums.count   // review I1: the count is what shows
             exhausted = true
             return
         }
@@ -267,32 +318,59 @@ struct SeededGenerator: RandomNumberGenerator {
         try await loadMore()
     }
 
-    /// The next page; nothing once the list has been read to its end.
+    /// The next page; nothing once the list has been read to its end. Reads on until something new shows (a page of
+    /// albums already shown would otherwise leave the grid's last row, and so the next read, where it was).
     public func loadMore() async throws {
-        guard !exhausted else { return }
-        if let window {
-            let yearQuery = query.inYearOrder
-            if backwards {
-                let start = max(window.lowerBound, next - Self.pageSize)
-                let page = try await source.page(yearQuery, start: start, end: next)
-                append(page.albums.reversed())
-                next = start
-                if start <= window.lowerBound || page.albums.isEmpty { exhausted = true }
+        let before = albums.count
+        while !exhausted && albums.count == before {
+            if let window {
+                try await readWindow(window)
             } else {
-                let end = min(window.upperBound, next + Self.pageSize)
-                let page = try await source.page(yearQuery, start: next, end: end)
-                append(page.albums)
-                next = end
-                if end >= window.upperBound || page.albums.isEmpty { exhausted = true }
+                try await readPhase()
             }
-            return
         }
-        let page = try await source.page(query, start: next, end: next + Self.pageSize)
-        total = page.total
+    }
+
+    private func readPhase() async throws {
+        guard phase < phases.count else { exhausted = true; return }
+        let list = phases[phase]
+        let page = try await source.page(list, start: next, end: next + Self.pageSize)
+        if phase == phases.count - 1 { total = page.total }
+        let ids = page.albums.map(\.id)
+        let repeated = !ids.isEmpty && ids == lastPage   // a server ignoring the offset
+        lastPage = ids
         append(page.albums)
         next += Self.pageSize
-        // A short page, or nothing new (a server ignoring the offset), is the end.
-        if page.albums.count < Self.pageSize || next >= page.total { exhausted = true }
+        if repeated || page.albums.count < Self.pageSize || next >= page.total {
+            phase += 1
+            next = 0
+            lastPage = []
+            if repeated || phase >= phases.count { exhausted = true }
+        }
+    }
+
+    private func readWindow(_ window: Range<Int>) async throws {
+        let yearQuery = query.inYearOrder
+        if backwards {
+            // Read towards the window's start; a year is shown only once the read has passed it, then in name order
+            // (review M2: reversing the server's pages turned each year's names Z to A).
+            let start = max(window.lowerBound, next - Self.pageSize)
+            let page = try await source.page(yearQuery, start: start, end: next)
+            pending += page.albums
+            next = start
+            let done = start <= window.lowerBound || page.albums.isEmpty
+            let oldestRead = page.albums.compactMap(\.sortYear).min()
+            let ready = done ? pending : pending.filter { ($0.sortYear ?? 0) > (oldestRead ?? Int.min) }
+            pending = done ? [] : pending.filter { ($0.sortYear ?? 0) <= (oldestRead ?? Int.min) }
+            append(GenreAlbumOrder.sorted(ready, by: .newest))
+            if done { exhausted = true }
+        } else {
+            let end = min(window.upperBound, next + Self.pageSize)
+            let page = try await source.page(yearQuery, start: next, end: end)
+            append(page.albums)
+            next = end
+            if end >= window.upperBound || page.albums.isEmpty { exhausted = true }
+        }
     }
 
     private func append<S: Sequence>(_ page: S) where S.Element == Album {
@@ -305,6 +383,7 @@ struct SeededGenerator: RandomNumberGenerator {
         try await Self.firstIndex(source, in: query, count: count, atLeast: year, known: known, from: start)
     }
 
+    /// Binary search on the year Navidrome orders by (review I1: the original year, else the album's own).
     private static func firstIndex(_ source: GenreAlbumSource, in query: GenreAlbumQuery, count: Int, atLeast year: Int,
                                    known: Album?, from start: Int = 0) async throws -> Int {
         var lo = start, hi = count
@@ -313,7 +392,7 @@ struct SeededGenerator: RandomNumberGenerator {
             let album: Album?
             if mid == 0, let known { album = known } else { album = try await source.page(query, start: mid, end: mid + 1).albums.first }
             guard let album else { hi = mid; continue }   // past the end (the list shrank meanwhile)
-            if (album.year ?? 0) >= year { hi = mid } else { lo = mid + 1 }
+            if (album.sortYear ?? 0) >= year { hi = mid } else { lo = mid + 1 }
         }
         return lo
     }
@@ -323,12 +402,12 @@ struct SeededGenerator: RandomNumberGenerator {
     public static func yearSpan(_ source: GenreAlbumSource, query: GenreAlbumQuery) async throws -> (oldest: Int?, newest: Int?) {
         var newestFirst = query
         newestFirst.sort = .newest
-        let newest = try await source.page(newestFirst, start: 0, end: 1).albums.first?.year
+        let newest = try await source.page(newestFirst, start: 0, end: 1).albums.first?.sortYear
         let oldestFirst = query.inYearOrder
         let first = try await source.page(oldestFirst, start: 0, end: 1)
-        if let year = first.albums.first?.year, year > 0 { return (year, newest) }
+        if let year = first.albums.first?.sortYear, year > 0 { return (year, newest) }
         let at = try await firstIndex(source, in: oldestFirst, count: first.total, atLeast: 1, known: first.albums.first)
         guard at < first.total else { return (nil, newest) }
-        return (try await source.page(oldestFirst, start: at, end: at + 1).albums.first?.year, newest)
+        return (try await source.page(oldestFirst, start: at, end: at + 1).albums.first?.sortYear, newest)
     }
 }

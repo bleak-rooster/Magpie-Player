@@ -77,7 +77,8 @@ enum Mapping {
         return Album(id: d.id, name: d.name ?? "", artist: artist, artistId: d.artistId, year: d.year,
                      songCount: d.songCount ?? songs?.count ?? 0, duration: d.duration ?? 0,
                      coverArtId: d.coverArt, releaseGroupMBID: nil, songs: songs, starred: d.starred != nil,
-                     created: date(d.created), playCount: d.playCount)
+                     created: date(d.created), playCount: d.playCount,
+                     originalYear: d.originalReleaseDate?.year.flatMap { $0 > 0 ? $0 : nil })
     }
 
     /// A native `/api/album` row (round 15 C4): the same album getAlbumList2 gives, with its release group and plays.
@@ -88,7 +89,13 @@ enum Mapping {
                      songCount: d.songCount ?? 0, duration: d.duration ?? 0,
                      coverArtId: "al-\(d.id)" + (hash.map { "_\($0)" } ?? ""),
                      releaseGroupMBID: mbid(d.mbzReleaseGroupId), songs: nil, starred: d.starred ?? false,
-                     created: date(d.createdAt), playCount: d.playCount)
+                     created: date(d.createdAt), playCount: d.playCount, originalYear: leadingYear(d.originalDate))
+    }
+
+    /// The year at the start of a date ("1975-06-01" or "1975"); nil when empty or not a year.
+    static func leadingYear(_ date: String?) -> Int? {
+        guard let date, date.count >= 4, let year = Int(date.prefix(4)), year > 0 else { return nil }
+        return year
     }
 
     static func artist(_ d: SubsonicArtist) -> Artist {

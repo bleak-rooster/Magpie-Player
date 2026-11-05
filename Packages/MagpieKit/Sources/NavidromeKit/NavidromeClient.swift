@@ -626,6 +626,8 @@ public actor NavidromeClient {
         items += genreIds.map { URLQueryItem(name: "genre_id", value: $0) }
         if let text = query.text { items.append(URLQueryItem(name: "name", value: text)) }
         if query.favouritesOnly { items.append(URLQueryItem(name: "starred", value: "true")) }
+        // Navidrome reads any value of it as `play_count > 0` (v0.63.2 `recentlyPlayedFilter`).
+        if query.playedOnly { items.append(URLQueryItem(name: "recently_played", value: "true")) }
         let (data, response) = try await native("api/album", items + libraryItem)
         let rows = try Self.decode([NativeAlbum].self, data)
         // Without the header (a proxy dropped it), a full page means there may be more; a short one is the end.

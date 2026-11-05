@@ -2,6 +2,7 @@ import Foundation
 import MagpieCore
 import MagpieTestSupport
 import NavidromeKit
+import os
 import Search
 import Testing
 @testable import Magpie
@@ -19,13 +20,14 @@ private let rockGenres = [Genre(name: "Indie Rock", songCount: 10, albumCount: 1
 /// Downloaded only; the last sort kept per kind of page.
 extension GenresAppTests {
     /// `/api/genre` names the two genres; `/api/album` answers `total` albums a page at a time and notes each read.
-    private func stubNativeAlbums(total: Int = 250) -> Recorder {
+    private func stubNativeAlbums(total: Int = 250, failing: OSAllocatedUnfairLock<Bool>? = nil) -> Recorder {
         let seen = Recorder()
         transport.inner.stub(pathSuffix: "/api/genre", body: Data(#"""
         [{"id":"g-indie","name":"Indie Rock"},{"id":"g-alt","name":"Alt Rock"},{"id":"g-amb","name":"Ambient"}]
         """#.utf8))
         transport.inner.stub(pathSuffix: "/api/album") { request in
             seen.add(request)
+            if failing?.withLock({ $0 }) == true { return MockTransport.Response(status: 500, body: Data(), headers: [:]) }
             let start = Int(values(request.url, "_start").first ?? "0") ?? 0
             let end = Int(values(request.url, "_end").first ?? "0") ?? 0
             let rows = (start..<min(end, total)).map {
@@ -84,8 +86,12 @@ extension GenresAppTests {
         #expect(model.preferences.genres.groupSort == .recentlyAdded)
         #expect(model.preferences.genres.genreSort == .name, "a genre's page keeps its own")
 
+        // A relaunch (a second model over the same defaults): its page starts with the kept sort, no filter.
         let relaunched = makeModel(fetcher: FakeFetcher())
-        #expect(relaunched.preferences.genres.groupSort == .recentlyAdded)
+        let afterRelaunch = GenreAlbumBrowser(kind: .group)
+        await afterRelaunch.start(model: relaunched, genres: rockGenres)
+        #expect(afterRelaunch.sort == .recentlyAdded && !afterRelaunch.filter.isActive)
+        // And the server is asked in that order.
         let again = GenreAlbumBrowser(kind: .group)
         await again.start(model: model, genres: rockGenres)
         #expect(again.sort == .recentlyAdded && !again.filter.isActive)
@@ -140,5 +146,69 @@ extension GenresAppTests {
         await offline.toggle(genre: "Indie Rock")
         #expect(offline.origin == .phone && offline.albums.value?.map(\.id) == ["al1"])
         #expect(seen.urls.isEmpty, "sent: \(seen.urls.map(\.path))")
+    }
+
+    // MARK: - Fix round (review I2, M1, M3, I1)
+
+    /// I2: without the native list, a Subsonic read that fails too says so (Try again), never a spinner for good.
+    @Test func c4AFailedSubsonicFallbackSaysSo() async throws {
+        let model = try await signedInModel(fetcher: FakeFetcher())
+        transport.inner.stub(pathSuffix: "/api/genre", body: Data(#"[{"id":"g-indie","name":"Indie Rock"},{"id":"g-alt","name":"Alt Rock"}]"#.utf8))
+        transport.inner.stub(pathSuffix: "/api/album", status: 404, body: Data())
+        // The Subsonic read finds the server gone.
+        let transport = self.transport
+        transport.setHook { request in
+            if request.url?.path.hasSuffix("/rest/getAlbumList2") == true, let host = request.url?.host {
+                transport.setDown([host])
+            }
+        }
+        defer { transport.setHook(nil); transport.setDown([]) }
+        let browser = GenreAlbumBrowser(kind: .group)
+        await browser.start(model: model, genres: rockGenres)
+        guard case .failed = browser.albums else {
+            Issue.record("still \(browser.albums.value.map { "\($0.count) albums" } ?? "loading")")
+            return
+        }
+    }
+
+    /// M3: a "more" read that fails leaves the albums shown and offers Try again (no spinner left turning); Try again
+    /// reads the page.
+    @Test func c4AFailedLoadMoreOffersTryAgain() async throws {
+        let model = try await signedInModel(fetcher: FakeFetcher())
+        let failing = OSAllocatedUnfairLock(initialState: false)
+        _ = stubNativeAlbums(failing: failing)
+        let browser = GenreAlbumBrowser(kind: .group)
+        await browser.start(model: model, genres: rockGenres)
+        #expect(browser.albums.value?.count == 100)
+        failing.withLock { $0 = true }
+        await browser.loadMore()
+        #expect(browser.loadMoreFailed && browser.albums.value?.count == 100)
+        failing.withLock { $0 = false }
+        await browser.retryMore()
+        #expect(!browser.loadMoreFailed && browser.albums.value?.count == 200)
+    }
+
+    /// M1: the decades a page spans are read once per set of genres (per account) and kept for the session, not on every
+    /// open.
+    @Test func c4TheDecadesAreReadOncePerSession() async throws {
+        let model = try await signedInModel(fetcher: FakeFetcher())
+        let seen = stubNativeAlbums()
+        let first = GenreAlbumBrowser(kind: .genre)
+        let genre = [Genre(name: "Ambient", songCount: 12, albumCount: 2)]
+        await first.start(model: model, genres: genre)
+        let seeks = albumReads(seen).filter { values($0, "_end").first.flatMap(Int.init) == values($0, "_start").first.flatMap(Int.init).map { $0 + 1 } }.count
+        #expect(seeks > 0 && !first.decades.isEmpty)
+        let second = GenreAlbumBrowser(kind: .genre)
+        await second.start(model: model, genres: genre)
+        let after = albumReads(seen).filter { values($0, "_end").first.flatMap(Int.init) == values($0, "_start").first.flatMap(Int.init).map { $0 + 1 } }.count
+        #expect(after == seeks, "no single-album reads the second time")
+        #expect(second.decades == first.decades)
+    }
+
+    /// I1: Newest and Oldest show the year Navidrome orders by (the original release's).
+    @Test func c4TheYearShownIsTheOneTheListIsOrderedBy() {
+        let remaster = Album(id: "r", name: "Remaster", artist: "X", year: 2010, songCount: 1, duration: 1, originalYear: 1975)
+        #expect(GenreAlbumList.subtitle(remaster, sort: .oldest) == "X · 1975")
+        #expect(GenreAlbumList.subtitle(remaster, sort: .name) == "X")
     }
 }

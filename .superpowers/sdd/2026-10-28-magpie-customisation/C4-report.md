@@ -109,3 +109,51 @@ the count said 2 albums while 1 showed. The server now leaves missing albums out
 - Nothing on the dev stack has a decade window big enough to page; that case is covered only by the package tests.
 - The "Magpie Tests C4" simulator is still there; delete it with `xcrun simctl delete "Magpie Tests C4"` if it isn't
   wanted.
+
+## Fix round (review C4-review.md)
+
+Every fix had a RED test first. Each failing run is listed below; the outputs are kept in the session scratchpad.
+
+- **I1, year mismatch (D142).**
+  - Navidrome orders by year using `coalesce(original_date, max_year)` (v0.63.2).
+  - Albums now carry `originalYear` (native `originalDate`; OpenSubsonic `originalReleaseDate`) and a `sortYear`. `sortYear` drives:
+    - the decade binary search and the in-decade filter;
+    - the phone's Newest and Oldest order;
+    - the year shown under Newest and Oldest.
+  - A sorted decade's count is now what shows on screen.
+  - RED:
+    - `aDecadeGoesByTheOriginalYear` (4 issues);
+    - `thePhonesOrderAndDecadeGoByTheOriginalYear` (2);
+    - `theOriginalYearIsKept` (2);
+    - `c4TheYearShownIsTheOneTheListIsOrderedBy` ("X · 2010").
+- **I2, failed fallback (D144).**
+  - If the Subsonic fallback fails too, it now surfaces through `albums.failing(...)`.
+  - RED: `c4AFailedSubsonicFallbackSaysSo` was stuck at "still loading".
+- **I3, ties (D141).**
+  - The v0.63.2 `sanitizeSort` takes one key only. On the dev stack (0.64.2), `_sort=play_count,name` came back misordered, so compound sorts can't be used.
+  - `recently_played` means `play_count > 0` whatever value is sent (confirmed on 0.64.2 and in the 0.63.2 source).
+  - Most played now works in two phases:
+    1. the played albums are read in name order and sorted by plays on the phone (up to 1,000);
+    2. then every album follows by name, with the played ones skipped.
+  - The other sorts' mappings already end in a name, so a gap needs two albums with the same name and artist (or the same date and name). That limit is recorded in D141.
+  - A read that adds nothing new reads on, so the grid can't stall.
+  - RED: `mostPlayedHasNoGapsWhenTheServerShufflesTies`, against a fake server that reshuffles `play_count` ties on every read (3 issues: gaps). `playedOnlyAsksForPlayedAlbums` also failed first.
+- **M1, decade cost.**
+  - The decade years are cached per account and set of genres for the session.
+  - RED: `c4TheDecadesAreReadOncePerSession` (4 single-album reads where 2 were expected).
+  - I tried a galloping search for the decade's upper edge. Its test passed before any change, and gallop doesn't reduce the read count for typical windows, so I dropped it.
+- **M2, order within a year.**
+  - A big decade read newest first now shows a year only once the read has passed it, with each year A to Z.
+  - RED: `aHugeDecadeNewestFirstKeepsNamesInOrderWithinAYear` (10 issues).
+- **M3, failed "load more".**
+  - Shows "Couldn't load more. Try again" (`genre-load-more-retry`) instead of a stuck spinner.
+  - RED: `c4AFailedLoadMoreOffersTryAgain`.
+- **M4, tests.**
+  - Added `aServerIgnoringTheOffsetNeverLoops`, a real offset-ignoring fake. It was RED: the pager kept reading the same page.
+  - The old test is renamed `aShortPageEndsTheList`.
+  - The relaunch test now starts the browser on the relaunched model.
+- **Runs:**
+  - `GenreAlbumPageTests` 8/8 and `GenreAlbumsTests` 16/16.
+  - Hosted `GenresAppTests` and `OutsideArtAppTests`: 47/47.
+  - Release UI `C4HomeGenresUITests`: 2/2 (simulator "Magpie Tests C4", stub port 3914).
+  - check-writes OK, check-release OK.
