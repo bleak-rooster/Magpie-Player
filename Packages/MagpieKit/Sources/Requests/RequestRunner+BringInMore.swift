@@ -382,7 +382,7 @@ extension RequestRunner {
         var qualityProfileId: Int
     }
 
-    static func follows(_ artist: LidarrArtist) -> Bool {
+    public static func follows(_ artist: LidarrArtist) -> Bool {
         followingValues.contains(artist.monitorNewItems?.lowercased() ?? "")
     }
 

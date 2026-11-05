@@ -293,6 +293,42 @@ public enum ArtistLidarr {
         var artistId: Int
     }
 
+    /// Round 15 C3 (D140) "Include singles for this artist", confirmed: for an artist Magpie added (the ledger says so,
+    /// read fresh) that follows no new releases, so the refresh lists their singles and monitors none of them. Their
+    /// metadata profile becomes Magpie's for `types` (made if missing) when it differs, then Lidarr refreshes the artist
+    /// and this waits for the refresh (at most `checks` reads, `pause` apart). Nothing else is changed: the one wanted
+    /// single is then monitored and searched by the usual request. Any other artist: refused, nothing sent.
+    public static func listSingles(artistId: Int, types: ReleaseTypes, lidarr: LidarrClient, gate: LidarrWriteGate,
+                                   ledger: Ledger, checks: Int = 30, pause: Duration = .seconds(2)) async throws {
+        guard await gate.enabled else { throw ArtistLidarrError.changesOff }
+        let artist = try await lidarr.artist(id: artistId)
+        guard try await ledger.createdArtist(artist) else { throw ArtistLidarrError.notMagpies }
+        guard !RequestRunner.follows(artist) else { throw ArtistLidarrError.failed }
+        do {
+            let profile = try await releaseTypesProfile(types, lidarr: lidarr, gate: gate)
+            if artist.metadataProfileId != profile {
+                _ = try await gate.send("PUT", "artist/editor", body: MetadataProfileBody(artistIds: [artistId],
+                                                                                     metadataProfileId: profile))
+            }
+            let data = try await gate.send("POST", "command", body: RefreshBody(name: "RefreshArtist", artistId: artistId))
+            guard let command = (try? JSONDecoder().decode(JSONValue.self, from: data))?["id"]?.intValue else { return }
+            for _ in 0..<checks {
+                if let c = try? await lidarr.commands().first(where: { $0.id == command }),
+                   RequestRunner.finishedCommandStates.contains(c.status.lowercased()) { return }
+                try await Task.sleep(for: pause)
+            }
+        } catch WriteGateError.disabled {
+            throw ArtistLidarrError.changesOff
+        } catch LidarrError.http(let status) where (400..<500).contains(status) {
+            throw ArtistLidarrError.failed
+        }
+    }
+
+    private struct RefreshBody: Encodable, Sendable {
+        var name: String
+        var artistId: Int
+    }
+
     /// "Monitor": monitors an artist Magpie added (the ledger says so, for the same id and MBID, read fresh) and
     /// searches for its albums. Any other artist is the owner's: refused, nothing sent.
     public static func monitor(lidarrId: Int, lidarr: LidarrClient, gate: LidarrWriteGate, ledger: Ledger) async throws {

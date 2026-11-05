@@ -88,7 +88,7 @@ struct TrendingView: View {
         if let albums {
             if !albums.isEmpty {
                 ShelfSection(DiscoverPagesCopy.topAlbums(region: region)) {
-                    ForEach(Array(albums.enumerated()), id: \.offset) { _, album in
+                    ForEach(Array(albums.enumerated()), id: \.offset) { index, album in
                         VStack(alignment: .leading, spacing: Tokens.Spacing.xs) {
                             AurralArt(image: album.artwork, side: 140)
                             Text(album.name).font(.subheadline.weight(.semibold)).lineLimit(2)
@@ -96,6 +96,9 @@ struct TrendingView: View {
                         }
                         .frame(width: 140, alignment: .leading)
                         .accessibilityElement(children: .combine)
+                        // Round 15 C3: Try / Add to library (a long press).
+                        .contextMenu { OutsideAlbumMenu(album: OutsideAlbumRef(title: album.name, artist: album.artist)) }
+                        .accessibilityIdentifier("trending-album-\(index)")
                     }
                 }
             }

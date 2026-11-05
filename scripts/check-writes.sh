@@ -553,7 +553,10 @@ if [ -z "${G1_SRC:-}" ]; then
         case "$name|$file" in
           "albumsearch|$rq/RequestRunner.swift"|"albumsearch|$rq/RequestRunner+Lossless.swift"|\
           "albumsearch|$rq/RequestRunner+BringInMore.swift"|"albumsearch|$rq/DownloadsInLidarr.swift"|\
-          "refreshartist|$rq/RequestRunner+Lossless.swift"|"artistsearch|$rq/ArtistLidarr.swift") ;;
+          "refreshartist|$rq/RequestRunner+Lossless.swift"|"artistsearch|$rq/ArtistLidarr.swift"|\
+          "refreshartist|$rq/ArtistLidarr.swift"|"artistsearch|$rq/RequestRunner.swift") ;;
+          # Round 15 C3: RefreshArtist after "Include singles" (D140, an artist Magpie added) and the discography's
+          # ArtistSearch after Add to library's own release (D135); the gate confines both to Magpie's artists.
           *) echo "L1: a Lidarr command (${name:-no literal name}) outside its pinned callers: $file:$line" >&2; bad=1 ;;
         esac ;;
     esac

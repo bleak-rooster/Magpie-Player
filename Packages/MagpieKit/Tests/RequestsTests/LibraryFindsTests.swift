@@ -142,6 +142,47 @@ import MagpieCore
         #expect(try await h.runner.targetPreview(h.recording(recAlbumOnly)) == .newArtist(title: "Release 4", isAlbum: true))
     }
 
+    // MARK: - 4. Singles switch (D140)
+
+    /// Confirmed, for an artist Magpie added: their metadata profile becomes Magpie's with singles (made if missing),
+    /// then a refresh; nothing is monitored here (the one single is then the usual request). Each through the gate.
+    @Test func includeSinglesListsThemAndMonitorsNothing() async throws {
+        let fake = try await ArtistLidarrTests.Fake()
+        ArtistAddChoicesTests.stubProfiles(fake.transport, existing: [])
+        var types = ReleaseTypes.standard
+        types.kinds = .albumsEPsAndSingles
+        try await ArtistLidarr.listSingles(artistId: 30, types: types, lidarr: fake.client, gate: fake.gate,
+                                           ledger: fake.ledger, checks: 2, pause: .zero)
+        #expect(fake.writes.map { "\($0.httpMethod!) \($0.url!.path)" }
+                == ["POST /api/v1/metadataprofile", "PUT /api/v1/artist/editor", "POST /api/v1/command"])
+        let bodies = fake.writes.map { ($0.httpBody.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }) ?? [:] }
+        #expect(bodies[0]["name"] as? String == types.profileName)
+        #expect(bodies[1]["metadataProfileId"] as? Int == 20 && bodies[1].count == 2, "only the profile")
+        #expect(bodies[2]["name"] as? String == "RefreshArtist" && bodies[2]["artistId"] as? Int == 30)
+        #expect(!fake.writes.contains { $0.url!.path.hasSuffix("album/monitor") }, "nothing else monitored")
+        #expect(await fake.gate.changeLog().count == 3, "in the change log, so it can be undone")
+    }
+
+    @Test func includeSinglesNeverChangesTheOwnersArtist() async throws {
+        let fake = try await ArtistLidarrTests.Fake()
+        ArtistAddChoicesTests.stubProfiles(fake.transport, existing: [])
+        await #expect(throws: ArtistLidarrError.notMagpies) {
+            try await ArtistLidarr.listSingles(artistId: 20, types: .standard, lidarr: fake.client, gate: fake.gate,
+                                               ledger: fake.ledger, checks: 1, pause: .zero)
+        }
+        #expect(fake.writes.isEmpty)
+    }
+
+    @Test func includeSinglesWithChangesOffSendsNothing() async throws {
+        let fake = try await ArtistLidarrTests.Fake(changesOn: false)
+        ArtistAddChoicesTests.stubProfiles(fake.transport, existing: [])
+        await #expect(throws: ArtistLidarrError.changesOff) {
+            try await ArtistLidarr.listSingles(artistId: 30, types: .standard, lidarr: fake.client, gate: fake.gate,
+                                               ledger: fake.ledger, checks: 1, pause: .zero)
+        }
+        #expect(fake.writes.isEmpty)
+    }
+
     // MARK: - Persistence and the status words (D136)
 
     @Test func theMarksSurviveARelaunchAndOlderFilesDecode() throws {

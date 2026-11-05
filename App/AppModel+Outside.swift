@@ -16,18 +16,23 @@ extension AppModel {
 
     /// "Try this album": the existing Try aimed at the album's release group (into Finds when set up, otherwise straight
     /// into the library). A live request for that album is returned instead of a second one.
-    func tryAlbum(_ firstTrack: ExternalRecording, releaseGroup: MBID) async throws -> RequestID {
-        try await startTry(firstTrack, album: releaseGroup, releaseGroup: nil)
+    func tryAlbum(_ firstTrack: ExternalRecording, releaseGroup: MBID,
+                  intent: RequestRunner.Intent = .plain) async throws -> RequestID {
+        try await startTry(firstTrack, album: releaseGroup, releaseGroup: nil, intent: intent)
     }
 
     /// A track of an outside album: the existing single-song Try, deduped against a live request for its album (R20).
-    func tryTrack(_ recording: ExternalRecording, releaseGroup: MBID?) async throws -> RequestID {
-        try await startTry(recording, album: nil, releaseGroup: releaseGroup)
+    func tryTrack(_ recording: ExternalRecording, releaseGroup: MBID?,
+                  intent: RequestRunner.Intent = .plain) async throws -> RequestID {
+        try await startTry(recording, album: nil, releaseGroup: releaseGroup, intent: intent)
     }
 
-    private func startTry(_ recording: ExternalRecording, album: MBID?, releaseGroup: MBID?) async throws -> RequestID {
+    /// Round 15 C3 (D135, D139): `intent` is the menus' Try (`.trial`) or Add to library (`.library`).
+    func startTry(_ recording: ExternalRecording, album: MBID?, releaseGroup: MBID?,
+                  intent: RequestRunner.Intent = .plain) async throws -> RequestID {
         guard let runner else { throw RequestRunner.TryError.notSetUp }
-        let id = try await runner.tryRecording(recording, tier: speedTier, album: album, releaseGroup: releaseGroup)
+        let id = try await runner.tryRecording(recording, tier: speedTier, album: album, releaseGroup: releaseGroup,
+                                               intent: intent)
         if notifications { ReadyNotifier.shared.requestAuthorizationIfNeeded() }
         pollRequests()
         return id

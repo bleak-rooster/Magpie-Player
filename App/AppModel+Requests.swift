@@ -139,6 +139,7 @@ extension AppModel {
                 self.songActions.requestsLoaded = true   // round 14 A3 (I1): this runner's list is in
                 if !self.songActions.pending.isEmpty { Task { await self.evaluatePendingAdds() } }   // round 14 A3
                 if !self.letGo.jobs.isEmpty { Task { await self.resumeLetGoCleanups() } }   // round 15 C3 (D138)
+                if list.contains(where: \.addToLibrary) { Task { await self.evaluateLibraryAdds() } }   // round 15 C3 (D135)
                 // I4: a request just started waiting: re-check the connection so a rejected key is named.
                 if !wasWaiting, self.hasUnavailableWait, !self.isOffline { Task { _ = await self.lidarrAudit() } }
             }
@@ -340,9 +341,9 @@ extension AppModel {
         }
     }
 
-    func tryRecording(_ recording: ExternalRecording) async throws -> RequestID {
+    func tryRecording(_ recording: ExternalRecording, intent: RequestRunner.Intent = .plain) async throws -> RequestID {
         guard let runner else { throw RequestRunner.TryError.notSetUp }
-        let id = try await runner.tryRecording(recording, tier: speedTier)
+        let id = try await runner.tryRecording(recording, tier: speedTier, intent: intent)
         if notifications { ReadyNotifier.shared.requestAuthorizationIfNeeded() }
         pollRequests()
         return id
@@ -430,7 +431,10 @@ extension AppModel {
         if request.isFind, let songId = request.songId { findsIdentity.markLanded(songId) }
         if request.isFind { Task { await refreshFinds() } }
         Task { await rememberReadySong(request) }   // R17: rows showing it become the library song in place
-        if !request.isFind, findsLibraryId != nil {
+        if request.addToLibrary {
+            // Round 15 C3 (D135): Add to library is a download, not a listen: it never lands in the queue.
+            if !request.isFind, findsLibraryId != nil { Task { await refreshFinds() } }
+        } else if !request.isFind, findsLibraryId != nil {
             // Final fix 2 A-I1, belt and braces: a song the runner didn't call a find can still be in the Finds
             // library. Read it again before landing, so it never plays as now playing (D29).
             Task {
@@ -442,6 +446,8 @@ extension AppModel {
         }
         guard notifications else { return }
         ReadyNotifier.shared.post(id: request.id.description, title: "\(request.recording.title) is ready",
-                                  body: "\(request.recording.artist) · in your \(request.isFind ? "Finds" : "library") now")
+                                  body: request.addToLibrary && request.isFind
+                                      ? "\(request.recording.artist) · going into your library now"
+                                      : "\(request.recording.artist) · in your \(request.isFind ? "Finds" : "library") now")
     }
 }

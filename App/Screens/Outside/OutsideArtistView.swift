@@ -14,8 +14,6 @@ struct OutsideArtistView: View {
     @State private var model: OutsideArtistModel?
     @State private var art: OutsideArtLoader?
     @State private var showsMore = false
-    @State private var trying: TryTarget?
-    @State private var tryError: String?
     /// Round 14 A3 (owner answer 6): the artist's Top songs, from the chosen source (the page's Popular).
     @State private var topSongs: TopSongsResult?
     /// B1: bumped by a pull to refresh, so every picture that didn't load is asked for again.
@@ -43,7 +41,6 @@ struct OutsideArtistView: View {
         .navigationTitle(artist.name)
         .navigationBarTitleDisplayMode(.inline)
         .magpieScreen()
-        .sheet(item: $trying) { TrySheet(target: $0) }
         // One task builds and loads (review I2); again when offline mode flips ("You're offline", then the page).
         .task(id: app.isOffline) {
             if art == nil { art = app.makeOutsideArt() }
@@ -72,9 +69,6 @@ struct OutsideArtistView: View {
                 StatusLine(.notYet)
                 if let presentation = model.lidarrLine.presentation, model.phase != .offline {
                     ArtistLidarrLine(line: model.lidarrLine, presentation: presentation)
-                }
-                if let tryError {
-                    Label(tryError, systemImage: "exclamationmark.circle").font(.footnote).foregroundStyle(p.ink2Color)
                 }
             }
             .frame(maxWidth: .infinity)
@@ -164,9 +158,8 @@ struct OutsideArtistView: View {
             }
             .buttonStyle(.plain)
             .contextMenu {
-                if !app.isOffline, model?.canTryAlbum(item) ?? false {
-                    Button(TrySheet.tryAlbumTitle, systemImage: "sparkles") { Task { await tryAlbum(album) } }
-                }
+                // Round 15 C3: Try (temporary) / Add to library (permanent), in place of Try this album.
+                if !app.isOffline, model?.canTryAlbum(item) ?? false { OutsideAlbumMenu(album: OutsideAlbumRef(album)) }
             }
         }
     }
@@ -176,17 +169,6 @@ struct OutsideArtistView: View {
         for item in s.albums + s.eps + s.singles + s.more {
             art?.note(item.id, OutsideAlbumHint(title: item.title, artist: artist.name))
         }
-    }
-
-    /// Try this album from the list: reads the album's tracklist first (the request names its first track).
-    private func tryAlbum(_ album: NotYetAlbum) async {
-        tryError = nil
-        guard let rg = album.mbid, let release = try? await app.outsideCatalog.release(releaseGroup: rg),
-              let first = OutsideReleasePick.recordings(release, artist: album.artist, artistMBID: album.artistMBID).first else {
-            tryError = OutsideCopy.couldntLoad
-            return
-        }
-        trying = TryTarget(recording: first, album: album, albumGroup: rg)
     }
 }
 
