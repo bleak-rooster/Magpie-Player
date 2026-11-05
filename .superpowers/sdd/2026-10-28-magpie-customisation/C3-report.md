@@ -141,7 +141,7 @@ Branch `c3-library-finds` (from `v0.0.1-custom` 25bed51). Commits:
    - **Pins:** check-writes pins the exact lines and the trial delete's one caller.
 
 **Tests for the gaps:**
-- Package `LibraryFindsTests`, now 23 tests. New ones:
+- Package `LibraryFindsTests` at that commit (2e7468c): 23 tests (five singles tests have since moved to `SinglesSwitchTests`; see below). New ones then:
   - trial recorded with its date;
   - Reject deletes only that album's files, then unmonitors;
   - an album with files before is refused, by the runner and directly at the gate;
@@ -154,7 +154,7 @@ Branch `c3-library-finds` (from `v0.0.1-custom` 25bed51). Commits:
   - changes off sends nothing;
   - a release with files is never unmonitored by the switch.
 - **RED evidence:** with the trial gate's release-group check disabled, `aRecheckOnChangedStateRefusesAndSendsNothing` failed (3 issues). The singles tests failed to compile before the API existed.
-- Hosted `LibraryFindsAppTests`, now 10 tests: a trial listed in Finds and the car with its date; a Reject that can't go changes no playlist and writes nothing; the new copy.
+- Hosted `LibraryFindsAppTests` at that commit: 9 tests (the earlier "10" was wrong; review M9): a trial listed in Finds and the car with its date; a Reject that can't go changes no playlist and writes nothing; the new copy.
 - Suites run:
   - Requests package: 397 tests;
   - LidarrKit: 169 tests;
@@ -173,3 +173,103 @@ Branch `c3-library-finds` (from `v0.0.1-custom` 25bed51). Commits:
 - Each tap shows "…switched off…", and nothing is read or written.
 
 **Checks:** check-writes passes, the selftest passes (42 planted violations and 26 allow-list weakenings caught), and check-release says OK.
+
+
+## Review fixes (C3-review.md; commit `13094a0`)
+
+### Critical and important
+
+- **C1. The singles switch never narrows the artist's profile.**
+  - The target profile is "<the artist's own profile> + Singles (Magpie)": its primary types plus Single, with the same secondary types and the same statuses.
+  - A Magpie profile with exactly that spec is reused. Otherwise it is made from the artist's own profile through the gate. An existing profile is never modified, and a same-named profile set up differently stops the switch (a conflict).
+  - A profile that already lists singles is left alone.
+  - The Live, Compilation and Promotion test passes.
+- **I1. A persisted journal** (`singles-switch-<instance>.json`, atomic, erased at sign-out).
+  - Each step is saved before its write. The steps are: saved, followOff, profileSwitched, refreshSent, refreshed, extrasUnmonitored, done.
+  - Unfinished switches are resumed on runner start and on requests updates (at most once a minute).
+  - After 5 failures, or a conflict, a switch is rolled back: following, the profile, then a refresh. The owner is told.
+  - The journal holds the original profile id and following.
+  - Undo restores both, then refreshes.
+- **I2. The RefreshArtist command id is required, and its completion is read from Lidarr.**
+  - With no id, a timeout or failed reads, the switch stays pending with following off, and nothing is unmonitored.
+  - Once the refresh completes, the extras are unmonitored. They are compared by id and by release group (M7).
+- **I3. Serialisation and the gate.**
+  - Switches are serialised per artist: a second waits, then finds singles listed. So Magpie's profile is never saved as the original.
+  - The journal must save before any write, or nothing is sent.
+  - The gate's `singlesSwitch` rule now reads the journal: no journal, no write.
+    - A profile is allowed only if it is a "+ Singles (Magpie)" superset or the saved original.
+    - Following may be "none" only while the switch is open; otherwise only its saved value.
+  - The change-log line is information only, so the 5,000-entry cap can't lose the undo.
+  - Undo shows only on the newest switch line of an artist whose switch finished.
+  - check-writes pins the exact SinglesSwitch.swift lines.
+- **I4.** `isOpenTrial` requires `closedAt == nil`.
+- **I5.** A trial's playlist clean-up takes only the songs whose files are the album's Lidarr track files, path to path (`TrialSongs.match`, using the existing mapping). Unmatched files are left alone and said.
+- **I6.** Reject is proven first and nothing is sent until then. Then it unmonitors, then deletes. If the unmonitor fails, nothing is deleted.
+
+### Minors
+
+- **M1:** a failed "comes with the album" check sends nothing and shows a retryable message.
+- **M2:** a new artist's Add uses the owner's Add defaults (their release types' Magpie metadata profile, plus singles only when the song comes only as one, and their following), with Lossless Preferred (D136).
+- **M3:** Lossless Preferred is made only for a new artist's add, one creation at a time.
+- **M4:** clean-up retries back off: 1, 5, then 15 minutes.
+- **M5:** the UI-test hooks act only on a loopback server.
+- **M6:** the runner code moved to RequestRunner+LibraryAdds.swift. Only hook lines remain in RequestRunner.swift.
+- **M8:** superseded trials are hidden (the ledger's open trials), and Trending albums show their status by name.
+
+### Tests (accurate counts at `13094a0`)
+
+**Package:**
+- `SinglesSwitchTests`, 13 tests, new:
+  - theSwitchNeverNarrowsTheProfile
+  - anOwnersArtistEndsWithOnlyTheTargetNewlyMonitoredAndFollowingRestored
+  - aMagpieSupersetProfileIsReusedAndAProfileWithSinglesIsLeftAlone
+  - aProfileThatAlreadyListsSinglesSwitchesNothing
+  - undoRestoresProfileAndFollowingThenRefreshes
+  - anInterruptedSwitchIsFinishedOnRestart
+  - aSwitchThatCantBeFinishedIsRolledBack
+  - anUnconfirmedRefreshKeepsFollowingOffUntilItCompletes (no id, and a slow refresh with late singles)
+  - twoSwitchesAtOnceAreOne
+  - anUnsavedJournalSendsNothing
+  - theGateFollowsTheJournal
+  - changesOffSendsNothing
+  - theJournalIsErasedWithTheRequests
+- `LibraryFindsTests`, 21 tests. New:
+  - aClosedTrialEntryIsRefusedAtTheGate
+  - aRejectWhoseUnmonitorFailsDeletesNothing
+  - aTrialsSongsAreItsFilesNotTheSameNamedAlbum
+  - onlyANewArtistsAddNeedsTheLosslessPreferredProfile
+  - the discography test now asserts the owner's metadata profile and following
+- `FindCleanupTests`, 4 tests. `LosslessPreferredTests`, 3 tests.
+
+**Hosted:**
+- `LibraryFindsAppTests`, 13 tests. New:
+  - whenWhatComesCantBeCheckedNothingIsSent
+  - aSupersededTrialIsNotListed
+  - anAlbumKnownByNameShowsItsStatus
+  - theUITestHooksNeedALoopbackServer
+- `FindCleanupAppTests`, 10 tests. New: anUnfinishedCleanupBacksOff.
+
+**Failing runs captured** (the fix disabled, the test run, the fix restored):
+- C1: narrowing the made profile's secondaries failed `theSwitchNeverNarrowsTheProfile` (3 issues).
+- I2: treating the refresh as completed failed `aSwitchThatCantBeFinishedIsRolledBack` and `anUnconfirmedRefreshKeepsFollowingOffUntilItCompletes`.
+- I4 and I6: before the fix, `aClosedTrialEntryIsRefusedAtTheGate` and `aRejectWhoseUnmonitorFailsDeletesNothing` failed (7 issues).
+- I5: matching by album name failed `aTrialsSongsAreItsFilesNotTheSameNamedAlbum`.
+- M2: ignoring the request's profile failed the discography test.
+- M5 and M4: forcing the hooks and skipping the back-off failed `theUITestHooksNeedALoopbackServer` and `anUnfinishedCleanupBacksOff`.
+- **Caveat:** the SinglesSwitch tests were written alongside the new type, so their first failure was a compile failure. The behavioural failing runs above came from disabling the fix afterwards.
+
+**Suites run:**
+- Requests: 408 tests. LidarrKit: 169 tests.
+- Hosted, 149 tests: LibraryFinds, FindCleanup, Round14Actions, OutsidePages, CarPlayFinds, FindsShelf, LibraryLayout, FindFlow, Round14Discover.
+- check-writes and its selftest pass.
+
+**Not covered:**
+- A hosted end-to-end successful trial Reject. The runner and gate halves have package tests; the playlist half has item 7's tests and the path matcher's test.
+- Lidarr's real RefreshArtist drop behaviour is modelled in the test fake, not exercised on the dev stack (it needs MusicBrainz).
+
+**Release UI checks after the review fixes, all passed** (Release, the "Magpie Tests" simulator):
+- `testALibraryTrialShowsInFindsWithKeepAndReject` (23.1 s)
+- `testARejectedFindLeavesItsPlaylistAndMagpieSaysSo` (14.2 s)
+- `testATrendingSongOffersTryAndAddToLibraryAndSaysWhyWithChangesOff` (66.0 s)
+
+check-release: OK.
