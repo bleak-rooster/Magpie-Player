@@ -32,6 +32,7 @@ struct DiscoverPlaylistView: View {
     @State private var showsArtists = false
     @State private var removing: Song?
     @State private var adder = DiscoverArtistAdder()
+    @State private var editingFlow: RecipeFlowEditor.Target?
     private let themed = Themed()
 
     var body: some View {
@@ -72,6 +73,7 @@ struct DiscoverPlaylistView: View {
             adder.finished(outcome)
             message = outcome.message
         }
+        .sheet(item: $editingFlow) { RecipeFlowEditor(target: $0) }   // round 16
         .onChange(of: adder.message) { if let text = adder.message { message = text; adder.message = nil } }
         .task { await load() }
         // While a run is under way, its progress every 5 s; when it ends, the new songs.
@@ -122,6 +124,11 @@ struct DiscoverPlaylistView: View {
                         }
                         .disabled(runActive)
                         .accessibilityIdentifier("discover-refresh")
+                    }
+                    // Round 16: a recipe flow of the user's: Edit flow (its recipe, Delete flow inside).
+                    if model.aurralCanManageFlows, let flow = page.flow.flatMap({ model.recipeFlow(id: $0.id) }) {
+                        ActionButton(RecipeFlowCopy.editFlow, symbol: "slider.horizontal.3") { editingFlow = .edit(flow) }
+                            .accessibilityIdentifier("discover-edit-flow")
                     }
                     ActionButton(DiscoverCopy.artistsInPlaylist, symbol: "person.2") { showsArtists = true }
                         .accessibilityIdentifier("discover-artists")
@@ -221,6 +228,7 @@ struct DiscoverListView: View {
 
     var body: some View {
         List {
+            YourFlowsSection()   // round 16: the user's own recipe flows (New flow, Edit flow, Delete flow)
             LoadableView(state: playlists, retry: load) { playlists in
                 ForEach(playlists, id: \.id) { playlist in
                     NavigationLink(value: Route.playlist(id: playlist.id)) {

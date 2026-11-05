@@ -28,7 +28,7 @@ final class LogSink: @unchecked Sendable {
             ("DELETE", "api/library/tracks/12"), ("GET", "api/library/tracks/12"), ("POST", "api/library/artists"),
             ("POST", "api/library/downloads/track"), ("GET", "api/health/live"),
             ("GET", "api/playlists/worker/settings"),
-            ("PUT", "api/playlists/flows/flow-1/enabled"), ("POST", "api/playlists/flows/flow-1/tracks/job-1/research"),
+            ("POST", "api/playlists/flows/flow-1/enabled"), ("POST", "api/playlists/flows/flow-1/tracks/job-1/research"),
             ("GET", "api/playlists/flows/flow-1/lidarr-import-list"), ("POST", "api/playlists/reset"),
             ("POST", "api/playlists/research-missing"), ("DELETE", "api/playlists/shared-playlists/p/tracks/j"),
             ("GET", "api/requests"), ("GET", "rest/getPlaylists"),

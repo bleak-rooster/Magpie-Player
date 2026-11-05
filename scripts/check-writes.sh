@@ -38,6 +38,13 @@
 #       on the owner's tap. Pinned below (the four sends in AurralKit/ChartFlows.swift).
 #   Packages/MagpieKit/Sources/MagpieTestSupport/StubAurral.swift  G1 allowlist: stub aurral chart flows
 #       The in-process stub names the verbs it answers for those routes; it sends nothing.
+#   Packages/MagpieKit/Sources/AurralKit/AurralClient.swift  G1 allowlist: aurral recipe flows
+#       Round 16: the user's own flows from a recipe: `POST /api/playlists/flows` (New flow), `PUT …/:id/enabled`
+#       with exactly `{enabled: true}` (a new flow turned on so its songs download; never off), `PUT …/:id` (Edit flow:
+#       the changed fields) and `DELETE …/:id` (Delete flow), each only on the owner's tap. Pinned below (the four sends
+#       in AurralKit/RecipeFlows.swift).
+#   Packages/MagpieKit/Sources/MagpieTestSupport/StubAurral.swift  G1 allowlist: stub aurral recipe flows
+#       The in-process stub names the verbs it answers for those routes; it sends nothing.
 #   Packages/MagpieKit/Tests/RequestsTests/FindsIT.swift  G1 allowlist: devLidarr
 #       Raw requests to the dev Lidarr for IT set-up and clean-up (manual import, removing the test artist), after
 #       TryDevStack verified the host is local and the dev marker matches (G0). Never product code.
@@ -72,6 +79,8 @@ allow=(
   "Packages/MagpieKit/Sources/AurralKit/AurralClient.swift|G1 allowlist: aurral image proxy"
   "Packages/MagpieKit/Sources/AurralKit/AurralClient.swift|G1 allowlist: aurral chart flows"
   "Packages/MagpieKit/Sources/MagpieTestSupport/StubAurral.swift|G1 allowlist: stub aurral chart flows"
+  "Packages/MagpieKit/Sources/AurralKit/AurralClient.swift|G1 allowlist: aurral recipe flows"
+  "Packages/MagpieKit/Sources/MagpieTestSupport/StubAurral.swift|G1 allowlist: stub aurral recipe flows"
   "Tests/MagpieUITests/ChartFlowUITests.swift|G1 allowlist: stub reset"
   "Packages/MagpieKit/Tests/MagpieCoreTests/HTTPTransportTests.swift|RedirectStub"
   "Packages/MagpieKit/Tests/MagpieCoreTests/SharedLoginTransportTests.swift|auth/login"
@@ -303,6 +312,14 @@ if [ -z "${G1_SRC:-}" ]; then
               'static let chartFlowAppendMethod = "POST"' \
               'static let chartFlowRemoveSongsMethod = "POST"' \
               'static let chartFlowDeleteMethod = "DELETE"' \
+              'case 2 where rest == ["playlists", "flows"]: .recipeFlowCreate' \
+              'case 4 where rest[0] == "playlists" && rest[1] == "flows" && isPlainId(rest[2]) && rest[3] == "enabled": .recipeFlowTurnOn' \
+              'case 3 where rest[0] == "playlists" && rest[1] == "flows" && isPlainId(rest[2]) && method == recipeFlowUpdateMethod: .recipeFlowUpdate' \
+              'case 3 where rest[0] == "playlists" && rest[1] == "flows" && isPlainId(rest[2]) && method == recipeFlowDeleteMethod: .recipeFlowDelete' \
+              'static let recipeFlowCreateMethod = "POST"' \
+              'static let recipeFlowTurnOnMethod = "PUT"' \
+              'static let recipeFlowUpdateMethod = "PUT"' \
+              'static let recipeFlowDeleteMethod = "DELETE"' \
               'static let imageProxyMethod = "POST"' \
               'case .editorialAdd, .discoverFeedback, .flowDownload, .trackResearch: Self.discoverWriteMethod' \
               'static let discoverWriteMethod = "POST"' \
@@ -310,7 +327,7 @@ if [ -z "${G1_SRC:-}" ]; then
               'AurralRoute.isAllowed(method: method, path: path, query: query),'; do
     grep -qF -- "$want" "$aurral" || { echo "G1: $aurral: the Aurral allow-list changed (missing: $want)" >&2; bad=1; }
   done
-  [ "$(grep -cE 'case [0-9] where' "$aurral")" = 31 ] || { echo "G1: $aurral: the Aurral allow-list isn't exactly 31 routes" >&2; bad=1; }
+  [ "$(grep -cE 'case [0-9] where' "$aurral")" = 35 ] || { echo "G1: $aurral: the Aurral allow-list isn't exactly 35 routes" >&2; bad=1; }
   # Fix M1: the verb, token and query-name switches are pinned whole (each read GET, only the seven writes POST, only
   # health, login and the preview without the token, the six routes with queries and exactly their names), and the
   # trackResearch route's continuation line too.
@@ -331,6 +348,10 @@ if [ -z "${G1_SRC:-}" ]; then
         case .chartFlowAppend: Self.chartFlowAppendMethod
         case .chartFlowRemoveSongs: Self.chartFlowRemoveSongsMethod
         case .chartFlowDelete: Self.chartFlowDeleteMethod
+        case .recipeFlowCreate: Self.recipeFlowCreateMethod
+        case .recipeFlowTurnOn: Self.recipeFlowTurnOnMethod
+        case .recipeFlowUpdate: Self.recipeFlowUpdateMethod
+        case .recipeFlowDelete: Self.recipeFlowDeleteMethod
         }'
   want_authorised='        switch self {
         case .health, .login, .deezerPreview, .imageProxyFile: false
@@ -394,6 +415,24 @@ if [ -z "${G1_SRC:-}" ]; then
               'var o: [String: Any] = ["tracks": tracks.map(\.json)]'; do
     grep -qF -- "$want" "$chart_flows" || { echo "G1: $chart_flows: a chart flow write changed (missing: $want)" >&2; bad=1; }
   done
+  # Round 16: the four recipe flow writes are sent only from these exact lines in RecipeFlows.swift (each path a
+  # literal plus a plain id); the turn-on body is exactly {enabled: true} (never off).
+  recipe_flows="Packages/MagpieKit/Sources/AurralKit/RecipeFlows.swift"
+  for verb in recipeFlowCreateMethod recipeFlowTurnOnMethod recipeFlowUpdateMethod recipeFlowDeleteMethod; do
+    sends=$(grep -rnF --include='*.swift' "AurralRoute.$verb" "${product[@]}" | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' || true)
+    { [ "$(printf '%s\n' "$sends" | grep -c .)" = 1 ] && [ "${sends%%:*}" = "$recipe_flows" ]; } ||
+      { echo "G1: the Aurral recipe flow write $verb isn't exactly one send in $recipe_flows" >&2; bad=1; }
+  done
+  for want in 'let data = try await ok(method: AurralRoute.recipeFlowCreateMethod, path: "api/playlists/flows", body: body)' \
+              '_ = try await ok(method: AurralRoute.recipeFlowTurnOnMethod, path: "api/playlists/flows/" + flowId + "/enabled", body: body)' \
+              'let body = Self.recipeFlowBody(["enabled": true]) else { throw AurralError.forbidden("turn on \(flowId.count) chars") }' \
+              '_ = try await ok(method: AurralRoute.recipeFlowUpdateMethod, path: "api/playlists/flows/" + flowId, body: body)' \
+              '_ = try await ok(method: AurralRoute.recipeFlowDeleteMethod, path: "api/playlists/flows/" + flowId)'; do
+    grep -qF -- "$want" "$recipe_flows" || { echo "G1: $recipe_flows: a recipe flow write changed (missing: $want)" >&2; bad=1; }
+  done
+  if grep -nE '"enabled": *false|enabled: *false' "$recipe_flows" | grep -vE '^[0-9]+:[[:space:]]*//' | grep -q .; then
+    echo "G1: $recipe_flows: a flow is turned off" >&2; bad=1
+  fi
   # Round 14 A1 (D83), A7 (D110): the preview resolver sends no login or cookie, asks Aurral for the clip itself
   # (`?download`), follows no redirect (any 3xx refused) and takes the answer only from the configured Aurral host.
   # Its open transport (also the image proxy's pictures, D111) keeps no cookie or cache and never follows a redirect.
@@ -532,7 +571,7 @@ if [ -z "${G1_SRC:-}" ]; then
   done <<< "$discover_names"
   for f in $(grep -rlE --include='*.swift' 'api/playlists/flows|shared-playlists|api/deezer/preview' "${product[@]}" | sort -u || true); do
     case "$f" in
-      "$aurral_discover"|"$aurral"|"$chart_flows"|Packages/MagpieKit/Sources/AurralKit/AurralPreview.swift|Packages/MagpieKit/Sources/MagpieTestSupport/*) ;;
+      "$aurral_discover"|"$aurral"|"$chart_flows"|"$recipe_flows"|Packages/MagpieKit/Sources/AurralKit/AurralPreview.swift|Packages/MagpieKit/Sources/MagpieTestSupport/*) ;;
       *) grep -nE 'api/playlists/flows|shared-playlists|api/deezer/preview' "$f" | grep -vE '^[0-9]+:[[:space:]]*//' | grep -q . &&
            { echo "G1: an Aurral flow or preview route named outside AurralKit: $f" >&2; bad=1; } ;;
     esac

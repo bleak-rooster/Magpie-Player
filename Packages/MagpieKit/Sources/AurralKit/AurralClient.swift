@@ -59,6 +59,7 @@ public enum AurralRoute: CaseIterable, Sendable {
     case editorialAdd, discoverFeedback, artistPreview, releaseGroupTracks, search, searchUnified, playlistJobsById
     case flowDownload, trackResearch, deezerPreview, imageProxy, imageProxyFile
     case chartFlowCreate, chartFlowAppend, chartFlowRemoveSongs, chartFlowDelete
+    case recipeFlowCreate, recipeFlowTurnOn, recipeFlowUpdate, recipeFlowDelete
 
     var method: String {
         switch self {
@@ -74,6 +75,10 @@ public enum AurralRoute: CaseIterable, Sendable {
         case .chartFlowAppend: Self.chartFlowAppendMethod
         case .chartFlowRemoveSongs: Self.chartFlowRemoveSongsMethod
         case .chartFlowDelete: Self.chartFlowDeleteMethod
+        case .recipeFlowCreate: Self.recipeFlowCreateMethod
+        case .recipeFlowTurnOn: Self.recipeFlowTurnOnMethod
+        case .recipeFlowUpdate: Self.recipeFlowUpdateMethod
+        case .recipeFlowDelete: Self.recipeFlowDeleteMethod
         }
     }
 
@@ -117,6 +122,14 @@ public enum AurralRoute: CaseIterable, Sendable {
     static let chartFlowRemoveSongsMethod = "POST"
     // G1 allowlist: aurral chart flows (Remove flow).
     static let chartFlowDeleteMethod = "DELETE"
+    // G1 allowlist: aurral recipe flows (round 16: the user's own flows, made from a recipe on their tap).
+    static let recipeFlowCreateMethod = "POST"
+    // G1 allowlist: aurral recipe flows (a flow just made is turned on, so its songs download at once; never off).
+    static let recipeFlowTurnOnMethod = "PUT"
+    // G1 allowlist: aurral recipe flows (Edit flow: only the recipe fields that changed).
+    static let recipeFlowUpdateMethod = "PUT"
+    // G1 allowlist: aurral recipe flows (Delete flow).
+    static let recipeFlowDeleteMethod = "DELETE"
 
     /// `<sha256 hex>` or `<sha256 hex>.<ext>`, as Aurral's image proxy names its cached pictures.
     static func isImageProxyKey(_ s: Substring) -> Bool {
@@ -188,6 +201,10 @@ public enum AurralRoute: CaseIterable, Sendable {
         case 4 where rest[0] == "playlists" && rest[1] == "shared-playlists" && isPlainId(rest[2]) && rest[3] == "tracks": .chartFlowAppend
         case 4 where rest[0] == "playlists" && rest[1] == "shared-playlists" && isPlainId(rest[2]) && rest[3] == "track-removals": .chartFlowRemoveSongs
         case 3 where rest[0] == "playlists" && rest[1] == "shared-playlists" && isPlainId(rest[2]) && method == chartFlowDeleteMethod: .chartFlowDelete
+        case 2 where rest == ["playlists", "flows"]: .recipeFlowCreate
+        case 4 where rest[0] == "playlists" && rest[1] == "flows" && isPlainId(rest[2]) && rest[3] == "enabled": .recipeFlowTurnOn
+        case 3 where rest[0] == "playlists" && rest[1] == "flows" && isPlainId(rest[2]) && method == recipeFlowUpdateMethod: .recipeFlowUpdate
+        case 3 where rest[0] == "playlists" && rest[1] == "flows" && isPlainId(rest[2]) && method == recipeFlowDeleteMethod: .recipeFlowDelete
         default: nil
         }
         guard let route, route.method == method else { return nil }

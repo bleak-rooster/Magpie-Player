@@ -43,8 +43,7 @@ import Testing
                                ("POST", "api/playlists/shared-playlists/../track-removals"),
                                ("POST", "api/playlists/shared-playlists/pl-1/sync"), ("POST", "api/playlists/shared-playlists/pl-1/track-moves"),
                                ("DELETE", "api/playlists/shared-playlists/pl-1/tracks/job-1"),
-                               ("PUT", "api/playlists/shared-playlists/pl-1/track-availability"),
-                               ("PUT", "api/playlists/flows/flow-1"), ("DELETE", "api/playlists/flows/flow-1")] {
+                               ("PUT", "api/playlists/shared-playlists/pl-1/track-availability")] {
             #expect(!AurralRoute.isAllowed(method: method, path: path), "\(method) \(path)")
         }
         for route in [AurralRoute.chartFlowCreate, .chartFlowAppend, .chartFlowRemoveSongs, .chartFlowDelete] {

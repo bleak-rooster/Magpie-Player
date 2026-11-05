@@ -43,6 +43,11 @@ import Testing
         ("POST", "api/playlists/shared-playlists/pl-1/tracks", .chartFlowAppend),
         ("POST", "api/playlists/shared-playlists/pl-1/track-removals", .chartFlowRemoveSongs),
         ("DELETE", "api/playlists/shared-playlists/pl-1", .chartFlowDelete),
+        // Round 16: the user's own recipe flows.
+        ("POST", "api/playlists/flows", .recipeFlowCreate),
+        ("PUT", "api/playlists/flows/flow-1/enabled", .recipeFlowTurnOn),
+        ("PUT", "api/playlists/flows/flow-1", .recipeFlowUpdate),
+        ("DELETE", "api/playlists/flows/flow-1", .recipeFlowDelete),
     ]
 
     @Test func theExactAllowedCalls() {
@@ -60,12 +65,13 @@ import Testing
         #expect(Set(open) == [.health, .login, .deezerPreview, .imageProxyFile])
     }
 
-    /// The writes are exactly the eight POSTs (A7: the image proxy's cache step is the eighth) and round 15 C2's four
-    /// chart flow writes (D131).
-    @Test func theWritesAreExactlyTwelve() {
+    /// The writes are exactly the eight POSTs (A7: the image proxy's cache step is the eighth), round 15 C2's four
+    /// chart flow writes (D131) and round 16's four recipe flow writes.
+    @Test func theWritesAreExactlySixteen() {
         let writes = AurralRoute.allCases.filter { $0.method != "GET" }
         #expect(Set(writes) == [.startFlow, .login, .logout, .editorialAdd, .discoverFeedback, .flowDownload, .trackResearch,
-                                .imageProxy, .chartFlowCreate, .chartFlowAppend, .chartFlowRemoveSongs, .chartFlowDelete])
+                                .imageProxy, .chartFlowCreate, .chartFlowAppend, .chartFlowRemoveSongs, .chartFlowDelete,
+                                .recipeFlowCreate, .recipeFlowTurnOn, .recipeFlowUpdate, .recipeFlowDelete])
     }
 
     @Test func bannedAndTwistedCallsAreRefused() async throws {
@@ -80,7 +86,8 @@ import Testing
             ("POST", "api/library/artists"), ("POST", "api/library/albums"), ("POST", "api/library/albums/request"),
             ("POST", "api/library/downloads/track"), ("POST", "api/library/downloads/album"), ("GET", "api/library/downloads"),
             ("PUT", "api/playlists/shared-playlists/pl-1"), ("POST", "api/playlists/shared-playlists/pl-1/sync"),
-            ("POST", "api/playlists/flows"), ("PUT", "api/playlists/flows/flow-1"), ("DELETE", "api/playlists/flows/flow-1"),
+            ("GET", "api/playlists/flows"), ("POST", "api/playlists/flows/flow-1"), ("PATCH", "api/playlists/flows/flow-1"),
+            ("POST", "api/playlists/flows/flow-1/static-playlist"), ("POST", "api/playlists/flows/flow-1/enabled"),
             ("POST", "api/playlists/flows/flow-1/tracks/job-1/research"),   // 2.13: synced playlists use shared-playlists
             ("GET", "api/playlists/flows/flow-1/lidarr-import-list"), ("POST", "api/playlists/jobs/job-1/retry"),
             ("GET", "api/playlists/jobs/job-1/files"), ("DELETE", "api/playlists/jobs/all"),

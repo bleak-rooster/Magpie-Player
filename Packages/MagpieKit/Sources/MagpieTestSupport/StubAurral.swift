@@ -23,6 +23,8 @@ public final class StubAurral: HTTPTransport, @unchecked Sendable {
         public var ownerUserId: Int?
         /// Round 14 A4: Aurral 2.13's `autoDownload` (nil: not sent, as 2.10).
         public var autoDownload: Bool?
+        /// Round 16: the recipe fields a create or edit sent (JSON object), shown in the status over the defaults.
+        public var recipe: Data?
         public init(id: String, name: String, enabled: Bool = true, size: Int = 20, ownerUserId: Int? = 1) {
             self.id = id; self.name = name; self.enabled = enabled; self.size = size; self.ownerUserId = ownerUserId
         }
@@ -239,6 +241,98 @@ public final class StubAurral: HTTPTransport, @unchecked Sendable {
                       "operationId": isCreate ? "op-create" : isDelete ? "op-delete" : "op-append"])
     }
 
+    /// Round 16: Aurral 2.13's recipe flows (`routes/playlists/handlers/flows.ts`; accessFlow, an admin passes):
+    /// - `POST /api/playlists/flows {name, …}` makes the flow **off** at once and answers `{success, flow}`; a name the
+    ///   user already has (a flow or a shared playlist, case folded) is a 400 "Flow name already exists";
+    /// - `PUT …/:id/enabled {enabled}` turns it on (its first run: `size` songs, all done here) or off (its songs go);
+    /// - `PUT …/:id {…}` merges the fields sent into the recipe (a rename is checked like a create);
+    /// - `DELETE …/:id` queues the delete: its songs' files go (`chartFlowDeletedFiles`) and the flow stays listed for
+    ///   `setDeleteDelay(reads:)` more status reads.
+    /// A flow that isn't the user's is 404.
+    func recipeFlowAnswer(method: String, path: String, request: URLRequest, user: User) -> (Int, Any)? {
+        let parts = path.split(separator: "/").map(String.init)
+        guard parts.count >= 3, parts[0] == "api", parts[1] == "playlists", parts[2] == "flows", features != nil else { return nil }
+        // G1 allowlist: stub aurral recipe flows (the verbs the stub answers; it sends nothing).
+        let verbs = (post: "POST", put: "PUT", delete: "DELETE")
+        let isCreate = method == verbs.post && parts.count == 3
+        let isEnable = method == verbs.put && parts.count == 5 && parts[4] == "enabled"
+        let isUpdate = method == verbs.put && parts.count == 4
+        let isDelete = method == verbs.delete && parts.count == 4
+        guard isCreate || isEnable || isUpdate || isDelete else { return nil }
+        guard user.role == "admin" || user.permissions?["accessFlow"] == true else {
+            return (403, ["error": "Forbidden", "message": "Missing permission: accessFlow"])
+        }
+        let sent = request.httpBody
+        let reply = state.withLock { s -> (Int, Data) in
+            let body = sent.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:]
+            func json(_ status: Int, _ o: [String: Any]) -> (Int, Data) {
+                (status, (try? JSONSerialization.data(withJSONObject: o)) ?? Data())
+            }
+            func taken(_ name: String, except id: String?) -> Bool {
+                let key = name.trimmingCharacters(in: .whitespaces).lowercased()
+                return s.flows.contains { $0.id != id && $0.name.lowercased() == key && ($0.ownerUserId ?? user.id) == user.id }
+                    || s.synced.contains { $0.name.lowercased() == key && $0.ownerUserId == user.id }
+            }
+            func recipe(_ old: Data?, merging fields: [String: Any]) -> Data? {
+                var o = old.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:]
+                for (key, value) in fields where key != "name" && key != "templateId" { o[key] = value }
+                return try? JSONSerialization.data(withJSONObject: o)
+            }
+            if isCreate {
+                let name = (body["name"] as? String ?? "").trimmingCharacters(in: .whitespaces)
+                guard !name.isEmpty else { return json(400, ["error": "name is required"]) }
+                guard !taken(name, except: nil) else { return json(400, ["error": "Flow name already exists"]) }
+                var flow = Flow(id: UUID().uuidString.lowercased(), name: name, enabled: false,
+                                size: body["size"] as? Int ?? 30, ownerUserId: user.id)
+                flow.autoDownload = body["autoDownload"] as? Bool ?? true
+                flow.recipe = recipe(nil, merging: body)
+                s.flows.append(flow)
+                return json(200, ["success": true, "flow": ["id": flow.id, "name": flow.name, "enabled": false]])
+            }
+            guard let index = s.flows.firstIndex(where: { $0.id == parts[3] && (user.role == "admin" || $0.ownerUserId == user.id) }),
+                  s.pendingDeletes[parts[3]] == nil
+            else { return json(404, ["error": "Flow not found"]) }
+            let id = parts[3]
+            if isEnable {
+                let on = body["enabled"] as? Bool ?? false
+                s.flows[index].enabled = on
+                s.jobs = s.jobs.map { var j = $0; if j.flowId == id { j.flowId = "" }; return j }
+                if on {
+                    for n in 1...max(1, s.flows[index].size) {
+                        s.jobs.append(Job(flowId: id, artistName: "Recipe Artist \(n)", trackName: "Recipe Song \(n)", status: "done"))
+                    }
+                }
+                return json(200, ["success": true, "flowId": id, "enabled": on])
+            }
+            if isDelete {
+                for job in s.jobs where job.flowId == id {
+                    s.deletedFiles.append("\(job.artistName.lowercased())|\(job.trackName.lowercased())")
+                }
+                s.pendingDeletes[id] = s.deleteDelayReads
+                return json(200, ["success": true, "flowId": id, "queued": true, "operationId": "op-delete-flow"])
+            }
+            if let name = (body["name"] as? String)?.trimmingCharacters(in: .whitespaces) {
+                guard !name.isEmpty else { return json(400, ["error": "name is required"]) }
+                guard !taken(name, except: id) else { return json(400, ["error": "Flow name already exists"]) }
+                s.flows[index].name = name
+            }
+            if let size = body["size"] as? Int { s.flows[index].size = size }
+            if let auto = body["autoDownload"] as? Bool { s.flows[index].autoDownload = auto }
+            s.flows[index].recipe = recipe(s.flows[index].recipe, merging: body)
+            return json(200, ["success": true, "flow": ["id": id, "name": s.flows[index].name]])
+        }
+        return (reply.0, (try? JSONSerialization.jsonObject(with: reply.1)) ?? [String: Any]())
+    }
+
+    /// Round 16: the recipe fields a flow holds now (as the status lists them), or nil when there is no such flow.
+    public func recipeFlowFields(_ id: String) -> [String: Any]? {
+        guard let flow = state.withLock({ s in s.flows.first(where: { $0.id == id }) }) else { return nil }
+        var o = flow.recipe.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:]
+        o["name"] = flow.name
+        o["enabled"] = flow.enabled
+        return o
+    }
+
     /// Round 15 C2 fix round: every chart flow creation from now fails in Aurral's worker (accepted, never made).
     public func setChartFlowCreationFails(_ on: Bool) { state.withLock { $0.chartFlowCreationFails = on } }
     /// Re-review M-c: `GET /api/playlists/status` answers this status (nil: as usual).
@@ -289,6 +383,7 @@ public final class StubAurral: HTTPTransport, @unchecked Sendable {
                 if left > 0 { s.pendingDeletes[id] = left - 1; continue }
                 s.pendingDeletes[id] = nil
                 s.synced.removeAll { $0.id == id }
+                s.flows.removeAll { $0.id == id }   // round 16: a recipe flow's queued delete
                 s.syncedProviders[id] = nil
                 for i in s.jobs.indices where s.jobs[i].flowId == id { s.jobs[i].flowId = "" }
             }
@@ -517,6 +612,9 @@ public final class StubAurral: HTTPTransport, @unchecked Sendable {
             if let (status, body) = chartFlowAnswer(method: method, path: path, request: request, user: user) {
                 return answer(status, body)
             }
+            if let (status, body) = recipeFlowAnswer(method: method, path: path, request: request, user: user) {
+                return answer(status, body)
+            }
             if let (status, body) = try await discoverAnswer(method: method, path: path, url: url, request: request,
                                                              user: user, version: snapshot.version) {
                 return answer(status, body)
@@ -597,11 +695,16 @@ public final class StubAurral: HTTPTransport, @unchecked Sendable {
             "slskd": ["configured": true, "connected": true],
             "flowStats": flowStats,
             "flows": s.flows.map { f in
-                ["id": f.id, "name": f.name, "ownerUserId": f.ownerUserId.map { $0 as Any } ?? NSNull(),
+                var o: [String: Any] = ["id": f.id, "name": f.name, "ownerUserId": f.ownerUserId.map { $0 as Any } ?? NSNull(),
                  "ownerUsername": (s.users.first { $0.id == f.ownerUserId }?.username).map { $0 as Any } ?? NSNull(), "enabled": f.enabled,
                  "size": f.size, "autoDownload": f.autoDownload.map { $0 as Any } ?? NSNull(),
                  "scheduleDays": [5], "scheduleTime": "00:00", "nextRunAt": "2026-11-06T00:00:00.000Z",
                  "lastRunAt": s.lastRunAt[f.id] ?? "2026-10-30T00:00:00.000Z", "mix": ["discover": 100], "lidarrFeedToken": "secret-feed-token"]
+                for (key, value) in f.recipe.flatMap({ try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }) ?? [:] {
+                    o[key] = value
+                }
+                o["name"] = f.name
+                return o
             },
             // Round 14 A4: the synced playlists Add flow made (Aurral 2.13 lists them beside the flows).
             // Fix round 1 (M1): upstream 2.13's shape (playlistStatusSnapshot.ts staticPlaylistsWithOwners).
