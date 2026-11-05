@@ -67,33 +67,12 @@ struct PreviewMiniPlayerAccessory: View {
                 .artworkTestMarker("preview-mini-player-art", loaded: shown != nil)
                 .task(id: "\(item.id)|\(item.artworkKey ?? "")") {
                     guard picture?.itemId != item.id, let found = await model.previewArtwork(item, side: 36) else { return }
+                    // C1 review minor 1: a load cancelled by the next preview never overwrites that one's cover.
+                    guard !Task.isCancelled else { return }
                     picture = (item.id, found)
                 }
         }
     }
-}
-
-extension View {
-    /// UI tests only (`-MagpieUITesting YES`): a 1-point element labelled `name` (a label, since a container's
-    /// identifier replaces its children's), whose value says whether the real picture shows ("artwork-loaded") or the
-    /// placeholder. Nothing at all otherwise (VoiceOver never meets it).
-    @ViewBuilder func artworkTestMarker(_ name: String, loaded: Bool) -> some View {
-        if ArtworkTestMarker.enabled {
-            overlay(alignment: .topLeading) {
-                Color.clear.frame(width: 1, height: 1)
-                    .accessibilityElement()
-                    .accessibilityLabel(name)
-                    .accessibilityIdentifier(name)
-                    .accessibilityValue(loaded ? "artwork-loaded" : "placeholder")
-            }
-        } else {
-            self
-        }
-    }
-}
-
-enum ArtworkTestMarker {
-    static let enabled = UserDefaults.standard.string(forKey: "MagpieUITesting") == "YES"
 }
 
 /// The words previews use (design language §5: about music, never a service); the button's own come from `PreviewStatus`.

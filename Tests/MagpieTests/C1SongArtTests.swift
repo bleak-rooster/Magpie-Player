@@ -122,6 +122,62 @@ extension Round14ActionsTests {
         #expect(center.nowPlayingInfo?[MPMediaItemPropertyArtwork] != nil, "the preview's cover on the Lock Screen")
         #expect(asked == ["a"])
     }
+
+    /// Fix round (review minor 2): the cover follows the preview. The next preview shows none until its own cover
+    /// arrives (never the last one's), and when previews stop the main song comes back without the preview's cover.
+    @Test func c1TheLockScreenCoverFollowsThePreviewAndGoesWithIt() async throws {
+        let engine = C1SilentEngine()
+        let player = Player(engine: FakeEngine(), scrobbler: FakeScrobbler(), urls: FakeURLs())
+        player.play([Song(id: "1", title: "Song One", artist: "Artist", album: "Album", duration: 180, libraryId: 1)], startAt: 0)
+        let preview = PreviewPlayer(engine: engine, mainPlayer: player)
+        preview.lookup = { _ in .playable(Data("clip".utf8)) }
+        let picture = try #require(UIImage(data: c1PNG))
+        let gate = C1Gate()
+        let bridge = NowPlayingBridge(player: player, artworkURL: { _ in nil }, onLike: { _ in },
+                                      previewArtwork: { item in
+                                          gate.asked.append(item.id)
+                                          while item.id == "b", !gate.releaseB { try? await Task.sleep(for: .milliseconds(10)) }
+                                          return picture
+                                      }, preview: preview)
+        defer { bridge.invalidate() }
+        let center = MPNowPlayingInfoCenter.default()
+        func info(_ key: String) -> Any? { center.nowPlayingInfo?[key] }
+        func waitFor(_ condition: () -> Bool) async throws {
+            for _ in 0..<250 where !condition() { try await Task.sleep(for: .milliseconds(20)) }
+        }
+        func start() async throws {
+            let before = engine.loads.count
+            for _ in 0..<200 where engine.loads.count == before { try await Task.sleep(for: .milliseconds(10)) }
+            preview.handle(.started(token: try #require(engine.loads.last)))
+        }
+        let link = "https://cdn-images.dzcdn.net/images/cover/1/250x250-000000-80-0-0.jpg"
+        preview.play([PreviewItem(id: "a", previewId: "1", title: "Harbour Lights", artist: "Stub Arrows", artworkKey: link),
+                      PreviewItem(id: "b", previewId: "2", title: "Paper Moon", artist: "Stub Arrows", artworkKey: link)])
+        try await start()
+        try await waitFor { info(MPMediaItemPropertyTitle) as? String == "Harbour Lights" && info(MPMediaItemPropertyArtwork) != nil }
+        #expect(info(MPMediaItemPropertyArtwork) != nil, "A's cover")
+
+        preview.next()
+        try await start()
+        try await waitFor { info(MPMediaItemPropertyTitle) as? String == "Paper Moon" && gate.asked.contains("b") }
+        #expect(info(MPMediaItemPropertyTitle) as? String == "Paper Moon")
+        #expect(info(MPMediaItemPropertyArtwork) == nil, "never A's cover while B's loads")
+        gate.releaseB = true
+        try await waitFor { info(MPMediaItemPropertyArtwork) != nil }
+        #expect(info(MPMediaItemPropertyArtwork) != nil, "B's cover once it arrives")
+        #expect(gate.asked == ["a", "b"])
+
+        preview.stop()
+        try await waitFor { info(MPMediaItemPropertyTitle) as? String == "Song One" }
+        #expect(info(MPMediaItemPropertyTitle) as? String == "Song One", "the main song is back")
+        #expect(info(MPMediaItemPropertyArtwork) == nil, "without the preview's cover")
+    }
+}
+
+/// What the Lock Screen test's cover source was asked, and when B's cover may arrive.
+@MainActor final class C1Gate {
+    var asked: [String] = []
+    var releaseB = false
 }
 
 /// A preview engine that plays nothing and reports nothing.

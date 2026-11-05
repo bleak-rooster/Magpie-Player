@@ -70,6 +70,7 @@ private struct TopSongRowView: View {
                 .artworkTestMarker("top-song-art-\(row.id)", loaded: shown != nil)
                 .task(id: row) {
                     guard picture?.row != row, let found = await model.topSongArtwork(row, side: 48) else { return }
+                    guard !Task.isCancelled else { return }   // C1 review minor 1: a cancelled load never lands
                     picture = (row, found)
                 }
             }

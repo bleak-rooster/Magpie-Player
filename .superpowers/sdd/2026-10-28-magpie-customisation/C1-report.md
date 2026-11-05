@@ -71,3 +71,21 @@ answers the poster (401 without the key). It's there if item 2 ever comes back.
 - Preview covers on CarPlay: not applicable, since previews don't show there.
 - Pre-existing quirk: `TopSongsSection`'s `.accessibilityIdentifier("top-songs")` replaces every row's `top-song-N`
   identifier. It's not fixed here.
+
+## Fix round (C1-review.md)
+
+All changes are in commit `fix round` on `c1-pictures`.
+
+- **Minor 1:** the mini player and the Top songs row now check `guard !Task.isCancelled` before they store a picture
+  they loaded. A cancelled load can no longer overwrite the newer cover. There's no dedicated test: the window is a
+  SwiftUI `.task` race, and a unit test for it isn't cheap.
+- **Minor 2:** new test `c1TheLockScreenCoverFollowsThePreviewAndGoesWithIt`. It plays two previews in a row and
+  checks that the second (B) shows no artwork while its own cover loads, never the first one's. B's cover then
+  appears, and the cover source was asked for each preview once (`asked == ["a", "b"]`). After the preview stops,
+  the queued main song is back on the Lock Screen without the preview's cover.
+- **Minor 4:** D127 now records that a failed cover isn't retried for the same preview.
+- **Minor 6:** `artworkTestMarker` moved to `App/Screens/Shared/ArtworkTestMarker.swift`.
+- **Tests run:**
+  - `Round14ActionsTests` (which holds the C1 tests) with `PreviewComponentsTests`: 42 pass.
+  - `DiscoverAppTests` (which holds `PreviewAppTests`): 52 pass.
+  - `check-release`: OK.
