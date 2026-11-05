@@ -96,6 +96,11 @@ public final class StubAurral: HTTPTransport, @unchecked Sendable {
         var createAttempts: [(String, String, Bool)] = []
         /// Round 15 C2 fix round: every chart flow creation fails in the worker (as a taken name or a server error does).
         var chartFlowCreationFails = false
+        /// Re-review I3: deletes 2.13 has queued: the playlist stays listed for this many more status reads.
+        var pendingDeletes: [String: Int] = [:]
+        var deleteDelayReads = 1
+        /// Re-review M-c: the status read answers this status instead (nil: as usual).
+        var statusFailure: Int?
         var creationDelayReads = 1
     }
 
@@ -125,7 +130,7 @@ public final class StubAurral: HTTPTransport, @unchecked Sendable {
     /// no such playlist.
     public func sharedPlaylistSongs(_ id: String) -> [(title: String, artist: String)]? {
         state.withLock { s in
-            guard s.synced.contains(where: { $0.id == id }) else { return nil }
+            guard s.synced.contains(where: { $0.id == id }), s.pendingDeletes[id] == nil else { return nil }
             return s.jobs.filter { $0.flowId == id }.map { ($0.trackName, $0.artistName) }
         }
     }
@@ -194,12 +199,13 @@ public final class StubAurral: HTTPTransport, @unchecked Sendable {
             else { return (404, nil, "Playlist not found", []) }
             func key(_ artist: String, _ title: String) -> String { "\(artist.lowercased())|\(title.lowercased())" }
             if isDelete {
-                for i in s.jobs.indices where s.jobs[i].flowId == id {
-                    s.deletedFiles.append(key(s.jobs[i].artistName, s.jobs[i].trackName))
-                    s.jobs[i].flowId = ""
+                // 2.13 queues `shared-playlist-delete`: the worker deletes the files, then the playlist; until then the
+                // status still lists it (one more read here).
+                if s.pendingDeletes[id] == nil {
+                    for job in s.jobs where job.flowId == id { s.deletedFiles.append(key(job.artistName, job.trackName)) }
+                    s.pendingDeletes[id] = s.deleteDelayReads
                 }
-                s.synced.remove(at: index)
-                s.syncedProviders[id] = nil
+                _ = index
                 return (200, id, nil, [])
             }
             if isRemoval {
@@ -235,6 +241,10 @@ public final class StubAurral: HTTPTransport, @unchecked Sendable {
 
     /// Round 15 C2 fix round: every chart flow creation from now fails in Aurral's worker (accepted, never made).
     public func setChartFlowCreationFails(_ on: Bool) { state.withLock { $0.chartFlowCreationFails = on } }
+    /// Re-review M-c: `GET /api/playlists/status` answers this status (nil: as usual).
+    public func setStatusFailure(_ status: Int?) { state.withLock { $0.statusFailure = status } }
+    /// Re-review I3: how many more status reads a deleted playlist stays listed (2.13 runs the delete in its worker).
+    public func setDeleteDelay(reads: Int) { state.withLock { $0.deleteDelayReads = max(0, reads) } }
 
     /// Round 15 C2 fix round: the songs ("artist|title", lower-cased) whose files Aurral deleted (track removals and
     /// playlist deletes), in order.
@@ -275,6 +285,13 @@ public final class StubAurral: HTTPTransport, @unchecked Sendable {
                 }
             }
             s.pendingSynced = waiting
+            for (id, left) in s.pendingDeletes {
+                if left > 0 { s.pendingDeletes[id] = left - 1; continue }
+                s.pendingDeletes[id] = nil
+                s.synced.removeAll { $0.id == id }
+                s.syncedProviders[id] = nil
+                for i in s.jobs.indices where s.jobs[i].flowId == id { s.jobs[i].flowId = "" }
+            }
         }
     }
 
@@ -470,6 +487,8 @@ public final class StubAurral: HTTPTransport, @unchecked Sendable {
         case ("GET", "/api/playlists/status") where !Self.mayAccessFlows(user, snapshot),
              ("GET", "/api/playlists/jobs") where !Self.mayAccessFlows(user, snapshot):
             return answer(403, ["error": "Forbidden", "message": "Missing permission: accessFlow"])
+        case ("GET", "/api/playlists/status") where snapshot.statusFailure != nil:
+            return answer(snapshot.statusFailure ?? 500, ["error": "Stub failure"])
         case ("GET", "/api/playlists/status"):
             advanceCreations()   // round 14 A4 fix round 1: a queued Add flow is created after its reads
             var scoped = state.withLock { $0 }

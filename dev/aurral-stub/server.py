@@ -153,8 +153,10 @@ def shared_answer(method, parts, body, accessflow):
             return 404, {"error": "Playlist not found"}
         playlist = shared[pid]
         if delete:
-            STATE.setdefault("deleted", []).extend(song_key(t) for t in playlist["tracks"])
-            del shared[pid]
+            # 2.13 queues `shared-playlist-delete`: the status lists the playlist for one more read (re-review I3).
+            if "deleting" not in playlist:
+                STATE.setdefault("deleted", []).extend(song_key(t) for t in playlist["tracks"])
+                playlist["deleting"] = 1
             return 200, {"success": True, "playlistId": pid, "queued": True, "operationId": "op-delete"}
         if removal:
             ids = body.get("jobIds") if isinstance(body.get("jobIds"), list) else []
@@ -218,6 +220,11 @@ def flows_and_jobs():
 def status_body():
     flows, jobs = flows_and_jobs()
     with LOCK:
+        for pid in [pid for pid, p in STATE["shared"].items() if "deleting" in p]:   # queued deletes run now
+            if STATE["shared"][pid]["deleting"] > 0:
+                STATE["shared"][pid]["deleting"] -= 1
+            else:
+                del STATE["shared"][pid]
         shared = {pid: dict(p) for pid, p in STATE["shared"].items()}
     stats = {"flow-dw": {"total": 2, "pending": 0, "downloading": 0, "done": 1, "failed": 1, "blocked": 0}}
     for pid, p in shared.items():
@@ -454,7 +461,7 @@ class Handler(BaseHTTPRequestHandler):
             with LOCK:
                 return self.reply(200, {"playlists": [{"id": pid, "name": p["name"], "trackCount": len(p["tracks"]),
                                                        "tracks": [t["trackName"] for t in p["tracks"]]}
-                                                      for pid, p in STATE["shared"].items()],
+                                                      for pid, p in STATE["shared"].items() if "deleting" not in p],
                                         "deletedFiles": list(STATE.get("deleted", [])),
                                         "failedCreates": list(STATE.get("failed", []))})
         if path == "/__stub/reset" and method == "POST":

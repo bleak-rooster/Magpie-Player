@@ -137,12 +137,15 @@ extension AppModel {
     }
 
     /// The names the user's playlists and flows have on the server now (fix round I1: a create with one of them would
-    /// be accepted, then fail in the server's worker).
-    private func takenFlowNames() async -> [String] {
-        await refreshDiscoverStatus()
-        let status = discover.status
-        return (status?.flows ?? []).map(\.name) + (status?.sharedPlaylists ?? []).map(\.name)
-            + aurralFeeds.chartFlows.flows.map(\.name)
+    /// be accepted, then fail in the server's worker). Re-review M-c: read fresh; a failed read throws (no create is
+    /// sent on a guess), as a failed read of a flow's songs sends nothing.
+    private func takenFlowNames(_ client: AurralClient) async throws -> [String] {
+        let status: AurralStatus
+        do { status = try await client.status() } catch {
+            noteAurralError(error)
+            throw error
+        }
+        return status.flows.map(\.name) + status.sharedPlaylists.map(\.name) + aurralFeeds.chartFlows.flows.map(\.name)
     }
 
     /// Create flow: the chart's top `count` songs as a new playlist of the user's on the server, under the first free
@@ -152,7 +155,7 @@ extension AppModel {
         let client = try chartFlowClient()
         let tracks = ChartFlowPlan.tracks(from: Self.flowTracks(page.songs), count: count)
         guard !tracks.isEmpty else { throw AurralError.notFound }
-        let name = ChartFlowPlan.freeName(Self.chartFlowName(page), taken: await takenFlowNames())
+        let name = ChartFlowPlan.freeName(Self.chartFlowName(page), taken: try await takenFlowNames(client))
         let created: AurralChartFlowCreated
         do { created = try await client.createChartFlow(name: name, tracks: tracks) } catch {
             noteAurralError(error)
@@ -173,7 +176,7 @@ extension AppModel {
         let old = chartFlow(for: page.chart)
         if let old {
             if let client = try? chartFlowClient() { try? await client.deleteChartFlow(playlistId: old.playlistId) }
-            aurralFeeds.forgetChartFlow(page.chart.key)
+            aurralFeeds.forgetChartFlow(page.chart.key, removed: true)   // a late retry of it is never taken back
         }
         return try await createChartFlow(page, count: old?.count ?? ChartFlowPlan.defaultCount(chartLength: page.songs.count))
     }
@@ -202,7 +205,10 @@ extension AppModel {
         guard !flow.confirmed else { return .live(phase) }
         if aurralFeeds.now().timeIntervalSince(flow.createdAt) >= Self.addFlowSetUpLimit { return .couldntCreate }
         guard let status = discover.status else { return .settingUp }
-        if !status.operationProcessing, status.operationPending == 0 {
+        // Re-review M-d: 2.13 retries a failed create after 60 s (three tries), and a waiting retry isn't in the
+        // queue's count (`getHonkerQueueDepth` counts `run_at <= now`), so an idle queue means nothing before then.
+        let pastRetries = aurralFeeds.now().timeIntervalSince(flow.createdAt) >= Self.chartFlowRetryWindow
+        if pastRetries, !status.operationProcessing, status.operationPending == 0 {
             let reads = (aurralFeeds.unlistedIdleReads[flow.playlistId] ?? 0) + 1
             aurralFeeds.unlistedIdleReads[flow.playlistId] = reads
             if reads >= Self.chartFlowIdleReads { return .couldntCreate }
@@ -212,6 +218,8 @@ extension AppModel {
 
     /// Reads with the server's queue idle and the new flow still unlisted before it counts as not made.
     nonisolated static let chartFlowIdleReads = 2
+    /// How long after a create an idle queue still may hide its retries (2.13: up to three tries, 60 s apart).
+    nonisolated static let chartFlowRetryWindow: TimeInterval = 150
 
     /// Fix round M3: takes back the chart's flow from the server (a lost book, or a flow made on another phone).
     private func adoptChartFlow(_ page: ChartPage) async -> Bool {
@@ -224,8 +232,10 @@ extension AppModel {
             return rest.isEmpty || (rest.first == " " && rest.dropFirst().allSatisfy(\.isNumber) && rest.count > 1)
         }
         let taken = Set(aurralFeeds.chartFlows.playlistIds)
+        let book = aurralFeeds.chartFlows
         guard let found = discover.status?.sharedPlaylists.first(where: {
             $0.sourceName == AurralClient.chartFlowSourceName && named($0.name) && !taken.contains($0.id)
+                && !book.wasRemoved($0.id)   // re-review I3: removed or dropped here: its queued delete hasn't run yet
         }) else { return false }
         let now = aurralFeeds.now()
         let count = min(ChartFlowPlan.maxSongs, max(1, found.size ?? ChartFlowPlan.defaultCount(chartLength: page.songs.count)))
@@ -282,7 +292,7 @@ extension AppModel {
             }
             if !change.add.isEmpty { _ = try await client.appendChartFlowSongs(playlistId: flow.playlistId, tracks: change.add) }
         } catch AurralError.notFound {
-            aurralFeeds.forgetChartFlow(page.chart.key)   // removed on the server: Create flow… again
+            aurralFeeds.forgetChartFlow(page.chart.key, removed: true)   // removed on the server: Create flow… again
             throw AurralError.notFound
         } catch {
             noteAurralError(error)
@@ -305,7 +315,7 @@ extension AppModel {
             noteAurralError(error)
             throw error
         }
-        aurralFeeds.forgetChartFlow(chart.key)
+        aurralFeeds.forgetChartFlow(chart.key, removed: true)
         afterChartFlowChange()
     }
 

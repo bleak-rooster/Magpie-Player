@@ -141,16 +141,80 @@ import Testing
         aurral.setChartFlowCreationFails(true)
         let model = try await model()
         defer { model.signOut() }
+        let start = Date()
+        model.aurralFeeds.now = { start }
         let page = try await model.chartPage(.worldwide)
         _ = try await model.createChartFlow(page, count: 6)
+        model.aurralFeeds.now = { start.addingTimeInterval(AppModel.chartFlowRetryWindow + 1) }
         #expect(await model.checkChartFlow(page) == .settingUp)
         #expect(await model.checkChartFlow(page) == .couldntCreate)
         await #expect(throws: AurralError.self) { _ = try await model.resizeChartFlow(page, count: 3) }
         aurral.setChartFlowCreationFails(false)
+        let dropped = try #require(aurral.chartFlowCreates.first?.id)
         let again = try await model.retryChartFlow(page)
         #expect(again.count == 6 && aurral.chartFlowCreates.count == 2)
+        #expect(model.aurralFeeds.chartFlows.wasRemoved(dropped), "the dropped create is never taken back")
         #expect(await model.checkChartFlow(page) == .live(.inYourFlows))
         #expect(DiscoverPagesCopy.couldntCreateFlow == "Couldn\u{2019}t create the flow")
+    }
+
+    /// Re-review I3: 2.13 queues the delete, so the next status read still lists the removed playlist; it is never
+    /// taken back, and Create flow… shows (no Edit flow).
+    @Test func aRemovedFlowIsNeverTakenBackWhileItsDeleteIsQueued() async throws {
+        let model = try await model()
+        defer { model.signOut() }
+        let (page, flow) = try await confirmedWorldwide(model, count: 4)
+        aurral.setDeleteDelay(reads: 3)   // 2.13's worker deletes the files and tells Navidrome first
+        try await model.removeChartFlow(.worldwide)
+        #expect(await model.checkChartFlow(page) == nil)   // its status read is the first after the delete
+        #expect(model.discover.status?.sharedPlaylists.contains { $0.id == flow.playlistId } == true, "still listed")
+        #expect(model.chartFlow(for: .worldwide) == nil, "Create flow… shows, not Edit flow")
+        #expect(await model.checkChartFlow(page) == nil)
+        // A sign-out forgets the list with the book.
+        #expect(model.aurralFeeds.chartFlows.wasRemoved(flow.playlistId))
+        model.signOut()
+        #expect(!model.aurralFeeds.chartFlows.wasRemoved(flow.playlistId))
+    }
+
+    /// Re-review M-b: a failed read of the flow's songs sends nothing.
+    @Test func aFailedSongsReadSendsNothing() async throws {
+        let model = try await model()
+        defer { model.signOut() }
+        let (page, _) = try await confirmedWorldwide(model, count: 6)
+        let before = chartWrites
+        aurral.setDiscoverFailure(500)
+        await #expect(throws: AurralError.self) { _ = try await model.resizeChartFlow(page, count: 3) }
+        aurral.setDiscoverFailure(nil)
+        #expect(chartWrites == before && model.chartFlow(for: .worldwide)?.count == 6)
+    }
+
+    /// Re-review M-c: no create when the names can't be read (it might clash), with words that say try again.
+    @Test func noCreateWhenTheNamesCantBeRead() async throws {
+        let model = try await model()
+        defer { model.signOut() }
+        let page = try await model.chartPage(.worldwide)
+        aurral.setStatusFailure(502)
+        await #expect(throws: AurralError.self) { _ = try await model.createChartFlow(page, count: 3) }
+        #expect(chartWrites.isEmpty && model.chartFlow(for: .worldwide) == nil)
+        aurral.setStatusFailure(nil)
+    }
+
+    /// Re-review M-d: 2.13 retries a failed create after 60 s (up to three tries), and a waiting retry isn't counted
+    /// in the queue (`getHonkerQueueDepth` counts only `run_at <= now`), so an idle queue says nothing until the
+    /// retries had their time.
+    @Test func anIdleQueueSaysNothingUntilTheRetriesHadTheirTime() async throws {
+        aurral.setChartFlowCreationFails(true)
+        let model = try await model()
+        defer { model.signOut() }
+        let start = Date()
+        model.aurralFeeds.now = { start }
+        let page = try await model.chartPage(.worldwide)
+        _ = try await model.createChartFlow(page, count: 6)
+        model.aurralFeeds.now = { start.addingTimeInterval(30) }
+        for _ in 0..<3 { #expect(await model.checkChartFlow(page) == .settingUp) }
+        model.aurralFeeds.now = { start.addingTimeInterval(AppModel.chartFlowRetryWindow + 1) }
+        #expect(await model.checkChartFlow(page) == .settingUp)
+        #expect(await model.checkChartFlow(page) == .couldntCreate)
     }
 
     /// M2: until the server lists the new flow, Songs: N, Refresh now and Remove flow send nothing (the playlist may
@@ -213,6 +277,7 @@ import Testing
         let (page, flow) = try await confirmedWorldwide(model, count: 3)
         let other = AurralClient(base: aurral.base, session: aurral.signedInSession(), transport: aurral)
         try await other.deleteChartFlow(playlistId: flow.playlistId)
+        for _ in 0..<2 { _ = try await other.status() }   // 2.13 queues the delete: it has run after these reads
         await #expect(throws: AurralError.notFound) { _ = try await model.resizeChartFlow(page, count: 4) }
         #expect(model.chartFlow(for: .worldwide) == nil, "Create flow… shows again")
     }

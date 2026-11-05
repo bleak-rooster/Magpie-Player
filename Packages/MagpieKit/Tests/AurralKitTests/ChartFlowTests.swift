@@ -106,6 +106,20 @@ import Testing
         #expect(same.remove.isEmpty && same.add.isEmpty)
     }
 
+    /// Re-review M-a: a quality-upgrade job (`upgradeForJobId`) is never the song's job: it is neither kept in place of
+    /// the original nor removed (2.13 refuses to select it anyway).
+    @Test func upgradeJobsAreLeftOut() throws {
+        var upgrade = AurralJob(id: "job-up", flowId: "pl", artistName: "Artist 1", trackName: "Song 1")
+        upgrade.upgradeForJobId = "job-1"
+        let original = AurralJob(id: "job-1", flowId: "pl", artistName: "Artist 1", trackName: "Song 1")
+        let change = ChartFlowPlan.changes(jobs: [upgrade, original], wanted: Array(Self.songs(1)))
+        #expect(change.remove.isEmpty && change.add.isEmpty, "the original stays; the upgrade is left alone")
+        let gone = ChartFlowPlan.changes(jobs: [upgrade, original], wanted: Array(Self.songs(2).suffix(1)))
+        #expect(gone.remove == ["job-1"])
+        let json = #"[{"id":"job-up","playlistId":"pl","artistName":"A","trackName":"T","upgradeForJobId":"job-1"}]"#
+        #expect(try AurralJob.decodeList(Data(json.utf8)).first?.upgradeForJobId == "job-1")
+    }
+
     @Test func shortenRemovesTheTailsSongsAndTheirFilesExtendAddsSongs() async throws {
         let made = try await client.createChartFlow(name: "Top Australia", tracks: Self.songs(10))
         let jobs = try #require(try await client.playlistJobs(made.playlistId))
@@ -130,6 +144,9 @@ import Testing
     @Test func removeDeletesItAndAGoneOneIsAlreadyRemoved() async throws {
         let made = try await client.createChartFlow(name: "Pop", tracks: Self.songs(3))
         try await client.deleteChartFlow(playlistId: made.playlistId)
+        // Re-review I3: 2.13 queues the delete: the next status read still lists it, the one after doesn't.
+        #expect(try await client.status().sharedPlaylists.contains { $0.id == made.playlistId })
+        #expect(try await client.status().sharedPlaylists.contains { $0.id == made.playlistId } == false)
         #expect(stub.sharedPlaylistSongs(made.playlistId) == nil && stub.chartFlowDeletedFiles.count == 3)
         #expect(stub.requests.last?.httpBody == nil, "no body")
         try await client.deleteChartFlow(playlistId: made.playlistId)   // 404: already gone, nothing to do
@@ -205,6 +222,12 @@ import Testing
         #expect(decoded == book)
         #expect(book.chartKey(forPlaylist: "pl-pop") == "genre:132")
         #expect(book.flow(for: "worldwide")?.confirmed == false, "not seen on the server yet")
+        // Re-review I3: a removed (or retried-away) playlist is remembered so it's never taken back.
+        book.noteRemoved("pl-w")
+        #expect(book.wasRemoved("pl-w") && !book.wasRemoved("pl-pop"))
+        #expect(try JSONDecoder().decode(ChartFlowBook.self, from: try JSONEncoder().encode(book)).wasRemoved("pl-w"))
+        for n in 0..<300 { book.noteRemoved("x-\(n)") }
+        #expect(book.wasRemoved("x-299") && !book.wasRemoved("pl-w"), "the list stays small: the oldest go")
     }
 
     /// M3: one entry a later build wrote that this one can't read never costs the others.

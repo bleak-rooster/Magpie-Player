@@ -126,3 +126,38 @@ TrendingView's song rows are untouched (`ChartSongList` as before); no change to
 - New songs from extend or refresh join at the end of the playlist (append), not in chart order.
 - The scratchpad is shared with other workstreams: C3's `run-ui.sh` had replaced mine. I briefly edited it, then put
   it back. C2 now uses `c2-run-ui.sh`.
+
+## Second fix round (C2 re-review: I3, M-a to M-d)
+
+**What was wrong, and the fixes**
+- **I3, Remove brought the flow back.** 2.13 only queues the delete, so the playlist stays listed for a while. In
+  that gap the "Charts" rebuild took it back.
+  - Removed, retried-away and server-gone playlist ids are now remembered with the book (`removedPlaylistIds`: newest
+    200, per account, cleared on sign-out).
+  - The rebuild never takes one of those back.
+  - Both stubs now queue the delete. The Swift stub's delay is configurable (`setDeleteDelay(reads:)`, default 1).
+- **M-a, upgrade jobs.** `AurralJob.upgradeForJobId` is now decoded, and `ChartFlowPlan.changes` ignores those jobs.
+- **M-b, failed songs read.** Now tested: if reading the flow's songs fails, nothing is sent and N is unchanged.
+- **M-c, failed names read.** Create reads the status fresh for the names. If that read fails, no create is sent
+  (`StubAurral.setStatusFailure`).
+- **M-d, retry window.** In 2.13, `retryDecision` retries a failed create every 60 s, up to 3 tries.
+  `getHonkerQueueDepth` counts only `run_at <= now`, so a waiting retry doesn't show in the queue. Idle reads therefore
+  count only after 150 s (this covers the third try). Recorded in D131.
+
+**Tests**
+- **RED:**
+  - Package: the build failed, since `upgradeForJobId` and `noteRemoved` didn't exist yet.
+  - I3: the new hosted test failed with the adopt guard taken out. It took the removed flow back: `checkChartFlow` not
+    nil, and the flow was present. I then put the guard back.
+  - First version of that test: it passed even without the guard. Its own extra status read let the one-read delete
+    finish, and the app's background refresh after Remove uses up a read too. The test now uses a delete that stays
+    listed for 3 reads, closer to 2.13's worker, which deletes files and tells Navidrome first.
+  - I wrote the other new hosted tests (M-b, M-c, M-d) before the app code, but didn't capture a RED run for them.
+- **GREEN:**
+  - Package: `ChartFlowTests` (13, including upgrade jobs, the queued delete and the removed-ids list) and
+    AurralKitTests (141).
+  - Hosted: `ChartFlowAppTests` (15), `Round14DiscoverTests` (29) and `AurralStubServerTests`.
+  - `aFlowRemovedOnTheServerCanBeCreatedAgain` now lets the queued delete run (two status reads) before it expects
+    the 404.
+- **Release UI check:** `ChartFlowUITests` passed on stub port 3923 (242 s; the shared simulator was slow).
+- check-writes OK; check-release OK.

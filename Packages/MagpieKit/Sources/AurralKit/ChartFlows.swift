@@ -86,12 +86,14 @@ public enum ChartFlowPlan {
     }
 
     /// Fix round I2: what changes to make the flow (its songs as Aurral's jobs) hold `wanted`: the jobs to take out
-    /// (songs no longer wanted, and any second job for one song) and the songs to add, in chart order.
+    /// (songs no longer wanted, and a second canonical job for one song) and the songs to add, in chart order.
+    /// Quality-upgrade jobs (`upgradeForJobId`) are left out entirely (re-review M-a): never kept in place of the
+    /// original, never sent for removal (2.13's `captureStaticPlaylistSelection` refuses them anyway).
     public static func changes(jobs: [AurralJob], wanted: [ChartFlowTrack]) -> (remove: [String], add: [ChartFlowTrack]) {
         let wantedKeys = Set(wanted.map { songKey($0.artistName, $0.trackName) })
         var kept = Set<String>()
         var remove: [String] = []
-        for job in jobs {
+        for job in jobs where job.upgradeForJobId == nil {
             let key = songKey(job.artistName, job.trackName)
             if wantedKeys.contains(key), kept.insert(key).inserted { continue }
             remove.append(job.id)
@@ -149,6 +151,11 @@ public struct ChartFlow: Sendable, Equatable, Codable {
 /// Every chart's flow for one Navidrome account and Aurral user (saved with Discover's feeds, removed on sign-out).
 public struct ChartFlowBook: Sendable, Equatable, Codable {
     public private(set) var flows: [ChartFlow] = []
+    /// Re-review I3: playlists removed (Remove flow) or dropped (Retry) from here: never taken back from the server,
+    /// whose delete is queued (2.13 lists the playlist until its worker gets there) and whose dropped create may still
+    /// be made by a late retry. The newest `maxRemembered`.
+    public private(set) var removedPlaylistIds: [String] = []
+    public static let maxRemembered = 200
 
     public init() {}
 
@@ -160,9 +167,19 @@ public struct ChartFlowBook: Sendable, Equatable, Codable {
         }
         let c = try decoder.container(keyedBy: CodingKeys.self)
         flows = ((try? c.decodeIfPresent([Lenient].self, forKey: .flows)) ?? nil)?.compactMap(\.flow) ?? []
+        removedPlaylistIds = ((try? c.decodeIfPresent([String].self, forKey: .removedPlaylistIds)) ?? nil) ?? []
     }
 
-    enum CodingKeys: String, CodingKey { case flows }
+    enum CodingKeys: String, CodingKey { case flows, removedPlaylistIds }
+
+    /// The playlist was removed or dropped here: never take it back.
+    public mutating func noteRemoved(_ playlistId: String) {
+        removedPlaylistIds.removeAll { $0 == playlistId }
+        removedPlaylistIds.append(playlistId)
+        if removedPlaylistIds.count > Self.maxRemembered { removedPlaylistIds.removeFirst(removedPlaylistIds.count - Self.maxRemembered) }
+    }
+
+    public func wasRemoved(_ playlistId: String) -> Bool { removedPlaylistIds.contains(playlistId) }
 
     public func flow(for chartKey: String) -> ChartFlow? { flows.first { $0.chartKey == chartKey } }
 

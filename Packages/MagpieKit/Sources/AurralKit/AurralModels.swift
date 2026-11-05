@@ -207,6 +207,9 @@ public struct AurralJob: Sendable, Equatable, Hashable {
     /// Where Aurral put the file (container path).
     public var finalPath: String?
     public var status: String?
+    /// Round 15 C2 re-review (M-a): a quality-upgrade job's original (2.13 `upgradeForJobId`); such a job is never the
+    /// song's own in a chart flow.
+    public var upgradeForJobId: String?
 
     public init(id: String, flowId: String?, artistName: String, trackName: String, albumName: String? = nil,
                 artistMBID: MBID? = nil, trackMBID: MBID? = nil, durationMs: Int? = nil, finalPath: String? = nil,
@@ -233,10 +236,12 @@ public struct AurralJob: Sendable, Equatable, Hashable {
         return items.compactMap { item in
             guard let j = item as? [String: Any], let id = j.string("id") ?? j.int("id").map(String.init),
                   let artist = j.string("artistName"), let track = j.string("trackName") else { return nil }
-            return AurralJob(id: id, flowId: j.string("playlistId") ?? j.string("playlistType"), artistName: artist,
-                             trackName: track, albumName: j.string("albumName"), artistMBID: j.mbid("artistMbid"),
-                             trackMBID: j.mbid("trackMbid"), durationMs: j.int("durationMs"), finalPath: j.string("finalPath"),
-                             status: j.string("status"))
+            var job = AurralJob(id: id, flowId: j.string("playlistId") ?? j.string("playlistType"), artistName: artist,
+                                trackName: track, albumName: j.string("albumName"), artistMBID: j.mbid("artistMbid"),
+                                trackMBID: j.mbid("trackMbid"), durationMs: j.int("durationMs"), finalPath: j.string("finalPath"),
+                                status: j.string("status"))
+            job.upgradeForJobId = j.string("upgradeForJobId").flatMap { $0.isEmpty ? nil : String($0.prefix(100)) }
+            return job
         }
     }
 }

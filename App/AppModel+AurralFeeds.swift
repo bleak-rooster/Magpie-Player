@@ -296,9 +296,14 @@ import UIKit
         save()
     }
 
-    /// The chart's flow is gone (removed, or the server no longer has it).
-    func forgetChartFlow(_ chartKey: String) {
-        if let id = chartFlows.flow(for: chartKey)?.playlistId { addedAt[id] = nil }
+    /// The chart's flow is gone here. `removed` (Remove flow, Retry, gone from the server): its playlist is never
+    /// taken back from the server (re-review I3: 2.13 lists it until its queued delete runs).
+    func forgetChartFlow(_ chartKey: String, removed: Bool = false) {
+        if let id = chartFlows.flow(for: chartKey)?.playlistId {
+            addedAt[id] = nil
+            unlistedIdleReads[id] = nil
+            if removed { chartFlows.noteRemoved(id) }
+        }
         chartFlows.remove(chartKey)
         save()
     }
