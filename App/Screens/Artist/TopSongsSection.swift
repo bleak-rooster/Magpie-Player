@@ -2,6 +2,7 @@ import DesignSystem
 import MagpieCore
 import Search
 import SwiftUI
+import UIKit
 
 /// Round 14 A3 (owner answer 6, D104): an artist page's Top songs from outside the library (the server's or
 /// ListenBrainz's): the library's copy plays in full; any other has its preview (or "No preview available"; no controls
@@ -33,6 +34,8 @@ private struct TopSongRowView: View {
     @Environment(AppModel.self) private var model
     let row: TopSongRow
     let rows: [TopSongRow]
+    /// Round 15 C1 (owner item 3, D128): an outside song's cover, and for which row (never another row's).
+    @State private var picture: (row: TopSongRow, image: UIImage)?
 
     var body: some View {
         Group {
@@ -53,12 +56,22 @@ private struct TopSongRowView: View {
                 let item = row.preview.map(model.previewItem(for:))
                 let status: PreviewStatus? = !model.previewsAvailable ? nil
                     : item.map { PreviewCopy.status(model.previewPlayer.state(for: $0), player: model.previewPlayer) } ?? .noPreview
-                if OutsideSongMenu.isAvailable(model) {
-                    PreviewRow(title: row.song.title, artist: row.song.artist, status: status,
-                               onPreview: { if let item { model.togglePreview(item) } }) { OutsideSongMenu(song: row.song) }
-                } else {
-                    PreviewRow(title: row.song.title, artist: row.song.artist, status: status,
-                               onPreview: { if let item { model.togglePreview(item) } })
+                let shown = picture?.row == row ? picture?.image : nil
+                let art = shown.map { Image(uiImage: $0) }
+                Group {
+                    if OutsideSongMenu.isAvailable(model) {
+                        PreviewRow(title: row.song.title, artist: row.song.artist, artwork: art, status: status,
+                                   onPreview: { if let item { model.togglePreview(item) } }) { OutsideSongMenu(song: row.song) }
+                    } else {
+                        PreviewRow(title: row.song.title, artist: row.song.artist, artwork: art, status: status,
+                                   onPreview: { if let item { model.togglePreview(item) } })
+                    }
+                }
+                .artworkTestMarker("top-song-art-\(row.id)", loaded: shown != nil)
+                .task(id: row) {
+                    guard picture?.row != row, let found = await model.topSongArtwork(row, side: 48) else { return }
+                    guard !Task.isCancelled else { return }   // C1 review minor 1: a cancelled load never lands
+                    picture = (row, found)
                 }
             }
         }
