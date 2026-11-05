@@ -231,6 +231,15 @@ struct GenreAlbumControls: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: Tokens.Spacing.s) {
                     sortMenu
+                    // Next to the sort, so it is always on screen while a filter is on.
+                    if browser.filter.isActive {
+                        Button { Task { await browser.clearFilters() } } label: {
+                            ChipLabel(title: "Clear", symbol: "xmark", isSelected: false)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Clear filters")
+                        .accessibilityIdentifier("genre-clear")
+                    }
                     if browser.decades.count > 1 || browser.filter.decade != nil { decadeMenu }
                     FilterChip("Favourites", isSelected: browser.filter.favouritesOnly) {
                         Task { await browser.setFavouritesOnly(!browser.filter.favouritesOnly) }
@@ -241,14 +250,6 @@ struct GenreAlbumControls: View {
                             Task { await browser.setDownloadedOnly(!browser.filter.downloadedOnly) }
                         }
                         .accessibilityIdentifier("genre-downloaded")
-                    }
-                    if browser.filter.isActive {
-                        Button { Task { await browser.clearFilters() } } label: {
-                            ChipLabel(title: "Clear", symbol: "xmark", isSelected: false)
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("Clear filters")
-                        .accessibilityIdentifier("genre-clear")
                     }
                 }
                 .padding(.horizontal, Tokens.Spacing.margin)

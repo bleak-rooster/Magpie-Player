@@ -618,7 +618,9 @@ public actor NavidromeClient {
         case .mostPlayed: ("play_count", "DESC")
         case .random: ("random", nil)
         }
-        var items = [int("_start", start), int("_end", end), URLQueryItem(name: "_sort", value: sort)]
+        // `missing=false`: albums whose files are gone are left out by the server, so the count matches the rows.
+        var items = [int("_start", start), int("_end", end), URLQueryItem(name: "_sort", value: sort),
+                     URLQueryItem(name: "missing", value: "false")]
         if let order { items.append(URLQueryItem(name: "_order", value: order)) }
         if query.sort == .random { items.append(int("seed", query.seed)) }
         items += genreIds.map { URLQueryItem(name: "genre_id", value: $0) }

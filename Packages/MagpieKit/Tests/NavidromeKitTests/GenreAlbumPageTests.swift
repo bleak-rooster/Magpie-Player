@@ -45,6 +45,7 @@ import Testing
             #expect(queryValue(r, "_sort") == expected[sort]?.0, "\(sort)")
             #expect(queryValue(r, "_order") == expected[sort]?.1, "\(sort)")
             #expect(queryValue(r, "_start") == "100" && queryValue(r, "_end") == "200")
+            #expect(queryValue(r, "missing") == "false", "albums whose files are gone aren't counted")
             #expect(queryValue(r, "seed") == (sort == .random ? "42" : nil), "a seed only for Random")
             #expect(r.value(forHTTPHeaderField: "X-ND-Authorization") != nil)
         }
