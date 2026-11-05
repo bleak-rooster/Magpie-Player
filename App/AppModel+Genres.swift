@@ -140,6 +140,31 @@ extension AppModel {
         return try await request { [cap = Self.groupSongCap] in try await $0.songs(genre: name, count: cap, offset: 0) }
     }
 
+    // MARK: - Sorted and filtered albums (round 15 C4, D141–D145)
+
+    /// The server's native album list for genre pages: each genre's native id by name (one `/api/genre` read), and
+    /// pages of `/api/album` through the session's client.
+    func serverGenreAlbums() async throws -> ServerGenreAlbums {
+        let ids = try await request { try await $0.genreIds() }
+        return ServerGenreAlbums(ids: ids) { [weak self] query, genreIds, start, end in
+            guard let self else { throw CancellationError() }
+            return try await self.request { try await $0.albumsPage(query, genreIds: genreIds, start: start, end: end) }
+        }
+    }
+
+    /// The downloaded albums with a song in one of `genres` (offline, and Downloaded only).
+    func phoneGenreAlbums(_ genres: Set<String>) async -> [Album] { await offlineAlbums(genres) }
+
+    /// Whether a native album read failed because this server has no such list (too old, or a proxy in front of it),
+    /// rather than because it is unreachable: the page then sorts the Subsonic list on the phone (D144).
+    nonisolated static func nativeListUnsupported(_ error: Error) -> Bool {
+        switch error as? NavidromeError {
+        case .http(let status)?: status != 401 && status != 408 && status != 429 && status < 500
+        case .unexpectedResponse?, .unexpectedData?: true
+        default: false
+        }
+    }
+
     // MARK: - The owner's overrides
 
     /// Why a move can't be kept (§5 voice); shown instead of dropping it.

@@ -122,6 +122,15 @@ private func album(_ i: Int, year: Int, name: String? = nil, artist: String = "A
                 "only the decade's albums are read")
     }
 
+    /// The decades a page offers: from its oldest known year to its newest (albums without a year are skipped).
+    @Test func theYearSpanSkipsUnknownYears() async throws {
+        var rows = (0..<40).map { FakeAlbumServer.Row(album: album($0, year: 1970 + $0), genres: ["G"]) }
+        rows += (40..<45).map { FakeAlbumServer.Row(album: album($0, year: 0), genres: ["G"]) }
+        let span = try await GenreAlbumPager.yearSpan(FakeAlbumServer(rows), query: GenreAlbumQuery(genres: ["G"], sort: .name))
+        #expect(span.oldest == 1970 && span.newest == 2009)
+        #expect(Decades.spanning(oldest: span.oldest, newest: span.newest) == [2000, 1990, 1980, 1970])
+    }
+
     @Test func aDecadeWithNothingInItIsEmpty() async throws {
         let pager = GenreAlbumPager(source: Self.bigGroup(), query: GenreAlbumQuery(genres: ["Rock"], sort: .name), decade: 1940)
         try await pager.loadFirst()

@@ -77,7 +77,7 @@ enum Mapping {
         return Album(id: d.id, name: d.name ?? "", artist: artist, artistId: d.artistId, year: d.year,
                      songCount: d.songCount ?? songs?.count ?? 0, duration: d.duration ?? 0,
                      coverArtId: d.coverArt, releaseGroupMBID: nil, songs: songs, starred: d.starred != nil,
-                     created: date(d.created))
+                     created: date(d.created), playCount: d.playCount)
     }
 
     /// A native `/api/album` row (round 15 C4): the same album getAlbumList2 gives, with its release group and plays.

@@ -302,6 +302,11 @@ struct SeededGenerator: RandomNumberGenerator {
     /// The first position in `query`'s year order whose album is from `year` or later (`count` when none is).
     private func firstIndex(in query: GenreAlbumQuery, count: Int, atLeast year: Int, known: Album?,
                             from start: Int = 0) async throws -> Int {
+        try await Self.firstIndex(source, in: query, count: count, atLeast: year, known: known, from: start)
+    }
+
+    private static func firstIndex(_ source: GenreAlbumSource, in query: GenreAlbumQuery, count: Int, atLeast year: Int,
+                                   known: Album?, from start: Int = 0) async throws -> Int {
         var lo = start, hi = count
         while lo < hi {
             let mid = (lo + hi) / 2
@@ -311,5 +316,19 @@ struct SeededGenerator: RandomNumberGenerator {
             if (album.year ?? 0) >= year { hi = mid } else { lo = mid + 1 }
         }
         return lo
+    }
+
+    /// The oldest and newest known years of `query`'s list (albums without a year sort first and are skipped): the
+    /// decades a page offers. A few single-album reads.
+    public static func yearSpan(_ source: GenreAlbumSource, query: GenreAlbumQuery) async throws -> (oldest: Int?, newest: Int?) {
+        var newestFirst = query
+        newestFirst.sort = .newest
+        let newest = try await source.page(newestFirst, start: 0, end: 1).albums.first?.year
+        let oldestFirst = query.inYearOrder
+        let first = try await source.page(oldestFirst, start: 0, end: 1)
+        if let year = first.albums.first?.year, year > 0 { return (year, newest) }
+        let at = try await firstIndex(source, in: oldestFirst, count: first.total, atLeast: 1, known: first.albums.first)
+        guard at < first.total else { return (nil, newest) }
+        return (try await source.page(oldestFirst, start: at, end: at + 1).albums.first?.year, newest)
     }
 }
