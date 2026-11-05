@@ -300,6 +300,7 @@ extension AppModel {
     /// Round 14 A4 fix round 1 (I2): a shared playlist Add flow made (a Deezer playlist, or one this phone added).
     func isAddFlowsPlaylist(_ playlist: AurralFlow) -> Bool {
         playlist.importProvider == "deezer-playlist" || (aurralFeeds?.added.values.contains(playlist.id) ?? false)
+            || (aurralFeeds?.chartFlows.playlistIds.contains(playlist.id) ?? false)   // round 15 C2: a chart flow (D133)
     }
 
     // MARK: - A Discover playlist's page
@@ -540,6 +541,7 @@ enum DiscoverCopy {
         case .rateLimited?: AurralCopy.rateLimited
         case .notFound?: "That flow isn\u{2019}t there any more."
         case .forbidden?: "Magpie doesn\u{2019}t send that."
+        case .nameTaken?: "You already have playlists with that name. Rename one and try again."
         default: AppModel.isConnectionError(error) ? "Discover\u{2019}s server isn\u{2019}t answering right now." : BrowseErrorCopy.message(for: error)
         }
     }

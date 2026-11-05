@@ -97,6 +97,9 @@ struct TrendingSnapshot: Codable, Equatable, Sendable {
     var albumsRegion: String?
     var showingServerInstead: String?
     var forSetting: String?
+    /// Round 15 C2 (D132): which chart the top songs are (the server's region, or the default chart); nil when the
+    /// server didn't name its region.
+    var chart: TrendingChart?
 
     init(_ t: AurralTrending) {
         region = t.region
@@ -118,6 +121,7 @@ struct TrendingSnapshot: Codable, Equatable, Sendable {
             merged.songs = older.songs; merged.chartName = older.chartName; merged.chartPlaylistId = older.chartPlaylistId
             merged.libraryPlaylistId = older.libraryPlaylistId; merged.daysAtTop = older.daysAtTop
             merged.songsRegion = older.songsRegion; merged.showingServerInstead = older.showingServerInstead
+            merged.chart = older.chart
         }
         if merged.albums == nil { merged.albums = older.albums }
         if merged.artists == nil { merged.artists = older.artists }

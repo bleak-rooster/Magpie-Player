@@ -112,6 +112,79 @@ public final class StubAurral: HTTPTransport, @unchecked Sendable {
         }
     }
 
+    /// Round 15 C2: a static playlist's songs as Aurral holds them now (title and artist, in order); nil when there is
+    /// no such playlist.
+    public func sharedPlaylistSongs(_ id: String) -> [(title: String, artist: String)]? {
+        state.withLock { s in
+            guard s.synced.contains(where: { $0.id == id }) else { return nil }
+            return s.jobs.filter { $0.flowId == id }.map { ($0.trackName, $0.artistName) }
+        }
+    }
+
+    /// Round 15 C2 (D131): Aurral 2.13's own playlists, as `routes/playlists/handlers/staticPlaylists.ts` serves them
+    /// (accessFlow; an admin passes): `POST /api/playlists/shared-playlists {name, sourceName, tracks}` makes one (400
+    /// "Playlist name already exists" for a name the user has), `PUT .../:id {tracks}` replaces its songs (a song still
+    /// in keeps its job; the rest leave; new ones are queued) and `DELETE .../:id` removes it (404 for one not the
+    /// user's). Its songs are done at once (jobs left by removed songs are orphaned, so `job-<index>` ids stay put).
+    func chartFlowAnswer(method: String, path: String, request: URLRequest, user: User) -> (Int, Any)? {
+        let parts = path.split(separator: "/").map(String.init)
+        guard parts.count >= 3, parts[0] == "api", parts[1] == "playlists", parts[2] == "shared-playlists",
+              features != nil else { return nil }
+        // G1 allowlist: stub aurral chart flows (the verbs the stub answers; it sends nothing).
+        let verbs = (create: "POST", update: "PUT", delete: "DELETE")
+        let isCreate = method == verbs.create && parts.count == 3
+        let isUpdate = method == verbs.update && parts.count == 4
+        let isDelete = method == verbs.delete && parts.count == 4
+        guard isCreate || isUpdate || isDelete else { return nil }
+        guard user.role == "admin" || user.permissions?["accessFlow"] == true else {
+            return (403, ["error": "Forbidden", "message": "Missing permission: accessFlow"])
+        }
+        let body = request.httpBody.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:]
+        let songs = ((body["tracks"] as? [[String: Any]]) ?? []).compactMap { t -> (title: String, artist: String, durationMs: Int)? in
+            guard let title = (t["trackName"] as? String)?.trimmingCharacters(in: .whitespaces), !title.isEmpty,
+                  let artist = (t["artistName"] as? String)?.trimmingCharacters(in: .whitespaces), !artist.isEmpty else { return nil }
+            return (title, artist, t["durationMs"] as? Int ?? 0)
+        }
+        let name = (body["name"] as? String ?? "").trimmingCharacters(in: .whitespaces)
+        // (status, the playlist's id, Aurral's error words)
+        let outcome = state.withLock { s -> (Int, String?, String?) in
+            if isCreate {
+                guard !name.isEmpty else { return (400, nil, "name is required") }
+                if s.synced.contains(where: { $0.name.lowercased() == name.lowercased() && $0.ownerUserId == user.id }) {
+                    return (400, nil, "Playlist name already exists")
+                }
+                let id = UUID().uuidString.lowercased()
+                Self.create(&s, flow: Flow(id: id, name: name, size: songs.count, ownerUserId: user.id), provider: nil,
+                            songs: songs, statuses: songs.map { _ in "done" })
+                return (200, id, nil)
+            }
+            let id = parts[3]
+            guard let index = s.synced.firstIndex(where: { $0.id == id && (user.role == "admin" || $0.ownerUserId == user.id) })
+            else { return (404, nil, "Playlist not found") }
+            var statuses: [String: String] = [:]
+            for i in s.jobs.indices where s.jobs[i].flowId == id {
+                statuses["\(s.jobs[i].artistName.lowercased())|\(s.jobs[i].trackName.lowercased())"] = s.jobs[i].status
+                s.jobs[i].flowId = ""
+            }
+            if isDelete {
+                s.synced.remove(at: index)
+                s.syncedProviders[id] = nil
+                return (200, id, nil)
+            }
+            // Aurral keeps the playlist in the order sent; a song still in keeps its status, a new one is queued.
+            for song in songs {
+                let status = statuses["\(song.artist.lowercased())|\(song.title.lowercased())"] ?? "done"
+                s.jobs.append(Job(flowId: id, artistName: song.artist, trackName: song.title, durationMs: song.durationMs,
+                                  status: status))
+            }
+            s.synced[index].size = songs.count
+            return (200, id, nil)
+        }
+        guard let id = outcome.1 else { return (outcome.0, ["error": outcome.2 ?? "Failed"]) }
+        return (200, ["success": true, "playlistId": id, "queued": true,
+                      "operationId": isCreate ? "op-create" : isDelete ? "op-delete" : "op-update"])
+    }
+
     /// Upstream-shaped id for the playlist Add flow makes from Deezer playlist `deezerId` (2.13: a random UUID).
     public static func syncedId(_ deezerId: String) -> String {
         "a4000000-0000-4000-8000-" + String(repeating: "0", count: max(0, 12 - deezerId.count)) + deezerId.suffix(12)
@@ -361,6 +434,9 @@ public final class StubAurral: HTTPTransport, @unchecked Sendable {
             }
             return answer(200, ["success": true, "flowId": flowId, "queued": true, "operationId": "op-1"])
         default:
+            if let (status, body) = chartFlowAnswer(method: method, path: path, request: request, user: user) {
+                return answer(status, body)
+            }
             if let (status, body) = try await discoverAnswer(method: method, path: path, url: url, request: request,
                                                              user: user, version: snapshot.version) {
                 return answer(status, body)

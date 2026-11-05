@@ -27,6 +27,8 @@ public enum AurralError: Error, Sendable, Equatable {
     case runActive
     /// Round 14: the server has no download source set up (Download songs answered 409).
     case noDownloader
+    /// Round 15 C2: the user already has a playlist with that name (a chart flow's create answered 400).
+    case nameTaken
 }
 
 /// Round 12 Y6, round 13, round 14 A1 (D81): the only calls Magpie may send to Aurral; everything else is refused in
@@ -47,6 +49,9 @@ public enum AurralError: Error, Sendable, Equatable {
 /// - Round 14 writes, each only on the owner's tap: `POST /api/discover/editorial/:id/library` (Add flow),
 ///   `POST /api/discover/feedback` (Not for me), `POST /api/playlists/flows/:flowId/download` (Download songs) and
 ///   `POST /api/playlists/shared-playlists/:playlistId/tracks/:jobId/research` (Retry a song).
+/// - Round 15 C2 (D131), each only on the owner's tap: a chart flow (a chart's top N songs) is the user's own Aurral
+///   playlist: `POST /api/playlists/shared-playlists` (Create flow), `PUT /api/playlists/shared-playlists/:id` (Refresh
+///   now, Songs: N: its songs replaced) and `DELETE /api/playlists/shared-playlists/:id` (Remove flow).
 /// Never `/api/settings` (every secret in clear), `/api/auth/api-key`, `/api/users`, `/api/discover/refresh` (admin),
 /// `/api/discover/blocked-tags`, `/api/library/artists` or `/api/library/downloads/*` (adds go through Lidarr), or
 /// `DELETE /api/library/tracks/*` (deletes Lidarr's file).
@@ -55,6 +60,7 @@ public enum AurralRoute: CaseIterable, Sendable {
     case bootstrap, authMe, recommendations, trending, trendingGenre, editorialShelf, editorialLinks, editorialPlaylist
     case editorialAdd, discoverFeedback, artistPreview, releaseGroupTracks, search, searchUnified, playlistJobsById
     case flowDownload, trackResearch, deezerPreview, imageProxy, imageProxyFile
+    case chartFlowCreate, chartFlowUpdate, chartFlowDelete
 
     var method: String {
         switch self {
@@ -66,6 +72,9 @@ public enum AurralRoute: CaseIterable, Sendable {
              .deezerPreview, .imageProxyFile: "GET"
         case .editorialAdd, .discoverFeedback, .flowDownload, .trackResearch: Self.discoverWriteMethod
         case .imageProxy: Self.imageProxyMethod
+        case .chartFlowCreate: Self.chartFlowCreateMethod
+        case .chartFlowUpdate: Self.chartFlowUpdateMethod
+        case .chartFlowDelete: Self.chartFlowDeleteMethod
         }
     }
 
@@ -100,6 +109,13 @@ public enum AurralRoute: CaseIterable, Sendable {
     static let discoverWriteMethod = "POST"
     // G1 allowlist: aurral image proxy (round 14 A7: Aurral caches a picture it named, in its own image cache).
     static let imageProxyMethod = "POST"
+    // G1 allowlist: aurral chart flows (round 15 C2, D131: a chart's top N as the user's own Aurral playlist; made,
+    // given its songs again and removed only on the owner's tap).
+    static let chartFlowCreateMethod = "POST"
+    // G1 allowlist: aurral chart flows (Refresh now and Songs: N replace the playlist's songs).
+    static let chartFlowUpdateMethod = "PUT"
+    // G1 allowlist: aurral chart flows (Remove flow).
+    static let chartFlowDeleteMethod = "DELETE"
 
     /// `<sha256 hex>` or `<sha256 hex>.<ext>`, as Aurral's image proxy names its cached pictures.
     static func isImageProxyKey(_ s: Substring) -> Bool {
@@ -167,6 +183,9 @@ public enum AurralRoute: CaseIterable, Sendable {
         case 3 where rest[0] == "deezer" && rest[1] == "preview" && isPreviewFile(rest[2]): .deezerPreview
         case 1 where rest[0] == "image-proxy": .imageProxy
         case 2 where rest[0] == "image-proxy" && isImageProxyKey(rest[1]): .imageProxyFile
+        case 2 where rest == ["playlists", "shared-playlists"]: .chartFlowCreate
+        case 3 where rest[0] == "playlists" && rest[1] == "shared-playlists" && isPlainId(rest[2]) && method == chartFlowUpdateMethod: .chartFlowUpdate
+        case 3 where rest[0] == "playlists" && rest[1] == "shared-playlists" && isPlainId(rest[2]) && method == chartFlowDeleteMethod: .chartFlowDelete
         default: nil
         }
         guard let route, route.method == method else { return nil }

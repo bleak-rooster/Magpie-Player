@@ -39,6 +39,12 @@ import UIKit
     private(set) var added: [String: String] = [:]
     /// Fix round 1 (I1): when Add flow made each synced playlist (by its id): it may stay queued on the server a while.
     private(set) var addedAt: [String: Date] = [:]
+    /// Round 15 C2 (D133): each chart's own flow (its Aurral playlist and how many top songs it holds), saved with the
+    /// copies, so per Navidrome account and Aurral user, and removed on sign-out.
+    private(set) var chartFlows = ChartFlowBook()
+    /// Round 15 C2 (D132): the charts picked on Trending this session (not the default's, which is `trending`), by
+    /// `TrendingChart.key`; memory only.
+    private(set) var chartPages: [String: ChartPage] = [:]
     private(set) var known = Known()
     /// The feeds whose last read failed (the page keeps its copy and says so quietly).
     private(set) var failed: Set<Feed> = []
@@ -62,6 +68,16 @@ import UIKit
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let charts = object["charts"] as? [String: String] else { return [:] }
         return charts.filter { $0.key.count == 2 && !$0.value.isEmpty && $0.value.count <= 20 && $0.value.allSatisfy(\.isNumber) }
+    }()
+
+    /// Round 15 C2 (D132): Deezer's "Top Worldwide" chart playlist (the same bundled file's `worldwide`), read through
+    /// the server like a country's.
+    nonisolated static let worldwideChartPlaylist: String? = {
+        guard let url = Bundle.main.url(forResource: "ChartPlaylists", withExtension: "json"),
+              let data = try? Data(contentsOf: url), data.count < 64 * 1024,
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let id = object["worldwide"] as? String, !id.isEmpty, id.count <= 20, id.allSatisfy(\.isNumber) else { return nil }
+        return id
     }()
 
     /// How long a good read is used before reading again (Aurral itself refreshes charts every 5 hours).
@@ -92,6 +108,7 @@ import UIKit
         var hidden: Set<String>
         var added: [String: String]
         var addedAt: [String: Date]?
+        var chartFlows: ChartFlowBook?
     }
 
     nonisolated static let maxBytes = 2 * 1024 * 1024
@@ -117,12 +134,13 @@ import UIKit
         hidden = file.hidden
         added = file.added
         addedAt = file.addedAt ?? [:]
+        chartFlows = file.chartFlows ?? ChartFlowBook()
     }
 
     private func save() {
         guard let url = fileURL else { return }
         let file = File(known: known, trending: trending, recommended: recommended, editorial: editorial,
-                        genreCharts: genreCharts, hidden: hidden, added: added, addedAt: addedAt)
+                        genreCharts: genreCharts, hidden: hidden, added: added, addedAt: addedAt, chartFlows: chartFlows)
         do {
             try AtomicFile.write(file, to: url)
             var values = URLResourceValues()
@@ -142,6 +160,7 @@ import UIKit
         lookups = [:]
         trending = nil; recommended = nil; editorial = nil
         genreCharts = [:]; notReadyGenres = []; hidden = []; added = [:]; addedAt = [:]; known = Known()
+        chartFlows = ChartFlowBook(); chartPages = [:]
         failed = []; reading = []
     }
 
@@ -265,6 +284,25 @@ import UIKit
         if addedAt[playlistId] == nil { addedAt[playlistId] = now() }
         save()
     }
+
+    // MARK: - Chart flows (round 15 C2, D133)
+
+    /// The chart's flow is `flow` (made, resized or refreshed); saved at once.
+    func noteChartFlow(_ flow: ChartFlow) {
+        chartFlows.set(flow)
+        if addedAt[flow.playlistId] == nil { addedAt[flow.playlistId] = flow.createdAt }
+        save()
+    }
+
+    /// The chart's flow is gone (removed, or the server no longer has it).
+    func forgetChartFlow(_ chartKey: String) {
+        if let id = chartFlows.flow(for: chartKey)?.playlistId { addedAt[id] = nil }
+        chartFlows.remove(chartKey)
+        save()
+    }
+
+    /// A chart picked on Trending, as just read.
+    func noteChartPage(_ page: ChartPage, for chart: TrendingChart) { chartPages[chart.key] = page }
 
     #if DEBUG
     /// Tests: a recommendations read as if it had just come in.

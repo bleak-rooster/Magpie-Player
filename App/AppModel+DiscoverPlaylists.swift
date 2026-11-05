@@ -258,6 +258,33 @@ enum DiscoverPagesCopy {
     static let chartsAutomaticNote = "Your phone\u{2019}s region, when it has a chart"
     static let chartsServer = "Your server\u{2019}s region"
     static let worldwide = "Worldwide"
+    // Round 15 C2 (D132–D134): the chart picker and a chart's flow.
+    static let createFlow = "Create flow\u{2026}"
+    static let createFlowTitle = "Create flow"
+    static let editFlow = "Edit flow"
+    static let refreshNow = "Refresh now"
+    static let removeFlow = "Remove flow"
+    static let removeFlowQuestion = "Remove this flow?"
+    static let removeFlowNote = "Its playlist goes, with the songs only this flow brought in. You can create the flow again any time."
+    static let create = "Create"
+    static let save = "Save"
+    static let cancel = "Cancel"
+    static func flowSongs(_ n: Int) -> String { "Songs: \(n)" }
+    static func topCount(_ n: Int) -> String { "Top \(n)" }
+    static func flowNote(_ chart: String, _ n: Int) -> String {
+        "The top \(n) \(n == 1 ? "song" : "songs") of \(chart), as a playlist in your flows. Songs you don\u{2019}t have yet are downloaded."
+    }
+    static func flowUpdated(_ date: Date) -> String {
+        "Updated \(date.formatted(.relative(presentation: .named)))"
+    }
+    static let charts = "Charts"
+    static let countries = "Countries"
+    static let genres = "Genres"
+    static let makeDefault = "Make default"
+    static let defaultChart = "Default"
+    static let genreChart = "Genre chart"
+    static func topSongs(chart: String) -> String { "\(topSongs) \u{00B7} \(chart)" }
+    static func chooseChart(_ current: String) -> String { "Chart: \(current)" }
     static let topSongs = "Top songs"
     static let topAlbums = "Top albums"
     static let topArtists = "Top artists"

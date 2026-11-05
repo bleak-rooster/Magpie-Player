@@ -5,49 +5,35 @@ import NavidromeKit
 import Playback
 
 /// Round 14 A4 (D91, fix round 1, owner): Trending for the owner's chart country (Settings › Home & Library › Charts
-/// country), wherever they are. Aurral's own charts are its server's region. For another country, Top songs are Deezer's
+/// country), wherever they are. Round 15 C2 (D132): that setting is Trending's default chart, which may also be the
+/// worldwide chart or a genre chart. Aurral's own charts are its server's region. For another country, Top songs are Deezer's
 /// "Top <Country>" playlist read **through Aurral** (`GET /api/discover/editorial/<id>`, Aurral reads any Deezer
 /// playlist); the phone never calls Deezer or Apple. If that read fails, the server's chart shows with "Showing <region>
 /// charts". Top albums exist only for the server's region and say so when it differs; artists and genre charts are
 /// worldwide.
 extension AppModel {
-    /// The country whose top songs to show and its chart playlist (nil: the server's own chart).
-    nonisolated static func chartTarget(_ setting: ChartsCountry, phoneRegion: String?, serverRegion: String?,
-                                        charts: [String: String]) -> (region: String?, playlistId: String?) {
-        let server = serverRegion?.uppercased()
-        let wanted: String?
-        switch setting {
-        case .server: wanted = nil
-        case .country(let code): wanted = code.uppercased()
-        case .automatic: wanted = phoneRegion.map { $0.uppercased() }.flatMap { charts[$0] == nil ? nil : $0 }
-        }
-        guard let wanted, wanted != server, let id = charts[wanted] else { return (server, nil) }
-        return (wanted, id)
-    }
-
-    /// Reads Aurral's charts, with the chosen country's top songs (through Aurral) when it isn't the server's.
+    /// Reads Aurral's charts, with the default chart's top songs (round 15 C2, D132: a country's or the worldwide chart
+    /// through Aurral, or a genre chart) when it isn't the server's own.
     func loadTrending(client: AurralClient) async throws -> TrendingSnapshot {
         let trending = try await client.trending()
         var snapshot = TrendingSnapshot(trending)
         let server = trending.region?.uppercased()
+        let setting = preferences.layout.chartsCountry
         snapshot.songsRegion = server
-        snapshot.forSetting = preferences.layout.chartsCountry.stored
-        let target = Self.chartTarget(preferences.layout.chartsCountry, phoneRegion: aurralFeeds.phoneRegion(),
-                                      serverRegion: server, charts: AurralFeeds.chartPlaylists)
-        guard let id = target.playlistId, let region = target.region else { return snapshot }
+        snapshot.forSetting = setting.stored
+        snapshot.chart = server.flatMap { TrendingChart(key: "country:" + $0) }
+        let wanted = setting.chart(phoneRegion: aurralFeeds.phoneRegion(), serverRegion: server,
+                                   countriesWithCharts: Set(AurralFeeds.chartPlaylists.keys))
+        guard let wanted, wanted != snapshot.chart else { return snapshot }
+        if case .country(let code) = wanted, AurralFeeds.chartPlaylists[code] == nil { return snapshot }   // no such chart
         do {
-            let chart = try await client.editorialPlaylist(id)
-            guard !chart.tracks.isEmpty else { throw AurralError.notFound }
-            snapshot.songs = chart.tracks.prefix(100).enumerated().map { index, song in
-                var s = ChartSong(song)
-                s.position = index + 1
-                s.movement = nil
-                return s
-            }
-            snapshot.songsRegion = region
-            snapshot.chartName = chart.name
-            snapshot.chartPlaylistId = id
-            snapshot.libraryPlaylistId = chart.libraryPlaylistId
+            let page = try await readChart(wanted, client: client)
+            snapshot.songs = page.songs
+            snapshot.chart = wanted
+            if case .country(let code) = wanted { snapshot.songsRegion = code } else { snapshot.songsRegion = nil }
+            snapshot.chartName = page.name
+            snapshot.chartPlaylistId = page.playlistId
+            snapshot.libraryPlaylistId = page.libraryPlaylistId
             snapshot.daysAtTop = nil
             snapshot.albumsRegion = server
         } catch {
