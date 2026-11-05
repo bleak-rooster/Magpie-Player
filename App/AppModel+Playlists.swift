@@ -2,6 +2,7 @@ import Foundation
 import MagpieCore
 import NavidromeKit
 import os
+import Requests
 
 /// Round 11 R8 copy, in the UX appraisal's words (R20: docs/reviews/ux-appraisal-round-11.md §6, §9).
 enum PlaylistCopy {
@@ -186,6 +187,25 @@ extension AppModel {
                 try await $0.updatePlaylist(id: id, name: nil, adding: [], removingIndexes: [index])
             }, landed: { [expected] in try await self.songIds(in: fresh) == expected })
             playlistsChanged(PlaylistCopy.removed(from: fresh.name))
+        }
+    }
+
+    /// Round 15 C3 (D137): takes every entry of `songIds` (duplicates too) out of `playlist`, if it is the user's, read
+    /// fresh after any edit to it still under way. Positions go highest first, in one write; the others are untouched.
+    /// Returns true when something was removed, false when it held none, nil when its listing doesn't match its count
+    /// (the server hides entries, so positions can't be trusted): nothing is sent then.
+    func removeEverywhere(_ songIds: Set<String>, from playlist: Playlist) async throws -> Bool? {
+        try await libraryEdits.playlistLocks.run(playlist.id) {
+            let (fresh, songs) = try await ownPlaylist(playlist)
+            let list = songs.map(\.id)
+            guard fresh.songCount == list.count else { return nil }
+            let indexes = FindCleanups.indexesToRemove(songIds, in: list)
+            guard !indexes.isEmpty else { return false }
+            let expected = list.filter { !songIds.contains($0) }
+            try await sendOnce({ [id = fresh.id] in
+                try await $0.updatePlaylist(id: id, name: nil, adding: [], removingIndexes: indexes)
+            }, landed: { [expected] in try await self.songIds(in: fresh) == expected })
+            return true
         }
     }
 

@@ -397,9 +397,11 @@ public actor RequestStore {
     public static func eraseAll(in directory: URL = URL.applicationSupportDirectory) {
         let folder = defaultURL(in: directory, instance: "x").deletingLastPathComponent()
         let names = (try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []
-        // Round 14 A3 (D101): the playlist adds waiting for their songs go with the requests.
+        // Round 14 A3 (D101): the playlist adds waiting for their songs go with the requests; round 15 C3 (D138): so do
+        // the rejected finds' playlist clean-ups and their history.
         for name in names where (name.hasPrefix("requests-") || name.hasPrefix("runner-state-")
-                                 || name.hasPrefix("playlist-adds-")) && name.contains(".json") {
+                                 || name.hasPrefix("playlist-adds-") || name.hasPrefix("find-cleanups-"))
+                                && name.contains(".json") {
             try? FileManager.default.removeItem(at: folder.appending(path: name))
         }
     }

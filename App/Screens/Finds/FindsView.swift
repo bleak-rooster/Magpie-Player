@@ -38,11 +38,31 @@ struct FindsView: View {
                     header("On their way")
                 }
             }
+            // Round 15 C3 (D138): what Not for me took out of your playlists, the latest few.
+            let letGo = model.letGo.history.prefix(5)
+            if !letGo.isEmpty {
+                Section {
+                    ForEach(Array(letGo)) { job in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(job.title).font(.body).foregroundStyle(themed.palette.inkColor)
+                            Text(FindCleanupCopy.historyLine(job)).font(.footnote).foregroundStyle(themed.palette.ink2Color)
+                            if let at = job.finishedAt {
+                                Text(at, format: .relative(presentation: .named)).font(.caption).foregroundStyle(themed.palette.ink2Color)
+                            }
+                        }
+                        .accessibilityElement(children: .combine)
+                        .listRowBackground(Color.clear)
+                        .accessibilityIdentifier("finds-let-go-\(job.title)")
+                    }
+                } header: {
+                    header(FindCleanupCopy.recentlyLetGo)
+                }
+            }
         }
         .listStyle(.plain)
         // Over the list, not a row in it, so no separators frame it (final fix 2 B-M10, as Requests).
         .overlay {
-            if shelf.isEmpty {
+            if shelf.isEmpty, model.letGo.history.isEmpty {
                 ContentUnavailableView("No finds yet", systemImage: "record.circle",
                                        description: Text("New artists you try land here first, so you can try them before they join your library. Songs by artists you have go straight into your library."))
                     .accessibilityIdentifier("finds-empty")

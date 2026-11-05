@@ -81,18 +81,34 @@ extension AppModel {
 
     /// Lets the find go after the owner confirmed; returns what to tell the owner. Whenever files may have gone
     /// (done, still going, or needing a look), the find's songs leave the queue and the shelf at once.
+    /// Round 15 C3 (D137): before the files go, the find's songs leave every one of the owner's playlists (Navidrome's
+    /// scan after the delete would leave entries for songs that are gone). The Not for me is proven again first (nothing
+    /// written), so nothing leaves a playlist for a find that can't go; the clean-up is saved and finished later if
+    /// interrupted. What was removed, and from where, is said with the outcome.
     func notForMe(_ confirm: NotForMeConfirm) async -> String {
         guard let runner else { return NotForMeCopy.unavailable }
-        let songs = requests.first { $0.id == confirm.request }.map(letGoSongIds) ?? []
+        let request = requests.first { $0.id == confirm.request }
+        let songs = request.map(letGoSongIds) ?? []
+        var removed: String?
+        if let request, request.notForMe == nil {
+            do { _ = try await runner.notForMeCheck(confirm.request) } catch { return NotForMeCopy.message(for: error) }
+            removed = await cleanUpAfterLetGo(requestId: request.id, title: Self.letGoTitle(request), songIds: songs,
+                                              announce: false)
+        }
         defer { pollRequests() }   // a Not for me still going is followed by `tick`
         do {
             let outcome = try await runner.notForMe(confirm.request, permanentConfirmed: confirm.permanent)
             findLetGo(songs)
-            return NotForMeCopy.message(outcome)
+            return [NotForMeCopy.message(outcome), removed.map { $0 + "." }].compactMap { $0 }.joined(separator: " ")
         } catch {
             if error as? RequestRunner.NotForMeError == .needsAttention { findLetGo(songs) }
-            return NotForMeCopy.message(for: error)
+            return [NotForMeCopy.message(for: error), removed.map { $0 + "." }].compactMap { $0 }.joined(separator: " ")
         }
+    }
+
+    /// The name the clean-up's message uses: the album for Try this album, else the song.
+    nonisolated static func letGoTitle(_ request: MagpieRequest) -> String {
+        request.albumTarget != nil ? (request.albumTitle ?? request.recording.title) : request.recording.title
     }
 
     /// The request's song and the other songs of its release in the Finds library: the whole release goes.

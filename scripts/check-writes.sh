@@ -475,6 +475,26 @@ if [ -z "${G1_SRC:-}" ]; then
     { echo "G1: App/AppModel+Playlists.swift: ownPlaylist no longer refuses Discover's playlists" >&2; bad=1; }
   grep -qF 'let (fresh, songs) = try await ownPlaylist(playlist)' App/AppModel+DiscoverSwap.swift ||
     { echo "G1: App/AppModel+DiscoverSwap.swift: the swap no longer goes through ownPlaylist" >&2; bad=1; }
+  # Round 15 C3 (D137): a rejected find's songs leave the owner's playlists only through `removeEverywhere` (X3's
+  # checked path: ownership read fresh by `ownPlaylist`, the listing matching its count, positions highest first, sent
+  # once), and only the clean-up (AppModel+FindCleanup.swift) calls it.
+  pl="App/AppModel+Playlists.swift"
+  removal="$(awk '/func removeEverywhere\(/,/^    }$/' "$pl" || true)"
+  for want in 'let (fresh, songs) = try await ownPlaylist(playlist)' 'guard fresh.songCount == list.count else { return nil }' \
+              'let indexes = FindCleanups.indexesToRemove(songIds, in: list)' \
+              'try await $0.updatePlaylist(id: id, name: nil, adding: [], removingIndexes: indexes)'; do
+    grep -qF -- "$want" <<< "$removal" ||
+      { echo "G1: $pl: removeEverywhere no longer has: $want" >&2; bad=1; }
+  done
+  grep -qF 'list.indices.filter { songIds.contains(list[$0]) }.sorted(by: >)' Packages/MagpieKit/Sources/Requests/FindCleanup.swift ||
+    { echo "G1: FindCleanup.swift: the clean-up's positions are no longer highest first" >&2; bad=1; }
+  for hit in $(grep -rnE --include='*.swift' 'removeEverywhere\(' "${product[@]}" | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' |
+               grep -v 'func removeEverywhere(' | cut -d: -f1 | sort -u || true); do
+    case "$hit" in
+      App/AppModel+FindCleanup.swift) ;;
+      *) echo "G1: removeEverywhere called outside the rejected-find clean-up: $hit" >&2; bad=1 ;;
+    esac
+  done
   # Only the Lidarr gate and the Aurral client name an API-key header or parameter (the redactor and the test stub aside).
   for f in $(grep -rlE --include='*.swift' '[Xx]-[Aa]pi-[Kk]ey"|"api_key' "${product[@]}" | sort -u || true); do
     case "$f" in

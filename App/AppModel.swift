@@ -148,6 +148,8 @@ final class AppModel {
     /// Round 14 A3: the outside songs' menus, the pending playlist adds and this session's previews
     /// (AppModel+SongActions.swift).
     let songActions = SongActions()
+    /// Round 15 C3 (D137–D138): a rejected find's playlist clean-ups and their short history (AppModel+FindCleanup.swift).
+    let letGo = LetGoState()
     /// Round 12 Y3: the library Home, Library, Search and the car read (`AppModel+LibraryScope.swift`); nil for all.
     var libraryScope: [Int]?
     /// Changes each time the server answers again after it didn't: Home reads what failed (P5).
@@ -630,6 +632,7 @@ final class AppModel {
         session = nil
         libraryEdits.reset()
         songActions.forget()   // round 14 A3
+        letGo.forget()   // round 15 C3 (the file goes with the requests: RequestStore.eraseAll)
         PopularSongsCache.removeAll(root: dataDirectory)   // R3
         advertisedExtensions = nil
         reconnectTask = nil
