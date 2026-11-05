@@ -253,7 +253,7 @@ enum DiscoverPagesCopy {
         guard let region, !region.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
         return regionName(region)
     }
-    static let chartsCountry = "Charts country"
+    static let chartsCountry = "Default chart"   // round 15 C2 fix round M5 (was "Charts country")
     static let chartsAutomatic = "Automatic"
     static let chartsAutomaticNote = "Your phone\u{2019}s region, when it has a chart"
     static let chartsServer = "Your server\u{2019}s region"
@@ -265,7 +265,12 @@ enum DiscoverPagesCopy {
     static let refreshNow = "Refresh now"
     static let removeFlow = "Remove flow"
     static let removeFlowQuestion = "Remove this flow?"
-    static let removeFlowNote = "Its playlist goes, with the songs only this flow brought in. You can create the flow again any time."
+    static let removeFlowNote = "The playlist goes. Songs this flow downloaded are deleted unless another of your playlists uses them, even if you starred them. Songs you already had stay."
+    static let couldntCreateFlow = "Couldn\u{2019}t create the flow"
+    static let editFlowNote = "A flow can hold fewer songs than this: it skips songs you marked Not for me. Fewer songs: the ones that drop out are deleted unless another of your playlists uses them."
+    static func pinnedNote(_ chart: String) -> String {
+        "Trending now opens on \(chart) wherever you are. Choose Automatic in Settings to follow your phone\u{2019}s region again."
+    }
     static let create = "Create"
     static let save = "Save"
     static let cancel = "Cancel"

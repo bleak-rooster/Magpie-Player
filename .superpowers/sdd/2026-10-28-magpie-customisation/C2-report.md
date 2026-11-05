@@ -65,3 +65,64 @@ TrendingView's song rows are untouched (`ChartSongList` as before); no change to
 - Chart flows are not re-synced automatically (owner taps Refresh now); stated in D130.
 - The stub was run on port 3911 to avoid restarting other worktrees' stubs on 3901; start.sh reported a stub already on
   3911 running other code and restarted it (if another workstream also used 3911, its stub was restarted).
+
+## Fix round (C2 review: I1, I2, M1–M7)
+
+**Root causes (checked in Aurral 2.13 source)**
+- **I1:** `POST /shared-playlists` is queued (`enqueuePayload`) and answers 200 with a fresh id whatever the name.
+  The duplicate check (`assertUniqueStaticPlaylistName`: the user's playlists and flows, trimmed and lower-cased) runs
+  in the worker, which fails the job. The old code relied on a 400 that never comes (both stubs faked it).
+- **I2:** the PUT's `updateStaticPlaylistLocked` uses `deleteUnsharedFiles = false`. Dropped songs lost their jobs
+  but kept their files, untracked.
+
+**Fixes**
+- **Name before sending (I1):** `ChartFlowPlan.freeName` picks the first free name from the names in the status
+  (flows, shared playlists and Magpie's own chart flows), then sends once. The `nameTaken` error and the 400 mapping
+  are gone.
+- **A creation that never appears (I1):** a new flow shows Setting up… until it is listed. If it isn't listed after
+  two reads with the server's queue idle, or after 10 minutes, it shows "Couldn't create the flow" with Retry. Retry
+  picks a name afresh and sends the same N.
+- **Shorten, extend and Refresh now (I2):** these read the flow's jobs, then send `POST …/:id/track-removals {jobIds}`
+  for songs that leave and `POST …/:id/tracks {tracks}` for songs that come in. Nothing is sent when nothing changed.
+  The PUT is dropped and refused again.
+- **Removal file safety (I2):** checked in the 2.13 source (`removePlaylistFileIfUnshared`):
+  - only files inside Aurral's own download folder are deleted;
+  - library-reused files (`externalPath`) are skipped;
+  - a file another Aurral playlist or flow uses is moved to it, not deleted;
+  - files a visible Navidrome playlist uses are kept.
+
+  This is recorded in D130.
+- **Routes:** 31 now (create, append, track-removals, delete). They are pinned in `AurralRoute` and check-writes, and
+  the bodies match the 2.13 valibot schemas.
+- **M1:** the Remove confirmation says what goes and what stays, including starred songs.
+- **M2:** a flow is `confirmed` once listed. Until then Edit is disabled, and resize, refresh and remove refuse to
+  send.
+- **M3:** lenient book and snapshot decoding. A lost book is rebuilt from the status (`sourceName` "Charts", named
+  after the chart). Such playlists count as Discover's on any phone.
+- **M4:** Home's shelf heading is "Trending · <chart>".
+- **M5:** Make default from Automatic onto a country shows a note. The Settings label is now "Default chart".
+- **M6:** removed the unused `resize`.
+- **M7:** the Edit sheet notes that Not for me songs are skipped.
+- **Stubs:** both now match 2.13. The create answers 200 and a taken name (playlist or flow) fails silently. The
+  Swift stub records deleted files, failed creates, a worker failure switch and a moving worldwide chart. The Python
+  stub's `/__stub/shared` reports `deletedFiles` and `failedCreates`.
+
+**Tests**
+- **RED:** after the stubs were made to match 2.13, the old `aNameAlreadyTakenIsTold` failed (no error thrown) and
+  `resizingReplaces…` failed (`notFound`). The new app code was then missing APIs, so the build failed
+  (`nameTaken`, `updateChartFlow`).
+- **GREEN, package:** `ChartFlowTests` (free name, taken name accepted then never listed, changes plan, shorten with
+  files deleted, extend, remove, odd ids, lenient book), `TrendingChartTests` and the allow-list tests. 140
+  AurralKit tests pass.
+- **GREEN, hosted:** `ChartFlowAppTests` (11: create 10 → 5 → 20 → refresh after the chart moved → no-op refresh →
+  remove, with exact writes and deleted files; free name; couldn't create then Retry; nothing sent until listed;
+  lost book rebuilt; Home title and pin note; words), `Round14DiscoverTests` (29) and `AurralStubServerTests`.
+- **Release UI check:** `ChartFlowUITests` passed, on stub port 3923. It now also waits for Edit to be enabled and
+  checks that the five dropped songs' files were deleted. The first attempt hit an accessibility "Error getting main
+  window" during sign-in (the shared simulator); the retry passed.
+- check-writes OK; check-release OK.
+
+**Notes**
+- New songs from extend or refresh join at the end of the playlist (append), not in chart order.
+- The scratchpad is shared with other workstreams: C3's `run-ui.sh` had replaced mine. I briefly edited it, then put
+  it back. C2 now uses `c2-run-ui.sh`.

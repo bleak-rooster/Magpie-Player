@@ -199,7 +199,7 @@ private struct ShelfView: View {
             }
             .accessibilityIdentifier("home-\(shelf.section.rawValue)")
         } else {
-            ShelfSection(shelf.section.title, onSeeAll: seeAll) {
+            ShelfSection(shelf.section == .trending ? model.homeTrendingTitle : shelf.section.title, onSeeAll: seeAll) {
                 ForEach(shelf.items.prefix(style.count)) { item in
                     tile(item)
                 }

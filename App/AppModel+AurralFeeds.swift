@@ -45,6 +45,8 @@ import UIKit
     /// Round 15 C2 (D132): the charts picked on Trending this session (not the default's, which is `trending`), by
     /// `TrendingChart.key`; memory only.
     private(set) var chartPages: [String: ChartPage] = [:]
+    /// Fix round I1: per new chart flow, the status reads with the server's queue idle that didn't list it yet.
+    @ObservationIgnored var unlistedIdleReads: [String: Int] = [:]
     private(set) var known = Known()
     /// The feeds whose last read failed (the page keeps its copy and says so quietly).
     private(set) var failed: Set<Feed> = []
@@ -160,7 +162,7 @@ import UIKit
         lookups = [:]
         trending = nil; recommended = nil; editorial = nil
         genreCharts = [:]; notReadyGenres = []; hidden = []; added = [:]; addedAt = [:]; known = Known()
-        chartFlows = ChartFlowBook(); chartPages = [:]
+        chartFlows = ChartFlowBook(); chartPages = [:]; unlistedIdleReads = [:]
         failed = []; reading = []
     }
 

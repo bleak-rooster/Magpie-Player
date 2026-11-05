@@ -2,7 +2,7 @@ import XCTest
 
 /// Round 15 C2 (owner items 5 and 5b, D130–D134), the Release (TestFlight-equivalent) check: on Trending, pick
 /// Worldwide and make it the default; after a relaunch Trending opens on Worldwide; Create flow… with Songs: 10; Edit
-/// flow shows 10; change it to 5 and the playlist on the server holds 5. Dev stack and the localhost stub Aurral only
+/// flow shows 10; change it to 5 and the playlist on the server holds 5, the other five songs' files deleted. Dev stack and the localhost stub Aurral only
 /// (guard G0); the stub's own control route (`/__stub/shared`) says what the playlist holds.
 final class ChartFlowUITests: XCTestCase {
     private struct Stack {
@@ -37,6 +37,13 @@ final class ChartFlowUITests: XCTestCase {
         let list = object?["playlists"] as? [[String: Any]] ?? []
         return Dictionary(list.compactMap { p in (p["name"] as? String).map { ($0, p["trackCount"] as? Int ?? -1) } },
                           uniquingKeysWith: { a, _ in a })
+    }
+
+    /// The songs whose files the stub's Aurral deleted (removals and deletes).
+    private func deletedFiles(_ root: URL) throws -> [String] {
+        let data = try Data(contentsOf: root.appending(path: "__stub/shared"))
+        let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        return object?["deletedFiles"] as? [String] ?? []
     }
 
     private func resetStub(_ root: URL) {
@@ -168,8 +175,12 @@ final class ChartFlowUITests: XCTestCase {
         XCTAssertTrue(again.descendants(matching: .any)["chart-flow-edit"].waitForExistence(timeout: 20), "Edit flow shows")
         XCTAssertEqual(try waitForShared(s.aurral, name: "Top Worldwide", count: 10), 10, "the server's playlist holds 10")
 
-        // Edit flow shows 10; change it to 5.
-        element(again, "chart-flow-edit").tap()
+        // Edit flow shows 10 (once the server lists the flow: fix round M2); change it to 5.
+        let edit = element(again, "chart-flow-edit")
+        let enabledBy = Date().addingTimeInterval(20)
+        while Date() < enabledBy, !edit.isEnabled { Thread.sleep(forTimeInterval: 0.5) }
+        XCTAssertTrue(edit.isEnabled, "Edit flow once the server lists the flow")
+        edit.tap()
         XCTAssertTrue(again.staticTexts["Songs: 10"].waitForExistence(timeout: 10), "Edit flow shows 10")
         let stepper = again.steppers["chart-flow-count"]
         XCTAssertTrue(stepper.waitForExistence(timeout: 5))
@@ -178,6 +189,7 @@ final class ChartFlowUITests: XCTestCase {
         XCTAssertTrue(again.staticTexts["Songs: 5"].waitForExistence(timeout: 5))
         again.buttons["chart-flow-save"].tap()
         XCTAssertEqual(try waitForShared(s.aurral, name: "Top Worldwide", count: 5), 5, "the playlist has 5")
+        XCTAssertEqual(try deletedFiles(s.aurral).count, 5, "the five songs that left had their files deleted (I2)")
         XCTAssertTrue(again.descendants(matching: .any)["chart-flow-count-label"].waitForExistence(timeout: 10))
         XCTAssertEqual(again.descendants(matching: .any)["chart-flow-count-label"].label, "Songs: 5")
 

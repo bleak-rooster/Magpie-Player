@@ -62,6 +62,8 @@ public struct AurralFlow: Sendable, Equatable, Hashable {
     /// Round 14 A4 fix round 1 (I2): a static playlist's source (`importSource.provider`): "deezer-playlist" for Add flow's
     /// (Discover playlists and charts), "spotify-playlist" and others for imports; nil for a flow or a hand-made one.
     public var importProvider: String?
+    /// Round 15 C2 fix round (M3): a static playlist's `sourceName` ("Charts" for a chart flow Magpie made).
+    public var sourceName: String?
 
     public init(id: String, name: String, enabled: Bool = true, ownerUserId: Int? = nil, ownerUsername: String? = nil,
                 size: Int? = nil, nextRunAt: Date? = nil, lastRunAt: Date? = nil) {
@@ -168,6 +170,7 @@ public struct AurralStatus: Sendable, Equatable {
                                       nextRunAt: date(f.string("nextRunAt")), lastRunAt: date(f.string("lastRunAt")))
                 flow.autoDownload = f.bool("autoDownload")
                 flow.importProvider = f.dict("importSource")?.string("provider").map { String($0.prefix(64)) }
+                flow.sourceName = f.string("sourceName").map { String($0.prefix(64)) }
                 return flow
             }
         }

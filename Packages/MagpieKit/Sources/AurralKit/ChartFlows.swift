@@ -6,8 +6,17 @@ import MagpieCore
 // Aurral 2.13's Add flow (`POST /api/discover/editorial/:id/library`) takes no song count: it imports the whole chart as
 // a synced playlist that re-syncs every day and keeps songs that fell off (`keepRemovedTracks: true`), so it can be
 // neither shortened nor limited. A chart flow is instead one of the user's own Aurral playlists ("shared playlists",
-// `routes/playlists/handlers/staticPlaylists.ts`) holding exactly the chart's top N, which its owner may give a new
-// song list (`PUT`, Aurral keeps the songs still in, drops the rest and queues the new ones) or remove (`DELETE`).
+// `routes/playlists/handlers/staticPlaylists.ts`) holding exactly the chart's top N:
+// - made with `POST /api/playlists/shared-playlists {name, sourceName, tracks}`. 2.13 **queues** the creation and
+//   answers 200 whatever the name; a name the user already has (a playlist or a flow, trimmed and case folded) fails
+//   later in the worker and the playlist never appears. So Magpie picks a free name first (`ChartFlowPlan.freeName`)
+//   and gives up on a creation the server never lists (fix round I1);
+// - songs that leave go with `POST …/:id/track-removals {jobIds}` (2.13's bulk remove: `deleteFiles: true`, so their
+//   files are deleted, but only inside Aurral's own download folder, never a file reused from the library
+//   (`externalPath`), one another Aurral playlist or flow uses (moved to it instead) or one a visible Navidrome playlist
+//   still points at); songs that come in go with `POST …/:id/tracks {tracks}` (fix round I2: the `PUT` that replaced
+//   the list left the removed songs' files behind for good);
+// - removed with `DELETE …/:id` (the same file rules).
 // Aurral matches, downloads (its own download sources) and publishes it to Navidrome, as for Add flow.
 
 /// One song sent to Aurral for a chart flow: only the fields Aurral 2.13's playlist track takes and the chart gives.
@@ -31,7 +40,7 @@ public struct ChartFlowTrack: Sendable, Equatable, Hashable, Codable {
     }
 }
 
-/// Which songs a chart flow holds, and the counts offered.
+/// Which songs a chart flow holds, the counts offered, its name and what changes.
 public enum ChartFlowPlan {
     /// The most a chart flow holds (Aurral's charts list at most 100 songs).
     public static let maxSongs = 100
@@ -45,8 +54,8 @@ public enum ChartFlowPlan {
         var seen = Set<String>()
         var picked: [ChartFlowTrack] = []
         for song in songs where picked.count < wanted {
-            let artist = fold(song.artistName), title = fold(song.trackName)
-            guard !artist.isEmpty, !title.isEmpty, seen.insert(artist + "\u{1}" + title).inserted else { continue }
+            let key = songKey(song.artistName, song.trackName)
+            guard !key.isEmpty, seen.insert(key).inserted else { continue }
             var clean = song
             clean.artistName = song.artistName.trimmingCharacters(in: .whitespacesAndNewlines)
             clean.trackName = song.trackName.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -64,6 +73,37 @@ public enum ChartFlowPlan {
 
     /// What "Songs: N" starts at for a new flow: 25, or the whole chart when it is shorter.
     public static func defaultCount(chartLength: Int) -> Int { max(1, min(25, chartLength, maxSongs)) }
+
+    /// Fix round I1: the first of `base`, "`base` 2", "`base` 3"… that none of `taken` is (trimmed and lower-cased, as
+    /// Aurral's `normalizeNameKey` compares the user's playlists and flows).
+    public static func freeName(_ base: String, taken: [String]) -> String {
+        let used = Set(taken.map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() })
+        let base = base.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !used.contains(base.lowercased()) { return base }
+        var n = 2
+        while used.contains("\(base) \(n)".lowercased()) { n += 1 }
+        return "\(base) \(n)"
+    }
+
+    /// Fix round I2: what changes to make the flow (its songs as Aurral's jobs) hold `wanted`: the jobs to take out
+    /// (songs no longer wanted, and any second job for one song) and the songs to add, in chart order.
+    public static func changes(jobs: [AurralJob], wanted: [ChartFlowTrack]) -> (remove: [String], add: [ChartFlowTrack]) {
+        let wantedKeys = Set(wanted.map { songKey($0.artistName, $0.trackName) })
+        var kept = Set<String>()
+        var remove: [String] = []
+        for job in jobs {
+            let key = songKey(job.artistName, job.trackName)
+            if wantedKeys.contains(key), kept.insert(key).inserted { continue }
+            remove.append(job.id)
+        }
+        let add = wanted.filter { !kept.contains(songKey($0.artistName, $0.trackName)) }
+        return (remove, add)
+    }
+
+    static func songKey(_ artist: String, _ title: String) -> String {
+        let a = fold(artist), t = fold(title)
+        return a.isEmpty || t.isEmpty ? "" : a + "\u{1}" + t
+    }
 
     static func fold(_ text: String) -> String {
         text.folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: nil)
@@ -83,10 +123,26 @@ public struct ChartFlow: Sendable, Equatable, Codable {
     public var createdAt: Date
     /// When its songs were last sent (Create, Refresh now, Songs: N).
     public var refreshedAt: Date
+    /// Fix round M2: the server has listed it (its creation went through), so it can be edited or removed.
+    public var confirmed: Bool
 
-    public init(chartKey: String, playlistId: String, name: String, count: Int, createdAt: Date, refreshedAt: Date) {
+    public init(chartKey: String, playlistId: String, name: String, count: Int, createdAt: Date, refreshedAt: Date,
+                confirmed: Bool = false) {
         self.chartKey = chartKey; self.playlistId = playlistId; self.name = name; self.count = count
-        self.createdAt = createdAt; self.refreshedAt = refreshedAt
+        self.createdAt = createdAt; self.refreshedAt = refreshedAt; self.confirmed = confirmed
+    }
+
+    enum CodingKeys: String, CodingKey { case chartKey, playlistId, name, count, createdAt, refreshedAt, confirmed }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        chartKey = try c.decode(String.self, forKey: .chartKey)
+        playlistId = try c.decode(String.self, forKey: .playlistId)
+        name = try c.decode(String.self, forKey: .name)
+        count = try c.decode(Int.self, forKey: .count)
+        createdAt = try c.decode(Date.self, forKey: .createdAt)
+        refreshedAt = try c.decode(Date.self, forKey: .refreshedAt)
+        confirmed = (try? c.decodeIfPresent(Bool.self, forKey: .confirmed)) ?? false
     }
 }
 
@@ -96,18 +152,23 @@ public struct ChartFlowBook: Sendable, Equatable, Codable {
 
     public init() {}
 
+    /// Fix round M3: an entry this build can't read (a later build's) is dropped on its own, never the whole book.
+    public init(from decoder: Decoder) throws {
+        struct Lenient: Decodable {
+            let flow: ChartFlow?
+            init(from decoder: Decoder) throws { flow = try? ChartFlow(from: decoder) }
+        }
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        flows = ((try? c.decodeIfPresent([Lenient].self, forKey: .flows)) ?? nil)?.compactMap(\.flow) ?? []
+    }
+
+    enum CodingKeys: String, CodingKey { case flows }
+
     public func flow(for chartKey: String) -> ChartFlow? { flows.first { $0.chartKey == chartKey } }
 
     /// Sets the chart's flow (replacing any it had).
     public mutating func set(_ flow: ChartFlow) {
         if let index = flows.firstIndex(where: { $0.chartKey == flow.chartKey }) { flows[index] = flow } else { flows.append(flow) }
-    }
-
-    /// The chart's flow now holds `count` songs, sent at `date`.
-    public mutating func resize(_ chartKey: String, to count: Int, at date: Date) {
-        guard let index = flows.firstIndex(where: { $0.chartKey == chartKey }) else { return }
-        flows[index].count = count
-        flows[index].refreshedAt = date
     }
 
     public mutating func remove(_ chartKey: String) { flows.removeAll { $0.chartKey == chartKey } }
@@ -133,10 +194,10 @@ public struct AurralChartFlowCreated: Sendable, Equatable {
 }
 
 extension AurralClient {
-    /// The source name Magpie gives a chart flow in Aurral.
-    static let chartFlowSourceName = "Charts"
+    /// The source name Magpie gives a chart flow in Aurral (how one is recognised again: fix round M3).
+    public static let chartFlowSourceName = "Charts"
 
-    /// The body of a chart flow's create (`name`, `sourceName`, `tracks`) or song update (`tracks` only).
+    /// The body of a chart flow's create (`name`, `sourceName`, `tracks`) or song append (`tracks` only).
     static func chartFlowBody(name: String?, tracks: [ChartFlowTrack]) -> Data? {
         var o: [String: Any] = ["tracks": tracks.map(\.json)]
         if let name {
@@ -148,32 +209,46 @@ extension AurralClient {
 
     static func validChartFlowSongs(_ tracks: [ChartFlowTrack]) -> Bool {
         (1...ChartFlowPlan.maxSongs).contains(tracks.count)
-            && tracks.allSatisfy { !ChartFlowPlan.fold($0.artistName).isEmpty && !ChartFlowPlan.fold($0.trackName).isEmpty }
+            && tracks.allSatisfy { !ChartFlowPlan.songKey($0.artistName, $0.trackName).isEmpty }
     }
 
     /// Create flow: `POST /api/playlists/shared-playlists {name, sourceName, tracks}` (accessFlow). Aurral queues the
-    /// playlist's creation, then downloads and publishes it. `nameTaken`: the user already has a playlist so named.
+    /// creation: the answer's id is listed in the status only once the worker made it (a name the user already has
+    /// fails there, so the caller picks a free one first).
     public func createChartFlow(name: String, tracks: [ChartFlowTrack]) async throws -> AurralChartFlowCreated {
         let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty, name.count <= 200, Self.validChartFlowSongs(tracks),
               let body = Self.chartFlowBody(name: name, tracks: tracks) else {
             throw AurralError.forbidden("chart flow \(name.count) chars, \(tracks.count) songs")
         }
-        do {
-            return try AurralChartFlowCreated.decode(
-                try await ok(method: AurralRoute.chartFlowCreateMethod, path: "api/playlists/shared-playlists", body: body))
-        } catch AurralError.http(status: 400) { throw AurralError.nameTaken }
+        return try AurralChartFlowCreated.decode(
+            try await ok(method: AurralRoute.chartFlowCreateMethod, path: "api/playlists/shared-playlists", body: body))
     }
 
-    /// Refresh now and Songs: N: `PUT /api/playlists/shared-playlists/:id {tracks}`. Aurral keeps the songs still in,
-    /// takes out the rest and queues the new ones. `notFound`: the playlist is gone.
-    public func updateChartFlow(playlistId: String, tracks: [ChartFlowTrack]) async throws -> AurralQueued {
+    /// Songs that come in (Songs: N higher, Refresh now): `POST /api/playlists/shared-playlists/:id/tracks {tracks}`.
+    /// Aurral adds the ones it doesn't have and queues them. `notFound`: the playlist is gone.
+    public func appendChartFlowSongs(playlistId: String, tracks: [ChartFlowTrack]) async throws -> AurralQueued {
         guard AurralRoute.isPlainId(Substring(playlistId)), Self.validChartFlowSongs(tracks),
               let body = Self.chartFlowBody(name: nil, tracks: tracks) else {
             throw AurralError.forbidden("chart flow \(playlistId.count) chars, \(tracks.count) songs")
         }
-        return try AurralQueued.decode(try await ok(method: AurralRoute.chartFlowUpdateMethod,
-                                                    path: "api/playlists/shared-playlists/" + playlistId, body: body))
+        return try AurralQueued.decode(try await ok(method: AurralRoute.chartFlowAppendMethod,
+                                                    path: "api/playlists/shared-playlists/" + playlistId + "/tracks", body: body))
+    }
+
+    /// Songs that leave (Songs: N lower, Refresh now): `POST /api/playlists/shared-playlists/:id/track-removals
+    /// {jobIds}` (1–100 of the playlist's job ids). Aurral takes them out and deletes their files under its own rules
+    /// (see the top of this file). Answers the job ids it accepted. `notFound`: the playlist is gone.
+    public func removeChartFlowSongs(playlistId: String, jobIds: [String]) async throws -> [String] {
+        guard AurralRoute.isPlainId(Substring(playlistId)), (1...ChartFlowPlan.maxSongs).contains(jobIds.count),
+              jobIds.allSatisfy({ AurralRoute.isPlainId(Substring($0)) }),
+              let body = try? JSONSerialization.data(withJSONObject: ["jobIds": jobIds], options: [.sortedKeys]) else {
+            throw AurralError.forbidden("chart flow removal \(playlistId.count) chars, \(jobIds.count) songs")
+        }
+        let data = try await ok(method: AurralRoute.chartFlowRemoveSongsMethod,
+                                path: "api/playlists/shared-playlists/" + playlistId + "/track-removals", body: body)
+        let o = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        return (o?["acceptedJobIds"] as? [String] ?? []).filter(jobIds.contains)
     }
 
     /// Remove flow: `DELETE /api/playlists/shared-playlists/:id` (no body). A playlist already gone (404) is removed.

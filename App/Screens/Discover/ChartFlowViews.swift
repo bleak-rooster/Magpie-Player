@@ -3,37 +3,64 @@ import DesignSystem
 import MagpieCore
 import SwiftUI
 
-/// Round 15 C2 (owner item 5, D134): a chart's flow on Trending. Without one: **Create flow…** (a sheet with
-/// "Songs: N"); with one: **Edit flow** (Songs: N, Refresh now, Remove flow), its N, and its download state (as Add
-/// flow's: Setting up…, Downloading 3/10, In your flows; songs that couldn't download with Retry). Hidden without
-/// accessFlow or songs; without a download source it explains first.
+/// Round 15 C2 (owner item 5, D134; fix round I1, M2, M3): a chart's flow on Trending. Without one: **Create flow…** (a
+/// sheet with "Songs: N"); with one: **Edit flow** (Songs: N, Refresh now, Remove flow), its N, and its state: Setting
+/// up… while the server makes it (Edit flow waits until it has), then A4's (Downloading 3/10, In your flows; songs that
+/// couldn't download with Retry), or **Couldn't create the flow** with Retry. A flow lost here but on the server is
+/// taken back. Hidden without accessFlow or songs; without a download source it explains first.
 struct ChartFlowControl: View {
     @Environment(AppModel.self) private var model
     let page: ChartPage
     @State private var editing = false
     @State private var explaining = false
-    @State private var phase: AddFlowPhase?
+    @State private var phase: ChartFlowPhase?
+    @State private var retrying = false
+    @State private var message: String?
     private let themed = Themed()
 
     private var flow: ChartFlow? { model.chartFlow(for: page.chart) }
+
+    private var label: (text: String, symbol: String)? {
+        switch phase {
+        case .settingUp?: (DiscoverPagesCopy.settingUp, AddFlowPhase.preparing.symbol)
+        case .couldntCreate?: (DiscoverPagesCopy.couldntCreateFlow, DiscoverPagesCopy.couldntDownloadSymbol)
+        case .live(let p)? where p != .ready && p != .hidden: p.label.map { ($0, p.symbol) }
+        default: nil
+        }
+    }
 
     var body: some View {
         if model.aurralCanAddFlow, !page.songs.isEmpty {
             VStack(alignment: .leading, spacing: Tokens.Spacing.s) {
                 if let flow {
-                    HStack(spacing: Tokens.Spacing.s) {
-                        CapsuleButton(DiscoverPagesCopy.editFlow, symbol: "slider.horizontal.3") { editing = true }
-                            .accessibilityIdentifier("chart-flow-edit")
-                        Text(DiscoverPagesCopy.flowSongs(flow.count))
-                            .font(.footnote).foregroundStyle(themed.palette.ink2Color)
-                            .accessibilityIdentifier("chart-flow-count-label")
+                    if phase == .couldntCreate {
+                        HStack(spacing: Tokens.Spacing.s) {
+                            Label(DiscoverPagesCopy.couldntCreateFlow, systemImage: DiscoverPagesCopy.couldntDownloadSymbol)
+                                .font(.footnote.weight(.semibold))
+                                .accessibilityIdentifier("chart-flow-state")
+                            Button(DiscoverPagesCopy.retry) { Task { await retry() } }
+                                .font(.footnote.weight(.semibold))
+                                .disabled(retrying)
+                                .accessibilityIdentifier("chart-flow-retry")
+                        }
+                    } else {
+                        HStack(spacing: Tokens.Spacing.s) {
+                            CapsuleButton(DiscoverPagesCopy.editFlow, symbol: "slider.horizontal.3") { editing = true }
+                                .disabled(!flow.confirmed)   // M2: not while the server is still making it
+                                .accessibilityIdentifier("chart-flow-edit")
+                            Text(DiscoverPagesCopy.flowSongs(flow.count))
+                                .font(.footnote).foregroundStyle(themed.palette.ink2Color)
+                                .accessibilityIdentifier("chart-flow-count-label")
+                        }
+                        if let label {
+                            Label(label.text, systemImage: label.symbol)
+                                .font(.footnote.weight(.semibold))
+                                .accessibilityIdentifier("chart-flow-state")
+                        }
+                        if flow.confirmed {
+                            if case .live(let live)? = phase { SyncedFailures(playlistId: flow.playlistId, phase: live) }
+                        }
                     }
-                    if let phase, phase != .ready, phase != .hidden, let label = phase.label {
-                        Label(label, systemImage: phase.symbol)
-                            .font(.footnote.weight(.semibold))
-                            .accessibilityIdentifier("chart-flow-state")
-                    }
-                    SyncedFailures(playlistId: flow.playlistId, phase: phase)
                 } else {
                     CapsuleButton(DiscoverPagesCopy.createFlow, symbol: "plus.circle") {
                         if model.aurralHasDownloader == false { explaining = true } else { editing = true }
@@ -50,12 +77,19 @@ struct ChartFlowControl: View {
             } message: {
                 Text(DiscoverPagesCopy.noDownloader)
             }
-            .task(id: flow?.playlistId) {
-                phase = nil
-                guard let id = flow?.playlistId else { return }
-                await model.followAddFlow(playlistId: id) { phase = $0 }
+            .alert(message ?? "", isPresented: Binding(get: { message != nil }, set: { if !$0 { message = nil } })) {
+                Button("OK", role: .cancel) {}
+            }
+            .task(id: "\(page.chart.key)#\(flow?.playlistId ?? "")#\(flow?.confirmed == true)") {
+                await model.followChartFlow(page, every: .seconds(flow?.confirmed == true ? 30 : 5)) { phase = $0 }
             }
         }
+    }
+
+    private func retry() async {
+        retrying = true
+        defer { retrying = false }
+        do { _ = try await model.retryChartFlow(page) } catch { message = DiscoverCopy.message(for: error) }
     }
 }
 
@@ -104,7 +138,10 @@ struct ChartFlowSheet: View {
                         }
                     }
                 } footer: {
-                    Text(DiscoverPagesCopy.flowNote(chartName, count))
+                    VStack(alignment: .leading, spacing: Tokens.Spacing.xs) {
+                        Text(DiscoverPagesCopy.flowNote(chartName, count))
+                        Text(DiscoverPagesCopy.editFlowNote)   // M7: Not for me songs are skipped; I2: what goes
+                    }
                 }
                 if let flow {
                     Section {

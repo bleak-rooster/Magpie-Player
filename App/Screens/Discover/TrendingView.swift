@@ -19,6 +19,8 @@ struct TrendingView: View {
     @State private var pickedFailed = false
     @State private var choosing = false
     @State private var makingDefault = false
+    /// Fix round M5: Make default on Automatic pinned a fixed country: say so.
+    @State private var pinnedNote: String?
 
     private var feeds: AurralFeeds { model.aurralFeeds }
 
@@ -97,6 +99,7 @@ struct TrendingView: View {
     @ViewBuilder private func chartBar(_ t: TrendingSnapshot) -> some View {
         let shown = shownChart(t)
         let isDefault = shown != nil && shown == defaultChart(t)
+        VStack(alignment: .leading, spacing: Tokens.Spacing.xs) {
         HStack(spacing: Tokens.Spacing.s) {
             Button { choosing = true } label: {
                 HStack(spacing: Tokens.Spacing.xs) {
@@ -119,7 +122,7 @@ struct TrendingView: View {
                     Button(DiscoverPagesCopy.makeDefault) {
                         makingDefault = true
                         Task {
-                            await model.makeDefaultChart(shown)
+                            pinnedNote = await model.makeDefaultChart(shown)
                             if feeds.trending?.chart == shown { picked = nil }
                             makingDefault = false
                         }
@@ -130,6 +133,12 @@ struct TrendingView: View {
                     .accessibilityIdentifier("trending-make-default")
                 }
             }
+        }
+        if let pinnedNote {
+            Text(pinnedNote)
+                .font(.footnote).foregroundStyle(themed.palette.ink2Color)
+                .accessibilityIdentifier("trending-pinned-note")
+        }
         }
         .padding(.horizontal, Tokens.Spacing.margin)
         .sheet(isPresented: $choosing) {

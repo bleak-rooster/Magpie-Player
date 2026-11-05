@@ -4,12 +4,11 @@ import MagpieTestSupport
 import Testing
 @testable import AurralKit
 
-/// Round 15 C2 (owner items 5 and 5b, D130–D134): a flow of a chart's top N songs. Aurral 2.13's editorial add
-/// (`POST /api/discover/editorial/:id/library`) takes no song count and re-syncs the whole chart, keeping removed songs,
-/// so a chart flow is one of the user's own Aurral playlists ("shared playlists") holding exactly the top N:
-/// `POST /api/playlists/shared-playlists {name, sourceName, tracks}` makes it, `PUT .../:id {tracks}` replaces its
-/// songs (Refresh now, Songs: N) and `DELETE .../:id` removes it. Aurral downloads, matches and publishes it to
-/// Navidrome as it does for Add flow.
+/// Round 15 C2 (owner items 5 and 5b, D130–D134; fix round I1/I2): a flow of a chart's top N songs, as the user's own
+/// Aurral playlist. Aurral 2.13: `POST /api/playlists/shared-playlists {name, sourceName, tracks}` is queued and
+/// answers 200 whatever the name (a taken name fails later in the worker, so Magpie picks a free name first);
+/// `POST …/:id/tracks {tracks}` adds songs; `POST …/:id/track-removals {jobIds}` takes songs out and deletes their files
+/// (only in Aurral's download folder, sparing files another playlist or the library uses); `DELETE …/:id` removes it.
 @Suite struct ChartFlowTests {
     let stub: StubAurral
     let client: AurralClient
@@ -28,28 +27,32 @@ import Testing
 
     // MARK: - The routes (pinned in AurralRoute and check-writes)
 
-    @Test func theThreeRoutesAndNothingNear() {
+    @Test func theFourRoutesAndNothingNear() {
         #expect(AurralRoute.route(method: "POST", path: "api/playlists/shared-playlists") == .chartFlowCreate)
-        #expect(AurralRoute.route(method: "PUT", path: "api/playlists/shared-playlists/a4000000-0000-4000-8000-000000000001") == .chartFlowUpdate)
+        #expect(AurralRoute.route(method: "POST", path: "api/playlists/shared-playlists/a4000000-0000-4000-8000-000000000001/tracks") == .chartFlowAppend)
+        #expect(AurralRoute.route(method: "POST", path: "api/playlists/shared-playlists/pl_1/track-removals") == .chartFlowRemoveSongs)
         #expect(AurralRoute.route(method: "DELETE", path: "api/playlists/shared-playlists/pl_1") == .chartFlowDelete)
         for (method, path) in [("GET", "api/playlists/shared-playlists"), ("PUT", "api/playlists/shared-playlists"),
                                ("DELETE", "api/playlists/shared-playlists"), ("POST", "api/playlists/shared-playlists/pl-1"),
-                               ("GET", "api/playlists/shared-playlists/pl-1"), ("PATCH", "api/playlists/shared-playlists/pl-1"),
-                               ("PUT", "api/playlists/shared-playlists/../settings"), ("DELETE", "api/playlists/shared-playlists/a b"),
-                               ("POST", "api/playlists/shared-playlists/pl-1/sync"), ("POST", "api/playlists/shared-playlists/pl-1/tracks"),
+                               ("PUT", "api/playlists/shared-playlists/pl-1"), ("GET", "api/playlists/shared-playlists/pl-1"),
+                               ("PATCH", "api/playlists/shared-playlists/pl-1"), ("DELETE", "api/playlists/shared-playlists/a b"),
+                               ("PUT", "api/playlists/shared-playlists/../settings"),
+                               ("GET", "api/playlists/shared-playlists/pl-1/tracks"), ("DELETE", "api/playlists/shared-playlists/pl-1/tracks"),
+                               ("PUT", "api/playlists/shared-playlists/pl-1/tracks"),
+                               ("GET", "api/playlists/shared-playlists/pl-1/track-removals"),
+                               ("POST", "api/playlists/shared-playlists/../track-removals"),
+                               ("POST", "api/playlists/shared-playlists/pl-1/sync"), ("POST", "api/playlists/shared-playlists/pl-1/track-moves"),
                                ("DELETE", "api/playlists/shared-playlists/pl-1/tracks/job-1"),
-                               ("POST", "api/playlists/shared-playlists/pl-1/track-removals"),
                                ("PUT", "api/playlists/shared-playlists/pl-1/track-availability"),
                                ("PUT", "api/playlists/flows/flow-1"), ("DELETE", "api/playlists/flows/flow-1")] {
             #expect(!AurralRoute.isAllowed(method: method, path: path), "\(method) \(path)")
         }
-        #expect(AurralRoute.chartFlowCreate.isAuthorised && AurralRoute.chartFlowUpdate.isAuthorised
-                && AurralRoute.chartFlowDelete.isAuthorised)
-        #expect(AurralRoute.chartFlowCreate.queryNames.isEmpty && AurralRoute.chartFlowUpdate.queryNames.isEmpty
-                && AurralRoute.chartFlowDelete.queryNames.isEmpty)
+        for route in [AurralRoute.chartFlowCreate, .chartFlowAppend, .chartFlowRemoveSongs, .chartFlowDelete] {
+            #expect(route.isAuthorised && route.queryNames.isEmpty, "\(route)")
+        }
     }
 
-    // MARK: - Create, resize/refresh, remove
+    // MARK: - Create
 
     @Test func createSendsExactlyTheTopSongsAndTheStatusListsIt() async throws {
         let made = try await client.createChartFlow(name: "Top Worldwide", tracks: Self.songs(10))
@@ -61,40 +64,80 @@ import Testing
         let tracks = try #require(body["tracks"] as? [[String: Any]])
         #expect(tracks.count == 10)
         #expect(Set(tracks[0].keys) == ["artistName", "trackName", "albumName", "durationMs"])
-        #expect(tracks[0]["trackName"] as? String == "Song 1" && tracks[9]["artistName"] as? String == "Artist 10")
         #expect(stub.requests.first?.value(forHTTPHeaderField: "Content-Type") == "application/json")
         #expect(stub.sharedPlaylistSongs(made.playlistId)?.count == 10)
         let status = try await client.status()
-        #expect(status.sharedPlaylists.contains { $0.id == made.playlistId && $0.name == "Top Worldwide" })
+        let listed = try #require(status.sharedPlaylists.first { $0.id == made.playlistId })
+        #expect(listed.name == "Top Worldwide" && listed.sourceName == "Charts")
     }
 
-    @Test func resizingReplacesTheSongsKeepingTheOnesStillIn() async throws {
+    /// I1: 2.13 queues the create and answers 200 whatever the name; a taken name (a playlist **or a flow** of the
+    /// user's) fails in the worker and the playlist never appears. So the client never reads a 400 as "name taken".
+    @Test func aTakenNameIsAcceptedThenNeverAppears() async throws {
+        stub.addSharedPlaylist(id: "own-1", name: "Top Worldwide", provider: nil, songs: [])
+        let made = try await client.createChartFlow(name: "top worldwide ", tracks: Self.songs(2))
+        #expect(try await client.status().sharedPlaylists.contains { $0.id == made.playlistId } == false)
+        stub.setFlows([StubAurral.Flow(id: "flow-1", name: "Pop Weekly")])
+        let clash = try await client.createChartFlow(name: "Pop Weekly", tracks: Self.songs(2))
+        #expect(stub.sharedPlaylistSongs(clash.playlistId) == nil, "a flow's name is taken too")
+        #expect(stub.chartFlowCreates.map(\.failed) == [true, true])
+    }
+
+    /// I1: the free name is picked before sending, from the names the user's playlists and flows have now
+    /// (trimmed and case folded, as Aurral compares them).
+    @Test func theFirstFreeName() {
+        #expect(ChartFlowPlan.freeName("Top Australia", taken: []) == "Top Australia")
+        #expect(ChartFlowPlan.freeName("Top Australia", taken: [" top australia", "Discover Weekly"]) == "Top Australia 2")
+        #expect(ChartFlowPlan.freeName("Top Australia", taken: ["Top Australia", "TOP AUSTRALIA 2", "Top Australia 3"])
+                == "Top Australia 4")
+    }
+
+    // MARK: - Shorten, extend, refresh (I2)
+
+    /// What changes: the flow's songs no longer wanted go (their jobs), the wanted ones it lacks come.
+    @Test func theChangesBetweenTheFlowAndTheTopN() {
+        let jobs = (1...5).map { AurralJob(id: "job-\($0)", flowId: "pl", artistName: "Artist \($0)", trackName: "Song \($0)") }
+            + [AurralJob(id: "job-9", flowId: "pl", artistName: "ARTIST 1", trackName: "song 1")]   // a repeat
+        let shorter = ChartFlowPlan.changes(jobs: jobs, wanted: Array(Self.songs(5).prefix(3)))
+        #expect(shorter.remove == ["job-4", "job-5", "job-9"] && shorter.add.isEmpty)
+        let longer = ChartFlowPlan.changes(jobs: jobs, wanted: Self.songs(7))
+        #expect(longer.remove == ["job-9"] && longer.add.map(\.trackName) == ["Song 6", "Song 7"])
+        let same = ChartFlowPlan.changes(jobs: Array(jobs.prefix(5)), wanted: Self.songs(5))
+        #expect(same.remove.isEmpty && same.add.isEmpty)
+    }
+
+    @Test func shortenRemovesTheTailsSongsAndTheirFilesExtendAddsSongs() async throws {
         let made = try await client.createChartFlow(name: "Top Australia", tracks: Self.songs(10))
-        _ = try await client.updateChartFlow(playlistId: made.playlistId, tracks: Array(Self.songs(10).prefix(5)))
+        let jobs = try #require(try await client.playlistJobs(made.playlistId))
+        let tail = ChartFlowPlan.changes(jobs: jobs, wanted: Array(Self.songs(10).prefix(5)))
+        let accepted = try await client.removeChartFlowSongs(playlistId: made.playlistId, jobIds: tail.remove)
+        #expect(accepted == tail.remove && accepted.count == 5)
         #expect(stub.sharedPlaylistSongs(made.playlistId)?.map(\.title) == ["Song 1", "Song 2", "Song 3", "Song 4", "Song 5"])
-        _ = try await client.updateChartFlow(playlistId: made.playlistId, tracks: Self.songs(20))
-        #expect(stub.sharedPlaylistSongs(made.playlistId)?.count == 20)
-        let put = try #require(stub.requests.last)
-        #expect(put.httpMethod == "PUT" && put.url?.path == "/api/playlists/shared-playlists/\(made.playlistId)")
-        let body = try #require(put.httpBody.flatMap { try JSONSerialization.jsonObject(with: $0) as? [String: Any] })
-        #expect(Set(body.keys) == ["tracks"], "only the songs: the name and source stay as they are")
+        #expect(stub.chartFlowDeletedFiles == (6...10).map { "artist \($0)|song \($0)" }, "their files go")
+        let removal = try #require(stub.requests.last)
+        #expect(removal.httpMethod == "POST" && removal.url?.path == "/api/playlists/shared-playlists/\(made.playlistId)/track-removals")
+        let removalBody = try #require(removal.httpBody.flatMap { try JSONSerialization.jsonObject(with: $0) as? [String: Any] })
+        #expect(Set(removalBody.keys) == ["jobIds"] && removalBody["jobIds"] as? [String] == tail.remove)
+
+        _ = try await client.appendChartFlowSongs(playlistId: made.playlistId, tracks: Array(Self.songs(8).suffix(3)))
+        #expect(stub.sharedPlaylistSongs(made.playlistId)?.count == 8)
+        let append = try #require(stub.requests.last)
+        #expect(append.url?.path == "/api/playlists/shared-playlists/\(made.playlistId)/tracks")
+        let appendBody = try #require(append.httpBody.flatMap { try JSONSerialization.jsonObject(with: $0) as? [String: Any] })
+        #expect(Set(appendBody.keys) == ["tracks"])
     }
 
     @Test func removeDeletesItAndAGoneOneIsAlreadyRemoved() async throws {
         let made = try await client.createChartFlow(name: "Pop", tracks: Self.songs(3))
         try await client.deleteChartFlow(playlistId: made.playlistId)
-        #expect(stub.sharedPlaylistSongs(made.playlistId) == nil)
+        #expect(stub.sharedPlaylistSongs(made.playlistId) == nil && stub.chartFlowDeletedFiles.count == 3)
         #expect(stub.requests.last?.httpBody == nil, "no body")
         try await client.deleteChartFlow(playlistId: made.playlistId)   // 404: already gone, nothing to do
         await #expect(throws: AurralError.notFound) {
-            _ = try await client.updateChartFlow(playlistId: made.playlistId, tracks: Self.songs(2))
+            _ = try await client.appendChartFlowSongs(playlistId: made.playlistId, tracks: Self.songs(2))
         }
-    }
-
-    @Test func aNameAlreadyTakenIsTold() async throws {
-        stub.addSharedPlaylist(id: "own-1", name: "Top Worldwide", provider: nil, songs: [])
-        await #expect(throws: AurralError.nameTaken) {
-            _ = try await client.createChartFlow(name: "Top Worldwide", tracks: Self.songs(2))
+        await #expect(throws: AurralError.notFound) {
+            _ = try await client.removeChartFlowSongs(playlistId: made.playlistId, jobIds: ["job-0"])
         }
     }
 
@@ -106,10 +149,15 @@ import Testing
 
     @Test func oddIdsAndEmptyListsAreRefusedUnsent() async throws {
         for id in ["", "../settings", "a b", "a/b", String(repeating: "a", count: 101)] {
-            await #expect(throws: AurralError.self, "\(id)") { _ = try await client.updateChartFlow(playlistId: id, tracks: Self.songs(1)) }
+            await #expect(throws: AurralError.self, "\(id)") { _ = try await client.appendChartFlowSongs(playlistId: id, tracks: Self.songs(1)) }
+            await #expect(throws: AurralError.self, "\(id)") { _ = try await client.removeChartFlowSongs(playlistId: id, jobIds: ["job-1"]) }
             await #expect(throws: AurralError.self, "\(id)") { try await client.deleteChartFlow(playlistId: id) }
         }
+        for jobIds in [[String](), ["a/b"], ["../x"], Array(repeating: "job-1", count: 101)] {
+            await #expect(throws: AurralError.self) { _ = try await client.removeChartFlowSongs(playlistId: "pl", jobIds: jobIds) }
+        }
         await #expect(throws: AurralError.self) { _ = try await client.createChartFlow(name: "x", tracks: []) }
+        await #expect(throws: AurralError.self) { _ = try await client.appendChartFlowSongs(playlistId: "pl", tracks: []) }
         await #expect(throws: AurralError.self) { _ = try await client.createChartFlow(name: "  ", tracks: Self.songs(1)) }
         await #expect(throws: AurralError.self) { _ = try await client.createChartFlow(name: "x", tracks: Self.songs(101)) }
         #expect(stub.requests.isEmpty)
@@ -146,14 +194,24 @@ import Testing
         book.set(ChartFlow(chartKey: "country:AU", playlistId: "pl-au", name: "Top Australia", count: 50, createdAt: now, refreshedAt: now))
         book.set(ChartFlow(chartKey: "genre:132", playlistId: "pl-pop", name: "Pop", count: 20, createdAt: now, refreshedAt: now))
         #expect(book.flow(for: "worldwide")?.count == 10 && book.flow(for: "country:AU")?.count == 50)
-        book.resize("worldwide", to: 5, at: now.addingTimeInterval(60))
+        var smaller = try #require(book.flow(for: "worldwide"))
+        smaller.count = 5
+        book.set(smaller)
         #expect(book.flow(for: "worldwide")?.count == 5 && book.flow(for: "country:AU")?.count == 50, "only that chart")
-        #expect(book.flow(for: "worldwide")?.refreshedAt == now.addingTimeInterval(60))
         #expect(book.playlistIds == ["pl-w", "pl-au", "pl-pop"])
         book.remove("country:AU")
         #expect(book.flow(for: "country:AU") == nil && book.playlistIds == ["pl-w", "pl-pop"])
         let decoded = try JSONDecoder().decode(ChartFlowBook.self, from: try JSONEncoder().encode(book))
         #expect(decoded == book)
         #expect(book.chartKey(forPlaylist: "pl-pop") == "genre:132")
+        #expect(book.flow(for: "worldwide")?.confirmed == false, "not seen on the server yet")
+    }
+
+    /// M3: one entry a later build wrote that this one can't read never costs the others.
+    @Test func aBookWithAnUnreadableEntryKeepsTheRest() throws {
+        let json = #"{"flows":[{"chartKey":"worldwide","playlistId":"pl-w","name":"Top Worldwide","count":10,"createdAt":0,"refreshedAt":0,"confirmed":true},{"chartKey":7},{"chartKey":"genre:132","playlistId":"pl-pop","name":"Top Pop","count":3,"createdAt":0,"refreshedAt":0}]}"#
+        let book = try JSONDecoder().decode(ChartFlowBook.self, from: Data(json.utf8))
+        #expect(book.playlistIds == ["pl-w", "pl-pop"] && book.flow(for: "worldwide")?.confirmed == true)
+        #expect(book.flow(for: "genre:132")?.confirmed == false)
     }
 }
