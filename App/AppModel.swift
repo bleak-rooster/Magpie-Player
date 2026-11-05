@@ -150,6 +150,8 @@ final class AppModel {
     let songActions = SongActions()
     /// Round 15 C3 (D137–D138): a rejected find's playlist clean-ups and their short history (AppModel+FindCleanup.swift).
     let letGo = LetGoState()
+    /// Round 15 C3 (D146): the singles switch's journal and switcher for the connected Lidarr (built with the runner).
+    @ObservationIgnored var singlesSwitcher: SinglesSwitcher?
     /// Round 12 Y3: the library Home, Library, Search and the car read (`AppModel+LibraryScope.swift`); nil for all.
     var libraryScope: [Int]?
     /// Changes each time the server answers again after it didn't: Home reads what failed (P5).

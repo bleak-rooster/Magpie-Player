@@ -112,7 +112,7 @@ if [ -z "${G1_SRC:-}" ]; then
   # query, never through a variable.
   restarter="Packages/MagpieKit/Sources/Requests/DownloadsInLidarr.swift"
   trialfile="Packages/MagpieKit/Sources/Requests/RequestRunner+Trial.swift"
-  artistfile="Packages/MagpieKit/Sources/Requests/ArtistLidarr.swift"
+  singlesfile="Packages/MagpieKit/Sources/Requests/SinglesSwitch.swift"
   shaped=$(grep -rnE --include='*.swift' 'confinedAs:' "${product[@]}" | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' |
            grep -v "^Packages/MagpieKit/Sources/LidarrKit/WriteGate.swift:" || true)
   while IFS= read -r s; do
@@ -120,11 +120,14 @@ if [ -z "${G1_SRC:-}" ]; then
     # Round 15 C3 (D147, D146): the trial Reject's one track file delete and the singles switch's one sender.
     case "$s" in
       "$trialfile":*'_ = try await gate.send("DELETE", "trackfile/bulk", body: TrackFileIdsBody(trackFileIds: ids), confinedAs: .trialDelete)') continue ;;
-      # D146: the singles switch, only in ArtistLidarr.swift, only these forms (its bodies are built just above each).
-      "$artistfile":*'_ = try await gate.send("PUT", "artist/editor", body: body, confinedAs: .singlesSwitch)') continue ;;
-      "$artistfile":*'let data = try await gate.send("POST", "command", body: RefreshBody(name: "RefreshArtist", artistId: artistId), confinedAs: .singlesSwitch)') continue ;;
-      "$artistfile":*'_ = try await gate.send("PUT", "album/monitor", body: body, confinedAs: .singlesSwitch)') continue ;;
-      "$artistfile":*'let restored = (try? await gate.send("PUT", "artist/editor", body: restore, confinedAs: .singlesSwitch)) != nil') continue ;;
+      # D146 (review I1-I3): the singles switch's journal, only in SinglesSwitch.swift, only these forms; the gate allows
+      # them only for an artist whose switch is in the journal, and only the journal's values.
+      "$singlesfile":*'_ = try await gate.send("PUT", "artist/editor", body: FollowBody(artistIds: [job.artistId], monitorNewItems: "none"), confinedAs: .singlesSwitch)') continue ;;
+      "$singlesfile":*'_ = try await gate.send("PUT", "artist/editor", body: FollowBody(artistIds: [job.artistId], monitorNewItems: job.originalFollow), confinedAs: .singlesSwitch)') continue ;;
+      "$singlesfile":*'_ = try await gate.send("PUT", "artist/editor", body: ProfileBody(artistIds: [job.artistId], metadataProfileId: job.singlesProfileId!), confinedAs: .singlesSwitch)') continue ;;
+      "$singlesfile":*'_ = try await gate.send("PUT", "artist/editor", body: ProfileBody(artistIds: [job.artistId], metadataProfileId: job.originalProfileId), confinedAs: .singlesSwitch)') continue ;;
+      "$singlesfile":*'try await gate.send("POST", "command", body: RefreshBody(name: "RefreshArtist", artistId: job.artistId), confinedAs: .singlesSwitch)') continue ;;
+      "$singlesfile":*'_ = try await gate.send("PUT", "album/monitor", body: UnmonitorBody(albumIds: extras, monitored: false), confinedAs: .singlesSwitch)') continue ;;
     esac
     case "${s%%:*}" in
       "$stall"|"$restarter") ;;
@@ -567,7 +570,7 @@ if [ -z "${G1_SRC:-}" ]; then
           "albumsearch|$rq/RequestRunner.swift"|"albumsearch|$rq/RequestRunner+Lossless.swift"|\
           "albumsearch|$rq/RequestRunner+BringInMore.swift"|"albumsearch|$rq/DownloadsInLidarr.swift"|\
           "refreshartist|$rq/RequestRunner+Lossless.swift"|"artistsearch|$rq/ArtistLidarr.swift"|\
-          "refreshartist|$rq/ArtistLidarr.swift"|"artistsearch|$rq/RequestRunner.swift") ;;
+          "refreshartist|$rq/SinglesSwitch.swift"|"artistsearch|$rq/RequestRunner+LibraryAdds.swift") ;;
           # Round 15 C3: RefreshArtist after "Include singles" (D146, any artist, confirmed) and the discography's
           # ArtistSearch after Add to library's own release (D135); the gate confines both to Magpie's artists.
           *) echo "L1: a Lidarr command (${name:-no literal name}) outside its pinned callers: $file:$line" >&2; bad=1 ;;

@@ -66,12 +66,28 @@ public struct WriteConfinement: Sendable {
     /// R17: the ids (`RequestID` text) of Magpie's requests on their way right now; nil while they can't be known.
     /// Without it, queue deletes are refused.
     let liveRequests: (@Sendable () async -> Set<String>?)?
+    /// Round 15 C3 (D146): the singles switch's journal for an artist (its saved profile and following, and whether the
+    /// switch is still under way). Without one, every singles-switch write is refused.
+    let singlesOriginal: (@Sendable (Int) async -> SinglesOriginal?)?
+
+    /// What the singles switch's journal saved for an artist before its first write.
+    public struct SinglesOriginal: Sendable, Equatable {
+        public var profileId: Int
+        public var follow: String
+        /// The switch (or its roll-back) is under way: following may be "none" meanwhile.
+        public var open: Bool
+        public init(profileId: Int, follow: String, open: Bool) {
+            self.profileId = profileId; self.follow = follow; self.open = open
+        }
+    }
 
     public init(ledger: Ledger, roots: @escaping @Sendable () async -> Roots,
-                liveRequests: (@Sendable () async -> Set<String>?)? = nil) {
+                liveRequests: (@Sendable () async -> Set<String>?)? = nil,
+                singlesOriginal: (@Sendable (Int) async -> SinglesOriginal?)? = nil) {
         self.ledger = ledger
         self.roots = roots
         self.liveRequests = liveRequests
+        self.singlesOriginal = singlesOriginal
     }
 
     /// At most this many track files in one delete (each is read first).
@@ -123,7 +139,7 @@ public struct WriteConfinement: Sendable {
         /// Round 15 C3 (D147): `ConfinedShape.trialDelete`'s track file delete.
         case trialDelete([Int])
         /// Round 15 C3 (D146): `ConfinedShape.singlesSwitch`'s writes. `undoProfile`: the profile the change log saved.
-        case singlesEditor([String: Any], undoProfile: Int?)
+        case singlesEditor([String: Any])
         case singlesRefresh(Int)
         case singlesUnmonitor([Int])
     }
@@ -158,10 +174,18 @@ public struct WriteConfinement: Sendable {
             case .trialDelete(let ids):
                 let (artistId, albumId) = try await context.trialDelete(ids)
                 return .confined(artists: [artistId], rule: .trialDelete(albumId: albumId))
-            case .singlesEditor(let body, let undo):
-                try await context.singlesEditor(body, undoProfile: undo)
+            case .singlesEditor(let body):
+                let ids = body.first { $0.key.lowercased() == "artistids" }?.value as? [Any]
+                guard let id = (ids?.first as? NSNumber)?.intValue, ids?.count == 1,
+                      let original = await singlesOriginal?(id) else {
+                    return .refused("a singles-switch edit only for an artist whose switch is in the journal")
+                }
+                try await context.singlesEditor(body, original: original)
                 return .confined(artists: [], rule: .other)
             case .singlesRefresh(let artistId):
+                guard await singlesOriginal?(artistId) != nil else {
+                    return .refused("a singles-switch refresh only for an artist whose switch is in the journal")
+                }
                 _ = try await context.artist(artistId)
                 return .confined(artists: [], rule: .other)
             case .singlesUnmonitor(let ids):
@@ -568,9 +592,10 @@ public struct WriteConfinement: Sendable {
             return (entry.lidarrArtistId, albumId)
         }
 
-        /// Round 15 C3 (D146): the singles switch's artist edit. Any artist that exists (it is the owner's confirmed
-        /// action); a metadata profile only one of Magpie's own, or the one the change log saved for the undo.
-        func singlesEditor(_ body: [String: Any], undoProfile: Int?) async throws {
+        /// Round 15 C3 (D146): the singles switch's artist edit, for an artist whose switch is in the journal: a metadata
+        /// profile only a Magpie "+ Singles" superset or exactly the saved original; following only "none" while the
+        /// switch is under way, or exactly the saved value back.
+        func singlesEditor(_ body: [String: Any], original: SinglesOriginal) async throws {
             let value = { (name: String) in body.first { $0.key.lowercased() == name }?.value }
             guard let ids = value("artistids") as? [Any], ids.count == 1, let id = (ids[0] as? NSNumber)?.intValue else {
                 throw Refusal(reason: "the artist editor changes one artist")
@@ -580,10 +605,16 @@ public struct WriteConfinement: Sendable {
             guard keys == ["artistids", "metadataprofileid"] || keys == ["artistids", "monitornewitems"] else {
                 throw Refusal(reason: "the singles switch changes the metadata profile or monitorNewItems only")
             }
-            if let profile = (value("metadataprofileid") as? NSNumber)?.intValue, profile != undoProfile {
+            if let profile = (value("metadataprofileid") as? NSNumber)?.intValue, profile != original.profileId {
                 let profiles = try await read { try await lidarr.metadataProfiles() }
-                guard let name = profiles.first(where: { $0.id == profile })?.name, ReleaseTypes.isMagpieMetadataProfile(name) else {
-                    throw Refusal(reason: "only Magpie's own metadata profiles, or the one saved for the undo")
+                guard let name = profiles.first(where: { $0.id == profile })?.name, name.hasSuffix(Provisioner.singlesSuffix) else {
+                    throw Refusal(reason: "only a Magpie singles superset profile, or the saved original")
+                }
+            }
+            if let follow = value("monitornewitems") as? String {
+                let back = follow.lowercased() == original.follow.lowercased()
+                guard back || (follow.lowercased() == "none" && original.open) else {
+                    throw Refusal(reason: "following only off during the switch, or back to its saved value")
                 }
             }
         }

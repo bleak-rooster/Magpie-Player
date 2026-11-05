@@ -88,9 +88,10 @@ public struct LedgerEntry: Sendable, Equatable, Codable {
     /// Reject went through (its files deleted, the album unmonitored).
     public var trialRejectedAt: Date?
 
-    /// A trial whose files a Reject may still delete.
+    /// A trial whose files a Reject may still delete. Review I4: never a closed entry (its request cancelled, failed or
+    /// given up): the album may be the owner's again.
     public var isOpenTrial: Bool {
-        trialHadNoFiles == true && trialExpiresAt != nil && trialKeptAt == nil && trialRejectedAt == nil
+        closedAt == nil && trialHadNoFiles == true && trialExpiresAt != nil && trialKeptAt == nil && trialRejectedAt == nil
             && !wasMonitoredBefore && !createdArtist && albumId != nil && !isKeptOrKeeping
     }
 

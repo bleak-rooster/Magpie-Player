@@ -211,6 +211,9 @@ public struct MagpieRequest: Sendable, Codable, Equatable, Identifiable {
     public var trialExpiresAt: Date?
     /// D147: Reject went through (the release's files deleted, the album unmonitored).
     public var trialRejected: Bool?
+    /// D136 (review M2): a new artist's Add to library: the owner's Add-defaults metadata profile and following.
+    public var libraryMetadataProfileId: Int?
+    public var libraryFollow: Bool?
 
     public init(id: RequestID = RequestID(), recording: ExternalRecording, tier: Tier, createdAt: Date) {
         self.id = id
@@ -434,7 +437,7 @@ public actor RequestStore {
         // Round 14 A3 (D101): the playlist adds waiting for their songs go with the requests; round 15 C3 (D138): so do
         // the rejected finds' playlist clean-ups and their history.
         for name in names where (name.hasPrefix("requests-") || name.hasPrefix("runner-state-")
-                                 || name.hasPrefix("playlist-adds-") || name.hasPrefix("find-cleanups-"))
+                                 || name.hasPrefix("playlist-adds-") || name.hasPrefix("find-cleanups-") || name.hasPrefix("singles-switch-"))
                                 && name.contains(".json") {
             try? FileManager.default.removeItem(at: folder.appending(path: name))
         }

@@ -10,8 +10,9 @@ extension RequestRunner {
         /// An artist in Lidarr whose listing has no release holding the song (singles not listed, D146): the single
         /// (release group) the singles switch would list, when MusicBrainz names one.
         case notListed(artistId: Int, single: MBID?)
-        /// An artist not in Lidarr: the smallest release a new artist's add can monitor.
-        case newArtist(title: String, isAlbum: Bool)
+        /// An artist not in Lidarr: the smallest release a new artist's add can monitor (`isSingle`: the add's release
+        /// types must include singles, D136).
+        case newArtist(title: String, isAlbum: Bool, isSingle: Bool)
     }
 
     public func targetPreview(_ recording: ExternalRecording) async throws -> TargetPreview {
@@ -30,7 +31,8 @@ extension RequestRunner {
         let fits = Set(found.releases.filter(Self.fitsFindsProfile).map(\.releaseGroup.id))
         guard let rg = ReleasePicker.smallest(containing: found, available: fits),
               let release = found.releases.first(where: { $0.releaseGroup.id == rg }) else { throw MusicBrainzError.notFound }
-        return .newArtist(title: release.title, isAlbum: release.releaseGroup.primaryType?.lowercased() == "album")
+        let type = release.releaseGroup.primaryType?.lowercased()
+        return .newArtist(title: release.title, isAlbum: type == "album", isSingle: type == "single")
     }
 }
 

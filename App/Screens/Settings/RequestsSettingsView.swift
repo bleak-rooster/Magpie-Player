@@ -198,6 +198,8 @@ struct ChangeLogView: View {
     @Environment(AppModel.self) private var model
     @State private var entries: [ChangeLogEntry]?
     @State private var undoMessage: String?
+    /// Artists whose finished singles switch can be undone (the journal's, not the capped log's).
+    @State private var undoable: Set<Int> = []
 
     /// The artist of a singles-switch note (`LidarrWriteGate.singlesNote`).
     static func singlesArtist(_ entry: ChangeLogEntry) -> Int? {
@@ -213,10 +215,13 @@ struct ChangeLogView: View {
                                            description: Text("Every change Magpie makes in Lidarr is listed here."))
                         .accessibilityIdentifier("change-log-empty")
                 }
-                ForEach(Array(entries.enumerated()), id: \.offset) { _, entry in
-                    ChangeLogRow(entry: entry) { artistId in
+                ForEach(Array(entries.enumerated()), id: \.offset) { index, entry in
+                    // Review I3: Undo only on the newest switch line of an artist whose switch can be undone.
+                    let artist = ChangeLogView.singlesArtist(entry)
+                    let newest = artist.map { a in !entries.prefix(index).contains { ChangeLogView.singlesArtist($0) == a } } ?? false
+                    ChangeLogRow(entry: entry, showsUndo: newest && artist.map(undoable.contains) == true) { artistId in
                         undoMessage = await model.undoSingles(artistId: artistId)
-                        self.entries = await model.changeLog()
+                        await reload()
                     }
                 }
             } else {
@@ -227,14 +232,20 @@ struct ChangeLogView: View {
             Button("OK", role: .cancel) {}
         }
         .navigationTitle("Lidarr change log")
-        .task { entries = await model.changeLog() }
-        .refreshable { entries = await model.changeLog() }
+        .task { await reload() }
+        .refreshable { await reload() }
+    }
+
+    private func reload() async {
+        entries = await model.changeLog()
+        undoable = await model.undoableSinglesSwitches()
     }
 }
 
 /// One change-log line; a singles switch's saved line offers its undo (round 15 C3, D146: the profile back).
 private struct ChangeLogRow: View {
     let entry: ChangeLogEntry
+    let showsUndo: Bool
     let undo: (Int) async -> Void
 
     var body: some View {
@@ -249,7 +260,7 @@ private struct ChangeLogRow: View {
             if !entry.bodySummary.isEmpty {
                 Text(entry.bodySummary).font(.caption2.monospaced()).foregroundStyle(.secondary).lineLimit(4)
             }
-            if let artistId = ChangeLogView.singlesArtist(entry) {
+            if showsUndo, let artistId = ChangeLogView.singlesArtist(entry) {
                 Button(LibraryFindsCopy.undo) { Task { await undo(artistId) } }
                     .buttonStyle(.bordered)
                     .accessibilityIdentifier("change-log-undo-singles")

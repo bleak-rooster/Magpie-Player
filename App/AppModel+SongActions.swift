@@ -103,6 +103,13 @@ struct SavePick: Identifiable {
     var unmatchedAlbum: OutsideAlbumRef?
     /// Round 15 C3 (D135, D146): Add to library's question first (the album a song comes with, or singles).
     var libraryConfirm: LibraryConfirm?
+    /// Review M3: the one creation of "Magpie Lossless Preferred" under way.
+    @ObservationIgnored var qualityTask: Task<Void, Error>?
+    /// D146: songs whose singles switch is still waiting on Lidarr (asked for when it finishes), by artist.
+    @ObservationIgnored var singlesWaiting: [Int: (ExternalRecording, MBID)] = [:]
+    @ObservationIgnored var singlesResumedAt: Date?
+    /// D147 (review M8): albums the ledger holds as open trials; nil until read.
+    var openTrialAlbums: Set<Int>?
     /// Search instead: the query the Search tab takes (it clears it).
     var searchQuery: String?
     /// Songs being matched right now (their menus wait).
@@ -167,7 +174,7 @@ struct SavePick: Identifiable {
         pending = []; store = nil; loadedScope = nil; keepAsked = []; lookedUpAt = [:]
         artistPreviews = [:]; playlistSongs = []; previewReads.values.forEach { $0.cancel() }; previewReads = [:]
         trying = nil; wholeArtistAdd = nil; choosing = nil; picking = nil; unmatched = nil; unmatchedAlbum = nil
-        libraryConfirm = nil
+        libraryConfirm = nil; qualityTask = nil; singlesWaiting = [:]; singlesResumedAt = nil; openTrialAlbums = nil
     }
 }
 

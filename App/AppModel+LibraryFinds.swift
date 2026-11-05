@@ -24,6 +24,14 @@ enum LibraryFindsCopy {
     static let unmatchedAlbumMessage = "Magpie couldn\u{2019}t tell which album this is, so nothing was asked for. Search for it instead."
     static let singlesTitle = "Include singles for this artist?"
     static let includeSingles = "Include singles"
+    static let couldntCheck = "Couldn\u{2019}t check what comes with it, so nothing was asked for. Try again in a moment."
+    static let singlesPending = "Listing their singles is waiting on your server. It finishes by itself, and the song comes then."
+    static let singlesRolledBack = "Couldn\u{2019}t list an artist\u{2019}s singles, so everything was put back as it was."
+    static let singlesNotStarted = "Couldn\u{2019}t list their singles this time. Nothing was changed."
+    static func unmatchedLeft(_ n: Int) -> String {
+        n == 1 ? "1 song couldn\u{2019}t be matched, so it was left in your playlists."
+               : "\(n) songs couldn\u{2019}t be matched, so they were left in your playlists."
+    }
     static let singlesFailed = "Couldn\u{2019}t list their singles this time. Their new-release setting is as it was."
     static let singlesFailedNeedsLook = "Couldn\u{2019}t list their singles this time, and their new-release setting couldn\u{2019}t be put back. It needs a look."
     static let singlesUndone = "Singles are no longer listed for this artist."
@@ -102,7 +110,7 @@ enum LibraryActionsState: Equatable {
 
 /// A question before Add to library sends anything: the album a song comes with, or the singles switch.
 struct LibraryConfirm: Identifiable {
-    enum Kind { case album, singles(artistId: Int, single: MBID?) }
+    enum Kind { case album(RequestRunner.TargetPreview), singles(artistId: Int, single: MBID?) }
     let id = UUID()
     let kind: Kind
     let title: String
@@ -168,7 +176,7 @@ extension AppModel {
 
     /// Add to library on an outside song: the release is the smallest the artist's listing has that holds it (a new
     /// artist's: the smallest a Finds-style add can monitor). An album is said before anything is sent; a song no listed
-    /// release holds offers the singles switch (D146).
+    /// release holds offers the singles switch (D146). When what comes with it can't be checked, nothing is sent (M1).
     func addToLibrary(_ song: OutsideSong) async {
         if let why = libraryActionRefusal() { return libraryEdits.notify(why, symbol: "info.circle") }
         let key = SongActions.key(song) + "|library"
@@ -179,17 +187,20 @@ extension AppModel {
             songActions.unmatched = song
             return
         }
-        switch try? await runner?.targetPreview(recording) {
-        case .listed(let title, true)?, .newArtist(let title, true)?:
-            songActions.libraryConfirm = LibraryConfirm(kind: .album, title: LibraryFindsCopy.confirmTitle,
+        guard let runner, let preview = try? await runner.targetPreview(recording) else {
+            return libraryEdits.notify(LibraryFindsCopy.couldntCheck, symbol: "exclamationmark.circle")
+        }
+        switch preview {
+        case .listed(let title, true), .newArtist(let title, true, _):
+            songActions.libraryConfirm = LibraryConfirm(kind: .album(preview), title: LibraryFindsCopy.confirmTitle,
                                                         message: LibraryFindsCopy.comesWithAlbum(title), recording: recording)
-        case .notListed(let artistId, let single)?:
+        case .notListed(let artistId, let single):
             songActions.libraryConfirm = LibraryConfirm(kind: .singles(artistId: artistId, single: single),
                                                         title: LibraryFindsCopy.singlesTitle,
                                                         message: LibraryFindsCopy.singlesMessage(artist: song.artist, song: song.title),
                                                         recording: recording)
         default:
-            await sendToLibrary(recording, album: nil, title: song.title)
+            await sendToLibrary(recording, album: nil, title: song.title, preview: preview)
         }
     }
 
@@ -197,7 +208,7 @@ extension AppModel {
     func confirmLibrary(_ confirm: LibraryConfirm) async {
         songActions.libraryConfirm = nil
         switch confirm.kind {
-        case .album: await sendToLibrary(confirm.recording, album: nil, title: confirm.recording.title)
+        case .album(let preview): await sendToLibrary(confirm.recording, album: nil, title: confirm.recording.title, preview: preview)
         case .singles(let artistId, let single): await includeSingles(artistId: artistId, single: single, then: confirm.recording)
         }
     }
@@ -212,14 +223,22 @@ extension AppModel {
             songActions.unmatchedAlbum = album
             return
         }
-        await sendToLibrary(first, album: group, title: album.title)
+        guard let runner, let preview = try? await runner.targetPreview(first) else {
+            return libraryEdits.notify(LibraryFindsCopy.couldntCheck, symbol: "exclamationmark.circle")
+        }
+        await sendToLibrary(first, album: group, title: album.title, preview: preview)
     }
 
-    /// Sends Add to library: the main library's quality profile is made first if missing (D136), then the runner.
-    func sendToLibrary(_ recording: ExternalRecording, album: MBID?, title: String) async {
+    /// Sends Add to library. Only a new artist's add needs the main library's profiles (M3): "Magpie Lossless Preferred"
+    /// and the owner's own Add defaults' metadata profile and following (D136, M2), made through the gate first.
+    func sendToLibrary(_ recording: ExternalRecording, album: MBID?, title: String, preview: RequestRunner.TargetPreview?) async {
         do {
-            try await ensureLibraryQuality()
-            _ = try await startTry(recording, album: album, releaseGroup: nil, intent: .library)
+            var libraryAdd: RequestRunner.LibraryAddProfile?
+            if case .newArtist(_, _, let isSingle)? = preview {
+                try await ensureLibraryQuality()
+                libraryAdd = try await newArtistProfile(includingSingles: isSingle && album == nil)
+            }
+            _ = try await startTry(recording, album: album, releaseGroup: nil, intent: .library, libraryAdd: libraryAdd)
             libraryEdits.notify(LibraryFindsCopy.added(title), symbol: "arrow.down.circle")
         } catch let error as ProvisionError {
             libraryEdits.notify(NewMusicCopy.message(for: ArtistLidarrError.profileConflict(Self.conflictName(error))),
@@ -234,57 +253,123 @@ extension AppModel {
         return Provisioner.losslessPreferredName
     }
 
-    /// "Magpie Lossless Preferred", through the gate, once (D136).
+    /// D136 (review M2): the owner's own Add defaults (Settings › New music): their release types' metadata profile (made
+    /// through the gate if missing; with singles when the song only comes as one) and whether new releases follow.
+    func newArtistProfile(includingSingles: Bool) async throws -> RequestRunner.LibraryAddProfile {
+        guard let gate, let client = lidarrClient else { throw RequestRunner.TryError.notSetUp }
+        let choices = newMusic.whenYouAdd
+        var types = choices.types
+        if includingSingles { types.kinds = .albumsEPsAndSingles }
+        let profile = try await Provisioner().ensureReleaseTypes(types, gate: gate, client: client)
+        return .init(metadataProfileId: profile, follow: choices.follow)
+    }
+
+    /// "Magpie Lossless Preferred", through the gate, once (D136): one creation at a time (M3).
     func ensureLibraryQuality() async throws {
+        if let running = songActions.qualityTask { return try await running.value }
         guard lidarrSetup?.losslessPreferredProfileId == nil else { return }
-        guard let gate, let client = lidarrClient, var setup = lidarrSetup else { throw RequestRunner.TryError.notSetUp }
-        guard await gate.enabled else { throw RequestRunner.TryError.changesOff }
-        do {
-            setup.losslessPreferredProfileId = try await Provisioner().ensureLosslessPreferred(gate: gate, client: client)
-        } catch WriteGateError.disabled {
-            throw RequestRunner.TryError.changesOff
+        let task = Task { @MainActor in
+            defer { self.songActions.qualityTask = nil }
+            guard let gate = self.gate, let client = self.lidarrClient, var setup = self.lidarrSetup else {
+                throw RequestRunner.TryError.notSetUp
+            }
+            guard await gate.enabled else { throw RequestRunner.TryError.changesOff }
+            do {
+                setup.losslessPreferredProfileId = try await Provisioner().ensureLosslessPreferred(gate: gate, client: client)
+            } catch WriteGateError.disabled {
+                throw RequestRunner.TryError.changesOff
+            }
+            self.lidarrSetup = setup
+            self.setupStore.save(setup)
         }
-        lidarrSetup = setup
-        setupStore.save(setup)
+        songActions.qualityTask = task
+        try await task.value
     }
 
     // MARK: - Singles (D146)
 
-    /// "Include singles for this artist", confirmed, for any artist (`ArtistLidarr.includeSingles`: the undo saved in the
-    /// change log, new releases not followed meanwhile, the profile switched, a refresh, every newly listed release but the
-    /// single unmonitored, the following put back). Then only this song's single is monitored and searched (the usual
-    /// Add to library, aimed at that single).
+    /// "Include singles for this artist", confirmed, for any artist: the journaled switch (`SinglesSwitcher`: the original
+    /// profile and following saved first, following off, the artist's own profile plus Single, a confirmed refresh, every
+    /// other new release unmonitored, following back). Then only this song's single is monitored and searched. A switch
+    /// still waiting on Lidarr finishes by itself; the song is asked for then.
     func includeSingles(artistId: Int, single: MBID?, then recording: ExternalRecording) async {
-        guard let gate, let client = lidarrClient else { return libraryEdits.notify(TryCopy.notSetUp, symbol: "info.circle") }
+        guard let switcher = singlesSwitcher else { return libraryEdits.notify(TryCopy.notSetUp, symbol: "info.circle") }
         guard let single else { return libraryEdits.notify(LibraryFindsCopy.singlesFailed, symbol: "exclamationmark.circle") }
         do {
-            var types = ReleaseTypes.standard
-            types.kinds = .albumsEPsAndSingles
-            try await ArtistLidarr.includeSingles(artistId: artistId, target: single, types: types, lidarr: client, gate: gate)
-            await sendToLibrary(recording, album: single, title: recording.title)
-        } catch ArtistLidarr.SinglesError.failed(let restored) {
-            libraryEdits.notify(restored ? LibraryFindsCopy.singlesFailed : LibraryFindsCopy.singlesFailedNeedsLook,
-                                symbol: "exclamationmark.circle")
+            switch try await switcher.start(artistId: artistId, target: single) {
+            case .finished, .alreadyListed:
+                await sendToLibrary(recording, album: single, title: recording.title, preview: nil)
+            case .pending:
+                songActions.singlesWaiting[artistId] = (recording, single)
+                libraryEdits.notify(LibraryFindsCopy.singlesPending, symbol: "clock")
+            case .rolledBack:
+                libraryEdits.notify(LibraryFindsCopy.singlesFailed, symbol: "exclamationmark.circle")
+            }
+        } catch SinglesSwitchError.changesOff {
+            libraryEdits.notify(TryAvailability.changesOff.message!, symbol: "info.circle")
+        } catch SinglesSwitchError.profileConflict(let name) {
+            libraryEdits.notify(NewMusicCopy.message(for: ArtistLidarrError.profileConflict(name)), symbol: "exclamationmark.circle")
         } catch {
-            libraryEdits.notify(NewMusicCopy.message(for: error), symbol: "exclamationmark.circle")
+            libraryEdits.notify(LibraryFindsCopy.singlesNotStarted, symbol: "exclamationmark.circle")
         }
     }
 
-    /// The change log's Undo for a singles switch: the artist's saved metadata profile back.
-    func undoSingles(artistId: Int) async -> String {
-        guard let gate else { return LibraryFindsCopy.trialUnavailable }
-        do {
-            try await ArtistLidarr.undoSingles(artistId: artistId, gate: gate)
-            return LibraryFindsCopy.singlesUndone
-        } catch {
-            return NewMusicCopy.message(for: error)
+    /// Unfinished switches, resumed (runner start, every requests update at most once a minute): finished ones bring in
+    /// the song they were for; rolled-back ones say so.
+    func resumeSinglesSwitches(force: Bool = false) async {
+        guard let switcher = singlesSwitcher, !isOffline else { return }
+        let now = Date()
+        if !force, let last = songActions.singlesResumedAt, now.timeIntervalSince(last) < 60 { return }
+        songActions.singlesResumedAt = now
+        for (artistId, outcome) in await switcher.resumeAll() {
+            let waiting = songActions.singlesWaiting.removeValue(forKey: artistId)
+            switch outcome {
+            case .finished:
+                if let (recording, single) = waiting { await sendToLibrary(recording, album: single, title: recording.title, preview: nil) }
+            case .rolledBack:
+                libraryEdits.notify(LibraryFindsCopy.singlesRolledBack, symbol: "exclamationmark.circle")
+            case .pending, .alreadyListed:
+                if let waiting { songActions.singlesWaiting[artistId] = waiting }
+            }
         }
+    }
+
+    /// The change log's Undo for a finished singles switch: the saved profile and following back, then a refresh (the
+    /// journal is the source, never the capped log).
+    func undoSingles(artistId: Int) async -> String {
+        guard let switcher = singlesSwitcher else { return LibraryFindsCopy.trialUnavailable }
+        do {
+            try await switcher.undo(artistId: artistId)
+            return LibraryFindsCopy.singlesUndone
+        } catch SinglesSwitchError.changesOff {
+            return TryAvailability.changesOff.message!
+        } catch {
+            return LibraryFindsCopy.trialUnavailable
+        }
+    }
+
+    /// Artists whose finished singles switch can be undone (Settings › change log).
+    func undoableSinglesSwitches() async -> Set<Int> {
+        guard let jobs = try? await singlesSwitcher?.store.jobs() else { return [] }
+        return Set(jobs.filter { $0.step == .done }.map(\.artistId))
     }
 
     // MARK: - Library trials in Finds (D147)
 
-    /// Releases of library artists on trial that have arrived: Finds lists them beside the finds.
-    var libraryTrials: [MagpieRequest] { requests.filter { $0.isLibraryTrial && $0.state == .ready } }
+    /// Releases of library artists on trial that have arrived, and whose ledger entry is still an open trial (a later Try
+    /// or Add of the same album supersedes it: review M8): Finds lists them beside the finds.
+    var libraryTrials: [MagpieRequest] {
+        requests.filter { r in
+            r.isLibraryTrial && r.state == .ready && (songActions.openTrialAlbums.map { r.albumId.map($0.contains) ?? false } ?? true)
+        }
+    }
+
+    /// Re-reads which albums the ledger holds as open trials (after each requests update).
+    func refreshOpenTrials() async {
+        guard let ledger, requests.contains(where: \.isLibraryTrial) else { return }
+        guard let entries = try? await ledger.entries else { return }
+        songActions.openTrialAlbums = Set(entries.filter(\.isOpenTrial).compactMap(\.albumId))
+    }
 
     /// A trial's song as a row shows it (the library song once known).
     func trialSong(_ request: MagpieRequest) -> Song {
@@ -303,31 +388,38 @@ extension AppModel {
         }
     }
 
-    /// Reject: proven first (reads only); then, as for a find (D137), the songs leave the owner's playlists; then the
-    /// release's files go and it is unmonitored.
+    /// Reject: proven first (reads only); then, as for a find (D137), the songs whose files are the trial's leave the
+    /// owner's playlists (review I5); then the album is unmonitored and its files go (I6).
     func rejectLibraryTrial(_ request: MagpieRequest) async -> String {
         guard let runner else { return LibraryFindsCopy.trialUnavailable }
         guard changesAllowed else { return TryAvailability.changesOff.message! }
         guard await runner.trialRejectable(request.id) else { return LibraryFindsCopy.rejectRefused }
-        let songs = await trialSongIds(request)
+        let (songs, unmatched) = await trialSongIds(request)
         let removed = await cleanUpAfterLetGo(requestId: request.id, title: Self.letGoTitle(request), songIds: songs,
                                               announce: false)
+        let left = unmatched > 0 ? LibraryFindsCopy.unmatchedLeft(unmatched) : nil
         defer { pollRequests() }
         do {
             try await runner.rejectTrial(request.id)
             player.removeSongs(songs)
-            return [LibraryFindsCopy.rejected, removed.map { $0 + "." }].compactMap { $0 }.joined(separator: " ")
+            return [LibraryFindsCopy.rejected, removed.map { $0 + "." }, left].compactMap { $0 }.joined(separator: " ")
         } catch {
-            return [LibraryFindsCopy.message(for: error), removed.map { $0 + "." }].compactMap { $0 }.joined(separator: " ")
+            return [LibraryFindsCopy.message(for: error), removed.map { $0 + "." }, left].compactMap { $0 }.joined(separator: " ")
         }
     }
 
-    /// The trial's song and the rest of its album in the library.
-    func trialSongIds(_ request: MagpieRequest) async -> Set<String> {
-        guard let songId = request.songId else { return [] }
-        guard let albumId = await librarySong(songId)?.albumId,
-              let songs = try? await self.request({ try await $0.album(id: albumId) }).songs else { return [songId] }
-        return Set([songId] + songs.map(\.id))
+    /// Review I5: the songs whose files are the trial album's Lidarr track files, path to path (`TrialSongs`); the count
+    /// of files no single song matched (left alone). Never a whole Navidrome album by name.
+    func trialSongIds(_ request: MagpieRequest) async -> (ids: Set<String>, unmatched: Int) {
+        guard let client = lidarrClient, let albumId = request.albumId, let artistId = request.lidarrArtistId,
+              let folder = try? await client.artist(id: artistId).path,
+              let files = try? await client.trackFiles(albumId: albumId),
+              let tracks = try? await client.tracks(albumId: albumId) else { return ([], 0) }
+        var candidates: [(song: Song, lidarrPath: String)] = []
+        for title in Set(tracks.filter(\.hasFile).compactMap(\.title)) {
+            candidates += await songsTitled(title, artistFolder: folder, anyLibrary: true) ?? []
+        }
+        return TrialSongs.match(files: files, candidates: candidates)
     }
 
     // MARK: - Albums
@@ -363,6 +455,22 @@ extension AppModel {
         })
     }
 
+    /// Review M8: an album known only by name (Trending's, from the charts, with no MusicBrainz id): its live album request
+    /// by the same folded title and artist.
+    func libraryStatus(forAlbumTitled title: String, artist: String) -> String? {
+        let key = SongIdentity.titleKey(title), who = SongIdentity.artistKey(artist)
+        guard !key.isEmpty else { return nil }
+        return statusLine(requests.last {
+            $0.albumTarget != nil && SongIdentity.titleKey($0.albumTitle ?? "") == key
+                && SongIdentity.artistKey($0.recording.artist) == who && LibraryAdds.status($0) != nil
+        })
+    }
+
+    /// The status for an outside album: by its release group, else by name.
+    func libraryStatus(for album: OutsideAlbumRef) -> String? {
+        libraryStatus(forAlbum: album.releaseGroup) ?? libraryStatus(forAlbumTitled: album.title, artist: album.artist)
+    }
+
     private func statusLine(_ request: MagpieRequest?) -> String? {
         guard let request, let status = LibraryAdds.status(request) else { return nil }
         return LibraryFindsCopy.status(status, removeOn: status == .onTrial ? trialEnds(request) : nil)
@@ -385,8 +493,14 @@ extension AppModel {
     func retry(_ request: MagpieRequest) async {
         let intent: RequestRunner.Intent = request.addToLibrary ? .library : request.askedAsTry ? .trial : .plain
         do {
-            if intent == .library { try await ensureLibraryQuality() }
-            _ = try await startTry(request.recording, album: request.albumTarget, releaseGroup: nil, intent: intent)
+            // A new artist's add again: its profiles as before (the quality made only then, M3).
+            var libraryAdd: RequestRunner.LibraryAddProfile?
+            if intent == .library, let profile = request.libraryMetadataProfileId {
+                try await ensureLibraryQuality()
+                libraryAdd = .init(metadataProfileId: profile, follow: request.libraryFollow ?? false)
+            }
+            _ = try await startTry(request.recording, album: request.albumTarget, releaseGroup: nil, intent: intent,
+                                   libraryAdd: libraryAdd)
         } catch {
             libraryEdits.notify(TryCopy.message(for: error), symbol: "exclamationmark.circle")
         }

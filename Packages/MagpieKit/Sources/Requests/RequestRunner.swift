@@ -336,22 +336,25 @@ public actor RequestRunner {
     ///   - releaseGroup: the album the song was picked from, when known: a live request for it is this Try (R20).
     ///   - intent: round 15 C3 (D135, D139): `.library` is "Add to library" (permanent), `.trial` the Try (temporary).
     ///     A live request this Try is becomes Add to library when asked so; nothing else about it changes.
+    ///   - libraryAdd: D136 (review M2): a new artist's Add to library uses the owner's own Add defaults (the metadata
+    ///     profile for their release types, and whether new releases are followed).
     public func tryRecording(_ recording: ExternalRecording, tier: Tier, album: MBID? = nil,
-                             releaseGroup: MBID? = nil, intent: Intent = .plain) async throws -> RequestID {
+                             releaseGroup: MBID? = nil, intent: Intent = .plain,
+                             libraryAdd: LibraryAddProfile? = nil) async throws -> RequestID {
         guard !stopped, await load() else { throw TryError.unavailable }
         if let existing = liveTry(recording, album: album, releaseGroup: releaseGroup) {
             if intent == .library, !existing.addToLibrary { await mutate(existing.id) { $0.addToLibrary = true } }
             return existing.id
         }
         guard await gate.enabled else { throw TryError.changesOff }
-        guard let setup = await setup() else { throw TryError.notSetUp }
-        // D135: a new artist added to the library needs the lossless-preferred profile (the app provisions it first).
-        guard intent != .library || setup.libraryQualityProfileId != nil else { throw TryError.notSetUp }
+        guard await setup() != nil else { throw TryError.notSetUp }
         guard activeCount < Self.maxActive else { throw TryError.tooMany }
         var request = MagpieRequest(recording: recording, tier: tier, createdAt: now())
         request.albumTarget = album
         request.addToLibrary = intent == .library
         request.askedAsTry = intent == .trial
+        request.libraryMetadataProfileId = libraryAdd?.metadataProfileId
+        request.libraryFollow = libraryAdd?.follow
         list.append(request)
         await changed()
         let id = request.id
@@ -888,14 +891,7 @@ public actor RequestRunner {
         // Y5 fix I4: a Try on this album never drops a Keep under way or the find's file record (Ledger.record merges too).
         entry.keepIntentAt = prior?.keepIntentAt
         entry.findFiles = prior?.findFiles
-        // Round 15 C3 (D147): a Try of a release of an artist already in the library, which Magpie monitors now: read
-        // just above, it is unmonitored with no files. Only such an album may later be rejected (its files deleted).
-        let trial = r.askedAsTry && !r.addToLibrary && mode == .fallback && needsMonitor && !entry.createdArtist
-            && album.trackFileCount == 0
-        if trial {
-            entry.trialHadNoFiles = true
-            entry.trialExpiresAt = now().addingTimeInterval(TimeInterval(Self.trialDays) * 86_400)
-        }
+        let trial = markTrial(&entry, r, mode: mode, needsMonitor: needsMonitor, album: album)   // round 15 C3 (D147)
         try await ledger.record(entry)
         await mutate(id) {
             $0.lidarrArtistId = artist.id
@@ -939,7 +935,7 @@ public actor RequestRunner {
         }
         let library = request(id)?.addToLibrary == true
         let target = library ? try Self.libraryDestination(setup) : try await destination(setup)
-        let body = library ? try Self.addLibraryArtistBody(lookup: lookup, setup: target.setup)
+        let body = library ? try Self.addLibraryArtistBody(lookup: lookup, setup: target.setup, request: request(id))
                            : try Self.addArtistBody(lookup: lookup, setup: target.setup, releaseGroup: plan.releaseGroupMBID)
         // Item 9.8: the command list before the add, so only Lidarr's RefreshArtist for this add counts.
         let baseline = (try? await lidarr.commands())?.map(\.id).max()
@@ -991,33 +987,6 @@ public actor RequestRunner {
 
     /// Where a new artist goes. Finds mode reads Lidarr's root folders now (a failure throws: the request waits,
     /// nothing is added) and uses the Finds root only if it still passes; else the main root (B8).
-    /// Round 15 C3 (D135, D136): Add to library of a new artist: the main root, tag `magpie`, "Magpie Lossless Preferred".
-    static func libraryDestination(_ setup: Setup) throws -> (setup: Setup, mode: LedgerMode) {
-        guard let quality = setup.libraryQualityProfileId else { throw WriteGateError.disabled }   // waits; never Fast Start
-        var target = setup
-        target.qualityProfileId = quality
-        return (target, .fallback)
-    }
-
-    /// D135: the whole discography monitored (not new releases), no search on add: this release is searched first by
-    /// the runner, then the rest (`ArtistSearch`, after it).
-    static func addLibraryArtistBody(lookup: JSONValue, setup: Setup) throws -> JSONValue {
-        guard var o = lookup.objectValue else { throw AddFailure(reason: .noRelease) }
-        let overrides: [String: JSONValue] = [
-            "rootFolderPath": .string(setup.rootFolderPath),
-            "qualityProfileId": .int(setup.qualityProfileId),
-            "metadataProfileId": .int(setup.metadataProfileId),
-            "monitored": .bool(true),
-            "monitorNewItems": .string("none"),
-            "tags": .array(setup.tagIds.map { .int($0) }),
-            "addOptions": .object(["monitor": .string("all"), "searchForMissingAlbums": .bool(false)]),
-        ]
-        let folded = Set(overrides.keys.map { $0.lowercased() } + ["id"])
-        o = o.filter { !folded.contains($0.key.lowercased()) }
-        o.merge(overrides) { _, new in new }
-        return .object(o)
-    }
-
     private func destination(_ setup: Setup) async throws -> (setup: Setup, mode: LedgerMode) {
         guard let finds = setup.finds else { return (setup, .fallback) }
         let roots = try await lidarr.rootFolders().map(\.path)
@@ -1188,20 +1157,6 @@ public actor RequestRunner {
         } catch {
             await apply(id, Self.event(for: error))
         }
-    }
-
-    /// D135: after this release's search, the rest of a new artist Magpie added for Add to library (once; the gate allows
-    /// ArtistSearch only for an artist Magpie added). A failure is left: Lidarr's monitoring carries on.
-    private func searchDiscography(_ id: RequestID) async {
-        guard let r = request(id), r.addToLibrary, r.addSent, r.discographySearched != true,
-              let artistId = r.lidarrArtistId else { return }
-        await mutate(id) { $0.discographySearched = true }
-        _ = try? await gate.send("POST", "command", body: ArtistSearchBody(name: "ArtistSearch", artistId: artistId))
-    }
-
-    private struct ArtistSearchBody: Encodable, Sendable {
-        var name: String
-        var artistId: Int
     }
 
     static let finishedCommandStates: Set<String> = ["completed", "failed", "aborted", "cancelled", "orphaned"]

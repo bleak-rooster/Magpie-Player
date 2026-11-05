@@ -93,6 +93,10 @@ struct TrendingView: View {
                             AurralArt(image: album.artwork, side: 140)
                             Text(album.name).font(.subheadline.weight(.semibold)).lineLimit(2)
                             Text(album.artist).font(.footnote).foregroundStyle(themed.palette.ink2Color).lineLimit(1)
+                            // Round 15 C3 (review M8): where it stands, once asked for.
+                            if let status = model.libraryStatus(forAlbumTitled: album.name, artist: album.artist) {
+                                Text(status).font(.caption).foregroundStyle(themed.palette.accentInkColor).lineLimit(1)
+                            }
                         }
                         .frame(width: 140, alignment: .leading)
                         .accessibilityElement(children: .combine)

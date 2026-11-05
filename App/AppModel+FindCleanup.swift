@@ -45,9 +45,12 @@ enum FindCleanupCopy {
     /// Local notifications posted (title, body), newest last.
     @ObservationIgnored var posted: [(title: String, body: String)] = []
     @ObservationIgnored var uiTestRan = false
+    /// Review M4: retries of an unfinished clean-up, and when the next may run.
+    @ObservationIgnored var tries: [UUID: Int] = [:]
+    @ObservationIgnored var nextTry: [UUID: Date] = [:]
 
     func forget() {
-        jobs = []; store = nil; loadedScope = nil; loaded = false; running = []; posted = []
+        jobs = []; store = nil; loadedScope = nil; loaded = false; running = []; posted = []; tries = [:]; nextTry = [:]
     }
 }
 
@@ -99,9 +102,25 @@ extension AppModel {
         return letGo.jobs.first { $0.id == job.id }.flatMap(FindCleanupCopy.message)
     }
 
-    /// Unfinished clean-ups (an interruption, a server that didn't answer): tried again, from a fresh read.
+    /// Unfinished clean-ups (an interruption, a server that didn't answer): tried again, from a fresh read, backing off
+    /// (review M4: 1, 5, then every 15 minutes) so a playlist that keeps failing isn't re-read on every poll.
     func resumeLetGoCleanups() async {
-        for job in letGo.jobs where job.finishedAt == nil { await runCleanup(job.id, announce: true) }
+        let now = Date()
+        for job in letGo.jobs where job.finishedAt == nil {
+            if let next = letGo.nextTry[job.id], next > now { continue }
+            let tries = letGo.tries[job.id, default: 0]
+            letGo.tries[job.id] = tries + 1
+            letGo.nextTry[job.id] = now.addingTimeInterval(Self.cleanupBackoff(tries))
+            await runCleanup(job.id, announce: true)
+        }
+    }
+
+    nonisolated static func cleanupBackoff(_ tries: Int) -> TimeInterval {
+        switch tries {
+        case 0: 60
+        case 1: 300
+        default: 900
+        }
     }
 
     /// D101's pending playlist adds for the rejected find: they'd never arrive.
@@ -161,11 +180,17 @@ extension AppModel {
 
     // MARK: - UI tests only
 
+    /// Review M5: the UI-test hooks act only on a dev server on this machine (localhost / 127.0.0.1).
+    var signedInToLoopback: Bool {
+        guard let session, !session.endpoint.bases.isEmpty else { return false }
+        return session.endpoint.bases.allSatisfy { ["localhost", "127.0.0.1"].contains($0.host()?.lowercased() ?? "") }
+    }
+
     /// The Release UI check of library trials in Finds (round 15 C3, D147): with `-MagpieUITesting YES
     /// -MagpieUITestLibraryTrial <song id>` that dev song is shown as a library trial (a request in memory only; nothing
     /// is written anywhere). A production launch never passes these.
     func seedUITestLibraryTrialIfAsked(_ defaults: UserDefaults = .standard) async {
-        guard defaults.string(forKey: "MagpieUITesting") == "YES",
+        guard defaults.string(forKey: "MagpieUITesting") == "YES", signedInToLoopback,
               let songId = defaults.string(forKey: "MagpieUITestLibraryTrial"), !songId.isEmpty,
               !requests.contains(where: { $0.songId == songId }),
               let song = try? await request({ try await $0.song(id: songId) }) else { return }
@@ -185,7 +210,7 @@ extension AppModel {
     /// clean-up a Not for me runs is run for that song, as if its find had just been let go (the dev stack can't make a
     /// real find without the internet). A production launch never passes these.
     func runUITestLetGoIfAsked(_ defaults: UserDefaults = .standard) async {
-        guard defaults.string(forKey: "MagpieUITesting") == "YES", !letGo.uiTestRan,
+        guard defaults.string(forKey: "MagpieUITesting") == "YES", !letGo.uiTestRan, signedInToLoopback,
               let songId = defaults.string(forKey: "MagpieUITestLetGo"), !songId.isEmpty else { return }
         letGo.uiTestRan = true
         let title = (try? await request { try await $0.song(id: songId) })?.title ?? "this song"

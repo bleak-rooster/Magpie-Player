@@ -239,4 +239,59 @@ private let releaseMBID = MBID("b5cdfb5f-35a5-4bc5-bbca-57839a71813a")!
         #expect(transport.navidrome.requests.allSatisfy { ($0.httpMethod ?? "GET") == "GET" || $0.url?.path.hasSuffix("/auth/login") == true },
                 "nothing written")
     }
+
+    // MARK: - Review fixes
+
+    /// M1: when what comes with the song can't be checked, nothing is sent: a retryable message instead.
+    @Test func whenWhatComesCantBeCheckedNothingIsSent() async throws {
+        let model = try await model()
+        defer { model.signOut() }
+        catalog(model)
+        available(model)
+        let song = OutsideSong(title: "Harbour Lights", artist: "Stub Arrows", album: "Harbour Lights", duration: 196,
+                               artistMBID: MBID("a74b1b7f-71a5-4011-9441-d0b5e4122711"), releaseGroupMBID: groupMBID, recordingMBID: firstTrack)
+        await model.addToLibrary(song)   // MusicBrainz isn't reachable on the mock: the preview fails
+        #expect(model.libraryEdits.notice?.text == LibraryFindsCopy.couldntCheck)
+        #expect(model.requests.isEmpty && model.songActions.libraryConfirm == nil)
+        #expect(transport.navidrome.requests.allSatisfy { ($0.httpMethod ?? "GET") == "GET" || $0.url?.path.hasSuffix("/auth/login") == true })
+    }
+
+    /// M8: a trial whose ledger entry was superseded (a later Try or Add of the album) shows no Keep or Reject.
+    @Test func aSupersededTrialIsNotListed() async throws {
+        let model = try await model()
+        defer { model.signOut() }
+        let trial = libraryTrial()
+        model.requests = [trial]
+        model.songActions.openTrialAlbums = [33]
+        #expect(model.libraryTrials.map(\.id) == [trial.id])
+        model.songActions.openTrialAlbums = []
+        #expect(model.libraryTrials.isEmpty)
+    }
+
+    /// M8: an album known only by name (Trending's) shows where it stands.
+    @Test func anAlbumKnownByNameShowsItsStatus() async throws {
+        let model = try await model()
+        defer { model.signOut() }
+        var r = request(library: true, find: false, state: .downloading(progress: 0.5))
+        r.albumTarget = groupMBID
+        r.albumTitle = "Harbour Lights"
+        model.requests = [r]
+        #expect(model.libraryStatus(forAlbumTitled: "harbour lights", artist: "Stub Arrows") == "Coming \u{00B7} 50%")
+        #expect(model.libraryStatus(for: OutsideAlbumRef(title: "Harbour Lights", artist: "Stub Arrows")) == "Coming \u{00B7} 50%")
+        #expect(model.libraryStatus(forAlbumTitled: "Other", artist: "Stub Arrows") == nil)
+    }
+
+    /// M5: the UI-test hooks act only on a dev server on this machine.
+    @Test func theUITestHooksNeedALoopbackServer() async throws {
+        let model = try await model()
+        defer { model.signOut() }
+        #expect(!model.signedInToLoopback, "the mock server is 192.168.1.2")
+        let defaults = UserDefaults(suiteName: "hooks-\(UUID().uuidString)")!
+        defaults.set("YES", forKey: "MagpieUITesting")
+        defaults.set("f1", forKey: "MagpieUITestLetGo")
+        defaults.set("f1", forKey: "MagpieUITestLibraryTrial")
+        await model.runUITestLetGoIfAsked(defaults)
+        await model.seedUITestLibraryTrialIfAsked(defaults)
+        #expect(model.letGo.jobs.isEmpty && model.requests.isEmpty && nav.updates.isEmpty)
+    }
 }

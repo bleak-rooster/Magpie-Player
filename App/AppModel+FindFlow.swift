@@ -124,12 +124,12 @@ extension AppModel {
 
     /// Item 9.2: the library's songs titled like `title` inside Lidarr's artist folder, with their paths in Lidarr's
     /// terms. Same paths on both servers, or the Finds mapping; anything that can't be placed is left out.
-    func songsTitled(_ title: String, artistFolder: String) async -> [(song: Song, lidarrPath: String)]? {
-        guard let finds = findsSetup, let findsLibrary = finds.library,
-              let libraries = try? await navidromeLibraries() else { return nil }
+    /// Round 15 C3 (review I5): `anyLibrary` also looks without a Finds setup (a library trial's songs, main library).
+    func songsTitled(_ title: String, artistFolder: String, anyLibrary: Bool = false) async -> [(song: Song, lidarrPath: String)]? {
+        guard anyLibrary || findsSetup?.library != nil, let libraries = try? await navidromeLibraries() else { return nil }
         var all = libraries
-        if !all.contains(where: { $0.id == findsLibrary.id }) { all.append(findsLibrary) }
-        let mapped = finds.mapping.map { $0.toNavidrome(artistFolder) } ?? PathGuard.standardize(artistFolder)
+        if let findsLibrary = findsSetup?.library, !all.contains(where: { $0.id == findsLibrary.id }) { all.append(findsLibrary) }
+        let mapped = findsSetup?.mapping.map { $0.toNavidrome(artistFolder) } ?? PathGuard.standardize(artistFolder)
         guard let navidromeFolder = mapped else { return nil }
         for library in all {
             guard let base = PathGuard.standardize(library.path),

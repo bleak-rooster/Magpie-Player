@@ -69,7 +69,7 @@ struct OutsideAlbumMenu: View {
 
     var body: some View {
         if model.libraryActions != .hidden {
-            if let status = model.libraryStatus(forAlbum: album.releaseGroup) {
+            if let status = model.libraryStatus(for: album) {
                 Label(status, systemImage: "clock").accessibilityIdentifier("album-menu-status")
             }
             Button { Task { await model.tryOutsideAlbum(album) } } label: {

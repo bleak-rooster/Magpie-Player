@@ -29,10 +29,11 @@ extension AppModel {
 
     /// Round 15 C3 (D135, D139): `intent` is the menus' Try (`.trial`) or Add to library (`.library`).
     func startTry(_ recording: ExternalRecording, album: MBID?, releaseGroup: MBID?,
-                  intent: RequestRunner.Intent = .plain) async throws -> RequestID {
+                  intent: RequestRunner.Intent = .plain,
+                  libraryAdd: RequestRunner.LibraryAddProfile? = nil) async throws -> RequestID {
         guard let runner else { throw RequestRunner.TryError.notSetUp }
         let id = try await runner.tryRecording(recording, tier: speedTier, album: album, releaseGroup: releaseGroup,
-                                               intent: intent)
+                                               intent: intent, libraryAdd: libraryAdd)
         if notifications { ReadyNotifier.shared.requestAuthorizationIfNeeded() }
         pollRequests()
         return id

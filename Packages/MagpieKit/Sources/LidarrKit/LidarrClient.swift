@@ -46,6 +46,9 @@ public struct LidarrClient: Sendable {
     /// Raw JSON of a GET (provisioning reads schemas and existing profiles whole, A15).
     func json(_ path: String) async throws -> JSONValue { try await decode(JSONValue.self, path) }
 
+    /// Round 15 C3 (D146): every metadata profile whole (the singles switch builds a superset of the artist's own).
+    public func metadataProfilesJSON() async throws -> [JSONValue] { try await json("metadataprofile").arrayValue ?? [] }
+
     private func list<T: Decodable>(_ type: T.Type, _ path: String, _ query: [URLQueryItem] = []) async throws -> [T] {
         try await decode(LossyArray<T>.self, path, query).values
     }

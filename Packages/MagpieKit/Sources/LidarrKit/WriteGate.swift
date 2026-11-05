@@ -593,23 +593,9 @@ public actor LidarrWriteGate {
         defaults.set(on, forKey: Self.enabledKey(scope: connection.instanceScope))
     }
 
-    /// Round 15 C3 (D146): the singles switch's change-log line, saved before its first write: the undo.
+    /// Round 15 C3 (D146): the singles switch's change-log line (information only; the undo is the journal's).
     public static func singlesNote(artistId: Int, metadataProfileId: Int?, monitorNewItems: String?) -> String {
         "singles switch: artist \(artistId) metadataProfileId \(metadataProfileId.map(String.init) ?? "-") monitorNewItems \(monitorNewItems ?? "-")"
-    }
-
-    /// The metadata profile the latest singles-switch note saved for the body's artist: an undo may set exactly that one.
-    static func singlesUndoProfile(in log: [ChangeLogEntry], body: [String: Any]) -> Int? {
-        guard let ids = body.first(where: { $0.key.lowercased() == "artistids" })?.value as? [Any], ids.count == 1,
-              let artist = (ids[0] as? NSNumber)?.intValue else { return nil }
-        return singlesSavedProfile(in: log, artistId: artist)
-    }
-
-    /// The metadata profile the latest singles-switch note saved for `artistId` (the undo), if any.
-    public static func singlesSavedProfile(in log: [ChangeLogEntry], artistId artist: Int) -> Int? {
-        let prefix = "singles switch: artist \(artist) metadataProfileId "
-        guard let line = log.last(where: { $0.method == "NOTE" && $0.bodySummary.hasPrefix(prefix) })?.bodySummary else { return nil }
-        return line.dropFirst(prefix.count).split(separator: " ").first.flatMap { Int($0) }
     }
 
     /// Y5 fix I2: a line in the change log for something Magpie did without a write to Lidarr (it cleared a Keep that
@@ -677,7 +663,7 @@ public actor LidarrWriteGate {
         if shape == .singlesSwitch {
             switch confined {
             case .editor(let body)?:
-                confined = .singlesEditor(body, undoProfile: Self.singlesUndoProfile(in: changeLog(), body: body))
+                confined = .singlesEditor(body)
             case .command(let name, _, let artistId?)? where name == "refreshartist": confined = .singlesRefresh(artistId)
             case .albumMonitor(let ids, false)?: confined = .singlesUnmonitor(ids)
             default: throw refused(target, "singlesSwitch is an artist edit, a refresh or an unmonitor only")

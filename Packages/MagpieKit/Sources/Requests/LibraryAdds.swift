@@ -1,4 +1,5 @@
 import Foundation
+import LidarrKit
 import MagpieCore
 
 /// Round 15 C3 (owner item 6, D135, D136): what happens after Try or Add to library, and what a row says.
@@ -6,6 +7,21 @@ import MagpieCore
 /// Add to library on a find (an artist on trial) is kept on arrival through the existing Keep (D52: intent → PUT →
 /// verify → commit, the gate's rules); a new artist goes straight into the main library, and a library artist's release
 /// is monitored and searched there, so neither needs anything more.
+/// Round 15 C3 (review I5): a library trial's songs are only those whose files are that album's Lidarr track files,
+/// matched path to path (through the Finds mapping when there is one): never a whole Navidrome album by name (it may
+/// group the owner's own release with it). A file with no single matching song is counted, and left alone.
+public enum TrialSongs {
+    public static func match(files: [TrackFile], candidates: [(song: Song, lidarrPath: String)]) -> (ids: Set<String>, unmatched: Int) {
+        var ids = Set<String>()
+        var unmatched = 0
+        for file in files {
+            let hits = Set(candidates.filter { WriteConfinement.looselySame($0.lidarrPath, file.path) }.map(\.song.id))
+            if hits.count == 1, let id = hits.first { ids.insert(id) } else { unmatched += 1 }
+        }
+        return (ids, unmatched)
+    }
+}
+
 public enum LibraryAdds {
     public enum Step: Equatable, Sendable {
         /// Nothing to do now (on its way, kept already, a Keep under way, or one that can't be asked again from here).

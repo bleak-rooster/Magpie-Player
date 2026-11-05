@@ -43,32 +43,33 @@ extension RequestRunner {
         return albums.first { $0.id == albumId }?.foreignAlbumId == entry.rgMbid
     }
 
-    /// Reject: the album's track files (all of them, that album only), then the album unmonitored.
+    /// Reject (review I6): the album unmonitored first (reversible; when it fails nothing is deleted, so the release can't
+    /// come back by itself), then its track files (all of them, that album only).
     public func rejectTrial(_ id: RequestID) async throws {
         guard !stopped, await load() else { throw TrialError.unavailable }
         guard let r = request(id), r.isLibraryTrial, let albumId = r.albumId else { throw TrialError.notATrial }
         guard await gate.enabled else { throw TrialError.changesOff }
+        // Proven on fresh state before anything is sent (an open trial, the album still that release).
+        guard await trialRejectable(id) else { throw TrialError.refused }
+        do {
+            _ = try await gate.send("PUT", "album/monitor", body: TrialMonitorBody(albumIds: [albumId], monitored: false))
+        } catch WriteGateError.disabled {
+            throw TrialError.changesOff
+        } catch is WriteGateError {
+            throw TrialError.refused
+        } catch {
+            throw TrialError.unavailable
+        }
         let files: [TrackFile]
-        do { files = try await lidarr.trackFiles(albumId: albumId) } catch { throw TrialError.unavailable }
+        do { files = try await lidarr.trackFiles(albumId: albumId) } catch { throw TrialError.needsAttention }
         if !files.isEmpty {
             do {
                 let ids = files.map(\.id)
                 _ = try await gate.send("DELETE", "trackfile/bulk", body: TrackFileIdsBody(trackFileIds: ids), confinedAs: .trialDelete)
-            } catch WriteGateError.disabled {
-                throw TrialError.changesOff
-            } catch is WriteGateError {
-                throw TrialError.refused
             } catch {
-                throw TrialError.unavailable
+                // Unmonitored, files kept: it needs a look (Reject can be asked again; the gate proves it again).
+                throw TrialError.needsAttention
             }
-        }
-        do {
-            _ = try await gate.send("PUT", "album/monitor", body: TrialMonitorBody(albumIds: [albumId], monitored: false))
-        } catch {
-            let at = now()
-            try? await ledger.update(albumId: albumId) { $0.trialRejectedAt = at }
-            await mutate(id) { $0.trialRejected = true }
-            throw TrialError.needsAttention
         }
         let at = now()
         try? await ledger.update(albumId: albumId) {

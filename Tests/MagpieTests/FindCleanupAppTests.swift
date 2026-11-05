@@ -34,6 +34,9 @@ final class PlaylistsNavidrome: @unchecked Sendable {
         "pl-clean": List(name: "Clean", owner: "admin", songs: ["m-x"]),
     ]
     private(set) var updates: [URLRequest] = []
+    /// Playlists whose read fails (a clean-up of them stays unfinished).
+    var broken: Set<String> = []
+    private(set) var reads = 0
 
     func list(_ id: String) -> [String] { lock.withLock { lists[id]?.songs ?? [] } }
     func set(_ id: String, _ change: (inout List) -> Void) { lock.withLock { if var l = lists[id] { change(&l); lists[id] = l } } }
@@ -55,6 +58,8 @@ final class PlaylistsNavidrome: @unchecked Sendable {
         }
         t.stub(pathSuffix: "/rest/getPlaylist") { r in
             let id = value(r, "id") ?? ""
+            let failing = self.lock.withLock { () -> Bool in self.reads += 1; return self.broken.contains(id) }
+            if failing { return .init(status: 500) }
             guard let l = self.lock.withLock({ self.lists[id] }) else { return .init(status: 404) }
             let entries = l.songs.map(self.entry).joined(separator: ",")
             return .init(status: 200, body: ok(#""playlist":{"id":"\#(id)","name":"\#(l.name)","owner":"\#(l.owner)","readonly":\#(l.owner == "admin" ? "false" : "true"),"songCount":\#(l.songs.count + l.hidden),"entry":[\#(entries)]}"#))
@@ -209,6 +214,21 @@ final class PlaylistsNavidrome: @unchecked Sendable {
         let message = await model.cleanUpAfterLetGo(requestId: RequestID(), title: "Harbour Lights", songIds: ["f9"])
         #expect(message == nil && nav.updates.isEmpty)
         #expect(model.letGo.history.first?.playlists == [])
+    }
+
+    /// Review M4: an unfinished clean-up is retried with a back-off (1, 5, then 15 minutes), not on every poll.
+    @Test func anUnfinishedCleanupBacksOff() async throws {
+        let model = try await model()
+        defer { model.signOut() }
+        nav.broken = ["pl-chill"]
+        _ = await model.cleanUpAfterLetGo(requestId: RequestID(), title: "Harbour Lights", songIds: ["f2"])
+        #expect(model.letGo.jobs.first?.finishedAt == nil, "unfinished: a playlist couldn't be read")
+        await model.resumeLetGoCleanups()
+        let reads = nav.reads
+        await model.resumeLetGoCleanups()
+        await model.resumeLetGoCleanups()
+        #expect(nav.reads == reads, "not again before its time")
+        #expect(AppModel.cleanupBackoff(0) == 60 && AppModel.cleanupBackoff(1) == 300 && AppModel.cleanupBackoff(5) == 900)
     }
 
     @Test func theWordsNeverNameAService() {

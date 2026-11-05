@@ -93,6 +93,7 @@ extension AppModel {
         requestStore = nil
         if let retired { Task { await retired.stop() } }
         songActions.requestsLoaded = false   // round 14 A3 (I1): not until the new runner publishes its list
+        singlesSwitcher = nil
         guard session != nil, let client = lidarrClient else {
             requests = []
             followPendingAdds(instance: nil)   // round 14 A3
@@ -105,9 +106,12 @@ extension AppModel {
         followFindCleanups(instance: scope)   // round 15 C3 (D138): a rejected find's playlist clean-ups
         let ledger = Ledger(fileURL: Ledger.defaultURL(in: dataDirectory), instance: scope)
         // FM1: the gate confines deletes and artist edits itself, from this ledger and the owner's setup.
+        // Round 15 C3 (D146): the singles switch's journal; the gate allows its writes only from it.
+        let singlesStore = SinglesSwitchStore(fileURL: SinglesSwitchStore.defaultURL(in: dataDirectory, instance: scope))
         let confinement = WriteConfinement(ledger: ledger, roots: { [weak self] in
             await self?.gateRoots ?? WriteConfinement.Roots(mainRoot: nil, findsRoot: nil, findTagId: nil)
-        }, liveRequests: { [weak self] in await self?.liveRequestIds() })   // R17: queue deletes
+        }, liveRequests: { [weak self] in await self?.liveRequestIds() },   // R17: queue deletes
+           singlesOriginal: { await singlesStore.original(artistId: $0) })
         let gate = LidarrWriteGate(client: client, logURL: LidarrWriteGate.defaultLogURL(in: dataDirectory),
                                    defaultsSuite: gateDefaultsSuite, confinement: confinement)
         let requestStore = RequestStore(fileURL: RequestStore.defaultURL(in: dataDirectory, instance: scope))
@@ -129,6 +133,8 @@ extension AppModel {
             })
         self.gate = gate
         self.runner = runner
+        singlesSwitcher = SinglesSwitcher(lidarr: client, gate: gate, store: singlesStore)
+        Task { await self.resumeSinglesSwitches(force: true) }   // D146: an interrupted switch, finished or rolled back
         let stallLimit = stallLimit.seconds
         Task { await runner.setStallLimit(stallLimit) }   // R17
         runnerTasks.append(Task { [weak self] in
@@ -140,6 +146,8 @@ extension AppModel {
                 if !self.songActions.pending.isEmpty { Task { await self.evaluatePendingAdds() } }   // round 14 A3
                 if !self.letGo.jobs.isEmpty { Task { await self.resumeLetGoCleanups() } }   // round 15 C3 (D138)
                 if list.contains(where: \.addToLibrary) { Task { await self.evaluateLibraryAdds() } }   // round 15 C3 (D135)
+                if list.contains(where: \.isLibraryTrial) { Task { await self.refreshOpenTrials() } }   // D147 (M8)
+                Task { await self.resumeSinglesSwitches() }   // D146: at most once a minute
                 // I4: a request just started waiting: re-check the connection so a rejected key is named.
                 if !wasWaiting, self.hasUnavailableWait, !self.isOffline { Task { _ = await self.lidarrAudit() } }
             }

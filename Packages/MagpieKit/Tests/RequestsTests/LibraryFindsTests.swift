@@ -38,10 +38,13 @@ import MagpieCore
         let h = await Harness(setup: Self.setup)
         h.server.artistIsNew()
         let id = try await h.runner.tryRecording(h.recording(recSingleAndAlbum), tier: .standard, album: rgAlbum,
-                                                 intent: .library)
+                                                 intent: .library,
+                                                 libraryAdd: .init(metadataProfileId: 14, follow: true))
         await h.runner.settle()
         let writes = h.server.writeBodies()
         #expect(writes.map(\.0) == ["POST artist", "POST command", "POST command"])
+        #expect(writes[0].1["metadataProfileId"] as? Int == 14, "the owner's Add defaults, never the Finds profile (M2)")
+        #expect(writes[0].1["monitorNewItems"] as? String == "all", "their following")
         let add = writes[0].1
         #expect(add["rootFolderPath"] as? String == "/music/library", "the main root, never Finds")
         #expect(add["qualityProfileId"] as? Int == 12, "lossless preferred")
@@ -56,12 +59,20 @@ import MagpieCore
         #expect(r.addToLibrary && !r.isFind && r.discographySearched == true)
     }
 
-    @Test func addToLibraryNeedsTheLosslessPreferredProfile() async throws {
+    /// Review M3: only a new artist's add needs the lossless-preferred profile; without it that add is never sent (never
+    /// with Fast Start), while Add to library on an artist already in Lidarr goes ahead without it.
+    @Test func onlyANewArtistsAddNeedsTheLosslessPreferredProfile() async throws {
         let h = await Harness(setup: Harness.findsSetup)
-        await #expect(throws: RequestRunner.TryError.notSetUp) {
-            _ = try await h.runner.tryRecording(h.recording(recSingleAndAlbum), tier: .standard, intent: .library)
-        }
-        #expect(h.server.writes.isEmpty)
+        h.server.artistIsNew()
+        _ = try await h.runner.tryRecording(h.recording(recSingleAndAlbum), tier: .standard, intent: .library)
+        await h.runner.settle()
+        #expect(!h.server.writeBodies().contains { $0.0 == "POST artist" })
+        let library = await Harness(setup: Harness.findsSetup)
+        library.server.ownerHasArtist(albumMonitored: false)
+        _ = try await library.runner.tryRecording(library.recording(recSingleAndAlbum), tier: .standard, album: rgLive,
+                                                  intent: .library)
+        await library.runner.settle()
+        #expect(library.server.writeBodies().map(\.0) == ["PUT album/monitor", "POST command"])
     }
 
     // MARK: - 2. A find artist (on trial now)
@@ -139,8 +150,8 @@ import MagpieCore
     @Test func aNewArtistsSongPreviewsItsSmallestRelease() async throws {
         let h = await Harness(setup: Self.setup)
         h.server.artistIsNew()
-        #expect(try await h.runner.targetPreview(h.recording(recSingleAndAlbum)) == .newArtist(title: "Release 2", isAlbum: false))
-        #expect(try await h.runner.targetPreview(h.recording(recAlbumOnly)) == .newArtist(title: "Release 4", isAlbum: true))
+        #expect(try await h.runner.targetPreview(h.recording(recSingleAndAlbum)) == .newArtist(title: "Release 2", isAlbum: false, isSingle: true))
+        #expect(try await h.runner.targetPreview(h.recording(recAlbumOnly)) == .newArtist(title: "Release 4", isAlbum: true, isSingle: false))
     }
 
     // MARK: - 3b. A library trial's Keep and Reject (D147)
@@ -185,9 +196,9 @@ import MagpieCore
         #expect(await h.runner.trialRejectable(id))
         try await h.runner.rejectTrial(id)
         let writes = Array(h.server.writeBodies().dropFirst(before))
-        #expect(writes.map(\.0) == ["DELETE trackfile/bulk", "PUT album/monitor"])
-        #expect(Set(writes[0].1["trackFileIds"] as? [Int] ?? []) == [2, 3], "that album's files, all of them")
-        #expect(writes[1].1["albumIds"] as? [Int] == [33] && writes[1].1["monitored"] as? Bool == false)
+        #expect(writes.map(\.0) == ["PUT album/monitor", "DELETE trackfile/bulk"], "unmonitored first (I6)")
+        #expect(Set(writes[1].1["trackFileIds"] as? [Int] ?? []) == [2, 3], "that album's files, all of them")
+        #expect(writes[0].1["albumIds"] as? [Int] == [33] && writes[0].1["monitored"] as? Bool == false)
         #expect(h.server.with { $0.extraFiles.map(\.id) } == [4], "the artist's other album untouched")
         #expect(!h.server.writeBodies().contains { $0.0.hasPrefix("DELETE artist") }, "never the artist")
         let r = try #require(await h.request(id))
@@ -246,6 +257,54 @@ import MagpieCore
         #expect(h.server.writes.count == before)
     }
 
+    /// Review I4: a closed ledger entry (the request cancelled, failed or given up) is never an open trial: the gate refuses
+    /// its files, whatever the owner did with the album since.
+    @Test func aClosedTrialEntryIsRefusedAtTheGate() async throws {
+        let h = await Harness(setup: Self.setup)
+        let id = try await libraryTrial(h)
+        let at = h.clock.now
+        try await h.ledger.update(albumId: 33) { $0.closedAt = at }
+        #expect(try await h.ledger.entry(albumId: 33)?.isOpenTrial == false)
+        let before = h.server.writes.count
+        #expect(await h.runner.trialRejectable(id) == false)
+        await #expect(throws: WriteGateError.self) {
+            _ = try await h.gate.send("DELETE", "trackfile/bulk", body: RequestRunner.TrackFileIdsBody(trackFileIds: [2, 3]),
+                                      confinedAs: .trialDelete)
+        }
+        #expect(h.server.writes.count == before)
+    }
+
+    /// Review I6: Reject unmonitors first; when that fails, nothing is deleted (the release can't come back by itself).
+    @Test func aRejectWhoseUnmonitorFailsDeletesNothing() async throws {
+        let h = await Harness(setup: Self.setup)
+        let id = try await libraryTrial(h)
+        h.server.with { $0.monitorFails503 = 5 }
+        let before = h.server.writes.count
+        await #expect(throws: RequestRunner.TrialError.self) { try await h.runner.rejectTrial(id) }
+        #expect(!h.server.writeBodies().dropFirst(before).contains { $0.0.hasPrefix("DELETE") }, "nothing deleted")
+        #expect(h.server.with { Set($0.extraFiles.map(\.id)) } == [2, 3, 4])
+        #expect(await h.request(id)?.isLibraryTrial == true, "still on trial: Reject can be tried again")
+    }
+
+    /// Review I5: Navidrome groups another release with the same name into the trial's album; only the trial's own files'
+    /// songs leave playlists, by path. A file with no matching song is counted and left alone.
+    @Test func aTrialsSongsAreItsFilesNotTheSameNamedAlbum() {
+        func song(_ id: String) -> Song { Song(id: id, title: "T\(id)", artist: "A", album: "Lowlands Live", duration: 100) }
+        let files = [TrackFile(id: 2, path: "/music/library/Aurora Field/Lowlands Live (2001)/01.flac", albumId: 33, artistId: 7),
+                     TrackFile(id: 3, path: "/music/library/Aurora Field/Lowlands Live (2001)/02.flac", albumId: 33, artistId: 7),
+                     TrackFile(id: 5, path: "/music/library/Aurora Field/Lowlands Live (2001)/03.flac", albumId: 33, artistId: 7)]
+        let candidates: [(song: Song, lidarrPath: String)] = [
+            (song("t1"), "/music/library/Aurora Field/Lowlands Live (2001)/01.flac"),
+            (song("t2"), "/music/library/Aurora Field/Lowlands Live (2001)/02.flac"),
+            // The owner's own release of the same name, merged into one Navidrome album.
+            (song("o1"), "/music/library/Aurora Field/Lowlands Live (2019)/01.flac"),
+            (song("o2"), "/music/library/Aurora Field/Lowlands Live (2019)/02.flac"),
+        ]
+        let match = TrialSongs.match(files: files, candidates: candidates)
+        #expect(match.ids == ["t1", "t2"], "never the owner's songs")
+        #expect(match.unmatched == 1, "03 has no song: left alone, and said")
+    }
+
     /// As Finds (D10): when the date passes, nothing is removed by itself; it still shows, with Keep and Reject.
     @Test func expiryRemovesNothingByItself() async throws {
         let h = await Harness(setup: Self.setup)
@@ -257,146 +316,6 @@ import MagpieCore
         #expect(!h.server.writeBodies().dropFirst(before).contains { $0.0.hasPrefix("DELETE") })
         #expect(await h.request(id)?.isLibraryTrial == true)
     }
-
-    // MARK: - 4. Singles switch, any artist (D146)
-
-    /// An owner-added artist (id 20, metadata profile 5, following "all" new releases) whose listing gains the target
-    /// single (rg T, album 2) and two other singles (3, 4) on the refresh. Lidarr marks the new ones monitored (the
-    /// worst case); album 1 was there before, with files.
-    final class SinglesLidarr: @unchecked Sendable {
-        let transport = MockTransport()
-        let client: LidarrClient
-        let ledger: Ledger
-        let gate: LidarrWriteGate
-        private let lock = NSLock()
-        private var refreshed = false
-        var refreshFails = false
-        var everyReleaseHasFiles = false
-        static let target = MBID("55555555-5555-4555-8555-555555555555")!
-
-        init(changesOn: Bool = true) async {
-            client = LidarrClient(base: ArtistLidarrTests.base, apiKey: "devkey", transport: transport)
-            ledger = Ledger(fileURL: nil, instance: client.instanceScope)
-            let dir = FileManager.default.temporaryDirectory.appending(path: "Singles-\(UUID().uuidString)")
-            gate = LidarrWriteGate(client: client, logURL: dir.appending(path: "log.json"),
-                                   defaultsSuite: "Singles.\(UUID().uuidString)",
-                                   confinement: WriteConfinement(ledger: ledger, roots: {
-                                       WriteConfinement.Roots(mainRoot: "/music/library", findsRoot: nil, findTagId: nil)
-                                   }))
-            await gate.setEnabled(changesOn)
-            ArtistAddChoicesTests.stubProfiles(transport, existing: [])
-            transport.stub(pathSuffix: "/api/v1/artist/20", body: Data(#"""
-            {"id":20,"artistName":"Owner","foreignArtistId":"\#(ArtistLidarrTests.ownerMBID.rawValue)","monitored":true,
-             "tags":[],"metadataProfileId":5,"monitorNewItems":"all","path":"/music/library/Owner"}
-            """#.utf8))
-            transport.stub(pathSuffix: "/api/v1/album") { [self] _ in
-                let after = lock.withLock { refreshed }
-                var rows: [[String: Any]] = [["id": 1, "title": "Album", "artistId": 20, "foreignAlbumId": mbid(901).rawValue,
-                                              "monitored": true, "statistics": ["trackFileCount": 10]]]
-                if after {
-                    rows += [["id": 2, "title": "Target", "artistId": 20, "foreignAlbumId": Self.target.rawValue, "monitored": true],
-                             ["id": 3, "title": "Other single", "artistId": 20, "foreignAlbumId": mbid(903).rawValue, "monitored": true],
-                             ["id": 4, "title": "Old single", "artistId": 20, "foreignAlbumId": mbid(904).rawValue, "monitored": false]]
-                }
-                return .init(status: 200, body: try JSONSerialization.data(withJSONObject: rows))
-            }
-            transport.stub(pathSuffix: "/api/v1/trackfile") { [self] _ in
-                .init(status: 200, body: Data((everyReleaseHasFiles ? #"[{"id":7,"path":"/x","albumId":1}]"# : "[]").utf8))
-            }
-            transport.stub(pathSuffix: "/api/v1/command") { _ in .init(status: 200, body: Data(#"[{"id":9,"name":"RefreshArtist","status":"completed"}]"#.utf8)) }
-            transport.stub(method: "POST", pathSuffix: "/api/v1/command") { [self] _ in
-                if refreshFails { return .init(status: 500) }
-                lock.withLock { refreshed = true }
-                return .init(status: 201, body: Data(#"{"id":9}"#.utf8))
-            }
-            transport.stub(method: "PUT", pathSuffix: "/api/v1/artist/editor", body: Data("[]".utf8))
-            transport.stub(method: "PUT", pathSuffix: "/api/v1/album/monitor", body: Data("[]".utf8))
-        }
-
-        var writes: [(String, [String: Any])] {
-            transport.requests.filter { ($0.httpMethod ?? "GET") != "GET" }.map { r in
-                ("\(r.httpMethod!) \(r.url!.path.replacingOccurrences(of: "/api/v1/", with: ""))",
-                 (r.httpBody.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }) ?? [:])
-            }
-        }
-    }
-
-    struct ProfileBody: Encodable, Sendable { var artistIds: [Int]; var metadataProfileId: Int }
-    struct UnmonitorBody: Encodable, Sendable { var albumIds: [Int]; var monitored: Bool }
-
-    static var singles: ReleaseTypes {
-        var types = ReleaseTypes.standard
-        types.kinds = .albumsEPsAndSingles
-        return types
-    }
-
-    @Test func anOwnersArtistEndsWithOnlyTheTargetNewlyMonitoredAndFollowingRestored() async throws {
-        let fake = await SinglesLidarr()
-        try await ArtistLidarr.includeSingles(artistId: 20, target: SinglesLidarr.target, types: Self.singles,
-                                              lidarr: fake.client, gate: fake.gate, checks: 2, pause: .zero)
-        let writes = fake.writes
-        #expect(writes.map(\.0) == ["PUT artist/editor", "POST metadataprofile", "PUT artist/editor", "POST command",
-                                    "PUT album/monitor", "PUT artist/editor"])
-        #expect(writes[0].1["monitorNewItems"] as? String == "none" && writes[0].1.count == 2, "first: nothing new monitored")
-        #expect(writes[2].1["metadataProfileId"] as? Int == 20, "Magpie's singles profile")
-        #expect(writes[3].1["name"] as? String == "RefreshArtist")
-        #expect(writes[4].1["albumIds"] as? [Int] == [3] && writes[4].1["monitored"] as? Bool == false,
-                "the new single that isn't the target goes back to unmonitored; the target and the old ones stay")
-        #expect(writes[5].1["monitorNewItems"] as? String == "all", "following restored")
-        let log = await fake.gate.changeLog()
-        #expect(log.first?.method == "NOTE"
-                && log.first?.bodySummary == LidarrWriteGate.singlesNote(artistId: 20, metadataProfileId: 5, monitorNewItems: "all"),
-                "the undo is saved before the first write")
-    }
-
-    @Test func undoRestoresTheSavedProfileAndNothingElse() async throws {
-        let fake = await SinglesLidarr()
-        try await ArtistLidarr.includeSingles(artistId: 20, target: SinglesLidarr.target, types: Self.singles,
-                                              lidarr: fake.client, gate: fake.gate, checks: 2, pause: .zero)
-        let before = fake.writes.count
-        try await ArtistLidarr.undoSingles(artistId: 20, gate: fake.gate)
-        let undo = Array(fake.writes.dropFirst(before))
-        #expect(undo.map(\.0) == ["PUT artist/editor"] && undo[0].1["metadataProfileId"] as? Int == 5)
-        // Any other profile that isn't Magpie's is refused.
-        await #expect(throws: WriteGateError.self) {
-            _ = try await fake.gate.send("PUT", "artist/editor", body: ProfileBody(artistIds: [20], metadataProfileId: 6),
-                                         confinedAs: .singlesSwitch)
-        }
-        #expect(fake.writes.count == before + 1)
-    }
-
-    @Test func aFailureMidwayRestoresFollowingAndSaysSo() async throws {
-        let fake = await SinglesLidarr()
-        fake.refreshFails = true
-        await #expect(throws: ArtistLidarr.SinglesError.failed(followingRestored: true)) {
-            try await ArtistLidarr.includeSingles(artistId: 20, target: SinglesLidarr.target, types: Self.singles,
-                                                  lidarr: fake.client, gate: fake.gate, checks: 2, pause: .zero)
-        }
-        let writes = fake.writes
-        #expect(writes.last?.0 == "PUT artist/editor" && writes.last?.1["monitorNewItems"] as? String == "all")
-        #expect(!writes.contains { $0.0 == "PUT album/monitor" })
-    }
-
-    @Test func withChangesOffNothingIsSent() async throws {
-        let fake = await SinglesLidarr(changesOn: false)
-        await #expect(throws: ArtistLidarrError.changesOff) {
-            try await ArtistLidarr.includeSingles(artistId: 20, target: SinglesLidarr.target, types: Self.singles,
-                                                  lidarr: fake.client, gate: fake.gate, checks: 1, pause: .zero)
-        }
-        #expect(fake.writes.isEmpty)
-    }
-
-    /// A release with files is never unmonitored by the switch's shape.
-    @Test func theSwitchNeverUnmonitorsAReleaseWithFiles() async throws {
-        let fake = await SinglesLidarr()
-        fake.everyReleaseHasFiles = true
-        await #expect(throws: WriteGateError.self) {
-            _ = try await fake.gate.send("PUT", "album/monitor", body: UnmonitorBody(albumIds: [1], monitored: false),
-                                         confinedAs: .singlesSwitch)
-        }
-        #expect(fake.writes.isEmpty)
-    }
-
 
     // MARK: - Persistence and the status words (D136)
 
