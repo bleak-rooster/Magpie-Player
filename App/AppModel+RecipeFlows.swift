@@ -25,6 +25,18 @@ extension AppModel {
 
     func recipeFlow(id: String) -> AurralFlow? { recipeFlows.first { $0.id == id } }
 
+    /// The recipe flow a Discover playlist is (its row then carries Edit flow and Delete flow).
+    func recipeFlow(playlistId: String) -> AurralFlow? {
+        discover.playlists.first { $0.playlist.id == playlistId }?.flow.nonEmpty.flatMap { recipeFlow(id: $0.id) }
+    }
+
+    /// Owner (2026-11-05): each flow shows once in Discover, as its playlist (with its picture). Only a flow whose
+    /// playlist the server hasn't published yet (just made, still getting its songs) has a row of its own.
+    var unpublishedRecipeFlows: [AurralFlow] {
+        let published = Set(discover.playlists.map(\.flow.id))
+        return recipeFlows.filter { !published.contains($0.id) }
+    }
+
     /// Owner (2026-11-05): a flow whose songs are still being fetched or downloaded in the background shows greyed out
     /// in Your flows, with its progress. Nil once its songs are in (or it is off).
     func recipeFlowDownload(_ flow: AurralFlow) -> RecipeFlowDownload? {

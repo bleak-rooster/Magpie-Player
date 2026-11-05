@@ -2,8 +2,9 @@ import AurralKit
 import DesignSystem
 import SwiftUI
 
-/// Round 16: Discover's Your flows: each of the user's recipe flows (its summary and when it updates), tap to edit,
-/// swipe to delete; New flow in the header. Only with accessFlow on a server with flows.
+/// Round 16: Discover's Your flows header (New flow) and a row for each recipe flow whose playlist isn't published yet
+/// (greyed while it gets its songs; tap to edit, swipe to delete). A published flow shows only as its playlist's row
+/// below (owner, 2026-11-05: never twice). Only with accessFlow on a server with flows.
 struct YourFlowsSection: View {
     @Environment(AppModel.self) private var model
     @State private var editing: RecipeFlowEditor.Target?
@@ -14,7 +15,7 @@ struct YourFlowsSection: View {
     var body: some View {
         if model.aurralCanManageFlows {
             Section {
-                ForEach(model.recipeFlows, id: \.id) { flow in
+                ForEach(model.unpublishedRecipeFlows, id: \.id) { flow in
                     Button { editing = .edit(flow) } label: { row(flow) }
                         .buttonStyle(.plain)
                         .accessibilityIdentifier("recipe-flow-\(flow.name)")

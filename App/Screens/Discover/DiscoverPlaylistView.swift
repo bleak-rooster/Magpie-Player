@@ -224,6 +224,9 @@ struct DiscoverPlaylistView: View {
 struct DiscoverListView: View {
     @Environment(AppModel.self) private var model
     @State private var playlists: Loadable<[Playlist]> = .loading
+    @State private var editingFlow: RecipeFlowEditor.Target?
+    @State private var deletingFlow: AurralFlow?
+    @State private var message: String?
     private let themed = Themed()
 
     var body: some View {
@@ -231,18 +234,40 @@ struct DiscoverListView: View {
             YourFlowsSection()   // round 16: the user's own recipe flows (New flow, Edit flow, Delete flow)
             LoadableView(state: playlists, retry: load) { playlists in
                 ForEach(playlists, id: \.id) { playlist in
+                    // Round 16 (owner): a recipe flow shows once, as this row: greyed while its songs download, with
+                    // Edit flow and Delete flow on a long press or swipe.
+                    let flow = model.aurralCanManageFlows ? model.recipeFlow(playlistId: playlist.id) : nil
+                    let download = flow.flatMap(model.recipeFlowDownload)
                     NavigationLink(value: Route.playlist(id: playlist.id)) {
                         HStack(spacing: Tokens.Spacing.m) {
                             Artwork(playlist.coverArtId, side: 56) { SleeveArt(image: $0, side: 56) }
                             VStack(alignment: .leading, spacing: 1) {
                                 Text(playlist.name).font(.body)
-                                Text(playlist.songCount == 1 ? "1 song" : "\(playlist.songCount) songs")
-                                    .font(.footnote).foregroundStyle(themed.palette.ink2Color)
+                                if let download {
+                                    Label(download.text, systemImage: "arrow.down.circle.dotted")
+                                        .font(.footnote).foregroundStyle(themed.palette.ink2Color)
+                                } else {
+                                    Text(playlist.songCount == 1 ? "1 song" : "\(playlist.songCount) songs")
+                                        .font(.footnote).foregroundStyle(themed.palette.ink2Color)
+                                }
                             }
                         }
+                        .opacity(download == nil ? 1 : 0.45)
                         .accessibilityElement(children: .combine)
                     }
                     .listRowBackground(Color.clear)
+                    .contextMenu {
+                        if let flow {
+                            Button(RecipeFlowCopy.editFlow, systemImage: "slider.horizontal.3") { editingFlow = .edit(flow) }
+                            Button(RecipeFlowCopy.deleteFlow, systemImage: "trash", role: .destructive) { deletingFlow = flow }
+                        }
+                    }
+                    .swipeActions {
+                        if let flow {
+                            Button(RecipeFlowCopy.deleteFlow, role: .destructive) { deletingFlow = flow }
+                            Button(RecipeFlowCopy.editFlow) { editingFlow = .edit(flow) }.tint(.accentColor)
+                        }
+                    }
                 }
             }
             .listRowSeparatorTint(themed.palette.sepColor)
@@ -268,7 +293,28 @@ struct DiscoverListView: View {
         .navigationTitle(DiscoverCopy.title)
         .navigationBarTitleDisplayMode(.inline)
         .magpieScreen()
+        .sheet(item: $editingFlow) { RecipeFlowEditor(target: $0) }
+        .confirmationDialog(RecipeFlowCopy.deleteQuestion, isPresented: Binding(get: { deletingFlow != nil },
+                                                                                set: { if !$0 { deletingFlow = nil } }),
+                            titleVisibility: .visible, presenting: deletingFlow) { flow in
+            Button(RecipeFlowCopy.deleteFlow, role: .destructive) {
+                Task {
+                    let gone = Set(model.discover.playlists.filter { $0.flow.id == flow.id }.map(\.playlist.id))
+                    do {
+                        try await model.deleteRecipeFlow(flow)
+                        if let list = playlists.value { playlists = .loaded(list.filter { !gone.contains($0.id) }) }
+                    } catch { message = DiscoverCopy.message(for: error) }
+                }
+            }
+        } message: { _ in
+            Text(RecipeFlowCopy.deleteNote)
+        }
+        .alert(message ?? "", isPresented: Binding(get: { message != nil }, set: { if !$0 { message = nil } })) {
+            Button("OK", role: .cancel) {}
+        }
         .task { await load() }
+        // Round 16: a flow's playlist joins (or leaves) as the server publishes it.
+        .onChange(of: model.discover.playlists.map(\.playlist.id)) { Task { await load() } }
     }
 
     private func load() async {
