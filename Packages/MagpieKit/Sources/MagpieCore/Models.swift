@@ -96,14 +96,24 @@ public struct Album: Sendable, Hashable, Codable {
     public var starred: Bool
     /// When the server first listed it (Subsonic `created`), when it says. Round 13: the car's Newest, after the year.
     public var created: Date?
+    /// The user's plays of it, when the server says (round 15 C4: a genre page's Most played, sorted on the phone).
+    public var playCount: Int?
+    /// The original release's year, when the server says (round 15 C4 fix round, D142): Navidrome orders "by year" by the
+    /// original date first.
+    public var originalYear: Int?
+
+    /// The year Navidrome's year order uses: the original release's, else the album's own.
+    public var sortYear: Int? { originalYear ?? year }
 
     public init(id: String, name: String, artist: String, artistId: String? = nil, year: Int? = nil,
                 songCount: Int, duration: TimeInterval, coverArtId: String? = nil,
-                releaseGroupMBID: MBID? = nil, songs: [Song]? = nil, starred: Bool = false, created: Date? = nil) {
+                releaseGroupMBID: MBID? = nil, songs: [Song]? = nil, starred: Bool = false, created: Date? = nil,
+                playCount: Int? = nil, originalYear: Int? = nil) {
         self.id = id; self.name = name; self.artist = artist; self.artistId = artistId
         self.year = year; self.songCount = songCount; self.duration = duration
         self.coverArtId = coverArtId; self.releaseGroupMBID = releaseGroupMBID; self.songs = songs
-        self.starred = starred; self.created = created
+        self.starred = starred; self.created = created; self.playCount = playCount
+        self.originalYear = originalYear
     }
 }
 

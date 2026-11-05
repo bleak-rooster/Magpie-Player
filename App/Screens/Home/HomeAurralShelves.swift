@@ -19,6 +19,10 @@ struct HomeOutsideItem: Identifiable, Hashable, Sendable {
     var group: String?
 
     var id: String { "\(kind.rawValue)-\(key)" }
+
+    /// An artist tile's MBID: its key when the recommendation had one (else the key is `RecommendedRails.key`'s
+    /// "name:…", which is never an MBID); nil for any other tile.
+    var artistMBID: MBID? { kind == .artist ? MBID(key) : nil }
 }
 
 /// Round 14 A6 (D109): where Home's provided sections come from. Home never talks to Aurral itself: round 14 A4

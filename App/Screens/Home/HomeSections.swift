@@ -170,18 +170,23 @@ struct OutsideTile: View {
                 tile
             }
         }
-        .task(id: item.artworkKey) {
-            image = item.artworkKey == nil ? nil
-                : await model.homeAurralShelves.artwork(for: item, side: HomeShelfLayout.width(size))
+        // Round 15 C4 (D140): an artist tile without a picture from the server falls back like Library › Recommended's
+        // circles (the phone's copy, then the artist page's picture).
+        .task(id: "\(item.id)|\(item.artworkKey ?? "")") {
+            image = nil
+            await model.homeTilePicture(item, side: HomeShelfLayout.width(size)) { image = $0 }
         }
     }
 
     @ViewBuilder private var tile: some View {
-        let artwork = image.map { Image(uiImage: $0) }
+        // Only memory while drawing; the phone's copy is read in the task.
+        let shown = image ?? item.artistMBID.flatMap { model.recommendedArt.peek(.artist($0)) }.map { UIImage(cgImage: $0) }
+        let artwork = shown.map { Image(uiImage: $0) }
         let width = HomeShelfLayout.width(size)
         switch item.kind {
         case .artist:
             ArtistCircle(title: item.title, subtitle: item.subtitle, artwork: artwork, width: width - 10)
+                .artworkTestMarker("home-artist-art-\(item.key)", loaded: artwork != nil)
         default:
             if size == .large {
                 LargeCard(title: item.title, subtitle: item.subtitle, artwork: artwork, width: width + 40)

@@ -1,4 +1,5 @@
 import Foundation
+import AurralKit
 import LidarrKit
 import ListenBrainzKit
 import Requests
@@ -65,6 +66,7 @@ extension AppModel {
         if let disk = outsideArtDiskSlot { return disk }
         let disk = OutsideArtDiskCache(directory: OutsideArtDiskCache.directory(root: dataDirectory))
         outsideArtDiskSlot = disk
+        ArtworkTestMarker.seedArtistPicture(into: disk)   // UI tests only (round 15 C4)
         return disk
     }
 
@@ -85,6 +87,34 @@ extension AppModel {
     func prefetchArtistPictures(_ artists: [MBID], priority: OutsideArtPriority = .visible) async {
         guard !isOffline, session != nil, lidarr != nil else { return }
         await recommendedArt.prefetch(artists.map(OutsideArtKey.artist), priority: priority)
+    }
+
+    /// A recommended artist's circle (Library › Recommended through `AurralArt`, Home's recommended rails): the copy on
+    /// the phone first, then the picture the server named (through Aurral's image proxy), then the one the artist page
+    /// shows (`recommendedArt`, Lidarr's lookup). `show` gets each better picture as it comes; nothing, the placeholder.
+    func recommendedArtistPicture(_ image: AurralImage?, artist: MBID?, side: CGFloat,
+                                  show: (UIImage) -> Void) async {
+        var shown = false
+        if let artist, let onPhone = await recommendedArt.cached(.artist(artist)) {
+            show(UIImage(cgImage: onPhone))
+            shown = true
+        }
+        if let found = await aurralArtwork(image, side: side) { show(found); return }
+        guard !shown, let artist, !isOffline, !Task.isCancelled else { return }
+        if let found = await recommendedArt.image(.artist(artist)) { show(UIImage(cgImage: found)) }
+    }
+
+    /// A provided Home tile's picture (`OutsideTile`). Round 15 C4 (D140): an artist tile (every recommended rail) falls
+    /// back like Library › Recommended's circles (`recommendedArtistPicture`): Aurral rarely names a picture for a
+    /// recommendation, and the tile used to ask only when it did. Any other tile shows the picture its provider names.
+    func homeTilePicture(_ item: HomeOutsideItem, side: CGFloat, show: (UIImage) -> Void) async {
+        if item.kind == .artist {
+            await recommendedArtistPicture(item.artworkKey.flatMap(AurralImage.init), artist: item.artistMBID, side: side,
+                                           show: show)
+            return
+        }
+        guard item.artworkKey != nil, let found = await homeAurralShelves.artwork(for: item, side: side) else { return }
+        show(found)
     }
 
     /// Sign-out: the pictures go with the account.

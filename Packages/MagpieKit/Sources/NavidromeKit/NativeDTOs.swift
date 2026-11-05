@@ -72,6 +72,33 @@ public struct MusicFolder: Sendable, Equatable, Hashable, Codable, Identifiable 
     public init(id: Int, name: String) { self.id = id; self.name = name }
 }
 
+/// One row of `/api/album` (round 15 C4; field names verified against Navidrome 0.64.2).
+struct NativeAlbum: Decodable {
+    let id: String
+    let name: String?
+    let albumArtist: String?
+    let albumArtistId: String?
+    let maxYear: Int?
+    let songCount: Int?
+    let duration: Double?
+    let playCount: Int?
+    let starred: Bool?
+    /// The cover's version: getAlbumList2's `coverArt` is `al-<id>_<imageHash>`.
+    let imageHash: String?
+    let compilation: Bool?
+    let mbzReleaseGroupId: String?
+    let createdAt: String?
+    let missing: Bool?
+    /// "1975-06-01", "1975" or empty: Navidrome's year order uses it first (review I1).
+    let originalDate: String?
+}
+
+/// One row of `/api/genre`.
+struct NativeGenre: Decodable {
+    let id: String
+    let name: String?
+}
+
 /// One row of `/api/artist` (every role: album artists and track-only artists).
 struct NativeArtist: Decodable {
     let id: String

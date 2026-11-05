@@ -3,9 +3,10 @@ import MagpieCore
 import Search
 import SwiftUI
 
-/// A group's page (spec §4, Task 19): its albums, merged from every genre in it, and Shuffle. A group mixes many genres,
+/// A group's page (spec §4, Task 19): its albums, from every genre in it, and Shuffle. A group mixes many genres,
 /// so it offers Shuffle only (D41); its songs (at most `AppModel.groupSongCap`, taken from each genre in turn) are
-/// fetched when Shuffle is tapped.
+/// fetched when Shuffle is tapped. Round 15 C4 (D141–D145): the albums are sorted and filtered (sort, sub-genres,
+/// decade, album or artist, Favourites, Downloaded) and read a page at a time.
 struct GenreGroupView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.magpieTheme) private var theme
@@ -13,11 +14,12 @@ struct GenreGroupView: View {
     @State private var page: Loadable<Page> = .loading
     @State private var shuffling = false
     @State private var shuffleError: String?
+    @State private var browser = GenreAlbumBrowser(kind: .group)
+    @State private var text = ""
     private let themed = Themed()
 
     struct Page {
         let group: AppModel.GenreGroupPage
-        let albums: [Album]
         var section: GenreGroupSection { group.section }
     }
 
@@ -29,8 +31,10 @@ struct GenreGroupView: View {
         }
         .navigationTitle(page.value?.section.group.name ?? "")
         .navigationBarTitleDisplayMode(.inline)
+        .searchable(text: $text, prompt: "Album or artist")
         .magpieScreen()
         .task(id: model.offlinePageKey) { await load() }
+        .task(id: text) { await browser.setText(text) }
     }
 
     private func content(_ page: Page) -> some View {
@@ -56,12 +60,8 @@ struct GenreGroupView: View {
                     .padding(.horizontal, Tokens.Spacing.largeTitleMargin)
             }
 
-            if page.albums.isEmpty {
-                Text(model.isOffline ? OfflineCopy.notOnPhone : "No albums in this group.")
-                    .font(.footnote).foregroundStyle(p.ink2Color)
-            } else {
-                AlbumGrid(albums: page.albums) { $0.artist }
-            }
+            GenreAlbumControls(browser: browser)
+            GenreAlbumList(browser: browser, emptyText: "No albums in this group.")
         }
         .padding(.vertical, Tokens.Spacing.l)
         .foregroundStyle(p.inkColor)
@@ -74,7 +74,8 @@ struct GenreGroupView: View {
                 page = .failed("This group has no genres now.")
                 return
             }
-            page = .loaded(Page(group: group, albums: try await model.groupAlbums(in: group.genres)))
+            page = .loaded(Page(group: group))
+            await browser.start(model: model, genres: group.genres)
         } catch {
             if page.value == nil { page = .failed(BrowseErrorCopy.message(for: error)) }
         }

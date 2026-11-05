@@ -568,6 +568,64 @@ extension OutsideArtAppTests {
     }
 }
 
+// MARK: - Round 15 C4 (D140): Home's recommended circles fall back like Library › Recommended's
+
+extension OutsideArtAppTests {
+    private func stubLidarrArtistPictures() {
+        transport.inner.stub(pathSuffix: "/api/v1/artist/lookup") { request in
+            let term = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?
+                .first { $0.name == "term" }?.value ?? ""
+            let mbid = term.replacingOccurrences(of: "lidarr:", with: "")
+            return .init(status: 200, body: Data(#"""
+            [{"artistName":"A","foreignArtistId":"\#(mbid)","images":[{"coverType":"poster","remoteUrl":"https://images.lidarr.audio/cache/\#(mbid).jpg"}]}]
+            """#.utf8))
+        }
+    }
+
+    private func homePicture(_ model: AppModel, _ item: HomeOutsideItem) async -> [UIImage] {
+        var shown: [UIImage] = []
+        await model.homeTilePicture(item, side: 110) { shown.append($0) }
+        return shown
+    }
+
+    /// Owner (build 15): Home › Recommended's circles had no pictures while Library › Recommended's had them. An Aurral
+    /// recommendation rarely names a picture, and the tile asked only when it did. Now it shows the artist page's picture.
+    @Test func c4HomeRecommendedCircleWithoutAServerPictureShowsTheArtistPagesPicture() async throws {
+        let model = try await signedIn()
+        try await withLidarr(model)
+        stubLidarrArtistPictures()
+        let item = HomeOutsideItem(kind: .artist, key: artistMBID.rawValue, title: "A", subtitle: nil, artworkKey: nil)
+        #expect(await homePicture(model, item).count == 1, "the artist page's picture")
+        #expect(outsideRequests == ["https://images.lidarr.audio/cache/\(artistMBID.rawValue).jpg"])
+        model.signOut()
+    }
+
+    /// The copy on the phone shows at once, without Lidarr and without asking anything.
+    @Test func c4HomeRecommendedCircleShowsThePhonesCopyFirst() async throws {
+        let model = try await signedIn()
+        model.outsideArtDisk.save(Self.png, for: .artist(artistMBID))
+        let item = HomeOutsideItem(kind: .artist, key: artistMBID.rawValue, title: "A", subtitle: nil, artworkKey: nil)
+        #expect(await homePicture(model, item).count == 1)
+        #expect(outside.requests.isEmpty)
+        model.signOut()
+    }
+
+    /// A recommendation without an MBID (its key is "name:…") is never looked up; only an artist tile's key is an artist.
+    @Test func c4HomeTileWithoutAnMBIDAsksNothing() async throws {
+        let model = try await signedIn()
+        try await withLidarr(model)
+        stubLidarrArtistPictures()
+        let before = transport.inner.requests.count
+        let named = HomeOutsideItem(kind: .artist, key: "name:no id band", title: "No Id Band", subtitle: nil, artworkKey: nil)
+        #expect(await homePicture(model, named).isEmpty)
+        let playlist = HomeOutsideItem(kind: .playlist, key: artistMBID.rawValue, title: "P", subtitle: nil, artworkKey: nil)
+        #expect(await homePicture(model, playlist).isEmpty)
+        #expect(!transport.inner.requests.dropFirst(before).contains { $0.url?.path.hasSuffix("/artist/lookup") == true })
+        #expect(outside.requests.isEmpty)
+        model.signOut()
+    }
+}
+
 /// Answers every picture after `delay`.
 private final class SlowOutside: HTTPTransport, @unchecked Sendable {
     let delay: Duration

@@ -604,6 +604,50 @@ public actor NavidromeClient {
         return artists
     }
 
+    /// Round 15 C4 (D141): albums `start..<end` of any of `genreIds`, in `query`'s order and narrowed by its text
+    /// (Navidrome's full-text `name` filter: album and artist) and Favourites only, via `/api/album` in the scoped
+    /// libraries; `end` is exclusive. Albums flagged `missing` are left out. Verified on the dev Navidrome 0.64.2:
+    /// repeated `genre_id` is "any of", the six sort keys, and `random` with a `seed` is the same order every page.
+    public func albumsPage(_ query: GenreAlbumQuery, genreIds: [String], start: Int, end: Int) async throws -> GenreAlbumPage {
+        let (sort, order): (String, String?) = switch query.sort {
+        case .name: ("name", "ASC")
+        case .artist: ("artist", "ASC")
+        case .newest: ("max_year", "DESC")
+        case .oldest: ("max_year", "ASC")
+        case .recentlyAdded: ("recently_added", "DESC")
+        case .mostPlayed: ("play_count", "DESC")
+        case .random: ("random", nil)
+        }
+        // `missing=false`: albums whose files are gone are left out by the server, so the count matches the rows.
+        var items = [int("_start", start), int("_end", end), URLQueryItem(name: "_sort", value: sort),
+                     URLQueryItem(name: "missing", value: "false")]
+        if let order { items.append(URLQueryItem(name: "_order", value: order)) }
+        if query.sort == .random { items.append(int("seed", query.seed)) }
+        items += genreIds.map { URLQueryItem(name: "genre_id", value: $0) }
+        if let text = query.text { items.append(URLQueryItem(name: "name", value: text)) }
+        if query.favouritesOnly { items.append(URLQueryItem(name: "starred", value: "true")) }
+        // Navidrome reads any value of it as `play_count > 0` (v0.63.2 `recentlyPlayedFilter`).
+        if query.playedOnly { items.append(URLQueryItem(name: "recently_played", value: "true")) }
+        let (data, response) = try await native("api/album", items + libraryItem)
+        let rows = try Self.decode([NativeAlbum].self, data)
+        // Without the header (a proxy dropped it), a full page means there may be more; a short one is the end.
+        let total = response.value(forHTTPHeaderField: "X-Total-Count").flatMap { Int($0) }
+            ?? (rows.count < end - start ? start + rows.count : end + 1)
+        return GenreAlbumPage(albums: rows.filter { $0.missing != true }.map(Mapping.album), total: total)
+    }
+
+    /// Round 15 C4: every genre's native id by name (`/api/genre`, at most 5,000), for `albumsPage`.
+    public func genreIds() async throws -> [String: String] {
+        let query = [int("_start", 0), int("_end", 5000), URLQueryItem(name: "_sort", value: "name"),
+                     URLQueryItem(name: "_order", value: "ASC")]
+        let (data, _) = try await native("api/genre", query)
+        var ids: [String: String] = [:]
+        for row in try Self.decode([NativeGenre].self, data) {
+            if let name = row.name, ids[name] == nil { ids[name] = row.id }
+        }
+        return ids
+    }
+
     /// The library folders and their paths as Navidrome sees them (`/api/library`; B6, G2). Some versions
     /// answer 403 to non-admin accounts (`NavidromeError.http(status: 403)`).
     public func libraries() async throws -> [NavidromeLibrary] {
