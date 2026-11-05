@@ -197,6 +197,13 @@ struct RequestsSettingsView: View {
 struct ChangeLogView: View {
     @Environment(AppModel.self) private var model
     @State private var entries: [ChangeLogEntry]?
+    @State private var undoMessage: String?
+
+    /// The artist of a singles-switch note (`LidarrWriteGate.singlesNote`).
+    static func singlesArtist(_ entry: ChangeLogEntry) -> Int? {
+        guard entry.method == "NOTE", entry.bodySummary.hasPrefix("singles switch: artist ") else { return nil }
+        return entry.bodySummary.dropFirst("singles switch: artist ".count).split(separator: " ").first.flatMap { Int($0) }
+    }
 
     var body: some View {
         List {
@@ -207,26 +214,46 @@ struct ChangeLogView: View {
                         .accessibilityIdentifier("change-log-empty")
                 }
                 ForEach(Array(entries.enumerated()), id: \.offset) { _, entry in
-                    VStack(alignment: .leading, spacing: 4) {
-                        HStack {
-                            Text(entry.method).font(.caption.monospaced().weight(.semibold))
-                            Text(entry.path).font(.caption.monospaced()).lineLimit(2)
-                        }
-                        Text(entry.date.formatted(date: .abbreviated, time: .standard)
-                             + " · " + (entry.status.map { "answered \($0)" } ?? "no answer"))
-                            .font(.caption2).foregroundStyle(.secondary)
-                        if !entry.bodySummary.isEmpty {
-                            Text(entry.bodySummary).font(.caption2.monospaced()).foregroundStyle(.secondary).lineLimit(4)
-                        }
+                    ChangeLogRow(entry: entry) { artistId in
+                        undoMessage = await model.undoSingles(artistId: artistId)
+                        self.entries = await model.changeLog()
                     }
-                    .accessibilityElement(children: .combine)
                 }
             } else {
                 ProgressView().frame(maxWidth: .infinity)
             }
         }
+        .alert(undoMessage ?? "", isPresented: Binding(get: { undoMessage != nil }, set: { if !$0 { undoMessage = nil } })) {
+            Button("OK", role: .cancel) {}
+        }
         .navigationTitle("Lidarr change log")
         .task { entries = await model.changeLog() }
         .refreshable { entries = await model.changeLog() }
+    }
+}
+
+/// One change-log line; a singles switch's saved line offers its undo (round 15 C3, D146: the profile back).
+private struct ChangeLogRow: View {
+    let entry: ChangeLogEntry
+    let undo: (Int) async -> Void
+
+    var body: some View {
+        let answered = entry.status.map { "answered \($0)" } ?? "no answer"
+        let when = entry.date.formatted(date: .abbreviated, time: .standard)
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(entry.method).font(.caption.monospaced().weight(.semibold))
+                Text(entry.path).font(.caption.monospaced()).lineLimit(2)
+            }
+            Text("\(when) \u{00B7} \(answered)").font(.caption2).foregroundStyle(.secondary)
+            if !entry.bodySummary.isEmpty {
+                Text(entry.bodySummary).font(.caption2.monospaced()).foregroundStyle(.secondary).lineLimit(4)
+            }
+            if let artistId = ChangeLogView.singlesArtist(entry) {
+                Button(LibraryFindsCopy.undo) { Task { await undo(artistId) } }
+                    .buttonStyle(.bordered)
+                    .accessibilityIdentifier("change-log-undo-singles")
+            }
+        }
     }
 }

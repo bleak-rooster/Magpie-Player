@@ -33,6 +33,16 @@ extension RequestRunner {
         await mutate(id) { $0.trialKept = true }
     }
 
+    /// Reads only: whether a Reject can go now (an open trial in the ledger, the album still that release). The app asks
+    /// before it takes the songs out of playlists, so nothing changes for a Reject that would be refused.
+    public func trialRejectable(_ id: RequestID) async -> Bool {
+        guard !stopped, await load(), let r = request(id), r.isLibraryTrial, let albumId = r.albumId,
+              let artistId = r.lidarrArtistId, await gate.enabled,
+              let entry = try? await ledger.entry(albumId: albumId), entry.isOpenTrial,
+              let albums = try? await lidarr.albums(artistId: artistId) else { return false }
+        return albums.first { $0.id == albumId }?.foreignAlbumId == entry.rgMbid
+    }
+
     /// Reject: the album's track files (all of them, that album only), then the album unmonitored.
     public func rejectTrial(_ id: RequestID) async throws {
         guard !stopped, await load() else { throw TrialError.unavailable }

@@ -161,6 +161,26 @@ extension AppModel {
 
     // MARK: - UI tests only
 
+    /// The Release UI check of library trials in Finds (round 15 C3, D147): with `-MagpieUITesting YES
+    /// -MagpieUITestLibraryTrial <song id>` that dev song is shown as a library trial (a request in memory only; nothing
+    /// is written anywhere). A production launch never passes these.
+    func seedUITestLibraryTrialIfAsked(_ defaults: UserDefaults = .standard) async {
+        guard defaults.string(forKey: "MagpieUITesting") == "YES",
+              let songId = defaults.string(forKey: "MagpieUITestLibraryTrial"), !songId.isEmpty,
+              !requests.contains(where: { $0.songId == songId }),
+              let song = try? await request({ try await $0.song(id: songId) }) else { return }
+        var r = MagpieRequest(recording: ExternalRecording(title: song.title, artist: song.artist, duration: song.duration,
+                                                           source: .lidarr), tier: .standard, createdAt: Date())
+        r.state = .ready
+        r.songId = song.id
+        r.askedAsTry = true
+        r.trialExpiresAt = Date().addingTimeInterval(TimeInterval(RequestRunner.trialDays) * 86_400)
+        r.albumId = 1
+        r.lidarrArtistId = 1
+        readySongs[r.id] = song
+        requests.append(r)
+    }
+
     /// The Release UI check of the clean-up (round 15 C3): with `-MagpieUITesting YES -MagpieUITestLetGo <song id>` the
     /// clean-up a Not for me runs is run for that song, as if its find had just been let go (the dev stack can't make a
     /// real find without the internet). A production launch never passes these.

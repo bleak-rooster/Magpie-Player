@@ -92,6 +92,46 @@ final class Round15LetGoUITests: XCTestCase {
         XCTAssertEqual(playlistSongs(s, playlistId), [a, b])
     }
 
+    /// Round 15 C3 (D147): a library-artist trial shows in Finds with its date, Keep and Not for me (Release). Seeded in
+    /// memory with `-MagpieUITestLibraryTrial <song id>` (UI tests only); nothing is tapped that would write.
+    @MainActor func testALibraryTrialShowsInFindsWithKeepAndReject() throws {
+        let s = try stack()
+        continueAfterFailure = false
+        let random = call(s, "getRandomSongs", [URLQueryItem(name: "size", value: "1")])?["randomSongs"] as? [String: Any]
+        let song = try XCTUnwrap((random?["song"] as? [[String: Any]])?.first)
+        let id = try XCTUnwrap(song["id"] as? String), title = try XCTUnwrap(song["title"] as? String)
+
+        let app = XCUIApplication()
+        app.launchArguments = ["-MagpieResetState", "YES", "-MagpieUITesting", "YES", "-MagpieNetwork", "wifi",
+                               "-MagpieUITestLibraryTrial", id]
+        app.launch()
+        let address = app.textFields["connect-address-0"]
+        XCTAssertTrue(address.waitForExistence(timeout: 10))
+        address.tap()
+        address.typeText(s.url)
+        app.textFields["connect-username"].tap()
+        app.textFields["connect-username"].typeText(s.user)
+        app.secureTextFields["connect-password"].tap()
+        app.secureTextFields["connect-password"].typeText(s.password)
+        app.buttons["connect-continue"].tap()
+        let notNow = app.buttons["Not Now"]
+        if notNow.waitForExistence(timeout: 5) {
+            for _ in 0..<3 where notNow.exists { notNow.tap(); _ = notNow.waitForNonExistence(timeout: 2) }
+        }
+        XCTAssertTrue(app.tabBars.buttons["Library"].waitForExistence(timeout: 20))
+        app.tabBars.buttons["Library"].tap()
+        let finds = app.buttons["library-finds"]
+        for _ in 0..<4 where !finds.isHittable { app.swipeUp() }
+        XCTAssertTrue(finds.waitForExistence(timeout: 15), "Finds shows for a library trial")
+        finds.tap()
+        let row = app.descendants(matching: .any).matching(identifier: "finds-trial-\(title)").firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 15), "the trial is listed")
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "On trial \u{00B7} until")).firstMatch.exists)
+        XCTAssertTrue(app.buttons["trial-keep"].firstMatch.exists, "Keep")
+        XCTAssertTrue(app.buttons["trial-reject"].firstMatch.exists, "Not for me")
+        attachScreenshot(app, "library-trial-in-finds")
+    }
+
     @MainActor private func attachScreenshot(_ app: XCUIApplication, _ name: String) {
         let shot = XCTAttachment(screenshot: app.screenshot())
         shot.name = name

@@ -266,7 +266,8 @@ extension AppModel {
 
     /// The phone's rows, or the car's (no Songs, no Requests): one rule for both (`visibleLibraryRows`).
     func libraryRows(carPlay: Bool) -> [LibraryRow] {
-        preferences.layout.visibleLibraryRows(offline: isOffline, findsSetUp: findsSetup?.library != nil,
+        // Round 15 C3 (D147): library trials show in Finds, so Finds shows with them even without a Finds folder.
+        preferences.layout.visibleLibraryRows(offline: isOffline, findsSetUp: findsSetup?.library != nil || !libraryTrials.isEmpty,
                                               lidarrConnected: lidarr != nil, carPlay: carPlay,
                                               discoverSetUp: aurralSetUp,   // Y6
                                               trendingSetUp: aurralFeeds?.can.trending ?? false,   // round 14 A4

@@ -7,8 +7,9 @@ extension RequestRunner {
     public enum TargetPreview: Sendable, Equatable {
         /// An artist in Lidarr: the smallest release its listing has that holds the song.
         case listed(title: String, isAlbum: Bool)
-        /// An artist in Lidarr whose listing has no release holding the song (singles not listed, D140).
-        case notListed(artistId: Int)
+        /// An artist in Lidarr whose listing has no release holding the song (singles not listed, D146): the single
+        /// (release group) the singles switch would list, when MusicBrainz names one.
+        case notListed(artistId: Int, single: MBID?)
         /// An artist not in Lidarr: the smallest release a new artist's add can monitor.
         case newArtist(title: String, isAlbum: Bool)
     }
@@ -21,7 +22,8 @@ extension RequestRunner {
             let albums = try await lidarr.albums(artistId: artist.id)
             guard let rg = ReleasePicker.smallest(containing: found, available: Set(albums.compactMap(\.foreignAlbumId))),
                   let album = albums.first(where: { $0.foreignAlbumId == rg }) else {
-                return .notListed(artistId: artist.id)
+                let singles = Set(found.releases.filter(Self.fitsFindsProfile).map(\.releaseGroup.id))
+                return .notListed(artistId: artist.id, single: ReleasePicker.smallest(containing: found, available: singles))
             }
             return .listed(title: album.title, isAlbum: (album.albumType ?? "Album").lowercased() == "album")
         }

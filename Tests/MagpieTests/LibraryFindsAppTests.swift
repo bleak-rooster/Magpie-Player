@@ -184,8 +184,11 @@ private let releaseMBID = MBID("b5cdfb5f-35a5-4bc5-bbca-57839a71813a")!
     @Test func theWordsNeverNameAService() {
         let words = [LibraryFindsCopy.tryIt, LibraryFindsCopy.tryNote, LibraryFindsCopy.addToLibrary, LibraryFindsCopy.addNote,
                      LibraryFindsCopy.addAlbumNote, LibraryFindsCopy.confirmTitle, LibraryFindsCopy.unmatchedAlbumTitle,
-                     LibraryFindsCopy.unmatchedAlbumMessage, LibraryFindsCopy.singlesTitle, LibraryFindsCopy.singlesMessage,
-                     LibraryFindsCopy.singlesNotMagpies, LibraryFindsCopy.singlesFollowing, LibraryFindsCopy.singlesFailed,
+                     LibraryFindsCopy.unmatchedAlbumMessage, LibraryFindsCopy.singlesTitle,
+                     LibraryFindsCopy.singlesMessage(artist: "A", song: "S"), LibraryFindsCopy.singlesFailed,
+                     LibraryFindsCopy.singlesFailedNeedsLook, LibraryFindsCopy.singlesUndone, LibraryFindsCopy.onTrialHeader,
+                     LibraryFindsCopy.kept, LibraryFindsCopy.rejected, LibraryFindsCopy.rejectMessage,
+                     LibraryFindsCopy.rejectRefused, LibraryFindsCopy.trialNeedsLook,
                      LibraryFindsCopy.comesWithAlbum("X"), LibraryFindsCopy.added("X"), LibraryFindsCopy.trying("X"),
                      LibraryFindsCopy.retry]
             + [LibraryAdds.Status.inLibrary, .onTrial, .coming(0.5), .coming(nil), .couldntBringIn].map { LibraryFindsCopy.status($0) }
@@ -193,5 +196,47 @@ private let releaseMBID = MBID("b5cdfb5f-35a5-4bc5-bbca-57839a71813a")!
             #expect(!w.isEmpty && !w.localizedCaseInsensitiveContains("aurral") && !w.localizedCaseInsensitiveContains("lidarr"), "\(w)")
         }
         #expect(LibraryFindsCopy.comesWithAlbum("Lowlands") == "This song comes with the album \u{201C}Lowlands\u{201D}.")
+        #expect(LibraryFindsCopy.singlesMessage(artist: "Low", song: "Words")
+                == "Singles will be listed for Low. Only \u{201C}Words\u{201D} downloads; nothing else changes.")
+    }
+
+    // MARK: - Library trials in Finds (D147)
+
+    private func libraryTrial() -> MagpieRequest {
+        var r = request(trial: true, find: false)
+        r.trialExpiresAt = Date().addingTimeInterval(14 * 86_400)
+        r.albumId = 33
+        return r
+    }
+
+    @Test func aLibraryTrialIsListedInFindsAndTheCarWithItsDate() async throws {
+        let model = try await model()
+        defer { model.signOut() }
+        #expect(model.libraryTrials.isEmpty && !model.libraryRows.contains(.finds), "no Finds folder, no trials: no Finds row")
+        let trial = libraryTrial()
+        model.requests = [trial, request(trial: true, find: false, state: .downloading(progress: 0.2))]
+        #expect(model.libraryTrials.map(\.id) == [trial.id], "only arrived ones")
+        #expect(model.libraryRows.contains(.finds), "Finds shows for its trials")
+        #expect(model.trialEnds(trial) == trial.trialExpiresAt)
+        #expect(model.carPlayFinds?.finds.map(\.song.title) == ["Harbour Lights"])
+        var kept = trial
+        kept.trialKept = true
+        model.requests = [kept]
+        #expect(model.libraryTrials.isEmpty, "kept: no longer on trial")
+    }
+
+    /// Reject is proven before anything changes: with Allow changes off, or a trial the runner can't prove, no playlist
+    /// is touched and nothing is written.
+    @Test func aRejectThatCantGoChangesNoPlaylist() async throws {
+        let model = try await model()
+        defer { model.signOut() }
+        let trial = libraryTrial()
+        model.requests = [trial]
+        #expect(await model.rejectLibraryTrial(trial) == TryAvailability.changesOff.message)
+        model.changesAllowed = true
+        #expect(await model.rejectLibraryTrial(trial) == LibraryFindsCopy.rejectRefused)
+        #expect(nav.updates.isEmpty && model.letGo.jobs.isEmpty, "no playlist touched")
+        #expect(transport.navidrome.requests.allSatisfy { ($0.httpMethod ?? "GET") == "GET" || $0.url?.path.hasSuffix("/auth/login") == true },
+                "nothing written")
     }
 }

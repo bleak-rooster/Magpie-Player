@@ -133,7 +133,7 @@ import MagpieCore
         h.server.ownerHasArtist(albumMonitored: false)
         h.server.with { s in s.albums.removeAll() }   // the artist lists nothing that holds it
         let preview = try await h.runner.targetPreview(h.recording(recSingleAndAlbum))
-        #expect(preview == .notListed(artistId: 7))
+        #expect(preview == .notListed(artistId: 7, single: rgSingle), "the single the switch would list")
     }
 
     @Test func aNewArtistsSongPreviewsItsSmallestRelease() async throws {
@@ -182,6 +182,7 @@ import MagpieCore
         let h = await Harness(setup: Self.setup)
         let id = try await libraryTrial(h)
         let before = h.server.writes.count
+        #expect(await h.runner.trialRejectable(id))
         try await h.runner.rejectTrial(id)
         let writes = Array(h.server.writeBodies().dropFirst(before))
         #expect(writes.map(\.0) == ["DELETE trackfile/bulk", "PUT album/monitor"])
@@ -214,6 +215,7 @@ import MagpieCore
         // Meanwhile Lidarr lists another release under that album id.
         h.server.with { s in for i in s.albums.indices where s.albums[i].id == 33 { s.albums[i].rg = rgSingle } }
         let before = h.server.writes.count
+        #expect(await h.runner.trialRejectable(id) == false, "the app's read-only check says no first")
         await #expect(throws: RequestRunner.TrialError.refused) { try await h.runner.rejectTrial(id) }
         #expect(h.server.writes.count == before, "nothing sent")
         // And a delete that isn't exactly the album's files (another album's file slipped in) is refused too.
