@@ -19,6 +19,9 @@ struct FindsView: View {
     /// Finds a Not for me is asking about or running for: their row offers no second one meanwhile.
     @State private var lettingGo: Set<RequestID> = []
     @State private var asking: NotForMeConfirm?
+    /// Round 15 C3 (D147): the library trial whose Not for me is being confirmed, and the ones under way.
+    @State private var rejectingTrial: MagpieRequest?
+    @State private var trialsBusy: Set<RequestID> = []
     private let themed = Themed()
 
     var body: some View {
@@ -38,11 +41,39 @@ struct FindsView: View {
                     header("On their way")
                 }
             }
+            // Round 15 C3 (D147): releases of library artists on trial, with Keep and Not for me.
+            if !model.libraryTrials.isEmpty {
+                Section {
+                    ForEach(model.libraryTrials) { request in trialRow(request) }
+                } header: {
+                    header(LibraryFindsCopy.onTrialHeader)
+                }
+            }
+            // Round 15 C3 (D138): what Not for me took out of your playlists, the latest few.
+            let letGo = model.letGo.history.prefix(5)
+            if !letGo.isEmpty {
+                Section {
+                    ForEach(Array(letGo)) { job in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(job.title).font(.body).foregroundStyle(themed.palette.inkColor)
+                            Text(FindCleanupCopy.historyLine(job)).font(.footnote).foregroundStyle(themed.palette.ink2Color)
+                            if let at = job.finishedAt {
+                                Text(at, format: .relative(presentation: .named)).font(.caption).foregroundStyle(themed.palette.ink2Color)
+                            }
+                        }
+                        .accessibilityElement(children: .combine)
+                        .listRowBackground(Color.clear)
+                        .accessibilityIdentifier("finds-let-go-\(job.title)")
+                    }
+                } header: {
+                    header(FindCleanupCopy.recentlyLetGo)
+                }
+            }
         }
         .listStyle(.plain)
         // Over the list, not a row in it, so no separators frame it (final fix 2 B-M10, as Requests).
         .overlay {
-            if shelf.isEmpty {
+            if shelf.isEmpty, model.letGo.history.isEmpty, model.libraryTrials.isEmpty {
                 ContentUnavailableView("No finds yet", systemImage: "record.circle",
                                        description: Text("New artists you try land here first, so you can try them before they join your library. Songs by artists you have go straight into your library."))
                     .accessibilityIdentifier("finds-empty")
@@ -66,6 +97,47 @@ struct FindsView: View {
             Button("Cancel", role: .cancel) {}
         } message: { confirm in
             Text(confirm.message)
+        }
+        .confirmationDialog(LibraryFindsCopy.rejectTitle, isPresented: Binding(get: { rejectingTrial != nil },
+                                                                                set: { if !$0 { rejectingTrial = nil } }),
+                            titleVisibility: .visible, presenting: rejectingTrial) { request in
+            Button(NotForMeCopy.action, role: .destructive) { trialAction(request) { await model.rejectLibraryTrial(request) } }
+                .accessibilityIdentifier("trial-reject-confirm")
+            Button("Cancel", role: .cancel) {}
+        } message: { _ in
+            Text(LibraryFindsCopy.rejectMessage)
+        }
+    }
+
+    /// A library trial: its song, "On trial · until <date>", Keep and Not for me (the same words as a find's).
+    private func trialRow(_ request: MagpieRequest) -> some View {
+        let song = model.trialSong(request)
+        let busy = trialsBusy.contains(request.id)
+        return VStack(alignment: .leading, spacing: Tokens.Spacing.xs) {
+            Text(song.title).font(.body).foregroundStyle(themed.palette.inkColor)
+                .accessibilityIdentifier("finds-trial-\(song.title)")
+            Text(song.artist).font(.subheadline).foregroundStyle(themed.palette.ink2Color)
+            Text(LibraryFindsCopy.status(.onTrial, removeOn: model.trialEnds(request)))
+                .font(.footnote).foregroundStyle(themed.palette.ink2Color)
+            HStack(spacing: Tokens.Spacing.m) {
+                Button(LibraryFindsCopy.keep) { trialAction(request) { await model.keepLibraryTrial(request) } }
+                    .buttonStyle(.bordered).disabled(busy)
+                    .accessibilityIdentifier("trial-keep")
+                Button(NotForMeCopy.action, role: .destructive) { rejectingTrial = request }
+                    .buttonStyle(.bordered).disabled(busy)
+                    .accessibilityIdentifier("trial-reject")
+            }
+        }
+        .padding(.vertical, Tokens.Spacing.xs)
+        .listRowBackground(Color.clear)
+    }
+
+    private func trialAction(_ request: MagpieRequest, _ run: @escaping () async -> String) {
+        rejectingTrial = nil
+        trialsBusy.insert(request.id)
+        Task {
+            keepMessage = await run()
+            trialsBusy.remove(request.id)
         }
     }
 

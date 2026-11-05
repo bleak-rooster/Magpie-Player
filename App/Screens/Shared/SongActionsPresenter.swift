@@ -51,6 +51,30 @@ struct SongActionsPresenter: ViewModifier {
             } message: { _ in
                 Text(SongActionsCopy.unmatchedMessage)
             }
+            // Round 15 C3: an outside album whose MusicBrainz ids couldn't be found.
+            .alert(LibraryFindsCopy.unmatchedAlbumTitle,
+                   isPresented: Binding(get: { actions.unmatchedAlbum != nil }, set: { if !$0 { actions.unmatchedAlbum = nil } }),
+                   presenting: actions.unmatchedAlbum) { album in
+                Button(SongActionsCopy.searchInstead) {
+                    actions.searchQuery = "\(album.artist) \(album.title)"
+                    navigator?.tab = .search
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: { _ in
+                Text(LibraryFindsCopy.unmatchedAlbumMessage)
+            }
+            // Round 15 C3 (D135, D146): Add to library says first what comes (an album, or singles listed).
+            .alert(actions.libraryConfirm?.title ?? LibraryFindsCopy.confirmTitle,
+                   isPresented: Binding(get: { actions.libraryConfirm != nil }, set: { if !$0 { actions.libraryConfirm = nil } }),
+                   presenting: actions.libraryConfirm) { confirm in
+                Button(confirm.isSingles ? LibraryFindsCopy.includeSingles : LibraryFindsCopy.add) {
+                    Task { await model.confirmLibrary(confirm) }
+                }
+                .accessibilityIdentifier("library-confirm")
+                Button("Cancel", role: .cancel) {}
+            } message: { confirm in
+                Text(confirm.message)
+            }
     }
 
     private func notify(_ outcome: AddOutcome) {

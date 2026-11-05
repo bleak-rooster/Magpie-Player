@@ -18,7 +18,10 @@ public struct LidarrTrack: Sendable, Equatable, Decodable {
 
     public var hasFile: Bool { (trackFileId ?? 0) > 0 }
 
-    enum CodingKeys: String, CodingKey { case id, albumId, trackFileId, foreignTrackId, foreignRecordingId }
+    /// Round 15 C3 (review I5): the track's title (a library trial's songs are matched by title and path).
+    public var title: String?
+
+    enum CodingKeys: String, CodingKey { case id, albumId, trackFileId, foreignTrackId, foreignRecordingId, title }
 }
 
 extension LidarrClient {

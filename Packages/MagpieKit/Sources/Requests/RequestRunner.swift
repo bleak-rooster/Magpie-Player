@@ -117,11 +117,26 @@ public actor RequestRunner {
             }
         }
 
+        /// Round 15 C3 (D136): "Magpie Lossless Preferred" (FLAC, MP3 only as a fallback): new artists Add to library
+        /// brings into the main library. Nil until provisioned.
+        public var libraryQualityProfileId: Int?
+
         public init(rootFolderPath: String, qualityProfileId: Int, metadataProfileId: Int, tagIds: [Int],
-                    finds: Finds? = nil) {
+                    finds: Finds? = nil, libraryQualityProfileId: Int? = nil) {
             self.rootFolderPath = rootFolderPath; self.qualityProfileId = qualityProfileId
             self.metadataProfileId = metadataProfileId; self.tagIds = tagIds; self.finds = finds
+            self.libraryQualityProfileId = libraryQualityProfileId
         }
+    }
+
+    /// Round 15 C3: why a Try was asked for.
+    public enum Intent: Sendable, Equatable {
+        /// As before round 15 (the car, Save to playlist, the outside pages' Try this album).
+        case plain
+        /// Try: temporary, with Keep or Reject (a trial in the main library for a library artist, D139).
+        case trial
+        /// Add to library: permanent (D135).
+        case library
     }
 
     public enum TryError: Error, Equatable {
@@ -319,10 +334,16 @@ public actor RequestRunner {
     /// - Parameters:
     ///   - album: R19 "Try this album": bring in this release group (one request per album).
     ///   - releaseGroup: the album the song was picked from, when known: a live request for it is this Try (R20).
+    ///   - intent: round 15 C3 (D135, D139): `.library` is "Add to library" (permanent), `.trial` the Try (temporary).
+    ///     A live request this Try is becomes Add to library when asked so; nothing else about it changes.
+    ///   - libraryAdd: D136 (review M2): a new artist's Add to library uses the owner's own Add defaults (the metadata
+    ///     profile for their release types, and whether new releases are followed).
     public func tryRecording(_ recording: ExternalRecording, tier: Tier, album: MBID? = nil,
-                             releaseGroup: MBID? = nil) async throws -> RequestID {
+                             releaseGroup: MBID? = nil, intent: Intent = .plain,
+                             libraryAdd: LibraryAddProfile? = nil) async throws -> RequestID {
         guard !stopped, await load() else { throw TryError.unavailable }
         if let existing = liveTry(recording, album: album, releaseGroup: releaseGroup) {
+            if intent == .library, !existing.addToLibrary { await mutate(existing.id) { $0.addToLibrary = true } }
             return existing.id
         }
         guard await gate.enabled else { throw TryError.changesOff }
@@ -330,6 +351,10 @@ public actor RequestRunner {
         guard activeCount < Self.maxActive else { throw TryError.tooMany }
         var request = MagpieRequest(recording: recording, tier: tier, createdAt: now())
         request.albumTarget = album
+        request.addToLibrary = intent == .library
+        request.askedAsTry = intent == .trial
+        request.libraryMetadataProfileId = libraryAdd?.metadataProfileId
+        request.libraryFollow = libraryAdd?.follow
         list.append(request)
         await changed()
         let id = request.id
@@ -592,6 +617,7 @@ public actor RequestRunner {
             plan = Plan(recordingMBID: recordingId, releaseGroupMBID: rg, artistMBID: artistMBID,
                         lidarrArtistId: artist.id, mode: .fallback)
             title = albums.first { $0.foreignAlbumId == rg }?.title
+            await mutate(id) { $0.artistExisted = true }   // round 15 C3 (D139): a Try here is a trial in the library
         } else {
             // A1: the "Magpie Finds" metadata profile only has official Album/EP/Single studio releases, so
             // only those can be monitored after the add.
@@ -601,8 +627,10 @@ public actor RequestRunner {
                 return await apply(id, .error(.noRelease))
             }
             // Finds mode is the intent here; the add checks the Finds root again and may fall back (G2, B8).
+            // Round 15 C3 (D135): Add to library never makes a find.
+            let findsOn = await setup()?.finds != nil
             plan = Plan(recordingMBID: recordingId, releaseGroupMBID: rg, artistMBID: artistMBID,
-                        lidarrArtistId: nil, mode: await setup()?.finds != nil ? .finds : .fallback)
+                        lidarrArtistId: nil, mode: findsOn && !r.addToLibrary ? .finds : .fallback)
             title = recording.releases.first { $0.releaseGroup.id == rg }?.title
         }
         await mutate(id) {
@@ -863,10 +891,12 @@ public actor RequestRunner {
         // Y5 fix I4: a Try on this album never drops a Keep under way or the find's file record (Ledger.record merges too).
         entry.keepIntentAt = prior?.keepIntentAt
         entry.findFiles = prior?.findFiles
+        let trial = markTrial(&entry, r, mode: mode, needsMonitor: needsMonitor, album: album)   // round 15 C3 (D147)
         try await ledger.record(entry)
         await mutate(id) {
             $0.lidarrArtistId = artist.id
             $0.albumId = album.id
+            if trial { $0.trialExpiresAt = entry.trialExpiresAt }
         }
         guard needsMonitor else { return }
         try ensure(id, .adding)
@@ -903,8 +933,10 @@ public actor RequestRunner {
         guard let lookup = try await lidarr.artistLookupJSON(mbid: plan.artistMBID) else {
             throw AddFailure(reason: .noRelease)
         }
-        let target = try await destination(setup)
-        let body = try Self.addArtistBody(lookup: lookup, setup: target.setup, releaseGroup: plan.releaseGroupMBID)
+        let library = request(id)?.addToLibrary == true
+        let target = library ? try Self.libraryDestination(setup) : try await destination(setup)
+        let body = library ? try Self.addLibraryArtistBody(lookup: lookup, setup: target.setup, request: request(id))
+                           : try Self.addArtistBody(lookup: lookup, setup: target.setup, releaseGroup: plan.releaseGroupMBID)
         // Item 9.8: the command list before the add, so only Lidarr's RefreshArtist for this add counts.
         let baseline = (try? await lidarr.commands())?.map(\.id).max()
         try ensure(id, .adding)
@@ -948,7 +980,7 @@ public actor RequestRunner {
         }
         await mutate(id) {
             $0.lidarrArtistId = artistId
-            $0.skipNextSearch = true   // `searchForMissingAlbums` starts the search
+            $0.skipNextSearch = !library   // `searchForMissingAlbums` starts the search; D135: the release first
         }
         await discoverAlbum(id)
     }
@@ -1118,6 +1150,7 @@ public actor RequestRunner {
                 $0.searchCommandId = commandId
                 $0.grabbed = false
             }
+            await searchDiscography(id)
             await apply(id, .searchStarted)
         } catch is Superseded {
             return

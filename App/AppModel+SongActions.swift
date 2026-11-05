@@ -99,6 +99,17 @@ struct SavePick: Identifiable {
     var picking: SavePick?
     /// "Couldn't match this song", with Search instead.
     var unmatched: OutsideSong?
+    /// Round 15 C3: "Couldn't match this album", with Search instead.
+    var unmatchedAlbum: OutsideAlbumRef?
+    /// Round 15 C3 (D135, D146): Add to library's question first (the album a song comes with, or singles).
+    var libraryConfirm: LibraryConfirm?
+    /// Review M3: the one creation of "Magpie Lossless Preferred" under way.
+    @ObservationIgnored var qualityTask: Task<Void, Error>?
+    /// D146: songs whose singles switch is still waiting on Lidarr (asked for when it finishes), by artist.
+    @ObservationIgnored var singlesDamageTold = false
+    @ObservationIgnored var singlesResumedAt: Date?
+    /// D147 (review M8): albums the ledger holds as open trials; nil until read.
+    var openTrialAlbums: Set<Int>?
     /// Search instead: the query the Search tab takes (it clears it).
     var searchQuery: String?
     /// Songs being matched right now (their menus wait).
@@ -162,7 +173,8 @@ struct SavePick: Identifiable {
         timer?.cancel(); timer = nil; queuedAdd = nil; requestsLoaded = false; evaluateAgain = false
         pending = []; store = nil; loadedScope = nil; keepAsked = []; lookedUpAt = [:]
         artistPreviews = [:]; playlistSongs = []; previewReads.values.forEach { $0.cancel() }; previewReads = [:]
-        trying = nil; wholeArtistAdd = nil; choosing = nil; picking = nil; unmatched = nil
+        trying = nil; wholeArtistAdd = nil; choosing = nil; picking = nil; unmatched = nil; unmatchedAlbum = nil
+        libraryConfirm = nil; qualityTask = nil; singlesDamageTold = false; singlesResumedAt = nil; openTrialAlbums = nil
     }
 }
 
@@ -181,7 +193,7 @@ extension AppModel {
     // MARK: - Matching (D100)
 
     /// The server's editorial links, as the matcher takes them (nil without a server that has them).
-    private var editorialLinks: OutsideSongMatch.Links? {
+    var editorialLinks: OutsideSongMatch.Links? {
         guard let client = aurralClient, !isOffline, aurralCapabilities.editorialLinks else { return nil }
         return { artist, album, deezerAlbum in
             let links = try await client.editorialLinks(artist: artist, album: album, deezerAlbumId: deezerAlbum)

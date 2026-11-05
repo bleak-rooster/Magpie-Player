@@ -17,6 +17,8 @@ struct TrySheet: View {
     var albumGroup: MBID? = nil
     /// R19: a track of an outside album; a live request for that album opens instead of a second Try (R20).
     var releaseGroup: MBID? = nil
+    /// Round 15 C3: the menus' Try is a trial (D139).
+    var intent: RequestRunner.Intent = .plain
 
     init(recording: ExternalRecording) { self.recording = recording }
 
@@ -25,6 +27,7 @@ struct TrySheet: View {
         album = target.album
         albumGroup = target.albumGroup
         releaseGroup = target.releaseGroup
+        intent = target.intent
     }
 
     static let tryAlbumTitle = "Try this album"
@@ -168,11 +171,11 @@ struct TrySheet: View {
         do {
             let id: RequestID
             if let albumGroup {
-                id = try await model.tryAlbum(recording, releaseGroup: albumGroup)
+                id = try await model.tryAlbum(recording, releaseGroup: albumGroup, intent: intent)
             } else if releaseGroup != nil {
-                id = try await model.tryTrack(recording, releaseGroup: releaseGroup)
+                id = try await model.tryTrack(recording, releaseGroup: releaseGroup, intent: intent)
             } else {
-                id = try await model.tryRecording(recording)
+                id = try await model.tryRecording(recording, intent: intent)
             }
             phase = tier.asksInsteadOfWaiting ? .asked(id) : .waiting(id)
         } catch {

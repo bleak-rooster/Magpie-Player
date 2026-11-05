@@ -197,6 +197,29 @@ struct RequestsSettingsView: View {
 struct ChangeLogView: View {
     @Environment(AppModel.self) private var model
     @State private var entries: [ChangeLogEntry]?
+    @State private var undoMessage: String?
+    /// Artists whose finished singles switch can be undone (the journal's, not the capped log's).
+    @State private var undoable: Set<Int> = []
+    /// Re-review m3: artists whose switch journal was lost: their newest line offers "Put back".
+    @State private var lost: Set<Int> = []
+    @State private var scope: String?
+
+    /// The artist of a singles-switch note (`LidarrWriteGate.singlesNote`).
+    static func singlesArtist(_ entry: ChangeLogEntry) -> Int? {
+        guard entry.method == "NOTE", entry.bodySummary.hasPrefix("singles switch: artist ") else { return nil }
+        return entry.bodySummary.dropFirst("singles switch: artist ".count).split(separator: " ").first.flatMap { Int($0) }
+    }
+
+    /// Re-review m3: what a singles-switch line saved ("singles switch: artist N metadataProfileId P monitorNewItems V").
+    static func singlesSaved(_ entry: ChangeLogEntry) -> (artistId: Int, profileId: Int, follow: String, instance: String?)? {
+        guard let artist = singlesArtist(entry) else { return nil }
+        let words = entry.bodySummary.split(separator: " ").map(String.init)
+        func after(_ key: String) -> String? { words.firstIndex(of: key).flatMap { $0 + 1 < words.count ? words[$0 + 1] : nil } }
+        guard let profile = after("metadataProfileId").flatMap(Int.init), let follow = after("monitorNewItems"), follow != "-" else {
+            return nil
+        }
+        return (artist, profile, follow, after("instance"))
+    }
 
     var body: some View {
         List {
@@ -206,27 +229,70 @@ struct ChangeLogView: View {
                                            description: Text("Every change Magpie makes in Lidarr is listed here."))
                         .accessibilityIdentifier("change-log-empty")
                 }
-                ForEach(Array(entries.enumerated()), id: \.offset) { _, entry in
-                    VStack(alignment: .leading, spacing: 4) {
-                        HStack {
-                            Text(entry.method).font(.caption.monospaced().weight(.semibold))
-                            Text(entry.path).font(.caption.monospaced()).lineLimit(2)
-                        }
-                        Text(entry.date.formatted(date: .abbreviated, time: .standard)
-                             + " · " + (entry.status.map { "answered \($0)" } ?? "no answer"))
-                            .font(.caption2).foregroundStyle(.secondary)
-                        if !entry.bodySummary.isEmpty {
-                            Text(entry.bodySummary).font(.caption2.monospaced()).foregroundStyle(.secondary).lineLimit(4)
-                        }
+                ForEach(Array(entries.enumerated()), id: \.offset) { index, entry in
+                    // Review I3: Undo only on the newest switch line of an artist whose switch can be undone.
+                    // Re-review 2 N1: only this Lidarr's lines get actions.
+                    let artist = ChangeLogView.singlesSaved(entry).flatMap { $0.instance == scope ? $0.artistId : nil }
+                    let newest = artist.map { a in !entries.prefix(index).contains { ChangeLogView.singlesArtist($0) == a } } ?? false
+                    ChangeLogRow(entry: entry, showsUndo: newest && artist.map(undoable.contains) == true,
+                                 showsPutBack: newest && artist.map(lost.contains) == true) { artistId in
+                        undoMessage = await model.undoSingles(artistId: artistId)
+                        await reload()
+                    } putBack: {
+                        undoMessage = await model.restoreSinglesFromNote(entry)
+                        await reload()
                     }
-                    .accessibilityElement(children: .combine)
                 }
             } else {
                 ProgressView().frame(maxWidth: .infinity)
             }
         }
+        .alert(undoMessage ?? "", isPresented: Binding(get: { undoMessage != nil }, set: { if !$0 { undoMessage = nil } })) {
+            Button("OK", role: .cancel) {}
+        }
         .navigationTitle("Lidarr change log")
-        .task { entries = await model.changeLog() }
-        .refreshable { entries = await model.changeLog() }
+        .task { await reload() }
+        .refreshable { await reload() }
+    }
+
+    private func reload() async {
+        entries = await model.changeLog()
+        undoable = await model.undoableSinglesSwitches()
+        lost = await model.singlesPutBackArtists(entries ?? [])
+        scope = model.lidarrScope
+    }
+}
+
+/// One change-log line; a singles switch's saved line offers its undo (round 15 C3, D146: the profile back).
+private struct ChangeLogRow: View {
+    let entry: ChangeLogEntry
+    let showsUndo: Bool
+    var showsPutBack = false
+    let undo: (Int) async -> Void
+    var putBack: () async -> Void = {}
+
+    var body: some View {
+        let answered = entry.status.map { "answered \($0)" } ?? "no answer"
+        let when = entry.date.formatted(date: .abbreviated, time: .standard)
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(entry.method).font(.caption.monospaced().weight(.semibold))
+                Text(entry.path).font(.caption.monospaced()).lineLimit(2)
+            }
+            Text("\(when) \u{00B7} \(answered)").font(.caption2).foregroundStyle(.secondary)
+            if !entry.bodySummary.isEmpty {
+                Text(entry.bodySummary).font(.caption2.monospaced()).foregroundStyle(.secondary).lineLimit(4)
+            }
+            if showsUndo, let artistId = ChangeLogView.singlesArtist(entry) {
+                Button(LibraryFindsCopy.undo) { Task { await undo(artistId) } }
+                    .buttonStyle(.bordered)
+                    .accessibilityIdentifier("change-log-undo-singles")
+            }
+            if showsPutBack {
+                Button(LibraryFindsCopy.putBack) { Task { await putBack() } }
+                    .buttonStyle(.bordered)
+                    .accessibilityIdentifier("change-log-put-back-singles")
+            }
+        }
     }
 }

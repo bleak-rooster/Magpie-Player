@@ -28,12 +28,18 @@ extension AppModel {
     /// New finds and the finds with days left, as the phone's Finds shelf has them; nil when no Finds library is
     /// chosen (the phone shows no Finds either).
     var carPlayFinds: CPFindsShelf? {
-        guard findsSetup?.library != nil else { return nil }
+        guard findsSetup?.library != nil || !libraryTrials.isEmpty else { return nil }
         let shelf = findsShelf()
         func finds(_ items: [FindsShelf.Item]) -> [CPFind] {
             items.map { CPFind(song: $0.song, daysLeft: $0.daysLeft, isNew: $0.isNew) }
         }
-        return CPFindsShelf(newFinds: finds(shelf.newFinds), finds: finds(shelf.finds))
+        // Round 15 C3 (D147): library trials beside the finds, with their days left.
+        let trials = libraryTrials.map { r in
+            CPFind(song: trialSong(r),
+                   daysLeft: r.trialExpiresAt.map { max(0, Calendar.current.dateComponents([.day], from: Date(), to: $0).day ?? 0) } ?? 0,
+                   isNew: false)
+        }
+        return CPFindsShelf(newFinds: finds(shelf.newFinds), finds: finds(shelf.finds) + trials)
     }
 
     // MARK: - Keep (Now Playing)

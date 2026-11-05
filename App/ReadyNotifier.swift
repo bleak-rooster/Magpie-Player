@@ -23,16 +23,21 @@ final class ReadyNotifier: NSObject, UNUserNotificationCenterDelegate {
     var postedForTesting: [String] = []
     #endif
 
-    func post(id: String, title: String, body: String) {
+    func post(id: String, title: String, body: String) { post(identifier: "ready-\(id)", title: title, body: body) }
+
+    /// Round 15 C3 (D138): a rejected find's playlist clean-up finished while Magpie was in the background.
+    func postLetGo(id: String, title: String, body: String) { post(identifier: "letgo-\(id)", title: title, body: body) }
+
+    private func post(identifier: String, title: String, body: String) {
         #if DEBUG
-        postedForTesting.append("ready-\(id)")
+        postedForTesting.append(identifier)
         #endif
         center.delegate = self
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body
         content.sound = .default
-        center.add(UNNotificationRequest(identifier: "ready-\(id)", content: content, trigger: nil))
+        center.add(UNNotificationRequest(identifier: identifier, content: content, trigger: nil))
     }
 
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,

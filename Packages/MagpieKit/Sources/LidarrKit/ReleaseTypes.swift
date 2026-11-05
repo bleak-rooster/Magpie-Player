@@ -67,6 +67,28 @@ public struct ReleaseTypes: Codable, Hashable, Sendable {
         name == Provisioner.findsMetadataName || all.contains { $0.profileName == name }
     }
 
+    /// Round 15 C3 (re-review R2): these types widened so a release of `albumType` and `secondaryTypes` is listed (EP or
+    /// Single added to the kinds, Studio / Live / Soundtrack switched on). Nil when it can't be expressed (another primary
+    /// or secondary type): the add is refused before anything is sent.
+    public func widened(toInclude albumType: String?, secondaryTypes: [String]) -> ReleaseTypes? {
+        var t = self
+        switch albumType?.lowercased() {
+        case "album": break
+        case "ep": if t.kinds == .albums { t.kinds = .albumsAndEPs }
+        case "single": t.kinds = .albumsEPsAndSingles
+        default: return nil
+        }
+        for secondary in secondaryTypes.isEmpty ? ["studio"] : secondaryTypes.map({ $0.lowercased() }) {
+            switch secondary {
+            case "studio": t.studio = true
+            case "live": t.live = true
+            case "soundtrack": t.soundtrack = true
+            default: return nil
+            }
+        }
+        return t.includes(albumType: albumType, secondaryTypes: secondaryTypes) ? t : nil
+    }
+
     /// Whether a release of this primary type and these secondary types is brought in (as Lidarr's metadata profile
     /// filters: the primary type allowed, and every secondary type allowed; none counts as Studio). Unknown primary
     /// type: not brought in.

@@ -60,8 +60,19 @@ struct OutsideAlbumView: View {
                     if model.phase == .loaded, model.canTryAlbum, let target = model.tryTarget {
                         // Y7: the page's one action, in the same bar as Play on an album page.
                         ActionBar(insetsMargins: false) {
-                            ActionButton(TrySheet.tryAlbumTitle, symbol: "sparkles", prominence: .primary) { trying = target }
-                                .accessibilityIdentifier("outside-album-try")
+                            // Round 15 C3 (owner item 6): a trial (Keep or Reject), or into the library for good.
+                            ActionButton(LibraryFindsCopy.tryIt, symbol: "sparkles", prominence: .primary) {
+                                var trial = target
+                                trial.intent = .trial
+                                trying = trial
+                            }
+                            .accessibilityIdentifier("outside-album-try")
+                            if app.libraryActions != .hidden {
+                                ActionButton(LibraryFindsCopy.addToLibrary, symbol: "arrow.down.circle") {
+                                    Task { await app.addAlbumToLibrary(OutsideAlbumRef(album)) }
+                                }
+                                .accessibilityIdentifier("outside-album-add-library")
+                            }
                         }
                     }
                 }

@@ -76,6 +76,25 @@ public struct LedgerEntry: Sendable, Equatable, Codable {
     /// nothing about who monitors the album *now*, so it is never inherited.
     public var closedAt: Date?
 
+    // Round 15 C3 (D139, D147): a trial of a release of an artist already in the main library. Optional, so older
+    // files decode.
+    /// Read fresh just before Magpie's monitor write: the album was unmonitored and had no track files. Only then may a
+    /// Reject delete its files (`ConfinedShape.trialDelete`).
+    public var trialHadNoFiles: Bool?
+    /// When the trial ends (as Finds: the date is shown; nothing is removed by itself).
+    public var trialExpiresAt: Date?
+    /// Keep: the trial mark is cleared; the album stays, monitored. No Reject after this.
+    public var trialKeptAt: Date?
+    /// Reject went through (its files deleted, the album unmonitored).
+    public var trialRejectedAt: Date?
+
+    /// A trial whose files a Reject may still delete. Review I4: never a closed entry (its request cancelled, failed or
+    /// given up): the album may be the owner's again.
+    public var isOpenTrial: Bool {
+        closedAt == nil && trialHadNoFiles == true && trialExpiresAt != nil && trialKeptAt == nil && trialRejectedAt == nil
+            && !wasMonitoredBefore && !createdArtist && albumId != nil && !isKeptOrKeeping
+    }
+
     public init(lidarrArtistId: Int, albumId: Int?, rgMbid: MBID, createdArtist: Bool, wasMonitoredBefore: Bool,
                 root: String, mode: LedgerMode, keptAt: Date? = nil, instance: String? = nil,
                 send: MonitorSend = .unclear, requestId: String? = nil, closedAt: Date? = nil, artistMbid: MBID? = nil) {
@@ -102,6 +121,7 @@ public struct LedgerEntry: Sendable, Equatable, Codable {
     private enum CodingKeys: String, CodingKey {
         case lidarrArtistId, albumId, rgMbid, createdArtist, wasMonitoredBefore, root, mode, keptAt, instance
         case send, requestId, closedAt, artistMbid, keepIntentAt, findFiles
+        case trialHadNoFiles, trialExpiresAt, trialKeptAt, trialRejectedAt
     }
 
     /// Fix round 4: a missing or unknown `send` decodes as `unclear`, never as applied. That includes entries
@@ -125,6 +145,10 @@ public struct LedgerEntry: Sendable, Equatable, Codable {
         artistMbid = try? c.decodeIfPresent(MBID.self, forKey: .artistMbid)
         keepIntentAt = try c.decodeIfPresent(Date.self, forKey: .keepIntentAt)   // round 12 L7: malformed fails closed
         findFiles = try? c.decodeIfPresent([FindFile].self, forKey: .findFiles)
+        trialHadNoFiles = try? c.decodeIfPresent(Bool.self, forKey: .trialHadNoFiles)
+        trialExpiresAt = try? c.decodeIfPresent(Date.self, forKey: .trialExpiresAt)
+        trialKeptAt = try? c.decodeIfPresent(Date.self, forKey: .trialKeptAt)
+        trialRejectedAt = try? c.decodeIfPresent(Date.self, forKey: .trialRejectedAt)
     }
 }
 
@@ -241,6 +265,26 @@ public actor Ledger {
             out.append(e)
         }
         return out
+    }
+
+    /// Round 15 C3: changes this server's entry for one album (a trial's Keep or Reject). Returns whether it changed.
+    @discardableResult
+    public func update(albumId: Int, _ change: (inout LedgerEntry) -> Void) throws -> Bool {
+        guard let fileURL else {
+            guard let i = memory.firstIndex(where: { $0.instance == instance && $0.albumId == albumId }) else { return false }
+            change(&memory[i])
+            return true
+        }
+        return try withoutActuallyEscaping(change) { change in
+            try Self.fileLock.withLockUnchecked {
+                var all = try Self.read(fileURL)
+                guard let i = all.firstIndex(where: { $0.instance == instance && $0.albumId == albumId }) else { return false }
+                change(&all[i])
+                all[i].instance = instance
+                try LocalFile.save(all, to: fileURL)
+                return true
+            }
+        }
     }
 
     public func entry(albumId: Int) throws -> LedgerEntry? {

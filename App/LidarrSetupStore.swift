@@ -20,6 +20,8 @@ struct LidarrSetup: Codable, Equatable, Sendable {
     /// The main root folder new music goes into (fallback mode). Picked by the owner when Lidarr has several;
     /// never guessed.
     var rootFolderPath: String?
+    /// Round 15 C3 (D136): "Magpie Lossless Preferred", made on the first Add to library of a new artist. Nil until then.
+    var losslessPreferredProfileId: Int?
 
     var isProvisioned: Bool { fastStartProfileId != nil && findsMetadataProfileId != nil && magpieTagId != nil }
 
@@ -28,7 +30,8 @@ struct LidarrSetup: Codable, Equatable, Sendable {
     var runnerSetup: RequestRunner.Setup? {
         guard let fastStartProfileId, let findsMetadataProfileId, let magpieTagId, let rootFolderPath else { return nil }
         return RequestRunner.Setup(rootFolderPath: rootFolderPath, qualityProfileId: fastStartProfileId,
-                                   metadataProfileId: findsMetadataProfileId, tagIds: [magpieTagId])
+                                   metadataProfileId: findsMetadataProfileId, tagIds: [magpieTagId],
+                                   libraryQualityProfileId: losslessPreferredProfileId)
     }
 }
 

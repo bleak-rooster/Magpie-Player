@@ -1,5 +1,44 @@
 import Foundation
+import ListenBrainzKit
 import MagpieCore
+
+/// Round 15 C3 (owner item 6, D135): which release a song brings in, said before anything is sent. Reads only.
+extension RequestRunner {
+    public enum TargetPreview: Sendable, Equatable {
+        /// An artist in Lidarr: the smallest release its listing has that holds the song.
+        case listed(title: String, isAlbum: Bool)
+        /// An artist in Lidarr whose listing has no release holding the song (singles not listed, D146): the single
+        /// (release group) the singles switch would list, when MusicBrainz names one.
+        case notListed(artistId: Int, single: MBID?)
+        /// An artist not in Lidarr: the release a new artist's add would monitor (the album asked for, or the smallest a
+        /// Finds-profile add can monitor), with its MusicBrainz types: the add's release types must list it (D136, R2).
+        /// `official`: some release of it is Official (Magpie's profiles list Official releases only; re-review 2).
+        case newArtist(title: String, isAlbum: Bool, primaryType: String?, secondaryTypes: [String], official: Bool = true)
+    }
+
+    /// `album`: an album-page add (that release group); otherwise the song's smallest release.
+    public func targetPreview(_ recording: ExternalRecording, album: MBID? = nil) async throws -> TargetPreview {
+        guard let recordingId = recording.recordingMBID else { throw MusicBrainzError.notFound }
+        let found = try await mb.recording(recordingId)
+        guard let artistMBID = recording.artistMBID ?? found.artistIds.first else { throw MusicBrainzError.notFound }
+        if let artist = try await lidarr.artists().first(where: { $0.foreignArtistId == artistMBID }) {
+            let albums = try await lidarr.albums(artistId: artist.id)
+            guard let rg = ReleasePicker.smallest(containing: found, available: Set(albums.compactMap(\.foreignAlbumId))),
+                  let album = albums.first(where: { $0.foreignAlbumId == rg }) else {
+                let singles = Set(found.releases.filter(Self.fitsFindsProfile).map(\.releaseGroup.id))
+                return .notListed(artistId: artist.id, single: ReleasePicker.smallest(containing: found, available: singles))
+            }
+            return .listed(title: album.title, isAlbum: (album.albumType ?? "Album").lowercased() == "album")
+        }
+        let fits = Set(found.releases.filter(Self.fitsFindsProfile).map(\.releaseGroup.id))
+        guard let rg = album ?? ReleasePicker.smallest(containing: found, available: fits),
+              let release = found.releases.first(where: { $0.releaseGroup.id == rg }) else { throw MusicBrainzError.notFound }
+        let group = release.releaseGroup
+        let official = found.releases.contains { $0.releaseGroup.id == rg && $0.status?.lowercased() == "official" }
+        return .newArtist(title: release.title, isAlbum: group.primaryType?.lowercased() == "album",
+                          primaryType: group.primaryType, secondaryTypes: group.secondaryTypes, official: official)
+    }
+}
 
 /// R19 "Try this album" and R20's dedupe by release group.
 extension RequestRunner {

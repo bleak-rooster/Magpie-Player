@@ -123,10 +123,38 @@ if [ -z "${G1_SRC:-}" ]; then
   # named only by the screen's restarter and the runner's counted removal, only as a queue delete with the same exact
   # query, never through a variable.
   restarter="Packages/MagpieKit/Sources/Requests/DownloadsInLidarr.swift"
+  trialfile="Packages/MagpieKit/Sources/Requests/RequestRunner+Trial.swift"
+  singlesfile="Packages/MagpieKit/Sources/Requests/SinglesSwitch.swift"
+  # Round 15 C3 (re-review m2): the singles-switch journal the gate trusts is made and written only by its owners: the
+  # store type only in SinglesSwitch.swift and the runner's rebuild (one shared store per Lidarr), and nothing else saves
+  # to a switcher's store.
+  for f in $(grep -rlE --include='*.swift' 'SinglesSwitchStore' "${product[@]}" | sort -u || true); do
+    case "$f" in
+      "$singlesfile"|App/AppModel+Requests.swift) ;;
+      *) echo "G1: the singles-switch journal named outside its owners: $f" >&2; bad=1 ;;
+    esac
+  done
+  [ "$(grep -c 'SinglesSwitchStore.shared(fileURL:' App/AppModel+Requests.swift)" = 1 ] ||
+    { echo "G1: App/AppModel+Requests.swift: the singles journal isn't the one shared store" >&2; bad=1; }
+  if grep -rnE --include='*.swift' '(switcher|singlesSwitcher\??)\.store\.save\(' "${product[@]}" | grep -v "^$singlesfile:" | grep -q .; then
+    echo "G1: a singles-switch journal saved outside SinglesSwitch.swift" >&2; bad=1
+  fi
   shaped=$(grep -rnE --include='*.swift' 'confinedAs:' "${product[@]}" | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' |
            grep -v "^Packages/MagpieKit/Sources/LidarrKit/WriteGate.swift:" || true)
   while IFS= read -r s; do
     [ -n "$s" ] || continue
+    # Round 15 C3 (D147, D146): the trial Reject's one track file delete and the singles switch's one sender.
+    case "$s" in
+      "$trialfile":*'_ = try await gate.send("DELETE", "trackfile/bulk", body: TrackFileIdsBody(trackFileIds: ids), confinedAs: .trialDelete)') continue ;;
+      # D146 (review I1-I3): the singles switch's journal, only in SinglesSwitch.swift, only these forms; the gate allows
+      # them only for an artist whose switch is in the journal, and only the journal's values.
+      "$singlesfile":*'_ = try await gate.send("PUT", "artist/editor", body: FollowBody(artistIds: [job.artistId], monitorNewItems: "none"), confinedAs: .singlesSwitch)') continue ;;
+      "$singlesfile":*'_ = try await gate.send("PUT", "artist/editor", body: FollowBody(artistIds: [job.artistId], monitorNewItems: job.originalFollow), confinedAs: .singlesSwitch)') continue ;;
+      "$singlesfile":*'_ = try await gate.send("PUT", "artist/editor", body: ProfileBody(artistIds: [job.artistId], metadataProfileId: job.singlesProfileId!), confinedAs: .singlesSwitch)') continue ;;
+      "$singlesfile":*'_ = try await gate.send("PUT", "artist/editor", body: ProfileBody(artistIds: [job.artistId], metadataProfileId: job.originalProfileId), confinedAs: .singlesSwitch)') continue ;;
+      "$singlesfile":*'try await gate.send("POST", "command", body: RefreshBody(name: "RefreshArtist", artistId: job.artistId), confinedAs: .singlesSwitch)') continue ;;
+      "$singlesfile":*'_ = try await gate.send("PUT", "album/monitor", body: UnmonitorBody(albumIds: extras, monitored: false), confinedAs: .singlesSwitch)') continue ;;
+    esac
     case "${s%%:*}" in
       "$stall"|"$restarter") ;;
       *) echo "G1: queueRestartAny named outside its two callers: ${s%%:*}" >&2; bad=1; continue ;;
@@ -193,6 +221,8 @@ if [ -z "${G1_SRC:-}" ]; then
   for f in $tf_sends; do
     case "$f" in
       Packages/MagpieKit/Sources/Requests/RequestRunner+NotForMe.swift|Packages/MagpieKit/Sources/Requests/RequestRunner+Lossless.swift) ;;
+      # Round 15 C3 (D147): a library trial's Reject, confined by `ConfinedShape.trialDelete` (pinned above).
+      Packages/MagpieKit/Sources/Requests/RequestRunner+Trial.swift) ;;
       *) echo "G1: track file delete outside Not for me and the MP3 rule: $f" >&2; bad=1 ;;
     esac
   done
@@ -521,6 +551,26 @@ if [ -z "${G1_SRC:-}" ]; then
     { echo "G1: App/AppModel+Playlists.swift: ownPlaylist no longer refuses Discover's playlists" >&2; bad=1; }
   grep -qF 'let (fresh, songs) = try await ownPlaylist(playlist)' App/AppModel+DiscoverSwap.swift ||
     { echo "G1: App/AppModel+DiscoverSwap.swift: the swap no longer goes through ownPlaylist" >&2; bad=1; }
+  # Round 15 C3 (D137): a rejected find's songs leave the owner's playlists only through `removeEverywhere` (X3's
+  # checked path: ownership read fresh by `ownPlaylist`, the listing matching its count, positions highest first, sent
+  # once), and only the clean-up (AppModel+FindCleanup.swift) calls it.
+  pl="App/AppModel+Playlists.swift"
+  removal="$(awk '/func removeEverywhere\(/,/^    }$/' "$pl" || true)"
+  for want in 'let (fresh, songs) = try await ownPlaylist(playlist)' 'guard fresh.songCount == list.count else { return nil }' \
+              'let indexes = FindCleanups.indexesToRemove(songIds, in: list)' \
+              'try await $0.updatePlaylist(id: id, name: nil, adding: [], removingIndexes: indexes)'; do
+    grep -qF -- "$want" <<< "$removal" ||
+      { echo "G1: $pl: removeEverywhere no longer has: $want" >&2; bad=1; }
+  done
+  grep -qF 'list.indices.filter { songIds.contains(list[$0]) }.sorted(by: >)' Packages/MagpieKit/Sources/Requests/FindCleanup.swift ||
+    { echo "G1: FindCleanup.swift: the clean-up's positions are no longer highest first" >&2; bad=1; }
+  for hit in $(grep -rnE --include='*.swift' 'removeEverywhere\(' "${product[@]}" | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' |
+               grep -v 'func removeEverywhere(' | cut -d: -f1 | sort -u || true); do
+    case "$hit" in
+      App/AppModel+FindCleanup.swift) ;;
+      *) echo "G1: removeEverywhere called outside the rejected-find clean-up: $hit" >&2; bad=1 ;;
+    esac
+  done
   # Only the Lidarr gate and the Aurral client name an API-key header or parameter (the redactor and the test stub aside).
   for f in $(grep -rlE --include='*.swift' '[Xx]-[Aa]pi-[Kk]ey"|"api_key' "${product[@]}" | sort -u || true); do
     case "$f" in
@@ -562,7 +612,7 @@ if [ -z "${G1_SRC:-}" ]; then
     case "$verb $path" in
       "delete trackfile"*)
         case "$file" in
-          "$rq/RequestRunner+NotForMe.swift"|"$rq/RequestRunner+Lossless.swift") ;;
+          "$rq/RequestRunner+NotForMe.swift"|"$rq/RequestRunner+Lossless.swift"|"$rq/RequestRunner+Trial.swift") ;;
           *) echo "L1: track file delete outside Not for me and the MP3 rule: $file:$line" >&2; bad=1 ;;
         esac ;;
       "delete queue"*)
@@ -579,7 +629,10 @@ if [ -z "${G1_SRC:-}" ]; then
         case "$name|$file" in
           "albumsearch|$rq/RequestRunner.swift"|"albumsearch|$rq/RequestRunner+Lossless.swift"|\
           "albumsearch|$rq/RequestRunner+BringInMore.swift"|"albumsearch|$rq/DownloadsInLidarr.swift"|\
-          "refreshartist|$rq/RequestRunner+Lossless.swift"|"artistsearch|$rq/ArtistLidarr.swift") ;;
+          "refreshartist|$rq/RequestRunner+Lossless.swift"|"artistsearch|$rq/ArtistLidarr.swift"|\
+          "refreshartist|$rq/SinglesSwitch.swift"|"artistsearch|$rq/RequestRunner+LibraryAdds.swift") ;;
+          # Round 15 C3: RefreshArtist after "Include singles" (D146, any artist, confirmed) and the discography's
+          # ArtistSearch after Add to library's own release (D135); the gate confines both to Magpie's artists.
           *) echo "L1: a Lidarr command (${name:-no literal name}) outside its pinned callers: $file:$line" >&2; bad=1 ;;
         esac ;;
     esac

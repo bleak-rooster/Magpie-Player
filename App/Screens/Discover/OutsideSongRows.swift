@@ -20,10 +20,29 @@ struct OutsideSongMenu: View {
 
     var body: some View {
         if model.outsideSongMenuAvailable {
-            Button { Task { await model.listenToFullSong(song) } } label: {
-                Label { Text(SongActionsCopy.listen); Text(model.listenSubtitle) } icon: { Image(systemName: "sparkles") }
+            // Round 15 C3 (owner item 6, D135, D136, D139): where it stands, then Try (temporary) and Add to library
+            // (permanent). With Allow changes off (or Try not set up) the subtitles and a tap say why.
+            if let status = model.libraryStatus(for: song) {
+                Label(status, systemImage: "clock").accessibilityIdentifier("song-menu-status")
             }
-            .accessibilityIdentifier("song-menu-listen")
+            if let stopped = model.stoppedRequest(for: song) {
+                Button { Task { await model.retry(stopped) } } label: {
+                    Label(LibraryFindsCopy.retry, systemImage: "arrow.clockwise")
+                }
+                .accessibilityIdentifier("song-menu-retry")
+            }
+            Button { Task { await model.tryOutside(song) } } label: {
+                Label { Text(LibraryFindsCopy.tryIt); Text(Self.note(model, LibraryFindsCopy.tryNote)) } icon: {
+                    Image(systemName: "sparkles")
+                }
+            }
+            .accessibilityIdentifier("song-menu-try")
+            Button { Task { await model.addToLibrary(song) } } label: {
+                Label { Text(LibraryFindsCopy.addToLibrary); Text(Self.note(model, LibraryFindsCopy.addNote)) } icon: {
+                    Image(systemName: "arrow.down.circle")
+                }
+            }
+            .accessibilityIdentifier("song-menu-add-library")
             Button { Task { await model.addArtist(of: song) } } label: {
                 Label(SongActionsCopy.addArtist, systemImage: "person.badge.plus")
             }
@@ -32,6 +51,39 @@ struct OutsideSongMenu: View {
                 Label(SongActionsCopy.saveToPlaylist, systemImage: "text.badge.plus")
             }
             .accessibilityIdentifier("song-menu-save")
+        }
+    }
+
+    /// The action's subtitle, or why it can't be done right now (D139: never a dead button).
+    @MainActor static func note(_ model: AppModel, _ normal: String) -> String {
+        if case .explained(let why) = model.libraryActions { return why }
+        return normal
+    }
+}
+
+/// Round 15 C3 (owner item 6): an outside album's menu (a Trending tile, an outside artist page's row): where it stands,
+/// Try (temporary) and Add to library (permanent). Hidden without Lidarr; explained without Allow changes.
+struct OutsideAlbumMenu: View {
+    @Environment(AppModel.self) private var model
+    let album: OutsideAlbumRef
+
+    var body: some View {
+        if model.libraryActions != .hidden {
+            if let status = model.libraryStatus(for: album) {
+                Label(status, systemImage: "clock").accessibilityIdentifier("album-menu-status")
+            }
+            Button { Task { await model.tryOutsideAlbum(album) } } label: {
+                Label { Text(LibraryFindsCopy.tryIt); Text(OutsideSongMenu.note(model, LibraryFindsCopy.tryNote)) } icon: {
+                    Image(systemName: "sparkles")
+                }
+            }
+            .accessibilityIdentifier("album-menu-try")
+            Button { Task { await model.addAlbumToLibrary(album) } } label: {
+                Label { Text(LibraryFindsCopy.addToLibrary); Text(OutsideSongMenu.note(model, LibraryFindsCopy.addAlbumNote)) } icon: {
+                    Image(systemName: "arrow.down.circle")
+                }
+            }
+            .accessibilityIdentifier("album-menu-add-library")
         }
     }
 }

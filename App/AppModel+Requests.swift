@@ -93,19 +93,33 @@ extension AppModel {
         requestStore = nil
         if let retired { Task { await retired.stop() } }
         songActions.requestsLoaded = false   // round 14 A3 (I1): not until the new runner publishes its list
+        // Re-review R1: the retired switcher sends and saves nothing more; without a Lidarr (sign-out, disconnect) its
+        // journal is closed too, so nothing writes the file again.
+        let retiredSwitcher = singlesSwitcher
+        singlesSwitcher = nil
+        retiredSwitcher?.stop()   // re-review 2: synchronous, before the new runner starts
+        let nextScope = session != nil ? lidarrClient?.instanceScope : nil
+        if let retiredSwitcher, retiredSwitcher.store.fileURL != nextScope.map({ SinglesSwitchStore.defaultURL(in: dataDirectory, instance: $0) }) {
+            retiredSwitcher.store.close()
+        }
         guard session != nil, let client = lidarrClient else {
             requests = []
             followPendingAdds(instance: nil)   // round 14 A3
+            followFindCleanups(instance: nil)   // round 15 C3
             return
         }
         // CRITICAL 1: one ledger view and one requests file per Lidarr server.
         let scope = client.instanceScope
         followPendingAdds(instance: scope)   // round 14 A3 (D101): the playlist adds beside the requests
+        followFindCleanups(instance: scope)   // round 15 C3 (D138): a rejected find's playlist clean-ups
         let ledger = Ledger(fileURL: Ledger.defaultURL(in: dataDirectory), instance: scope)
         // FM1: the gate confines deletes and artist edits itself, from this ledger and the owner's setup.
+        // Round 15 C3 (D146): the singles switch's journal; the gate allows its writes only from it.
+        let singlesStore = SinglesSwitchStore.shared(fileURL: SinglesSwitchStore.defaultURL(in: dataDirectory, instance: scope))
         let confinement = WriteConfinement(ledger: ledger, roots: { [weak self] in
             await self?.gateRoots ?? WriteConfinement.Roots(mainRoot: nil, findsRoot: nil, findTagId: nil)
-        }, liveRequests: { [weak self] in await self?.liveRequestIds() })   // R17: queue deletes
+        }, liveRequests: { [weak self] in await self?.liveRequestIds() },   // R17: queue deletes
+           singlesOriginal: { await singlesStore.original(artistId: $0) })
         let gate = LidarrWriteGate(client: client, logURL: LidarrWriteGate.defaultLogURL(in: dataDirectory),
                                    defaultsSuite: gateDefaultsSuite, confinement: confinement)
         let requestStore = RequestStore(fileURL: RequestStore.defaultURL(in: dataDirectory, instance: scope))
@@ -127,6 +141,8 @@ extension AppModel {
             })
         self.gate = gate
         self.runner = runner
+        singlesSwitcher = SinglesSwitcher(lidarr: client, gate: gate, store: singlesStore)
+        Task { [weak self] in await self?.resumeSinglesSwitches(force: true) }   // D146: an interrupted switch, finished or rolled back
         let stallLimit = stallLimit.seconds
         Task { await runner.setStallLimit(stallLimit) }   // R17
         runnerTasks.append(Task { [weak self] in
@@ -136,6 +152,10 @@ extension AppModel {
                 self.requests = list
                 self.songActions.requestsLoaded = true   // round 14 A3 (I1): this runner's list is in
                 if !self.songActions.pending.isEmpty { Task { await self.evaluatePendingAdds() } }   // round 14 A3
+                if !self.letGo.jobs.isEmpty { Task { await self.resumeLetGoCleanups() } }   // round 15 C3 (D138)
+                if list.contains(where: \.addToLibrary) { Task { await self.evaluateLibraryAdds() } }   // round 15 C3 (D135)
+                if list.contains(where: \.isLibraryTrial) { Task { await self.refreshOpenTrials() } }   // D147 (M8)
+                Task { await self.resumeSinglesSwitches() }   // D146: at most once a minute
                 // I4: a request just started waiting: re-check the connection so a rejected key is named.
                 if !wasWaiting, self.hasUnavailableWait, !self.isOffline { Task { _ = await self.lidarrAudit() } }
             }
@@ -337,9 +357,9 @@ extension AppModel {
         }
     }
 
-    func tryRecording(_ recording: ExternalRecording) async throws -> RequestID {
+    func tryRecording(_ recording: ExternalRecording, intent: RequestRunner.Intent = .plain) async throws -> RequestID {
         guard let runner else { throw RequestRunner.TryError.notSetUp }
-        let id = try await runner.tryRecording(recording, tier: speedTier)
+        let id = try await runner.tryRecording(recording, tier: speedTier, intent: intent)
         if notifications { ReadyNotifier.shared.requestAuthorizationIfNeeded() }
         pollRequests()
         return id
@@ -427,7 +447,10 @@ extension AppModel {
         if request.isFind, let songId = request.songId { findsIdentity.markLanded(songId) }
         if request.isFind { Task { await refreshFinds() } }
         Task { await rememberReadySong(request) }   // R17: rows showing it become the library song in place
-        if !request.isFind, findsLibraryId != nil {
+        if request.addToLibrary {
+            // Round 15 C3 (D135): Add to library is a download, not a listen: it never lands in the queue.
+            if !request.isFind, findsLibraryId != nil { Task { await refreshFinds() } }
+        } else if !request.isFind, findsLibraryId != nil {
             // Final fix 2 A-I1, belt and braces: a song the runner didn't call a find can still be in the Finds
             // library. Read it again before landing, so it never plays as now playing (D29).
             Task {
@@ -439,6 +462,8 @@ extension AppModel {
         }
         guard notifications else { return }
         ReadyNotifier.shared.post(id: request.id.description, title: "\(request.recording.title) is ready",
-                                  body: "\(request.recording.artist) · in your \(request.isFind ? "Finds" : "library") now")
+                                  body: request.addToLibrary && request.isFind
+                                      ? "\(request.recording.artist) · going into your library now"
+                                      : "\(request.recording.artist) · in your \(request.isFind ? "Finds" : "library") now")
     }
 }

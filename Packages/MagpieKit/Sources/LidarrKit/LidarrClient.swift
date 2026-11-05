@@ -46,6 +46,9 @@ public struct LidarrClient: Sendable {
     /// Raw JSON of a GET (provisioning reads schemas and existing profiles whole, A15).
     func json(_ path: String) async throws -> JSONValue { try await decode(JSONValue.self, path) }
 
+    /// Round 15 C3 (D146): every metadata profile whole (the singles switch builds a superset of the artist's own).
+    public func metadataProfilesJSON() async throws -> [JSONValue] { try await json("metadataprofile").arrayValue ?? [] }
+
     private func list<T: Decodable>(_ type: T.Type, _ path: String, _ query: [URLQueryItem] = []) async throws -> [T] {
         try await decode(LossyArray<T>.self, path, query).values
     }
@@ -148,6 +151,9 @@ public struct LidarrClient: Sendable {
     public func artists() async throws -> [LidarrArtist] { try await list(LidarrArtist.self, "artist") }
 
     public func artist(id: Int) async throws -> LidarrArtist { try await decode(LidarrArtist.self, "artist/\(id)") }
+
+    /// One album (round 15 C3: the singles switch's unmonitor is checked against its artist's journal).
+    public func album(id: Int) async throws -> LidarrAlbum { try await decode(LidarrAlbum.self, "album/\(id)") }
 
     public func albums(artistId: Int) async throws -> [LidarrAlbum] {
         try await list(LidarrAlbum.self, "album", [URLQueryItem(name: "artistId", value: String(artistId))])

@@ -66,12 +66,30 @@ public struct WriteConfinement: Sendable {
     /// R17: the ids (`RequestID` text) of Magpie's requests on their way right now; nil while they can't be known.
     /// Without it, queue deletes are refused.
     let liveRequests: (@Sendable () async -> Set<String>?)?
+    /// Round 15 C3 (D146): the singles switch's journal for an artist (its saved profile and following, and whether the
+    /// switch is still under way). Without one, every singles-switch write is refused.
+    let singlesOriginal: (@Sendable (Int) async -> SinglesOriginal?)?
+
+    /// What the singles switch's journal saved for an artist before its first write.
+    public struct SinglesOriginal: Sendable, Equatable {
+        public var profileId: Int
+        public var follow: String
+        /// The switch (or its roll-back) is under way: following may be "none" meanwhile.
+        public var open: Bool
+        /// The "+ Singles" profile the switch made or reused, once known.
+        public var singlesProfileId: Int?
+        public init(profileId: Int, follow: String, open: Bool, singlesProfileId: Int? = nil) {
+            self.profileId = profileId; self.follow = follow; self.open = open; self.singlesProfileId = singlesProfileId
+        }
+    }
 
     public init(ledger: Ledger, roots: @escaping @Sendable () async -> Roots,
-                liveRequests: (@Sendable () async -> Set<String>?)? = nil) {
+                liveRequests: (@Sendable () async -> Set<String>?)? = nil,
+                singlesOriginal: (@Sendable (Int) async -> SinglesOriginal?)? = nil) {
         self.ledger = ledger
         self.roots = roots
         self.liveRequests = liveRequests
+        self.singlesOriginal = singlesOriginal
     }
 
     /// At most this many track files in one delete (each is read first).
@@ -87,6 +105,8 @@ public struct WriteConfinement: Sendable {
         case other
         /// D49: a restart of any download; its albums may get one `restartSearch` (Y5 fix I9).
         case queueRestart(albums: Set<Int>)
+        /// Round 15 C3 (D147): a library trial's files: right before it goes, its ledger entry must still be an open trial.
+        case trialDelete(albumId: Int)
     }
 
     enum Verdict: Equatable {
@@ -118,6 +138,12 @@ public struct WriteConfinement: Sendable {
         /// The same request, named `ConfinedShape.queueRestartAny` by Settings › Downloads in Lidarr (D49); round 13
         /// (D63): `allowForeign` from its flagged confirmation, for a download Lidarr never grabbed.
         case queueRestartAny(Int, allowForeign: Bool)
+        /// Round 15 C3 (D147): `ConfinedShape.trialDelete`'s track file delete.
+        case trialDelete([Int])
+        /// Round 15 C3 (D146): `ConfinedShape.singlesSwitch`'s writes. `undoProfile`: the profile the change log saved.
+        case singlesEditor([String: Any])
+        case singlesRefresh(Int)
+        case singlesUnmonitor([Int])
     }
 
     func check(_ write: Write, lidarr: LidarrClient) async -> Verdict {
@@ -147,6 +173,34 @@ public struct WriteConfinement: Sendable {
                 return .confined(artists: [], rule: .other)
             case .queueDelete, .queueRestartAny:
                 return .unknown   // handled above
+            case .trialDelete(let ids):
+                let (artistId, albumId) = try await context.trialDelete(ids)
+                return .confined(artists: [artistId], rule: .trialDelete(albumId: albumId))
+            case .singlesEditor(let body):
+                let ids = body.first { $0.key.lowercased() == "artistids" }?.value as? [Any]
+                guard let id = (ids?.first as? NSNumber)?.intValue, ids?.count == 1,
+                      let original = await singlesOriginal?(id) else {
+                    return .refused("a singles-switch edit only for an artist whose switch is in the journal")
+                }
+                try await context.singlesEditor(body, original: original)
+                return .confined(artists: [], rule: .other)
+            case .singlesRefresh(let artistId):
+                guard await singlesOriginal?(artistId) != nil else {
+                    return .refused("a singles-switch refresh only for an artist whose switch is in the journal")
+                }
+                _ = try await context.artist(artistId)
+                return .confined(artists: [], rule: .other)
+            case .singlesUnmonitor(let ids):
+                // Re-review m2: only releases of an artist whose switch is open in the journal, and without files.
+                for id in ids {
+                    let artistId: Int?
+                    do { artistId = try await lidarr.album(id: id).artistId } catch { return .unknown }
+                    guard let artistId, await singlesOriginal?(artistId)?.open == true else {
+                        return .refused("a singles-switch unmonitor only for an artist whose switch is open")
+                    }
+                }
+                try await context.singlesUnmonitor(ids)
+                return .confined(artists: [], rule: .other)
             case .command(let name, let albumIds, let artistId):
                 // Y5 fix I9: a search can make Lidarr grab and replace files, so only albums the ledger knows (Magpie
                 // recorded each before it monitored or searched it); a refresh only for an artist the ledger knows.
@@ -258,6 +312,10 @@ public struct WriteConfinement: Sendable {
     /// kept or keeping now. keptLossyDelete: every one is still confirmed kept, no Keep under way. Nil: the ledger
     /// can't be read.
     func lastCheck(_ rule: Rule, _ artists: Set<Int>) async -> Bool? {
+        if case .trialDelete(let albumId) = rule {
+            guard let entries = try? await ledger.entries else { return nil }
+            return entries.contains { $0.albumId == albumId && $0.isOpenTrial }
+        }
         guard !artists.isEmpty, rule == .findDelete || rule == .keptLossyDelete else { return true }
         guard let entries = try? await ledger.entries else { return nil }
         switch rule {
@@ -265,7 +323,7 @@ public struct WriteConfinement: Sendable {
             return !entries.contains { artists.contains($0.lidarrArtistId) && $0.isKeptOrKeeping }
         case .keptLossyDelete:
             return artists.allSatisfy { Self.confirmedKept($0, in: entries) }
-        case .other, .queueRestart:
+        case .other, .queueRestart, .trialDelete:
             return true
         }
     }
@@ -505,6 +563,83 @@ public struct WriteConfinement: Sendable {
                 artists.insert(artistId)
             }
             return artists
+        }
+
+        /// Round 15 C3 (D147): Reject of a library trial. The files must all be of one album whose ledger entry is an open
+        /// trial (Magpie monitored it when it was unmonitored with no files; not kept, not rejected, not Magpie's own
+        /// artist), of that entry's artist; Lidarr's album with that id is still the entry's release group; and the ids
+        /// are exactly that album's files now (read fresh), each inside the artist's folder. Nothing else of the artist.
+        func trialDelete(_ ids: [Int]) async throws -> (artist: Int, album: Int) {
+            guard !ids.isEmpty, ids.count <= WriteConfinement.maxTrackFiles else {
+                throw Refusal(reason: "track file delete needs 1 to \(WriteConfinement.maxTrackFiles) ids")
+            }
+            var albumId: Int?
+            var files: [TrackFile] = []
+            for id in ids {
+                let file = try await trackFile(id)
+                guard let a = file.albumId, albumId == nil || albumId == a else {
+                    throw Refusal(reason: "a trial delete is one album's files")
+                }
+                albumId = a
+                files.append(file)
+            }
+            guard let albumId, let entry = entries.first(where: { $0.albumId == albumId && $0.isOpenTrial }) else {
+                throw Refusal(reason: "not an album Magpie monitored when it had no files")
+            }
+            guard files.allSatisfy({ $0.artistId == entry.lidarrArtistId }) else { throw Refusal(reason: "another artist's files") }
+            let artist = try await artist(entry.lidarrArtistId)
+            let albums = try await read { try await lidarr.albums(artistId: entry.lidarrArtistId) }
+            guard albums.first(where: { $0.id == albumId })?.foreignAlbumId == entry.rgMbid else {
+                throw Refusal(reason: "the album isn't the trial's release any more")
+            }
+            let now = try await read { try await lidarr.trackFiles(albumId: albumId) }
+            guard Set(now.map(\.id)) == Set(ids), now.count == ids.count else {
+                throw Refusal(reason: "a trial delete is exactly all of the album's files")
+            }
+            guard let folder = artist.path else { throw Refusal(reason: "the artist has no folder") }
+            let inside = PathGuard(findsRoot: folder, otherRoots: [], caseInsensitive: false)
+            guard files.allSatisfy({ inside.isInside($0.path) }) else { throw Refusal(reason: "a file outside the artist's folder") }
+            return (entry.lidarrArtistId, albumId)
+        }
+
+        /// Round 15 C3 (D146): the singles switch's artist edit, for an artist whose switch is in the journal: a metadata
+        /// profile only a Magpie "+ Singles" superset or exactly the saved original; following only "none" while the
+        /// switch is under way, or exactly the saved value back.
+        func singlesEditor(_ body: [String: Any], original: SinglesOriginal) async throws {
+            let value = { (name: String) in body.first { $0.key.lowercased() == name }?.value }
+            guard let ids = value("artistids") as? [Any], ids.count == 1, let id = (ids[0] as? NSNumber)?.intValue else {
+                throw Refusal(reason: "the artist editor changes one artist")
+            }
+            _ = try await artist(id)
+            let keys = Set(body.keys.map { $0.lowercased() })
+            guard keys == ["artistids", "metadataprofileid"] || keys == ["artistids", "monitornewitems"] else {
+                throw Refusal(reason: "the singles switch changes the metadata profile or monitorNewItems only")
+            }
+            if let profile = (value("metadataprofileid") as? NSNumber)?.intValue, profile != original.profileId {
+                // Re-review m1: a "+ Singles (Magpie)" profile that is a true superset of the saved original plus Single.
+                let profiles = try await read { try await lidarr.metadataProfilesJSON() }
+                guard let target = profiles.first(where: { $0["id"]?.intValue == profile }),
+                      let base = profiles.first(where: { $0["id"]?.intValue == original.profileId }),
+                      target["name"]?.stringValue?.hasSuffix(Provisioner.singlesSuffix) == true,
+                      Provisioner.isSinglesSuperset(target, of: base) else {
+                    throw Refusal(reason: "only a Magpie singles superset of the saved profile, or the saved original")
+                }
+            }
+            if let follow = value("monitornewitems") as? String {
+                let back = follow.lowercased() == original.follow.lowercased()
+                guard back || (follow.lowercased() == "none" && original.open) else {
+                    throw Refusal(reason: "following only off during the switch, or back to its saved value")
+                }
+            }
+        }
+
+        /// Round 15 C3 (D146): only releases with no files are unmonitored by the singles switch.
+        func singlesUnmonitor(_ ids: [Int]) async throws {
+            for id in ids {
+                guard try await read({ try await lidarr.trackFiles(albumId: id) }).isEmpty else {
+                    throw Refusal(reason: "a release with files is never unmonitored here")
+                }
+            }
         }
 
         func albumMonitor(_ ids: [Int], monitored: Bool) throws {

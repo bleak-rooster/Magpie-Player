@@ -64,6 +64,72 @@ public struct Provisioner: Sendable {
 
     public init() {}
 
+    // MARK: - Round 15 C3 (D146): the singles switch's profile, a superset of the artist's own
+
+    /// "<the artist's profile> + Singles (Magpie)".
+    public static let singlesSuffix = " + Singles (Magpie)"
+
+    /// Whether a metadata profile already lists singles.
+    public static func includesSingle(_ profile: JSONValue) -> Bool {
+        allowedNames(profile["primaryAlbumTypes"], "albumType").contains("Single")
+    }
+
+    /// The spec of `profile` with Single added: the same primary types plus Single, the same secondary types and the same
+    /// release statuses. Never narrower than the artist's own (C1).
+    static func singlesSpec(of profile: JSONValue, name: String) -> MetadataSpec {
+        MetadataSpec(name: name, primary: allowedNames(profile["primaryAlbumTypes"], "albumType").union(["Single"]),
+                     secondary: allowedNames(profile["secondaryAlbumTypes"], "albumType"),
+                     statuses: allowedNames(profile["releaseStatuses"], "releaseStatus"))
+    }
+
+    /// The id of "<current> + Singles (Magpie)" with exactly that superset spec: reused when Lidarr has it, otherwise made
+    /// through the gate from the current profile itself (only Single switched on). A same-named profile set up
+    /// differently is never changed: `ProvisionError.conflict`. No existing profile is ever modified.
+    public func ensureSinglesSuperset(of current: JSONValue, gate: LidarrWriteGate, client: LidarrClient) async throws -> Int {
+        guard let currentName = current["name"]?.stringValue else { throw ProvisionError.schemaMissing("metadataprofile name") }
+        let name = currentName.hasSuffix(Self.singlesSuffix) ? currentName : currentName + Self.singlesSuffix
+        let spec = Self.singlesSpec(of: current, name: name)
+        let existing = try await client.metadataProfilesJSON()
+        if let found = try Self.existing(named: name, in: existing) {
+            guard Self.matches(found, spec), let id = found["id"]?.intValue else { throw ProvisionError.conflict(name) }
+            return id
+        }
+        guard var body = current.objectValue, let primaries = current["primaryAlbumTypes"]?.arrayValue else {
+            throw ProvisionError.schemaMissing("primaryAlbumTypes")
+        }
+        guard primaries.contains(where: { $0["albumType"]?["name"]?.stringValue == "Single" }) else {
+            throw ProvisionError.schemaMissing("Single")
+        }
+        body["id"] = nil
+        body["name"] = .string(name)
+        body["primaryAlbumTypes"] = .array(primaries.map { entry in
+            guard entry["albumType"]?["name"]?.stringValue == "Single", var o = entry.objectValue else { return entry }
+            o["allowed"] = .bool(true)
+            return .object(o)
+        })
+        return try await Self.create(gate, "metadataprofile", .object(body), name)
+    }
+
+    // MARK: - Round 15 C3 (owner answer 4, D136): the main library's quality
+
+    public static let losslessPreferredName = "Magpie Lossless Preferred"
+    /// FLAC first, MP3-320 / V0 only as a fallback; upgrades on until FLAC.
+    static let losslessPreferredSpec = QualitySpec(name: losslessPreferredName, allowed: ["FLAC", "MP3-320", "MP3-VBR-V0"],
+                                                   cutoff: "FLAC", upgradeAllowed: true)
+
+    /// "Magpie Lossless Preferred"'s id, made through the gate if missing (on the first Add to library of a new artist).
+    /// A same-named profile set up differently is never changed: `ProvisionError.conflict`.
+    public func ensureLosslessPreferred(gate: LidarrWriteGate, client: LidarrClient) async throws -> Int {
+        let spec = Self.losslessPreferredSpec
+        let existing = try await client.json("qualityprofile").arrayValue ?? []
+        if let found = try Self.existing(named: spec.name, in: existing) {
+            guard Self.matches(found, spec), let id = found["id"]?.intValue else { throw ProvisionError.conflict(spec.name) }
+            return id
+        }
+        let body = try Self.qualityBody(spec, schema: try await client.json("qualityprofile/schema"))
+        return try await Self.create(gate, "qualityprofile", body, spec.name)
+    }
+
     public func ensure(gate: LidarrWriteGate, client: LidarrClient) async throws -> ProvisionResult {
         // 1. Read everything and decide, so a conflict stops the run before any write.
         let existingQuality = try await client.json("qualityprofile").arrayValue ?? []
@@ -182,6 +248,14 @@ public struct Provisioner: Sendable {
         return allowedNames(profile["primaryAlbumTypes"], "albumType") == spec.primary
             && allowedNames(profile["secondaryAlbumTypes"], "albumType") == spec.secondary
             && allowedNames(profile["releaseStatuses"], "releaseStatus") == spec.statuses
+    }
+
+    /// Re-review m1: whether `profile` allows everything `original` does, plus Single (all three allowed sets).
+    public static func isSinglesSuperset(_ profile: JSONValue, of original: JSONValue) -> Bool {
+        let pairs = [("primaryAlbumTypes", "albumType"), ("secondaryAlbumTypes", "albumType"), ("releaseStatuses", "releaseStatus")]
+        return pairs.allSatisfy { field, key in
+            allowedNames(original[field], key).isSubset(of: allowedNames(profile[field], key))
+        } && includesSingle(profile)
     }
 
     private static func allowedNames(_ list: JSONValue?, _ key: String) -> Set<String> {

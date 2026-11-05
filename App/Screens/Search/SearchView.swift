@@ -519,6 +519,8 @@ struct TryTarget: Identifiable {
     var albumGroup: MBID? = nil
     /// R19: a track of an outside album: a live request for that album is this Try (R20).
     var releaseGroup: MBID? = nil
+    /// Round 15 C3: the menus' Try is a trial (D139); the other Trys are as before.
+    var intent: RequestRunner.Intent = .plain
 }
 
 private extension View {
