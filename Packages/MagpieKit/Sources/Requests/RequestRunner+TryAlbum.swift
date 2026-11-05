@@ -10,12 +10,13 @@ extension RequestRunner {
         /// An artist in Lidarr whose listing has no release holding the song (singles not listed, D146): the single
         /// (release group) the singles switch would list, when MusicBrainz names one.
         case notListed(artistId: Int, single: MBID?)
-        /// An artist not in Lidarr: the smallest release a new artist's add can monitor (`isSingle`: the add's release
-        /// types must include singles, D136).
-        case newArtist(title: String, isAlbum: Bool, isSingle: Bool)
+        /// An artist not in Lidarr: the release a new artist's add would monitor (the album asked for, or the smallest a
+        /// Finds-profile add can monitor), with its MusicBrainz types: the add's release types must list it (D136, R2).
+        case newArtist(title: String, isAlbum: Bool, primaryType: String?, secondaryTypes: [String])
     }
 
-    public func targetPreview(_ recording: ExternalRecording) async throws -> TargetPreview {
+    /// `album`: an album-page add (that release group); otherwise the song's smallest release.
+    public func targetPreview(_ recording: ExternalRecording, album: MBID? = nil) async throws -> TargetPreview {
         guard let recordingId = recording.recordingMBID else { throw MusicBrainzError.notFound }
         let found = try await mb.recording(recordingId)
         guard let artistMBID = recording.artistMBID ?? found.artistIds.first else { throw MusicBrainzError.notFound }
@@ -29,10 +30,11 @@ extension RequestRunner {
             return .listed(title: album.title, isAlbum: (album.albumType ?? "Album").lowercased() == "album")
         }
         let fits = Set(found.releases.filter(Self.fitsFindsProfile).map(\.releaseGroup.id))
-        guard let rg = ReleasePicker.smallest(containing: found, available: fits),
+        guard let rg = album ?? ReleasePicker.smallest(containing: found, available: fits),
               let release = found.releases.first(where: { $0.releaseGroup.id == rg }) else { throw MusicBrainzError.notFound }
-        let type = release.releaseGroup.primaryType?.lowercased()
-        return .newArtist(title: release.title, isAlbum: type == "album", isSingle: type == "single")
+        let group = release.releaseGroup
+        return .newArtist(title: release.title, isAlbum: group.primaryType?.lowercased() == "album",
+                          primaryType: group.primaryType, secondaryTypes: group.secondaryTypes)
     }
 }
 

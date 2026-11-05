@@ -200,11 +200,24 @@ struct ChangeLogView: View {
     @State private var undoMessage: String?
     /// Artists whose finished singles switch can be undone (the journal's, not the capped log's).
     @State private var undoable: Set<Int> = []
+    /// Re-review m3: artists whose switch journal was lost: their newest line offers "Put back".
+    @State private var lost: Set<Int> = []
 
     /// The artist of a singles-switch note (`LidarrWriteGate.singlesNote`).
     static func singlesArtist(_ entry: ChangeLogEntry) -> Int? {
         guard entry.method == "NOTE", entry.bodySummary.hasPrefix("singles switch: artist ") else { return nil }
         return entry.bodySummary.dropFirst("singles switch: artist ".count).split(separator: " ").first.flatMap { Int($0) }
+    }
+
+    /// Re-review m3: what a singles-switch line saved ("singles switch: artist N metadataProfileId P monitorNewItems V").
+    static func singlesSaved(_ entry: ChangeLogEntry) -> (artistId: Int, profileId: Int, follow: String)? {
+        guard let artist = singlesArtist(entry) else { return nil }
+        let words = entry.bodySummary.split(separator: " ").map(String.init)
+        func after(_ key: String) -> String? { words.firstIndex(of: key).flatMap { $0 + 1 < words.count ? words[$0 + 1] : nil } }
+        guard let profile = after("metadataProfileId").flatMap(Int.init), let follow = after("monitorNewItems"), follow != "-" else {
+            return nil
+        }
+        return (artist, profile, follow)
     }
 
     var body: some View {
@@ -219,8 +232,12 @@ struct ChangeLogView: View {
                     // Review I3: Undo only on the newest switch line of an artist whose switch can be undone.
                     let artist = ChangeLogView.singlesArtist(entry)
                     let newest = artist.map { a in !entries.prefix(index).contains { ChangeLogView.singlesArtist($0) == a } } ?? false
-                    ChangeLogRow(entry: entry, showsUndo: newest && artist.map(undoable.contains) == true) { artistId in
+                    ChangeLogRow(entry: entry, showsUndo: newest && artist.map(undoable.contains) == true,
+                                 showsPutBack: newest && artist.map(lost.contains) == true) { artistId in
                         undoMessage = await model.undoSingles(artistId: artistId)
+                        await reload()
+                    } putBack: {
+                        undoMessage = await model.restoreSinglesFromNote(entry)
                         await reload()
                     }
                 }
@@ -239,6 +256,7 @@ struct ChangeLogView: View {
     private func reload() async {
         entries = await model.changeLog()
         undoable = await model.undoableSinglesSwitches()
+        lost = await model.singlesWithoutJournal(Set((entries ?? []).compactMap(ChangeLogView.singlesArtist)))
     }
 }
 
@@ -246,7 +264,9 @@ struct ChangeLogView: View {
 private struct ChangeLogRow: View {
     let entry: ChangeLogEntry
     let showsUndo: Bool
+    var showsPutBack = false
     let undo: (Int) async -> Void
+    var putBack: () async -> Void = {}
 
     var body: some View {
         let answered = entry.status.map { "answered \($0)" } ?? "no answer"
@@ -264,6 +284,11 @@ private struct ChangeLogRow: View {
                 Button(LibraryFindsCopy.undo) { Task { await undo(artistId) } }
                     .buttonStyle(.bordered)
                     .accessibilityIdentifier("change-log-undo-singles")
+            }
+            if showsPutBack {
+                Button(LibraryFindsCopy.putBack) { Task { await putBack() } }
+                    .buttonStyle(.bordered)
+                    .accessibilityIdentifier("change-log-put-back-singles")
             }
         }
     }

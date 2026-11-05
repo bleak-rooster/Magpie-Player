@@ -250,6 +250,14 @@ public struct Provisioner: Sendable {
             && allowedNames(profile["releaseStatuses"], "releaseStatus") == spec.statuses
     }
 
+    /// Re-review m1: whether `profile` allows everything `original` does, plus Single (all three allowed sets).
+    public static func isSinglesSuperset(_ profile: JSONValue, of original: JSONValue) -> Bool {
+        let pairs = [("primaryAlbumTypes", "albumType"), ("secondaryAlbumTypes", "albumType"), ("releaseStatuses", "releaseStatus")]
+        return pairs.allSatisfy { field, key in
+            allowedNames(original[field], key).isSubset(of: allowedNames(profile[field], key))
+        } && includesSingle(profile)
+    }
+
     private static func allowedNames(_ list: JSONValue?, _ key: String) -> Set<String> {
         Set((list?.arrayValue ?? []).filter { $0["allowed"]?.boolValue == true }
             .compactMap { $0[key]?["name"]?.stringValue })

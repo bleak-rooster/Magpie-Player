@@ -28,6 +28,17 @@ extension RequestRunner {
     public func keepTrial(_ id: RequestID) async throws {
         guard !stopped, await load() else { throw TrialError.unavailable }
         guard let r = request(id), r.isLibraryTrial, let albumId = r.albumId else { throw TrialError.notATrial }
+        // Re-review m7: a Reject that unmonitored it but couldn't delete left it unmonitored: Keep monitors it again, so
+        // it really stays in the library (through the gate: Magpie's own ledger album).
+        if let artistId = r.lidarrArtistId, let album = try? await lidarr.albums(artistId: artistId).first(where: { $0.id == albumId }),
+           !album.monitored {
+            guard await gate.enabled else { throw TrialError.changesOff }
+            do {
+                _ = try await gate.send("PUT", "album/monitor", body: TrialMonitorBody(albumIds: [albumId], monitored: true))
+            } catch {
+                throw TrialError.unavailable
+            }
+        }
         let at = now()
         do { try await ledger.update(albumId: albumId) { $0.trialKeptAt = at } } catch { throw TrialError.unavailable }
         await mutate(id) { $0.trialKept = true }

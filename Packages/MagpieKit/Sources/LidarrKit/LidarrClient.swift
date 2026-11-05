@@ -152,6 +152,9 @@ public struct LidarrClient: Sendable {
 
     public func artist(id: Int) async throws -> LidarrArtist { try await decode(LidarrArtist.self, "artist/\(id)") }
 
+    /// One album (round 15 C3: the singles switch's unmonitor is checked against its artist's journal).
+    public func album(id: Int) async throws -> LidarrAlbum { try await decode(LidarrAlbum.self, "album/\(id)") }
+
     public func albums(artistId: Int) async throws -> [LidarrAlbum] {
         try await list(LidarrAlbum.self, "album", [URLQueryItem(name: "artistId", value: String(artistId))])
     }

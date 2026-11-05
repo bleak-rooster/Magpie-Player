@@ -49,11 +49,12 @@ final class SinglesLidarr: @unchecked Sendable {
     nonisolated(unsafe) static let ownerProfile = profile(5, "Owner Profile", primary: ["Album", "EP"], secondary: ["Studio", "Live", "Compilation"],
                                       statuses: ["Official", "Promotion"])
 
-    init(changesOn: Bool = true, storeURL: URL? = nil, checks: Int = 2) async {
+    init(changesOn: Bool = true, storeURL: URL? = nil, checks: Int = 2, shared: Bool = false) async {
         client = LidarrClient(base: ArtistLidarrTests.base, apiKey: "devkey", transport: transport)
         ledger = Ledger(fileURL: nil, instance: client.instanceScope)
         let dir = FileManager.default.temporaryDirectory.appending(path: "Singles-\(UUID().uuidString)")
-        let store = SinglesSwitchStore(fileURL: storeURL ?? dir.appending(path: "singles.json"))
+        let url = storeURL ?? dir.appending(path: "singles.json")
+        let store = shared ? SinglesSwitchStore.shared(fileURL: url) : SinglesSwitchStore(fileURL: url)
         self.store = store
         gate = LidarrWriteGate(client: client, logURL: dir.appending(path: "log.json"), defaultsSuite: "Singles.\(UUID().uuidString)",
                                confinement: WriteConfinement(ledger: ledger, roots: {
@@ -120,6 +121,12 @@ final class SinglesLidarr: @unchecked Sendable {
             Self.reply(state.withLockUnchecked { s in s.albums.map { a -> [String: Any] in
                 ["id": a.id, "title": "A\(a.id)", "artistId": 20, "foreignAlbumId": a.rg.rawValue, "monitored": a.monitored,
                  "albumType": a.primary, "statistics": ["trackFileCount": a.files]] } })
+        }
+        for id in 1...8 {
+            t.stub(pathSuffix: "/api/v1/album/\(id)") { [self] _ in
+                let monitored = state.withLockUnchecked { s in s.albums.first { $0.id == id }?.monitored ?? false }
+                return Self.reply(["id": id, "title": "A\(id)", "artistId": 20, "monitored": monitored])
+            }
         }
         t.stub(pathSuffix: "/api/v1/trackfile") { [self] req in
             let albumId = URLComponents(url: req.url!, resolvingAgainstBaseURL: false)?.queryItems?
@@ -246,8 +253,8 @@ final class SinglesLidarr: @unchecked Sendable {
         let before = fake.writes.count
         try await switcher.undo(artistId: 20)
         let undo = Array(fake.writes.dropFirst(before))
-        #expect(undo.map(\.0) == ["PUT artist/editor", "PUT artist/editor", "POST command"])
-        #expect(undo[0].1["monitorNewItems"] as? String == "all" && undo[1].1["metadataProfileId"] as? Int == 5)
+        #expect(undo.map(\.0) == ["PUT artist/editor", "POST command", "PUT artist/editor"], "profile, refresh, following (m4)")
+        #expect(undo[0].1["metadataProfileId"] as? Int == 5 && undo[2].1["monitorNewItems"] as? String == "all")
         #expect(fake.state.withLockUnchecked { ($0.profileId, $0.follow) } == (5, "all"))
         #expect(try await fake.store.job(20)?.step == .undone)
         // After the undo the gate allows no more switch writes for the artist.
@@ -276,20 +283,144 @@ final class SinglesLidarr: @unchecked Sendable {
         #expect(Self.before.isSubset(of: fake.monitored))
     }
 
-    /// I1: one that can't be finished is rolled back (following and the profile back, then a refresh), and says so.
+    /// I1: one that can't be finished is rolled back, and says so. Re-review m4: the profile back first, then a refresh
+    /// whose completion is confirmed, then following (until then following stays off).
     @Test func aSwitchThatCantBeFinishedIsRolledBack() async throws {
         let fake = await SinglesLidarr()
         fake.state.withLockUnchecked { $0.refreshStatus = "failed" }
         let switcher = fake.switcher()
         var outcome = try await switcher.start(artistId: 20, target: SinglesLidarr.target)
-        for _ in 0..<SinglesSwitcher.maxFailures where outcome == .pending {
+        for _ in 0..<SinglesSwitcher.maxFailures where try await fake.store.job(20)?.step != .puttingBack {
             outcome = await switcher.resumeAll()[20] ?? .pending
         }
+        let step = try await fake.store.job(20)?.step
+        #expect(outcome == .pending && step == .puttingBack)
+        #expect(fake.state.withLockUnchecked { ($0.profileId, $0.follow) } == (5, "none"), "the profile back, following not yet")
+        fake.state.withLockUnchecked { $0.refreshStatus = "completed" }
+        outcome = await switcher.resumeAll()[20] ?? .pending
         #expect(outcome == .rolledBack)
         #expect(fake.state.withLockUnchecked { ($0.profileId, $0.follow) } == (5, "all"))
-        #expect(fake.writes.last?.0 == "POST command", "a refresh after the profile is back")
+        #expect(fake.writes.last.map { $0.0 == "PUT artist/editor" && $0.1["monitorNewItems"] as? String == "all" } == true,
+                "following last")
         #expect(try await fake.store.job(20)?.step == .rolledBack)
     }
+
+    // MARK: - Re-review R1, m1–m6
+
+    /// R1: the runner is rebuilt during a switch: the old switcher is stopped, the new one (the same shared journal) finishes
+    /// it, and the old one sends nothing more. The end state is consistent.
+    @Test func aRebuildDuringASwitchLeavesOneSwitcherActing() async throws {
+        let dir = FileManager.default.temporaryDirectory.appending(path: "SinglesShared-\(UUID().uuidString)")
+        let url = dir.appending(path: "singles.json")
+        let fake = await SinglesLidarr(storeURL: url, shared: true)
+        fake.state.withLockUnchecked { s in s.refreshPending = true; s.refreshStatus = "started"; s.newMonitored = true }
+        let old = fake.switcher()
+        #expect(try await old.start(artistId: 20, target: SinglesLidarr.target) == .pending)
+        await old.stop()   // the rebuild
+        let new = SinglesSwitcher(lidarr: fake.client, gate: fake.gate, store: SinglesSwitchStore.shared(fileURL: url), checks: 2, pause: .zero)
+        #expect(new.store === old.store, "one journal per Lidarr")
+        fake.applyRefresh()
+        fake.state.withLockUnchecked { $0.refreshStatus = "completed" }
+        let sent = fake.writes.count
+        #expect(await old.resumeAll().isEmpty && fake.writes.count == sent, "the retired switcher does nothing")
+        #expect(await new.resumeAll() == [20: .finished])
+        #expect(try await new.store.job(20)?.step == .done)
+        #expect(fake.state.withLockUnchecked { $0.follow } == "all" && fake.monitored == Self.before.union([SinglesLidarr.target]))
+        #expect(fake.writes.filter { $0.0 == "PUT album/monitor" }.count == 1)
+    }
+
+    /// R1: sign-out during a switch: nothing more is sent, and the journal file isn't written again.
+    @Test func aSignOutDuringASwitchSendsNothingAndLeavesNoFile() async throws {
+        let dir = FileManager.default.temporaryDirectory.appending(path: "SinglesOut-\(UUID().uuidString)")
+        let url = SinglesSwitchStore.defaultURL(in: dir, instance: "lidarr-a")
+        let fake = await SinglesLidarr(storeURL: url, shared: true)
+        fake.state.withLockUnchecked { s in s.refreshPending = true; s.refreshStatus = "started" }
+        let switcher = fake.switcher()
+        #expect(try await switcher.start(artistId: 20, target: SinglesLidarr.target) == .pending)
+        // Sign-out: the switcher stopped, the journal closed, the files erased.
+        await switcher.stop()
+        fake.store.close()
+        RequestStore.eraseAll(in: dir)
+        let sent = fake.writes.count
+        fake.state.withLockUnchecked { $0.refreshStatus = "completed" }
+        #expect(await switcher.resumeAll().isEmpty)
+        await #expect(throws: SinglesSwitchError.stopped) { _ = try await switcher.start(artistId: 20, target: SinglesLidarr.target) }
+        #expect(fake.writes.count == sent)
+        #expect(!FileManager.default.fileExists(atPath: url.path), "no journal after sign-out")
+        await #expect(throws: (any Error).self) { try await fake.store.save(SinglesSwitchJob(artistId: 9, target: SinglesLidarr.target,
+            originalProfileId: 1, originalFollow: "all", beforeAlbumIds: [], beforeReleaseGroups: [], startedAt: Date())) }
+        #expect(!FileManager.default.fileExists(atPath: url.path))
+    }
+
+    /// m3: an unreadable journal is moved aside (never silently dropped), and the change log's saved line can put the
+    /// artist back (profile, confirmed refresh, following).
+    @Test func aCorruptJournalIsKeptAsideAndTheArtistCanBePutBack() async throws {
+        let dir = FileManager.default.temporaryDirectory.appending(path: "SinglesBad-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let url = dir.appending(path: "singles.json")
+        try Data("not json".utf8).write(to: url)
+        let fake = await SinglesLidarr(storeURL: url)
+        #expect(try await fake.store.jobs().isEmpty)
+        #expect(await fake.store.damagedAt != nil)
+        let aside = try FileManager.default.contentsOfDirectory(atPath: dir.path).filter { $0.contains("unreadable") }
+        #expect(aside.count == 1, "kept aside, not overwritten")
+        fake.state.withLockUnchecked { s in s.follow = "none"; s.profileId = 5 }   // the lost switch left following off
+        #expect(try await fake.switcher().restoreFromNote(artistId: 20, profileId: 5, follow: "all"))
+        #expect(fake.writes.map(\.0) == ["PUT artist/editor", "POST command", "PUT artist/editor"])
+        #expect(fake.state.withLockUnchecked { $0.follow } == "all")
+    }
+
+    /// m5: a pending switch's song survives a relaunch and is handed over once, when it finishes.
+    @Test func aPendingSwitchsSongIsAskedForAfterARelaunch() async throws {
+        let dir = FileManager.default.temporaryDirectory.appending(path: "SinglesSong-\(UUID().uuidString)")
+        let url = dir.appending(path: "singles.json")
+        let fake = await SinglesLidarr(storeURL: url)
+        fake.state.withLockUnchecked { s in s.refreshPending = true; s.refreshStatus = "started" }
+        let song = ExternalRecording(recordingMBID: mbid(777), title: "Song", artist: "Owner", source: .lidarr)
+        #expect(try await fake.switcher().start(artistId: 20, target: SinglesLidarr.target, recording: song) == .pending)
+        // A relaunch: a new store and switcher read the file.
+        let relaunched = SinglesSwitcher(lidarr: fake.client, gate: fake.gate, store: SinglesSwitchStore(fileURL: url), checks: 2, pause: .zero)
+        fake.applyRefresh()
+        fake.state.withLockUnchecked { $0.refreshStatus = "completed" }
+        #expect(await relaunched.resumeAll() == [20: .finished])
+        #expect(await relaunched.takeRecording(20) == song)
+        #expect(await relaunched.takeRecording(20) == nil, "once")
+    }
+
+    /// m6: Undo leaves a profile the owner changed by hand since.
+    @Test func undoLeavesAProfileTheOwnerChanged() async throws {
+        let fake = await SinglesLidarr()
+        let switcher = fake.switcher()
+        _ = try await switcher.start(artistId: 20, target: SinglesLidarr.target)
+        fake.state.withLockUnchecked { $0.profileId = 7 }   // the owner's own change
+        let before = fake.writes.count
+        await #expect(throws: SinglesSwitchError.changedByOwner) { try await switcher.undo(artistId: 20) }
+        #expect(fake.writes.count == before && fake.state.withLockUnchecked { $0.profileId } == 7)
+    }
+
+    /// m1: a "+ Singles (Magpie)" profile that isn't a true superset of the saved original is refused; m2: the unmonitor
+    /// needs an open switch for the album's artist.
+    @Test func theGateChecksTheSupersetAndTheOpenSwitch() async throws {
+        let fake = await SinglesLidarr()
+        try await fake.store.save(SinglesSwitchJob(artistId: 20, target: SinglesLidarr.target, originalProfileId: 5,
+                                                   originalFollow: "all", beforeAlbumIds: [], beforeReleaseGroups: [], startedAt: Date()))
+        fake.state.withLockUnchecked { $0.profiles.append(SinglesLidarr.profile(41, "Narrow + Singles (Magpie)",
+                                                                                primary: ["Album", "Single"], secondary: ["Studio"],
+                                                                                statuses: ["Official"])) }
+        await #expect(throws: WriteGateError.self) {
+            _ = try await fake.gate.send("PUT", "artist/editor", body: Profile(artistIds: [20], metadataProfileId: 41), confinedAs: .singlesSwitch)
+        }
+        // m2: a finished switch (not open): no unmonitor.
+        var done = try #require(try await fake.store.job(20))
+        done.step = .done
+        try await fake.store.save(done)
+        await #expect(throws: WriteGateError.self) {
+            _ = try await fake.gate.send("PUT", "album/monitor", body: Unmonitor(albumIds: [6], monitored: false), confinedAs: .singlesSwitch)
+        }
+        #expect(fake.writes.isEmpty)
+    }
+
+    struct Unmonitor: Encodable, Sendable { var albumIds: [Int]; var monitored: Bool }
 
     /// I2: no command id, or a refresh that doesn't finish in time: following stays off and nothing is unmonitored yet;
     /// once it completes, the late singles are unmonitored and following comes back.

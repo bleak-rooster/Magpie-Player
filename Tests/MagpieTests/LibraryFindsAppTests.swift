@@ -294,4 +294,31 @@ private let releaseMBID = MBID("b5cdfb5f-35a5-4bc5-bbca-57839a71813a")!
         await model.seedUITestLibraryTrialIfAsked(defaults)
         #expect(model.letGo.jobs.isEmpty && model.requests.isEmpty && nav.updates.isEmpty)
     }
+
+    // MARK: - Re-review R2, m3
+
+    /// R2: owner defaults of Albums only, and an EP asked for: the add's types list the EP; a kind that can't be listed
+    /// is refused before anything is sent.
+    @Test func aNewArtistsAddListsTheReleaseAskedFor() async throws {
+        let types = try #require(AppModel.libraryTypes(defaults: ReleaseTypes(kinds: .albums), primaryType: "EP", secondaryTypes: []))
+        #expect(types.includes(albumType: "EP", secondaryTypes: []) && types.includes(albumType: "Album", secondaryTypes: []))
+        let model = try await model()
+        defer { model.signOut() }
+        available(model)
+        let before = transport.navidrome.requests.count
+        let recording = ExternalRecording(recordingMBID: firstTrack, title: "Harbour Lights", artist: "Stub Arrows", source: .lidarr)
+        await model.sendToLibrary(recording, album: groupMBID, title: "Harbour Lights",
+                                  preview: .newArtist(title: "Harbour Lights", isAlbum: false, primaryType: "Broadcast", secondaryTypes: []))
+        #expect(model.libraryEdits.notice?.text == LibraryFindsCopy.refusedKind)
+        #expect(transport.navidrome.requests.dropFirst(before).allSatisfy { ($0.httpMethod ?? "GET") == "GET" })
+    }
+
+    /// m3: the change log line a switch saved names its artist, profile and following (for "Put back").
+    @Test func aSwitchLineSaysWhatWasSaved() {
+        let line = ChangeLogEntry(date: Date(), method: "NOTE", path: "/magpie",
+                                  bodySummary: LidarrWriteGate.singlesNote(artistId: 20, metadataProfileId: 5, monitorNewItems: "all"))
+        let saved = ChangeLogView.singlesSaved(line)
+        #expect(saved?.artistId == 20 && saved?.profileId == 5 && saved?.follow == "all")
+        #expect(ChangeLogView.singlesSaved(ChangeLogEntry(date: Date(), method: "PUT", path: "/x", bodySummary: "")) == nil)
+    }
 }

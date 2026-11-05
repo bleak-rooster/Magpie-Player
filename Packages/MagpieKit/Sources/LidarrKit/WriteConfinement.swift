@@ -76,8 +76,10 @@ public struct WriteConfinement: Sendable {
         public var follow: String
         /// The switch (or its roll-back) is under way: following may be "none" meanwhile.
         public var open: Bool
-        public init(profileId: Int, follow: String, open: Bool) {
-            self.profileId = profileId; self.follow = follow; self.open = open
+        /// The "+ Singles" profile the switch made or reused, once known.
+        public var singlesProfileId: Int?
+        public init(profileId: Int, follow: String, open: Bool, singlesProfileId: Int? = nil) {
+            self.profileId = profileId; self.follow = follow; self.open = open; self.singlesProfileId = singlesProfileId
         }
     }
 
@@ -189,6 +191,14 @@ public struct WriteConfinement: Sendable {
                 _ = try await context.artist(artistId)
                 return .confined(artists: [], rule: .other)
             case .singlesUnmonitor(let ids):
+                // Re-review m2: only releases of an artist whose switch is open in the journal, and without files.
+                for id in ids {
+                    let artistId: Int?
+                    do { artistId = try await lidarr.album(id: id).artistId } catch { return .unknown }
+                    guard let artistId, await singlesOriginal?(artistId)?.open == true else {
+                        return .refused("a singles-switch unmonitor only for an artist whose switch is open")
+                    }
+                }
                 try await context.singlesUnmonitor(ids)
                 return .confined(artists: [], rule: .other)
             case .command(let name, let albumIds, let artistId):
@@ -606,9 +616,13 @@ public struct WriteConfinement: Sendable {
                 throw Refusal(reason: "the singles switch changes the metadata profile or monitorNewItems only")
             }
             if let profile = (value("metadataprofileid") as? NSNumber)?.intValue, profile != original.profileId {
-                let profiles = try await read { try await lidarr.metadataProfiles() }
-                guard let name = profiles.first(where: { $0.id == profile })?.name, name.hasSuffix(Provisioner.singlesSuffix) else {
-                    throw Refusal(reason: "only a Magpie singles superset profile, or the saved original")
+                // Re-review m1: a "+ Singles (Magpie)" profile that is a true superset of the saved original plus Single.
+                let profiles = try await read { try await lidarr.metadataProfilesJSON() }
+                guard let target = profiles.first(where: { $0["id"]?.intValue == profile }),
+                      let base = profiles.first(where: { $0["id"]?.intValue == original.profileId }),
+                      target["name"]?.stringValue?.hasSuffix(Provisioner.singlesSuffix) == true,
+                      Provisioner.isSinglesSuperset(target, of: base) else {
+                    throw Refusal(reason: "only a Magpie singles superset of the saved profile, or the saved original")
                 }
             }
             if let follow = value("monitornewitems") as? String {

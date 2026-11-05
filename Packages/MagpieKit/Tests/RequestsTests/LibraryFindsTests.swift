@@ -150,8 +150,8 @@ import MagpieCore
     @Test func aNewArtistsSongPreviewsItsSmallestRelease() async throws {
         let h = await Harness(setup: Self.setup)
         h.server.artistIsNew()
-        #expect(try await h.runner.targetPreview(h.recording(recSingleAndAlbum)) == .newArtist(title: "Release 2", isAlbum: false, isSingle: true))
-        #expect(try await h.runner.targetPreview(h.recording(recAlbumOnly)) == .newArtist(title: "Release 4", isAlbum: true, isSingle: false))
+        #expect(try await h.runner.targetPreview(h.recording(recSingleAndAlbum)) == .newArtist(title: "Release 2", isAlbum: false, primaryType: "Single", secondaryTypes: []))
+        #expect(try await h.runner.targetPreview(h.recording(recAlbumOnly)) == .newArtist(title: "Release 4", isAlbum: true, primaryType: "Album", secondaryTypes: []))
     }
 
     // MARK: - 3b. A library trial's Keep and Reject (D147)
@@ -303,6 +303,46 @@ import MagpieCore
         let match = TrialSongs.match(files: files, candidates: candidates)
         #expect(match.ids == ["t1", "t2"], "never the owner's songs")
         #expect(match.unmatched == 1, "03 has no song: left alone, and said")
+    }
+
+    /// Re-review m7: Keep after a Reject whose delete failed (the album left unmonitored) monitors it again.
+    @Test func keepAfterAFailedDeleteMonitorsTheAlbumAgain() async throws {
+        let h = await Harness(setup: Self.setup)
+        let id = try await libraryTrial(h)
+        h.server.with { $0.bulkDelete = .rejects }
+        await #expect(throws: RequestRunner.TrialError.needsAttention) { try await h.runner.rejectTrial(id) }
+        #expect(h.server.with { $0.albums.first { $0.id == 33 }?.monitored } == false)
+        let before = h.server.writes.count
+        try await h.runner.keepTrial(id)
+        let writes = Array(h.server.writeBodies().dropFirst(before))
+        #expect(writes.map(\.0) == ["PUT album/monitor"] && writes[0].1["monitored"] as? Bool == true)
+        #expect(await h.request(id)?.isLibraryTrial == false)
+    }
+
+    /// Re-review R2: a new artist's add always lists the release asked for: the owner's types widened to its kind.
+    @Test func theAddsTypesAlwaysListTheTarget() throws {
+        let albumsOnly = ReleaseTypes(kinds: .albums)
+        let ep = try #require(albumsOnly.widened(toInclude: "EP", secondaryTypes: []))
+        #expect(ep.includes(albumType: "EP", secondaryTypes: []) && ep.kinds == .albumsAndEPs)
+        let single = try #require(albumsOnly.widened(toInclude: "Single", secondaryTypes: []))
+        #expect(single.kinds == .albumsEPsAndSingles)
+        var noStudio = ReleaseTypes.standard
+        noStudio.studio = false
+        noStudio.live = true
+        #expect(noStudio.widened(toInclude: "Album", secondaryTypes: [])?.studio == true)
+        #expect(albumsOnly.widened(toInclude: "Album", secondaryTypes: ["Live"])?.live == true)
+        #expect(albumsOnly.widened(toInclude: "Broadcast", secondaryTypes: []) == nil, "can't be expressed: refused")
+        #expect(albumsOnly.widened(toInclude: "Album", secondaryTypes: ["Compilation"]) == nil)
+    }
+
+    /// R2: an album-page add previews that release group (its own type), not the first track's smallest release.
+    @Test func anAlbumPagePreviewIsThatRelease() async throws {
+        let h = await Harness(setup: Self.setup)
+        h.server.artistIsNew()
+        #expect(try await h.runner.targetPreview(h.recording(recSingleAndAlbum), album: rgAlbum)
+                == .newArtist(title: "Release 1", isAlbum: true, primaryType: "Album", secondaryTypes: []))
+        #expect(try await h.runner.targetPreview(h.recording(recSingleAndAlbum), album: rgSingle)
+                == .newArtist(title: "Release 2", isAlbum: false, primaryType: "Single", secondaryTypes: []))
     }
 
     /// As Finds (D10): when the date passes, nothing is removed by itself; it still shows, with Keep and Reject.

@@ -93,7 +93,15 @@ extension AppModel {
         requestStore = nil
         if let retired { Task { await retired.stop() } }
         songActions.requestsLoaded = false   // round 14 A3 (I1): not until the new runner publishes its list
+        // Re-review R1: the retired switcher sends and saves nothing more; without a Lidarr (sign-out, disconnect) its
+        // journal is closed too, so nothing writes the file again.
+        let retiredSwitcher = singlesSwitcher
         singlesSwitcher = nil
+        if let retiredSwitcher { Task { await retiredSwitcher.stop() } }
+        let nextScope = session != nil ? lidarrClient?.instanceScope : nil
+        if let retiredSwitcher, retiredSwitcher.store.fileURL != nextScope.map({ SinglesSwitchStore.defaultURL(in: dataDirectory, instance: $0) }) {
+            retiredSwitcher.store.close()
+        }
         guard session != nil, let client = lidarrClient else {
             requests = []
             followPendingAdds(instance: nil)   // round 14 A3
@@ -107,7 +115,7 @@ extension AppModel {
         let ledger = Ledger(fileURL: Ledger.defaultURL(in: dataDirectory), instance: scope)
         // FM1: the gate confines deletes and artist edits itself, from this ledger and the owner's setup.
         // Round 15 C3 (D146): the singles switch's journal; the gate allows its writes only from it.
-        let singlesStore = SinglesSwitchStore(fileURL: SinglesSwitchStore.defaultURL(in: dataDirectory, instance: scope))
+        let singlesStore = SinglesSwitchStore.shared(fileURL: SinglesSwitchStore.defaultURL(in: dataDirectory, instance: scope))
         let confinement = WriteConfinement(ledger: ledger, roots: { [weak self] in
             await self?.gateRoots ?? WriteConfinement.Roots(mainRoot: nil, findsRoot: nil, findTagId: nil)
         }, liveRequests: { [weak self] in await self?.liveRequestIds() },   // R17: queue deletes
@@ -134,7 +142,7 @@ extension AppModel {
         self.gate = gate
         self.runner = runner
         singlesSwitcher = SinglesSwitcher(lidarr: client, gate: gate, store: singlesStore)
-        Task { await self.resumeSinglesSwitches(force: true) }   // D146: an interrupted switch, finished or rolled back
+        Task { [weak self] in await self?.resumeSinglesSwitches(force: true) }   // D146: an interrupted switch, finished or rolled back
         let stallLimit = stallLimit.seconds
         Task { await runner.setStallLimit(stallLimit) }   // R17
         runnerTasks.append(Task { [weak self] in

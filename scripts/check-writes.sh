@@ -113,6 +113,20 @@ if [ -z "${G1_SRC:-}" ]; then
   restarter="Packages/MagpieKit/Sources/Requests/DownloadsInLidarr.swift"
   trialfile="Packages/MagpieKit/Sources/Requests/RequestRunner+Trial.swift"
   singlesfile="Packages/MagpieKit/Sources/Requests/SinglesSwitch.swift"
+  # Round 15 C3 (re-review m2): the singles-switch journal the gate trusts is made and written only by its owners: the
+  # store type only in SinglesSwitch.swift and the runner's rebuild (one shared store per Lidarr), and nothing else saves
+  # to a switcher's store.
+  for f in $(grep -rlE --include='*.swift' 'SinglesSwitchStore' "${product[@]}" | sort -u || true); do
+    case "$f" in
+      "$singlesfile"|App/AppModel+Requests.swift) ;;
+      *) echo "G1: the singles-switch journal named outside its owners: $f" >&2; bad=1 ;;
+    esac
+  done
+  [ "$(grep -c 'SinglesSwitchStore.shared(fileURL:' App/AppModel+Requests.swift)" = 1 ] ||
+    { echo "G1: App/AppModel+Requests.swift: the singles journal isn't the one shared store" >&2; bad=1; }
+  if grep -rnE --include='*.swift' '(switcher|singlesSwitcher\??)\.store\.save\(' "${product[@]}" | grep -v "^$singlesfile:" | grep -q .; then
+    echo "G1: a singles-switch journal saved outside SinglesSwitch.swift" >&2; bad=1
+  fi
   shaped=$(grep -rnE --include='*.swift' 'confinedAs:' "${product[@]}" | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' |
            grep -v "^Packages/MagpieKit/Sources/LidarrKit/WriteGate.swift:" || true)
   while IFS= read -r s; do
