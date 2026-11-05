@@ -386,6 +386,7 @@ final class AppModel {
                 onLike: { [weak self] song in Task { await self?.toggleStar(song) } },
                 isLiked: { [weak self] song in self?.isStarred(song) ?? song.starred },
                 artworkImage: { [weak self] song in await self?.nowPlayingArtwork(song) },   // P4
+                previewArtwork: { [weak self] item in await self?.previewArtwork(item, side: 200) },   // C1 (D127)
                 preview: previewPlayer)   // round 14 A2
         }
         #endif

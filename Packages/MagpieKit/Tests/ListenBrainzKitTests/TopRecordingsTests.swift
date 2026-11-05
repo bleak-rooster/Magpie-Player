@@ -49,6 +49,22 @@ import Testing
         #expect(t.requests.isEmpty)
     }
 
+    /// Round 15 C1 (owner item 3, D128): the cover is the release ListenBrainz has art for (`caa_release_mbid`) when it
+    /// names one; `release_mbid` (often without a front of its own) otherwise.
+    @Test func theCoverIsTheReleaseWithArt() async throws {
+        let t = MockTransport()
+        t.stub(pathSuffix: "/top-recordings-for-artist/\(Self.portishead.rawValue)", body: json(#"""
+            [{"artist_mbids":["8f6bd1e4-fbe1-4f50-aa9b-94c450ec0f11"],"artist_name":"Portishead","recording_name":"Glory Box",
+              "release_mbid":"76df3287-6cda-33eb-8e9a-044b5e15ffdd","release_name":"Dummy",
+              "caa_release_mbid":"48140466-cff6-3222-bd55-63c27e43190d","caa_id":829521842},
+             {"artist_name":"Portishead","recording_name":"Roads","release_mbid":"76df3287-6cda-33eb-8e9a-044b5e15ffdd",
+              "caa_release_mbid":"not-an-mbid"}]
+            """#))
+        let rows = try await ListenBrainzClient(transport: t, token: "x").topRecordingsForArtist(Self.portishead)
+        #expect(rows[0].releaseMBID == MBID("48140466-cff6-3222-bd55-63c27e43190d"))
+        #expect(rows[1].releaseMBID == MBID("76df3287-6cda-33eb-8e9a-044b5e15ffdd"), "a junk caa id: the release")
+    }
+
     @Test func refusalsAndJunk() async throws {
         let t = MockTransport()
         t.stub(pathSuffix: "/top-recordings-for-artist/\(Self.portishead.rawValue)", status: 401)

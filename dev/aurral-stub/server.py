@@ -23,6 +23,8 @@ sends no custom header) can be pointed at one; a test runner may instead send `X
   oversized        the preview's ?download and the image proxy's pictures send 5 MB (A7)
   lidarr-artist    Trending's songs are credited to "Radiohead", the name Lidarr's lookup gives ARTIST_A (the one
                    artist MBID the editorial links answer), so S14 M2's name check (D116) passes for Whole artist
+  playable-clip    the preview's ?download sends 12 s of silence the phone can really play (round 15 C1: the mini
+                   player stays up while the UI test looks at its cover)
 Control (never sent by the app): GET /__stub/ping, GET /__stub/log (the requests seen, newest last, as
 "METHOD /path" without the scenario prefix and without query), POST /__stub/reset.
 """
@@ -60,7 +62,23 @@ PREVIEW_CLIP = b"ID3" + b"\xff" * 2045
 PROXIED_PICTURE = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")
 SCENARIOS = {"default", "aurral210", "no-access-flow", "no-downloader", "region-us", "missing-sections",
-             "genre-not-ready", "slow", "failing", "redirects", "oversized", "lidarr-artist"}
+             "genre-not-ready", "slow", "failing", "redirects", "oversized", "lidarr-artist", "playable-clip"}
+
+
+def silent_wav(seconds=12, rate=8000):
+    """Round 15 C1: a clip AVAudioPlayer really plays (8-bit mono silence), for the "playable-clip" scenario."""
+    import io
+    import wave
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(1)
+        w.setframerate(rate)
+        w.writeframes(b"\x80" * rate * seconds)
+    return buf.getvalue()
+
+
+PLAYABLE_CLIP = silent_wav()
 # Round 14 A7 fix round 1: "redirects" answers the preview's ?download and the image proxy's pictures with a 302 (an
 # Aurral that redirects anyway: Magpie must refuse it, never follow); "oversized" sends 5 MB for both (past the caps).
 OVERSIZED = b"ID3" + b"\xff" * (5 * 1024 * 1024)
@@ -390,6 +408,8 @@ class Handler(BaseHTTPRequestHandler):
                     return self.reply(302, None, {"Location": f"/s/default{path}?download", "Cache-Control": "no-store"})
                 if scenario == "oversized":
                     return self.reply_bytes(200, OVERSIZED, "audio/mpeg")
+                if scenario == "playable-clip":
+                    return self.reply_bytes(200, PLAYABLE_CLIP, "audio/mpeg")
                 return self.reply_bytes(200, PREVIEW_CLIP, "audio/mpeg")
             return self.reply(302, None, {"Location": PREVIEW_TARGET, "Cache-Control": "no-store"})
         # Round 14 A7: the image proxy's file route is open (2.13 guards.ts isOpen).

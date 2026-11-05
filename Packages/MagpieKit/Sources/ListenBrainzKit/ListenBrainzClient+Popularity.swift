@@ -26,6 +26,8 @@ private struct TopRecordingRow: Decodable {
     var recording_name: String?
     var release_mbid: String?
     var release_name: String?
+    /// Round 15 C1 (D128): the release the Cover Art Archive has a front for (often not `release_mbid`).
+    var caa_release_mbid: String?
     /// Milliseconds.
     var length: Double?
 
@@ -37,11 +39,12 @@ private struct TopRecordingRow: Decodable {
         recording_name = try? c.decodeIfPresent(String.self, forKey: .recording_name)
         release_mbid = try? c.decodeIfPresent(String.self, forKey: .release_mbid)
         release_name = try? c.decodeIfPresent(String.self, forKey: .release_name)
+        caa_release_mbid = try? c.decodeIfPresent(String.self, forKey: .caa_release_mbid)
         length = try? c.decodeIfPresent(Double.self, forKey: .length)
     }
 
     enum CodingKeys: String, CodingKey {
-        case artist_mbids, artist_name, recording_mbid, recording_name, release_mbid, release_name, length
+        case artist_mbids, artist_name, recording_mbid, recording_name, release_mbid, release_name, caa_release_mbid, length
     }
 
     func recording(artist: MBID) -> ExternalRecording? {
@@ -53,6 +56,7 @@ private struct TopRecordingRow: Decodable {
                                  title: title, artist: name,
                                  releaseTitle: (release?.isEmpty == false) ? release : nil,
                                  duration: length.flatMap { $0 > 0 && $0.isFinite && $0 < 1e9 ? $0 / 1000 : nil },
-                                 source: .listenBrainz, releaseMBID: release_mbid.flatMap(MBID.init))
+                                 source: .listenBrainz,
+                                 releaseMBID: caa_release_mbid.flatMap(MBID.init) ?? release_mbid.flatMap(MBID.init))
     }
 }

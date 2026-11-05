@@ -11,15 +11,19 @@ public struct PreviewItem: Sendable, Hashable, Identifiable {
     public var artist: String
     public var album: String?
     public var artworkURL: URL?
+    /// Round 15 C1 (owner item 4, D127): the app's handle for the song's picture (the one its row shows), which the app
+    /// resolves for the mini player and the Lock Screen. Never fetched as a link here.
+    public var artworkKey: String?
 
     public init(id: String, previewId: String?, title: String, artist: String, album: String? = nil,
-                artworkURL: URL? = nil) {
+                artworkURL: URL? = nil, artworkKey: String? = nil) {
         self.id = id
         self.previewId = previewId
         self.title = title
         self.artist = artist
         self.album = album
         self.artworkURL = artworkURL
+        self.artworkKey = artworkKey
     }
 }
 

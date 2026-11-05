@@ -3,6 +3,7 @@ import Foundation
 import MagpieCore
 import Observation
 import Playback
+import UIKit
 
 /// Round 14 A2 (D85–D89): 30-second previews, through Aurral.
 ///
@@ -45,7 +46,14 @@ extension AppModel {
         let onAurral = song.artwork.flatMap { $0.raw.hasPrefix("/") ? $0 : nil }
         return PreviewItem(id: "aurral-\(key)", previewId: song.preview?.trackId, title: song.trackName,
                            artist: song.artistName, album: song.albumName,
-                           artworkURL: base.flatMap { onAurral?.url(on: $0) })
+                           artworkURL: base.flatMap { onAurral?.url(on: $0) }, artworkKey: song.artwork?.raw)
+    }
+
+    /// Round 15 C1 (owner item 4, D127): the preview's cover for the mini player and the Lock Screen: the picture its
+    /// row shows (the one the server named), through the server's image proxy; nil: the placeholder.
+    func previewArtwork(_ item: PreviewItem, side: CGFloat) async -> UIImage? {
+        guard let key = item.artworkKey, let image = AurralImage(key) else { return nil }
+        return await aurralArtwork(image, side: side)
     }
 
     /// Resolves a preview through Aurral right now (D87): 404 is "No preview available"; a 5xx, a timeout, a refused

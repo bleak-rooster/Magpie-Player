@@ -21,6 +21,10 @@ public final class NowPlayingBridge {
     private let isLiked: (Song) -> Bool
     private var artwork: (coverArtId: String, artwork: MPMediaItemArtwork)?
     private var artworkTask: Task<Void, Never>?
+    /// Round 15 C1 (owner item 4, D127): the preview's cover, through the app (its row's picture); nil: none.
+    private let previewArtwork: (@MainActor (PreviewItem) async -> UIImage?)?
+    private var previewArt: (itemId: String, artwork: MPMediaItemArtwork?)?
+    private var previewArtTask: Task<Void, Never>?
     private var observation: Task<Void, Never>?
     private var commandTargets: [(MPRemoteCommand, Any)] = []
 
@@ -47,9 +51,11 @@ public final class NowPlayingBridge {
 
     public init(player: Player, artworkURL: @escaping (Song) -> URL?, onLike: @escaping (Song) -> Void,
                 isLiked: @escaping (Song) -> Bool = { $0.starred },
-                artworkImage: (@MainActor (Song) async -> UIImage?)? = nil, preview: PreviewPlayer? = nil) {
+                artworkImage: (@MainActor (Song) async -> UIImage?)? = nil,
+                previewArtwork: (@MainActor (PreviewItem) async -> UIImage?)? = nil, preview: PreviewPlayer? = nil) {
         self.player = player
         self.preview = preview
+        self.previewArtwork = previewArtwork
         self.artworkURL = artworkURL
         self.artworkImage = artworkImage
         self.onLike = onLike
@@ -84,6 +90,7 @@ public final class NowPlayingBridge {
     public func invalidate() {
         observation?.cancel()
         artworkTask?.cancel()
+        previewArtTask?.cancel()
         for (command, target) in commandTargets { command.removeTarget(target) }
         commandTargets = []
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
@@ -96,7 +103,8 @@ public final class NowPlayingBridge {
         return PreviewSnapshot(itemId: item.id, isPlaying: preview.phase == .playing, second: wholeSeconds(preview.position))
     }
 
-    /// The Now Playing info of the preview playing: its title and artist, 30 seconds long. No artwork, no queue index.
+    /// The Now Playing info of the preview playing: its title and artist, 30 seconds long. The bridge adds its cover once
+    /// the app has it (C1, D127).
     public static func previewInfo(_ preview: PreviewPlayer) -> [String: Any]? {
         guard preview.isActive, let item = preview.current else { return nil }
         var info: [String: Any] = [
@@ -119,7 +127,13 @@ public final class NowPlayingBridge {
     private func publish(loadArtwork: Bool) {
         Self.syncModes(of: player)
         let center = MPNowPlayingInfoCenter.default()
-        if let preview, let info = Self.previewInfo(preview) {
+        if let preview, var info = Self.previewInfo(preview), let item = preview.current {
+            // C1 (D127): the preview's cover (its row's picture), once the app has it; loaded once per preview.
+            if previewArt?.itemId == item.id {
+                if let artwork = previewArt?.artwork { info[MPMediaItemPropertyArtwork] = artwork }
+            } else {
+                fetchPreviewArtwork(for: item)
+            }
             center.nowPlayingInfo = info
             MPRemoteCommandCenter.shared().likeCommand.isActive = false
             return
@@ -151,6 +165,18 @@ public final class NowPlayingBridge {
         center.nowPlayingInfo = info
         MPRemoteCommandCenter.shared().likeCommand.isActive = isLiked(song)
         if loadArtwork { fetchArtwork(for: song) }
+    }
+
+    private func fetchPreviewArtwork(for item: PreviewItem) {
+        previewArtTask?.cancel()
+        previewArt = (item.id, nil)
+        guard let previewArtwork, item.artworkKey != nil else { return }
+        previewArtTask = Task { [weak self] in
+            guard let image = await previewArtwork(item), !Task.isCancelled, let self, self.previewArt?.itemId == item.id
+            else { return }
+            self.previewArt = (item.id, Self.makeArtwork(image))
+            if self.preview?.current?.id == item.id { self.publish(loadArtwork: false) }
+        }
     }
 
     private func fetchArtwork(for song: Song) {
