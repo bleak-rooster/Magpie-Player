@@ -87,6 +87,8 @@ public struct WriteConfinement: Sendable {
         case other
         /// D49: a restart of any download; its albums may get one `restartSearch` (Y5 fix I9).
         case queueRestart(albums: Set<Int>)
+        /// Round 15 C3 (D147): a library trial's files: right before it goes, its ledger entry must still be an open trial.
+        case trialDelete(albumId: Int)
     }
 
     enum Verdict: Equatable {
@@ -118,6 +120,12 @@ public struct WriteConfinement: Sendable {
         /// The same request, named `ConfinedShape.queueRestartAny` by Settings › Downloads in Lidarr (D49); round 13
         /// (D63): `allowForeign` from its flagged confirmation, for a download Lidarr never grabbed.
         case queueRestartAny(Int, allowForeign: Bool)
+        /// Round 15 C3 (D147): `ConfinedShape.trialDelete`'s track file delete.
+        case trialDelete([Int])
+        /// Round 15 C3 (D146): `ConfinedShape.singlesSwitch`'s writes. `undoProfile`: the profile the change log saved.
+        case singlesEditor([String: Any], undoProfile: Int?)
+        case singlesRefresh(Int)
+        case singlesUnmonitor([Int])
     }
 
     func check(_ write: Write, lidarr: LidarrClient) async -> Verdict {
@@ -147,6 +155,18 @@ public struct WriteConfinement: Sendable {
                 return .confined(artists: [], rule: .other)
             case .queueDelete, .queueRestartAny:
                 return .unknown   // handled above
+            case .trialDelete(let ids):
+                let (artistId, albumId) = try await context.trialDelete(ids)
+                return .confined(artists: [artistId], rule: .trialDelete(albumId: albumId))
+            case .singlesEditor(let body, let undo):
+                try await context.singlesEditor(body, undoProfile: undo)
+                return .confined(artists: [], rule: .other)
+            case .singlesRefresh(let artistId):
+                _ = try await context.artist(artistId)
+                return .confined(artists: [], rule: .other)
+            case .singlesUnmonitor(let ids):
+                try await context.singlesUnmonitor(ids)
+                return .confined(artists: [], rule: .other)
             case .command(let name, let albumIds, let artistId):
                 // Y5 fix I9: a search can make Lidarr grab and replace files, so only albums the ledger knows (Magpie
                 // recorded each before it monitored or searched it); a refresh only for an artist the ledger knows.
@@ -258,6 +278,10 @@ public struct WriteConfinement: Sendable {
     /// kept or keeping now. keptLossyDelete: every one is still confirmed kept, no Keep under way. Nil: the ledger
     /// can't be read.
     func lastCheck(_ rule: Rule, _ artists: Set<Int>) async -> Bool? {
+        if case .trialDelete(let albumId) = rule {
+            guard let entries = try? await ledger.entries else { return nil }
+            return entries.contains { $0.albumId == albumId && $0.isOpenTrial }
+        }
         guard !artists.isEmpty, rule == .findDelete || rule == .keptLossyDelete else { return true }
         guard let entries = try? await ledger.entries else { return nil }
         switch rule {
@@ -265,7 +289,7 @@ public struct WriteConfinement: Sendable {
             return !entries.contains { artists.contains($0.lidarrArtistId) && $0.isKeptOrKeeping }
         case .keptLossyDelete:
             return artists.allSatisfy { Self.confirmedKept($0, in: entries) }
-        case .other, .queueRestart:
+        case .other, .queueRestart, .trialDelete:
             return true
         }
     }
@@ -505,6 +529,72 @@ public struct WriteConfinement: Sendable {
                 artists.insert(artistId)
             }
             return artists
+        }
+
+        /// Round 15 C3 (D147): Reject of a library trial. The files must all be of one album whose ledger entry is an open
+        /// trial (Magpie monitored it when it was unmonitored with no files; not kept, not rejected, not Magpie's own
+        /// artist), of that entry's artist; Lidarr's album with that id is still the entry's release group; and the ids
+        /// are exactly that album's files now (read fresh), each inside the artist's folder. Nothing else of the artist.
+        func trialDelete(_ ids: [Int]) async throws -> (artist: Int, album: Int) {
+            guard !ids.isEmpty, ids.count <= WriteConfinement.maxTrackFiles else {
+                throw Refusal(reason: "track file delete needs 1 to \(WriteConfinement.maxTrackFiles) ids")
+            }
+            var albumId: Int?
+            var files: [TrackFile] = []
+            for id in ids {
+                let file = try await trackFile(id)
+                guard let a = file.albumId, albumId == nil || albumId == a else {
+                    throw Refusal(reason: "a trial delete is one album's files")
+                }
+                albumId = a
+                files.append(file)
+            }
+            guard let albumId, let entry = entries.first(where: { $0.albumId == albumId && $0.isOpenTrial }) else {
+                throw Refusal(reason: "not an album Magpie monitored when it had no files")
+            }
+            guard files.allSatisfy({ $0.artistId == entry.lidarrArtistId }) else { throw Refusal(reason: "another artist's files") }
+            let artist = try await artist(entry.lidarrArtistId)
+            let albums = try await read { try await lidarr.albums(artistId: entry.lidarrArtistId) }
+            guard albums.first(where: { $0.id == albumId })?.foreignAlbumId == entry.rgMbid else {
+                throw Refusal(reason: "the album isn't the trial's release any more")
+            }
+            let now = try await read { try await lidarr.trackFiles(albumId: albumId) }
+            guard Set(now.map(\.id)) == Set(ids), now.count == ids.count else {
+                throw Refusal(reason: "a trial delete is exactly all of the album's files")
+            }
+            guard let folder = artist.path else { throw Refusal(reason: "the artist has no folder") }
+            let inside = PathGuard(findsRoot: folder, otherRoots: [], caseInsensitive: false)
+            guard files.allSatisfy({ inside.isInside($0.path) }) else { throw Refusal(reason: "a file outside the artist's folder") }
+            return (entry.lidarrArtistId, albumId)
+        }
+
+        /// Round 15 C3 (D146): the singles switch's artist edit. Any artist that exists (it is the owner's confirmed
+        /// action); a metadata profile only one of Magpie's own, or the one the change log saved for the undo.
+        func singlesEditor(_ body: [String: Any], undoProfile: Int?) async throws {
+            let value = { (name: String) in body.first { $0.key.lowercased() == name }?.value }
+            guard let ids = value("artistids") as? [Any], ids.count == 1, let id = (ids[0] as? NSNumber)?.intValue else {
+                throw Refusal(reason: "the artist editor changes one artist")
+            }
+            _ = try await artist(id)
+            let keys = Set(body.keys.map { $0.lowercased() })
+            guard keys == ["artistids", "metadataprofileid"] || keys == ["artistids", "monitornewitems"] else {
+                throw Refusal(reason: "the singles switch changes the metadata profile or monitorNewItems only")
+            }
+            if let profile = (value("metadataprofileid") as? NSNumber)?.intValue, profile != undoProfile {
+                let profiles = try await read { try await lidarr.metadataProfiles() }
+                guard let name = profiles.first(where: { $0.id == profile })?.name, ReleaseTypes.isMagpieMetadataProfile(name) else {
+                    throw Refusal(reason: "only Magpie's own metadata profiles, or the one saved for the undo")
+                }
+            }
+        }
+
+        /// Round 15 C3 (D146): only releases with no files are unmonitored by the singles switch.
+        func singlesUnmonitor(_ ids: [Int]) async throws {
+            for id in ids {
+                guard try await read({ try await lidarr.trackFiles(albumId: id) }).isEmpty else {
+                    throw Refusal(reason: "a release with files is never unmonitored here")
+                }
+            }
         }
 
         func albumMonitor(_ ids: [Int], monitored: Bool) throws {

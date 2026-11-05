@@ -293,35 +293,84 @@ public enum ArtistLidarr {
         var artistId: Int
     }
 
-    /// Round 15 C3 (D140) "Include singles for this artist", confirmed: for an artist Magpie added (the ledger says so,
-    /// read fresh) that follows no new releases, so the refresh lists their singles and monitors none of them. Their
-    /// metadata profile becomes Magpie's for `types` (made if missing) when it differs, then Lidarr refreshes the artist
-    /// and this waits for the refresh (at most `checks` reads, `pause` apart). Nothing else is changed: the one wanted
-    /// single is then monitored and searched by the usual request. Any other artist: refused, nothing sent.
-    public static func listSingles(artistId: Int, types: ReleaseTypes, lidarr: LidarrClient, gate: LidarrWriteGate,
-                                   ledger: Ledger, checks: Int = 30, pause: Duration = .seconds(2)) async throws {
+    // MARK: - Round 15 C3 (D146): "Include singles for this artist", any artist
+
+    public enum SinglesError: Error, Equatable {
+        /// It stopped part-way. `followingRestored`: the artist's new-release setting is back as it was (else it needs
+        /// a look in the change log). The metadata profile, if switched, stays (undo from the change log).
+        case failed(followingRestored: Bool)
+    }
+
+    /// The owner confirmed "Singles will be listed for <artist>. Only <song> downloads; nothing else changes." Every write
+    /// goes through `singlesSend` (`ConfinedShape.singlesSwitch`, pinned in check-writes), in this order:
+    /// 1. the change log saves the artist's metadata profile and `monitorNewItems` (the undo), before any write;
+    /// 2. `monitorNewItems` none (if it wasn't);
+    /// 3. the metadata profile Magpie's for `types` (made through the gate if missing), if it differs;
+    /// 4. RefreshArtist, waited for (at most `checks` reads, `pause` apart);
+    /// 5. every release that appeared in the refresh and is monitored, except `target`, unmonitored (only releases with
+    ///    no files; the gate refuses any other);
+    /// 6. `monitorNewItems` back to its saved value.
+    /// The target is then monitored and searched by the usual Add to library. The profile stays singles-inclusive.
+    public static func includeSingles(artistId: Int, target: MBID, types: ReleaseTypes, lidarr: LidarrClient,
+                                      gate: LidarrWriteGate, checks: Int = 30, pause: Duration = .seconds(2)) async throws {
         guard await gate.enabled else { throw ArtistLidarrError.changesOff }
         let artist = try await lidarr.artist(id: artistId)
-        guard try await ledger.createdArtist(artist) else { throw ArtistLidarrError.notMagpies }
-        guard !RequestRunner.follows(artist) else { throw ArtistLidarrError.failed }
+        let before = Set(try await lidarr.albums(artistId: artistId).map(\.id))
+        let follow = artist.monitorNewItems
+        await gate.note(LidarrWriteGate.singlesNote(artistId: artistId, metadataProfileId: artist.metadataProfileId,
+                                                    monitorNewItems: follow))
+        var followChanged = false
         do {
+            if follow?.lowercased() != "none" {
+                let body = FollowBody(artistIds: [artistId], monitorNewItems: "none")
+                _ = try await gate.send("PUT", "artist/editor", body: body, confinedAs: .singlesSwitch)
+                followChanged = true
+            }
             let profile = try await releaseTypesProfile(types, lidarr: lidarr, gate: gate)
             if artist.metadataProfileId != profile {
-                _ = try await gate.send("PUT", "artist/editor", body: MetadataProfileBody(artistIds: [artistId],
-                                                                                     metadataProfileId: profile))
+                let body = MetadataProfileBody(artistIds: [artistId], metadataProfileId: profile)
+                _ = try await gate.send("PUT", "artist/editor", body: body, confinedAs: .singlesSwitch)
             }
-            let data = try await gate.send("POST", "command", body: RefreshBody(name: "RefreshArtist", artistId: artistId))
-            guard let command = (try? JSONDecoder().decode(JSONValue.self, from: data))?["id"]?.intValue else { return }
-            for _ in 0..<checks {
-                if let c = try? await lidarr.commands().first(where: { $0.id == command }),
-                   RequestRunner.finishedCommandStates.contains(c.status.lowercased()) { return }
-                try await Task.sleep(for: pause)
+            let data = try await gate.send("POST", "command", body: RefreshBody(name: "RefreshArtist", artistId: artistId), confinedAs: .singlesSwitch)
+            if let command = (try? JSONDecoder().decode(JSONValue.self, from: data))?["id"]?.intValue {
+                for _ in 0..<checks {
+                    if let c = try? await lidarr.commands().first(where: { $0.id == command }),
+                       RequestRunner.finishedCommandStates.contains(c.status.lowercased()) { break }
+                    try await Task.sleep(for: pause)
+                }
             }
-        } catch WriteGateError.disabled {
+            let appeared = try await lidarr.albums(artistId: artistId)
+                .filter { !before.contains($0.id) && $0.monitored && $0.foreignAlbumId != target }.map(\.id)
+            if !appeared.isEmpty {
+                let body = UnmonitorBody(albumIds: appeared, monitored: false)
+                _ = try await gate.send("PUT", "album/monitor", body: body, confinedAs: .singlesSwitch)
+            }
+            if followChanged, let follow {
+                let body = FollowBody(artistIds: [artistId], monitorNewItems: follow)
+                _ = try await gate.send("PUT", "artist/editor", body: body, confinedAs: .singlesSwitch)
+            }
+        } catch WriteGateError.disabled where !followChanged {
             throw ArtistLidarrError.changesOff
-        } catch LidarrError.http(let status) where (400..<500).contains(status) {
-            throw ArtistLidarrError.failed
+        } catch {
+            guard followChanged, let follow else { throw SinglesError.failed(followingRestored: true) }
+            let restore = FollowBody(artistIds: [artistId], monitorNewItems: follow)
+            let restored = (try? await gate.send("PUT", "artist/editor", body: restore, confinedAs: .singlesSwitch)) != nil
+            throw SinglesError.failed(followingRestored: restored)
         }
+    }
+
+    /// The undo: the metadata profile the latest singles-switch note saved for the artist (the gate allows exactly that
+    /// profile back under the same shape).
+    public static func undoSingles(artistId: Int, gate: LidarrWriteGate) async throws {
+        let log = await gate.changeLog()
+        guard let profile = LidarrWriteGate.singlesSavedProfile(in: log, artistId: artistId) else { throw ArtistLidarrError.failed }
+        let body = MetadataProfileBody(artistIds: [artistId], metadataProfileId: profile)
+        _ = try await gate.send("PUT", "artist/editor", body: body, confinedAs: .singlesSwitch)
+    }
+
+    private struct UnmonitorBody: Encodable, Sendable {
+        var albumIds: [Int]
+        var monitored: Bool
     }
 
     private struct RefreshBody: Encodable, Sendable {

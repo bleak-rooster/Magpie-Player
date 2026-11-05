@@ -111,10 +111,21 @@ if [ -z "${G1_SRC:-}" ]; then
   # named only by the screen's restarter and the runner's counted removal, only as a queue delete with the same exact
   # query, never through a variable.
   restarter="Packages/MagpieKit/Sources/Requests/DownloadsInLidarr.swift"
+  trialfile="Packages/MagpieKit/Sources/Requests/RequestRunner+Trial.swift"
+  artistfile="Packages/MagpieKit/Sources/Requests/ArtistLidarr.swift"
   shaped=$(grep -rnE --include='*.swift' 'confinedAs:' "${product[@]}" | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' |
            grep -v "^Packages/MagpieKit/Sources/LidarrKit/WriteGate.swift:" || true)
   while IFS= read -r s; do
     [ -n "$s" ] || continue
+    # Round 15 C3 (D147, D146): the trial Reject's one track file delete and the singles switch's one sender.
+    case "$s" in
+      "$trialfile":*'_ = try await gate.send("DELETE", "trackfile/bulk", body: TrackFileIdsBody(trackFileIds: ids), confinedAs: .trialDelete)') continue ;;
+      # D146: the singles switch, only in ArtistLidarr.swift, only these forms (its bodies are built just above each).
+      "$artistfile":*'_ = try await gate.send("PUT", "artist/editor", body: body, confinedAs: .singlesSwitch)') continue ;;
+      "$artistfile":*'let data = try await gate.send("POST", "command", body: RefreshBody(name: "RefreshArtist", artistId: artistId), confinedAs: .singlesSwitch)') continue ;;
+      "$artistfile":*'_ = try await gate.send("PUT", "album/monitor", body: body, confinedAs: .singlesSwitch)') continue ;;
+      "$artistfile":*'let restored = (try? await gate.send("PUT", "artist/editor", body: restore, confinedAs: .singlesSwitch)) != nil') continue ;;
+    esac
     case "${s%%:*}" in
       "$stall"|"$restarter") ;;
       *) echo "G1: queueRestartAny named outside its two callers: ${s%%:*}" >&2; bad=1; continue ;;
@@ -181,6 +192,8 @@ if [ -z "${G1_SRC:-}" ]; then
   for f in $tf_sends; do
     case "$f" in
       Packages/MagpieKit/Sources/Requests/RequestRunner+NotForMe.swift|Packages/MagpieKit/Sources/Requests/RequestRunner+Lossless.swift) ;;
+      # Round 15 C3 (D147): a library trial's Reject, confined by `ConfinedShape.trialDelete` (pinned above).
+      Packages/MagpieKit/Sources/Requests/RequestRunner+Trial.swift) ;;
       *) echo "G1: track file delete outside Not for me and the MP3 rule: $f" >&2; bad=1 ;;
     esac
   done
@@ -536,7 +549,7 @@ if [ -z "${G1_SRC:-}" ]; then
     case "$verb $path" in
       "delete trackfile"*)
         case "$file" in
-          "$rq/RequestRunner+NotForMe.swift"|"$rq/RequestRunner+Lossless.swift") ;;
+          "$rq/RequestRunner+NotForMe.swift"|"$rq/RequestRunner+Lossless.swift"|"$rq/RequestRunner+Trial.swift") ;;
           *) echo "L1: track file delete outside Not for me and the MP3 rule: $file:$line" >&2; bad=1 ;;
         esac ;;
       "delete queue"*)

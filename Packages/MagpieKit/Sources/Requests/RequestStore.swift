@@ -207,6 +207,10 @@ public struct MagpieRequest: Sendable, Codable, Equatable, Identifiable {
     public var artistExisted: Bool?
     /// A trial on a library artist that was kept: the mark is cleared, the release stays.
     public var trialKept: Bool?
+    /// D147: the ledger recorded this release as a trial (unmonitored, no files, when Magpie monitored it); when it ends.
+    public var trialExpiresAt: Date?
+    /// D147: Reject went through (the release's files deleted, the album unmonitored).
+    public var trialRejected: Bool?
 
     public init(id: RequestID = RequestID(), recording: ExternalRecording, tier: Tier, createdAt: Date) {
         self.id = id
@@ -239,7 +243,7 @@ public struct MagpieRequest: Sendable, Codable, Equatable, Identifiable {
     /// Round 15 C3 (D139): a Try of a release of an artist already in the main library: it comes into the main library,
     /// marked as a trial (Keep clears the mark; Reject removes only that release).
     public var isLibraryTrial: Bool {
-        askedAsTry && !addToLibrary && artistExisted == true && !isFind && trialKept != true
+        askedAsTry && !addToLibrary && trialExpiresAt != nil && !isFind && trialKept != true && trialRejected != true
     }
 
     /// Imported by Lidarr but not listed by the library after the time limit (Needs attention).

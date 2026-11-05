@@ -76,6 +76,15 @@ public enum ConfinedShape: Sendable, Equatable {
     /// D49 with Y5 fix I9: the AlbumSearch that follows a `queueRestartAny`, only for the albums of a download this gate
     /// itself removed in the last 10 minutes (the confined AlbumSearch is otherwise for ledger albums only).
     case restartSearch
+    /// Round 15 C3 (D147): Reject of a library-artist trial: a track file delete (`trackfile/bulk` or one id) confined by
+    /// `WriteConfinement.trialDelete`: exactly all of one album's files, the album the ledger proves Magpie monitored when
+    /// it was unmonitored and had no files, re-read fresh. `scripts/check-writes.sh` pins the one caller.
+    case trialDelete
+    /// Round 15 C3 (D146): "Include singles for this artist", confirmed by the owner, for any artist: the artist's
+    /// `monitorNewItems` (none, then its saved value back), its metadata profile (Magpie's, or back to the one the
+    /// change log saved for it: the undo), a RefreshArtist, and unmonitoring releases that have no files. Confined by
+    /// `WriteConfinement.singles…`; `scripts/check-writes.sh` pins the callers.
+    case singlesSwitch
 }
 
 /// One line of the Lidarr change log: what Magpie asked Lidarr to change. Never carries secrets.
@@ -199,14 +208,14 @@ enum ForbiddenWrites {
     static let allowedMonitorNewItems: Set<String> = ["new"]
 
     /// Why the request is refused, or nil when it may be sent.
-    static func reason(_ t: WriteTarget, body: Data?) -> String? {
+    static func reason(_ t: WriteTarget, body: Data?, singlesSwitch: Bool = false) -> String? {
         if t.foreignPrefix { return "not under /api/v1" }
         // Checked on the exact bytes that will be sent, before anything reads the body as a dictionary.
         if let body, let why = JSONKeyScan.problem(in: body) { return why }
         let json = body.flatMap { try? JSONSerialization.jsonObject(with: $0, options: [.fragmentsAllowed]) }
         if body != nil, json == nil { return "body is not JSON" }
         if let why = neverCall(t, json: json) { return why }
-        return allowListed(t, json: json)
+        return allowListed(t, json: json, singlesSwitch: singlesSwitch)
     }
 
     // MARK: Layer 1: the never-call list
@@ -273,7 +282,7 @@ enum ForbiddenWrites {
 
     private static func isId(_ s: String) -> Bool { !s.isEmpty && s.allSatisfy { $0.isASCII && $0.isNumber } }
 
-    static func allowListed(_ t: WriteTarget, json: Any?) -> String? {
+    static func allowListed(_ t: WriteTarget, json: Any?, singlesSwitch: Bool = false) -> String? {
         let key = t.key
         let notAllowed = "\(t.method) /\(key.joined(separator: "/")) is not on the allow list"
         let noQuery: String? = t.query.isEmpty ? nil : "no query allowed on \(t.method) /\(key[0])"
@@ -283,7 +292,7 @@ enum ForbiddenWrites {
         case ("POST", 1) where key[0] == "command":
             return noQuery ?? commandReason(json)
         case ("PUT", 2) where key[0] == "artist" && key[1] == "editor":
-            return noQuery ?? editorReason(json)
+            return noQuery ?? editorReason(json, singlesSwitch: singlesSwitch)
         // Security L9 / FM1: never `PUT /artist/{id}` or `PUT /album/{id}` (a whole resource: anything could change).
         case ("PUT", 2) where key[0] == "album" && key[1] == "monitor":
             return noQuery ?? albumMonitorReason(json)
@@ -396,7 +405,10 @@ enum ForbiddenWrites {
     /// monitorNewItems: new}`. A body with `monitored` (P3 "Monitor", for an artist Magpie added) is exactly
     /// `{artistIds: [one id], monitored: true}`: Magpie never unmonitors an artist. Where an artist may be moved, and
     /// which artist, the gate's confinement decides (FM1).
-    private static func editorReason(_ json: Any?) -> String? {
+    /// Round 15 C3 (D146): the singles switch may set `monitorNewItems` to none and back to what it was.
+    static let singlesMonitorNewItems: Set<String> = ["none", "new", "all"]
+
+    private static func editorReason(_ json: Any?, singlesSwitch: Bool = false) -> String? {
         guard let object = json as? [String: Any] else { return "artist editor needs a body" }
         if let flag = anyKey(falseOnlyFlags, in: object) { return "artist editor body must not carry \(flag)" }
         if let other = object.keys.first(where: { !editorKeys.contains($0.lowercased()) }) {
@@ -431,7 +443,8 @@ enum ForbiddenWrites {
             }
         }
         if let follow = object.first(where: { $0.key.lowercased() == "monitornewitems" })?.value {
-            guard let s = follow as? String, allowedMonitorNewItems.contains(s.lowercased()) else {
+            guard let s = follow as? String,
+                  (singlesSwitch ? singlesMonitorNewItems : allowedMonitorNewItems).contains(s.lowercased()) else {
                 return "monitorNewItems must be new"
             }
             guard object.count == 2,
@@ -580,6 +593,25 @@ public actor LidarrWriteGate {
         defaults.set(on, forKey: Self.enabledKey(scope: connection.instanceScope))
     }
 
+    /// Round 15 C3 (D146): the singles switch's change-log line, saved before its first write: the undo.
+    public static func singlesNote(artistId: Int, metadataProfileId: Int?, monitorNewItems: String?) -> String {
+        "singles switch: artist \(artistId) metadataProfileId \(metadataProfileId.map(String.init) ?? "-") monitorNewItems \(monitorNewItems ?? "-")"
+    }
+
+    /// The metadata profile the latest singles-switch note saved for the body's artist: an undo may set exactly that one.
+    static func singlesUndoProfile(in log: [ChangeLogEntry], body: [String: Any]) -> Int? {
+        guard let ids = body.first(where: { $0.key.lowercased() == "artistids" })?.value as? [Any], ids.count == 1,
+              let artist = (ids[0] as? NSNumber)?.intValue else { return nil }
+        return singlesSavedProfile(in: log, artistId: artist)
+    }
+
+    /// The metadata profile the latest singles-switch note saved for `artistId` (the undo), if any.
+    public static func singlesSavedProfile(in log: [ChangeLogEntry], artistId artist: Int) -> Int? {
+        let prefix = "singles switch: artist \(artist) metadataProfileId "
+        guard let line = log.last(where: { $0.method == "NOTE" && $0.bodySummary.hasPrefix(prefix) })?.bodySummary else { return nil }
+        return line.dropFirst(prefix.count).split(separator: " ").first.flatMap { Int($0) }
+    }
+
     /// Y5 fix I2: a line in the change log for something Magpie did without a write to Lidarr (it cleared a Keep that
     /// never reached Lidarr). Method `NOTE`; nothing is sent.
     public func note(_ text: String) {
@@ -631,12 +663,25 @@ public actor LidarrWriteGate {
         let target = try WriteTarget(method: method, path: path)
         if allowForeign, shape != .queueRestartAny { throw refused(target, "allowForeign goes with queueRestartAny only") }
         let data = try body.map { try JSONEncoder().encode($0) }
-        if let why = ForbiddenWrites.reason(target, body: data) { throw refused(target, why) }
+        if let why = ForbiddenWrites.reason(target, body: data, singlesSwitch: shape == .singlesSwitch) { throw refused(target, why) }
         let json = data.flatMap { try? JSONSerialization.jsonObject(with: $0, options: [.fragmentsAllowed]) }
         var confined = ForbiddenWrites.confined(target, json: json)
         if shape == .queueRestartAny {
             guard case .queueDelete(let id)? = confined else { throw refused(target, "queueRestartAny is a queue delete only") }
             confined = .queueRestartAny(id, allowForeign: allowForeign)
+        }
+        if shape == .trialDelete {
+            guard case .trackFileDelete(let ids)? = confined else { throw refused(target, "trialDelete is a track file delete only") }
+            confined = .trialDelete(ids)
+        }
+        if shape == .singlesSwitch {
+            switch confined {
+            case .editor(let body)?:
+                confined = .singlesEditor(body, undoProfile: Self.singlesUndoProfile(in: changeLog(), body: body))
+            case .command(let name, _, let artistId?)? where name == "refreshartist": confined = .singlesRefresh(artistId)
+            case .albumMonitor(let ids, false)?: confined = .singlesUnmonitor(ids)
+            default: throw refused(target, "singlesSwitch is an artist edit, a refresh or an unmonitor only")
+            }
         }
         if confined != nil, confinement == nil { throw refused(target, "deletes and artist edits need the ledger") }
         guard enabled else { throw WriteGateError.disabled }
@@ -673,7 +718,8 @@ public actor LidarrWriteGate {
         switch await confinement.lastCheck(rule, artists) {
         case true?: break
         case false?:
-            throw refused(target, rule == .keptLossyDelete ? "the Keep isn't confirmed now" : "the artist was kept meanwhile")
+            throw refused(target, rule == .keptLossyDelete ? "the Keep isn't confirmed now"
+                          : rule == .findDelete ? "the artist was kept meanwhile" : "the trial was kept or ended meanwhile")
         case nil: throw WriteGateError.unconfirmed
         }
         let answer = try await deliver(target, data)

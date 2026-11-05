@@ -888,10 +888,19 @@ public actor RequestRunner {
         // Y5 fix I4: a Try on this album never drops a Keep under way or the find's file record (Ledger.record merges too).
         entry.keepIntentAt = prior?.keepIntentAt
         entry.findFiles = prior?.findFiles
+        // Round 15 C3 (D147): a Try of a release of an artist already in the library, which Magpie monitors now: read
+        // just above, it is unmonitored with no files. Only such an album may later be rejected (its files deleted).
+        let trial = r.askedAsTry && !r.addToLibrary && mode == .fallback && needsMonitor && !entry.createdArtist
+            && album.trackFileCount == 0
+        if trial {
+            entry.trialHadNoFiles = true
+            entry.trialExpiresAt = now().addingTimeInterval(TimeInterval(Self.trialDays) * 86_400)
+        }
         try await ledger.record(entry)
         await mutate(id) {
             $0.lidarrArtistId = artist.id
             $0.albumId = album.id
+            if trial { $0.trialExpiresAt = entry.trialExpiresAt }
         }
         guard needsMonitor else { return }
         try ensure(id, .adding)
