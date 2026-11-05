@@ -273,3 +273,71 @@ Branch `c3-library-finds` (from `v0.0.1-custom` 25bed51). Commits:
 - `testATrendingSongOffersTryAndAddToLibraryAndSaysWhyWithChangesOff` (66.0 s)
 
 check-release: OK.
+
+## Re-review fixes (C3-rereview.md; commit `d5a2466`)
+
+### Important
+
+**R1. A retired switcher no longer keeps acting after a rebuild.**
+- `rebuildRunner` stops the old `SinglesSwitcher`. The stopped state is checked before every Lidarr send, every journal save and every resume.
+- There is one shared `SinglesSwitchStore` per journal file (`SinglesSwitchStore.shared(fileURL:)`), so two switchers can never hold stale copies.
+- Sign-out or a disconnect closes the store (`close()`). After that, every save refuses, so the file is never recreated.
+- Tests:
+  - `aRebuildDuringASwitchLeavesOneSwitcherActing`: one journal; the old switcher does nothing; the new one finishes with a consistent end state.
+  - `aSignOutDuringASwitchSendsNothingAndLeavesNoFile`.
+
+**R2. A new artist's Add always lists the release that was asked for.**
+- The owner's Add-default types are widened to the target's own kind with `ReleaseTypes.widened(toInclude:secondaryTypes:)`: EP, Single, and Studio / Live / Soundtrack.
+- The album page previews that release group itself (`targetPreview(_:album:)`).
+- A kind that can't be listed is refused before anything is sent.
+- Tests:
+  - `theAddsTypesAlwaysListTheTarget` (Albums-only defaults + an EP lists the EP);
+  - `anAlbumPagePreviewIsThatRelease`;
+  - hosted `aNewArtistsAddListsTheReleaseAskedFor`.
+
+### Minors
+
+- **m1:** the gate requires a "+ Singles (Magpie)" profile to be a true superset of the saved original plus Single, on all three allowed sets.
+- **m2:** an unmonitor needs an open switch for the album's artist. check-writes pins who names and saves the journal (only SinglesSwitch.swift and the runner's rebuild; the one shared store).
+- **m3:** an unreadable journal is moved aside (`.unreadable-<ts>`), and rows that don't decode are dropped one by one. The owner is told "A change to an artist couldn't be finished. Check Settings › change log." That line then offers **Put back**, which puts back the profile, then a confirmed refresh, then following, journaled. Hosted `aSwitchLineSaysWhatWasSaved` covers parsing the saved values.
+- **m4:** roll-back and Undo now go profile, then a confirmed refresh, then following. Following stays off until the refresh is confirmed.
+- **m5:** the song a pending switch is for is kept in the journal and handed over once when the switch finishes, also after a relaunch.
+- **m6:** Undo leaves a profile the owner changed since, and says so.
+- **m7:** Keep after a Reject whose delete failed monitors the album again.
+
+### Tests at `d5a2466`
+
+**Package:**
+| Suite | Tests | New |
+|---|---|---|
+| `SinglesSwitchTests` | 19 | aRebuildDuringASwitchLeavesOneSwitcherActing, aSignOutDuringASwitchSendsNothingAndLeavesNoFile, aCorruptJournalIsKeptAsideAndTheArtistCanBePutBack, aPendingSwitchsSongIsAskedForAfterARelaunch, undoLeavesAProfileTheOwnerChanged, theGateChecksTheSupersetAndTheOpenSwitch |
+| `LibraryFindsTests` | 24 | keepAfterAFailedDeleteMonitorsTheAlbumAgain, theAddsTypesAlwaysListTheTarget, anAlbumPagePreviewIsThatRelease |
+
+Changed: the rollback test (the profile back, following not until the refresh is confirmed) and the undo test (the new order).
+
+**Hosted:**
+| Suite | Tests | New |
+|---|---|---|
+| `LibraryFindsAppTests` | 15 | aNewArtistsAddListsTheReleaseAskedFor, aSwitchLineSaysWhatWasSaved |
+| `FindCleanupAppTests` | 10 | — |
+
+**Failing runs captured** (the fix disabled, the test run, the fix restored):
+- Disabling the stop guards failed `aRebuildDuringASwitchLeavesOneSwitcherActing` and `aSignOutDuringASwitchSendsNothingAndLeavesNoFile`.
+- Disabling the store's close guard, the owner-change check, the persisted song and the move-aside failed:
+  - `undoLeavesAProfileTheOwnerChanged`
+  - `aPendingSwitchsSongIsAskedForAfterARelaunch`
+  - `aCorruptJournalIsKeptAsideAndTheArtistCanBePutBack`
+- Disabling the gate's superset and open checks failed `theGateChecksTheSupersetAndTheOpenSwitch`.
+- Disabling the EP widening failed `theAddsTypesAlwaysListTheTarget`.
+- Previewing the smallest release instead of the album failed `anAlbumPagePreviewIsThatRelease`.
+- Disabling Keep's re-monitor failed `keepAfterAFailedDeleteMonitorsTheAlbumAgain`.
+- Skipping the app's widening failed hosted `aNewArtistsAddListsTheReleaseAskedFor`.
+
+**Suites run:**
+- Requests: 417 tests. LidarrKit: 169 tests.
+- Hosted LibraryFinds, FindCleanup and FindFlow: 32 tests.
+- check-writes and its selftest pass.
+
+**Release UI check (Trending song menu), passed:** `testATrendingSongOffersTryAndAddToLibraryAndSaysWhyWithChangesOff` (68.8 s).
+
+check-release: OK.
