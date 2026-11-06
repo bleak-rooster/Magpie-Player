@@ -91,6 +91,11 @@ public enum ConfinedShape: Sendable, Equatable {
     /// change log saved for it: the undo), a RefreshArtist, and unmonitoring releases that have no files. Confined by
     /// `WriteConfinement.singles…`; `scripts/check-writes.sh` pins the callers.
     case singlesSwitch
+    /// Round 23 (owner, 2026-11-07, D191): before Magpie removes an artist it added (Not for me, Stop looking), Lidarr's
+    /// blocklist entries for that artist go, so a later Try starts from a clean slate: `DELETE /blocklist/bulk {ids}`
+    /// confined by `WriteConfinement.blocklistCleanup` (every id read fresh from the blocklist, all of one artist that
+    /// the artist delete itself would let go). `scripts/check-writes.sh` pins the one caller.
+    case blocklistCleanup
 }
 
 /// One line of the Lidarr change log: what Magpie asked Lidarr to change. Never carries secrets.
@@ -274,6 +279,10 @@ enum ForbiddenWrites {
                 return .trackFileDelete(ids.compactMap { ($0 as? NSNumber)?.intValue })
             }
             return .trackFileDelete([Int(key[1])].compactMap { $0 })
+        // Round 23 (D191): the blocklist clean-up before an artist Magpie added is removed.
+        case ("DELETE", "blocklist") where key[1] == "bulk":
+            let ids = (json as? [String: Any])?["ids"] as? [Any] ?? []
+            return .blocklistDelete(ids.compactMap { ($0 as? NSNumber)?.intValue })
         case ("PUT", "album") where key[1] == "monitor":
             let object = json as? [String: Any] ?? [:]
             let value = { (name: String) in object.first { $0.key.lowercased() == name }?.value }
@@ -307,6 +316,9 @@ enum ForbiddenWrites {
         // Not for me (A16): the bulk route, falling back to one file at a time.
         case ("DELETE", 2) where key[0] == "trackfile" && key[1] == "bulk":
             return noQuery ?? trackFileBulkReason(json)
+        // Round 23 (D191): only the bulk route, and only named `ConfinedShape.blocklistCleanup` (checked in `send`).
+        case ("DELETE", 2) where key[0] == "blocklist" && key[1] == "bulk":
+            return noQuery ?? blocklistBulkReason(json)
         case ("DELETE", 2) where key[0] == "trackfile" && isId(key[1]):
             return noQuery ?? (json == nil ? nil : "no body allowed on DELETE /trackfile/{id}")
         // R17: a stalled Soulseek download or Search again. Which queue item, the gate's confinement decides.
@@ -350,6 +362,16 @@ enum ForbiddenWrites {
         guard let object = json as? [String: Any], object.count == 1, let ids = object["trackFileIds"] as? [Any],
               !ids.isEmpty, ids.allSatisfy(isPositiveInteger) else {
             return "track file delete needs exactly a list of track file ids"
+        }
+        return nil
+    }
+
+    /// `DELETE /blocklist/bulk`: exactly `{"ids": [<positive integers>]}`, 1 to 500 of them, each once.
+    private static func blocklistBulkReason(_ json: Any?) -> String? {
+        guard let object = json as? [String: Any], object.count == 1, let ids = object["ids"] as? [Any],
+              (1...500).contains(ids.count), ids.allSatisfy(isPositiveInteger),
+              Set(ids.compactMap { ($0 as? NSNumber)?.intValue }).count == ids.count else {
+            return "blocklist delete needs exactly a list of blocklist ids"
         }
         return nil
     }
@@ -671,6 +693,13 @@ public actor LidarrWriteGate {
         if shape == .keptSingleDelete {
             guard case .trackFileDelete(let ids)? = confined else { throw refused(target, "keptSingleDelete is a track file delete only") }
             confined = .keptSingleDelete(ids)
+        }
+        // Round 23 (D191): a blocklist delete is only ever the named clean-up, and the clean-up is only that.
+        if case .blocklistDelete? = confined, shape != .blocklistCleanup {
+            throw refused(target, "a blocklist delete is named blocklistCleanup")
+        }
+        if shape == .blocklistCleanup {
+            guard case .blocklistDelete? = confined else { throw refused(target, "blocklistCleanup is a blocklist delete only") }
         }
         if shape == .singlesSwitch {
             switch confined {

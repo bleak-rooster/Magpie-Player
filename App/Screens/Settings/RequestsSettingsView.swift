@@ -33,6 +33,12 @@ struct RequestsSettingsView: View {
                     }
                     .accessibilityIdentifier("settings-lidarr-downloads")
                 }
+                Section {   // R23 (D192): the optional slskd connection, next to Lidarr's
+                    NavigationLink(value: SettingsPage.slskd) {
+                        LabeledContent(SlskdCopy.title, value: model.slskd == nil ? SlskdCopy.rowSummaryOff : SlskdCopy.rowSummaryOn)
+                    }
+                    .accessibilityIdentifier("settings-slskd")
+                }
             }
         }
         .navigationTitle(SettingsCopy.lidarr)

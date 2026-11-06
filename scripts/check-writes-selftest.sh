@@ -62,6 +62,16 @@ planted=(
   'aurral.ok(method: AurralRoute.imageProxyMethod, path: "api/image-proxy", body: other)'
   # Round 22 R22A (D186): a third caller of Download songs.
   'client.downloadFlow("flow-1")'
+  # Round 23 (D191): the blocklist clean-up named anywhere but its one pinned caller, or another blocklist delete.
+  'gate.send("DELETE", "blocklist/bulk", body: BlocklistIdsBody(ids: ids), confinedAs: .blocklistCleanup)'
+  'gate.send("DELETE", "Blocklist/5", body: nil)'
+  # Round 23 (D192): an slskd write outside the clean slate, the channel sent outside its gate, a gate made elsewhere,
+  # the key header built elsewhere.
+  'slskd.gate.perform(.deleteFolder(name, only: []))'
+  'access.perform(.removeTransfer(username: user, id: id))'
+  'client.connection.send(.deleteFolder("Lowlands"))'
+  'SlskdWriteGate(client: client, defaultsSuite: nil)'
+  'request.setValue(key, forHTTPHeaderField: "X-API-Key")'
   # Round 23 R23F (D200): a third caller of Retry a song (the research route).
   'client.retrySong(playlistId: "flow-1", jobId: "job-1")'
 )
@@ -165,6 +175,35 @@ for w in "${s14_weakened[@]}"; do
 done
 for f in "$aurral_src" "$discover_src" "$proxy_src"; do cp "$f.orig" "$f"; rm -f "$f.orig"; done
 weakened+=("${s14_weakened[@]}")
+
+# Round 23 (D192): the slskd allow-list and gate weakened: a read turned into a write, a sixth route, a name allowed to
+# climb out of the downloads folder, the write switch dropped, the GET-only read channel loosened.
+slroute_src="$work/Packages/MagpieKit/Sources/SlskdKit/SlskdRoute.swift"
+slclient_src="$work/Packages/MagpieKit/Sources/SlskdKit/SlskdClient.swift"
+for f in "$slroute_src" "$slclient_src"; do cp "$f" "$f.orig"; done
+slskd_weakened=(
+  "$slroute_src|s/        case .downloads, .downloadsFolder: \"GET\"/        case .downloads: \"GET\"\n        case .downloadsFolder: Self.deleteMethod/"
+  "$slroute_src|s/^    case deleteFolder(String)/    case deleteFolder(String)\n    case clearCompleted/"
+  "$slroute_src|s/s != \".\", s != \"..\", //"
+  "$slroute_src|s/\$0 == \"\\\\\\\\\" || //"
+  "$slroute_src|s/            return \[\"transfers\", \"downloads\"\]/            return [\"transfers\", \"downloads\", \"all\", \"completed\"]/"
+  "$slclient_src|s/        guard enabled else { throw SlskdGateError.disabled }/        _ = enabled/"
+  "$slclient_src|s/        guard route.method == \"GET\" else { throw SlskdError.forbidden }//"
+)
+for w in "${slskd_weakened[@]}"; do
+  file="${w%%|*}" expr="${w#*|}"
+  for f in "$slroute_src" "$slclient_src"; do cp "$f.orig" "$f"; done
+  cp "$file" "$work/before"
+  sed -i '' "$expr" "$file"
+  if cmp -s "$work/before" "$file"; then echo "selftest: the weakening didn't apply: $expr" >&2; failed=1; continue; fi
+  if out=$("$work/scripts/check-writes.sh" 2>&1); then
+    echo "selftest: NOT caught: $expr" >&2; failed=1
+  elif ! grep -qE 'G1:' <<< "$out"; then
+    echo "selftest: failed without a G1 reason: $expr" >&2; failed=1
+  fi
+done
+for f in "$slroute_src" "$slclient_src"; do cp "$f.orig" "$f"; rm -f "$f.orig"; done
+weakened+=("${slskd_weakened[@]}")
 
 [ "$failed" = 0 ] || exit 1
 echo "check-writes selftest: all ${#planted[@]} planted violations and ${#weakened[@]} allow-list weakenings caught; the clean tree passes"

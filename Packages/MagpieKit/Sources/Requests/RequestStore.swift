@@ -255,6 +255,9 @@ public struct MagpieRequest: Sendable, Codable, Equatable, Identifiable {
     /// The kept single and what becomes of it once Bring in more brings in an album or EP (D171–D173).
     public var keptSingle: KeptSingle?
 
+    /// Round 23 (D194): what was cleared before Magpie removed the artist (its blocklist, slskd's leftovers). Optional.
+    public var cleanSlate: CleanSlate?
+
     public init(id: RequestID = RequestID(), recording: ExternalRecording, tier: Tier, createdAt: Date) {
         self.id = id
         self.recording = recording

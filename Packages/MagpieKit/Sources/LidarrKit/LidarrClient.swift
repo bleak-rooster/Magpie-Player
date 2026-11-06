@@ -29,7 +29,7 @@ public struct LidarrClient: Sendable {
         try await connection.get(path, query)
     }
 
-    private func ok(_ path: String, _ query: [URLQueryItem] = []) async throws -> Data {
+    func ok(_ path: String, _ query: [URLQueryItem] = []) async throws -> Data {
         let (data, response) = try await get(path, query)
         switch response.statusCode {
         case 200..<300: return data

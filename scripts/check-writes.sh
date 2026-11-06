@@ -54,6 +54,11 @@
 #       A POST into a URLProtocol stub (redirect policy test); nothing leaves the process.
 #   Packages/MagpieKit/Tests/MagpieCoreTests/SharedLoginTransportTests.swift  auth/login
 #       A login request handed to MockTransport.
+#   Packages/MagpieKit/Sources/SlskdKit/SlskdRoute.swift, SlskdClient.swift  G1 allowlist: slskd clean-up
+#       Round 23 (D192): slskd's three clean-up DELETEs (a finished transfer's record, a file or folder directly inside
+#       its downloads folder), only through `SlskdWriteGate.perform`, only from the clean slate. Pinned below.
+#   Packages/MagpieKit/Sources/MagpieTestSupport/FakeSlskd.swift  G1 allowlist: stub slskd
+#       The in-process stub names the verb it answers for those routes; it sends nothing.
 #
 # G1_SRC overrides the product tree to scan and skips the others (used to check this script against a planted
 # violation).
@@ -84,6 +89,9 @@ allow=(
   "Tests/MagpieUITests/ChartFlowUITests.swift|G1 allowlist: stub reset"
   "Packages/MagpieKit/Tests/MagpieCoreTests/HTTPTransportTests.swift|RedirectStub"
   "Packages/MagpieKit/Tests/MagpieCoreTests/SharedLoginTransportTests.swift|auth/login"
+  "Packages/MagpieKit/Sources/SlskdKit/SlskdRoute.swift|G1 allowlist: slskd clean-up"
+  "Packages/MagpieKit/Sources/SlskdKit/SlskdClient.swift|G1 allowlist: slskd clean-up"
+  "Packages/MagpieKit/Sources/MagpieTestSupport/FakeSlskd.swift|G1 allowlist: stub slskd"
 )
 [ -n "${G1_SRC:-}" ] && allow=("$G1_SRC/NavidromeKit/NavidromeClient.swift|auth/login"
                                "$G1_SRC/MagpieTestSupport/SharedLoginTransport.swift|auth/login")
@@ -135,6 +143,7 @@ if [ -z "${G1_SRC:-}" ]; then
   trialfile="Packages/MagpieKit/Sources/Requests/RequestRunner+Trial.swift"
   singlesfile="Packages/MagpieKit/Sources/Requests/SinglesSwitch.swift"
   keptsinglefile="Packages/MagpieKit/Sources/Requests/RequestRunner+KeptSingle.swift"
+  cleanslatefile="Packages/MagpieKit/Sources/Requests/RequestRunner+CleanSlate.swift"
   # Round 15 C3 (re-review m2): the singles-switch journal the gate trusts is made and written only by its owners: the
   # store type only in SinglesSwitch.swift and the runner's rebuild (one shared store per Lidarr), and nothing else saves
   # to a switcher's store.
@@ -158,6 +167,8 @@ if [ -z "${G1_SRC:-}" ]; then
       "$trialfile":*'_ = try await gate.send("DELETE", "trackfile/bulk", body: TrackFileIdsBody(trackFileIds: ids), confinedAs: .trialDelete)') continue ;;
       # Round 22 (D172): a kept single's removal, its one track file delete (the gate's keptSingleDelete rule).
       "$keptsinglefile":*'_ = try await gate.send("DELETE", "trackfile/bulk", body: TrackFileIdsBody(trackFileIds: ids), confinedAs: .keptSingleDelete)') continue ;;
+      # Round 23 (D191): a removed artist's blocklist rows, its one delete (the gate's blocklistCleanup rule).
+      "$cleanslatefile":*'_ = try await gate.send("DELETE", "blocklist/bulk", body: BlocklistIdsBody(ids: ids), confinedAs: .blocklistCleanup)') continue ;;
       # D146 (review I1-I3): the singles switch's journal, only in SinglesSwitch.swift, only these forms; the gate allows
       # them only for an artist whose switch is in the journal, and only the journal's values.
       "$singlesfile":*'_ = try await gate.send("PUT", "artist/editor", body: FollowBody(artistIds: [job.artistId], monitorNewItems: "none"), confinedAs: .singlesSwitch)') continue ;;
@@ -690,6 +701,12 @@ if [ -z "${G1_SRC:-}" ]; then
           "$rq/RequestRunner+NotForMe.swift"|"$rq/RequestRunner+Lossless.swift"|"$rq/RequestRunner+Trial.swift"|"$rq/RequestRunner+OnlyTheSong.swift"|"$rq/RequestRunner+KeptSingle.swift") ;;
           *) echo "L1: track file delete outside Not for me and the MP3 rule: $file:$line" >&2; bad=1 ;;
         esac ;;
+      "delete blocklist"*)
+        # Round 23 (D191): only the clean slate's one bulk delete (named blocklistCleanup, pinned above).
+        case "$file|$path" in
+          "$rq/RequestRunner+CleanSlate.swift|blocklist/bulk") ;;
+          *) echo "L1: a blocklist delete outside the clean slate: $file:$line" >&2; bad=1 ;;
+        esac ;;
       "delete queue"*)
         case "$file" in
           "$rq/RequestRunner+Stall.swift"|"$rq/DownloadsInLidarr.swift") ;;
@@ -716,6 +733,57 @@ if [ -z "${G1_SRC:-}" ]; then
     [ "$f" = "Packages/MagpieKit/Sources/Requests/DownloadsInLidarr.swift" ] ||
       { echo "L1: removeCounting(restartAny: true) outside the restarter: $f" >&2; bad=1; }
   done
+fi
+if [ -z "${G1_SRC:-}" ]; then
+  # Round 23 (D192, D193): slskd. Its route allow-list is exactly five calls, their paths and verbs pinned whole, every
+  # name one level inside slskd's downloads folder; its writes go only through `SlskdWriteGate.perform`, called only by
+  # the clean slate; the channel's send only from the gate; the gate made only by the app's slskd connection; the
+  # `X-API-Key` header only in the slskd client (and the stub that checks it).
+  slroute="Packages/MagpieKit/Sources/SlskdKit/SlskdRoute.swift"
+  slclient="Packages/MagpieKit/Sources/SlskdKit/SlskdClient.swift"
+  for want in '    case downloads' '    case downloadsFolder(String)' '    case removeTransfer(username: String, id: UUID)' \
+              '    case deleteFile(folder: String, file: String)' '    case deleteFolder(String)' \
+              '        case .downloads, .downloadsFolder: "GET"' \
+              '        case .removeTransfer, .deleteFile, .deleteFolder: Self.deleteMethod' \
+              '            return ["transfers", "downloads"]' \
+              '            return ["files", "downloads", "directories", Self.base64(folder)]' \
+              '            return ["transfers", "downloads", username, id.uuidString.lowercased()]' \
+              '            return ["files", "downloads", "files", Self.base64(folder + "/" + file)]' \
+              '        if case .removeTransfer = self { return [URLQueryItem(name: "remove", value: "true")] }' \
+              '        guard !s.isEmpty, s != ".", s != "..", s.utf8.count <= 255, s.trimmingCharacters(in: .whitespaces) == s else {' \
+              '        return !s.unicodeScalars.contains { $0 == "/" || $0 == "\\" || $0 == ":" || CharacterSet.controlCharacters.contains($0) }' \
+              '        components.percentEncodedPath = prefix + "/api/v0/" + segments.map(Self.encode).joined(separator: "/")'; do
+    grep -qF -- "$want" "$slroute" || { echo "G1: $slroute: the slskd allow-list changed (missing: $want)" >&2; bad=1; }
+  done
+  [ "$(grep -cE '^    case ' "$slroute")" = 5 ] || { echo "G1: $slroute: the slskd allow-list isn't exactly 5 routes" >&2; bad=1; }
+  [ "$(grep -cE '^            return \[' "$slroute")" = 5 ] || { echo "G1: $slroute: the slskd paths changed" >&2; bad=1; }
+  for want in '        guard route.method == "GET" else { throw SlskdError.forbidden }' \
+              '        guard let url = route.url(base: base) else { throw SlskdError.forbidden }' \
+              '        guard enabled else { throw SlskdGateError.disabled }'; do
+    grep -qF -- "$want" "$slclient" || { echo "G1: $slclient: the slskd gate changed (missing: $want)" >&2; bad=1; }
+  done
+  slhits=$(grep -rnE --include='*.swift' 'gate\.perform\(|perform\(\.(removeTransfer|deleteFile|deleteFolder)|SlskdWriteGate\(|connection\.send\(|X-API-Key' \
+             "${product[@]}" | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' || true)
+  while IFS= read -r s; do
+    [ -n "$s" ] || continue
+    file="${s%%:*}" text="${s#*:*:}"
+    case "$text" in
+      *'X-API-Key'*)
+        case "$file" in "$slclient"|Packages/MagpieKit/Sources/MagpieTestSupport/FakeSlskd.swift) ;;
+          *) echo "G1: the slskd key header outside the slskd client: $file" >&2; bad=1 ;; esac ;;
+      *'connection.send('*)
+        case "$file" in "$slclient"|Packages/MagpieKit/Sources/LidarrKit/WriteGate.swift) ;;
+          *) echo "G1: a connection's send outside its gate: $file" >&2; bad=1 ;; esac ;;
+      *'SlskdWriteGate('*)
+        case "$file" in App/AppModel+Slskd.swift) ;;
+          *) echo "G1: an slskd write gate made outside the app's slskd connection: $file" >&2; bad=1 ;; esac ;;
+      *)
+        case "$file" in "$cleanslatefile") ;;
+          *) echo "G1: an slskd write outside the clean slate: $file" >&2; bad=1 ;; esac ;;
+    esac
+  done <<< "$slhits"
+  [ "$(grep -cE 'slskd\.gate\.perform\(\.(removeTransfer|deleteFile|deleteFolder)\(' "$cleanslatefile")" = 3 ] ||
+    { echo "G1: $cleanslatefile: the slskd writes aren't exactly its three" >&2; bad=1; }
 fi
 [ "$bad" = 0 ] || { echo "G1 check failed: route Lidarr writes through LidarrWriteGate (or extend the allowlist in $0)" >&2; exit 1; }
 echo "G1 check: no write verbs outside LidarrWriteGate in ${product[*]}${tests[*]:+ and ${tests[*]}} (allowlisted: Navidrome auth/login, dev-only IT helpers)"

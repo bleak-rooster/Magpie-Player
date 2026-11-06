@@ -142,6 +142,8 @@ extension AppModel {
             onFailed: { [weak self] request in Task { @MainActor in self?.requestFailed(request) } })
         self.gate = gate
         self.runner = runner
+        let slskd = slskdAccess   // R23 (D192): the clean slate's slskd, when connected
+        Task { await runner.useSlskd(slskd) }
         singlesSwitcher = SinglesSwitcher(lidarr: client, gate: gate, store: singlesStore)
         Task { [weak self] in await self?.resumeSinglesSwitches(force: true) }   // D146: an interrupted switch, finished or rolled back
         let stallLimit = stallLimit.seconds

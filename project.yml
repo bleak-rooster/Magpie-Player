@@ -39,6 +39,8 @@ targets:
       - package: MagpieKit
         product: AurralKit
       - package: MagpieKit
+        product: SlskdKit
+      - package: MagpieKit
         product: MatchIndex
       - package: MagpieKit
         product: Search

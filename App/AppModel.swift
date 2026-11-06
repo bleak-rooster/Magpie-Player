@@ -126,6 +126,11 @@ final class AppModel {
     var countPlays: Bool
     /// Whether an optional ListenBrainz token is saved.
     var hasListenBrainzToken = false
+    /// Round 23 (D192): the owner's slskd, when connected (Keychain; AppModel+Slskd), and "Allow Magpie to change
+    /// Soulseek" for it (off by default, per slskd).
+    var slskd: SlskdConnection?
+    var slskdChangesAllowed = false
+    @ObservationIgnored var slskdStore: any SlskdConnectionStoring = SlskdConnectionStore.standard
     /// ListenBrainz refused the saved token (401) when plays were sent to it (T17); cleared when one is saved again.
     var listenBrainzRejected = false
     /// Changes whenever the token is saved, replaced or removed: Home's "Made for you" reads again (Task 7.1c).
@@ -401,6 +406,7 @@ final class AppModel {
         wirePreviews()
         wireAurralFeeds()   // round 14 A4
         readLidarrPermissions()
+        readSlskdConnection()   // R23 (D192)
     }
 
     isolated deinit {
@@ -426,6 +432,7 @@ final class AppModel {
             hasListenBrainzToken = hasToken
             listenBrainzTokenChanged()
         }
+        if slskd == nil { readSlskdConnection() }   // R23 (D192)
         guard lidarr == nil, let saved = lidarrStore.load() else { return false }
         lidarr = saved
         readLidarrPermissions()
@@ -445,6 +452,7 @@ final class AppModel {
         if resets, !uiTesting {
             store.clear()
             LidarrConnectionStore.standard.clear()
+            SlskdConnectionStore.standard.clear()
         }
         let model = AppModel(store: store, defaults: defaults, theme: savedTheme(defaults))
         // UI tests (flake fix): a real sign-out of what the last test left, so its downloads (the audio store, pending
@@ -454,6 +462,7 @@ final class AppModel {
             if model.session != nil { model.signOut() }
             store.clear()
             LidarrConnectionStore.standard.clear()
+            SlskdConnectionStore.standard.clear()
         }
         // UI tests only (with `-MagpieUITesting YES`): Home and Library back to their default layout, so a layout test
         // that failed half-way never leaves a section hidden for the next test.
@@ -653,6 +662,7 @@ final class AppModel {
         lidarr = nil
         lidarrSetup = nil
         lidarrStatus = nil
+        disconnectSlskd()   // R23 (D192)
         rebuildRunner()
         forgetDiscover()   // Y6
         RecentSearches(defaults: appDefaults).clear()   // shared with the car
