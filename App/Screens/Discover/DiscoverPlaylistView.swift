@@ -153,6 +153,10 @@ struct DiscoverPlaylistView: View {
                             .accessibilityIdentifier("discover-auto-download-note")
                     }
                 }
+                // Round 23 R23F (D199): the user's own flow's or playlist's missing songs, searched for again.
+                SearchAgainSection(playlistId: page.playlist.id,
+                                   runActive: model.searchAgainFlow(playlistId: page.playlist.id)
+                                       .map { model.isFlowRunActive($0.id) } ?? false)
             }
         }
         .padding(.vertical, Tokens.Spacing.l)
@@ -323,6 +327,7 @@ struct DiscoverListView: View {
         .task { await load() }
         // Round 16: a flow's playlist joins (or leaves) as the server publishes it.
         .onChange(of: model.discover.playlists.map(\.playlist.id)) { Task { await load() } }
+        .onChange(of: model.discover.everyoneRevision) { Task { await load() } }   // R23F (D190)
     }
 
     private func load() async {

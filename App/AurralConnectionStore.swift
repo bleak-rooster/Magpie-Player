@@ -139,6 +139,12 @@ struct AurralConnectionStore: AurralConnectionStoring {
     var aurralSongIds: Set<String> = []
     /// Each song's library-copy lookup this session (fix M1).
     @ObservationIgnored var lookups: [String: DiscoverLookup] = [:]
+    /// Round 23 R23F (D189): the matched playlists that are other users' flows' or playlists', as last read.
+    var othersPlaylistIds: Set<String> = []
+    /// Round 23 R23F (D190): bumped when "Show everyone's flows" changes (Library › Discover lists again).
+    var everyoneRevision = 0
+    /// Round 23 R23F (D199): "Search again for missing songs", per flow or playlist id, this session.
+    var searchAgain: [String: SearchAgainRun] = [:]
 
     init(store: any AurralConnectionStoring) {
         self.store = store
@@ -203,6 +209,8 @@ struct AurralConnectionStore: AurralConnectionStoring {
         refreshing = [:]
         aurralSongIds = []
         lookups = [:]
+        othersPlaylistIds = []   // R23F
+        searchAgain = [:]   // R23F
         refreshTask?.task.cancel()   // Round 13 Z2: the next account's first ask starts its own read
         refreshTask = nil
     }

@@ -62,6 +62,8 @@ planted=(
   'aurral.ok(method: AurralRoute.imageProxyMethod, path: "api/image-proxy", body: other)'
   # Round 22 R22A (D186): a third caller of Download songs.
   'client.downloadFlow("flow-1")'
+  # Round 23 R23F (D200): a third caller of Retry a song (the research route).
+  'client.retrySong(playlistId: "flow-1", jobId: "job-1")'
 )
 failed=0
 for p in "${planted[@]}"; do

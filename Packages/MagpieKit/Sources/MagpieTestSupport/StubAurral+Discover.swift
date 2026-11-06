@@ -321,6 +321,12 @@ public extension StubAurral {
         if method == "GET", parts.count == 4, parts[1] == "playlists", parts[2] == "jobs" {
             return jobsAnswer(flowId: String(parts[3]), user: user)
         }
+        // Round 23 R23F: as 2.13's `enqueueResearchTrack`, a song of another playlist is 404 and one still pending or
+        // downloading is 409 ("already being processed"); nothing is queued.
+        if method != "GET", parts.count == 7, parts[2] == "shared-playlists", parts[6] == "research",
+           let refusal = researchRefusal(playlistId: String(parts[3]), jobId: String(parts[5]), user: user) {
+            return refusal
+        }
         let query = Dictionary(URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?
             .map { ($0.name, $0.value ?? "") } ?? [], uniquingKeysWith: { a, _ in a })
         let body = request.httpBody.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:]

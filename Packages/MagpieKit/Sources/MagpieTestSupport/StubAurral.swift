@@ -407,6 +407,26 @@ public final class StubAurral: HTTPTransport, @unchecked Sendable {
         state.withLock { s in if s.jobs.indices.contains(index) { s.jobs[index].status = "pending" } }
     }
 
+    /// Round 23 R23F: one song (`job-<index>`) now has this status (Aurral found it, gave up on it, …).
+    public func setJobStatus(_ jobId: String, _ status: String) {
+        guard jobId.hasPrefix("job-"), let index = Int(jobId.dropFirst(4)) else { return }
+        state.withLock { s in if s.jobs.indices.contains(index) { s.jobs[index].status = status } }
+    }
+
+    /// Round 23 R23F: the research route's refusals (2.13 `enqueueResearchTrack`) for a user allowed to ask: a song of
+    /// another playlist is 404, one pending or downloading 409. Nil: answered as before.
+    func researchRefusal(playlistId: String, jobId: String, user: User) -> (Int, Any)? {
+        guard user.role == "admin" || user.permissions?["accessFlow"] == true,
+              jobId.hasPrefix("job-"), let index = Int(jobId.dropFirst(4)) else { return nil }
+        let job = state.withLock { s in s.jobs.indices.contains(index) ? s.jobs[index] : nil }
+        guard let job else { return nil }
+        if job.flowId != playlistId { return (404, ["error": "Track not found"]) }
+        if job.status == "pending" || job.status == "downloading" {
+            return (409, ["error": "Track is already being processed"])
+        }
+        return nil
+    }
+
     /// Round 14 A4: Add flow made a synced playlist `id` named `name` for `owner`: Aurral queues every song (its jobs).
     /// Fix round 1: queued as 2.13 does; created after `creationDelayReads` status reads (at once with 0).
     func addSynced(id: String, name: String, owner: Int, songs: [(title: String, artist: String, durationMs: Int)]) {
