@@ -65,6 +65,6 @@ extension AppModel {
 
 /// The words for D190 (Settings › Aurral; §5 voice).
 enum EveryonesFlowsCopy {
-    static let toggle = "Show everyone\u{2019}s flows"
-    static let footer = "Flows other people on your server made also appear in Discover."
+    static let toggle = "Show everyone\u{2019}s flows and playlists"
+    static let footer = "Off: Discover shows only what you made. On: flows and playlists anyone on your server made appear too."
 }
