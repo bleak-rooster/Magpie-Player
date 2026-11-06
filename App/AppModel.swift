@@ -613,6 +613,7 @@ final class AppModel {
             appDefaults.removeObject(forKey: Self.musicFoldersKey(navidromeScope))
             appDefaults.removeObject(forKey: Self.autoMainLibraryKey(navidromeScope))
             appDefaults.removeObject(forKey: Self.lidarrLibrariesKey(navidromeScope))
+            appDefaults.removeObject(forKey: Self.playlistShowKey(navidromeScope))   // R22P (D180)
             for key in [Self.discoverPlaylistsKey, Self.discoverLibrariesKey, Self.aurralSongsKey] {   // Y6 fix M7
                 appDefaults.removeObject(forKey: key(navidromeScope))
             }

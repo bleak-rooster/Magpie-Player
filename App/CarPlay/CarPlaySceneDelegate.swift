@@ -94,7 +94,8 @@ final class CarPlayLibraryAdapter: CarPlayLibrary {
 
     func playlists() async throws -> [Playlist] {
         if model.isOffline { return await model.offlineCatalog.playlists() }
-        return try await model.request { try await $0.playlists() }.filter { !model.isDiscoverPlaylist($0) }   // Y6
+        let all = try await model.request { try await $0.playlists() }.filter { !model.isDiscoverPlaylist($0) }   // Y6
+        return model.shownPlaylists(all)   // All or Yours, as on the phone (D179)
     }
 
     /// Y6: Library › Discover.
