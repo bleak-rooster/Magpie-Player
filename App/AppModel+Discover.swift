@@ -18,8 +18,9 @@ struct DiscoverPage: Equatable {
 /// - Aurral is asked only through `AurralClient`'s allow-listed calls (`AurralRoute`); nothing is ever written to
 ///   Aurral except on the owner's tap: Refresh Flow (refused while a run is active) and round 14's Add flow, Not for me,
 ///   Download songs and Retry a song.
-/// - Discover is the Navidrome playlists named after Aurral's flows; they are kept out of Playlists (Home, Library,
-///   the car, Add to playlist), and no playlist edit is ever sent to one.
+/// - Discover is the Navidrome playlists named after Aurral's flows and playlists (round 22 R22A: every one, unless
+///   proven the owner's own, D181–D185); they are kept out of Playlists (Home, Library, the car, Add to playlist),
+///   and no playlist edit is ever sent to one.
 /// - Aurral's library (found from its job paths) is kept out of Home, Library, Search and the car (Y3's scope).
 /// - Swap in Magpie, never in Aurral's data: a flow song the main library also has (by MusicBrainz recording id, else
 ///   artist + title + duration within 3 s, never by name alone) shows and plays as the library's copy, in place.
@@ -157,6 +158,7 @@ extension AppModel {
             appDefaults.removeObject(forKey: Self.discoverPlaylistsKey(scope))
             appDefaults.removeObject(forKey: Self.discoverLibrariesKey(scope))
             appDefaults.removeObject(forKey: Self.aurralSongsKey(scope))
+            appDefaults.removeObject(forKey: Self.ownPlaylistsKey(scope))   // R22A
         }
         syncLibraryScope()
     }
@@ -174,6 +176,13 @@ extension AppModel {
 
     func isDiscoverPlaylist(id: String) -> Bool { discoverPlaylistIds.contains(id) }
 
+    /// Round 22 R22A (D182): the playlists named as Aurral's last proven the owner's own, saved for the account (a
+    /// later read that can't tell leaves them the owner's).
+    var ownPlaylistIds: Set<String> {
+        guard let scope = navidromeScope else { return [] }
+        return Set(appDefaults.stringArray(forKey: Self.ownPlaylistsKey(scope)) ?? [])
+    }
+
     /// The libraries holding Aurral's flow files, as learnt from its job paths (`DiscoverRules.discoverLibraries`).
     var savedDiscoverLibraryIds: Set<Int> {
         guard aurralSetUp, let scope = navidromeScope else { return [] }
@@ -182,10 +191,10 @@ extension AppModel {
 
     // MARK: - Reading Aurral
 
-    /// Reads Aurral's flows (and its jobs, for the songs' ids) and finds their playlists: named after a flow AND holding
-    /// the flow's songs (fix I1, `DiscoverRules.confirmedFlowPlaylists`); a playlist that can't be read keeps what it
-    /// was. Then Aurral's library is read again (fix I2). At most every 30 s unless `force`. Offline, or without Aurral,
-    /// nothing is asked. A failure keeps what was read before.
+    /// Reads Aurral's flows and playlists (and its jobs, for the songs' ids) and finds their Navidrome playlists: named
+    /// as one of them unless proven the owner's own (round 22 R22A, D182, `keptDiscoverPlaylists`); a playlist that
+    /// can't be read keeps what it was. Then Aurral's library is read again (fix I2). At most every 30 s unless
+    /// `force`. Offline, or without Aurral, nothing is asked. A failure keeps what was read before.
     /// Round 13 Z2: only through `refreshDiscover(force:)` / `refreshDiscover(waitingAtMost:)`, one read at a time.
     func performDiscoverRead(force: Bool = false) async {
         guard let client = aurralClient, session != nil, !isOffline, let scope = navidromeScope else { return }
@@ -206,14 +215,17 @@ extension AppModel {
         // Round 13: only the signed-in user's flows' songs (Aurral shows an admin everyone's).
         // Round 14 A4 (D94, amends D75): Add flow's synced playlists are Discover's too, matched like flows (named
         // after one and holding its songs); they never get Refresh Flow (`discoverFlow(playlistId:)`).
-        // Fix round 1 (I2): only Add flow's: a Deezer playlist (`importSource.provider` "deezer-playlist", what Discover
-        // playlists and charts are) or one this phone added. Spotify or YouTube imports and hand-made shared playlists
-        // stay in Playlists.
-        let flows = status.flows + status.sharedPlaylists.filter(isAddFlowsPlaylist)
+        // Round 22 R22A (owner, D183, supersedes fix round 1's I2): every one of the user's shared playlists is
+        // Discover's, Add flow's or not (a Spotify or YouTube import, one made by hand in Aurral): Aurral's playlists
+        // live in Discover only.
+        let flows = status.flows + status.sharedPlaylists
         let flowIds = Set(flows.map(\.id))
         if let jobs { discover.jobs = jobs.filter { $0.flowId.map(flowIds.contains) ?? false } }
         let before = discoverPlaylistIds
-        let candidates = DiscoverRules.flowPlaylists(flows: flows, playlists: all)
+        // D184: Aurral's other users' flows and playlists (Aurral shows an admin everyone's) name Aurral's playlists
+        // too, matched after the user's own; with no flow id, never Refresh Flow and never their songs (D72).
+        let others = status.othersPlaylists.map { AurralFlow(id: "", name: $0.name, ownerUsername: $0.ownerUsername) }
+        let candidates = DiscoverRules.flowPlaylists(flows: flows + others, playlists: all)
         var entries: [String: [Song]] = [:]
         // Round 13 Z2: the known Discover playlists no flow is named as now are read too (`discoverPlaylistsToRead`).
         for id in Self.discoverPlaylistsToRead(candidates: candidates, before: before, all: all) {
@@ -224,16 +236,31 @@ extension AppModel {
         guard navidromeScope == scope, discover.connection?.account == account else { return }
         // Round 13 Z2: a read that can't confirm a playlist (jobs unreadable, a run under way, a playlist that didn't
         // read, no flows listed, a flow renamed first) never takes it out of Discover and into Playlists.
-        let matched = keptDiscoverPlaylists(flows: flows, all: all, candidates: candidates, entries: entries,
-                                            before: before)
+        // R22A (D182): only playlists whose songs show them Aurral's teach what Aurral's copies are. With nothing
+        // learnt yet (a first read), Aurral's library is learnt from those first and the playlists are told apart
+        // again, so the owner's own same-named playlist isn't taken for Aurral's for want of what to compare with.
+        let unknown = knownAurralSongIds.isEmpty && savedDiscoverLibraryIds.isEmpty
+        var evidence = Set<String>()
+        var matched = keptDiscoverPlaylists(flows: flows, all: all, candidates: candidates, entries: entries,
+                                            before: before, jobsRead: jobs != nil, evidence: &evidence)
+        for id in evidence { noteFlowSongs(entries[id] ?? []) }
+        let aurralSongs = evidence.sorted().flatMap { entries[$0] ?? [] }
+        if unknown {
+            await refreshAurralLibrary(entries: aurralSongs)
+            guard navidromeScope == scope, discover.connection?.account == account else { return }
+            if !(knownAurralSongIds.isEmpty && savedDiscoverLibraryIds.isEmpty) {
+                matched = keptDiscoverPlaylists(flows: flows, all: all, candidates: candidates, entries: entries,
+                                                before: Set(matched.map(\.playlist.id)), jobsRead: jobs != nil,
+                                                evidence: &evidence)
+            }
+        }
         discover.playlists = matched
         appDefaults.set(matched.map(\.playlist.id), forKey: Self.discoverPlaylistsKey(scope))
-        for playlist in matched { noteFlowSongs(entries[playlist.playlist.id] ?? []) }
         if Set(matched.map(\.playlist.id)) != before {
             libraryEdits.playlistsRevision += 1   // Playlists read again
             homeFeedSlot?.sectionsChanged([.discover, .playlists])   // Round 13 Z2: and Home's two shelves
         }
-        await refreshAurralLibrary(entries: matched.flatMap { entries[$0.playlist.id] ?? [] })
+        if !unknown { await refreshAurralLibrary(entries: aurralSongs) }
     }
 
     /// Fix I2: every song in Aurral's library (flow songs, and the ones rotated out but still kept because a playlist
@@ -298,6 +325,7 @@ extension AppModel {
     }
 
     /// Round 14 A4 fix round 1 (I2): a shared playlist Add flow made (a Deezer playlist, or one this phone added).
+    /// Round 22 R22A (D183): no longer what decides Discover (every shared playlist is Discover's).
     func isAddFlowsPlaylist(_ playlist: AurralFlow) -> Bool {
         playlist.importProvider == "deezer-playlist" || (aurralFeeds?.added.values.contains(playlist.id) ?? false)
             || (aurralFeeds?.chartFlows.playlistIds.contains(playlist.id) ?? false)   // round 15 C2: a chart flow (D133)
@@ -507,6 +535,9 @@ extension AppModel {
     nonisolated static func aurralSongsKey(_ scope: String) -> String { aurralSongsKeyPrefix + scope }
     nonisolated static let discoverLibrariesKeyPrefix = "magpie.discoverLibraries."
     nonisolated static func discoverLibrariesKey(_ scope: String) -> String { discoverLibrariesKeyPrefix + scope }
+    /// Round 22 R22A (D182): the playlists named as Aurral's that a read proved the owner's own.
+    nonisolated static let ownPlaylistsKeyPrefix = "magpie.discoverOwnPlaylists."
+    nonisolated static func ownPlaylistsKey(_ scope: String) -> String { ownPlaylistsKeyPrefix + scope }
 }
 
 /// Discover's words (§5 voice; the glossary's "your library").

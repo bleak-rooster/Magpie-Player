@@ -19,16 +19,15 @@ extension AppModel {
     /// The longest a screen waits for Aurral before showing the Discover playlists it already knows.
     nonisolated static let discoverWait: Duration = .seconds(3)
 
-    /// The flows' playlists after a read: the ones confirmed now, and each one Discover's before (`before`) that is
-    /// still named after its flow (it is a candidate) when no other playlist is confirmed for that flow. Aurral keeps a
-    /// flow's playlist id and renames it in place.
-    nonisolated static func keptFlowPlaylists(_ candidates: [DiscoverPlaylist], confirmed: [DiscoverPlaylist],
-                                              before: Set<String>) -> [DiscoverPlaylist] {
-        let confirmedIds = Set(confirmed.map(\.playlist.id))
-        let confirmedFlows = Set(confirmed.map(\.flow.id))
-        return candidates.filter {
-            confirmedIds.contains($0.playlist.id) || (before.contains($0.playlist.id) && !confirmedFlows.contains($0.flow.id))
-        }
+    /// The flows' playlists after a read. Round 22 R22A (owner, D182, supersedes D62's "more than half" and D75's
+    /// "another playlist confirmed for the flow"): every playlist named as one of Aurral's is Discover's unless
+    /// `ownersOwn` proves it the owner's own on this read. D75's stickiness holds in what it was for: a read that can't
+    /// prove anything (jobs unreadable, a run under way, songs that didn't read) never moves one out of Discover; only
+    /// proof does, so a playlist wrongly taken in while Aurral's library wasn't known yet goes back to the owner.
+    /// Several playlists may be one flow's (an older name beside the new one): all are Discover's.
+    nonisolated static func keptFlowPlaylists(_ candidates: [DiscoverPlaylist],
+                                              ownersOwn: (DiscoverPlaylist) -> Bool) -> [DiscoverPlaylist] {
+        candidates.filter { !ownersOwn($0) }
     }
 
     /// The playlists one read of Aurral reads the songs of: every candidate, and every known Discover playlist the
@@ -40,18 +39,37 @@ extension AppModel {
         return named + orphans
     }
 
-    /// Review I1: Discover after a read. Candidates follow `keptFlowPlaylists`. A known Discover playlist that no flow
+    /// Review I1: Discover after a read. Candidates follow `keptFlowPlaylists` (round 22 R22A: named as Aurral's and
+    /// not proven the owner's own, D182). A known Discover playlist that no flow
     /// is named as now (and that the server still has) stays Discover's unless Aurral positively says otherwise: it
     /// leaves only when the status lists flows, none is named as it, its songs could be read, and they are no longer a
     /// flow's (by Aurral's jobs) or Aurral's copies. A status with no flows (Z1's fail-closed status when the user
     /// isn't known), a flow renamed before its playlist, or songs that didn't read change nothing. A kept playlist's
     /// flow is the one its songs belong to, else the one it had (renamed as the status says), else none (no Refresh).
+    /// `evidence` gets the kept playlists whose songs show them Aurral's (R22A): only their songs teach Magpie what
+    /// Aurral's copies and library are, never a playlist that is Discover's only for want of proof.
     func keptDiscoverPlaylists(flows: [AurralFlow], all: [Playlist], candidates: [DiscoverPlaylist],
-                               entries: [String: [Song]], before: Set<String>) -> [DiscoverPlaylist] {
+                               entries: [String: [Song]], before: Set<String>, jobsRead: Bool,
+                               evidence: inout Set<String>) -> [DiscoverPlaylist] {
         let known = knownAurralSongIds
         let jobs = discover.jobs
-        let confirmed = DiscoverRules.confirmedFlowPlaylists(candidates, entries: entries, jobs: jobs, aurralSongIds: known)
-        var kept = Self.keptFlowPlaylists(candidates, confirmed: confirmed, before: before)
+        let libraries = savedDiscoverLibraryIds
+        // R22A (D182): a read that can't tell keeps what was known (Discover's before, or proven the owner's own
+        // before); one never told apart is Aurral's.
+        let ownBefore = ownPlaylistIds
+        var own = Set<String>(), found = Set<String>()
+        var kept = Self.keptFlowPlaylists(candidates) { candidate in
+            let flowId = candidate.flow.id, id = candidate.playlist.id
+            let told = DiscoverRules.isOwnersOwn(songs: entries[id],
+                                                 flowJobs: flowId.isEmpty ? [] : jobs.filter { $0.flowId == flowId },
+                                                 jobsRead: jobsRead, runActive: !flowId.isEmpty && isFlowRunActive(flowId),
+                                                 aurralSongIds: known, aurralLibraries: libraries)
+            let isOwn = told ?? (ownBefore.contains(id) && !before.contains(id))
+            if isOwn { own.insert(id) }
+            if told == false { found.insert(id) }
+            return isOwn
+        }
+        if let scope = navidromeScope { appDefaults.set(own.sorted(), forKey: Self.ownPlaylistsKey(scope)) }
         let named = Set(candidates.map(\.playlist.id))
         let previous = Dictionary(discover.playlists.map { ($0.playlist.id, $0.flow) }, uniquingKeysWith: { a, _ in a })
         for playlist in all where before.contains(playlist.id) && !named.contains(playlist.id) {
@@ -67,10 +85,13 @@ extension AppModel {
             }
             if let flow = flows.first(where: { confirms($0, jobs, []) }) {
                 kept.append(DiscoverPlaylist(flow: flow, playlist: playlist))   // still a flow's songs
+                found.insert(playlist.id)
             } else if confirms(fallback, [], known) {
                 kept.append(DiscoverPlaylist(flow: fallback, playlist: playlist))   // still Aurral's copies
+                found.insert(playlist.id)
             }
         }
+        evidence = found
         let keptIds = Set(kept.map(\.playlist.id))
         let order = all.map(\.id).filter(keptIds.contains)
         let byId = Dictionary(kept.map { ($0.playlist.id, $0) }, uniquingKeysWith: { a, _ in a })

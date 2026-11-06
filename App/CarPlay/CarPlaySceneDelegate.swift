@@ -93,7 +93,8 @@ final class CarPlayLibraryAdapter: CarPlayLibrary {
     }
 
     func playlists() async throws -> [Playlist] {
-        if model.isOffline { return await model.offlineCatalog.playlists() }
+        // Round 22 R22A (D185): downloaded Discover playlists stay out too (the account's saved Discover ids).
+        if model.isOffline { return await model.offlineCatalog.playlists().filter { !model.isDiscoverPlaylist($0) } }
         let all = try await model.request { try await $0.playlists() }.filter { !model.isDiscoverPlaylist($0) }   // Y6
         return model.shownPlaylists(all)   // All or Yours, as on the phone (D179)
     }
