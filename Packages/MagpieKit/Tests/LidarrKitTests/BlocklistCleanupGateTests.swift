@@ -131,6 +131,17 @@ import MagpieTestSupport
         #expect(fake.writes.isEmpty)
     }
 
+    /// Fix round 1 M5: a blocklist longer than the pages Magpie reads is an error, never a partial list.
+    @Test func tooLongABlocklistIsAnError() async throws {
+        let fake = try await Fake()
+        fake.transport.stub(pathSuffix: "/api/v1/blocklist") { _ in
+            MockTransport.Response(status: 200, body: try JSONSerialization.data(withJSONObject: [
+                "page": 1, "pageSize": 1, "totalRecords": 1000,
+                "records": [["id": 6, "artistId": 42, "albumIds": [50], "sourceTitle": "b"]]]))
+        }
+        await #expect(throws: (any Error).self) { _ = try await fake.client.blocklist(artistId: 42, pageSize: 1) }
+    }
+
     /// The blocklist is read page by page (the find's entry on the second page is found).
     @Test func readsEveryPage() async throws {
         let fake = try await Fake()

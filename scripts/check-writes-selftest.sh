@@ -72,6 +72,10 @@ planted=(
   'client.connection.send(.deleteFolder("Lowlands"))'
   'SlskdWriteGate(client: client, defaultsSuite: nil)'
   'request.setValue(key, forHTTPHeaderField: "X-API-Key")'
+  # Fix round 1 M4: the slskd gate named (then used through another name) outside its one caller.
+  'slskd.gate.enabled'
+  'model.slskdAccess?.gate.enabled'
+  'g as SlskdWriteGate'
   # Round 23 R23F (D200): a third caller of Retry a song (the research route).
   'client.retrySong(playlistId: "flow-1", jobId: "job-1")'
 )

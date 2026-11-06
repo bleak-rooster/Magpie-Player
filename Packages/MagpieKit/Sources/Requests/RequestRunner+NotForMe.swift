@@ -291,10 +291,11 @@ extension RequestRunner {
         case .no: return .done
         case .yes: break
         }
-        await cleanSlateBeforeRemoving(artistId: p.artistId, for: id)   // R23 (D191–D194)
         guard await spend(id, p) else { return await stop(id, .needsAttention, wasSent: true) }
         // M6: saved before the write; if it can't be saved, nothing is sent and it waits.
         do { try await persist() } catch { return .pending }
+        // R23 (D191–D194; fix round 1 M3): only once nothing before the artist's DELETE can stop it.
+        await cleanSlateBeforeRemoving(artistId: p.artistId, for: id)
         do {
             _ = try await gate.send("DELETE", "artist/\(p.artistId)?deleteFiles=false&addImportListExclusion=false",
                                     body: nil)
@@ -607,8 +608,9 @@ extension RequestRunner {
         case .no: return true
         case .yes: break
         }
-        await cleanSlateBeforeRemoving(artistId: artistId, for: id)   // R23 (D191–D194)
         do { try await persist() } catch { return false }
+        // R23 (D191–D194; fix round 1 M3): only once nothing before the artist's DELETE can stop it.
+        await cleanSlateBeforeRemoving(artistId: artistId, for: id)
         do {
             _ = try await gate.send("DELETE", "artist/\(artistId)?deleteFiles=false&addImportListExclusion=false",
                                     body: nil)

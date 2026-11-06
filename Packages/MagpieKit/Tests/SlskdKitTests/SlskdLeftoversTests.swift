@@ -9,7 +9,8 @@ import Testing
         SlskdTransfer(id: UUID(), username: user, filename: dir + "\\" + file, directory: dir, state: state)
     }
 
-    static let imported: [(folder: String, file: String)] = [("Lowlands (2016)", "01 - Song.flac")]
+    static let imported: [(folder: String, file: String)] = [("Lowlands (2016)", "01 - Song.flac"),
+                                                             ("Lowlands (2016)", "02 - Other.flac")]
 
     @Test func theImportedFoldersFinishedGroupIsPlanned() {
         let a = Self.t("jordan", "@@x\\Lowlands (2016)", "01 - Song.flac")
@@ -20,7 +21,41 @@ import Testing
         #expect(plan.count == 1)
         #expect(plan.first?.name == "Lowlands (2016)")
         #expect(plan.first?.files == ["01 - Song.flac", "02 - Other.flac"], "a failed transfer left no file to delete")
-        #expect(Set(plan.first?.transfers.map(\.id) ?? []) == [a.id, b.id, failed.id], "never the unrelated user's")
+        #expect(Set(plan.first?.transfers.map(\.id) ?? []) == [a.id, b.id],
+                "never the unrelated user's, nor a record of a file Lidarr didn't import")
+    }
+
+    // MARK: - Fix round 1 I1: a group is tied by its own folder name and every song in it
+
+    /// Another album downloaded by hand into a folder of the same name ("CD1"), sharing one track name with the find:
+    /// it has a song Lidarr never imported, so it isn't the artist's, and none of its files or records are planned.
+    @Test func aForeignGroupInAFolderOfTheSameNameSharingOneTrackIsLeftAlone() {
+        let imported: [(folder: String, file: String)] = [("CD1", "01 - Intro.flac"), ("CD1", "02 - Song.flac")]
+        let a1 = Self.t("jordan", "@@x\\Aurora Field\\Lowlands\\CD1", "01 - Intro.flac")
+        let a2 = Self.t("jordan", "@@x\\Aurora Field\\Lowlands\\CD1", "02 - Song.flac")
+        let b1 = Self.t("sam", "@@y\\Greatest Hits\\CD1", "01 - Intro.flac")
+        let b2 = Self.t("sam", "@@y\\Greatest Hits\\CD1", "02 - Theirs.flac")
+        let plan = SlskdLeftovers.plan(imported: imported, transfers: [a1, a2, b1, b2])
+        #expect(plan.count == 1)
+        #expect(Set(plan.first?.transfers.map(\.id) ?? []) == [a1.id, a2.id], "sam's records stay")
+        #expect(plan.first?.files == ["01 - Intro.flac", "02 - Song.flac"])
+    }
+
+    /// A group whose own remote folder has another name is never tied to Lidarr's folder, whatever its file names.
+    @Test func aGroupFromAnotherNamedFolderIsNeverMatched() {
+        let a = Self.t("jordan", "@@x\\Lowlands", "01 - Song.flac")
+        let b = Self.t("jordan", "@@x\\Lowlands", "02 - Other.flac")
+        #expect(SlskdLeftovers.plan(imported: Self.imported, transfers: [a, b]).isEmpty)
+    }
+
+    /// Pictures and notes beside the songs are neither required nor planned: only the imported songs go.
+    @Test func filesLidarrDidntImportStay() {
+        let a = Self.t("jordan", "@@x\\Lowlands (2016)", "01 - Song.flac")
+        let b = Self.t("jordan", "@@x\\Lowlands (2016)", "02 - Other.flac")
+        let cover = Self.t("jordan", "@@x\\Lowlands (2016)", "cover.jpg")
+        let plan = SlskdLeftovers.plan(imported: Self.imported, transfers: [a, b, cover])
+        #expect(plan.first?.files == ["01 - Song.flac", "02 - Other.flac"])
+        #expect(Set(plan.first?.transfers.map(\.id) ?? []) == [a.id, b.id])
     }
 
     @Test func nothingWithoutAnImportRecord() {

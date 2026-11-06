@@ -44,6 +44,10 @@ extension RequestRunner {
     /// failure is recorded on the request and in the change log, and never holds the artist's removal back.
     func cleanSlateBeforeRemoving(artistId: Int, for id: RequestID) async {
         guard let r = request(id), r.cleanSlate?.artistId != artistId else { return }
+        // Fix round 1 M3: right before, the ledger once more: an artist kept or being kept, or not Magpie's, never.
+        guard let entries = try? await ledger.entries.filter({ $0.lidarrArtistId == artistId }),
+              entries.contains(where: \.createdArtist), !entries.contains(where: \.isKeptOrKeeping),
+              !list.contains(where: { $0.lidarrArtistId == artistId && ($0.state == .kept || $0.keep != nil) }) else { return }
         await mutate(id) { $0.cleanSlate = CleanSlate(artistId: artistId, startedAt: self.now()) }
         do { try await persist() } catch {
             await mutate(id) { $0.cleanSlate = nil }   // not saved: nothing is sent
@@ -87,8 +91,8 @@ extension RequestRunner {
         }
     }
 
-    /// slskd's finished downloads of the artist's grabs (see `SlskdLeftovers`): a folder that holds only those files goes
-    /// whole, otherwise only those files; then their records, only for a folder whose files went (or were gone already).
+    /// slskd's finished downloads of the artist's grabs (see `SlskdLeftovers`): those files one by one, then the folder if
+    /// nothing is left in it; then their records, only for a folder whose files went (or were gone already).
     private func clearSlskd(_ id: RequestID, imported: [ImportedFrom]?) async {
         guard let slskd else { return }
         guard await slskd.gate.enabled else {
@@ -110,17 +114,16 @@ extension RequestRunner {
         for folder in plan {
             do {
                 if let listing = try await slskd.client.folder(folder.name) {
-                    let mine = listing.files.filter(folder.files.contains)
-                    if !mine.isEmpty, mine.count == listing.files.count, listing.folders.isEmpty {
+                    // Fix round 1 M2: file by file (slskd deletes a folder with everything in it), then the folder
+                    // only if it is empty now (read again; the gate reads it once more).
+                    for file in listing.files.filter(folder.files.contains) {
                         try await persist()   // M6
-                        try await Self.gone { try await slskd.gate.perform(.deleteFolder(folder.name, only: folder.files)) }
-                        await mutate(id) { $0.cleanSlate?.slskdFilesRemoved? += mine.count }
-                    } else {
-                        for file in mine {
-                            try await persist()
-                            try await Self.gone { try await slskd.gate.perform(.deleteFile(folder: folder.name, file: file)) }
-                            await mutate(id) { $0.cleanSlate?.slskdFilesRemoved? += 1 }
-                        }
+                        try await Self.gone { try await slskd.gate.perform(.deleteFile(folder: folder.name, file: file)) }
+                        await mutate(id) { $0.cleanSlate?.slskdFilesRemoved? += 1 }
+                    }
+                    if let after = try await slskd.client.folder(folder.name), after.files.isEmpty, after.folders.isEmpty {
+                        try await persist()
+                        try await Self.gone { try await slskd.gate.perform(.deleteFolder(folder.name)) }
                     }
                 }
             } catch {

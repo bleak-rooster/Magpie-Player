@@ -36,7 +36,7 @@ import SlskdKit
         let gate = SlskdWriteGate(client: client, defaultsSuite: h.suite)
         await gate.setEnabled(on)
         await h.runner.useSlskd(RequestRunner.SlskdAccess(client: client, gate: gate))
-        h.server.with { $0.imports = [(50, "/downloads/slskd/\(folder)/01 - Song.flac")] }
+        h.server.with { $0.imports = [(50, "/downloads/slskd/\(folder)/01 - Song.flac"), (50, "/downloads/slskd/\(folder)/02 - Other.flac")] }
         return (slskd, ids)
     }
 
@@ -141,8 +141,11 @@ import SlskdKit
 
         // Lidarr forgets an artist's history with it: the folder was found only because this ran first.
         let deleted = slskd.with { $0.deleted }
-        #expect(deleted.first == "folder \(Self.folder)", "files before records")
-        #expect(Set(deleted.dropFirst()) == Set(ids[0...1].map { "record \($0.uuidString.lowercased())" }) && deleted.count == 3)
+        // Fix round 1 M2: file by file, then the folder once it is empty, then the records.
+        #expect(deleted.count == 5)
+        #expect(Set(deleted.prefix(2)) == ["file \(Self.folder)/01 - Song.flac", "file \(Self.folder)/02 - Other.flac"])
+        #expect(deleted.dropFirst(2).first == "folder \(Self.folder)")
+        #expect(Set(deleted.suffix(2)) == Set(ids[0...1].map { "record \($0.uuidString.lowercased())" }))
         #expect(slskd.with { $0.folders["Another"] } != nil, "someone else's download under way is never touched")
         #expect(slskd.with { $0.transfers.map(\.id) } == [ids[2]])
         #expect(h.server.with { $0.deletedArtists } == [42])
@@ -162,6 +165,42 @@ import SlskdKit
         #expect(Set(slskd.with { $0.deleted }.filter { $0.hasPrefix("file ") })
                 == ["file \(Self.folder)/01 - Song.flac", "file \(Self.folder)/02 - Other.flac"])
         #expect(slskd.with { $0.folders[Self.folder]?.files } == ["notes.txt"])
+    }
+
+    /// Fix round 1 I1: someone's other album, downloaded into a folder of the same name and sharing a track name, keeps
+    /// its files, its records and the folder.
+    @Test func aForeignAlbumInTheSameFolderKeepsItsFilesAndRecords() async throws {
+        let h = await Harness(setup: Harness.findsSetup)
+        let id = try await NotForMeTests.readyFind(h)
+        let (slskd, ids) = await Self.connectSlskd(h)
+        let theirs = [UUID(), UUID()]
+        slskd.with { s in
+            s.transfers += [.init(id: theirs[0], username: "sam", directory: "@@y\\Other\\Lowlands (2016)", file: "01 - Song.flac"),
+                            .init(id: theirs[1], username: "sam", directory: "@@y\\Other\\Lowlands (2016)", file: "09 - Theirs.flac")]
+            s.folders[Self.folder]?.files.append("09 - Theirs.flac")
+        }
+        _ = try await h.runner.notForMe(id, permanentConfirmed: false)
+        let deleted = slskd.with { $0.deleted }
+        #expect(!deleted.contains { $0.contains("09 - Theirs") || $0.hasPrefix("folder ") })
+        #expect(!deleted.contains { theirs.map { "record \($0.uuidString.lowercased())" }.contains($0) }, "sam's records stay")
+        #expect(slskd.with { $0.folders[Self.folder]?.files } == ["09 - Theirs.flac"])
+        #expect(Set(deleted.filter { $0.hasPrefix("record ") }) == Set(ids[0...1].map { "record \($0.uuidString.lowercased())" }))
+    }
+
+    /// Fix round 1 M3: when the artist's removal stops (out of tries) the clean slate never ran: its blocklist stays.
+    @Test func anArtistWhoseRemovalStopsKeepsItsBlocklist() async throws {
+        let h = await Harness(setup: Harness.findsSetup)
+        let id = try await NotForMeTests.readyFind(h)
+        h.server.with { s in
+            s.blocklist = [(5, 42)]
+            s.deleteFails503 = 2         // two unanswered deletes,
+            s.deleteAppliedThen504 = 1   // then one that landed but lost its answer: three, out of tries
+            s.unmonitorOnDelete = true   // (Lidarr unmonitored it: no write before the artist's step)
+        }
+        _ = try? await h.runner.notForMe(id, permanentConfirmed: false)
+        #expect(h.server.with { $0.deletedArtists }.isEmpty)
+        #expect(h.server.with { $0.blocklist.map(\.id) } == [5])
+        #expect(await h.request(id)?.cleanSlate == nil)
     }
 
     @Test func slskdChangesOffTouchesNothing() async throws {
