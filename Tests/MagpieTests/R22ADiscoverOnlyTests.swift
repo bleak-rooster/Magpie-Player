@@ -142,6 +142,9 @@ import Testing
         }
         defer { model.signOut() }
         #expect(model.discover.status?.flows.map(\.id) == ["flow-dw", "flow-tm"], "Your flows stay yours")
+        // Round 23 R23F (D189 amends D184): listed under Discover only with "Show everyone's flows" on.
+        #expect(try await !model.discoverPlaylists().contains { $0.id == "pl-sam" }, "only your own by default")
+        model.showEveryonesFlows = true
         try await expectOnlyInDiscover("pl-sam", model, "Sam's flow's playlist")
         #expect(model.discoverFlow(playlistId: "pl-sam") == nil, "never Refresh someone else's flow")
     }

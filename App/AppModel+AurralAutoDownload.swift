@@ -55,8 +55,10 @@ extension AppModel {
     }
 
     /// D188: whether Library › Playlists and the car's Playlists leave `playlist` out: Discover's, unless the switch
-    /// shows them there too.
-    func leavesOutOfPlaylists(_ playlist: Playlist) -> Bool { !showDiscoverInPlaylists && isDiscoverPlaylist(playlist) }
+    /// shows them there too. Round 23 R23F (D189): another user's always (the switch shows only the user's own).
+    func leavesOutOfPlaylists(_ playlist: Playlist) -> Bool {
+        isDiscoverPlaylist(playlist) && !(showDiscoverInPlaylists && !isOthersDiscoverPlaylist(playlist))
+    }
 
     /// The note on a flow's page when its songs couldn't start by themselves.
     func autoDownloadNote(flowId: String) -> AutoDownloadNote? {

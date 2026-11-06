@@ -159,6 +159,7 @@ extension AppModel {
             appDefaults.removeObject(forKey: Self.discoverLibrariesKey(scope))
             appDefaults.removeObject(forKey: Self.aurralSongsKey(scope))
             appDefaults.removeObject(forKey: Self.ownPlaylistsKey(scope))   // R22A
+            appDefaults.removeObject(forKey: Self.othersPlaylistsKeyPrefix + scope)   // R23F (D189)
             forgetAutoDownloadRecords(scope: scope)   // R22A (D186)
         }
         syncLibraryScope()
@@ -226,7 +227,9 @@ extension AppModel {
         let before = discoverPlaylistIds
         // D184: Aurral's other users' flows and playlists (Aurral shows an admin everyone's) name Aurral's playlists
         // too, matched after the user's own; with no flow id, never Refresh Flow and never their songs (D72).
-        let others = status.othersPlaylists.map { AurralFlow(id: "", name: $0.name, ownerUsername: $0.ownerUsername) }
+        let others = status.othersPlaylists.map {
+            AurralFlow(id: "", name: $0.name, ownerUserId: $0.ownerUserId, ownerUsername: $0.ownerUsername)
+        }
         let candidates = DiscoverRules.flowPlaylists(flows: flows + others, playlists: all)
         var entries: [String: [Song]] = [:]
         // Round 13 Z2: the known Discover playlists no flow is named as now are read too (`discoverPlaylistsToRead`).
@@ -256,6 +259,7 @@ extension AppModel {
                                                 evidence: &evidence)
             }
         }
+        noteOthersPlaylists(matched, others: others, scope: scope)   // Round 23 R23F (D189), before Discover lists them
         discover.playlists = matched
         appDefaults.set(matched.map(\.playlist.id), forKey: Self.discoverPlaylistsKey(scope))
         if Set(matched.map(\.playlist.id)) != before {
@@ -300,10 +304,11 @@ extension AppModel {
         guard aurralSetUp, !isOffline else { return [] }
         await refreshDiscover(waitingAtMost: Self.discoverWait)   // Round 13 Z2: never held up by a slow Aurral
         guard !discover.flowsNotPermitted else { return [] }   // round 14: no accessFlow, Discover hides
-        if !discover.playlists.isEmpty { return discover.playlists.map(\.playlist) }
+        // Round 23 R23F (D189, D190): the user's own, and other users' only with "Show everyone's flows" on.
+        if !discover.playlists.isEmpty { return discover.playlists.map(\.playlist).filter(isShownInDiscover) }
         let ids = discoverPlaylistIds
         guard !ids.isEmpty else { return [] }
-        return try await request { try await $0.playlists() }.filter { ids.contains($0.id) }
+        return try await request { try await $0.playlists() }.filter { ids.contains($0.id) && isShownInDiscover($0) }
     }
 
     /// The flow a Discover playlist belongs to, if known.
