@@ -14,8 +14,10 @@ node_modules/
 Magpie.xcodeproj/
 App/Info.plist
 
-# Claude Code agent worktrees
-.claude/worktrees/
+# Claude Code: shared agent definitions and commands are tracked; local settings and agent worktrees are not
+.claude/*
+!.claude/agents/
+!.claude/commands/
 ios_crash_reports/
 
 # Per-worktree DerivedData used by parallel agents
