@@ -11,7 +11,8 @@ don't have yet: a "Try" lands in a separate *Finds* folder you can Keep or let g
 charts, recommendations, flows) and optional **ListenBrainz** (scrobbling, recommendations). Every feature must work,
 or be hidden or explained, in all four setups: Navidrome alone; + Lidarr; + Aurral; all of them.
 
-Swift 6 (language mode 6), SwiftUI, iOS 27, Xcode 27.1, XcodeGen. Most logic lives in the Swift package
+Swift 6 (language mode 6), SwiftUI, iOS 26.0 and newer (built with the iOS 27 SDK; iOS 27-only APIs behind
+`if #available(iOS 27, *)` with an iOS 26 fallback, D166), Xcode 27.1, XcodeGen. Most logic lives in the Swift package
 `Packages/MagpieKit` so it tests on macOS with `swift test`; the app target in `App/` is a thin SwiftUI layer.
 
 ## Read before you change anything

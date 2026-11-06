@@ -58,8 +58,12 @@ enough to use Magpie as a player.
 
 ## What it doesn't do, and known limits
 
-- **iOS 27 and Xcode 27.1 only.** It is built and tested for iPhone. It installs on iPad, but the layout hasn't been
-  designed for it.
+- **iOS 26 or newer, built with Xcode 27.1 or newer.** It is built for iPhone on iOS 26.0 and later, and its tests run
+  on an iOS 27 simulator and an iOS 26.2 one. It installs on iPad, but the layout hasn't been designed for it.
+- **AirPlay and Bluetooth go through the system.** Now Playing has the system's output picker ("Play on…"), and the
+  lock screen, Control Centre, car and AirPlay receivers get the song and its controls. The simulator checks the picker,
+  the audio session and the pause when an output goes away; real speakers, headphones and cars can only be tried on
+  a phone.
 - **Navidrome is required.** Magpie uses Navidrome's own API alongside the Subsonic one, so other Subsonic servers
   won't work. There's no Plex, Jellyfin or streaming-service support, and none is planned.
 - **Getting music depends on your Lidarr setup.** Whether a Try succeeds depends on your indexers and download
