@@ -81,8 +81,15 @@ import Testing
         player.play([Song(id: "s1", title: "T", artist: "A", album: "B", duration: 10)], startAt: 0)
         #expect(player.isPlaying)
         try await AVQueueEngineTests.waitUntil { activation.calls == 1 }
-        NotificationCenter.default.post(name: AVAudioSession.didBecomeInactiveNotification,
-                                        object: AVAudioSession.sharedInstance())
+        // R21 (D166): iOS 27's inactive notification, or iOS 26's interruption began.
+        if #available(iOS 27, *) {
+            NotificationCenter.default.post(name: AVAudioSession.didBecomeInactiveNotification,
+                                            object: AVAudioSession.sharedInstance())
+        } else {
+            NotificationCenter.default.post(name: AVAudioSession.interruptionNotification,
+                                            object: AVAudioSession.sharedInstance(),
+                                            userInfo: [AVAudioSessionInterruptionTypeKey: AVAudioSession.InterruptionType.began.rawValue])
+        }
         try await Task.sleep(for: .milliseconds(700))      // the activation has completed by now
         #expect(engine.playerRate == 0, "no play after the interruption")
         #expect(!player.isPlaying)

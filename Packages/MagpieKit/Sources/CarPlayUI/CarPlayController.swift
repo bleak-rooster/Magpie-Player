@@ -403,7 +403,8 @@ public final class CarPlayController: NSObject {
         nowPlaying.upNextTitle = CarPlayRows.upNextTitle
         nowPlaying.isAlbumArtistButtonEnabled = false   // on once the song playing has a page to go to (2d)
         nowPlaying.add(self)
-        nowPlaying.allowsMiniPlayer = true
+        // R21 (D166): the car's mini player is new in iOS 27; on iOS 26 CarPlay keeps its own Now Playing button.
+        if #available(iOS 27, *) { nowPlaying.allowsMiniPlayer = true }
         updateNowPlayingButtons()
     }
 

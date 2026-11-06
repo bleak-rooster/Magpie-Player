@@ -486,24 +486,20 @@ public final class AVQueueEngine: PlaybackEngine {
     private func observeSession() {
         let center = NotificationCenter.default
         let session = AVAudioSession.sharedInstance()
-        // Interruptions (iOS 27 API): the session goes inactive, later the system may recommend resuming.
-        notificationTokens.append(center.addObserver(forName: AVAudioSession.didBecomeInactiveNotification,
-                                                     object: session, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.sessionBecameInactive() }
-        })
-        notificationTokens.append(center.addObserver(forName: AVAudioSession.resumptionRecommendationNotification,
-                                                     object: session, queue: .main) { [weak self] note in
-            let context = note.userInfo?[AVAudioSession.resumptionContextKey] as? AVAudioSession.ResumptionContext
-            let shouldResume = context?.recommendation == .shouldResume
-            MainActor.assumeIsolated { self?.resumptionRecommended(shouldResume) }
+        // Interruptions: iOS 27's inactive / resumption-recommendation pair, or iOS 26's interruption notification
+        // (R21, D166). The session goes inactive; later the system may recommend resuming.
+        notificationTokens += AudioSessionEvents.observeInterruptions(session, began: { [weak self] in
+            self?.sessionBecameInactive()
+        }, ended: { [weak self] shouldResume in
+            self?.resumptionRecommended(shouldResume)
         })
         notificationTokens.append(center.addObserver(forName: AVAudioSession.routeChangeNotification,
                                                      object: session, queue: .main) { [weak self] note in
-            let reason = (note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt)
-                .flatMap(AVAudioSession.RouteChangeReason.init(rawValue:))
+            let pauses = AudioSessionEvents.pausesPlayback(note.userInfo)
             MainActor.assumeIsolated {
-                // Headphones unplugged / car disconnected: pause rather than play out of the speaker.
-                guard reason == .oldDeviceUnavailable, let self, self.wantsToPlay else { return }
+                // Headphones unplugged, Bluetooth or the car gone, an AirPlay speaker dropped: pause rather than play
+                // out of the speaker, and don't resume on our own. A new route keeps playing (R21, D168).
+                guard pauses, let self, self.wantsToPlay else { return }
                 self.pause()
                 self.continuation.yield(.playing(false))
             }
