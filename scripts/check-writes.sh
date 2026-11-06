@@ -412,6 +412,18 @@ if [ -z "${G1_SRC:-}" ]; then
       *) echo "G1: Aurral's Download songs asked for outside its two callers: ${c%%:*}" >&2; bad=1 ;;
     esac
   done <<< "$dl_callers"
+  # Round 23 R23F (D200): Retry a song (the research route) is asked for from exactly two places: a synced playlist's
+  # per-song Retry (AppModel+DiscoverPlaylists.swift) and "Search again for missing songs" (AppModel+SearchAgain.swift),
+  # one call each, both on the owner's tap.
+  rs_callers=$(grep -rnF --include='*.swift' 'client.retrySong(' "${product[@]}" | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' || true)
+  [ "$(printf '%s\n' "$rs_callers" | grep -c .)" = 2 ] || { echo "G1: Aurral's Retry a song isn't asked for from exactly two calls" >&2; bad=1; }
+  while IFS= read -r c; do
+    [ -n "$c" ] || continue
+    case "${c%%:*}" in
+      App/AppModel+DiscoverPlaylists.swift|App/AppModel+SearchAgain.swift) ;;
+      *) echo "G1: Aurral's Retry a song asked for outside its two callers: ${c%%:*}" >&2; bad=1 ;;
+    esac
+  done <<< "$rs_callers"
   # Round 15 C2 (D131, fix round): the four chart flow writes are sent only from these exact lines in ChartFlows.swift
   # (each path a literal plus a plain id; the create's and append's bodies are built by chartFlowBody only, the
   # removal's is exactly {jobIds}). No PUT to a shared playlist (it left removed songs' files behind).

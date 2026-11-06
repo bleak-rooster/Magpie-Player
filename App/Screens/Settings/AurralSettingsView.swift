@@ -147,6 +147,14 @@ struct AurralSettingsView: View {
         } footer: {
             Text(AurralAutoDownloadCopy.showInPlaylistsFooter)
         }
+        // Round 23 R23F (D190): other people's flows in Discover too.
+        Section {
+            Toggle(EveryonesFlowsCopy.toggle, isOn: Binding(get: { model.showEveryonesFlows },
+                                                            set: { model.showEveryonesFlows = $0 }))
+                .accessibilityIdentifier("aurral-show-everyones-flows")
+        } footer: {
+            Text(EveryonesFlowsCopy.footer)
+        }
         if model.aurralAwaitingConsent {
             Section {
                 Button {
