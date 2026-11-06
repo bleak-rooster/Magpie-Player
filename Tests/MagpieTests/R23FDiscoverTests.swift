@@ -108,8 +108,8 @@ import Testing
         #expect(try await !inPlaylists(model).contains("pl-sam"), "never in Playlists, even with both switches on")
         let scope = try #require(model.navidromeScope)
         #expect(defaults.bool(forKey: AppModel.showEveryonesFlowsKeyPrefix + scope))
-        #expect(EveryonesFlowsCopy.toggle == "Show everyone\u{2019}s flows")
-        #expect(EveryonesFlowsCopy.footer == "Flows other people on your server made also appear in Discover.")
+        #expect(EveryonesFlowsCopy.toggle == "Show everyone\u{2019}s flows and playlists")
+        #expect(EveryonesFlowsCopy.footer == "Off: Discover shows only what you made. On: flows and playlists anyone on your server made appear too.")
     }
 
     /// A new flow of another user's is never started by itself (D186 only ever starts the user's own), switch on or off.
