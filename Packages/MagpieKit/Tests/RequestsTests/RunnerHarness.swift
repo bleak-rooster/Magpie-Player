@@ -812,6 +812,9 @@ final class FakeLibrary: @unchecked Sendable {
         /// Y5 9.2: what a title read in an artist folder lists (nil: can't tell).
         var titled: [(song: Song, lidarrPath: String)]?
         var titledReads = 0
+        /// R22 (D173): playlists pointed from one song to another; `repointFails`: it couldn't be done.
+        var repointed: [(String, String)] = []
+        var repointFails = false
     }
 
     let state = OSAllocatedUnfairLock(initialState: State())
@@ -851,6 +854,13 @@ final class FakeLibrary: @unchecked Sendable {
                 state.withLock { s in
                     s.existsReads.append(id)
                     return s.existsUnknown ? nil : !s.gone.contains(id)
+                }
+            },
+            repointSong: { [self] from, to in
+                state.withLock { s in
+                    guard !s.repointFails else { return false }
+                    s.repointed.append((from, to.id))
+                    return true
                 }
             })
     }

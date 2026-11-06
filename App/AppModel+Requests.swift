@@ -193,7 +193,8 @@ extension AppModel {
             keptSong: { [weak self] recording, artistPath in try await self?.keptSong(recording, artistPath: artistPath) },
             songsTitled: { [weak self] title, folder in await self?.songsTitled(title, artistFolder: folder) },   // Y5 9.2
             scanFolder: { [weak self] folder in await self?.scanArtistFolder(folder) ?? false },   // Y5 fix I7
-            songExists: { [weak self] songId in await self?.librarySongExists(songId) })
+            songExists: { [weak self] songId in await self?.librarySongExists(songId) },
+            repointSong: { [weak self] from, to in await self?.repointEverywhere(from: from, to: to) ?? false })   // R22
     }
 
     /// Polls while any request is on its way: every 5 s in the foreground, 30 s otherwise. Stops by itself

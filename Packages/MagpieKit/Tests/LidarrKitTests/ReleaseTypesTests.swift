@@ -20,6 +20,39 @@ import MagpieTestSupport
         #expect(ReleaseTypes(kinds: .albums, studio: false).secondaryNames == ["Studio"])
     }
 
+    /// Round 22 (owner, D175): Albums, EPs and Singles are chosen independently (at least one). The three R18 ladder
+    /// choices keep their profile names, so profiles Magpie already made are reused.
+    @Test func kindsAreChosenIndependently() {
+        let singlesOnly = ReleaseTypes(albums: false, eps: false, singles: true)
+        #expect(singlesOnly.primaryNames == ["Single"])
+        #expect(singlesOnly.profileName == "Magpie Singles \u{00B7} Studio")
+        #expect(singlesOnly.includes(albumType: "Single", secondaryTypes: []))
+        #expect(!singlesOnly.includes(albumType: "Album", secondaryTypes: []))
+        let albumsAndSingles = ReleaseTypes(albums: true, eps: false, singles: true)
+        #expect(albumsAndSingles.profileName == "Magpie Albums+Singles \u{00B7} Studio")
+        #expect(!albumsAndSingles.includes(albumType: "EP", secondaryTypes: []))
+        #expect(ReleaseTypes(albums: false, eps: true, singles: false).profileName == "Magpie EPs \u{00B7} Studio")
+        // The R18 ladder spells the same as before.
+        #expect(ReleaseTypes(kinds: .albumsEPsAndSingles) == ReleaseTypes(albums: true, eps: true, singles: true))
+        #expect(ReleaseTypes(albums: true, eps: true, singles: false).kinds == .albumsAndEPs)
+        #expect(ReleaseTypes(albums: false, eps: true, singles: true).kinds == nil)
+        // Every combination is one of Magpie's profiles; nothing chosen isn't a choice.
+        #expect(ReleaseTypes.all.count == 7 * 8)
+        #expect(ReleaseTypes.isMagpieMetadataProfile("Magpie Singles \u{00B7} Studio"))
+        #expect(!ReleaseTypes(albums: false, eps: false, singles: false).hasKind)
+    }
+
+    /// Saved choices from before round 22 (`kinds`) still read the same; new ones keep the three switches.
+    @Test func decodesTheLadderAndTheSwitches() throws {
+        let old = Data(#"{"kinds":"albumsEPsAndSingles","studio":true,"soundtrack":false,"live":true}"#.utf8)
+        let decoded = try JSONDecoder().decode(ReleaseTypes.self, from: old)
+        #expect(decoded == ReleaseTypes(albums: true, eps: true, singles: true, live: true))
+        let mixed = ReleaseTypes(albums: true, eps: false, singles: true)
+        #expect(try JSONDecoder().decode(ReleaseTypes.self, from: JSONEncoder().encode(mixed)) == mixed)
+        let none = Data(#"{"albums":false,"eps":false,"singles":false}"#.utf8)
+        #expect(try JSONDecoder().decode(ReleaseTypes.self, from: none) == .standard, "nothing chosen reads as the default")
+    }
+
     @Test func includesFiltersAsLidarrDoes() {
         let standard = ReleaseTypes.standard
         #expect(standard.includes(albumType: "Album", secondaryTypes: []))

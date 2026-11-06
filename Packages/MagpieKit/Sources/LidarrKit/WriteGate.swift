@@ -80,6 +80,12 @@ public enum ConfinedShape: Sendable, Equatable {
     /// `WriteConfinement.trialDelete`: exactly all of one album's files, the album the ledger proves Magpie monitored when
     /// it was unmonitored and had no files, re-read fresh. `scripts/check-writes.sh` pins the one caller.
     case trialDelete
+    /// Round 22 (owner, 2026-11-06, D172): a kept single the owner chose to remove once Bring in more brought in a release
+    /// holding its song: a track file delete confined by `WriteConfinement.keptSingleDelete`: exactly all of one Single's
+    /// files, of an artist Magpie added and whose Keep is confirmed, the album Magpie monitored itself, with the removal
+    /// recorded in the ledger and the release holding the song having files, read fresh, inside the artist's folder in the
+    /// main root. Never the artist. `scripts/check-writes.sh` pins the one caller.
+    case keptSingleDelete
     /// Round 15 C3 (D146): "Include singles for this artist", confirmed by the owner, for any artist: the artist's
     /// `monitorNewItems` (none, then its saved value back), its metadata profile (Magpie's, or back to the one the
     /// change log saved for it: the undo), a RefreshArtist, and unmonitoring releases that have no files. Confined by
@@ -662,6 +668,10 @@ public actor LidarrWriteGate {
             guard case .trackFileDelete(let ids)? = confined else { throw refused(target, "trialDelete is a track file delete only") }
             confined = .trialDelete(ids)
         }
+        if shape == .keptSingleDelete {
+            guard case .trackFileDelete(let ids)? = confined else { throw refused(target, "keptSingleDelete is a track file delete only") }
+            confined = .keptSingleDelete(ids)
+        }
         if shape == .singlesSwitch {
             switch confined {
             case .editor(let body)?:
@@ -706,8 +716,13 @@ public actor LidarrWriteGate {
         switch await confinement.lastCheck(rule, artists) {
         case true?: break
         case false?:
-            throw refused(target, rule == .keptLossyDelete ? "the Keep isn't confirmed now"
-                          : rule == .findDelete ? "the artist was kept meanwhile" : "the trial was kept or ended meanwhile")
+            let why = switch rule {
+            case .keptLossyDelete: "the Keep isn't confirmed now"
+            case .findDelete: "the artist was kept meanwhile"
+            case .keptSingleDelete: "the single's removal isn't recorded or the Keep isn't confirmed now"
+            default: "the trial was kept or ended meanwhile"
+            }
+            throw refused(target, why)
         case nil: throw WriteGateError.unconfirmed
         }
         let answer = try await deliver(target, data)

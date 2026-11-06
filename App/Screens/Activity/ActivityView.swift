@@ -228,6 +228,7 @@ struct RequestDetailView: View {
             if model.isOffline { OfflineNotice() }
             actions(request)
                 .disabled(model.isOffline)   // Task 14: nothing reaches Lidarr or the server offline
+            KeptSingleRequestSection(request: request)   // R22 (D171): keep or remove the kept single
         }
         .padding(.bottom, Tokens.Spacing.l)
         .background(themed.palette.bgColor)

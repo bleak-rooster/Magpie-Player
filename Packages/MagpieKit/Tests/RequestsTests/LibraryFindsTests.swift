@@ -325,7 +325,8 @@ import MagpieCore
         let ep = try #require(albumsOnly.widened(toInclude: "EP", secondaryTypes: []))
         #expect(ep.includes(albumType: "EP", secondaryTypes: []) && ep.kinds == .albumsAndEPs)
         let single = try #require(albumsOnly.widened(toInclude: "Single", secondaryTypes: []))
-        #expect(single.kinds == .albumsEPsAndSingles)
+        // Round 22 (D175): only the release's own kind is added; EPs stay as the owner chose.
+        #expect(single.albums && single.singles && !single.eps)
         var noStudio = ReleaseTypes.standard
         noStudio.studio = false
         noStudio.live = true

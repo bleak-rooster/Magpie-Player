@@ -250,6 +250,11 @@ public struct MagpieRequest: Sendable, Codable, Equatable, Identifiable {
     /// Remix beside Studio), so Lidarr lists that release.
     public var findsExtras: Bool?
 
+    // Round 22 (owner, 2026-11-06). Optional, so older requests decode.
+
+    /// The kept single and what becomes of it once Bring in more brings in an album or EP (D171–D173).
+    public var keptSingle: KeptSingle?
+
     public init(id: RequestID = RequestID(), recording: ExternalRecording, tier: Tier, createdAt: Date) {
         self.id = id
         self.recording = recording
@@ -269,7 +274,7 @@ public struct MagpieRequest: Sendable, Codable, Equatable, Identifiable {
     public var canBeRemoved: Bool {
         !isActive && !(state == .ready && isFind) && !cleanupPending && keep == nil && notForMe == nil && !keepNeedsAttention
             && !notForMeNeedsAttention && relinkPending != true && (bringingIn ?? []).isEmpty
-            && !(lossless?.isActive ?? false) && !mp3NeedsAttention
+            && !(lossless?.isActive ?? false) && !mp3NeedsAttention && !(keptSingle?.isOpen ?? false)
     }
 
     /// How many places this request takes in the limit of 5 (G7): one while on its way, plus each release Bring in
@@ -287,6 +292,51 @@ public struct MagpieRequest: Sendable, Codable, Equatable, Identifiable {
 
     /// Imported by Lidarr but not listed by the library after the time limit (Needs attention).
     public var isNotListed: Bool { state == .importing && notListedAt != nil }
+}
+
+/// Round 22 (owner, 2026-11-06, D171–D173): a kept find whose own release is a Single, after a Bring in more that brought
+/// in at least one album or EP: keep the single (the default; nothing is sent) or remove it once a release brought in
+/// holds the song with its file. Never the artist.
+public struct KeptSingle: Sendable, Codable, Equatable {
+    public enum Choice: String, Sendable, Codable {
+        case keep
+        case remove
+    }
+
+    public enum Outcome: String, Sendable, Codable {
+        /// Kept by choice; the bring-in's window ended.
+        case kept
+        /// Removed: its files went and it is unmonitored; the album's copy plays in its place.
+        case removed
+        /// No release brought in held the song within the window, or the bring-in was called off: the single stays.
+        case albumDidNotArrive
+        /// The releases arrived, but none holds the song: the single stays.
+        case noCopy
+        /// It couldn't be removed safely (no longer Magpie's to change, refused, or out of tries): the single stays.
+        case notRemovable
+    }
+
+    /// The single's album in Lidarr, and its title.
+    public var albumId: Int
+    public var title: String
+    public var choice: Choice
+    /// The albums and EPs this Bring in more monitored: only these may stand in for the single.
+    public var bringIn: [Int]
+    /// When the Bring in more was sent: the window (`RequestRunner.keptSingleWindow`) counts from here.
+    public var since: Date
+    public var outcome: Outcome?
+    public var outcomeAt: Date?
+    /// The album that holds the song now (after a removal).
+    public var replacedBy: Int?
+    /// Removals that couldn't finish (bounded by `RequestRunner.keptSingleTryLimit`).
+    public var tries: Int?
+
+    public init(albumId: Int, title: String, choice: Choice, bringIn: [Int], since: Date) {
+        self.albumId = albumId; self.title = title; self.choice = choice; self.bringIn = bringIn; self.since = since
+    }
+
+    /// Still under way: the choice can change, and a removal may still happen.
+    public var isOpen: Bool { outcome == nil }
 }
 
 /// A Keep in flight (Task 6.2b), saved before its first Lidarr write so a relaunch never writes it twice.

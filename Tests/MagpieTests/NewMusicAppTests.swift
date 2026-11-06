@@ -126,14 +126,15 @@ import Testing
         #expect(NewMusicCopy.isLotOfMusic(51 * 3600) && !NewMusicCopy.isLotOfMusic(nil))
     }
 
+    /// R22 (D175): the rows pick the whole artist or this album; the release switches stay as they are.
     @Test func theRowsPickTheReleaseTypes() {
         var c = DownloadChoices.defaults
         c.types.live = true
-        let everything = AddWhat.everything.applied(to: c)
-        #expect(everything.types.kinds == .albumsEPsAndSingles && everything.types.live, "the toggles stay")
-        #expect(AddWhat(everything) == .everything)
-        #expect(AddWhat(AddWhat.albums.applied(to: c)) == .albums)
-        #expect(AddWhat.thisAlbum.applied(to: c).what == .thisAlbum)
+        c.types.singles = true
+        let album = AddWhat.thisAlbum.applied(to: c)
+        #expect(album.what == .thisAlbum && AddWhat(album) == .thisAlbum)
+        let whole = AddWhat.wholeArtist.applied(to: album)
+        #expect(whole.what == .wholeArtist && whole.types.singles && whole.types.live, "the switches stay")
     }
 
     // MARK: - Keep from a find's menus

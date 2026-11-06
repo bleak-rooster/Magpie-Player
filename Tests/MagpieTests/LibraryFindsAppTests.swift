@@ -313,6 +313,27 @@ private let releaseMBID = MBID("b5cdfb5f-35a5-4bc5-bbca-57839a71813a")!
         #expect(transport.navidrome.requests.dropFirst(before).allSatisfy { ($0.httpMethod ?? "GET") == "GET" })
     }
 
+    /// Round 22 (owner, D177): a new artist's Add to library asks which of their releases come (albums, EPs, singles)
+    /// before anything is sent: the Add sheet, preset with the owner's defaults, the song named, no quality row.
+    @Test func aNewArtistsAddAsksWhichReleasesCome() async throws {
+        let model = try await model()
+        defer { model.signOut() }
+        available(model)
+        let before = transport.navidrome.requests.count
+        let recording = ExternalRecording(recordingMBID: firstTrack, title: "Harbour Lights", artist: "Stub Arrows", source: .lidarr)
+        let accepted = await model.sendToLibrary(recording, album: groupMBID, title: "Harbour Lights",
+                                                 preview: .newArtist(title: "Harbour Lights", isAlbum: false, primaryType: "Single",
+                                                                     secondaryTypes: []))
+        #expect(accepted)
+        let sheet = try #require(model.songActions.wholeArtistAdd)
+        #expect(sheet.kind == .add && sheet.artist == "Stub Arrows" && !sheet.showsQuality)
+        #expect(sheet.note == LibraryFindsCopy.comesToo("Harbour Lights"))
+        #expect(AddRoute.route(withMyDefaults: true, defaults: model.newMusic.whenYouAdd, albumContext: sheet.albumContext,
+                               candidates: 1, kind: sheet.kind) == .sheet(model.newMusic.whenYouAdd), "always asked")
+        #expect(model.requests.isEmpty, "nothing asked for yet")
+        #expect(transport.navidrome.requests.dropFirst(before).allSatisfy { ($0.httpMethod ?? "GET") == "GET" })
+    }
+
     /// m3: the change log line a switch saved names its artist, profile and following (for "Put back").
     @Test func aSwitchLineSaysWhatWasSaved() {
         let line = ChangeLogEntry(date: Date(), method: "NOTE", path: "/magpie",

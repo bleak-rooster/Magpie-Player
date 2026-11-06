@@ -1,4 +1,5 @@
 import DesignSystem
+import LidarrKit
 import NavidromeKit
 import Requests
 import SwiftUI
@@ -17,7 +18,7 @@ struct NewMusicDefaultsSection: View {
                 WhenYouAddView()
             } label: {
                 LabeledContent(NewMusicCopy.whenYouAdd) {
-                    Text(NewMusicCopy.what(AddWhat(settings.whenYouAdd)))
+                    Text(NewMusicCopy.kinds(settings.whenYouAdd.types))
                 }
             }
             .accessibilityIdentifier("settings-when-you-add")
@@ -38,23 +39,15 @@ struct WhenYouAddView: View {
     var body: some View {
         @Bindable var settings = model.newMusic
         Form {
-            Section(NewMusicCopy.whatHeader) {
-                ForEach([AddWhat.albumsAndEPs, .albums, .everything]) { what in
-                    let isOn = AddWhat(settings.whenYouAdd) == what
-                    Button {
-                        settings.whenYouAdd = what.applied(to: settings.whenYouAdd)
-                    } label: {
-                        HStack {
-                            Text(NewMusicCopy.what(what)).foregroundStyle(.primary)
-                            Spacer()
-                            if isOn { Image(systemName: "checkmark").accessibilityHidden(true) }
-                        }
-                        .frame(minHeight: Tokens.minHitSize)
-                        .contentShape(Rectangle())
-                    }
-                    .accessibilityAddTraits(isOn ? .isSelected : [])
-                    .accessibilityIdentifier("when-what-\(what.rawValue)")
-                }
+            // R22 (owner, D175): albums, EPs and singles, each on its own; the last one on can't be turned off.
+            Section {
+                Toggle(NewMusicCopy.albums, isOn: kind(\.albums)).accessibilityIdentifier("when-albums")
+                Toggle(NewMusicCopy.eps, isOn: kind(\.eps)).accessibilityIdentifier("when-eps")
+                Toggle(NewMusicCopy.singles, isOn: kind(\.singles)).accessibilityIdentifier("when-singles")
+            } header: {
+                Text(NewMusicCopy.releasesHeader)
+            } footer: {
+                Text(NewMusicCopy.chooseOne)
             }
             Section(NewMusicCopy.kindsHeader) {
                 Toggle(NewMusicCopy.studio, isOn: $settings.whenYouAdd.types.studio).accessibilityIdentifier("when-studio")
@@ -78,6 +71,16 @@ struct WhenYouAddView: View {
         }
         .navigationTitle(NewMusicCopy.whenYouAdd)
         .navigationBarTitleDisplayMode(.inline)
+    }
+
+    /// One of Albums / EPs / Singles; turning off the last one on is ignored (defaults always add something).
+    private func kind(_ key: WritableKeyPath<ReleaseTypes, Bool>) -> Binding<Bool> {
+        Binding(get: { model.newMusic.whenYouAdd.types[keyPath: key] }, set: { on in
+            var types = model.newMusic.whenYouAdd.types
+            types[keyPath: key] = on
+            guard types.hasKind else { return }
+            model.newMusic.whenYouAdd.types = types
+        })
     }
 }
 

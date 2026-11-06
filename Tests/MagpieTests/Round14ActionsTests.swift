@@ -164,7 +164,7 @@ private func queryValue(_ r: URLRequest, _ name: String) -> String? {
         #expect(add.artist == "Stub Arrows" && add.candidates.map(\.mbid) == [stubArtist])
         #expect(model.songActions.pending.isEmpty, "nothing waits before the Add is confirmed")
         // Magpie isn't set up in this Lidarr: the Add fails, so nothing waits.
-        let outcome = await add.commit(model.newMusic.whenYouAdd, add.candidates.first, nil)
+        let outcome = await add.commit(model.newMusic.whenYouAdd, add.candidates.first, nil, false)
         #expect(!outcome.succeeded && model.songActions.pending.isEmpty)
     }
 
