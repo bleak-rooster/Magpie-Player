@@ -41,6 +41,9 @@ actor Latch {
         await withCheckedContinuation { holders.append($0) }
     }
 
+    /// Round 23: whether the held request has arrived (tests poll it with a deadline rather than wait for ever).
+    var hasArrived: Bool { arrived }
+
     func waitArrived() async {
         if arrived { return }
         await withCheckedContinuation { arrivalWaiters.append($0) }
@@ -277,6 +280,14 @@ final class FakeLidarr: @unchecked Sendable {
         var onCommandRead: (@Sendable () -> Void)?
         /// Y4 fix round 2 N1: downloads with no grab in Lidarr's history (`GET /history?downloadId=…&eventType=1`).
         var ungrabbed: Set<String> = []
+        /// Round 23 (D191, D193): Lidarr's blocklist rows (`GET /blocklist`, `DELETE /blocklist/bulk`; an artist's go with
+        /// it, as Lidarr's own `ArtistsDeletedEvent` does), and the artist's import history (`GET /history/artist`:
+        /// the album and where Lidarr picked each file up).
+        var blocklist: [(id: Int, artistId: Int)] = []
+        var blocklistDown = false
+        var imports: [(albumId: Int, droppedPath: String)] = []
+        /// `DELETE /artist/{id}` answers 503 without removing it, this many times.
+        var artistDeleteFails503 = 0
     }
 
     let latch = Latch()
@@ -515,9 +526,17 @@ final class FakeLidarr: @unchecked Sendable {
         }
         for id in [7, 42, 43] {
             t.stub(method: "DELETE", pathSuffix: "/api/v1/artist/\(id)") { [self] _ in
+                let fails = with { s in
+                    guard s.artistDeleteFails503 > 0 else { return false }
+                    s.artistDeleteFails503 -= 1
+                    return true
+                }
+                if fails { return MockTransport.Response(status: 503) }
                 with { s in
                     s.artists.removeAll { $0.id == id }
                     s.deletedArtists.append(id)
+                    s.blocklist.removeAll { $0.artistId == id }   // Lidarr's ArtistsDeletedEvent
+                    s.imports.removeAll()                          // and its history of the artist
                 }
                 return reply([String: Any]())
             }
@@ -738,6 +757,24 @@ final class FakeLidarr: @unchecked Sendable {
             let f = ISO8601DateFormatter()
             return reply(with { s in s.history.map { ["albumId": $0.albumId, "eventType": $0.type,
                                                       "date": f.string(from: $0.date)] as [String: Any] } })
+        }
+        // Round 23 (D191, D193): the blocklist and the artist's import history.
+        t.stub(pathSuffix: "/api/v1/blocklist") { [self] _ in
+            if let d = down() { return d }
+            let (rows, isDown) = with { s in (s.blocklist, s.blocklistDown) }
+            if isDown { return MockTransport.Response(status: 503) }
+            return reply(["page": 1, "pageSize": 250, "totalRecords": rows.count,
+                          "records": rows.map { ["id": $0.id, "artistId": $0.artistId, "albumIds": [50], "sourceTitle": "x"] }])
+        }
+        t.stub(method: "DELETE", pathSuffix: "/api/v1/blocklist/bulk") { [self] req in
+            let ids = (req.httpBody.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }?["ids"] as? [Int]) ?? []
+            with { s in s.blocklist.removeAll { ids.contains($0.id) } }
+            return reply([String: Any]())
+        }
+        t.stub(pathSuffix: "/api/v1/history/artist") { [self] _ in
+            if let d = down() { return d }
+            return reply(with { s in s.imports.map { ["eventType": "trackFileImported", "artistId": 42, "albumId": $0.albumId,
+                                                      "downloadId": "dl-1", "data": ["droppedPath": $0.droppedPath]] as [String: Any] } })
         }
         t.stub(pathSuffix: "/api/v1/command/78") { [self] _ in
             reply(["id": 78, "name": "AlbumSearch", "status": with { $0.commandStatus }])

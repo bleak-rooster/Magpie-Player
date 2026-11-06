@@ -10,6 +10,7 @@ let package = Package(
         .library(name: "ListenBrainzKit", targets: ["ListenBrainzKit"]),
         .library(name: "LidarrKit", targets: ["LidarrKit"]),
         .library(name: "AurralKit", targets: ["AurralKit"]),
+        .library(name: "SlskdKit", targets: ["SlskdKit"]),
         .library(name: "MatchIndex", targets: ["MatchIndex"]),
         .library(name: "Search", targets: ["Search"]),
         .library(name: "Requests", targets: ["Requests"]),
@@ -25,9 +26,12 @@ let package = Package(
         .target(name: "LidarrKit", dependencies: ["MagpieCore"]),
         // Round 12 Y6: Aurral (Discover). Its own module: an allow-listed client, and the pure Discover rules.
         .target(name: "AurralKit", dependencies: ["MagpieCore"]),
+        // Round 23 (D192): the optional slskd connection: an allow-listed client and its write gate (a removed
+        // artist's leftover downloads).
+        .target(name: "SlskdKit", dependencies: ["MagpieCore"]),
         .target(name: "MatchIndex", dependencies: ["MagpieCore", "NavidromeKit"]),
         .target(name: "Search", dependencies: ["MagpieCore", "MatchIndex", "ListenBrainzKit", "LidarrKit", "AurralKit"]),
-        .target(name: "Requests", dependencies: ["MagpieCore", "LidarrKit", "ListenBrainzKit", "NavidromeKit", "MatchIndex"]),
+        .target(name: "Requests", dependencies: ["MagpieCore", "LidarrKit", "ListenBrainzKit", "NavidromeKit", "MatchIndex", "SlskdKit"]),
         // Round 14 A7: the preview engine plays the bytes Aurral sent (AurralKit's `PreviewResolver` fetches them).
         .target(name: "Playback", dependencies: ["MagpieCore"]),
         .target(name: "DesignSystem", dependencies: ["MagpieCore"]),
@@ -44,10 +48,12 @@ let package = Package(
                     dependencies: ["ListenBrainzKit", "MagpieCore", "MagpieTestSupport"],
                     resources: [.copy("../Fixtures/listenbrainz"), .copy("../Fixtures/musicbrainz")]),
         .testTarget(name: "AurralKitTests", dependencies: ["AurralKit", "MagpieCore", "MagpieTestSupport"]),
+        .testTarget(name: "SlskdKitTests", dependencies: ["SlskdKit", "MagpieCore", "MagpieTestSupport"]),
         .testTarget(name: "PlaybackTests", dependencies: ["Playback", "MagpieCore", "MagpieTestSupport"]),
         .testTarget(name: "MatchIndexTests", dependencies: ["MatchIndex", "MagpieCore", "NavidromeKit", "MagpieTestSupport"]),
         .testTarget(name: "RequestsTests",
-                    dependencies: ["Requests", "MagpieCore", "LidarrKit", "ListenBrainzKit", "NavidromeKit", "Search", "MagpieTestSupport"]),
+                    dependencies: ["Requests", "MagpieCore", "LidarrKit", "ListenBrainzKit", "NavidromeKit", "Search", "MagpieTestSupport",
+                                   "SlskdKit"]),
         // Crash hunt 4: seeded fuzzing of every client's decoding, and the decoded models through the UI and car builders.
         .testTarget(name: "HostileDataTests",
                     dependencies: ["NavidromeKit", "LidarrKit", "ListenBrainzKit", "MatchIndex", "Search", "CarPlayUI",

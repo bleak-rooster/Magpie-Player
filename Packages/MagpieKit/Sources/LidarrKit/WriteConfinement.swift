@@ -23,7 +23,10 @@ import MagpieCore
 ///   each album before it monitors it: a Try, a Bring in more); `monitored: false` only for albums the ledger says
 ///   Magpie monitored (not monitored before) and that aren't kept. Ledger only, no Lidarr read;
 /// - `DELETE /queue/{id}` (R17): only a download of a live Magpie request's own album, re-read from the queue
-///   (`queueDelete`).
+///   (`queueDelete`);
+/// - `DELETE /blocklist/bulk` (round 23, D191, named `blocklistCleanup`): every id is in Lidarr's blocklist now (read
+///   fresh, every page), all of one artist, and that artist passes the artist delete's own rule (Magpie created it,
+///   nothing of it kept, tagged `magpie-find` and strictly inside the Finds root).
 ///
 /// The gate runs confined writes one at a time, checks to answer (`LidarrWriteGate`), and reads the ledger's kept
 /// state once more right before sending a delete.
@@ -149,6 +152,8 @@ public struct WriteConfinement: Sendable {
         case singlesEditor([String: Any])
         case singlesRefresh(Int)
         case singlesUnmonitor([Int])
+        /// Round 23 (D191): `DELETE /blocklist/bulk`'s ids (`ConfinedShape.blocklistCleanup`).
+        case blocklistDelete([Int])
     }
 
     func check(_ write: Write, lidarr: LidarrClient) async -> Verdict {
@@ -176,6 +181,9 @@ public struct WriteConfinement: Sendable {
             case .albumMonitor(let ids, let monitored):
                 try context.albumMonitor(ids, monitored: monitored)
                 return .confined(artists: [], rule: .other)
+            case .blocklistDelete(let ids):
+                // Right before it goes, the artist mustn't be kept or keeping (findDelete's last check).
+                return .confined(artists: [try await context.blocklistDelete(ids)], rule: .findDelete)
             case .queueDelete, .queueRestartAny:
                 return .unknown   // handled above
             case .trialDelete(let ids):
@@ -466,6 +474,25 @@ public struct WriteConfinement: Sendable {
                 throw Refusal(reason: "the artist isn't a find in the Finds folder")
             }
             return (path, finds)
+        }
+
+        /// Round 23 (D191): every id is a blocklist row now, all rows of one artist, and that artist may be deleted
+        /// (`artistDelete`). Returns the artist.
+        func blocklistDelete(_ ids: [Int]) async throws -> Int {
+            guard !ids.isEmpty, ids.count <= WriteConfinement.maxTrackFiles, Set(ids).count == ids.count else {
+                throw Refusal(reason: "a blocklist delete needs 1 to \(WriteConfinement.maxTrackFiles) ids")
+            }
+            let rows = try await read { try await lidarr.blocklistEntries() }
+            var artists = Set<Int>()
+            for id in ids {
+                guard let row = rows.first(where: { $0.id == id }), let artist = row.artistId else {
+                    throw Refusal(reason: "not in Lidarr's blocklist now")
+                }
+                artists.insert(artist)
+            }
+            guard artists.count == 1, let artist = artists.first else { throw Refusal(reason: "a blocklist delete is one artist's") }
+            try await artistDelete(artist)
+            return artist
         }
 
         func artistDelete(_ id: Int) async throws {

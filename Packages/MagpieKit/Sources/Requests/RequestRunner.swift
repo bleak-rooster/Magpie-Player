@@ -246,6 +246,8 @@ public actor RequestRunner {
     var bringInChecks: [RequestID: Date] = [:]
     /// R22 (D172): when a kept single's removal was last looked at, per request (throttles `followKeptSingles`).
     var keptSingleChecks: [RequestID: Date] = [:]
+    /// Round 23 (D192): the optional slskd connection (`useSlskd`); nil without one.
+    var slskd: SlskdAccess?
     private var inFlight: [RequestID: Task<Void, Never>] = [:]
     private var ticking = false
     private(set) var stopped = false
