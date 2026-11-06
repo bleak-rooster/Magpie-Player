@@ -442,9 +442,9 @@ private let lidarrBase = URL(string: "http://192.168.1.2:8686")!
         #expect(AddFlowPhase.stillSettingUp.label == "Still setting up. Check back later.")
     }
 
-    /// I2: only Add flow's synced playlists (Deezer playlists) join Your flows; a Spotify import or a hand-made shared
-    /// playlist Aurral published stays in Playlists, even holding the server's songs.
-    @Test func onlyAddFlowsSyncedPlaylistsJoinYourFlows() async throws {
+    /// Round 22 R22A (D183, supersedes I2's "only Add flow's"): every one of the user's shared playlists is Discover's,
+    /// a Spotify import and one made by hand in Aurral as well as Add flow's.
+    @Test func everySharedPlaylistJoinsDiscover() async throws {
         let songs: [(title: String, artist: String, durationMs: Int)] = [("Harbour Lights", "Stub Arrows", 196_000),
                                                                          ("Paper Moon", "Stub Arrows", 197_000)]
         aurral.addSharedPlaylist(id: "6c1e0000-0000-4000-8000-000000000001", name: "Road Mix", provider: "spotify-playlist", songs: songs)
@@ -462,8 +462,9 @@ private let lidarrBase = URL(string: "http://192.168.1.2:8686")!
         await model.refreshDiscover(force: true)
         let names = try await model.discoverPlaylists().map(\.name)
         #expect(names.contains("Other Phone Picks"), "Add flow's from another phone (a Deezer playlist)")
-        #expect(!names.contains("Road Mix") && !names.contains("Made By Hand"))
-        #expect(!model.isDiscoverPlaylist(id: "pl-road-mix") && !model.isDiscoverPlaylist(id: "pl-hand"))
+        #expect(names.contains("Road Mix") && names.contains("Made By Hand"))
+        #expect(model.isDiscoverPlaylist(id: "pl-road-mix") && model.isDiscoverPlaylist(id: "pl-hand"))
+        #expect(try await !model.libraryPlaylists().contains { ["pl-road-mix", "pl-hand"].contains($0.id) })
     }
 
     /// Owner answer 10: with Lidarr connected, Add flow still sends nothing to Lidarr.

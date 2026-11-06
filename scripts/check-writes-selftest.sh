@@ -60,6 +60,8 @@ planted=(
   'URLSession.shared.data(from: URL(string: "https://rss.applemarketingtools.com/api/v2/au")!)'
   'URLSession.shared.data(from: URL(string: "https://itunes.apple.com/lookup?id=1")!)'
   'aurral.ok(method: AurralRoute.imageProxyMethod, path: "api/image-proxy", body: other)'
+  # Round 22 R22A (D186): a third caller of Download songs.
+  'client.downloadFlow("flow-1")'
 )
 failed=0
 for p in "${planted[@]}"; do

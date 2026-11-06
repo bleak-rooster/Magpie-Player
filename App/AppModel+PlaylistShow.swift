@@ -37,24 +37,27 @@ extension AppModel {
         }
     }
 
-    /// `playlists` as `show` lists them: Yours is Save to playlist's rule (`isOwn`, D101), nothing new.
-    nonisolated static func shown(_ playlists: [Playlist], _ show: PlaylistShow, user: String) -> [Playlist] {
+    /// `playlists` as `show` lists them: Yours is Save to playlist's rule (`isOwn`, D101), nothing new; never one of
+    /// Discover's (round 22 R22A, D188: they're Aurral's, shown in All only when the owner asks).
+    nonisolated static func shown(_ playlists: [Playlist], _ show: PlaylistShow, user: String,
+                                  isDiscover: (Playlist) -> Bool = { _ in false }) -> [Playlist] {
         switch show {
         case .all: playlists
-        case .yours: playlists.filter { isOwn($0, by: user) }
+        case .yours: playlists.filter { isOwn($0, by: user) && !isDiscover($0) }
         }
     }
 
     /// `playlists` as the saved choice lists them (the car's Playlists list).
     func shownPlaylists(_ playlists: [Playlist]) -> [Playlist] {
-        Self.shown(playlists, playlistShow, user: session?.username ?? "")
+        Self.shown(playlists, playlistShow, user: session?.username ?? "", isDiscover: isDiscoverPlaylist)
     }
 
-    /// Library › Playlists: every playlist but Discover's (Y6), A–Z for the letter index (P2). Filtered on the phone,
-    /// so switching All and Yours reads nothing again.
+    /// Library › Playlists: every playlist but Discover's (Y6; with "Show Discover playlists in Playlists" on, D188,
+    /// Discover's too), A–Z for the letter index (P2). Filtered on the phone, so switching All and Yours reads nothing
+    /// again.
     func libraryPlaylists() async throws -> [Playlist] {
         try await request { try await $0.playlists() }
-            .filter { !isDiscoverPlaylist($0) }
+            .filter { !leavesOutOfPlaylists($0) }
             .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
 }

@@ -76,7 +76,7 @@ private func ok(_ body: String) -> Data {
         await model.refreshMusicFolders()
         _ = try await model.connectAurral(base: aurral.base, username: StubAurral.defaultUsername,
                                           password: StubAurral.defaultPassword)
-        #expect(model.discover.playlists.map(\.playlist.id) == ["pl-dw"])
+        #expect(model.discover.playlists.map(\.playlist.id) == ["pl-dw", "pl-empty"], "R22A (D182): the empty Trending Mix is Aurral's too")
         return model
     }
 
@@ -104,8 +104,8 @@ private func ok(_ body: String) -> Data {
     /// What every Home read must show: Discover is Aurral's playlist and nothing else; Playlists the owner's own,
     /// never Aurral's; no album in either.
     private func expectRightShelves(_ shelves: [HomeShelf], _ label: Comment) {
-        #expect(ids(shelves, .discover) == ["playlist-pl-dw"], label)
-        #expect(ids(shelves, .playlists) == ["playlist-pl-mine", "playlist-pl-road", "playlist-pl-empty"], label)
+        #expect(ids(shelves, .discover) == ["playlist-pl-dw", "playlist-pl-empty"], label)
+        #expect(ids(shelves, .playlists) == ["playlist-pl-mine", "playlist-pl-road"], label)
         #expect(ids(shelves, .randomAlbums) == ["album-al-r1", "album-al-r2", "album-al-r3"], label)
     }
 
@@ -211,7 +211,7 @@ private func ok(_ body: String) -> Data {
         _ = try await model.homeShelves(for: [.discover, .playlists])
         model.discover.statusReadAt = nil
         let shelves = try await model.homeShelves(for: [.discover, .playlists])
-        #expect(ids(shelves, .discover) == nil)
+        #expect(ids(shelves, .discover) == ["playlist-pl-empty"], "Discover Weekly left; the empty Trending Mix stays (R22A)")
         #expect(ids(shelves, .playlists)?.contains("playlist-pl-dw") == true)
     }
 
@@ -351,18 +351,19 @@ private func ok(_ body: String) -> Data {
         home.stop()
     }
 
-    /// The rule on its own: confirmed now, or Discover's before and still named after its flow with no other
-    /// playlist confirmed for it.
+    /// The rule on its own (round 22 R22A, D182 supersedes "confirmed now"): named after its flow is Discover's unless
+    /// proven the owner's own (a read that can't tell keeps what was known: `keptDiscoverPlaylists`); several may be
+    /// one flow's.
     @Test func keptFlowPlaylistsRule() {
         let dw = AurralFlow(id: "flow-dw", name: "Discover Weekly")
         func candidate(_ id: String) -> DiscoverPlaylist {
             DiscoverPlaylist(flow: dw, playlist: Playlist(id: id, name: "Discover Weekly", songCount: 1, duration: 0))
         }
         let old = candidate("pl-old"), new = candidate("pl-new"), mine = candidate("pl-mine")
-        #expect(AppModel.keptFlowPlaylists([old, mine], confirmed: [], before: ["pl-old"]) == [old], "unconfirmed: kept")
-        #expect(AppModel.keptFlowPlaylists([old, mine], confirmed: [], before: []) == [], "never confirmed: never Discover")
-        #expect(AppModel.keptFlowPlaylists([old, new], confirmed: [new], before: ["pl-old"]) == [new], "another confirmed")
-        #expect(AppModel.keptFlowPlaylists([mine], confirmed: [], before: ["pl-old"]) == [], "renamed away: gone")
+        let proven: (DiscoverPlaylist) -> Bool = { $0.playlist.id == "pl-mine" }
+        #expect(AppModel.keptFlowPlaylists([old, mine], ownersOwn: proven) == [old], "proven own: not")
+        #expect(AppModel.keptFlowPlaylists([old, new], ownersOwn: { _ in false }) == [old, new], "no proof: both")
+        #expect(AppModel.keptFlowPlaylists([mine], ownersOwn: proven) == [], "the owner's own: never")
     }
 
     // MARK: - Home's saved shelves from build 12

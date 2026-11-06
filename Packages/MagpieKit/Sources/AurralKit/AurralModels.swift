@@ -118,6 +118,10 @@ public struct AurralStatus: Sendable, Equatable {
     /// playlist or a chart (`POST /api/discover/editorial/:id/library`), and Aurral publishes it to Navidrome under its
     /// name like a flow. Read as flows (id, name, owner); Refresh Flow never applies to them.
     public var sharedPlaylists: [AurralFlow] = []
+    /// Round 22 R22A (D184): the flows and playlists of Aurral's other users, which Aurral shows an admin. Never
+    /// Discover's own (no Refresh, no songs read from them, D72), but their Navidrome playlists are Aurral's too, so
+    /// they stay out of Playlists and are shown under Discover. Set by `scoped(to:)`; empty with no user.
+    public var othersPlaylists: [AurralFlow] = []
 
     public struct Hint: Sendable, Equatable {
         public var phase: String?
@@ -138,6 +142,7 @@ public struct AurralStatus: Sendable, Equatable {
         var scoped = self
         scoped.flows = user.map { user in flows.filter { $0.belongs(to: user) } } ?? []
         scoped.sharedPlaylists = user.map { user in sharedPlaylists.filter { $0.belongs(to: user) } } ?? []   // round 14 A4
+        scoped.othersPlaylists = user.map { user in (flows + sharedPlaylists).filter { !$0.belongs(to: user) } } ?? []   // D184
         let ids = Set((scoped.flows + scoped.sharedPlaylists).map(\.id))
         scoped.flowStats = flowStats.filter { ids.contains($0.key) }
         return scoped

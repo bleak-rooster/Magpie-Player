@@ -243,7 +243,7 @@ final class DiscoverNavidrome: @unchecked Sendable {
         #expect(aurral.loginCount - before == 1)
         #expect(model.discover.needsSignIn)
         #expect(AurralCopy.summary(model) == "Sign in again")
-        #expect(model.discover.playlists.map(\.playlist.id) == ["pl-dw"], "what was read stays")
+        #expect(model.discover.playlists.map(\.playlist.id) == ["pl-dw", "pl-empty"], "what was read stays")
         _ = try await model.connectAurral(base: aurral.base, username: StubAurral.defaultUsername, password: "changed")
         #expect(!model.discover.needsSignIn)
         #expect(aurralStore.load()?.password == "changed")
@@ -318,12 +318,16 @@ final class DiscoverNavidrome: @unchecked Sendable {
         _ = try await model.connectAurral(base: aurral.base, username: StubAurral.defaultUsername,
                                           password: StubAurral.defaultPassword)
         #expect(model.discover.status?.flows.map(\.id) == ["flow-tm"])
-        #expect(model.discover.playlists.isEmpty, "Sam's Discover Weekly isn't this user's")
+        // R22A (D184): Sam's Discover Weekly is Aurral's too: under Discover with no flow (never Refresh), and the
+        // owner's same-named one with it while nothing can tell them apart (no songs of this user's flows to go by).
+        #expect(model.discover.playlists.map(\.playlist.id) == ["pl-dw", "pl-empty", "pl-mine"])
+        #expect(model.discoverFlow(playlistId: "pl-dw") == nil, "Sam's flow: no Refresh Flow")
         #expect(model.discover.jobs.isEmpty, "nor its songs")
         model.disconnectAurral()
         _ = try await model.connectAurral(base: aurral.base, username: "sam", password: "sam-pw")
         #expect(model.discover.status?.flows.map(\.id) == ["flow-dw"])
-        #expect(model.discover.playlists.map(\.playlist.id) == ["pl-dw"])
+        #expect(model.discover.playlists.map(\.playlist.id) == ["pl-dw"], "Aurral shows Sam (no admin) only Sam's flows")
+        #expect(model.discoverFlow(playlistId: "pl-dw")?.id == "flow-dw")
     }
 
     /// Round 13: a round-12 connection (address and API key) is deleted on upgrade; its address is offered for
@@ -367,7 +371,7 @@ final class DiscoverNavidrome: @unchecked Sendable {
         defer { model.signOut() }
         #expect(model.discover.health?.compatibility == .newer("2.12.0"))
         #expect(AurralCopy.compatibilityNote(model.discover.health)?.contains("2.12.0") == true)
-        #expect(model.discover.playlists.map(\.playlist.id) == ["pl-dw"])
+        #expect(model.discover.playlists.map(\.playlist.id) == ["pl-dw", "pl-empty"])
     }
 
     // MARK: - Discover vs Playlists
@@ -376,7 +380,7 @@ final class DiscoverNavidrome: @unchecked Sendable {
     @Test func discoverHiddenFromPlaylists() async throws {
         let model = try await signedIn()
         defer { model.signOut() }
-        #expect(model.discover.playlists.map(\.playlist.id) == ["pl-dw"])
+        #expect(model.discover.playlists.map(\.playlist.id) == ["pl-dw", "pl-empty"])
         #expect(model.discover.playlists.first?.flow.id == "flow-dw")
         #expect(model.isDiscoverPlaylist(id: "pl-dw") && !model.isDiscoverPlaylist(id: "pl-road"))
         let shelves = try await model.homeShelves(for: [.playlists, .discover])
@@ -385,16 +389,17 @@ final class DiscoverNavidrome: @unchecked Sendable {
                 if case .playlist(let p) = item { return p.id } else { return nil }
             } ?? []
         }
-        #expect(ids(.playlists) == ["pl-mine", "pl-road", "pl-empty"], "fix I1: same-named but not Aurral's")
-        #expect(ids(.discover) == ["pl-dw"])
-        #expect(try await model.editablePlaylists().map(\.id) == ["pl-mine", "pl-road", "pl-empty"])
+        #expect(ids(.playlists) == ["pl-mine", "pl-road"], "fix I1: same-named but not Aurral's")
+        #expect(ids(.discover) == ["pl-dw", "pl-empty"], "R22A (D182): the empty Trending Mix is Aurral's")
+        #expect(try await model.editablePlaylists().map(\.id) == ["pl-mine", "pl-road"])
         let dw = Playlist(id: "pl-dw", name: "Discover Weekly", songCount: 4, duration: 0, owner: "admin", readOnly: false)
         #expect(!model.canEdit(dw), "Aurral's playlist, though the server names the owner")
         let car = CarPlayLibraryAdapter(model: model)
-        #expect(try await car.playlists().map(\.id) == ["pl-empty", "pl-mine", "pl-road"])
-        #expect(try await car.discoverPlaylists().map(\.id) == ["pl-dw"])
+        #expect(try await car.playlists().map(\.id) == ["pl-mine", "pl-road"])
+        #expect(try await car.discoverPlaylists().map(\.id) == ["pl-dw", "pl-empty"])
         // Saved for this account: kept out before Aurral answers again.
-        #expect(defaults.stringArray(forKey: AppModel.discoverPlaylistsKey(try #require(model.navidromeScope))) == ["pl-dw"])
+        #expect(defaults.stringArray(forKey: AppModel.discoverPlaylistsKey(try #require(model.navidromeScope)))
+                == ["pl-dw", "pl-empty"])
     }
 
     /// No writes to Aurral's playlists: every playlist edit refuses a Discover playlist and sends nothing.
@@ -534,19 +539,20 @@ final class DiscoverNavidrome: @unchecked Sendable {
 
     // MARK: - Fix round 1
 
-    /// I1: the owner's own "Discover Weekly" (library songs) and an empty "Trending Mix" stay normal playlists: listed,
-    /// editable, no Refresh; only Aurral's (its songs are the flow's) is Discover.
+    /// I1: the owner's own "Discover Weekly" (library songs) stays a normal playlist: listed, editable, no Refresh.
+    /// R22A (D182, supersedes "an empty one too"): the empty "Trending Mix" is named as a flow and nothing proves it
+    /// the owner's, so it is Discover's.
     @Test func sameNamedOwnPlaylistStaysNormal() async throws {
         let model = try await signedIn()
         defer { model.signOut() }
-        #expect(model.discover.playlists.map(\.playlist.id) == ["pl-dw"])
-        #expect(!model.isDiscoverPlaylist(id: "pl-mine") && !model.isDiscoverPlaylist(id: "pl-empty"))
+        #expect(model.discover.playlists.map(\.playlist.id) == ["pl-dw", "pl-empty"])
+        #expect(!model.isDiscoverPlaylist(id: "pl-mine") && model.isDiscoverPlaylist(id: "pl-empty"))
         let mine = Playlist(id: "pl-mine", name: "Discover Weekly", songCount: 2, duration: 0, owner: "admin", readOnly: false)
         #expect(model.canEdit(mine))
         #expect(model.discoverFlow(playlistId: "pl-mine") == nil, "no Refresh Flow on it")
         try await model.add(["m-x"], to: mine)
         #expect(nav.lists["pl-mine"]?.songs == ["m-x", "m-y", "m-x"])
-        #expect(try await model.discoverPlaylists().map(\.id) == ["pl-dw"])
+        #expect(try await model.discoverPlaylists().map(\.id) == ["pl-dw", "pl-empty"])
     }
 
     /// I2: an Aurral copy that has left every flow is still recognised (by Aurral's library, read and saved), also after
