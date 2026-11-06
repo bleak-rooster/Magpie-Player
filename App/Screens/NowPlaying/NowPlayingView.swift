@@ -30,6 +30,8 @@ struct NowPlayingView: View {
     @State private var links = NowPlayingLinks()
     /// The current tab's stack, which the links push onto (absent in tests: the links do nothing).
     @Environment(TabNavigator.self) private var navigator: TabNavigator?
+    /// R21 (D167): where the sound plays when it isn't this iPhone (AirPlay, Bluetooth, the car); nil on the phone.
+    @State private var output: OutputRoute.Output?
     private let themed = Themed()
 
     /// `showingLyrics` opens in lyrics mode, as if the server offered them (tests).
@@ -71,6 +73,7 @@ struct NowPlayingView: View {
         .presentationDragIndicator(theme.character == .classic ? .visible : .hidden)
         .task { if !lyricsAvailable { lyricsAvailable = (try? await model.serverAdvertises("songLyrics")) ?? false } }
         .sheet(isPresented: $showsQueue) { QueueView() }
+        .modifier(OutputRouteTracking(output: $output))   // R21 (D167)
         .task(id: "\(model.player.queue.current?.song.id ?? "")|\(model.offlinePageKey)") { await resolveLinks() }
     }
 
@@ -347,6 +350,15 @@ struct NowPlayingView: View {
                     .frame(maxWidth: .infinity)
                     .accessibilityIdentifier("now-playing-hearing")
             }
+            // R21 (D167): the words that go with the output picker's accent colour (D3).
+            if let output {
+                Label("Playing on \(output.name)", systemImage: output.symbol)
+                    .font(.caption2)
+                    .foregroundStyle(themed.palette.ink2Color)
+                    .lineLimit(typeSize.isAccessibilitySize ? nil : 1)
+                    .frame(maxWidth: .infinity)
+                    .accessibilityIdentifier("now-playing-output")
+            }
         }
     }
 
@@ -405,7 +417,8 @@ struct NowPlayingView: View {
         .accessibilityAddTraits(.isButton)
     }
 
-    /// Lyrics | Sleep timer | Queue, evenly spaced. The moon stays centred while Lyrics is hidden.
+    /// Lyrics | Sleep timer | Play on… | Queue, evenly spaced (R21 added the output picker, D167). The row keeps its
+    /// slots while Lyrics is hidden.
     private var bottomBar: some View {
         HStack {
             if lyricsAvailable {
@@ -420,6 +433,10 @@ struct NowPlayingView: View {
             }
             Spacer()
             SleepTimerMenu()
+            Spacer()
+            OutputPicker(tint: themed.palette.ink2Color, activeTint: themed.palette.accentInkColor,
+                         current: OutputRoute.spoken(output, device: UIDevice.current.model))
+                .frame(width: Tokens.minHitSize, height: Tokens.minHitSize)
             Spacer()
             Button { showsQueue = true } label: {
                 Image(systemName: "list.bullet").font(.title3).frame(width: Tokens.minHitSize, height: Tokens.minHitSize)
