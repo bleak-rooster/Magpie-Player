@@ -118,3 +118,29 @@ Cover text needs ffmpeg's `drawtext`. Homebrew's ffmpeg lacks it, so the script 
   - `system/status`, `rootfolder` (both roots), `qualityprofile`, `metadataprofile`, `artist`, `queue/status`, `notification` (Subsonic)
   - a request without a key gets 401
   - `artist/lookup` reports **SKIP** instead of FAIL when the external metadata server is unreachable
+
+## Fake indexer and blackhole: real grabs and imports (round 20)
+
+Out of the box the dev Lidarr has no indexer and no download client, so nothing downloads. `dev/fake-indexer/` adds
+both, for tests that need the whole grab → download → import path (Try and Finds end to end):
+
+```sh
+dev/fake-indexer/setup.sh    # idempotent: starts the indexer, creates the blackhole folders, adds both to Lidarr if missing
+cd Packages/MagpieKit && MAGPIE_IT=1 MAGPIE_LIVE=1 swift test --filter DownloadFlowIT
+```
+
+- `server.py`: a stdlib-Python Newznab indexer on http://127.0.0.1:3903 (`FAKE_INDEXER_PORT`). Lidarr reaches it as
+  `http://host.docker.internal:3903` (Docker Desktop forwards that to the Mac's loopback; no compose change). It offers
+  nothing until a test says what to offer: `POST /control/releases` (title, size, match terms, `delaySeconds` for a
+  slow Soulseek-like search; a title like `{artist} - {album} (2021) [MP3 320]` is filled in from each search),
+  `POST /control/reset`, `GET /control/log` (every query and NZB fetch). Details at the top of the file.
+- `setup.sh` adds a Newznab indexer **Magpie Fake Indexer** (RSS off, so nothing is grabbed unasked) and a Usenet
+  Blackhole download client **Magpie Blackhole**: NZB folder `/downloads/magpie-blackhole/nzb`, watch folder
+  `/downloads/magpie-blackhole/complete` (host: `dev/data/downloads/magpie-blackhole/…`). Nothing else is changed;
+  remove them in Lidarr's settings to go back to a stack that never downloads.
+- Nobody downloads anything: the test plays the downloader. When an NZB appears it builds a folder named like the
+  release in the watch folder (silent 320 kbit/s MP3s as long as Lidarr's tracks, tagged with the MusicBrainz ids, via
+  ffmpeg; without ffmpeg, copies of the fixture single), and Lidarr's completed-download handling imports it.
+- `DownloadFlowIT` uses Lorde's "Solar Power" (a Single and a studio album of that name), so the dev Lidarr must not
+  have Lorde, and real MusicBrainz (`MAGPIE_LIVE=1`). It removes the artist it added (`deleteFiles=false`), then the
+  files it made on the host. In a git worktree, link `dev/.env.local` and `dev/data` to the main checkout's first.
