@@ -52,6 +52,8 @@ full test gates → release build. Security, design, crash-hunt and docs-verific
 calls for them. Only the controller (the coordinating session or the human) merges, tags, archives, uploads or pushes.
 
 Agents for each role are defined in `.claude/agents/` (readable by any tool: plain Markdown with a short header).
+Branches, issues, pull requests, releases and the CI that guards them: [`docs/ways-of-working/github.md`](docs/ways-of-working/github.md).
+Agents never push, merge, tag or open pull requests unless the controller has said so for that task.
 
 ## Commands
 

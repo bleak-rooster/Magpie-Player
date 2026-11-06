@@ -50,7 +50,7 @@ phone through TestFlight: [`docs/TESTFLIGHT.md`](docs/TESTFLIGHT.md).
 
 - [`docs/decisions.md`](docs/decisions.md) — every product and engineering decision, numbered, with its reason
 - [`docs/FLOWS.md`](docs/FLOWS.md) — how each flow behaves · [`docs/RUNBOOK.md`](docs/RUNBOOK.md) — running and testing
-- [`docs/ways-of-working/`](docs/ways-of-working/README.md) — how the project is built (process, rules, templates)
+- [`docs/ways-of-working/`](docs/ways-of-working/README.md) — how the project is built (process, rules, templates, GitHub)
 - [`docs/reviews/`](docs/reviews/) and [`docs/superpowers/plans/`](docs/superpowers/plans/) — past reviews and plans
 
 ## Contributing

@@ -1,0 +1,7 @@
+# Every change is reviewed by the maintainer. The write gate, its audit and the privacy rules need their review in
+# particular (docs/ways-of-working/rules.md).
+*                                                   @bleak-rooster
+/Packages/MagpieKit/Sources/LidarrKit/WriteGate.swift        @bleak-rooster
+/Packages/MagpieKit/Sources/LidarrKit/WriteConfinement.swift @bleak-rooster
+/scripts/check-writes*.sh                           @bleak-rooster
+/Packages/MagpieKit/Sources/MagpieCore/RefusedMediaHosts.swift @bleak-rooster

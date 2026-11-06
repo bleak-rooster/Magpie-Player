@@ -1,0 +1,8 @@
+# The Swift package has no external dependencies; keep the workflow actions current.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    labels: ["area: build", "dependencies"]

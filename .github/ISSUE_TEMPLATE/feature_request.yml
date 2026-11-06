@@ -1,0 +1,24 @@
+name: Idea or request
+description: Something Magpie should do, or do differently.
+labels: ["type: feature", "needs: triage"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What would you like, in your own words?
+      description: These words are quoted verbatim in the plan (docs/ways-of-working/process.md).
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why — what are you trying to do?
+  - type: checkboxes
+    id: setups
+    attributes:
+      label: Which setups is it for?
+      options:
+        - label: Navidrome only
+        - label: With Lidarr
+        - label: With Aurral
+        - label: With ListenBrainz

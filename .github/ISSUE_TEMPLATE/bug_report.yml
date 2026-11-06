@@ -1,0 +1,46 @@
+name: Something isn't working
+description: A bug, a crash, or a screen that says the wrong thing.
+labels: ["type: bug", "needs: triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. **Never paste a server address, username, password, API key, token or log that contains
+        one** — replace them with `music.example`, `jordan`, `test-key`.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: "1. Open Library › Finds\n2. …"
+    validations:
+      required: true
+  - type: dropdown
+    id: setup
+    attributes:
+      label: Which services are connected?
+      options:
+        - Navidrome only
+        - Navidrome + Lidarr
+        - Navidrome + Aurral
+        - Navidrome + Lidarr + Aurral
+    validations:
+      required: true
+  - type: input
+    id: build
+    attributes:
+      label: Magpie version and build (Settings › About)
+      placeholder: "0.0.1 (21)"
+  - type: input
+    id: device
+    attributes:
+      label: iPhone model and iOS version; CarPlay?
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else (versions of Lidarr, Tubifarry, Aurral, Navidrome)

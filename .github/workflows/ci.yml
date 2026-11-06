@@ -1,0 +1,54 @@
+# Every pull request and every push to main: the write/privacy audit, the package tests and a secret scan.
+# These are the required checks for merging (docs/ways-of-working/github.md › Branch protection).
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: Write and privacy audit
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: check-writes (Lidarr writes, Aurral routes, forbidden hosts)
+        run: scripts/check-writes.sh
+      - name: check-writes self-test (planted bypasses must be caught)
+        run: scripts/check-writes-selftest.sh
+
+  package-tests:
+    name: Package tests
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select the newest Xcode 27
+        run: |
+          xcode=$(find /Applications -maxdepth 1 -name "Xcode_27*.app" | sort -V | tail -1)
+          if [ -z "$xcode" ]; then echo "::error::No Xcode 27 on this runner image (see docs/ways-of-working/github.md › CI)"; exit 1; fi
+          sudo xcode-select -s "$xcode/Contents/Developer"
+          xcodebuild -version
+      - name: swift test
+        working-directory: Packages/MagpieKit
+        run: swift test
+
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

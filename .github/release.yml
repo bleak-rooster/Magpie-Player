@@ -1,0 +1,15 @@
+# Categories for GitHub's generated release notes (by pull-request label).
+changelog:
+  exclude:
+    labels: ["skip-changelog"]
+  categories:
+    - title: New
+      labels: ["type: feature"]
+    - title: Fixed
+      labels: ["type: bug"]
+    - title: Safety and privacy
+      labels: ["type: security"]
+    - title: Docs and ways of working
+      labels: ["type: docs"]
+    - title: Other changes
+      labels: ["*"]

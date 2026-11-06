@@ -1,0 +1,30 @@
+# The hosted app and UI tests (about 10 minutes on a fast Mac). Run by hand from the Actions tab, and weekly on main.
+# Needs a runner image with Xcode 27.1 and an iOS 27 simulator; use a self-hosted Mac if the hosted images lag.
+name: App tests
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 3 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  app-tests:
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select the newest Xcode 27
+        run: |
+          xcode=$(find /Applications -maxdepth 1 -name "Xcode_27*.app" | sort -V | tail -1)
+          if [ -z "$xcode" ]; then echo "::error::No Xcode 27 on this runner image"; exit 1; fi
+          sudo xcode-select -s "$xcode/Contents/Developer"
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Hosted app and UI tests
+        run: |
+          DEVELOPER_DIR="$(xcode-select -p)"
+          export DEVELOPER_DIR
+          scripts/test-app.sh

@@ -1,0 +1,30 @@
+"area: requests":
+  - changed-files:
+      - any-glob-to-any-file: ["Packages/MagpieKit/Sources/Requests/**", "App/AppModel+Requests.swift", "App/AppModel+Find*.swift", "App/Screens/Finds/**", "App/Screens/Activity/**"]
+"area: lidarr":
+  - changed-files:
+      - any-glob-to-any-file: ["Packages/MagpieKit/Sources/LidarrKit/**", "scripts/check-writes*.sh"]
+"area: aurral":
+  - changed-files:
+      - any-glob-to-any-file: ["Packages/MagpieKit/Sources/AurralKit/**", "App/Screens/Discover/**", "App/AppModel+Aurral*.swift"]
+"area: playback":
+  - changed-files:
+      - any-glob-to-any-file: ["Packages/MagpieKit/Sources/Playback/**", "App/Playback/**", "App/Screens/NowPlaying/**", "App/Downloads/**"]
+"area: carplay":
+  - changed-files:
+      - any-glob-to-any-file: ["Packages/MagpieKit/Sources/CarPlayUI/**", "App/CarPlay/**"]
+"area: search":
+  - changed-files:
+      - any-glob-to-any-file: ["Packages/MagpieKit/Sources/Search/**", "Packages/MagpieKit/Sources/MatchIndex/**", "App/Screens/Search/**"]
+"area: ui":
+  - changed-files:
+      - any-glob-to-any-file: ["App/Screens/**", "Packages/MagpieKit/Sources/DesignSystem/**"]
+"area: build":
+  - changed-files:
+      - any-glob-to-any-file: ["project.yml", "scripts/**", ".github/**", "Packages/MagpieKit/Package.swift"]
+"type: docs":
+  - changed-files:
+      - any-glob-to-any-file: ["docs/**", "*.md", ".claude/agents/**"]
+"type: tests":
+  - changed-files:
+      - any-glob-to-any-file: ["Tests/**", "Packages/MagpieKit/Tests/**"]

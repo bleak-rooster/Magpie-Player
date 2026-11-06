@@ -14,7 +14,9 @@ their data, never leak their details.** The full guide is [`AGENTS.md`](AGENTS.m
 
 ## Making the change
 
-- Branch off the integration branch; one topic per branch.
+- Start from an issue, and branch off the integration branch with one topic per branch: `<round><n>-<slug>`, `fix-<slug>`,
+  `docs-<slug>` ([`docs/ways-of-working/github.md`](docs/ways-of-working/github.md) has the branch, issue, label and
+  pull-request rules).
 - Write the failing test first (Swift Testing), then the code. Follow the surrounding code's patterns, naming and
   comment density; new features go in new files.
 - Lidarr writes only through `LidarrWriteGate`, pinned in `scripts/check-writes.sh`. No direct calls to Deezer or
@@ -30,7 +32,8 @@ scripts/check-writes.sh
 scripts/test-app.sh            # or the hosted suites your change can affect
 ```
 
-Commit messages: `"<area>: <plain-English outcome>"`. If an AI assistant wrote part of a commit, add a trailer naming
+Open the pull request as a draft into the integration branch; CI (write and privacy audit, package tests, secret scan)
+must be green before review. Commit messages: `"<area>: <plain-English outcome>"`. If an AI assistant wrote part of a commit, add a trailer naming
 the model. Fill in the pull-request checklist honestly, including anything you didn't run.
 
 ## Security
