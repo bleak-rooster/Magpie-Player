@@ -36,6 +36,9 @@ distributed only through TestFlight. It is not on the App Store. Expect rough ed
   Lidarr's own indexers and download clients do the downloading; Magpie never downloads music itself.
 - New artists go into a separate Finds folder. **Keep** moves a find into your main library and lets Lidarr upgrade it
   to lossless. **Not for me** deletes it again.
+- After a Keep you can bring in more of the artist; if the find was a single, you choose to keep it or remove it once
+  the album holding the song has arrived (only the single's files go, never the artist). Adding an artist always asks
+  which of their albums, EPs and singles come.
 - If the song is only on an album, Lidarr still downloads the whole album (Lidarr and its plugins only fetch whole
   releases). Magpie then removes the album's other songs from your Finds folder. A title track (a song named like its
   album) is fetched through its album first, because that is what searches for its name find.
