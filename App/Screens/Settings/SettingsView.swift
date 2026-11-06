@@ -3,14 +3,16 @@ import SwiftUI
 /// A Settings page: the top-level rows, and the pages entry points elsewhere open directly (T21b).
 enum SettingsPage: Hashable {
     /// Round 13 item 14, Accounts & Servers: Navidrome (was Account & Server), Lidarr (was New music), Aurral (was
-    /// New music › Aurral), ListenBrainz (was Scrobbling).
+    /// New music âº Aurral), ListenBrainz (was Scrobbling).
     case account, lidarr, aurral, listenBrainz
     case playback, downloads, homeAndLibrary, appearance, about
     /// Y4 (round 12 item 6): Downloads in Lidarr. Round 13: opened from the Lidarr page, no longer a top-level row.
     case lidarrDownloads
-    /// Lidarr › Finds.
+    /// Lidarr âº Finds.
     case findsSetup
-    /// Round 13 (Z3): Settings › CarPlay, the third tab and the car's Home. A top-level row since Z1's Accounts &
+    /// Round 23 (D192): Lidarr › Soulseek (slskd), the optional slskd connection.
+    case slskd
+    /// Round 13 (Z3): Settings âº CarPlay, the third tab and the car's Home. A top-level row since Z1's Accounts &
     /// Servers rework made room (it first opened from Home & Library).
     case carPlay
 
@@ -22,7 +24,7 @@ enum SettingsPage: Hashable {
     /// The top level, in order.
     static var topLevel: [SettingsPage] { accountsAndServers + preferences }
 
-    /// Home's "Finish setting up" › Review: Lidarr while Try isn't available yet, else Finds set-up (the step left).
+    /// Home's "Finish setting up" âº Review: Lidarr while Try isn't available yet, else Finds set-up (the step left).
     static func finishSettingUp(_ availability: TryAvailability) -> [SettingsPage] {
         if case .available = availability { [.lidarr, .findsSetup] } else { [.lidarr] }
     }
@@ -31,7 +33,7 @@ enum SettingsPage: Hashable {
 /// Settings (replaces the Library account menu): one short list of pages that fits one screen at the default text
 /// size (T21b), each row with its one-line summary. Round 13 item 14: "Accounts & Servers" first, one row per service
 /// (named, as the owner's plan names them), each opening that service's page with all of its settings; then the
-/// preferences, whose row titles name no service (§5).
+/// preferences, whose row titles name no service (Â§5).
 struct SettingsView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
@@ -71,7 +73,7 @@ struct SettingsView: View {
 
     private func link(_ page: SettingsPage) -> some View {
         NavigationLink(value: page) { row(page) }
-            // Two-line rows 50 pt, one-line rows 44 pt (D15), so the whole list fits 375 × 667 with room for one more
+            // Two-line rows 50 pt, one-line rows 44 pt (D15), so the whole list fits 375 Ã 667 with room for one more
             // two-line row.
             .listRowInsets(.vertical, 3)
             .accessibilityIdentifier(Self.identifier(page))
@@ -103,7 +105,7 @@ struct SettingsView: View {
             SettingsRow(title: "Appearance", symbol: "paintpalette", summary: SettingsSummary(SettingsSummaries.appearance(model.theme)))
         case .about:
             SettingsRow(title: "About", symbol: "info.circle", summary: SettingsSummary(AboutView.summary))
-        case .lidarrDownloads, .findsSetup:
+        case .lidarrDownloads, .findsSetup, .slskd:
             EmptyView()   // not top-level rows
         }
     }
@@ -122,6 +124,7 @@ struct SettingsView: View {
         case .lidarrDownloads: LidarrDownloadsView()
         case .about: AboutView()
         case .findsSetup: FindsSetupView()
+        case .slskd: SlskdSettingsView()
         }
     }
 
@@ -140,6 +143,7 @@ struct SettingsView: View {
         case .lidarrDownloads: "settings-lidarr-downloads"
         case .about: "settings-about"
         case .findsSetup: "settings-finds"
+        case .slskd: "settings-slskd"
         }
     }
 }
