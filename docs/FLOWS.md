@@ -131,8 +131,9 @@ Code: `Playback/Player.swift` (`scrobble`, `maybeSubmitScrobble`), `App/Playback
 - **The "Not in your library" band** shows outside songs, albums and artists. An outside hit is dropped when the match index, or the library rows on screen, already have it. It is limited to 10 songs, 8 albums and 5 artists, with one song row per artist and title (albums and artists once each).
 - **Failures.** A source that fails or runs out of time adds nothing. A search fails only when the library fails *and* nothing came from outside.
 - **What can be tried.** Only songs have Try. Album and artist rows are information only.
+- **All / Songs / Artists / Albums** (round 23, D201). A segmented choice ("Search in") pinned at the top of the results whenever there's a query: while typing, after the Search key, after scrolling, after a page and back, after a recent search, online and offline. It hides with an empty query (Recent searches). The choice is kept until you change it. It's the app's own picker, not the system scope bar, which showed only while the search field was active.
 
-Code: `Search/{MergedSearch,SearchSections}.swift`, `ListenBrainzKit/ListenBrainzClient.swift`, `App/AppModel.swift` (`mergedSearch`), `App/Screens/Search/*`
+Code: `Search/{MergedSearch,SearchSections}.swift`, `ListenBrainzKit/ListenBrainzClient.swift`, `App/AppModel.swift` (`mergedSearch`), `App/Screens/Search/*` (`SearchScopePicker.swift`: the choices)
 
 ### f. Requesting a song ("Try")
 "Quick" here means Lidarr's normal search-and-download pipeline. **Quick fetch via slskd is not built in v1.**

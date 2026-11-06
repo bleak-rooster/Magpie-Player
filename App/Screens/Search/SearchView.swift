@@ -20,7 +20,7 @@ struct SearchView: View {
                                       set: { if let navigator { navigator.search = $0 } else { ownPath = $0 } })) {
             Group {
                 if let model {
-                    SearchContent(model: model, scope: scope, depth: navigator?.search.count ?? ownPath.count)
+                    SearchContent(model: model, scope: $scope, depth: navigator?.search.count ?? ownPath.count)
                 } else {
                     Color.clear
                 }
@@ -30,9 +30,8 @@ struct SearchView: View {
         // On the stack itself, which is where a Search-role tab looks for its field.
         .searchable(text: Binding(get: { model?.query ?? "" }, set: { model?.update(query: $0) }),
                     placement: .navigationBarDrawer(displayMode: .always), prompt: "Songs, artists and albums")
-        .searchScopes($scope) {
-            ForEach(SearchScope.allCases) { Text($0.rawValue).tag($0) }
-        }
+        // Round 23 (D201): no `.searchScopes`: its bar went with the search's presentation. The choices are
+        // SearchScopePicker, on the results.
         .onSubmit(of: .search) { if let model { RecentSearches().add(model.query) } }
         .task {
             guard model == nil else { return }
@@ -65,15 +64,10 @@ struct SearchView: View {
     }
 }
 
-private enum SearchScope: String, CaseIterable, Identifiable {
-    case all = "All", songs = "Songs", artists = "Artists", albums = "Albums"
-    var id: String { rawValue }
-}
-
 private struct SearchContent: View {
     @Environment(AppModel.self) private var app
     let model: SearchModel
-    let scope: SearchScope
+    @Binding var scope: SearchScope
     /// How deep the tab's stack is: a row that opens a page remembers the search (R19: no gesture on the rows, which
     /// took their taps).
     let depth: Int
@@ -116,6 +110,10 @@ private struct SearchContent: View {
         }
         .listStyle(.plain)
         .listRowSeparatorTint(themed.palette.sepColor)
+        // Round 23 (owner, D201): the choices stay at the top whenever there's a query, searching or not.
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if model.phase != .idle { SearchScopePicker(scope: $scope) }
+        }
         .navigationTitle("Search")
         .magpieScreen()
         .scrollDismissesKeyboard(.interactively)
