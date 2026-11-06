@@ -40,6 +40,8 @@ planted=(
   'restarter.restart(row)'
   'screen.restartAll(rows, model: model)'
   'LidarrDownloadRestarter(lidarr: client, gate: gate, runner: nil)'
+  # Round 22 (D172): the kept single's delete named anywhere but its one pinned caller.
+  'gate.send("DELETE", "trackfile/bulk", body: TrackFileIdsBody(trackFileIds: ids), confinedAs: .keptSingleDelete)'
   # Round 14 A1: Aurral routes outside the exact allow-list.
   'aurral.ok(method: "GET", path: "api/discover/refresh")'
   'aurral.ok(method: "GET", path: "api/discover/blocked-tags")'

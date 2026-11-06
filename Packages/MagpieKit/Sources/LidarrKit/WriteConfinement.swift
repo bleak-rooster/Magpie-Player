@@ -107,6 +107,9 @@ public struct WriteConfinement: Sendable {
         case queueRestart(albums: Set<Int>)
         /// Round 15 C3 (D147): a library trial's files: right before it goes, its ledger entry must still be an open trial.
         case trialDelete(albumId: Int)
+        /// Round 22 (D172): a kept single's files: right before they go, the artist's Keep is still confirmed and the
+        /// album's entry still records the removal.
+        case keptSingleDelete(albumId: Int)
     }
 
     enum Verdict: Equatable {
@@ -140,6 +143,8 @@ public struct WriteConfinement: Sendable {
         case queueRestartAny(Int, allowForeign: Bool)
         /// Round 15 C3 (D147): `ConfinedShape.trialDelete`'s track file delete.
         case trialDelete([Int])
+        /// Round 22 (D172): `ConfinedShape.keptSingleDelete`'s track file delete.
+        case keptSingleDelete([Int])
         /// Round 15 C3 (D146): `ConfinedShape.singlesSwitch`'s writes. `undoProfile`: the profile the change log saved.
         case singlesEditor([String: Any])
         case singlesRefresh(Int)
@@ -176,6 +181,9 @@ public struct WriteConfinement: Sendable {
             case .trialDelete(let ids):
                 let (artistId, albumId) = try await context.trialDelete(ids)
                 return .confined(artists: [artistId], rule: .trialDelete(albumId: albumId))
+            case .keptSingleDelete(let ids):
+                let (artistId, albumId) = try await context.keptSingleDelete(ids)
+                return .confined(artists: [artistId], rule: .keptSingleDelete(albumId: albumId))
             case .singlesEditor(let body):
                 let ids = body.first { $0.key.lowercased() == "artistids" }?.value as? [Any]
                 guard let id = (ids?.first as? NSNumber)?.intValue, ids?.count == 1,
@@ -332,6 +340,11 @@ public struct WriteConfinement: Sendable {
             guard let entries = try? await ledger.entries else { return nil }
             return entries.contains { $0.albumId == albumId && $0.isOpenTrial }
         }
+        if case .keptSingleDelete(let albumId) = rule {
+            guard let entries = try? await ledger.entries else { return nil }
+            return !artists.isEmpty && artists.allSatisfy { Self.confirmedKept($0, in: entries) }
+                && entries.contains { $0.albumId == albumId && $0.isKeptSingleBeingRemoved && $0.isConfirmedKept }
+        }
         guard !artists.isEmpty, rule == .findDelete || rule == .keptLossyDelete else { return true }
         guard let entries = try? await ledger.entries else { return nil }
         switch rule {
@@ -339,7 +352,7 @@ public struct WriteConfinement: Sendable {
             return !entries.contains { artists.contains($0.lidarrArtistId) && $0.isKeptOrKeeping }
         case .keptLossyDelete:
             return artists.allSatisfy { Self.confirmedKept($0, in: entries) }
-        case .other, .queueRestart, .trialDelete:
+        case .other, .queueRestart, .trialDelete, .keptSingleDelete:
             return true
         }
     }
@@ -618,6 +631,65 @@ public struct WriteConfinement: Sendable {
             return (entry.lidarrArtistId, albumId)
         }
 
+        /// Round 22 (D172): a kept single's removal. The files must all be of one album whose ledger entry records the
+        /// removal (`isKeptSingleBeingRemoved`: Magpie added the artist and monitored the album itself, not before the
+        /// owner) and is confirmed kept; the artist's Keep is confirmed (no Keep under way) and Magpie created it (fresh
+        /// MBID); Lidarr's album is still that release group and a Single; the release the entry names as holding the song
+        /// is another album of the same artist with files now; the ids are exactly all of the single's files now (read
+        /// fresh), each inside the artist's folder, which is inside the main root. Never the artist, never another album.
+        func keptSingleDelete(_ ids: [Int]) async throws -> (artist: Int, album: Int) {
+            guard !ids.isEmpty, ids.count <= WriteConfinement.maxTrackFiles else {
+                throw Refusal(reason: "track file delete needs 1 to \(WriteConfinement.maxTrackFiles) ids")
+            }
+            var albumId: Int?
+            var files: [TrackFile] = []
+            for id in ids {
+                let file = try await trackFile(id)
+                guard let a = file.albumId, albumId == nil || albumId == a else {
+                    throw Refusal(reason: "a kept single's delete is one album's files")
+                }
+                albumId = a
+                files.append(file)
+            }
+            guard let albumId, let entry = entries.first(where: { $0.albumId == albumId }),
+                  entry.isKeptSingleBeingRemoved, entry.isConfirmedKept, let replacement = entry.keptSingleReplacedBy,
+                  replacement != albumId else {
+                throw Refusal(reason: "not a kept single whose removal Magpie recorded")
+            }
+            let artistId = entry.lidarrArtistId
+            guard WriteConfinement.confirmedKept(artistId, in: entries) else { throw Refusal(reason: "the Keep isn't confirmed") }
+            guard try await created(artistId) else { throw Refusal(reason: "not an artist Magpie added") }
+            guard files.allSatisfy({ $0.artistId == artistId }) else { throw Refusal(reason: "another artist's files") }
+            guard let main = roots.mainRoot else { throw Refusal(reason: "no main root folder") }
+            let fresh = try await lidarrRoots()
+            guard fresh.contains(where: { Self.sameBytes($0, main) }) else {
+                throw Refusal(reason: "the main root isn't a Lidarr root folder")
+            }
+            let mainGuard = PathGuard(findsRoot: main, otherRoots: fresh.filter { !Self.sameBytes($0, main) }, caseInsensitive: false)
+            let artist = try await artist(artistId)
+            guard let folder = artist.path, mainGuard.isInside(folder) else {
+                throw Refusal(reason: "the artist isn't in the main root folder")
+            }
+            let albums = try await read { try await lidarr.albums(artistId: artistId) }
+            guard let single = albums.first(where: { $0.id == albumId }), single.foreignAlbumId == entry.rgMbid,
+                  single.albumType?.lowercased() == "single" else {
+                throw Refusal(reason: "the album isn't the kept single any more")
+            }
+            guard albums.contains(where: { $0.id == replacement }),
+                  try await !read({ try await lidarr.trackFiles(albumId: replacement) }).isEmpty else {
+                throw Refusal(reason: "the release holding the song has no files")
+            }
+            let now = try await read { try await lidarr.trackFiles(albumId: albumId) }
+            guard Set(now.map(\.id)) == Set(ids), now.count == ids.count else {
+                throw Refusal(reason: "a kept single's delete is exactly all of its files")
+            }
+            let inside = PathGuard(findsRoot: folder, otherRoots: [], caseInsensitive: false)
+            guard files.allSatisfy({ inside.isInside($0.path) && mainGuard.isInside($0.path) }) else {
+                throw Refusal(reason: "a file outside the artist's folder")
+            }
+            return (artistId, albumId)
+        }
+
         /// Round 15 C3 (D146): the singles switch's artist edit, for an artist whose switch is in the journal: a metadata
         /// profile only a Magpie "+ Singles" superset or exactly the saved original; following only "none" while the
         /// switch is under way, or exactly the saved value back.
@@ -663,7 +735,8 @@ public struct WriteConfinement: Sendable {
                 let entry = entries.filter { $0.albumId == id }
                 guard !entry.isEmpty else { throw Refusal(reason: "not an album Magpie asked for") }
                 if !monitored {
-                    guard entry.allSatisfy({ !$0.wasMonitoredBefore && !$0.isKeptOrKeeping }) else {
+                    // Round 22 (D172): a kept album only when its entry records a kept single's removal.
+                    guard entry.allSatisfy({ !$0.wasMonitoredBefore && (!$0.isKeptOrKeeping || $0.isKeptSingleBeingRemoved) }) else {
                         throw Refusal(reason: "Magpie only unmonitors albums it monitored and nobody kept")
                     }
                 }

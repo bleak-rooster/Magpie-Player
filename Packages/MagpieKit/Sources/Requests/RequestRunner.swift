@@ -27,8 +27,12 @@ public struct LibraryAccess: Sendable {
     public var songsTitled: @Sendable (_ title: String, _ artistFolder: String) async -> [(song: Song, lidarrPath: String)]?
     /// Whether the library still has the song with this id (a scan can re-identify a song). Nil: can't tell.
     public var songExists: @Sendable (_ songId: String) async -> Bool?
+    /// Round 22 (D173): before a kept single is removed, the owner's own playlists that hold its song are pointed at the
+    /// album's copy instead, in place. True: done, or none held it. False: not done (the single waits).
+    public var repointSong: @Sendable (_ from: String, _ to: Song) async -> Bool
 
     /// `rescanMoved` nil: one plain quick scan. `keptSong` nil: never found (the request keeps its song id).
+    /// `repointSong` nil: no playlists to change.
     public init(startScan: @escaping @Sendable () async throws -> Void,
                 isScanning: @escaping @Sendable () async throws -> Bool,
                 refreshIndex: @escaping @Sendable () async throws -> Void,
@@ -37,7 +41,9 @@ public struct LibraryAccess: Sendable {
                 keptSong: (@Sendable (MBID, _ artistPath: String) async throws -> Song?)? = nil,
                 songsTitled: (@Sendable (_ title: String, _ artistFolder: String) async -> [(song: Song, lidarrPath: String)]?)? = nil,
                 scanFolder: (@Sendable (_ artistFolder: String) async -> Bool)? = nil,
-                songExists: (@Sendable (_ songId: String) async -> Bool?)? = nil) {
+                songExists: (@Sendable (_ songId: String) async -> Bool?)? = nil,
+                repointSong: (@Sendable (_ from: String, _ to: Song) async -> Bool)? = nil) {
+        self.repointSong = repointSong ?? { _, _ in true }
         self.scanFolder = scanFolder ?? { _ in false }
         self.songExists = songExists ?? { _ in nil }
         self.startScan = startScan; self.isScanning = isScanning
@@ -238,6 +244,8 @@ public actor RequestRunner {
     var relinkChecks: [RequestID: Date] = [:]
     /// When Bring in more's releases were last checked, per request (throttles `followBringIns`).
     var bringInChecks: [RequestID: Date] = [:]
+    /// R22 (D172): when a kept single's removal was last looked at, per request (throttles `followKeptSingles`).
+    var keptSingleChecks: [RequestID: Date] = [:]
     private var inFlight: [RequestID: Task<Void, Never>] = [:]
     private var ticking = false
     private(set) var stopped = false
@@ -296,6 +304,7 @@ public actor RequestRunner {
         list.contains {
             ($0.isActive && !$0.isNotListed) || $0.cleanupPending || $0.keep != nil || $0.relinkPending == true
                 || $0.notForMe != nil || ($0.lossless?.isActive ?? false)
+                || ($0.keptSingle.map { $0.isOpen && $0.choice == .remove } ?? false)   // R22 (D172)
         }
     }
 
@@ -474,6 +483,8 @@ public actor RequestRunner {
         await followNotForMes()
         if shouldStop() { return }
         await followBringIns()
+        if shouldStop() { return }
+        await followKeptSingles()   // R22 (D172)
     }
 
     /// G7: the places taken in the limit of 5: requests on their way and releases Bring in more is bringing in (FL4).

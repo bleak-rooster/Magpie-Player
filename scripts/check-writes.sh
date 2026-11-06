@@ -134,6 +134,7 @@ if [ -z "${G1_SRC:-}" ]; then
   restarter="Packages/MagpieKit/Sources/Requests/DownloadsInLidarr.swift"
   trialfile="Packages/MagpieKit/Sources/Requests/RequestRunner+Trial.swift"
   singlesfile="Packages/MagpieKit/Sources/Requests/SinglesSwitch.swift"
+  keptsinglefile="Packages/MagpieKit/Sources/Requests/RequestRunner+KeptSingle.swift"
   # Round 15 C3 (re-review m2): the singles-switch journal the gate trusts is made and written only by its owners: the
   # store type only in SinglesSwitch.swift and the runner's rebuild (one shared store per Lidarr), and nothing else saves
   # to a switcher's store.
@@ -155,6 +156,8 @@ if [ -z "${G1_SRC:-}" ]; then
     # Round 15 C3 (D147, D146): the trial Reject's one track file delete and the singles switch's one sender.
     case "$s" in
       "$trialfile":*'_ = try await gate.send("DELETE", "trackfile/bulk", body: TrackFileIdsBody(trackFileIds: ids), confinedAs: .trialDelete)') continue ;;
+      # Round 22 (D172): a kept single's removal, its one track file delete (the gate's keptSingleDelete rule).
+      "$keptsinglefile":*'_ = try await gate.send("DELETE", "trackfile/bulk", body: TrackFileIdsBody(trackFileIds: ids), confinedAs: .keptSingleDelete)') continue ;;
       # D146 (review I1-I3): the singles switch's journal, only in SinglesSwitch.swift, only these forms; the gate allows
       # them only for an artist whose switch is in the journal, and only the journal's values.
       "$singlesfile":*'_ = try await gate.send("PUT", "artist/editor", body: FollowBody(artistIds: [job.artistId], monitorNewItems: "none"), confinedAs: .singlesSwitch)') continue ;;
@@ -234,6 +237,8 @@ if [ -z "${G1_SRC:-}" ]; then
       Packages/MagpieKit/Sources/Requests/RequestRunner+Trial.swift) ;;
       # Round 18 (D152): a song's Try keeps only that song: the release's other files of a find, confined by findDelete.
       Packages/MagpieKit/Sources/Requests/RequestRunner+OnlyTheSong.swift) ;;
+      # Round 22 (D172): a kept single's files, confined by `ConfinedShape.keptSingleDelete` (pinned above).
+      Packages/MagpieKit/Sources/Requests/RequestRunner+KeptSingle.swift) ;;
       *) echo "G1: track file delete outside Not for me and the MP3 rule: $f" >&2; bad=1 ;;
     esac
   done
@@ -653,7 +658,7 @@ if [ -z "${G1_SRC:-}" ]; then
     case "$verb $path" in
       "delete trackfile"*)
         case "$file" in
-          "$rq/RequestRunner+NotForMe.swift"|"$rq/RequestRunner+Lossless.swift"|"$rq/RequestRunner+Trial.swift"|"$rq/RequestRunner+OnlyTheSong.swift") ;;
+          "$rq/RequestRunner+NotForMe.swift"|"$rq/RequestRunner+Lossless.swift"|"$rq/RequestRunner+Trial.swift"|"$rq/RequestRunner+OnlyTheSong.swift"|"$rq/RequestRunner+KeptSingle.swift") ;;
           *) echo "L1: track file delete outside Not for me and the MP3 rule: $file:$line" >&2; bad=1 ;;
         esac ;;
       "delete queue"*)

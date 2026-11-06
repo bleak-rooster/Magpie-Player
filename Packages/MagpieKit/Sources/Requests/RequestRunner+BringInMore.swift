@@ -39,11 +39,14 @@ extension RequestRunner {
         public var duration: TimeInterval?
         /// This album only: the album's title (also when it's in already).
         public var title: String?
+        /// R22 (D171): how many of `albumIds` are albums or EPs (a kept single's choice is offered only when some are).
+        public var albumsOrEPs: Int
 
         public var isCapped: Bool { available > albumIds.count }
 
-        public init(albumIds: [Int], available: Int, duration: TimeInterval?, title: String? = nil) {
+        public init(albumIds: [Int], available: Int, duration: TimeInterval?, title: String? = nil, albumsOrEPs: Int = 0) {
             self.albumIds = albumIds; self.available = available; self.duration = duration; self.title = title
+            self.albumsOrEPs = albumsOrEPs
         }
     }
 
@@ -55,6 +58,16 @@ extension RequestRunner {
         public var options: [BringInChoice: BringInOption]
         /// The artist already follows new releases (`monitorNewItems` all or new).
         public var followsNewReleases: Bool
+        /// R22 (D171): the kept find's own release, when Lidarr lists it as a Single: keep it or remove it once an album
+        /// or EP brought in holds the song. Nil for any other release.
+        public var keptSingle: KeptSingleOffer?
+    }
+
+    /// R22 (D171): the kept single the sheet names ("The single “<title>”").
+    public struct KeptSingleOffer: Sendable, Equatable {
+        public var albumId: Int
+        public var title: String
+        public init(albumId: Int, title: String) { self.albumId = albumId; self.title = title }
     }
 
     public struct BringInResult: Sendable, Equatable {
@@ -113,7 +126,7 @@ extension RequestRunner {
                                                  skip: target.openAlbums, limit: bringInRoom, types: types)
         }
         return BringInOffer(artistId: target.artist.id, artistName: target.artist.artistName, options: options,
-                            followsNewReleases: Self.follows(target.artist))
+                            followsNewReleases: Self.follows(target.artist), keptSingle: target.keptSingle)
     }
 
     // MARK: - Bring in
@@ -130,8 +143,12 @@ extension RequestRunner {
     /// metadata profile for them (provisioned if missing), so new releases follow the same types. `qualityProfileId`
     /// sets the artist's quality profile (Lossless or Smaller files). Each is sent only when it differs, before any
     /// release is monitored; the gate allows both only for an artist Magpie added.
+    ///
+    /// R22 (D171): when the kept release is a Single and an album or EP comes in, the single's choice is recorded on the
+    /// request (`removeSingle`: remove it once one of them holds the song; otherwise keep it, and nothing is sent).
     public func bringIn(_ id: RequestID, choice: BringInChoice?, offered: [Int]? = nil,
-                        follow: Bool, types: ReleaseTypes? = nil, qualityProfileId: Int? = nil) async throws -> BringInResult {
+                        follow: Bool, types: ReleaseTypes? = nil, qualityProfileId: Int? = nil,
+                        removeSingle: Bool = false) async throws -> BringInResult {
         let target = try await bringInTarget(id)
         let artistId = target.artist.id
         guard tryAcquireArtist(artistId) else { throw BringInError.unavailable }   // Y5 fix I5: atomic
@@ -178,6 +195,7 @@ extension RequestRunner {
             }
             await arrived(id, Set(reserved).subtracting(albums.map(\.id)))
             result.albums = albums.count
+            await recordKeptSingle(id, target.keptSingle, brought: albums, remove: removeSingle)
             do {
                 _ = try await gate.send("POST", "command", body: SearchBody(name: "AlbumSearch", albumIds: albums.map(\.id)))
                 result.searching = true
@@ -265,6 +283,8 @@ extension RequestRunner {
         /// Albums an open ledger entry belongs to (a request still on its way): never touched here.
         var openAlbums: Set<Int>
         var mainRoot: String
+        /// R22: the kept find's own release, when it is a Single.
+        var keptSingle: KeptSingleOffer?
     }
 
     /// The kept, moved find's artist and albums, after every precondition (see the type comment).
@@ -300,8 +320,10 @@ extension RequestRunner {
             throw BringInError.notKept
         }
         let open = Set(entries.filter { $0.isOpen && $0.lidarrArtistId == artistId }.compactMap(\.albumId))
-        return Target(request: r, artist: artist, albums: albums.filter { $0.artistId == nil || $0.artistId == artistId },
-                      openAlbums: open, mainRoot: setup.mainRoot)
+        let own = albums.filter { $0.artistId == nil || $0.artistId == artistId }
+        let single = r.albumId.flatMap { albumId in own.first { $0.id == albumId } }
+            .flatMap { $0.albumType?.lowercased() == "single" ? KeptSingleOffer(albumId: $0.id, title: $0.title) : nil }
+        return Target(request: r, artist: artist, albums: own, openAlbums: open, mainRoot: setup.mainRoot, keptSingle: single)
     }
 
     /// Release groups of type Album (no secondary types: no live albums or compilations) the song is on, from
@@ -342,7 +364,9 @@ extension RequestRunner {
         let chosen = Array(pending.prefix(limit))
         let lengths = chosen.compactMap(\.duration)
         let duration = !chosen.isEmpty && lengths.count == chosen.count ? lengths.reduce(0, +) : nil
-        return BringInOption(albumIds: chosen.map(\.id), available: pending.count, duration: duration, title: title)
+        let albumsOrEPs = chosen.filter { ["album", "ep"].contains(type($0)) }.count
+        return BringInOption(albumIds: chosen.map(\.id), available: pending.count, duration: duration, title: title,
+                             albumsOrEPs: albumsOrEPs)
     }
 
     /// R18: the artist's release types (Magpie's metadata profile for them, created through the gate if missing) and

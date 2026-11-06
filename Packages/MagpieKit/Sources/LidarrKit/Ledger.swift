@@ -88,6 +88,21 @@ public struct LedgerEntry: Sendable, Equatable, Codable {
     /// Reject went through (its files deleted, the album unmonitored).
     public var trialRejectedAt: Date?
 
+    // Round 22 (owner, 2026-11-06, D172): a kept single removed once Bring in more brought in a release holding its song.
+    // Optional, so older files decode.
+    /// Saved just before the single's unmonitor and file delete (M6): only with it may the gate let them through
+    /// (`ConfinedShape.keptSingleDelete`, and the album monitor rule for a kept album).
+    public var keptSingleRemovalAt: Date?
+    /// The album (same artist) that holds the song with its file now: the gate reads it again and needs files there.
+    public var keptSingleReplacedBy: Int?
+
+    /// A kept single whose removal is recorded: Magpie added the artist and monitored this album itself, and no Keep is
+    /// under way.
+    public var isKeptSingleBeingRemoved: Bool {
+        keptSingleRemovalAt != nil && keptSingleReplacedBy != nil && createdArtist && !wasMonitoredBefore
+            && keepIntentAt == nil && albumId != nil
+    }
+
     /// A trial whose files a Reject may still delete. Review I4: never a closed entry (its request cancelled, failed or
     /// given up): the album may be the owner's again.
     public var isOpenTrial: Bool {
@@ -122,6 +137,7 @@ public struct LedgerEntry: Sendable, Equatable, Codable {
         case lidarrArtistId, albumId, rgMbid, createdArtist, wasMonitoredBefore, root, mode, keptAt, instance
         case send, requestId, closedAt, artistMbid, keepIntentAt, findFiles
         case trialHadNoFiles, trialExpiresAt, trialKeptAt, trialRejectedAt
+        case keptSingleRemovalAt, keptSingleReplacedBy
     }
 
     /// Fix round 4: a missing or unknown `send` decodes as `unclear`, never as applied. That includes entries
@@ -149,6 +165,8 @@ public struct LedgerEntry: Sendable, Equatable, Codable {
         trialExpiresAt = try? c.decodeIfPresent(Date.self, forKey: .trialExpiresAt)
         trialKeptAt = try? c.decodeIfPresent(Date.self, forKey: .trialKeptAt)
         trialRejectedAt = try? c.decodeIfPresent(Date.self, forKey: .trialRejectedAt)
+        keptSingleRemovalAt = try? c.decodeIfPresent(Date.self, forKey: .keptSingleRemovalAt)
+        keptSingleReplacedBy = try? c.decodeIfPresent(Int.self, forKey: .keptSingleReplacedBy)
     }
 }
 
