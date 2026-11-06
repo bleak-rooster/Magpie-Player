@@ -166,9 +166,12 @@ struct AlbumsListView: View {
 
 /// All playlists, A–Z, with the A–Z bar (P2; round 11 R2: the custom bar, so the letter bubble shows here too).
 /// Round 11 R8: "+" makes a new playlist (a name, then `createPlaylist`); the list reads again after any change.
+/// Round 22 R22P (owner, 2026-11-06): All or Yours above the list, remembered per account (D179, D180).
 struct PlaylistsListView: View {
     @Environment(AppModel.self) private var model
+    /// Every playlist but Discover's, A–Z; `show` picks what is listed from it.
     @State private var playlists: Loadable<[Playlist]> = .loading
+    @State private var show: PlaylistShow = .all
     @State private var sections: [LetterIndex.Section] = []
     @State private var naming = false
     @State private var newName = ""
@@ -181,21 +184,27 @@ struct PlaylistsListView: View {
         ScrollViewReader { proxy in
             List {
                 LoadableView(state: playlists, retry: load) { playlists in
-                    ForEach(playlists, id: \.id) { playlist in row(playlist) }
+                    ForEach(listed(playlists), id: \.id) { playlist in row(playlist) }
                 }
                 .listRowSeparatorTint(themed.palette.sepColor)
             }
             .listStyle(.plain)
             .letterIndex(available: Set(sections.map(\.key)), hidden: sections.isEmpty) { letter in
-                guard let target = LetterIndex.target(letter, in: sections), let list = playlists.value else { return }
-                proxy.scrollTo(list[target.range.lowerBound].id, anchor: .top)
+                guard let target = LetterIndex.target(letter, in: sections), let all = playlists.value else { return }
+                proxy.scrollTo(listed(all)[target.range.lowerBound].id, anchor: .top)
             }
         }
-        // Over the list, not a row in it, so no separators frame it (H3 M8).
+        // Over the list, not a row in it, so no separators frame it (H3 M8). An empty Yours says so (D179).
         .overlay {
-            if playlists.value?.isEmpty == true {
-                ContentUnavailableView("No playlists yet", systemImage: "music.note.list")
+            if let all = playlists.value, listed(all).isEmpty {
+                ContentUnavailableView(show.emptyTitle, systemImage: "music.note.list")
             }
+        }
+        .safeAreaInset(edge: .top, spacing: 0) { showPicker }
+        .onAppear { show = model.playlistShow }
+        .onChange(of: show) {
+            model.playlistShow = show
+            if let all = playlists.value { sections = LetterIndex.sections(listed(all), name: \.name) }
         }
         .navigationTitle("Playlists")
         .navigationBarTitleDisplayMode(.inline)   // as with rows; an empty list would otherwise show a large title
@@ -239,6 +248,24 @@ struct PlaylistsListView: View {
         }
     }
 
+    /// All / Yours (D179): text in each segment, read by VoiceOver as "Show playlists", 44 pt high at least.
+    private var showPicker: some View {
+        Picker("Show playlists", selection: $show) {
+            ForEach(PlaylistShow.allCases, id: \.self) { Text($0.title).tag($0) }
+        }
+        .pickerStyle(.segmented)
+        .frame(minHeight: Tokens.minHitSize)
+        .padding(.horizontal, Tokens.Spacing.l)
+        .padding(.vertical, Tokens.Spacing.s)
+        .background(.bar)   // the rows scroll under it
+        .accessibilityIdentifier("playlist-show")
+    }
+
+    /// What `show` lists of `all` (Yours: Save to playlist's owner rule, D101).
+    private func listed(_ all: [Playlist]) -> [Playlist] {
+        AppModel.shown(all, show, user: model.session?.username ?? "")
+    }
+
     private func row(_ playlist: Playlist) -> some View {
         NavigationLink(value: Route.playlist(id: playlist.id)) {
             HStack(spacing: Tokens.Spacing.m) {
@@ -262,11 +289,9 @@ struct PlaylistsListView: View {
 
     private func load() async {
         do {
-            // A–Z for the letter index (P2).
-            let sorted = try await model.request { try await $0.playlists() }
-                .filter { !model.isDiscoverPlaylist($0) }   // Y6: Discover's are under Discover
-                .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
-            sections = LetterIndex.sections(sorted, name: \.name)
+            // A–Z for the letter index (P2); Discover's are under Discover (Y6).
+            let sorted = try await model.libraryPlaylists()
+            sections = LetterIndex.sections(listed(sorted), name: \.name)
             playlists = .loaded(sorted)
         } catch {
             if playlists.value == nil { playlists = .failed(BrowseErrorCopy.message(for: error)) }
