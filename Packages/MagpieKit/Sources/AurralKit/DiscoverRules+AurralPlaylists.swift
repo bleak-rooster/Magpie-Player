@@ -39,19 +39,28 @@ extension DiscoverRules {
         return base.isEmpty ? nil : base
     }
 
-    /// D182 (supersedes D62's "more than half"): a playlist named as one of Aurral's is the owner's own (and stays in
-    /// Playlists) only on proof: its songs were read and there are some, Aurral's songs list was read this time and no
-    /// run is under way (a run clears it while the server still holds the last run's songs), and not one of its songs
-    /// is the flow's (by Aurral's jobs: recording id, else artist + title with the durations within 3 s), one of
-    /// Aurral's copies (`aurralSongIds`), or filed in Aurral's library (`aurralLibraries`). Without that proof it is
-    /// Aurral's: a flow just made (empty) or still downloading (a few songs in) included.
+    /// D182 (supersedes D62's "more than half"): whether a playlist named as one of Aurral's is the owner's own, as far
+    /// as this read can tell.
+    /// - `false`, Aurral's: one of its songs is one of Aurral's copies (`aurralSongIds`), filed in Aurral's library
+    ///   (`aurralLibraries`), or (with Aurral's song list read) the flow's (by its jobs: recording id, else artist +
+    ///   title with the durations within 3 s).
+    /// - `true`, the owner's own (proof): its songs were read and there are some, Aurral's song list was read this
+    ///   time and holds songs for this flow (another user's flow has none: never proven), no run is under way (a run
+    ///   clears it while the server still holds the last run's songs), what Aurral's
+    ///   copies are is known at all (`aurralSongIds` or `aurralLibraries` not empty), and none of its songs is Aurral's.
+    /// - `nil`, can't tell (empty, songs or jobs unread, a run, nothing learnt yet): the caller keeps what it knew,
+    ///   and a playlist never told apart is Aurral's (a flow just made, or still downloading).
     public static func isOwnersOwn(songs: [Song]?, flowJobs: [AurralJob], jobsRead: Bool, runActive: Bool,
-                                   aurralSongIds: Set<String>, aurralLibraries: Set<Int>) -> Bool {
-        guard let songs, !songs.isEmpty, jobsRead, !runActive else { return false }
-        return !songs.contains { song in
+                                   aurralSongIds: Set<String>, aurralLibraries: Set<Int>) -> Bool? {
+        guard let songs, !songs.isEmpty else { return nil }
+        let aurrals = songs.contains { song in
             aurralSongIds.contains(song.id) || song.libraryId.map(aurralLibraries.contains) == true
-                || isFlowSong(song, jobs: flowJobs)
+                || (jobsRead && isFlowSong(song, jobs: flowJobs))
         }
+        if aurrals { return false }
+        guard jobsRead, !flowJobs.isEmpty, !runActive, !aurralSongIds.isEmpty || !aurralLibraries.isEmpty
+        else { return nil }
+        return true
     }
 }
 

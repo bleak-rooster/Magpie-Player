@@ -51,31 +51,31 @@ private func song(_ id: String, _ title: String, _ artist: String = "Low", libra
     let jobs = [AurralJob(id: "j1", flowId: "f1", artistName: "Low", trackName: "Lullaby")]
 
     /// D182: a playlist named as Aurral's is the owner's own only on proof: its songs were read and there are some,
-    /// Aurral's songs list was read this time, no run is under way, and not one song is the flow's, one of Aurral's
-    /// copies or in Aurral's library.
+    /// Aurral's songs list was read this time, no run is under way, what Aurral's copies are is known, and not one
+    /// song is the flow's, one of Aurral's copies or in Aurral's library. One of Aurral's songs says it's Aurral's;
+    /// anything else can't tell (nil).
     @Test func onlyOnProof() {
         let mine = [song("m1", "X", "Q", library: 1), song("m2", "Y", "Q", library: 1)]
-        #expect(DiscoverRules.isOwnersOwn(songs: mine, flowJobs: jobs, jobsRead: true, runActive: false,
-                                          aurralSongIds: [], aurralLibraries: [2]))
-        // No proof: it's Aurral's.
-        #expect(!DiscoverRules.isOwnersOwn(songs: [], flowJobs: jobs, jobsRead: true, runActive: false,
-                                           aurralSongIds: [], aurralLibraries: []), "empty: newly made, nothing in yet")
-        #expect(!DiscoverRules.isOwnersOwn(songs: nil, flowJobs: jobs, jobsRead: true, runActive: false,
-                                           aurralSongIds: [], aurralLibraries: []), "its songs didn't read")
-        #expect(!DiscoverRules.isOwnersOwn(songs: mine, flowJobs: jobs, jobsRead: false, runActive: false,
-                                           aurralSongIds: [], aurralLibraries: []), "Aurral's songs didn't read")
-        #expect(!DiscoverRules.isOwnersOwn(songs: mine, flowJobs: jobs, jobsRead: true, runActive: true,
-                                           aurralSongIds: [], aurralLibraries: []), "a run under way clears the jobs")
-        // One of Aurral's songs is enough: downloads still coming in leave most of a flow unmatched.
-        let partly = mine + [song("a1", "Lullaby")]
-        #expect(!DiscoverRules.isOwnersOwn(songs: partly, flowJobs: jobs, jobsRead: true, runActive: false,
-                                           aurralSongIds: [], aurralLibraries: []), "the flow's song")
-        let copy = mine + [song("a9", "Old")]
-        #expect(!DiscoverRules.isOwnersOwn(songs: copy, flowJobs: jobs, jobsRead: true, runActive: false,
-                                           aurralSongIds: ["a9"], aurralLibraries: []), "one of Aurral's copies")
-        let filed = mine + [song("a8", "New", library: 2)]
-        #expect(!DiscoverRules.isOwnersOwn(songs: filed, flowJobs: jobs, jobsRead: true, runActive: false,
-                                           aurralSongIds: [], aurralLibraries: [2]), "in Aurral's library")
+        func own(_ songs: [Song]?, jobsRead: Bool = true, runActive: Bool = false, ids: Set<String> = [],
+                 libraries: Set<Int> = [2]) -> Bool? {
+            DiscoverRules.isOwnersOwn(songs: songs, flowJobs: jobs, jobsRead: jobsRead, runActive: runActive,
+                                      aurralSongIds: ids, aurralLibraries: libraries)
+        }
+        #expect(own(mine) == true)
+        #expect(own(mine, ids: ["a1"], libraries: []) == true, "Aurral's copies known by id")
+        // Can't tell.
+        #expect(own(mine, libraries: []) == nil, "Aurral's copies not known yet")
+        #expect(own([]) == nil, "empty: newly made, nothing in yet")
+        #expect(own(nil) == nil, "its songs didn't read")
+        #expect(own(mine, jobsRead: false) == nil, "Aurral's songs didn't read")
+        #expect(own(mine, runActive: true) == nil, "a run under way clears the jobs")
+        #expect(DiscoverRules.isOwnersOwn(songs: mine, flowJobs: [], jobsRead: true, runActive: false, aurralSongIds: [],
+                                          aurralLibraries: [2]) == nil, "the flow's song list empty: a run cleared it")
+        // Aurral's: one of its songs is enough (downloads still coming in leave most of a flow unmatched).
+        #expect(own(mine + [song("a1", "Lullaby")]) == false, "the flow's song")
+        #expect(own(mine + [song("a1", "Lullaby")], jobsRead: false) == nil, "no jobs: the flow's song can't be told")
+        #expect(own(mine + [song("a9", "Old")], ids: ["a9"], libraries: []) == false, "one of Aurral's copies")
+        #expect(own(mine + [song("a8", "New", library: 2)], runActive: true) == false, "in Aurral's library")
     }
 }
 
