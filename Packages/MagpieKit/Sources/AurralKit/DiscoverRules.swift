@@ -40,21 +40,18 @@ public enum DiscoverRules {
 
     // MARK: - Flows ↔ playlists
 
-    /// The Navidrome playlists that are Aurral's flows: named exactly as a flow (folded), or "<owner> - <flow>" (Aurral's
-    /// optional user-name prefix). In the playlists' order; a blank name matches nothing.
+    /// The Navidrome playlists that are Aurral's flows: named as a flow (folded) in any of the forms Aurral gives it
+    /// (`aurralNames(of:)`: the name, "<owner> - <flow>", the older forms, the file's name), with a " (2)"… Aurral adds
+    /// to a name taken twice (`withoutCopyNumber`). In the playlists' order; a blank name matches nothing; of two flows
+    /// with a name in common, the one listed first.
     public static func flowPlaylists(flows: [AurralFlow], playlists: [Playlist]) -> [DiscoverPlaylist] {
         var byName: [String: AurralFlow] = [:]
         for flow in flows {
-            let name = normalised(flow.name)
-            guard !name.isEmpty else { continue }
-            if byName[name] == nil { byName[name] = flow }
-            if let owner = flow.ownerUsername.map(normalised), !owner.isEmpty, byName[owner + " - " + name] == nil {
-                byName[owner + " - " + name] = flow
-            }
+            for name in aurralNames(of: flow) where byName[name] == nil { byName[name] = flow }   // R22A (D181)
         }
         return playlists.compactMap { playlist in
             let name = normalised(playlist.name)
-            guard !name.isEmpty, let flow = byName[name] else { return nil }
+            guard !name.isEmpty, let flow = byName[name] ?? withoutCopyNumber(name).flatMap({ byName[$0] }) else { return nil }
             return DiscoverPlaylist(flow: flow, playlist: playlist)
         }
     }
