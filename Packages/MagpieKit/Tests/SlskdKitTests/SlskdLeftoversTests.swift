@@ -26,8 +26,7 @@ import Testing
     @Test func nothingWithoutAnImportRecord() {
         let a = Self.t("jordan", "@@x\\Lowlands (2016)", "01 - Song.flac")
         #expect(SlskdLeftovers.plan(imported: [], transfers: [a]).isEmpty)
-        // Same file name, another folder Lidarr imported from: not this group's folder by name alone? The group matches
-        // by file name, so the folder named in the record is the one planned, never another.
+        // An import record of another file: the group isn't tied to it.
         let plan = SlskdLeftovers.plan(imported: [("Other Folder", "99 - Nope.flac")], transfers: [a])
         #expect(plan.isEmpty)
     }
