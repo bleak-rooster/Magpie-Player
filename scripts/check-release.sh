@@ -29,6 +29,8 @@ check_variant() {
   [ "$(pb CFBundleShortVersionString "$plist")" = "$want_version" ] || fail "$variant: CFBundleShortVersionString is not $want_version"
   [ "$(pb CFBundleVersion "$plist")" = "7" ] || fail "$variant: CFBundleVersion is not the --build number (7)"
   [ "$(pb CFBundleIdentifier "$plist")" = "com.bleak-rooster.magpie" ] || fail "$variant: bundle id"
+  # R21 (D166): installs on iOS 26.0 and newer.
+  [ "$(pb MinimumOSVersion "$plist")" = "26.0" ] || fail "$variant: MinimumOSVersion is not 26.0"
   [ "$(pb NSAppTransportSecurity:NSAllowsArbitraryLoads "$plist")" = "true" ] || fail "$variant: Release lacks NSAllowsArbitraryLoads"
   for k in NSAllowsLocalNetworking NSAllowsArbitraryLoadsInWebContent NSAllowsArbitraryLoadsForMedia; do
     pb "NSAppTransportSecurity:$k" "$plist" >/dev/null && fail "$variant: $k present (iOS would ignore arbitrary loads)"
