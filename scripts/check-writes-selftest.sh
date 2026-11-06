@@ -72,6 +72,8 @@ planted=(
   'client.connection.send(.deleteFolder("Lowlands"))'
   'SlskdWriteGate(client: client, defaultsSuite: nil)'
   'request.setValue(key, forHTTPHeaderField: "X-API-Key")'
+  # Round 23 R23F (D200): a third caller of Retry a song (the research route).
+  'client.retrySong(playlistId: "flow-1", jobId: "job-1")'
 )
 failed=0
 for p in "${planted[@]}"; do
