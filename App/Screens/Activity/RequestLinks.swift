@@ -114,7 +114,7 @@ struct NotYetSongLink<TryRow: View>: View {
                                     titleVisibility: .visible, presenting: confirmsStop) { r in
                     Button("Stop looking", role: .destructive) { Task { await app.cancelRequest(r.id) } }
                 } message: { _ in
-                    Text("Magpie stops asking for it. Nothing is deleted.")
+                    Text("Magpie stops asking for it, and cancels a download it started. Nothing in your library is deleted.")
                 }
                 // Ready but its song not read yet: read it once (the runner's ready event does this too).
                 .task(id: request.state == .ready) { await app.rememberReadySong(request) }

@@ -527,6 +527,9 @@ struct HistoryPage: Decodable {
         var eventType: String?
         var eventTypeNumber: Int?
         var downloadId: String?
+        /// Round 20: the album and artist the grab was for.
+        var albumId: Int?
+        var artistId: Int?
 
         /// Lidarr sends the event type as a name ("grabbed"); a number (1) is accepted too.
         var isGrab: Bool { eventType?.lowercased() == "grabbed" || eventTypeNumber == 1 }
@@ -536,6 +539,8 @@ struct HistoryPage: Decodable {
             eventType = c.value("eventType", as: String.self)
             eventTypeNumber = c.value("eventType", as: Int.self)
             downloadId = c.text("downloadId").flatMap { $0.isEmpty ? nil : $0 }
+            albumId = c.int("albumId")
+            artistId = c.int("artistId")
         }
     }
 
@@ -596,11 +601,13 @@ public struct HistoryEvent: Sendable, Equatable, Decodable {
     public var sourceTitle: String
     public var eventType: String
     public var date: Date?
+    /// Round 20: the download the event is about (nil when Lidarr sent none).
+    public var downloadId: String?
 
     public init(id: Int? = nil, albumId: Int? = nil, artistId: Int? = nil, sourceTitle: String = "",
-                eventType: String, date: Date? = nil) {
+                eventType: String, date: Date? = nil, downloadId: String? = nil) {
         self.id = id; self.albumId = albumId; self.artistId = artistId; self.sourceTitle = sourceTitle
-        self.eventType = eventType; self.date = date
+        self.eventType = eventType; self.date = date; self.downloadId = downloadId
     }
 
     public init(from decoder: Decoder) throws {
@@ -611,6 +618,7 @@ public struct HistoryEvent: Sendable, Equatable, Decodable {
         sourceTitle = c.text("sourceTitle") ?? ""
         eventType = c.text("eventType") ?? ""
         date = c.date("date")
+        downloadId = c.text("downloadId").flatMap { $0.isEmpty ? nil : $0 }
     }
 
     public var kind: Kind {
@@ -637,11 +645,14 @@ public struct CommandStatus: Sendable, Equatable, Decodable {
     /// Artists the command works on (Keep's `BulkMoveArtist`, A3), from its body: `artist[].artistId` (Lidarr's
     /// `BulkMoveArtistCommand`), and defensively `artists[].artistId`, `artistIds[]`, `artistId`.
     public var artistIds: [Int]
+    /// Round 20: the albums an `AlbumSearch` works on (`body.albumIds`).
+    public var albumIds: [Int]
 
     public init(id: Int, name: String, status: String, result: String? = nil, message: String? = nil,
-                queued: Date? = nil, started: Date? = nil, ended: Date? = nil, artistIds: [Int] = []) {
+                queued: Date? = nil, started: Date? = nil, ended: Date? = nil, artistIds: [Int] = [], albumIds: [Int] = []) {
         self.id = id; self.name = name; self.status = status; self.result = result; self.message = message
         self.queued = queued; self.started = started; self.ended = ended; self.artistIds = artistIds
+        self.albumIds = albumIds
     }
 
     public init(from decoder: Decoder) throws {
@@ -654,8 +665,9 @@ public struct CommandStatus: Sendable, Equatable, Decodable {
         queued = c.date("queued")
         started = c.date("started")
         ended = c.date("ended")
-        var ids: [Int] = []
+        var ids: [Int] = [], albums: [Int] = []
         if let body = try? c.nestedContainer(keyedBy: AnyKey.self, forKey: AnyKey("body")) {
+            albums = body.value("albumIds", as: LossyArray<Int>.self)?.values ?? []
             for key in ["artist", "artists"] {
                 ids += (body.value(key, as: LossyArray<ArtistRef>.self)?.values ?? []).compactMap(\.artistId)
             }
@@ -663,6 +675,7 @@ public struct CommandStatus: Sendable, Equatable, Decodable {
             if let one = body.int("artistId") { ids.append(one) }
         }
         artistIds = ids
+        albumIds = albums
     }
 
     private struct ArtistRef: Decodable {

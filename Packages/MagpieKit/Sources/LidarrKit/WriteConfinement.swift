@@ -261,14 +261,29 @@ public struct WriteConfinement: Sendable {
         // Round 19: a copy Lidarr couldn't import may go too (it never reached the library).
         guard item.isDownloadingBeforeImport || item.isBlockedImport else { return .refused("that copy is past downloading") }
         guard let downloadId = item.downloadId else { return .refused("the queue doesn't say which download it is") }
+        // Round 20: a row with no album yet (some clients' rows carry none until import) is named by Lidarr's own grab
+        // history for its download.
+        var grabbed: [(albumId: Int, artistId: Int)]?
         for row in items where row.downloadId == downloadId {
-            guard let albumId = row.albumId, let artistId = row.artistId,
-                  mine.contains(where: { $0.albumId == albumId && $0.lidarrArtistId == artistId }) else {
+            var pairs: [(albumId: Int, artistId: Int)] = []
+            if let albumId = row.albumId, let artistId = row.artistId {
+                pairs = [(albumId, artistId)]
+            } else {
+                if grabbed == nil {
+                    do { grabbed = try await lidarr.grabbedAlbums(downloadId: downloadId) } catch { return .unknown }
+                }
+                pairs = grabbed ?? []
+            }
+            guard !pairs.isEmpty, pairs.allSatisfy({ pair in
+                mine.contains(where: { $0.albumId == pair.albumId && $0.lidarrArtistId == pair.artistId })
+            }) else {
                 return .refused("not one of Magpie's downloads in the queue now")
             }
             // A plain album entry is the album's only one (`Ledger.record`); an owner's monitor before Magpie's never
             // passes.
-            guard !entries.contains(where: { $0.albumId == albumId && ($0.wasMonitoredBefore && !$0.createdArtist) }) else {
+            guard !pairs.contains(where: { pair in
+                entries.contains { $0.albumId == pair.albumId && ($0.wasMonitoredBefore && !$0.createdArtist) }
+            }) else {
                 return .refused("the owner monitored this album")
             }
         }

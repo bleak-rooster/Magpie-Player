@@ -80,7 +80,17 @@ enum RequestCopy {
             return request.keepFailed ? keepFailed : readyInFinds
         }
         if request.state == .kept { return kept(request) }
+        if request.state == .searching, let line = searching(request) { return line }
         return status(request.state, context: context)
+    }
+
+    /// Round 20 (owner: a request "just sat there"): while searching, which release is being looked for, so the wait
+    /// shows it moving on. Nil without a release name (the plain line then).
+    static func searching(_ request: MagpieRequest) -> String? {
+        guard let title = request.albumTitle?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty else { return nil }
+        if request.anyFormat == true { return "Looking for any copy of \u{201C}\(title)\u{201D}" }
+        if !(request.releasesTried ?? []).isEmpty { return "Trying \u{201C}\(title)\u{201D} instead" }
+        return "Looking for \u{201C}\(title)\u{201D}"
     }
 
     /// A find lands in Finds, not in the library (Task 6.2a).

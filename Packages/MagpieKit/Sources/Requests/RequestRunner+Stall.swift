@@ -98,8 +98,9 @@ extension RequestRunner {
         case limitReached
     }
 
-    /// The requests on their way now, as `RequestID` text (the write gate's check for queue deletes).
-    public var liveRequestIds: Set<String> { Set(list.filter(\.isActive).map(\.id.description)) }
+    /// The requests on their way now, as `RequestID` text (the write gate's check for queue deletes). Round 20: a stopped
+    /// or failed request still being cleaned up counts too, so a copy its search grabbed after the stop can go.
+    public var liveRequestIds: Set<String> { Set(list.filter { $0.isActive || $0.cleanupPending }.map(\.id.description)) }
 
     /// Settings › New music "Give up on a stuck copy after".
     public func setStallLimit(_ seconds: TimeInterval) { stallLimit = StallLimit(seconds: seconds).seconds }
@@ -127,6 +128,87 @@ extension RequestRunner {
     /// isn't stuck. The stall rule looks after them instead.
     func isSoulseekDownloading(_ item: QueueItem) -> Bool {
         isSoulseek(item) && item.trackedDownloadState.lowercased() == "downloading" && item.status.lowercased() == "warning"
+    }
+
+    // MARK: - After a stop (round 20)
+
+    /// The stopped request's search is over and the queue holds nothing of its album (`searchSettled`, `queueCleared`), or
+    /// it has waited `stoppedFindArtistLimit` (a copy that can't be removed: one Lidarr is importing, or one with no queue
+    /// id). True: the clean-up may close the entry.
+    func drained(_ id: RequestID, albumId: Int) async -> Bool {
+        guard let r = request(id) else { return true }
+        let since = r.drainSince ?? now()
+        if r.drainSince == nil { await mutate(id) { $0.drainSince = since } }
+        if now().timeIntervalSince(since) >= Self.stoppedFindArtistLimit {
+            Log.logger("requests").error("clean-up: stopped waiting for the album's search and downloads")
+            return true
+        }
+        guard await searchSettled(albumId, request: r) else { return false }
+        return await queueCleared(id, albumId: albumId)
+    }
+
+    /// No AlbumSearch for the album (or the request's own search command) is queued or running in Lidarr. A failed read is
+    /// "not yet". Bounded by the clean-up's own limit (`stoppedFindArtistLimit`) through `removeStoppedFindArtist`.
+    func searchSettled(_ albumId: Int, request r: MagpieRequest) async -> Bool {
+        guard let commands = try? await lidarr.commands() else { return false }
+        lastLidarrContact = now()
+        let server = serverNow()
+        return !commands.contains { c in
+            guard c.id == r.searchCommandId
+                    || (c.name.lowercased() == "albumsearch" && (c.albumIds.contains(albumId) || c.albumIds.isEmpty)) else { return false }
+            // A search that ended moments ago may not have written its grab to the history or queue yet (seen on the dev
+            // stack: the artist went, then the grab arrived): settled only `searchGrace` after it ended, in Lidarr's time.
+            guard Self.isFinished(c) else { return true }
+            return c.ended.map { server.timeIntervalSince($0) < Self.searchGrace } ?? false
+        }
+    }
+
+    /// How long after a search ended its grab can still be on its way to Lidarr's history and queue.
+    static let searchGrace: TimeInterval = 60
+
+    /// The album has no download in Lidarr's queue: one that is still coming or couldn't be imported is removed (and
+    /// blocklisted) through the gate; one being imported is waited for. True when the queue holds nothing of it.
+    func queueCleared(_ id: RequestID, albumId: Int) async -> Bool {
+        // The whole queue: a row may carry no album until import; Lidarr's grab history for the album since the search
+        // began names its downloads (round 20).
+        guard let queue = try? await lidarr.queueDetails(albumIds: []) else { return false }
+        let since = (request(id)?.searchStartedAtServer ?? request(id)?.createdAt ?? now()).addingTimeInterval(-60)
+        guard let events = try? await lidarr.historySince(since) else { return false }
+        let grabbed = Set(events.filter { $0.kind == .grabbed && $0.albumId == albumId }.compactMap(\.downloadId))
+        let items = queue.filter { $0.albumId == albumId || ($0.albumId == nil && $0.downloadId.map(grabbed.contains) == true) }
+        // A grab shows in the queue a little after the search ends (seen on the dev stack): until each one grabbed for the
+        // album is in the queue or has finished (imported, failed, ignored), it isn't over.
+        let finished = Set(events.filter { [.imported, .waiting, .ignored].contains($0.kind) }.compactMap(\.downloadId))
+        let unseen = grabbed.subtracting(queue.compactMap(\.downloadId)).subtracting(finished)
+        guard items.isEmpty else { return await cancelCopies(items) }
+        // A grab whose download Lidarr can't name (some clients report no id) is matched by its release title: it is over
+        // once a queue row of that title is gone and the album's import, failure or ignore came after the grab.
+        let grabs = events.filter { $0.kind == .grabbed && $0.albumId == albumId && $0.downloadId == nil }
+        let titled = grabs.contains { grab in
+            let inQueue = queue.contains { $0.title == grab.sourceTitle }
+            let over = events.contains { e in
+                e.albumId == albumId && [.imported, .waiting, .ignored].contains(e.kind)
+                    && (e.date ?? .distantPast) >= (grab.date ?? .distantFuture)
+            }
+            return inQueue || !over
+        }
+        return unseen.isEmpty && !titled
+    }
+
+    /// Removes (and blocklists) the copies that are still coming or couldn't be imported; one being imported is waited for.
+    /// Always false: the queue is read again on the next pass.
+    private func cancelCopies(_ items: [QueueItem]) async -> Bool {
+        for item in items where item.isDownloadingBeforeImport || item.isBlockedImport {
+            guard let queueId = item.id else { continue }
+            do {
+                try await persist()
+                _ = try await gate.send("DELETE", "queue/\(queueId)?\(Self.queueRemoval)", body: nil)
+                Log.logger("requests").info("a copy grabbed after the stop was removed")
+            } catch {
+                Log.logger("requests").error("copy after the stop not removed: \(Log.category(of: error), privacy: .public)")
+            }
+        }
+        return false   // looked at again on the next pass, until the queue holds nothing of the album
     }
 
     // MARK: - Stalls

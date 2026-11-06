@@ -65,6 +65,9 @@ import MagpieTestSupport
                 ["id": 522, "albumId": 35, "artistId": 9, "downloadClient": "Slskd", "downloadId": "multi"],
                 // I2: and one Lidarr can't name a download for: it can't be shown to be Magpie's alone.
                 ["id": 523, "albumId": 31, "artistId": 7, "downloadClient": "Slskd", "downloadId": NSNull()],
+                // Round 20: rows with no album yet (some clients' rows carry none until import); the grab history names it.
+                ["id": 531, "downloadClient": "Blackhole"],
+                ["id": 532, "downloadClient": "Blackhole"],
             ].map { row in row.merging(["size": 100, "sizeleft": 50, "status": "downloading",
                                         "trackedDownloadState": "downloading",
                                         "downloadId": "dl-\(row["id"]!)"]) { a, _ in a } }
@@ -80,6 +83,15 @@ import MagpieTestSupport
                 return MockTransport.Response(status: 200, body: try JSONSerialization.data(withJSONObject: shown))
             }
             transport.stub(method: "DELETE", pathSuffix: "", body: json("{}"))
+            // Lidarr's grab history: dl-531 was grabbed for Magpie's live album 31, dl-532 for the owner's album 35.
+            transport.stub(pathSuffix: "/api/v1/history") { request in
+                let id = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?
+                    .first { $0.name == "downloadId" }?.value
+                let (album, artist) = id == "dl-531" ? (31, 7) : id == "dl-532" ? (35, 9) : (0, 0)
+                let records: [[String: Any]] = album == 0 ? [] :
+                    [["eventType": "grabbed", "downloadId": id ?? "", "albumId": album, "artistId": artist]]
+                return MockTransport.Response(status: 200, body: try! JSONSerialization.data(withJSONObject: ["records": records]))
+            }
         }
 
         func gate(live provided: Bool = true) async -> LidarrWriteGate {
@@ -181,6 +193,18 @@ import MagpieTestSupport
         let gate = await fake.gate()
         _ = try await gate.send("DELETE", "queue/513" + Self.shape, body: nil as JSONValue?)
         #expect(fake.writes.count == 1 && fake.writes.first?.url?.path == "/lidarr/api/v1/queue/513")
+    }
+
+    /// Round 20: a row Lidarr lists with no album yet is Magpie's only when Lidarr's grab history for its download names a
+    /// live request's album; the owner's album (or no grab at all) is refused.
+    @Test func aRowWithNoAlbumIsNamedByTheGrabHistory() async throws {
+        let fake = try await Fake()
+        let gate = await fake.gate()
+        _ = try await gate.send("DELETE", "queue/531" + Self.shape, body: nil as JSONValue?)
+        #expect(fake.writes.count == 1 && fake.writes.first?.url?.path == "/lidarr/api/v1/queue/531")
+        let other = try await Fake()
+        await WriteConfinementTests.expectRefusedHere(Call("DELETE", "queue/532" + Self.shape), await other.gate(),
+                                                      writes: { other.writes })
     }
 
     /// Fix round 1 I2: one download that also brings the owner's album 35 (every queue row sharing its downloadId is

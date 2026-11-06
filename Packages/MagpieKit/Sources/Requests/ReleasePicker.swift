@@ -22,17 +22,37 @@ public struct ReleasePicker {
         if !plain.isEmpty { candidates = plain }
         var seen = Set<MBID>()
         let song = SongIdentity.titleKey(recording.title)
-        return candidates.sorted { ranks($0, $1, song: song) }.map(\.releaseGroup.id).filter { seen.insert($0).inserted }
+        let sorted = candidates.sorted { ranks($0, $1, song: song) }
+        var order = sorted.map(\.releaseGroup.id).filter { seen.insert($0).inserted }
+        // Round 20 (owner: a title track sat at "looking"): when a studio album holding the song carries the song's
+        // own name, it comes first. A search for that name finds the album's folders (named after it) whichever is
+        // asked for: as the single they don't match and are refused or blocked, as the album they import cleanly, and
+        // the trim then keeps only the song.
+        if let titled = sorted.first(where: { $0.releaseGroup.primaryType?.lowercased() == "album" && named($0, song)
+                                              && $0.releaseGroup.secondaryTypes.isEmpty }),
+           let index = order.firstIndex(of: titled.releaseGroup.id), index > 0 {
+            order.remove(at: index)
+            order.insert(titled.releaseGroup.id, at: 0)
+        }
+        return order
     }
 
     private static func ranks(_ a: MBRelease, _ b: MBRelease, song: String) -> Bool {
         let (ka, kb) = (key(a), key(b))
         if ka.official != kb.official { return ka.official < kb.official }
-        if ka.type != kb.type { return ka.type < kb.type }
+        // Round 20: a single named after something else holds the song as a B-side, which is rarely shared on its own:
+        // it comes after the EPs and albums (the song's own single still comes first).
+        let (ta, tb) = (bSide(a, song) ? 3 : ka.type, bSide(b, song) ? 3 : kb.type)
+        if ta != tb { return ta < tb }
         let (na, nb) = (named(a, song), named(b, song))
         if na != nb { return na }
         if ka.date != kb.date { return ka.date < kb.date }
         return a.releaseGroup.id.rawValue < b.releaseGroup.id.rawValue
+    }
+
+    /// A single not named after the song (round 20).
+    private static func bSide(_ r: MBRelease, _ song: String) -> Bool {
+        r.releaseGroup.primaryType?.lowercased() == "single" && !named(r, song)
     }
 
     /// The release is named after the song (round 19).
@@ -47,7 +67,7 @@ public struct ReleasePicker {
         case "single": type = 0
         case "ep": type = 1
         case "album": type = 2
-        default: type = 3
+        default: type = 4
         }
         // Undated releases sort last; partial dates ("1985" < "1985-03") compare lexicographically.
         let date = (r.date?.isEmpty == false) ? r.date! : "9999"

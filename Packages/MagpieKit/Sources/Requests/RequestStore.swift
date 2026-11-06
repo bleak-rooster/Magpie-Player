@@ -240,6 +240,9 @@ public struct MagpieRequest: Sendable, Codable, Equatable, Identifiable {
     public var trimTries: Int?
     /// Round 19: the trim unmonitored the album (it had other songs); a Keep monitors it again for its lossless upgrade.
     public var trimUnmonitored: Bool?
+    /// Round 20: when a stopped request's clean-up began waiting for Lidarr's search and queue to settle; it waits at most
+    /// `RequestRunner.stoppedFindArtistLimit`, then closes anyway.
+    public var drainSince: Date?
 
     // Round 19 (owner, 2026-11-05: popular singles). Optional, so older requests decode.
 

@@ -733,6 +733,20 @@ private let t0 = Date(timeIntervalSince1970: 1_900_000_000)
         }
     }
 
+    /// Round 20: while searching, the request says which release it is looking for, and when it has moved on.
+    @Test func searchingSaysWhatItIsLookingFor() {
+        var r = Self.letGoRequest(songId: "a")
+        r.state = .searching
+        r.albumTitle = "Harbour Lights"
+        #expect(RequestCopy.status(r) == "Looking for \u{201C}Harbour Lights\u{201D}")
+        r.releasesTried = [MBID("00000000-0000-0000-0000-000000000010")!]
+        #expect(RequestCopy.status(r) == "Trying \u{201C}Harbour Lights\u{201D} instead")
+        r.anyFormat = true
+        #expect(RequestCopy.status(r) == "Looking for any copy of \u{201C}Harbour Lights\u{201D}")
+        r.albumTitle = nil
+        #expect(RequestCopy.status(r) == "Looking for the best copy", "no release name: the plain line")
+    }
+
     /// Owner (round 18): finds show as they were asked for: a song's Try in Songs, Try this album as one album row
     /// (its songs inside, in track order). Every song is still on the shelf for the car and the badge.
     @Test func findsShowAsSongsAndAlbums() {

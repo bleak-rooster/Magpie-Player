@@ -1510,6 +1510,11 @@ public actor RequestRunner {
                 }
             }
             guard !settling else { return }
+            // Round 20 (owner: stopped, the artist went, then the album was grabbed anyway): a search Lidarr is still
+            // running for the album can grab after the stop (a search Magpie started ignores "monitored"). Wait for it
+            // to finish, then take out any copy it grabbed (from the client too), before the entry closes and the
+            // artist may go.
+            guard await drained(id, albumId: albumId), await removeLateImport(id, albumId: albumId, artistId: artistId) else { return }
             if entry.isOpen {
                 var closed = entry
                 closed.closedAt = now()

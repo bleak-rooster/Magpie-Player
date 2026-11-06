@@ -123,6 +123,8 @@ final class Flow: @unchecked Sendable {
                                         metadataProfileId: provisioned.findsMetadataProfileId, tagIds: [provisioned.magpieTagId],
                                         finds: .init(rootFolderPath: "/music/samples",
                                                      tagIds: [provisioned.magpieTagId, provisioned.findTagId]))
+        let keep = RequestRunner.KeepSetup(findsRoot: "/music/samples", mainRoot: "/music/library",
+                                           losslessProfileId: provisioned.losslessProfileId, findTagId: provisioned.findTagId)
         let ledger = Ledger(fileURL: dir.appending(path: "ledger.json"), instance: client.instanceScope)
         let gate = LidarrWriteGate(client: client, logURL: dir.appending(path: "log.json"), defaultsSuite: suite,
                                    confinement: WriteConfinement(ledger: ledger, roots: {
@@ -134,7 +136,10 @@ final class Flow: @unchecked Sendable {
             return try? await Flow.lidarrSong(recording: mbid)
         })
         let runner = RequestRunner(lidarr: client, gate: gate, ledger: ledger, mb: mb, library: library,
-                                   store: RequestStore(fileURL: dir.appending(path: "requests.json")), setup: { setup })
+                                   store: RequestStore(fileURL: dir.appending(path: "requests.json")), setup: { setup },
+                                   // As the app: where Keep moves finds, which also lets a stopped find's late import be
+                                   // proven Magpie's and removed (D161).
+                                   keepSetup: { keep })
         let completer = try Completer(filesFrom: filesFrom)
         let flow = Flow(name: name, client: client, runner: runner, completer: completer)
         flow.limit = limit

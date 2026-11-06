@@ -150,7 +150,7 @@ import MagpieCore
     @Test func aNewArtistsSongPreviewsItsSmallestRelease() async throws {
         let h = await Harness(setup: Self.setup)
         h.server.artistIsNew()
-        #expect(try await h.runner.targetPreview(h.recording(recSingleAndAlbum)) == .newArtist(title: "Release 2", isAlbum: false, primaryType: "Single", secondaryTypes: []))
+        #expect(try await h.runner.targetPreview(h.recording(recSingleAndAlbum)) == .newArtist(title: "Song", isAlbum: false, primaryType: "Single", secondaryTypes: []))
         #expect(try await h.runner.targetPreview(h.recording(recAlbumOnly)) == .newArtist(title: "Release 4", isAlbum: true, primaryType: "Album", secondaryTypes: []))
     }
 
@@ -342,7 +342,7 @@ import MagpieCore
         #expect(try await h.runner.targetPreview(h.recording(recSingleAndAlbum), album: rgAlbum)
                 == .newArtist(title: "Release 1", isAlbum: true, primaryType: "Album", secondaryTypes: []))
         #expect(try await h.runner.targetPreview(h.recording(recSingleAndAlbum), album: rgSingle)
-                == .newArtist(title: "Release 2", isAlbum: false, primaryType: "Single", secondaryTypes: []))
+                == .newArtist(title: "Song", isAlbum: false, primaryType: "Single", secondaryTypes: []))
     }
 
     /// As Finds (D10): when the date passes, nothing is removed by itself; it still shows, with Keep and Reject.

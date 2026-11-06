@@ -110,7 +110,8 @@ import MagpieCore
 
     /// The artist stays when something of it is left or it isn't the find's to remove.
     @Test func stopLookingKeepsAnArtistWithSomethingLeft() async throws {
-        // A file of the artist recorded (something downloaded).
+        // Round 20 (D161): the stopped find's own album arrived anyway (imported after the stop): its files go as Not for
+        // me would let them go, then, nothing being left, the artist.
         do {
             let h = await Harness(setup: Harness.findsSetup)
             let id = try await Self.searchingFind(h)
@@ -120,7 +121,10 @@ import MagpieCore
             }
             await h.runner.cancel(id)
             await h.runner.tick()
-            #expect(h.server.with { $0.deletedArtists }.isEmpty)
+            #expect(h.server.writeBodies().contains { $0.0 == "DELETE trackfile/bulk" && $0.1["trackFileIds"] as? [Int] == [1] })
+            h.clock.advance(5)
+            await h.runner.tick()
+            #expect(h.server.with { $0.deletedArtists } == [42])
             #expect(await h.request(id)?.cleanupPending == false)
         }
         // Another find of the artist still on its way.

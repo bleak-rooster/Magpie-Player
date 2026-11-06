@@ -23,7 +23,7 @@ import MagpieCore
 
     @Test func orderedPutsTheSingleFirstThenTheAlbum() {
         let release = { (n: Int, rg: MBID, type: String, secondary: [String]) in
-            MBRelease(id: mbid(500 + n), title: "R\(n)", date: "2001", status: "Official",
+            MBRelease(id: mbid(500 + n), title: type == "Single" ? "Song" : "R\(n)", date: "2001", status: "Official",
                       releaseGroup: MBReleaseGroup(id: rg, primaryType: type, secondaryTypes: secondary))
         }
         let recording = MBRecording(id: recSingleAndAlbum, title: "Song", releases: [

@@ -744,7 +744,8 @@ final class FakeLidarr: @unchecked Sendable {
         }
         // MusicBrainz
         func release(_ n: Int, _ rg: MBID, _ type: String, secondary: [String] = []) -> [String: Any] {
-            ["id": mbid(500 + n).rawValue, "title": "Release \(n)", "status": "Official", "date": "2001",
+            // Round 20: a single is named after its song, as real ones are (another name makes it a B-side, D163).
+            ["id": mbid(500 + n).rawValue, "title": type == "Single" ? "Song" : "Release \(n)", "status": "Official", "date": "2001",
              "release-group": ["id": rg.rawValue, "primary-type": type, "secondary-types": secondary]]
         }
         let credit: [[String: Any]] = [["name": "Aurora Field", "artist": ["id": artistA.rawValue]]]

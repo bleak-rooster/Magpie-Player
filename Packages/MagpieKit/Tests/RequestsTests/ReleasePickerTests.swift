@@ -8,7 +8,7 @@ private func id(_ n: Int) -> MBID { MBID(String(format: "00000000-0000-0000-0000
 
 private func rel(_ n: Int, _ type: String?, secondary: [String] = [], status: String? = "Official",
                  date: String? = "2000") -> MBRelease {
-    MBRelease(id: id(100 + n), title: "r\(n)", date: date, status: status,
+    MBRelease(id: id(100 + n), title: type == "Single" ? "song" : "r\(n)", date: date, status: status,   // a single: the song's own (D163)
               releaseGroup: MBReleaseGroup(id: id(n), primaryType: type, secondaryTypes: secondary))
 }
 
@@ -68,7 +68,8 @@ private func rec(_ releases: [MBRelease]) -> MBRecording {
         let r = MBRecording(id: mbid(1), title: "APT.", releases: [rel(1, "number one girl", "Single", "2024-01-01"),
                                                                      rel(2, "APT.", "Single", "2024-10-18"),
                                                                      rel(3, "rosie", "Album", "2024-12-06")])
-        #expect(ReleasePicker.ordered(containing: r, available: nil) == [mbid(902), mbid(901), mbid(903)])
+        // Round 20: the B-side single comes after the album (rarely shared on its own).
+        #expect(ReleasePicker.ordered(containing: r, available: nil) == [mbid(902), mbid(903), mbid(901)])
     }
 
     @Test func extrasAreSoundtracksAndRemixesOnly() {

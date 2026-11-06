@@ -237,7 +237,7 @@ struct RequestDetailView: View {
                             titleVisibility: .visible) {
             Button("Stop looking", role: .destructive) { Task { await model.cancelRequest(requestId) } }
         } message: {
-            Text("Magpie stops asking for it. Nothing is deleted.")
+            Text("Magpie stops asking for it, and cancels a download it started. Nothing in your library is deleted.")
         }
         .confirmationDialog(RequestCopy.findAnotherTitle, isPresented: $confirmsAnotherCopy, titleVisibility: .visible) {
             Button(RequestCopy.findAnotherCopy, role: .destructive) { Task { await findAnotherCopy(removingCopy: true) } }

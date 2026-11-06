@@ -37,7 +37,11 @@ distributed only through TestFlight. It is not on the App Store. Expect rough ed
 - New artists go into a separate Finds folder. **Keep** moves a find into your main library and lets Lidarr upgrade it
   to lossless. **Not for me** deletes it again.
 - If the song is only on an album, Lidarr still downloads the whole album (Lidarr and its plugins only fetch whole
-  releases). Magpie then removes the album's other songs from your Finds folder.
+  releases). Magpie then removes the album's other songs from your Finds folder. A title track (a song named like its
+  album) is fetched through its album first, because that is what searches for its name find.
+- While a request is searching, it shows which release it is looking for. Stopping a request waits for a search still
+  running in Lidarr to finish, cancels any download it started, and removes the album from your Finds folder if it
+  arrived anyway. Nothing in your main library is deleted.
 - Nothing is changed in Lidarr until you switch on **Allow Magpie to change Lidarr**. Every change goes through one
   write gate that only allows a short list of requests. It only touches artists and albums Magpie itself added or
   monitored, and logs each change on the phone before sending it. Your own artists, profiles and settings are never
@@ -74,8 +78,9 @@ enough to use Magpie as a player.
   - Siri;
   - Live Activities;
   - clean-up of a removed artist's files in Soulseek's (slskd's) own download folder.
-- **One developer, one test setup.** Most testing is automated against fakes, plus a local Navidrome and Lidarr. Real
-  use has been on a single home server.
+- **One developer, one test setup.** Most testing is automated against fakes. The full request path (search, grab,
+  download, import, stop) is also tested against a real Lidarr in Docker, with a stand-in indexer and download client
+  that serve generated audio. Real Soulseek behaviour is only seen on the author's own server.
 
 ## Roadmap
 
@@ -114,6 +119,7 @@ scripts/test-app.sh                     # app and UI tests on a dedicated simula
 scripts/check-writes.sh                 # checks every Lidarr write goes through the write gate
 scripts/test-all.sh                     # everything a release needs
 dev/bootstrap.sh                        # a local Navidrome and Lidarr in Docker, for integration tests
+dev/fake-indexer/setup.sh               # gives that Lidarr a stand-in indexer and download client, so it downloads
 ```
 
 Most of the logic lives in the Swift package `Packages/MagpieKit`: one module per service (`NavidromeKit`,

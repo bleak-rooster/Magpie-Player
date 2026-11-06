@@ -205,6 +205,23 @@ public struct LidarrClient: Sendable {
         return page.records.contains { $0.isGrab && $0.downloadId == downloadId }   // round 12 L3: a record without the id never counts
     }
 
+    /// Round 20: the albums (with their artists) Lidarr's grab history records for this download. Some clients' queue rows
+    /// carry no album until import (seen with a blackhole client on the dev stack); the grab says which it is. Read only.
+    public func grabbedAlbums(downloadId: String) async throws -> [(albumId: Int, artistId: Int)] {
+        let page = try await decode(HistoryPage.self, "history", [
+            URLQueryItem(name: "downloadId", value: downloadId), URLQueryItem(name: "eventType", value: "1"),
+            URLQueryItem(name: "page", value: "1"), URLQueryItem(name: "pageSize", value: "20")])
+        return page.records.compactMap { r in
+            guard r.isGrab, r.downloadId == downloadId, let album = r.albumId, let artist = r.artistId else { return nil }
+            return (album, artist)
+        }
+    }
+
+    /// Round 20: the downloads Lidarr grabbed for this album since `date` (download ids). Read only.
+    public func grabbedDownloads(albumId: Int, since date: Date) async throws -> Set<String> {
+        Set(try await historySince(date).filter { $0.kind == .grabbed && $0.albumId == albumId }.compactMap(\.downloadId))
+    }
+
     /// The download clients set up in Lidarr (R17: which ones are Soulseek). Read only; never written (G5).
     public func downloadClients() async throws -> [DownloadClientInfo] {
         try await list(DownloadClientInfo.self, "downloadclient")

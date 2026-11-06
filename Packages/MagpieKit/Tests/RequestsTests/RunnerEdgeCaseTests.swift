@@ -99,7 +99,7 @@ private let proxyPage = MockTransport.Response(
         h.server.ownerHasArtist(albumMonitored: false)
         let id = try await h.runner.tryRecording(h.recording(recAlbumOnly), tier: .standard)
         await h.runner.settle()
-        h.server.with { $0.queue = [.init(albumId: 31, size: 10, sizeleft: 5)] }
+        h.server.with { $0.queue = [.init(albumId: 31, size: 10, sizeleft: 5, id: 901, artistId: 7)] }
         await h.runner.tick()
         #expect(await h.state(id) == .downloading(progress: 0.5))
         let writesBefore = h.server.writes.count
@@ -117,7 +117,10 @@ private let proxyPage = MockTransport.Response(
         h.server.with { $0.everyLidarrAnswer = nil }
         h.clock.advance(5)
         await h.runner.tick()
-        #expect(h.server.writeBodies().last?.0 == "PUT album/monitor")
+        // Round 20: the undo, then the copy that request started is cancelled; the clean-up ends once the queue is clear.
+        #expect(h.server.writeBodies().map(\.0).suffix(2) == ["PUT album/monitor", "DELETE queue/901"])
+        h.clock.advance(5)
+        await h.runner.tick()
         #expect(await h.request(id)?.cleanupPending == false)
     }
 

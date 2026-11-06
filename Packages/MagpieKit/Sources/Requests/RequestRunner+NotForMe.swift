@@ -459,6 +459,38 @@ extension RequestRunner {
         return false
     }
 
+    // MARK: - A late import after a stop (round 20)
+
+    /// Round 20 (owner: stopped, then the album arrived anyway): a search still running at the stop can grab, and a copy
+    /// that is already complete is never interrupted, so Lidarr may import a stopped find's album after all. Once the
+    /// queue holds nothing of it, those files are let go as Not for me lets a find go: every precondition proven again
+    /// (`proveLetGo`: Magpie created the artist, it is a find inside the Finds folder, nothing of it kept, each file on
+    /// disk where Lidarr records it), then `DELETE trackfile/bulk` through the gate (findDelete). Only for a find; an
+    /// artist the owner had is never touched. True: settled (nothing left, or not provably Magpie's to delete).
+    func removeLateImport(_ id: RequestID, albumId: Int, artistId: Int) async -> Bool {
+        guard let r = request(id), r.isFind else { return true }
+        if let since = r.drainSince, now().timeIntervalSince(since) >= Self.stoppedFindArtistLimit { return true }   // bounded
+        guard let setup = await keepSetup() else { return true }
+        switch await proveLetGo(r, artistId: artistId, albumId: albumId, setup: setup, artistPath: nil) {
+        case .unknown: return false
+        case .no: return true
+        case .yes(let proof):
+            guard !proof.albumFiles.isEmpty else { return true }
+            do {
+                try await persist()
+                _ = try await gate.send("DELETE", "trackfile/bulk", body: TrackFileIdsBody(trackFileIds: proof.albumFiles.map(\.id)))
+                Log.logger("requests").info("an album imported after the stop was removed")
+                try? await library.startScan()
+            } catch let refusal as WriteGateError where refusal != .disabled && refusal != .logUnavailable && refusal != .unconfirmed {
+                Log.logger("requests").error("late import not removed: the gate refused")
+                return true
+            } catch {
+                Log.logger("requests").error("late import not removed: \(Log.category(of: error), privacy: .public)")
+            }
+            return false   // read again on the next pass
+        }
+    }
+
     // MARK: - A find no request is on (round 18)
 
     /// Round 18 (owner, 2026-11-05: finds couldn't be removed once downloaded): a song in the Finds folder that no request
@@ -624,7 +656,16 @@ extension RequestRunner {
             // A refresh still running for the artist (the add's own RefreshArtist can outlast a quick download when
             // the metadata server is slow) re-creates it after the DELETE ("Adding missing parent artist"): a find
             // Magpie no longer tracks would be left in Lidarr. Wait for it to finish.
-            if try await lidarr.commands().contains(where: { Self.refreshes($0, artistId: p.artistId) && !Self.isFinished($0) }) {
+            // Round 20: nor while a search for one of its albums runs, or Lidarr's queue holds a download of it (a grab
+            // after a stop would land in an artist that is gone).
+            let albumIds = Set(try await lidarr.albums(artistId: p.artistId).map(\.id))
+            if try await lidarr.commands().contains(where: { c in
+                !Self.isFinished(c) && (Self.refreshes(c, artistId: p.artistId)
+                    || (c.name.lowercased() == "albumsearch" && (c.albumIds.isEmpty || !albumIds.isDisjoint(with: c.albumIds))))
+            }) {
+                return .unknown
+            }
+            if try await lidarr.queueDetails(albumIds: Array(albumIds)).contains(where: { $0.artistId == p.artistId || $0.albumId.map(albumIds.contains) == true }) {
                 return .unknown
             }
             return .yes(())

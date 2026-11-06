@@ -55,7 +55,7 @@ import MagpieCore
 
         let r = try #require(await h.request(id))
         #expect(r.state == .searching && r.albumId == 50 && r.lidarrArtistId == 42 && r.addSent)
-        #expect(r.albumTitle == "Release 2")
+        #expect(r.albumTitle == "Song")
         let entry = try #require(try await h.ledger.entry(albumId: 50))
         #expect(entry.createdArtist && !entry.wasMonitoredBefore && entry.root == "/music/library" && entry.rgMbid == rgSingle)
     }
