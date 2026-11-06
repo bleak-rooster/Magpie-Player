@@ -82,6 +82,18 @@ extension RequestRunner {
     /// if a crash came first (no search yet).
     func kickLosslessWatch(_ id: RequestID, artistId: Int) async {
         guard let w = request(id)?.lossless, w.isActive, w.searches == 0 else { return }
+        // Round 19: a kept find whose trim unmonitored its album is monitored again, so the lossless copy can come (the
+        // whole release then comes in lossless: Keep adds it to the library).
+        if request(id)?.trimUnmonitored == true, let albumId = request(id)?.albumId,
+           let album = try? await lidarr.albums(artistId: artistId).first(where: { $0.id == albumId }), !album.monitored {
+            do {
+                try await persist()
+                _ = try await gate.send("PUT", "album/monitor", body: MonitorAlbumsBody(albumIds: [albumId], monitored: true))
+                await mutate(id) { $0.trimUnmonitored = nil }
+            } catch {
+                Log.logger("requests").error("kept album not monitored again: \(Log.category(of: error), privacy: .public)")
+            }
+        }
         if (try? await gate.send("POST", "command", body: RefreshBody(name: "RefreshArtist", artistId: artistId))) != nil {
             lastLidarrContact = now()
         }

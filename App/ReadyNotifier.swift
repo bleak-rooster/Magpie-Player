@@ -28,6 +28,9 @@ final class ReadyNotifier: NSObject, UNUserNotificationCenterDelegate {
     /// Round 15 C3 (D138): a rejected find's playlist clean-up finished while Magpie was in the background.
     func postLetGo(id: String, title: String, body: String) { post(identifier: "letgo-\(id)", title: title, body: body) }
 
+    /// Round 17: a song that couldn't be brought in (nothing holding it could be found).
+    func postFailed(id: String, title: String, body: String) { post(identifier: "failed-\(id)", title: title, body: body) }
+
     private func post(identifier: String, title: String, body: String) {
         #if DEBUG
         postedForTesting.append(identifier)

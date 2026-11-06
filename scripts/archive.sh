@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # Archive Magpie for TestFlight (docs/TESTFLIGHT.md).
 #
-#   scripts/archive.sh --team TEAMID [--build N] [--carplay] [--upload [--skip-release-tests]] [--out DIR]
-#   scripts/archive.sh --unsigned [--build N] [--carplay] [--out DIR]
+#   scripts/archive.sh --team TEAMID [--build N] [--no-carplay] [--upload [--skip-release-tests]] [--out DIR]
+#   scripts/archive.sh --unsigned [--build N] [--no-carplay] [--out DIR]
 #
 #   --team TEAMID  Apple Developer team id (10 characters; Xcode › Settings › Accounts). Or set MAGPIE_TEAM_ID.
 #   --build N      CFBundleVersion, must go up with every upload. Or set MAGPIE_BUILD_NUMBER. Default 1, except
 #                  with --upload, which needs it given (a repeated build number is rejected after the upload).
-#   --carplay      Sign with the CarPlay audio entitlement. Only once Apple has granted it to your team:
-#                  before that, no provisioning profile carries it and signing fails.
+#   --no-carplay   Sign without the CarPlay audio entitlement (the app isn't offered in the car). CarPlay is the
+#                  default since Apple granted it to the team (2026-11-05). --carplay is still accepted.
 #   --upload       Send the build to App Store Connect with the account signed in to Xcode.
 #                  Without it, an .ipa is exported to DIR/export for Xcode Organizer or Transporter.
 #                  B1 (D120): an upload first runs the package and hosted suites in the optimised Release
@@ -27,7 +27,7 @@ die() { echo "archive.sh: $*" >&2; exit 1; }
 
 team="${MAGPIE_TEAM_ID:-}"
 build="${MAGPIE_BUILD_NUMBER:-}"
-carplay=no
+carplay=yes
 upload=no
 skip_release_tests=no
 unsigned=no
@@ -37,6 +37,7 @@ while [ $# -gt 0 ]; do
     --team) [ $# -ge 2 ] || die "--team needs a team id"; team="$2"; shift 2 ;;
     --build) [ $# -ge 2 ] || die "--build needs a number"; build="$2"; shift 2 ;;
     --carplay) carplay=yes; shift ;;
+    --no-carplay) carplay=no; shift ;;
     --upload) upload=yes; shift ;;
     --skip-release-tests) skip_release_tests=yes; shift ;;
     --unsigned) unsigned=yes; shift ;;
@@ -80,8 +81,8 @@ esac
 [ -x "$DEVELOPER_DIR/usr/bin/xcodebuild" ] || die "no xcodebuild in DEVELOPER_DIR=$DEVELOPER_DIR"
 command -v xcodegen >/dev/null || die "xcodegen not found (brew install xcodegen)"
 
-# testflight: App/MagpieNoCarPlay.entitlements (MAGPIE_CARPLAY=NO, project default for device builds).
-# testflight-carplay: App/Magpie.entitlements.
+# testflight (--no-carplay): App/MagpieNoCarPlay.entitlements (MAGPIE_CARPLAY=NO).
+# testflight-carplay (default): App/Magpie.entitlements (MAGPIE_CARPLAY=YES, the project default).
 settings=(CURRENT_PROJECT_VERSION="$build")
 if [ "$carplay" = yes ]; then settings+=(MAGPIE_CARPLAY=YES); else settings+=(MAGPIE_CARPLAY=NO); fi
 # Signed builds: the default variant is archived unsigned and signed once, for App Store Connect, by the export

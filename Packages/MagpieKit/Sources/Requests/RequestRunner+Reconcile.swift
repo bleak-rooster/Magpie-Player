@@ -29,7 +29,7 @@ extension RequestRunner {
             }
             if let last = factChecks[r.id], (0..<Self.factInterval).contains(t.timeIntervalSince(last)) { continue }
             factChecks[r.id] = t
-            if let recording = r.recording.recordingMBID ?? r.plan?.recordingMBID,
+            if let recording = r.plan?.recordingMBID ?? r.recording.recordingMBID,
                let tracks = try? await lidarr.tracks(albumId: albumId),
                tracks.contains(where: { $0.foreignRecordingId == recording.rawValue && $0.hasFile }) {
                 lastLidarrContact = now()
@@ -70,7 +70,7 @@ extension RequestRunner {
     func tagFreeSongId(_ r: MagpieRequest, albumId: Int, artistId: Int) async -> String? {
         guard let folder = try? await lidarr.artist(id: artistId).path else { return nil }
         var filePath: String?
-        if let recording = r.recording.recordingMBID ?? r.plan?.recordingMBID,
+        if let recording = r.plan?.recordingMBID ?? r.recording.recordingMBID,
            let track = try? await lidarr.tracks(albumId: albumId).first(where: { $0.foreignRecordingId == recording.rawValue && $0.hasFile }),
            let file = try? await lidarr.trackFile(id: track.trackFileId ?? 0) {
             filePath = file.path

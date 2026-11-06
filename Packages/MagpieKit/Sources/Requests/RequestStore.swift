@@ -218,6 +218,35 @@ public struct MagpieRequest: Sendable, Codable, Equatable, Identifiable {
     public var libraryMetadataProfileId: Int?
     public var libraryFollow: Bool?
 
+    // Round 17 (owner, 2026-11-05): when the release Lidarr was asked for can't be found, the next one holding the song.
+    // Optional, so older requests decode.
+
+    /// The other release groups holding the song, best first (`ReleasePicker.ordered`), not tried yet.
+    public var releaseAlternates: [MBID]?
+    /// The release groups already tried for this request (none of them brought it in).
+    public var releasesTried: [MBID]?
+    /// The find's artist was moved to "Magpie Finds Any Format" (no MP3 of a release was found), or that couldn't be
+    /// done (false): either way the MP3-only step is over for this request.
+    public var anyFormat: Bool?
+
+    // Round 18 (owner, 2026-11-05): a song's Try keeps only that song. Optional, so older requests decode.
+
+    /// Asked for one song (not "Try this album") from round 18 on: once it is ready, the other songs of the release it
+    /// came on leave the Finds folder (`RequestRunner+OnlyTheSong`). Requests from before are never trimmed.
+    public var onlyTheSong: Bool?
+    /// The trim is over: the other songs went, or they stay for good (kept, let go, not matched, out of tries).
+    public var trimDone: Bool?
+    /// Trims that couldn't finish (a refusal, no answer); bounded by `RequestRunner.trimTryLimit`.
+    public var trimTries: Int?
+    /// Round 19: the trim unmonitored the album (it had other songs); a Keep monitors it again for its lossless upgrade.
+    public var trimUnmonitored: Bool?
+
+    // Round 19 (owner, 2026-11-05: popular singles). Optional, so older requests decode.
+
+    /// The song is only on soundtrack or remix releases: a new artist is added with "Magpie Finds Extras" (Soundtrack and
+    /// Remix beside Studio), so Lidarr lists that release.
+    public var findsExtras: Bool?
+
     public init(id: RequestID = RequestID(), recording: ExternalRecording, tier: Tier, createdAt: Date) {
         self.id = id
         self.recording = recording
@@ -233,8 +262,9 @@ public struct MagpieRequest: Sendable, Codable, Equatable, Identifiable {
     /// Whether Activity may remove it (security FL6): finished or ready, with no clean-up owed, no Keep or Not for me
     /// still going or needing a look, no kept song still being looked up, and nothing Bring in more is still
     /// bringing in. Removing any of those would drop their follow-up (a failed move's put-back, the relink).
+    /// Round 18: never a ready find. Forgetting it left its songs in the Finds folder with no way to let them go.
     public var canBeRemoved: Bool {
-        !isActive && !cleanupPending && keep == nil && notForMe == nil && !keepNeedsAttention
+        !isActive && !(state == .ready && isFind) && !cleanupPending && keep == nil && notForMe == nil && !keepNeedsAttention
             && !notForMeNeedsAttention && relinkPending != true && (bringingIn ?? []).isEmpty
             && !(lossless?.isActive ?? false) && !mp3NeedsAttention
     }

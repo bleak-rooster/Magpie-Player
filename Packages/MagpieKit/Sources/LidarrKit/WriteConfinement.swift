@@ -258,7 +258,8 @@ public struct WriteConfinement: Sendable {
         guard let item = items.first(where: { $0.id == id }) else {
             return .refused("not one of Magpie's downloads in the queue now")
         }
-        guard item.isDownloadingBeforeImport else { return .refused("that copy is past downloading") }
+        // Round 19: a copy Lidarr couldn't import may go too (it never reached the library).
+        guard item.isDownloadingBeforeImport || item.isBlockedImport else { return .refused("that copy is past downloading") }
         guard let downloadId = item.downloadId else { return .refused("the queue doesn't say which download it is") }
         for row in items where row.downloadId == downloadId {
             guard let albumId = row.albumId, let artistId = row.artistId,

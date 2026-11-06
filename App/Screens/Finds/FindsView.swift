@@ -19,6 +19,8 @@ struct FindsView: View {
     /// Finds a Not for me is asking about or running for: their row offers no second one meanwhile.
     @State private var lettingGo: Set<RequestID> = []
     @State private var asking: NotForMeConfirm?
+    /// Round 18: songs whose request is being put back before their Not for me is asked.
+    @State private var recovering: Set<String> = []
     /// Round 15 C3 (D147): the library trial whose Not for me is being confirmed, and the ones under way.
     @State private var rejectingTrial: MagpieRequest?
     @State private var trialsBusy: Set<RequestID> = []
@@ -27,8 +29,16 @@ struct FindsView: View {
     var body: some View {
         let shelf = model.findsShelf()
         List {
-            section("New finds", shelf.newFinds, all: shelf)
-            section("Finds", shelf.finds, all: shelf)
+            // Round 18 (owner): finds as they were asked for: songs, and albums (Try this album) as one row each.
+            section("New songs", shelf.newSongs, all: shelf)
+            section("Songs", shelf.songs, all: shelf)
+            if !shelf.albums.isEmpty {
+                Section {
+                    ForEach(shelf.albums) { album in albumRow(album, all: shelf) }
+                } header: {
+                    header("Albums")
+                }
+            }
             if !shelf.onTheirWay.isEmpty {
                 Section {
                     ForEach(shelf.onTheirWay.reversed()) { request in
@@ -141,6 +151,38 @@ struct FindsView: View {
         }
     }
 
+    /// Round 18: an album asked for with Try this album: its cover, title, artist and songs; tap to open its songs (each
+    /// plays from there). Not for me lets the whole album go, as on any of its songs.
+    private func albumRow(_ album: FindsShelf.AlbumGroup, all: FindsShelf) -> some View {
+        DisclosureGroup {
+            ForEach(album.items) { item in
+                Artwork(item.song.coverArtId, side: 40) {
+                    SongRow(song: item.song, state: item.state, artwork: $0, quality: item.quality, onKeep: keepAction(item))
+                }
+                .onTapGesture { play(item, in: all) }
+                .accessibilityAddTraits(.isButton)
+                .accessibilityAction { play(item, in: all) }
+                .listRowInsets(EdgeInsets())
+                .listRowBackground(Color.clear)
+                .accessibilityIdentifier("find-\(item.song.title)")
+            }
+        } label: {
+            HStack(spacing: Tokens.Spacing.m) {
+                Artwork(album.coverArtId, side: 48) { SleeveArt(image: $0, side: 48) }
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(album.title).font(.body).foregroundStyle(themed.palette.inkColor).lineLimit(2)
+                    Text(album.artist).font(.subheadline).foregroundStyle(themed.palette.ink2Color).lineLimit(1)
+                    Text(FindsAlbumCopy.status(album)).font(.caption).foregroundStyle(themed.palette.accentInkColor)
+                }
+            }
+            .accessibilityElement(children: .combine)
+        }
+        .modifier(NotForMeAlbumActions(action: album.items.first.flatMap(notForMeAction)))
+        .listRowBackground(Color.clear)
+        .accessibilityIdentifier("finds-album-\(album.title)")
+    }
+
     @ViewBuilder private func section(_ title: String, _ items: [FindsShelf.Item], all: FindsShelf) -> some View {
         if !items.isEmpty {
             Section {
@@ -190,8 +232,25 @@ struct FindsView: View {
 
     /// Not for me, when the find has a ready request it can go through and nothing is running for it. Asks the
     /// runner first (a fresh read, nothing written) so the sheet can say whether the files can come back.
+    /// Round 18: a find no request is on any more puts its request back first (`notForMeAsk(recovering:)`).
     private func notForMeAction(_ item: FindsShelf.Item) -> (() -> Void)? {
-        guard let id = item.notForMeRequest, !lettingGo.contains(id), !keeping.contains(id) else { return nil }
+        guard !recovering.contains(item.song.id) else { return nil }
+        guard let id = item.notForMeRequest else {
+            guard item.needsRecovery else { return nil }
+            return {
+                recovering.insert(item.song.id)
+                Task {
+                    switch await model.notForMeAsk(recovering: item.song) {
+                    case .confirm(let confirm):
+                        lettingGo.insert(confirm.request)
+                        asking = confirm
+                    case .message(let text): keepMessage = text
+                    }
+                    recovering.remove(item.song.id)
+                }
+            }
+        }
+        guard !lettingGo.contains(id), !keeping.contains(id) else { return nil }
         return {
             lettingGo.insert(id)
             Task {
@@ -239,6 +298,34 @@ private struct NotForMeActions: ViewModifier {
                 .accessibilityAction(named: NotForMeCopy.action, action)
         } else {
             content.songSwipeActions(song, in: .list)
+        }
+    }
+}
+
+/// Round 18: an album find's line under its title.
+enum FindsAlbumCopy {
+    static func status(_ album: FindsShelf.AlbumGroup) -> String {
+        let songs = album.items.count == 1 ? "1 song" : "\(album.items.count) songs"
+        return album.isNew ? "\(songs) · New" : "\(songs) · \(album.daysLeft == 1 ? "1 day" : "\(album.daysLeft) days") left"
+    }
+}
+
+/// Not for me on an album find: a trailing swipe, the context menu and a named VoiceOver action.
+private struct NotForMeAlbumActions: ViewModifier {
+    let action: (() -> Void)?
+
+    func body(content: Content) -> some View {
+        if let action {
+            content
+                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                    Button(NotForMeCopy.action, systemImage: "hand.thumbsdown", role: .destructive, action: action)
+                }
+                .contextMenu {
+                    Button(NotForMeCopy.action, systemImage: "hand.thumbsdown", role: .destructive, action: action)
+                }
+                .accessibilityAction(named: NotForMeCopy.action, action)
+        } else {
+            content
         }
     }
 }

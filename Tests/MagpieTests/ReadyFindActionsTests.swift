@@ -40,9 +40,11 @@ struct ReadyFindActionsTests {
         #expect(ReadyFindActions.notForMe(find(mode: .fallback)) == nil)
     }
 
-    @Test func notForMeOnlyForANewArtistAndNeitherWhileOneIsUnderWay() {
+    @Test func notForMeForAnyFindAndNeitherWhileOneIsUnderWay() {
         #expect(ReadyFindActions.keep(find(artistExisted: true)) != nil)
-        #expect(ReadyFindActions.notForMe(find(artistExisted: true)) == nil, "the artist was there before")
+        // Round 18 (D153): Finds mode is only ever set for an artist Magpie created (an owner's artist is `.fallback`,
+        // above), so a second song of a find's artist, or a find round 17 moved to another release, can be let go too.
+        #expect(ReadyFindActions.notForMe(find(artistExisted: true)) != nil, "the plan named Magpie's own find artist")
         var stuck = find()
         stuck.keepNeedsAttention = true
         #expect(ReadyFindActions.keep(stuck) == nil)

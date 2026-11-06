@@ -3,8 +3,8 @@
 You need: a paid Apple Developer Program membership, Xcode 27.1 at `/Applications/Xcode.app`, XcodeGen (`brew install xcodegen`), and the TestFlight app on the iPhone. Everything below is done by you: Magpie's scripts never sign in to Apple or store credentials.
 
 Two build variants:
-- **testflight** (default): no CarPlay. CarPlay audio needs Apple's approval first; until then no provisioning profile can carry the entitlement and signing would fail. The app works as usual; it just doesn't appear in the car.
-- **testflight-carplay** (`--carplay`): with CarPlay. Use it once Apple has granted CarPlay audio to your team (step 12).
+- **testflight-carplay** (default since build 19): with CarPlay. Apple has granted CarPlay audio to the team (both provisioning profiles for `com.bleak-rooster.magpie` carry it, 2026-11-05). Signing while archiving needs one registered device (step 3).
+- **testflight** (`--no-carplay`): no CarPlay. The app works as usual; it just doesn't appear in the car. Builds up to 18 were this variant, which is why Magpie didn't show in the car.
 
 ## Steps
 
@@ -20,7 +20,7 @@ Two build variants:
    scripts/archive.sh --team AB12CD34EF --build 1 --upload
    ```
    Every upload needs a higher `--build` (2, 3, …), and `--upload` refuses to run without one; `git rev-list --count HEAD` is a handy number that only goes up. The version is 0.0.1 (set in project.yml). Build numbers keep rising: build 2 is the interim network build and build 3 the 0.0.1 release. Without `--upload` the script exports `build/testflight/export/Magpie.ipa`, which you can send with the **Transporter** app. Or upload from Xcode: Product › Archive, then Organizer › Distribute App › TestFlight & App Store. The first run may ask for your Mac login password to let `codesign` use the new signing key: choose Always Allow.
-   Before you upload, you can check what the build is signed with: `codesign -d --entitlements - build/testflight/Magpie.xcarchive/Products/Applications/Magpie.app`. The default build must show **no** `com.apple.developer.carplay-audio`; a `--carplay` build must show it.
+   Before you upload, you can check what the build is signed with: `codesign -d --entitlements - build/testflight/Magpie.xcarchive/Products/Applications/Magpie.app`. The default build must show `com.apple.developer.carplay-audio`; a `--no-carplay` build must not.
 5. **Wait for processing.** App Store Connect › your app › TestFlight. Usually 5 to 30 minutes; you get an email.
 6. **Export compliance.** The build already says it uses no non-exempt encryption (`ITSAppUsesNonExemptEncryption` = NO: only standard HTTPS through the system), so you shouldn't be asked. If you are: "None of the algorithms mentioned above".
 7. **Add yourself as an internal tester.** TestFlight › Internal Testing › `+` group (e.g. "Me") › add yourself (your App Store Connect user) › add the build. Internal testers don't need Apple's beta review.
@@ -32,7 +32,7 @@ Two build variants:
    - **Count plays.** On by default: what you play is recorded on your Navidrome (and ListenBrainz if connected). Switch it off in Settings while testing if you don't want test plays recorded.
 10. **Updates.** Change code, run step 4 with the next `--build`, and the phone's TestFlight app offers the update.
 11. **Problems signing.** "No profiles for com.bleak-rooster.magpie": the script passes `-allowProvisioningUpdates`, so Xcode creates them; make sure you're signed in (step 1) and the team id is right. "Provisioning profile doesn't include the com.apple.developer.carplay-audio entitlement": you used `--carplay` before step 12 was granted; drop it.
-12. **CarPlay.** Request the CarPlay audio entitlement at developer.apple.com/contact/carplay (sign in, choose Audio, describe Magpie as a music player for your own server). Approval takes days to weeks. Once granted, check it is listed under your App ID's capabilities, then archive with `scripts/archive.sh --team AB12CD34EF --build N --upload --carplay`. Running from Xcode on your phone with CarPlay: set `MAGPIE_CARPLAY` to `YES` in the Magpie target's build settings.
+12. **CarPlay.** Request the CarPlay audio entitlement at developer.apple.com/contact/carplay (sign in, choose Audio, describe Magpie as a music player for your own server). Approval takes days to weeks. Granted (2026-11-05): `scripts/archive.sh --team AB12CD34EF --build N --upload` now carries it by default, and `MAGPIE_CARPLAY` is `YES` in `project.yml`, so runs from Xcode on your phone have CarPlay too. If CarPlay is ever revoked, archive with `--no-carplay`.
 13. **CarPlay without a car.** Download **Additional Tools for Xcode** (developer.apple.com/download/all), open **CarPlay Simulator**, connect the iPhone by cable, and Magpie appears once it carries the entitlement. The Xcode iOS simulator (I/O › External Displays › CarPlay) always works: simulator builds carry the entitlement.
 
 ## Free alternative (no paid membership)

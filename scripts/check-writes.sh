@@ -232,6 +232,8 @@ if [ -z "${G1_SRC:-}" ]; then
       Packages/MagpieKit/Sources/Requests/RequestRunner+NotForMe.swift|Packages/MagpieKit/Sources/Requests/RequestRunner+Lossless.swift) ;;
       # Round 15 C3 (D147): a library trial's Reject, confined by `ConfinedShape.trialDelete` (pinned above).
       Packages/MagpieKit/Sources/Requests/RequestRunner+Trial.swift) ;;
+      # Round 18 (D152): a song's Try keeps only that song: the release's other files of a find, confined by findDelete.
+      Packages/MagpieKit/Sources/Requests/RequestRunner+OnlyTheSong.swift) ;;
       *) echo "G1: track file delete outside Not for me and the MP3 rule: $f" >&2; bad=1 ;;
     esac
   done
@@ -651,7 +653,7 @@ if [ -z "${G1_SRC:-}" ]; then
     case "$verb $path" in
       "delete trackfile"*)
         case "$file" in
-          "$rq/RequestRunner+NotForMe.swift"|"$rq/RequestRunner+Lossless.swift"|"$rq/RequestRunner+Trial.swift") ;;
+          "$rq/RequestRunner+NotForMe.swift"|"$rq/RequestRunner+Lossless.swift"|"$rq/RequestRunner+Trial.swift"|"$rq/RequestRunner+OnlyTheSong.swift") ;;
           *) echo "L1: track file delete outside Not for me and the MP3 rule: $file:$line" >&2; bad=1 ;;
         esac ;;
       "delete queue"*)

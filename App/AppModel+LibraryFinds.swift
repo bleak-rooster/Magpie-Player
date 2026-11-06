@@ -33,6 +33,8 @@ enum LibraryFindsCopy {
     static let refusedKind = "This release can\u{2019}t be added from here. Nothing was asked for."
     static let singlesRolledBack = "Couldn\u{2019}t list an artist\u{2019}s singles, so everything was put back as it was."
     static let singlesNotStarted = "Couldn\u{2019}t list their singles this time. Nothing was changed."
+    /// Round 19: the singles switch went through for a Try; the song is being looked for.
+    static func singlesTrying(_ song: String) -> String { "Singles listed. Looking for \u{201C}\(song)\u{201D} now." }
     static func unmatchedLeft(_ n: Int) -> String {
         n == 1 ? "1 song couldn\u{2019}t be matched, so it was left in your playlists."
                : "\(n) songs couldn\u{2019}t be matched, so they were left in your playlists."
@@ -121,6 +123,9 @@ struct LibraryConfirm: Identifiable {
     let title: String
     let message: String
     let recording: ExternalRecording
+    /// Round 19: the singles switch was offered for a Try (or Listen to the full song): once the single is listed, that
+    /// Try is sent (with this intent) instead of Add to library.
+    var tryIntent: RequestRunner.Intent? = nil
 
     var isSingles: Bool {
         if case .singles = kind { return true }
@@ -155,7 +160,9 @@ extension AppModel {
         guard songActions.begin(key) else { return }
         defer { songActions.end(key) }
         do {
-            songActions.trying = TryTarget(recording: try await resolveOutsideSong(song), intent: .trial)
+            let recording = try await resolveOutsideSong(song)
+            if await offerSinglesFirst(recording, artist: song.artist, intent: .trial) { return }   // round 19
+            songActions.trying = TryTarget(recording: recording, intent: .trial)
         } catch {
             songActions.unmatched = song
         }
@@ -214,7 +221,8 @@ extension AppModel {
         songActions.libraryConfirm = nil
         switch confirm.kind {
         case .album(let preview): await sendToLibrary(confirm.recording, album: nil, title: confirm.recording.title, preview: preview)
-        case .singles(let artistId, let single): await includeSingles(artistId: artistId, single: single, then: confirm.recording)
+        case .singles(let artistId, let single):
+            await includeSingles(artistId: artistId, single: single, then: confirm.recording, tryIntent: confirm.tryIntent)
         }
     }
 
@@ -309,16 +317,19 @@ extension AppModel {
     /// profile and following saved first, following off, the artist's own profile plus Single, a confirmed refresh, every
     /// other new release unmonitored, following back). Then only this song's single is monitored and searched. A switch
     /// still waiting on Lidarr finishes by itself; the song is asked for then.
-    func includeSingles(artistId: Int, single: MBID?, then recording: ExternalRecording) async {
+    /// Round 19: `tryIntent` (a Try or Listen to the full song): the song is then tried, not added to the library. A switch
+    /// still waiting on Lidarr brings it in through Add to library when it finishes (the journal keeps only the song).
+    func includeSingles(artistId: Int, single: MBID?, then recording: ExternalRecording,
+                        tryIntent: RequestRunner.Intent? = nil) async {
         guard let switcher = singlesSwitcher else { return libraryEdits.notify(TryCopy.notSetUp, symbol: "info.circle") }
         guard let single else { return libraryEdits.notify(LibraryFindsCopy.singlesFailed, symbol: "exclamationmark.circle") }
         do {
             switch try await switcher.start(artistId: artistId, target: single, recording: recording) {
             case .finished:
                 _ = await switcher.takeRecording(artistId)
-                await sendToLibrary(recording, album: single, title: recording.title, preview: nil)
+                await bringIn(recording, single: single, tryIntent: tryIntent)
             case .alreadyListed:
-                await sendToLibrary(recording, album: single, title: recording.title, preview: nil)
+                await bringIn(recording, single: single, tryIntent: tryIntent)
             case .pending:   // the song is in the journal: asked for when it finishes, also after a relaunch (m5)
                 libraryEdits.notify(LibraryFindsCopy.singlesPending, symbol: "clock")
             case .rolledBack:
@@ -331,6 +342,41 @@ extension AppModel {
         } catch {
             libraryEdits.notify(LibraryFindsCopy.singlesNotStarted, symbol: "exclamationmark.circle")
         }
+    }
+
+    /// After the singles switch: the Try asked for (its single now listed: the runner picks it), else Add to library.
+    private func bringIn(_ recording: ExternalRecording, single: MBID, tryIntent: RequestRunner.Intent?) async {
+        guard let tryIntent else {
+            await sendToLibrary(recording, album: single, title: recording.title, preview: nil)
+            return
+        }
+        do {
+            _ = try await startTry(recording, album: nil, releaseGroup: nil, intent: tryIntent)
+            libraryEdits.notify(LibraryFindsCopy.singlesTrying(recording.title), symbol: "arrow.down.circle")
+        } catch {
+            libraryEdits.notify(LibraryFindsCopy.singlesNotStarted, symbol: "exclamationmark.circle")
+        }
+    }
+
+    /// Round 19: a request that failed "Not in this artist's catalogue": the singles switch, then the same Try again.
+    func includeSinglesForRequest(_ request: MagpieRequest) async {
+        let intent: RequestRunner.Intent = request.addToLibrary ? .library : request.askedAsTry ? .trial : .plain
+        guard await offerSinglesFirst(request.recording, artist: request.recording.artist, intent: intent) else {
+            return libraryEdits.notify(LibraryFindsCopy.couldntCheck, symbol: "exclamationmark.circle")
+        }
+    }
+
+    /// Round 19: the artist is in Lidarr but its listing has no release holding the song (its profile lists no singles):
+    /// the singles switch is offered first (nothing is sent until the owner says yes). True when it was offered.
+    func offerSinglesFirst(_ recording: ExternalRecording, artist: String, intent: RequestRunner.Intent) async -> Bool {
+        guard let runner, case .notListed(let artistId, let single)? = try? await runner.targetPreview(recording) else {
+            return false
+        }
+        songActions.libraryConfirm = LibraryConfirm(kind: .singles(artistId: artistId, single: single),
+                                                    title: LibraryFindsCopy.singlesTitle,
+                                                    message: LibraryFindsCopy.singlesMessage(artist: artist, song: recording.title),
+                                                    recording: recording, tryIntent: intent)
+        return true
     }
 
     /// Unfinished switches, resumed (runner start, every requests update at most once a minute): finished ones bring in

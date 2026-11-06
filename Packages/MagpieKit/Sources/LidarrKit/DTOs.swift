@@ -490,6 +490,12 @@ extension QueueItem {
     /// complete, and something is left. Never a copy that's complete, waiting to import, being imported, blocked from
     /// importing, imported or failed. Only such a copy may be given up on or removed (R17: "the queue only, before
     /// import").
+    /// Round 19: a complete copy Lidarr couldn't import (`importBlocked`, `importFailed`): it stays in the queue until
+    /// someone acts (Lidarr never retries it). Never imported, so it holds no library file.
+    public var isBlockedImport: Bool {
+        ["importblocked", "importfailed"].contains(trackedDownloadState.lowercased())
+    }
+
     public var isDownloadingBeforeImport: Bool {
         trackedDownloadState.lowercased() == "downloading" && status.lowercased() != "completed" && sizeleft > 0
     }

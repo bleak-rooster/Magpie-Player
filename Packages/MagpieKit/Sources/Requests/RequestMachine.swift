@@ -94,6 +94,8 @@ public enum RequestEvent: Sendable, Equatable {
     case searchAgain
     /// R17: a Soulseek download stalled and the automatic retries are used up: wait as still looking.
     case stalled
+    /// Round 17: the release asked for couldn't be found; bring in this one (another release holding the song).
+    case nextRelease(Plan)
 }
 
 public enum Effect: Sendable, Equatable {
@@ -171,6 +173,9 @@ public struct RequestMachine {
             return (.searching, [.startSearch])
         case (.searching, .stalled), (.downloading, .stalled):
             return wait(.stillLooking, now: now, prior: prior)
+        // Round 17: nothing was grabbed for the last release; monitor and search the next one.
+        case let (.searching, .nextRelease(plan)), let (.waiting, .nextRelease(plan)):
+            return (.adding, [.addOrMonitor(plan)])
 
         case (.ready, .keep):
             return (.kept, [])

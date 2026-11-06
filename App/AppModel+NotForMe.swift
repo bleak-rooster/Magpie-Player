@@ -79,6 +79,18 @@ extension AppModel {
         }
     }
 
+    /// Round 18: a find no request is on any more (`FindsShelf.needsRecovery`): its request is put back from the ledger
+    /// and Lidarr first (nothing written to Lidarr), then asked as any other.
+    func notForMeAsk(recovering song: Song) async -> NotForMeAsk {
+        guard let runner, !isOffline else { return .message(NotForMeCopy.unavailable) }
+        guard let id = await runner.recoverFind(songId: song.id, title: song.title, artist: song.artist,
+                                                artistMBID: song.artistMBID, album: song.album) else {
+            return .message(NotForMeCopy.notAFind)
+        }
+        pollRequests()
+        return await notForMeAsk(id)
+    }
+
     /// Lets the find go after the owner confirmed; returns what to tell the owner. Whenever files may have gone
     /// (done, still going, or needing a look), the find's songs leave the queue and the shelf at once.
     /// Round 15 C3 (D137): before the files go, the find's songs leave every one of the owner's playlists (Navidrome's

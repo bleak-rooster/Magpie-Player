@@ -129,6 +129,18 @@ public struct LidarrClient: Sendable {
     /// B1 (D122): the album cover Lidarr's lookup names for a release group (`album/lookup?term=lidarr:<mbid>`, a GET):
     /// the `cover` image's `remoteUrl`, HTTPS only, never Lidarr's own `/MediaCoverProxy` (it would need the key).
     /// nil when Lidarr knows no such album or names no cover.
+    /// Round 19: whether Lidarr's metadata server knows the release group, and the artist it files it under (a soundtrack's
+    /// cast, not the song's singer; a duet's first name): `known` false when it lists no such release. Reads only.
+    public func albumOwner(releaseGroup: MBID) async throws -> (known: Bool, artist: MBID?) {
+        let data = try await ok("album/lookup", [URLQueryItem(name: "term", value: "lidarr:" + releaseGroup.rawValue)])
+        guard let rows = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]] else { return (false, nil) }
+        guard let row = rows.first(where: { ($0["foreignAlbumId"] as? String).flatMap(MBID.init) == releaseGroup }) else {
+            return (false, nil)
+        }
+        let artist = (row["artist"] as? [String: Any])?["foreignArtistId"] as? String ?? row["foreignArtistId"] as? String
+        return (true, artist.flatMap(MBID.init))
+    }
+
     public func albumCoverURL(releaseGroup: MBID) async throws -> URL? {
         let data = try await ok("album/lookup", [URLQueryItem(name: "term", value: "lidarr:" + releaseGroup.rawValue)])
         guard let rows = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]] else { return nil }

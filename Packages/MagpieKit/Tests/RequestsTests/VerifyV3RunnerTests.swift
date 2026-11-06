@@ -104,12 +104,12 @@ import MagpieCore
         await h.runner.tick()
         #expect(await h.state(id) == .searching)
 
-        // The search finishes at 9 min; one minute later (10 min after it started) the request already waits.
+        // The search finishes at 9 min; one minute later (10 min after it started) nothing was found (round 17: with no
+        // other release holding the song, it fails).
         h.server.with { $0.commandStatus = "completed" }
         h.clock.advance(61)
         await h.runner.tick()
-        guard case .waiting(let reason, _) = await h.state(id) else { Issue.record("expected waiting"); return }
-        #expect(reason.kind == .stillLooking)
+        #expect(await h.state(id) == .failed(reason: .notFoundYet))
     }
 
     /// §3f Ready: "Whenever the index matches the recording, the request becomes Ready" — from any state before

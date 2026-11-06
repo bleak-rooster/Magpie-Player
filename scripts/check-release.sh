@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # T1: what a TestFlight build must look like, checked without an Apple account. Archives Release twice
-# with signing off (scripts/archive.sh --unsigned): the default "testflight" variant (no CarPlay) and
+# with signing off (scripts/archive.sh --unsigned): "testflight" (--no-carplay) and the default
 # "testflight-carplay". Then checks the built Info.plist (versions, ATS, export compliance, background
 # audio, icon), the privacy manifest, and which entitlements each variant would be signed with.
 set -euo pipefail
@@ -79,9 +79,9 @@ check_variant() {
   echo "   entitlements: $ent (carplay-audio: $has), CarPlay scene: $scene"
 }
 
-scripts/archive.sh --unsigned --build 7 --out "$out/testflight"
+scripts/archive.sh --unsigned --build 7 --no-carplay --out "$out/testflight"
 check_variant testflight no
-scripts/archive.sh --unsigned --build 7 --carplay --out "$out/testflight-carplay"
+scripts/archive.sh --unsigned --build 7 --out "$out/testflight-carplay"
 check_variant testflight-carplay yes
 
 # The checked-in sources too: the manifest lints, and the simulator keeps CarPlay in every configuration.

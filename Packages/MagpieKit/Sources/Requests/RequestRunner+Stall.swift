@@ -137,17 +137,17 @@ extension RequestRunner {
     func handledStall(_ id: RequestID, _ items: [QueueItem]) async -> Bool {
         guard let r = request(id), let albumId = r.albumId else { return false }
         let t = now()
-        // Fix round 1 I1: only copies still coming before import; one that's complete, waiting to import, importing or
-        // blocked is never stalled (its watch is dropped).
-        let followed = items.filter { $0.albumId == albumId && $0.id != nil && $0.isDownloadingBeforeImport }
+        // Fix round 1 I1: only copies still coming before import; one that's complete, waiting to import or importing is
+        // never stalled (its watch is dropped). Round 19: a copy Lidarr couldn't import (blocked or failed, from any
+        // client: Lidarr never retries it) is given up on the same way, so the request doesn't wait a day on it.
+        let followed = items.filter { $0.albumId == albumId && $0.id != nil && ($0.isDownloadingBeforeImport || $0.isBlockedImport) }
         let present = Set(followed.compactMap(\.id))
         stallWatch = stallWatch.filter { $0.value.albumId != albumId || present.contains($0.key) }
         guard !followed.isEmpty, r.isActive, r.joinedTo == nil, let names = await soulseekNames() else { return false }
         var stalled: [QueueItem] = []
         for item in followed {
-            guard let queueId = item.id, let client = item.downloadClient?.lowercased(), names.contains(client) else {
-                continue
-            }
+            guard let queueId = item.id, item.isBlockedImport || item.downloadClient.map({ names.contains($0.lowercased()) }) == true
+            else { continue }
             let signature = StallWatch.Signature(item)
             if let watch = stallWatch[queueId], watch.signature == signature {
                 if t.timeIntervalSince(watch.since) >= stallLimit { stalled.append(item) }
@@ -183,7 +183,7 @@ extension RequestRunner {
             let still = stalled.filter { old in
                 fresh.contains { item in
                     item.id == old.id && item.albumId == albumId && item.downloadClient == old.downloadClient
-                        && isSoulseek(item) && item.isDownloadingBeforeImport
+                        && ((isSoulseek(item) && item.isDownloadingBeforeImport) || item.isBlockedImport)
                         && StallWatch.Signature(item) == StallWatch.Signature(old)
                         && Self.isOwnDownload(item, of: albumId, in: fresh)
                 }

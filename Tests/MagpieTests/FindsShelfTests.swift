@@ -645,8 +645,8 @@ private let t0 = Date(timeIntervalSince1970: 1_900_000_000)
         return r
     }
 
-    /// Not for me is offered only on a ready find of an artist Magpie added in Finds mode (G6: never on an
-    /// existing-artist row or a fallback request), with no Keep or Not for me under way or needing a look.
+    /// Not for me is offered only on a ready find (Finds mode: an artist Magpie added; G6: never a fallback request),
+    /// with no Keep or Not for me under way or needing a look.
     @Test func notForMeIsOfferedOnlyOnAFindMagpieAdded() {
         let ready = Self.letGoRequest(songId: "a")
         var existing = Self.letGoRequest(songId: "b")
@@ -667,9 +667,93 @@ private let t0 = Date(timeIntervalSince1970: 1_900_000_000)
                                now: t0)
         let offered = Dictionary(uniqueKeysWithValues: shelf.newFinds.map { ($0.song.id, $0.notForMeRequest) })
         #expect(offered["a"] == .some(ready.id))
-        for id in ["b", "c", "d", "e", "f"] { #expect(offered[id] == .some(nil), "\(id)") }
+        // Round 18: a find whose plan named the artist (a second song of a find artist, round 17's next release) too.
+        #expect(offered["b"] == .some(existing.id))
+        for id in ["c", "d", "e", "f"] { #expect(offered[id] == .some(nil), "\(id)") }
         let keep = Dictionary(uniqueKeysWithValues: shelf.newFinds.map { ($0.song.id, $0.keepRequest) })
         #expect(keep["d"] == .some(nil) && keep["e"] == .some(nil), "no Keep while letting go, or after it stuck")
+    }
+
+    // MARK: - Round 18: every downloaded find can be let go; finds as they were asked for
+
+    static func albumSong(_ id: String, album: String, track: Int, created: Date = t0) -> Song {
+        Song(id: id, title: "T\(id)", artist: "A", album: "Album \(album)", albumId: album, track: track, duration: 200,
+             libraryId: 2, createdAt: created)
+    }
+
+    /// The release's other songs (a whole album that came for one song before round 18) go through the song's request:
+    /// Not for me lets the whole release go.
+    @Test func otherSongsOfTheReleaseGoThroughItsRequest() {
+        let r = Self.letGoRequest(songId: "a1")
+        let songs = [Self.albumSong("a1", album: "x", track: 1), Self.albumSong("a2", album: "x", track: 2),
+                     Self.albumSong("b1", album: "y", track: 1)]
+        let shelf = FindsShelf(songs: songs, requests: [r], played: [], now: t0)
+        let offered = Dictionary(uniqueKeysWithValues: shelf.newFinds.map { ($0.song.id, $0.notForMeRequest) })
+        #expect(offered["a1"] == .some(r.id) && offered["a2"] == .some(r.id))
+        #expect(offered["b1"] == .some(nil), "another album: not this request")
+        let recover = Dictionary(uniqueKeysWithValues: shelf.newFinds.map { ($0.song.id, $0.needsRecovery) })
+        #expect(recover == ["a1": false, "a2": false, "b1": true], "no request on b1's album: put back first")
+        #expect(FindsShelf.notForMeRequest(for: songs[1], in: [r]) == nil, "without the library's songs, no sibling")
+    }
+
+    /// Something under way on the album (a Keep, a Not for me, a request on its way): no recovery offered.
+    @Test func noRecoveryWhileSomethingIsUnderWay() {
+        let song = Self.albumSong("a1", album: "x", track: 1)
+        var keeping = Self.letGoRequest(songId: "a1")
+        keeping.keepNeedsAttention = true
+        var arriving = Self.letGoRequest(songId: "a1")
+        arriving.state = .importing
+        for r in [keeping, arriving] {
+            #expect(!FindsShelf.needsRecovery(song, in: [r], songs: [song]))
+        }
+        var failed = Self.letGoRequest(songId: "a1")
+        failed.state = .failed(reason: .unknown)
+        #expect(FindsShelf.needsRecovery(song, in: [failed], songs: [song]), "a finished request is no way to let it go")
+    }
+
+    /// The request page: a ready find offers Not for me even when its plan named the artist, and never Remove (removing
+    /// it from the list left its songs with no way to let them go).
+    @Test func requestPageOffersNotForMeNeverRemove() {
+        for named in [nil, 42] {
+            var r = Self.letGoRequest(songId: "a")
+            r.plan?.lidarrArtistId = named
+            let actions = RequestPageAction.actions(for: r)
+            #expect(actions.contains(.notForMe) && !actions.contains(.remove) && !r.canBeRemoved, "\(String(describing: named))")
+        }
+    }
+
+    /// Round 19 (D158): a request that failed "Not in this artist's catalogue" offers Include singles; no other does.
+    @Test func notInCatalogueOffersIncludeSingles() {
+        var r = Self.letGoRequest(songId: "a")
+        r.state = .failed(reason: .notInCatalogue)
+        #expect(RequestPageAction.actions(for: r).contains(.includeSingles))
+        for other in [RequestState.failed(reason: .noRelease), .failed(reason: .notFoundYet), .ready, .searching] {
+            r.state = other
+            #expect(!RequestPageAction.actions(for: r).contains(.includeSingles), "\(other)")
+        }
+    }
+
+    /// Owner (round 18): finds show as they were asked for: a song's Try in Songs, Try this album as one album row
+    /// (its songs inside, in track order). Every song is still on the shelf for the car and the badge.
+    @Test func findsShowAsSongsAndAlbums() {
+        let one = Self.letGoRequest(songId: "s1")
+        var album = Self.letGoRequest(songId: "a2")
+        album.albumTarget = MBID("00000000-0000-0000-0000-000000000010")!
+        let songs = [Self.albumSong("s1", album: "single", track: 1),
+                     Self.albumSong("a2", album: "x", track: 2, created: t0.addingTimeInterval(60)),
+                     Self.albumSong("a1", album: "x", track: 1, created: t0.addingTimeInterval(60))]
+        let shelf = FindsShelf(songs: songs, requests: [one, album], played: ["a1"], now: t0)
+        #expect(shelf.newSongs.map(\.song.id) == ["s1"] && shelf.songs.isEmpty)
+        #expect(shelf.albums.count == 1)
+        let group = try? #require(shelf.albums.first)
+        #expect(group?.id == "x" && group?.title == "Album x" && group?.items.map(\.song.id) == ["a1", "a2"])
+        #expect(group?.notForMeRequest == album.id && group?.isNew == true)
+        #expect(Set((shelf.newFinds + shelf.finds).map(\.song.id)) == ["s1", "a1", "a2"], "every song still on the shelf")
+        #expect(FindsAlbumCopy.status(group!) == "2 songs · New")
+        // Once Not for me let the album go (or before a request has its song), its songs are songs again.
+        var gone = album
+        gone.state = .dismissed
+        #expect(FindsShelf(songs: songs, requests: [one, gone], played: [], now: t0).albums.isEmpty)
     }
 
     /// G3 / G9: the confirm sheet says "This deletes the files permanently." exactly when the recycle bin is

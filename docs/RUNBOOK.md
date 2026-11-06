@@ -109,7 +109,7 @@ A lost answer is never followed by the same write until a fresh read shows what 
 - Device only: cold launch with a locked phone, and real head-unit artwork.
 - CarPlay on a physical phone needs Apple's approved CarPlay audio entitlement in your provisioning profile; the simulator doesn't.
 
-**On a real iPhone:** follow **docs/TESTFLIGHT.md** (TestFlight, or a free Personal Team run from Xcode). Device builds are CarPlay-less by default: they sign with `App/MagpieNoCarPlay.entitlements` (`MAGPIE_CARPLAY=NO`), so no approval is needed and the app simply doesn't appear in the car. Once Apple has granted CarPlay audio to your team, build with `MAGPIE_CARPLAY=YES` (`scripts/archive.sh --carplay`, or that build setting in Xcode). The simulator always carries the entitlement.
+**On a real iPhone:** follow **docs/TESTFLIGHT.md** (TestFlight, or a free Personal Team run from Xcode). Device builds carry CarPlay by default since Apple granted CarPlay audio to the team (2026-11-05): they sign with `App/Magpie.entitlements` (`MAGPIE_CARPLAY=YES`). `scripts/archive.sh --no-carplay` (or `MAGPIE_CARPLAY=NO`) signs with `App/MagpieNoCarPlay.entitlements`, and the CarPlay scene is then left out of Info.plist. The simulator always carries the entitlement.
 - First device launch after a reboot before unlocking (CarPlay cold start) waits for the unlock, then restores Navidrome and Lidarr.
 
 ## 5. Known limits, risks and troubleshooting

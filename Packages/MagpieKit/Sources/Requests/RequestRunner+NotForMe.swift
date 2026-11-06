@@ -383,8 +383,11 @@ extension RequestRunner {
     }
 
     /// What the requests alone must say (G6, G3.4): the artist and album, or nil when Not for me isn't offered.
+    /// Round 18: a find whose plan named the artist (a second song of a find artist, or round 17's next release) counts
+    /// too: Finds mode is only ever set for an artist the ledger says Magpie created, inside the Finds root
+    /// (`isFindNow`), and `proveLetGo` proves all of it again on fresh state.
     func letGoCandidate(_ r: MagpieRequest) -> (artist: Int, album: Int)? {
-        guard r.state == .ready, r.isFind, let plan = r.plan, !plan.artistExistsInLidarr,
+        guard r.state == .ready, r.isFind, let plan = r.plan,
               let artist = r.lidarrArtistId, let album = r.albumId else { return nil }
         // Anything of the artist kept, being kept, being let go, or needing a look: never.
         let busy = list.contains {
@@ -454,6 +457,77 @@ extension RequestRunner {
     func mayRemoveArtistAllowed(_ r: MagpieRequest, _ p: NotForMeProgress) async -> Bool {
         if case .yes = await mayRemoveArtist(r, p) { return true }
         return false
+    }
+
+    // MARK: - A find no request is on (round 18)
+
+    /// Round 18 (owner, 2026-11-05: finds couldn't be removed once downloaded): a song in the Finds folder that no request
+    /// is on any more (its ready request was removed from Activity, which forgot it) gets its request back, so Not for me
+    /// can go through it with every check of `proveLetGo` still ahead. Matched strictly, from the ledger and fresh reads:
+    /// exactly one artist Magpie created, tagged a find inside the Finds root, of the song's artist MBID (else its name); exactly one of
+    /// its albums of the song's album title with Magpie's ledger entry (same release group, not monitored before Magpie).
+    /// A ready find already on that album is returned instead. Writes nothing to Lidarr; nil when there is no one match.
+    public func recoverFind(songId: String, title: String, artist artistName: String, artistMBID songArtist: MBID? = nil,
+                            album albumTitle: String) async -> RequestID? {
+        guard !stopped, await load(), let setup = await keepSetup() else { return nil }
+        if let r = list.last(where: { $0.songId == songId && $0.state == .ready && $0.isFind }) { return r.id }
+        let entries: [LedgerEntry], artists: [LidarrArtist], roots: [String]
+        do {
+            entries = try await ledger.entries
+            artists = try await lidarr.artists()
+            roots = try await lidarr.rootFolders().map(\.path)
+        } catch {
+            return nil
+        }
+        lastLidarrContact = now()
+        let finds = Self.findsGuard(findsRoot: setup.findsRoot, mainRoot: setup.mainRoot, roots: roots)
+        let named = artists.filter { a in
+            (songArtist.map { a.foreignArtistId == $0 } ?? (Self.looseKey(a.artistName) == Self.looseKey(artistName)))
+                && a.tags.contains(setup.findTagId)
+                && a.path.map(finds.isInside) == true && entries.contains { $0.created(a) }
+                && !entries.contains { $0.lidarrArtistId == a.id && $0.isKeptOrKeeping }
+        }
+        guard named.count == 1, let artist = named.first, let artistMBID = artist.foreignArtistId else { return nil }
+        guard let albums = try? await lidarr.albums(artistId: artist.id) else { return nil }
+        let matches = albums.filter { a in
+            Self.looseKey(a.title) == Self.looseKey(albumTitle)
+                && entries.contains { $0.albumId == a.id && $0.rgMbid == a.foreignAlbumId && !$0.wasMonitoredBefore }
+        }
+        guard matches.count == 1, let album = matches.first, let rg = album.foreignAlbumId else { return nil }
+        if let r = list.last(where: { $0.albumId == album.id && $0.lidarrArtistId == artist.id && $0.state == .ready && $0.isFind }) {
+            return r.id
+        }
+        // Anything else on this album or artist under way: not now (Not for me would refuse it anyway).
+        guard !list.contains(where: { $0.lidarrArtistId == artist.id && ($0.isActive || $0.keep != nil || $0.notForMe != nil) })
+        else { return nil }
+        guard let tracks = try? await lidarr.tracks(albumId: album.id) else { return nil }
+        let key = SongIdentity.titleKey(title)
+        // Only names the request: Not for me proves the album's files itself.
+        let byTitle = tracks.filter { $0.title.map(SongIdentity.titleKey) == key }
+        guard let recording = (byTitle.first(where: \.hasFile) ?? byTitle.first ?? tracks.first(where: \.hasFile) ?? tracks.first)?
+            .foreignRecordingId.flatMap(MBID.init) else { return nil }
+        let entry = entries.first { $0.albumId == album.id && $0.rgMbid == rg }
+        let id = entry?.requestId.flatMap(UUID.init(uuidString:)).map(RequestID.init)
+            .flatMap { id in list.contains { $0.id == id } ? nil : id } ?? RequestID()
+        var r = MagpieRequest(id: id, recording: ExternalRecording(recordingMBID: recording, artistMBID: artistMBID,
+                                                                   title: title, artist: artistName,
+                                                                   releaseTitle: album.title, source: .lidarr),
+                              tier: .standard, createdAt: now())
+        r.state = .ready
+        r.plan = Plan(recordingMBID: recording, releaseGroupMBID: rg, artistMBID: artistMBID, lidarrArtistId: artist.id,
+                      mode: .finds)
+        r.lidarrArtistId = artist.id
+        r.albumId = album.id
+        r.albumTitle = album.title
+        r.songId = songId
+        r.trimDone = true   // what is there stays until Not for me
+        return await adopt(r) ? id : nil
+    }
+
+    /// Names compared loosely: case, diacritics, width, and runs of spaces.
+    static func looseKey(_ s: String) -> String {
+        s.folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: nil)
+            .split(whereSeparator: \.isWhitespace).joined(separator: " ")
     }
 
     // MARK: - Stop looking (round 16)

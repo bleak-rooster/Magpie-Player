@@ -50,6 +50,8 @@ enum RequestLinks {
 /// What a request's page offers, in order (R17, R20).
 enum RequestPageAction: Equatable {
     case play, keep, notForMe, findAnotherCopy, checkAgain, stopLooking, remove
+    /// Round 19: "Not in this artist's catalogue on your server" (their profile lists no singles): the singles switch.
+    case includeSingles
 
     static func actions(for r: MagpieRequest) -> [RequestPageAction] {
         var actions: [RequestPageAction] = []
@@ -59,8 +61,9 @@ enum RequestPageAction: Equatable {
             let free = r.isFind && r.keep == nil && !r.keepNeedsAttention && r.notForMe == nil && !r.notForMeNeedsAttention
                 && r.lidarrArtistId != nil
             if free { actions.append(.keep) }
-            if free, r.plan?.artistExistsInLidarr == false, r.albumId != nil { actions.append(.notForMe) }
+            if free, r.albumId != nil { actions.append(.notForMe) }   // round 18: any find (the runner proves it)
         }
+        if r.state == .failed(reason: .notInCatalogue) { actions.append(.includeSingles) }
         if r.canSearchAgain { actions.append(.findAnotherCopy) }
         if r.isNotListed { actions.append(.checkAgain) }
         if RequestCopy.canCancel(r.state) {

@@ -162,6 +162,8 @@ public actor RequestRunner {
     let now: @Sendable () -> Date
     let sleep: @Sendable (Duration) async -> Void
     private let onReady: @Sendable (MagpieRequest) -> Void
+    /// Round 17: a request just failed (nothing holding the song could be brought in, or Lidarr said no).
+    private let onFailed: @Sendable (MagpieRequest) -> Void
     let onRelinked: @Sendable (MagpieRequest, _ before: String?, Song) -> Void
     /// Y5 (M1): the kept find's MP3 was removed: the app drops queue entries and the phone's download of that song.
     let onMP3Removed: @Sendable (MagpieRequest, _ songId: String?) -> Void
@@ -254,11 +256,12 @@ public actor RequestRunner {
                 onReady: @escaping @Sendable (MagpieRequest) -> Void = { _ in },
                 onRelinked: @escaping @Sendable (MagpieRequest, _ before: String?, Song) -> Void = { _, _, _ in },
                 onMP3Removed: @escaping @Sendable (MagpieRequest, _ songId: String?) -> Void = { _, _ in },
-                onRefound: @escaping @Sendable (MagpieRequest, _ before: String) -> Void = { _, _ in }) {
+                onRefound: @escaping @Sendable (MagpieRequest, _ before: String) -> Void = { _, _ in },
+                onFailed: @escaping @Sendable (MagpieRequest) -> Void = { _ in }) {
         self.lidarr = lidarr; self.gate = gate; self.ledger = ledger; self.mb = mb
         self.library = library; self.store = store; self.setup = setup; self.keepSetup = keepSetup
         self.now = now; self.sleep = sleep; self.onReady = onReady; self.onRelinked = onRelinked
-        self.onMP3Removed = onMP3Removed; self.onRefound = onRefound
+        self.onMP3Removed = onMP3Removed; self.onRefound = onRefound; self.onFailed = onFailed
         self.lastLidarrContact = now()
         // Critical: ids are only meaningful on their own server. A ledger for another Lidarr disables the runner.
         if ledger.instance != lidarr.instanceScope {
@@ -351,6 +354,7 @@ public actor RequestRunner {
         guard activeCount < Self.maxActive else { throw TryError.tooMany }
         var request = MagpieRequest(recording: recording, tier: tier, createdAt: now())
         request.albumTarget = album
+        request.onlyTheSong = album == nil ? true : nil   // round 18: one song, not the release it comes on
         request.addToLibrary = intent == .library
         request.askedAsTry = intent == .trial
         request.libraryMetadataProfileId = libraryAdd?.metadataProfileId
@@ -461,6 +465,8 @@ public actor RequestRunner {
         if shouldStop() { return }
         await followReadyFinds()
         if shouldStop() { return }
+        await trimToSongs()
+        if shouldStop() { return }
         await followLossless()
         if shouldStop() { return }
         await flushFolderScans()   // fix I7
@@ -504,6 +510,19 @@ public actor RequestRunner {
             Log.logger("requests").error("requests not saved; Lidarr write postponed")
             throw NotSaved()
         }
+    }
+
+    /// Round 18 (`recoverFind`): a request put back from the ledger joins the list, saved before anyone sees it. False
+    /// (nothing added): the list couldn't be saved.
+    func adopt(_ r: MagpieRequest) async -> Bool {
+        guard !stopped, !list.contains(where: { $0.id == r.id }) else { return false }
+        list.append(r)
+        do { try await persist() } catch {
+            list.removeAll { $0.id == r.id }
+            return false
+        }
+        publish()
+        return true
     }
 
     /// The request list could not be saved before a Lidarr write (M6): nothing was sent; wait and retry.
@@ -553,6 +572,7 @@ public actor RequestRunner {
         if case .visibleInLibrary(let songId) = event { r.songId = songId }
         if effects.contains(.cleanup) { r.cleanupPending = true }
         await mutate(id) { $0 = r }
+        if case .failed = next { onFailed(r) }
         for effect in effects where !(deferCleanup && effect == .cleanup) { await perform(effect, id) }
     }
 
@@ -592,15 +612,28 @@ public actor RequestRunner {
         } catch {
             return await apply(id, .lidarrUnavailable)
         }
-        guard let artistMBID = r.recording.artistMBID ?? recording.artistIds.first else {
+        guard var artistMBID = r.recording.artistMBID ?? recording.artistIds.first else {
             return await apply(id, .error(.noRelease))
         }
         let artists: [LidarrArtist]
         do { artists = try await lidarr.artists() } catch { return await apply(id, .lidarrUnavailable) }
         lastLidarrContact = now()
+        // Round 19: for an artist not in Lidarr yet, Lidarr's metadata says which of the song's releases it knows and
+        // whose they are: a release is listed under its own artist (HUNTR/X's "Golden" under the film's cast), so that
+        // artist is the one added; one Lidarr doesn't know is never waited for.
+        var unknownToLidarr = Set<MBID>()
+        if r.albumTarget == nil, !artists.contains(where: { $0.foreignArtistId == artistMBID }) {
+            let listing = await lidarrListing(recording)
+            unknownToLidarr = listing.unknown
+            if let owner = listing.owner, owner != artistMBID {
+                Log.logger("requests").info("the song's release is filed under another artist in Lidarr: adding that one")
+                artistMBID = owner
+            }
+        }
 
         let plan: Plan
         let title: String?
+        var alternates: [MBID] = []   // round 17: the other releases holding the song, best first
         if let artist = artists.first(where: { $0.foreignArtistId == artistMBID }) {
             // A7: only release groups the artist already has in Lidarr; its profiles are never changed.
             let albums: [LidarrAlbum]
@@ -617,30 +650,79 @@ public actor RequestRunner {
             plan = Plan(recordingMBID: recordingId, releaseGroupMBID: rg, artistMBID: artistMBID,
                         lidarrArtistId: artist.id, mode: .fallback)
             title = albums.first { $0.foreignAlbumId == rg }?.title
+            alternates = ReleasePicker.ordered(containing: recording, available: magpies ? available.union(fits) : available)
             await mutate(id) { $0.artistExisted = true }   // round 15 C3 (D139): a Try here is a trial in the library
         } else {
             // A1: the "Magpie Finds" metadata profile only has official Album/EP/Single studio releases, so
             // only those can be monitored after the add.
-            let fits = Set(recording.releases.filter(Self.fitsFindsProfile).map(\.releaseGroup.id))
+            var fits = Set(recording.releases.filter(Self.fitsFindsProfile).map(\.releaseGroup.id)).subtracting(unknownToLidarr)
+            // Round 19: a song only on a soundtrack or a remix release (HUNTR/X "Golden", a film's song): the artist is
+            // added with "Magpie Finds Extras", which lists those too.
+            let studioHasIt = r.albumTarget.map(fits.contains) ?? (ReleasePicker.smallest(containing: recording, available: fits) != nil)
+            var extras = false
+            if !studioHasIt {
+                let wider = Set(recording.releases.filter(Self.fitsFindsExtras).map(\.releaseGroup.id)).subtracting(unknownToLidarr)
+                if !wider.isEmpty { fits = wider; extras = true }
+            }
             guard let rg = Self.albumTarget(r.albumTarget, allowed: r.albumTarget.map(fits.contains) ?? false)
                     ?? (r.albumTarget != nil ? nil : ReleasePicker.smallest(containing: recording, available: fits)) else {
                 return await apply(id, .error(.noRelease))
             }
+            await mutate(id) { $0.findsExtras = extras ? true : nil }
             // Finds mode is the intent here; the add checks the Finds root again and may fall back (G2, B8).
             // Round 15 C3 (D135): Add to library never makes a find.
             let findsOn = await setup()?.finds != nil
             plan = Plan(recordingMBID: recordingId, releaseGroupMBID: rg, artistMBID: artistMBID,
                         lidarrArtistId: nil, mode: findsOn && !r.addToLibrary ? .finds : .fallback)
             title = recording.releases.first { $0.releaseGroup.id == rg }?.title
+            alternates = ReleasePicker.ordered(containing: recording, available: fits)
         }
         await mutate(id) {
             $0.plan = plan
+            // "Try this album" asked for that one release: nothing else stands in for it.
+            $0.releaseAlternates = $0.albumTarget == nil ? alternates.filter { $0 != plan.releaseGroupMBID } : []
             if let title, !title.isEmpty { $0.albumTitle = title }
             // Help the match ladder find the song once it lands (ISRC, artist MBID).
             if $0.recording.isrcs.isEmpty { $0.recording.isrcs = recording.isrcs }
             if $0.recording.artistMBID == nil { $0.recording.artistMBID = artistMBID }
         }
         await apply(id, .resolved(plan))
+    }
+
+    /// MusicBrainz's "Various Artists".
+    static let variousArtists = MBID("89ad4ac3-39f7-470e-963a-56509c546377")!
+
+    /// The most of a song's releases checked with Lidarr's metadata before an add (each one read).
+    static let listingChecks = 4
+
+    /// Round 19: the song's releases a find could bring in (studio first, else soundtrack or remix), best first, each
+    /// asked of Lidarr's metadata (`album/lookup`) until one is known: its artist (`owner`), and the ones before it Lidarr
+    /// doesn't know (`unknown`). A read that fails ends the look with what is known so far (nothing changes then).
+    func lidarrListing(_ recording: MBRecording) async -> (owner: MBID?, unknown: Set<MBID>) {
+        var candidates = ReleasePicker.ordered(containing: recording,
+                                               available: Set(recording.releases.filter(Self.fitsFindsProfile).map(\.releaseGroup.id)))
+        if candidates.isEmpty {
+            candidates = ReleasePicker.ordered(containing: recording,
+                                               available: Set(recording.releases.filter(Self.fitsFindsExtras).map(\.releaseGroup.id)))
+        }
+        var unknown = Set<MBID>()
+        for rg in candidates.prefix(Self.listingChecks) {
+            guard let listed = try? await lidarr.albumOwner(releaseGroup: rg) else { return (nil, unknown) }
+            lastLidarrContact = now()
+            // A release filed under "Various Artists" is never brought in as an artist of its own.
+            if listed.known, listed.artist != Self.variousArtists { return (listed.artist, unknown) }
+            unknown.insert(rg)
+        }
+        return (nil, unknown)
+    }
+
+    /// Round 19: what "Magpie Finds Extras" adds: an official Album, EP or Single that is a soundtrack or a remix (and
+    /// nothing else besides).
+    static func fitsFindsExtras(_ release: MBRelease) -> Bool {
+        let primary = release.releaseGroup.primaryType?.lowercased() ?? ""
+        let secondary = Set(release.releaseGroup.secondaryTypes.map { $0.lowercased() })
+        return ["album", "ep", "single"].contains(primary) && !secondary.isEmpty && secondary.isSubset(of: ["soundtrack", "remix"])
+            && release.status?.lowercased() == "official"
     }
 
     static func fitsFindsProfile(_ release: MBRelease) -> Bool {
@@ -657,7 +739,7 @@ public actor RequestRunner {
 
     // MARK: - Add or monitor (A6, A7, G6, G7)
 
-    private struct AlbumMonitorBody: Encodable, Sendable {
+    struct AlbumMonitorBody: Encodable, Sendable {
         var albumIds: [Int]
         var monitored: Bool
     }
@@ -937,8 +1019,12 @@ public actor RequestRunner {
         }
         let library = request(id)?.addToLibrary == true
         let target = library ? try Self.libraryDestination(setup) : try await destination(setup)
+        var findSetup = target.setup
+        if !library, request(id)?.findsExtras == true {   // round 19: a soundtrack or remix release
+            findSetup.metadataProfileId = try await Provisioner().ensureFindsExtras(gate: gate, client: lidarr)
+        }
         let body = library ? try Self.addLibraryArtistBody(lookup: lookup, setup: target.setup, request: request(id))
-                           : try Self.addArtistBody(lookup: lookup, setup: target.setup, releaseGroup: plan.releaseGroupMBID)
+                           : try Self.addArtistBody(lookup: lookup, setup: findSetup, releaseGroup: plan.releaseGroupMBID)
         // Item 9.8: the command list before the add, so only Lidarr's RefreshArtist for this add counts.
         let baseline = (try? await lidarr.commands())?.map(\.id).max()
         try ensure(id, .adding)
@@ -1063,12 +1149,12 @@ public actor RequestRunner {
                 if let again = try? await lidarr.albums(artistId: artistId), again.contains(where: { $0.foreignAlbumId == rg }) {
                     return
                 }
-                await apply(id, .error(.noRelease))
+                await nextRelease(id, otherwise: .error(.noRelease))   // round 17: another release holding the song
             case .failed?:
                 await apply(id, .lidarrUnavailable)
             case nil:
                 if now().timeIntervalSince(r.addedAt ?? r.searchStartedAt ?? r.createdAt) > Self.albumAppearLimit {
-                    await apply(id, .error(.noRelease))
+                    await nextRelease(id, otherwise: .error(.noRelease))
                 }
             }
             return
@@ -1257,17 +1343,23 @@ public actor RequestRunner {
                 await apply(r.id, .downloadFailed)
                 continue
             }
-            // A14 "nothing found": the search finished, nothing queued, nothing grabbed for 10 minutes.
+            // A14 "nothing found": the search finished, nothing queued, nothing grabbed. Round 19: Lidarr decides its grab
+            // inside the AlbumSearch command (a delay profile's hold shows as a pending queue row), so once Lidarr says the
+            // command finished, `noGrabAfterFinishedSearch` is enough; when it can't say, the old 10 minutes.
             let elapsed = now().timeIntervalSince(current.searchStartedAt ?? now())
-            if current.state == .searching, !current.grabbed, lastGrab == nil, elapsed >= RequestMachine.noGrabThreshold {
-                var searchDone = true
+            if current.state == .searching, !current.grabbed, lastGrab == nil, elapsed >= Self.noGrabAfterFinishedSearch {
+                var searchDone = elapsed >= RequestMachine.noGrabThreshold
                 if let commandId = current.searchCommandId, let command = try? await lidarr.command(id: commandId) {
                     searchDone = Self.finishedCommandStates.contains(command.status.lowercased())
                 }
-                if searchDone { await apply(r.id, .noGrabAfter(elapsed)) }
+                // Round 17: another format for a find, else the next release holding the song, else it fails.
+                if searchDone { await nothingFound(r.id) }
             }
         }
     }
+
+    /// Round 19: how long after the search started "nothing found" may be said once Lidarr reports its search finished.
+    public static let noGrabAfterFinishedSearch: TimeInterval = 150
 
     /// When the request's search started, in Lidarr's time (stored since Y5; older requests: the phone's + offset).
     func serverStart(_ r: MagpieRequest) -> Date {

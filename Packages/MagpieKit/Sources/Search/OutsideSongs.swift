@@ -63,9 +63,38 @@ public enum OutsideSongMatch {
 
     /// `artistName` checks the artist the links name (S14 M2): the recording keeps it only when Lidarr's name for it is
     /// the song's artist; otherwise it carries none, and the request takes MusicBrainz's own artist for the recording.
+    /// Round 19: the way to a recording that needs no music server: MusicBrainz's recordings of a title by an artist.
+    /// (The phone never asks Deezer itself, plan decision 11, so a chart row's ISRC isn't read.)
+    public struct Finder: Sendable {
+        public var search: @Sendable (_ title: String, _ artist: String) async throws -> [MBRecording]
+
+        public init(search: @escaping @Sendable (_ title: String, _ artist: String) async throws -> [MBRecording]) {
+            self.search = search
+        }
+    }
+
+    /// The song's recording, by the first way that names it (round 19, owner: popular singles weren't found):
+    /// 1. its own recording MBID;
+    /// 2. the server's editorial links (artist and album) and that album's tracklist, by title and length (D100);
+    /// 3. MusicBrainz's recordings of the title by the song's artist: the same title, an artist of the credit, the length
+    ///    within `searchLengthSlack` when both are known; one on a plain official release first. This needs no music
+    ///    server (Lidarr alone), and catches what the links miss: a single too new for them, a deluxe or compilation
+    ///    album, a radio edit, a duet.
+    /// Never by name alone without the artist; anything short of that is `unmatched` ("Couldn't match this song").
     public static func resolve(_ song: OutsideSong, links: Links, release: Release,
-                               artistName: ArtistName = { _ in nil }) async throws -> ExternalRecording {
+                               artistName: ArtistName = { _ in nil }, finder: Finder? = nil) async throws -> ExternalRecording {
         if let known = song.recording { return known }
+        if let linked = try? await byLinks(song, links: links, release: release, artistName: artistName) { return linked }
+        let title = Self.searchTitle(song.title)
+        if let finder, !title.isEmpty, let found = try? await finder.search(title, primaryArtist(song.artist)),
+           let pick = Self.pick(found, for: song) {
+            return Self.recording(pick, song: song)
+        }
+        throw Failure.unmatched
+    }
+
+    /// D100's way: the server's editorial links, then the album's tracklist by title and length.
+    static func byLinks(_ song: OutsideSong, links: Links, release: Release, artistName: ArtistName) async throws -> ExternalRecording {
         var artistMBID = song.artistMBID
         var group = song.releaseGroupMBID
         if group == nil || artistMBID == nil {
@@ -84,6 +113,61 @@ public enum OutsideSongMatch {
         return ExternalRecording(recordingMBID: track.recording, artistMBID: artistMBID, title: track.title,
                                  artist: song.artist, releaseTitle: detail.title, duration: track.length, source: .lidarr,
                                  releaseMBID: detail.id)
+    }
+
+    /// How far a search hit's length may be from the song's (a radio edit and the album version differ by more than D100's
+    /// 3 s; a different recording of the song by more than this).
+    public static let searchLengthSlack: TimeInterval = 8
+
+    /// The recording of `song` among `found`, or nil: the title, an artist of the credit, and the length (when both are
+    /// known) must all match. Best first: the title, a plain official single/EP/album holding it, one named after the song, the length closest,
+    /// then the most releases (the one people have).
+    public static func pick(_ found: [MBRecording], for song: OutsideSong) -> MBRecording? {
+        let key = SongIdentity.titleKey(song.title)
+        let artists = Set([song.artist, primaryArtist(song.artist)].map(SongIdentity.artistKey)).subtracting([""])
+        func titled(_ r: MBRecording) -> Bool { !key.isEmpty && SongIdentity.titleKey(r.title) == key }
+        func credited(_ r: MBRecording) -> Bool { r.artistNames.contains { artists.contains(SongIdentity.artistKey($0)) } }
+        func gap(_ r: MBRecording) -> TimeInterval? {
+            guard let a = r.length, let b = song.duration, a.isFinite, b.isFinite else { return nil }
+            return abs(a - b)
+        }
+        let fits = found.filter { r in titled(r) && credited(r) && gap(r).map { $0 <= searchLengthSlack } != false }
+        func plain(_ r: MBRecording) -> Bool {
+            r.releases.contains { rel in
+                rel.status?.lowercased() == "official" && rel.releaseGroup.secondaryTypes.isEmpty
+                    && ["single", "ep", "album"].contains(rel.releaseGroup.primaryType?.lowercased() ?? "")
+            }
+        }
+        func named(_ r: MBRecording) -> Bool { r.releases.contains { !key.isEmpty && SongIdentity.titleKey($0.title) == key } }
+        return fits.max { a, b in
+            if titled(a) != titled(b) { return !titled(a) }
+            if plain(a) != plain(b) { return !plain(a) }
+            if named(a) != named(b) { return !named(a) }
+            let (ga, gb) = (gap(a) ?? .infinity, gap(b) ?? .infinity)
+            if ga != gb { return ga > gb }
+            return a.releases.count < b.releases.count
+        }
+    }
+
+    /// The request's recording: the song's own names and length, MusicBrainz's ids; the artist the credit names as the
+    /// song's own (a duet's first-named artist on the server's row), else the credit's first.
+    static func recording(_ r: MBRecording, song: OutsideSong) -> ExternalRecording {
+        let artists = Set([song.artist, primaryArtist(song.artist)].map(SongIdentity.artistKey)).subtracting([""])
+        let index = r.artistNames.firstIndex { artists.contains(SongIdentity.artistKey($0)) }
+        let artist = song.artistMBID ?? index.flatMap { r.artistIds.indices.contains($0) ? r.artistIds[$0] : nil }
+            ?? r.artistIds.first
+        return ExternalRecording(recordingMBID: r.id, artistMBID: artist, title: song.title, artist: song.artist,
+                                 releaseTitle: song.album, duration: r.length ?? song.duration,
+                                 isrcs: r.isrcs, source: .lidarr)
+    }
+
+    /// The title MusicBrainz is searched for: without a featured-artist note ("Song (feat. X)" is "Song" there).
+    static func searchTitle(_ title: String) -> String {
+        var t = title
+        for marker in ["(feat.", "(ft.", "(featuring", "[feat.", "(with ", " feat. ", " ft. "] {
+            if let r = t.range(of: marker, options: .caseInsensitive) { t = String(t[..<r.lowerBound]) }
+        }
+        return t.trimmingCharacters(in: .whitespaces)
     }
 
     /// The artist's MBID alone (Add artist, Whole artist): the song's own, else the one the links name, but only when

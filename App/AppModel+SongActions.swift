@@ -208,13 +208,16 @@ extension AppModel {
         return { mbid in try await client.artistLookup(mbid: mbid)?.artistName }
     }
 
-    /// The song's recording: its own MBID, else the editorial links and the album's tracklist (MusicBrainz). The links'
-    /// artist is kept only when Lidarr names it as the song's artist (S14 M2).
+    /// The song's recording: its own MBID; else the editorial links and the album's tracklist (MusicBrainz); else (round
+    /// 19) MusicBrainz's recordings of the title by the artist. The links' artist is kept only when Lidarr names it as the
+    /// song's artist (S14 M2). Only the links need the music server: with Lidarr alone the search still matches.
     func resolveOutsideSong(_ song: OutsideSong) async throws -> ExternalRecording {
         let catalog = outsideCatalog
         let links = editorialLinks ?? { _, _, _ in throw OutsideSongMatch.Failure.unmatched }
+        let mb = musicBrainz
+        let finder = OutsideSongMatch.Finder(search: { try await mb.searchRecordings(title: $0, artist: $1) })
         return try await OutsideSongMatch.resolve(song, links: links, release: { try await catalog.release(releaseGroup: $0) },
-                                                  artistName: lidarrArtistName)
+                                                  artistName: lidarrArtistName, finder: isOffline ? nil : finder)
     }
 
     // MARK: - The menu's actions (owner answer 8, Decisions 1 and 4)
@@ -226,6 +229,7 @@ extension AppModel {
         defer { songActions.end(key) }
         do {
             let recording = try await resolveOutsideSong(song)
+            if await offerSinglesFirst(recording, artist: song.artist, intent: .plain) { return }   // round 19
             songActions.trying = TryTarget(recording: recording)
         } catch {
             songActions.unmatched = song

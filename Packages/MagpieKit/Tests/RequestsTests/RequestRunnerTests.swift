@@ -247,9 +247,9 @@ import MagpieCore
         #expect(h.server.transport.requests.isEmpty)
     }
 
-    /// A14: search done, nothing queued or grabbed for 10 minutes: "still looking"; the retry searches again
-    /// without touching monitoring a second time.
-    @Test func nothingFoundWaitsThenSearchesAgain() async throws {
+    /// A14 with round 17: search done, nothing queued or grabbed for 10 minutes, and no other release holds the song:
+    /// it fails (any speed), and the clean-up takes Magpie's monitor off.
+    @Test func nothingFoundFailsOnceTheSearchFinished() async throws {
         let h = await Harness()
         h.server.ownerHasArtist(albumMonitored: false)
         let id = try await h.runner.tryRecording(h.recording(recAlbumOnly), tier: .patient)
@@ -262,15 +262,10 @@ import MagpieCore
 
         h.server.with { $0.commandStatus = "completed" }
         await h.runner.tick()
-        guard case .waiting(let reason, let retryAt) = await h.state(id) else { Issue.record("expected waiting"); return }
-        #expect(reason.kind == .stillLooking && reason.attempt == 0)
-        #expect(await h.request(id)?.priorWait == reason)
-
-        h.clock.advance(retryAt.timeIntervalSince(h.clock.now) + 1)
-        await h.runner.tick()
-        #expect(await h.state(id) == .searching)
-        #expect(h.server.writeBodies().map(\.0) == ["PUT album/monitor", "POST command", "POST command"])
-        #expect(try await h.ledger.entry(albumId: 31)?.wasMonitoredBefore == false, "Magpie's own monitor is remembered")
+        await h.runner.settle()
+        #expect(await h.state(id) == .failed(reason: .notFoundYet))
+        #expect(h.server.writeBodies().map(\.0) == ["PUT album/monitor", "POST command", "PUT album/monitor"])
+        #expect(h.server.with { s in s.albums.first { $0.id == 31 }?.monitored } == false)
     }
 
     /// Lidarr reports a failed download: wait (Lidarr retries), not fail (A14).

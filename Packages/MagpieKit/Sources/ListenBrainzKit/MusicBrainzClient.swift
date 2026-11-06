@@ -46,15 +46,18 @@ public struct MBRecording: Sendable, Hashable {
     public var artistIds: [MBID]
     /// Length in seconds, when MusicBrainz knows it.
     public var length: TimeInterval?
+    /// Round 19: the credited artists' names, in the order of `artistIds` (empty when MusicBrainz sent none).
+    public var artistNames: [String]
 
     public init(id: MBID, title: String, releases: [MBRelease], isrcs: [String] = [], artistIds: [MBID] = [],
-                length: TimeInterval? = nil) {
+                length: TimeInterval? = nil, artistNames: [String] = []) {
         self.id = id
         self.title = title
         self.releases = releases
         self.isrcs = isrcs
         self.artistIds = artistIds
         self.length = length
+        self.artistNames = artistNames
     }
 }
 
@@ -76,30 +79,97 @@ public actor MusicBrainzClient {
         self.limiter = limiter
     }
 
+    /// The recording with its releases. Round 19: a lookup lists at most 25 releases, and a hit is on dozens (Espresso:
+    /// 73, most of them compilations), so its own single could be missing; then the whole list is browsed (`allReleases`).
     public func recording(_ mbid: MBID) async throws -> MBRecording {
-        try await limiter.wait()
+        let data = try await get("ws/2/recording/\(mbid.rawValue)",
+                                 [URLQueryItem(name: "inc", value: "releases+release-groups+isrcs+artist-credits")])
+        guard let dto = try? JSONDecoder().decode(RecordingDTO.self, from: data), var recording = dto.recording else {
+            throw MusicBrainzError.decoding
+        }
+        if recording.releases.count >= Self.lookupReleaseCap, let all = try? await allReleases(recording: mbid), !all.isEmpty {
+            recording.releases = all
+        }
+        return recording
+    }
+
+    /// The most releases a recording lookup lists.
+    static let lookupReleaseCap = 25
+    /// Pages of 100 browsed at most for one recording's releases (300 releases).
+    static let releasePages = 3
+
+    /// Round 19: every release of the recording (browsed 100 at a time, at most `releasePages`).
+    public func allReleases(recording mbid: MBID) async throws -> [MBRelease] {
+        var releases: [MBRelease] = []
+        for page in 0..<Self.releasePages {
+            let data = try await get("ws/2/release", [
+                URLQueryItem(name: "recording", value: mbid.rawValue),
+                URLQueryItem(name: "inc", value: "release-groups"),
+                URLQueryItem(name: "limit", value: "100"),
+                URLQueryItem(name: "offset", value: String(page * 100)),
+            ])
+            guard let dto = try? JSONDecoder().decode(ReleaseBrowseDTO.self, from: data) else { throw MusicBrainzError.decoding }
+            let batch = dto.releases?.values ?? []
+            releases += batch.compactMap(\.release)
+            if batch.isEmpty || (page + 1) * 100 >= (dto.releaseCount ?? 0) { break }
+        }
+        return releases
+    }
+
+    /// Round 19: recordings named `title` by `artist` (MusicBrainz's search, both phrases quoted), best first. Callers
+    /// check the title, artist and length themselves: the search's own score is never trusted alone.
+    public func searchRecordings(title: String, artist: String, limit: Int = 25) async throws -> [MBRecording] {
+        func phrase(_ s: String) -> String {
+            "\"" + s.replacingOccurrences(of: "\\", with: " ").replacingOccurrences(of: "\"", with: " ") + "\""
+        }
+        guard !title.trimmingCharacters(in: .whitespaces).isEmpty, !artist.trimmingCharacters(in: .whitespaces).isEmpty else {
+            return []
+        }
+        return try await search("recording:\(phrase(title)) AND artist:\(phrase(artist))", limit: limit)
+    }
+
+    private func search(_ query: String, limit: Int) async throws -> [MBRecording] {
+        let data = try await get("ws/2/recording", [URLQueryItem(name: "query", value: query),
+                                                    URLQueryItem(name: "limit", value: String(limit))])
+        guard let dto = try? JSONDecoder().decode(RecordingSearchDTO.self, from: data) else { throw MusicBrainzError.decoding }
+        return dto.recordings?.values.compactMap(\.recording) ?? []
+    }
+
+    /// Times a 503 (MusicBrainz busy: its rate limit) is waited out before it is thrown.
+    static let busyRetries = 2
+
+    /// One GET, spaced by the limiter; a 503 is waited out (`busyRetries`, 1.5 s, then 3 s) before it is thrown.
+    private func get(_ path: String, _ query: [URLQueryItem]) async throws -> Data {
         guard let url = ServerEndpoint(bases: [Self.base]).url(
-            Self.base, path: "ws/2/recording/\(mbid.rawValue)",
-            query: [URLQueryItem(name: "inc", value: "releases+release-groups+isrcs+artist-credits"),
-                    URLQueryItem(name: "fmt", value: "json")]) else { throw URLError(.badURL) }
+            Self.base, path: path, query: query + [URLQueryItem(name: "fmt", value: "json")]) else { throw URLError(.badURL) }
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        let (data, response) = try await transport.send(request)
-        switch response.statusCode {
-        case 200..<300: break
-        case 404: throw MusicBrainzError.notFound
-        default: throw MusicBrainzError.http(status: response.statusCode)
+        var attempt = 0
+        while true {
+            try await limiter.wait()
+            let (data, response) = try await transport.send(request)
+            switch response.statusCode {
+            case 200..<300: return data
+            case 404: throw MusicBrainzError.notFound
+            case 503 where attempt < Self.busyRetries:
+                attempt += 1
+                try await Task.sleep(for: .milliseconds(1500 * attempt))
+            default: throw MusicBrainzError.http(status: response.statusCode)
+            }
         }
-        guard let dto = try? JSONDecoder().decode(RecordingDTO.self, from: data),
-              let id = MBID(dto.id) else { throw MusicBrainzError.decoding }
-        return MBRecording(id: id, title: (dto.title ?? "").capped,
-                           releases: dto.releases?.values.compactMap(\.release) ?? [],
-                           isrcs: (dto.isrcs ?? []).map(\.capped).filter { !$0.isEmpty },
-                           artistIds: dto.artistCredit?.values.compactMap { $0.artist?.id.flatMap(MBID.init) } ?? [],
-                           length: dto.length.flatMap { $0 > 0 ? $0 / 1000 : nil })
     }
+}
+
+private struct ReleaseBrowseDTO: Decodable {
+    var releases: LossyArray<RecordingDTO.ReleaseDTO>?
+    var releaseCount: Int?
+    enum CodingKeys: String, CodingKey { case releases, releaseCount = "release-count" }
+}
+
+private struct RecordingSearchDTO: Decodable {
+    var recordings: LossyArray<RecordingDTO>?
 }
 
 private struct RecordingDTO: Decodable {
@@ -114,8 +184,21 @@ private struct RecordingDTO: Decodable {
     enum CodingKeys: String, CodingKey { case id, title, releases, isrcs, length, artistCredit = "artist-credit" }
 
     struct CreditDTO: Decodable {
-        struct ArtistDTO: Decodable { var id: String? }
+        struct ArtistDTO: Decodable { var id: String?; var name: String? }
         var artist: ArtistDTO?
+        /// The name as credited ("ROSÉ"); the artist's own name when missing.
+        var name: String?
+    }
+
+    var recording: MBRecording? {
+        guard let id = MBID(id) else { return nil }
+        let credits = artistCredit?.values.filter { $0.artist?.id.flatMap(MBID.init) != nil } ?? []
+        return MBRecording(id: id, title: (title ?? "").capped,
+                           releases: releases?.values.compactMap(\.release) ?? [],
+                           isrcs: (isrcs ?? []).map(\.capped).filter { !$0.isEmpty },
+                           artistIds: credits.compactMap { $0.artist?.id.flatMap(MBID.init) },
+                           length: length.flatMap { $0 > 0 ? $0 / 1000 : nil },
+                           artistNames: credits.map { ($0.name ?? $0.artist?.name ?? "").capped })
     }
 
     struct ReleaseDTO: Decodable {

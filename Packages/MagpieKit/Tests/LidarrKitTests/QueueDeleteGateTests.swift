@@ -164,14 +164,23 @@ import MagpieTestSupport
                                                       writes: { fake.writes })
     }
 
-    /// Fix round 1 I1: only a copy still coming before import: never one that's complete, waiting to import, being
-    /// imported or blocked from importing, even of a live request's album.
-    @Test(arguments: [511, 512, 513, 514])
+    /// Fix round 1 I1: only a copy still coming before import: never one that's complete, waiting to import or being
+    /// imported, even of a live request's album.
+    @Test(arguments: [511, 512, 514])
     func copyPastDownloadingRefused(_ id: Int) async throws {
         let fake = try await Fake()
         let gate = await fake.gate()
         await WriteConfinementTests.expectRefusedHere(Call("DELETE", "queue/\(id)" + Self.shape), gate,
                                                       writes: { fake.writes })
+    }
+
+    /// Round 19: a copy Lidarr couldn't import (blocked) of a live request's own album may go: Lidarr never retries it,
+    /// and it never reached the library. In the one shape, as any other.
+    @Test func aBlockedImportOfMagpiesOwnDownloadIsRemoved() async throws {
+        let fake = try await Fake()
+        let gate = await fake.gate()
+        _ = try await gate.send("DELETE", "queue/513" + Self.shape, body: nil as JSONValue?)
+        #expect(fake.writes.count == 1 && fake.writes.first?.url?.path == "/lidarr/api/v1/queue/513")
     }
 
     /// Fix round 1 I2: one download that also brings the owner's album 35 (every queue row sharing its downloadId is

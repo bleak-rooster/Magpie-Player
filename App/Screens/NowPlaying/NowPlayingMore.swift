@@ -64,7 +64,7 @@ extension AppModel {
     func nowPlayingMoreItems(_ song: Song, lyricsMode: Bool, links: NowPlayingLinks) -> NowPlayingMoreItems {
         let isFind = isFind(song)
         let keep = isFind && findsSetup?.library != nil ? FindsShelf.keepRequest(for: song, in: requests) : nil
-        let notForMe = isFind ? FindsShelf.notForMeRequest(for: song, in: requests) : nil
+        let notForMe = isFind ? FindsShelf.notForMeRequest(for: song, in: requests, songs: findSongs) : nil
         let download: NowPlayingMoreItems.DownloadItem = switch downloadStatus([song.id]) {
         case .none: .download
         case .downloaded: .remove

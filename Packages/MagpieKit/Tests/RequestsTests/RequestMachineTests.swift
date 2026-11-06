@@ -32,7 +32,7 @@ private enum S: String, CaseIterable {
 private enum E: String, CaseIterable {
     case start, resolved, added, searchStarted, queueProgress, imported, visibleInLibrary, noGrabAfter
     case lidarrUnavailable, downloadFailed, cancel, keep, notForMe, retryDue, error
-    case searchAgain, stalled
+    case searchAgain, stalled, nextRelease
     var value: RequestEvent {
         switch self {
         case .start: .start
@@ -52,6 +52,7 @@ private enum E: String, CaseIterable {
         case .error: .error(.addFailed)
         case .searchAgain: .searchAgain
         case .stalled: .stalled
+        case .nextRelease: .nextRelease(plan)
         }
     }
 }
@@ -92,6 +93,7 @@ private func _guardEvent(_ e: RequestEvent) -> E {
     case .error: .error
     case .searchAgain: .searchAgain
     case .stalled: .stalled
+    case .nextRelease: .nextRelease
     }
 }
 
@@ -127,6 +129,8 @@ private let valid: [Key: (RequestState, [Effect])] = {
     // R17: search again before anything was imported; a stall with the retries used up waits as still looking.
     for s in [S.searching, .downloading, .waiting] { m[Key(s: s, e: .searchAgain)] = (.searching, [.startSearch]) }
     for s in [S.searching, .downloading] { m[Key(s: s, e: .stalled)] = retry(.stillLooking, after: 60) }
+    // Round 17: the release tried couldn't be found: the next one holding the song is monitored and searched.
+    for s in [S.searching, .waiting] { m[Key(s: s, e: .nextRelease)] = (.adding, [.addOrMonitor(plan)]) }
     for s in [S.resolving, .adding, .searching, .downloading, .importing] {
         m[Key(s: s, e: .lidarrUnavailable)] = retry(.serviceUnavailable, after: 60)
         m[Key(s: s, e: .error)] = (.failed(reason: .addFailed), [.cleanup])

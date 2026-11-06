@@ -130,6 +130,81 @@ public struct Provisioner: Sendable {
         return try await Self.create(gate, "qualityprofile", body, spec.name)
     }
 
+    // MARK: - Round 17 (owner, 2026-11-05): a find that can't be found as an MP3
+
+    public static let anyFormatName = "Magpie Finds Any Format"
+    /// The qualities a find may come in once no MP3 was found: MP3 from 192 kbps, AAC, Ogg Vorbis from Q6, and lossless
+    /// that plays on the phone (never WMA, APE or WavPack, nor anything below 192 kbps). Only those Lidarr lists count.
+    static let anyFormatQualities: Set<String> = [
+        "MP3-192", "MP3-224", "MP3-256", "MP3-VBR-V2", "MP3-VBR-V0", "MP3-320",
+        "AAC-192", "AAC-256", "AAC-VBR", "AAC-320",
+        "OGG Vorbis Q6", "OGG Vorbis Q7", "OGG Vorbis Q8", "OGG Vorbis Q9", "OGG Vorbis Q10",
+        "FLAC", "ALAC", "FLAC 24bit", "ALAC 24bit", "WAV",
+    ]
+    /// Fast Start's MP3s stay the first choice (Lidarr prefers the last items): V0, then MP3-320 on top.
+    static let anyFormatFirstChoice = ["MP3-VBR-V0", "MP3-320"]
+
+    static func anyFormatSpec(schema: JSONValue) -> QualitySpec {
+        QualitySpec(name: anyFormatName, allowed: anyFormatQualities.intersection(qualityNames(schema)), cutoff: "MP3-320",
+                    upgradeAllowed: false)
+    }
+
+    /// Every quality name the schema lists, inside groups too.
+    static func qualityNames(_ schema: JSONValue) -> Set<String> {
+        var names = Set<String>()
+        for item in schema["items"]?.arrayValue ?? [] {
+            if let n = item["quality"]?["name"]?.stringValue { names.insert(n) }
+            for child in item["items"]?.arrayValue ?? [] {
+                if let n = child["quality"]?["name"]?.stringValue { names.insert(n) }
+            }
+        }
+        return names
+    }
+
+    /// The profile's body: `qualityBody`, with the MP3s moved to the top of Lidarr's order.
+    static func anyFormatBody(schema: JSONValue) throws -> JSONValue {
+        let built = try qualityBody(anyFormatSpec(schema: schema), schema: schema)
+        guard var body = built.objectValue, let items = built["items"]?.arrayValue else {
+            throw ProvisionError.schemaMissing("qualityprofile items")
+        }
+        let name = { (item: JSONValue) in item["quality"]?["name"]?.stringValue ?? "" }
+        let first = anyFormatFirstChoice.compactMap { n in items.first { name($0) == n } }
+        body["items"] = .array(items.filter { !anyFormatFirstChoice.contains(name($0)) } + first)
+        return .object(body)
+    }
+
+    /// "Magpie Finds Any Format"'s id, made through the gate if missing (the first find whose MP3 couldn't be found). A
+    /// same-named profile set up differently is never changed: `ProvisionError.conflict`.
+    /// Round 19: "Magpie Finds Extras", for a find whose song is only on a soundtrack or remix release (HUNTR/X "Golden",
+    /// a film's song, a remix single): the Finds types (Album, EP, Single; Official) with Soundtrack and Remix beside Studio.
+    public static let findsExtrasMetadataName = "Magpie Finds Extras"
+    static let findsExtrasSpec = MetadataSpec(name: findsExtrasMetadataName, primary: ["Album", "EP", "Single"],
+                                              secondary: ["Studio", "Soundtrack", "Remix"], statuses: ["Official"])
+
+    /// The id of "Magpie Finds Extras": reused when Lidarr has it with exactly that spec, else made through the gate once.
+    /// A same-named profile set up differently is never changed (`ProvisionError.conflict`).
+    public func ensureFindsExtras(gate: LidarrWriteGate, client: LidarrClient) async throws -> Int {
+        let spec = Self.findsExtrasSpec
+        let existing = try await client.metadataProfilesJSON()
+        if let found = try Self.existing(named: spec.name, in: existing) {
+            guard Self.matches(found, spec), let id = found["id"]?.intValue else { throw ProvisionError.conflict(spec.name) }
+            return id
+        }
+        let schema = try await client.json("metadataprofile/schema")
+        return try await Self.create(gate, "metadataprofile", try Self.metadataBody(spec, schema: schema), spec.name)
+    }
+
+    public func ensureAnyFormat(gate: LidarrWriteGate, client: LidarrClient) async throws -> Int {
+        let schema = try await client.json("qualityprofile/schema")
+        let spec = Self.anyFormatSpec(schema: schema)
+        let existing = try await client.json("qualityprofile").arrayValue ?? []
+        if let found = try Self.existing(named: spec.name, in: existing) {
+            guard Self.matches(found, spec), let id = found["id"]?.intValue else { throw ProvisionError.conflict(spec.name) }
+            return id
+        }
+        return try await Self.create(gate, "qualityprofile", try Self.anyFormatBody(schema: schema), spec.name)
+    }
+
     public func ensure(gate: LidarrWriteGate, client: LidarrClient) async throws -> ProvisionResult {
         // 1. Read everything and decide, so a conflict stops the run before any write.
         let existingQuality = try await client.json("qualityprofile").arrayValue ?? []

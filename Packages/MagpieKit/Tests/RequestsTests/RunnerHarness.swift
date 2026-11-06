@@ -14,9 +14,11 @@ let artistA = mbid(1)
 let rgSingle = mbid(10)
 let rgAlbum = mbid(11)
 let rgLive = mbid(12)
+let rgSoundtrack = mbid(39)   // round 19: a film's soundtrack album
 let recSingleAndAlbum = mbid(100)   // on the single and the album
 let recAlbumOnly = mbid(101)        // album only
 let recAlbumOnly2 = mbid(102)       // album only
+let recSoundtrackOnly = mbid(189)   // round 19: only on a soundtrack (HUNTR/X "Golden")
 
 final class TestClock: @unchecked Sendable {
     private let lock = OSAllocatedUnfairLock(initialState: Date(timeIntervalSince1970: 1_900_000_000))
@@ -131,6 +133,8 @@ final class FakeLidarr: @unchecked Sendable {
         var id: Int; var artistId: Int; var albumId: Int; var path: String; var recorded = true; var onDisk: String?
         /// Y5: the file's quality and size (nil: not sent).
         var quality: String? = nil; var size: Int? = nil
+        /// Round 18: the file is a track of its album in `GET /track` (another song of the release); nil: not listed.
+        var trackTitle: String? = nil; var trackRecording: MBID? = nil
     }
     /// How `DELETE /trackfile/bulk` goes.
     enum BulkDelete: Equatable {
@@ -162,6 +166,11 @@ final class FakeLidarr: @unchecked Sendable {
         /// Albums Lidarr gets for an artist it adds (after its refresh).
         var albumsOnAdd: [Album] = []
         var albumsAppearOnAdd = true
+        /// Round 17: `GET /track?albumId=` for other albums (title, recording).
+        var albumTracks: [Int: [(title: String, recording: MBID)]] = [:]
+        /// Round 17: Lidarr's quality profiles (Magpie's "Any Format" is made here when a find has no MP3).
+        var qualityProfiles: [JSONValue] = [.object(["id": .int(4), "name": .string("Magpie Fast Start"), "items": .array([]),
+                                                     "cutoff": .int(4), "upgradeAllowed": .bool(false)])]
         var queue: [Queued] = []
         var history: [Event] = []
         var commandStatus = "completed"
@@ -252,6 +261,8 @@ final class FakeLidarr: @unchecked Sendable {
         var songImported = false
         /// The song file's path below the artist folder (Y5: a FLAC landing under another name).
         var songFileName = FakeLidarr.songFile
+        /// Round 18: the song's track title in `GET /track`.
+        var songTitle = "Song"
         /// `Date` of `GET /system/status` (nil: no header); `Age` set: served from a cache.
         var serverDate: Date?
         var serverDateCached = false
@@ -456,14 +467,50 @@ final class FakeLidarr: @unchecked Sendable {
             if cached { headers["Age"] = "30" }
             return MockTransport.Response(status: 200, body: Data("{}".utf8), headers: headers)
         }
+        // Round 17: a small quality schema (lowest first, as Lidarr lists it) and the profiles.
+        let quality = { (id: Int, name: String) -> [String: Any] in ["quality": ["id": id, "name": name], "items": [], "allowed": false] }
+        let schema: [String: Any] = ["name": "", "upgradeAllowed": false, "cutoff": 0, "items": [
+            quality(0, "Unknown"),
+            ["name": "Poor Quality Lossy", "id": 1001, "allowed": false, "items": [quality(22, "MP3-128")]],
+            quality(20, "WMA"),
+            ["name": "High Quality Lossy", "id": 1004, "allowed": false,
+             "items": [quality(2, "MP3-VBR-V0"), quality(4, "MP3-320"), quality(11, "AAC-320")]],
+            ["name": "Lossless", "id": 1005, "allowed": false, "items": [quality(6, "FLAC"), quality(35, "APE")]],
+        ]]
+        t.stub(pathSuffix: "/api/v1/qualityprofile/schema", body: try! JSONSerialization.data(withJSONObject: schema))
+        t.stub(pathSuffix: "/api/v1/qualityprofile") { [self] _ in
+            MockTransport.Response(status: 200, body: try! JSONEncoder().encode(with { $0.qualityProfiles }))
+        }
+        t.stub(method: "POST", pathSuffix: "/api/v1/qualityprofile") { [self] req in
+            guard case .object(var body) = try! JSONDecoder().decode(JSONValue.self, from: req.httpBody!) else {
+                return MockTransport.Response(status: 400)
+            }
+            body["id"] = .int(20)
+            with { $0.qualityProfiles.append(.object(body)) }
+            return MockTransport.Response(status: 201, body: try! JSONEncoder().encode(JSONValue.object(body)))
+        }
         t.stub(pathSuffix: "/api/v1/track") { [self] req in
             let albumId = URLComponents(url: req.url!, resolvingAgainstBaseURL: false)?.queryItems?
                 .first { $0.name == "albumId" }?.value.flatMap(Int.init)
             return reply(with { s in
-                guard albumId == 50 else { return [[String: Any]]() }
+                if let albumId, let tracks = s.albumTracks[albumId] {
+                    return tracks.enumerated().map { i, t in
+                        ["id": 1000 + albumId * 10 + i, "albumId": albumId, "trackFileId": 0, "title": t.title,
+                         "foreignRecordingId": t.recording.rawValue] as [String: Any]
+                    }
+                }
+                // Round 18: other songs of the release, each with its file while Lidarr records one.
+                let others: [[String: Any]] = s.extraFiles.enumerated().compactMap { i, x in
+                    guard x.albumId == albumId, x.trackTitle != nil || x.trackRecording != nil else { return nil }
+                    var row: [String: Any] = ["id": 950 + i, "albumId": x.albumId, "trackFileId": x.recorded ? x.id : 0]
+                    if let t = x.trackTitle { row["title"] = t }
+                    if let r = x.trackRecording { row["foreignRecordingId"] = r.rawValue }
+                    return row
+                }
+                guard albumId == 50 else { return others }
                 let file = s.songImported && s.artists.contains { $0.recorded != nil } ? s.songFileId : 0
-                return [["id": 900, "albumId": 50, "trackFileId": file, "foreignTrackId": s.songTrack,
-                         "foreignRecordingId": recSingleAndAlbum.rawValue] as [String: Any]]
+                return [["id": 900, "albumId": 50, "trackFileId": file, "foreignTrackId": s.songTrack, "title": s.songTitle,
+                         "foreignRecordingId": recSingleAndAlbum.rawValue] as [String: Any]] + others
             })
         }
         for id in [7, 42, 43] {
@@ -706,6 +753,7 @@ final class FakeLidarr: @unchecked Sendable {
                                 release(3, rgLive, "Album", secondary: ["Live"])],
             recAlbumOnly: [release(4, rgAlbum, "Album")],
             recAlbumOnly2: [release(5, rgAlbum, "Album")],
+            recSoundtrackOnly: [release(6, rgSoundtrack, "Album", secondary: ["Soundtrack"])],
         ]
         for (id, releases) in recordings {
             let body = try! JSONSerialization.data(withJSONObject: ["id": id.rawValue, "title": "Song", "releases": releases,
@@ -821,6 +869,8 @@ struct Harness {
     let library: FakeLibrary
     let clock = TestClock()
     let ready = OSAllocatedUnfairLock(initialState: [RequestID]())
+    /// Round 17: `onFailed` calls.
+    let failed = OSAllocatedUnfairLock(initialState: [RequestID]())
     let gate: LidarrWriteGate
     let ledger: Ledger
     let store: RequestStore
@@ -865,13 +915,14 @@ struct Harness {
         store = RequestStore(fileURL: RequestStore.defaultURL(in: dir, instance: client.instanceScope))
         let mb = MusicBrainzClient(transport: lidarr.clientTransport, userAgent: MusicBrainzClient.userAgent(version: "test"),
                                    limiter: RateLimiter(perSecond: 1_000, sleep: { _ in }))
-        let clock = self.clock, ready = self.ready, relinked = self.relinked, refound = self.refound
+        let clock = self.clock, ready = self.ready, relinked = self.relinked, refound = self.refound, failed = self.failed
         runner = RequestRunner(lidarr: client, gate: gate, ledger: ledger, mb: mb, library: library.access,
                                store: store, setup: { setup }, keepSetup: { keep }, now: { clock.now },
                                sleep: { d in clock.advance(Double(d.components.seconds) + Double(d.components.attoseconds) / 1e18) },
                                onReady: { r in ready.withLock { $0.append(r.id) } },
                                onRelinked: { r, before, song in relinked.withLock { $0.append((r.id, before, song)) } },
-                               onRefound: { r, before in refound.withLock { $0.append((r.id, before, r.songId)) } })
+                               onRefound: { r, before in refound.withLock { $0.append((r.id, before, r.songId)) } },
+                               onFailed: { r in failed.withLock { $0.append(r.id) } })
         runnerRef.runner = runner
         self.server = lidarr
         self.dir = dir

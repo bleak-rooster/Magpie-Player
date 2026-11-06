@@ -54,9 +54,9 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.bleak-rooster.magpie
         PRODUCT_NAME: Magpie
-        # CarPlay audio needs Apple's approval before any profile can carry it, so device builds sign
-        # without it unless MAGPIE_CARPLAY=YES (scripts/archive.sh --carplay). The simulator always has it (B7).
-        MAGPIE_CARPLAY: "NO"
+        # CarPlay audio was granted to the team (2026-11-05: both profiles carry it), so device builds sign with it.
+        # MAGPIE_CARPLAY=NO (scripts/archive.sh --no-carplay) signs without it. The simulator always has it (B7).
+        MAGPIE_CARPLAY: "YES"
         MAGPIE_ENTITLEMENTS_YES: App/Magpie.entitlements
         MAGPIE_ENTITLEMENTS_NO: App/MagpieNoCarPlay.entitlements
         CODE_SIGN_ENTITLEMENTS: $(MAGPIE_ENTITLEMENTS_$(MAGPIE_CARPLAY))

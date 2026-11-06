@@ -47,7 +47,7 @@ let package = Package(
         .testTarget(name: "PlaybackTests", dependencies: ["Playback", "MagpieCore", "MagpieTestSupport"]),
         .testTarget(name: "MatchIndexTests", dependencies: ["MatchIndex", "MagpieCore", "NavidromeKit", "MagpieTestSupport"]),
         .testTarget(name: "RequestsTests",
-                    dependencies: ["Requests", "MagpieCore", "LidarrKit", "ListenBrainzKit", "NavidromeKit", "MagpieTestSupport"]),
+                    dependencies: ["Requests", "MagpieCore", "LidarrKit", "ListenBrainzKit", "NavidromeKit", "Search", "MagpieTestSupport"]),
         // Crash hunt 4: seeded fuzzing of every client's decoding, and the decoded models through the UI and car builders.
         .testTarget(name: "HostileDataTests",
                     dependencies: ["NavidromeKit", "LidarrKit", "ListenBrainzKit", "MatchIndex", "Search", "CarPlayUI",
@@ -57,7 +57,8 @@ let package = Package(
         // Y2: the car's A–Z lists (pure models; run on macOS like the other package suites).
         .testTarget(name: "CarPlayUITests", dependencies: ["CarPlayUI", "MagpieCore", "Search"]),
         .testTarget(name: "SearchTests",
-                    dependencies: ["Search", "MatchIndex", "MagpieCore", "LidarrKit", "ListenBrainzKit", "AurralKit", "MagpieTestSupport"]),
+                    dependencies: ["Search", "MatchIndex", "MagpieCore", "LidarrKit", "ListenBrainzKit", "AurralKit", "Requests",
+                                   "MagpieTestSupport"]),
     ],
     swiftLanguageModes: [.v6]
 )

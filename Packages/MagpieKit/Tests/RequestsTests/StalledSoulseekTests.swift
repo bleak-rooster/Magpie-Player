@@ -32,6 +32,39 @@ import MagpieCore
 
     // MARK: - Detection
 
+    /// Round 19: a copy Lidarr couldn't import (blocked or failed, from any client) sits in the queue for good: after
+    /// the stall limit it is removed (blocklisted, from the client) and searched again, like a stalled one.
+    @Test func aBlockedImportIsGivenUpOnAndSearchedAgain() async throws {
+        for (state, client) in [("importBlocked", "Slskd"), ("importFailed", "SABnzbd")] {
+            let (h, id) = try await searching()
+            var blocked = soulseek(905, sizeleft: 0, client: client)
+            blocked.status = "completed"
+            blocked.tracked = state
+            blocked.messages = ["Album match is not close enough"]
+            h.server.with { $0.queue = [blocked] }
+            await h.runner.tick()
+            h.clock.advance(59); await h.runner.tick()
+            #expect(deletes(h).isEmpty, "\(state): not before the limit")
+            h.clock.advance(1); await h.runner.tick()
+            #expect(deletes(h) == ["/lidarr/api/v1/queue/905?" + Self.deleteQuery], "\(state)")
+            #expect(h.server.writeBodies().last?.1["name"] as? String == "AlbumSearch", "\(state)")
+            #expect(await h.request(id)?.stallRetries == 1, "\(state)")
+            #expect(await h.gate.changeLog().contains { $0.path == "/api/v1/queue/905?" + Self.deleteQuery }, "\(state): the gate let it")
+        }
+    }
+
+    /// Round 19: once Lidarr says the search command finished with nothing grabbed or queued, "nothing found" comes after
+    /// `noGrabAfterFinishedSearch`, not 10 minutes; while the command is still running, never.
+    @Test func nothingFoundSoonAfterTheSearchFinished() async throws {
+        let (h, id) = try await searching()
+        h.server.with { $0.commandStatus = "started" }
+        h.clock.advance(RequestRunner.noGrabAfterFinishedSearch + 1); await h.runner.tick()
+        #expect(await h.state(id) == .searching, "the search is still running")
+        h.server.with { $0.commandStatus = "completed" }
+        h.clock.advance(5); await h.runner.tick()
+        #expect(await h.state(id) != .searching, "nothing found, well before 10 minutes")
+    }
+
     /// Nothing moved for 60 s: DELETE in the exact shape, then the runner's own AlbumSearch, and the request says
     /// the source stalled. Not a second sooner.
     @Test func stallFiresAtTheThreshold() async throws {
@@ -112,10 +145,11 @@ import MagpieCore
         #expect(deletes(h).count == 1, "the status flip didn't restart the clock")
     }
 
-    /// Fix round 1 I1: a copy that's complete, waiting to import, being imported or blocked from importing is never
-    /// "stalled": not after 10 minutes either. Only a copy still coming (downloading, something left) counts.
+    /// Fix round 1 I1: a copy that's complete, waiting to import or being imported is never "stalled": not after 10
+    /// minutes either. Only a copy still coming (downloading, something left) counts. Round 19: one blocked from
+    /// importing is given up on (`aBlockedImportIsGivenUpOnAndSearchedAgain`).
     @Test(arguments: [("importPending", "completed", 0.0), ("importing", "completed", 0.0),
-                      ("importBlocked", "warning", 0.0), ("downloading", "completed", 0.0)])
+                      ("downloading", "completed", 0.0)])
     func copyPastDownloadingNeverStalls(_ tracked: String, _ status: String, _ sizeleft: Double) async throws {
         let (h, id) = try await searching()
         var copy = soulseek(901, sizeleft: sizeleft)

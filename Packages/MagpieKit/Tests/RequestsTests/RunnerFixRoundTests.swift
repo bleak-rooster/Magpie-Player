@@ -137,7 +137,12 @@ import MagpieCore
         h.server.ownerHasArtist(albumMonitored: false)
         let id = try await h.runner.tryRecording(h.recording(recAlbumOnly), tier: .standard)
         await h.runner.settle()
-        h.clock.advance(601)
+        // Round 17: nothing found now fails; a failed download is the wait that retries.
+        h.clock.advance(5)
+        h.server.with { s in
+            s.history = [.init(albumId: 31, type: "grabbed", date: h.clock.now),
+                         .init(albumId: 31, type: "downloadFailed", date: h.clock.now.addingTimeInterval(1))]
+        }
         await h.runner.tick()
         guard case .waiting(_, let retryAt) = await h.state(id) else { Issue.record("expected waiting"); return }
         h.clock.advance(retryAt.timeIntervalSince(h.clock.now) + 1)
@@ -153,7 +158,12 @@ import MagpieCore
         h.server.ownerHasArtist(albumMonitored: false)
         let id = try await h.runner.tryRecording(h.recording(recAlbumOnly), tier: .standard)
         await h.runner.settle()
-        h.clock.advance(601)
+        // Round 17: nothing found now fails; a failed download is the wait that retries.
+        h.clock.advance(5)
+        h.server.with { s in
+            s.history = [.init(albumId: 31, type: "grabbed", date: h.clock.now),
+                         .init(albumId: 31, type: "downloadFailed", date: h.clock.now.addingTimeInterval(1))]
+        }
         await h.runner.tick()
         guard case .waiting(_, let retryAt) = await h.state(id) else { Issue.record("expected waiting"); return }
         h.server.with { s in for i in s.albums.indices { s.albums[i].monitored = false } }
@@ -262,6 +272,7 @@ import MagpieCore
         h.server.ownerHasArtist(albumMonitored: false)
         _ = try await h.runner.tryRecording(h.recording(recAlbumOnly), tier: .standard)
         await h.runner.settle()
+        h.server.with { $0.commandStatus = "started" }   // round 19: still searching (a finished one says nothing found)
         let started = h.clock.now
         h.clock.advance(300)
         await h.runner.tick()

@@ -333,6 +333,11 @@ struct RequestDetailView: View {
             Button("Stop looking", role: .destructive) { confirmsStop = true }
                 .frame(minHeight: Tokens.minHitSize)
                 .accessibilityIdentifier("request-stop")
+        case .includeSingles:
+            ActionButton(LibraryFindsCopy.includeSingles, symbol: "music.note.list") {
+                Task { await model.includeSinglesForRequest(request) }
+            }
+            .accessibilityIdentifier("request-include-singles")
         case .remove:
             Button("Remove from the list") {
                 Task {

@@ -163,6 +163,30 @@ enum RequestCopy {
         }
     }
 
+    // Round 17 (owner, 2026-11-05): a request that failed is said out loud (`AppModel.requestFailed`).
+
+    static func failedTitle(_ request: MagpieRequest) -> String { "Couldn\u{2019}t bring in \(detailTitle(request))" }
+
+    /// Nothing holding the song could be found (its single, an EP or an album): it was taken off again.
+    static func failedBody(_ request: MagpieRequest) -> String {
+        switch request.state {
+        case .failed(.notFoundYet), .failed(.noRelease), .failed(.notInCatalogue):
+            "\(request.recording.artist) · no single, EP or album with it could be found, so it\u{2019}s been taken off"
+        default:
+            "\(request.recording.artist) · \(status(request.state))"
+        }
+    }
+
+    /// The in-app notice: one line.
+    static func failedNotice(_ request: MagpieRequest) -> String {
+        switch request.state {
+        case .failed(.notFoundYet), .failed(.noRelease), .failed(.notInCatalogue):
+            "Couldn\u{2019}t find \u{201C}\(detailTitle(request))\u{201D} · it\u{2019}s been taken off"
+        default:
+            "\(failedTitle(request)) · \(status(request.state))"
+        }
+    }
+
     // R17 (with R20's wording): a stalled copy, and the owner's way to drop the copy coming now.
 
     static let sourceStalled = "That copy stopped coming. Looking for another…"

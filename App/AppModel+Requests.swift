@@ -138,7 +138,8 @@ extension AppModel {
             },
             onRefound: { [weak self] request, before in
                 Task { @MainActor in await self?.readyFindRefound(request, before: before) }
-            })
+            },
+            onFailed: { [weak self] request in Task { @MainActor in self?.requestFailed(request) } })
         self.gate = gate
         self.runner = runner
         singlesSwitcher = SinglesSwitcher(lidarr: client, gate: gate, store: singlesStore)
@@ -465,5 +466,14 @@ extension AppModel {
                                   body: request.addToLibrary && request.isFind
                                       ? "\(request.recording.artist) · going into your library now"
                                       : "\(request.recording.artist) · in your \(request.isFind ? "Finds" : "library") now")
+    }
+
+    /// Round 17 (owner, 2026-11-05): a song that couldn't be brought in is said out loud, a notice here and a notification
+    /// when notifications are on. The runner's clean-up takes its release off and a find's artist that has nothing else.
+    func requestFailed(_ request: MagpieRequest) {
+        libraryEdits.notify(RequestCopy.failedNotice(request), symbol: "exclamationmark.circle")
+        guard notifications else { return }
+        ReadyNotifier.shared.postFailed(id: request.id.description, title: RequestCopy.failedTitle(request),
+                                        body: RequestCopy.failedBody(request))
     }
 }

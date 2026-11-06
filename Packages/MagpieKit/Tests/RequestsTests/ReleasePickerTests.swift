@@ -55,3 +55,28 @@ private func rec(_ releases: [MBRelease]) -> MBRecording {
         #expect(ReleasePicker.smallest(containing: r, available: nil) == id(2))
     }
 }
+
+/// Round 19: among singles, the one named after the song (its own single) before an earlier one it is the B-side of;
+/// and the soundtrack or remix releases "Magpie Finds Extras" may bring in.
+@Suite struct ReleasePickerRound19Tests {
+    func rel(_ n: Int, _ title: String, _ type: String, _ date: String, secondary: [String] = [], status: String = "Official") -> MBRelease {
+        MBRelease(id: mbid(800 + n), title: title, date: date, status: status,
+                  releaseGroup: MBReleaseGroup(id: mbid(900 + n), primaryType: type, secondaryTypes: secondary))
+    }
+
+    @Test func theSongsOwnSingleBeforeAnEarlierBSide() {
+        let r = MBRecording(id: mbid(1), title: "APT.", releases: [rel(1, "number one girl", "Single", "2024-01-01"),
+                                                                     rel(2, "APT.", "Single", "2024-10-18"),
+                                                                     rel(3, "rosie", "Album", "2024-12-06")])
+        #expect(ReleasePicker.ordered(containing: r, available: nil) == [mbid(902), mbid(901), mbid(903)])
+    }
+
+    @Test func extrasAreSoundtracksAndRemixesOnly() {
+        #expect(RequestRunner.fitsFindsExtras(rel(1, "KPop Demon Hunters", "Album", "2025", secondary: ["Soundtrack"])))
+        #expect(RequestRunner.fitsFindsExtras(rel(2, "Dracula", "Single", "2025", secondary: ["Remix"])))
+        #expect(!RequestRunner.fitsFindsExtras(rel(3, "Hits", "Album", "2025", secondary: ["Compilation"])))
+        #expect(!RequestRunner.fitsFindsExtras(rel(4, "Live", "Album", "2025", secondary: ["Soundtrack", "Live"])))
+        #expect(!RequestRunner.fitsFindsExtras(rel(5, "Plain", "Single", "2025")), "a studio release is the Finds profile's")
+        #expect(!RequestRunner.fitsFindsExtras(rel(6, "Bootleg", "Single", "2025", secondary: ["Remix"], status: "Bootleg")))
+    }
+}
