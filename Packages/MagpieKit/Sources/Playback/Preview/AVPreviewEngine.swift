@@ -140,27 +140,20 @@ public final class AVPreviewEngine: PreviewEngine {
     private func observeSession() {
         let center = NotificationCenter.default
         let session = AVAudioSession.sharedInstance()
-        notificationTokens.append(center.addObserver(forName: AVAudioSession.didBecomeInactiveNotification,
-                                                     object: session, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.interrupted() }
-        })
-        notificationTokens.append(center.addObserver(forName: AVAudioSession.resumptionRecommendationNotification,
-                                                     object: session, queue: .main) { [weak self] note in
-            let context = note.userInfo?[AVAudioSession.resumptionContextKey] as? AVAudioSession.ResumptionContext
-            let shouldResume = context?.recommendation == .shouldResume
-            MainActor.assumeIsolated {
-                guard let self, self.isLive else { return }
-                self.continuation.yield(.resumption(shouldResume: shouldResume))
-            }
+        // R21 (D166): iOS 27's inactive / resumption-recommendation pair, or iOS 26's interruption notification.
+        notificationTokens += AudioSessionEvents.observeInterruptions(session, began: { [weak self] in
+            self?.interrupted()
+        }, ended: { [weak self] shouldResume in
+            guard let self, self.isLive else { return }
+            self.continuation.yield(.resumption(shouldResume: shouldResume))
         })
         notificationTokens.append(center.addObserver(forName: AVAudioSession.routeChangeNotification,
                                                      object: session, queue: .main) { [weak self] note in
-            let reason = (note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt)
-                .flatMap(AVAudioSession.RouteChangeReason.init(rawValue:))
+            let pauses = AudioSessionEvents.pausesPlayback(note.userInfo)
             MainActor.assumeIsolated {
                 // Headphones unplugged: pause rather than play out of the speaker (as the main engine does). Not a call:
                 // its own event, so no later recommendation resumes it.
-                guard reason == .oldDeviceUnavailable, let self, self.isLive else { return }
+                guard pauses, let self, self.isLive else { return }
                 self.pause()
                 self.continuation.yield(.routeLost)
             }

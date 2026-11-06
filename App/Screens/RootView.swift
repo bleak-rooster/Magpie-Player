@@ -61,7 +61,7 @@ struct MainTabs: View {
                 SearchView()
             }
         }
-        .tabViewBottomAccessory(isEnabled: model.player.queue.current != nil || model.previewPlayer.isActive) {
+        .miniPlayerAccessory(isEnabled: model.player.queue.current != nil || model.previewPlayer.isActive) {
             MiniPlayerAccessory { showNowPlaying = true }
         }
         .sheet(isPresented: $showNowPlaying) {
@@ -76,6 +76,22 @@ struct MainTabs: View {
         .task {   // round 15 C3: UI tests only (`-MagpieUITesting YES`)
             await model.runUITestLetGoIfAsked()
             await model.seedUITestLibraryTrialIfAsked()
+        }
+    }
+}
+
+private extension View {
+    /// The mini player above the tab bar while `isEnabled`. R21 (D166): iOS 26.1 brought the accessory's `isEnabled`;
+    /// on iOS 26.0 the accessory is added only while enabled (an empty one would show a bare capsule), so the tabs are
+    /// laid out afresh, once, when the first song starts or the queue empties.
+    @ViewBuilder
+    func miniPlayerAccessory(isEnabled: Bool, @ViewBuilder content: () -> some View) -> some View {
+        if #available(iOS 26.1, *) {
+            tabViewBottomAccessory(isEnabled: isEnabled, content: content)
+        } else if isEnabled {
+            tabViewBottomAccessory(content: content)
+        } else {
+            self
         }
     }
 }

@@ -3,7 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "MagpieKit",
-    platforms: [.iOS(.v27), .macOS(.v27)],
+    platforms: [.iOS(.v26), .macOS(.v27)],
     products: [
         .library(name: "MagpieCore", targets: ["MagpieCore"]),
         .library(name: "NavidromeKit", targets: ["NavidromeKit"]),

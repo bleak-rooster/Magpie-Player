@@ -3,7 +3,7 @@ options:
   bundleIdPrefix: com.bleak-rooster
   organizationName: bleak-rooster
   deploymentTarget:
-    iOS: "27.0"
+    iOS: "26.0"
   createIntermediateGroups: true
 settings:
   base:

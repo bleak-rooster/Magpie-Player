@@ -30,6 +30,15 @@ enum RequestsBackgroundRefresh {
         }
     }
 
+    /// Hands a request to iOS: iOS 27's async submit, or iOS 26's synchronous one (R21, D166).
+    static func submit(_ request: BGTaskRequest) async throws {
+        if #available(iOS 27, *) {
+            try await BGTaskScheduler.shared.submitTaskRequest(request)
+        } else {
+            try BGTaskScheduler.shared.submit(request)
+        }
+    }
+
     static func request(now: Date = Date()) -> BGAppRefreshTaskRequest {
         let request = BGAppRefreshTaskRequest(identifier: identifier)
         request.earliestBeginDate = now.addingTimeInterval(interval)
@@ -58,9 +67,7 @@ enum RequestsBackgroundRefresh {
 extension AppModel {
     /// Asks iOS for a background pass while any request is still on its way (on going to the background, and after
     /// each pass). Nothing is asked for otherwise.
-    func scheduleRequestRefresh(submit: @escaping (BGTaskRequest) async throws -> Void = {
-        try await BGTaskScheduler.shared.submitTaskRequest($0)
-    }) {
+    func scheduleRequestRefresh(submit: @escaping (BGTaskRequest) async throws -> Void = RequestsBackgroundRefresh.submit) {
         guard let runner else { return }
         Task {
             guard await runner.needsPolling else { return }
@@ -69,9 +76,7 @@ extension AppModel {
     }
 
     /// The scene phase: going to the background asks iOS for a pass while a request is on its way (RootView).
-    func requestsScenePhaseChanged(_ phase: ScenePhase, submit: @escaping (BGTaskRequest) async throws -> Void = {
-        try await BGTaskScheduler.shared.submitTaskRequest($0)
-    }) {
+    func requestsScenePhaseChanged(_ phase: ScenePhase, submit: @escaping (BGTaskRequest) async throws -> Void = RequestsBackgroundRefresh.submit) {
         guard phase == .background else { return }
         scheduleRequestRefresh(submit: submit)
     }
@@ -83,9 +88,8 @@ extension AppModel {
     /// - Returns: whether the pass finished within `limit`.
     func backgroundRequestPass(limit: Duration = RequestsBackgroundRefresh.passLimit,
                                stop: RequestsBackgroundRefresh.PassStop = .init(),
-                               submit: @escaping (BGTaskRequest) async throws -> Void = {
-                                   try await BGTaskScheduler.shared.submitTaskRequest($0)
-                               }) async -> Bool {
+                               submit: @escaping (BGTaskRequest) async throws -> Void = RequestsBackgroundRefresh.submit)
+        async -> Bool {
         if runner == nil, session != nil, reloadKeychainItems() { rebuildRunner() }
         guard let runner else { return false }
         guard !isOffline else {

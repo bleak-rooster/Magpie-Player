@@ -102,7 +102,10 @@ import UIKit
             try await Task.sleep(for: .seconds(0.3))
             let first = log.writes.count
             #expect(try await writes(during: 0.3, log) == 0, "\(host) \(size) \(typeSize): still resizing: \(log.writes.suffix(6))")
-            #expect(first <= 6, "\(host) \(size) \(typeSize): \(first) sizes to lay out: \(log.writes)")
+            // R21 (D166): iOS 26's SwiftUI measures the grid's text at xSmall a few more times before it settles
+            // (measured 7–10 sizes, the same every run); the settle check above holds there as on iOS 27.
+            let budget = if #available(iOS 27, *) { 6 } else { 12 }
+            #expect(first <= budget, "\(host) \(size) \(typeSize): \(first) sizes to lay out: \(log.writes)")
         }
     }
 }
