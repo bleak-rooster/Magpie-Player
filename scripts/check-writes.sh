@@ -590,9 +590,14 @@ if [ -z "${G1_SRC:-}" ]; then
                grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' | cut -d: -f1 | sort -u || true); do
     case "$hit" in
       App/AppModel+Playlists.swift|App/AppModel+DiscoverSwap.swift) ;;
+      # Round 22 (D173): a kept single's song swapped for the album's copy in the owner's own playlists, in place, after
+      # X3's ownership check (pinned below), as the swap above.
+      App/AppModel+KeptSingle.swift) ;;
       *) echo "G1: a playlist write outside X3's checked path: $hit" >&2; bad=1 ;;
     esac
   done
+  grep -qF 'let (fresh, songs) = try await ownPlaylist(list)' App/AppModel+KeptSingle.swift ||
+    { echo "G1: App/AppModel+KeptSingle.swift: the repoint no longer goes through ownPlaylist" >&2; bad=1; }
   grep -qF 'guard Self.isOwn(fresh, by: user), !isDiscoverPlaylist(fresh) else { throw PlaylistEditError.notYours }' App/AppModel+Playlists.swift ||
     { echo "G1: App/AppModel+Playlists.swift: ownPlaylist no longer refuses Discover's playlists" >&2; bad=1; }
   grep -qF 'let (fresh, songs) = try await ownPlaylist(playlist)' App/AppModel+DiscoverSwap.swift ||
