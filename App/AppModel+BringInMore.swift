@@ -19,6 +19,31 @@ enum BringInCopy {
         "Bring in more from \(artist.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "this artist" : artist)?"
     }
 
+    // MARK: - Round 22 (owner, 2026-11-06, D171–D173): the kept single
+
+    /// "The single “Lowlands (single)”".
+    static func single(_ title: String) -> String {
+        let t = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        return t.isEmpty ? "The single" : "The single \u{201C}\(t)\u{201D}"
+    }
+    static let keepSingle = "Keep it"
+    static let removeSingle = "Remove it once the album is here"
+    static let removeSingleNote = "Only the single goes, once the album\u{2019}s copy of the song is in. The artist and everything else stay."
+    static let keepSingleNote = "The single stays beside the album."
+
+    /// What the request page says once it's settled (nil: nothing to say).
+    static func singleOutcome(_ outcome: KeptSingle.Outcome) -> String? {
+        switch outcome {
+        case .kept: nil
+        case .removed: "The single went. The album\u{2019}s copy plays in its place."
+        case .albumDidNotArrive: "The single stays: the album didn't arrive."
+        case .noCopy: "The single stays: the album doesn\u{2019}t have this song."
+        case .notRemovable: "The single stays: it couldn\u{2019}t be removed safely."
+        }
+    }
+
+    static let singleWaiting = "The single goes once the album is here."
+
     static func choice(_ choice: RequestRunner.BringInChoice) -> String {
         switch choice {
         case .albumsAndEPs: "Albums and EPs"
@@ -135,11 +160,12 @@ extension AppModel {
     /// sheet showed, so never more than it said come in (FL4).
     /// R18: `types` (with Everything) and `qualityProfileId` set the artist's release types and quality first.
     func bringIn(_ id: RequestID, choice: RequestRunner.BringInChoice?, offered: [Int]?, follow: Bool,
-                 artist: String, types: ReleaseTypes? = nil, qualityProfileId: Int? = nil) async -> BringInReply {
+                 artist: String, types: ReleaseTypes? = nil, qualityProfileId: Int? = nil,
+                 removeSingle: Bool = false) async -> BringInReply {
         guard let runner else { return BringInReply(error: RequestRunner.BringInError.unavailable) }
         do {
             let result = try await runner.bringIn(id, choice: choice, offered: offered, follow: follow, types: types,
-                                                  qualityProfileId: qualityProfileId)
+                                                  qualityProfileId: qualityProfileId, removeSingle: removeSingle)
             return BringInReply(message: BringInCopy.done(result, artist: artist), succeeded: true)
         } catch {
             return BringInReply(error: error)

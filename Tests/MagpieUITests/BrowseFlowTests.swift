@@ -650,8 +650,9 @@ final class BrowseFlowTests: XCTestCase {
         return app
     }
 
-    /// P3 (re-review N1) with R18 + R20: "Add to your library" with Add with my defaults on is one confirmation naming
-    /// the artist and the defaults in one line, and the confirmed choice reaches the add. The dev library has no
+    /// P3 (re-review N1) with R18 + R20, round 22 (D176): "Add to your library" with Add with my defaults on still shows
+    /// the Add sheet (a new artist always asks which releases come), preset with the defaults, and the choice reaches
+    /// the add. The dev library has no
     /// visible artist with a real MusicBrainz id that Lidarr could add (its only real one, Judie Tzuke, has just a
     /// missing song, which Navidrome hides), so Aurora Field's fixture MBID is used: Lidarr's lookup can't find it,
     /// the add stops before any write (the release types' profile is made only after the lookup), and the error line
@@ -662,15 +663,20 @@ final class BrowseFlowTests: XCTestCase {
         XCTAssertTrue(add.waitForExistence(timeout: 5))
         XCTAssertEqual(add.label, "Add to your library")
         add.tap()
-        XCTAssertTrue(app.staticTexts["Add Aurora Field to your library?"].waitForExistence(timeout: 5),
-                      "one confirmation names the artist")
-        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'Their albums and EPs \u{00B7} Lossless'"))
-                        .firstMatch.exists, "with the defaults in one line")
-        attachScreenshot(app, "artist-add-confirmation")
-        let confirm = app.buttons.matching(NSPredicate(format: "label == 'Add to your library' AND identifier != 'artist-lidarr-add'")).firstMatch
-        confirm.tap()
-        let error = app.descendants(matching: .any)["artist-lidarr-error"]
-        XCTAssertTrue(error.waitForExistence(timeout: 30), "the confirmed choice reached the add (Lidarr can't find the fixture MBID)")
+        // Round 22 (D176): a new artist always asks which releases come, even with Add with my defaults on.
+        let whole = app.buttons["add-what-wholeArtist"]
+        XCTAssertTrue(whole.waitForExistence(timeout: 5), "the Add sheet, not one confirmation")
+        XCTAssertTrue(whole.isSelected, "preset with the defaults")
+        attachScreenshot(app, "artist-add-sheet-with-my-defaults")
+        let start = app.buttons["add-start"]
+        for _ in 0..<8 where !start.isHittable { app.swipeUp() }
+        start.tap()
+        let error = app.descendants(matching: .any)["add-error"]
+        for _ in 0..<15 where !error.exists {
+            app.swipeUp()
+            _ = error.waitForExistence(timeout: 2)
+        }
+        XCTAssertTrue(error.exists, "the choice reached the add (Lidarr can't find the fixture MBID)")
         attachScreenshot(app, "artist-add-result")
     }
 
@@ -682,16 +688,16 @@ final class BrowseFlowTests: XCTestCase {
         let add = app.buttons["artist-lidarr-add"]
         XCTAssertTrue(add.waitForExistence(timeout: 5))
         add.tap()
-        let preset = app.buttons["add-what-albumsAndEPs"]
+        let preset = app.buttons["add-what-wholeArtist"]
         XCTAssertTrue(preset.waitForExistence(timeout: 5), "the Add sheet")
         XCTAssertTrue(preset.isSelected, "preset with the defaults")
         XCTAssertFalse(app.buttons["add-what-thisAlbum"].exists, "Just this album only with an album")
         attachScreenshot(app, "artist-add-sheet")
         // The sheet opens at half height: the rest is below.
-        for id in ["add-studio", "add-live", "add-soundtracks"] {
+        for id in ["add-albums", "add-eps", "add-singles", "add-studio", "add-live", "add-soundtracks"] {
             let toggle = app.switches[id]
             for _ in 0..<4 where !toggle.isHittable { app.swipeUp() }
-            XCTAssertEqual(toggle.value as? String, id == "add-studio" ? "1" : "0", id)
+            XCTAssertEqual(toggle.value as? String, ["add-albums", "add-eps", "add-studio"].contains(id) ? "1" : "0", id)
         }
         let start = app.buttons["add-start"]
         for _ in 0..<8 where !start.isHittable { app.swipeUp() }

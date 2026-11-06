@@ -21,6 +21,8 @@ struct AddSheet: View {
     @State private var loadingSizes = true
     @State private var working = false
     @State private var failure: String?
+    /// R22 (D171): after a Keep, the kept single goes once the album is here (default: it stays).
+    @State private var removeSingle = false
     private let themed = Themed()
 
     init(request: AddFlowRequest, preset: DownloadChoices, onFinish: @escaping (AddOutcome) -> Void) {
@@ -42,6 +44,9 @@ struct AddSheet: View {
                             .foregroundStyle(themed.palette.accentInkColor)
                             .accessibilityIdentifier("add-kept")
                     }
+                }
+                if let note = request.note {
+                    Section { Text(note).accessibilityIdentifier("add-note") }
                 }
                 if needsPick { pickSection } else { choiceSections }
             }
@@ -92,18 +97,33 @@ struct AddSheet: View {
             }
         }
         if choices.what == .wholeArtist {
+            // R22 (owner, D175): albums, EPs and singles, each on its own (at least one).
+            Section {
+                Toggle(NewMusicCopy.albums, isOn: $choices.types.albums).accessibilityIdentifier("add-albums")
+                Toggle(NewMusicCopy.eps, isOn: $choices.types.eps).accessibilityIdentifier("add-eps")
+                Toggle(NewMusicCopy.singles, isOn: $choices.types.singles).accessibilityIdentifier("add-singles")
+            } header: {
+                Text(NewMusicCopy.releasesHeader)
+            } footer: {
+                if !choices.types.hasKind { Text(NewMusicCopy.chooseOne).accessibilityIdentifier("add-choose-one") }
+            }
             Section(NewMusicCopy.kindsHeader) {
                 Toggle(NewMusicCopy.studio, isOn: $choices.types.studio).accessibilityIdentifier("add-studio")
                 Toggle(NewMusicCopy.live, isOn: $choices.types.live).accessibilityIdentifier("add-live")
                 Toggle(NewMusicCopy.soundtracks, isOn: $choices.types.soundtrack).accessibilityIdentifier("add-soundtracks")
             }
         }
-        Section(NewMusicCopy.qualityHeader) {
-            Picker(NewMusicCopy.qualityHeader, selection: $choices.quality) {
-                ForEach(DownloadChoices.Quality.allCases, id: \.self) { Text(NewMusicCopy.quality($0)).tag($0) }
+        if let single = selectedSize?.keptSingle {
+            KeptSingleChoice(title: single, remove: $removeSingle)   // R22 (D171)
+        }
+        if request.showsQuality {
+            Section(NewMusicCopy.qualityHeader) {
+                Picker(NewMusicCopy.qualityHeader, selection: $choices.quality) {
+                    ForEach(DownloadChoices.Quality.allCases, id: \.self) { Text(NewMusicCopy.quality($0)).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .accessibilityIdentifier("add-quality")
             }
-            .pickerStyle(.segmented)
-            .accessibilityIdentifier("add-quality")
         }
         Section {
             Toggle(NewMusicCopy.follow, isOn: $choices.follow).accessibilityIdentifier("add-follow")
@@ -118,8 +138,11 @@ struct AddSheet: View {
                 }
                 .frame(maxWidth: .infinity, minHeight: Tokens.minHitSize)
             }
-            .disabled(working)
+            .disabled(working || !canAdd)
             .accessibilityIdentifier("add-start")
+            if !canAdd {
+                Text(NewMusicCopy.chooseOne).font(.footnote).foregroundStyle(p.ink2Color)
+            }
             if let failure {
                 Label(failure, systemImage: "exclamationmark.triangle")
                     .font(.footnote).foregroundStyle(p.ink2Color)
@@ -129,8 +152,11 @@ struct AddSheet: View {
     }
 
     private var rows: [AddWhat] {
-        [.albumsAndEPs, .albums, .everything] + (request.albumContext ? [.thisAlbum] : [])
+        [.wholeArtist] + (request.albumContext ? [.thisAlbum] : [])
     }
+
+    /// R22: the whole artist needs at least one of albums, EPs and singles (the button says why it waits).
+    private var canAdd: Bool { choices.what == .thisAlbum || choices.types.hasKind }
 
     private var selectedSize: AddSize? { sizes[AddWhat(choices)] }
 
@@ -163,7 +189,7 @@ struct AddSheet: View {
     private func commit() async {
         working = true
         failure = nil
-        let outcome = await request.commit(choices, picked, selectedSize)
+        let outcome = await request.commit(choices, picked, selectedSize, selectedSize?.keptSingle != nil && removeSingle)
         working = false
         if outcome.succeeded {
             onFinish(outcome)
@@ -203,7 +229,8 @@ private struct AddFlowModifier: ViewModifier {
                 guard let asked = request else { return }
                 request = nil
                 switch AddRoute.route(withMyDefaults: model.newMusic.withMyDefaults, defaults: model.newMusic.whenYouAdd,
-                                      albumContext: asked.albumContext, candidates: asked.candidates.count) {
+                                      albumContext: asked.albumContext, candidates: asked.candidates.count,
+                                      kind: asked.kind) {
                 case .sheet(let preset):
                     sheet = SheetItem(request: asked, preset: preset)
                 case .confirm(let choices):
@@ -225,7 +252,7 @@ private struct AddFlowModifier: ViewModifier {
                    isPresented: Binding(get: { confirm != nil }, set: { if !$0 { confirm = nil } }),
                    presenting: confirm) { item in
                 Button(NewMusicCopy.primary(item.request.kind)) {
-                    Task { onFinish(await item.request.commit(item.choices, item.request.candidates.first, item.size)) }
+                    Task { onFinish(await item.request.commit(item.choices, item.request.candidates.first, item.size, false)) }
                 }
                 .accessibilityIdentifier("add-confirm")
                 Button(NewMusicCopy.cancel(item.request.kind), role: .cancel) {}

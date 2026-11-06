@@ -58,11 +58,24 @@ enum NewMusicCopy {
 
     static func what(_ what: AddWhat) -> String {
         switch what {
-        case .albumsAndEPs: "Their albums and EPs"
-        case .albums: "Just albums"
-        case .everything: "Everything, singles too"
+        case .wholeArtist: "The whole artist"
         case .thisAlbum: "Just this album"
         }
+    }
+
+    /// Round 22 (owner, D175): which releases come, chosen one by one (at least one).
+    static let releasesHeader = "Releases"
+    static let albums = "Albums"
+    static let eps = "EPs"
+    static let singles = "Singles"
+    static let chooseOne = "Choose albums, EPs or singles."
+
+    /// "Their albums and EPs", "Their singles", "Their albums, EPs and singles".
+    static func kinds(_ types: ReleaseTypes) -> String {
+        let names = [("albums", types.albums), ("EPs", types.eps), ("singles", types.singles)].filter(\.1).map(\.0)
+        guard let last = names.last else { return "Nothing chosen" }
+        let list = names.count == 1 ? last : names.dropLast().joined(separator: ", ") + " and " + last
+        return "Their " + list
     }
 
     static let studio = "Studio albums"
@@ -82,7 +95,7 @@ enum NewMusicCopy {
     /// The one-line summary under "Add with my defaults"' confirmation: "Their albums and EPs · Lossless · about 14
     /// hours of music", plus "· Following new releases".
     static func summary(_ choices: DownloadChoices, duration: TimeInterval?) -> String {
-        var parts = [what(AddWhat(choices)), quality(choices.quality)]
+        var parts = [choices.what == .wholeArtist ? kinds(choices.types) : what(.thisAlbum), quality(choices.quality)]
         let kinds = [choices.types.live ? "live albums" : nil, choices.types.soundtrack ? "soundtracks" : nil].compactMap { $0 }
         if choices.what == .wholeArtist, !kinds.isEmpty { parts[0] += " with " + kinds.joined(separator: " and ") }
         if choices.what == .wholeArtist, !choices.types.studio { parts[0] += ", no studio albums" }
@@ -111,29 +124,20 @@ enum NewMusicError: Error, Equatable {
     case notSetUp
 }
 
-/// The Add sheet's "What to add" rows: a whole-artist kind, or the one album (only with an album in context).
+/// The Add sheet's "What to add" rows: the whole artist (its releases chosen by the Albums / EPs / Singles switches,
+/// round 22, D175), or the one album (only with an album in context).
 enum AddWhat: String, CaseIterable, Identifiable {
-    case albumsAndEPs, albums, everything, thisAlbum
+    case wholeArtist, thisAlbum
     var id: String { rawValue }
 
     init(_ choices: DownloadChoices) {
-        guard choices.what == .wholeArtist else { self = .thisAlbum; return }
-        self = switch choices.types.kinds {
-        case .albums: .albums
-        case .albumsAndEPs: .albumsAndEPs
-        case .albumsEPsAndSingles: .everything
-        }
+        self = choices.what == .wholeArtist ? .wholeArtist : .thisAlbum
     }
 
-    /// `choices` with this row chosen (the kinds toggles stay as they are).
+    /// `choices` with this row chosen (the release switches stay as they are).
     func applied(to choices: DownloadChoices) -> DownloadChoices {
         var c = choices
-        switch self {
-        case .thisAlbum: c.what = .thisAlbum
-        case .albums: c.what = .wholeArtist; c.types.kinds = .albums
-        case .albumsAndEPs: c.what = .wholeArtist; c.types.kinds = .albumsAndEPs
-        case .everything: c.what = .wholeArtist; c.types.kinds = .albumsEPsAndSingles
-        }
+        c.what = self == .thisAlbum ? .thisAlbum : .wholeArtist
         return c
     }
 }
@@ -234,13 +238,16 @@ extension AppModel {
     }
 
     /// Brings in what the choices say for a kept find, with their release types and quality.
-    func addMore(afterKeep id: RequestID, choices: DownloadChoices, offered: [Int]?, artist: String) async -> BringInReply {
+    /// R22 (D171): `removeSingle`: the kept single goes once an album or EP brought in holds its song.
+    func addMore(afterKeep id: RequestID, choices: DownloadChoices, offered: [Int]?, artist: String,
+                 removeSingle: Bool = false) async -> BringInReply {
         guard let quality = qualityProfileId(choices.quality) else {
             return BringInReply(message: NewMusicCopy.message(for: NewMusicError.notSetUp))
         }
         let choice: RequestRunner.BringInChoice? = (offered?.isEmpty ?? false) ? nil : choices.bringInChoice
         return await bringIn(id, choice: choice, offered: offered, follow: choices.follow, artist: artist,
-                             types: choices.what == .wholeArtist ? choices.types : nil, qualityProfileId: quality)
+                             types: choices.what == .wholeArtist ? choices.types : nil, qualityProfileId: quality,
+                             removeSingle: removeSingle)
     }
 
     // MARK: - Add to your library (an artist not in it yet)
@@ -341,6 +348,9 @@ enum AddKind: Equatable {
 struct AddSize: Equatable {
     var duration: TimeInterval?
     var albumIds: [Int]?
+    /// R22 (D171): after a Keep, the kept single's title when this choice brings in an album or EP (the sheet then asks
+    /// whether to keep the single).
+    var keptSingle: String?
 }
 
 /// How an Add turned out: what to say, and whether it went through.
@@ -357,10 +367,16 @@ struct AddFlowRequest: Identifiable {
     let artist: String
     var albumContext = false
     var candidates: [ArtistLidarr.Candidate] = []
+    /// R22 (D177): the quality row shows (false where the add's quality isn't a choice: a song's Add to library of a
+    /// new artist always asks for the lossless-preferred copy, D136).
+    var showsQuality = true
+    /// R22 (D177): a line at the top of the sheet (the song that comes with a new artist).
+    var note: String?
     /// Each row's size for these release types; rows left out aren't known (A5: never guessed).
     let sizes: @MainActor (ReleaseTypes) async -> [AddWhat: AddSize]
-    /// Does the add with these choices (and the picked artist, when there were several).
-    let commit: @MainActor (DownloadChoices, ArtistLidarr.Candidate?, AddSize?) async -> AddOutcome
+    /// Does the add with these choices (and the picked artist, when there were several). R22: the last argument is the
+    /// kept single's choice after a Keep (true: remove it once the album is here).
+    let commit: @MainActor (DownloadChoices, ArtistLidarr.Candidate?, AddSize?, Bool) async -> AddOutcome
 }
 
 /// Whether an Add shows the sheet or one confirmation, and with what (pure, tested).
@@ -370,12 +386,27 @@ enum AddRoute: Equatable {
     /// Off (or an artist to pick first): the Add sheet, preset with the defaults.
     case sheet(DownloadChoices)
 
+    /// `kind` (round 22, owner: "when adding an artist, you should be given the option to select albums, EPs and/or
+    /// singles. This should be done for all new adds"): a new artist (`.add`) and the whole artist after a Keep
+    /// (`.afterKeep`, where the kept single's choice is asked too) always show the sheet, preset with the defaults; "Add
+    /// with my defaults" still confirms in one step only for Add more (an artist already in your library). Nil: as
+    /// before round 22.
     static func route(withMyDefaults: Bool, defaults: DownloadChoices, albumContext: Bool,
-                      candidates: Int) -> AddRoute {
+                      candidates: Int, kind: AddKind? = nil) -> AddRoute {
         var preset = defaults
         // "Just this album" only with an album in context.
         if !albumContext, preset.what == .thisAlbum { preset.what = .wholeArtist }
-        return withMyDefaults && candidates <= 1 ? .confirm(preset) : .sheet(preset)
+        if !preset.types.hasKind { preset.types = DownloadChoices.defaults.types }
+        let asks = kind.map(Self.alwaysAsks) ?? false
+        return withMyDefaults && candidates <= 1 && !asks ? .confirm(preset) : .sheet(preset)
+    }
+
+    /// R22 (D176): the adds that always ask which releases come.
+    static func alwaysAsks(_ kind: AddKind) -> Bool {
+        switch kind {
+        case .add, .afterKeep: true
+        case .addMore: false
+        }
     }
 }
 
@@ -430,7 +461,7 @@ extension AppModel {
     /// "Add to your library" for an artist not in it: no sizes (Lidarr doesn't have their releases yet).
     func addRequest(artist: String, candidates: [ArtistLidarr.Candidate],
                     add: @escaping @MainActor (MBID, DownloadChoices) async throws -> Void) -> AddFlowRequest {
-        AddFlowRequest(kind: .add, artist: artist, candidates: candidates, sizes: { _ in [:] }) { choices, picked, _ in
+        AddFlowRequest(kind: .add, artist: artist, candidates: candidates, sizes: { _ in [:] }) { choices, picked, _, _ in
             guard let mbid = picked?.mbid ?? (candidates.count == 1 ? candidates[0].mbid : nil) else {
                 return AddOutcome(message: NewMusicCopy.message(for: ArtistLidarrError.notFound), succeeded: false)
             }
@@ -448,7 +479,7 @@ extension AppModel {
                         done: @escaping @MainActor () async -> Void = {}) -> AddFlowRequest {
         AddFlowRequest(kind: .addMore, artist: artist, sizes: { [weak self] types in
             await self?.addMoreSizes(lidarrId: lidarrId, types: types) ?? [:]
-        }) { [weak self] choices, _, _ in
+        }) { [weak self] choices, _, _, _ in
             guard let self else { return AddOutcome(message: NewMusicCopy.message(for: ArtistLidarrError.failed), succeeded: false) }
             do {
                 try await addMoreToLibrary(lidarrId: lidarrId, choices: choices)
@@ -465,38 +496,36 @@ extension AppModel {
     func afterKeepRequest(_ id: RequestID, artist: String, kept: String) -> AddFlowRequest {
         AddFlowRequest(kind: .afterKeep(kept: kept), artist: artist, albumContext: true, sizes: { [weak self] types in
             await self?.afterKeepSizes(id, types: types) ?? [:]
-        }) { [weak self] choices, _, size in
+        }) { [weak self] choices, _, size, removeSingle in
             guard let self else { return AddOutcome(message: BringInCopy.message(for: RequestRunner.BringInError.unavailable), succeeded: false) }
-            let reply = await addMore(afterKeep: id, choices: choices, offered: size?.albumIds, artist: artist)
+            let reply = await addMore(afterKeep: id, choices: choices, offered: size?.albumIds, artist: artist,
+                                      removeSingle: size?.keptSingle != nil && removeSingle)
             return AddOutcome(message: reply.message, succeeded: reply.succeeded)
         }
     }
 
     // MARK: - Sizes
 
-    /// Each whole-artist row's length for an artist Magpie added: their releases of those types not in yet.
+    /// The whole artist's length for an artist Magpie added: their releases of those types not in yet.
     func addMoreSizes(lidarrId: Int, types: ReleaseTypes) async -> [AddWhat: AddSize] {
         guard let client = lidarrClient, !isOffline, let albums = try? await client.albums(artistId: lidarrId) else { return [:] }
-        var sizes: [AddWhat: AddSize] = [:]
-        for what in [AddWhat.albumsAndEPs, .albums, .everything] {
-            let rowTypes = what.applied(to: DownloadChoices(types: types)).types
-            sizes[what] = AddSize(duration: Self.missingDuration(albums, types: rowTypes))
-        }
-        return sizes
+        return [.wholeArtist: AddSize(duration: Self.missingDuration(albums, types: types))]
     }
 
-    /// Each row's length after a Keep, from the kept find's Bring in more offers (writes nothing).
+    /// Each row's length after a Keep, from the kept find's Bring in more offer (writes nothing).
     func afterKeepSizes(_ id: RequestID, types: ReleaseTypes) async -> [AddWhat: AddSize] {
+        guard case .offer(let offer) = await afterKeepOffer(id, types: types) else { return [:] }
+        return Self.afterKeepSizes(offer)
+    }
+
+    /// The Add sheet's rows from a Bring in more offer: the whole artist (Everything, of the chosen types) and Just this
+    /// album, each naming the kept single only when it brings in an album or EP (R22, D171). Pure (tested).
+    nonisolated static func afterKeepSizes(_ offer: RequestRunner.BringInOffer) -> [AddWhat: AddSize] {
         var sizes: [AddWhat: AddSize] = [:]
-        for what in [AddWhat.albumsAndEPs, .albums, .everything] {
-            let rowTypes = what.applied(to: DownloadChoices(types: types)).types
-            guard case .offer(let offer) = await afterKeepOffer(id, types: rowTypes) else { continue }
-            if let option = offer.options[.everything] {
-                sizes[what] = AddSize(duration: option.duration, albumIds: option.albumIds)
-            }
-            if sizes[.thisAlbum] == nil, let option = offer.options[.thisAlbum] {
-                sizes[.thisAlbum] = AddSize(duration: option.duration, albumIds: option.albumIds)
-            }
+        for (what, choice) in [(AddWhat.wholeArtist, RequestRunner.BringInChoice.everything), (.thisAlbum, .thisAlbum)] {
+            guard let option = offer.options[choice] else { continue }
+            sizes[what] = AddSize(duration: option.duration, albumIds: option.albumIds,
+                                  keptSingle: option.albumsOrEPs > 0 ? offer.keptSingle?.title : nil)
         }
         return sizes
     }

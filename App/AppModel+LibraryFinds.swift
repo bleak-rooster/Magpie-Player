@@ -31,6 +31,8 @@ enum LibraryFindsCopy {
     static let putBack = "Put back"
     static let singlesChangedByOwner = "This artist\u{2019}s settings were changed since, so Magpie left them as they are."
     static let refusedKind = "This release can\u{2019}t be added from here. Nothing was asked for."
+    /// R22 (D177): the top of the Add sheet for a new artist's song or album.
+    static func comesToo(_ title: String) -> String { "\u{201C}\(title)\u{201D} comes in too. Choose what else of theirs comes with it." }
     static let singlesRolledBack = "Couldn\u{2019}t list an artist\u{2019}s singles, so everything was put back as it was."
     static let singlesNotStarted = "Couldn\u{2019}t list their singles this time. Nothing was changed."
     /// Round 19: the singles switch went through for a Try; the song is being looked for.
@@ -245,17 +247,31 @@ extension AppModel {
     /// Sends Add to library. Only a new artist's add needs the main library's profiles (M3): "Magpie Lossless Preferred"
     /// and the owner's own Add defaults' metadata profile and following (D136, M2), made through the gate first.
     /// Returns whether the request was accepted.
+    ///
+    /// Round 22 (owner: "when adding an artist, you should be given the option to select albums, EPs and/or singles. This
+    /// should be done for all new adds", D177): a new artist's add first shows the Add sheet, preset with the owner's
+    /// defaults, to choose its albums, EPs and singles (and kinds and following); `chosen` is that answer. The release
+    /// asked for always comes (the types are widened to it, as before).
     @discardableResult
-    func sendToLibrary(_ recording: ExternalRecording, album: MBID?, title: String, preview: RequestRunner.TargetPreview?) async -> Bool {
+    func sendToLibrary(_ recording: ExternalRecording, album: MBID?, title: String, preview: RequestRunner.TargetPreview?,
+                       chosen: DownloadChoices? = nil) async -> Bool {
         do {
             var libraryAdd: RequestRunner.LibraryAddProfile?
             if case .newArtist(_, _, let primary, let secondary, let official)? = preview {
-                guard official, let types = newMusic.whenYouAdd.types.widened(toInclude: primary, secondaryTypes: secondary) else {
+                guard official, newMusic.whenYouAdd.types.widened(toInclude: primary, secondaryTypes: secondary) != nil else {
+                    libraryEdits.notify(LibraryFindsCopy.refusedKind, symbol: "exclamationmark.circle")
+                    return false
+                }
+                guard let chosen else {
+                    songActions.wholeArtistAdd = newArtistAddRequest(recording, album: album, title: title, preview: preview)
+                    return true
+                }
+                guard let types = chosen.types.widened(toInclude: primary, secondaryTypes: secondary) else {
                     libraryEdits.notify(LibraryFindsCopy.refusedKind, symbol: "exclamationmark.circle")
                     return false
                 }
                 try await ensureLibraryQuality()
-                libraryAdd = try await newArtistProfile(types: types)
+                libraryAdd = try await newArtistProfile(types: types, follow: chosen.follow)
             }
             _ = try await startTry(recording, album: album, releaseGroup: nil, intent: .library, libraryAdd: libraryAdd)
             libraryEdits.notify(LibraryFindsCopy.added(title), symbol: "arrow.down.circle")
@@ -278,10 +294,26 @@ extension AppModel {
     /// D136 (review M2, re-review R2): the owner's own Add defaults (Settings › New music) widened to list the release asked
     /// for (`ReleaseTypes.widened`): their metadata profile for those types (made through the gate if missing) and whether
     /// new releases follow.
-    func newArtistProfile(types: ReleaseTypes) async throws -> RequestRunner.LibraryAddProfile {
+    func newArtistProfile(types: ReleaseTypes, follow: Bool? = nil) async throws -> RequestRunner.LibraryAddProfile {
         guard let gate, let client = lidarrClient else { throw RequestRunner.TryError.notSetUp }
         let profile = try await Provisioner().ensureReleaseTypes(types, gate: gate, client: client)
-        return .init(metadataProfileId: profile, follow: newMusic.whenYouAdd.follow)
+        return .init(metadataProfileId: profile, follow: follow ?? newMusic.whenYouAdd.follow)
+    }
+
+    /// R22 (D177): the Add sheet for a song's or album's Add to library of an artist not in the library yet: which of
+    /// their releases come (albums, EPs, singles; kinds) and following. No quality row (the library's lossless-preferred
+    /// copy, D136) and no "about N hours" (Lidarr doesn't list their releases before the add).
+    func newArtistAddRequest(_ recording: ExternalRecording, album: MBID?, title: String,
+                             preview: RequestRunner.TargetPreview?) -> AddFlowRequest {
+        AddFlowRequest(kind: .add, artist: recording.artist, showsQuality: false,
+                       note: LibraryFindsCopy.comesToo(title), sizes: { _ in [:] }) { [weak self] choices, _, _, _ in
+            guard let self else { return AddOutcome(message: NewMusicCopy.message(for: ArtistLidarrError.failed), succeeded: false) }
+            var whole = choices
+            whole.what = .wholeArtist
+            let sent = await sendToLibrary(recording, album: album, title: title, preview: preview, chosen: whole)
+            return AddOutcome(message: sent ? LibraryFindsCopy.added(title) : NewMusicCopy.message(for: ArtistLidarrError.failed),
+                              succeeded: sent)
+        }
     }
 
     /// R2: the types a new artist's Add uses for a release of these kinds (nil: refused before anything is sent).

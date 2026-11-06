@@ -61,6 +61,12 @@ extension RequestRunner {
         /// R22 (D171): the kept find's own release, when Lidarr lists it as a Single: keep it or remove it once an album
         /// or EP brought in holds the song. Nil for any other release.
         public var keptSingle: KeptSingleOffer?
+
+        public init(artistId: Int, artistName: String, options: [BringInChoice: BringInOption], followsNewReleases: Bool,
+                    keptSingle: KeptSingleOffer? = nil) {
+            self.artistId = artistId; self.artistName = artistName; self.options = options
+            self.followsNewReleases = followsNewReleases; self.keptSingle = keptSingle
+        }
     }
 
     /// R22 (D171): the kept single the sheet names ("The single “<title>”").

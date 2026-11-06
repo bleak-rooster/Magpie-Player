@@ -119,7 +119,7 @@ private let twinB = MBID("55555555-5555-4555-8555-555555555555")!
     func commit(_ line: ArtistLidarrModel, pick: MBID? = nil, choices: DownloadChoices = .defaults) async throws -> AddOutcome {
         let flow = try #require(line.addFlow)
         let picked = pick.flatMap { m in flow.candidates.first { $0.mbid == m } }
-        return await flow.commit(choices, picked, nil)
+        return await flow.commit(choices, picked, nil, false)
     }
 
     @Test func statesMapToTheirCopyAndSymbols() {
@@ -226,7 +226,7 @@ private let twinB = MBID("55555555-5555-4555-8555-555555555555")!
         await #expect(throws: ArtistLidarrError.notMagpies) {
             try await model.addMoreToLibrary(lidarrId: 20, choices: .defaults)
         }
-        let outcome = await model.addMoreRequest(artist: "Owner", lidarrId: 20).commit(.defaults, nil, nil)
+        let outcome = await model.addMoreRequest(artist: "Owner", lidarrId: 20).commit(.defaults, nil, nil, false)
         #expect(!outcome.succeeded && outcome.message == "Added outside Magpie. Change it where you added it.")
         await #expect(throws: ArtistLidarrError.alreadyInLidarr) { _ = try await model.addArtist(mbid: ownerMBID, choices: .defaults) }
         #expect(lidarrWrites.isEmpty, "not even a metadata profile")
