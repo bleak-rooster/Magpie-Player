@@ -57,7 +57,8 @@ public enum SlskdRoute: Sendable, Equatable {
         return []
     }
 
-    /// One folder or file name directly inside slskd's downloads folder: not empty, not `.` or `..`, no separator
+    /// One folder or file name directly inside slskd's downloads folder: not empty, not only dots, not ending in a dot
+    /// or a space, no separator
     /// (`/` or `\`), no control character, no `:` (a drive or stream on Windows), at most 255 bytes. A name that
     /// isn't safe is never sent, so a path can only ever name something one level (folder) or two levels (folder/file)
     /// inside the downloads folder.
@@ -65,6 +66,8 @@ public enum SlskdRoute: Sendable, Equatable {
         guard !s.isEmpty, s != ".", s != "..", s.utf8.count <= 255, s.trimmingCharacters(in: .whitespaces) == s else {
             return false
         }
+        // Fix round 1 M1: only dots, or a trailing dot or space: Windows strips them ("..." would name the root).
+        guard !s.allSatisfy({ $0 == "." }), !s.hasSuffix("."), !s.hasSuffix(" ") else { return false }
         return !s.unicodeScalars.contains { $0 == "/" || $0 == "\\" || $0 == ":" || CharacterSet.controlCharacters.contains($0) }
     }
 

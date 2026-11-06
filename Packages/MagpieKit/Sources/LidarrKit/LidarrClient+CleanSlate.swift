@@ -24,6 +24,9 @@ public struct BlocklistEntry: Sendable, Equatable, Decodable {
     }
 }
 
+/// Fix round 1 M5: Lidarr's blocklist is longer than `LidarrClient.blocklistPageLimit` pages.
+public struct BlocklistTooLong: Error, Sendable, Equatable {}
+
 struct BlocklistPage: Decodable {
     var records: [BlocklistEntry]
     var totalRecords: Int?
@@ -86,7 +89,8 @@ extension LidarrClient {
         try await blocklistEntries(pageSize: pageSize).filter { $0.artistId == artistId }
     }
 
-    /// Every blocklist row (`GET /blocklist?page=&pageSize=`), at most `blocklistPageLimit` pages. Read only.
+    /// Every blocklist row (`GET /blocklist?page=&pageSize=`), at most `blocklistPageLimit` pages; a longer
+    /// blocklist throws `BlocklistTooLong` (fix round 1 M5). Read only.
     public func blocklistEntries(pageSize: Int = 250) async throws -> [BlocklistEntry] {
         var out: [BlocklistEntry] = [], page = 1, seen = 0
         while page <= Self.blocklistPageLimit {
@@ -98,10 +102,11 @@ extension LidarrClient {
             do { decoded = try JSONDecoder().decode(BlocklistPage.self, from: data) } catch { throw LidarrError.decoding }
             out += decoded.records
             seen += decoded.records.count
-            guard !decoded.records.isEmpty, let total = decoded.totalRecords, seen < total else { break }
+            guard !decoded.records.isEmpty, let total = decoded.totalRecords, seen < total else { return out }
             page += 1
         }
-        return out
+        // Fix round 1 M5: more pages than Magpie reads: never a partial list (nothing is cleaned).
+        throw BlocklistTooLong()
     }
 
     /// The files Lidarr's history says it imported for this artist (`GET /history/artist?artistId=`), with where each

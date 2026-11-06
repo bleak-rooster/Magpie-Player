@@ -146,8 +146,8 @@ public enum SlskdWrite: Sendable, Equatable {
     case removeTransfer(username: String, id: UUID)
     /// One file of a folder directly inside slskd's downloads folder.
     case deleteFile(folder: String, file: String)
-    /// A folder directly inside slskd's downloads folder, with its files, when every file in it is one of `only`.
-    case deleteFolder(String, only: Set<String>)
+    /// An empty folder directly inside slskd's downloads folder (fix round 1 M2).
+    case deleteFolder(String)
 }
 
 public enum SlskdGateError: Error, Sendable, Equatable {
@@ -164,8 +164,8 @@ public enum SlskdGateError: Error, Sendable, Equatable {
 /// - a transfer record goes only when slskd lists it now, for that user, finished;
 /// - a file goes only when it is in the named folder directly inside the downloads folder now, a finished, complete
 ///   download of that name is in slskd's list, and no unfinished download of that name is;
-/// - a folder goes only when it holds no folder, at least one file, every file is one of the caller's (`only`) and each
-///   passes the file rule.
+/// - a folder goes only when it is empty now (fix round 1 M2: slskd's folder delete is recursive, so its files go one by
+///   one under the file rule first).
 /// Names are one level deep and never `.`/`..` or a separator (`SlskdRoute.isSafeName`), so nothing outside the
 /// downloads folder can be named. Which downloads are an artist's, the runner decides (`SlskdLeftovers`); this gate
 /// keeps that decision from reaching anything in progress or anything slskd didn't download.
@@ -194,7 +194,7 @@ public actor SlskdWriteGate {
         switch write {
         case .removeTransfer(let username, let id): route = .removeTransfer(username: username, id: id)
         case .deleteFile(let folder, let file): route = .deleteFile(folder: folder, file: file)
-        case .deleteFolder(let folder, _): route = .deleteFolder(folder)
+        case .deleteFolder(let folder): route = .deleteFolder(folder)
         }
         guard route.segments != nil else { throw SlskdGateError.refused("not a name inside the downloads folder") }
         let transfers: [SlskdTransfer]
@@ -208,12 +208,10 @@ public actor SlskdWriteGate {
             let listing = try await readFolder(folder)
             guard listing.files.contains(file) else { throw SlskdGateError.refused("no such file there now") }
             try Self.mayDelete(file, transfers)
-        case .deleteFolder(let folder, let only):
+        case .deleteFolder(let folder):
+            // Fix round 1 M2: slskd deletes a folder with everything in it, so only an empty one, read just now.
             let listing = try await readFolder(folder)
-            guard listing.folders.isEmpty, !listing.files.isEmpty, listing.files.allSatisfy(only.contains) else {
-                throw SlskdGateError.refused("the folder holds something else")
-            }
-            for file in listing.files { try Self.mayDelete(file, transfers) }
+            guard listing.folders.isEmpty, listing.files.isEmpty else { throw SlskdGateError.refused("the folder isn't empty") }
         }
         guard enabled else { throw SlskdGateError.disabled }   // turned off during the reads
         let (_, response) = try await client.connection.send(route)

@@ -60,7 +60,7 @@ import MagpieTestSupport
             .allSatisfy { $0.method == "DELETE" })
     }
 
-    @Test(arguments: ["", ".", "..", "a/b", "a\\b", "C:", "a\u{0}", " lead", "trail ", String(repeating: "x", count: 256)])
+    @Test(arguments: ["", ".", "..", "...", "....", "name.", "name ", "a/b", "a\\b", "C:", "a\u{0}", " lead", "trail ", String(repeating: "x", count: 256)])
     func unsafeNamesAreNeverSent(_ name: String) {
         #expect(!SlskdRoute.isSafeName(name))
         #expect(SlskdRoute.deleteFolder(name).url(base: Self.base) == nil)
@@ -93,23 +93,34 @@ import MagpieTestSupport
     @Test func offByDefaultSendsNothing() async throws {
         let env = await Env(on: false)
         #expect(await env.gate.enabled == false)
-        await #expect(throws: SlskdGateError.disabled) { try await env.gate.perform(.deleteFolder(Self.album, only: ["01 - Song.flac"])) }
+        await #expect(throws: SlskdGateError.disabled) { try await env.gate.perform(.deleteFolder(Self.album)) }
         #expect(env.slskd.requests.isEmpty, "nothing read while it's off")
     }
 
     @Test func aFinishedAlbumsFilesFolderAndRecordsGo() async throws {
         let env = await Env()
         try await env.gate.perform(.deleteFile(folder: Self.album, file: "02 - Other.flac"))
-        try await env.gate.perform(.deleteFolder(Self.album, only: ["01 - Song.flac"]))
+        try await env.gate.perform(.deleteFile(folder: Self.album, file: "01 - Song.flac"))
+        try await env.gate.perform(.deleteFolder(Self.album))
         try await env.gate.perform(.removeTransfer(username: "jordan", id: env.done))
-        #expect(env.slskd.with { $0.deleted } == ["file \(Self.album)/02 - Other.flac", "folder \(Self.album)",
-                                                   "record \(env.done.uuidString.lowercased())"])
+        #expect(env.slskd.with { $0.deleted } == ["file \(Self.album)/02 - Other.flac", "file \(Self.album)/01 - Song.flac",
+                                                   "folder \(Self.album)", "record \(env.done.uuidString.lowercased())"])
+    }
+
+    /// Fix round 1 M2: a folder is deleted only once it is empty (slskd deletes a folder with everything in it): a
+    /// folder still holding files is refused, whatever the caller says.
+    @Test func aFolderGoesOnlyWhenEmpty() async throws {
+        let env = await Env()
+        await #expect(throws: SlskdGateError.self) {
+            try await env.gate.perform(.deleteFolder(Self.album))
+        }
+        #expect(env.slskd.writes.isEmpty)
     }
 
     @Test func nothingInProgress() async throws {
         let env = await Env()
         await #expect(throws: SlskdGateError.self) { try await env.gate.perform(.deleteFile(folder: "Another", file: "01 - Busy.flac")) }
-        await #expect(throws: SlskdGateError.self) { try await env.gate.perform(.deleteFolder("Another", only: ["01 - Busy.flac"])) }
+        await #expect(throws: SlskdGateError.self) { try await env.gate.perform(.deleteFolder("Another")) }
         await #expect(throws: SlskdGateError.self) { try await env.gate.perform(.removeTransfer(username: "sam", id: env.running)) }
         // A finished copy whose name another download (under way) also has: not now.
         env.slskd.with { s in
@@ -125,15 +136,15 @@ import MagpieTestSupport
         // A file slskd has no finished download of, and a folder holding it or anything not named, or a subfolder.
         await #expect(throws: SlskdGateError.self) { try await env.gate.perform(.deleteFile(folder: Self.album, file: "cover.jpg")) }
         await #expect(throws: SlskdGateError.self) {
-            try await env.gate.perform(.deleteFolder(Self.album, only: ["01 - Song.flac", "02 - Other.flac"]))
+            try await env.gate.perform(.deleteFolder(Self.album))
         }
         env.slskd.with { s in s.folders["Sub"] = (["01 - Song.flac"], ["Disc 2"]) }
-        await #expect(throws: SlskdGateError.self) { try await env.gate.perform(.deleteFolder("Sub", only: ["01 - Song.flac"])) }
+        await #expect(throws: SlskdGateError.self) { try await env.gate.perform(.deleteFolder("Sub")) }
         // A record of another user, or one slskd doesn't list.
         await #expect(throws: SlskdGateError.self) { try await env.gate.perform(.removeTransfer(username: "sam", id: env.done)) }
         await #expect(throws: SlskdGateError.self) { try await env.gate.perform(.removeTransfer(username: "jordan", id: UUID())) }
         // A path outside the downloads folder can't be named.
-        await #expect(throws: SlskdGateError.self) { try await env.gate.perform(.deleteFolder("..", only: [])) }
+        await #expect(throws: SlskdGateError.self) { try await env.gate.perform(.deleteFolder("..")) }
         await #expect(throws: SlskdGateError.self) { try await env.gate.perform(.deleteFile(folder: "../etc", file: "passwd")) }
         #expect(env.slskd.writes.isEmpty)
     }
@@ -141,7 +152,7 @@ import MagpieTestSupport
     @Test func unreadableSendsNothing() async throws {
         let env = await Env()
         env.slskd.with { $0.down = true }
-        await #expect(throws: SlskdGateError.unconfirmed) { try await env.gate.perform(.deleteFolder(Self.album, only: ["01 - Song.flac", "02 - Other.flac"])) }
+        await #expect(throws: SlskdGateError.unconfirmed) { try await env.gate.perform(.deleteFolder(Self.album)) }
         #expect(env.slskd.writes.isEmpty)
     }
 
@@ -149,7 +160,7 @@ import MagpieTestSupport
         let env = await Env()
         env.slskd.with { $0.remoteFileManagement = false }
         await #expect(throws: SlskdError.unauthorized) {
-            try await env.gate.perform(.deleteFolder(Self.album, only: ["01 - Song.flac", "02 - Other.flac"]))
+            try await env.gate.perform(.deleteFile(folder: Self.album, file: "01 - Song.flac"))
         }
         #expect(env.slskd.with { $0.deleted }.isEmpty)
     }

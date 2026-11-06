@@ -782,6 +782,16 @@ if [ -z "${G1_SRC:-}" ]; then
           *) echo "G1: an slskd write outside the clean slate: $file" >&2; bad=1 ;; esac ;;
     esac
   done <<< "$slhits"
+  # Fix round 1 M4: the slskd gate itself is named only in SlskdKit, the clean slate and the app's slskd connection, so it
+  # can't be taken under another name (`let g = slskd.gate`) and used elsewhere.
+  slgate=$(grep -rnE --include='*.swift' 'slskd[A-Za-z]*\??\.gate\b|\bSlskdWriteGate\b|\bSlskdWrite\b' "${product[@]}" |
+           grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' | cut -d: -f1 | sort -u || true)
+  for f in $slgate; do
+    case "$f" in
+      Packages/MagpieKit/Sources/SlskdKit/*|"$cleanslatefile"|App/AppModel+Slskd.swift) ;;
+      *) echo "G1: the slskd gate named outside its owners: $f" >&2; bad=1 ;;
+    esac
+  done
   [ "$(grep -cE 'slskd\.gate\.perform\(\.(removeTransfer|deleteFile|deleteFolder)\(' "$cleanslatefile")" = 3 ] ||
     { echo "G1: $cleanslatefile: the slskd writes aren't exactly its three" >&2; bad=1; }
 fi
