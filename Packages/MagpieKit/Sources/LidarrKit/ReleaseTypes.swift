@@ -1,38 +1,84 @@
 import Foundation
 
-/// R18: which of an artist's releases a whole-artist download brings in. Albums, Albums + EPs, or Albums + EPs +
-/// Singles, each with Studio, Soundtrack and Live as toggles. Official releases only, always (not a choice).
+/// R18: which of an artist's releases a whole-artist download brings in, with Studio, Soundtrack and Live as toggles.
+/// Official releases only, always (not a choice). Round 22 (owner, 2026-11-06, D175): Albums, EPs and Singles are three
+/// independent switches (at least one on), not R18's ladder (Albums; Albums + EPs; Albums + EPs + Singles), which
+/// `Kinds` still names for choices saved and profiles made before.
 ///
 /// Lidarr filters an artist's releases with a metadata profile, so each choice is a Magpie metadata profile named
 /// `Magpie <Types> · <Secondary>` (`profileName`), provisioned on demand (`Provisioner.ensureReleaseTypes`).
 /// Lidarr's "Studio" secondary type is a release with no secondary type; a profile must allow at least one, so
 /// with every toggle off it is Studio.
 public struct ReleaseTypes: Codable, Hashable, Sendable {
+    /// R18's three choices (saved choices from before round 22 still use them).
     public enum Kinds: String, Codable, CaseIterable, Sendable {
         case albums
         case albumsAndEPs
         case albumsEPsAndSingles
     }
 
-    public var kinds: Kinds
+    public var albums: Bool
+    public var eps: Bool
+    public var singles: Bool
     public var studio: Bool
     public var soundtrack: Bool
     public var live: Bool
 
-    public init(kinds: Kinds = .albumsAndEPs, studio: Bool = true, soundtrack: Bool = false, live: Bool = false) {
-        self.kinds = kinds; self.studio = studio; self.soundtrack = soundtrack; self.live = live
+    public init(albums: Bool = true, eps: Bool = true, singles: Bool = false, studio: Bool = true,
+                soundtrack: Bool = false, live: Bool = false) {
+        self.albums = albums; self.eps = eps; self.singles = singles
+        self.studio = studio; self.soundtrack = soundtrack; self.live = live
+    }
+
+    public init(kinds: Kinds, studio: Bool = true, soundtrack: Bool = false, live: Bool = false) {
+        self.init(albums: true, eps: kinds != .albums, singles: kinds == .albumsEPsAndSingles,
+                  studio: studio, soundtrack: soundtrack, live: live)
     }
 
     /// The owner default: Albums + EPs, Studio.
     public static let standard = ReleaseTypes()
 
+    /// The R18 ladder choice these are, if they are one.
+    public var kinds: Kinds? {
+        switch (albums, eps, singles) {
+        case (true, false, false): .albums
+        case (true, true, false): .albumsAndEPs
+        case (true, true, true): .albumsEPsAndSingles
+        default: nil
+        }
+    }
+
+    /// At least one of Albums, EPs and Singles is on (a profile with none would list nothing).
+    public var hasKind: Bool { albums || eps || singles }
+
+    private enum CodingKeys: String, CodingKey { case kinds, albums, eps, singles, studio, soundtrack, live }
+
+    /// Missing fields read as the defaults; R18's `kinds` reads as its switches; nothing chosen reads as the default.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let d = Self.standard
+        func bool(_ key: CodingKeys, _ fallback: Bool) -> Bool {
+            ((try? c.decodeIfPresent(Bool.self, forKey: key)) ?? nil) ?? fallback
+        }
+        studio = bool(.studio, d.studio); soundtrack = bool(.soundtrack, d.soundtrack); live = bool(.live, d.live)
+        if let ladder = (try? c.decodeIfPresent(Kinds.self, forKey: .kinds)) ?? nil {
+            let t = ReleaseTypes(kinds: ladder)
+            albums = t.albums; eps = t.eps; singles = t.singles
+        } else {
+            albums = bool(.albums, d.albums); eps = bool(.eps, d.eps); singles = bool(.singles, d.singles)
+        }
+        if !hasKind { albums = d.albums; eps = d.eps; singles = d.singles }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(albums, forKey: .albums); try c.encode(eps, forKey: .eps); try c.encode(singles, forKey: .singles)
+        try c.encode(studio, forKey: .studio); try c.encode(soundtrack, forKey: .soundtrack); try c.encode(live, forKey: .live)
+    }
+
     /// Lidarr's primary album type names this allows.
     public var primaryNames: [String] {
-        switch kinds {
-        case .albums: ["Album"]
-        case .albumsAndEPs: ["Album", "EP"]
-        case .albumsEPsAndSingles: ["Album", "EP", "Single"]
-        }
+        [("Album", albums), ("EP", eps), ("Single", singles)].filter(\.1).map(\.0)
     }
 
     /// Lidarr's secondary album type names this allows, in a fixed order; Studio when none is on.
@@ -44,20 +90,20 @@ public struct ReleaseTypes: Codable, Hashable, Sendable {
     /// Release statuses: Official only.
     public static let statuses: Set<String> = ["Official"]
 
-    /// `Magpie Albums+EPs · Studio+Live`.
+    /// `Magpie Albums+EPs · Studio+Live` (R18's names for its three choices, so profiles made before are reused;
+    /// `Magpie Singles · Studio`, `Magpie Albums+Singles · …` for the others, D175).
     public var profileName: String {
-        let kinds = switch kinds {
-        case .albums: "Albums"
-        case .albumsAndEPs: "Albums+EPs"
-        case .albumsEPsAndSingles: "Albums+EPs+Singles"
-        }
+        let kinds = [("Albums", albums), ("EPs", eps), ("Singles", singles)].filter(\.1).map(\.0).joined(separator: "+")
         return "Magpie \(kinds) \u{00B7} \(secondaryNames.joined(separator: "+"))"
     }
 
-    /// Every choice there is (3 kinds × the Studio / Soundtrack / Live toggles).
+    /// Every choice there is (the 7 sets of Albums / EPs / Singles × the Studio / Soundtrack / Live toggles).
     public static var all: [ReleaseTypes] {
-        Kinds.allCases.flatMap { kinds in
-            (0..<8).map { bits in ReleaseTypes(kinds: kinds, studio: bits & 1 != 0, soundtrack: bits & 2 != 0, live: bits & 4 != 0) }
+        (1..<8).flatMap { k in
+            (0..<8).map { bits in
+                ReleaseTypes(albums: k & 1 != 0, eps: k & 2 != 0, singles: k & 4 != 0,
+                             studio: bits & 1 != 0, soundtrack: bits & 2 != 0, live: bits & 4 != 0)
+            }
         }
     }
 
@@ -73,9 +119,10 @@ public struct ReleaseTypes: Codable, Hashable, Sendable {
     public func widened(toInclude albumType: String?, secondaryTypes: [String]) -> ReleaseTypes? {
         var t = self
         switch albumType?.lowercased() {
-        case "album": break
-        case "ep": if t.kinds == .albums { t.kinds = .albumsAndEPs }
-        case "single": t.kinds = .albumsEPsAndSingles
+        // Round 22 (D175): only the release's own kind is added; the others stay as the owner chose.
+        case "album": t.albums = true
+        case "ep": t.eps = true
+        case "single": t.singles = true
         default: return nil
         }
         for secondary in secondaryTypes.isEmpty ? ["studio"] : secondaryTypes.map({ $0.lowercased() }) {
