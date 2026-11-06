@@ -36,6 +36,11 @@ Open the pull request as a draft into the integration branch; CI (write and priv
 must be green before review. Commit messages: `"<area>: <plain-English outcome>"`. If an AI assistant wrote part of a commit, add a trailer naming
 the model. Fill in the pull-request checklist honestly, including anything you didn't run.
 
+## Licence
+
+Magpie is MIT-licensed ([`LICENSE`](LICENSE)). By contributing, you agree that your contributions are licensed
+under the same terms.
+
 ## Security
 
 Found something that could leak credentials or change someone's server unexpectedly? Please report it privately to

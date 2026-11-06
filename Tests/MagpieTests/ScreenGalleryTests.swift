@@ -29,16 +29,25 @@ import UIKit
     static let songTitles = ["North by Northwest", "Compass Rose", "Lantern Hours", "The Long Meridian",
                              "Paper Coastlines", "Night Ferry", "Tidewater", "Small Hours"]
 
+    /// README screenshots only (`ScreenGalleryTests.drawReadmeScreenshots`): albums, songs and the artist carry cover ids,
+    /// whose generated covers are put in the artwork cache first, so nothing is ever fetched. Off for every other test.
+    static var withCovers = false
+
+    static func cover(_ id: String) -> String { withCovers ? #","coverArt":"\#(id)""# : "" }
+
     static func songs(album: String = "a1", albumName: String = "Atlas of Small Hours") -> String {
         songTitles.enumerated().map { i, title in
-            #"{"id":"\#(album)s\#(i + 1)","title":"\#(title)","artist":"The Midnight Cartographers","artistId":"ar1","album":"\#(albumName)","albumId":"\#(album)","track":\#(i + 1),"duration":\#(180 + i * 17),"suffix":"flac","bitRate":900}"#
+            #"{"id":"\#(album)s\#(i + 1)","title":"\#(title)","artist":"The Midnight Cartographers","artistId":"ar1","album":"\#(albumName)","albumId":"\#(album)","track":\#(i + 1),"duration":\#(180 + i * 17),"suffix":"flac","bitRate":900\#(cover("al-" + album))}"#
         }.joined(separator: ",")
     }
 
-    static let albumsJSON = [("a1", "Atlas of Small Hours", 2024), ("a2", "Harbour Lights", 2021), ("a3", "Weather Systems", 2018),
-                             ("a4", "Signal Fires", 2016)]
-        .map { #"{"id":"\#($0.0)","name":"\#($0.1)","artist":"The Midnight Cartographers","artistId":"ar1","year":\#($0.2),"songCount":8,"duration":1800,"genre":"Ambient"}"# }
-        .joined(separator: ",")
+    static let albums = [("a1", "Atlas of Small Hours", 2024), ("a2", "Harbour Lights", 2021), ("a3", "Weather Systems", 2018),
+                         ("a4", "Signal Fires", 2016)]
+
+    static var albumsJSON: String {
+        albums.map { #"{"id":"\#($0.0)","name":"\#($0.1)","artist":"The Midnight Cartographers","artistId":"ar1","year":\#($0.2),"songCount":8,"duration":1800,"genre":"Ambient"\#(cover("al-" + $0.0))}"# }
+            .joined(separator: ",")
+    }
 
     func signedInModel() async throws -> AppModel {
         let t = transport.inner
@@ -48,9 +57,9 @@ import UIKit
         """#.utf8))
         t.stub(pathSuffix: "/api/song", body: Data("[]".utf8), headers: ["X-Total-Count": "0"])
         t.stub(pathSuffix: "/rest/getAlbum", body: Self.subsonic(
-            #""album":{"id":"a1","name":"Atlas of Small Hours","artist":"The Midnight Cartographers","artistId":"ar1","year":2024,"songCount":8,"duration":1660,"genre":"Ambient","song":[\#(Self.songs())]}"#))
+            #""album":{"id":"a1","name":"Atlas of Small Hours","artist":"The Midnight Cartographers","artistId":"ar1","year":2024,"songCount":8,"duration":1660,"genre":"Ambient"\#(Self.cover("al-a1")),"song":[\#(Self.songs())]}"#))
         t.stub(pathSuffix: "/rest/getArtist", body: Self.subsonic(
-            #""artist":{"id":"ar1","name":"The Midnight Cartographers","albumCount":4,"album":[\#(Self.albumsJSON)]}"#))
+            #""artist":{"id":"ar1","name":"The Midnight Cartographers","albumCount":4\#(Self.cover("ar-ar1")),"album":[\#(Self.albumsJSON)]}"#))
         t.stub(pathSuffix: "/rest/getPlaylist", body: Self.subsonic(
             #""playlist":{"id":"p1","name":"Late Night Drive","songCount":8,"duration":1660,"owner":"admin","entry":[\#(Self.songs())]}"#))
         t.stub(pathSuffix: "/rest/getAlbumList2", body: Self.subsonic(#""albumList2":{"album":[\#(Self.albumsJSON)]}"#))
@@ -152,3 +161,67 @@ private struct ProbeModifier: ViewModifier {
         }
     }
 }
+
+/// The README's screenshots: a few main screens in Signature, light and dark, with generated gradient covers (no real
+/// artwork, no server). Runs only when `README_SHOTS_DIR` is set (pass `TEST_RUNNER_README_SHOTS_DIR` to xcodebuild).
+@MainActor @Suite(.serialized) struct ReadmeScreenshotTests {
+    /// One cover per id: a soft diagonal gradient with concentric rings, in the app's palette family.
+    static func coverPNG(_ index: Int, side: Int) -> Data? {
+        let palettes: [(UIColor, UIColor)] = [
+            (UIColor(red: 0.16, green: 0.36, blue: 0.33, alpha: 1), UIColor(red: 0.52, green: 0.78, blue: 0.70, alpha: 1)),
+            (UIColor(red: 0.20, green: 0.22, blue: 0.38, alpha: 1), UIColor(red: 0.93, green: 0.55, blue: 0.47, alpha: 1)),
+            (UIColor(red: 0.44, green: 0.24, blue: 0.16, alpha: 1), UIColor(red: 0.95, green: 0.78, blue: 0.52, alpha: 1)),
+            (UIColor(red: 0.13, green: 0.17, blue: 0.20, alpha: 1), UIColor(red: 0.55, green: 0.66, blue: 0.80, alpha: 1)),
+            (UIColor(red: 0.30, green: 0.18, blue: 0.32, alpha: 1), UIColor(red: 0.86, green: 0.62, blue: 0.80, alpha: 1)),
+        ]
+        let (a, b) = palettes[index % palettes.count]
+        let size = CGSize(width: side, height: side)
+        let image = UIGraphicsImageRenderer(size: size).image { ctx in
+            let cg = ctx.cgContext
+            let gradient = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: [a.cgColor, b.cgColor] as CFArray,
+                                      locations: [0, 1])!
+            cg.drawLinearGradient(gradient, start: .zero, end: CGPoint(x: size.width, y: size.height), options: [])
+            cg.setStrokeColor(UIColor.white.withAlphaComponent(0.18).cgColor)
+            cg.setLineWidth(CGFloat(side) / 120)
+            let centre = CGPoint(x: size.width * 0.62, y: size.height * 0.58)
+            for ring in 1...7 {
+                let r = CGFloat(side) * 0.07 * CGFloat(ring)
+                cg.strokeEllipse(in: CGRect(x: centre.x - r, y: centre.y - r, width: 2 * r, height: 2 * r))
+            }
+        }
+        return image.pngData()
+    }
+
+    @Test func drawReadmeScreenshots() async throws {
+        guard let dir = ProcessInfo.processInfo.environment["README_SHOTS_DIR"], !dir.isEmpty else { return }
+        let out = URL(fileURLWithPath: dir)
+        try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+        ScreenFixture.withCovers = true
+        defer { ScreenFixture.withCovers = false }
+        let fixture = ScreenFixture()
+        let model = try await fixture.signedInModel()
+        let scope = try #require(model.navidromeScope)
+        let ids = ScreenFixture.albums.map { "al-" + $0.0 } + ["ar-ar1"]
+        for (i, id) in ids.enumerated() {
+            for side in [120, 300, 600, 1000] {
+                let data = try #require(Self.coverPNG(i, side: side))
+                await model.artworkDisk.save(data, scope: scope, coverArtId: id, size: side, generation: Int.max)
+            }
+        }
+        let shots: [(String, @MainActor () -> AnyView, UIUserInterfaceStyle)] = [
+            ("home", { AnyView(HomeView()) }, .light),
+            ("album", { AnyView(AlbumView(albumId: "a1")) }, .light),
+            ("artist", { AnyView(ArtistView(artistId: "ar1")) }, .dark),
+            ("library", { AnyView(LibraryView()) }, .dark),
+            ("settings", { AnyView(SettingsView()) }, .light),
+        ]
+        for (name, make, scheme) in shots {
+            let window = try await ScreenFixture.host(make(), model: model, theme: Theme(character: .signature), scheme: scheme)
+            if let data = ScreenFixture.png(window) {
+                try data.write(to: out.appending(path: "\(name).png"))
+            }
+            window.isHidden = true
+        }
+    }
+}
+

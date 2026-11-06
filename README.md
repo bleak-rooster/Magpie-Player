@@ -1,60 +1,148 @@
 # Magpie
 
-An iOS and CarPlay music player for your own **Navidrome** server — and, if you run them, a friendly front end for
-**Lidarr** (bring in music you don't have yet), **Aurral** (charts, recommendations, flows) and **ListenBrainz**
-(scrobbling and recommendations).
+Magpie is an iPhone and CarPlay app for listening to your own music library on a [Navidrome](https://www.navidrome.org)
+server. If you also run [Lidarr](https://lidarr.audio), it can ask Lidarr for songs and albums you don't have yet and
+put them in a separate "Finds" folder, so you can try them before they join your library.
 
-- **Play your library** at home and in the car: albums, artists, genres, playlists, favourites, offline downloads,
-  gapless playback, lyrics, a customisable Home and CarPlay layout.
-- **Try something new.** Ask for a song or an album you don't have; it arrives in a separate **Finds** folder to try
-  for a week. **Keep** it (it moves into your library and upgrades to lossless) or say **Not for me** (it's removed).
-- **Discover** through Aurral's charts and flows, and ListenBrainz's recommendations, with previews.
-- **Safe with your server.** Magpie never changes Lidarr unless you switch that on, and then only through a write
-  gate that confines every change to what Magpie itself did.
+It is a personal project in early development: version 0.0.1, used day to day by its author against one home setup,
+distributed only through TestFlight. It is not on the App Store. Expect rough edges.
 
-Every feature works, or is hidden or explained, whether you connect Navidrome alone or with Lidarr, Aurral or both.
+<p align="center">
+  <img src="docs/images/home.png" width="200" alt="Home screen: a greeting, a grid of recent albums and a row to jump back in">
+  <img src="docs/images/album.png" width="200" alt="Album screen: cover, title, artist, Play, Shuffle and Download buttons, and the track list">
+  <img src="docs/images/artist.png" width="200" alt="Artist screen in the dark theme: artist picture, Play and Shuffle, and the artist's albums">
+  <img src="docs/images/settings.png" width="200" alt="Settings: Navidrome, Lidarr, Aurral and ListenBrainz connections, then playback, downloads, layout, CarPlay and appearance">
+</p>
+<p align="center"><sub>Screens rendered by the test suite from a made-up library, with generated covers. No real server or album art.</sub></p>
 
-## Requirements
+## What it does
 
-- Xcode 27.1 and iOS 27 (simulator or device), [XcodeGen](https://github.com/yonaskolb/XcodeGen) (`brew install xcodegen`)
-- A Navidrome server for real use; Lidarr (with Tubifarry), Aurral and ListenBrainz are optional
-- For the local dev stack: Docker, `curl`, `jq`, `openssl`, `ffmpeg`
+**Your library, through Navidrome**
+- Browse playlists, artists, albums, songs and genres; search as you type; star favourites.
+- A queue with shuffle and repeat, the lock screen and Control Centre, and synced lyrics when your server has them.
+  Playback is gapless when the files carry gapless information.
+- Download albums and playlists for offline listening, with a size-limited cache for what you stream.
+- Several server addresses (home and away). Magpie uses the first that answers and switches when one stops
+  responding.
+- Three looks (Classic, Signature, Immersive), light and dark, and a Home screen and CarPlay layout you can rearrange.
 
-## Build and test
+**CarPlay**
+- Home, Library, Finds and Search tabs, Now Playing with shuffle and repeat. It starts from the car even if the phone
+  is locked, once the phone has been unlocked after a restart.
+
+**Finds, through Lidarr (optional)**
+- Tap **Try** on a song or album you don't have (from search, an artist's page, a playlist or recommendations). Magpie
+  works out which release holds it using MusicBrainz, then asks Lidarr to monitor and search for that release.
+  Lidarr's own indexers and download clients do the downloading; Magpie never downloads music itself.
+- New artists go into a separate Finds folder. **Keep** moves a find into your main library and lets Lidarr upgrade it
+  to lossless. **Not for me** deletes it again.
+- If the song is only on an album, Lidarr still downloads the whole album (Lidarr and its plugins only fetch whole
+  releases). Magpie then removes the album's other songs from your Finds folder.
+- Nothing is changed in Lidarr until you switch on **Allow Magpie to change Lidarr**. Every change goes through one
+  write gate that only allows a short list of requests. It only touches artists and albums Magpie itself added or
+  monitored, and logs each change on the phone before sending it. Your own artists, profiles and settings are never
+  modified.
+
+**Discovery (optional)**
+- With [Aurral](https://github.com/lklynet/aurral): charts, recommendations, previews and Aurral's "flows" (playlists
+  it builds and keeps up to date).
+- With a [ListenBrainz](https://listenbrainz.org) token: your weekly playlists and recommendations. Plays are
+  scrobbled through Navidrome; songs in Finds are never scrobbled.
+
+Every feature works, is hidden, or explains why not, depending on which of these you connect. Navidrome alone is
+enough to use Magpie as a player.
+
+## What it doesn't do, and known limits
+
+- **iOS 27 and Xcode 27.1 only.** It is built and tested for iPhone. It installs on iPad, but the layout hasn't been
+  designed for it.
+- **Navidrome is required.** Magpie uses Navidrome's own API alongside the Subsonic one, so other Subsonic servers
+  won't work. There's no Plex, Jellyfin or streaming-service support, and none is planned.
+- **Getting music depends on your Lidarr setup.** Whether a Try succeeds depends on your indexers and download
+  clients. It has been tested with Soulseek through [Tubifarry](https://github.com/TypNull/Tubifarry). The song also
+  needs to be in MusicBrainz and in Lidarr's metadata. A very new single sometimes isn't there yet; Magpie tries the
+  song's other releases, and otherwise tells you it couldn't find it.
+- **Finds don't expire on their own.** "Days left" is a reminder only. Keeping a find whose release was trimmed brings
+  the whole release back in lossless.
+- **Plain `http://` is allowed** so home servers work without certificates. Magpie asks before sending your password
+  over plain http to a public address, but on an untrusted network your credentials can still be intercepted. Use
+  HTTPS for anything that leaves your home network.
+- **Background work is limited by iOS.** Requests are followed while the app runs and whenever iOS grants background
+  time, so a download that finishes while the app is closed may only show up the next time you open it.
+- **Not built yet:**
+  - in CarPlay: Up Next and Downloaded, and Not for me;
+  - Siri;
+  - Live Activities;
+  - clean-up of a removed artist's files in Soulseek's (slskd's) own download folder.
+- **One developer, one test setup.** Most testing is automated against fakes, plus a local Navidrome and Lidarr. Real
+  use has been on a single home server.
+
+## Roadmap
+
+There are no dates. These are the things most likely to come next, roughly in order:
+
+1. Run CI on every pull request on GitHub (the workflows are in place; the hosted macOS runners need Xcode 27).
+2. Clean up properly when Magpie removes an artist: blocklist entries in Lidarr, and leftover files in slskd.
+3. CarPlay: Up Next and Downloaded.
+4. Try a whole artist, not just a song or an album.
+5. Optional automatic expiry for finds you haven't kept.
+6. iPad layouts.
+
+Requests and ideas are welcome as issues. Larger changes start as a short plan
+([how work is planned](docs/ways-of-working/process.md)).
+
+## Building it yourself
+
+You need a Mac with Xcode 27.1 and [XcodeGen](https://github.com/yonaskolb/XcodeGen) (`brew install xcodegen`).
 
 ```sh
-scripts/build.sh                              # xcodegen generate + build for the simulator
-cd Packages/MagpieKit && swift test           # package tests (macOS)
-scripts/test-app.sh                           # app + UI tests on the dedicated "Magpie Tests" simulator
-scripts/test-all.sh                           # every gate a release needs
+git clone https://github.com/bleak-rooster/magpie.git
+cd magpie
+scripts/build.sh                       # generates Magpie.xcodeproj from project.yml and builds for the simulator
+open Magpie.xcodeproj
 ```
 
-The Xcode project is generated from `project.yml`; open `Magpie.xcodeproj` after `xcodegen generate`. A local
-Navidrome + Lidarr for development: `dev/bootstrap.sh` (see [`dev/README.md`](dev/README.md)). Installing on a
-phone through TestFlight: [`docs/TESTFLIGHT.md`](docs/TESTFLIGHT.md).
+To run it on your own iPhone, sign it with your own Apple developer team in Xcode. CarPlay needs Apple's CarPlay audio
+entitlement on that team; without it, build the variant without CarPlay (`scripts/archive.sh --no-carplay`, or
+`MAGPIE_CARPLAY=NO`). [`docs/TESTFLIGHT.md`](docs/TESTFLIGHT.md) walks through a TestFlight build.
 
-## How it's put together
+## Development
 
-| Part | What it holds |
-|---|---|
-| `App/` | The SwiftUI app and CarPlay scene: `AppModel` (+ one file per feature), screens, downloads, playback glue |
-| `Packages/MagpieKit/Sources/MagpieCore` | Models, networking, Keychain, redaction, preferences |
-| `NavidromeKit` · `LidarrKit` · `AurralKit` · `ListenBrainzKit` | One client per service (Lidarr writes only through `LidarrWriteGate`) |
-| `Requests` | The Try / Finds machinery: request state machine, runner, ledger-confined clean-up, Keep, Not for me |
-| `Search` · `MatchIndex` | Merged search, outside songs and pages, library matching |
-| `Playback` | Player, queue, audio engine, scrobbling, offline storage, previews |
-| `DesignSystem` · `CarPlayUI` | Theme, tokens and components; CarPlay templates |
-| `MagpieTestSupport` | Fakes and stub servers for tests |
+```sh
+cd Packages/MagpieKit && swift test     # package tests (macOS, about a minute)
+scripts/test-app.sh                     # app and UI tests on a dedicated simulator (about 10 minutes)
+scripts/check-writes.sh                 # checks every Lidarr write goes through the write gate
+scripts/test-all.sh                     # everything a release needs
+dev/bootstrap.sh                        # a local Navidrome and Lidarr in Docker, for integration tests
+```
 
-## Documentation
+Most of the logic lives in the Swift package `Packages/MagpieKit`: one module per service (`NavidromeKit`,
+`LidarrKit`, `AurralKit`, `ListenBrainzKit`), plus `Requests` (Try and Finds), `Playback`, `Search`, `CarPlayUI` and
+`DesignSystem`. The app target in `App/` is the SwiftUI layer. Tests never contact a real server.
 
-- [`docs/decisions.md`](docs/decisions.md) — every product and engineering decision, numbered, with its reason
-- [`docs/FLOWS.md`](docs/FLOWS.md) — how each flow behaves · [`docs/RUNBOOK.md`](docs/RUNBOOK.md) — running and testing
-- [`docs/ways-of-working/`](docs/ways-of-working/README.md) — how the project is built (process, rules, templates, GitHub)
-- [`docs/reviews/`](docs/reviews/) and [`docs/superpowers/plans/`](docs/superpowers/plans/) — past reviews and plans
+Further reading:
+- [`docs/decisions.md`](docs/decisions.md) — every product and engineering decision, numbered, with its reason.
+- [`docs/FLOWS.md`](docs/FLOWS.md) — how each flow behaves.
+- [`docs/RUNBOOK.md`](docs/RUNBOOK.md) — running and testing against your own servers.
+- [`docs/ways-of-working/`](docs/ways-of-working/README.md) — the process, rules, templates and GitHub conventions.
 
 ## Contributing
 
-Read [`CONTRIBUTING.md`](CONTRIBUTING.md). If you work with an AI assistant, it should start from
-[`AGENTS.md`](AGENTS.md) (Claude Code also reads [`CLAUDE.md`](CLAUDE.md) and the role definitions in
-[`.claude/agents/`](.claude/agents/)).
+Contributions are welcome. Please read [`CONTRIBUTING.md`](CONTRIBUTING.md) first. The short version:
+- never commit a real server address, username or key;
+- every Lidarr write goes through the write gate;
+- write the failing test first.
+
+If you use an AI coding assistant, point it at [`AGENTS.md`](AGENTS.md). Claude Code also picks up
+[`CLAUDE.md`](CLAUDE.md) and the role definitions in [`.claude/agents/`](.claude/agents/).
+
+Please report security or privacy problems privately, through GitHub's
+[security advisories](https://github.com/bleak-rooster/magpie/security/advisories/new), not in a public issue.
+
+## Licence
+
+[MIT](LICENSE). You can use, change and redistribute Magpie, including in your own apps, as long as the copyright
+notice stays with it.
+
+Magpie is not affiliated with Navidrome, Lidarr, Tubifarry, Aurral, ListenBrainz or MusicBrainz. It relies on their
+work, and on the people who keep MusicBrainz's data accurate.
