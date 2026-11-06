@@ -144,6 +144,14 @@ struct DiscoverPlaylistView: View {
                         }
                         .accessibilityIdentifier("discover-download-songs")
                     }
+                    // Round 22 R22A (D186): its songs couldn't start by themselves; said quietly, here only.
+                    if let flow = page.flow, let note = model.autoDownloadNote(flowId: flow.id) {
+                        Label(AurralAutoDownloadCopy.note(note), systemImage: "info.circle")
+                            .font(.footnote).foregroundStyle(p.ink2Color)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, Tokens.Spacing.l)
+                            .accessibilityIdentifier("discover-auto-download-note")
+                    }
                 }
             }
         }

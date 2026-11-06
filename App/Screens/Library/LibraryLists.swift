@@ -263,7 +263,7 @@ struct PlaylistsListView: View {
 
     /// What `show` lists of `all` (Yours: Save to playlist's owner rule, D101).
     private func listed(_ all: [Playlist]) -> [Playlist] {
-        AppModel.shown(all, show, user: model.session?.username ?? "")
+        AppModel.shown(all, show, user: model.session?.username ?? "", isDiscover: model.isDiscoverPlaylist)
     }
 
     private func row(_ playlist: Playlist) -> some View {

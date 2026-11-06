@@ -17,7 +17,7 @@ struct DiscoverPage: Equatable {
 ///
 /// - Aurral is asked only through `AurralClient`'s allow-listed calls (`AurralRoute`); nothing is ever written to
 ///   Aurral except on the owner's tap: Refresh Flow (refused while a run is active) and round 14's Add flow, Not for me,
-///   Download songs and Retry a song.
+///   Download songs and Retry a song; and (round 22 R22A, D186) Download songs once by itself for a new flow.
 /// - Discover is the Navidrome playlists named after Aurral's flows and playlists (round 22 R22A: every one, unless
 ///   proven the owner's own, D181–D185); they are kept out of Playlists (Home, Library, the car, Add to playlist),
 ///   and no playlist edit is ever sent to one.
@@ -159,6 +159,7 @@ extension AppModel {
             appDefaults.removeObject(forKey: Self.discoverLibrariesKey(scope))
             appDefaults.removeObject(forKey: Self.aurralSongsKey(scope))
             appDefaults.removeObject(forKey: Self.ownPlaylistsKey(scope))   // R22A
+            forgetAutoDownloadRecords(scope: scope)   // R22A (D186)
         }
         syncLibraryScope()
     }
@@ -212,6 +213,7 @@ extension AppModel {
         let jobs = (try? await client.jobs()) ?? nil
         guard navidromeScope == scope, discover.connection?.account == account else { return }   // another account or Aurral
         noteStatus(status)
+        autoDownloadNewFlows(status)   // Round 22 R22A (D186): a new flow's songs start by themselves
         // Round 13: only the signed-in user's flows' songs (Aurral shows an admin everyone's).
         // Round 14 A4 (D94, amends D75): Add flow's synced playlists are Discover's too, matched like flows (named
         // after one and holding its songs); they never get Refresh Flow (`discoverFlow(playlistId:)`).

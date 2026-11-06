@@ -132,6 +132,21 @@ struct AurralSettingsView: View {
         } footer: {
             Text(AurralCopy.compatibilityNote(model.discover.health) ?? AurralCopy.connectedFooter)
         }
+        // Round 22 R22A (D186, D188): new flows' songs, and Discover's playlists in Playlists.
+        Section {
+            Toggle(AurralAutoDownloadCopy.autoDownload, isOn: Binding(get: { model.autoDownloadNewFlows },
+                                                                      set: { model.autoDownloadNewFlows = $0 }))
+                .accessibilityIdentifier("aurral-auto-download")
+        } footer: {
+            Text(AurralAutoDownloadCopy.autoDownloadFooter)
+        }
+        Section {
+            Toggle(AurralAutoDownloadCopy.showInPlaylists, isOn: Binding(get: { model.showDiscoverInPlaylists },
+                                                                         set: { model.showDiscoverInPlaylists = $0 }))
+                .accessibilityIdentifier("aurral-show-in-playlists")
+        } footer: {
+            Text(AurralAutoDownloadCopy.showInPlaylistsFooter)
+        }
         if model.aurralAwaitingConsent {
             Section {
                 Button {

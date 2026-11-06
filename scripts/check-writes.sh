@@ -400,6 +400,18 @@ if [ -z "${G1_SRC:-}" ]; then
               'var o: [String: Any] = ["action": "block_artist", "artistName": name, "sourceContext": "recommended",'; do
     grep -qF -- "$want" "$aurral_discover" || { echo "G1: $aurral_discover: an Aurral write changed (missing: $want)" >&2; bad=1; }
   done
+  # Round 22 R22A (D186): Download songs is asked for from exactly two places: the owner's tap
+  # (AppModel+DiscoverPlaylists.swift) and a new flow's songs starting by themselves (AppModel+AurralAutoDownload.swift),
+  # one call each.
+  dl_callers=$(grep -rnF --include='*.swift' '.downloadFlow(' "${product[@]}" | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' || true)
+  [ "$(printf '%s\n' "$dl_callers" | grep -c .)" = 2 ] || { echo "G1: Aurral's Download songs isn't asked for from exactly two calls" >&2; bad=1; }
+  while IFS= read -r c; do
+    [ -n "$c" ] || continue
+    case "${c%%:*}" in
+      App/AppModel+DiscoverPlaylists.swift|App/AppModel+AurralAutoDownload.swift) ;;
+      *) echo "G1: Aurral's Download songs asked for outside its two callers: ${c%%:*}" >&2; bad=1 ;;
+    esac
+  done <<< "$dl_callers"
   # Round 15 C2 (D131, fix round): the four chart flow writes are sent only from these exact lines in ChartFlows.swift
   # (each path a literal plus a plain id; the create's and append's bodies are built by chartFlowBody only, the
   # removal's is exactly {jobIds}). No PUT to a shared playlist (it left removed songs' files behind).

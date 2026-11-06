@@ -190,4 +190,115 @@ import Testing
         let library = try await model.libraryPlaylists().map(\.id)
         #expect(library.contains("pl-empty") && library.contains("pl-dw"))
     }
+
+    // MARK: - D186: a new flow's songs start by themselves
+
+    /// Aurral's writes to its data (its own login and logout aside).
+    private var aurralWrites: [String] { aurral.asked.filter { $0.hasPrefix("POST") && !$0.hasPrefix("POST /api/auth/") } }
+
+    /// A flow Aurral doesn't download by itself (`autoDownload` false), as Aurral 2.13 lists it.
+    private func manualFlow(_ id: String, _ name: String) -> StubAurral.Flow {
+        var flow = StubAurral.Flow(id: id, name: name)
+        flow.autoDownload = false
+        return flow
+    }
+
+    private let baseFlows: [StubAurral.Flow] = [.init(id: "flow-dw", name: "Discover Weekly"),
+                                                .init(id: "flow-tm", name: "Trending Mix")]
+
+    /// The first read only records what is there; a new flow Aurral won't download by itself gets "Download songs"
+    /// once, in the background; one that downloads by itself and a new Aurral playlist get nothing (Aurral queues
+    /// those itself); reading again never sends it twice.
+    @Test func aNewFlowsSongsStartOnce() async throws {
+        let model = try await signedIn { aurral in
+            aurral.useAurral213()
+            aurral.setFlows([.init(id: "flow-dw", name: "Discover Weekly"), self.manualFlow("flow-tm", "Trending Mix")])
+        }
+        defer { model.signOut() }
+        #expect(aurralWrites.isEmpty, "the flows already there aren't started")
+        #expect(model.handledAurralFlows == ["flow-dw", "flow-tm"])
+        aurral.setFlows(baseFlows + [manualFlow("flow-new", "Night Drive"), .init(id: "flow-self", name: "Self Starter")])
+        aurral.addSharedPlaylist(id: "sp-new", name: "Summer Spotify", provider: "spotify-playlist", songs: [])
+        await model.refreshDiscover(force: true)
+        #expect(await eventually { self.aurralWrites == ["POST /api/playlists/flows/flow-new/download"] }, "\(aurralWrites)")
+        #expect(model.handledAurralFlows?.isSuperset(of: ["flow-new", "flow-self", "sp-new"]) == true)
+        await model.refreshDiscover(force: true)
+        await model.refreshDiscover(force: true)
+        #expect(aurralWrites == ["POST /api/playlists/flows/flow-new/download"], "never twice")
+    }
+
+    /// Never while a run is under way: the flow is looked at again once the run is over.
+    @Test func notWhileARunIsUnderWay() async throws {
+        let model = try await signedIn { $0.useAurral213() }
+        defer { model.signOut() }
+        aurral.setFlows(baseFlows + [manualFlow("flow-new", "Night Drive")])
+        aurral.setRunning("flow-new", true)
+        await model.refreshDiscover(force: true)
+        #expect(aurralWrites.isEmpty && model.handledAurralFlows?.contains("flow-new") == false)
+        aurral.finishRun()
+        await model.refreshDiscover(force: true)
+        #expect(await eventually { self.aurralWrites == ["POST /api/playlists/flows/flow-new/download"] }, "\(aurralWrites)")
+    }
+
+    /// The switch off, or no downloader known: recorded, nothing sent. Aurral answering "no downloader" (409): a
+    /// quiet note on the flow's page, never sent again.
+    @Test func switchOffNoDownloaderAndTheNote() async throws {
+        let model = try await signedIn { $0.useAurral213() }
+        defer { model.signOut() }
+        #expect(model.autoDownloadNewFlows, "on by default")
+        model.autoDownloadNewFlows = false
+        aurral.setFlows(baseFlows + [manualFlow("flow-off", "Off Flow")])
+        await model.refreshDiscover(force: true)
+        #expect(aurralWrites.isEmpty && model.handledAurralFlows?.contains("flow-off") == true)
+        model.autoDownloadNewFlows = true
+        aurral.setDownloadSources(configured: false)   // the bootstrap read at sign-in still says there is one
+        aurral.setFlows(baseFlows + [manualFlow("flow-off", "Off Flow"), manualFlow("flow-409", "No Source")])
+        await model.refreshDiscover(force: true)
+        #expect(await eventually { model.autoDownloadNote(flowId: "flow-409") == .noDownloader })
+        #expect(AurralAutoDownloadCopy.note(.noDownloader).contains("no downloader"))
+        await model.refreshDiscover(force: true)
+        #expect(aurralWrites == ["POST /api/playlists/flows/flow-409/download"], "sent once")
+        await model.refreshAurralCapabilities(force: true)   // now known: none
+        aurral.setFlows(baseFlows + [manualFlow("flow-none", "Still None")])
+        await model.refreshDiscover(force: true)
+        #expect(aurralWrites.count == 1, "no downloader known: nothing sent")
+    }
+
+    // MARK: - D187: Discover groups flows and Aurral's playlists
+
+    /// One list: a flow's playlist and an Aurral playlist side by side, on the phone and in the car.
+    @Test func discoverGroupsFlowsAndPlaylists() async throws {
+        let model = try await signedIn(lists: ["pl-sp": ("Summer Spotify", ["a-old"])]) { aurral in
+            aurral.addSharedPlaylist(id: "sp-1", name: "Summer Spotify", provider: "spotify-playlist",
+                                     songs: [(title: "Old", artist: "Low", durationMs: 300_000)])
+        }
+        defer { model.signOut() }
+        let phone = try await model.discoverPlaylists().map(\.id)
+        #expect(phone.contains("pl-dw") && phone.contains("pl-sp"), "\(phone)")
+        #expect(try await CarPlayLibraryAdapter(model: model).discoverPlaylists().map(\.id) == phone)
+    }
+
+    // MARK: - D188: Show Discover playlists in Playlists
+
+    /// Off by default: Discover's are left out of Playlists. On: they're in Library › Playlists (All) and the car's
+    /// Playlists too, still read-only, never in Yours or the add sheets, still under Discover; saved per account.
+    @Test func showDiscoverPlaylistsInPlaylists() async throws {
+        let model = try await signedIn()
+        defer { model.signOut() }
+        #expect(!model.showDiscoverInPlaylists, "off by default")
+        #expect(try await !model.libraryPlaylists().contains { $0.id == "pl-dw" })
+        model.showDiscoverInPlaylists = true
+        let library = try await model.libraryPlaylists()
+        #expect(library.contains { $0.id == "pl-dw" } && library.contains { $0.id == "pl-empty" })
+        let user = model.session?.username ?? ""
+        #expect(!AppModel.shown(library, .yours, user: user, isDiscover: model.isDiscoverPlaylist).contains { $0.id == "pl-dw" },
+                "never Yours")
+        #expect(try await CarPlayLibraryAdapter(model: model).playlists().contains { $0.id == "pl-dw" })
+        #expect(try await !model.editablePlaylists().contains { $0.id == "pl-dw" }, "never in the add sheets")
+        #expect(!model.canEdit(try #require(library.first { $0.id == "pl-dw" })), "read-only")
+        #expect(try await model.discoverPlaylists().contains { $0.id == "pl-dw" }, "still under Discover")
+        let scope = try #require(model.navidromeScope)
+        #expect(defaults.bool(forKey: AppModel.showDiscoverInPlaylistsKeyPrefix + scope))
+        #expect(AurralAutoDownloadCopy.showInPlaylists == "Show Discover playlists in Playlists")
+    }
 }
