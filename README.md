@@ -83,8 +83,10 @@ enough to use Magpie as a player.
 - **Not built yet:**
   - in CarPlay: Up Next and Downloaded, and Not for me;
   - Siri;
-  - Live Activities;
-  - clean-up of a removed artist's files in Soulseek's (slskd's) own download folder.
+  - Live Activities.
+- **Removing an artist Magpie added clears what it left behind** (Lidarr's blocklist entries for it, and, with the
+  optional Soulseek (slskd) connection and its switch on, slskd's finished downloads of it). The slskd part needs
+  slskd's remote file management turned on, and leaves alone any folder it can't tie to the artist for certain.
 - **One developer, one test setup.** Most testing is automated against fakes. The full request path (search, grab,
   download, import, stop) is also tested against a real Lidarr in Docker, with a stand-in indexer and download client
   that serve generated audio. Real Soulseek behaviour is only seen on the author's own server.
@@ -94,11 +96,10 @@ enough to use Magpie as a player.
 There are no dates. These are the things most likely to come next, roughly in order:
 
 1. Run CI on every pull request on GitHub (the workflows are in place; the hosted macOS runners need Xcode 27).
-2. Clean up properly when Magpie removes an artist: blocklist entries in Lidarr, and leftover files in slskd.
-3. CarPlay: Up Next and Downloaded.
-4. Try a whole artist, not just a song or an album.
-5. Optional automatic expiry for finds you haven't kept.
-6. iPad layouts.
+2. CarPlay: Up Next and Downloaded.
+3. Try a whole artist, not just a song or an album.
+4. Optional automatic expiry for finds you haven't kept.
+5. iPad layouts.
 
 Requests and ideas are welcome as issues. Larger changes start as a short plan
 ([how work is planned](docs/ways-of-working/process.md)).
