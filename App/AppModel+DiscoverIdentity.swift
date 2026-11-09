@@ -13,7 +13,9 @@ import MagpieCore
 ///   playlist is the user's; another user's, or one no item could claim (a tie, Q1), is listed only under everyone's
 ///   and never in Playlists. A playlist no item is named as now (D75's orphan) keeps what it was.
 /// - The claims are saved per account by Aurral item id (`magpie.discoverClaims.<account hash>`, D204), forgotten with
-///   the other Discover keys and when Aurral has deleted the item (R24C's `forgetRemovedAurralItem`).
+///   the other Discover keys and when Aurral has deleted the item (R24C's `forgetRemovedAurralItem`). Fix round 1
+///   (I2): only proven claims are saved (the owner's prefix, the songs, a saved claim the songs don't contradict); a
+///   name-only claim lasts for its read.
 extension AppModel {
     nonisolated static let discoverClaimsKeyPrefix = "magpie.discoverClaims."
     nonisolated static func discoverClaimsKey(_ scope: String) -> String { discoverClaimsKeyPrefix + scope }
@@ -40,13 +42,20 @@ extension AppModel {
         let saved = savedDiscoverClaims(scope: scope)
             ?? DiscoverIdentity.migrate(oldIds: Set(appDefaults.stringArray(forKey: Self.discoverPlaylistsKey(scope)) ?? []),
                                         aurralItems: items, playlists: matched.map(\.playlist))
-        let claims = DiscoverIdentity.assign(aurralItems: items, playlists: matched.map(\.playlist).filter { named.contains($0.id) },
-                                             jobs: jobs, saved: saved, entries: entries)
-        appDefaults.set(claims, forKey: Self.discoverClaimsKey(scope))
+        // Fix round 1 (I2): a run under way isn't evidence against a saved claim (D75); only proof is saved, never a
+        // name-only claim, so another user's same-named playlist never becomes the user's for good.
+        let assignment = DiscoverIdentity.resolve(aurralItems: items,
+                                                  playlists: matched.map(\.playlist).filter { named.contains($0.id) },
+                                                  jobs: jobs, saved: saved, entries: entries,
+                                                  running: Set(mine.map(\.id).filter(isFlowRunActive)))
+        let claims = assignment.claims
+        appDefaults.set(assignment.proven, forKey: Self.discoverClaimsKey(scope))
         let claimedBy = Dictionary(claims.map { ($0.value, $0.key) }, uniquingKeysWith: { a, _ in a })
         let mineById = Dictionary(mine.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         let othersById = Dictionary(others.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         var notMine = Set<String>()
+        var owners: [String: String] = [:]
+        defer { discover.playlistOwners = owners }   // M6: the captions' lookup
         let playlists = matched.map { m -> DiscoverPlaylist in
             let id = m.playlist.id
             guard named.contains(id) else {
@@ -56,6 +65,7 @@ extension AppModel {
             if let item = claimedBy[id], let flow = mineById[item] { return DiscoverPlaylist(flow: flow, playlist: m.playlist) }
             notMine.insert(id)
             if let item = claimedBy[id], let other = othersById[item] {
+                owners[id] = other.ownerUsername
                 return DiscoverPlaylist(flow: AurralFlow(id: "", name: other.name, ownerUserId: other.ownerUserId,
                                                          ownerUsername: other.ownerUsername), playlist: m.playlist)
             }
@@ -74,8 +84,7 @@ extension AppModel {
     /// D205: the owner shown under an Aurral row's name ("sam"): only while everyone's flows are shown, only for
     /// another user's item that claimed the playlist (never a guessed owner), never the signed-in user's own.
     func discoverOwnerCaption(playlistId: String) -> String? {
-        guard showEveryonesFlows, let flow = discover.playlists.first(where: { $0.playlist.id == playlistId })?.flow,
-              flow.id.isEmpty else { return nil }   // the user's own carry their flow id
-        return OwnerCaption.text(owner: flow.ownerUsername, signedInUser: discover.connection?.username)
+        guard showEveryonesFlows, let owner = discover.playlistOwners[playlistId] else { return nil }   // fix round 1 (M6)
+        return OwnerCaption.text(owner: owner, signedInUser: discover.connection?.username)
     }
 }

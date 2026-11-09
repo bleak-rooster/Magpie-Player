@@ -35,12 +35,16 @@ import Testing
 
     /// Aurral's prefix off: the signed-in user's "Chill" and Sam's "Chill" give two Navidrome playlists both called
     /// "Chill": pl-c1 holds the user's songs, pl-c2 Sam's. `sameSongs`: both hold the same songs (a tie).
-    private func signedIn(sameSongs: Bool = false, before: (AppModel) -> Void = { _ in }) async throws -> AppModel {
+    /// `lists`: replaces or adds Navidrome playlists (nil removes one); `setUp`: the stub Aurral before sign-in.
+    private func signedIn(sameSongs: Bool = false, lists: [String: (name: String, songs: [String])?] = [:],
+                          setUp: (StubAurral) -> Void = { _ in },
+                          before: (AppModel) -> Void = { _ in }) async throws -> AppModel {
         nav.lists = [
             "pl-c1": ("Chill", ["a-lullaby", "a-words"]),
             "pl-c2": ("Chill", sameSongs ? ["a-lullaby", "a-words"] : ["a-other", "a-nameonly"]),
             "pl-road": ("Road trip", ["m-x", "m-y"]),
         ]
+        for (id, list) in lists { nav.lists[id] = list }
         nav.install(on: transport.navidrome)
         aurral.useAurral213()
         aurral.addUser(id: 2, username: "sam", password: "sam-pw")
@@ -52,6 +56,7 @@ import Testing
                .init(flowId: "flow-sc", artistName: "Low", trackName: "Halo")]
         aurral.setJobs([.init(flowId: "flow-c", artistName: "Low", trackName: "Lullaby", durationMs: 251_000),
                         .init(flowId: "flow-c", artistName: "Low", trackName: "Words", durationMs: 200_000)] + samJobs)
+        setUp(aurral)
         let model = makeModel()
         try await model.signIn(urls: [URL(string: "http://192.168.1.2:4533")!], username: "admin", password: "pw")
         await model.refreshMusicFolders()
@@ -152,9 +157,62 @@ import Testing
     }
 
     /// Sign-out forgets the claims with the other Discover keys.
+    /// Fix round 1 (I1): sign-out forgets every Discover key of the account: the claims, the playlists proven the
+    /// owner's own (D182), the other users' (D189) and the auto-download records (D186), though the session is gone by
+    /// the time Discover is forgotten.
     @Test func signOutForgetsClaims() async throws {
         let model = try await signedIn()
+        let scope = try #require(model.navidromeScope)
+        defaults.set(["flow-c"], forKey: AppModel.handledFlowsKeyPrefix + scope)
+        defaults.set(["flow-c": "note"], forKey: AppModel.autoDownloadNotesKeyPrefix + scope)
+        let prefixes = [AppModel.discoverClaimsKeyPrefix, AppModel.ownPlaylistsKeyPrefix, AppModel.othersPlaylistsKeyPrefix,
+                        AppModel.handledFlowsKeyPrefix, AppModel.autoDownloadNotesKeyPrefix]
+        #expect(defaults.object(forKey: AppModel.othersPlaylistsKeyPrefix + scope) != nil, "set before sign-out")
+        #expect(defaults.object(forKey: AppModel.ownPlaylistsKeyPrefix + scope) != nil, "set before sign-out")
         model.signOut()
-        #expect(!defaults.dictionaryRepresentation().keys.contains { $0.hasPrefix(AppModel.discoverClaimsKeyPrefix) })
+        let left = defaults.dictionaryRepresentation().keys.filter { key in prefixes.contains { key.hasPrefix($0) } }
+        #expect(left.isEmpty, "\(left)")
+    }
+
+    // MARK: - Fix round 1
+
+    /// I2: a user who isn't an admin sees only their own items. The user's new "Chill" has no playlist yet; the only
+    /// "Chill" on the server is Sam's (its songs read: not the flow's). It never becomes the user's: not under "only
+    /// mine", no Refresh Flow, no Search again; and a later read doesn't revive it.
+    @Test func nameOnly_neverMakesAnotherUsersPlaylistYours() async throws {
+        let model = try await signedIn(lists: ["pl-c1": nil], setUp: { aurral in
+            aurral.setRole("user", for: StubAurral.defaultUsername)
+            aurral.setPermissions(AurralPermissions(accessFlow: true, addArtist: true, addAlbum: true),
+                                  for: StubAurral.defaultUsername)
+            aurral.setJobs([.init(flowId: "flow-c", artistName: "Low", trackName: "Lullaby", durationMs: 251_000, status: "failed"),
+                            .init(flowId: "flow-sc", artistName: "Nobody", trackName: "Unknown Song", durationMs: 180_000),
+                            .init(flowId: "flow-sc", artistName: "Low", trackName: "Halo")])
+        })
+        defer { model.signOut() }
+        #expect(model.discover.status?.othersPlaylists.isEmpty == true, "Sam's flow isn't shown to this user")
+        for _ in 0..<2 {
+            #expect(try await !model.discoverPlaylists().contains { $0.id == "pl-c2" })
+            #expect(model.discoverFlow(playlistId: "pl-c2") == nil)
+            #expect(model.searchAgainFlow(playlistId: "pl-c2") == nil, "never Search again on someone else's")
+            await model.refreshDiscover(force: true)
+        }
+        let scope = try #require(model.navidromeScope)
+        #expect((defaults.dictionary(forKey: AppModel.discoverClaimsKey(scope)) as? [String: String])?["flow-c"] == nil)
+    }
+
+    /// M2: a flow's older-named leftover ("[A] Chill") beside its current playlist goes unclaimed: still Aurral's (out
+    /// of Playlists), listed only under everyone's, with no flow and no owner.
+    @Test func olderNamedLeftover_isUnclaimed() async throws {
+        let model = try await signedIn(lists: ["pl-old": ("[A] Chill", ["a-lullaby", "a-words"])])
+        defer { model.signOut() }
+        #expect(model.isDiscoverPlaylist(id: "pl-old"))
+        #expect(try await !model.discoverPlaylists().contains { $0.id == "pl-old" })
+        #expect(try await !inPlaylists(model).contains("pl-old"))
+        model.showDiscoverInPlaylists = true
+        #expect(try await !inPlaylists(model).contains("pl-old"), "not the user's, so not in Playlists either way")
+        model.showEveryonesFlows = true
+        #expect(try await model.discoverPlaylists().contains { $0.id == "pl-old" })
+        #expect(model.discoverFlow(playlistId: "pl-old") == nil && model.discoverOwnerCaption(playlistId: "pl-old") == nil)
+        #expect(model.discoverFlow(playlistId: "pl-c1")?.id == "flow-c", "the current name is the flow's")
     }
 }

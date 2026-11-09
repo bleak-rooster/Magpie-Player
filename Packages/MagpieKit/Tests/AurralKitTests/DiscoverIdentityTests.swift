@@ -119,4 +119,105 @@ private let sams = item("f-s", "Chill", owner: 2, "sam")
                                                 playlists: playlists)
         #expect(migrated == ["f-f": "p3", "f-j": "p4"], "\(migrated)")
     }
+
+    // MARK: - Fix round 1
+
+    /// I2: a user who isn't an admin sees only their own items. Their "Chill" has jobs; the only "Chill" playlist holds
+    /// another user's songs (read, and not the item's): no claim by name, and a claim saved for it isn't revived.
+    @Test func nameOnly_contradictedBySongs_claimsNothing_andIsNotRevived() {
+        let theirs = [playlist("p-sam", "Chill")]
+        let entries = ["p-sam": [song("s1", "Halo"), song("s2", "Words")]]
+        let jobs = [job("f-j", "Lullaby"), job("f-j", "Old")]
+        let first = DiscoverIdentity.assign(aurralItems: [jordans], playlists: theirs, jobs: jobs, saved: [:], entries: entries)
+        #expect(first.isEmpty, "\(first)")
+        // The next read with a claim saved for it (as the first fix-less read saved, or a migrated round-23 id): still
+        // nothing, as the songs contradict it.
+        let revived = DiscoverIdentity.assign(aurralItems: [jordans], playlists: theirs, jobs: jobs,
+                                              saved: ["f-j": "p-sam"], entries: entries)
+        #expect(revived.isEmpty, "a saved claim the songs contradict isn't kept: \(revived)")
+    }
+
+    /// I2: with nothing to go by (songs unread), the name alone claims for this read only; while the item's run is
+    /// under way its jobs aren't the playlist's songs yet (D75), so a saved claim holds and stays saved.
+    @Test func nameOnly_lastsOneRead_savedHoldsDuringARun() {
+        let theirs = [playlist("p-sam", "Chill")]
+        let entries = ["p-sam": [song("s1", "Halo"), song("s2", "Words")]]
+        let jobs = [job("f-j", "Lullaby"), job("f-j", "Old")]
+        let unread = DiscoverIdentity.resolve(aurralItems: [jordans], playlists: theirs, jobs: jobs, saved: [:], entries: [:])
+        #expect(unread.claims == ["f-j": "p-sam"] && unread.proven.isEmpty, "\(unread)")
+        let running = DiscoverIdentity.resolve(aurralItems: [jordans], playlists: theirs, jobs: jobs,
+                                               saved: ["f-j": "p-sam"], entries: entries, running: ["f-j"])
+        #expect(running.claims == ["f-j": "p-sam"] && running.proven == ["f-j": "p-sam"], "\(running)")
+    }
+
+    /// I2: what is kept for the next read is proof only: the owner's prefix, the songs, a saved claim nothing
+    /// contradicts; never the name alone.
+    @Test func provenClaims_neverNameOnly() {
+        let focus = item("f-f", "Focus", owner: 2, "sam")
+        let playlists = [playlist("p1", "jordan - Chill"), playlist("p2", "Focus"), playlist("p3", "Chill")]
+        let entries = ["p3": [song("s1", "Halo")]]
+        let result = DiscoverIdentity.resolve(aurralItems: [jordans, sams, focus], playlists: playlists,
+                                              jobs: [job("f-s", "Halo")], saved: [:], entries: entries)
+        #expect(result.claims == ["f-j": "p1", "f-s": "p3", "f-f": "p2"], "\(result.claims)")
+        #expect(result.proven == ["f-j": "p1", "f-s": "p3"], "\(result.proven)")
+    }
+
+    /// M5: the owner's prefix doesn't win over an item whose own plain name the playlist carries.
+    @Test func prefix_yieldsToAPlainerName() {
+        let literal = item("f-l", "jordan - Chill", owner: 2, "sam")
+        let claims = DiscoverIdentity.assign(aurralItems: [jordans, literal], playlists: [playlist("p1", "jordan - Chill")],
+                                             jobs: [], saved: [:], entries: [:])
+        #expect(claims["f-j"] == nil, "\(claims)")
+    }
+
+    /// M3: the same answer whatever order Aurral and the server list things in.
+    @Test func identity_isDeterministic() {
+        let focus = item("f-f", "Focus", owner: 1, "jordan")
+        let items = [jordans, sams, focus]
+        let playlists = [playlist("p1", "Chill"), playlist("p2", "Chill"), playlist("p3", "Focus"),
+                         playlist("p4", "[A] Focus"), playlist("p5", "sam - Chill")]
+        let entries = ["p1": [song("s1", "Halo")], "p2": [song("s2", "Lullaby")]]
+        let jobs = [job("f-j", "Halo"), job("f-s", "Lullaby"), job("f-f", "Words")]
+        let expected = DiscoverIdentity.assign(aurralItems: items, playlists: playlists, jobs: jobs, saved: [:], entries: entries)
+        #expect(!expected.isEmpty)
+        var generator = SeededGenerator(seed: 24)
+        for _ in 0..<20 {
+            let again = DiscoverIdentity.assign(aurralItems: items.shuffled(using: &generator),
+                                                playlists: playlists.shuffled(using: &generator),
+                                                jobs: jobs.shuffled(using: &generator), saved: [:], entries: entries)
+            #expect(again == expected)
+        }
+        #expect(DiscoverIdentity.assign(aurralItems: items.reversed(), playlists: playlists.reversed(), jobs: jobs.reversed(),
+                                        saved: [:], entries: entries) == expected)
+    }
+
+    /// M3: migration's "that item only one of the ids": an item two old ids fit by name alone keeps neither.
+    @Test func migrate_itemWithTwoOldIds_keepsNeither() {
+        let migrated = DiscoverIdentity.migrate(oldIds: ["p1", "p2"], aurralItems: [jordans],
+                                                playlists: [playlist("p1", "Chill"), playlist("p2", "[A] Chill")])
+        #expect(migrated.isEmpty, "\(migrated)")
+    }
+
+    /// M1: 300 items, 300 playlists (20 songs each) and 5,000 jobs well inside a second.
+    @Test func identity_scales() {
+        let items = (0..<300).map { item("f-\($0)", "Mix \($0 % 100)", owner: $0 % 3, "user\($0 % 3)") }
+        let playlists = (0..<300).map { playlist("p-\($0)", "Mix \($0 % 100)") }
+        let jobs = (0..<5000).map { job("f-\($0 % 300)", "Song \($0)") }
+        var entries: [String: [Song]] = [:]
+        for p in 0..<300 { entries["p-\(p)"] = (0..<20).map { song("s-\(p)-\($0)", "Song \(p + 300 * $0)") } }
+        let start = ContinuousClock.now
+        _ = DiscoverIdentity.assign(aurralItems: items, playlists: playlists, jobs: jobs, saved: [:], entries: entries)
+        let took = ContinuousClock.now - start
+        #expect(took < .seconds(1), "\(took)")
+    }
+}
+
+/// A small seeded generator, so a shuffle is the same on every run.
+private struct SeededGenerator: RandomNumberGenerator {
+    var state: UInt64
+    init(seed: UInt64) { state = seed }
+    mutating func next() -> UInt64 {
+        state = state &* 6364136223846793005 &+ 1442695040888963407
+        return state
+    }
 }
