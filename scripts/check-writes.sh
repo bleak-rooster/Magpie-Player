@@ -325,12 +325,36 @@ if [ -z "${G1_SRC:-}" ]; then
     "$lk/WriteConfinement+Owned.swift|        guard !Self.hasLiveTry(artistId, in: entries) else { throw Failure.refused(\"a Try of Magpie's is under way for the artist\") }"
     "$lk/WriteConfinement+Owned.swift|                  let types = intent.targetTypes, name == types.profileName else {"
     "$lk/WriteConfinement+Owned.swift|        guard let rootFolder = artist.rootFolderPath, Self.sameBytes(rootFolder, main),"
+    # R24H fix round 1 M1: Revert's guards, the unmonitor type and Magpie-request guards, the monitor-true guards, the
+    # clean-up's last check; I2's kept-or-confirmed rule; I5's Try guards.
+    "$lk/WriteConfinement+Owned.swift|            guard profile == intent.previousProfileId, profiles.contains(where: { \$0.id == profile }),"
+    "$lk/WriteConfinement+Owned.swift|                  book.intents.contains(where: { \$0.kind == .monitoringChange && \$0.artistId == artistId && !\$0.isOpen"
+    "$lk/WriteConfinement+Owned.swift|                  ReleaseTypes.isMagpieMetadataProfile(current) else {"
+    "$lk/WriteConfinement+Owned.swift|            guard !ids.contains(where: { id in entries.contains { \$0.albumId == id && \$0.isOpen && !\$0.isConfirmedKept } }) else {"
+    "$lk/WriteConfinement+Owned.swift|                albums.first { \$0.id == id }.map { !types.includes(albumType: \$0.albumType, secondaryTypes: \$0.secondaryTypes) } == true"
+    "$lk/WriteConfinement+Owned.swift|        guard let types = intent.targetTypes, Set(ids).isSubset(of: intent.monitorAlbumIds),"
+    "$lk/WriteConfinement+Owned.swift|              Set(ids).isDisjoint(with: intent.beforeAlbumIds) else {"
+    "$lk/WriteConfinement+Owned.swift|                  types.includes(albumType: album.albumType, secondaryTypes: album.secondaryTypes) else {"
+    "$lk/WriteConfinement+Owned.swift|            if search, !album.monitored { throw Failure.refused(\"a search only for an album just monitored\") }"
+    "$lk/WriteConfinement+Owned.swift|        return book.intents.contains { \$0.id == id && \$0.isOpen && \$0.kind == .unmatchedCleanup && \$0.artistId == artistId }"
+    "$lk/WriteConfinement+Owned.swift|            && !OwnedProof.hasLiveTry(artistId, in: entries)"
+    "$lk/WriteConfinement+Owned.swift|        if book.kept(artistId: artistId)?.files.contains(file) == true { return true }"
+    "$lk/WriteConfinement+Owned.swift|            change.kind == .monitoringChange && change.artistId == artistId && change.step == .done && !change.keepFiles"
+    "$lk/WriteConfinement+Owned.swift|                && change.files.contains(file) && change.unmonitorAlbumIds.contains(file.albumId)"
+    "$lk/WriteConfinement+Owned.swift|            guard Self.keptOrConfirmed(recorded, artistId: artistId, in: book) else {"
+    "$lk/WriteConfinement+Owned.swift|        guard !Self.hasLiveTry(artistId, in: entries) else { throw Failure.refused(\"a Try of Magpie's is under way for the artist\") }"
+    "$lk/WriteConfinement+Owned.swift|                guard !OwnedProof.hasLiveTry(artistId, in: entries) else { throw OwnedProof.Failure.refused(\"a Try of Magpie's is under way for the artist\") }"
+    "$lk/Ledger.swift|    nonisolated var monitoringURL: URL? { fileURL.map(Self.monitoringURL(beside:)) }"
   )
   for pin in "${owned_pins[@]}"; do
     file="${pin%%|*}" want="${pin#*|}"
     grep -qxF -- "$want" "$file" || { echo "G1: $file: a Round 24 owned-artist proof changed or is gone: ${want#"${want%%[![:space:]]*}"}" >&2; bad=1; }
   done
-  for f in $(grep -rlE --include='*.swift' '\b(saveIntent|updateMonitoring|setKept)\(' "${product[@]}" | sort -u || true); do
+  # R24H fix round 1 I6: any mention (a trailing closure, a spaced call), the book's file, URL or types made anywhere
+  # else; comment lines don't count.
+  book_hits=$(grep -rnE --include='*.swift' '\b(saveIntent|updateMonitoring|setKept|monitoringURL)\b|\b(MonitoringBook|MonitoringIntent)[[:space:]]*\(|-monitoring\.json' \
+                "${product[@]}" | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' | cut -d: -f1 | sort -u || true)
+  for f in $book_hits; do
     case "$f" in
       "$lk/Ledger.swift"|Packages/MagpieKit/Sources/Requests/MonitoringChange.swift) ;;
       *) echo "G1: the ledger's monitoring book written outside MonitoringChange.swift: $f" >&2; bad=1 ;;

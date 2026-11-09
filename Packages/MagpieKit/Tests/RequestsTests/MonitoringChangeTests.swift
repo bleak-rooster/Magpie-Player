@@ -13,7 +13,7 @@ import MagpieTestSupport
 final class MonitoringLidarr: @unchecked Sendable {
     struct Album { var id: Int; var primary: String; var secondary: [String] = []; var monitored: Bool; var title: String }
     struct File { var id: Int; var album: Int; var size: Int64; var title: String; var recording: String }
-    struct State {
+    struct State: @unchecked Sendable {
         var profileId = 5
         var follow = "none"
         var albums: [Album] = []
@@ -21,6 +21,13 @@ final class MonitoringLidarr: @unchecked Sendable {
         var files: [File] = []
         var loseNextAnswer: String?
         var refreshStatus = "completed"
+        var profiles: [[String: Any]] = MonitoringLidarr.profiles
+        /// Reads of the artist fail (Lidarr unreachable for that call).
+        var artistFails = false
+        /// Commands Lidarr lists (`GET /command`).
+        var commands: [[String: Any]] = []
+        /// The next POST /command answers 503 this many times.
+        var failCommands = 0
     }
     static let ownerMBID = MBID("20202020-2020-4020-8020-202020202020")!
     let transport = MockTransport()
@@ -91,7 +98,7 @@ final class MonitoringLidarr: @unchecked Sendable {
 
     func applyRefresh() {
         state.withLockUnchecked { s in
-            let profile = Self.profiles.first { $0["id"] as? Int == s.profileId } ?? [:]
+            let profile = s.profiles.first { $0["id"] as? Int == s.profileId } ?? [:]
             func allowed(_ field: String) -> Set<String> {
                 Set((profile[field] as? [[String: Any]] ?? []).filter { $0["allowed"] as? Bool == true }
                     .compactMap { ($0["albumType"] as? [String: Any])?["name"] as? String })
@@ -114,12 +121,25 @@ final class MonitoringLidarr: @unchecked Sendable {
         let t = transport
         t.stub(pathSuffix: "/api/v1/rootfolder") { _ in Self.reply([["id": 1, "path": "/music/library"], ["id": 2, "path": "/music/samples"]]) }
         t.stub(pathSuffix: "/api/v1/artist/20") { [self] _ in
+            if state.withLockUnchecked({ $0.artistFails }) { return .init(status: 503) }
             let p = state.withLockUnchecked { $0.profileId }
             return Self.reply(["id": 20, "artistName": "Owner", "foreignArtistId": Self.ownerMBID.rawValue, "monitored": true,
                                "tags": [Int](), "metadataProfileId": p, "monitorNewItems": "none",
                                "path": "\(root)/Owner", "rootFolderPath": root])
         }
-        t.stub(pathSuffix: "/api/v1/metadataprofile") { _ in Self.reply(Self.profiles) }
+        t.stub(pathSuffix: "/api/v1/metadataprofile") { [self] _ in Self.reply(state.withLockUnchecked { $0.profiles }) }
+        t.stub(pathSuffix: "/api/v1/metadataprofile/schema") { _ in
+            Self.reply(Self.profile(0, "", primary: [], secondary: []))
+        }
+        t.stub(method: "POST", pathSuffix: "/api/v1/metadataprofile") { [self] req in
+            var body = try JSONSerialization.jsonObject(with: req.httpBody!) as! [String: Any]
+            let id = state.withLockUnchecked { $0.profiles.count + 40 }
+            body["id"] = id
+            let made = body
+            state.withLockUnchecked { $0.profiles.append(made) }
+            return Self.reply(made, status: 201)
+        }
+        t.stub(pathSuffix: "/api/v1/command") { [self] _ in Self.reply(state.withLockUnchecked { $0.commands }) }
         t.stub(pathSuffix: "/api/v1/album") { [self] _ in
             Self.reply(state.withLockUnchecked { s in s.albums.map { a -> [String: Any] in
                 ["id": a.id, "title": a.title, "artistId": 20, "monitored": a.monitored, "albumType": a.primary,
@@ -152,7 +172,15 @@ final class MonitoringLidarr: @unchecked Sendable {
         }
         t.stub(method: "POST", pathSuffix: "/api/v1/command") { [self] req in
             let body = try JSONSerialization.jsonObject(with: req.httpBody!) as! [String: Any]
-            if (body["name"] as? String) == "RefreshArtist" { applyRefresh() }
+            if state.withLockUnchecked({ s -> Bool in
+                guard s.failCommands > 0 else { return false }
+                s.failCommands -= 1
+                return true
+            }) { return .init(status: 503) }
+            if (body["name"] as? String) == "RefreshArtist" {
+                applyRefresh()
+                try loseAnswer("refresh")
+            }
             return Self.reply(["id": 9], status: 201)
         }
         t.stub(method: "PUT", pathSuffix: "/api/v1/artist/editor") { [self] req in
@@ -427,6 +455,149 @@ final class MonitoringLidarr: @unchecked Sendable {
         #expect(try await again.entries.isEmpty, "the album entries never see an owner's artist")
         #expect(FileManager.default.fileExists(atPath: dir.appending(path: "lidarr-ledger-monitoring.json").path))
     }
+
+    // MARK: - Fix round 1
+
+    /// I3: sign-out forgets the book of every Lidarr with nothing open, and keeps a Lidarr's whose change is unfinished.
+    @Test func i3_signOutForgetsFinishedMonitoring() async throws {
+        let dir = FileManager.default.temporaryDirectory.appending(path: "Forget-\(UUID().uuidString)")
+        let url = Ledger.defaultURL(in: dir)
+        let done = Ledger(fileURL: url, instance: "lidarr-a"), open = Ledger(fileURL: url, instance: "lidarr-b")
+        var finished = MonitoringIntent(kind: .monitoringChange, artistId: 20, artistMbid: MonitoringLidarr.ownerMBID,
+                                        previousProfileId: 5, targetProfileId: 30, createdAt: Date())
+        finished.step = .done
+        try await done.saveIntent(finished)
+        try await done.setKept(artistId: 20, UnmonitoredKept(artistId: 20, artistMbid: MonitoringLidarr.ownerMBID, albumIds: [2],
+                                                             files: [OwnedFile(id: 103, albumId: 2, size: 500)], recordedAt: Date()))
+        try await open.saveIntent(MonitoringIntent(kind: .monitoringChange, artistId: 21, artistMbid: MonitoringLidarr.ownerMBID,
+                                                   previousProfileId: 5, targetProfileId: 30, createdAt: Date()))
+        Ledger.forgetFinished(in: dir)
+        #expect(try await done.monitoringBook == MonitoringBook(), "nothing open: forgotten, kept set too")
+        #expect(try await open.monitoringBook.intents.count == 1, "an unfinished change stays")
+        // Once the last open change is closed, the file goes.
+        var last = try #require(try await open.monitoringBook.intents.first)
+        last.step = .abandoned
+        try await open.saveIntent(last)
+        Ledger.forgetFinished(in: dir)
+        #expect(!FileManager.default.fileExists(atPath: dir.appending(path: "Magpie/lidarr-ledger-monitoring.json").path))
+    }
+
+    /// I1: the Magpie profile is made only once the intent is saved: a save that fails sends nothing, not even the profile.
+    @Test func i1_noProfileIsMadeBeforeTheIntentIsSaved() async throws {
+        let blocker = FileManager.default.temporaryDirectory.appending(path: "Blocked-\(UUID().uuidString)")
+        try Data().write(to: blocker)
+        let fake = await MonitoringLidarr(ledgerURL: blocker.appending(path: "ledger.json"))
+        fake.state.withLockUnchecked { $0.profiles.removeAll { $0["id"] as? Int == 30 } }
+        let changer = fake.changer()
+        let preview = try await changer.preview(artistId: 20, types: MonitoringLidarr.albumsOnly, keep: Self.nothingKept)
+        await #expect(throws: MonitoringChangeError.notSaved) { _ = try await changer.apply(preview, choice: .keep) }
+        #expect(fake.writes.isEmpty, "\(fake.writes.map(\.0))")
+    }
+
+    /// I1: a missing profile is made after the save, and its id recorded before the first change write.
+    @Test func i1_aMissingProfileIsMadeAfterTheSaveAndRecorded() async throws {
+        let fake = await MonitoringLidarr()
+        fake.state.withLockUnchecked { $0.profiles.removeAll { $0["id"] as? Int == 30 } }
+        let changer = fake.changer()
+        let preview = try await changer.preview(artistId: 20, types: MonitoringLidarr.albumsOnly, keep: Self.nothingKept)
+        #expect(try await changer.apply(preview, choice: .keep) == .finished)
+        #expect(fake.writes.first?.0 == "POST metadataprofile")
+        let made = try #require(fake.state.withLockUnchecked { $0.profiles.last?["id"] as? Int })
+        #expect(fake.state.withLockUnchecked { $0.profileId } == made)
+        #expect(try await fake.ledger.monitoringBook.intents.first?.targetProfileId == made)
+    }
+
+    /// I2: a clean-up deletes only kept files, whatever rows the caller hands it.
+    @Test func i2_cleanUpDeletesOnlyKeptFiles() async throws {
+        let fake = await MonitoringLidarr()
+        let changer = fake.changer()
+        _ = try await changer.apply(try await changer.preview(artistId: 20, types: MonitoringLidarr.albumsOnly, keep: Self.nothingKept),
+                                    choice: .keep)
+        var cleanup = try await changer.cleanupPreview(artistId: 20, keep: Self.nothingKept)
+        // A row for the album the owner unmonitored himself (never kept on reducing).
+        cleanup.rows.append(.init(file: OwnedFile(id: 109, albumId: 9, size: 900), title: "Old", album: "Owner Unmonitored",
+                                  recording: nil, kept: false))
+        #expect(try await changer.cleanUp(cleanup) == .finished)
+        #expect(Set(fake.deletes.flatMap { $0 }) == [103, 104])
+        #expect(fake.fileIds.contains(109))
+    }
+
+    /// I2: Delete them deletes only files of albums that stop being monitored, whatever files the preview carries.
+    @Test func i2_deleteThemOnlyFilesOfAlbumsFallingOut() async throws {
+        let fake = await MonitoringLidarr()
+        let changer = fake.changer()
+        var preview = try await changer.preview(artistId: 20, types: MonitoringLidarr.albumsOnly, keep: Self.nothingKept)
+        preview.files.append(OwnedFile(id: 109, albumId: 9, size: 900))
+        preview.files.append(OwnedFile(id: 101, albumId: 1, size: 1000))
+        #expect(try await changer.apply(preview, choice: .delete) == .finished)
+        #expect(Set(fake.deletes.flatMap { $0 }) == [103, 104])
+        #expect(fake.fileIds == [101, 102, 109])
+    }
+
+    /// I4: a change that stopped partway (given up after repeated failures) can still be put back while the artist is on
+    /// the profile it set.
+    @Test func i4_aChangeThatStoppedPartwayCanBePutBack() async throws {
+        let fake = await MonitoringLidarr()
+        let changer = fake.changer()
+        let preview = try await changer.preview(artistId: 20, types: MonitoringLidarr.albumsOnly, keep: Self.nothingKept)
+        fake.state.withLockUnchecked { $0.failCommands = 100 }
+        var outcome = try await changer.apply(preview, choice: .keep)
+        for _ in 0..<MonitoringChanger.maxFailures where outcome == .pending {
+            outcome = await changer.resume(artistId: 20) ?? .pending
+        }
+        #expect(outcome == .abandoned)
+        #expect(fake.state.withLockUnchecked { $0.profileId } == 30)
+        let now = try await changer.current(artistId: 20)
+        #expect(now.stoppedPartway && now.canRevert)
+        fake.state.withLockUnchecked { $0.failCommands = 0 }
+        #expect(try await changer.revert(artistId: 20) == .finished)
+        #expect(fake.state.withLockUnchecked { $0.profileId } == 5)
+    }
+
+    /// I5: nothing is recorded or sent while a Try of Magpie's is under way for the artist.
+    @Test func i5_aTryUnderWayRefusesTheChange() async throws {
+        let fake = await MonitoringLidarr()
+        try await fake.ledger.record(LedgerEntry(lidarrArtistId: 20, albumId: 7, rgMbid: MBID("00000000-0000-0000-0000-000000000007")!,
+                                                 createdArtist: false, wasMonitoredBefore: false, root: "/music/library",
+                                                 mode: .fallback, send: .applied, requestId: "r-7"))
+        let changer = fake.changer()
+        let preview = try await changer.preview(artistId: 20, types: MonitoringLidarr.albumsOnly, keep: Self.nothingKept)
+        await #expect(throws: MonitoringChangeError.tryUnderWay) { _ = try await changer.apply(preview, choice: .keep) }
+        #expect(fake.writes.isEmpty)
+        #expect(try await fake.ledger.monitoringBook.intents.isEmpty)
+    }
+
+    /// M2: after a lost answer, a profile that can't be read is never sent blind.
+    @Test func m2_aFailedProfileReadNeverSends() async throws {
+        let fake = await MonitoringLidarr()
+        let changer = fake.changer()
+        let preview = try await changer.preview(artistId: 20, types: MonitoringLidarr.albumsOnly, keep: Self.nothingKept)
+        fake.state.withLockUnchecked { $0.loseNextAnswer = "monitor" }
+        #expect(try await changer.apply(preview, choice: .keep) == .pending)
+        fake.state.withLockUnchecked { $0.artistFails = true }
+        #expect(await changer.resume(artistId: 20) == .pending)
+        let open = try #require(try await fake.ledger.monitoringBook.open(artistId: 20).first)
+        #expect(open.sending != .profileSet, "the profile wasn't sent blind")
+        #expect(!fake.writes.contains { $0.0 == "PUT artist/editor" })
+        fake.state.withLockUnchecked { $0.artistFails = false }
+        #expect(await changer.resume(artistId: 20) == .finished)
+    }
+
+    /// M2: a refresh whose answer was lost is looked for in Lidarr's commands before one is sent again.
+    @Test func m2_aLostRefreshIsReadBeforeSendingAgain() async throws {
+        let fake = await MonitoringLidarr()
+        let changer = fake.changer()
+        let preview = try await changer.preview(artistId: 20, types: MonitoringLidarr.albumsOnly, keep: Self.nothingKept)
+        fake.state.withLockUnchecked { s in
+            s.loseNextAnswer = "refresh"
+            s.commands = [["id": 9, "name": "RefreshArtist", "status": "started", "body": ["artistId": 20]]]
+        }
+        #expect(try await changer.apply(preview, choice: .keep) == .pending)
+        #expect(await changer.resume(artistId: 20) == .finished)
+        let refreshes = fake.writes.filter { $0.0 == "POST command" && $0.1["name"] as? String == "RefreshArtist" }
+        #expect(refreshes.count == 1, "the running refresh was found, not sent again")
+    }
+
 
     @Test func presetFromAMagpieProfile() async throws {
         let fake = await MonitoringLidarr()

@@ -85,25 +85,28 @@ public struct MonitoringCurrent: Sendable, Equatable {
     public var hasKept: Bool
     /// A change is under way or waiting to be finished.
     public var busy: Bool
+    /// Fix round 1 I4: the artist's last change (or Revert) stopped partway (refused or given up): said on the page
+    /// and in the sheet, with "Put back how it was" when `canRevert`.
+    public var stoppedPartway: Bool = false
 }
 
 /// What a change would do, read before anything is asked or sent (D240).
 public struct MonitoringPreview: Sendable, Equatable {
-    public var artistId: Int
-    public var artistName: String
-    public var artistMbid: MBID
-    public var currentProfileId: Int
-    public var currentTypes: ReleaseTypes?
+    public internal(set) var artistId: Int
+    public internal(set) var artistName: String
+    public internal(set) var artistMbid: MBID
+    public internal(set) var currentProfileId: Int
+    public internal(set) var currentTypes: ReleaseTypes?
     /// The owner's own profile, recorded so Revert can go back to it.
-    public var previousProfileId: Int
-    public var target: ReleaseTypes
-    public var beforeAlbumIds: [Int]
+    public internal(set) var previousProfileId: Int
+    public internal(set) var target: ReleaseTypes
+    public internal(set) var beforeAlbumIds: [Int]
     /// Monitored albums the new choice doesn't include.
-    public var unmonitorAlbumIds: [Int]
+    public internal(set) var unmonitorAlbumIds: [Int]
     /// Every file of those albums.
-    public var files: [OwnedFile]
+    public internal(set) var files: [OwnedFile]
     /// Files the owner favourited, saved or keeps on the phone (or whose size Lidarr doesn't say): never deleted.
-    public var excludedFileIds: [Int]
+    public internal(set) var excludedFileIds: [Int]
 
     public var deletable: [OwnedFile] { files.filter { !excludedFileIds.contains($0.id) } }
     public var albumCount: Int { unmonitorAlbumIds.count }
@@ -121,20 +124,20 @@ public struct MonitoringPreview: Sendable, Equatable {
 /// "Clean up unmatched songs" (D242): the kept files whose album is still unmonitored, read fresh.
 public struct CleanupPreview: Sendable, Equatable {
     public struct Row: Sendable, Equatable, Identifiable {
-        public var file: OwnedFile
-        public var title: String
-        public var album: String
+        public internal(set) var file: OwnedFile
+        public internal(set) var title: String
+        public internal(set) var album: String
         /// The song's recording (Lidarr's), so the app can say why a kept one stays.
-        public var recording: String?
+        public internal(set) var recording: String?
         /// "Kept because you favourited it": never deleted.
-        public var kept: Bool
+        public internal(set) var kept: Bool
         public var id: Int { file.id }
     }
 
-    public var artistId: Int
-    public var artistName: String
-    public var artistMbid: MBID?
-    public var rows: [Row]
+    public internal(set) var artistId: Int
+    public internal(set) var artistName: String
+    public internal(set) var artistMbid: MBID?
+    public internal(set) var rows: [Row]
 
     public var files: [OwnedFile] { rows.filter { !$0.kept }.map(\.file) }
     public var excludedFileIds: [Int] { rows.filter(\.kept).map(\.file.id) }
@@ -172,8 +175,7 @@ public actor MonitoringChanger {
 
     /// The ledger's file (or, kept in memory, the ledger itself), its Lidarr, and the artist.
     private func key(_ artistId: Int) -> String {
-        let book = ledger.monitoringURL?.path ?? "memory-\(ObjectIdentifier(ledger).hashValue)"
-        return "\(book)|\(ledger.instance ?? "-")|\(artistId)"
+        "\(ledger.monitoringBookKey)|\(ledger.instance ?? "-")|\(artistId)"
     }
 
     private func exclusive<T: Sendable>(_ artistId: Int, _ body: () async throws -> T) async throws -> T {
@@ -213,13 +215,22 @@ public actor MonitoringChanger {
         return Array(x.utf8) == Array(y.utf8)
     }
 
-    /// The last finished change of the artist.
+    /// The last closed change of the artist: finished, or (fix round 1 I4) stopped partway once its profile was known.
     private static func lastChange(_ book: MonitoringBook, _ artistId: Int) -> MonitoringIntent? {
-        book.intents.filter { $0.artistId == artistId && $0.kind == .monitoringChange && $0.step == .done }
-            .max { $0.createdAt < $1.createdAt }
+        book.intents.filter {
+            $0.artistId == artistId && $0.kind == .monitoringChange && ($0.step == .done || $0.step == .abandoned)
+                && $0.targetProfileId != nil
+        }.max { $0.createdAt < $1.createdAt }
     }
 
-    /// D244: the change Revert puts back: the last finished one, while the artist is still on the profile it set.
+    /// Fix round 1 I4: the artist's last change or Revert stopped partway (refused, or given up).
+    private static func stoppedPartway(_ book: MonitoringBook, _ artistId: Int) -> Bool {
+        book.intents.filter { $0.artistId == artistId && $0.kind != .unmatchedCleanup }
+            .max { $0.createdAt < $1.createdAt }?.step == .abandoned
+    }
+
+    /// D244: the change Revert puts back: the last closed one (finished or stopped partway), while the artist is still on
+    /// the profile it set.
     private static func revertSource(_ book: MonitoringBook, _ artist: LidarrArtist) -> MonitoringIntent? {
         guard book.open(artistId: artist.id).isEmpty, let last = lastChange(book, artist.id),
               let current = artist.metadataProfileId, current == last.targetProfileId, current != last.previousProfileId else {
@@ -238,7 +249,8 @@ public actor MonitoringChanger {
                                  types: name.flatMap { ReleaseTypes(magpieProfileName: $0) },
                                  canRevert: Self.revertSource(book, artist) != nil,
                                  hasKept: !(book.kept(artistId: artistId)?.files.isEmpty ?? true),
-                                 busy: !book.open(artistId: artistId).isEmpty)
+                                 busy: !book.open(artistId: artistId).isEmpty,
+                                 stoppedPartway: Self.stoppedPartway(book, artistId))
     }
 
     /// Whether songs kept on reducing wait to be cleaned up (the More menu's item). False when the ledger can't be read.
@@ -297,6 +309,15 @@ public actor MonitoringChanger {
 
     // MARK: - Apply
 
+    /// Fix round 1 I5: a request of Magpie's under way for the artist (an open entry nobody kept): nothing is recorded
+    /// or sent (the gate refuses the profile and the refresh too).
+    private func noLiveTry(_ artistId: Int) async throws {
+        let entries = try await reading { try await ledger.entries }
+        guard !entries.contains(where: { $0.lidarrArtistId == artistId && $0.isOpen && !$0.isConfirmedKept }) else {
+            throw MonitoringChangeError.tryUnderWay
+        }
+    }
+
     private func writable() async throws {
         guard await gate.enabled else { throw MonitoringChangeError.changesOff }
         guard await gate.monitoringChangesEnabled else { throw MonitoringChangeError.switchOff }
@@ -308,6 +329,7 @@ public actor MonitoringChanger {
         try await exclusive(preview.artistId) {
             try await writable()
             guard try await book().open(artistId: preview.artistId).isEmpty else { throw MonitoringChangeError.busy }
+            try await noLiveTry(preview.artistId)
             let artist = try await ownedArtist(preview.artistId)
             let albums = try await reading { try await lidarr.albums(artistId: preview.artistId) }
             let unmonitor = albums.filter {
@@ -315,22 +337,20 @@ public actor MonitoringChanger {
             }.map(\.id).sorted()
             guard artist.metadataProfileId == preview.currentProfileId, artist.foreignArtistId == preview.artistMbid,
                   unmonitor == preview.unmonitorAlbumIds else { throw MonitoringChangeError.stale }
-            let profileId: Int
-            do {
-                profileId = try await Provisioner().ensureReleaseTypes(preview.target, gate: gate, client: lidarr)
-            } catch ProvisionError.conflict(let name) {
-                throw MonitoringChangeError.profileConflict(name)
-            } catch WriteGateError.disabled {
-                throw MonitoringChangeError.changesOff
-            } catch {
-                throw MonitoringChangeError.unavailable
-            }
-            if profileId == preview.currentProfileId, unmonitor.isEmpty { return .finished }
-            let intent = MonitoringIntent(kind: .monitoringChange, artistId: preview.artistId, artistMbid: preview.artistMbid,
-                                          previousProfileId: preview.previousProfileId, targetProfileId: profileId,
+            if preview.currentTypes == preview.target, unmonitor.isEmpty { return .finished }
+            // Fix round 1 I2: only files of albums that stop being monitored now, whatever the preview carries.
+            let falling = Set(unmonitor)
+            let files = preview.files.filter { falling.contains($0.albumId) }
+            let excluded = preview.excludedFileIds.filter { id in files.contains { $0.id == id } }
+            let deletable = files.filter { !excluded.contains($0.id) }
+            // Fix round 1 I1: the intent is saved before any write, the Magpie profile included: its id isn't known yet
+            // (`sending = .profileCreated`); `change` makes or reuses it and records the id before the first change write.
+            var intent = MonitoringIntent(kind: .monitoringChange, artistId: preview.artistId, artistMbid: preview.artistMbid,
+                                          previousProfileId: preview.previousProfileId, targetProfileId: nil,
                                           targetTypes: preview.target, beforeAlbumIds: albums.map(\.id).sorted(),
-                                          unmonitorAlbumIds: unmonitor, keepFiles: choice == .keep || preview.deletable.isEmpty,
-                                          files: preview.files, excludedFileIds: preview.excludedFileIds, createdAt: now())
+                                          unmonitorAlbumIds: unmonitor, keepFiles: choice == .keep || deletable.isEmpty,
+                                          files: files, excludedFileIds: excluded, createdAt: now())
+            intent.sending = .profileCreated
             do { try await ledger.saveIntent(intent) } catch { throw MonitoringChangeError.notSaved }
             await gate.note(Self.note(intent, from: preview.currentProfileId, instance: lidarr.instanceScope))
             return await advance(intent)
@@ -399,14 +419,17 @@ public actor MonitoringChanger {
             try await writable()
             guard !preview.files.isEmpty else { return .finished }
             guard let mbid = preview.artistMbid else { throw MonitoringChangeError.unavailable }
-            guard try await book().open(artistId: preview.artistId).isEmpty else { throw MonitoringChangeError.busy }
-            let entries = try await reading { try await ledger.entries }
-            guard !entries.contains(where: { $0.lidarrArtistId == preview.artistId && $0.isOpen && !$0.isConfirmedKept }) else {
-                throw MonitoringChangeError.tryUnderWay
-            }
+            let book = try await book()
+            guard book.open(artistId: preview.artistId).isEmpty else { throw MonitoringChangeError.busy }
+            try await noLiveTry(preview.artistId)
+            // Fix round 1 I2: only rows whose file (id, album, size) is in the artist's kept set, whatever the caller hands.
+            guard let kept = book.kept(artistId: preview.artistId), kept.artistMbid == mbid else { return .finished }
+            let keptFiles = Set(kept.files)
+            let rows = preview.rows.filter { keptFiles.contains($0.file) }
+            guard rows.contains(where: { !$0.kept }) else { return .finished }
             let intent = MonitoringIntent(kind: .unmatchedCleanup, artistId: preview.artistId, artistMbid: mbid,
-                                          previousProfileId: 0, files: preview.rows.map(\.file),
-                                          excludedFileIds: preview.excludedFileIds, createdAt: now())
+                                          previousProfileId: 0, files: rows.map(\.file),
+                                          excludedFileIds: rows.filter(\.kept).map(\.file.id), createdAt: now())
             do { try await ledger.saveIntent(intent) } catch { throw MonitoringChangeError.notSaved }
             return await advance(intent)
         }
@@ -419,6 +442,7 @@ public actor MonitoringChanger {
     public func revert(artistId: Int) async throws -> Outcome {
         try await exclusive(artistId) {
             try await writable()
+            try await noLiveTry(artistId)
             let artist = try await ownedArtist(artistId)
             guard let source = Self.revertSource(try await book(), artist), let mbid = artist.foreignArtistId else {
                 throw MonitoringChangeError.nothingToRevert
@@ -485,10 +509,25 @@ public actor MonitoringChanger {
         return ids.allSatisfy { id in albums.first { $0.id == id }?.monitored != true }
     }
 
-    private func profile(of artistId: Int) async -> Int? { try? await lidarr.artist(id: artistId).metadataProfileId }
+    /// Fix round 1 M2: the artist's profile read now; a read that fails stays pending (nothing is sent blind).
+    private func profile(of artistId: Int) async throws -> Int? {
+        do { return try await lidarr.artist(id: artistId).metadataProfileId } catch { throw Pending() }
+    }
 
     /// A change (or Revert): unmonitor what falls out, the profile, a confirmed refresh, then what it brings in.
     private func change(_ job: inout MonitoringIntent) async throws {
+        if job.targetProfileId == nil {
+            // Fix round 1 I1: the Magpie profile is made or reused only now that the intent is saved, and its id is
+            // saved before any change write. A same-named profile set up differently stops it (G5).
+            guard job.kind == .monitoringChange, job.sending == .profileCreated, let types = job.targetTypes else { throw Abandon() }
+            let made: Int
+            do { made = try await Provisioner().ensureReleaseTypes(types, gate: gate, client: lidarr) } catch is ProvisionError {
+                throw Abandon()
+            }
+            job.targetProfileId = made
+            job.sending = nil
+            try await ledger.saveIntent(job)
+        }
         guard let target = job.targetProfileId else { throw Abandon() }
         while true {
             switch job.step {
@@ -504,13 +543,27 @@ public actor MonitoringChanger {
                 }
                 try await saved(&job, .unmonitored)
             case .unmonitored:
-                if await profile(of: job.artistId) != target {
+                if try await profile(of: job.artistId) != target {
                     try await sending(&job, .profileSet)
                     _ = try await gate.send("PUT", "artist/editor", body: ProfileBody(artistIds: [job.artistId], metadataProfileId: target), confinedAs: .ownedChange)
-                    guard await profile(of: job.artistId) == target else { throw Pending() }
+                    guard try await profile(of: job.artistId) == target else { throw Pending() }
                 }
                 try await saved(&job, .profileSet)
             case .profileSet:
+                // Fix round 1 M2: a refresh whose answer was lost is looked for first: one still running is waited for,
+                // not sent again. A list that can't be read stays pending.
+                if job.sending == .refreshSent {
+                    let commands: [CommandStatus]
+                    do { commands = try await lidarr.commands() } catch { throw Pending() }
+                    if let running = commands.first(where: {
+                        $0.name.lowercased() == "refreshartist" && $0.artistIds.contains(job.artistId)
+                            && ["queued", "started"].contains($0.status.lowercased())
+                    }) {
+                        job.refreshCommandId = running.id
+                        try await saved(&job, .refreshSent)
+                        continue
+                    }
+                }
                 try await sending(&job, .refreshSent)
                 let data = try await gate.send("POST", "command", body: RefreshBody(name: "RefreshArtist", artistId: job.artistId), confinedAs: .ownedChange)
                 guard let id = (try? JSONDecoder().decode(JSONValue.self, from: data))?["id"]?.intValue else { throw Pending() }
@@ -529,7 +582,8 @@ public actor MonitoringChanger {
                 }
             case .refreshed:
                 // D239: more monitored types: the albums the refresh brought in, of a chosen type, monitored and searched.
-                if job.kind == .monitoringChange, let types = job.targetTypes {
+                // Fix round 1 M2: a search whose answer was lost is never sent again (when in doubt, don't write).
+                if job.kind == .monitoringChange, job.sending != .searchSent, let types = job.targetTypes {
                     let albums = try await lidarr.albums(artistId: job.artistId)
                     if job.monitorAlbumIds.isEmpty {
                         let before = Set(job.beforeAlbumIds)
@@ -539,15 +593,17 @@ public actor MonitoringChanger {
                     }
                     let ids = job.monitorAlbumIds
                     if !ids.isEmpty {
-                        try await sending(&job, .monitored)
+                        // Read first (above): only albums Lidarr doesn't monitor yet are sent.
                         if ids.contains(where: { id in albums.first { $0.id == id }?.monitored != true }) {
+                            try await sending(&job, .monitored)
                             _ = try await gate.send("PUT", "album/monitor", body: MonitorBody(albumIds: ids, monitored: true), confinedAs: .ownedChange)
                         }
+                        try await sending(&job, .searchSent)
                         _ = try await gate.send("POST", "command", body: SearchBody(name: "AlbumSearch", albumIds: ids), confinedAs: .ownedChange)
                     }
                 }
                 try await saved(&job, .monitored)
-            case .monitored, .done, .abandoned, .deleting:
+            case .monitored, .done, .abandoned, .deleting, .profileCreated, .searchSent:
                 return
             }
         }

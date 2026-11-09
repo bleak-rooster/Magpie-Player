@@ -51,6 +51,11 @@ public struct MonitoringIntent: Sendable, Equatable, Codable, Identifiable {
         case done
         /// Couldn't be finished; nothing more is sent for it.
         case abandoned
+        /// Fix round 1 I1 (a `sending` marker only): the intent is saved and Magpie's profile is being made or reused;
+        /// its id is saved in `targetProfileId` before any change write.
+        case profileCreated
+        /// Fix round 1 M2 (a `sending` marker only): the AlbumSearch was sent; after a lost answer it is never sent again.
+        case searchSent
     }
 
     public var id: UUID

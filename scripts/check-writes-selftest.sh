@@ -83,6 +83,10 @@ planted=(
   'gate.send("DELETE", "trackfile/bulk", body: TrackFileIdsBody(trackFileIds: ids), confinedAs: .unmatchedCleanup)'
   'gate.send("PUT", "artist/editor", body: ProfileBody(artistIds: [job.artistId], metadataProfileId: target), confinedAs: .ownedChange)'
   'ledger.saveIntent(intent)'
+  # R24H fix round 1 I6: the book written by a trailing closure, a spaced call, or straight to its file.
+  'ledger.updateMonitoring { $0.kept = [] }'
+  'ledger.saveIntent (intent)'
+  'LocalFile.save(MonitoringBook(), to: l.monitoringURL!)'
   # Round 24 B (D207–D209): a held song decided, or a flow or playlist deleted, from anywhere but AurralClient+Manage.swift;
   # Aurral's retry, cancel, manual search or research-missing named.
   'aurral.ok(method: AurralRoute.heldSongMethod, path: "api/playlists/jobs/" + id + "/approve")'
@@ -245,6 +249,15 @@ owned_weakened=(
   "$owned_src|s/== \[\"artistids\", \"metadataprofileid\"\], body.count == 2,/.contains(\"artistids\"),/"
   "$owned_src|s/}), !album.monitored else {/}) else {/"
   "$ownedgate_src|s/guard monitoringChangesEnabled else { throw refused(target, \"changing what Lidarr monitors is off\") }/_ = monitoringChangesEnabled/"
+  # R24H fix round 1 M1: Revert's guards, the unmonitor guards, the monitor-true guards, the last check, I2 and I5.
+  "$owned_src|s/                  ReleaseTypes.isMagpieMetadataProfile(current) else {/                  true else {/"
+  "$owned_src|s/            guard profile == intent.previousProfileId, profiles/            guard profiles/"
+  "$owned_src|s/!types.includes(albumType: \$0.albumType, secondaryTypes: \$0.secondaryTypes) } == true/true } == true/"
+  "$owned_src|s/entries.contains { \$0.albumId == id \&\& \$0.isOpen \&\& !\$0.isConfirmedKept } }) else {/false }) else {/"
+  "$owned_src|s/              Set(ids).isDisjoint(with: intent.beforeAlbumIds) else {/              true else {/"
+  "$owned_src|s/            \&\& !OwnedProof.hasLiveTry(artistId, in: entries)/            \&\& true/"
+  "$owned_src|s/            guard Self.keptOrConfirmed(recorded, artistId: artistId, in: book) else {/            guard true else {/"
+  "$owned_src|s/        guard !Self.hasLiveTry(artistId, in: entries) else { throw Failure.refused(\"a Try of Magpie's is under way for the artist\") }//"
 )
 for w in "${owned_weakened[@]}"; do
   file="${w%%|*}" expr="${w#*|}"

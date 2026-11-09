@@ -78,7 +78,8 @@ struct CleanUpUnmatchedSheet: View {
         return VStack(alignment: .leading, spacing: Tokens.Spacing.xs) {
             Label(row.title, systemImage: row.kept ? "heart" : "trash")
             Text(row.album).font(.footnote).foregroundStyle(p.ink2Color)
-            if row.kept { Text(why).font(.footnote).foregroundStyle(p.ink2Color) }
+            // Fix round 1 M4: either way it is said in words (and read by VoiceOver), not by the symbol alone.
+            Text(row.kept ? why : MonitoringCopy.willBeRemoved).font(.footnote).foregroundStyle(p.ink2Color)
         }
         .frame(minHeight: Tokens.minHitSize, alignment: .leading)
         .accessibilityElement(children: .combine)

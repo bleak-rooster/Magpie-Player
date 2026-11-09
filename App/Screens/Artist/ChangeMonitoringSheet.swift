@@ -25,7 +25,12 @@ enum MonitoringCopy {
     static let forGood = "They go from your library for good."
     static let done = "Done."
     static let pending = "Almost done. Magpie finishes this when it can."
-    static let abandoned = "Something changed since you looked, so Magpie stopped. Nothing more was changed."
+    /// Fix round 1 I4: a change that stopped partway says so (where it stopped is left as it is).
+    static let abandoned = "This change stopped partway, so nothing more was sent. What it did so far stays."
+    static let stoppedPartway = "A change to what\u{2019}s monitored stopped partway. Nothing more was sent."
+    static let stillFinishing = "A change to what\u{2019}s monitored is still finishing."
+    /// Fix round 1 M4: a song the clean-up removes, in words as well as the symbol.
+    static let willBeRemoved = "Will be removed"
     static let nothingToChange = "That\u{2019}s what\u{2019}s monitored already."
     static let nothingToCleanUp = "Nothing to clean up. The songs you kept are monitored again, or changed."
     static let revert = "Put back how it was"
@@ -127,15 +132,65 @@ enum ArtistMonitoringPresentation {
     var hasKept = false
     var showsChange = false
     var showsCleanUp = false
+    /// Fix round 1 I4: what the page says about a change of this artist that isn't simply done.
+    var notice: Notice?
+
+    enum Notice: Equatable {
+        /// Still finishing (Lidarr's refresh not confirmed yet, an answer lost…).
+        case unfinished
+        /// Stopped partway; `canRevert`: "Put back how it was" is offered.
+        case stopped(canRevert: Bool)
+    }
 
     func refresh(_ model: AppModel, lidarrId: Int?) async {
         guard let lidarrId, model.monitoringChangesAllowed, model.changesAllowed, !model.isOffline,
               let changer = model.monitoringChanger else {
             hasKept = false
+            notice = nil
             return
         }
-        _ = await changer.resume(artistId: lidarrId)
+        // Fix round 1 I4: what resuming did is shown, never dropped.
+        let outcome = await changer.resume(artistId: lidarrId)
         hasKept = await changer.hasKept(artistId: lidarrId)
+        let now = try? await changer.current(artistId: lidarrId)
+        notice = Self.notice(outcome: outcome, current: now)
+    }
+
+    static func notice(outcome: MonitoringChanger.Outcome?, current: MonitoringCurrent?) -> Notice? {
+        if outcome == .pending || current?.busy == true { return .unfinished }
+        if outcome == .abandoned || current?.stoppedPartway == true { return .stopped(canRevert: current?.canRevert == true) }
+        return nil
+    }
+}
+
+/// Fix round 1 I4: the page's line about an unfinished or stopped change, text plus a symbol, with "Put back how it was"
+/// (which opens the sheet, where it is confirmed) when it can be put back.
+private struct ArtistMonitoringNotice: View {
+    @Bindable var state: ArtistMonitoringState
+    private let themed = Themed()
+
+    var body: some View {
+        if let notice = state.notice {
+            VStack(alignment: .leading, spacing: Tokens.Spacing.s) {
+                switch notice {
+                case .unfinished:
+                    Label(MonitoringCopy.stillFinishing, systemImage: "clock")
+                case .stopped(let canRevert):
+                    Label(MonitoringCopy.stoppedPartway, systemImage: "exclamationmark.circle")
+                    if canRevert {
+                        Button(MonitoringCopy.revert) { state.showsChange = true }
+                            .frame(minHeight: Tokens.minHitSize)
+                            .accessibilityIdentifier("artist-monitoring-revert")
+                    }
+                }
+            }
+            .font(.footnote)
+            .foregroundStyle(themed.palette.inkColor)
+            .padding(Tokens.Spacing.m)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.regularMaterial)
+            .accessibilityIdentifier("artist-monitoring-notice")
+        }
     }
 }
 
@@ -175,6 +230,7 @@ private struct ArtistMonitoring: ViewModifier {
     func body(content: Content) -> some View {
         let id = ArtistMonitoringPresentation.lidarrId(line?.state)
         content
+            .safeAreaInset(edge: .bottom) { ArtistMonitoringNotice(state: state) }
             .task(id: "\(id ?? 0)-\(model.monitoringChangesAllowed)") { await state.refresh(model, lidarrId: id) }
             .sheet(isPresented: $state.showsChange) {
                 if let id, let line {
@@ -246,6 +302,12 @@ struct ChangeMonitoringSheet: View {
                         Text(chosen.hasKind ? MonitoringCopy.footer : MonitoringCopy.chooseOne)
                     }
                     .disabled(working)
+                    if current.stoppedPartway {
+                        Section {
+                            Label(MonitoringCopy.stoppedPartway, systemImage: "exclamationmark.circle")
+                                .accessibilityIdentifier("monitoring-stopped")
+                        }
+                    }
                     if current.canRevert {
                         Section {
                             Button(MonitoringCopy.revert) { confirmsRevert = true }

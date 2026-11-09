@@ -332,6 +332,31 @@ public actor Ledger {
                 try? LocalFile.save(kept, to: url)
             }
         }
+        forgetFinishedMonitoring(at: monitoringURL(beside: url))
+    }
+
+    /// Fix round 1 I3: the monitoring book the same way: a Lidarr with an open intent keeps its intents and kept sets
+    /// (a change may still need finishing when the owner reconnects); every other Lidarr's part is forgotten. The file
+    /// goes once nothing is left; an unreadable file is left alone.
+    static func forgetFinishedMonitoring(at url: URL) {
+        fileLock.withLock {
+            guard FileManager.default.fileExists(atPath: url.path),
+                  let all = try? LocalFile.load(MonitoringBook.self, from: url, fallback: MonitoringBook(), category: "ledger") else { return }
+            let open = Set(all.intents.filter(\.isOpen).map { $0.instance ?? "" })
+            let kept = MonitoringBook(intents: all.intents.filter { open.contains($0.instance ?? "") },
+                                      kept: all.kept.filter { open.contains($0.instance ?? "") })
+            guard kept != all else { return }
+            if kept.intents.isEmpty, kept.kept.isEmpty {
+                try? FileManager.default.removeItem(at: url)
+            } else {
+                try? LocalFile.save(kept, to: url)
+            }
+        }
+    }
+
+    /// `lidarr-ledger-monitoring.json` beside a ledger file.
+    static func monitoringURL(beside ledger: URL) -> URL {
+        ledger.deletingLastPathComponent().appending(path: ledger.deletingPathExtension().lastPathComponent + "-monitoring.json")
     }
 
     /// Whether Magpie created this artist on this server (same id and same MBID, `LedgerEntry.created`).
@@ -342,9 +367,13 @@ public actor Ledger {
     // MARK: - Round 24 (owner, 2026-11-08): the monitoring book (D241, D243)
 
     /// Beside the ledger file: `lidarr-ledger-monitoring.json`. Its own file, so the album entries (and every rule that
-    /// reads them) never see an owner's artist as one of Magpie's requests.
-    public nonisolated var monitoringURL: URL? {
-        fileURL.map { $0.deletingLastPathComponent().appending(path: $0.deletingPathExtension().lastPathComponent + "-monitoring.json") }
+    /// reads them) never see an owner's artist as one of Magpie's requests. Fix round 1 I6: internal, so nothing outside
+    /// LidarrKit can write the book but through `saveIntent`, `updateMonitoring` and `setKept`.
+    nonisolated var monitoringURL: URL? { fileURL.map(Self.monitoringURL(beside:)) }
+
+    /// Which book this ledger writes (its file, or the ledger itself when kept in memory): one change per artist and book.
+    public nonisolated var monitoringBookKey: String {
+        monitoringURL?.path ?? "memory-\(ObjectIdentifier(self).hashValue)"
     }
 
     private func allMonitoring() throws -> MonitoringBook {

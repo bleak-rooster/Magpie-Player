@@ -110,15 +110,24 @@ import MagpieTestSupport
             return intent
         }
 
-        /// The owner's confirmed clean-up of artist 20's EP files (204 favourited, left out).
+        /// The owner's confirmed clean-up of artist 20's files; unless `kept` is false, every named file is also in the
+        /// artist's kept set (fix round 1 I2: a clean-up deletes only kept files, or a finished Delete them change's).
         @discardableResult
-        func cleanup(files: [OwnedFile]? = nil, excluded: [Int] = [204]) async throws -> MonitoringIntent {
-            let named = files ?? ([200, 201, 202, 204] + Array(205...260)).map { OwnedFile(id: $0, albumId: $0 == 202 ? 1 : 2, size: 1000) }
-                + [OwnedFile(id: 203, albumId: 2, size: 500)]
+        func cleanup(files: [OwnedFile]? = nil, excluded: [Int] = [204], kept: Bool = true) async throws -> MonitoringIntent {
+            let ids: [Int] = [200, 201, 202, 204] + Array(205...260)
+            var standard: [OwnedFile] = ids.map { id in
+                id == 202 ? OwnedFile(id: 202, albumId: 1, size: 10) : OwnedFile(id: id, albumId: 2, size: 1000)
+            }
+            standard.append(OwnedFile(id: 203, albumId: 2, size: 500))
+            let named: [OwnedFile] = files ?? standard
             let intent = MonitoringIntent(kind: .unmatchedCleanup, artistId: 20, artistMbid: OwnedChangeGateTests.ownerMBID,
-                                          previousProfileId: 5, files: named.map { $0.id == 202 ? OwnedFile(id: 202, albumId: 1, size: 10) : $0 },
-                                          excludedFileIds: excluded, createdAt: Date())
+                                          previousProfileId: 5, files: named, excludedFileIds: excluded, createdAt: Date())
             try await ledger.saveIntent(intent)
+            if kept {
+                try await ledger.setKept(artistId: 20, UnmonitoredKept(artistId: 20, artistMbid: OwnedChangeGateTests.ownerMBID,
+                                                                       albumIds: Array(Set(named.map(\.albumId))), files: named,
+                                                                       recordedAt: Date()))
+            }
             return intent
         }
     }
@@ -338,6 +347,53 @@ import MagpieTestSupport
             _ = try await (await fake.gate()).send("DELETE", "trackfile/bulk", body: Self.delete([200]))
             Issue.record("sent")
         } catch {}
+        #expect(fake.writes.isEmpty)
+    }
+
+    // MARK: - Fix round 1 (I2, I5)
+
+    /// I2: a clean-up intent naming a file the owner unmonitored himself (not in the kept set, not from a change) never
+    /// deletes it, whatever the intent says.
+    @Test func cleanup_refusesAFileTheOwnerUnmonitoredHimself() async throws {
+        let fake = Fake()
+        try await fake.cleanup(files: [OwnedFile(id: 200, albumId: 2, size: 1000)], excluded: [], kept: false)
+        #expect(Self.isRefused(await Self.answer(await fake.gate(), "DELETE", "trackfile/bulk", Self.delete([200]), .unmatchedCleanup)))
+        // A kept set for another file of the album doesn't widen it.
+        try await fake.ledger.setKept(artistId: 20, UnmonitoredKept(artistId: 20, artistMbid: Self.ownerMBID, albumIds: [2],
+                                                                    files: [OwnedFile(id: 205, albumId: 2, size: 1000)], recordedAt: Date()))
+        #expect(Self.isRefused(await Self.answer(await fake.gate(), "DELETE", "trackfile/bulk", Self.delete([200]), .unmatchedCleanup)))
+        #expect(fake.writes.isEmpty)
+    }
+
+    /// I2: Delete them's clean-up deletes a file a finished change named, only of an album that change unmonitored.
+    @Test func cleanup_fromAFinishedDeleteThemChange_onlyItsUnmonitoredAlbums() async throws {
+        let fake = Fake()
+        var change = MonitoringIntent(kind: .monitoringChange, artistId: 20, artistMbid: Self.ownerMBID, previousProfileId: 5,
+                                      targetProfileId: 30, targetTypes: Self.albumsOnly, beforeAlbumIds: [1, 2],
+                                      unmonitorAlbumIds: [3], keepFiles: false,
+                                      files: [OwnedFile(id: 200, albumId: 2, size: 1000)], createdAt: Date())
+        change.step = .done
+        try await fake.ledger.saveIntent(change)
+        try await fake.cleanup(files: [OwnedFile(id: 200, albumId: 2, size: 1000)], excluded: [], kept: false)
+        #expect(Self.isRefused(await Self.answer(await fake.gate(), "DELETE", "trackfile/bulk", Self.delete([200]), .unmatchedCleanup)),
+                "album 2 isn't one the change unmonitored")
+        change.unmonitorAlbumIds = [2]
+        try await fake.ledger.saveIntent(change)
+        #expect(await Self.answer(await fake.gate(), "DELETE", "trackfile/bulk", Self.delete([200]), .unmatchedCleanup) == nil)
+        #expect(fake.writes.count == 1)
+    }
+
+    /// I5: no profile change or refresh of an artist while a Try of Magpie's is under way for it.
+    @Test func change_refusedWhileATryIsUnderWay() async throws {
+        let fake = Fake()
+        try await fake.change()
+        try await fake.ledger.record(LedgerEntry(lidarrArtistId: 20, albumId: 3, rgMbid: MBID("00000000-0000-0000-0000-000000000003")!,
+                                                 createdArtist: false, wasMonitoredBefore: false, root: "/music/library",
+                                                 mode: .fallback, send: .applied, requestId: "r-1"))
+        let gate = await fake.gate()
+        #expect(Self.isRefused(await Self.answer(gate, "PUT", "artist/editor", Profile(artistIds: [20], metadataProfileId: 30), .ownedChange)))
+        struct Refresh: Encodable, Sendable { var name = "RefreshArtist"; var artistId: Int }
+        #expect(Self.isRefused(await Self.answer(gate, "POST", "command", Refresh(artistId: 20), .ownedChange)))
         #expect(fake.writes.isEmpty)
     }
 

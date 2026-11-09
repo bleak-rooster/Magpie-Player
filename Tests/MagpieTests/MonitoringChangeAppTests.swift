@@ -38,9 +38,21 @@ private let lidarrScope = LidarrClient(base: lidarrBase, apiKey: "key", transpor
         #expect(Copy.toggle == "Let Magpie change what Lidarr monitors for my artists")
         // §5: no service named outside Settings, and nothing about where songs come from.
         for text in [Copy.change, Copy.cleanUp, Copy.prompt(albums: 2, songs: 3, bytes: 10), Copy.cleanUpMessage(count: 2, artist: "A"),
-                     Copy.keptFavourite, Copy.keptSaved, Copy.done, Copy.pending, Copy.abandoned, Copy.revert, Copy.revertMessage] {
+                     Copy.keptFavourite, Copy.keptSaved, Copy.done, Copy.pending, Copy.abandoned, Copy.revert, Copy.revertMessage,
+                     Copy.stoppedPartway, Copy.stillFinishing, Copy.willBeRemoved] {
             for word in ["Lidarr", "Navidrome", "Soulseek", "Aurral"] { #expect(!text.contains(word), "\(text)") }
         }
+    }
+
+    /// Fix round 1 I4, M4: an unfinished or stopped change is said on the page (resume's outcome is used, not dropped);
+    /// a removed song says so in words.
+    @Test func anUnfinishedOrStoppedChangeIsSaid() {
+        #expect(ArtistMonitoringState.notice(outcome: .pending, current: nil) == .unfinished)
+        #expect(ArtistMonitoringState.notice(outcome: .abandoned, current: nil) == .stopped(canRevert: false))
+        #expect(ArtistMonitoringState.notice(outcome: .finished, current: nil) == nil)
+        #expect(ArtistMonitoringState.notice(outcome: nil, current: nil) == nil)
+        #expect(Copy.abandoned.contains("stopped partway"))
+        #expect(Copy.willBeRemoved == "Will be removed")
     }
 
     @Test func reduce_keepIsDefault() {
@@ -133,5 +145,11 @@ private let lidarrScope = LidarrClient(base: lidarrBase, apiKey: "key", transpor
         #expect(UserDefaults(suiteName: gateSuite)?.bool(forKey: LidarrWriteGate.monitoringChangesKey(scope: lidarrScope)) == true)
         await model.setMonitoringChangesAllowed(false)
         #expect(await gate.monitoringChangesEnabled == false)
+        // Fix round 1 I3: disconnecting forgets the switch, so a reconnect starts with it off.
+        await model.setMonitoringChangesAllowed(true)
+        model.disconnectLidarr()
+        #expect(UserDefaults(suiteName: gateSuite)?.object(forKey: LidarrWriteGate.monitoringChangesKey(scope: lidarrScope)) == nil)
+        _ = try await model.connectLidarr(base: lidarrBase, apiKey: "key")
+        #expect(model.monitoringChangesAllowed == false)
     }
 }

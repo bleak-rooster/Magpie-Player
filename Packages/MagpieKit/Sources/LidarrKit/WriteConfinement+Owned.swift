@@ -47,6 +47,8 @@ extension WriteConfinement {
                 try await proof.editor(body)
             case .ownedRefresh(let artistId):
                 let intent = try proof.changeIntent(artistId)
+                // Fix round 1 I5: never while a Try of Magpie's is under way for the artist.
+                guard !OwnedProof.hasLiveTry(artistId, in: entries) else { throw OwnedProof.Failure.refused("a Try of Magpie's is under way for the artist") }
                 _ = try await proof.artist(intent)
             case .ownedMonitor(let ids, let monitored):
                 try await proof.monitor(ids, monitored: monitored, search: false)
@@ -103,6 +105,13 @@ private struct OwnedProof {
         entries.contains { $0.lidarrArtistId == artistId && $0.isOpen && !$0.isConfirmedKept }
     }
 
+    /// Fix round 1 M3: a positive whole number from the body (never a boolean, never a fraction), or nil.
+    static func positiveInt(_ value: Any?) -> Int? {
+        guard let n = value as? NSNumber, CFGetTypeID(n) != CFBooleanGetTypeID(), n.int64Value > 0,
+              Double(n.int64Value) == n.doubleValue else { return nil }
+        return Int(exactly: n.int64Value)
+    }
+
     /// The artist's one open change or Revert.
     func changeIntent(_ artistId: Int) throws -> MonitoringIntent {
         let open = book.open(artistId: artistId).filter { $0.kind != .unmatchedCleanup }
@@ -136,10 +145,11 @@ private struct OwnedProof {
     func editor(_ body: [String: Any]) async throws {
         let value = { (name: String) in body.first { $0.key.lowercased() == name }?.value }
         guard Set(body.keys.map { $0.lowercased() }) == ["artistids", "metadataprofileid"], body.count == 2,
-              let ids = value("artistids") as? [Any], ids.count == 1, let artistId = (ids[0] as? NSNumber)?.intValue,
-              let profile = (value("metadataprofileid") as? NSNumber)?.intValue else {
+              let ids = value("artistids") as? [Any], ids.count == 1, let artistId = Self.positiveInt(ids[0]),
+              let profile = Self.positiveInt(value("metadataprofileid")) else {
             throw Failure.refused("a monitoring change sets one artist's metadata profile and nothing else")
         }
+        guard !Self.hasLiveTry(artistId, in: entries) else { throw Failure.refused("a Try of Magpie's is under way for the artist") }
         let intent = try changeIntent(artistId)
         guard intent.targetProfileId == profile else { throw Failure.refused("not the profile the owner confirmed") }
         let (artist, _, _) = try await self.artist(intent)
@@ -215,6 +225,16 @@ private struct OwnedProof {
         }
     }
 
+    /// Fix round 1 I2: `file` (id, album and size) is in the artist's kept set, or in a finished `monitoringChange` whose
+    /// owner chose Delete them, with its album among the albums that change unmonitored.
+    static func keptOrConfirmed(_ file: OwnedFile, artistId: Int, in book: MonitoringBook) -> Bool {
+        if book.kept(artistId: artistId)?.files.contains(file) == true { return true }
+        return book.intents.contains { change in
+            change.kind == .monitoringChange && change.artistId == artistId && change.step == .done && !change.keepFiles
+                && change.files.contains(file) && change.unmonitorAlbumIds.contains(file.albumId)
+        }
+    }
+
     func cleanup(_ ids: [Int]) async throws -> MonitoringIntent {
         guard !ids.isEmpty, ids.count <= WriteConfinement.maxCleanupFiles, Set(ids).count == ids.count else {
             throw Failure.refused("a clean-up deletes 1 to \(WriteConfinement.maxCleanupFiles) files at a time")
@@ -237,6 +257,11 @@ private struct OwnedProof {
         let albums = try await read { try await lidarr.albums(artistId: artistId) }
         for id in ids {
             guard let recorded = named[id] else { throw Failure.refused("only files the owner's confirmation named") }
+            // Fix round 1 I2: only a file the owner kept on reducing (the kept set), or one a finished Delete them change
+            // named, of an album that change unmonitored; never one the intent alone names.
+            guard Self.keptOrConfirmed(recorded, artistId: artistId, in: book) else {
+                throw Failure.refused("only songs kept on reducing, or named by a change the owner confirmed")
+            }
             var file = first
             if id != first.id { file = try await read { try await lidarr.trackFile(id: id) } }
             guard file.id == id, file.artistId == artistId, file.albumId == recorded.albumId else {
