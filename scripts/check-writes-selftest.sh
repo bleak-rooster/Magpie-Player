@@ -78,6 +78,16 @@ planted=(
   'g as SlskdWriteGate'
   # Round 23 R23F (D200): a third caller of Retry a song (the research route).
   'client.retrySong(playlistId: "flow-1", jobId: "job-1")'
+  # Round 24 B (D207–D209): a held song decided, or a flow or playlist deleted, from anywhere but AurralClient+Manage.swift;
+  # Aurral's retry, cancel, manual search or research-missing named.
+  'aurral.ok(method: AurralRoute.heldSongMethod, path: "api/playlists/jobs/" + id + "/approve")'
+  'aurral.ok(method: AurralRoute.heldSongMethod, path: path)'
+  'aurral.ok(method: AurralRoute.recipeFlowDeleteMethod, path: path)'
+  'aurral.ok(method: AurralRoute.chartFlowDeleteMethod, path: path)'
+  'aurral.ok(method: m, path: "api/playlists/jobs/" + id + "/retry")'
+  'aurral.ok(method: m, path: "api/playlists/jobs/" + id + "/cancel")'
+  'aurral.ok(method: m, path: "api/playlists/jobs/" + id + "/manual-search")'
+  'aurral.ok(method: m, path: "api/playlists/research-missing")'
 )
 failed=0
 for p in "${planted[@]}"; do
@@ -106,6 +116,9 @@ weakened=(
   's/        case .health, .login, .deezerPreview, .imageProxyFile: false/        case .health, .login, .deezerPreview, .imageProxyFile, .bootstrap: false/'
   's/            \&\& isPlainId(rest\[4\]) \&\& rest\[5\] == "research": .trackResearch/            \&\& rest[5] == "research": .trackResearch/'
   's/return Set(names).count == names.count \&\& names.allSatisfy(route.queryNames.contains)/return true/'
+  # Round 24 B (D207): approve's id check dropped, deny's verb given to a read.
+  's/ \&\& isPlainId(rest\[2\]) \&\& rest\[3\] == "approve": .jobApprove/ \&\& rest[3] == "approve": .jobApprove/'
+  's/        case .jobApprove, .jobDeny: Self.heldSongMethod/        case .jobApprove, .jobDeny: Self.heldSongMethod\n        case .playlistJobsById: Self.heldSongMethod/'
 )
 for w in "${weakened[@]}"; do
   cp "$work/AurralClient.orig" "$aurral_src"
@@ -208,6 +221,30 @@ for w in "${slskd_weakened[@]}"; do
 done
 for f in "$slroute_src" "$slclient_src"; do cp "$f.orig" "$f"; rm -f "$f.orig"; done
 weakened+=("${slskd_weakened[@]}")
+
+# Round 24 B (D207–D209): the four manage sends weakened: an id check dropped, a path turned to retry or cancel, a
+# delete given a body.
+manage_src="$work/Packages/MagpieKit/Sources/AurralKit/AurralClient+Manage.swift"
+cp "$manage_src" "$manage_src.orig"
+manage_weakened=(
+  's/guard AurralRoute.isPlainId(Substring(jobId)) else { throw AurralError.forbidden("approve /guard true else { throw AurralError.forbidden("approve /'
+  's/guard AurralRoute.isPlainId(Substring(flowId)) else { throw AurralError.forbidden("delete flow /guard true else { throw AurralError.forbidden("delete flow /'
+  's|path: "api/playlists/jobs/" + jobId + "/approve")|path: "api/playlists/jobs/" + jobId + "/retry")|'
+  's|path: "api/playlists/jobs/" + jobId + "/deny")|path: "api/playlists/jobs/" + jobId + "/cancel")|'
+  's|path: "api/playlists/shared-playlists/" + playlistId)|path: "api/playlists/shared-playlists/" + playlistId, body: Data())|'
+)
+for w in "${manage_weakened[@]}"; do
+  cp "$manage_src.orig" "$manage_src"
+  sed -i '' "$w" "$manage_src"
+  if cmp -s "$manage_src.orig" "$manage_src"; then echo "selftest: the weakening didn't apply: $w" >&2; failed=1; continue; fi
+  if out=$("$work/scripts/check-writes.sh" 2>&1); then
+    echo "selftest: NOT caught: $w" >&2; failed=1
+  elif ! grep -qE 'G1:' <<< "$out"; then
+    echo "selftest: failed without a G1 reason: $w" >&2; failed=1
+  fi
+done
+cp "$manage_src.orig" "$manage_src"; rm -f "$manage_src.orig"
+weakened+=("${manage_weakened[@]}")
 
 [ "$failed" = 0 ] || exit 1
 echo "check-writes selftest: all ${#planted[@]} planted violations and ${#weakened[@]} allow-list weakenings caught; the clean tree passes"
