@@ -322,15 +322,24 @@ public final class NowPlayingBridge {
     nonisolated static func commandHandler(
         player: Player, action: @escaping @Sendable @MainActor (Player, CommandInput) -> Void
     ) -> (MPRemoteCommandEvent) -> MPRemoteCommandHandlerStatus {
-        { event in
-            let input = CommandInput(event)
-            if Thread.isMainThread {
-                MainActor.assumeIsolated { action(player, input) }
-            } else {
-                Task { @MainActor in action(player, input) }
-            }
-            return .success
-        }
+        { event in dispatch(CommandInput(event), player: player, action: action) }
     }
+
+    /// Runs a command's action on the main actor: at once on the main thread, otherwise by a hop. Round 24 G (D234):
+    /// split out of `commandHandler` so tests can send a command from either thread without a MediaPlayer event.
+    nonisolated static func dispatch(
+        _ input: CommandInput, player: Player, action: @escaping @Sendable @MainActor (Player, CommandInput) -> Void
+    ) -> MPRemoteCommandHandlerStatus {
+        if Thread.isMainThread {
+            MainActor.assumeIsolated { action(player, input) }
+        } else {
+            Task { @MainActor in action(player, input) }
+        }
+        return .success
+    }
+
+    /// The commands this bridge has a handler on, one entry per handler (Round 24 G, D234: tests check each is
+    /// registered once and that `invalidate` removes them).
+    var registeredCommands: [MPRemoteCommand] { commandTargets.map(\.0) }
 }
 #endif
