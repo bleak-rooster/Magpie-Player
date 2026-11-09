@@ -146,6 +146,27 @@ import MagpieTestSupport
         #expect(env.connects.isEmpty)
     }
 
+    /// Security review D-L1: the record stores no address (it lives only in the Keychain); a record saved in the old form
+    /// (the address in plain text) still counts as on, only under its own scope, and is rewritten at once.
+    @Test func theRecordStoresNoAddress() async throws {
+        let env = await Env()
+        let defaults = try #require(UserDefaults(suiteName: env.suite))
+        let key = await env.gate.keepConnectedRecordKey
+        let stored = try #require(defaults.string(forKey: key))
+        #expect(!stored.localizedCaseInsensitiveContains("nas.local") && !stored.contains("slskd") && !stored.contains("https"))
+        #expect(await env.gate.keepConnected)
+
+        // The old form: on, and rewritten without the address.
+        defaults.set("https://nas.local/slskd", forKey: key)
+        #expect(await env.gate.keepConnected)
+        let rewritten = try #require(defaults.string(forKey: key))
+        #expect(rewritten == stored && !rewritten.contains("nas.local"))
+        // An old-form record naming another address is not this slskd's.
+        defaults.set("https://music.example/slskd", forKey: key)
+        #expect(await env.gate.keepConnected == false)
+        #expect(defaults.string(forKey: key) == "https://music.example/slskd", "left as it was, never rewritten")
+    }
+
     @Test func gate_connect_onlyWhenSlskdSaysDownNow() async throws {
         let env = await Env()
         await #expect(throws: SlskdGateError.self) { try await env.gate.perform(.connect) }   // connected now
