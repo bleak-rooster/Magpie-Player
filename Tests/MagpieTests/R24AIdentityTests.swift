@@ -136,18 +136,19 @@ import Testing
         #expect(try await model.discoverPlaylists().map(\.id) == ["pl-c1"], "Sam's stays out before Aurral answers")
     }
 
-    /// D204's upgrade: an old saved id is kept only while exactly one Aurral item can claim it. "Chill" fits two items,
-    /// so neither old id becomes a claim; the songs decide on the read.
+    /// D204's upgrade: an old saved id (round 23's id set, no item) is kept only while exactly one Aurral item can claim
+    /// it. "Chill" fits two items, so the old "pl-c1" isn't handed to the user's flow: with songs that can't tell the
+    /// two apart, neither is the user's.
     @Test func savedIds_migrateKeepsOnlyUnambiguous() async throws {
-        var scope: String?
-        let model = try await signedIn { model in
-            scope = model.navidromeScope
-            if let scope { model.appDefaults.set(["pl-c2"], forKey: AppModel.discoverPlaylistsKey(scope)) }
-        }
+        let model = try await signedIn(sameSongs: true)
         defer { model.signOut() }
-        let key = AppModel.discoverClaimsKey(try #require(scope))
-        #expect(defaults.dictionary(forKey: key) as? [String: String] == ["flow-c": "pl-c1", "flow-sc": "pl-c2"])
-        #expect(try await model.discoverPlaylists().map(\.id) == ["pl-c1"])
+        let scope = try #require(model.navidromeScope)
+        defaults.removeObject(forKey: AppModel.discoverClaimsKey(scope))   // as saved by round 23
+        defaults.set(["pl-c1", "pl-c2"], forKey: AppModel.discoverPlaylistsKey(scope))
+        await model.refreshDiscover(force: true)
+        #expect(defaults.dictionary(forKey: AppModel.discoverClaimsKey(scope)) as? [String: String] == [:])
+        #expect(try await model.discoverPlaylists().isEmpty)
+        #expect(model.isDiscoverPlaylist(id: "pl-c1") && model.isDiscoverPlaylist(id: "pl-c2"), "still Aurral's")
     }
 
     /// Sign-out forgets the claims with the other Discover keys.

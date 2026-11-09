@@ -160,6 +160,7 @@ extension AppModel {
             appDefaults.removeObject(forKey: Self.aurralSongsKey(scope))
             appDefaults.removeObject(forKey: Self.ownPlaylistsKey(scope))   // R22A
             appDefaults.removeObject(forKey: Self.othersPlaylistsKeyPrefix + scope)   // R23F (D189)
+            appDefaults.removeObject(forKey: Self.discoverClaimsKey(scope))   // R24A (D204)
             forgetAutoDownloadRecords(scope: scope)   // R22A (D186)
         }
         syncLibraryScope()
@@ -259,7 +260,12 @@ extension AppModel {
                                                 evidence: &evidence)
             }
         }
-        noteOthersPlaylists(matched, others: others, scope: scope)   // Round 23 R23F (D189), before Discover lists them
+        // Round 24 (D202–D204): each playlist's Aurral item by identity, then whose it is (D189), before Discover lists them.
+        let identified = identifyDiscoverPlaylists(matched, mine: flows, others: status.othersPlaylists,
+                                                   named: Set(candidates.map(\.playlist.id)), jobs: jobs ?? [],
+                                                   entries: entries, scope: scope)
+        matched = identified.playlists
+        noteOthersPlaylists(identified.notMine, scope: scope)
         discover.playlists = matched
         appDefaults.set(matched.map(\.playlist.id), forKey: Self.discoverPlaylistsKey(scope))
         if Set(matched.map(\.playlist.id)) != before {

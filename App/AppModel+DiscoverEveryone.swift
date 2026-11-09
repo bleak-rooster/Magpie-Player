@@ -11,6 +11,8 @@ import MagpieCore
 ///   they carry no flow id, so no Refresh Flow, Edit flow or Search again, and D186 never starts one.
 /// - Either way another user's never shows in Playlists, D188's switch included.
 /// - Which matched playlists are another user's is saved per account, so before Aurral answers they stay out too.
+///   Round 24 (D202): "another user's" is the claiming Aurral item's owner (`identifyDiscoverPlaylists`), never a
+///   name; a playlist no item could claim (Q1's tie) is treated the same way: listed only under everyone's.
 extension AppModel {
     nonisolated static let showEveryonesFlowsKeyPrefix = "magpie.showEveryonesFlows."
     nonisolated static let othersPlaylistsKeyPrefix = "magpie.discoverOthersPlaylists."
@@ -44,22 +46,11 @@ extension AppModel {
     /// "Show everyone's flows" on.
     func isShownInDiscover(_ playlist: Playlist) -> Bool { showEveryonesFlows || !isOthersDiscoverPlaylist(playlist) }
 
-    /// Hook from each read of Aurral (`performDiscoverRead`): which matched playlists are another user's.
-    func noteOthersPlaylists(_ matched: [DiscoverPlaylist], others: [AurralFlow], scope: String) {
-        let ids = Self.othersPlaylistIds(matched, others: others, before: othersDiscoverPlaylistIds)
+    /// Hook from each read of Aurral (`performDiscoverRead`): the matched playlists Discover lists only under everyone's.
+    /// Round 24 (D202): decided by the claiming Aurral item's owner (`identifyDiscoverPlaylists`), never by a name.
+    func noteOthersPlaylists(_ ids: Set<String>, scope: String) {
         discover.othersPlaylistIds = ids
         appDefaults.set(ids.sorted(), forKey: Self.othersPlaylistsKeyPrefix + scope)
-    }
-
-    /// Another user's: matched with no flow id (the user's own flows and playlists always have one) and named after one
-    /// of `others`, or kept from before (D75's orphan rule) as one with an owner or known another user's. A playlist
-    /// of the user's kept without a known flow has neither, so it stays the user's.
-    nonisolated static func othersPlaylistIds(_ matched: [DiscoverPlaylist], others: [AurralFlow],
-                                              before: Set<String>) -> Set<String> {
-        Set(matched.filter { m in
-            m.flow.id.isEmpty && (others.contains(m.flow) || m.flow.ownerUserId != nil || m.flow.ownerUsername != nil
-                                  || before.contains(m.playlist.id))
-        }.map(\.playlist.id))
     }
 }
 

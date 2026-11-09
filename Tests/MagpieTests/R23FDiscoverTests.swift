@@ -189,7 +189,11 @@ import Testing
 
     /// D200: at most 25 songs per tap.
     @Test func atMostTwentyFivePerTap() async throws {
-        let jobs = (0..<30).map { StubAurral.Job(flowId: "flow-dw", artistName: "Low", trackName: "Song \($0)", status: "failed") }
+        // Round 24 (D203): beside the flow's own songs, so its playlist is told from the owner's same-named one.
+        let own: [StubAurral.Job] = [.init(flowId: "flow-dw", artistName: "Low", trackName: "Lullaby", durationMs: 251_000),
+                                     .init(flowId: "flow-dw", artistName: "Low", trackName: "Words"),
+                                     .init(flowId: "flow-dw", artistName: "Low", trackName: "Halo")]
+        let jobs = own + (0..<30).map { StubAurral.Job(flowId: "flow-dw", artistName: "Low", trackName: "Song \($0)", status: "failed") }
         let model = try await signedIn(jobs: jobs)
         defer { model.signOut() }
         #expect(try await model.searchAgain(playlistId: "pl-dw") == 25)
