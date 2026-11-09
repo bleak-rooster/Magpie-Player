@@ -84,7 +84,6 @@ import Testing
     }
 }
 
-
 /// Through the car's controller and the app's adapter (CarPlayRound13Tests' signed-in model and car).
 extension CarPlayRound13Tests {
     /// The car connecting, going and connecting again (a CarPlay-only launch included) never touches the bridge's
@@ -104,18 +103,20 @@ extension CarPlayRound13Tests {
     }
 
     /// Now Playing's own buttons (moved to CarPlayController+NowPlaying.swift): shuffle, repeat and the star always;
-    /// Up Next on while there is a queue and off when it empties.
+    /// Up Next on while there is a queue and off when it empties. Read from this controller, not from the shared
+    /// template, which other suites drive at the same time (fix round 1, M5).
     @Test func carplay_nowPlayingButtons_enabledMatchQueue() async throws {
         let model = try await signedInModel()
         let (_, controller) = car(model)
         defer { controller.disconnect() }
-        #expect(!CPNowPlayingTemplate.shared.isUpNextButtonEnabled, "nothing playing")
-        let buttons = CPNowPlayingTemplate.shared.nowPlayingButtons
+        #expect(!controller.upNextButtonEnabled, "nothing playing")
+        let buttons = controller.nowPlayingButtons()
         #expect(buttons.contains { $0 is CPNowPlayingShuffleButton } && buttons.contains { $0 is CPNowPlayingRepeatButton })
+        #expect(buttons.contains { $0 is CPNowPlayingImageButton }, "the star")
         let songs = (0..<3).map { Song(id: "q\($0)", title: "Song \($0)", artist: "A", album: "B", duration: 60) }
         controller.start(songs, at: 0, shuffled: false)
-        #expect(await eventually { CPNowPlayingTemplate.shared.isUpNextButtonEnabled })
+        #expect(controller.upNextButtonEnabled)
         model.player.play([], startAt: 0)
-        #expect(await eventually { !CPNowPlayingTemplate.shared.isUpNextButtonEnabled })
+        #expect(!controller.upNextButtonEnabled)
     }
 }

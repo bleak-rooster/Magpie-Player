@@ -23,6 +23,16 @@ extension CarPlayController {
     /// Same Player calls as the lock screen's shuffle/repeat commands (`NowPlayingBridge`),
     /// which also keeps the commands' current types (the glyphs) in sync.
     func updateNowPlayingButtons() {
+        CPNowPlayingTemplate.shared.updateNowPlayingButtons(nowPlayingButtons())
+        CPNowPlayingTemplate.shared.isUpNextButtonEnabled = upNextButtonEnabled
+    }
+
+    /// Round 24 G fix round 1 (M5): Up Next is on while there is a queue. Read by tests from the controller, not from
+    /// the shared template other suites also drive.
+    var upNextButtonEnabled: Bool { player.queue.current != nil }
+
+    /// Keep (when shown), shuffle, repeat and the star, as `updateNowPlayingButtons` sets them.
+    func nowPlayingButtons() -> [CPNowPlayingButton] {
         var buttons: [CPNowPlayingButton] = []
         let keep = keepButton
         if keep.isShown {
@@ -42,8 +52,7 @@ extension CarPlayController {
             NowPlayingBridge.applyRepeat(NowPlayingBridge.repeatType(player.repeatMode.next), to: player)
         }
         repeatButton.isSelected = selection.repeating
-        CPNowPlayingTemplate.shared.updateNowPlayingButtons(buttons + [shuffle, repeatButton, favouriteButton()])
-        CPNowPlayingTemplate.shared.isUpNextButtonEnabled = player.queue.current != nil
+        return buttons + [shuffle, repeatButton, favouriteButton()]
     }
 
     private var keepButton: CPKeepButton {

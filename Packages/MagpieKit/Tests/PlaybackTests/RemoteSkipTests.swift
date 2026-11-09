@@ -189,9 +189,10 @@ import Testing
         #expect(player.isPlaying && engine.wantsToPlay)
     }
 
-    /// Past 3 s, previous starts the song again from a fresh load, not a seek: a converted stream comes chunked, with no
-    /// byte ranges (D42, D45), so a seek to 0 can leave the sound where it was while the screen shows 0:00.
-    @Test func remotePrevious_pastThreeSeconds_restartsFromAFreshLoad() throws {
+    /// Past 3 s on a converted stream (the chaos URLs are `format=aac` with no length estimate), previous starts the song
+    /// again from a fresh load, not a seek: such a stream comes chunked, with no byte ranges (D42, D45), so a seek to 0
+    /// may leave the sound where it was while the screen shows 0:00 (defensive; unconfirmed on a device).
+    @Test func remotePrevious_pastThreeSeconds_convertedStream_restartsFromAFreshLoad() throws {
         let (player, engine) = player(startAt: 1)
         let b = try #require(player.queue.current?.id)
         #expect(engine.loadsFromStart.last == b)
@@ -205,8 +206,8 @@ import Testing
         #expect(player.isPlaying && engine.wantsToPlay, "and it plays on")
     }
 
-    /// Paused past 3 s: previous puts the song back to the start and it stays paused.
-    @Test func remotePrevious_pausedPastThreeSeconds_restartsPaused() throws {
+    /// Paused past 3 s on a converted stream: previous loads the song again from the start and it stays paused.
+    @Test func remotePrevious_pausedPastThreeSeconds_convertedStream_restartsPaused() throws {
         let (player, engine) = player(startAt: 1)
         let b = try #require(player.queue.current?.id)
         player.handle(.time(b, 95, duration: 200))
@@ -232,18 +233,113 @@ import Testing
         #expect(player.isPlaying && engine.wantsToPlay)
     }
 
-    /// A restart shows 0, and a tick the engine sent before the restart landed doesn't put the old position back (the
-    /// screen and the sound agree).
-    @Test func seekZero_duringLoadCurrent_neverLeavesAudioPlaying() throws {
+    /// After a fresh-load restart (a converted stream), a tick the engine sent before the restart doesn't put the old
+    /// position back on screen; the next tick near the start is followed (a second, cosmetic fix).
+    @Test func remotePrevious_staleTickAfterRestart_isDropped() throws {
         let (player, _) = player(startAt: 1)
         let b = try #require(player.queue.current?.id)
         player.handle(.time(b, 95, duration: 200))
         remotePrevious(player, nil)
         #expect(player.queue.current?.id == b, "past 3 s: the same song")
         #expect(player.position == 0)
-        player.handle(.time(b, 95.5, duration: 200))   // in flight before the seek
+        player.handle(.time(b, 95.5, duration: 200))   // in flight before the restart
         #expect(player.position < 3, "a stale tick from before the restart doesn't undo it")
         player.handle(.time(b, 0.5, duration: 200))
         #expect(player.position == 0.5)
+    }
+
+    // MARK: - Sources that seek: a restart is a seek, as before (fix round 1, I1)
+
+    /// Streams by kind, counting every stream URL built (each would be a new request to the server).
+    @MainActor final class SourceURLs: StreamURLProvider {
+        /// Song id → "file" (on the phone), "original" (`format=raw` with its length), "mp3" (with its length) or
+        /// anything else (a converted AAC stream, chunked).
+        var kinds: [String: String] = [:]
+        private(set) var built: [String] = []
+        func streamURL(for song: Song) -> URL {
+            built.append(song.id)
+            let base = "http://127.0.0.1:4533/rest/stream?id=\(song.id)"
+            switch kinds[song.id] {
+            case "file": return URL(filePath: "/tmp/magpie-skip/\(song.id).flac")
+            case "original": return URL(string: base + "&format=raw&estimateContentLength=true")!
+            case "mp3": return URL(string: base + "&maxBitRate=320&format=mp3&estimateContentLength=true")!
+            default: return URL(string: base + "&maxBitRate=160&format=aac")!
+            }
+        }
+    }
+
+    func player(kind: String, startAt: Int = 1) -> (Player, SkipEngine, SourceURLs) {
+        let engine = SkipEngine()
+        let urls = SourceURLs()
+        for id in ["a", "b", "c"] { urls.kinds[id] = kind }
+        let player = Player(engine: engine, scrobbler: Fuzz.CountingScrobbler(), urls: urls)
+        player.lookahead = 2
+        player.play(["a", "b", "c"].map(Self.song), startAt: startAt)
+        return (player, engine, urls)
+    }
+
+    /// Past 3 s on a download, an Original or an MP3 stream: a seek to 0, no new load and no new stream request.
+    @Test(arguments: ["file", "original", "mp3"])
+    func remotePrevious_pastThreeSeconds_seekableSource_seeksToZero(_ kind: String) throws {
+        let (player, engine, urls) = player(kind: kind)
+        let b = try #require(player.queue.current?.id)
+        player.handle(.time(b, 95, duration: 200))
+        let loads = engine.loadsFromStart.count, built = urls.built.count
+        remotePrevious(player, nil)
+        #expect(player.queue.current?.id == b)
+        #expect(engine.seeks == [0], "\(kind): a seek to the start")
+        #expect(engine.loadsFromStart.count == loads, "\(kind): no fresh load")
+        #expect(urls.built.count == built, "\(kind): no new stream request")
+        #expect(player.position == 0)
+        #expect(player.isPlaying && engine.wantsToPlay)
+        player.handle(.time(b, 95.5, duration: 200))
+        #expect(player.position == 95.5, "\(kind): ticks are followed as before (no restart guard)")
+    }
+
+    /// The first song of a source that seeks: previous pressed again and again only seeks, never asks for it again.
+    @Test(arguments: ["file", "original", "mp3"])
+    func remotePrevious_repeatedOnTheFirstSong_seekableSource_noNewRequest(_ kind: String) {
+        let (player, engine, urls) = player(kind: kind, startAt: 0)
+        let loads = engine.loadsFromStart.count, built = urls.built.count
+        for _ in 0..<5 { remotePrevious(player, nil) }
+        #expect(player.queue.current?.song.id == "a")
+        #expect(engine.seeks == Array(repeating: 0, count: 5))
+        #expect(engine.loadsFromStart.count == loads && urls.built.count == built, "\(kind): no new request")
+    }
+
+    /// The first song of a converted stream: previous loads it afresh (its URL built again).
+    @Test func remotePrevious_onTheFirstSong_convertedStream_freshLoad() {
+        let (player, engine, urls) = player(kind: "aac", startAt: 0)
+        let loads = engine.loadsFromStart.count, built = urls.built.count
+        remotePrevious(player, nil)
+        #expect(engine.seeks.isEmpty)
+        #expect(engine.loadsFromStart.count == loads + 1 && urls.built.count > built)
+    }
+
+    // MARK: - The owner's pause holds (fix round 1, M3)
+
+    /// Paused by the owner, a next that takes the reload path (repeat one sends the engine the current song alone)
+    /// leaves the player paused.
+    @Test func remoteNext_afterTheOwnersPause_reloadPath_staysPaused() {
+        let (player, engine) = player()
+        player.repeatMode = .one
+        player.toggle()
+        let loads = engine.loadsFromStart.count
+        remoteNext(player, nil)
+        #expect(player.queue.current?.song.id == "b")
+        #expect(engine.loadsFromStart.count == loads + 1, "the reload path")
+        #expect(engine.nextCount == 0)
+        #expect(!player.isPlaying && !engine.wantsToPlay)
+    }
+
+    /// Paused by the owner within the first 3 s, previous goes back a song and stays paused.
+    @Test func remotePrevious_afterTheOwnersPause_nearStart_staysPaused() throws {
+        let (player, engine) = player(startAt: 1)
+        let b = try #require(player.queue.current?.id)
+        player.handle(.time(b, 2, duration: 200))
+        player.toggle()
+        remotePrevious(player, nil)
+        #expect(player.queue.current?.song.id == "a")
+        #expect(!player.isPlaying && !engine.wantsToPlay)
     }
 }
