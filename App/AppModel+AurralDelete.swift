@@ -154,6 +154,7 @@ enum AurralDeleteCopy {
         case .playlist: "Aurral removes this playlist and the songs only it was keeping. This can\u{2019}t be undone."
         }
     }
+    // G1 allowlist: copy (the confirmation button's word, never a request's verb)
     static let confirm = "Delete"
     static let keep = "Keep it"
     static func deleted(_ name: String) -> String { "Deleted \u{201C}\(name)\u{201D}." }

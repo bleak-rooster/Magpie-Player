@@ -69,6 +69,8 @@
 #       through the gate's `connect` shape, only from `SlskdKeepConnected.check`. Pinned below.
 #   Packages/MagpieKit/Sources/MagpieTestSupport/FakeSlskd.swift  G1 allowlist: stub slskd
 #       The in-process stub names the verb it answers for those routes; it sends nothing.
+#   App/AppModel+AurralDelete.swift  G1 allowlist: copy
+#       Round 24 C (D212): the Delete confirmation's button says "Delete" (the plan's words); copy, never a request's verb.
 #
 # G1_SRC overrides the product tree to scan and skips the others (used to check this script against a planted
 # violation).
@@ -105,6 +107,7 @@ allow=(
   "Packages/MagpieKit/Sources/SlskdKit/SlskdClient.swift|G1 allowlist: slskd clean-up"
   "Packages/MagpieKit/Sources/SlskdKit/SlskdRoute.swift|G1 allowlist: slskd keep connected"
   "Packages/MagpieKit/Sources/MagpieTestSupport/FakeSlskd.swift|G1 allowlist: stub slskd"
+  "App/AppModel+AurralDelete.swift|G1 allowlist: copy"
 )
 [ -n "${G1_SRC:-}" ] && allow=("$G1_SRC/NavidromeKit/NavidromeClient.swift|auth/login"
                                "$G1_SRC/MagpieTestSupport/SharedLoginTransport.swift|auth/login")
@@ -442,16 +445,17 @@ if [ -z "${G1_SRC:-}" ]; then
       *) echo "G1: Aurral's Download songs asked for outside its two callers: ${c%%:*}" >&2; bad=1 ;;
     esac
   done <<< "$dl_callers"
-  # Round 23 R23F (D200): Retry a song (the research route) is asked for from exactly two places: a synced playlist's
-  # per-song Retry (AppModel+DiscoverPlaylists.swift) and "Search again for missing songs" (AppModel+SearchAgain.swift),
-  # one call each, both on the owner's tap.
+  # Round 23 R23F (D200): Retry a song (the research route) is asked for from exactly three places: a synced playlist's
+  # per-song Retry (AppModel+DiscoverPlaylists.swift), "Search again for missing songs" (AppModel+SearchAgain.swift)
+  # and, round 24 C (D213), Songs still coming's Search now (AppModel+AurralDownloads.swift), one call each, all on the
+  # owner's tap.
   rs_callers=$(grep -rnF --include='*.swift' 'client.retrySong(' "${product[@]}" | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' || true)
-  [ "$(printf '%s\n' "$rs_callers" | grep -c .)" = 2 ] || { echo "G1: Aurral's Retry a song isn't asked for from exactly two calls" >&2; bad=1; }
+  [ "$(printf '%s\n' "$rs_callers" | grep -c .)" = 3 ] || { echo "G1: Aurral's Retry a song isn't asked for from exactly three calls" >&2; bad=1; }
   while IFS= read -r c; do
     [ -n "$c" ] || continue
     case "${c%%:*}" in
-      App/AppModel+DiscoverPlaylists.swift|App/AppModel+SearchAgain.swift) ;;
-      *) echo "G1: Aurral's Retry a song asked for outside its two callers: ${c%%:*}" >&2; bad=1 ;;
+      App/AppModel+DiscoverPlaylists.swift|App/AppModel+SearchAgain.swift|App/AppModel+AurralDownloads.swift) ;;
+      *) echo "G1: Aurral's Retry a song asked for outside its three callers: ${c%%:*}" >&2; bad=1 ;;
     esac
   done <<< "$rs_callers"
   # Round 15 C2 (D131, fix round): the four chart flow writes are sent only from these exact lines in ChartFlows.swift

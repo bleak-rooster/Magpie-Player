@@ -117,7 +117,7 @@ extension AppModel {
         do {
             noteStatus(try await client.status())
             guard !isFlowRunActive(row.item.id) else { throw AurralError.runActive }
-            _ = try await client.retrySong(playlistId: row.item.id, jobId: row.job.id)
+            try await sendSearchNow(row, client)
         } catch {
             noteAurralError(error)
             throw error
@@ -145,7 +145,7 @@ extension AppModel {
         var failure: Error?
         for row in searchNowBatch(board) {
             do {
-                _ = try await client.retrySong(playlistId: row.item.id, jobId: row.job.id)
+                try await sendSearchNow(row, client)
                 sent += 1
             } catch AurralError.notPermitted {
                 failure = AurralError.notPermitted
@@ -156,6 +156,11 @@ extension AppModel {
         }
         if sent == 0, let failure { throw failure }
         return sent
+    }
+
+    /// D199's Retry route for one song, the page's only call of it (`scripts/check-writes.sh` pins its callers).
+    private func sendSearchNow(_ row: SongsStillComing.Row, _ client: AurralClient) async throws {
+        _ = try await client.retrySong(playlistId: row.item.id, jobId: row.job.id)
     }
 
     /// The client for one of `row`'s actions, or why not: offline (nothing sent), or not offered (`notPermitted`).
