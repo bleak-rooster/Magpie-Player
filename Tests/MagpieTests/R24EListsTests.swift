@@ -291,8 +291,6 @@ private let search3 = ok(#"""
                 "a grid's first row of the run: the header")
         #expect(LetterSectionHeader.scrollTarget(index: 10, runs: runs, rowLength: 2) == .item(8), "a grid row before")
         #expect(LetterSectionHeader.scrollTarget(index: 10, runs: []) == .item(10), "no headers: the item")
-        #expect(LetterSectionHeader.scrollID(index: 2, runs: runs) { items[$0] } == AnyHashable("letter-header-C-2"))
-        #expect(LetterSectionHeader.scrollID(index: 10, runs: []) { items[$0] } == AnyHashable("Cherry 8"))
     }
 
     /// Fix round 1 (M4): no search field over an empty or failed list; kept while it holds a query.
@@ -374,6 +372,26 @@ private let search3 = ok(#"""
         trigger.letter = "M"
         await expectLanded(log, header: "letter-header-M-48", row: "row-M0 row",
                            headerInset: container == .list ? 16 : 0, "\(container)")
+    }
+
+    /// 25 rows or fewer (no headers): a jump still scrolls to the row itself (its `ForEach` id, matched by its own type).
+    @Test(arguments: [JumpHarness.Container.list, .stack])
+    func letterJump_withoutHeadersScrollsToTheRow(container: JumpHarness.Container) async throws {
+        let model = try await signedInModel()
+        let trigger = JumpTrigger()
+        let items = (0..<25).map { "\(Swift.Character(UnicodeScalar(UInt8(ascii: "A") + UInt8($0)))) row" }
+        let (window, log) = try await hostJump(JumpHarness(container: container, items: items, trigger: trigger),
+                                               model: model)
+        defer { window.isHidden = true }
+        #expect(await eventually(5) { log.frames["row-A row"] != nil && log.frames["viewport"] != nil })
+        #expect(log.frames.keys.allSatisfy { !$0.hasPrefix("letter-header-") }, "\(container): no headers at 25")
+        trigger.letter = "M"
+        let landed = await eventually(5) {
+            guard let row = log.frames["row-M row"], let top = log.frames["viewport"] else { return false }
+            let inset: CGFloat = container == .list ? 16 : 0   // a List cell pads its content
+            return row.minY >= top.minY - 1 && row.minY - top.minY <= inset + 1.5
+        }
+        #expect(landed, "\(container): M's row \(String(describing: log.frames["row-M row"])) is not at the top of \(String(describing: log.frames["viewport"]))")
     }
 
     /// I1: the albums grid with more than 25 albums: a jump to a loaded letter more than a screen below lands on it.

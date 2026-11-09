@@ -52,15 +52,6 @@ struct LetterSectionHeader: View {
         return index - run.range.lowerBound < step ? .header(id(run)) : .item(index - step)
     }
 
-    /// `scrollTarget` as a scroll id, with the items' ids.
-    static func scrollID<ID: Hashable>(index: Int, runs: [LetterIndex.Section], rowLength: Int = 1,
-                                       ids: (Int) -> ID) -> AnyHashable {
-        switch scrollTarget(index: index, runs: runs, rowLength: rowLength) {
-        case .header(let id): AnyHashable(id)
-        case .item(let i): AnyHashable(ids(i))
-        }
-    }
-
     var body: some View {
         let key = run.key
         Text(Self.label(key))
@@ -116,6 +107,10 @@ extension ScrollViewProxy {
     @MainActor func scrollToLetter<ID: Hashable>(index: Int, sections: [LetterIndex.Section], itemCount: Int,
                                       barShown: Bool = true, rowLength: Int = 1, ids: (Int) -> ID) {
         let runs = LetterSectionHeader.runs(sections, itemCount: itemCount, barShown: barShown)
-        scrollTo(LetterSectionHeader.scrollID(index: index, runs: runs, rowLength: rowLength, ids: ids), anchor: .top)
+        // The concrete id type, not `AnyHashable`: a `ForEach`'s ids are matched by their own type.
+        switch LetterSectionHeader.scrollTarget(index: index, runs: runs, rowLength: rowLength) {
+        case .header(let id): scrollTo(id, anchor: .top)
+        case .item(let i): scrollTo(ids(i), anchor: .top)
+        }
     }
 }
