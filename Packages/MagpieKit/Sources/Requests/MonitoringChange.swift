@@ -124,6 +124,8 @@ public struct CleanupPreview: Sendable, Equatable {
         public var file: OwnedFile
         public var title: String
         public var album: String
+        /// The song's recording (Lidarr's), so the app can say why a kept one stays.
+        public var recording: String?
         /// "Kept because you favourited it": never deleted.
         public var kept: Bool
         public var id: Int { file.id }
@@ -384,8 +386,9 @@ public actor MonitoringChanger {
         let rows: [CleanupPreview.Row] = kept.files.sorted { $0.id < $1.id }.compactMap { owned in
             guard let file = files.first(where: { $0.id == owned.id }), file.albumId == owned.albumId, file.size == owned.size,
                   let album = albums.first(where: { $0.id == owned.albumId }), !album.monitored else { return nil }
-            let title = tracks.first { $0.trackFileId == owned.id }?.title ?? WriteConfinement.lastComponent(file.path)
-            return .init(file: owned, title: title, album: album.title, kept: keptIds.contains(owned.id))
+            let track = tracks.first { $0.trackFileId == owned.id }
+            return .init(file: owned, title: track?.title ?? WriteConfinement.lastComponent(file.path), album: album.title,
+                         recording: track?.foreignRecordingId, kept: keptIds.contains(owned.id))
         }
         return CleanupPreview(artistId: artistId, artistName: artist.artistName, artistMbid: artist.foreignArtistId, rows: rows)
     }

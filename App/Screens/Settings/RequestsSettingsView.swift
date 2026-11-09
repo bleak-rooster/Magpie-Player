@@ -112,6 +112,7 @@ struct RequestsSettingsView: View {
             } footer: {
                 Text("Turn on to bring songs home. Every change is logged.")
             }
+            LidarrMonitoringToggle()   // Round 24 (Q10, D237): what Lidarr monitors for the owner's artists
             Section {   // R17 (R20's words)
                 Picker(RequestCopy.stuckCopySetting, selection: Binding(
                     get: { stuckCopyLimit },
