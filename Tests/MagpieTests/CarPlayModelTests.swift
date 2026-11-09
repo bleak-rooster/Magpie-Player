@@ -141,7 +141,7 @@ import UIKit
             case .albums: CarPlayRows.albumBands([a, b]) + CarPlayRows.albumBands([a, b], maxItems: 1)
             case .songs: CarPlayRows.songBands(CPSongIndex(total: 9, starts: [1, 3, 4, 5, 6, 8]))
                 + CarPlayRows.songBands(CPSongIndex(total: 9, starts: [1, 3, 4, 5, 6, 8]), maxItems: 1)
-            case .songRange: CarPlayRows.songPage([song("s"), song("t")], total: 3, playingId: nil)
+            case .songRange: CarPlayRows.songPage([song("s"), song("t")], playingId: nil)
             case .letterGroup(_, let sections): sections
             case .album: CarPlayRows.album(a, playingId: nil)
             case .playlist: CarPlayRows.playlist(Playlist(id: "p", name: "P", songCount: 1, duration: 9),

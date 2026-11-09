@@ -74,24 +74,32 @@ extension CarPlayController {
     /// read.
     /// Round 24 (D231): pages follow the new limits too. A song group's page is read again for them (its page holds
     /// only its songs); every other list is laid out again from what it shows (a list on screen keeps its shape until
-    /// it is off screen, `apply`).
+    /// it is off screen, `apply`). Fix round 1: only lists whose limits really changed (M5), and a page on top whose
+    /// place in the list moved is opened again under its right title (M3, `retitleIfStale`).
     func reloadAZLists() {
         let now = listLimits()
         for binding in bindings.values {
+            if let limits = binding.limits, limits == now { continue }
             let base: CPDestination? = if case .page(let ref) = binding.destination { ref.base } else { binding.destination }
             if case .songRange? = base {
-                if let limits = binding.limits, limits == now { continue }
-                if let destination = binding.destination, let fetch = azFetcher(for: destination, into: binding) {
+                if let current = currentPage(of: binding), current.title != binding.template.title,
+                   interface.topTemplate === binding.template {
+                    retitleIfStale(binding.template)   // opens the page again, reading its songs
+                } else if let destination = binding.destination, let fetch = azFetcher(for: destination, into: binding) {
                     load(binding, fetch)
                 }
                 continue
             }
             guard let destination = binding.destination, let base, [.playlists, .artists, .albums, .songs].contains(base)
             else {
-                if binding.content != nil { Task { [weak self] in await self?.refresh(binding) } }
+                if binding.content != nil {
+                    Task { [weak self] in
+                        await self?.refresh(binding)
+                        self?.retitleIfStale(binding.template)
+                    }
+                }
                 continue
             }
-            if let limits = binding.limits, limits == now { continue }
             if let relayout = binding.relayout, !binding.isPlaceholder {
                 binding.loadTask?.cancel()
                 binding.loadTask = Task { [weak self] in
@@ -100,6 +108,7 @@ extension CarPlayController {
                     binding.limits = now
                     binding.content = { _ in sections }
                     await self.refresh(binding)
+                    self.retitleIfStale(binding.template)
                 }
             } else if let fetch = azFetcher(for: destination, into: binding) {
                 load(binding, fetch)
@@ -173,7 +182,7 @@ extension CarPlayController {
         let library = library
         let total = ranges.reduce(0) { $0 + $1.count }
         let pages = CPPager.breaks(rowCount: total, maxItems: limits.items, maxSections: limits.sections)
-        let index = pages.firstIndex { $0.contains(start) } ?? max(0, pages.count - 1)
+        let index = CPPager.index(of: start, in: pages)
         binding?.limits = limits
         return {
             guard pages.indices.contains(index) else { return { _ in CarPlayRows.state(.empty) } }
@@ -188,7 +197,7 @@ extension CarPlayController {
             let navigation = (previous == nil ? 0 : 1) + (next == nil ? 0 : 1)
             let action = CPPageRef.action(base: base, baseTitle: title)
             return { playing in
-                var content = CarPlayRows.songPage(songs, total: nil, playingId: playing)
+                var content = CarPlayRows.songPage(songs, playingId: playing)
                 if content.count + (CPPager.ownSections(maxSections: limits.sections) ? navigation : 0) > limits.sections {
                     content = [CPSectionModel(header: nil, rows: content.flatMap(\.rows))]
                 }

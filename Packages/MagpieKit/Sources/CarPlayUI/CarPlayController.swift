@@ -103,6 +103,8 @@ public final class CarPlayController: NSObject {
     var listLimits: () -> (items: Int, sections: Int) = {
         (Int(CPListTemplate.maximumItemCount), Int(CPListTemplate.maximumSectionCount))
     }
+    /// R24F fix round 1 (I1): a page is being put in place of the list on screen (+Paging.swift).
+    var pageInFlight = false
 
     /// Artwork requests in flight per list.
     private static let artworkConcurrency = 4
@@ -702,7 +704,9 @@ extension CarPlayController: CPInterfaceControllerDelegate {
         }
     }
 
-    public func templateDidAppear(_ aTemplate: CPTemplate, animated: Bool) {}
+    public func templateDidAppear(_ aTemplate: CPTemplate, animated: Bool) {
+        retitleIfStale(aTemplate)   // R24F fix round 1 (M3): a page laid out for a new ceiling while covered
+    }
 
     public func templateWillDisappear(_ aTemplate: CPTemplate, animated: Bool) {}
 

@@ -18,15 +18,9 @@ public func clamp(_ sections: [CPSectionModel], maxItems: Int, maxSections: Int,
     for (i, section) in nonEmpty.enumerated() { sectionOfRow += Array(repeating: i, count: section.rows.count) }
     let pages = CPPager.breaks(sectionOfRow, maxItems: maxItems, maxSections: maxSections)
     guard pages.count > 1 else { return pages.first.map { CPPager.content(nonEmpty, rows: $0) } ?? [] }
-    let index = pages.firstIndex { $0.contains(start) } ?? (start < 0 ? 0 : pages.count - 1)
-    func linkTo(_ i: Int) -> CPPageLink {
-        let content = CPPager.content(nonEmpty, rows: pages[i])
-        let letters = CPPager.letters(content)
-        return CPPageLink(start: pages[i].lowerBound, count: pages[i].count, index: i, pageCount: pages.count,
-                          firstLetter: letters?.first, lastLetter: letters?.last, span: CPPager.span(content))
-    }
-    let previous = index > 0 && CPPager.hasPrevious(maxItems: maxItems) ? linkTo(index - 1) : nil
-    let next = index + 1 < pages.count ? linkTo(index + 1) : nil
+    let index = CPPager.index(of: start, in: pages)
+    let previous = index > 0 && CPPager.hasPrevious(maxItems: maxItems) ? CPPager.link(nonEmpty, pages, index - 1) : nil
+    let next = index + 1 < pages.count ? CPPager.link(nonEmpty, pages, index + 1) : nil
     return CPPager.assemble(CPPager.content(nonEmpty, rows: pages[index]), previous: previous, next: next,
                             maxSections: maxSections, link: link)
 }
@@ -53,11 +47,13 @@ public struct CPPageLink: Sendable, Hashable {
     }
 
     /// The opened page's title: its letters ("F–J") when it covers more than one, otherwise its place in the list
-    /// ("Mix (2 of 3)"); the list's own title for the first page.
+    /// ("Mix (2 of 3)", or "Page 2 of 3" for a list without a title, fix round 1 M6); the list's own title for the
+    /// first page.
     public func title(listTitle: String) -> String {
         if let firstLetter, let lastLetter, firstLetter != lastLetter { return "\(firstLetter)\u{2013}\(lastLetter)" }
         guard start > 0, let index, let pageCount else { return listTitle }
-        return "\(listTitle) (\(index + 1) of \(pageCount))"
+        let listTitle = listTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        return listTitle.isEmpty ? "Page \(index + 1) of \(pageCount)" : "\(listTitle) (\(index + 1) of \(pageCount))"
     }
 }
 
@@ -140,6 +136,39 @@ public enum CPPager {
     /// The breaks for `rowCount` rows in one section (a song group, read a page at a time).
     public static func breaks(rowCount: Int, maxItems: Int, maxSections: Int) -> [Range<Int>] {
         breaks(Array(repeating: 0, count: max(0, rowCount)), maxItems: maxItems, maxSections: maxSections)
+    }
+
+    /// The page holding row `start` (the first before the list, the last past it).
+    static func index(of start: Int, in pages: [Range<Int>]) -> Int {
+        pages.firstIndex { $0.contains(start) } ?? (start < 0 ? 0 : max(0, pages.count - 1))
+    }
+
+    /// The link to page `i` of `sections` (none empty) cut at `pages`.
+    static func link(_ sections: [CPSectionModel], _ pages: [Range<Int>], _ i: Int) -> CPPageLink {
+        let content = content(sections, rows: pages[i])
+        let letters = letters(content)
+        return CPPageLink(start: pages[i].lowerBound, count: pages[i].count, index: i, pageCount: pages.count,
+                          firstLetter: letters?.first, lastLetter: letters?.last, span: span(content))
+    }
+
+    /// Fix round 1 (M3): the page of `sections` holding row `start` under these limits (its title and first row), so a
+    /// page laid out again for a new ceiling can be titled again. Nil for an empty list.
+    public static func page(_ sections: [CPSectionModel], holding start: Int, maxItems: Int,
+                            maxSections: Int) -> CPPageLink? {
+        let nonEmpty = sections.filter { !$0.rows.isEmpty }
+        var sectionOfRow: [Int] = []
+        for (i, section) in nonEmpty.enumerated() { sectionOfRow += Array(repeating: i, count: section.rows.count) }
+        let pages = breaks(sectionOfRow, maxItems: maxItems, maxSections: maxSections)
+        guard !pages.isEmpty else { return nil }
+        return link(nonEmpty, pages, index(of: start, in: pages))
+    }
+
+    /// The same for a song group of `rowCount` songs (its pages are cut by count).
+    public static func page(rowCount: Int, holding start: Int, maxItems: Int, maxSections: Int) -> CPPageLink? {
+        let pages = breaks(rowCount: rowCount, maxItems: maxItems, maxSections: maxSections)
+        guard !pages.isEmpty else { return nil }
+        let i = index(of: start, in: pages)
+        return CPPageLink(start: pages[i].lowerBound, count: pages[i].count, index: i, pageCount: pages.count)
     }
 
     /// The sections holding `rows` (positions over the rows of `sections`, none empty), each keeping its header and

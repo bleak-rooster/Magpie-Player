@@ -28,7 +28,8 @@ import Testing
         return nil
     }
 
-    /// Thirty letter sections' worth of rows: "A1", "A2", "B1", … filed under their letter (the scrubber's index title).
+    /// One letter section per `(letter, count)`, its rows "A1", "A2", … filed under the letter (the scrubber's index
+    /// title).
     func lettered(_ counts: [(String, Int)]) -> [CPSectionModel] {
         counts.map { key, n in
             CPSectionModel(header: key, rows: (1...n).map { row("\(key)\($0)") }, indexTitle: key)
@@ -106,6 +107,27 @@ import Testing
         #expect(more.detail == "10 more, Song 12 to Song 21")
         guard case .open(.page(let ref)) = more.action else { Issue.record("More… opens a page"); return }
         #expect(ref.title == "List (2 of 3)")
+    }
+
+    /// Fix round 1 (M6): a list without a title names its pages "Page 2 of 3", never with a leading space.
+    @Test func carList_untitledListPagesAreNamedPageNOfM() {
+        let link = CPPageLink(start: 11, count: 10, index: 1, pageCount: 3)
+        #expect(link.title(listTitle: "") == "Page 2 of 3")
+        #expect(link.title(listTitle: "  ") == "Page 2 of 3")
+        #expect(link.title(listTitle: "Mix") == "Mix (2 of 3)")
+        #expect(CPPageLink(start: 0, count: 11, index: 0, pageCount: 3).title(listTitle: "Mix") == "Mix")
+    }
+
+    /// Fix round 1 (M3): the page holding a row is found again under new limits, with its title.
+    @Test func carList_pageHoldingARow_isFoundForNewLimits() throws {
+        let sections = [CPSectionModel(header: nil, rows: (0..<30).map { row("r\($0)") })]
+        let parked = try #require(CPPager.page(sections, holding: 23, maxItems: 24, maxSections: 12))
+        #expect(parked.start == 23 && parked.title(listTitle: "Mix") == "Mix (2 of 2)")
+        let driving = try #require(CPPager.page(sections, holding: 23, maxItems: 12, maxSections: 12))
+        #expect(driving.start == 21 && driving.title(listTitle: "Mix") == "Mix (3 of 3)")
+        let songs = try #require(CPPager.page(rowCount: 30, holding: 3, maxItems: 4, maxSections: 12))
+        #expect(songs.start == 3 && songs.count == 2 && songs.title(listTitle: "A\u{2013}E") == "A\u{2013}E (2 of 14)")
+        #expect(CPPager.page([], holding: 0, maxItems: 12, maxSections: 12) == nil)
     }
 
     @Test func carList_noShowingNOfMRow() {

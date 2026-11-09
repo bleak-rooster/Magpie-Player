@@ -138,6 +138,114 @@ private func subsonic(_ body: String) -> Data {
         #expect(await eventually { FakeCarInterface.texts(car.topList).contains("Song 11") })
     }
 
+    // MARK: Fix round 1
+
+    /// I1: a real pop answers later; a second tap on "More…" meanwhile opens nothing more (one push, same depth).
+    @Test func carList_doubleTapOnMore_pushesOnce() async throws {
+        let model = try await signedInModel()
+        let car = DeferredPopCar()
+        let controller = CarPlayController(interfaceController: car, library: CarPlayLibraryAdapter(model: model),
+                                           player: model.player)
+        controller.listLimits = { (items: 12, sections: 12) }
+        controller.setAvailability(.ready(account: "one"))
+        defer { controller.disconnect() }
+        controller.perform(.open(.letterGroup(title: "Mix", sections: Self.group(30))))
+        #expect(await eventually { FakeCarInterface.texts(car.templates.last as? CPListTemplate).last == "More\u{2026}" })
+        let depth = car.templates.count, pushes = car.pushes
+        car.tap("More\u{2026}")
+        car.tap("More\u{2026}")
+        #expect(car.pendingPops.count == 1, "the second tap waits for nothing: it is refused")
+        car.answerPops()
+        #expect(car.pushes == pushes + 1)
+        #expect(car.templates.count == depth)
+        #expect((car.templates.last as? CPListTemplate)?.title == "Mix (2 of 3)")
+        // Once the page is up, More works again.
+        #expect(await eventually { FakeCarInterface.texts(car.templates.last as? CPListTemplate).last == "More\u{2026}" })
+        car.tap("More\u{2026}")
+        car.answerPops()
+        #expect(car.pushes == pushes + 2 && car.templates.count == depth)
+    }
+
+    /// M2: when the car refuses the pop, nothing is pushed and the page that would have opened is let go.
+    @Test func carList_refusedPop_pushesNothing() async throws {
+        let model = try await signedInModel()
+        let (car, controller) = car(model, limits: (items: 12, sections: 12))
+        defer { controller.disconnect() }
+        controller.perform(.open(.letterGroup(title: "Mix", sections: Self.group(30))))
+        #expect(await eventually { FakeCarInterface.texts(car.topList).last == "More\u{2026}" })
+        let depth = car.templates.count, bindings = controller.bindings.count
+        car.failsPops = true
+        car.tap("More\u{2026}", in: car.topList)
+        #expect(car.templates.count == depth)
+        #expect(car.topList?.title == "Mix")
+        #expect(controller.bindings.count == bindings, "the unshown page's binding is dropped")
+        #expect(!controller.bindings.values.contains { $0.template.title == "Mix (2 of 3)" })
+        car.failsPops = false
+        car.tap("More\u{2026}", in: car.topList)
+        #expect(car.topList?.title == "Mix (2 of 3)", "and More still works afterwards")
+    }
+
+    /// M3: a page on screen when the ceiling changes is opened again for the new ceiling, so its title is right.
+    @Test func carList_ceilingChange_retitlesThePageShown() async throws {
+        let model = try await signedInModel()
+        var limits = (items: 24, sections: 12)
+        let (car, controller) = car(model)
+        controller.listLimits = { limits }
+        defer { controller.disconnect() }
+        controller.perform(.open(.letterGroup(title: "Mix", sections: Self.group(30))))
+        #expect(await eventually { FakeCarInterface.texts(car.topList).last == "More\u{2026}" })
+        car.tap("More\u{2026}", in: car.topList)
+        #expect(car.topList?.title == "Mix (2 of 2)")
+        let depth = car.templates.count
+
+        limits = (items: 12, sections: 12)
+        controller.sessionConfiguration(CPSessionConfiguration(delegate: controller), limitedUserInterfacesChanged: [.keyboard])
+        #expect(await eventually { car.topList?.title == "Mix (3 of 3)" }, "row A24 is on the third page now")
+        #expect(car.templates.count == depth)
+        #expect(await eventually { FakeCarInterface.texts(car.topList).dropFirst().first == "A22" })
+        #expect(FakeCarInterface.texts(car.topList).count <= 12)
+    }
+
+    /// M3: a page covered by another screen when the ceiling changes is opened again when it shows.
+    @Test func carList_ceilingChange_retitlesACoveredPageWhenItShows() async throws {
+        let model = try await signedInModel()
+        var limits = (items: 24, sections: 12)
+        let (car, controller) = car(model)
+        controller.listLimits = { limits }
+        defer { controller.disconnect() }
+        controller.perform(.open(.letterGroup(title: "Mix", sections: Self.group(30))))
+        #expect(await eventually { FakeCarInterface.texts(car.topList).last == "More\u{2026}" })
+        car.tap("More\u{2026}", in: car.topList)
+        let page = try #require(car.topList)
+        #expect(page.title == "Mix (2 of 2)")
+        controller.perform(.open(.letterGroup(title: "Other", sections: Self.group(2))))
+
+        limits = (items: 12, sections: 12)
+        controller.sessionConfiguration(CPSessionConfiguration(delegate: controller), limitedUserInterfacesChanged: [.keyboard])
+        await Task { @MainActor in }.value
+        #expect(car.topList?.title == "Other", "the screen on top is left alone")
+        car.pop(to: page, animated: false, completion: nil)
+        controller.templateWillAppear(page, animated: false)
+        controller.templateDidAppear(page, animated: false)
+        #expect(await eventually { car.topList?.title == "Mix (3 of 3)" })
+    }
+
+    /// M5: a change that leaves the limits as they were lays nothing out again.
+    @Test func carList_sameLimits_refreshesNothing() async throws {
+        let model = try await signedInModel()
+        let (car, controller) = car(model, limits: (items: 12, sections: 12))
+        defer { controller.disconnect() }
+        controller.perform(.open(.letterGroup(title: "Mix", sections: Self.group(30))))
+        #expect(await eventually { FakeCarInterface.texts(car.topList).last == "More\u{2026}" })
+        let list = try #require(car.topList)
+        let binding = try #require(controller.bindings[ObjectIdentifier(list)])
+        let generation = binding.generation
+        controller.sessionConfiguration(CPSessionConfiguration(delegate: controller), limitedUserInterfacesChanged: [.keyboard])
+        await Task { @MainActor in }.value   // runs after anything the change scheduled on the main actor
+        await Task { @MainActor in }.value
+        #expect(binding.generation == generation)
+    }
+
     // MARK: A new ceiling
 
     @Test func carList_ceilingChangeMidSession_rebuildsPages() async throws {
@@ -203,5 +311,60 @@ private func subsonic(_ body: String) -> Data {
         defer { again.disconnect() }
         #expect(await eventually { FakeCarInterface.texts(yours.tab(2)) == ["Drive"] })
         #expect(Self.detail("Drive", in: yours.tab(2)) == "2 songs")
+    }
+}
+
+/// R24F fix round 1 (I1): the car's screen with a real `CPInterfaceController`'s timing: a pop answers later, as the
+/// animation ends. Pushes are counted.
+@MainActor
+final class DeferredPopCar: CarPlayInterface {
+    weak var delegate: (any CPInterfaceControllerDelegate)?
+    private(set) var templates: [CPTemplate] = []
+    var topTemplate: CPTemplate? { templates.last }
+    var presentedTemplate: CPTemplate? { nil }
+    let carTraitCollection = UITraitCollection(displayScale: 2)
+    private(set) var pushes = 0
+    /// Pops asked for and not yet answered.
+    private(set) var pendingPops: [() -> Void] = []
+
+    func setRootTemplate(_ rootTemplate: CPTemplate, animated: Bool, completion: ((Bool, (any Error)?) -> Void)?) {
+        templates = [rootTemplate]
+        completion?(true, nil)
+    }
+
+    func pushTemplate(_ templateToPush: CPTemplate, animated: Bool, completion: ((Bool, (any Error)?) -> Void)?) {
+        pushes += 1
+        templates.append(templateToPush)
+        completion?(true, nil)
+    }
+
+    func pop(to targetTemplate: CPTemplate, animated: Bool, completion: ((Bool, (any Error)?) -> Void)?) {
+        pendingPops.append { [weak self] in
+            guard let self else { return }
+            if let index = self.templates.firstIndex(where: { $0 === targetTemplate }) {
+                self.templates = Array(self.templates.prefix(index + 1))
+            }
+            completion?(true, nil)
+        }
+    }
+
+    func presentTemplate(_ templateToPresent: CPTemplate, animated: Bool, completion: ((Bool, (any Error)?) -> Void)?) {
+        completion?(true, nil)
+    }
+
+    func dismissTemplate(animated: Bool, completion: ((Bool, (any Error)?) -> Void)?) { completion?(true, nil) }
+
+    /// The pops end, in order.
+    func answerPops() {
+        let pops = pendingPops
+        pendingPops = []
+        pops.forEach { $0() }
+    }
+
+    /// Taps the row titled `text` on the top list.
+    func tap(_ text: String) {
+        guard let item = (templates.last as? CPListTemplate)?.sections.flatMap(\.items).compactMap({ $0 as? CPListItem })
+            .first(where: { $0.text == text }) else { Issue.record("no row \(text)"); return }
+        item.handler?(item) {}
     }
 }
