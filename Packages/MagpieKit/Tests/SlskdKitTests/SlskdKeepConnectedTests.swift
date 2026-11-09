@@ -236,6 +236,49 @@ import MagpieTestSupport
         let env = await Env()
         env.slskd.with { s in s.serverConnected = false; s.connectStatus = 403 }
         #expect(await env.check() == .keyCannotReconnect)
+        // Fix round 1 M3: held until the key changes: no more asks, however long.
+        for _ in 0..<5 {
+            env.clock.advance(120)
+            #expect(await env.check() == .keyCannotReconnect)
+        }
+        #expect(env.connects.count == 1)
+        await #expect(throws: SlskdGateError.self) { try await env.gate.perform(.connect) }
+        // Another key for the same slskd starts afresh.
+        let client = SlskdClient(base: Self.base, apiKey: "another-key", transport: env.slskd)
+        let other = SlskdWriteGate(client: client, defaultsSuite: env.suite, now: { env.clock.now })
+        await other.setKeepConnected(true)
+        env.slskd.with { $0.apiKey = "another-key"; $0.connectStatus = 200 }
+        #expect(await SlskdKeepConnected.check(client: client, gate: other) == .down(asked: true))
+        #expect(env.connects.count == 2)
+    }
+
+    /// Fix round 1 M1: a last ask in the future (the clock was set back) counts as made now, never as "never".
+    @Test func gate_lastConnectInTheFutureCountsAsNow() async throws {
+        let env = await Env()
+        env.slskd.with { s in s.serverConnected = false; s.connectReconnects = false }
+        let defaults = try #require(UserDefaults(suiteName: env.suite))
+        let key = SlskdWriteGate.lastConnectKey(scope: env.client.instanceScope)
+        defaults.set(env.clock.now.addingTimeInterval(86_400), forKey: key)
+        #expect(await env.check() == .down(asked: false))
+        #expect(env.connects.isEmpty)
+        #expect(await env.gate.lastConnect == env.clock.now, "reset to now")
+        env.clock.advance(59)
+        #expect(await env.check() == .down(asked: false))
+        env.clock.advance(1)
+        #expect(await env.check() == .down(asked: true))
+        #expect(env.connects.count == 1)
+    }
+
+    /// Fix round 1 M1: an outage that started "in the future" starts again from now.
+    @Test func outage_sinceInTheFutureStartsAgain() {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let outage = Tracker()
+        _ = outage.record(.down(asked: true), at: start.addingTimeInterval(3600))
+        _ = outage.record(.down(asked: true), at: start.addingTimeInterval(3660))
+        #expect(!outage.record(.down(asked: true), at: start), "the clock went back an hour")
+        #expect(outage.outage.failedChecks == 1 && outage.outage.since == start)
+        #expect(!outage.record(.down(asked: true), at: start.addingTimeInterval(300)))
+        #expect(outage.record(.down(asked: true), at: start.addingTimeInterval(600)))
     }
 
     // MARK: - The outage

@@ -245,54 +245,82 @@ public actor SlskdWriteGate {
     public static let keepConnectedDefaultsKey = "magpie.slskd.keepConnected"
     public static func keepConnectedKey(scope: String) -> String { "\(keepConnectedDefaultsKey).\(scope)" }
     public static func lastConnectKey(scope: String) -> String { "magpie.slskd.lastConnect.\(scope)" }
+    /// Fix round 1 M3: slskd refused this address and key's ask (401/403); no more asks until the key changes.
+    public static func keyRefusedKey(scope: String) -> String { "magpie.slskd.connectRefused.\(scope)" }
 
     /// Where the owner's "Keep Soulseek connected" record for this slskd is saved: the address it was turned on for.
     var keepConnectedRecordKey: String { Self.keepConnectedKey(scope: client.instanceScope) }
 
-    /// The address as the record names it (lower case, no trailing slash).
-    private var recordedBase: String { Self.keepConnectedRecord(for: client.connection.base) }
-
     /// What the record saves for `base`: the address, lower case, without a trailing slash.
-    public static func keepConnectedRecord(for base: URL) -> String {
+    static func keepConnectedRecord(for base: URL) -> String {
         var text = base.absoluteString.lowercased()
         while text.hasSuffix("/") { text.removeLast() }
         return text
     }
 
+    /// The record, read for one slskd (`scope` is its client's `instanceScope`). The one place its format lives (fix
+    /// round 1 M5): the gate and the app's switch both use these.
+    public static func keepConnected(in defaults: UserDefaults, scope: String, base: URL) -> Bool {
+        defaults.string(forKey: keepConnectedKey(scope: scope)) == keepConnectedRecord(for: base)
+    }
+
+    /// Saves (or removes) the record for one slskd. Turned on, it names this address; a new address or key starts off.
+    public static func setKeepConnected(_ on: Bool, in defaults: UserDefaults, scope: String, base: URL) {
+        if on {
+            defaults.set(keepConnectedRecord(for: base), forKey: keepConnectedKey(scope: scope))
+        } else {
+            defaults.removeObject(forKey: keepConnectedKey(scope: scope))
+        }
+    }
+
     /// "Keep Soulseek connected": on only when its record, saved before any ask, names this address (and lives under
     /// this address and key's scope). False until the owner turns it on.
-    public var keepConnected: Bool { defaults.string(forKey: keepConnectedRecordKey) == recordedBase }
+    public var keepConnected: Bool {
+        Self.keepConnected(in: defaults, scope: client.instanceScope, base: client.connection.base)
+    }
 
-    /// Saves (or removes) the owner's record. Turned on, it names this address; a new address or key starts off.
     public func setKeepConnected(_ on: Bool) {
-        if on { defaults.set(recordedBase, forKey: keepConnectedRecordKey) } else { defaults.removeObject(forKey: keepConnectedRecordKey) }
+        Self.setKeepConnected(on, in: defaults, scope: client.instanceScope, base: client.connection.base)
     }
 
     /// When Magpie last asked this slskd to connect (saved before the ask was sent).
     public var lastConnect: Date? { defaults.object(forKey: Self.lastConnectKey(scope: client.instanceScope)) as? Date }
 
-    /// The switch is on and the last ask is at least `SlskdKeepConnected.connectCooldown` old.
-    public var mayAskToConnect: Bool {
-        guard keepConnected else { return false }
+    /// slskd refused this key's ask to reconnect (fix round 1 M3). Cleared only with the key (a new scope).
+    public var keyRefused: Bool { defaults.bool(forKey: Self.keyRefusedKey(scope: client.instanceScope)) }
+
+    /// The switch is on, the key hasn't been refused, and the last ask is at least `SlskdKeepConnected.connectCooldown`
+    /// old. Fix round 1 M1: a last ask in the future (the clock was set back) counts as made now, so the minute starts
+    /// again rather than never ending.
+    public func mayAskToConnect() -> Bool {
+        guard keepConnected, !keyRefused else { return false }
         guard let lastConnect else { return true }
-        return now().timeIntervalSince(lastConnect) >= SlskdKeepConnected.connectCooldown
+        let now = now()
+        if lastConnect > now {
+            defaults.set(now, forKey: Self.lastConnectKey(scope: client.instanceScope))
+            return false
+        }
+        return now.timeIntervalSince(lastConnect) >= SlskdKeepConnected.connectCooldown
     }
 
-    /// The `connect` shape: refused unless the owner's record is on for this address and key, the last ask is a minute
-    /// old, and slskd, read just now, says it is disconnected and not transitioning. The time of the ask is saved before
-    /// it is sent (M6), so a lost answer is never followed by another ask within the minute. Never a disconnect.
+    /// The `connect` shape: refused unless the owner's record is on for this address and key, the key wasn't refused,
+    /// the last ask is a minute old, and slskd, read just now, says it is disconnected and not transitioning. The time of
+    /// the ask is saved before it is sent (M6), so a lost answer is never followed by another ask within the minute.
+    /// Never a disconnect.
     private func connect() async throws {
         guard keepConnected else { throw SlskdGateError.refused("Keep Soulseek connected is off for this slskd") }
-        guard mayAskToConnect else { throw SlskdGateError.refused("asked less than a minute ago") }
+        guard mayAskToConnect() else { throw SlskdGateError.refused("asked less than a minute ago") }
         let state: SlskdServerState
         do { state = try await client.serverState() } catch { throw SlskdGateError.unconfirmed }
         guard state.condition == .down else { throw SlskdGateError.refused("slskd isn't disconnected now") }
-        guard mayAskToConnect else { throw SlskdGateError.refused("turned off during the read") }
+        guard mayAskToConnect() else { throw SlskdGateError.refused("turned off during the read") }
         defaults.set(now(), forKey: Self.lastConnectKey(scope: client.instanceScope))
         let (_, response) = try await client.connection.send(.connect)
         switch response.statusCode {
         case 200..<300: return
-        case 401, 403: throw SlskdError.unauthorized
+        case 401, 403:
+            defaults.set(true, forKey: Self.keyRefusedKey(scope: client.instanceScope))
+            throw SlskdError.unauthorized
         default: throw SlskdError.http(status: response.statusCode)
         }
     }

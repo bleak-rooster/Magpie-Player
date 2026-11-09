@@ -101,7 +101,8 @@ public enum SlskdKeepConnected {
         case .unknown: return .unknown
         case .down: break
         }
-        guard await gate.mayAskToConnect else { return .down(asked: false) }
+        if await gate.keyRefused { return .keyCannotReconnect }   // fix round 1 M3: held until the key changes
+        guard await gate.mayAskToConnect() else { return .down(asked: false) }
         do {
             try await gate.perform(.connect)   // Round 24 (D218): the one caller of the connect shape
             return .down(asked: true)
@@ -139,6 +140,12 @@ public struct SlskdOutage: Sendable, Equatable, Codable {
             return false
         }
         guard check.isFailure else { return false }
+        // Fix round 1 M1: a start in the future (the clock was set back) starts the outage again from now; whether the
+        // owner was told already is kept.
+        if let start = since, start > now {
+            since = nil
+            failedChecks = 0
+        }
         failedChecks += 1
         let start = since ?? now
         since = start

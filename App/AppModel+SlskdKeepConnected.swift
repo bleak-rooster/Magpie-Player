@@ -29,6 +29,14 @@ final class SlskdKeepConnectedState {
     /// Whether switching on starts the minute-by-minute checks (tests drive the checks themselves).
     @ObservationIgnored var runsLoop = !AppModel.isHostedTest
     @ObservationIgnored var loop: Task<Void, Never>?
+    /// Fix round 1 I3: the connected slskd's check, with its one gate, made once per slskd (`scope`) by
+    /// AppModel+Slskd and dropped when slskd changes.
+    @ObservationIgnored var checker: (scope: String, run: @Sendable () async -> SlskdCheck)?
+    /// Fix round 1 I3: the check under way; another caller joins it instead of starting a second.
+    @ObservationIgnored var inFlight: Task<SlskdCheck?, Never>?
+    /// Fix round 1 M6: Settings sheets on screen. A tap on the notification while one is open navigates in it instead
+    /// of presenting another sheet (which SwiftUI would not show).
+    @ObservationIgnored var settingsShown = 0
 
     /// Home's banner: only once the owner is to be told (three failed checks over ten minutes), while it lasts.
     var homeBanner: String? {
@@ -45,6 +53,9 @@ final class SlskdKeepConnectedState {
     func reset() {
         loop?.cancel()
         loop = nil
+        inFlight?.cancel()
+        inFlight = nil
+        checker = nil
         isOn = false
         lastCheck = nil
         outage = SlskdOutage()
@@ -126,12 +137,23 @@ extension AppModel {
         startSlskdKeepConnectedLoop(after: first)
     }
 
-    /// One check (the loop's, the background pass's, or the switch's first). Nil when nothing was checked: the switch is
-    /// off, slskd isn't connected, or Magpie is offline (Task 14: nothing is sent).
+    /// One check (the loop's, the background pass's, the page's, or the switch's first). Nil when nothing was checked:
+    /// the switch is off, slskd isn't connected, Magpie is offline (Task 14: nothing is sent), or the check was cancelled
+    /// (the background pass's time ran out). Fix round 1 I3: single-flight: while one runs, another caller joins it, so
+    /// one check is one read, at most one ask, and one count. Cancelling the caller cancels the check.
     @discardableResult
     func checkSlskdKeepConnected() async -> SlskdCheck? {
+        if let running = slskdKeep.inFlight { return await running.value }
+        let task = Task { await self.performSlskdKeepConnectedCheck() }
+        slskdKeep.inFlight = task
+        let check = await withTaskCancellationHandler { await task.value } onCancel: { task.cancel() }
+        if slskdKeep.inFlight == task { slskdKeep.inFlight = nil }
+        return check
+    }
+
+    private func performSlskdKeepConnectedCheck() async -> SlskdCheck? {
         guard slskdKeep.isOn, !isOffline, let check = await runSlskdKeepConnectedCheck() else { return nil }
-        guard slskdKeep.isOn else { return nil }   // turned off while it ran
+        guard slskdKeep.isOn, !Task.isCancelled else { return nil }   // turned off, or out of time, while it ran
         slskdKeep.lastCheck = check
         if slskdKeep.outage.record(check, at: slskdKeep.clock()), slskdKeep.notificationsAllowed != false {
             slskdKeep.notifier.postSlskdOutage(title: SlskdKeepCopy.notificationTitle, body: SlskdKeepCopy.notificationBody)
@@ -171,17 +193,17 @@ extension AppModel {
         }
     }
 
-    /// iOS's background pass (`RequestsBackgroundRefresh`, D220): one check, when the switch is on, bounded so the rest
-    /// of the pass keeps its time. True when it finished in time.
-    func slskdBackgroundCheck(limit: Duration = .seconds(10)) async -> Bool {
-        guard slskdKeep.isOn else { return false }
-        return await Self.within(limit) { [weak self] in _ = await self?.checkSlskdKeepConnected() }
-    }
+    /// iOS's background pass (`RequestsBackgroundRefresh`, D220): the slskd check gets at most this long, and is
+    /// cancelled past it (fix round 1 I2, M2); the runner gets what is left of the pass.
+    static let slskdBackgroundLimit: Duration = .seconds(10)
 
     /// The saved outage of the connected slskd, read with the switch.
     func readSlskdKeepConnected() {
         slskdKeep.loop?.cancel()
         slskdKeep.loop = nil
+        slskdKeep.inFlight?.cancel()
+        slskdKeep.inFlight = nil
+        slskdKeep.checker = nil   // fix round 1 I3: a new slskd (or none) gets its own gate
         slskdKeep.isOn = slskdKeepConnectedSaved
         slskdKeep.lastCheck = nil
         slskdKeep.outage = slskdOutageKey.flatMap { gateDefaults.data(forKey: $0) }
@@ -235,11 +257,29 @@ extension View {
     func slskdPagePresenter() -> some View { modifier(SlskdPagePresenter()) }
 }
 
+/// Fix round 1 M6: a Settings sheet that is already open takes the request itself (`SettingsView` opens the page in its
+/// own navigation); otherwise this presents Settings on the slskd page.
 private struct SlskdPagePresenter: ViewModifier {
     @Environment(AppModel.self) private var model
+    @State private var presents = false
 
     func body(content: Content) -> some View {
-        @Bindable var keep = model.slskdKeep
-        content.sheet(isPresented: $keep.opensPage) { SettingsView(opening: [.slskd]) }
+        content
+            .sheet(isPresented: $presents) { SettingsView(opening: [.slskd]) }
+            .onChange(of: model.slskdKeep.opensPage, initial: true) { _, opens in
+                guard opens, SlskdPageRoute.route(settingsShown: model.slskdKeep.settingsShown) == .present else { return }
+                model.slskdKeep.opensPage = false
+                presents = true
+            }
     }
+}
+
+/// Fix round 1 M6: where a request to open the slskd page goes.
+enum SlskdPageRoute: Equatable {
+    /// No Settings sheet is open: present one on the slskd page.
+    case present
+    /// A Settings sheet is open: open the page in it.
+    case navigate
+
+    static func route(settingsShown: Int) -> SlskdPageRoute { settingsShown > 0 ? .navigate : .present }
 }

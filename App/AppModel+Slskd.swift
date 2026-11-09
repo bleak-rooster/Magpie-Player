@@ -55,49 +55,60 @@ extension AppModel {
         handSlskdToRunner()
     }
 
-    /// Both switches of one slskd: Allow changes, and (R24) Keep Soulseek connected's record, its last ask and outage.
+    /// Both switches of one slskd: Allow changes, and (R24) Keep Soulseek connected's record, its last ask, a refused
+    /// key and the outage.
     private func forgetSlskdSwitches(scope: String) {
         gateDefaults.removeObject(forKey: SlskdWriteGate.enabledKey(scope: scope))
         gateDefaults.removeObject(forKey: SlskdWriteGate.keepConnectedKey(scope: scope))
         gateDefaults.removeObject(forKey: SlskdWriteGate.lastConnectKey(scope: scope))
+        gateDefaults.removeObject(forKey: SlskdWriteGate.keyRefusedKey(scope: scope))
         forgetSlskdOutage(scope: scope)
     }
 
     // MARK: - Round 24: Keep Soulseek connected (D217, D218)
 
-    /// The connected slskd's client and gate for the keep-connected checks, on the checks' clock. Nil without slskd, or
-    /// while its address waits for the owner's OK to send the key over plain http.
-    private var slskdKeepAccess: (client: SlskdClient, gate: SlskdWriteGate)? {
+    /// The connected slskd's client, read only. Nil without slskd, or while its address waits for the owner's OK to send
+    /// the key over plain http.
+    private var slskdReadClient: SlskdClient? {
         guard let slskd, plainHTTPConsent.allows(slskd.base) else { return nil }
-        let client = SlskdClient(base: slskd.base, apiKey: slskd.apiKey, transport: transport)
-        return (client, SlskdWriteGate(client: client, defaultsSuite: gateDefaultsSuite, now: slskdKeep.clock))
+        return SlskdClient(base: slskd.base, apiKey: slskd.apiKey, transport: transport)
     }
 
-    /// "Keep Soulseek connected" as saved for the connected slskd: the gate's own record for this address and key.
+    /// Fix round 1 I3: the keep-connected check of the connected slskd, with its one gate (on the checks' clock), made
+    /// once per slskd and kept, so every check of that slskd goes through the same gate.
+    private func slskdKeepChecker() -> (@Sendable () async -> SlskdCheck)? {
+        guard let client = slskdReadClient else { return nil }
+        let scope = client.instanceScope
+        if let kept = slskdKeep.checker, kept.scope == scope { return kept.run }
+        let gate = SlskdWriteGate(client: client, defaultsSuite: gateDefaultsSuite, now: slskdKeep.clock)
+        let run: @Sendable () async -> SlskdCheck = { await SlskdKeepConnected.check(client: client, gate: gate) }
+        slskdKeep.checker = (scope, run)
+        return run
+    }
+
+    /// "Keep Soulseek connected" as saved for the connected slskd: the gate's own record (fix round 1 M5).
     var slskdKeepConnectedSaved: Bool {
         guard let slskd, let scope = slskdScope else { return false }
-        return gateDefaults.string(forKey: SlskdWriteGate.keepConnectedKey(scope: scope))
-            == SlskdWriteGate.keepConnectedRecord(for: slskd.base)
+        return SlskdWriteGate.keepConnected(in: gateDefaults, scope: scope, base: slskd.base)
     }
 
     /// Saves the switch where the gate reads it, before any check can ask slskd anything (M6).
     func saveSlskdKeepConnected(_ on: Bool) {
         guard let slskd, let scope = slskdScope else { return }
-        let key = SlskdWriteGate.keepConnectedKey(scope: scope)
-        if on { gateDefaults.set(SlskdWriteGate.keepConnectedRecord(for: slskd.base), forKey: key) } else { gateDefaults.removeObject(forKey: key) }
+        SlskdWriteGate.setKeepConnected(on, in: gateDefaults, scope: scope, base: slskd.base)
     }
 
     /// One keep-connected check (`SlskdKeepConnected.check`); nil without slskd.
     func runSlskdKeepConnectedCheck() async -> SlskdCheck? {
-        guard let access = slskdKeepAccess else { return nil }
-        return await SlskdKeepConnected.check(client: access.client, gate: access.gate)
+        guard let run = slskdKeepChecker() else { return nil }
+        return await run()
     }
 
     /// slskd's state, read only (the page opened with the switch off): never sends anything.
     func readSlskdServerState() async -> SlskdCheck? {
-        guard let access = slskdKeepAccess else { return nil }
+        guard let client = slskdReadClient else { return nil }
         do {
-            switch try await access.client.serverState().condition {
+            switch try await client.serverState().condition {
             case .connected: return .connected
             case .transitioning: return .transitioning
             case .down: return .down(asked: false)

@@ -71,6 +71,15 @@ struct SettingsView: View {
             .task(id: model.lidarr) { if model.lidarr != nil, !model.isOffline { _ = await model.lidarrAudit() } }
             .task(id: model.slskd) { await model.refreshSlskdState() }   // R24 (D216): the row says whether slskd answers
         }
+        // R24 fix round 1 M6: the slskd notification tapped while Settings is open opens the page here (on the stack, not
+        // its root list, which disappears when a page is pushed).
+        .onAppear { model.slskdKeep.settingsShown += 1 }
+        .onDisappear { model.slskdKeep.settingsShown -= 1 }
+        .onChange(of: model.slskdKeep.opensPage, initial: true) { _, opens in
+            guard opens, SlskdPageRoute.route(settingsShown: model.slskdKeep.settingsShown) == .navigate else { return }
+            model.slskdKeep.opensPage = false
+            path = [.slskd]
+        }
     }
 
     private func link(_ page: SettingsPage) -> some View {

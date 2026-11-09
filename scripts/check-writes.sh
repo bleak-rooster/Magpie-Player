@@ -842,7 +842,7 @@ if [ -z "${G1_SRC:-}" ]; then
               '        guard enabled else { throw SlskdGateError.disabled }' \
               '        if write == .connect { return try await connect() }   // Round 24 (D218): its own switch and proofs, below' \
               '        guard keepConnected else { throw SlskdGateError.refused("Keep Soulseek connected is off for this slskd") }' \
-              '        guard mayAskToConnect else { throw SlskdGateError.refused("asked less than a minute ago") }' \
+              '        guard mayAskToConnect() else { throw SlskdGateError.refused("asked less than a minute ago") }' \
               '        guard state.condition == .down else { throw SlskdGateError.refused("slskd isn'"'"'t disconnected now") }' \
               '        defaults.set(now(), forKey: Self.lastConnectKey(scope: client.instanceScope))' \
               '        let (_, response) = try await client.connection.send(.connect)'; do
@@ -888,6 +888,35 @@ if [ -z "${G1_SRC:-}" ]; then
   # SlskdKit (the clean slate never reconnects).
   [ "$(grep -cE '^            try await gate\.perform\(\.connect\)   // Round 24 \(D218\): the one caller of the connect shape$' "$slkeep")" = 1 ] ||
     { echo "G1: $slkeep: the slskd reconnect isn't its one caller" >&2; bad=1; }
+  # Fix round 1 I1: counted, whatever the spelling. Every `send(` in the slskd client is one of its five known lines;
+  # its request's verb is the route's own, set in one place; the keep-connected check performs exactly once; the clean
+  # slate performs exactly its three; the app's slskd connection makes exactly its two gates and performs nothing; and
+  # no product code takes another route's verb.
+  slnc() { grep -nE "$1" "$2" | grep -vE '^[0-9]+:[[:space:]]*//' || true; }
+  want_sends=$(printf '%s\n' \
+    '        return try await send(route)' \
+    '    fileprivate func send(_ route: SlskdRoute) async throws -> (Data, HTTPURLResponse) {' \
+    '        return try await transport.send(request, maxBytes: Self.maxResponseBytes)' \
+    '        let (_, response) = try await client.connection.send(route)' \
+    '        let (_, response) = try await client.connection.send(.connect)' | sort)
+  have_sends=$(slnc 'send\(' "$slclient" | cut -d: -f2- | sort)
+  [ "$have_sends" = "$want_sends" ] || { echo "G1: $slclient: the slskd client's sends changed" >&2; bad=1; }
+  [ "$(slnc 'httpMethod' "$slclient" | cut -d: -f2-)" = '        request.httpMethod = route.method' ] ||
+    { echo "G1: $slclient: the slskd request's verb isn't exactly its route's" >&2; bad=1; }
+  [ "$(slnc 'perform\(' "$slkeep" | wc -l | tr -d ' ')" = 1 ] ||
+    { echo "G1: $slkeep: the keep-connected check performs other than once" >&2; bad=1; }
+  [ "$(slnc 'perform\(' "$cleanslatefile" | wc -l | tr -d ' ')" = 3 ] ||
+    { echo "G1: $cleanslatefile: the clean slate performs other than its three" >&2; bad=1; }
+  slapp="App/AppModel+Slskd.swift"
+  [ -z "$(slnc 'perform\(' "$slapp")" ] || { echo "G1: $slapp: performs an slskd write itself" >&2; bad=1; }
+  want_gates=$(printf '%s\n' \
+    '        return RequestRunner.SlskdAccess(client: client, gate: SlskdWriteGate(client: client, defaultsSuite: gateDefaultsSuite))' \
+    '        let gate = SlskdWriteGate(client: client, defaultsSuite: gateDefaultsSuite, now: slskdKeep.clock)' | sort)
+  [ "$(slnc 'SlskdWriteGate\(' "$slapp" | cut -d: -f2- | sort)" = "$want_gates" ] ||
+    { echo "G1: $slapp: the slskd gates made aren't exactly its two" >&2; bad=1; }
+  for f in $(grep -rlE --include='*.swift' 'SlskdRoute\.[A-Za-z]+\.method' "${product[@]}" | sort -u || true); do
+    [ -n "$(slnc 'SlskdRoute\.[A-Za-z]+\.method' "$f")" ] && { echo "G1: another slskd route's verb taken: $f" >&2; bad=1; }
+  done
   for f in $(grep -rlE --include='*.swift' '\bSlskdWrite\.connect\b|perform\(\.connect\)|send\(\.connect\)' "${product[@]}" | sort -u || true); do
     case "$f" in "$slkeep"|"$slclient") ;;
       *) echo "G1: the slskd reconnect named outside SlskdKit: $f" >&2; bad=1 ;; esac

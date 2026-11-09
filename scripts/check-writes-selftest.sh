@@ -217,7 +217,7 @@ slskd_weakened=(
   "$slroute_src|s/^    case connect/    case connect\n    case disconnect/"
   "$slroute_src|s/    static let connectMethod = \"PUT\"/    static let connectMethod = \"DELETE\"/"
   "$slclient_src|s/        guard keepConnected else { throw SlskdGateError.refused(.*) }//"
-  "$slclient_src|s/        guard mayAskToConnect else { throw SlskdGateError.refused(\"asked less than a minute ago\") }//"
+  "$slclient_src|s/        guard mayAskToConnect() else { throw SlskdGateError.refused(\"asked less than a minute ago\") }//"
   "$slclient_src|s/        guard state.condition == .down else { throw SlskdGateError.refused(.*) }//"
   "$slclient_src|s/        defaults.set(now(), forKey: Self.lastConnectKey(scope: client.instanceScope))//"
   "$slroute_src|s/^    case deleteFolder(String)/    case deleteFolder(String)\n    case clearCompleted/"
@@ -265,6 +265,34 @@ for w in "${manage_weakened[@]}"; do
 done
 cp "$manage_src.orig" "$manage_src"; rm -f "$manage_src.orig"
 weakened+=("${manage_weakened[@]}")
+
+# Round 24 D fix round 1 (I1): slskd reconnect bypasses planted where they would really go (appended to, or edited
+# into, the file named): a connect through a typed variable in the clean slate, a second gate made and used by the app,
+# a second caller in the check, a reconnect on the client skipping the gate, the verb of another route swapped in, and
+# a read that sends the connect.
+slskd_inplace=(
+  "Packages/MagpieKit/Sources/Requests/RequestRunner+CleanSlate.swift|append|        let w: SlskdWrite = .connect; try await slskd.gate.perform(w)"
+  "App/AppModel+Slskd.swift|append|        let g = SlskdWriteGate(client: client, defaultsSuite: gateDefaultsSuite); try await g.perform(w)"
+  "Packages/MagpieKit/Sources/SlskdKit/SlskdServerState.swift|append|      try await gate.perform(.connect)"
+  "Packages/MagpieKit/Sources/SlskdKit/SlskdClient.swift|append|    public func reconnect() async throws { _ = try await connection.send(.connect) }"
+  "Packages/MagpieKit/Sources/SlskdKit/SlskdClient.swift|sed|s/request.httpMethod = route.method/request.httpMethod = route == .serverState ? SlskdRoute.connect.method : route.method/"
+  "Packages/MagpieKit/Sources/SlskdKit/SlskdClient.swift|sed|s/        guard route.method == \"GET\" else { throw SlskdError.forbidden }/&\n        if route == .serverState { return try await send(.connect) }/"
+)
+for entry in "${slskd_inplace[@]}"; do
+  rel="${entry%%|*}" rest="${entry#*|}"
+  mode="${rest%%|*}" text="${rest#*|}"
+  file="$work/$rel"
+  cp "$file" "$file.orig"
+  if [ "$mode" = append ]; then printf '%s\n' "$text" >> "$file"; else sed -i '' "$text" "$file"; fi
+  if cmp -s "$file.orig" "$file"; then echo "selftest: the plant didn't apply: $entry" >&2; failed=1
+  elif out=$("$work/scripts/check-writes.sh" 2>&1); then
+    echo "selftest: NOT caught: $entry" >&2; failed=1
+  elif ! grep -qE 'G1:' <<< "$out"; then
+    echo "selftest: failed without a G1 reason: $entry" >&2; failed=1
+  fi
+  cp "$file.orig" "$file"; rm -f "$file.orig"
+done
+planted+=("${slskd_inplace[@]}")
 
 [ "$failed" = 0 ] || exit 1
 echo "check-writes selftest: all ${#planted[@]} planted violations and ${#weakened[@]} allow-list weakenings caught; the clean tree passes"

@@ -39,17 +39,36 @@ import Testing
         func permissionStatus() async -> Bool? { allows }
     }
 
+    /// Fix round 1 I2: the fake slskd, except that while `hangs` is on an answer never comes (until the request is
+    /// cancelled). Records whether a hanging request was cancelled.
+    final class HangingTransport: HTTPTransport, Sendable {
+        let inner: FakeSlskd
+        let hangs = OSAllocatedUnfairLock(initialState: false)
+        let cancelled = OSAllocatedUnfairLock(initialState: 0)
+        init(_ inner: FakeSlskd) { self.inner = inner }
+        func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+            if hangs.withLock({ $0 }) {
+                do { try await Task.sleep(for: .seconds(120)) } catch {
+                    cancelled.withLock { $0 += 1 }
+                    throw error
+                }
+            }
+            return try await inner.send(request)
+        }
+    }
+
     final class TestClock: Sendable {
         private let time = OSAllocatedUnfairLock(initialState: Date(timeIntervalSince1970: 1_800_000_000))
         var now: Date { time.withLock { $0 } }
         func advance(_ seconds: TimeInterval) { time.withLock { $0 = $0.addingTimeInterval(seconds) } }
     }
 
-    func makeModel(connected: Bool = true) -> AppModel {
+    func makeModel(connected: Bool = true, transport: (any HTTPTransport)? = nil) -> AppModel {
         if connected { try? slskdStore.save(SlskdConnection(base: Self.base, apiKey: "test-slskd-key")) }
+        let transport = transport ?? slskd
         let model = AppModel(store: store, lidarrStore: MemoryLidarrStore(), tokenStore: MemoryTokenStore(),
-                             matchIndexDirectory: nil, dataDirectory: nil, gateDefaultsSuite: gateSuite, transport: slskd,
-                             probeTransport: slskd, engine: FakeEngine(), defaults: defaults, systemNowPlaying: false,
+                             matchIndexDirectory: nil, dataDirectory: nil, gateDefaultsSuite: gateSuite, transport: transport,
+                             probeTransport: transport, engine: FakeEngine(), defaults: defaults, systemNowPlaying: false,
                              notifications: false)
         model.slskdKeep.notifier = notifier
         model.slskdKeep.runsLoop = false   // checks are driven by the test
@@ -239,5 +258,103 @@ import Testing
         #expect(await eventually { submitted.withLock { $0 } == 1 })
         await model.setSlskdKeepConnected(false)
         #expect(await model.backgroundRequestPass(submit: record) == false, "nothing to do")
+    }
+
+    // MARK: - Fix round 1
+
+    /// I3: two checks at once against a disconnected slskd: one read-and-ask, one PUT, one counted failure.
+    @Test func concurrentChecksAreOne() async {
+        let model = makeModel()
+        slskd.with { s in s.serverConnected = false; s.connectReconnects = false }
+        await model.setSlskdKeepConnected(true)   // the first check: one ask, one failure
+        #expect(connects == 1 && model.slskdKeep.outage.failedChecks == 1)
+        clock.advance(61)
+        async let a = model.checkSlskdKeepConnected()
+        async let b = model.checkSlskdKeepConnected()
+        let (first, second) = await (a, b)
+        #expect(first == .down(asked: true) && second == .down(asked: true), "the second joined the first")
+        #expect(connects == 2, "one PUT for the two")
+        #expect(model.slskdKeep.outage.failedChecks == 2, "one counted failure for the two")
+    }
+
+    /// M4: the count survives a relaunch mid-outage: a new model goes on from the saved one.
+    @Test func anOutageSurvivesARelaunch() async {
+        let first = makeModel()
+        slskd.with { s in s.serverConnected = false; s.connectReconnects = false }
+        await first.setSlskdKeepConnected(true)
+        clock.advance(300)
+        _ = await first.checkSlskdKeepConnected()
+        #expect(first.slskdKeep.outage.failedChecks == 2 && notifier.posted.isEmpty)
+        let relaunched = makeModel()
+        #expect(relaunched.slskdKeep.isOn && relaunched.slskdKeep.outage.failedChecks == 2)
+        clock.advance(300)
+        _ = await relaunched.checkSlskdKeepConnected()
+        #expect(notifier.posted.count == 1, "the third check, ten minutes after the first, across the relaunch")
+    }
+
+    /// I2, M2, M4: a hanging slskd check gets at most its limit and is cancelled; the runner gets the rest of the pass,
+    /// and the whole pass ends inside its limit.
+    @Test func aHangingSlskdCheckLeavesTheRunnerTheRest() async {
+        #expect(AppModel.slskdBackgroundLimit == .seconds(10))
+        let clock = ContinuousClock()
+        let cancelled = OSAllocatedUnfairLock(initialState: false)
+        let given = OSAllocatedUnfairLock<Duration?>(initialState: nil)
+        let start = clock.now
+        let result = await AppModel.boundedPass(
+            limit: .milliseconds(1500), slskdLimit: .milliseconds(300),
+            slskd: {
+                do { try await Task.sleep(for: .seconds(120)) } catch { cancelled.withLock { $0 = true } }
+            },
+            runner: { left in
+                given.withLock { $0 = left }
+                return await AppModel.within(left) {}
+            })
+        let took = clock.now - start
+        #expect(result.slskd == false && result.runner == true)
+        #expect(await eventually { cancelled.withLock { $0 } }, "the hanging check was cancelled")
+        let left = given.withLock { $0 } ?? .zero
+        #expect(left <= .milliseconds(1200) && left >= .milliseconds(900), "the rest of the pass: \(left)")
+        #expect(took < .milliseconds(1500), "inside the limit: \(took)")
+        // A slskd limit longer than the pass is cut to the pass; nothing is left for the runner.
+        let short = await AppModel.boundedPass(limit: .milliseconds(200), slskdLimit: .seconds(10),
+                                               slskd: { try? await Task.sleep(for: .seconds(120)) },
+                                               runner: { _ in true })
+        #expect(short.slskd == false && short.runner == false)
+    }
+
+    /// I2: the app's own background pass with a slskd that never answers: bounded, cancelled, nothing counted.
+    @Test func theBackgroundPassCancelsAHangingCheck() async {
+        let hanging = HangingTransport(slskd)
+        let model = makeModel(transport: hanging)
+        await model.setSlskdKeepConnected(true)
+        hanging.hangs.withLock { $0 = true }
+        let outage = model.slskdKeep.outage
+        let clock = ContinuousClock()
+        let start = clock.now
+        #expect(await model.backgroundRequestPass(limit: .milliseconds(800), slskdLimit: .milliseconds(200),
+                                                  submit: { _ in }) == false)
+        #expect(clock.now - start < .milliseconds(800))
+        #expect(await eventually { hanging.cancelled.withLock { $0 } == 1 }, "the request was cancelled")
+        #expect(model.slskdKeep.outage == outage, "a cancelled check counts for nothing")
+        #expect(model.slskdKeep.inFlight == nil || model.slskdKeep.inFlight?.isCancelled == true)
+    }
+
+    /// M6: a tap on the notification navigates in a Settings sheet that is open, else presents one.
+    @Test func theNotificationTapFindsThePage() {
+        #expect(SlskdPageRoute.route(settingsShown: 0) == .present)
+        #expect(SlskdPageRoute.route(settingsShown: 1) == .navigate)
+    }
+
+    /// M3 through the app: a read-only key is said, and not asked again.
+    @Test func aReadOnlyKeyIsNotAskedAgain() async {
+        let model = makeModel()
+        slskd.with { s in s.serverConnected = false; s.connectStatus = 403 }
+        await model.setSlskdKeepConnected(true)
+        #expect(model.slskdKeep.lastCheck == .keyCannotReconnect)
+        for _ in 0..<3 {
+            clock.advance(120)
+            #expect(await model.checkSlskdKeepConnected() == .keyCannotReconnect)
+        }
+        #expect(connects == 1)
     }
 }
