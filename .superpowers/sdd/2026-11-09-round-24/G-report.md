@@ -156,3 +156,83 @@ Notes on the RED evidence:
 - 5caf396 R24G: tests for the remote handlers' lifecycle and main-actor hop (the bridge exposes its handlers and dispatch for them)
 - 42695bb R24G: a skip after the player stopped by itself plays; previous past 3 s starts the song from a fresh load, and a tick from before it is dropped
 - (this report) R24G: report
+
+## Fix round 1
+
+Commit ff19534 (`R24G fix round 1: I1 …; M1 …; M3 …; M5 …; M6 …`). This section supersedes the earlier sections where they
+differ: the D235 row below, the restart scope, the renamed tests, and the hypothesis 4 evidence.
+
+**I1: the fresh-load restart is narrowed to sources that can't seek.**
+- `Player.restartFromTop` (`Player.swift:229–243`) now decides by the current URL:
+  - A source that seeks keeps `seek(0)`, exactly as before. That covers a file on the phone and an Original or MP3
+    stream, which carries `estimateContentLength=true`.
+  - Only a converted AAC or Opus stream (chunked, no length: D42, D45) gets the fresh load.
+- The check is the new `Player.seeksReliably(_:)` (`:245–251`). It reads the same query item `NavidromeClient.streamURL`
+  sets (`NavidromeClient.swift:361`).
+- The restart guard for stale ticks is set only on the fresh-load path, so a seekable source follows its ticks as before.
+- After the player stopped by itself (H2's fix), previous still loads and plays the song, whatever the source: the engine
+  has no item left to seek in.
+- New tests in `RemoteSkipTests`:
+  - `remotePrevious_pastThreeSeconds_seekableSource_seeksToZero` (file, original, mp3): one `seek(0)`, no fresh load, no
+    new stream URL built (no request), and ticks followed as before.
+  - `remotePrevious_repeatedOnTheFirstSong_seekableSource_noNewRequest` (file, original, mp3): previous pressed 5 times on
+    the first song gives five seeks to 0 and no new load or stream URL.
+  - `remotePrevious_onTheFirstSong_convertedStream_freshLoad`: the converted branch on the first song.
+- Renamed to name their branch: `remotePrevious_pastThreeSeconds_convertedStream_restartsFromAFreshLoad` and
+  `remotePrevious_pausedPastThreeSeconds_convertedStream_restartsPaused`. Their URLs are `format=aac` with no estimate.
+- RED against the round-0 fix (42695bb's `Player.swift`, swapped in for the run and restored after): 18 issues, in all 6
+  seekable cases. For example:
+  ```
+  ✘ Test remotePrevious_pastThreeSeconds_seekableSource_seeksToZero(_:) recorded an issue with 1 argument kind → "file" at RemoteSkipTests.swift:290:9: Expectation failed: engine.seeks == [0]
+  ✘ … kind → "file" at RemoteSkipTests.swift:292:9: Expectation failed: urls.built.count == built
+  ✘ Test remotePrevious_repeatedOnTheFirstSong_seekableSource_noNewRequest(_:) recorded an issue with 1 argument kind → "mp3" at RemoteSkipTests.swift:307:9: Expectation failed: engine.loadsFromStart.count == loads && urls.built.count == built
+  ✘ Test run with 17 tests in 1 suite failed after 0.003 seconds with 18 issues.
+  ```
+  With the fix, all 17 tests pass.
+
+**M1.** `seekZero_duringLoadCurrent_neverLeavesAudioPlaying` is renamed `remotePrevious_staleTickAfterRestart_isDropped`.
+The stale-tick guard (`restartedAt`, `Player.swift:94, 242, 256, 390–392`) is a **second, cosmetic fix**: it stops the
+old time flashing back on screen for half a second after a fresh-load restart. It isn't part of the owner's symptom.
+
+**M2. Hypothesis 4 is ruled out by reading the code, not by the tests.** `AppModel.swift:392` is the only place a
+`NowPlayingBridge` is built, in `AppModel.init`. The model is the single `AppModel.shared`, used by the phone scene and
+`CarPlaySceneDelegate` alike, and nothing ever calls `invalidate` in the app. `bridge_reconnect_registersEachCommandOnce`
+and `carConnectDisconnectConnect_leavesTheHandlersAlone` are guards that keep it that way; they don't prove it.
+
+**M3. Guards that the owner's pause holds** (both pass, on the round-0 fix too):
+- `remoteNext_afterTheOwnersPause_reloadPath_staysPaused`: repeat one sends the engine the current song alone, so next
+  takes the `loadCurrent()` path; while paused it stays paused.
+- `remotePrevious_afterTheOwnersPause_nearStart_staysPaused`: previous within 3 s while paused goes back a song and stays
+  paused.
+
+**M4.** D235 now says a fresh load rebuilds the song's URL, so the song comes from whatever source is current then: a
+download that landed, the quality setting, a failover address. With I1 this applies only to converted streams.
+
+**M5.** `carplay_nowPlayingButtons_enabledMatchQueue` now reads the controller's own state, not the shared
+`CPNowPlayingTemplate`. In `CarPlayController+NowPlaying.swift`, `updateNowPlayingButtons` now applies two pieces split
+out of it: `nowPlayingButtons()` (the list it built before) and `upNextButtonEnabled` (`player.queue.current != nil`). The
+behaviour is unchanged. The test checks shuffle, repeat and the star in `nowPlayingButtons()`, and that
+`upNextButtonEnabled` is off, then on with a queue, then off again after it empties, all synchronously.
+
+**M6.** The double blank line in `RemoteSkipBridgeTests.swift` is removed.
+
+**D235, replacing the earlier row:**
+
+| D235 | **Skips play after a stop; previous on a converted stream restarts from a fresh load.** When the player had stopped by itself (the current song failed, or the queue ended), `Player.next()` / `previous()` play the song they land on. After the owner's pause, or a stop after the current song, a skip leaves the player paused. Previous past 3 s (or on the first song) still seeks to 0 on a source that seeks: a file on the phone, or an Original or MP3 stream sent with its length (`estimateContentLength`). On a converted AAC or Opus stream (chunked, no byte ranges: D42, D45), it instead empties the engine's list and sends it again, so the song loads anew from 0. This is a defensive change for the owner's symptom ("jumps to the start while audio continues"); the cause is unconfirmed on a device. Paused stays paused. The fresh load builds the song's URL again, so it comes from whatever source is current then (a download that landed, the quality setting, a failover address), and it is one new request to the server. For 2 s after such a restart, a tick above 3 s for that song (one sent before the restart) is dropped, until a tick lands within the first 3 s; a seek ends this (cosmetic). The phone's Now Playing buttons call the same methods, so they behave the same way. Supersedes the seek-only restart for converted streams. | Owner item 11 (round 24), D234 | Done |
+
+**Tests after fix round 1:**
+- `RemoteSkipTests`: 17/17 (26 cases).
+- Full package suite (`swift test`), run alone: exit 0. All 12 test binaries passed, 1612 tests
+  (20 + 157 + 501 + 158 + 121 + 37 + 169 + 43 + 188 + 22 + 41 + 155).
+  - An earlier run alongside the xcodebuild had the same unrelated `B1OutsideArtTests.aCancelledLoadNeverPoisonsTheCache`
+    failure seen in round 0. It fails only under that load; it passed in the run alone.
+- Targeted hosted on Magpie X5: 102/102 passed, 0 skipped. This covers `RemoteSkipBridgeTests`, `CarPlayRound13Tests`
+  (incl. the two G tests), `PlayerTests` (incl. `backRestartsBefore3s`, whose `FakeURLs` stream has no estimate, so it
+  takes the fresh-load branch), `NowPlayingModesTests`, `CarPlayControllerTests`, `PlaybackChaosHuntTests` and
+  `NowPlayingVerifyTests`.
+- The full hosted + UI suite was not re-run this round. The round-0 run was 1356 total: 1306 passed, 0 failed, 50 skipped.
+
+**FLOWS.md §3, replacing the earlier text:** "Previous restarts the song once it has played more than 3 seconds, otherwise
+it goes back a song. A song on the phone, or an Original or MP3 stream, restarts with a seek. A converted stream (AAC,
+Opus) can't seek reliably, so it is loaded again from the start. After the player stopped by itself (a song couldn't
+play, or the queue ended), next and previous play the song they land on; after a pause, they leave it paused."
