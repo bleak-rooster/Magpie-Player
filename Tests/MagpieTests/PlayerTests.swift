@@ -327,7 +327,8 @@ extension Player {
         player.handle(.time(player.queue.current!.id, 3.5, duration: 200))
         player.previous()
         #expect(player.queue.current?.song.id == "2", "past 3 s: restart the song")
-        #expect(engine.seeks.last == 0)
+        // R24 G (D235): from a fresh load, not a seek (the engine's list is emptied, then the song sent again).
+        #expect(engine.setItemsCalls.suffix(2).map { $0.items.first?.0 } == [nil, player.queue.current!.id])
         #expect(player.position == 0)
 
         player.handle(.time(player.queue.current!.id, 2, duration: 200))

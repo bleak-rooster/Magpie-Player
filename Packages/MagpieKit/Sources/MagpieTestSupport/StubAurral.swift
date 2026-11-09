@@ -104,6 +104,8 @@ public final class StubAurral: HTTPTransport, @unchecked Sendable {
         /// Re-review M-c: the status read answers this status instead (nil: as usual).
         var statusFailure: Int?
         var creationDelayReads = 1
+        /// Round 24 B: the jobs whose held copy was denied.
+        var denied: [String] = []
     }
 
     struct PendingSynced {
@@ -413,6 +415,47 @@ public final class StubAurral: HTTPTransport, @unchecked Sendable {
         state.withLock { s in if s.jobs.indices.contains(index) { s.jobs[index].status = status } }
     }
 
+    /// Round 24 B: one song's status now (`job-<index>`), nil when there is no such job.
+    public func jobStatus(_ jobId: String) -> String? {
+        guard jobId.hasPrefix("job-"), let index = Int(jobId.dropFirst(4)) else { return nil }
+        return state.withLock { s in s.jobs.indices.contains(index) ? s.jobs[index].status : nil }
+    }
+
+    /// Round 24 B: the songs whose held copy was denied (Aurral's `recordDeniedSource`), in order.
+    public var deniedJobs: [String] { state.withLock { $0.denied } }
+
+    /// Round 24 B (D209): Aurral 2.13's review of a song held back (`routes/playlists/handlers/jobs.ts`,
+    /// `blockedJobReview.ts`; accessFlow, an admin passes, and, as upstream, no check of whose song it is):
+    /// - `POST /api/playlists/jobs/:jobId/approve` imports the held copy (the job `done`);
+    /// - `POST …/deny` discards it, records its source as denied and sets the job `pending` again;
+    /// - either on a job that isn't `blocked` (or doesn't exist) is 404 "Blocked job not found".
+    func heldSongAnswer(method: String, path: String, user: User) -> (Int, Any)? {
+        let parts = path.split(separator: "/").map(String.init)
+        // G1 allowlist: stub aurral held songs (the verb the stub answers, as 2.13 routes only POST; it sends nothing).
+        let verb = "POST"
+        guard method == verb, parts.count == 5, parts[0] == "api", parts[1] == "playlists", parts[2] == "jobs",
+              parts[4] == "approve" || parts[4] == "deny", features != nil else { return nil }
+        guard user.role == "admin" || user.permissions?["accessFlow"] == true else {
+            return (403, ["error": "Forbidden", "message": "Missing permission: accessFlow"])
+        }
+        let jobId = parts[3], approve = parts[4] == "approve"
+        let done = state.withLock { s -> Bool in
+            guard jobId.hasPrefix("job-"), let index = Int(jobId.dropFirst(4)), s.jobs.indices.contains(index),
+                  s.jobs[index].status == "blocked" else { return false }
+            if approve {
+                s.jobs[index].status = "done"
+            } else {
+                s.jobs[index].status = "pending"
+                s.denied.append(jobId)
+            }
+            return true
+        }
+        guard done else { return (404, ["error": "Blocked job not found"]) }
+        var body: [String: Any] = ["success": true]
+        if approve { body["path"] = "/music/aurral/" + jobId + ".flac" }
+        return (200, body)
+    }
+
     /// Round 23 R23F: the research route's refusals (2.13 `enqueueResearchTrack`) for a user allowed to ask: a song of
     /// another playlist is 404, one pending or downloading 409. Nil: answered as before.
     func researchRefusal(playlistId: String, jobId: String, user: User) -> (Int, Any)? {
@@ -635,6 +678,7 @@ public final class StubAurral: HTTPTransport, @unchecked Sendable {
             if let (status, body) = recipeFlowAnswer(method: method, path: path, request: request, user: user) {
                 return answer(status, body)
             }
+            if let (status, body) = heldSongAnswer(method: method, path: path, user: user) { return answer(status, body) }
             if let (status, body) = try await discoverAnswer(method: method, path: path, url: url, request: request,
                                                              user: user, version: snapshot.version) {
                 return answer(status, body)
