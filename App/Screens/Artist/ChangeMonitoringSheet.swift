@@ -248,14 +248,14 @@ private struct ArtistMonitoring: ViewModifier {
             .sheet(isPresented: $state.showsChange) {
                 if let id, let line {
                     ChangeMonitoringSheet(lidarrId: id, artistName: line.name) {
-                        Task { await state.refresh(model, lidarrId: id, name: line?.name ?? ""); await line.refresh() }
+                        Task { await state.refresh(model, lidarrId: id, name: line.name); await line.refresh() }
                     }
                 }
             }
             .sheet(isPresented: $state.showsCleanUp) {
                 if let id, let line {
                     CleanUpUnmatchedSheet(lidarrId: id, artistName: line.name) {
-                        Task { await state.refresh(model, lidarrId: id, name: line?.name ?? "") }
+                        Task { await state.refresh(model, lidarrId: id, name: line.name) }
                     }
                 }
             }
