@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import MagpieCore
 
@@ -119,20 +120,35 @@ public actor SlskdWriteGate {
     /// Fix round 1 M3: slskd refused this address and key's ask (401/403); no more asks until the key changes.
     public static func keyRefusedKey(scope: String) -> String { "magpie.slskd.connectRefused.\(scope)" }
 
-    /// Where the owner's "Keep Soulseek connected" record for this slskd is saved: the address it was turned on for.
+    /// Where the owner's "Keep Soulseek connected" record for this slskd is saved (the key carries the address-and-key
+    /// scope).
     var keepConnectedRecordKey: String { Self.keepConnectedKey(scope: client.instanceScope) }
 
-    /// What the record saves for `base`: the address, lower case, without a trailing slash.
-    static func keepConnectedRecord(for base: URL) -> String {
+    /// The address as it was first recorded (lower case, no trailing slash). Security review D-L1: never stored any
+    /// more; only read to recognise a record saved in that old form.
+    static func plainRecord(for base: URL) -> String {
         var text = base.absoluteString.lowercased()
         while text.hasSuffix("/") { text.removeLast() }
         return text
     }
 
+    /// What the record saves for `base` (security review D-L1): a hash of the address, never the address itself, which
+    /// lives only in the Keychain. It still ties the record to this address, so a record copied under another key fails.
+    static func keepConnectedRecord(for base: URL) -> String {
+        let digest = SHA256.hash(data: Data("slskd-keep-connected|\(plainRecord(for: base))".utf8))
+        return "v2:" + digest.map { String(format: "%02x", $0) }.joined()
+    }
+
     /// The record, read for one slskd (`scope` is its client's `instanceScope`). The one place its format lives (fix
-    /// round 1 M5): the gate and the app's switch both use these.
+    /// round 1 M5): the gate and the app's switch both use these. A record in the old form (the address in plain text)
+    /// counts as on, still only under this scope, and is rewritten in the new form at once (D-L1).
     public static func keepConnected(in defaults: UserDefaults, scope: String, base: URL) -> Bool {
-        defaults.string(forKey: keepConnectedKey(scope: scope)) == keepConnectedRecord(for: base)
+        let key = keepConnectedKey(scope: scope)
+        guard let saved = defaults.string(forKey: key) else { return false }
+        if saved == keepConnectedRecord(for: base) { return true }
+        guard saved == plainRecord(for: base) else { return false }
+        defaults.set(keepConnectedRecord(for: base), forKey: key)
+        return true
     }
 
     /// Saves (or removes) the record for one slskd. Turned on, it names this address; a new address or key starts off.
