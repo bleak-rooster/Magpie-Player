@@ -48,6 +48,10 @@ import Testing
         ("PUT", "api/playlists/flows/flow-1/enabled", .recipeFlowTurnOn),
         ("PUT", "api/playlists/flows/flow-1", .recipeFlowUpdate),
         ("DELETE", "api/playlists/flows/flow-1", .recipeFlowDelete),
+        // Round 24 B (D207): approve or deny a song Aurral held for review (the two deletes above also serve any of
+        // the user's own flows and shared playlists).
+        ("POST", "api/playlists/jobs/job-1/approve", .jobApprove),
+        ("POST", "api/playlists/jobs/job-1/deny", .jobDeny),
     ]
 
     @Test func theExactAllowedCalls() {
@@ -66,12 +70,13 @@ import Testing
     }
 
     /// The writes are exactly the eight POSTs (A7: the image proxy's cache step is the eighth), round 15 C2's four
-    /// chart flow writes (D131) and round 16's four recipe flow writes.
-    @Test func theWritesAreExactlySixteen() {
+    /// chart flow writes (D131), round 16's four recipe flow writes and round 24 B's approve and deny (D207).
+    @Test func theWritesAreExactlyEighteen() {
         let writes = AurralRoute.allCases.filter { $0.method != "GET" }
         #expect(Set(writes) == [.startFlow, .login, .logout, .editorialAdd, .discoverFeedback, .flowDownload, .trackResearch,
                                 .imageProxy, .chartFlowCreate, .chartFlowAppend, .chartFlowRemoveSongs, .chartFlowDelete,
-                                .recipeFlowCreate, .recipeFlowTurnOn, .recipeFlowUpdate, .recipeFlowDelete])
+                                .recipeFlowCreate, .recipeFlowTurnOn, .recipeFlowUpdate, .recipeFlowDelete,
+                                .jobApprove, .jobDeny])
     }
 
     @Test func bannedAndTwistedCallsAreRefused() async throws {

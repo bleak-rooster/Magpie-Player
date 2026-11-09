@@ -19,6 +19,13 @@ extension CarPlayLibraryAdapter {
     /// The phone's Library rows without Requests. Offline: Downloads, and Genres when shown.
     var libraryRows: [LibraryRow] { model.libraryRows(carPlay: true) }
 
+    /// Round 24 (D223's rule, D179): while Playlists show All, the signed-in user, so the car's rows say whose the
+    /// others' playlists are; nil for Yours.
+    var playlistCaptionUser: String? {
+        guard model.playlistShow == .all, let user = model.session?.username, !user.isEmpty else { return nil }
+        return user
+    }
+
     /// The phone's shelves (offline, nothing is asked of the server), each cut to `size`, with Made for you's from its
     /// own shelf (read first when it is empty, as the phone's Home does). A downloaded album is an album here; the
     /// car's Downloaded shelf opens it from the phone.

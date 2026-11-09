@@ -209,8 +209,6 @@ extension AurralClient {
     /// Delete flow: `DELETE /api/playlists/flows/:id` (no body). Aurral queues it; a flow already gone (404) is deleted.
     public func deleteRecipeFlow(_ flowId: String) async throws {
         guard AurralRoute.isPlainId(Substring(flowId)) else { throw AurralError.forbidden("recipe flow \(flowId.count) chars") }
-        do {
-            _ = try await ok(method: AurralRoute.recipeFlowDeleteMethod, path: "api/playlists/flows/" + flowId)
-        } catch AurralError.notFound { return }
+        _ = try await deleteFlow(flowId)   // round 24 B (D208): the one send, in AurralClient+Manage.swift
     }
 }
