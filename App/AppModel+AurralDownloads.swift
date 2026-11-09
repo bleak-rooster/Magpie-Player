@@ -84,9 +84,14 @@ extension AppModel {
             for (index, item) in items.enumerated() {
                 if started >= 4, let done = await group.next() { read[done.0] = done.1 }   // four at a time
                 started += 1
+                let id = item.0.id
                 group.addTask {
-                    do { return (index, try await client.playlistJobs(item.0.id) ?? []) }   // 404: none (gone)
-                    catch { return (index, nil) }
+                    // R24 integration fix: one return after the do/catch. In the optimised (Release) build, a child
+                    // task that returned its tuple from both `do` and `catch` lost the index: every result landed in
+                    // slot 0 (the rest read as unreadable), and with more items it crashed (EXC_BAD_ACCESS).
+                    let jobs: [AurralJob]?
+                    do { jobs = try await client.playlistJobs(id) ?? [] } catch { jobs = nil }   // 404: none (gone)
+                    return (index, jobs)
                 }
             }
             for await done in group { read[done.0] = done.1 }
