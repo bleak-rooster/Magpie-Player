@@ -413,6 +413,9 @@ public final class StubAurral: HTTPTransport, @unchecked Sendable {
         state.withLock { s in if s.jobs.indices.contains(index) { s.jobs[index].status = status } }
     }
 
+    public func jobStatus(_ jobId: String) -> String? { nil }
+    public var deniedJobs: [String] { [] }
+
     /// Round 23 R23F: the research route's refusals (2.13 `enqueueResearchTrack`) for a user allowed to ask: a song of
     /// another playlist is 404, one pending or downloading 409. Nil: answered as before.
     func researchRefusal(playlistId: String, jobId: String, user: User) -> (Int, Any)? {

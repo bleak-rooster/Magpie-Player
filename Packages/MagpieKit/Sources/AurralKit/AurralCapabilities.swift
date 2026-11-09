@@ -29,6 +29,7 @@ public struct AurralCapabilities: Sendable, Equatable {
     public var trackResearch = false
     /// `GET /api/playlists/jobs/:playlistId` (one flow's songs and their progress).
     public var playlistJobsById = false
+    public var manage = false
 
     /// Nothing new: Aurral 2.10 (and anything Magpie can't vouch for).
     public static let none = AurralCapabilities()
@@ -55,6 +56,8 @@ public struct AurralCapabilities: Sendable, Equatable {
         trackResearch = flows
         playlistJobsById = flows
     }
+
+    public func canManage(as user: AurralUser?) -> Bool { false }
 
     /// Any of Discover, Recommended or Trending.
     public var anyDiscover: Bool { recommendations || trending || editorialPlaylists }
