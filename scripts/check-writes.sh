@@ -144,6 +144,7 @@ if [ -z "${G1_SRC:-}" ]; then
   singlesfile="Packages/MagpieKit/Sources/Requests/SinglesSwitch.swift"
   keptsinglefile="Packages/MagpieKit/Sources/Requests/RequestRunner+KeptSingle.swift"
   cleanslatefile="Packages/MagpieKit/Sources/Requests/RequestRunner+CleanSlate.swift"
+  monitoringfile="Packages/MagpieKit/Sources/Requests/MonitoringChange.swift"
   # Round 15 C3 (re-review m2): the singles-switch journal the gate trusts is made and written only by its owners: the
   # store type only in SinglesSwitch.swift and the runner's rebuild (one shared store per Lidarr), and nothing else saves
   # to a switcher's store.
@@ -169,6 +170,15 @@ if [ -z "${G1_SRC:-}" ]; then
       "$keptsinglefile":*'_ = try await gate.send("DELETE", "trackfile/bulk", body: TrackFileIdsBody(trackFileIds: ids), confinedAs: .keptSingleDelete)') continue ;;
       # Round 23 (D191): a removed artist's blocklist rows, its one delete (the gate's blocklistCleanup rule).
       "$cleanslatefile":*'_ = try await gate.send("DELETE", "blocklist/bulk", body: BlocklistIdsBody(ids: ids), confinedAs: .blocklistCleanup)') continue ;;
+      # Round 24 (D243): an owner's artist's monitoring change and its clean-up, only in MonitoringChange.swift, only
+      # these forms; the gate allows them only as the artist's open intent in the ledger says (ownedChange,
+      # unmatchedCleanup), read fresh, and only while "Let Magpie change what Lidarr monitors" is on.
+      "$monitoringfile":*'_ = try await gate.send("PUT", "album/monitor", body: MonitorBody(albumIds: job.unmonitorAlbumIds, monitored: false), confinedAs: .ownedChange)') continue ;;
+      "$monitoringfile":*'_ = try await gate.send("PUT", "artist/editor", body: ProfileBody(artistIds: [job.artistId], metadataProfileId: target), confinedAs: .ownedChange)') continue ;;
+      "$monitoringfile":*'let data = try await gate.send("POST", "command", body: RefreshBody(name: "RefreshArtist", artistId: job.artistId), confinedAs: .ownedChange)') continue ;;
+      "$monitoringfile":*'_ = try await gate.send("PUT", "album/monitor", body: MonitorBody(albumIds: ids, monitored: true), confinedAs: .ownedChange)') continue ;;
+      "$monitoringfile":*'_ = try await gate.send("POST", "command", body: SearchBody(name: "AlbumSearch", albumIds: ids), confinedAs: .ownedChange)') continue ;;
+      "$monitoringfile":*'_ = try await gate.send("DELETE", "trackfile/bulk", body: TrackFileIdsBody(trackFileIds: ids), confinedAs: .unmatchedCleanup)') continue ;;
       # D146 (review I1-I3): the singles switch's journal, only in SinglesSwitch.swift, only these forms; the gate allows
       # them only for an artist whose switch is in the journal, and only the journal's values.
       "$singlesfile":*'_ = try await gate.send("PUT", "artist/editor", body: FollowBody(artistIds: [job.artistId], monitorNewItems: "none"), confinedAs: .singlesSwitch)') continue ;;
@@ -250,6 +260,8 @@ if [ -z "${G1_SRC:-}" ]; then
       Packages/MagpieKit/Sources/Requests/RequestRunner+OnlyTheSong.swift) ;;
       # Round 22 (D172): a kept single's files, confined by `ConfinedShape.keptSingleDelete` (pinned above).
       Packages/MagpieKit/Sources/Requests/RequestRunner+KeptSingle.swift) ;;
+      # Round 24 (D242): an owner's artist's unmatched songs, confined by `ConfinedShape.unmatchedCleanup` (pinned above).
+      Packages/MagpieKit/Sources/Requests/MonitoringChange.swift) ;;
       *) echo "G1: track file delete outside Not for me and the MP3 rule: $f" >&2; bad=1 ;;
     esac
   done
@@ -280,6 +292,40 @@ if [ -z "${G1_SRC:-}" ]; then
       echo "Y5 C5: a bare .keptAt at $file:$line; use isKeptOrKeeping (refusing) or isConfirmedKept (requiring)" >&2
       bad=1
     fi
+  done
+fi
+if [ -z "${G1_SRC:-}" ]; then
+  # Round 24 (owner, 2026-11-08, D242, D243): the proofs that let Magpie change an owner's artist are pinned whole, so a
+  # weakening fails here: the switch, the shapes' exact forms, the body's two keys, the 50-file cap, the fresh size,
+  # folder and unmonitored-album checks, the confirmation's hash. And the ledger's monitoring book (the owner's consent
+  # the gate reads) is written only by MonitoringChange.swift.
+  lk="Packages/MagpieKit/Sources/LidarrKit"
+  owned_pins=(
+    "$lk/WriteGate.swift|            guard monitoringChangesEnabled else { throw refused(target, \"changing what Lidarr monitors is off\") }"
+    "$lk/WriteGate.swift|            guard case .trackFileDelete(let ids)? = confined, target.key == [\"trackfile\", \"bulk\"] else {"
+    "$lk/WriteGate.swift|            default: throw refused(target, \"ownedChange is a profile, a refresh, a monitor or a search only\")"
+    "$lk/WriteConfinement.swift|        if let owned = await ownedCheck(write, lidarr: lidarr) { return owned }"
+    "$lk/WriteConfinement+Owned.swift|    public static let maxCleanupFiles = 50"
+    "$lk/WriteConfinement+Owned.swift|        guard Set(body.keys.map { \$0.lowercased() }) == [\"artistids\", \"metadataprofileid\"], body.count == 2,"
+    "$lk/WriteConfinement+Owned.swift|        guard !ids.isEmpty, ids.count <= WriteConfinement.maxCleanupFiles, Set(ids).count == ids.count else {"
+    "$lk/WriteConfinement+Owned.swift|        guard intent.matchesConfirmation else { throw Failure.refused(\"the clean-up isn't what the owner confirmed\") }"
+    "$lk/WriteConfinement+Owned.swift|        guard ids.allSatisfy({ named[\$0] != nil && !excluded.contains(\$0) }) else {"
+    "$lk/WriteConfinement+Owned.swift|            guard let size = file.size, size == recorded.size else { throw Failure.refused(\"the file changed\") }"
+    "$lk/WriteConfinement+Owned.swift|            guard mainGuard.isInside(file.path), inside.isInside(file.path) else {"
+    "$lk/WriteConfinement+Owned.swift|            guard let album = albums.first(where: { \$0.id == recorded.albumId }), !album.monitored else {"
+    "$lk/WriteConfinement+Owned.swift|        guard !Self.hasLiveTry(artistId, in: entries) else { throw Failure.refused(\"a Try of Magpie's is under way for the artist\") }"
+    "$lk/WriteConfinement+Owned.swift|                  let types = intent.targetTypes, name == types.profileName else {"
+    "$lk/WriteConfinement+Owned.swift|        guard let rootFolder = artist.rootFolderPath, Self.sameBytes(rootFolder, main),"
+  )
+  for pin in "${owned_pins[@]}"; do
+    file="${pin%%|*}" want="${pin#*|}"
+    grep -qxF -- "$want" "$file" || { echo "G1: $file: a Round 24 owned-artist proof changed or is gone: ${want#"${want%%[![:space:]]*}"}" >&2; bad=1; }
+  done
+  for f in $(grep -rlE --include='*.swift' '\b(saveIntent|updateMonitoring|setKept)\(' "${product[@]}" | sort -u || true); do
+    case "$f" in
+      "$lk/Ledger.swift"|Packages/MagpieKit/Sources/Requests/MonitoringChange.swift) ;;
+      *) echo "G1: the ledger's monitoring book written outside MonitoringChange.swift: $f" >&2; bad=1 ;;
+    esac
   done
 fi
 if [ -z "${G1_SRC:-}" ]; then
@@ -698,7 +744,7 @@ if [ -z "${G1_SRC:-}" ]; then
     case "$verb $path" in
       "delete trackfile"*)
         case "$file" in
-          "$rq/RequestRunner+NotForMe.swift"|"$rq/RequestRunner+Lossless.swift"|"$rq/RequestRunner+Trial.swift"|"$rq/RequestRunner+OnlyTheSong.swift"|"$rq/RequestRunner+KeptSingle.swift") ;;
+          "$rq/RequestRunner+NotForMe.swift"|"$rq/RequestRunner+Lossless.swift"|"$rq/RequestRunner+Trial.swift"|"$rq/RequestRunner+OnlyTheSong.swift"|"$rq/RequestRunner+KeptSingle.swift"|"$rq/MonitoringChange.swift") ;;
           *) echo "L1: track file delete outside Not for me and the MP3 rule: $file:$line" >&2; bad=1 ;;
         esac ;;
       "delete blocklist"*)
@@ -722,7 +768,10 @@ if [ -z "${G1_SRC:-}" ]; then
           "albumsearch|$rq/RequestRunner.swift"|"albumsearch|$rq/RequestRunner+Lossless.swift"|\
           "albumsearch|$rq/RequestRunner+BringInMore.swift"|"albumsearch|$rq/DownloadsInLidarr.swift"|\
           "refreshartist|$rq/RequestRunner+Lossless.swift"|"artistsearch|$rq/ArtistLidarr.swift"|\
-          "refreshartist|$rq/SinglesSwitch.swift"|"artistsearch|$rq/RequestRunner+LibraryAdds.swift") ;;
+          "refreshartist|$rq/SinglesSwitch.swift"|"artistsearch|$rq/RequestRunner+LibraryAdds.swift"|\
+          "refreshartist|$rq/MonitoringChange.swift"|"albumsearch|$rq/MonitoringChange.swift") ;;
+          # Round 24 (D239, D243): RefreshArtist after a monitoring change and the AlbumSearch for what it brought in, both
+          # named ownedChange (pinned above) and confined to the artist's open intent.
           # Round 15 C3: RefreshArtist after "Include singles" (D146, any artist, confirmed) and the discography's
           # ArtistSearch after Add to library's own release (D135); the gate confines both to Magpie's artists.
           *) echo "L1: a Lidarr command (${name:-no literal name}) outside its pinned callers: $file:$line" >&2; bad=1 ;;

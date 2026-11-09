@@ -133,11 +133,11 @@ public struct UnmonitoredKept: Sendable, Equatable, Codable {
     public var artistMbid: MBID
     public var albumIds: [Int]
     public var files: [OwnedFile]
-    public var keptAt: Date
+    public var recordedAt: Date
 
-    public init(artistId: Int, artistMbid: MBID, albumIds: [Int], files: [OwnedFile], keptAt: Date) {
+    public init(artistId: Int, artistMbid: MBID, albumIds: [Int], files: [OwnedFile], recordedAt: Date) {
         self.artistId = artistId; self.artistMbid = artistMbid; self.albumIds = albumIds; self.files = files
-        self.keptAt = keptAt
+        self.recordedAt = recordedAt
     }
 }
 

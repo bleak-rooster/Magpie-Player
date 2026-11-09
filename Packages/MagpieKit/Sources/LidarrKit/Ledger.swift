@@ -343,7 +343,7 @@ public actor Ledger {
 
     /// Beside the ledger file: `lidarr-ledger-monitoring.json`. Its own file, so the album entries (and every rule that
     /// reads them) never see an owner's artist as one of Magpie's requests.
-    nonisolated var monitoringURL: URL? {
+    public nonisolated var monitoringURL: URL? {
         fileURL.map { $0.deletingLastPathComponent().appending(path: $0.deletingPathExtension().lastPathComponent + "-monitoring.json") }
     }
 

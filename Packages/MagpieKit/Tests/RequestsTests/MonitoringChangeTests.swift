@@ -1,0 +1,439 @@
+import Foundation
+import os
+import Testing
+import LidarrKit
+import MagpieCore
+import MagpieTestSupport
+@testable import Requests
+
+/// A Lidarr for "Change what's monitored": the owner's artist 20 at `/music/library/Owner` on "Owner Profile" (5:
+/// Album, EP, Single; Studio, Live), Magpie's release-type profiles made already, and a refresh that behaves as
+/// Lidarr's (albums the profile no longer allows and that have no files go; the ones it now allows appear, unmonitored
+/// unless following is "all"). Track files can be deleted (`DELETE /trackfile/bulk`) and read one by one.
+final class MonitoringLidarr: @unchecked Sendable {
+    struct Album { var id: Int; var primary: String; var secondary: [String] = []; var monitored: Bool; var title: String }
+    struct File { var id: Int; var album: Int; var size: Int64; var title: String; var recording: String }
+    struct State {
+        var profileId = 5
+        var follow = "none"
+        var albums: [Album] = []
+        var catalogue: [Album] = []
+        var files: [File] = []
+        var loseNextAnswer: String?
+        var refreshStatus = "completed"
+    }
+    static let ownerMBID = MBID("20202020-2020-4020-8020-202020202020")!
+    let transport = MockTransport()
+    let client: LidarrClient
+    let ledger: Ledger
+    let gate: LidarrWriteGate
+    let state = OSAllocatedUnfairLock(initialState: State())
+
+    static func profile(_ id: Int, _ name: String, primary: Set<String>, secondary: Set<String>) -> [String: Any] {
+        ["id": id, "name": name,
+         "primaryAlbumTypes": ["Album", "EP", "Single", "Broadcast"].enumerated().map {
+             ["albumType": ["id": $0.offset, "name": $0.element], "allowed": primary.contains($0.element)] },
+         "secondaryAlbumTypes": ["Studio", "Compilation", "Soundtrack", "Live"].enumerated().map {
+             ["albumType": ["id": $0.offset, "name": $0.element], "allowed": secondary.contains($0.element)] },
+         "releaseStatuses": ["Official", "Promotion"].enumerated().map {
+             ["releaseStatus": ["id": $0.offset, "name": $0.element], "allowed": $0.element == "Official"] }]
+    }
+
+    static let albumsOnly = ReleaseTypes(albums: true, eps: false, singles: false)
+    static let albumsEPs = ReleaseTypes(albums: true, eps: true, singles: false)
+    static let everything = ReleaseTypes(albums: true, eps: true, singles: true)
+    nonisolated(unsafe) static let profiles: [[String: Any]] = [
+        profile(5, "Owner Profile", primary: ["Album", "EP", "Single"], secondary: ["Studio", "Live"]),
+        profile(30, albumsOnly.profileName, primary: ["Album"], secondary: ["Studio"]),
+        profile(32, albumsEPs.profileName, primary: ["Album", "EP"], secondary: ["Studio"]),
+        profile(33, everything.profileName, primary: ["Album", "EP", "Single"], secondary: ["Studio"]),
+    ]
+
+    init(monitoringOn: Bool = true, changesOn: Bool = true, ledgerURL: URL? = nil, root: String = "/music/library") async {
+        client = LidarrClient(base: URL(string: "http://127.0.0.1:8686")!, apiKey: "devkey", transport: transport)
+        ledger = Ledger(fileURL: ledgerURL, instance: client.instanceScope)
+        let dir = FileManager.default.temporaryDirectory.appending(path: "Monitoring-\(UUID().uuidString)")
+        gate = LidarrWriteGate(client: client, logURL: dir.appending(path: "log.json"), defaultsSuite: "Monitoring.\(UUID().uuidString)",
+                               confinement: WriteConfinement(ledger: ledger, roots: {
+                                   WriteConfinement.Roots(mainRoot: "/music/library", findsRoot: "/music/samples", findTagId: 2)
+                               }))
+        await gate.setEnabled(changesOn)
+        await gate.setMonitoringChangesEnabled(monitoringOn)
+        state.withLockUnchecked { s in
+            s.albums = [Album(id: 1, primary: "Album", monitored: true, title: "First Album"),
+                        Album(id: 2, primary: "EP", monitored: true, title: "An EP"),
+                        Album(id: 3, primary: "Single", monitored: true, title: "Hit"),
+                        Album(id: 6, primary: "Album", secondary: ["Live"], monitored: true, title: "Live At Home"),
+                        Album(id: 9, primary: "Album", monitored: false, title: "Owner Unmonitored")]
+            s.catalogue = s.albums + [Album(id: 7, primary: "EP", monitored: false, title: "Later EP"),
+                                      Album(id: 8, primary: "Single", monitored: false, title: "Later Single")]
+            s.files = [File(id: 101, album: 1, size: 1000, title: "One", recording: "rec-101"),
+                       File(id: 102, album: 1, size: 2000, title: "Two", recording: "rec-102"),
+                       File(id: 103, album: 2, size: 500, title: "EP Song", recording: "rec-103"),
+                       File(id: 104, album: 3, size: 300, title: "Hit", recording: "rec-104"),
+                       File(id: 109, album: 9, size: 900, title: "Old", recording: "rec-109")]
+        }
+        install(root: root)
+    }
+
+    static func reply(_ o: Any, status: Int = 200) -> MockTransport.Response {
+        .init(status: status, body: try! JSONSerialization.data(withJSONObject: o))
+    }
+
+    private func loseAnswer(_ what: String) throws {
+        let lose = state.withLockUnchecked { s -> Bool in
+            guard s.loseNextAnswer == what else { return false }
+            s.loseNextAnswer = nil
+            return true
+        }
+        if lose { throw URLError(.networkConnectionLost) }
+    }
+
+    func applyRefresh() {
+        state.withLockUnchecked { s in
+            let profile = Self.profiles.first { $0["id"] as? Int == s.profileId } ?? [:]
+            func allowed(_ field: String) -> Set<String> {
+                Set((profile[field] as? [[String: Any]] ?? []).filter { $0["allowed"] as? Bool == true }
+                    .compactMap { ($0["albumType"] as? [String: Any])?["name"] as? String })
+            }
+            let primary = allowed("primaryAlbumTypes"), secondary = allowed("secondaryAlbumTypes")
+            func allows(_ a: Album) -> Bool {
+                primary.contains(a.primary) && Set(a.secondary.isEmpty ? ["Studio"] : a.secondary).isSubset(of: secondary)
+            }
+            let files = s.files
+            s.albums.removeAll { a in !allows(a) && !files.contains { $0.album == a.id } }
+            for a in s.catalogue where allows(a) && !s.albums.contains(where: { $0.id == a.id }) {
+                var added = a
+                added.monitored = s.follow == "all"
+                s.albums.append(added)
+            }
+        }
+    }
+
+    private func install(root: String) {
+        let t = transport
+        t.stub(pathSuffix: "/api/v1/rootfolder") { _ in Self.reply([["id": 1, "path": "/music/library"], ["id": 2, "path": "/music/samples"]]) }
+        t.stub(pathSuffix: "/api/v1/artist/20") { [self] _ in
+            let p = state.withLockUnchecked { $0.profileId }
+            return Self.reply(["id": 20, "artistName": "Owner", "foreignArtistId": Self.ownerMBID.rawValue, "monitored": true,
+                               "tags": [Int](), "metadataProfileId": p, "monitorNewItems": "none",
+                               "path": "\(root)/Owner", "rootFolderPath": root])
+        }
+        t.stub(pathSuffix: "/api/v1/metadataprofile") { _ in Self.reply(Self.profiles) }
+        t.stub(pathSuffix: "/api/v1/album") { [self] _ in
+            Self.reply(state.withLockUnchecked { s in s.albums.map { a -> [String: Any] in
+                ["id": a.id, "title": a.title, "artistId": 20, "monitored": a.monitored, "albumType": a.primary,
+                 "secondaryTypes": a.secondary, "statistics": ["trackFileCount": s.files.filter { $0.album == a.id }.count]] } })
+        }
+        for id in [1, 2, 3, 6, 7, 8, 9] {
+            t.stub(pathSuffix: "/api/v1/album/\(id)") { [self] _ in
+                guard let a = state.withLockUnchecked({ s in s.albums.first { $0.id == id } }) else { return .init(status: 404) }
+                return Self.reply(["id": id, "title": a.title, "artistId": 20, "monitored": a.monitored, "albumType": a.primary,
+                                   "secondaryTypes": a.secondary])
+            }
+        }
+        let fileJSON: @Sendable (File) -> [String: Any] = { f in
+            ["id": f.id, "artistId": 20, "albumId": f.album, "size": f.size, "path": "\(root)/Owner/A\(f.album)/\(f.id).flac",
+             "quality": ["quality": ["name": "FLAC"]]]
+        }
+        t.stub(pathSuffix: "/api/v1/trackfile") { [self] _ in Self.reply(state.withLockUnchecked { $0.files.map(fileJSON) }) }
+        for id in [101, 102, 103, 104, 109] {
+            t.stub(pathSuffix: "/api/v1/trackfile/\(id)") { [self] _ in
+                guard let f = state.withLockUnchecked({ s in s.files.first { $0.id == id } }) else { return .init(status: 404) }
+                return Self.reply(fileJSON(f))
+            }
+        }
+        t.stub(pathSuffix: "/api/v1/track") { [self] _ in
+            Self.reply(state.withLockUnchecked { s in s.files.map { ["id": $0.id + 1000, "albumId": $0.album, "trackFileId": $0.id,
+                                                            "title": $0.title, "foreignRecordingId": $0.recording] } })
+        }
+        t.stub(pathSuffix: "/api/v1/command/9") { [self] _ in
+            Self.reply(["id": 9, "name": "RefreshArtist", "status": state.withLockUnchecked { $0.refreshStatus }])
+        }
+        t.stub(method: "POST", pathSuffix: "/api/v1/command") { [self] req in
+            let body = try JSONSerialization.jsonObject(with: req.httpBody!) as! [String: Any]
+            if (body["name"] as? String) == "RefreshArtist" { applyRefresh() }
+            return Self.reply(["id": 9], status: 201)
+        }
+        t.stub(method: "PUT", pathSuffix: "/api/v1/artist/editor") { [self] req in
+            let body = try JSONSerialization.jsonObject(with: req.httpBody!) as! [String: Any]
+            state.withLockUnchecked { s in if let p = body["metadataProfileId"] as? Int { s.profileId = p } }
+            try loseAnswer("editor")
+            return Self.reply([[String: Any]]())
+        }
+        t.stub(method: "PUT", pathSuffix: "/api/v1/album/monitor") { [self] req in
+            let body = try JSONSerialization.jsonObject(with: req.httpBody!) as! [String: Any]
+            let ids = body["albumIds"] as! [Int], monitored = body["monitored"] as! Bool
+            state.withLockUnchecked { s in for i in s.albums.indices where ids.contains(s.albums[i].id) { s.albums[i].monitored = monitored } }
+            try loseAnswer("monitor")
+            return Self.reply([[String: Any]]())
+        }
+        t.stub(method: "DELETE", pathSuffix: "/api/v1/trackfile/bulk") { [self] req in
+            let body = try JSONSerialization.jsonObject(with: req.httpBody!) as! [String: Any]
+            let ids = body["trackFileIds"] as! [Int]
+            state.withLockUnchecked { s in s.files.removeAll { ids.contains($0.id) } }
+            try loseAnswer("delete")
+            return Self.reply([String: Any]())
+        }
+    }
+
+    func changer(checks: Int = 2) -> MonitoringChanger {
+        MonitoringChanger(lidarr: client, gate: gate, ledger: ledger, roots: {
+            WriteConfinement.Roots(mainRoot: "/music/library", findsRoot: "/music/samples", findTagId: 2)
+        }, checks: checks, pause: .zero)
+    }
+
+    var writes: [(String, [String: Any])] {
+        transport.requests.filter { ($0.httpMethod ?? "GET") != "GET" }.map { r in
+            ("\(r.httpMethod!) \(r.url!.path.replacingOccurrences(of: "/api/v1/", with: ""))",
+             (r.httpBody.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }) ?? [:])
+        }
+    }
+    var deletes: [[Int]] { writes.filter { $0.0 == "DELETE trackfile/bulk" }.map { $0.1["trackFileIds"] as? [Int] ?? [] } }
+    var monitored: Set<Int> { state.withLockUnchecked { Set($0.albums.filter(\.monitored).map(\.id)) } }
+    var fileIds: Set<Int> { state.withLockUnchecked { Set($0.files.map(\.id)) } }
+}
+
+/// Round 24 (owner, 2026-11-08, D237–D244): "Change what's monitored" asks before anything is deleted (Keep by default),
+/// keeps or deletes exactly what it showed, records what it kept, cleans up later only what's still unmatched, can be
+/// put back, and resumes after a lost answer without sending again what Lidarr already did.
+@Suite struct MonitoringChangeTests {
+    static let nothingKept = MonitoringKeepList()
+
+    @Test func reduce_asksBeforeAnyDelete() async throws {
+        let fake = await MonitoringLidarr()
+        let preview = try await fake.changer().preview(artistId: 20, types: MonitoringLidarr.albumsOnly, keep: Self.nothingKept)
+        #expect(fake.writes.isEmpty, "the preview only reads")
+        #expect(preview.asksDeleteOrKeep)
+        #expect(Set(preview.unmonitorAlbumIds) == [2, 3, 6], "the EP, the Single and the live album stop being monitored")
+        #expect(preview.albumCount == 3)
+        #expect(Set(preview.files.map(\.id)) == [103, 104])
+        #expect(preview.songCount == 2 && preview.bytes == 800)
+        #expect(preview.currentTypes == nil, "the owner's own profile reads as Custom")
+        #expect((try await fake.ledger.monitoringBook).intents.isEmpty, "nothing recorded until the owner answers")
+    }
+
+    @Test func reduce_keepIsDefault() async throws {
+        #expect(ReduceChoice.default == .keep)
+        let fake = await MonitoringLidarr()
+        let preview = try await fake.changer().preview(artistId: 20, types: MonitoringLidarr.albumsOnly, keep: Self.nothingKept)
+        #expect(preview.defaultChoice == .keep)
+    }
+
+    @Test func reduce_keepRecordsUnmonitoredSet() async throws {
+        let fake = await MonitoringLidarr()
+        let changer = fake.changer()
+        let preview = try await changer.preview(artistId: 20, types: MonitoringLidarr.albumsOnly, keep: Self.nothingKept)
+        let outcome = try await changer.apply(preview, choice: .keep)
+        #expect(outcome == .finished)
+        #expect(fake.deletes.isEmpty, "Keep deletes nothing")
+        #expect(fake.state.withLockUnchecked { $0.profileId } == 30, "Magpie's Albums profile")
+        #expect(!fake.monitored.contains(2) && !fake.monitored.contains(3), "the kept albums are unmonitored")
+        #expect(fake.monitored.contains(1))
+        let kept = try #require(try await fake.ledger.monitoringBook.kept(artistId: 20))
+        #expect(Set(kept.albumIds) == [2, 3])
+        #expect(Set(kept.files) == [OwnedFile(id: 103, albumId: 2, size: 500), OwnedFile(id: 104, albumId: 3, size: 300)])
+        #expect(fake.fileIds == [101, 102, 103, 104, 109])
+        let editor = try #require(fake.writes.first { $0.0 == "PUT artist/editor" }?.1)
+        #expect(Set(editor.keys) == ["artistIds", "metadataProfileId"], "no root folder, no move, no monitored")
+        // The unmonitor went before the profile (so Lidarr never searches for what is falling out).
+        let order = fake.writes.map(\.0)
+        #expect(order.firstIndex(of: "PUT album/monitor")! < order.firstIndex(of: "PUT artist/editor")!)
+    }
+
+    @Test func reduce_deleteWritesOnlyShownIds() async throws {
+        let fake = await MonitoringLidarr()
+        let changer = fake.changer()
+        // "Hit" is favourited: it stays.
+        let keep = MonitoringKeepList(recordings: [], titles: ["Hit"], albumTitles: [])
+        let preview = try await changer.preview(artistId: 20, types: MonitoringLidarr.albumsOnly, keep: keep)
+        #expect(preview.excludedFileIds == [104])
+        #expect(preview.deletable.map(\.id) == [103])
+        let outcome = try await changer.apply(preview, choice: .delete)
+        #expect(outcome == .finished)
+        #expect(fake.deletes == [[103]], "exactly the shown file, never the favourite or the owner's other files")
+        #expect(fake.fileIds == [101, 102, 104, 109])
+        #expect(try await fake.ledger.monitoringBook.intents.allSatisfy { !$0.isOpen })
+    }
+
+    @Test func reduce_noFilesFallingOut_asksNothing() async throws {
+        let fake = await MonitoringLidarr()
+        fake.state.withLockUnchecked { $0.files.removeAll { [103, 104].contains($0.id) } }
+        let preview = try await fake.changer().preview(artistId: 20, types: MonitoringLidarr.albumsOnly, keep: Self.nothingKept)
+        #expect(!preview.asksDeleteOrKeep)
+        #expect(preview.reduces)
+    }
+
+    @Test func more_monitorsAndSearchesWhatTheNewChoiceBringsIn() async throws {
+        let fake = await MonitoringLidarr()
+        let changer = fake.changer()
+        let preview = try await changer.preview(artistId: 20, types: MonitoringLidarr.everything, keep: Self.nothingKept)
+        #expect(Set(preview.unmonitorAlbumIds) == [6], "only the live album falls out")
+        _ = try await changer.apply(preview, choice: .keep)
+        #expect(fake.state.withLockUnchecked { $0.profileId } == 33)
+        #expect(fake.monitored.isSuperset(of: [7, 8]), "the EP and Single the refresh listed are monitored")
+        #expect(!fake.monitored.contains(9), "an album the owner unmonitored before stays as he left it")
+        let search = try #require(fake.writes.first { $0.0 == "POST command" && $0.1["name"] as? String == "AlbumSearch" }?.1)
+        #expect(Set(search["albumIds"] as? [Int] ?? []) == [7, 8])
+    }
+
+    @Test func cleanup_neverDeletesFavouritedOrInPlaylist() async throws {
+        let fake = await MonitoringLidarr()
+        let changer = fake.changer()
+        _ = try await changer.apply(try await changer.preview(artistId: 20, types: MonitoringLidarr.albumsOnly, keep: Self.nothingKept),
+                                    choice: .keep)
+        // Later: the EP's song is in a playlist (its recording), the Single's isn't.
+        let keep = MonitoringKeepList(recordings: ["rec-103"], titles: [], albumTitles: [])
+        let cleanup = try await changer.cleanupPreview(artistId: 20, keep: keep)
+        #expect(cleanup.files.map(\.id) == [104])
+        #expect(cleanup.rows.first { $0.file.id == 103 }?.kept == true)
+        #expect(try await changer.cleanUp(cleanup) == .finished)
+        #expect(fake.deletes == [[104]])
+        #expect(fake.fileIds.contains(103))
+        let kept = try await fake.ledger.monitoringBook.kept(artistId: 20)
+        #expect(kept?.files.map(\.id) == [103], "what's left stays offered")
+    }
+
+    @Test func cleanup_skipsAlbumsMonitoredAgainOrFilesChanged() async throws {
+        let fake = await MonitoringLidarr()
+        let changer = fake.changer()
+        _ = try await changer.apply(try await changer.preview(artistId: 20, types: MonitoringLidarr.albumsOnly, keep: Self.nothingKept),
+                                    choice: .keep)
+        fake.state.withLockUnchecked { s in
+            if let i = s.albums.firstIndex(where: { $0.id == 2 }) { s.albums[i].monitored = true }   // the owner monitors the EP again
+            if let i = s.files.firstIndex(where: { $0.id == 104 }) { s.files[i].size = 301 }        // the Single's file changed
+        }
+        let cleanup = try await changer.cleanupPreview(artistId: 20, keep: Self.nothingKept)
+        #expect(cleanup.files.isEmpty)
+        #expect(fake.writes.filter { $0.0.hasPrefix("DELETE") }.isEmpty)
+    }
+
+    @Test func revert_restoresRecordedProfile() async throws {
+        let fake = await MonitoringLidarr()
+        let changer = fake.changer()
+        _ = try await changer.apply(try await changer.preview(artistId: 20, types: MonitoringLidarr.albumsOnly, keep: Self.nothingKept),
+                                    choice: .keep)
+        // A second change keeps the owner's original as the one to go back to.
+        _ = try await changer.apply(try await changer.preview(artistId: 20, types: MonitoringLidarr.albumsEPs, keep: Self.nothingKept),
+                                    choice: .keep)
+        #expect(fake.state.withLockUnchecked { $0.profileId } == 32)
+        #expect(try await changer.current(artistId: 20).canRevert)
+        #expect(try await changer.revert(artistId: 20) == .finished)
+        #expect(fake.state.withLockUnchecked { $0.profileId } == 5, "the owner's own profile, recorded before Magpie's first change")
+        #expect(try await changer.current(artistId: 20).canRevert == false)
+    }
+
+    @Test func revert_leavesAProfileTheOwnerChanged() async throws {
+        let fake = await MonitoringLidarr()
+        let changer = fake.changer()
+        _ = try await changer.apply(try await changer.preview(artistId: 20, types: MonitoringLidarr.albumsOnly, keep: Self.nothingKept),
+                                    choice: .keep)
+        fake.state.withLockUnchecked { $0.profileId = 5 }   // the owner put it back himself
+        let before = fake.writes.count
+        await #expect(throws: MonitoringChangeError.nothingToRevert) { _ = try await changer.revert(artistId: 20) }
+        #expect(fake.writes.count == before)
+    }
+
+    @Test func runner_resumesAfterLostAnswer() async throws {
+        let fake = await MonitoringLidarr()
+        let changer = fake.changer()
+        let preview = try await changer.preview(artistId: 20, types: MonitoringLidarr.albumsOnly, keep: Self.nothingKept)
+        fake.state.withLockUnchecked { $0.loseNextAnswer = "monitor" }
+        #expect(try await changer.apply(preview, choice: .delete) == .pending)
+        let open = try #require(try await fake.ledger.monitoringBook.open(artistId: 20).first)
+        #expect(open.sending == .unmonitored, "the step that was sent is recorded")
+        #expect(fake.writes.filter { $0.0 == "PUT album/monitor" }.count == 1)
+        // Resumed: Lidarr is read first; the unmonitor it already did isn't sent again.
+        fake.state.withLockUnchecked { $0.loseNextAnswer = "delete" }
+        #expect(await changer.resume(artistId: 20) == .pending)
+        #expect(fake.writes.filter { $0.0 == "PUT album/monitor" }.count == 1)
+        #expect(fake.deletes.count == 1)
+        // The delete's answer was lost too: the files are read again (gone), so nothing is deleted twice.
+        #expect(await changer.resume(artistId: 20) == .finished)
+        #expect(fake.deletes.count == 1)
+        #expect(fake.fileIds == [101, 102, 109])
+    }
+
+    @Test func refusedWhenTheSwitchIsOff_nothingSentOrSaved() async throws {
+        let fake = await MonitoringLidarr(monitoringOn: false)
+        let changer = fake.changer()
+        let preview = try await changer.preview(artistId: 20, types: MonitoringLidarr.albumsOnly, keep: Self.nothingKept)
+        await #expect(throws: MonitoringChangeError.switchOff) { _ = try await changer.apply(preview, choice: .keep) }
+        #expect(fake.writes.isEmpty)
+        #expect(try await fake.ledger.monitoringBook.intents.isEmpty)
+    }
+
+    @Test func refusedForAnArtistOutsideTheMainRoot() async throws {
+        let fake = await MonitoringLidarr(root: "/music/samples")
+        await #expect(throws: MonitoringChangeError.notInMainRoot) {
+            _ = try await fake.changer().preview(artistId: 20, types: MonitoringLidarr.albumsOnly, keep: Self.nothingKept)
+        }
+        #expect(fake.writes.isEmpty)
+    }
+
+    @Test func nothingIsSentWhenTheIntentCantBeSaved() async throws {
+        // The ledger's folder is a file: every save fails.
+        let blocker = FileManager.default.temporaryDirectory.appending(path: "Blocked-\(UUID().uuidString)")
+        try Data().write(to: blocker)
+        let fake = await MonitoringLidarr(ledgerURL: blocker.appending(path: "ledger.json"))
+        let changer = fake.changer()
+        let preview = try await changer.preview(artistId: 20, types: MonitoringLidarr.albumsOnly, keep: Self.nothingKept)
+        await #expect(throws: MonitoringChangeError.notSaved) { _ = try await changer.apply(preview, choice: .keep) }
+        #expect(fake.writes.isEmpty)
+    }
+
+    @Test func aStalePreviewIsAskedAgain() async throws {
+        let fake = await MonitoringLidarr()
+        let changer = fake.changer()
+        let preview = try await changer.preview(artistId: 20, types: MonitoringLidarr.albumsOnly, keep: Self.nothingKept)
+        fake.state.withLockUnchecked { $0.profileId = 33 }   // changed in Lidarr meanwhile
+        await #expect(throws: MonitoringChangeError.stale) { _ = try await changer.apply(preview, choice: .delete) }
+        #expect(fake.writes.isEmpty)
+    }
+
+    @Test func cleanup_capsPerCall_inBatchesOfFifty() async throws {
+        let fake = await MonitoringLidarr()
+        fake.state.withLockUnchecked { s in
+            for id in 300..<360 { s.files.append(.init(id: id, album: 2, size: 100, title: "Song \(id)", recording: "rec-\(id)")) }
+        }
+        for id in 300..<360 {
+            fake.transport.stub(pathSuffix: "/api/v1/trackfile/\(id)") { [fake] _ in
+                guard fake.state.withLockUnchecked({ s in s.files.contains { $0.id == id } }) else { return .init(status: 404) }
+                return MonitoringLidarr.reply(["id": id, "artistId": 20, "albumId": 2, "size": 100,
+                                               "path": "/music/library/Owner/A2/\(id).flac"])
+            }
+        }
+        let changer = fake.changer()
+        let preview = try await changer.preview(artistId: 20, types: MonitoringLidarr.albumsOnly, keep: Self.nothingKept)
+        #expect(preview.deletable.count == 62)
+        #expect(try await changer.apply(preview, choice: .delete) == .finished)
+        #expect(fake.deletes.map(\.count) == [50, 12])
+        #expect(Set(fake.deletes.flatMap { $0 }) == Set(preview.deletable.map(\.id)))
+    }
+
+    @Test func theBookIsPerLidarrAndSurvivesARelaunch() async throws {
+        let dir = FileManager.default.temporaryDirectory.appending(path: "Book-\(UUID().uuidString)")
+        let url = dir.appending(path: "lidarr-ledger.json")
+        let a = Ledger(fileURL: url, instance: "lidarr-a"), b = Ledger(fileURL: url, instance: "lidarr-b")
+        let intent = MonitoringIntent(kind: .monitoringChange, artistId: 20, artistMbid: MonitoringLidarr.ownerMBID,
+                                      previousProfileId: 5, targetProfileId: 30, createdAt: Date())
+        try await a.saveIntent(intent)
+        try await a.setKept(artistId: 20, UnmonitoredKept(artistId: 20, artistMbid: MonitoringLidarr.ownerMBID, albumIds: [2],
+                                                          files: [OwnedFile(id: 103, albumId: 2, size: 500)], recordedAt: Date()))
+        #expect(try await b.monitoringBook.intents.isEmpty, "another Lidarr never sees it")
+        let again = Ledger(fileURL: url, instance: "lidarr-a")
+        #expect(try await again.monitoringBook.intents.map(\.id) == [intent.id])
+        #expect(try await again.monitoringBook.kept(artistId: 20)?.files.map(\.id) == [103])
+        #expect(try await again.entries.isEmpty, "the album entries never see an owner's artist")
+        #expect(FileManager.default.fileExists(atPath: dir.appending(path: "lidarr-ledger-monitoring.json").path))
+    }
+
+    @Test func presetFromAMagpieProfile() async throws {
+        let fake = await MonitoringLidarr()
+        fake.state.withLockUnchecked { $0.profileId = 32 }
+        let current = try await fake.changer().current(artistId: 20)
+        #expect(current.types == MonitoringLidarr.albumsEPs)
+        fake.state.withLockUnchecked { $0.profileId = 5 }
+        #expect(try await fake.changer().current(artistId: 20).types == nil)
+    }
+}

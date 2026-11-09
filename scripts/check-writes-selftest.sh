@@ -78,6 +78,11 @@ planted=(
   'g as SlskdWriteGate'
   # Round 23 R23F (D200): a third caller of Retry a song (the research route).
   'client.retrySong(playlistId: "flow-1", jobId: "job-1")'
+  # Round 24 (D242, D243): an owner's artist's change or clean-up named outside MonitoringChange.swift, or the ledger's
+  # monitoring book (the consent the gate reads) written elsewhere.
+  'gate.send("DELETE", "trackfile/bulk", body: TrackFileIdsBody(trackFileIds: ids), confinedAs: .unmatchedCleanup)'
+  'gate.send("PUT", "artist/editor", body: ProfileBody(artistIds: [job.artistId], metadataProfileId: target), confinedAs: .ownedChange)'
+  'ledger.saveIntent(intent)'
 )
 failed=0
 for p in "${planted[@]}"; do
@@ -208,6 +213,33 @@ for w in "${slskd_weakened[@]}"; do
 done
 for f in "$slroute_src" "$slclient_src"; do cp "$f.orig" "$f"; rm -f "$f.orig"; done
 weakened+=("${slskd_weakened[@]}")
+
+# Round 24 (D243): the owned-artist proofs weakened one at a time: the clean-up's cap, the fresh size check, the
+# monitoring switch, the editor's two keys, the unmonitored-album check.
+owned_src="$work/Packages/MagpieKit/Sources/LidarrKit/WriteConfinement+Owned.swift"
+ownedgate_src="$work/Packages/MagpieKit/Sources/LidarrKit/WriteGate.swift"
+for f in "$owned_src" "$ownedgate_src"; do cp "$f" "$f.orig"; done
+owned_weakened=(
+  "$owned_src|s/    public static let maxCleanupFiles = 50/    public static let maxCleanupFiles = 500/"
+  "$owned_src|s/guard let size = file.size, size == recorded.size else/guard let size = file.size else/"
+  "$owned_src|s/== \[\"artistids\", \"metadataprofileid\"\], body.count == 2,/.contains(\"artistids\"),/"
+  "$owned_src|s/}), !album.monitored else {/}) else {/"
+  "$ownedgate_src|s/guard monitoringChangesEnabled else { throw refused(target, \"changing what Lidarr monitors is off\") }/_ = monitoringChangesEnabled/"
+)
+for w in "${owned_weakened[@]}"; do
+  file="${w%%|*}" expr="${w#*|}"
+  for f in "$owned_src" "$ownedgate_src"; do cp "$f.orig" "$f"; done
+  cp "$file" "$work/before"
+  sed -i '' "$expr" "$file"
+  if cmp -s "$work/before" "$file"; then echo "selftest: the weakening didn't apply: $expr" >&2; failed=1; continue; fi
+  if out=$("$work/scripts/check-writes.sh" 2>&1); then
+    echo "selftest: NOT caught: $expr" >&2; failed=1
+  elif ! grep -qE 'G1:' <<< "$out"; then
+    echo "selftest: failed without a G1 reason: $expr" >&2; failed=1
+  fi
+done
+for f in "$owned_src" "$ownedgate_src"; do cp "$f.orig" "$f"; rm -f "$f.orig"; done
+weakened+=("${owned_weakened[@]}")
 
 [ "$failed" = 0 ] || exit 1
 echo "check-writes selftest: all ${#planted[@]} planted violations and ${#weakened[@]} allow-list weakenings caught; the clean tree passes"
