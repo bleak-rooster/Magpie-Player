@@ -52,7 +52,7 @@ struct DiscoverPlaylistView: View {
         }
         .navigationTitle(page.value?.playlist.name ?? DiscoverCopy.title)
         .navigationBarTitleDisplayMode(.inline)
-        .aurralItemMenu(playlistId: playlistId)   // R24C (D212): ⋯ › Delete flow / Delete playlist, the user's own
+        .aurralItemMenu(playlistId: playlistId, message: $message)   // R24C (D212): ⋯ › Delete, the user's own
         .magpieScreen()
         .songRemovalDialog($removing)
         .confirmationDialog("\(DiscoverCopy.refresh)?", isPresented: $confirmingRefresh, titleVisibility: .visible) {

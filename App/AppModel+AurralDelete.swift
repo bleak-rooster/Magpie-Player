@@ -21,8 +21,13 @@ struct AurralRemoval: Sendable, Equatable {
     var startedAt: Date
 }
 
-/// Round 24 C (D212): where a delete is: Aurral hasn't run it yet; still hasn't after `aurralRemovalLimit`; done.
-enum AurralRemovalState: Sendable, Equatable { case removing, stillRemoving, deleted }
+/// Round 24 C (D212): where a delete is: Aurral hasn't run it yet; still hasn't after `aurralRemovalLimit` (the record
+/// then goes); done. Fix round 1: `alreadyGone`, Aurral's 404, which 2.13 answers alike for "gone" and "not yours" (B-L1:
+/// never claimed as Magpie's delete); `unheard`, the answer was lost, so Magpie checks as for a queued delete (I1).
+enum AurralRemovalState: Sendable, Equatable { case removing, stillRemoving, deleted, alreadyGone, unheard }
+
+/// Round 24 C fix round 1 (I6): the page's link changed between the confirmation and the send: nothing is sent.
+enum AurralDeleteRefusal: Error, Equatable { case changed }
 
 /// Round 24 C (owner, 2026-11-08: "Delete Aurral playlists and flows", item 5; D212; ruling Q4).
 ///
@@ -32,8 +37,13 @@ enum AurralRemovalState: Sendable, Equatable { case removing, stillRemoving, del
 ///   (2.13's routes and the user's accessFlow) and offline.
 /// - After the confirmation, B's `deleteFlow` / `deleteSharedPlaylist` (D207, D208): sent once, never again by itself.
 ///   Marked as removing before it is sent, so a second tap can't send it twice.
-/// - Aurral queues the delete: "Aurral is removing it…" until a status read no longer lists it ("Aurral is still removing
-///   it." after `aurralRemovalLimit`; the page then stops asking). A 404 is already gone: deleted at once.
+/// - Fix round 1 (I6): what is sent is what was confirmed; if the page's link changed meanwhile, nothing is sent.
+/// - Fix round 1 (M8, ruling): never on an item with no owner (from before Aurral had users), even for an admin.
+/// - Aurral queues the delete: "Aurral is removing it…" until a status read no longer lists it. After
+///   `aurralRemovalLimit` still listed: "Aurral is still removing it.", the record goes and Delete is offered again. A
+///   404 is "It's no longer in Aurral." (B-L1). A lost answer (no HTTP answer at all) keeps the record: "Magpie couldn't
+///   hear back from Aurral. It will check whether it's gone." and the same checks run (I1); only an answer Aurral gave
+///   (403, 409, 500…) clears it: "Aurral couldn't delete it. Nothing was changed."
 /// - Then Discover's saved ids for its playlists are forgotten (Workstream A's per-item map hasn't landed: the
 ///   per-account sets in `AppModel+Discover`, `+DiscoverEveryone`). Aurral removes its own Navidrome copy; Magpie never
 ///   deletes or changes a Navidrome playlist. One still listed is kept as Discover's, with no flow (so no Refresh Flow,
@@ -62,7 +72,8 @@ extension AppModel {
     func deletableAurralItem(playlistId: String) -> AurralItemToDelete? {
         guard aurralMayManage,
               let flow = discover.playlists.first(where: { $0.playlist.id == playlistId })?.flow.nonEmpty,
-              discover.removing[flow.id] == nil, let own = ownAurralItem(id: flow.id) else { return nil }
+              discover.removing[flow.id] == nil, let own = ownAurralItem(id: flow.id),
+              own.item.ownerUserId != nil || own.item.ownerUsername != nil else { return nil }   // M8: never ownerless
         return AurralItemToDelete(id: own.item.id, name: own.item.name, kind: own.kind)
     }
 
@@ -71,27 +82,31 @@ extension AppModel {
         discover.removing.values.first { $0.playlistIds.contains(playlistId) }
     }
 
-    /// Delete flow / Delete playlist, after the owner confirmed: sent once. `.removing` while Aurral's queued delete
-    /// hasn't run; `.deleted` when Aurral says it is already gone. Throws (nothing marked, nothing changed) when Aurral
-    /// refuses or can't be reached; `notPermitted` when it isn't offered.
-    func deleteAurralItem(playlistId: String) async throws -> AurralRemovalState {
+    /// Delete flow / Delete playlist, after the owner confirmed `confirmed`: sent once. `.removing` while Aurral's queued
+    /// delete hasn't run; `.alreadyGone` when Aurral answers 404; `.unheard` when no answer came back (it may have gone
+    /// through: the record stays and is checked). Throws (nothing marked, nothing changed) when Aurral answered with a
+    /// refusal; `notPermitted` when it isn't offered; `AurralDeleteRefusal.changed` when the page now names another item.
+    func deleteAurralItem(playlistId: String, confirmed: AurralItemToDelete) async throws -> AurralRemovalState {
         guard !isOffline else { throw Self.forcedOfflineError }
         guard let item = deletableAurralItem(playlistId: playlistId), let client = aurralClient else {
             throw AurralError.notPermitted
         }
+        guard item.id == confirmed.id, item.kind == confirmed.kind else { throw AurralDeleteRefusal.changed }
         let ids = Set(discover.playlists.filter { $0.flow.id == item.id }.map(\.playlist.id))
         discover.removing[item.id] = AurralRemoval(item: item, playlistIds: ids, startedAt: discover.now())   // before sending
         let result: AurralDeleteResult
         do {
             result = item.kind == .flow ? try await client.deleteFlow(item.id) : try await client.deleteSharedPlaylist(item.id)
-        } catch {
+        } catch let refusal as AurralError {   // an answer Aurral gave (or a refusal before sending): nothing changed
             discover.removing[item.id] = nil
-            noteAurralError(error)
-            throw error
+            noteAurralError(refusal)
+            throw refusal
+        } catch {
+            return .unheard   // no answer: it may have gone through, so it is checked, never sent again by itself
         }
         guard result != .alreadyGone else {
             await forgetRemovedAurralItem(item.id)
-            return .deleted
+            return .alreadyGone
         }
         return .removing
     }
@@ -113,7 +128,9 @@ extension AppModel {
                 noteAurralError(error)
             }
         }
-        return discover.now().timeIntervalSince(removal.startedAt) > Self.aurralRemovalLimit ? .stillRemoving : .removing
+        guard discover.now().timeIntervalSince(removal.startedAt) > Self.aurralRemovalLimit else { return .removing }
+        if discover.removing[removal.item.id] == removal { discover.removing[removal.item.id] = nil }   // Delete again
+        return .stillRemoving
     }
 
     /// Aurral has removed it: Discover's saved ids for its playlists go, as do this session's Search again and Refresh
@@ -154,7 +171,7 @@ enum AurralDeleteCopy {
         case .playlist: "Aurral removes this playlist and the songs only it was keeping. This can\u{2019}t be undone."
         }
     }
-    // G1 allowlist: copy (the confirmation button's word, never a request's verb)
+    // The confirmation button's word, never a request's verb (check-writes.sh allows this exact line only).
     static let confirm = "Delete"
     static let keep = "Keep it"
     static func deleted(_ name: String) -> String { "Deleted \u{201C}\(name)\u{201D}." }
@@ -162,4 +179,15 @@ enum AurralDeleteCopy {
     static let removing = "Aurral is removing it\u{2026}"
     /// Plan §3 d: a delete Aurral queued but hasn't run.
     static let stillRemoving = "Aurral is still removing it."
+    /// Fix round 1 (I1): the answer was lost.
+    static let unheard = "Magpie couldn\u{2019}t hear back from Aurral. It will check whether it\u{2019}s gone."
+    /// Fix round 1 (B-L1): Aurral's 404, "gone" or "not yours".
+    static let alreadyGone = "It\u{2019}s no longer in Aurral."
+    /// Fix round 1 (I6).
+    static let changed = "This page changed before it was deleted. Nothing was deleted."
+
+    /// What a delete that threw says.
+    static func message(for error: Error) -> String {
+        (error as? AurralDeleteRefusal) == .changed ? changed : failed
+    }
 }

@@ -69,8 +69,9 @@
 #       through the gate's `connect` shape, only from `SlskdKeepConnected.check`. Pinned below.
 #   Packages/MagpieKit/Sources/MagpieTestSupport/FakeSlskd.swift  G1 allowlist: stub slskd
 #       The in-process stub names the verb it answers for those routes; it sends nothing.
-#   App/AppModel+AurralDelete.swift  G1 allowlist: copy
-#       Round 24 C (D212): the Delete confirmation's button says "Delete" (the plan's words); copy, never a request's verb.
+#   App/AppModel+AurralDelete.swift  exactly the line `static let confirm = "Delete"`
+#       Round 24 C (D212, fix round 1 I3): the Delete confirmation's button says "Delete" (the plan's words); copy, never
+#       a request's verb. Only that one line in that one file; no tag is honoured for it.
 #
 # G1_SRC overrides the product tree to scan and skips the others (used to check this script against a planted
 # violation).
@@ -107,7 +108,6 @@ allow=(
   "Packages/MagpieKit/Sources/SlskdKit/SlskdClient.swift|G1 allowlist: slskd clean-up"
   "Packages/MagpieKit/Sources/SlskdKit/SlskdRoute.swift|G1 allowlist: slskd keep connected"
   "Packages/MagpieKit/Sources/MagpieTestSupport/FakeSlskd.swift|G1 allowlist: stub slskd"
-  "App/AppModel+AurralDelete.swift|G1 allowlist: copy"
 )
 [ -n "${G1_SRC:-}" ] && allow=("$G1_SRC/NavidromeKit/NavidromeClient.swift|auth/login"
                                "$G1_SRC/MagpieTestSupport/SharedLoginTransport.swift|auth/login")
@@ -129,6 +129,9 @@ bad=0
 for hit in $hits; do
   file="${hit%%:*}" line="${hit##*:}"
   ok=0
+  # Round 24 C fix round 1 (I3): the Delete button's word, on its one exact line.
+  if [ "$file" = "App/AppModel+AurralDelete.swift" ] &&
+     [ "$(sed -n "${line}p" "$file")" = '    static let confirm = "Delete"' ]; then ok=1; fi
   for entry in "${allow[@]}"; do
     if [ "$file" = "${entry%%|*}" ] &&
        sed -n "$((line > 3 ? line - 3 : 1)),${line}p" "$file" | grep -qF "${entry##*|}"; then ok=1; fi
@@ -458,6 +461,47 @@ if [ -z "${G1_SRC:-}" ]; then
       *) echo "G1: Aurral's Retry a song asked for outside its three callers: ${c%%:*}" >&2; bad=1 ;;
     esac
   done <<< "$rs_callers"
+  # Round 24 C fix round 1 (M6): `retrySong` named exactly so often in each file, whatever the spelling (spaced,
+  # backticked, taken as a function): one client call each in Search again and Songs still coming, the model's Retry
+  # (its definition and its one client call) and that method's one caller; nowhere else outside the client.
+  for f in $(grep -rlwE --include='*.swift' 'retrySong' "${product[@]}" || true); do
+    n=$(grep -owE 'retrySong' "$f" | grep -c . || true)
+    case "$f" in
+      Packages/MagpieKit/Sources/AurralKit/AurralClient+Discover.swift) want=$n ;;
+      App/AppModel+SearchAgain.swift|App/AppModel+AurralDownloads.swift|App/Screens/Discover/EditorialViews.swift) want=1 ;;
+      App/AppModel+DiscoverPlaylists.swift) want=2 ;;
+      *) want=0 ;;
+    esac
+    [ "$n" = "$want" ] || { echo "G1: Aurral's Retry a song named $n times in $f (allowed $want)" >&2; bad=1; }
+  done
+  # Round 24 C fix round 1 (B-M1): Aurral 2.13 checks no ownership on approve or deny, so a held song is decided only
+  # from `sendHeldDecision` (AppModel+AurralDownloads.swift), one call each, after the status and the item's songs are
+  # read fresh and the item is proven the user's on that fresh read and the song still held.
+  for name in approveHeldSong denyHeldSong; do
+    for f in $(grep -rlwE --include='*.swift' "$name" "${product[@]}" || true); do
+      n=$(grep -owE "$name" "$f" | grep -c . || true)
+      case "$f" in
+        Packages/MagpieKit/Sources/AurralKit/AurralClient+Manage.swift) want=$n ;;
+        App/AppModel+AurralDownloads.swift) want=1 ;;
+        *) want=0 ;;
+      esac
+      [ "$n" = "$want" ] || { echo "G1: $name named $n times in $f (allowed $want)" >&2; bad=1; }
+    done
+  done
+  held="App/AppModel+AurralDownloads.swift"
+  decide="$(awk '/private func sendHeldDecision\(/,/^    }$/' "$held" || true)"
+  last=0
+  for want in 'let client = try manageClient(action, row)' 'let fresh = try await client.status()' \
+              'let jobs = try await client.playlistJobs(row.item.id) ?? []' \
+              'let freshItem = (fresh.flows + fresh.sharedPlaylists).first { $0.id == row.item.id }' \
+              'guard let user = discover.bootstrap?.user, let freshItem, freshItem.belongs(to: user) else { throw AurralError.notPermitted }' \
+              'guard jobs.contains(where: { $0.id == row.job.id && $0.status?.lowercased() == "blocked" }) else {' \
+              'try await client.approveHeldSong(row.job.id)' 'try await client.denyHeldSong(row.job.id)'; do
+    at=$(grep -nF -- "$want" <<< "$decide" | head -1 | cut -d: -f1 || true)
+    if [ -z "$at" ]; then echo "G1: $held: sendHeldDecision no longer has: $want" >&2; bad=1
+    elif [ "$at" -le "$last" ]; then echo "G1: $held: sendHeldDecision out of order at: $want" >&2; bad=1
+    else last=$at; fi
+  done
   # Round 15 C2 (D131, fix round): the four chart flow writes are sent only from these exact lines in ChartFlows.swift
   # (each path a literal plus a plain id; the create's and append's bodies are built by chartFlowBody only, the
   # removal's is exactly {jobIds}). No PUT to a shared playlist (it left removed songs' files behind).

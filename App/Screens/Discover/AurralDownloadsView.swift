@@ -11,13 +11,20 @@ import SwiftUI
     private(set) var working = false
     var message: String?
 
-    func refresh(_ model: AppModel) async {
+    /// One read. Fix round 1: an item that didn't read keeps its rows and says so (M1); a read cut short (the page
+    /// left, the app went to the background) changes nothing; a good read clears the last action's words, unless
+    /// `keepingMessage` (the read right after that action, M2).
+    func refresh(_ model: AppModel, keepingMessage: Bool = false) async {
         guard !model.isOffline else { return }
         do {
-            board = try await model.readSongsStillComing()
-            unreachable = false
+            let read = try await model.readSongsStillComing(previous: board)
+            guard !Task.isCancelled else { return }
+            board = read
+            unreachable = !read.unread.isEmpty
+            if !keepingMessage { message = nil }
         } catch {
-            unreachable = AppModel.isCancellation(error) ? unreachable : true   // a read cut short says nothing
+            guard !Task.isCancelled, !AppModel.isCancellation(error) else { return }
+            unreachable = true
         }
     }
 
@@ -29,21 +36,27 @@ import SwiftUI
         }
     }
 
-    /// One action, sent once; the board read again after it (or a plain line saying why not).
-    func act(_ model: AppModel, _ send: () async throws -> SongsStillComing.Board) async {
+    /// One action, sent once (never while another is under way); then the page read again, apart from it (M2: a read
+    /// that fails afterwards isn't the action failing).
+    func act(_ model: AppModel, _ send: () async throws -> Void) async {
+        guard !working else { return }
         working = true
         defer { working = false }
-        do { board = try await send() } catch {
-            message = SongsStillComingCopy.message(for: error)
-            await refresh(model)
-        }
+        do { try await send() } catch { message = SongsStillComingCopy.message(for: error) }
+        await refresh(model, keepingMessage: message != nil)
     }
 
+    /// "Search now for N": D199's words after a 403 (M3).
     func searchNowAll(_ model: AppModel, _ board: SongsStillComing.Board) async {
+        guard !working else { return }
         working = true
         defer { working = false }
-        do { _ = try await model.searchNowAll(board) } catch { message = SongsStillComingCopy.message(for: error) }
-        await refresh(model)
+        do {
+            if try await model.searchNowAll(board).refused { message = SongsStillComingCopy.searchNowAllRefused }
+        } catch {
+            message = SongsStillComingCopy.searchNowAllMessage(for: error)
+        }
+        await refresh(model, keepingMessage: message != nil)
     }
 }
 
@@ -114,6 +127,7 @@ struct AurralDownloadsView: View {
             get: { approving != nil }, set: { if !$0 { approving = nil } }), titleVisibility: .visible,
                             presenting: approving) { row in
             Button(SongsStillComingCopy.approve) { Task { await screen.act(model) { try await model.approve(row) } } }
+                .disabled(screen.working)
                 .accessibilityIdentifier("aurral-downloads-approve-confirm")
             Button(DiscoverPagesCopy.cancel, role: .cancel) {}
         } message: { row in
@@ -125,6 +139,7 @@ struct AurralDownloadsView: View {
             Button(SongsStillComingCopy.tryAnotherSource, role: .destructive) {
                 Task { await screen.act(model) { try await model.tryAnotherSource(row) } }
             }
+            .disabled(screen.working)
             .accessibilityIdentifier("aurral-downloads-deny-confirm")
             Button(DiscoverPagesCopy.cancel, role: .cancel) {}
         } message: { _ in
@@ -135,6 +150,7 @@ struct AurralDownloadsView: View {
             Button(SongsStillComingCopy.searchNow) {
                 if let board = pendingAll { Task { await screen.searchNowAll(model, board) } }
             }
+            .disabled(screen.working)
             .accessibilityIdentifier("aurral-downloads-search-all-confirm")
             Button(DiscoverPagesCopy.cancel, role: .cancel) {}
         } message: {
@@ -223,6 +239,16 @@ private struct SongStillComingRow: View {
             }
             Label(SongsStillComingCopy.state(row), systemImage: SongsStillComingCopy.symbol(row.section))
                 .font(.footnote).foregroundStyle(.secondary)
+            // Fix round 1 (I4): Aurral's progress and words, when it gives them.
+            if row.section == .downloading || row.section == .looking, let percent = row.job.progress {
+                ProgressView(value: Double(percent), total: 100) { EmptyView() } currentValueLabel: {
+                    Text(SongsStillComingCopy.progress(percent)).font(.caption)
+                }
+                .accessibilityValue(SongsStillComingCopy.progress(percent))
+            }
+            if let words = row.job.message, row.section != .doneRecently {
+                Text(words).font(.footnote).foregroundStyle(.secondary).lineLimit(3)
+            }
             if !actions.isEmpty {
                 ViewThatFits(in: .horizontal) {
                     HStack(spacing: Tokens.Spacing.s) { buttons }
@@ -233,7 +259,7 @@ private struct SongStillComingRow: View {
         }
         .accessibilityElement(children: .combine)
         .accessibilityActions {
-            ForEach(actions, id: \.self) { action in
+            ForEach(working ? [] : actions, id: \.self) { action in   // none while Magpie is asking (I5)
                 Button(Self.title(action)) { perform(action) }
             }
         }

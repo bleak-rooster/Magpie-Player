@@ -61,3 +61,35 @@ private let sams = AurralFlow(id: "flow-sam", name: "Late Night", ownerUserId: 2
         #expect(board.held.last?.item.ownerUsername == "sam")
     }
 }
+
+/// Fix round 1 (I4, ruling): a song's progress and Aurral's words about it, read leniently. Aurral 2.13's public job
+/// (`rowToJob` / `toPublicJob`, read at tag v2.13.0) carries `error` and no progress; `progress`, `message` and
+/// `statusMessage` are accepted too, for a later Aurral. Absent or odd: nil, never a trap.
+@Suite struct JobProgressAndMessageTests {
+    private func decode(_ fields: String) throws -> AurralJob {
+        try #require(try AurralJob.decodeList(Data(#"[{"id":"1","trackName":"T","artistName":"A"\#(fields)}]"#.utf8)).first)
+    }
+
+    @Test func progressClampedAndScaled() throws {
+        #expect(try decode(#","progress":42"#).progress == 42)
+        #expect(try decode(#","progress":42.6"#).progress == 43)
+        #expect(try decode(#","progress":0.5"#).progress == 50, "0–1 scaled")
+        #expect(try decode(#","progress":250"#).progress == 100)
+        #expect(try decode(#","progress":-3"#).progress == 0)
+        #expect(try decode(#","progress":"37""#).progress == 37)
+        #expect(try decode(#","progress":"lots""#).progress == nil)
+        #expect(try decode(#","progress":1e308"#).progress == 100)
+        #expect(try decode("").progress == nil)
+    }
+
+    @Test func messageTrimmedAndBounded() throws {
+        #expect(try decode(#","error":"  No results on Soulseek  ""#).message == "No results on Soulseek")
+        #expect(try decode(#","statusMessage":"Waiting for a slot""#).message == "Waiting for a slot")
+        #expect(try decode(#","message":"Queued","error":"old""#).message == "Queued", "message first")
+        #expect(try decode(#","error":"   ""#).message == nil)
+        #expect(try decode(#","error":42"#).message == nil)
+        let long = String(repeating: "a", count: 500)
+        #expect(try decode(#","error":"\#(long)""#).message?.count == 200)
+        #expect(try decode("").message == nil)
+    }
+}

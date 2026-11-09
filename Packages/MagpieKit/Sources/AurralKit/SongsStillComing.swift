@@ -43,6 +43,8 @@ public enum SongsStillComing {
         public var looking: [Row] = []
         public var downloading: [Row] = []
         public var doneRecently: [Row] = []
+        /// Fix round 1 (M1): the items whose songs couldn't be read this time (their rows, if any, are the last read's).
+        public var unread: Set<String> = []
         public init() {}
 
         /// Nothing is waiting: nothing held, missing, looked for or downloading (Done recently doesn't count).
