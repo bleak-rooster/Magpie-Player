@@ -5,7 +5,7 @@ import Testing
 @testable import CarPlayUI
 
 /// Round 13 item 9: Now Playing's Up Next button opens the queue: the song playing marked, then what plays after it; a
-/// tap jumps there. Within the car's item limit ("Showing N of M") and its template depth (5).
+/// tap jumps there. Paged past the car's ceiling (round 24, D231) and within its template depth (5).
 @Suite struct UpNextRowsTests {
     func entries(_ ids: [String]) -> [QueueEntry] {
         ids.map { QueueEntry(song: Song(id: $0, title: "T\($0)", artist: "A\($0)", album: "B", duration: 60, coverArtId: "c\($0)")) }
@@ -31,13 +31,12 @@ import Testing
         #expect(rows.map(\.playing) == [false, true, false], "only the first of a repeated song")
     }
 
-    @Test func aLongQueueSaysHowMuchItShows() {
+    /// Round 24 (D231): the whole queue, for the controller to page past the ceiling; never "Showing N of M".
+    @Test func aLongQueueIsWhole() {
         let queue = entries((0..<30).map(String.init))
-        let sections = CarPlayRows.upNext(current: queue[0], upcoming: Array(queue.dropFirst()), maxItems: 12, playingId: "0")
-        let rows = sections.flatMap(\.rows)
-        #expect(rows.count == 12)
-        #expect(rows.last?.title == "Showing 11 of 30")
-        #expect(rows.last?.action == RowAction.none)
+        let rows = CarPlayRows.upNext(current: queue[0], upcoming: Array(queue.dropFirst()), playingId: "0").flatMap(\.rows)
+        #expect(rows.count == 30)
+        #expect(!rows.contains { $0.title.hasPrefix("Showing") })
     }
 
     @Test func anEmptyQueueSaysNothingHere() {

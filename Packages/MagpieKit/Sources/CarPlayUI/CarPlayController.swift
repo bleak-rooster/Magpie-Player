@@ -103,6 +103,8 @@ public final class CarPlayController: NSObject {
     var listLimits: () -> (items: Int, sections: Int) = {
         (Int(CPListTemplate.maximumItemCount), Int(CPListTemplate.maximumSectionCount))
     }
+    /// R24F fix round 1 (I1): a page is being put in place of the list on screen (+Paging.swift).
+    var pageInFlight = false
 
     /// Artwork requests in flight per list.
     private static let artworkConcurrency = 4
@@ -244,6 +246,7 @@ public final class CarPlayController: NSObject {
     }
 
     func open(_ destination: CPDestination) {
+        if case .page(let ref) = destination { return openPage(ref) }   // R24F (D232): in place of this page
         guard CPNavigator.allowsPush(atDepth: browseDepth) else {
             Log.logger("carplay").error("refused a push past the depth budget")
             return
@@ -489,8 +492,7 @@ public final class CarPlayController: NSObject {
     }
 
     func apply(_ sections: [CPSectionModel], to binding: ListBinding, placeholder: Bool) {
-        let fitted = clamp(sections, maxItems: Int(CPListTemplate.maximumItemCount),
-                           maxSections: Int(CPListTemplate.maximumSectionCount))
+        let fitted = fitPage(sections, for: binding)   // R24F (D231): pages within the car's limits (+Paging.swift)
         if !binding.shown.isEmpty, !needsRebuild(old: binding.shown, new: fitted) {
             updateInPlace(binding, fitted)
             binding.isPlaceholder = placeholder
@@ -640,7 +642,9 @@ extension CarPlayController: CPInterfaceControllerDelegate {
         }
     }
 
-    public func templateDidAppear(_ aTemplate: CPTemplate, animated: Bool) {}
+    public func templateDidAppear(_ aTemplate: CPTemplate, animated: Bool) {
+        retitleIfStale(aTemplate)   // R24F fix round 1 (M3): a page laid out for a new ceiling while covered
+    }
 
     public func templateWillDisappear(_ aTemplate: CPTemplate, animated: Bool) {}
 

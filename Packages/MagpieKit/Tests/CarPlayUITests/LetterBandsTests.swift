@@ -146,14 +146,14 @@ import Testing
         let songs = ["Under", "Zoo", "2 Become 1", "おやすみ"].enumerated().map {
             Song(id: "s\($0.offset)", title: $0.element, artist: "A", album: "B", duration: 60)
         }
-        let sections = CarPlayRows.songPage(songs, total: nil, playingId: "s1")
+        let sections = CarPlayRows.songPage(songs, playingId: "s1")
         #expect(sections.map(\.header) == ["U", "Z", "#"])
         #expect(sections.map(\.indexTitle) == ["U", "Z", "#"])
         let rows = sections.flatMap(\.rows)
         #expect(rows.map(\.playing) == [false, true, false, false])
         #expect(rows[2].action == .play(.songs(songs, startAt: 2)))
-        let cut = CarPlayRows.songPage(Array(songs.prefix(3)), total: 9, playingId: nil)
-        #expect(cut.flatMap(\.rows).last?.title == "Showing 3 of 9")
+        // Round 24 (D231): a page never says "Showing N of M"; the controller pages past the ceiling.
+        #expect(!sections.flatMap(\.rows).contains { $0.title.hasPrefix("Showing") })
     }
 
     /// The index is found by seeks over the server's title order (single-row reads), including the "#" tail.
