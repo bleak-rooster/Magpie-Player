@@ -7,7 +7,7 @@ import MagpieCore
 /// Round 24 (owner, 2026-11-08, D237, D243, D244), end to end against the dev stack's real Lidarr (`MAGPIE_IT=1`; writes to
 /// the dev Lidarr only, G0 as TryIT): an artist Magpie didn't add (put straight into the dev Lidarr's main root on its
 /// own "Standard" profile, so no Magpie ledger knows it) moves onto Magpie's Albums profile through the gate's
-/// `ownedChange` rule with Keep, then Revert puts the recorded profile back. The change log shows exactly the two-key
+/// `performOwned` (`OwnedShape.change`) rule with Keep, then Revert puts the recorded profile back. The change log shows exactly the two-key
 /// editor body and no delete. The artist is removed from the dev Lidarr afterwards. The dev stack has no indexer, so
 /// nothing downloads.
 @Suite(.enabled(if: TryDevStack.enabled), .serialized)

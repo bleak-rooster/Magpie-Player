@@ -29,7 +29,7 @@ import MagpieCore
 ///   nothing of it kept, tagged `magpie-find` and strictly inside the Finds root);
 /// - round 24 (owner, 2026-11-08, D243) supersedes "only for an artist the ledger says Magpie created" for the artist
 ///   editor and "only albums the ledger says Magpie monitored" for `monitored: false`, for the writes named
-///   `ownedChange` / `unmatchedCleanup` only: any artist in the main root, Magpie's or the owner's, as the artist's open
+///   `performOwned` / `performCleanup` (`OwnedShape`) only: any artist in the main root, Magpie's or the owner's, as the artist's open
 ///   `MonitoringIntent` says, proven from fresh reads (`WriteConfinement+Owned.swift`). The Finds rules stay for Finds.
 ///
 /// The gate runs confined writes one at a time, checks to answer (`LidarrWriteGate`), and reads the ledger's kept
@@ -161,14 +161,14 @@ public struct WriteConfinement: Sendable {
         case singlesUnmonitor([Int])
         /// Round 23 (D191): `DELETE /blocklist/bulk`'s ids (`ConfinedShape.blocklistCleanup`).
         case blocklistDelete([Int])
-        /// Round 24 (D243): `ConfinedShape.ownedChange`'s writes, checked against the artist's open intent
+        /// Round 24 (D243): `performOwned`'s writes (`OwnedShape.change`), checked against the artist's open intent
         /// (`WriteConfinement+Owned.swift`).
         case ownedEditor([String: Any])
         case ownedRefresh(Int)
         case ownedSearch([Int])
         case ownedMonitor(albumIds: [Int], monitored: Bool)
-        /// Round 24 (D242): `ConfinedShape.unmatchedCleanup`'s track file delete.
-        case ownedCleanup([Int])
+        /// Round 24 (D242): `performCleanup`'s track file delete, for the clean-up intent `intent` (fix round 3 H-L5).
+        case ownedCleanup([Int], intent: UUID)
     }
 
     func check(_ write: Write, lidarr: LidarrClient) async -> Verdict {

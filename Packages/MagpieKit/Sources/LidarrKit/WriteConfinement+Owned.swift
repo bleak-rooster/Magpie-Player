@@ -2,7 +2,7 @@ import Foundation
 import MagpieCore
 
 /// Round 24 (owner, 2026-11-08, D243): the safety proofs that replace "Magpie added it" for an artist the owner added.
-/// The owner put his own artists in scope, so each write named `ownedChange` or `unmatchedCleanup` is proven here from the
+/// The owner put his own artists in scope, so each write built by `performOwned` or `performCleanup` (`OwnedShape`) is proven here from the
 /// ledger's monitoring book (the owner's consent, saved before any write) and the gate's own fresh Lidarr reads, never
 /// from the caller:
 ///
@@ -54,8 +54,8 @@ extension WriteConfinement {
                 try await proof.monitor(ids, monitored: monitored, search: false)
             case .ownedSearch(let ids):
                 try await proof.monitor(ids, monitored: true, search: true)
-            case .ownedCleanup(let ids):
-                let intent = try await proof.cleanup(ids)
+            case .ownedCleanup(let ids, let intentId):
+                let intent = try await proof.cleanup(ids, intentId: intentId)
                 return .confined(artists: [intent.artistId], rule: .ownedCleanup(intent: intent.id, artistId: intent.artistId))
             default:
                 return nil
@@ -236,14 +236,14 @@ private struct OwnedProof {
         }
     }
 
-    func cleanup(_ ids: [Int]) async throws -> MonitoringIntent {
+    func cleanup(_ ids: [Int], intentId: UUID) async throws -> MonitoringIntent {
         guard !ids.isEmpty, ids.count <= WriteConfinement.maxCleanupFiles, Set(ids).count == ids.count else {
             throw Failure.refused("a clean-up deletes 1 to \(WriteConfinement.maxCleanupFiles) files at a time")
         }
         let first = try await read { try await lidarr.trackFile(id: ids[0]) }
         guard first.id == ids[0], let artistId = first.artistId else { throw Failure.refused("a track file without an artist") }
         let open = book.open(artistId: artistId).filter { $0.kind == .unmatchedCleanup }
-        guard open.count == 1, let intent = open.first else {
+        guard open.count == 1, let intent = open.first, intent.id == intentId else {
             throw Failure.refused("no clean-up the owner confirmed is open for this artist")
         }
         guard intent.matchesConfirmation else { throw Failure.refused("the clean-up isn't what the owner confirmed") }
@@ -257,7 +257,15 @@ private struct OwnedProof {
             throw Failure.refused("only files the owner's confirmation named")
         }
         guard !Self.hasLiveTry(artistId, in: entries) else { throw Failure.refused("a Try of Magpie's is under way for the artist") }
-        let (_, folder, mainGuard) = try await artist(intent)
+        let (artist, folder, mainGuard) = try await artist(intent)
+        // Fix round 3 H-M1: the newest finished change the artist is still on must leave the file's album type out (a
+        // later choice that monitors that type again, or a Revert, ends the clean-up of it).
+        let current = book.intents.filter {
+            $0.kind == .monitoringChange && $0.artistId == artistId && $0.step == .done && $0.targetProfileId != nil
+        }.max { $0.createdAt < $1.createdAt }
+        guard let current, current.targetProfileId == artist.metadataProfileId, let types = current.targetTypes else {
+            throw Failure.refused("the artist isn't on the profile of Magpie's last change now")
+        }
         let inside = PathGuard(findsRoot: folder, otherRoots: [], caseInsensitive: false)
         let albums = try await read { try await lidarr.albums(artistId: artistId) }
         for id in ids {
@@ -278,6 +286,9 @@ private struct OwnedProof {
             }
             guard let album = albums.first(where: { $0.id == recorded.albumId }), !album.monitored else {
                 throw Failure.refused("a file of an album that is monitored now")
+            }
+            guard !types.includes(albumType: album.albumType, secondaryTypes: album.secondaryTypes) else {
+                throw Failure.refused("a file of an album the current choice includes")
             }
         }
         return intent

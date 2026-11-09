@@ -34,6 +34,10 @@ final class MonitoringLidarr: @unchecked Sendable {
         var resetProfileAlways: Int?
         /// The editor answers 200 but doesn't take the profile (fix round 2 m3).
         var ignoreEditor = false
+        /// Files no track row names (fix round 3 H-M3).
+        var untracked: Set<Int> = []
+        /// The editor turns "Let Magpie change what Lidarr monitors" off as it answers (fix round 3 H-L2).
+        var switchOffAtEditor = false
     }
     static let ownerMBID = MBID("20202020-2020-4020-8020-202020202020")!
     let transport = MockTransport()
@@ -41,6 +45,7 @@ final class MonitoringLidarr: @unchecked Sendable {
     let ledger: Ledger
     let gate: LidarrWriteGate
     let state = OSAllocatedUnfairLock(initialState: State())
+    let suite = "Monitoring.\(UUID().uuidString)"
 
     static func profile(_ id: Int, _ name: String, primary: Set<String>, secondary: Set<String>) -> [String: Any] {
         ["id": id, "name": name,
@@ -66,7 +71,7 @@ final class MonitoringLidarr: @unchecked Sendable {
         client = LidarrClient(base: URL(string: "http://127.0.0.1:8686")!, apiKey: "devkey", transport: transport)
         ledger = Ledger(fileURL: ledgerURL, instance: client.instanceScope)
         let dir = FileManager.default.temporaryDirectory.appending(path: "Monitoring-\(UUID().uuidString)")
-        gate = LidarrWriteGate(client: client, logURL: dir.appending(path: "log.json"), defaultsSuite: "Monitoring.\(UUID().uuidString)",
+        gate = LidarrWriteGate(client: client, logURL: dir.appending(path: "log.json"), defaultsSuite: suite,
                                confinement: WriteConfinement(ledger: ledger, roots: {
                                    WriteConfinement.Roots(mainRoot: "/music/library", findsRoot: "/music/samples", findTagId: 2)
                                }))
@@ -170,7 +175,7 @@ final class MonitoringLidarr: @unchecked Sendable {
             }
         }
         t.stub(pathSuffix: "/api/v1/track") { [self] _ in
-            Self.reply(state.withLockUnchecked { s in s.files.map { ["id": $0.id + 1000, "albumId": $0.album, "trackFileId": $0.id,
+            Self.reply(state.withLockUnchecked { s in s.files.filter { !s.untracked.contains($0.id) }.map { ["id": $0.id + 1000, "albumId": $0.album, "trackFileId": $0.id,
                                                             "title": $0.title, "foreignRecordingId": $0.recording] } })
         }
         t.stub(pathSuffix: "/api/v1/command/9") { [self] _ in
@@ -196,6 +201,9 @@ final class MonitoringLidarr: @unchecked Sendable {
         t.stub(method: "PUT", pathSuffix: "/api/v1/artist/editor") { [self] req in
             let body = try JSONSerialization.jsonObject(with: req.httpBody!) as! [String: Any]
             state.withLockUnchecked { s in if let p = body["metadataProfileId"] as? Int, !s.ignoreEditor { s.profileId = p } }
+            if state.withLockUnchecked({ $0.switchOffAtEditor }) {
+                UserDefaults(suiteName: suite)?.set(false, forKey: LidarrWriteGate.monitoringChangesKey(scope: client.instanceScope))
+            }
             try loseAnswer("editor")
             return Self.reply([[String: Any]]())
         }
@@ -287,7 +295,7 @@ final class MonitoringLidarr: @unchecked Sendable {
         let preview = try await changer.preview(artistId: 20, types: MonitoringLidarr.albumsOnly, keep: keep)
         #expect(preview.excludedFileIds == [104])
         #expect(preview.deletable.map(\.id) == [103])
-        let outcome = try await changer.apply(preview, choice: .delete)
+        let outcome = try await changer.apply(preview, choice: .delete, keep: Self.nothingKept)
         #expect(outcome == .finished)
         #expect(fake.deletes == [[103]], "exactly the shown file, never the favourite or the owner's other files")
         #expect(fake.fileIds == [101, 102, 104, 109])
@@ -325,7 +333,7 @@ final class MonitoringLidarr: @unchecked Sendable {
         let cleanup = try await changer.cleanupPreview(artistId: 20, keep: keep)
         #expect(cleanup.files.map(\.id) == [104])
         #expect(cleanup.rows.first { $0.file.id == 103 }?.kept == true)
-        #expect(try await changer.cleanUp(cleanup) == .finished)
+        #expect(try await changer.cleanUp(cleanup, keep: Self.nothingKept) == .finished)
         #expect(fake.deletes == [[104]])
         #expect(fake.fileIds.contains(103))
         let kept = try await fake.ledger.monitoringBook.kept(artistId: 20)
@@ -377,17 +385,17 @@ final class MonitoringLidarr: @unchecked Sendable {
         let changer = fake.changer()
         let preview = try await changer.preview(artistId: 20, types: MonitoringLidarr.albumsOnly, keep: Self.nothingKept)
         fake.state.withLockUnchecked { $0.loseNextAnswer = "monitor" }
-        #expect(try await changer.apply(preview, choice: .delete) == .pending)
+        #expect(try await changer.apply(preview, choice: .delete, keep: Self.nothingKept) == .pending)
         let open = try #require(try await fake.ledger.monitoringBook.open(artistId: 20).first)
         #expect(open.sending == .unmonitored, "the step that was sent is recorded")
         #expect(fake.writes.filter { $0.0 == "PUT album/monitor" }.count == 1)
         // Resumed: Lidarr is read first; the unmonitor it already did isn't sent again.
         fake.state.withLockUnchecked { $0.loseNextAnswer = "delete" }
-        #expect(await changer.resume(artistId: 20) == .pending)
+        #expect(await changer.resume(artistId: 20, keep: Self.nothingKept) == .pending)
         #expect(fake.writes.filter { $0.0 == "PUT album/monitor" }.count == 1)
         #expect(fake.deletes.count == 1)
         // The delete's answer was lost too: the files are read again (gone), so nothing is deleted twice.
-        #expect(await changer.resume(artistId: 20) == .finished)
+        #expect(await changer.resume(artistId: 20, keep: Self.nothingKept) == .finished)
         #expect(fake.deletes.count == 1)
         #expect(fake.fileIds == [101, 102, 109])
     }
@@ -425,7 +433,7 @@ final class MonitoringLidarr: @unchecked Sendable {
         let changer = fake.changer()
         let preview = try await changer.preview(artistId: 20, types: MonitoringLidarr.albumsOnly, keep: Self.nothingKept)
         fake.state.withLockUnchecked { $0.profileId = 33 }   // changed in Lidarr meanwhile
-        await #expect(throws: MonitoringChangeError.stale) { _ = try await changer.apply(preview, choice: .delete) }
+        await #expect(throws: MonitoringChangeError.stale) { _ = try await changer.apply(preview, choice: .delete, keep: Self.nothingKept) }
         #expect(fake.writes.isEmpty)
     }
 
@@ -444,7 +452,7 @@ final class MonitoringLidarr: @unchecked Sendable {
         let changer = fake.changer()
         let preview = try await changer.preview(artistId: 20, types: MonitoringLidarr.albumsOnly, keep: Self.nothingKept)
         #expect(preview.deletable.count == 62)
-        #expect(try await changer.apply(preview, choice: .delete) == .finished)
+        #expect(try await changer.apply(preview, choice: .delete, keep: Self.nothingKept) == .finished)
         #expect(fake.deletes.map(\.count) == [50, 12])
         #expect(Set(fake.deletes.flatMap { $0 }) == Set(preview.deletable.map(\.id)))
     }
@@ -527,7 +535,7 @@ final class MonitoringLidarr: @unchecked Sendable {
         // A row for the album the owner unmonitored himself (never kept on reducing).
         cleanup.rows.append(.init(file: OwnedFile(id: 109, albumId: 9, size: 900), title: "Old", album: "Owner Unmonitored",
                                   recording: nil, kept: false))
-        #expect(try await changer.cleanUp(cleanup) == .finished)
+        #expect(try await changer.cleanUp(cleanup, keep: Self.nothingKept) == .finished)
         #expect(Set(fake.deletes.flatMap { $0 }) == [103, 104])
         #expect(fake.fileIds.contains(109))
     }
@@ -539,7 +547,7 @@ final class MonitoringLidarr: @unchecked Sendable {
         var preview = try await changer.preview(artistId: 20, types: MonitoringLidarr.albumsOnly, keep: Self.nothingKept)
         preview.files.append(OwnedFile(id: 109, albumId: 9, size: 900))
         preview.files.append(OwnedFile(id: 101, albumId: 1, size: 1000))
-        #expect(try await changer.apply(preview, choice: .delete) == .finished)
+        #expect(try await changer.apply(preview, choice: .delete, keep: Self.nothingKept) == .finished)
         #expect(Set(fake.deletes.flatMap { $0 }) == [103, 104])
         #expect(fake.fileIds == [101, 102, 109])
     }
@@ -588,6 +596,104 @@ final class MonitoringLidarr: @unchecked Sendable {
         #expect(await changer.resume(artistId: 20) == .finished)
         #expect(fake.state.withLockUnchecked { $0.profileId } == 30)
         #expect(fake.writes.filter { $0.0 == "PUT artist/editor" }.count == 2)
+    }
+
+    // MARK: - Fix round 3
+
+    /// H-M1: a later choice that monitors the kept albums' type again ends their clean-up: not offered, and refused.
+    @Test func cleanup_refusedAfterWideningIncludesTheAlbumType() async throws {
+        let fake = await MonitoringLidarr()
+        let changer = fake.changer()
+        _ = try await changer.apply(try await changer.preview(artistId: 20, types: MonitoringLidarr.albumsOnly, keep: Self.nothingKept),
+                                    choice: .keep)
+        _ = try await changer.apply(try await changer.preview(artistId: 20, types: MonitoringLidarr.albumsEPs, keep: Self.nothingKept),
+                                    choice: .keep)
+        let kept = try #require(try await fake.ledger.monitoringBook.kept(artistId: 20))
+        #expect(kept.files.map(\.id) == [104], "the EP's file left the kept set")
+        let cleanup = try await changer.cleanupPreview(artistId: 20, keep: Self.nothingKept)
+        #expect(cleanup.files.map(\.id) == [104])
+        #expect(try await changer.cleanUp(cleanup, keep: Self.nothingKept) == .finished)
+        #expect(fake.deletes == [[104]])
+        #expect(fake.fileIds.contains(103))
+    }
+
+    /// H-M1: Revert ends every clean-up of the artist.
+    @Test func cleanup_notOfferedAfterRevert() async throws {
+        let fake = await MonitoringLidarr()
+        let changer = fake.changer()
+        _ = try await changer.apply(try await changer.preview(artistId: 20, types: MonitoringLidarr.albumsOnly, keep: Self.nothingKept),
+                                    choice: .keep)
+        #expect(await changer.hasKept(artistId: 20))
+        #expect(try await changer.revert(artistId: 20) == .finished)
+        #expect(await changer.hasKept(artistId: 20) == false)
+        #expect(try await changer.cleanupPreview(artistId: 20, keep: Self.nothingKept).rows.isEmpty)
+    }
+
+    /// H-M3: resuming on its own never starts a delete; with a fresh keep list it drops what the owner keeps now.
+    @Test func resume_neverDeletesWithoutAFreshKeepList() async throws {
+        let fake = await MonitoringLidarr()
+        let changer = fake.changer()
+        let preview = try await changer.preview(artistId: 20, types: MonitoringLidarr.albumsOnly, keep: Self.nothingKept)
+        fake.state.withLockUnchecked { $0.loseNextAnswer = "monitor" }
+        #expect(try await changer.apply(preview, choice: .delete, keep: Self.nothingKept) == .pending)
+        #expect(await changer.resume(artistId: 20) == .waitingForKeepList)
+        #expect(fake.deletes.isEmpty, "no delete without a keep list")
+        #expect(await changer.waitsForKeepList(artistId: 20))
+        await changer.resumeAll()
+        #expect(fake.deletes.isEmpty)
+        // "Hit" is a favourite now: it stays.
+        #expect(await changer.resume(artistId: 20, keep: MonitoringKeepList(titles: ["Hit"])) == .finished)
+        #expect(fake.deletes == [[103]])
+        #expect(fake.fileIds.contains(104))
+    }
+
+    /// H-M3: a file no track row names can't be matched against the keep list: it is kept.
+    @Test func kept_aFileWithNoTrackIsKept() async throws {
+        let fake = await MonitoringLidarr()
+        fake.state.withLockUnchecked { $0.untracked = [104] }
+        let changer = fake.changer()
+        let preview = try await changer.preview(artistId: 20, types: MonitoringLidarr.albumsOnly, keep: Self.nothingKept)
+        #expect(preview.excludedFileIds == [104])
+        #expect(try await changer.apply(preview, choice: .delete, keep: Self.nothingKept) == .finished)
+        #expect(fake.deletes == [[103]])
+    }
+
+    /// H-L1: sizes near Int64.max from a server never trap.
+    @Test func preview_bytesNeverTrapsOnHugeSizes() async throws {
+        let fake = await MonitoringLidarr()
+        fake.state.withLockUnchecked { s in for i in s.files.indices { s.files[i].size = Int64.max } }
+        let preview = try await fake.changer().preview(artistId: 20, types: MonitoringLidarr.albumsOnly, keep: Self.nothingKept)
+        #expect(preview.bytes == Int64.max)
+        #expect(ByteTotal.of([Int64.max, Int64.max, -5, 3]) == Int64.max)
+    }
+
+    /// H-L2: the switch turned off mid-change: paused, open, never counted or given up; on again, it finishes.
+    @Test func switchOffMidChangeStaysPending() async throws {
+        let fake = await MonitoringLidarr()
+        let changer = fake.changer()
+        let preview = try await changer.preview(artistId: 20, types: MonitoringLidarr.albumsOnly, keep: Self.nothingKept)
+        fake.state.withLockUnchecked { $0.switchOffAtEditor = true }
+        #expect(try await changer.apply(preview, choice: .keep) == .paused)
+        let open = try #require(try await fake.ledger.monitoringBook.open(artistId: 20).first)
+        #expect(open.failures == 0 && open.step != .abandoned)
+        #expect(await changer.resume(artistId: 20) == .paused)
+        fake.state.withLockUnchecked { $0.switchOffAtEditor = false }
+        await fake.gate.setMonitoringChangesEnabled(true)
+        #expect(await changer.resume(artistId: 20) == .finished)
+    }
+
+    /// H-L3: one file of a batch fails its check: it is kept (recorded), the rest are deleted.
+    @Test func cleanup_aRefusedFileIsKeptAndTheRestGo() async throws {
+        let fake = await MonitoringLidarr()
+        let changer = fake.changer()
+        let preview = try await changer.preview(artistId: 20, types: MonitoringLidarr.albumsOnly, keep: Self.nothingKept)
+        // 104 changes size after the owner confirmed: the gate refuses it.
+        fake.state.withLockUnchecked { s in if let i = s.files.firstIndex(where: { $0.id == 104 }) { s.files[i].size = 301 } }
+        #expect(try await changer.apply(preview, choice: .delete, keep: Self.nothingKept) == .finished)
+        #expect(Set(fake.deletes.flatMap { $0 }) == [103])
+        #expect(fake.fileIds.contains(104))
+        let done = try #require(try await fake.ledger.monitoringBook.intents.first { $0.kind == .unmatchedCleanup })
+        #expect(done.excludedFileIds.contains(104) && done.step == .done, "recorded as kept, not dropped silently")
     }
 
     // MARK: - Fix round 2

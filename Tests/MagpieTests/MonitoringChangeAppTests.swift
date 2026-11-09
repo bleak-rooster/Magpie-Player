@@ -39,7 +39,7 @@ private let lidarrScope = LidarrClient(base: lidarrBase, apiKey: "key", transpor
         // §5: no service named outside Settings, and nothing about where songs come from.
         for text in [Copy.change, Copy.cleanUp, Copy.prompt(albums: 2, songs: 3, bytes: 10), Copy.cleanUpMessage(count: 2, artist: "A"),
                      Copy.keptFavourite, Copy.keptSaved, Copy.done, Copy.pending, Copy.abandoned, Copy.revert, Copy.revertMessage,
-                     Copy.stoppedPartway, Copy.stillFinishing, Copy.willBeRemoved] {
+                     Copy.stoppedPartway, Copy.stillFinishing, Copy.willBeRemoved, Copy.paused] {
             for word in ["Lidarr", "Navidrome", "Soulseek", "Aurral"] { #expect(!text.contains(word), "\(text)") }
         }
     }

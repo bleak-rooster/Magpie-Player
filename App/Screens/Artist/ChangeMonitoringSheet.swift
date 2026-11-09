@@ -29,6 +29,8 @@ enum MonitoringCopy {
     static let abandoned = "This change stopped partway, so nothing more was sent. What it did so far stays."
     static let stoppedPartway = "A change to what\u{2019}s monitored stopped partway. Nothing more was sent."
     static let stillFinishing = "A change to what\u{2019}s monitored is still finishing."
+    /// Fix round 3 H-L2: a change waits while a switch is off; it carries on when it's on again.
+    static let paused = "Paused while changes are switched off. It carries on when they\u{2019}re on again."
     /// Fix round 1 M4: a song the clean-up removes, in words as well as the symbol.
     static let willBeRemoved = "Will be removed"
     static let nothingToChange = "That\u{2019}s what\u{2019}s monitored already."
@@ -86,6 +88,8 @@ enum MonitoringCopy {
         case .finished: (done, "checkmark.circle")
         case .pending: (pending, "clock")
         case .abandoned: (abandoned, "exclamationmark.circle")
+        case .paused: (paused, "pause.circle")
+        case .waitingForKeepList: (pending, "clock")
         }
     }
 
@@ -138,26 +142,33 @@ enum ArtistMonitoringPresentation {
     enum Notice: Equatable {
         /// Still finishing (Lidarr's refresh not confirmed yet, an answer lost…).
         case unfinished
+        /// Fix round 3 H-L2: waiting while a switch is off.
+        case paused
         /// Stopped partway; `canRevert`: "Put back how it was" is offered.
         case stopped(canRevert: Bool)
     }
 
-    func refresh(_ model: AppModel, lidarrId: Int?) async {
+    func refresh(_ model: AppModel, lidarrId: Int?, name: String) async {
         guard let lidarrId, model.monitoringChangesAllowed, model.changesAllowed, !model.isOffline,
               let changer = model.monitoringChanger else {
             hasKept = false
             notice = nil
             return
         }
-        // Fix round 1 I4: what resuming did is shown, never dropped.
-        let outcome = await changer.resume(artistId: lidarrId)
+        // Fix round 1 I4: what resuming did is shown, never dropped. Fix round 3 H-M3: a delete carries on only with the
+        // owner's keep list read now (favourites, playlists, the phone); unreadable, it keeps waiting.
+        var outcome = await changer.resume(artistId: lidarrId)
+        if outcome == .waitingForKeepList, let keep = try? await model.monitoringKeepLists(artist: name).all {
+            outcome = await changer.resume(artistId: lidarrId, keep: keep)
+        }
         hasKept = await changer.hasKept(artistId: lidarrId)
         let now = try? await changer.current(artistId: lidarrId)
         notice = Self.notice(outcome: outcome, current: now)
     }
 
     static func notice(outcome: MonitoringChanger.Outcome?, current: MonitoringCurrent?) -> Notice? {
-        if outcome == .pending || current?.busy == true { return .unfinished }
+        if outcome == .paused { return .paused }
+        if outcome == .pending || outcome == .waitingForKeepList || current?.busy == true { return .unfinished }
         if outcome == .abandoned || current?.stoppedPartway == true { return .stopped(canRevert: current?.canRevert == true) }
         return nil
     }
@@ -175,6 +186,8 @@ private struct ArtistMonitoringNotice: View {
                 switch notice {
                 case .unfinished:
                     Label(MonitoringCopy.stillFinishing, systemImage: "clock")
+                case .paused:
+                    Label(MonitoringCopy.paused, systemImage: "pause.circle")
                 case .stopped(let canRevert):
                     Label(MonitoringCopy.stoppedPartway, systemImage: "exclamationmark.circle")
                     if canRevert {
@@ -206,7 +219,7 @@ struct ArtistMonitoringMenuItems: View {
             monitoringAllowed: model.monitoringChangesAllowed, state: line?.state, hasKept: state.hasKept)
         if items.contains(.change) {
             Button(MonitoringCopy.change, systemImage: "slider.horizontal.3") { state.showsChange = true }
-                .accessibilityIdentifier("artist-change-monitoring")
+                .accessibilityIdentifier("artist-monitoring-change")
         }
         if items.contains(.cleanUp) {
             Button(MonitoringCopy.cleanUp, systemImage: "trash") { state.showsCleanUp = true }
@@ -231,18 +244,18 @@ private struct ArtistMonitoring: ViewModifier {
         let id = ArtistMonitoringPresentation.lidarrId(line?.state)
         content
             .safeAreaInset(edge: .bottom) { ArtistMonitoringNotice(state: state) }
-            .task(id: "\(id ?? 0)-\(model.monitoringChangesAllowed)") { await state.refresh(model, lidarrId: id) }
+            .task(id: "\(id ?? 0)-\(model.monitoringChangesAllowed)") { await state.refresh(model, lidarrId: id, name: line?.name ?? "") }
             .sheet(isPresented: $state.showsChange) {
                 if let id, let line {
                     ChangeMonitoringSheet(lidarrId: id, artistName: line.name) {
-                        Task { await state.refresh(model, lidarrId: id); await line.refresh() }
+                        Task { await state.refresh(model, lidarrId: id, name: line?.name ?? ""); await line.refresh() }
                     }
                 }
             }
             .sheet(isPresented: $state.showsCleanUp) {
                 if let id, let line {
                     CleanUpUnmatchedSheet(lidarrId: id, artistName: line.name) {
-                        Task { await state.refresh(model, lidarrId: id) }
+                        Task { await state.refresh(model, lidarrId: id, name: line?.name ?? "") }
                     }
                 }
             }
@@ -267,6 +280,8 @@ struct ChangeMonitoringSheet: View {
     @State private var singles = false
     @State private var working = false
     @State private var preview: MonitoringPreview?
+    /// Fix round 3 H-M3: the keep list read for this answer; Delete them deletes only with it.
+    @State private var keepUsed: MonitoringKeepList?
     @State private var asksDeleteOrKeep = false
     @State private var confirmsDelete = false
     @State private var confirmsRevert = false
@@ -395,6 +410,7 @@ struct ChangeMonitoringSheet: View {
             if p.asksDeleteOrKeep {
                 // What the owner keeps is read only now, when a delete could be offered (when in doubt, keep).
                 let keep = try await model.monitoringKeepLists(artist: artistName).all
+                keepUsed = keep
                 p = try await changer.preview(artistId: lidarrId, types: chosen, keep: keep)
                 preview = p
                 asksDeleteOrKeep = true
@@ -411,7 +427,7 @@ struct ChangeMonitoringSheet: View {
         working = true
         defer { working = false; preview = nil }
         do {
-            result = MonitoringCopy.outcome(try await changer.apply(p, choice: choice))
+            result = MonitoringCopy.outcome(try await changer.apply(p, choice: choice, keep: keepUsed))
             onChanged()
             await load()
         } catch {

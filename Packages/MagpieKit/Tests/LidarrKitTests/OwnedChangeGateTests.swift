@@ -134,6 +134,13 @@ import MagpieTestSupport
             let intent = MonitoringIntent(kind: .unmatchedCleanup, artistId: 20, artistMbid: OwnedChangeGateTests.ownerMBID,
                                           previousProfileId: 5, files: named, excludedFileIds: excluded, createdAt: Date())
             try await ledger.saveIntent(intent)
+            // Fix round 3 H-M1: the clean-up's albums are left out by the newest finished change the artist is on.
+            var change = MonitoringIntent(kind: .monitoringChange, artistId: 20, artistMbid: OwnedChangeGateTests.ownerMBID,
+                                          previousProfileId: 5, targetProfileId: 30, targetTypes: OwnedChangeGateTests.albumsOnly,
+                                          createdAt: Date().addingTimeInterval(-60))
+            change.step = .done
+            try await ledger.saveIntent(change)
+            state.withLock { $0.artistProfile = 30 }
             if kept {
                 try await ledger.setKept(artistId: 20, UnmonitoredKept(artistId: 20, artistMbid: OwnedChangeGateTests.ownerMBID,
                                                                        albumIds: Array(Set(named.map(\.albumId))), files: named,
@@ -400,6 +407,33 @@ import MagpieTestSupport
         try await fake.ledger.saveIntent(change)
         try await fake.cleanup(files: [OwnedFile(id: 200, albumId: 2, size: 1000)], excluded: [], kept: false)
         #expect(Self.isRefused(await fake.deleting(await fake.gate(), [200])))
+        #expect(fake.writes.isEmpty)
+    }
+
+    /// Fix round 3 H-M1: a kept file whose album type the artist's current profile includes is never deleted.
+    @Test func cleanup_refusedForAKeptFileWhoseAlbumTypeTheCurrentProfileIncludes() async throws {
+        let fake = Fake()
+        try await fake.cleanup()
+        var wider = MonitoringIntent(kind: .monitoringChange, artistId: 20, artistMbid: Self.ownerMBID, previousProfileId: 5,
+                                     targetProfileId: 32, targetTypes: ReleaseTypes(albums: true, eps: true, singles: false),
+                                     createdAt: Date())
+        wider.step = .done
+        try await fake.ledger.saveIntent(wider)
+        fake.state.withLock { $0.artistProfile = 32 }
+        #expect(Self.isRefused(await fake.deleting(await fake.gate(), [200])), "album 2 is an EP: Albums + EPs includes it")
+        // And on a profile no finished change set (the owner's, or after Revert): refused too.
+        fake.state.withLock { $0.artistProfile = 5 }
+        #expect(Self.isRefused(await fake.deleting(await fake.gate(), [200])))
+        #expect(fake.writes.isEmpty)
+    }
+
+    /// Fix round 3 H-L5: the clean-up check is for the intent the gate was asked about, and no other.
+    @Test func cleanup_onlyForTheIntentNamed() async throws {
+        let fake = Fake()
+        try await fake.cleanup()
+        let gate = await fake.gate()
+        let wrong = await Self.outcome { _ = try await gate.sendConfined("DELETE", "trackfile/bulk", body: Self.delete([200]), owned: .cleanup, intentId: UUID()) }
+        #expect(Self.isRefused(wrong))
         #expect(fake.writes.isEmpty)
     }
 

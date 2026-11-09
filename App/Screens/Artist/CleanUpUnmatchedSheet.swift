@@ -15,6 +15,8 @@ struct CleanUpUnmatchedSheet: View {
 
     @State private var preview: CleanupPreview?
     @State private var favourites = MonitoringKeepList()
+    /// Fix round 3 H-M3: the keep list read for this clean-up (the delete re-checks against it).
+    @State private var keepAll = MonitoringKeepList()
     @State private var loadError: String?
     @State private var working = false
     @State private var confirms = false
@@ -91,6 +93,7 @@ struct CleanUpUnmatchedSheet: View {
         do {
             let keep = try await model.monitoringKeepLists(artist: artistName)
             favourites = keep.favourites
+            keepAll = keep.all
             preview = try await changer.cleanupPreview(artistId: lidarrId, keep: keep.all)
         } catch {
             loadError = MonitoringCopy.message(for: error)
@@ -102,7 +105,7 @@ struct CleanUpUnmatchedSheet: View {
         working = true
         defer { working = false }
         do {
-            result = MonitoringCopy.outcome(try await changer.cleanUp(p))
+            result = MonitoringCopy.outcome(try await changer.cleanUp(p, keep: keepAll))
             onFinished()
         } catch {
             result = (MonitoringCopy.message(for: error), "exclamationmark.circle")

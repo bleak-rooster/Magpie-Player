@@ -355,6 +355,23 @@ public actor Ledger {
         }
     }
 
+    /// Fix round 3 H-L6: at a disconnect, every part of the monitoring book that isn't `instance`'s (the Lidarr being
+    /// disconnected, which may come back) goes: a Lidarr no longer connected never steers a write.
+    public static func forgetMonitoring(otherThan instance: String?, in directory: URL = URL.applicationSupportDirectory) {
+        let url = monitoringURL(beside: defaultURL(in: directory))
+        fileLock.withLock {
+            guard FileManager.default.fileExists(atPath: url.path),
+                  let all = try? LocalFile.load(MonitoringBook.self, from: url, fallback: MonitoringBook(), category: "ledger") else { return }
+            let kept = MonitoringBook(intents: all.intents.filter { $0.instance == instance }, kept: all.kept.filter { $0.instance == instance })
+            guard kept != all else { return }
+            if kept.intents.isEmpty, kept.kept.isEmpty {
+                try? FileManager.default.removeItem(at: url)
+            } else {
+                try? LocalFile.save(kept, to: url)
+            }
+        }
+    }
+
     /// `lidarr-ledger-monitoring.json` beside a ledger file.
     static func monitoringURL(beside ledger: URL) -> URL {
         ledger.deletingLastPathComponent().appending(path: ledger.deletingPathExtension().lastPathComponent + "-monitoring.json")

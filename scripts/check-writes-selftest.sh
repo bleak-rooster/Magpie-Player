@@ -133,6 +133,12 @@ placed=(
   "$rq_src/RequestRunner+NotForMe.swift|_ = try await lidarrWrite(\"DELETE\", \"artist/1?deleteFiles=true\") // gate.send(\""
   "App/AppModel+Monitoring.swift|try Data().write(to: URL(fileURLWithPath: ledger.monitoringBookKey))"
   "App/AppModel+Monitoring.swift|let book = try JSONDecoder().decode(MonitoringBook.self, from: data)"
+  # R24H fix round 3 N1: a confined send split across lines (V1), a gate kept under another name (V2), `gate` and
+  # `.send(` on two lines (V4); H-M2: the reviewer's probe writing the book beside the ledger.
+  $'Packages/MagpieKit/Sources/Requests/RequestRunner+Trial.swift|_ = try await gate.send("DELETE", "trackfile/bulk", body: TrackFileIdsBody(trackFileIds: other), confinedAs\n        : .trialDelete)'
+  $'Packages/MagpieKit/Sources/Requests/PlantedAlias.swift|let g = gate\n    _ = try await g.send(verb, path, body: nil)'
+  $'Packages/MagpieKit/Sources/Requests/MonitoringChange.swift|_ = try await gate\n        .send(verb, path, body: nil)'
+  $'App/AppModel+Monitoring.swift|var book = try await ledger.monitoringBook; book.intents[0].files.append(OwnedFile(id: 9, albumId: 3, size: 1))\n    let name = Ledger.defaultURL().path.replacingOccurrences(of: ".json", with: "-monitoring" + ".json"); try JSONEncoder().encode(book).write(to: URL(filePath: name))'
 )
 for w in "${placed[@]}"; do
   file="$work/${w%%|*}" code="${w#*|}"

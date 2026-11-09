@@ -116,6 +116,23 @@ clean_lines() {
             $t =~ s{\s+//[^"]*$}{}; $t =~ s/^\s+|\s+$//g; print "$f:$n:$t\n"'
 }
 
+# R24H fix round 3 N1: the Lidarr checks read a normalised copy of the product tree, in which a line that starts with
+# `.` or `:` is joined to the line before it (so `gate` / `.send(` or `confinedAs` / `: .trialDelete` across two lines
+# reads as one). `ngrep` greps it and answers with the product's own paths.
+norm_root=""
+ngrep() {
+  if [ -z "$norm_root" ]; then
+    norm_root=$(mktemp -d "${TMPDIR:-/tmp}/check-writes-norm.XXXXXX")
+    while IFS= read -r f; do
+      mkdir -p "$norm_root/$(dirname "$f")"
+      perl -0777 -pe 's/\n[ \t]*(?=[.:])/ /g' "$f" > "$norm_root/$f"
+    done < <(find "${product[@]}" -name '*.swift')
+  fi
+  (cd "$norm_root" && grep -rnE --include='*.swift' "$@" "${product[@]}") || true
+}
+cleanup_norm() { [ -n "$norm_root" ] && rm -rf "$norm_root"; return 0; }
+trap cleanup_norm EXIT
+
 method_sets() {
   grep -rnE --include='*.swift' 'httpMethod[[:space:]]*=[^=]' "$@" \
     | grep -vE 'httpMethod[[:space:]]*=[[:space:]]*"(GET|HEAD)"' || true
@@ -200,7 +217,7 @@ if [ -z "${G1_SRC:-}" ]; then
     "$restarter|_ = try await gate.send(\"DELETE\", \"queue/\\(queueId)?\\(Self.queueRemoval)\", body: nil, confinedAs: .queueRestartAny, allowForeign: true)"
     "$restarter|_ = try await gate.send(\"POST\", \"command\", body: SearchBody(name: \"AlbumSearch\", albumIds: rest), confinedAs: .restartSearch)"
   )
-  shaped=$(grep -rnE --include='*.swift' 'confinedAs[[:space:]]*:' "${product[@]}" | grep -v "^$gate:" | clean_lines || true)
+  shaped=$(ngrep 'confinedAs[[:space:]]*:' | grep -v "^$gate:" | clean_lines || true)
   while IFS= read -r s; do
     [ -n "$s" ] || continue
     file="${s%%:*}" rest="${s#*:}"; text="${rest#*:}"
@@ -218,7 +235,7 @@ if [ -z "${G1_SRC:-}" ]; then
     "$monitoringfile|_ = try await gate.performOwned(intentId: job.id, step: .search)"
     "$monitoringfile|_ = try await gate.performCleanup(intentId: job.id)"
   )
-  owned_calls=$(grep -rnE --include='*.swift' '\b(performOwned|performCleanup|sendConfined|OwnedShape)\b' "${product[@]}" | grep -v "^$gate:" | clean_lines || true)
+  owned_calls=$(ngrep '\b(performOwned|performCleanup|sendConfined|OwnedShape)\b' | grep -v "^$gate:" | clean_lines || true)
   while IFS= read -r s; do
     [ -n "$s" ] || continue
     file="${s%%:*}" rest="${s#*:}"; text="${rest#*:}"
@@ -227,18 +244,40 @@ if [ -z "${G1_SRC:-}" ]; then
     [ "$ok" = 1 ] || { echo "G1: an owned-artist write named outside its pinned lines: $file:${rest%%:*}" >&2; bad=1; }
   done <<< "$owned_calls"
   # 2 + 5: at most one write call per line anywhere, and never a write function taken as a value.
-  multi=$(grep -rnE --include='*.swift' 'gate\.(send|performOwned|performCleanup)[[:space:]]*\(.*gate\.(send|performOwned|performCleanup)[[:space:]]*\(' \
-            "${product[@]}" | grep -v "^$gate:" | clean_lines | grep -E 'gate\.(send|performOwned|performCleanup)[[:space:]]*\(.*gate\.(send|performOwned|performCleanup)[[:space:]]*\(' || true)
+  multi=$(ngrep 'gate[[:space:]]*\.[[:space:]]*(send|performOwned|performCleanup)[[:space:]]*\(.*gate[[:space:]]*\.[[:space:]]*(send|performOwned|performCleanup)[[:space:]]*\(' \
+            | grep -v "^$gate:" | clean_lines | grep -E 'gate\.(send|performOwned|performCleanup)[[:space:]]*\(.*gate\.(send|performOwned|performCleanup)[[:space:]]*\(' || true)
   while IFS= read -r s; do
     [ -n "$s" ] || continue
     echo "G1: more than one gate write on one line: ${s%%:*}" >&2; bad=1
   done <<< "$multi"
-  refs=$(grep -rnE --include='*.swift' 'gate\.(send|performOwned|performCleanup)' "${product[@]}" | grep -v "^$gate:" | clean_lines |
+  refs=$(ngrep 'gate\.(send|performOwned|performCleanup)' | grep -v "^$gate:" | clean_lines |
            grep -E '=[[:space:]]*gate\.(send|performOwned|performCleanup)\b|gate\.(send|performOwned|performCleanup)([^(a-zA-Z]|$)' || true)
   while IFS= read -r s; do
     [ -n "$s" ] || continue
     echo "G1: a gate write taken as a value, not called: ${s%%:*}" >&2; bad=1
   done <<< "$refs"
+  # N1 (V4, V2): a gate write split from `gate` (`gate` then `.send(` on the next line), and a write gate bound to any
+  # name but `gate` (`let g = gate`, a `g: LidarrWriteGate` parameter, a capture `[g = gate]`, a new gate kept as `g`):
+  # every write must read `gate.send(` / `gate.performOwned(` / `gate.performCleanup(` on one line.
+  split=$(ngrep 'gate[[:space:]]+\.[[:space:]]*[A-Za-z]|gate\.[[:space:]]+[A-Za-z]' | grep -v "^$gate:" | clean_lines |
+            grep -E 'gate[[:space:]]+\.[[:space:]]*[A-Za-z]|gate\.[[:space:]]+[A-Za-z]' || true)
+  while IFS= read -r s; do
+    [ -n "$s" ] || continue
+    echo "G1: a gate write split across lines or spaced: ${s%%:*}" >&2; bad=1
+  done <<< "$split"
+  gate_names=$(ngrep 'LidarrWriteGate|gate' | grep -v "^$gate:" | clean_lines | perl -ne '
+      my ($f, $n, $t) = /^([^:]+):(\d+):(.*)$/ or next;
+      next if "$f|$t" eq "App/AppModel+Requests.swift|let reader = gate ?? LidarrWriteGate(";
+      my @bad;
+      push @bad, $1 while $t =~ /\b(?:let|var)\s+(\w+)\s*(?::[^=]*)?=\s*(?:self\.)?gate\b(?!\s*\.)/g;
+      push @bad, $1 while $t =~ /\b(?:let|var)\s+(\w+)\s*(?::[^=]*)?=[^;]*\bLidarrWriteGate\s*\(/g;
+      push @bad, $1 while $t =~ /\b(\w+)\??\s*:\s*\[?\s*LidarrWriteGate\b(?!\s*\.)/g;
+      push @bad, $1 while $t =~ /\[\s*(?:weak\s+|unowned\s+)?(\w+)\s*=\s*(?:self\.)?gate\b/g;
+      print "$f:$n:$_\n" for grep { $_ ne "gate" } @bad;' || true)
+  while IFS= read -r s; do
+    [ -n "$s" ] || continue
+    echo "G1: a write gate bound to another name (${s##*:}): ${s%%:*}" >&2; bad=1
+  done <<< "$gate_names"
   grep -qF 'static let queueRemoval = "removeFromClient=true&blocklist=true&skipRedownload=true"' "$restarter" ||
     { echo "G1: $restarter: queueRemoval isn't exactly removeFromClient=true&blocklist=true&skipRedownload=true" >&2; bad=1; }
   # Round 13 item 6 (D63; Z4 review I1): every `allowForeign:` / `includeForeign:` ARGUMENT in product code, whatever
@@ -337,8 +376,13 @@ if [ -z "${G1_SRC:-}" ]; then
   lk="Packages/MagpieKit/Sources/LidarrKit"
   owned_pins=(
     "$lk/WriteGate.swift|            guard monitoringChangesEnabled else { throw refused(target, \"changing what Lidarr monitors is off\") }"
-    "$lk/WriteGate.swift|            guard case .trackFileDelete(let ids)? = confined, target.key == [\"trackfile\", \"bulk\"] else {"
-    "$lk/WriteGate.swift|            default: throw refused(target, \"ownedChange is a profile, a refresh, a monitor or a search only\")"
+    "$lk/WriteGate.swift|            guard case .trackFileDelete(let ids)? = confined, target.key == [\"trackfile\", \"bulk\"], let ownedIntent else {"
+    "$lk/WriteGate.swift|            default: throw refused(target, \"an owned change (performOwned) is a profile, a refresh, a monitor or a search only\")"
+    # R24H fix round 3: H-M1 (the current profile's types), H-L5 (that very intent), the H-L4 batch.
+    "$lk/WriteConfinement+Owned.swift|        guard let current, current.targetProfileId == artist.metadataProfileId, let types = current.targetTypes else {"
+    "$lk/WriteConfinement+Owned.swift|            guard !types.includes(albumType: album.albumType, secondaryTypes: album.secondaryTypes) else {"
+    "$lk/WriteConfinement+Owned.swift|        guard open.count == 1, let intent = open.first, intent.id == intentId else {"
+    "$lk/WriteGate.swift|            guard intent.kind == .monitoringChange, (1...WriteConfinement.maxCleanupFiles).contains(batch.count),"
     "$lk/WriteConfinement.swift|        if let owned = await ownedCheck(write, lidarr: lidarr) { return owned }"
     "$lk/WriteConfinement+Owned.swift|    public static let maxCleanupFiles = 50"
     "$lk/WriteConfinement+Owned.swift|        guard Set(body.keys.map { \$0.lowercased() }) == [\"artistids\", \"metadataprofileid\"], body.count == 2,"
@@ -379,8 +423,16 @@ if [ -z "${G1_SRC:-}" ]; then
   # R24H fix round 1 I6: any mention (a trailing closure, a spaced call), the book's file, URL or types made anywhere
   # else; comment lines don't count.
   # Fix round 2 S1: also the book's key, its type as a value (`MonitoringBook.self`) or a declared type.
-  book_hits=$(grep -rnE --include='*.swift' '\b(saveIntent|updateMonitoring|setKept|monitoringURL|monitoringBookKey)\b|\b(MonitoringBook|MonitoringIntent)[[:space:]]*\(|-monitoring\.json|MonitoringBook\.self|:[[:space:]]*MonitoringBook\b' \
-                "${product[@]}" | clean_lines | cut -d: -f1 | sort -u || true)
+  book_hits=$(ngrep '\b(saveIntent|updateMonitoring|setKept|monitoringURL|monitoringBookKey)\b|\b(MonitoringBook|MonitoringIntent)[[:space:]]*\(|-monitoring\.json|MonitoringBook\.self|:[[:space:]]*MonitoringBook\b|\.monitoringBook\b|monitoring"|"-monitoring|\bforgetMonitoring\b' \
+                | clean_lines | grep -E '^[^:]+:[0-9]+:.*(\b(saveIntent|updateMonitoring|setKept|monitoringURL|monitoringBookKey)\b|\b(MonitoringBook|MonitoringIntent)[[:space:]]*\(|-monitoring\.json|MonitoringBook\.self|:[[:space:]]*MonitoringBook\b|\.monitoringBook\b|monitoring"|"-monitoring)' \
+                | cut -d: -f1 | sort -u || true)
+  # Fix round 3 H-M2: the ledger's file is named only where the ledger is made.
+  for f in $(ngrep 'Ledger[[:space:]]*\.[[:space:]]*defaultURL\b' | clean_lines | grep -E 'Ledger[[:space:]]*\.[[:space:]]*defaultURL' | cut -d: -f1 | sort -u || true); do
+    case "$f" in
+      "$lk/Ledger.swift"|App/AppModel+Requests.swift) ;;
+      *) echo "G1: the ledger's file named outside its owners: $f" >&2; bad=1 ;;
+    esac
+  done
   for f in $book_hits; do
     case "$f" in
       "$lk/Ledger.swift"|Packages/MagpieKit/Sources/Requests/MonitoringChange.swift|"$lk/WriteGate.swift"|"$lk/WriteConfinement+Owned.swift"|"$lk/MonitoringIntent.swift") ;;
@@ -843,7 +895,7 @@ if [ -z "${G1_SRC:-}" ]; then
   rq="Packages/MagpieKit/Sources/Requests"
   # R24H fix round 2: the line without its trailing comment, and every `gate.send(` on it (one per line is enforced
   # above, but each is checked in case).
-  sends=$(grep -rnE --include='*.swift' 'gate\.send[[:space:]]*\(' "${product[@]}" | grep -v "^$gate:" | clean_lines || true)
+  sends=$(ngrep 'gate\.send[[:space:]]*\(' | grep -v "^$gate:" | clean_lines || true)
   while IFS= read -r s0; do
     [ -n "$s0" ] || continue
     file="${s0%%:*}" rest="${s0#*:}"; line="${rest%%:*}" text0="${rest#*:}"

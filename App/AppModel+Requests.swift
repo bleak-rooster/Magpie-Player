@@ -146,7 +146,7 @@ extension AppModel {
         Task { await runner.useSlskd(slskd) }
         singlesSwitcher = SinglesSwitcher(lidarr: client, gate: gate, store: singlesStore)
         Task { [weak self] in await self?.resumeSinglesSwitches(force: true) }   // D146: an interrupted switch, finished or rolled back
-        Task { [weak self] in await self?.monitoringChanger?.resumeAll() }   // R24H fix round 1 I4: an unfinished monitoring change
+        Task { [weak self] in if self?.isForeground == true { await self?.monitoringChanger?.resumeAll() } }   // R24H I4; D-L2: not in a background pass
         let stallLimit = stallLimit.seconds
         Task { await runner.setStallLimit(stallLimit) }   // R17
         runnerTasks.append(Task { [weak self] in

@@ -8,7 +8,7 @@ import os
 // in scope." D237 (the change), D238 (only Magpie's profiles), D239 (more: the existing shapes), D240 (reducing asks,
 // Keep by default), D241 (the kept set), D242 (the clean-up), D243 (the gate's proofs), D244 (Revert).
 //
-// Every write is named `ConfinedShape.ownedChange` or `.unmatchedCleanup`; the gate lets it through only as the artist's
+// Every write is `gate.performOwned` or `gate.performCleanup` (`OwnedShape`, built by the gate); the gate lets it through only as the artist's
 // open `MonitoringIntent` in the ledger says (saved before the first write, each step saved before its write, M6), proven
 // from its own fresh reads. After a lost answer, Lidarr is read before anything is sent again.
 
@@ -111,7 +111,7 @@ public struct MonitoringPreview: Sendable, Equatable {
     public var deletable: [OwnedFile] { files.filter { !excludedFileIds.contains($0.id) } }
     public var albumCount: Int { unmonitorAlbumIds.count }
     public var songCount: Int { files.count }
-    public var bytes: Int64 { files.reduce(0) { $0 + max(0, $1.size) } }
+    public var bytes: Int64 { ByteTotal.of(files.map(\.size)) }   // fix round 3 H-L1: never traps
     /// Something stops being monitored.
     public var reduces: Bool { !unmonitorAlbumIds.isEmpty }
     /// Files would be left behind: the owner is asked to delete or keep them first.
@@ -141,7 +141,7 @@ public struct CleanupPreview: Sendable, Equatable {
 
     public var files: [OwnedFile] { rows.filter { !$0.kept }.map(\.file) }
     public var excludedFileIds: [Int] { rows.filter(\.kept).map(\.file.id) }
-    public var bytes: Int64 { files.reduce(0) { $0 + max(0, $1.size) } }
+    public var bytes: Int64 { ByteTotal.of(files.map(\.size)) }   // fix round 3 H-L1: never traps
 }
 
 public actor MonitoringChanger {
@@ -151,6 +151,12 @@ public actor MonitoringChanger {
         case pending
         /// The gate refused (something changed since the owner confirmed) or it kept failing: nothing more is sent.
         case abandoned
+        /// Fix round 3 H-L2: "Allow Magpie to change your library" or "Let Magpie change what Lidarr monitors" is off (or
+        /// the session ended): the change waits, open, and carries on when they're on again. Never counted, never given up.
+        case paused
+        /// Fix round 3 H-M3: a delete waits for a fresh list of what the owner keeps (favourites, playlists, the phone);
+        /// resuming on its own never deletes.
+        case waitingForKeepList
     }
 
     let lidarr: LidarrClient
@@ -287,7 +293,7 @@ public actor MonitoringChanger {
         let owned = shown.compactMap { f in f.albumId.map { OwnedFile(id: f.id, albumId: $0, size: f.size ?? -1) } }
             .sorted { $0.id < $1.id }
         var excluded = owned.filter { $0.size < 0 }.map(\.id)   // a size Lidarr doesn't say can't be checked: kept
-        if !owned.isEmpty, !keep.isEmpty {
+        if !owned.isEmpty {
             let tracks = try await reading { try await lidarr.tracks(artistId: artistId) }
             excluded += Self.kept(owned, tracks: tracks, albums: albums, keep: keep)
         }
@@ -299,12 +305,12 @@ public actor MonitoringChanger {
                                  files: owned, excludedFileIds: Array(Set(excluded)).sorted())
     }
 
-    /// The files whose song the owner keeps.
+    /// The files whose song the owner keeps. Fix round 3 H-M3: a file no track row names can't be matched, so it is kept.
     static func kept(_ files: [OwnedFile], tracks: [LidarrTrack], albums: [LidarrAlbum], keep: MonitoringKeepList) -> [Int] {
         files.filter { f in
             let album = albums.first { $0.id == f.albumId }?.title
             let songs = tracks.filter { $0.trackFileId == f.id }
-            return keep.keeps(recording: nil, title: nil, album: album)
+            return songs.isEmpty || keep.keeps(recording: nil, title: nil, album: album)
                 || songs.contains { keep.keeps(recording: $0.foreignRecordingId, title: $0.title, album: nil) }
         }.map(\.id)
     }
@@ -327,7 +333,9 @@ public actor MonitoringChanger {
 
     /// The owner's answer: `preview` as shown, and on reducing his choice. Lidarr is read again first (a change since
     /// he looked: `stale`, nothing sent); the intent is saved before the first write.
-    public func apply(_ preview: MonitoringPreview, choice: ReduceChoice) async throws -> Outcome {
+    /// `keep`: what the owner keeps, read fresh by the app for this answer (fix round 3 H-M3): Delete them deletes only
+    /// with it; without, the change finishes and its delete waits (`waitingForKeepList`).
+    public func apply(_ preview: MonitoringPreview, choice: ReduceChoice, keep: MonitoringKeepList? = nil) async throws -> Outcome {
         try await exclusive(preview.artistId) {
             try await writable()
             guard try await book().open(artistId: preview.artistId).isEmpty else { throw MonitoringChangeError.busy }
@@ -355,7 +363,7 @@ public actor MonitoringChanger {
             intent.sending = .profileCreated
             do { try await ledger.saveIntent(intent) } catch { throw MonitoringChangeError.notSaved }
             await gate.note(Self.note(intent, from: preview.currentProfileId, instance: lidarr.instanceScope))
-            return await advance(intent)
+            return await advance(intent, keep: keep)
         }
     }
 
@@ -365,18 +373,20 @@ public actor MonitoringChanger {
             + " unmonitor \(i.unmonitorAlbumIds.count) albums \(i.keepFiles ? "keep" : "remove") \(i.files.count) files instance \(instance)"
     }
 
-    /// Every open intent of the artist, carried on from the ledger. Nil when there is none; pending while changes are off.
-    public func resume(artistId: Int) async -> Outcome? {
+    /// Every open intent of the artist, carried on from the ledger. Nil when there is none; paused while changes are off.
+    /// Fix round 3 H-M3: a delete (Delete them's or a clean-up's) carries on only with `keep`, the owner's keep list read
+    /// fresh by the app; without it, it waits (`waitingForKeepList`).
+    public func resume(artistId: Int, keep: MonitoringKeepList? = nil) async -> Outcome? {
         do {
             return try await exclusive(artistId) { () async -> Outcome? in
             guard let open = try? await ledger.monitoringBook.open(artistId: artistId), !open.isEmpty else { return nil }
-            guard (try? await writable()) != nil else { return .pending }
+            guard (try? await writable()) != nil else { return .paused }
             var last: Outcome?
             for intent in open.sorted(by: { $0.createdAt < $1.createdAt }) {
                 // Fresh from the ledger: an earlier one may have just made this one.
                 guard let fresh = try? await ledger.monitoringBook.intents.first(where: { $0.id == intent.id }), fresh.isOpen else { continue }
-                last = await advance(fresh)
-                if last == .pending { break }
+                last = await advance(fresh, keep: keep)
+                if last != .finished { break }
             }
             return last
             }
@@ -385,7 +395,14 @@ public actor MonitoringChanger {
         }
     }
 
-    /// Every artist with an open intent.
+    /// A delete of the artist waits for a fresh keep list (the app reads one and resumes with it).
+    public func waitsForKeepList(artistId: Int) async -> Bool {
+        (try? await ledger.monitoringBook.open(artistId: artistId))?.contains {
+            $0.kind == .unmatchedCleanup || ($0.kind == .monitoringChange && !$0.keepFiles)
+        } ?? false
+    }
+
+    /// Every artist with an open intent (no keep list: deletes wait).
     public func resumeAll() async {
         guard let book = try? await ledger.monitoringBook else { return }
         for artistId in Set(book.intents.filter(\.isOpen).map(\.artistId)).sorted() { _ = await resume(artistId: artistId) }
@@ -415,8 +432,9 @@ public actor MonitoringChanger {
         return CleanupPreview(artistId: artistId, artistName: artist.artistName, artistMbid: artist.foreignArtistId, rows: rows)
     }
 
-    /// The owner confirmed `preview`: exactly its files go (50 at a time), the kept ones stay.
-    public func cleanUp(_ preview: CleanupPreview) async throws -> Outcome {
+    /// The owner confirmed `preview`: exactly its files go (50 at a time), the kept ones stay. `keep`: the keep list the
+    /// app read for it (fix round 3 H-M3).
+    public func cleanUp(_ preview: CleanupPreview, keep: MonitoringKeepList) async throws -> Outcome {
         try await exclusive(preview.artistId) {
             try await writable()
             guard !preview.files.isEmpty else { return .finished }
@@ -433,7 +451,7 @@ public actor MonitoringChanger {
                                           previousProfileId: 0, files: rows.map(\.file),
                                           excludedFileIds: rows.filter(\.kept).map(\.file.id), createdAt: now())
             do { try await ledger.saveIntent(intent) } catch { throw MonitoringChangeError.notSaved }
-            return await advance(intent)
+            return await advance(intent, keep: keep)
         }
     }
 
@@ -454,7 +472,7 @@ public actor MonitoringChanger {
                                           createdAt: now())
             do { try await ledger.saveIntent(intent) } catch { throw MonitoringChangeError.notSaved }
             await gate.note("monitoring revert: artist \(artistId) metadataProfileId \(artist.metadataProfileId.map(String.init) ?? "-") -> \(source.previousProfileId) instance \(lidarr.instanceScope)")
-            return await advance(intent)
+            return await advance(intent, keep: nil)
         }
     }
 
@@ -467,22 +485,30 @@ public actor MonitoringChanger {
     /// Fix round 2 m3: Lidarr didn't take the profile, or the refresh failed: a counted failure.
     private struct NotTaken: Error {}
 
-    private func advance(_ start: MonitoringIntent) async -> Outcome {
+    /// Fix round 3 H-M3: no keep list for a delete: it waits, open.
+    private struct NeedsKeepList: Error {}
+
+    private func advance(_ start: MonitoringIntent, keep: MonitoringKeepList?) async -> Outcome {
         var job = start
         do {
             switch job.kind {
             case .monitoringChange, .revert:
                 try await change(&job)
-                if let cleanup = try await finish(&job) { return await advance(cleanup) }
+                if let cleanup = try await finish(&job) { return await advance(cleanup, keep: keep) }
             case .unmatchedCleanup:
-                try await cleanup(&job)
+                guard let keep else { throw NeedsKeepList() }
+                try await cleanup(&job, keep: keep)
             }
             return .finished
         } catch is Pending {
             return .pending
+        } catch is NeedsKeepList {
+            return .waitingForKeepList
         } catch {
+            // Fix round 3 H-L2: a switch turned off (or the session ended) mid-change: paused, open, never counted.
+            if case WriteGateError.disabled = error { return .paused }
+            if (try? await writable()) == nil { return .paused }
             let refused: Bool = if case WriteGateError.forbidden = error { true } else { error is Abandon }
-            if case WriteGateError.disabled = error { return .pending }
             job.failures += 1
             if refused || job.failures >= Self.maxFailures {
                 Log.logger("requests").error("monitoring change given up: \(Log.category(of: error), privacy: .public)")
@@ -530,7 +556,7 @@ public actor MonitoringChanger {
             do { made = try await Provisioner().ensureReleaseTypes(types, gate: gate, client: lidarr) } catch is ProvisionError {
                 throw Abandon()
             }
-            job.targetProfileId = made
+            job.recordProfile(made)
             job.sending = nil
             try await ledger.saveIntent(job)
         }
@@ -603,17 +629,22 @@ public actor MonitoringChanger {
                     let albums = try await lidarr.albums(artistId: job.artistId)
                     if job.monitorAlbumIds.isEmpty {
                         let before = Set(job.beforeAlbumIds)
-                        job.monitorAlbumIds = albums.filter {
+                        job.recordMonitorAlbums(albums.filter {
                             !before.contains($0.id) && !$0.monitored && types.includes(albumType: $0.albumType, secondaryTypes: $0.secondaryTypes)
-                        }.map(\.id).sorted()
+                        }.map(\.id).sorted())
                     }
-                    let ids = job.monitorAlbumIds
-                    if !ids.isEmpty {
-                        // Read first (above): only albums Lidarr doesn't monitor yet are sent.
-                        if ids.contains(where: { id in albums.first { $0.id == id }?.monitored != true }) {
-                            try await sending(&job, .monitored)
-                            _ = try await gate.performOwned(intentId: job.id, step: .monitor)
-                        }
+                    // Fix round 3 H-L4: at most 50 albums per write; each batch saved before it goes. Read first (above):
+                    // only batches with albums Lidarr doesn't monitor yet are sent.
+                    let batches = stride(from: 0, to: job.monitorAlbumIds.count, by: WriteConfinement.maxCleanupFiles).map {
+                        Array(job.monitorAlbumIds[$0..<min($0 + WriteConfinement.maxCleanupFiles, job.monitorAlbumIds.count)])
+                    }
+                    for batch in batches where batch.contains(where: { id in albums.first { $0.id == id }?.monitored != true }) {
+                        job.monitorBatch = batch
+                        try await sending(&job, .monitored)
+                        _ = try await gate.performOwned(intentId: job.id, step: .monitor)
+                    }
+                    for batch in batches {
+                        job.monitorBatch = batch
                         try await sending(&job, .searchSent)
                         _ = try await gate.performOwned(intentId: job.id, step: .search)
                     }
@@ -641,21 +672,26 @@ public actor MonitoringChanger {
             guard next.confirmationHash == done.confirmationHash else { throw Abandon() }
             cleanup = next
         }
+        // Fix round 3 H-M1: albums of a type the new choice includes (monitored again) leave the kept set: they aren't
+        // unmatched any more. Read fresh; a read that fails stays pending (the change finishes on the next pass).
+        var included = Set<Int>()
+        if done.kind == .monitoringChange, let types = done.targetTypes {
+            let albums: [LidarrAlbum]
+            do { albums = try await lidarr.albums(artistId: done.artistId) } catch { throw Pending() }
+            included = Set(albums.filter { types.includes(albumType: $0.albumType, secondaryTypes: $0.secondaryTypes) }.map(\.id))
+        }
         let at = now()
         let next = cleanup
+        let monitoredAgain = included
         try await ledger.updateMonitoring { book in
             book.intents.removeAll { $0.id == done.id }
             book.intents.append(done)
             if let next { book.intents.append(next) }
-            if done.kind == .monitoringChange, done.keepFiles, !done.files.isEmpty {
-                let withFiles = Set(done.files.map(\.albumId))
-                let old = book.kept(artistId: done.artistId).flatMap { $0.artistMbid == done.artistMbid ? $0 : nil }
-                var files = old?.files ?? []
-                for f in done.files where !files.contains(where: { $0.id == f.id }) { files.append(f) }
-                let albums = Set(old?.albumIds ?? []).union(withFiles).sorted()
-                book.kept.removeAll { $0.artistId == done.artistId }
-                book.kept.append(UnmonitoredKept(artistId: done.artistId, artistMbid: done.artistMbid, albumIds: albums,
-                                                 files: files, recordedAt: at))
+            if done.kind == .revert {
+                book.forgetKept(artistId: done.artistId)   // H-M1: put back as it was, nothing left to clean up
+            } else {
+                book.forgetKept(artistId: done.artistId, albums: monitoredAgain)
+                book.recordKept(from: done, at: at)
             }
         }
         return cleanup
@@ -663,8 +699,20 @@ public actor MonitoringChanger {
 
     /// The clean-up's deletes, 50 at a time; a batch whose answer was lost is read again first (gone files count as
     /// deleted, the rest go with the next batch, checked again by the gate).
-    private func cleanup(_ job: inout MonitoringIntent) async throws {
+    private func cleanup(_ job: inout MonitoringIntent, keep: MonitoringKeepList) async throws {
         guard job.matchesConfirmation else { throw Abandon() }
+        // Fix round 3 H-M3: the keep list read now leaves out every file the owner keeps since (and any no track names),
+        // saved with a new hash before anything is deleted.
+        let (tracks, albums): ([LidarrTrack], [LidarrAlbum])
+        do { (tracks, albums) = (try await lidarr.tracks(artistId: job.artistId), try await lidarr.albums(artistId: job.artistId)) } catch {
+            throw Pending()
+        }
+        let undecided = job.files.filter { !job.excludedFileIds.contains($0.id) && !job.deletedFileIds.contains($0.id) }
+        let nowKept = Self.kept(undecided, tracks: tracks, albums: albums, keep: keep)
+        if !nowKept.isEmpty {
+            job.keepAlso(nowKept)
+            try await ledger.saveIntent(job)
+        }
         if !job.pendingFileIds.isEmpty {
             var gone: [Int] = []
             for id in job.pendingFileIds {
@@ -678,15 +726,39 @@ public actor MonitoringChanger {
         let remaining = job.files.map(\.id).filter { !excluded.contains($0) && !deleted.contains($0) }
         for start in stride(from: 0, to: remaining.count, by: WriteConfinement.maxCleanupFiles) {
             let ids = Array(remaining[start..<min(start + WriteConfinement.maxCleanupFiles, remaining.count)])
-            job.pendingFileIds = ids
-            job.step = .deleting
-            try await sending(&job, .deleting)
+            try await deleteBatch(&job, ids)
+        }
+        try await closeCleanup(&job, as: .done)
+    }
+
+    /// One batch. Fix round 3 H-L3: when the gate refuses a batch of several (one file changed, say), each file goes on
+    /// its own: a file refused alone is recorded as kept (left out, the hash saved again), the rest are deleted. Nothing
+    /// the owner chose is dropped silently, and nothing refused is sent again.
+    private func deleteBatch(_ job: inout MonitoringIntent, _ ids: [Int]) async throws {
+        job.pendingFileIds = ids
+        job.step = .deleting
+        try await sending(&job, .deleting)
+        do {
             _ = try await gate.performCleanup(intentId: job.id)
             job.deletedFileIds += ids
             job.pendingFileIds = []
             try await ledger.saveIntent(job)
+        } catch WriteGateError.forbidden where ids.count > 1 {
+            guard (try? await writable()) != nil else { throw WriteGateError.disabled }
+            for id in ids {
+                job.pendingFileIds = [id]
+                try await sending(&job, .deleting)
+                do {
+                    _ = try await gate.performCleanup(intentId: job.id)
+                    job.deletedFileIds.append(id)
+                } catch WriteGateError.forbidden {
+                    guard (try? await writable()) != nil else { throw WriteGateError.disabled }
+                    job.keepAlso([id])
+                }
+                job.pendingFileIds = []
+                try await ledger.saveIntent(job)
+            }
         }
-        try await closeCleanup(&job, as: .done)
     }
 
     /// The clean-up ends (done or given up): the files it deleted leave the kept set, in the same write.
@@ -699,11 +771,7 @@ public actor MonitoringChanger {
         try await ledger.updateMonitoring { book in
             book.intents.removeAll { $0.id == closed.id }
             book.intents.append(closed)
-            guard var kept = book.kept(artistId: closed.artistId) else { return }
-            kept.files.removeAll { gone.contains($0.id) }
-            kept.albumIds = kept.albumIds.filter { album in kept.files.contains { $0.albumId == album } }
-            book.kept.removeAll { $0.artistId == closed.artistId }
-            if !kept.files.isEmpty { book.kept.append(kept) }
+            book.forgetKept(artistId: closed.artistId, files: gone)
         }
     }
 

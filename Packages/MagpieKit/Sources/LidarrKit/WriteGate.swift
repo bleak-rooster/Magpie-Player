@@ -647,7 +647,7 @@ public actor LidarrWriteGate {
     }
 
     /// Round 24 (owner, 2026-11-08, Q10): "Let Magpie change what Lidarr monitors for my artists", per Lidarr instance,
-    /// off by default. The gate refuses every `ownedChange` and `unmatchedCleanup` write while it is off, whatever the
+    /// off by default. The gate refuses every owned-artist write (`performOwned`, `performCleanup`) while it is off, whatever the
     /// caller says (D243).
     public static let monitoringChangesDefaultsKey = "magpie.lidarr.monitoringChanges"
 
@@ -747,12 +747,17 @@ public actor LidarrWriteGate {
             return try await sendConfined("PUT", "artist/editor", body: OwnedProfileBody(artistIds: [intent.artistId], metadataProfileId: profile), owned: .change)
         case .refresh:
             return try await sendConfined("POST", "command", body: OwnedRefreshBody(name: "RefreshArtist", artistId: intent.artistId), owned: .change)
-        case .monitor:
-            guard intent.kind == .monitoringChange, !intent.monitorAlbumIds.isEmpty else { throw WriteGateError.forbidden("nothing to monitor") }
-            return try await sendConfined("PUT", "album/monitor", body: OwnedMonitorBody(albumIds: intent.monitorAlbumIds, monitored: true), owned: .change)
-        case .search:
-            guard intent.kind == .monitoringChange, !intent.monitorAlbumIds.isEmpty else { throw WriteGateError.forbidden("nothing to search for") }
-            return try await sendConfined("POST", "command", body: OwnedSearchBody(name: "AlbumSearch", albumIds: intent.monitorAlbumIds), owned: .change)
+        case .monitor, .search:
+            // Fix round 3 H-L4: the saved batch, at most 50 of the albums the refresh brought in.
+            let batch = intent.monitorBatch ?? []
+            guard intent.kind == .monitoringChange, (1...WriteConfinement.maxCleanupFiles).contains(batch.count),
+                  Set(batch).isSubset(of: intent.monitorAlbumIds) else {
+                throw WriteGateError.forbidden("no saved batch of the albums the change brought in")
+            }
+            if step == .monitor {
+                return try await sendConfined("PUT", "album/monitor", body: OwnedMonitorBody(albumIds: batch, monitored: true), owned: .change)
+            }
+            return try await sendConfined("POST", "command", body: OwnedSearchBody(name: "AlbumSearch", albumIds: batch), owned: .change)
         }
     }
 
@@ -763,16 +768,20 @@ public actor LidarrWriteGate {
         guard intent.kind == .unmatchedCleanup, !intent.pendingFileIds.isEmpty else {
             throw WriteGateError.forbidden("no pending batch of a clean-up the owner confirmed")
         }
-        return try await sendConfined("DELETE", "trackfile/bulk", body: OwnedTrackFilesBody(trackFileIds: intent.pendingFileIds), owned: .cleanup)
+        return try await sendConfined("DELETE", "trackfile/bulk", body: OwnedTrackFilesBody(trackFileIds: intent.pendingFileIds),
+                                      owned: .cleanup, intentId: intentId)
     }
 
-    /// The owned writes' one path through the gate (internal: LidarrKit and its tests only).
-    func sendConfined(_ method: String, _ path: String, body: (any Encodable & Sendable)?, owned: OwnedShape) async throws -> Data {
-        try await send(method, path, body: body, shape: nil, owned: owned)
+    /// The owned writes' one path through the gate (internal: LidarrKit and its tests only). `intentId`: the clean-up the
+    /// delete is for (fix round 3 H-L5: the confinement proves that very intent).
+    func sendConfined(_ method: String, _ path: String, body: (any Encodable & Sendable)?, owned: OwnedShape,
+                      intentId: UUID? = nil) async throws -> Data {
+        try await send(method, path, body: body, shape: nil, owned: owned, ownedIntent: intentId)
     }
 
     private func send(_ method: String, _ path: String, body: (any Encodable & Sendable)?,
-                      shape: ConfinedShape?, allowForeign: Bool = false, owned: OwnedShape? = nil) async throws -> Data {
+                      shape: ConfinedShape?, allowForeign: Bool = false, owned: OwnedShape? = nil,
+                      ownedIntent: UUID? = nil) async throws -> Data {
         let target = try WriteTarget(method: method, path: path)
         if allowForeign, shape != .queueRestartAny { throw refused(target, "allowForeign goes with queueRestartAny only") }
         let data = try body.map { try JSONEncoder().encode($0) }
@@ -815,14 +824,14 @@ public actor LidarrWriteGate {
             case .command(let name, _, let artistId?)? where name == "refreshartist": confined = .ownedRefresh(artistId)
             case .command(let name, let ids, nil)? where name == "albumsearch": confined = .ownedSearch(ids)
             case .albumMonitor(let ids, let monitored)?: confined = .ownedMonitor(albumIds: ids, monitored: monitored)
-            default: throw refused(target, "ownedChange is a profile, a refresh, a monitor or a search only")
+            default: throw refused(target, "an owned change (performOwned) is a profile, a refresh, a monitor or a search only")
             }
         }
         if owned == .cleanup {
-            guard case .trackFileDelete(let ids)? = confined, target.key == ["trackfile", "bulk"] else {
-                throw refused(target, "unmatchedCleanup is a bulk track file delete only")
+            guard case .trackFileDelete(let ids)? = confined, target.key == ["trackfile", "bulk"], let ownedIntent else {
+                throw refused(target, "an owned clean-up (performCleanup) is a bulk track file delete of one intent only")
             }
-            confined = .ownedCleanup(ids)
+            confined = .ownedCleanup(ids, intent: ownedIntent)
         }
         if owned != nil {
             guard confinement != nil else { throw refused(target, "deletes and artist edits need the ledger") }
