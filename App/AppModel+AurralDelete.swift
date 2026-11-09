@@ -164,6 +164,7 @@ extension AppModel {
                 }
             }
         }
+        forgetDiscoverClaim(itemId: itemId)   // R24A (D204): its saved claim goes too
         discover.othersPlaylistIds.subtract(gone)
         for id in removal.playlistIds { discover.searchAgain[id] = nil }
         discover.refreshing[itemId] = nil

@@ -25,7 +25,7 @@ extension DiscoverRules {
     }
 
     /// Aurral's playlist file name (`sanitizePlaylistFileName`), folded again.
-    private static func fileName(_ name: String) -> String {
+    static func fileName(_ name: String) -> String {
         normalised(String(name.map { "<>:\"/\\|?*".contains($0) ? "_" : $0 }))
     }
 

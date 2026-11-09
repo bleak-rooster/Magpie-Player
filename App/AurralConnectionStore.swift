@@ -141,6 +141,8 @@ struct AurralConnectionStore: AurralConnectionStoring {
     @ObservationIgnored var lookups: [String: DiscoverLookup] = [:]
     /// Round 23 R23F (D189): the matched playlists that are other users' flows' or playlists', as last read.
     var othersPlaylistIds: Set<String> = []
+    /// Round 24 R24A (D205): another user's claimed playlists' owners, by playlist id, as last read (the caption).
+    var playlistOwners: [String: String] = [:]
     /// Round 23 R23F (D190): bumped when "Show everyone's flows" changes (Library › Discover lists again).
     var everyoneRevision = 0
     /// Round 23 R23F (D199): "Search again for missing songs", per flow or playlist id, this session.
@@ -214,6 +216,7 @@ struct AurralConnectionStore: AurralConnectionStoring {
         aurralSongIds = []
         lookups = [:]
         othersPlaylistIds = []   // R23F
+        playlistOwners = [:]   // R24A (D205)
         searchAgain = [:]   // R23F
         removing = [:]   // R24C (D212)
         songsAsking = []   // R24C fix round 1 (I5)
