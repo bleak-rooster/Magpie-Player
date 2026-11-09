@@ -9,6 +9,8 @@ import SwiftUI
 /// same `tick()` the foreground runs (Lidarr queue and history reads, the Navidrome match check, and only the retry
 /// searches the runner already had scheduled), which posts the ready notification through `requestBecameReady`.
 /// Best-effort: iOS decides if and when it runs; at most every 15 minutes is asked for.
+/// Round 24 (D220): the same pass also runs one "Keep Soulseek connected" check while that switch is on (even without
+/// Lidarr), and the next pass is asked for while it stays on. Never guaranteed: the page's footer says so.
 enum RequestsBackgroundRefresh {
     static let identifier = "com.bleak-rooster.magpie.requests"
     /// The iOS minimum hint for app refresh.
@@ -68,9 +70,11 @@ extension AppModel {
     /// Asks iOS for a background pass while any request is still on its way (on going to the background, and after
     /// each pass). Nothing is asked for otherwise.
     func scheduleRequestRefresh(submit: @escaping (BGTaskRequest) async throws -> Void = RequestsBackgroundRefresh.submit) {
-        guard let runner else { return }
+        let keepsSlskd = slskdKeep.isOn   // R24 (D220)
+        guard runner != nil || keepsSlskd else { return }
+        let runner = runner
         Task {
-            guard await runner.needsPolling else { return }
+            if !keepsSlskd { guard await runner?.needsPolling == true else { return } }
             try? await submit(RequestsBackgroundRefresh.request())
         }
     }
@@ -87,18 +91,58 @@ extension AppModel {
     /// told, the runner stops between steps.
     /// - Returns: whether the pass finished within `limit`.
     func backgroundRequestPass(limit: Duration = RequestsBackgroundRefresh.passLimit,
+                               slskdLimit: Duration = AppModel.slskdBackgroundLimit,
                                stop: RequestsBackgroundRefresh.PassStop = .init(),
                                submit: @escaping (BGTaskRequest) async throws -> Void = RequestsBackgroundRefresh.submit)
         async -> Bool {
         if runner == nil, session != nil, reloadKeychainItems() { rebuildRunner() }
-        guard let runner else { return false }
+        let runner = self.runner
+        let keepsSlskd = slskdKeep.isOn   // R24 (D220): slskd's check, even without Lidarr
+        guard runner != nil || keepsSlskd else { return false }
         guard !isOffline else {
             scheduleRequestRefresh(submit: submit)
             return false
         }
-        let finished = await Self.within(limit) { await runner.tick(shouldStop: { stop.isStopped }) }
-        if !finished { stop.stop() }
+        // R24 fix round 1 I2: slskd's check first, bounded and cancelled past its limit; the runner gets what is left of
+        // `limit`, so the whole pass stays inside it.
+        var slskdCheck: (@Sendable () async -> Void)?
+        if keepsSlskd { slskdCheck = { [weak self] in _ = await self?.checkSlskdKeepConnected() } }
+        var runnerPass: ((Duration) async -> Bool)?
+        if let runner {
+            runnerPass = { (left: Duration) async -> Bool in
+                await Self.within(left) { await runner.tick(shouldStop: { stop.isStopped }) }
+            }
+        }
+        let result = await Self.boundedPass(limit: limit, slskdLimit: slskdLimit, slskd: slskdCheck, runner: runnerPass)
+        if result.runner == false { stop.stop() }
         scheduleRequestRefresh(submit: submit)   // the next one, while something is still on its way
+        return runner != nil ? result.runner ?? false : result.slskd ?? false
+    }
+
+    /// R24 fix round 1 I2: one background pass inside `limit`. `slskd` (if any) runs first for at most `slskdLimit`
+    /// (and never past `limit`), cancelled when its time runs out; `runner` (if any) is then given the rest of `limit`,
+    /// measured, never a fixed share. Returns whether each finished in time (nil: not run).
+    static func boundedPass(limit: Duration, slskdLimit: Duration,
+                            slskd: (@Sendable () async -> Void)?,
+                            runner: ((Duration) async -> Bool)?) async -> (slskd: Bool?, runner: Bool?) {
+        let clock = ContinuousClock()
+        let start = clock.now
+        var slskdFinished: Bool?
+        if let slskd { slskdFinished = await withinCancelling(min(slskdLimit, limit), slskd) }
+        var runnerFinished: Bool?
+        if let runner {
+            let left = limit - (clock.now - start)
+            runnerFinished = left > .zero ? await runner(left) : false
+        }
+        return (slskdFinished, runnerFinished)
+    }
+
+    /// `within`, and the work is cancelled when the time runs out (R24 fix round 1 M2: a hanging slskd check doesn't
+    /// keep running behind the runner's pass).
+    static func withinCancelling(_ limit: Duration, _ work: @escaping @Sendable () async -> Void) async -> Bool {
+        let task = Task { await work() }
+        let finished = await within(limit) { await task.value }
+        if !finished { task.cancel() }
         return finished
     }
 

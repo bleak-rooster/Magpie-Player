@@ -131,6 +131,8 @@ final class AppModel {
     var slskd: SlskdConnection?
     var slskdChangesAllowed = false
     @ObservationIgnored var slskdStore: any SlskdConnectionStoring = SlskdConnectionStore.standard
+    /// Round 24 (D217–D221): "Keep Soulseek connected" (AppModel+SlskdKeepConnected).
+    let slskdKeep = SlskdKeepConnectedState()
     /// ListenBrainz refused the saved token (401) when plays were sent to it (T17); cleared when one is saved again.
     var listenBrainzRejected = false
     /// Changes whenever the token is saved, replaced or removed: Home's "Made for you" reads again (Task 7.1c).

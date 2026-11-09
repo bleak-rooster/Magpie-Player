@@ -2,8 +2,9 @@ import CryptoKit
 import Foundation
 import MagpieCore
 
-// Round 23 (owner, 2026-11-07, D192): the optional slskd connection. The HTTP channel (`SlskdConnection`) is defined
-// in this file so that `fileprivate` keeps its writes to `SlskdWriteGate`: `SlskdClient` can only read.
+// Round 23 (owner, 2026-11-07, D192): the optional slskd connection. The HTTP channel (`SlskdConnection`) reads
+// (`get`, GETs only) for anyone in SlskdKit; it writes (`send`) only for a holder of an `SlskdGatePass`, which only
+// `SlskdWriteGate` (its own file) can make (round 24 fix round 2, R1): `SlskdClient` can only read.
 
 public enum SlskdError: Error, Sendable, Equatable {
     case http(status: Int)
@@ -51,7 +52,7 @@ public struct SlskdFolder: Sendable, Equatable {
 
 /// The one HTTP channel to an slskd server.
 struct SlskdConnection: Sendable {
-    fileprivate let base: URL
+    let base: URL
     fileprivate let apiKey: String
     fileprivate let transport: HTTPTransport
 
@@ -67,10 +68,15 @@ struct SlskdConnection: Sendable {
 
     func get(_ route: SlskdRoute) async throws -> (Data, HTTPURLResponse) {
         guard route.method == "GET" else { throw SlskdError.forbidden }
-        return try await send(route)
+        return try await exchange(route)
     }
 
-    fileprivate func send(_ route: SlskdRoute) async throws -> (Data, HTTPURLResponse) {
+    /// A write: only with the gate's pass (round 24 fix round 2, R1), which nothing but `SlskdWriteGate` can make.
+    func send(_ route: SlskdRoute, pass: SlskdGatePass) async throws -> (Data, HTTPURLResponse) {
+        try await exchange(route)
+    }
+
+    private func exchange(_ route: SlskdRoute) async throws -> (Data, HTTPURLResponse) {
         guard let url = route.url(base: base) else { throw SlskdError.forbidden }
         var request = URLRequest(url: url)
         // G1 allowlist: slskd clean-up (only `SlskdRoute`'s methods; writes only from `SlskdWriteGate.perform`)
@@ -123,6 +129,11 @@ public struct SlskdClient: Sendable {
         return out
     }
 
+    /// Round 24 (D217): slskd's connection to the Soulseek network (`GET /api/v0/server`), read leniently.
+    public func serverState() async throws -> SlskdServerState {
+        try SlskdServerState.decode(try await ok(.serverState))
+    }
+
     /// One folder directly inside slskd's downloads folder; nil when there is none of that name.
     public func folder(_ name: String) async throws -> SlskdFolder? {
         do {
@@ -135,103 +146,5 @@ public struct SlskdClient: Sendable {
         } catch SlskdError.http(status: 404) {
             return nil
         }
-    }
-}
-
-// MARK: - The gate
-
-/// One clean-up write (see `SlskdRoute`).
-public enum SlskdWrite: Sendable, Equatable {
-    /// A finished transfer's record (`remove=true`).
-    case removeTransfer(username: String, id: UUID)
-    /// One file of a folder directly inside slskd's downloads folder.
-    case deleteFile(folder: String, file: String)
-    /// An empty folder directly inside slskd's downloads folder (fix round 1 M2).
-    case deleteFolder(String)
-}
-
-public enum SlskdGateError: Error, Sendable, Equatable {
-    /// "Allow Magpie to change Soulseek" is off. Nothing was sent.
-    case disabled
-    /// Not something Magpie may change (see `SlskdWriteGate`). Nothing was sent.
-    case refused(String)
-    /// slskd couldn't be read to check it. Nothing was sent.
-    case unconfirmed
-}
-
-/// The only way Magpie changes slskd (D192). Off until the owner turns on "Allow Magpie to change Soulseek" (per slskd:
-/// a new address or key starts off). Each write is checked against slskd's own state, read fresh right before it:
-/// - a transfer record goes only when slskd lists it now, for that user, finished;
-/// - a file goes only when it is in the named folder directly inside the downloads folder now, a finished, complete
-///   download of that name is in slskd's list, and no unfinished download of that name is;
-/// - a folder goes only when it is empty now (fix round 1 M2: slskd's folder delete is recursive, so its files go one by
-///   one under the file rule first).
-/// Names are one level deep and never `.`/`..` or a separator (`SlskdRoute.isSafeName`), so nothing outside the
-/// downloads folder can be named. Which downloads are an artist's, the runner decides (`SlskdLeftovers`); this gate
-/// keeps that decision from reaching anything in progress or anything slskd didn't download.
-public actor SlskdWriteGate {
-    public static let enabledDefaultsKey = "magpie.slskd.writesEnabled"
-    public static func enabledKey(scope: String) -> String { "\(enabledDefaultsKey).\(scope)" }
-
-    private let client: SlskdClient
-    private let defaults: UserDefaults
-
-    public init(client: SlskdClient, defaultsSuite: String? = nil) {
-        self.client = client
-        self.defaults = defaultsSuite.flatMap { UserDefaults(suiteName: $0) } ?? .standard
-    }
-
-    /// "Allow Magpie to change Soulseek". Persisted per slskd; false until the owner turns it on.
-    public var enabled: Bool { defaults.bool(forKey: Self.enabledKey(scope: client.instanceScope)) }
-
-    public func setEnabled(_ on: Bool) { defaults.set(on, forKey: Self.enabledKey(scope: client.instanceScope)) }
-
-    /// Checks `write` on fresh reads and sends it. Throws `SlskdGateError` (nothing sent) or `SlskdError` (slskd's
-    /// answer; a 404 means it was already gone).
-    public func perform(_ write: SlskdWrite) async throws {
-        guard enabled else { throw SlskdGateError.disabled }
-        let route: SlskdRoute
-        switch write {
-        case .removeTransfer(let username, let id): route = .removeTransfer(username: username, id: id)
-        case .deleteFile(let folder, let file): route = .deleteFile(folder: folder, file: file)
-        case .deleteFolder(let folder): route = .deleteFolder(folder)
-        }
-        guard route.segments != nil else { throw SlskdGateError.refused("not a name inside the downloads folder") }
-        let transfers: [SlskdTransfer]
-        do { transfers = try await client.downloads() } catch { throw SlskdGateError.unconfirmed }
-        switch write {
-        case .removeTransfer(let username, let id):
-            guard transfers.contains(where: { $0.id == id && $0.username == username && $0.isFinished }) else {
-                throw SlskdGateError.refused("not a finished download slskd lists now")
-            }
-        case .deleteFile(let folder, let file):
-            let listing = try await readFolder(folder)
-            guard listing.files.contains(file) else { throw SlskdGateError.refused("no such file there now") }
-            try Self.mayDelete(file, transfers)
-        case .deleteFolder(let folder):
-            // Fix round 1 M2: slskd deletes a folder with everything in it, so only an empty one, read just now.
-            let listing = try await readFolder(folder)
-            guard listing.folders.isEmpty, listing.files.isEmpty else { throw SlskdGateError.refused("the folder isn't empty") }
-        }
-        guard enabled else { throw SlskdGateError.disabled }   // turned off during the reads
-        let (_, response) = try await client.connection.send(route)
-        switch response.statusCode {
-        case 200..<300: return
-        case 401, 403: throw SlskdError.unauthorized
-        default: throw SlskdError.http(status: response.statusCode)
-        }
-    }
-
-    private func readFolder(_ name: String) async throws -> SlskdFolder {
-        let listing: SlskdFolder?
-        do { listing = try await client.folder(name) } catch { throw SlskdGateError.unconfirmed }
-        guard let listing else { throw SlskdGateError.refused("no such folder now") }
-        return listing
-    }
-
-    private static func mayDelete(_ file: String, _ transfers: [SlskdTransfer]) throws {
-        let named = transfers.filter { $0.fileName == file }
-        guard named.contains(where: \.succeeded) else { throw SlskdGateError.refused("not a file slskd finished downloading") }
-        guard !named.contains(where: { !$0.isFinished }) else { throw SlskdGateError.refused("a download of that name is under way") }
     }
 }

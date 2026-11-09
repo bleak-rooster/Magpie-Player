@@ -73,6 +73,7 @@ struct MainTabs: View {
         .queueActionsPresenter()   // R12
         .findsKeepFlow(host: FindsLibraryMenuItem.main)   // R18/R20: Keep from a song's long-press menu
         .songActionsPresenter(navigator: navigator)   // round 14 A3: the outside songs' ⋯ menus
+        .slskdPagePresenter()   // R24 (D219): the slskd outage notification or banner opens slskd's page
         .task {   // round 15 C3: UI tests only (`-MagpieUITesting YES`)
             await model.runUITestLetGoIfAsked()
             await model.seedUITestLibraryTrialIfAsked()
