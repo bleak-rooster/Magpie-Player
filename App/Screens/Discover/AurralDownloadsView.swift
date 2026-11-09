@@ -100,6 +100,11 @@ struct AurralDownloadsView: View {
         }
         .navigationTitle(SongsStillComingCopy.title)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            if screen.working {   // Approve can take a while: Aurral imports the copy before it answers
+                ToolbarItem(placement: .topBarTrailing) { ProgressView().accessibilityLabel(SongsStillComingCopy.working) }
+            }
+        }
         .task(id: scenePhase == .active) {   // paused while the app isn't in front
             guard scenePhase == .active else { return }
             await screen.follow(model)

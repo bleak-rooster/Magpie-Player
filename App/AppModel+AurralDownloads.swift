@@ -35,9 +35,11 @@ extension AppModel {
     /// Home's banner: the user's own songs Aurral holds for review, as Discover last read them (0 when the user can't
     /// decide them here).
     var heldSongsWaiting: Int {
-        guard songsStillComingAvailable, aurralMayManage else { return 0 }
+        guard songsStillComingAvailable, aurralMayManage, let user = discover.bootstrap?.user,
+              let status = discover.status else { return 0 }
+        let own = Set((status.flows + status.sharedPlaylists).filter { $0.belongs(to: user) }.map(\.id))
         return discover.jobs.filter { job in
-            job.status?.lowercased() == "blocked" && job.flowId.map { ownAurralItem(id: $0) != nil } == true
+            job.status?.lowercased() == "blocked" && job.flowId.map(own.contains) == true
         }.count
     }
 
@@ -199,7 +201,7 @@ enum SongsStillComingCopy {
     static let searchNow = "Search now"
     static func searchNowAll(_ n: Int) -> String { "Search now for \(n)" }
     static let unreachable = "Couldn\u{2019}t reach Aurral. Trying again\u{2026}"
-    static let doneSymbol = "checkmark.circle"
+    static let working = "Asking\u{2026}"
 
     static func heading(_ section: SongsStillComing.Section) -> String {
         switch section {
