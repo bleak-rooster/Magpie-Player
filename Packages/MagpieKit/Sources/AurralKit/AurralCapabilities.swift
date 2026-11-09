@@ -29,6 +29,9 @@ public struct AurralCapabilities: Sendable, Equatable {
     public var trackResearch = false
     /// `GET /api/playlists/jobs/:playlistId` (one flow's songs and their progress).
     public var playlistJobsById = false
+    /// Round 24 B (D207): Delete flow / Delete playlist (`DELETE /api/playlists/flows/:id`,
+    /// `DELETE /api/playlists/shared-playlists/:id`) and a held song's Approve / Try another source
+    /// (`POST /api/playlists/jobs/:jobId/approve`, `/deny`), all checked against 2.13's flows.
     public var manage = false
 
     /// Nothing new: Aurral 2.10 (and anything Magpie can't vouch for).
@@ -55,9 +58,13 @@ public struct AurralCapabilities: Sendable, Equatable {
         flowDownload = flows && features.contains("flowAutoDownload")
         trackResearch = flows
         playlistJobsById = flows
+        manage = flows
     }
 
-    public func canManage(as user: AurralUser?) -> Bool { false }
+    /// Round 24 B (D207): whether `user` may delete their flows and playlists and decide their held songs here: this
+    /// Aurral has the routes and the user has Aurral's accessFlow (an admin passes; permissions Aurral didn't send fail
+    /// closed, as `canAddFlow`). The caller still offers them on the user's own items only.
+    public func canManage(as user: AurralUser?) -> Bool { manage && user?.canAddFlow == true }
 
     /// Any of Discover, Recommended or Trending.
     public var anyDiscover: Bool { recommendations || trending || editorialPlaylists }

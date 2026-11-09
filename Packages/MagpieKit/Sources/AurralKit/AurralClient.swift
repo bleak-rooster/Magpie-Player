@@ -53,6 +53,12 @@ public enum AurralError: Error, Sendable, Equatable {
 /// - Round 15 C2 (D131, fix round), each only on the owner's tap: a chart flow (a chart's top N songs) is the user's own
 ///   Aurral playlist: `POST /api/playlists/shared-playlists` (Create flow), `POST …/:id/tracks` (songs that come in),
 ///   `POST …/:id/track-removals` (songs that leave, with their files) and `DELETE …/:id` (Remove flow).
+/// - Round 16: the user's own recipe flows: `POST /api/playlists/flows` (New flow), `PUT …/:id/enabled`, `PUT …/:id`
+///   (Edit flow) and `DELETE …/:id` (Delete flow).
+/// - Round 24 B (D207–D209), each only on the owner's tap and only on the user's own items: the two deletes above also
+///   delete any of the user's own flows and shared playlists (`AurralClient+Manage.swift`: `deleteFlow`,
+///   `deleteSharedPlaylist`), and `POST /api/playlists/jobs/:jobId/approve` and `/deny` decide a song Aurral held for
+///   review. Never `jobs/:jobId/retry`, `/cancel`, `manual-search` or `research-missing`, and no other DELETE.
 /// Never `/api/settings` (every secret in clear), `/api/auth/api-key`, `/api/users`, `/api/discover/refresh` (admin),
 /// `/api/discover/blocked-tags`, `/api/library/artists` or `/api/library/downloads/*` (adds go through Lidarr), or
 /// `DELETE /api/library/tracks/*` (deletes Lidarr's file).
@@ -213,6 +219,8 @@ public enum AurralRoute: CaseIterable, Sendable {
         case 4 where rest[0] == "playlists" && rest[1] == "flows" && isPlainId(rest[2]) && rest[3] == "enabled": .recipeFlowTurnOn
         case 3 where rest[0] == "playlists" && rest[1] == "flows" && isPlainId(rest[2]) && method == recipeFlowUpdateMethod: .recipeFlowUpdate
         case 3 where rest[0] == "playlists" && rest[1] == "flows" && isPlainId(rest[2]) && method == recipeFlowDeleteMethod: .recipeFlowDelete
+        case 4 where rest[0] == "playlists" && rest[1] == "jobs" && isPlainId(rest[2]) && rest[3] == "approve": .jobApprove
+        case 4 where rest[0] == "playlists" && rest[1] == "jobs" && isPlainId(rest[2]) && rest[3] == "deny": .jobDeny
         default: nil
         }
         guard let route, route.method == method else { return nil }
