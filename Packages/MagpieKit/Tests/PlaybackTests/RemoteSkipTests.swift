@@ -177,14 +177,15 @@ import Testing
         #expect(player.isPlaying && engine.wantsToPlay)
     }
 
-    /// After a failure or the end of the queue, previous goes back and plays (the owner pressed it).
+    /// After the end of the queue, previous within the first seconds goes back and plays (the owner pressed it).
     @Test func remotePrevious_afterTheQueueEnded_playsThePreviousSong() throws {
-        let (player, engine) = player(startAt: 1)
-        let b = try #require(player.queue.current?.id)
+        let (player, engine) = player(startAt: 2)
+        let c = try #require(player.queue.current?.id)
         engine.stopWanting()
-        player.handle(.ended(b))
+        player.handle(.ended(c))
+        #expect(!player.isPlaying && player.hasEnded)
         remotePrevious(player, nil)
-        #expect(player.queue.current?.song.id == "a")
+        #expect(player.queue.current?.song.id == "b")
         #expect(player.isPlaying && engine.wantsToPlay)
     }
 
@@ -210,9 +211,10 @@ import Testing
         let b = try #require(player.queue.current?.id)
         player.handle(.time(b, 95, duration: 200))
         player.toggle()
+        let loadsBefore = engine.loadsFromStart.count
         remotePrevious(player, nil)
         #expect(player.queue.current?.id == b)
-        #expect(engine.loadsFromStart.last == b)
+        #expect(engine.loadsFromStart.count == loadsBefore + 1 && engine.loadsFromStart.last == b)
         #expect(player.position == 0)
         #expect(!player.isPlaying && !engine.wantsToPlay)
     }
