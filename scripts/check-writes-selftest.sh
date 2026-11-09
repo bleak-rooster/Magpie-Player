@@ -208,7 +208,8 @@ weakened+=("${s14_weakened[@]}")
 # climb out of the downloads folder, the write switch dropped, the GET-only read channel loosened.
 slroute_src="$work/Packages/MagpieKit/Sources/SlskdKit/SlskdRoute.swift"
 slclient_src="$work/Packages/MagpieKit/Sources/SlskdKit/SlskdClient.swift"
-for f in "$slroute_src" "$slclient_src"; do cp "$f" "$f.orig"; done
+slgate_src="$work/Packages/MagpieKit/Sources/SlskdKit/SlskdWriteGate.swift"
+for f in "$slroute_src" "$slclient_src" "$slgate_src"; do cp "$f" "$f.orig"; done
 slskd_weakened=(
   "$slroute_src|s/        case .downloads, .downloadsFolder, .serverState: \"GET\"/        case .downloads, .serverState: \"GET\"\n        case .downloadsFolder: Self.deleteMethod/"
   # Round 24 (D218): the server read made a write, a disconnect added, the connect's verb changed, the connect's proofs
@@ -216,20 +217,20 @@ slskd_weakened=(
   "$slroute_src|s/        case .downloads, .downloadsFolder, .serverState: \"GET\"/        case .downloads, .downloadsFolder: \"GET\"\n        case .serverState: Self.connectMethod/"
   "$slroute_src|s/^    case connect/    case connect\n    case disconnect/"
   "$slroute_src|s/    static let connectMethod = \"PUT\"/    static let connectMethod = \"DELETE\"/"
-  "$slclient_src|s/        guard keepConnected else { throw SlskdGateError.refused(.*) }//"
-  "$slclient_src|s/        guard mayAskToConnect() else { throw SlskdGateError.refused(\"asked less than a minute ago\") }//"
-  "$slclient_src|s/        guard state.condition == .down else { throw SlskdGateError.refused(.*) }//"
-  "$slclient_src|s/        defaults.set(now(), forKey: Self.lastConnectKey(scope: client.instanceScope))//"
+  "$slgate_src|s/        guard keepConnected else { throw SlskdGateError.refused(.*) }//"
+  "$slgate_src|s/        guard mayAskToConnect() else { throw SlskdGateError.refused(\"asked less than a minute ago\") }//"
+  "$slgate_src|s/        guard state.condition == .down else { throw SlskdGateError.refused(.*) }//"
+  "$slgate_src|s/        defaults.set(now(), forKey: Self.lastConnectKey(scope: client.instanceScope))//"
   "$slroute_src|s/^    case deleteFolder(String)/    case deleteFolder(String)\n    case clearCompleted/"
   "$slroute_src|s/s != \".\", s != \"..\", //"
   "$slroute_src|s/\$0 == \"\\\\\\\\\" || //"
   "$slroute_src|s/            return \[\"transfers\", \"downloads\"\]/            return [\"transfers\", \"downloads\", \"all\", \"completed\"]/"
-  "$slclient_src|s/        guard enabled else { throw SlskdGateError.disabled }/        _ = enabled/"
+  "$slgate_src|s/        guard enabled else { throw SlskdGateError.disabled }/        _ = enabled/"
   "$slclient_src|s/        guard route.method == \"GET\" else { throw SlskdError.forbidden }//"
 )
 for w in "${slskd_weakened[@]}"; do
   file="${w%%|*}" expr="${w#*|}"
-  for f in "$slroute_src" "$slclient_src"; do cp "$f.orig" "$f"; done
+  for f in "$slroute_src" "$slclient_src" "$slgate_src"; do cp "$f.orig" "$f"; done
   cp "$file" "$work/before"
   sed -i '' "$expr" "$file"
   if cmp -s "$work/before" "$file"; then echo "selftest: the weakening didn't apply: $expr" >&2; failed=1; continue; fi
@@ -239,7 +240,7 @@ for w in "${slskd_weakened[@]}"; do
     echo "selftest: failed without a G1 reason: $expr" >&2; failed=1
   fi
 done
-for f in "$slroute_src" "$slclient_src"; do cp "$f.orig" "$f"; rm -f "$f.orig"; done
+for f in "$slroute_src" "$slclient_src" "$slgate_src"; do cp "$f.orig" "$f"; rm -f "$f.orig"; done
 weakened+=("${slskd_weakened[@]}")
 
 # Round 24 B (D207–D209): the four manage sends weakened: an id check dropped, a path turned to retry or cancel, a
@@ -277,6 +278,15 @@ slskd_inplace=(
   "Packages/MagpieKit/Sources/SlskdKit/SlskdClient.swift|append|    public func reconnect() async throws { _ = try await connection.send(.connect) }"
   "Packages/MagpieKit/Sources/SlskdKit/SlskdClient.swift|sed|s/request.httpMethod = route.method/request.httpMethod = route == .serverState ? SlskdRoute.connect.method : route.method/"
   "Packages/MagpieKit/Sources/SlskdKit/SlskdClient.swift|sed|s/        guard route.method == \"GET\" else { throw SlskdError.forbidden }/&\n        if route == .serverState { return try await send(.connect) }/"
+  # Fix round 2 (R1): the re-review's variants: a connect on an existing perform line, a perform taken as a function, a
+  # backticked, spaced or function-reference send, a perform taken by the app, a spaced second caller.
+  "Packages/MagpieKit/Sources/Requests/RequestRunner+CleanSlate.swift|sed|s/try await slskd.gate.perform(.deleteFolder(folder.name)) }/&; let w: SlskdWrite = .connect; try await slskd.gate.perform(w)/"
+  "Packages/MagpieKit/Sources/Requests/RequestRunner+CleanSlate.swift|append|        let p = slskd.gate.perform; try await p(.connect)"
+  "Packages/MagpieKit/Sources/SlskdKit/SlskdClient.swift|append|    func b3() async throws { _ = try await connection.\`send\`(.connect) }"
+  "Packages/MagpieKit/Sources/SlskdKit/SlskdClient.swift|append|    func b4() async throws { _ = try await connection.send (.connect) }"
+  "Packages/MagpieKit/Sources/SlskdKit/SlskdClient.swift|append|    func b5() async throws { let s = connection.send; _ = try await s(.connect) }"
+  "App/AppModel+Slskd.swift|append|        let p = gate.perform; Task { try? await p(.connect) }"
+  "Packages/MagpieKit/Sources/SlskdKit/SlskdServerState.swift|append|            try await gate.perform (.connect)"
 )
 for entry in "${slskd_inplace[@]}"; do
   rel="${entry%%|*}" rest="${entry#*|}"

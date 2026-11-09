@@ -57,6 +57,24 @@ import Testing
         }
     }
 
+    /// Fix round 2 m1: the fake slskd, except that while `holds` is on each request waits until it is released (polled
+    /// with a deadline, never a fixed wait) or cancelled.
+    final class HoldingTransport: HTTPTransport, Sendable {
+        let inner: FakeSlskd
+        let holds = OSAllocatedUnfairLock(initialState: false)
+        let waiting = OSAllocatedUnfairLock(initialState: 0)
+        init(_ inner: FakeSlskd) { self.inner = inner }
+        func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+            waiting.withLock { $0 += 1 }
+            defer { waiting.withLock { $0 -= 1 } }
+            let deadline = Date().addingTimeInterval(10)
+            while holds.withLock({ $0 }), Date() < deadline {
+                try await Task.sleep(for: .milliseconds(5))
+            }
+            return try await inner.send(request)
+        }
+    }
+
     final class TestClock: Sendable {
         private let time = OSAllocatedUnfairLock(initialState: Date(timeIntervalSince1970: 1_800_000_000))
         var now: Date { time.withLock { $0 } }
@@ -356,5 +374,71 @@ import Testing
             #expect(await model.checkSlskdKeepConnected() == .keyCannotReconnect)
         }
         #expect(connects == 1)
+    }
+
+    // MARK: - Fix round 2
+
+    /// m1: of two callers waiting for one check, one is cancelled: the check goes on, and the other gets its counted
+    /// result (one read, one ask, one failure).
+    @Test func oneCallerCancellingLeavesTheCheckForTheOther() async {
+        let holding = HoldingTransport(slskd)
+        let model = makeModel(transport: holding)
+        slskd.with { s in s.serverConnected = false; s.connectReconnects = false }
+        await model.setSlskdKeepConnected(true)
+        #expect(model.slskdKeep.outage.failedChecks == 1)
+        clock.advance(61)
+        holding.holds.withLock { $0 = true }
+        let first = Task { await model.checkSlskdKeepConnected() }
+        #expect(await eventually { holding.waiting.withLock { $0 } == 1 }, "the check is under way")
+        let second = Task { await model.checkSlskdKeepConnected() }
+        #expect(await eventually { model.slskdKeep.inFlight?.waiters == 2 }, "the second joined it")
+        first.cancel()
+        #expect(await eventually { model.slskdKeep.inFlight?.waiters == 1 })
+        #expect(model.slskdKeep.inFlight?.isCancelled == false, "still wanted by the other")
+        holding.holds.withLock { $0 = false }
+        #expect(await second.value == .down(asked: true))
+        _ = await first.value
+        #expect(connects == 2 && model.slskdKeep.outage.failedChecks == 2, "counted once")
+    }
+
+    /// m1: the only caller cancelled: the check is cancelled and counts nothing.
+    @Test func theOnlyCallerCancellingCancelsTheCheck() async {
+        let holding = HoldingTransport(slskd)
+        let model = makeModel(transport: holding)
+        await model.setSlskdKeepConnected(true)
+        let outage = model.slskdKeep.outage
+        holding.holds.withLock { $0 = true }
+        let only = Task { await model.checkSlskdKeepConnected() }
+        #expect(await eventually { holding.waiting.withLock { $0 } == 1 })
+        only.cancel()
+        #expect(await only.value == nil)
+        #expect(model.slskdKeep.outage == outage)
+        holding.holds.withLock { $0 = false }
+    }
+
+    /// m3 (ruling): turning the switch off, or on again, forgets a refused key, so it is asked once more.
+    @Test func turningTheSwitchAgainClearsARefusedKey() async {
+        let model = makeModel()
+        slskd.with { s in s.serverConnected = false; s.connectStatus = 403; s.connectReconnects = false }
+        await model.setSlskdKeepConnected(true)
+        #expect(model.slskdKeep.lastCheck == .keyCannotReconnect && connects == 1)
+        clock.advance(61)
+        #expect(await model.checkSlskdKeepConnected() == .keyCannotReconnect)
+        #expect(connects == 1, "held")
+        slskd.with { $0.connectStatus = 200 }   // the owner gave the key write rights in slskd
+        await model.setSlskdKeepConnected(false)
+        clock.advance(61)
+        await model.setSlskdKeepConnected(true)
+        #expect(connects == 2, "asked again")
+        #expect(model.slskdKeep.lastCheck == .down(asked: true))
+        // On again while on (the switch's set again) also clears it.
+        slskd.with { $0.connectStatus = 403 }
+        clock.advance(61)
+        _ = await model.checkSlskdKeepConnected()
+        #expect(connects == 3 && model.slskdKeep.lastCheck == .keyCannotReconnect)
+        slskd.with { $0.connectStatus = 200 }
+        clock.advance(61)
+        await model.setSlskdKeepConnected(true)
+        #expect(connects == 4)
     }
 }

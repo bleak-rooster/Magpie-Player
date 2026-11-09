@@ -78,6 +78,19 @@ import MagpieTestSupport
         #expect(!all.contains { $0.method == "DELETE" && $0.segments == ["server"] })
     }
 
+    /// Fix round 2 R1: the channel's reads refuse every write route, and its writes need the gate's pass, which only the
+    /// gate's file can make: a write without the gate throws and sends nothing.
+    @Test func aWriteRouteWithoutTheGatesPassThrowsAndSendsNothing() async {
+        let env = await Env()
+        env.slskd.with { $0.serverConnected = false }
+        let writes: [SlskdRoute] = [.connect, .deleteFolder("a"), .deleteFile(folder: "a", file: "b"),
+                                    .removeTransfer(username: "a", id: UUID())]
+        for route in writes {
+            await #expect(throws: SlskdError.forbidden) { try await env.client.connection.get(route) }
+        }
+        #expect(env.slskd.requests.isEmpty, "nothing sent")
+    }
+
     // MARK: - Reading the state
 
     /// slskd's own camelCase JSON (`ServerState`); missing fields are unknown, never "down".

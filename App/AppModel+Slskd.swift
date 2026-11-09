@@ -92,6 +92,12 @@ extension AppModel {
         return SlskdWriteGate.keepConnected(in: gateDefaults, scope: scope, base: slskd.base)
     }
 
+    /// Fix round 2 m3: forgets that slskd refused this key's ask (the switch turned off, or on again).
+    func clearSlskdKeyRefused() {
+        guard let scope = slskdScope else { return }
+        gateDefaults.removeObject(forKey: SlskdWriteGate.keyRefusedKey(scope: scope))
+    }
+
     /// Saves the switch where the gate reads it, before any check can ask slskd anything (M6).
     func saveSlskdKeepConnected(_ on: Bool) {
         guard let slskd, let scope = slskdScope else { return }

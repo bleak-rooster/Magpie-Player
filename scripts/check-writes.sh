@@ -815,6 +815,7 @@ if [ -z "${G1_SRC:-}" ]; then
   # the gate's `connect` shape, its one caller `SlskdKeepConnected.check`); never `DELETE /api/v0/server`.
   slroute="Packages/MagpieKit/Sources/SlskdKit/SlskdRoute.swift"
   slclient="Packages/MagpieKit/Sources/SlskdKit/SlskdClient.swift"
+  slgatef="Packages/MagpieKit/Sources/SlskdKit/SlskdWriteGate.swift"
   for want in '    case downloads' '    case downloadsFolder(String)' '    case removeTransfer(username: String, id: UUID)' \
               '    case deleteFile(folder: String, file: String)' '    case deleteFolder(String)' \
               '        case .removeTransfer, .deleteFile, .deleteFolder: Self.deleteMethod' \
@@ -839,14 +840,19 @@ if [ -z "${G1_SRC:-}" ]; then
   [ "$(grep -cE '"(PUT|POST|PATCH)"' "$slroute")" = 1 ] || { echo "G1: $slroute: an slskd write verb besides the connect" >&2; bad=1; }
   for want in '        guard route.method == "GET" else { throw SlskdError.forbidden }' \
               '        guard let url = route.url(base: base) else { throw SlskdError.forbidden }' \
-              '        guard enabled else { throw SlskdGateError.disabled }' \
+              '    func send(_ route: SlskdRoute, pass: SlskdGatePass) async throws -> (Data, HTTPURLResponse) {'; do
+    grep -qF -- "$want" "$slclient" || { echo "G1: $slclient: the slskd channel changed (missing: $want)" >&2; bad=1; }
+  done
+  # Round 24 fix round 2 (R1): the gate in its own file, the only one that can make the pass the channel's writes need.
+  for want in '        guard enabled else { throw SlskdGateError.disabled }' \
+              'struct SlskdGatePass: Sendable {' '    fileprivate init() {}' \
               '        if write == .connect { return try await connect() }   // Round 24 (D218): its own switch and proofs, below' \
               '        guard keepConnected else { throw SlskdGateError.refused("Keep Soulseek connected is off for this slskd") }' \
               '        guard mayAskToConnect() else { throw SlskdGateError.refused("asked less than a minute ago") }' \
               '        guard state.condition == .down else { throw SlskdGateError.refused("slskd isn'"'"'t disconnected now") }' \
               '        defaults.set(now(), forKey: Self.lastConnectKey(scope: client.instanceScope))' \
-              '        let (_, response) = try await client.connection.send(.connect)'; do
-    grep -qF -- "$want" "$slclient" || { echo "G1: $slclient: the slskd gate changed (missing: $want)" >&2; bad=1; }
+              '        let (_, response) = try await client.connection.send(.connect, pass: SlskdGatePass())'; do
+    grep -qF -- "$want" "$slgatef" || { echo "G1: $slgatef: the slskd gate changed (missing: $want)" >&2; bad=1; }
   done
   slkeep="Packages/MagpieKit/Sources/SlskdKit/SlskdServerState.swift"
   slhits=$(grep -rnE --include='*.swift' 'gate\.perform\(|perform\(\.(removeTransfer|deleteFile|deleteFolder|connect)|SlskdWriteGate\(|connection\.send\(|X-API-Key' \
@@ -859,13 +865,13 @@ if [ -z "${G1_SRC:-}" ]; then
         case "$file" in "$slclient"|Packages/MagpieKit/Sources/MagpieTestSupport/FakeSlskd.swift) ;;
           *) echo "G1: the slskd key header outside the slskd client: $file" >&2; bad=1 ;; esac ;;
       *'connection.send('*)
-        case "$file" in "$slclient"|Packages/MagpieKit/Sources/LidarrKit/WriteGate.swift) ;;
+        case "$file" in "$slgatef"|Packages/MagpieKit/Sources/LidarrKit/WriteGate.swift) ;;
           *) echo "G1: a connection's send outside its gate: $file" >&2; bad=1 ;; esac ;;
       *'SlskdWriteGate('*)
         case "$file" in App/AppModel+Slskd.swift) ;;
           *) echo "G1: an slskd write gate made outside the app's slskd connection: $file" >&2; bad=1 ;; esac ;;
       *'perform(.connect)'*)
-        case "$file" in "$slkeep"|"$slclient") ;;
+        case "$file" in "$slkeep"|"$slgatef") ;;
           *) echo "G1: an slskd reconnect outside the keep-connected check: $file" >&2; bad=1 ;; esac ;;
       *)
         case "$file" in "$cleanslatefile") ;;
@@ -893,20 +899,45 @@ if [ -z "${G1_SRC:-}" ]; then
   # slate performs exactly its three; the app's slskd connection makes exactly its two gates and performs nothing; and
   # no product code takes another route's verb.
   slnc() { grep -nE "$1" "$2" | grep -vE '^[0-9]+:[[:space:]]*//' || true; }
-  want_sends=$(printf '%s\n' \
-    '        return try await send(route)' \
-    '    fileprivate func send(_ route: SlskdRoute) async throws -> (Data, HTTPURLResponse) {' \
-    '        return try await transport.send(request, maxBytes: Self.maxResponseBytes)' \
-    '        let (_, response) = try await client.connection.send(route)' \
-    '        let (_, response) = try await client.connection.send(.connect)' | sort)
-  have_sends=$(slnc 'send\(' "$slclient" | cut -d: -f2- | sort)
-  [ "$have_sends" = "$want_sends" ] || { echo "G1: $slclient: the slskd client's sends changed" >&2; bad=1; }
   [ "$(slnc 'httpMethod' "$slclient" | cut -d: -f2-)" = '        request.httpMethod = route.method' ] ||
     { echo "G1: $slclient: the slskd request's verb isn't exactly its route's" >&2; bad=1; }
-  [ "$(slnc 'perform\(' "$slkeep" | wc -l | tr -d ' ')" = 1 ] ||
-    { echo "G1: $slkeep: the keep-connected check performs other than once" >&2; bad=1; }
-  [ "$(slnc 'perform\(' "$cleanslatefile" | wc -l | tr -d ' ')" = 3 ] ||
-    { echo "G1: $cleanslatefile: the clean slate performs other than its three" >&2; bad=1; }
+  # Fix round 2 (R1): occurrences, not lines, of the bare words, so a backticked (`send`), spaced (`send (`) or
+  # function-reference (`let s = connection.send`) spelling, or a second call on an existing line, counts too. The
+  # channel's writes also need the gate's pass, which only the gate's file can make (the compiler holds the rest).
+  slocc() { grep -vE '^[[:space:]]*//' "$2" | grep -oE "$1" | wc -l | tr -d ' '; }
+  for want in "send|$slclient|2" "exchange|$slclient|3" "SlskdGatePass|$slclient|1" \
+              "send|$slgatef|2" "perform|$slgatef|1" "SlskdGatePass|$slgatef|3" \
+              "perform|$slkeep|1" "perform|$cleanslatefile|3" "perform|App/AppModel+Slskd.swift|0"; do
+    word="${want%%|*}" rest="${want#*|}"
+    file="${rest%%|*}" count="${rest#*|}"
+    [ "$(slocc "\\b$word\\b" "$file")" = "$count" ] ||
+      { echo "G1: $file: \`$word\` isn't named exactly $count times" >&2; bad=1; }
+  done
+  for f in $(grep -rlE --include='*.swift' 'SlskdGatePass' "${product[@]}" | sort -u || true); do
+    case "$f" in "$slclient"|"$slgatef") ;;
+      *) [ "$(slocc 'SlskdGatePass' "$f")" = 0 ] || { echo "G1: the slskd gate's pass named outside the gate: $f" >&2; bad=1; } ;; esac
+  done
+  # `.connect` (the reconnect shape and route, not a `.connect()` call) only on its pinned lines, once each: the route's
+  # two, the gate's four, the check's one; nowhere else in product code.
+  slconn='\.connect([^A-Za-z0-9_(]|$)'
+  want_conn=$(printf '%s\n' \
+    "$slroute|        case .connect: Self.connectMethod" \
+    "$slroute|        case .connect:" \
+    "$slgatef|        if write == .connect { return try await connect() }   // Round 24 (D218): its own switch and proofs, below" \
+    "$slgatef|        case .connect: throw SlskdGateError.refused(\"not a clean-up\")" \
+    "$slgatef|        case .connect:" \
+    "$slgatef|        let (_, response) = try await client.connection.send(.connect, pass: SlskdGatePass())" \
+    "$slkeep|            try await gate.perform(.connect)   // Round 24 (D218): the one caller of the connect shape" | sort)
+  have_conn=""
+  conn_occ=0
+  for f in $(grep -rlE --include='*.swift' "$slconn" "${product[@]}" | sort -u || true); do
+    lines=$(slnc "$slconn" "$f" | cut -d: -f2- | sed "s|^|$f\||")
+    [ -n "$lines" ] && have_conn="$have_conn$lines"$'\n'
+    conn_occ=$((conn_occ + $(slocc "$slconn" "$f")))
+  done
+  [ "$(printf '%s' "$have_conn" | sed '/^$/d' | sort)" = "$want_conn" ] ||
+    { echo "G1: the slskd reconnect (.connect) named off its pinned lines" >&2; bad=1; }
+  [ "$conn_occ" = 7 ] || { echo "G1: the slskd reconnect (.connect) named $conn_occ times, not 7" >&2; bad=1; }
   slapp="App/AppModel+Slskd.swift"
   [ -z "$(slnc 'perform\(' "$slapp")" ] || { echo "G1: $slapp: performs an slskd write itself" >&2; bad=1; }
   want_gates=$(printf '%s\n' \
@@ -918,7 +949,7 @@ if [ -z "${G1_SRC:-}" ]; then
     [ -n "$(slnc 'SlskdRoute\.[A-Za-z]+\.method' "$f")" ] && { echo "G1: another slskd route's verb taken: $f" >&2; bad=1; }
   done
   for f in $(grep -rlE --include='*.swift' '\bSlskdWrite\.connect\b|perform\(\.connect\)|send\(\.connect\)' "${product[@]}" | sort -u || true); do
-    case "$f" in "$slkeep"|"$slclient") ;;
+    case "$f" in "$slkeep"|"$slgatef") ;;
       *) echo "G1: the slskd reconnect named outside SlskdKit: $f" >&2; bad=1 ;; esac
   done
 fi

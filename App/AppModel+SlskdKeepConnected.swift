@@ -1,4 +1,5 @@
 import Foundation
+import os
 import SlskdKit
 import SwiftUI
 
@@ -33,7 +34,7 @@ final class SlskdKeepConnectedState {
     /// AppModel+Slskd and dropped when slskd changes.
     @ObservationIgnored var checker: (scope: String, run: @Sendable () async -> SlskdCheck)?
     /// Fix round 1 I3: the check under way; another caller joins it instead of starting a second.
-    @ObservationIgnored var inFlight: Task<SlskdCheck?, Never>?
+    @ObservationIgnored var inFlight: SlskdCheckFlight?
     /// Fix round 1 M6: Settings sheets on screen. A tap on the notification while one is open navigates in it instead
     /// of presenting another sheet (which SwiftUI would not show).
     @ObservationIgnored var settingsShown = 0
@@ -53,12 +54,34 @@ final class SlskdKeepConnectedState {
     func reset() {
         loop?.cancel()
         loop = nil
-        inFlight?.cancel()
+        inFlight?.task.cancel()
         inFlight = nil
         checker = nil
         isOn = false
         lastCheck = nil
         outage = SlskdOutage()
+    }
+}
+
+/// Fix round 2 m1: one keep-connected check under way and how many callers wait for it. A caller that is cancelled
+/// leaves; the check is cancelled only when the last one leaves.
+final class SlskdCheckFlight: Sendable {
+    let task: Task<SlskdCheck?, Never>
+    private let waiting = OSAllocatedUnfairLock(initialState: 0)
+
+    init(_ task: Task<SlskdCheck?, Never>) { self.task = task }
+
+    var waiters: Int { waiting.withLock { $0 } }
+    var isCancelled: Bool { task.isCancelled }
+
+    func join() { waiting.withLock { $0 += 1 } }
+
+    func leave() {
+        let left = waiting.withLock { count -> Int in
+            count -= 1
+            return count
+        }
+        if left <= 0 { task.cancel() }
     }
 }
 
@@ -123,6 +146,7 @@ extension AppModel {
     /// The switch. On: saved first (the record the gate reads), then notifications asked for, then one check, then the
     /// checks go on. Off: saved, the checks stop and the outage is forgotten.
     func setSlskdKeepConnected(_ on: Bool) async {
+        clearSlskdKeyRefused()   // fix round 2 m3: off or on again, a refused key may be asked once more
         guard on else {
             saveSlskdKeepConnected(false)
             slskdKeep.reset()
@@ -140,14 +164,21 @@ extension AppModel {
     /// One check (the loop's, the background pass's, the page's, or the switch's first). Nil when nothing was checked:
     /// the switch is off, slskd isn't connected, Magpie is offline (Task 14: nothing is sent), or the check was cancelled
     /// (the background pass's time ran out). Fix round 1 I3: single-flight: while one runs, another caller joins it, so
-    /// one check is one read, at most one ask, and one count. Cancelling the caller cancels the check.
+    /// one check is one read, at most one ask, and one count. Fix round 2 m1: the check is cancelled only once every
+    /// caller waiting for it has been cancelled (the background pass's time running out cancels a check only it waits
+    /// for, never the loop's).
     @discardableResult
     func checkSlskdKeepConnected() async -> SlskdCheck? {
-        if let running = slskdKeep.inFlight { return await running.value }
-        let task = Task { await self.performSlskdKeepConnectedCheck() }
-        slskdKeep.inFlight = task
-        let check = await withTaskCancellationHandler { await task.value } onCancel: { task.cancel() }
-        if slskdKeep.inFlight == task { slskdKeep.inFlight = nil }
+        let flight: SlskdCheckFlight
+        if let running = slskdKeep.inFlight {
+            flight = running
+        } else {
+            flight = SlskdCheckFlight(Task { await self.performSlskdKeepConnectedCheck() })
+            slskdKeep.inFlight = flight
+        }
+        flight.join()
+        let check = await withTaskCancellationHandler { await flight.task.value } onCancel: { flight.leave() }
+        if slskdKeep.inFlight === flight { slskdKeep.inFlight = nil }
         return check
     }
 
@@ -170,7 +201,8 @@ extension AppModel {
         }
         guard slskd != nil, !isOffline else { return }
         if slskdKeep.isOn {
-            await checkSlskdKeepConnected()
+            // Fix round 2 m1: its own task, so the page closing (its `.task` cancelled) never cancels a shared check.
+            await Task { await self.checkSlskdKeepConnected() }.value
         } else {
             slskdKeep.lastCheck = await readSlskdServerState()
         }
@@ -201,7 +233,7 @@ extension AppModel {
     func readSlskdKeepConnected() {
         slskdKeep.loop?.cancel()
         slskdKeep.loop = nil
-        slskdKeep.inFlight?.cancel()
+        slskdKeep.inFlight?.task.cancel()
         slskdKeep.inFlight = nil
         slskdKeep.checker = nil   // fix round 1 I3: a new slskd (or none) gets its own gate
         slskdKeep.isOn = slskdKeepConnectedSaved
