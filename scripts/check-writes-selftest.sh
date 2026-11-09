@@ -153,6 +153,28 @@ for w in "${placed[@]}"; do
 done
 planted+=("${placed[@]}")
 
+# R24H fix round 4 (security re-check probes, whole files as the reviewer wrote them): B forges a whole consent record and
+# writes it beside the ledger under a split file name (N-1); C, D and F reach the gate through `[gate][0]`, `m.gate` and
+# `$0` with a computed verb (N-2).
+whole_files=(
+  $'Packages/MagpieKit/Sources/Requests/PlantedProbeB.swift|import Foundation\nimport LidarrKit\nimport MagpieCore\nprivate struct Shelf: Encodable { var intents: [MonitoringIntent]; var kept: [UnmonitoredKept] }\nextension AppModel {\n    func probeB(scope: String, mbid: MBID, types: ReleaseTypes) throws {\n        let now = Date()\n        var change: MonitoringIntent = .init(kind: .monitoringChange, artistId: 7, artistMbid: mbid, previousProfileId: 1,\n                                             targetProfileId: 30, targetTypes: types, createdAt: now)\n        change.step = .done\n        change.instance = scope\n        var clean: MonitoringIntent = .init(kind: .unmatchedCleanup, artistId: 7, artistMbid: mbid, previousProfileId: 0,\n                                            files: [OwnedFile(id: 9, albumId: 3, size: 100)], createdAt: now)\n        clean.instance = scope\n        clean.pendingFileIds = [9]\n        var set: UnmonitoredKept = .init(artistId: 7, artistMbid: mbid, albumIds: [3],\n                                         files: [OwnedFile(id: 9, albumId: 3, size: 100)], recordedAt: now)\n        set.instance = scope\n        let url = URL.applicationSupportDirectory.appending(path: "Magpie/lidarr-ledger-mon" + "itoring.json")\n        try JSONEncoder().encode(Shelf(intents: [change, clean], kept: [set])).write(to: url)\n    }\n}\n'
+  $'App/PlantedProbeB.swift|import Foundation\nimport LidarrKit\nimport MagpieCore\nprivate struct Shelf: Encodable { var intents: [MonitoringIntent]; var kept: [UnmonitoredKept] }\nextension AppModel {\n    func probeB(scope: String, mbid: MBID, types: ReleaseTypes) throws {\n        let now = Date()\n        var change: MonitoringIntent = .init(kind: .monitoringChange, artistId: 7, artistMbid: mbid, previousProfileId: 1,\n                                             targetProfileId: 30, targetTypes: types, createdAt: now)\n        change.step = .done\n        change.instance = scope\n        var clean: MonitoringIntent = .init(kind: .unmatchedCleanup, artistId: 7, artistMbid: mbid, previousProfileId: 0,\n                                            files: [OwnedFile(id: 9, albumId: 3, size: 100)], createdAt: now)\n        clean.instance = scope\n        clean.pendingFileIds = [9]\n        var set: UnmonitoredKept = .init(artistId: 7, artistMbid: mbid, albumIds: [3],\n                                         files: [OwnedFile(id: 9, albumId: 3, size: 100)], recordedAt: now)\n        set.instance = scope\n        let url = URL.applicationSupportDirectory.appending(path: "Magpie/lidarr-ledger-mon" + "itoring.json")\n        try JSONEncoder().encode(Shelf(intents: [change, clean], kept: [set])).write(to: url)\n    }\n}\n'
+  $'App/PlantedProbeC.swift|import Foundation\nimport LidarrKit\nextension AppModel {\n    func probeC() async throws {\n        let g = [gate][0]\n        _ = try await g?.send("DEL" + "ETE", "trackfile/bulk", body: ["trackFileIds": [1]])\n    }\n}\n'
+  $'App/PlantedProbeD.swift|import Foundation\nimport LidarrKit\nextension AppModel {\n    func probeD(_ m: AppModel) async throws {\n        let g = m.gate\n        _ = try await g?.send("DEL" + "ETE", "trackfile/bulk", body: ["trackFileIds": [1]])\n    }\n}\n'
+  $'App/PlantedProbeF.swift|import Foundation\nimport LidarrKit\nextension AppModel {\n    func probeF() async throws {\n        try await gate.map { try await $0.send("DEL" + "ETE", "trackfile/bulk", body: ["trackFileIds": [1]]) }\n    }\n}\n'
+)
+for w in "${whole_files[@]}"; do
+  dest="$work/${w%%|*}"
+  printf '%s' "${w#*|}" > "$dest"
+  if out=$("$work/scripts/check-writes.sh" 2>&1); then
+    echo "selftest: NOT caught as a whole file: ${w%%|*}" >&2; failed=1
+  elif ! grep -qE 'L1:|G1:' <<< "$out"; then
+    echo "selftest: failed without a G1/L1 reason: ${w%%|*}" >&2; failed=1
+  fi
+  rm -f "$dest"
+done
+planted+=("${whole_files[@]}")
+
 # Fix M1: weakenings of the Aurral allow-list itself (one at a time, each on a fresh copy of AurralClient.swift) must be
 # caught too: a read moved to a write verb, a route with a new query name, a token dropped or added, the retry route's
 # continuation loosened.

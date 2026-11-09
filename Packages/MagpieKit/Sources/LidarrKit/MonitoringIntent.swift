@@ -58,14 +58,14 @@ public struct MonitoringIntent: Sendable, Equatable, Codable, Identifiable {
         case searchSent
     }
 
-    public var id: UUID
+    public internal(set) var id: UUID
     public internal(set) var kind: Kind
     /// The Lidarr server this belongs to (`LidarrClient.instanceScope`), stamped by the ledger.
-    public var instance: String?
+    public internal(set) var instance: String?
     public internal(set) var artistId: Int
     /// The artist's MusicBrainz id when the owner confirmed: Lidarr may hand a removed artist's id to another one.
     public internal(set) var artistMbid: MBID
-    public var createdAt: Date
+    public internal(set) var createdAt: Date
     /// The metadata profile the artist had before Magpie's first change: the owner's own, what Revert restores (D244).
     public internal(set) var previousProfileId: Int
     /// The profile this change assigns: one of Magpie's (`monitoringChange`) or `previousProfileId` (`revert`).
@@ -89,21 +89,21 @@ public struct MonitoringIntent: Sendable, Equatable, Codable, Identifiable {
     /// `confirmationHash(…)` of what the owner confirmed; the gate computes it again from this record.
     public internal(set) var confirmationHash: String?
     /// A clean-up's files gone so far.
-    public var deletedFileIds: [Int]
+    public internal(set) var deletedFileIds: [Int]
     /// A clean-up's batch being sent (saved just before it), proven again from fresh reads after a lost answer.
-    public var pendingFileIds: [Int]
+    public internal(set) var pendingFileIds: [Int]
     /// Fix round 3 H-L4: the batch (at most 50, of `monitorAlbumIds`) the next monitor or search covers, saved before it.
-    public var monitorBatch: [Int]?
-    public var refreshCommandId: Int?
-    public var step: Step
+    public internal(set) var monitorBatch: [Int]?
+    public internal(set) var refreshCommandId: Int?
+    public internal(set) var step: Step
     /// The step whose write is being sent (saved just before it); after a lost answer it is re-proven from a read.
-    public var sending: Step?
-    public var failures: Int
-    public var finishedAt: Date?
+    public internal(set) var sending: Step?
+    public internal(set) var failures: Int
+    public internal(set) var finishedAt: Date?
 
     public var isOpen: Bool { step != .done && step != .abandoned }
 
-    public init(kind: Kind, artistId: Int, artistMbid: MBID, previousProfileId: Int, targetProfileId: Int? = nil,
+    init(kind: Kind, artistId: Int, artistMbid: MBID, previousProfileId: Int, targetProfileId: Int? = nil,
                 targetTypes: ReleaseTypes? = nil, beforeAlbumIds: [Int] = [], unmonitorAlbumIds: [Int] = [],
                 keepFiles: Bool = true, files: [OwnedFile] = [], excludedFileIds: [Int] = [], createdAt: Date,
                 id: UUID = UUID()) {
@@ -145,6 +145,101 @@ public struct MonitoringIntent: Sendable, Equatable, Codable, Identifiable {
         monitorAlbumIds = ids.filter { !beforeAlbumIds.contains($0) }
     }
 
+    // MARK: Fix round 4 N-1: the only ways a record is made or moves on outside LidarrKit (its inits are internal)
+
+    /// The owner's confirmed change (D237): saved, nothing sent; its profile is found or made after the save (I1).
+    public static func change(artistId: Int, artistMbid: MBID, previousProfileId: Int, targetTypes: ReleaseTypes,
+                              beforeAlbumIds: [Int], unmonitorAlbumIds: [Int], keepFiles: Bool, files: [OwnedFile],
+                              excludedFileIds: [Int], createdAt: Date) -> MonitoringIntent {
+        var i = MonitoringIntent(kind: .monitoringChange, artistId: artistId, artistMbid: artistMbid,
+                                 previousProfileId: previousProfileId, targetProfileId: nil, targetTypes: targetTypes,
+                                 beforeAlbumIds: beforeAlbumIds, unmonitorAlbumIds: unmonitorAlbumIds, keepFiles: keepFiles,
+                                 files: files.filter { unmonitorAlbumIds.contains($0.albumId) },
+                                 excludedFileIds: excludedFileIds, createdAt: createdAt)
+        i.sending = .profileCreated
+        return i
+    }
+
+    /// Delete them's clean-up: exactly the finished change's files and the ones it left out (same hash), nil otherwise.
+    public static func cleanup(after change: MonitoringIntent, createdAt: Date) -> MonitoringIntent? {
+        guard change.kind == .monitoringChange, change.step == .done, !change.keepFiles else { return nil }
+        let next = MonitoringIntent(kind: .unmatchedCleanup, artistId: change.artistId, artistMbid: change.artistMbid,
+                                    previousProfileId: change.previousProfileId, files: change.files,
+                                    excludedFileIds: change.excludedFileIds, createdAt: createdAt)
+        return next.confirmationHash == change.confirmationHash ? next : nil
+    }
+
+    /// "Clean up unmatched songs": only files of the artist's kept set (id, album and size), whatever else is passed.
+    public static func cleanup(of kept: UnmonitoredKept, files: [OwnedFile], excludedFileIds: [Int],
+                               createdAt: Date) -> MonitoringIntent {
+        let named = files.filter { kept.files.contains($0) }
+        return MonitoringIntent(kind: .unmatchedCleanup, artistId: kept.artistId, artistMbid: kept.artistMbid,
+                                previousProfileId: 0, files: named,
+                                excludedFileIds: excludedFileIds.filter { id in named.contains { $0.id == id } },
+                                createdAt: createdAt)
+    }
+
+    /// Revert of a closed change (D244): back to the profile it recorded as previous.
+    public static func revert(of change: MonitoringIntent, createdAt: Date) -> MonitoringIntent? {
+        guard change.kind == .monitoringChange, !change.isOpen else { return nil }
+        return MonitoringIntent(kind: .revert, artistId: change.artistId, artistMbid: change.artistMbid,
+                                previousProfileId: change.previousProfileId, targetProfileId: change.previousProfileId,
+                                createdAt: createdAt)
+    }
+
+    /// The step reached (saved before the next write).
+    public mutating func reach(_ step: Step) {
+        guard isOpen, step != .profileCreated, step != .searchSent else { return }
+        self.step = step
+        sending = nil
+    }
+
+    /// The write about to be sent (saved just before it).
+    public mutating func willSend(_ step: Step) { if isOpen { sending = step } }
+
+    /// The change step goes back to `step` (a profile Lidarr put back, a refresh that failed), the refresh forgotten.
+    public mutating func back(to step: Step) {
+        guard isOpen, [.saved, .unmonitored, .profileSet].contains(step) else { return }
+        self.step = step
+        refreshCommandId = nil
+    }
+
+    public mutating func recordRefresh(_ id: Int?) { refreshCommandId = id }
+
+    public mutating func countFailure() { failures += 1 }
+
+    /// The record ends, finished or given up.
+    public mutating func close(as end: Step, at date: Date) {
+        guard end == .done || end == .abandoned else { return }
+        step = end
+        sending = nil
+        finishedAt = date
+    }
+
+    /// A clean-up's next batch: only files it names, none it left out or already deleted, at most 50.
+    public mutating func beginBatch(_ ids: [Int]) {
+        let named = Set(files.map(\.id))
+        pendingFileIds = Array(ids.filter { named.contains($0) && !excludedFileIds.contains($0) && !deletedFileIds.contains($0) }
+            .prefix(WriteConfinement.maxCleanupFiles))
+        step = .deleting
+        sending = .deleting
+    }
+
+    /// Files of the pending batch now gone (deleted, or read as gone after a lost answer).
+    public mutating func batchGone(_ ids: [Int]) {
+        let gone = ids.filter { pendingFileIds.contains($0) && !deletedFileIds.contains($0) }
+        deletedFileIds += gone
+        pendingFileIds.removeAll { gone.contains($0) }
+    }
+
+    /// The pending batch is settled (nothing of it waits any more).
+    public mutating func endBatch() { pendingFileIds = [] }
+
+    /// The next monitor or search batch: only albums the refresh brought in, at most 50.
+    public mutating func beginMonitorBatch(_ ids: [Int]) {
+        monitorBatch = Array(ids.filter { monitorAlbumIds.contains($0) }.prefix(WriteConfinement.maxCleanupFiles))
+    }
+
     /// Fix round 3 H-M3 / H-L3: files kept after all (a fresh keep list says the owner keeps them, or a check refused one):
     /// left out of the delete and the hash saved again. Only ever narrows: nothing is added to what may be deleted.
     public mutating func keepAlso(_ ids: [Int]) {
@@ -169,14 +264,14 @@ public enum ByteTotal {
 /// D241: Keep them, recorded once the change is done: the albums that stopped being monitored and their files at that
 /// moment. "Clean up unmatched songs" (D242) offers only these files, while their album is still unmonitored.
 public struct UnmonitoredKept: Sendable, Equatable, Codable {
-    public var instance: String?
-    public var artistId: Int
-    public var artistMbid: MBID
+    public internal(set) var instance: String?
+    public internal(set) var artistId: Int
+    public internal(set) var artistMbid: MBID
     public internal(set) var albumIds: [Int]
     public internal(set) var files: [OwnedFile]
-    public var recordedAt: Date
+    public internal(set) var recordedAt: Date
 
-    public init(artistId: Int, artistMbid: MBID, albumIds: [Int], files: [OwnedFile], recordedAt: Date) {
+    init(artistId: Int, artistMbid: MBID, albumIds: [Int], files: [OwnedFile], recordedAt: Date) {
         self.artistId = artistId; self.artistMbid = artistMbid; self.albumIds = albumIds; self.files = files
         self.recordedAt = recordedAt
     }
@@ -184,10 +279,10 @@ public struct UnmonitoredKept: Sendable, Equatable, Codable {
 
 /// The ledger's monitoring book: every intent and kept set, of every Lidarr (each stamped with its own).
 public struct MonitoringBook: Sendable, Equatable, Codable {
-    public var intents: [MonitoringIntent]
-    public var kept: [UnmonitoredKept]
+    public internal(set) var intents: [MonitoringIntent]
+    public internal(set) var kept: [UnmonitoredKept]
 
-    public init(intents: [MonitoringIntent] = [], kept: [UnmonitoredKept] = []) {
+    init(intents: [MonitoringIntent] = [], kept: [UnmonitoredKept] = []) {
         self.intents = intents; self.kept = kept
     }
 
@@ -195,6 +290,12 @@ public struct MonitoringBook: Sendable, Equatable, Codable {
     public func open(artistId: Int) -> [MonitoringIntent] { intents.filter { $0.artistId == artistId && $0.isOpen } }
 
     public func kept(artistId: Int) -> UnmonitoredKept? { kept.first { $0.artistId == artistId } }
+
+    /// Fix round 4 N-1: saves `intent` in the book (replacing the one with its id).
+    public mutating func put(_ intent: MonitoringIntent) {
+        intents.removeAll { $0.id == intent.id }
+        intents.append(intent)
+    }
 
     // MARK: Fix round 3 H-M2: the kept set changes only through these
 

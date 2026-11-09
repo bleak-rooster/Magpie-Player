@@ -284,6 +284,49 @@ if [ -z "${G1_SRC:-}" ]; then
     [ -n "$s" ] || continue
     echo "G1: a write gate bound to another name (${s##*:}): ${s%%:*}" >&2; bad=1
   done <<< "$gate_names"
+  lk4="Packages/MagpieKit/Sources/LidarrKit"
+  # R24H fix round 4 N-2 (controller ruling): outside LidarrKit a `.send(` / `.performOwned(` / `.performCleanup(` has
+  # one of these literal receivers only (the gate's is `gate`; the others are HTTP transports, slskd's own gated
+  # connection and Aurral's client), so no alias (`g?`, `$0`, `[gate][0]`, `m.gate`, `self.gate`) can reach the gate.
+  receivers=$(ngrep '\.[[:space:]]*(send|performOwned|performCleanup)[[:space:]]*\(' | grep -v "^Packages/MagpieKit/Sources/LidarrKit/" | clean_lines |
+      perl -ne 'my ($f, $n, $t) = /^([^:]+):(\d+):(.*)$/ or next;
+                while ($t =~ /((?:[\w\$]+[?!]?\s*\.\s*)*[\w\$]+[?!]?|[\]\)])\s*\.\s*(?:send|performOwned|performCleanup)\s*\(/g) {
+                  my $r = $1; $r =~ s/\s+//g;
+                  print "$f:$n:$r\n" unless $r =~ /^(gate|transport|inner|probeTransport|client\.connection|Self)$/;
+                }' || true)
+  while IFS= read -r s; do
+    [ -n "$s" ] || continue
+    echo "G1: a send whose receiver isn't literally gate (${s##*:}): ${s%%:*}" >&2; bad=1
+  done <<< "$receivers"
+  # The verb of every gate send outside the gate is a literal on the line, nothing computed.
+  computed=$(ngrep 'gate\.send[[:space:]]*\(' | grep -v "^$gate:" | clean_lines |
+      perl -ne 'my ($f, $n, $t) = /^([^:]+):(\d+):(.*)$/ or next;
+                while ($t =~ /gate\.send\s*\(\s*(.{0,24})/g) { my $rest = $1; print "$f:$n\n" unless $rest =~ /^"(POST|PUT|DELETE)"\s*,/; }' || true)
+  while IFS= read -r s; do
+    [ -n "$s" ] || continue
+    echo "G1: a gate send whose verb isn't a literal: ${s%%:*}" >&2; bad=1
+  done <<< "$computed"
+  # No `[gate]`, and no other name bound to an expression's `.gate` (`let g = m.gate`).
+  wrapped=$(ngrep 'gate' | grep -v "^$gate:" | clean_lines |
+      perl -ne 'my ($f, $n, $t) = /^([^:]+):(\d+):(.*)$/ or next;
+                print "$f:$n:[gate]\n" if $t =~ /\[\s*(?:self\s*\.\s*)?gate\s*[?!]?\s*\]/;
+                while ($t =~ /\b(?:let|var)\s+(\w+)\s*(?::[^=]*)?=[^;{]*?[\w\$\])][?!]?\s*\.\s*gate\b/g) { print "$f:$n:$1\n" if $1 ne "gate"; }' || true)
+  while IFS= read -r s; do
+    [ -n "$s" ] || continue
+    echo "G1: a write gate wrapped or taken from another value (${s##*:}): ${s%%:*}" >&2; bad=1
+  done <<< "$wrapped"
+  # R24H fix round 4 N-1 (controller ruling): the consent records' types are named only by their owners, and the
+  # ledger's file name only by the ledger (in any spelling that starts it).
+  for f in $(ngrep '\b(MonitoringIntent|UnmonitoredKept|MonitoringBook)\b' | clean_lines |
+             grep -E '^[^:]+:[0-9]+:.*\b(MonitoringIntent|UnmonitoredKept|MonitoringBook)\b' | cut -d: -f1 | sort -u || true); do
+    case "$f" in
+      "$lk4/Ledger.swift"|"$lk4/MonitoringIntent.swift"|"$lk4/WriteGate.swift"|"$lk4/WriteConfinement.swift"|"$lk4/WriteConfinement+Owned.swift"|Packages/MagpieKit/Sources/Requests/MonitoringChange.swift) ;;
+      *) echo "G1: a monitoring consent record named outside its owners: $f" >&2; bad=1 ;;
+    esac
+  done
+  for f in $(ngrep 'lidarr-ledger|ledger-mon' | clean_lines | grep -E '^[^:]+:[0-9]+:.*(lidarr-ledger|ledger-mon)' | cut -d: -f1 | sort -u || true); do
+    [ "$f" = "$lk4/Ledger.swift" ] || { echo "G1: the ledger's file name spelled outside the ledger: $f" >&2; bad=1; }
+  done
   grep -qF 'static let queueRemoval = "removeFromClient=true&blocklist=true&skipRedownload=true"' "$restarter" ||
     { echo "G1: $restarter: queueRemoval isn't exactly removeFromClient=true&blocklist=true&skipRedownload=true" >&2; bad=1; }
   # Round 13 item 6 (D63; Z4 review I1): every `allowForeign:` / `includeForeign:` ARGUMENT in product code, whatever

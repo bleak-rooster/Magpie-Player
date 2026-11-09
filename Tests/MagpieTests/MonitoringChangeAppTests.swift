@@ -1,5 +1,5 @@
 import Foundation
-import LidarrKit
+@testable import LidarrKit
 import MagpieCore
 import MagpieTestSupport
 import Requests
@@ -120,6 +120,54 @@ private let lidarrScope = LidarrClient(base: lidarrBase, apiKey: "key", transpor
         t.stub(pathSuffix: "/api/song", body: Data("[]".utf8), headers: ["X-Total-Count": "0"])
         t.stub(pathSuffix: "/api/v1/system/status", body: Data(#"{"version":"3.2.0","instanceName":"Lidarr","authentication":"forms"}"#.utf8))
         t.stub(pathSuffix: "/api/v1/rootfolder", body: Data(#"[{"id":1,"path":"/music"}]"#.utf8))
+    }
+
+    /// R24H fix round 4 (D-L2): a cold launch for the background request pass never resumes a monitoring change; the
+    /// scene becoming active does.
+    @Test func aColdBackgroundPassSendsNoMonitoringWrite() async throws {
+        AppModel.MonitoringSwitch.shared.sceneActive = false
+        LidarrSetupStore(defaults: defaults).save(LidarrSetup(base: lidarrBase, scope: lidarrScope, fastStartProfileId: 4,
+                                                              findsMetadataProfileId: 3, magpieTagId: 1,
+                                                              losslessProfileId: 7, rootFolderPath: "/music"))
+        let model = AppModel(store: store, lidarrStore: lidarrStore, tokenStore: MemoryTokenStore(), matchIndexDirectory: nil,
+                             dataDirectory: data, gateDefaultsSuite: gateSuite, transport: transport, probeTransport: transport,
+                             engine: FakeEngine(), defaults: defaults, systemNowPlaying: false, notifications: false)
+        defer {
+            model.signOut()
+            UserDefaults(suiteName: gateSuite)?.removePersistentDomain(forName: gateSuite)
+            try? FileManager.default.removeItem(at: data)
+        }
+        try await model.signIn(urls: [home], username: "jordan", password: "pw")
+        _ = try await model.connectLidarr(base: lidarrBase, apiKey: "key")
+        await model.setChangesAllowed(true)
+        // The switch on, as an earlier session left it (turning it on here would resume by itself).
+        UserDefaults(suiteName: gateSuite)?.set(true, forKey: LidarrWriteGate.monitoringChangesKey(scope: lidarrScope))
+        // An unfinished change of artist 20, its unmonitor not sent yet.
+        let ledger = Ledger(fileURL: Ledger.defaultURL(in: data), instance: lidarrScope)
+        let intent = MonitoringIntent(kind: .monitoringChange, artistId: 20, artistMbid: MBID("22222222-2222-4222-8222-222222222222")!,
+                                      previousProfileId: 5, targetProfileId: 30,
+                                      targetTypes: ReleaseTypes(albums: true, eps: false, singles: false),
+                                      unmonitorAlbumIds: [2], createdAt: Date())
+        try await ledger.saveIntent(intent)
+        // A cold background launch: the runner is built and the pass runs.
+        model.rebuildRunner()
+        _ = await model.backgroundRequestPass(limit: .seconds(5), submit: { _ in })
+        for _ in 0..<50 { await Task.yield() }
+        let monitoringWrites = { [transport] in
+            transport.inner.requests.filter { r in
+                (r.httpMethod ?? "GET") != "GET" && ["/api/v1/album/monitor", "/api/v1/artist/editor", "/api/v1/command"].contains(r.url?.path ?? "")
+            }
+        }
+        #expect(monitoringWrites().isEmpty, "no monitoring write from a background pass")
+        #expect(try await ledger.monitoringBook.intents.first?.sending == nil, "nothing was even about to be sent")
+        // The scene becoming active resumes it: the intent moves on (marked as sending, or ended by the gate's refusal
+        // here, where this fake Lidarr has no artist 20).
+        model.monitoringSceneChanged(active: true)
+        #expect(await eventually {
+            guard let now = try? await ledger.monitoringBook.intents.first else { return false }
+            return now.sending != nil || now.step != .saved
+        })
+        AppModel.MonitoringSwitch.shared.sceneActive = false
     }
 
     @Test func theSwitchIsOffByDefaultForEachLidarr() async throws {

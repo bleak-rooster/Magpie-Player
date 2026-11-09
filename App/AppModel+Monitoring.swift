@@ -14,6 +14,9 @@ extension AppModel {
     @MainActor @Observable final class MonitoringSwitch {
         static let shared = MonitoringSwitch()
         var revision = 0
+        /// R24H fix round 4 (D-L2): the scene has reported active. False at launch, so a cold launch for the background
+        /// request pass never resumes a monitoring change (its writes wait for the owner to open Magpie).
+        var sceneActive = false
     }
 
     /// "Let Magpie change what Lidarr monitors for my artists", for the connected Lidarr. False without one.
@@ -30,6 +33,14 @@ extension AppModel {
         }
         MonitoringSwitch.shared.revision += 1
         if on { Task { await monitoringChanger?.resumeAll() } }
+    }
+
+    /// R24H fix round 4 (D-L2): the scene's phase. Becoming active resumes unfinished monitoring changes (never a
+    /// delete: that waits for a keep list, H-M3); a background launch never does.
+    func monitoringSceneChanged(active: Bool) {
+        let wasActive = MonitoringSwitch.shared.sceneActive
+        MonitoringSwitch.shared.sceneActive = active
+        if active, !wasActive { Task { await monitoringChanger?.resumeAll() } }
     }
 
     /// The package's changer for the connected Lidarr, through the same gate and ledger as the requests. Nil without

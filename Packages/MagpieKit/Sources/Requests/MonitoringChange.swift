@@ -355,12 +355,11 @@ public actor MonitoringChanger {
             let deletable = files.filter { !excluded.contains($0.id) }
             // Fix round 1 I1: the intent is saved before any write, the Magpie profile included: its id isn't known yet
             // (`sending = .profileCreated`); `change` makes or reuses it and records the id before the first change write.
-            var intent = MonitoringIntent(kind: .monitoringChange, artistId: preview.artistId, artistMbid: preview.artistMbid,
-                                          previousProfileId: preview.previousProfileId, targetProfileId: nil,
-                                          targetTypes: preview.target, beforeAlbumIds: albums.map(\.id).sorted(),
-                                          unmonitorAlbumIds: unmonitor, keepFiles: choice == .keep || deletable.isEmpty,
-                                          files: files, excludedFileIds: excluded, createdAt: now())
-            intent.sending = .profileCreated
+            let intent = MonitoringIntent.change(artistId: preview.artistId, artistMbid: preview.artistMbid,
+                                                 previousProfileId: preview.previousProfileId, targetTypes: preview.target,
+                                                 beforeAlbumIds: albums.map(\.id).sorted(), unmonitorAlbumIds: unmonitor,
+                                                 keepFiles: choice == .keep || deletable.isEmpty, files: files,
+                                                 excludedFileIds: excluded, createdAt: now())
             do { try await ledger.saveIntent(intent) } catch { throw MonitoringChangeError.notSaved }
             await gate.note(Self.note(intent, from: preview.currentProfileId, instance: lidarr.instanceScope))
             return await advance(intent, keep: keep)
@@ -447,9 +446,8 @@ public actor MonitoringChanger {
             let keptFiles = Set(kept.files)
             let rows = preview.rows.filter { keptFiles.contains($0.file) }
             guard rows.contains(where: { !$0.kept }) else { return .finished }
-            let intent = MonitoringIntent(kind: .unmatchedCleanup, artistId: preview.artistId, artistMbid: mbid,
-                                          previousProfileId: 0, files: rows.map(\.file),
-                                          excludedFileIds: rows.filter(\.kept).map(\.file.id), createdAt: now())
+            let intent = MonitoringIntent.cleanup(of: kept, files: rows.map(\.file),
+                                                  excludedFileIds: rows.filter(\.kept).map(\.file.id), createdAt: now())
             do { try await ledger.saveIntent(intent) } catch { throw MonitoringChangeError.notSaved }
             return await advance(intent, keep: keep)
         }
@@ -467,9 +465,9 @@ public actor MonitoringChanger {
             guard let source = Self.revertSource(try await book(), artist), let mbid = artist.foreignArtistId else {
                 throw MonitoringChangeError.nothingToRevert
             }
-            let intent = MonitoringIntent(kind: .revert, artistId: artistId, artistMbid: mbid,
-                                          previousProfileId: source.previousProfileId, targetProfileId: source.previousProfileId,
-                                          createdAt: now())
+            guard let intent = MonitoringIntent.revert(of: source, createdAt: now()), intent.artistMbid == mbid else {
+                throw MonitoringChangeError.nothingToRevert
+            }
             do { try await ledger.saveIntent(intent) } catch { throw MonitoringChangeError.notSaved }
             await gate.note("monitoring revert: artist \(artistId) metadataProfileId \(artist.metadataProfileId.map(String.init) ?? "-") -> \(source.previousProfileId) instance \(lidarr.instanceScope)")
             return await advance(intent, keep: nil)
@@ -509,12 +507,11 @@ public actor MonitoringChanger {
             if case WriteGateError.disabled = error { return .paused }
             if (try? await writable()) == nil { return .paused }
             let refused: Bool = if case WriteGateError.forbidden = error { true } else { error is Abandon }
-            job.failures += 1
+            job.countFailure()
             if refused || job.failures >= Self.maxFailures {
                 Log.logger("requests").error("monitoring change given up: \(Log.category(of: error), privacy: .public)")
                 if job.kind == .unmatchedCleanup { try? await closeCleanup(&job, as: .abandoned) } else {
-                    job.step = .abandoned
-                    job.finishedAt = now()
+                    job.close(as: .abandoned, at: now())
                     try? await ledger.saveIntent(job)
                 }
                 return .abandoned
@@ -525,13 +522,12 @@ public actor MonitoringChanger {
     }
 
     private func sending(_ job: inout MonitoringIntent, _ step: MonitoringIntent.Step) async throws {
-        job.sending = step
+        job.willSend(step)
         try await ledger.saveIntent(job)
     }
 
     private func saved(_ job: inout MonitoringIntent, _ step: MonitoringIntent.Step) async throws {
-        job.step = step
-        job.sending = nil
+        job.reach(step)
         try await ledger.saveIntent(job)
     }
 
@@ -557,7 +553,7 @@ public actor MonitoringChanger {
                 throw Abandon()
             }
             job.recordProfile(made)
-            job.sending = nil
+            job.reach(job.step)   // the profile is known: nothing is being sent
             try await ledger.saveIntent(job)
         }
         guard let target = job.targetProfileId else { throw Abandon() }
@@ -592,7 +588,7 @@ public actor MonitoringChanger {
                         $0.name.lowercased() == "refreshartist" && $0.artistIds.contains(job.artistId)
                             && ["queued", "started"].contains($0.status.lowercased())
                     }) {
-                        job.refreshCommandId = running.id
+                        job.recordRefresh(running.id)
                         try await saved(&job, .refreshSent)
                         continue
                     }
@@ -600,15 +596,14 @@ public actor MonitoringChanger {
                 try await sending(&job, .refreshSent)
                 let data = try await gate.performOwned(intentId: job.id, step: .refresh)
                 guard let id = (try? JSONDecoder().decode(JSONValue.self, from: data))?["id"]?.intValue else { throw Pending() }
-                job.refreshCommandId = id
+                job.recordRefresh(id)
                 try await saved(&job, .refreshSent)
             case .refreshSent:
-                guard let id = job.refreshCommandId else { job.step = .profileSet; continue }
+                guard let id = job.refreshCommandId else { job.back(to: .profileSet); continue }
                 switch await refreshState(id) {
                 case .completed: try await saved(&job, .refreshed)
                 case .failed:
-                    job.refreshCommandId = nil
-                    job.step = .profileSet
+                    job.back(to: .profileSet)
                     try await ledger.saveIntent(job)
                     throw NotTaken()   // fix round 2 m3: counted
                 case .unknown: throw Pending()
@@ -618,8 +613,7 @@ public actor MonitoringChanger {
                 // editor write (seen on the dev stack): the profile is read again after the confirmed refresh, and sent
                 // again (counted as a failure, so it can't loop) when it isn't the target.
                 if job.sending != .searchSent, try await profile(of: job.artistId) != target {
-                    job.step = .unmonitored
-                    job.refreshCommandId = nil
+                    job.back(to: .unmonitored)
                     try await ledger.saveIntent(job)
                     throw ProfileReverted()
                 }
@@ -639,12 +633,12 @@ public actor MonitoringChanger {
                         Array(job.monitorAlbumIds[$0..<min($0 + WriteConfinement.maxCleanupFiles, job.monitorAlbumIds.count)])
                     }
                     for batch in batches where batch.contains(where: { id in albums.first { $0.id == id }?.monitored != true }) {
-                        job.monitorBatch = batch
+                        job.beginMonitorBatch(batch)
                         try await sending(&job, .monitored)
                         _ = try await gate.performOwned(intentId: job.id, step: .monitor)
                     }
                     for batch in batches {
-                        job.monitorBatch = batch
+                        job.beginMonitorBatch(batch)
                         try await sending(&job, .searchSent)
                         _ = try await gate.performOwned(intentId: job.id, step: .search)
                     }
@@ -660,16 +654,12 @@ public actor MonitoringChanger {
     /// very confirmation the owner gave (same hash), saved in the same write as the change's end. Returns that clean-up.
     private func finish(_ job: inout MonitoringIntent) async throws -> MonitoringIntent? {
         guard job.step == .monitored else { return nil }
-        job.step = .done
-        job.sending = nil
-        job.finishedAt = now()
+        job.close(as: .done, at: now())
         let done = job
         var cleanup: MonitoringIntent?
         if done.kind == .monitoringChange, !done.keepFiles {
-            let next = MonitoringIntent(kind: .unmatchedCleanup, artistId: done.artistId, artistMbid: done.artistMbid,
-                                        previousProfileId: done.previousProfileId, files: done.files,
-                                        excludedFileIds: done.excludedFileIds, createdAt: now())
-            guard next.confirmationHash == done.confirmationHash else { throw Abandon() }
+            // The very confirmation the owner gave (same hash), or nothing.
+            guard let next = MonitoringIntent.cleanup(after: done, createdAt: now()) else { throw Abandon() }
             cleanup = next
         }
         // Fix round 3 H-M1: albums of a type the new choice includes (monitored again) leave the kept set: they aren't
@@ -684,9 +674,8 @@ public actor MonitoringChanger {
         let next = cleanup
         let monitoredAgain = included
         try await ledger.updateMonitoring { book in
-            book.intents.removeAll { $0.id == done.id }
-            book.intents.append(done)
-            if let next { book.intents.append(next) }
+            book.put(done)
+            if let next { book.put(next) }
             if done.kind == .revert {
                 book.forgetKept(artistId: done.artistId)   // H-M1: put back as it was, nothing left to clean up
             } else {
@@ -718,8 +707,8 @@ public actor MonitoringChanger {
             for id in job.pendingFileIds {
                 do { _ = try await lidarr.trackFile(id: id) } catch LidarrError.http(status: 404) { gone.append(id) }
             }
-            job.deletedFileIds += gone
-            job.pendingFileIds = []
+            job.batchGone(gone)
+            job.endBatch()
             try await ledger.saveIntent(job)
         }
         let excluded = Set(job.excludedFileIds), deleted = Set(job.deletedFileIds)
@@ -735,27 +724,26 @@ public actor MonitoringChanger {
     /// its own: a file refused alone is recorded as kept (left out, the hash saved again), the rest are deleted. Nothing
     /// the owner chose is dropped silently, and nothing refused is sent again.
     private func deleteBatch(_ job: inout MonitoringIntent, _ ids: [Int]) async throws {
-        job.pendingFileIds = ids
-        job.step = .deleting
-        try await sending(&job, .deleting)
+        job.beginBatch(ids)
+        try await ledger.saveIntent(job)
         do {
             _ = try await gate.performCleanup(intentId: job.id)
-            job.deletedFileIds += ids
-            job.pendingFileIds = []
+            job.batchGone(job.pendingFileIds)
+            job.endBatch()
             try await ledger.saveIntent(job)
         } catch WriteGateError.forbidden where ids.count > 1 {
             guard (try? await writable()) != nil else { throw WriteGateError.disabled }
             for id in ids {
-                job.pendingFileIds = [id]
-                try await sending(&job, .deleting)
+                job.beginBatch([id])
+                try await ledger.saveIntent(job)
                 do {
                     _ = try await gate.performCleanup(intentId: job.id)
-                    job.deletedFileIds.append(id)
+                    job.batchGone([id])
                 } catch WriteGateError.forbidden {
                     guard (try? await writable()) != nil else { throw WriteGateError.disabled }
                     job.keepAlso([id])
                 }
-                job.pendingFileIds = []
+                job.endBatch()
                 try await ledger.saveIntent(job)
             }
         }
@@ -763,14 +751,11 @@ public actor MonitoringChanger {
 
     /// The clean-up ends (done or given up): the files it deleted leave the kept set, in the same write.
     private func closeCleanup(_ job: inout MonitoringIntent, as end: MonitoringIntent.Step) async throws {
-        job.step = end
-        job.sending = nil
-        job.finishedAt = now()
+        job.close(as: end, at: now())
         let closed = job
         let gone = Set(job.deletedFileIds)
         try await ledger.updateMonitoring { book in
-            book.intents.removeAll { $0.id == closed.id }
-            book.intents.append(closed)
+            book.put(closed)
             book.forgetKept(artistId: closed.artistId, files: gone)
         }
     }

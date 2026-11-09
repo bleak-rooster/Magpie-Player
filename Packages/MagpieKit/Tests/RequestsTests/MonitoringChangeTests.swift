@@ -1,7 +1,7 @@
 import Foundation
 import os
 import Testing
-import LidarrKit
+@testable import LidarrKit
 import MagpieCore
 import MagpieTestSupport
 @testable import Requests
