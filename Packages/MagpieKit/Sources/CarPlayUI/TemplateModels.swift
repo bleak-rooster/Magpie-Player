@@ -35,6 +35,9 @@ public enum CPDestination: Sendable, Hashable {
     case songs
     /// Round 13: one song group (or a page of it): offsets in the server's title order, read when it opens.
     case songRange(title: String, ranges: [Range<Int>])
+    /// Round 24 (owner, 2026-11-08): one page of a list longer than the car's ceiling, opened by "More…" or
+    /// "Previous…" in place of the page before it (ListDiff.swift, D231, D232).
+    indirect case page(CPPageRef)
 
     public var title: String {
         switch self {
@@ -53,6 +56,7 @@ public enum CPDestination: Sendable, Hashable {
         case .search: "Search"
         case .letterGroup(let title, _), .songRange(let title, _): title
         case .songs: "Songs"
+        case .page(let ref): ref.title
         }
     }
 }
