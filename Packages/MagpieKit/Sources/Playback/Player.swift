@@ -88,6 +88,11 @@ public final class Player {
     /// What the engine was last handed as current; reused so a refresh of the upcoming URLs (quality,
     /// network) never makes the engine reload the song that is playing.
     @ObservationIgnored private var loaded: (entryId: UUID, url: URL)?
+    /// Round 24 G (D235): the entry previous last started again, and when. A tick the engine sent before that restart
+    /// (still in its stream) would put the old position back on screen while the song plays from the top: until a tick
+    /// lands near the start, or `restartTickGrace` passes, a later one for that entry is dropped.
+    @ObservationIgnored private var restartedAt: (entryId: UUID, at: Date)?
+    private static let restartTickGrace: TimeInterval = 2
 
     /// The URL the current entry plays from (a file on the phone or a server stream), nil before it is loaded.
     /// Round 12 Y3: Now Playing says what is heard from it, not from the quality set now.
@@ -162,6 +167,7 @@ public final class Player {
     }
 
     public func next() {
+        let resumes = stoppedOnItsOwn
         // A manual skip is not the song ending: stop after current no longer applies. Turning it off
         // re-sends the upcoming list, so the engine has the next song again.
         stopsAfterCurrent = false
@@ -180,6 +186,7 @@ public final class Player {
         while queue.current?.id != target.id, queue.advance() != nil {}
         guard engineHasItNext else {
             loadCurrent()
+            if resumes { resume() }
             return
         }
         engine.next()
@@ -199,16 +206,54 @@ public final class Player {
     }
 
     public func previous() {
+        let resumes = stoppedOnItsOwn
         if position > Self.restartThreshold || queue.back() == nil {
-            seek(0)
+            restartFromTop(resumes: resumes)
             return
         }
         loadCurrent()
+        if resumes { resume() }
+    }
+
+    /// Round 24 G (owner item 11, D235): the player stopped by itself, not by the owner's pause: the current song failed
+    /// (a dropout in the car), or the queue ended. A skip from there plays what it lands on; before, it loaded the song
+    /// and stayed silent, so the car's next and previous seemed to do nothing.
+    private var stoppedOnItsOwn: Bool { failedEntryId != nil || hasEnded }
+
+    /// Previous past 3 s (or on the first song) starts the song again. Stopped on its own, the song loads and plays as a
+    /// new play. Otherwise a song that seeks (a file on the phone, an Original or MP3 stream) seeks to 0 as before.
+    /// Round 24 G (owner item 11, D235), defensive, the cause unconfirmed on a device: a converted AAC or Opus stream
+    /// comes chunked, with no byte ranges (D42, D45), so a seek to 0 may leave the sound where it was while Now Playing
+    /// shows 0:00; that one is loaded afresh instead. Emptying the engine's list first makes it drop the item, so the
+    /// same entry loads anew (its URL built again, so from the source that is current now); paused stays paused.
+    private func restartFromTop(resumes: Bool) {
+        guard let current = queue.current else { return }
+        if resumes {
+            loadCurrent()
+            resume()
+            return
+        }
+        guard let url = currentURL, !Self.seeksReliably(url) else { return seek(0) }
+        engine.setItems([], startAt: 0)
+        loaded = nil
+        syncEngine()
+        position = 0
+        anchorTick(at: 0)
+        restartedAt = (current.id, now())
+    }
+
+    /// Round 24 G (D235): whether a seek on `url` lands: a file on the phone, or a stream sent with its length
+    /// (`estimateContentLength`: Original and MP3). A converted AAC or Opus stream goes out chunked without it (D42, D45).
+    nonisolated static func seeksReliably(_ url: URL) -> Bool {
+        if url.isFileURL { return true }
+        let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        return items.contains { $0.name == "estimateContentLength" && $0.value == "true" }
     }
 
     public func seek(_ t: TimeInterval) {
         guard t.isFinite else { return }   // NaN or infinity would trap where the position becomes whole seconds
         hasEnded = false
+        restartedAt = nil   // R24 G (D235): a seek after a restart is followed at once
         engine.seek(to: t)
         position = t
         anchorTick(at: t)   // a jump is not listening
@@ -342,6 +387,10 @@ public final class Player {
             // A time that isn't a number (a stream that lost its clock) keeps the last position: NaN or infinity would
             // trap where it becomes whole seconds (lock screen, the scrubber's clock).
             guard t.isFinite else { return }
+            if let restart = restartedAt, restart.entryId == id {   // R24 G (D235): a tick from before the restart
+                if t > Self.restartThreshold, now().timeIntervalSince(restart.at) < Self.restartTickGrace { return }
+                restartedAt = nil
+            }
             position = max(0, t)
             if var p = playback, p.entryId == id {
                 // A step is listening only when the wall clock could have covered it (ticks come less often in the
