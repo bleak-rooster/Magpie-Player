@@ -18,7 +18,9 @@ distributed only through TestFlight. It is not on the App Store. Expect rough ed
 ## What it does
 
 **Your library, through Navidrome**
-- Browse playlists, artists, albums, songs and genres; search as you type; star favourites.
+- Browse playlists, artists, albums, songs and genres; search as you type; star favourites. Artists, Albums and
+  Songs each have their own search field, and long lists have a header for each letter beside the A–Z bar.
+- Playlists can show only yours or everyone's shared ones; under everyone's, each playlist says who made it.
 - A queue with shuffle and repeat, the lock screen and Control Centre, and synced lyrics when your server has them.
   Playback is gapless when the files carry gapless information.
 - Download albums and playlists for offline listening, with a size-limited cache for what you stream.
@@ -29,6 +31,8 @@ distributed only through TestFlight. It is not on the App Store. Expect rough ed
 **CarPlay**
 - Home, Library, Finds and Search tabs, Now Playing with shuffle and repeat. It starts from the car even if the phone
   is locked, once the phone has been unlocked after a restart.
+- Every list reaches its end, however small the car's screen: long lists open on letter groups or go on with "More…"
+  pages, within the limits the car sets.
 
 **Finds, through Lidarr (optional)**
 - Tap **Try** on a song or album you don't have (from search, an artist's page, a playlist or recommendations). Magpie
@@ -47,12 +51,22 @@ distributed only through TestFlight. It is not on the App Store. Expect rough ed
   arrived anyway. Nothing in your main library is deleted.
 - Nothing is changed in Lidarr until you switch on **Allow Magpie to change Lidarr**. Every change goes through one
   write gate that only allows a short list of requests. It only touches artists and albums Magpie itself added or
-  monitored, and logs each change on the phone before sending it. Your own artists, profiles and settings are never
-  modified.
+  monitored, and logs each change on the phone before sending it. Your own artists, profiles and settings are left
+  alone, with one opt-in exception below.
+- **Change what's monitored (opt-in).** With **Let Magpie change what Lidarr monitors for my artists** switched on, an
+  artist's menu lets you choose Albums, EPs and Singles. When fewer are monitored, Magpie asks whether to delete the
+  songs that fall out or keep them (Keep is the default); kept songs can be removed later with **Clean up unmatched
+  songs**, and **Put back how it was** restores the artist's previous profile. Favourites, songs in playlists and songs
+  downloaded to the phone are never deleted, and every change is saved on the phone and checked against Lidarr before
+  it is sent.
+- **Soulseek (slskd), optional.** Its own settings page. **Keep Soulseek connected** checks that slskd is connected,
+  asks it to reconnect when it isn't, and lets you know if it still can't after about ten minutes.
 
 **Discovery (optional)**
 - With [Aurral](https://github.com/lklynet/aurral): charts, recommendations, previews and Aurral's "flows" (playlists
-  it builds and keeps up to date).
+  it builds and keeps up to date). Flows and playlists are matched to the person who made them, not by name, so two
+  people's "Chill" stay apart. You can delete your own flows and playlists, and **Songs still coming** shows what
+  Aurral is still fetching, with Approve, Try another source and Search now for your own songs.
 - With a [ListenBrainz](https://listenbrainz.org) token: your weekly playlists and recommendations. Plays are
   scrobbled through Navidrome; songs in Finds are never scrobbled.
 
@@ -81,7 +95,7 @@ enough to use Magpie as a player.
 - **Background work is limited by iOS.** Requests are followed while the app runs and whenever iOS grants background
   time, so a download that finishes while the app is closed may only show up the next time you open it.
 - **Not built yet:**
-  - in CarPlay: Up Next and Downloaded, and Not for me;
+  - in CarPlay: Not for me;
   - Siri;
   - Live Activities.
 - **Removing an artist Magpie added clears what it left behind** (Lidarr's blocklist entries for it, and, with the
@@ -96,10 +110,9 @@ enough to use Magpie as a player.
 There are no dates. These are the things most likely to come next, roughly in order:
 
 1. Run CI on every pull request on GitHub (the workflows are in place; the hosted macOS runners need Xcode 27).
-2. CarPlay: Up Next and Downloaded.
-3. Try a whole artist, not just a song or an album.
-4. Optional automatic expiry for finds you haven't kept.
-5. iPad layouts.
+2. Try a whole artist, not just a song or an album.
+3. Optional automatic expiry for finds you haven't kept.
+4. iPad layouts.
 
 Requests and ideas are welcome as issues. Larger changes start as a short plan
 ([how work is planned](docs/ways-of-working/process.md)).
