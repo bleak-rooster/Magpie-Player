@@ -96,6 +96,12 @@ final class R24EListsUITests: XCTestCase {
         let terra = app.buttons.matching(NSPredicate(format: "label CONTAINS 'Terra Incognita'")).firstMatch
         XCTAssertTrue(terra.waitForExistence(timeout: 5))
         XCTAssertTrue(terra.isHittable, "scrolled to T")
+        // Fix round 1 (I2): the jump lands on T's header, with T's first song wholly below it, not under it.
+        let header = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH 'letter-header-T-'")).firstMatch
+        XCTAssertTrue(header.waitForExistence(timeout: 5), "no header for T")
+        XCTAssertGreaterThanOrEqual(terra.frame.minY, header.frame.maxY - 0.5,
+                                    "T's first song \(terra.frame) is under its header \(header.frame)")
 
         let field = app.textFields["kind-search-songs"]
         XCTAssertTrue(field.waitForExistence(timeout: 5), "no search field on Songs")
@@ -111,6 +117,7 @@ final class R24EListsUITests: XCTestCase {
         XCTAssertTrue(index.waitForExistence(timeout: 5), "the A–Z bar is back")
         XCTAssertTrue(terra.waitForExistence(timeout: 5))
         XCTAssertTrue(terra.isHittable, "back at T, where the list was")
+        XCTAssertGreaterThanOrEqual(terra.frame.minY, header.frame.maxY - 0.5, "still below T's header")
         XCTAssertFalse(app.buttons["song-0"].isHittable, "not back at the top")
     }
 }

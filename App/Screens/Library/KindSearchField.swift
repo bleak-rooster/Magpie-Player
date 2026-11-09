@@ -294,28 +294,38 @@ struct KindSearchResults: View {
 extension View {
     /// A kind's list with its search field on top (D224): while a query is on, the results cover the letter list,
     /// which stays underneath untouched (hidden from touch and VoiceOver), so clearing the query shows it again at the
-    /// same place. `search` is nil until the screen has made it.
-    func kindSearch(_ kind: KindSearchKind, _ search: SearchModel?) -> some View {
-        modifier(KindSearchOverlay(kind: kind, search: search))
+    /// same place. `search` is nil until the screen has made it. `available`: the letter list has items (fix round 1,
+    /// M4: no field over an empty or failed list, nothing to search).
+    func kindSearch(_ kind: KindSearchKind, _ search: SearchModel?, available: Bool) -> some View {
+        modifier(KindSearchOverlay(kind: kind, search: search, available: available))
     }
+}
+
+extension KindSearch {
+    /// The field shows over a list with items, and always while it holds a query (so it can be cleared).
+    static func showsField(available: Bool, query: String) -> Bool { available || !query.isEmpty }
 }
 
 private struct KindSearchOverlay: ViewModifier {
     @Environment(AppModel.self) private var model
     let kind: KindSearchKind
     let search: SearchModel?
+    let available: Bool
 
     func body(content: Content) -> some View {
         let searching = search.map(KindSearch.showsResults) ?? false
         ZStack {
             content
+                .environment(\.letterIndexCovered, searching)   // the bar goes; the list keeps its layout (M1)
                 .opacity(searching ? 0 : 1)
                 .allowsHitTesting(!searching)
                 .accessibilityHidden(searching)
             if searching, let search { KindSearchResults(kind: kind, search: search) }
         }
         .safeAreaInset(edge: .top, spacing: 0) {
-            if let search { KindSearchField(kind: kind, search: search) }
+            if let search, KindSearch.showsField(available: available, query: search.query) {
+                KindSearchField(kind: kind, search: search)
+            }
         }
         // The same query again from the other source when offline mode changes (as Search does).
         .onChange(of: model.isOffline) { if let search, !search.query.isEmpty { search.update(query: search.query) } }

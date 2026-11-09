@@ -157,8 +157,6 @@ struct AlbumGrid: View {
     let albums: [Album]
     let subtitle: (Album) -> String
     var onAppearLast: (() -> Void)?
-    /// Round 24 (D225): the first tile's place in the whole list, when this grid is one letter's run of it.
-    var firstIndex = 0
     @State private var width: CGFloat = 350
     @Environment(\.dynamicTypeSize) private var typeSize
 
@@ -182,7 +180,7 @@ struct AlbumGrid: View {
                     AlbumTileView(album: album, subtitle: subtitle(album), width: tileWidth)
                 }
                 .buttonStyle(.plain)
-                .accessibilityIdentifier("album-\(firstIndex + index)")
+                .accessibilityIdentifier("album-\(index)")
                 .onAppear { if index == albums.count - 1 { onAppearLast?() } }
             }
         }

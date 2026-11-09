@@ -89,6 +89,10 @@ extension EnvironmentValues {
     /// Round 24 (owner, 2026-11-08): the A–Z bar is on screen over this list (set by `.letterIndex`), so a list of more
     /// than 25 items shows letter headers (`LetterSectionHeader`, D225).
     @Entry var letterIndexShown = false
+    /// Round 24 fix round 1 (M1): something covers this list (a kind search's results, D224). The bar goes (from sight,
+    /// touch and VoiceOver) but the list keeps its layout: margins and headers stay as they were, so nothing under the
+    /// results is rebuilt or reflowed, and clearing finds it as it was.
+    @Entry var letterIndexCovered = false
 }
 
 extension View {
@@ -104,6 +108,7 @@ private struct LetterIndexOverlay: ViewModifier {
     let hidden: Bool
     let onSelect: (String) -> Void
     @Environment(\.dynamicTypeSize) private var typeSize
+    @Environment(\.letterIndexCovered) private var covered
     @State private var height: CGFloat = .infinity
     @State private var bubble = LetterBubbleState()
 
@@ -115,7 +120,7 @@ private struct LetterIndexOverlay: ViewModifier {
             .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height = $0 }
             .contentMargins(.trailing, shown ? 14 : 0, for: .scrollContent)
             .overlay(alignment: .trailing) {
-                if shown { LetterIndexBar(available: available, onSelect: onSelect, bubble: bubble).padding(.trailing, 2) }
+                if shown, !covered { LetterIndexBar(available: available, onSelect: onSelect, bubble: bubble).padding(.trailing, 2) }
             }
             .overlay { LetterBubble(state: bubble) }
     }

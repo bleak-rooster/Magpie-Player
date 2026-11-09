@@ -15,8 +15,6 @@ struct SongsListView: View {
     /// Round 24 (D224): the list's own search, songs only.
     @State private var search: SearchModel?
 
-    private var searching: Bool { search.map(KindSearch.showsResults) ?? false }
-
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
@@ -26,21 +24,19 @@ struct SongsListView: View {
                             ContentUnavailableView("No songs yet", systemImage: "music.note",
                                                    description: Text("Songs show up here once your server has some."))
                         } else {
-                            SongLetterRows(songs: songs, list: list, removing: $removing)
+                            SongLetterRows(songs: songs, list: list, removing: $removing, proxy: proxy)
                         }
                     }
                 }
             }
-            .letterIndex(available: list?.availableLetters ?? [],
-                         hidden: list?.items.value?.isEmpty != false || searching) { letter in
+            .letterIndex(available: list?.availableLetters ?? [], hidden: list?.items.value?.isEmpty != false) { letter in
                 pick(letter)
             }
             .overlay { if list?.seeking == true { ProgressView().accessibilityLabel("Finding songs") } }
-            .onChange(of: list?.scrollRequest) { _, request in
-                if let request { proxy.scrollTo(request.id, anchor: .top) }
-            }
+            // The rows take the list's scroll requests: they know whether headers show (fix round 1, I2).
         }
-        .kindSearch(.songs, search)   // round 24 (D224): "Search songs" at the top
+        // Round 24 (D224): "Search songs" at the top; not over an empty or failed list (fix round 1, M4).
+        .kindSearch(.songs, search, available: list?.items.value?.isEmpty == false)
         .navigationTitle("Songs")
         .navigationBarTitleDisplayMode(.inline)
         .magpieScreen()
@@ -66,12 +62,14 @@ struct SongsListView: View {
 }
 
 /// The songs read so far, in a `LazyVStack` whose letter headers pin at the top (D225: more than 25 songs and the A–Z
-/// bar on screen; only the loaded runs, so a header never claims songs not read yet).
+/// bar on screen; only the loaded runs, so a header never claims songs not read yet). It takes the list's scroll
+/// requests, so a jump lands on the letter's header, never under it (fix round 1, I2).
 private struct SongLetterRows: View {
     @Environment(AppModel.self) private var model
     let songs: [Song]
     let list: PagedLetterList<Song>
     @Binding var removing: Song?
+    let proxy: ScrollViewProxy
     @Environment(\.letterIndexShown) private var barShown
     private let themed = Themed()
 
@@ -89,7 +87,7 @@ private struct SongLetterRows: View {
                 rows(songs.indices)
             } else {
                 ForEach(runs, id: \.range.lowerBound) { run in
-                    Section { rows(run.range) } header: { LetterSectionHeader(key: run.key, pinned: true) }
+                    Section { rows(run.range) } header: { LetterSectionHeader(run: run, pinned: true) }
                 }
             }
             if let moreError = list.moreError {
@@ -107,6 +105,15 @@ private struct SongLetterRows: View {
         }
         .padding(.vertical, Tokens.Spacing.s)
         .foregroundStyle(p.inkColor)
+        .onChange(of: list.scrollRequest) { _, request in
+            guard let request else { return }
+            guard let index = songs.firstIndex(where: { $0.id == request.id }) else {
+                return proxy.scrollTo(request.id, anchor: .top)
+            }
+            proxy.scrollToLetter(index: index, sections: list.sections, itemCount: songs.count, barShown: barShown) {
+                songs[$0].id
+            }
+        }
     }
 
     /// The rows at `indices` (their index in the songs read so far: what plays, and the UI tests' "song-N").

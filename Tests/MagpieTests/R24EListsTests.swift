@@ -1,10 +1,13 @@
+import DesignSystem
 import Foundation
 import MagpieCore
 import MagpieTestSupport
 import os
 import Playback
 import Search
+import SwiftUI
 import Testing
+import UIKit
 @testable import Magpie
 
 private let loginJSON = Data(#"""
@@ -230,7 +233,7 @@ private let search3 = ok(#"""
     // MARK: - Section headers (D225)
 
     private static func names(_ n: Int) -> [String] {
-        (0..<n).map { i in "\(Character(UnicodeScalar(UInt8(ascii: "a") + UInt8(i % 26))))\(i)" }.sorted()
+        (0..<n).map { i in "\(Swift.Character(UnicodeScalar(UInt8(ascii: "a") + UInt8(i % 26))))\(i)" }.sorted()
     }
 
     @Test func sectionHeaders_onlyAbove25WithBar() {
@@ -267,10 +270,135 @@ private let search3 = ok(#"""
         #expect(paged.last?.range.upperBound == 150)
     }
 
+    /// Fix round 1 (M3): two "#" runs (digits first, other scripts last) have different header ids.
+    @Test func sectionHeaders_twoHashRunsHaveTheirOwnIds() {
+        let items = ["1999", "2046"] + (0..<30).map { "Cherry \($0)" } + ["おやすみ"]
+        let runs = LetterSectionHeader.runs(LetterIndex.sections(items, name: { $0 }), itemCount: items.count, barShown: true)
+        let ids = runs.map(LetterSectionHeader.id)
+        #expect(ids == ["letter-header-#-0", "letter-header-C-2", "letter-header-#-32"])
+        #expect(Set(ids).count == ids.count)
+    }
+
+    /// Fix round 1 (I2): a jump goes to the header of the run that holds the target, never to a row its own sticky
+    /// header covers; inside a run, a row (a grid's row) before it; with no headers, the item itself.
+    @Test func sectionHeaders_jumpTargetsTheRunsHeader() {
+        let items = ["Apple", "Avocado"] + (0..<30).map { "Cherry \($0)" }
+        let runs = LetterSectionHeader.runs(LetterIndex.sections(items, name: { $0 }), itemCount: items.count, barShown: true)
+        #expect(LetterSectionHeader.scrollTarget(index: 0, runs: runs) == .header("letter-header-A-0"))
+        #expect(LetterSectionHeader.scrollTarget(index: 2, runs: runs) == .header("letter-header-C-2"))
+        #expect(LetterSectionHeader.scrollTarget(index: 10, runs: runs) == .item(9), "inside a run: the row before")
+        #expect(LetterSectionHeader.scrollTarget(index: 3, runs: runs, rowLength: 2) == .header("letter-header-C-2"),
+                "a grid's first row of the run: the header")
+        #expect(LetterSectionHeader.scrollTarget(index: 10, runs: runs, rowLength: 2) == .item(8), "a grid row before")
+        #expect(LetterSectionHeader.scrollTarget(index: 10, runs: []) == .item(10), "no headers: the item")
+        #expect(LetterSectionHeader.scrollID(index: 2, runs: runs) { items[$0] } == AnyHashable("letter-header-C-2"))
+        #expect(LetterSectionHeader.scrollID(index: 10, runs: []) { items[$0] } == AnyHashable("Cherry 8"))
+    }
+
+    /// Fix round 1 (M4): no search field over an empty or failed list; kept while it holds a query.
+    @Test func kindSearch_fieldHiddenWithoutItems() {
+        #expect(KindSearch.showsField(available: true, query: ""))
+        #expect(!KindSearch.showsField(available: false, query: ""))
+        #expect(KindSearch.showsField(available: false, query: "x"), "a query can always be cleared")
+    }
+
+    /// Controller ruling (fix round 1): every phone A–Z list gets the headers. Each list that shows the A–Z bar lays
+    /// its rows out with the letter-run containers (and lands its jumps on the headers).
+    @Test func sectionHeaders_everyLetterIndexListUsesThem() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let files = try #require(FileManager.default.enumerator(at: root.appending(path: "App"), includingPropertiesForKeys: nil))
+            .compactMap { $0 as? URL }.filter { $0.pathExtension == "swift" }
+        var lists: [String] = []
+        for file in files {
+            let source = try String(contentsOf: file, encoding: .utf8)
+            guard source.contains(".letterIndex(available:") else { continue }
+            lists.append(file.lastPathComponent)
+            #expect(["LetterSectionedRows(", "AlbumLetterGrid(", "SongLetterRows("].contains { source.contains($0) },
+                    "\(file.lastPathComponent): an A–Z list without letter headers")
+            #expect(source.contains("scrollToLetter("), "\(file.lastPathComponent): a jump that can land under a header")
+        }
+        #expect(Set(lists).isSuperset(of: ["LibraryLists.swift", "SongsListView.swift", "GenresView.swift",
+                                           "DownloadsView.swift"]), "\(lists)")
+    }
+
+    // MARK: - Letter jumps on screen (fix round 1, I1 and I2)
+
+    /// 26 letters × 4 rows, A–Z, so "M" is well over a screen down.
+    private static let alphabet = (0..<104).map { i in "\(Swift.Character(UnicodeScalar(UInt8(ascii: "A") + UInt8(i / 4))))\(i % 4) row" }
+
+    /// Hosts `content` in an iPhone-sized window and reports header frames (the views' probe) and row frames.
+    private func hostJump(_ content: some View, model: AppModel) async throws -> (UIWindow, LayoutLog) {
+        let log = LayoutLog()
+        let scene = try #require(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let window = UIWindow(windowScene: scene)
+        window.frame = CGRect(x: 0, y: 0, width: 402, height: 874)
+        let root = NavigationStack { content }
+            .environment(model)
+            .environment(\.songIsDownloaded, model.songIsDownloaded)
+            .magpieTheme(Theme())
+            .environment(\.letterLayoutProbe) { id, frame in log.frames[id] = frame }
+            .environment(\.jumpLog, log)
+        window.rootViewController = UIHostingController(rootView: root)
+        window.isHidden = false
+        return (window, log)
+    }
+
+    /// After a jump to M: M's header sits at the top of the scroll view, and M's first row (when the test can see it)
+    /// is wholly below the header, not under it, and on screen. `headerInset`: how far the header's text sits inside its
+    /// header (a `List`'s system header cell pads it; a pinned header's own bar is the frame).
+    private func expectLanded(_ log: LayoutLog, header: String, row: String?, headerInset: CGFloat = 0,
+                              _ what: String) async {
+        let landed = await eventually(5) {
+            guard let h = log.frames[header], let top = log.frames["viewport"] else { return false }
+            return h.minY >= top.minY - 1 && h.minY - top.minY <= headerInset + 1.5
+        }
+        #expect(landed, "\(what): M's header is not at the top: \(String(describing: log.frames[header])) in \(String(describing: log.frames["viewport"]))")
+        if let row, let h = log.frames[header], let view = log.frames["viewport"] {
+            let below = await eventually(2) {
+                guard let r = log.frames[row] else { return false }
+                return r.minY >= h.maxY - 0.5 && r.maxY <= view.maxY
+            }
+            #expect(below, "\(what): the row \(String(describing: log.frames[row])) is under its header \(h) or off screen")
+        }
+    }
+
+    @Test(arguments: [JumpHarness.Container.list, .stack])
+    func letterJump_landsBelowItsHeader(container: JumpHarness.Container) async throws {
+        let model = try await signedInModel()
+        let trigger = JumpTrigger()
+        let (window, log) = try await hostJump(JumpHarness(container: container, items: Self.alphabet, trigger: trigger),
+                                               model: model)
+        defer { window.isHidden = true }
+        #expect(await eventually(5) { log.frames["letter-header-A-0"] != nil }, "\(container): no headers")
+        trigger.letter = "M"
+        await expectLanded(log, header: "letter-header-M-48", row: "row-M0 row",
+                           headerInset: container == .list ? 16 : 0, "\(container)")
+    }
+
+    /// I1: the albums grid with more than 25 albums: a jump to a loaded letter more than a screen below lands on it.
+    @Test func albumGrid_jumpToALoadedLetterLandsOnIt() async throws {
+        let model = try await signedInModel()
+        let trigger = JumpTrigger()
+        let albums = Self.alphabet.enumerated().map { i, name in
+            Album(id: "al\(i)", name: name, artist: "Corin Hale", songCount: 1, duration: 60)
+        }
+        let (window, log) = try await hostJump(AlbumJumpHarness(albums: albums, trigger: trigger), model: model)
+        defer { window.isHidden = true }
+        #expect(await eventually(5) { log.frames["letter-header-A-0"] != nil }, "no headers in the grid")
+        #expect(log.frames["letter-header-M-48"] == nil || (log.frames["letter-header-M-48"]?.minY ?? 0) > 874,
+                "M starts off screen")
+        trigger.letter = "M"
+        await expectLanded(log, header: "letter-header-M-48", row: nil, "album grid")
+    }
+
     // MARK: - Whole-row history (D226)
 
-    /// Every search-history list in the app: its row's label carries `.contentShape(Rectangle())`, so the empty space
-    /// beside a short query is part of the button (round 24, owner item 9).
+    /// Search's two history lists (the only ones in the app; the car's recents are `CPListItem`s): its recent searches
+    /// and, offline, its "Recently played on this phone". Each row is tappable across its whole width: the recent
+    /// search's label carries `.contentShape(Rectangle())`; a recently played song is Search's `songRow`, whose
+    /// `SongRow` body is full width and shaped itself (round 24, owner item 9). Any new `ForEach(recent…)` list is
+    /// held to the same.
     @Test func everyHistoryList_hasContentShape() throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -294,10 +422,130 @@ private let search3 = ok(#"""
         #expect(blocks >= 2, "Search's recent searches and its recently played songs")
     }
 
+    /// Search's `songRow` labels its button with `SongRow`, and `SongRow`'s own `body` (not just anywhere in its file)
+    /// is full width (`.frame(maxWidth: .infinity`) and shaped (`.contentShape(Rectangle())`).
     private func songRowIsShaped(_ root: URL) throws -> Bool {
-        let source = try String(contentsOf: root.appending(path: "Packages/MagpieKit/Sources/DesignSystem/Components/SongRow.swift"),
-                                encoding: .utf8)
-        return source.contains(".contentShape(Rectangle())") && source.contains(".frame(maxWidth: .infinity")
+        let search = try String(contentsOf: root.appending(path: "App/Screens/Search/SearchView.swift"), encoding: .utf8)
+        guard let helper = Self.block(after: "private func songRow(", in: search), helper.contains("SongRow(") else {
+            return false
+        }
+        let row = try String(contentsOf: root.appending(path: "Packages/MagpieKit/Sources/DesignSystem/Components/SongRow.swift"),
+                             encoding: .utf8)
+        guard let body = Self.block(after: "public var body: some View {", in: row) else { return false }
+        return body.contains(".contentShape(Rectangle())") && body.contains(".frame(maxWidth: .infinity")
+    }
+
+    /// The text of the brace block that opens on the line holding `marker` (counted braces; nil if not found).
+    static func block(after marker: String, in source: String) -> String? {
+        guard let start = source.range(of: marker) else { return nil }
+        var depth = 0, opened = false
+        var end = source.endIndex
+        for i in source[start.lowerBound...].indices {
+            switch source[i] {
+            case "{": depth += 1; opened = true
+            case "}": depth -= 1
+            default: break
+            }
+            if opened, depth == 0 { end = source.index(after: i); break }
+        }
+        return opened ? String(source[start.lowerBound..<end]) : nil
+    }
+}
+
+// MARK: - Jump harnesses (fix round 1, I1 and I2)
+
+/// The letter the harness jumps to (set by the test).
+@MainActor @Observable final class JumpTrigger {
+    var letter: String?
+}
+
+/// Frames on screen, by name: headers (through `letterLayoutProbe`), rows ("row-<name>") and the scroll view
+/// ("viewport").
+@MainActor final class LayoutLog {
+    var frames: [String: CGRect] = [:]
+}
+
+extension EnvironmentValues {
+    @Entry var jumpLog: LayoutLog?
+}
+
+private extension View {
+    func logFrame(_ name: String, _ log: LayoutLog?) -> some View {
+        onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { log?.frames[name] = $0 }
+    }
+}
+
+/// An A–Z list as Artists and Playlists lay it out (`List`), or as Genres, Downloads and Songs do (`LazyVStack` with
+/// pinned headers), with the bar, and its jumps as the screens make them.
+struct JumpHarness: View {
+    enum Container: String, CustomStringConvertible, Sendable {
+        case list, stack
+        var description: String { rawValue }
+    }
+
+    let container: Container
+    let items: [String]
+    let trigger: JumpTrigger
+    @Environment(\.jumpLog) private var log
+
+    var body: some View {
+        let sections = LetterIndex.sections(items) { $0 }
+        ScrollViewReader { proxy in
+            Group {
+                switch container {
+                case .list:
+                    List {
+                        LetterSectionedRows(items: items, sections: sections, id: \.self) { row($0) }
+                    }
+                    .listStyle(.plain)
+                case .stack:
+                    ScrollView {
+                        LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
+                            LetterSectionedRows(items: items, sections: sections, id: \.self, pinned: true) { row($0) }
+                        }
+                    }
+                }
+            }
+            .logFrame("viewport", log)
+            .letterIndex(available: Set(sections.map(\.key))) { _ in }
+            .onChange(of: trigger.letter) { _, letter in
+                guard let letter, let target = LetterIndex.target(letter, in: sections) else { return }
+                proxy.scrollToLetter(index: target.range.lowerBound, sections: sections, itemCount: items.count) {
+                    items[$0]
+                }
+            }
+        }
+        .toolbar(.hidden, for: .navigationBar)
+    }
+
+    private func row(_ name: String) -> some View {
+        Text(name)
+            .frame(maxWidth: .infinity, minHeight: 60, alignment: .leading)
+            .logFrame("row-\(name)", log)
+    }
+}
+
+/// Library › Albums' grid over a list of albums already loaded, jumped as `PagedLetterList` asks (a scroll request).
+struct AlbumJumpHarness: View {
+    let albums: [Album]
+    let trigger: JumpTrigger
+    @State private var request: PagedLetterList<Album>.ScrollRequest?
+    @Environment(\.jumpLog) private var log
+
+    var body: some View {
+        let sections = LetterIndex.sections(albums) { $0.name }
+        ScrollViewReader { proxy in
+            ScrollView {
+                AlbumLetterGrid(albums: albums, sections: sections, scrollRequest: request, proxy: proxy)
+            }
+            .logFrame("viewport", log)
+            .letterIndex(available: Set(sections.map(\.key))) { _ in }
+            .onChange(of: trigger.letter) { _, letter in
+                guard let letter, let target = LetterIndex.target(letter, in: sections) else { return }
+                request = .init(id: albums[target.range.lowerBound].id, token: (request?.token ?? 0) + 1)
+            }
+        }
+        .toolbar(.hidden, for: .navigationBar)
     }
 }
 

@@ -20,7 +20,6 @@ struct ArtistsListView: View {
 
     var body: some View {
         let albumArtistsOnly = model.preferences.layout.albumArtistsOnly
-        let searching = search.map(KindSearch.showsResults) ?? false
         ScrollViewReader { proxy in
             List {
                 LoadableView(state: artists, retry: load) { artists in
@@ -29,14 +28,16 @@ struct ArtistsListView: View {
                 .listRowSeparatorTint(themed.palette.sepColor)
             }
             .listStyle(.plain)
-            .letterIndex(available: Set(sections.map(\.key)), hidden: sections.isEmpty || searching) { letter in
+            .letterIndex(available: Set(sections.map(\.key)), hidden: sections.isEmpty) { letter in
                 guard let target = LetterIndex.target(letter, in: sections), let list = artists.value else { return }
-                proxy.scrollTo(list[target.range.lowerBound].id, anchor: .top)
+                proxy.scrollToLetter(index: target.range.lowerBound, sections: sections, itemCount: list.count) { list[$0].id }
             }
         }
-        .kindSearch(.artists, search)
+        // Fix round 1 (M4): no field over an empty or failed list.
+        .kindSearch(.artists, search, available: artists.value?.isEmpty == false)
         .task { if search == nil { search = model.kindSearchModel(.artists) } }
         .navigationTitle("Artists")
+        .navigationBarTitleDisplayMode(.inline)   // the field sits where a large title would
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
@@ -115,7 +116,6 @@ struct AlbumsListView: View {
     @State private var search: SearchModel?
 
     var body: some View {
-        let searching = search.map(KindSearch.showsResults) ?? false
         ScrollViewReader { proxy in
             ScrollView {
                 if let list {
@@ -129,7 +129,8 @@ struct AlbumsListView: View {
                             .accessibilityIdentifier("albums-earlier")
                         }
                         AlbumLetterGrid(albums: albums, sections: list.sections,
-                                        onAppearLast: { Task { await list.loadMore() } })
+                                        onAppearLast: { Task { await list.loadMore() } },
+                                        scrollRequest: list.scrollRequest, proxy: proxy)
                             .padding(.vertical, Tokens.Spacing.l)
                         if let moreError = list.moreError {
                             VStack(spacing: Tokens.Spacing.s) {
@@ -146,17 +147,15 @@ struct AlbumsListView: View {
                     }
                 }
             }
-            .letterIndex(available: list?.availableLetters ?? [],
-                         hidden: list?.items.value?.isEmpty != false || searching) { letter in
+            .letterIndex(available: list?.availableLetters ?? [], hidden: list?.items.value?.isEmpty != false) { letter in
                 pick(letter)
             }
             .overlay { if list?.seeking == true { ProgressView().accessibilityLabel("Finding albums") } }
-            .onChange(of: list?.scrollRequest) { _, request in
-                if let request { proxy.scrollTo(request.id, anchor: .top) }
-            }
+            // The grid takes the list's scroll requests: it knows its headers and columns (fix round 1, I2).
         }
-        .kindSearch(.albums, search)
+        .kindSearch(.albums, search, available: list?.items.value?.isEmpty == false)   // fix round 1 (M4)
         .navigationTitle("Albums")
+        .navigationBarTitleDisplayMode(.inline)   // the field sits where a large title would
         .magpieScreen()
         .onDisappear { jumpTask?.cancel() }
         .task {
@@ -179,30 +178,63 @@ struct AlbumsListView: View {
     }
 }
 
-/// The albums read so far as one grid, or (D225: more than 25 and the A–Z bar on screen) a grid per loaded letter run
-/// under a pinned header. Tiles keep their place in the whole list ("album-N").
-private struct AlbumLetterGrid: View {
+/// Albums as tiles in columns, A–Z: one grid, and (D225: more than 25 and the A–Z bar on screen) a pinned header per
+/// letter run in it (fix round 1, I1: one `LazyVGrid` with sections, one width, so a jump reaches any loaded run). Tiles
+/// keep their place in the whole list ("album-N"). It takes the list's scroll requests itself, since it knows whether
+/// headers show and how many tiles a row holds: a jump lands on the letter's header, never under it (I2).
+struct AlbumLetterGrid: View {
     let albums: [Album]
     let sections: [LetterIndex.Section]
-    let onAppearLast: () -> Void
+    var onAppearLast: (() -> Void)?
+    var scrollRequest: PagedLetterList<Album>.ScrollRequest?
+    var proxy: ScrollViewProxy?
     @Environment(\.letterIndexShown) private var barShown
+    @Environment(\.dynamicTypeSize) private var typeSize
+    @State private var width: CGFloat = 350
+
+    private var columns: Int { AlbumGrid.columnCount(width: width, accessibility: typeSize.isAccessibilitySize) }
+    private var tileWidth: CGFloat { max(100, (width - CGFloat(columns - 1) * Tokens.Spacing.l) / CGFloat(columns)) }
 
     var body: some View {
         let runs = LetterSectionHeader.runs(sections, itemCount: albums.count, barShown: barShown)
-        if runs.isEmpty {
-            AlbumGrid(albums: albums, subtitle: { $0.artist }, onAppearLast: onAppearLast)
-        } else {
-            LazyVStack(alignment: .leading, spacing: Tokens.Spacing.xl, pinnedViews: [.sectionHeaders]) {
+        LazyVGrid(columns: Array(repeating: GridItem(.fixed(tileWidth), spacing: Tokens.Spacing.l, alignment: .top),
+                                 count: columns),
+                  alignment: .leading, spacing: Tokens.Spacing.xl, pinnedViews: [.sectionHeaders]) {
+            if runs.isEmpty {
+                tiles(albums.indices)
+            } else {
                 ForEach(runs, id: \.range.lowerBound) { run in
                     Section {
-                        AlbumGrid(albums: Array(albums[run.range]), subtitle: { $0.artist },
-                                  onAppearLast: run.range.upperBound == albums.count ? onAppearLast : nil,
-                                  firstIndex: run.range.lowerBound)
+                        tiles(run.range)
                     } header: {
-                        LetterSectionHeader(key: run.key, pinned: true)
+                        // The grid sits on the page's margins; its header bar runs edge to edge.
+                        LetterSectionHeader(run: run, pinned: true)
+                            .padding(.horizontal, -Tokens.Spacing.largeTitleMargin)
                     }
                 }
             }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
+        .padding(.horizontal, Tokens.Spacing.largeTitleMargin)
+        .onChange(of: scrollRequest) { _, request in
+            guard let request, let proxy else { return }
+            guard let index = albums.firstIndex(where: { $0.id == request.id }) else {
+                return proxy.scrollTo(request.id, anchor: .top)
+            }
+            proxy.scrollToLetter(index: index, sections: sections, itemCount: albums.count, barShown: barShown,
+                                 rowLength: columns) { albums[$0].id }
+        }
+    }
+
+    private func tiles(_ indices: Range<Int>) -> some View {
+        ForEach(Array(zip(indices, albums[indices])), id: \.1.id) { index, album in
+            NavigationLink(value: Route.album(id: album.id)) {
+                AlbumTileView(album: album, subtitle: album.artist, width: tileWidth)
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("album-\(index)")
+            .onAppear { if index == albums.count - 1 { onAppearLast?() } }
         }
     }
 }
@@ -249,7 +281,11 @@ struct PlaylistsListView: View {
             .listStyle(.plain)
             .letterIndex(available: Set(sections.map(\.key)), hidden: sections.isEmpty) { letter in
                 guard let target = LetterIndex.target(letter, in: sections), let all = playlists.value else { return }
-                proxy.scrollTo(listed(all)[target.range.lowerBound].id, anchor: .top)
+                let shown = listed(all)
+                guard shown.indices.contains(target.range.lowerBound) else { return }
+                proxy.scrollToLetter(index: target.range.lowerBound, sections: sections, itemCount: shown.count) {
+                    shown[$0].id
+                }
             }
         }
         // Over the list, not a row in it, so no separators frame it (H3 M8). An empty Yours says so (D179).
