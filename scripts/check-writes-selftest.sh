@@ -76,6 +76,10 @@ planted=(
   'slskd.gate.enabled'
   'model.slskdAccess?.gate.enabled'
   'g as SlskdWriteGate'
+  # Round 24 (D218): the slskd reconnect sent or named outside the keep-connected check.
+  'slskd.gate.perform(.connect)'
+  'client.connection.send(.connect)'
+  'gate.perform(SlskdWrite.connect)'
   # Round 23 R23F (D200): a third caller of Retry a song (the research route).
   'client.retrySong(playlistId: "flow-1", jobId: "job-1")'
   # Round 24 B (D207–D209): a held song decided, or a flow or playlist deleted, from anywhere but AurralClient+Manage.swift;
@@ -204,19 +208,29 @@ weakened+=("${s14_weakened[@]}")
 # climb out of the downloads folder, the write switch dropped, the GET-only read channel loosened.
 slroute_src="$work/Packages/MagpieKit/Sources/SlskdKit/SlskdRoute.swift"
 slclient_src="$work/Packages/MagpieKit/Sources/SlskdKit/SlskdClient.swift"
-for f in "$slroute_src" "$slclient_src"; do cp "$f" "$f.orig"; done
+slgate_src="$work/Packages/MagpieKit/Sources/SlskdKit/SlskdWriteGate.swift"
+for f in "$slroute_src" "$slclient_src" "$slgate_src"; do cp "$f" "$f.orig"; done
 slskd_weakened=(
-  "$slroute_src|s/        case .downloads, .downloadsFolder: \"GET\"/        case .downloads: \"GET\"\n        case .downloadsFolder: Self.deleteMethod/"
+  "$slroute_src|s/        case .downloads, .downloadsFolder, .serverState: \"GET\"/        case .downloads, .serverState: \"GET\"\n        case .downloadsFolder: Self.deleteMethod/"
+  # Round 24 (D218): the server read made a write, a disconnect added, the connect's verb changed, the connect's proofs
+  # (its switch, the minute, slskd read down, the ask saved first) dropped.
+  "$slroute_src|s/        case .downloads, .downloadsFolder, .serverState: \"GET\"/        case .downloads, .downloadsFolder: \"GET\"\n        case .serverState: Self.connectMethod/"
+  "$slroute_src|s/^    case connect/    case connect\n    case disconnect/"
+  "$slroute_src|s/    static let connectMethod = \"PUT\"/    static let connectMethod = \"DELETE\"/"
+  "$slgate_src|s/        guard keepConnected else { throw SlskdGateError.refused(.*) }//"
+  "$slgate_src|s/        guard mayAskToConnect() else { throw SlskdGateError.refused(\"asked less than a minute ago\") }//"
+  "$slgate_src|s/        guard state.condition == .down else { throw SlskdGateError.refused(.*) }//"
+  "$slgate_src|s/        defaults.set(now(), forKey: Self.lastConnectKey(scope: client.instanceScope))//"
   "$slroute_src|s/^    case deleteFolder(String)/    case deleteFolder(String)\n    case clearCompleted/"
   "$slroute_src|s/s != \".\", s != \"..\", //"
   "$slroute_src|s/\$0 == \"\\\\\\\\\" || //"
   "$slroute_src|s/            return \[\"transfers\", \"downloads\"\]/            return [\"transfers\", \"downloads\", \"all\", \"completed\"]/"
-  "$slclient_src|s/        guard enabled else { throw SlskdGateError.disabled }/        _ = enabled/"
+  "$slgate_src|s/        guard enabled else { throw SlskdGateError.disabled }/        _ = enabled/"
   "$slclient_src|s/        guard route.method == \"GET\" else { throw SlskdError.forbidden }//"
 )
 for w in "${slskd_weakened[@]}"; do
   file="${w%%|*}" expr="${w#*|}"
-  for f in "$slroute_src" "$slclient_src"; do cp "$f.orig" "$f"; done
+  for f in "$slroute_src" "$slclient_src" "$slgate_src"; do cp "$f.orig" "$f"; done
   cp "$file" "$work/before"
   sed -i '' "$expr" "$file"
   if cmp -s "$work/before" "$file"; then echo "selftest: the weakening didn't apply: $expr" >&2; failed=1; continue; fi
@@ -226,7 +240,7 @@ for w in "${slskd_weakened[@]}"; do
     echo "selftest: failed without a G1 reason: $expr" >&2; failed=1
   fi
 done
-for f in "$slroute_src" "$slclient_src"; do cp "$f.orig" "$f"; rm -f "$f.orig"; done
+for f in "$slroute_src" "$slclient_src" "$slgate_src"; do cp "$f.orig" "$f"; rm -f "$f.orig"; done
 weakened+=("${slskd_weakened[@]}")
 
 # Round 24 B (D207–D209): the four manage sends weakened: an id check dropped, a path turned to retry or cancel, a
@@ -252,6 +266,53 @@ for w in "${manage_weakened[@]}"; do
 done
 cp "$manage_src.orig" "$manage_src"; rm -f "$manage_src.orig"
 weakened+=("${manage_weakened[@]}")
+
+# Round 24 D fix round 1 (I1): slskd reconnect bypasses planted where they would really go (appended to, or edited
+# into, the file named): a connect through a typed variable in the clean slate, a second gate made and used by the app,
+# a second caller in the check, a reconnect on the client skipping the gate, the verb of another route swapped in, and
+# a read that sends the connect.
+slskd_inplace=(
+  "Packages/MagpieKit/Sources/Requests/RequestRunner+CleanSlate.swift|append|        let w: SlskdWrite = .connect; try await slskd.gate.perform(w)"
+  "App/AppModel+Slskd.swift|append|        let g = SlskdWriteGate(client: client, defaultsSuite: gateDefaultsSuite); try await g.perform(w)"
+  "Packages/MagpieKit/Sources/SlskdKit/SlskdServerState.swift|append|      try await gate.perform(.connect)"
+  "Packages/MagpieKit/Sources/SlskdKit/SlskdClient.swift|append|    public func reconnect() async throws { _ = try await connection.send(.connect) }"
+  "Packages/MagpieKit/Sources/SlskdKit/SlskdClient.swift|sed|s/request.httpMethod = route.method/request.httpMethod = route == .serverState ? SlskdRoute.connect.method : route.method/"
+  "Packages/MagpieKit/Sources/SlskdKit/SlskdClient.swift|sed|s/        guard route.method == \"GET\" else { throw SlskdError.forbidden }/&\n        if route == .serverState { return try await send(.connect) }/"
+  # Fix round 2 (R1): the re-review's variants: a connect on an existing perform line, a perform taken as a function, a
+  # backticked, spaced or function-reference send, a perform taken by the app, a spaced second caller.
+  "Packages/MagpieKit/Sources/Requests/RequestRunner+CleanSlate.swift|sed|s/try await slskd.gate.perform(.deleteFolder(folder.name)) }/&; let w: SlskdWrite = .connect; try await slskd.gate.perform(w)/"
+  "Packages/MagpieKit/Sources/Requests/RequestRunner+CleanSlate.swift|append|        let p = slskd.gate.perform; try await p(.connect)"
+  "Packages/MagpieKit/Sources/SlskdKit/SlskdClient.swift|append|    func b3() async throws { _ = try await connection.\`send\`(.connect) }"
+  "Packages/MagpieKit/Sources/SlskdKit/SlskdClient.swift|append|    func b4() async throws { _ = try await connection.send (.connect) }"
+  "Packages/MagpieKit/Sources/SlskdKit/SlskdClient.swift|append|    func b5() async throws { let s = connection.send; _ = try await s(.connect) }"
+  "App/AppModel+Slskd.swift|append|        let p = gate.perform; Task { try? await p(.connect) }"
+  "Packages/MagpieKit/Sources/SlskdKit/SlskdServerState.swift|append|            try await gate.perform (.connect)"
+  # Fix round 3 (R2): a pass made by an extension's initialiser, a value of any type made by a generic bit-cast in a
+  # new SlskdKit file, and the channel's send reached from another SlskdKit file, spaced, backticked or taken as a
+  # function (no `.connect` and no pass named, so only the send rule can see them).
+  "Packages/MagpieKit/Sources/SlskdKit/SlskdServerState.swift|append|extension SlskdGatePass { init(sneak: ()) {} }"
+  "Packages/MagpieKit/Sources/SlskdKit/SlskdPlanted.swift|new|func make<T>() -> T { unsafeBitCast((), to: T.self) }"
+  "Packages/MagpieKit/Sources/SlskdKit/SlskdLeftovers.swift|append|    func r1(_ c: SlskdClient, _ r: SlskdRoute) async throws { _ = try await c.connection.send (r, pass: make()) }"
+  "Packages/MagpieKit/Sources/SlskdKit/SlskdLeftovers.swift|append|    func r2(_ c: SlskdClient, _ r: SlskdRoute) async throws { _ = try await c.connection.\`send\`(r, pass: make()) }"
+  "Packages/MagpieKit/Sources/SlskdKit/SlskdLeftovers.swift|append|    func r3(_ c: SlskdClient) { let s = c.connection . send; _ = s }"
+)
+for entry in "${slskd_inplace[@]}"; do
+  rel="${entry%%|*}" rest="${entry#*|}"
+  mode="${rest%%|*}" text="${rest#*|}"
+  file="$work/$rel"
+  [ -e "$file" ] || : > "$file"   # a new file (fix round 3): starts empty
+  cp "$file" "$file.orig"
+  if [ "$mode" = append ] || [ "$mode" = new ]; then printf '%s\n' "$text" >> "$file"; else sed -i '' "$text" "$file"; fi
+  if cmp -s "$file.orig" "$file"; then echo "selftest: the plant didn't apply: $entry" >&2; failed=1
+  elif out=$("$work/scripts/check-writes.sh" 2>&1); then
+    echo "selftest: NOT caught: $entry" >&2; failed=1
+  elif ! grep -qE 'G1:' <<< "$out"; then
+    echo "selftest: failed without a G1 reason: $entry" >&2; failed=1
+  fi
+  cp "$file.orig" "$file"; rm -f "$file.orig"
+  [ "$mode" = new ] && rm -f "$file"
+done
+planted+=("${slskd_inplace[@]}")
 
 [ "$failed" = 0 ] || exit 1
 echo "check-writes selftest: all ${#planted[@]} planted violations and ${#weakened[@]} allow-list weakenings caught; the clean tree passes"

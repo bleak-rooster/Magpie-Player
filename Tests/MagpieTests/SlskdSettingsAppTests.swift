@@ -36,7 +36,7 @@ import Testing
     @Test func notSetUpByDefault() {
         let model = makeModel()
         #expect(model.slskd == nil && !model.slskdChangesAllowed && model.slskdAccess == nil)
-        #expect(SettingsPage.topLevel.contains(.slskd) == false, "a page on Lidarr's, not a top-level row")
+        #expect(SettingsPage.topLevel.contains(.slskd), "round 24 (D216): its own row, no longer a page of Lidarr's")
     }
 
     @Test func testAndConnectReadsOnlyAndStartsWithChangesOff() async throws {

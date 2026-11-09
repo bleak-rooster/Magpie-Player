@@ -6,6 +6,8 @@ import os
 /// 0.26's controllers do (downloads grouped by user and remote folder; a folder by the Base64 of its relative name; a
 /// delete of a file or folder 403 unless remote file management is on; a transfer delete needing a GUID). Any other
 /// route answers 404 and is recorded, so a test can show nothing else was asked. It sends nothing anywhere.
+/// Round 24 (D217, D218): also slskd's server state (`GET /api/v0/server`, its `ServerState` JSON) and the reconnect
+/// (`PUT /api/v0/server`, which connects unless told otherwise). `DELETE /api/v0/server` answers 404 like anything else.
 /// G1 allowlist: stub slskd
 public final class FakeSlskd: HTTPTransport, @unchecked Sendable {
     public struct Transfer: Sendable {
@@ -31,6 +33,15 @@ public final class FakeSlskd: HTTPTransport, @unchecked Sendable {
         public var deleteFailures = 0
         /// What was deleted, in order: `file <folder>/<name>`, `folder <name>`, `record <id>`.
         public var deleted: [String] = []
+        /// Round 24: slskd's connection to the Soulseek network, as `GET /api/v0/server` reports it.
+        public var serverConnected = true
+        public var serverTransitioning = false
+        /// The server state's whole answer instead (a lenient-decoding test).
+        public var serverJSON: String?
+        /// What `PUT /api/v0/server` answers (any 2xx is fine; 401/403: the key can only read).
+        public var connectStatus = 200
+        /// Whether slskd is connected again after a reconnect ask (a 2xx one).
+        public var connectReconnects = true
         public init() {}
     }
 
@@ -39,6 +50,8 @@ public final class FakeSlskd: HTTPTransport, @unchecked Sendable {
 
     /// The verb of the three clean-up routes it answers. G1 allowlist: stub slskd
     static let deleteVerb = "DELETE"
+    /// The verb of the reconnect it answers. G1 allowlist: stub slskd
+    static let connectVerb = "PUT"
 
     public init() {}
 
@@ -70,6 +83,16 @@ public final class FakeSlskd: HTTPTransport, @unchecked Sendable {
         func decoded(_ s: String) -> String? { Data(base64Encoded: s).flatMap { String(data: $0, encoding: .utf8) } }
 
         switch (method, segments.count) {
+        case ("GET", 1) where segments == ["server"]:
+            if let raw = state.serverJSON { return (200, Data(raw.utf8)) }
+            let connected = state.serverConnected, moving = state.serverTransitioning
+            let flags = moving ? (connected ? "Connected, LoggingIn" : "Connecting") : (connected ? "Connected, LoggedIn" : "Disconnected")
+            return (200, json(["address": "server.example:2271", "state": flags, "username": "jordan",
+                               "isConnected": connected, "isLoggedIn": connected && !moving, "isTransitioning": moving]))
+        case (Self.connectVerb, 1) where segments == ["server"]:
+            guard (200..<300).contains(state.connectStatus) else { return (state.connectStatus, Data()) }
+            if state.connectReconnects { with { $0.serverConnected = true; $0.serverTransitioning = false } }
+            return (state.connectStatus, Data())
         case ("GET", 2) where segments == ["transfers", "downloads"]:
             let byUser = Dictionary(grouping: state.transfers, by: \.username)
             return (200, json(byUser.map { user, transfers in
