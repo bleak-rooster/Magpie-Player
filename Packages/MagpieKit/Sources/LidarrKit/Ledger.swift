@@ -193,6 +193,8 @@ public actor Ledger {
     public nonisolated let instance: String?
     /// Only used when `fileURL` is nil.
     private var memory: [LedgerEntry] = []
+    /// Round 24: the monitoring book, only used when `fileURL` is nil.
+    private var monitoringMemory = MonitoringBook()
 
     /// `fileURL` nil keeps the ledger in memory only.
     public init(fileURL: URL?, instance: String? = nil) {
@@ -335,5 +337,67 @@ public actor Ledger {
     /// Whether Magpie created this artist on this server (same id and same MBID, `LedgerEntry.created`).
     public func createdArtist(_ artist: LidarrArtist) throws -> Bool {
         try entries.contains { $0.created(artist) }
+    }
+
+    // MARK: - Round 24 (owner, 2026-11-08): the monitoring book (D241, D243)
+
+    /// Beside the ledger file: `lidarr-ledger-monitoring.json`. Its own file, so the album entries (and every rule that
+    /// reads them) never see an owner's artist as one of Magpie's requests.
+    nonisolated var monitoringURL: URL? {
+        fileURL.map { $0.deletingLastPathComponent().appending(path: $0.deletingPathExtension().lastPathComponent + "-monitoring.json") }
+    }
+
+    private func allMonitoring() throws -> MonitoringBook {
+        guard let url = monitoringURL else { return monitoringMemory }
+        return try Self.fileLock.withLock {
+            try LocalFile.load(MonitoringBook.self, from: url, fallback: MonitoringBook(), category: "ledger")
+        }
+    }
+
+    /// This server's intents and kept sets. Throws when the file can't be read: callers refuse (nothing is sent).
+    public var monitoringBook: MonitoringBook {
+        get throws {
+            let all = try allMonitoring()
+            return MonitoringBook(intents: all.intents.filter { $0.instance == instance },
+                                  kept: all.kept.filter { $0.instance == instance })
+        }
+    }
+
+    /// Changes this server's part of the book in one read-modify-write and one save (M6: the save happens before the
+    /// write it records; a save that fails throws and nothing is sent).
+    public func updateMonitoring(_ change: (inout MonitoringBook) -> Void) throws {
+        let scope = instance
+        func merged(_ all: MonitoringBook, _ change: (inout MonitoringBook) -> Void) -> MonitoringBook {
+            var mine = MonitoringBook(intents: all.intents.filter { $0.instance == scope },
+                                      kept: all.kept.filter { $0.instance == scope })
+            change(&mine)
+            for i in mine.intents.indices { mine.intents[i].instance = scope }
+            for i in mine.kept.indices { mine.kept[i].instance = scope }
+            return MonitoringBook(intents: all.intents.filter { $0.instance != scope } + mine.intents,
+                                  kept: all.kept.filter { $0.instance != scope } + mine.kept)
+        }
+        guard let url = monitoringURL else { monitoringMemory = merged(monitoringMemory, change); return }
+        try withoutActuallyEscaping(change) { change in
+            try Self.fileLock.withLockUnchecked {
+                let all = try LocalFile.load(MonitoringBook.self, from: url, fallback: MonitoringBook(), category: "ledger")
+                try LocalFile.save(merged(all, change), to: url)
+            }
+        }
+    }
+
+    /// Saves `intent` (replacing the one with its id), stamped with this server.
+    public func saveIntent(_ intent: MonitoringIntent) throws {
+        try updateMonitoring { book in
+            book.intents.removeAll { $0.id == intent.id }
+            book.intents.append(intent)
+        }
+    }
+
+    /// The artist's kept set replaced (nil: forgotten).
+    public func setKept(artistId: Int, _ kept: UnmonitoredKept?) throws {
+        try updateMonitoring { book in
+            book.kept.removeAll { $0.artistId == artistId }
+            if let kept { book.kept.append(kept) }
+        }
     }
 }

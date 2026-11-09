@@ -26,7 +26,11 @@ import MagpieCore
 ///   (`queueDelete`);
 /// - `DELETE /blocklist/bulk` (round 23, D191, named `blocklistCleanup`): every id is in Lidarr's blocklist now (read
 ///   fresh, every page), all of one artist, and that artist passes the artist delete's own rule (Magpie created it,
-///   nothing of it kept, tagged `magpie-find` and strictly inside the Finds root).
+///   nothing of it kept, tagged `magpie-find` and strictly inside the Finds root);
+/// - round 24 (owner, 2026-11-08, D243) supersedes "only for an artist the ledger says Magpie created" for the artist
+///   editor and "only albums the ledger says Magpie monitored" for `monitored: false`, for the writes named
+///   `ownedChange` / `unmatchedCleanup` only: any artist in the main root, Magpie's or the owner's, as the artist's open
+///   `MonitoringIntent` says, proven from fresh reads (`WriteConfinement+Owned.swift`). The Finds rules stay for Finds.
 ///
 /// The gate runs confined writes one at a time, checks to answer (`LidarrWriteGate`), and reads the ledger's kept
 /// state once more right before sending a delete.
@@ -113,6 +117,9 @@ public struct WriteConfinement: Sendable {
         /// Round 22 (D172): a kept single's files: right before they go, the artist's Keep is still confirmed and the
         /// album's entry still records the removal.
         case keptSingleDelete(albumId: Int)
+        /// Round 24 (D242): an owned artist's clean-up: right before it goes, its intent is still open in the ledger and
+        /// no Try of Magpie's has started for the artist.
+        case ownedCleanup(intent: UUID, artistId: Int)
     }
 
     enum Verdict: Equatable {
@@ -154,6 +161,14 @@ public struct WriteConfinement: Sendable {
         case singlesUnmonitor([Int])
         /// Round 23 (D191): `DELETE /blocklist/bulk`'s ids (`ConfinedShape.blocklistCleanup`).
         case blocklistDelete([Int])
+        /// Round 24 (D243): `ConfinedShape.ownedChange`'s writes, checked against the artist's open intent
+        /// (`WriteConfinement+Owned.swift`).
+        case ownedEditor([String: Any])
+        case ownedRefresh(Int)
+        case ownedSearch([Int])
+        case ownedMonitor(albumIds: [Int], monitored: Bool)
+        /// Round 24 (D242): `ConfinedShape.unmatchedCleanup`'s track file delete.
+        case ownedCleanup([Int])
     }
 
     func check(_ write: Write, lidarr: LidarrClient) async -> Verdict {
@@ -162,6 +177,7 @@ public struct WriteConfinement: Sendable {
         if case .queueRestartAny(let id, let allowForeign) = write {
             return await Self.queueRestartAny(id, allowForeign: allowForeign, lidarr: lidarr)
         }
+        if let owned = await ownedCheck(write, lidarr: lidarr) { return owned }
         do {
             let entries: [LedgerEntry]
             do { entries = try await ledger.entries } catch { throw Unreadable() }
@@ -184,7 +200,7 @@ public struct WriteConfinement: Sendable {
             case .blocklistDelete(let ids):
                 // Right before it goes, the artist mustn't be kept or keeping (findDelete's last check).
                 return .confined(artists: [try await context.blocklistDelete(ids)], rule: .findDelete)
-            case .queueDelete, .queueRestartAny:
+            case .queueDelete, .queueRestartAny, .ownedEditor, .ownedRefresh, .ownedSearch, .ownedMonitor, .ownedCleanup:
                 return .unknown   // handled above
             case .trialDelete(let ids):
                 let (artistId, albumId) = try await context.trialDelete(ids)
@@ -348,6 +364,7 @@ public struct WriteConfinement: Sendable {
             guard let entries = try? await ledger.entries else { return nil }
             return entries.contains { $0.albumId == albumId && $0.isOpenTrial }
         }
+        if case .ownedCleanup(let intent, let artistId) = rule { return await ownedCleanupLastCheck(intent, artistId: artistId) }
         if case .keptSingleDelete(let albumId) = rule {
             guard let entries = try? await ledger.entries else { return nil }
             return !artists.isEmpty && artists.allSatisfy { Self.confirmedKept($0, in: entries) }
@@ -360,7 +377,7 @@ public struct WriteConfinement: Sendable {
             return !entries.contains { artists.contains($0.lidarrArtistId) && $0.isKeptOrKeeping }
         case .keptLossyDelete:
             return artists.allSatisfy { Self.confirmedKept($0, in: entries) }
-        case .other, .queueRestart, .trialDelete, .keptSingleDelete:
+        case .other, .queueRestart, .trialDelete, .keptSingleDelete, .ownedCleanup:
             return true
         }
     }

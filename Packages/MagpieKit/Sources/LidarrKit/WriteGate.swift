@@ -96,6 +96,17 @@ public enum ConfinedShape: Sendable, Equatable {
     /// confined by `WriteConfinement.blocklistCleanup` (every id read fresh from the blocklist, all of one artist that
     /// the artist delete itself would let go). `scripts/check-writes.sh` pins the one caller.
     case blocklistCleanup
+    /// Round 24 (owner, 2026-11-08, D243): "Change what's monitored" for any artist in the main root, Magpie's or the
+    /// owner's: `PUT /artist/editor {artistIds: [one], metadataProfileId}` (one of Magpie's profiles, or Revert's recorded
+    /// previous one), RefreshArtist, `PUT /album/monitor` and AlbumSearch, each only as the artist's open
+    /// `MonitoringIntent` in the ledger says, proven from fresh reads (`WriteConfinement.ownedChange`). Only while the
+    /// owner's "Let Magpie change what Lidarr monitors for my artists" is on. `scripts/check-writes.sh` pins the callers.
+    case ownedChange
+    /// Round 24 (D242, D243): "Clean up unmatched songs" (and Delete them on reducing): `DELETE /trackfile/bulk` of at most
+    /// 50 files the artist's open clean-up intent named, each read fresh: that artist's, inside its folder in the main
+    /// root, its album unmonitored now, its size unchanged, never one the owner favourited or saved
+    /// (`WriteConfinement.unmatchedCleanup`). `scripts/check-writes.sh` pins the one caller.
+    case unmatchedCleanup
 }
 
 /// One line of the Lidarr change log: what Magpie asked Lidarr to change. Never carries secrets.
@@ -621,6 +632,21 @@ public actor LidarrWriteGate {
         defaults.set(on, forKey: Self.enabledKey(scope: connection.instanceScope))
     }
 
+    /// Round 24 (owner, 2026-11-08, Q10): "Let Magpie change what Lidarr monitors for my artists", per Lidarr instance,
+    /// off by default. The gate refuses every `ownedChange` and `unmatchedCleanup` write while it is off, whatever the
+    /// caller says (D243).
+    public static let monitoringChangesDefaultsKey = "magpie.lidarr.monitoringChanges"
+
+    public static func monitoringChangesKey(scope: String) -> String { "\(monitoringChangesDefaultsKey).\(scope)" }
+
+    public var monitoringChangesEnabled: Bool {
+        defaults.bool(forKey: Self.monitoringChangesKey(scope: connection.instanceScope))
+    }
+
+    public func setMonitoringChangesEnabled(_ on: Bool) {
+        defaults.set(on, forKey: Self.monitoringChangesKey(scope: connection.instanceScope))
+    }
+
     /// Round 15 C3 (D146): the singles switch's change-log line (information only; the undo is the journal's).
     /// Re-review 2 N1: stamped with the Lidarr it is for (the change log is one file for every Lidarr).
     public static func singlesNote(artistId: Int, metadataProfileId: Int?, monitorNewItems: String?, instance: String? = nil) -> String {
@@ -710,6 +736,28 @@ public actor LidarrWriteGate {
             default: throw refused(target, "singlesSwitch is an artist edit, a refresh or an unmonitor only")
             }
         }
+        // Round 24 (D243): an owned artist's change is only these four writes, its clean-up only a track file delete;
+        // never an artist delete, a move, a queue or blocklist write.
+        if shape == .ownedChange {
+            switch confined {
+            case .editor(let body)?: confined = .ownedEditor(body)
+            case .command(let name, _, let artistId?)? where name == "refreshartist": confined = .ownedRefresh(artistId)
+            case .command(let name, let ids, nil)? where name == "albumsearch": confined = .ownedSearch(ids)
+            case .albumMonitor(let ids, let monitored)?: confined = .ownedMonitor(albumIds: ids, monitored: monitored)
+            default: throw refused(target, "ownedChange is a profile, a refresh, a monitor or a search only")
+            }
+        }
+        if shape == .unmatchedCleanup {
+            guard case .trackFileDelete(let ids)? = confined, target.key == ["trackfile", "bulk"] else {
+                throw refused(target, "unmatchedCleanup is a bulk track file delete only")
+            }
+            confined = .ownedCleanup(ids)
+        }
+        if shape == .ownedChange || shape == .unmatchedCleanup {
+            guard confinement != nil else { throw refused(target, "deletes and artist edits need the ledger") }
+            guard enabled else { throw WriteGateError.disabled }
+            guard monitoringChangesEnabled else { throw refused(target, "changing what Lidarr monitors is off") }
+        }
         if confined != nil, confinement == nil { throw refused(target, "deletes and artist edits need the ledger") }
         guard enabled else { throw WriteGateError.disabled }
         if shape == .restartSearch {
@@ -739,6 +787,9 @@ public actor LidarrWriteGate {
             throw WriteGateError.unconfirmed
         }
         guard enabled else { throw WriteGateError.disabled }   // turned off during the reads
+        if shape == .ownedChange || shape == .unmatchedCleanup, !monitoringChangesEnabled {
+            throw refused(target, "changing what Lidarr monitors is off")
+        }
         // The ledger once more, right before a delete, by the rule that let it through (C4): a find delete refuses an
         // artist kept or keeping meanwhile (Keep saves its intent before it writes); a kept MP3 delete refuses one
         // whose Keep isn't confirmed now.
@@ -749,6 +800,7 @@ public actor LidarrWriteGate {
             case .keptLossyDelete: "the Keep isn't confirmed now"
             case .findDelete: "the artist was kept meanwhile"
             case .keptSingleDelete: "the single's removal isn't recorded or the Keep isn't confirmed now"
+            case .ownedCleanup: "the clean-up isn't open in the ledger now, or a Try started for the artist"
             default: "the trial was kept or ended meanwhile"
             }
             throw refused(target, why)
