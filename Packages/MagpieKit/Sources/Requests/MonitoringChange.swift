@@ -460,6 +460,8 @@ public actor MonitoringChanger {
 
     private struct Pending: Error {}
     private struct Abandon: Error {}
+    /// The profile wasn't the target after the confirmed refresh: sent again on the next pass (a counted failure).
+    private struct ProfileReverted: Error {}
 
     private func advance(_ start: MonitoringIntent) async -> Outcome {
         var job = start
@@ -581,6 +583,15 @@ public actor MonitoringChanger {
                 case .unknown: throw Pending()
                 }
             case .refreshed:
+                // A refresh Lidarr started before ours (an add's) can save the artist with its old profile after our
+                // editor write (seen on the dev stack): the profile is read again after the confirmed refresh, and sent
+                // again (counted as a failure, so it can't loop) when it isn't the target.
+                if job.sending != .searchSent, try await profile(of: job.artistId) != target {
+                    job.step = .unmonitored
+                    job.refreshCommandId = nil
+                    try await ledger.saveIntent(job)
+                    throw ProfileReverted()
+                }
                 // D239: more monitored types: the albums the refresh brought in, of a chosen type, monitored and searched.
                 // Fix round 1 M2: a search whose answer was lost is never sent again (when in doubt, don't write).
                 if job.kind == .monitoringChange, job.sending != .searchSent, let types = job.targetTypes {

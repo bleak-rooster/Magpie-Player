@@ -28,6 +28,8 @@ final class MonitoringLidarr: @unchecked Sendable {
         var commands: [[String: Any]] = []
         /// The next POST /command answers 503 this many times.
         var failCommands = 0
+        /// The next refresh saves the artist with this profile (an earlier refresh racing the editor write).
+        var resetProfileOnRefresh: Int?
     }
     static let ownerMBID = MBID("20202020-2020-4020-8020-202020202020")!
     let transport = MockTransport()
@@ -179,6 +181,9 @@ final class MonitoringLidarr: @unchecked Sendable {
             }) { return .init(status: 503) }
             if (body["name"] as? String) == "RefreshArtist" {
                 applyRefresh()
+                state.withLockUnchecked { s in
+                    if let back = s.resetProfileOnRefresh { s.profileId = back; s.resetProfileOnRefresh = nil }
+                }
                 try loseAnswer("refresh")
             }
             return Self.reply(["id": 9], status: 201)
@@ -565,6 +570,19 @@ final class MonitoringLidarr: @unchecked Sendable {
         await #expect(throws: MonitoringChangeError.tryUnderWay) { _ = try await changer.apply(preview, choice: .keep) }
         #expect(fake.writes.isEmpty)
         #expect(try await fake.ledger.monitoringBook.intents.isEmpty)
+    }
+
+    /// Seen on the dev stack: a refresh Lidarr had under way saved the artist with its old profile after the editor write.
+    /// The profile is read again after the confirmed refresh and sent again.
+    @Test func aProfileARefreshPutBackIsSentAgain() async throws {
+        let fake = await MonitoringLidarr()
+        let changer = fake.changer()
+        let preview = try await changer.preview(artistId: 20, types: MonitoringLidarr.albumsOnly, keep: Self.nothingKept)
+        fake.state.withLockUnchecked { $0.resetProfileOnRefresh = 5 }
+        #expect(try await changer.apply(preview, choice: .keep) == .pending)
+        #expect(await changer.resume(artistId: 20) == .finished)
+        #expect(fake.state.withLockUnchecked { $0.profileId } == 30)
+        #expect(fake.writes.filter { $0.0 == "PUT artist/editor" }.count == 2)
     }
 
     /// M2: after a lost answer, a profile that can't be read is never sent blind.

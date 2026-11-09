@@ -61,6 +61,15 @@ struct MonitoringChangeIT {
             if albums.isEmpty { try await Task.sleep(for: .seconds(2)) }
         }
         try #require(!albums.isEmpty, "the dev Lidarr never listed the artist's albums")
+        // The add's own refresh must be over first: it saves the artist as it loaded it (fix round 1: seen racing the
+        // profile change on the dev stack; the runner now reads the profile again after its own refresh too).
+        for _ in 0..<90 {
+            let running = try await client.commands().filter {
+                $0.artistIds.contains(artistId) && ["queued", "started"].contains($0.status.lowercased())
+            }
+            if running.isEmpty { break }
+            try await Task.sleep(for: .seconds(2))
+        }
         let ledger = Ledger(fileURL: dir.appending(path: "ledger.json"), instance: client.instanceScope)
         let roots = WriteConfinement.Roots(mainRoot: "/music/library", findsRoot: "/music/samples", findTagId: findTag)
         let gate = LidarrWriteGate(client: client, logURL: dir.appending(path: "log.json"), defaultsSuite: suite,
