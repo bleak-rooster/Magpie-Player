@@ -1,6 +1,7 @@
 import Foundation
 import MagpieCore
 import MagpieTestSupport
+import os
 import Playback
 import Search
 import Testing
@@ -30,6 +31,8 @@ private let search3 = ok(#"""
     let store = SessionStore(keychain: KeychainStore(service: "com.bleak-rooster.magpie.tests.\(UUID().uuidString)"))
     let defaults = UserDefaults(suiteName: "R24EListsTests.\(UUID().uuidString)")!
     let transport = HostSwitchTransport()
+    /// What `search3` answers (a test can swap it).
+    let searchBody = OSAllocatedUnfairLock(initialState: search3)
 
     deinit {
         store.clear()
@@ -40,7 +43,8 @@ private let search3 = ok(#"""
         transport.inner.stub(pathSuffix: "/rest/ping", body: ok())
         transport.inner.stub(method: "POST", pathSuffix: "/auth/login", body: loginJSON)
         transport.inner.stub(pathSuffix: "/api/song", body: Data("[]".utf8), headers: ["X-Total-Count": "0"])
-        transport.inner.stub(pathSuffix: "/rest/search3", body: search3)
+        let body = searchBody
+        transport.inner.stub(pathSuffix: "/rest/search3") { _ in .init(status: 200, body: body.withLock { $0 }) }
         let model = AppModel(store: store, lidarrStore: MemoryLidarrStore(), tokenStore: MemoryTokenStore(),
                              matchIndexDirectory: nil, dataDirectory: tmp, transport: transport,
                              probeTransport: transport, engine: FakeEngine(), defaults: defaults,
@@ -141,10 +145,8 @@ private let search3 = ok(#"""
     /// Search's batch size and load-more (Y1): the kind's next batch asks for that kind only.
     @Test func kindSearch_loadsMoreOfItsKindOnly() async throws {
         let model = try await signedInModel()
-        transport.inner.stub(pathSuffix: "/rest/search3") { _ in
-            let songs = (0..<20).map { #"{"id":"s\#($0)","title":"Harbour \#($0)","artist":"Corin Hale","album":"A","duration":1}"# }
-            return .init(status: 200, body: ok(#""searchResult3":{"song":[\#(songs.joined(separator: ","))]}"#))
-        }
+        let songs = (0..<20).map { #"{"id":"s\#($0)","title":"Harbour \#($0)","artist":"Corin Hale","album":"A","duration":1}"# }
+        searchBody.withLock { $0 = ok(#""searchResult3":{"song":[\#(songs.joined(separator: ","))]}"#) }
         let search = model.kindSearchModel(.songs, sleep: { _ in })
         search.update(query: "harbour")
         await search.settle()
@@ -152,10 +154,11 @@ private let search3 = ok(#"""
         #expect(!search.results.hasMore(.artists) && !search.results.hasMore(.albums))
         search.loadMore(.songs)
         await search.settleMore()
-        let last = try #require(transport.inner.requests.compactMap(\.url).last { $0.path.hasSuffix("/rest/search3") })
-        let c = try #require(URLComponents(url: last, resolvingAgainstBaseURL: false))
-        #expect(count("songOffset", in: c) == 20)
-        #expect(count("artistCount", in: c) == 0 && count("albumCount", in: c) == 0)
+        let asked = transport.inner.requests.compactMap(\.url).filter { $0.path.hasSuffix("/rest/search3") }
+            .compactMap { URLComponents(url: $0, resolvingAgainstBaseURL: false) }
+        let more = asked.filter { (count("songOffset", in: $0) ?? 0) > 0 }
+        #expect(more.first.flatMap { count("songOffset", in: $0) } == 20, "the next batch, from where the first ended")
+        for c in more { #expect(count("artistCount", in: c) == 0 && count("albumCount", in: c) == 0) }
     }
 
     /// The letter list is kept under the results, untouched: clearing shows it again where it was (no read, no jump).

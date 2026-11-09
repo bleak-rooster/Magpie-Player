@@ -6,29 +6,36 @@ import SwiftUI
 /// All artists, A–Z in Navidrome's order (its default articles dropped: "The Midnight Cartographers" under M), with
 /// the A–Z bar (P2; round 11 R2: the custom bar, so the letter bubble shows here too). Round 11 R11: album artists
 /// only, or every artist, from the toolbar's filter menu (the same preference as Settings › Library).
+/// Round 24 (owner, 2026-11-08): a "Search artists" field at the top (D224), and a header per letter past 25 artists
+/// (D225).
 struct ArtistsListView: View {
     @Environment(AppModel.self) private var model
     @State private var artists: Loadable<[Artist]> = .loading
     @State private var sections: [LetterIndex.Section] = []
     /// The "Album artists only" value the list was read for: coming back to the list doesn't read it again (M1).
     @State private var loadedFor: Bool?
+    /// Round 24 (D224): the list's own search, artists only.
+    @State private var search: SearchModel?
     private let themed = Themed()
 
     var body: some View {
         let albumArtistsOnly = model.preferences.layout.albumArtistsOnly
+        let searching = search.map(KindSearch.showsResults) ?? false
         ScrollViewReader { proxy in
             List {
                 LoadableView(state: artists, retry: load) { artists in
-                    ForEach(artists, id: \.id) { artist in row(artist) }
+                    LetterSectionedRows(items: artists, sections: sections, id: \.id) { artist in row(artist) }
                 }
                 .listRowSeparatorTint(themed.palette.sepColor)
             }
             .listStyle(.plain)
-            .letterIndex(available: Set(sections.map(\.key)), hidden: sections.isEmpty) { letter in
+            .letterIndex(available: Set(sections.map(\.key)), hidden: sections.isEmpty || searching) { letter in
                 guard let target = LetterIndex.target(letter, in: sections), let list = artists.value else { return }
                 proxy.scrollTo(list[target.range.lowerBound].id, anchor: .top)
             }
         }
+        .kindSearch(.artists, search)
+        .task { if search == nil { search = model.kindSearchModel(.artists) } }
         .navigationTitle("Artists")
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
@@ -97,14 +104,18 @@ struct ArtistsListView: View {
 }
 
 /// All albums, A–Z, a page at a time, with the letter index (P2: `PagedLetterList` jumps over the server's order,
-/// which drops Navidrome's default articles).
+/// which drops Navidrome's default articles). Round 24 (owner, 2026-11-08): a "Search albums" field at the top (D224),
+/// and a header per loaded letter run past 25 albums (D225).
 struct AlbumsListView: View {
     @Environment(AppModel.self) private var model
     @State private var list: PagedLetterList<Album>?
     /// The running letter jump (its seek reads the server), cancelled when the screen goes.
     @State private var jumpTask: Task<Void, Never>?
+    /// Round 24 (D224): the list's own search, albums only.
+    @State private var search: SearchModel?
 
     var body: some View {
+        let searching = search.map(KindSearch.showsResults) ?? false
         ScrollViewReader { proxy in
             ScrollView {
                 if let list {
@@ -117,7 +128,8 @@ struct AlbumsListView: View {
                             .padding(.top, Tokens.Spacing.s)
                             .accessibilityIdentifier("albums-earlier")
                         }
-                        AlbumGrid(albums: albums, subtitle: { $0.artist }, onAppearLast: { Task { await list.loadMore() } })
+                        AlbumLetterGrid(albums: albums, sections: list.sections,
+                                        onAppearLast: { Task { await list.loadMore() } })
                             .padding(.vertical, Tokens.Spacing.l)
                         if let moreError = list.moreError {
                             VStack(spacing: Tokens.Spacing.s) {
@@ -134,7 +146,8 @@ struct AlbumsListView: View {
                     }
                 }
             }
-            .letterIndex(available: list?.availableLetters ?? [], hidden: list?.items.value?.isEmpty != false) { letter in
+            .letterIndex(available: list?.availableLetters ?? [],
+                         hidden: list?.items.value?.isEmpty != false || searching) { letter in
                 pick(letter)
             }
             .overlay { if list?.seeking == true { ProgressView().accessibilityLabel("Finding albums") } }
@@ -142,10 +155,12 @@ struct AlbumsListView: View {
                 if let request { proxy.scrollTo(request.id, anchor: .top) }
             }
         }
+        .kindSearch(.albums, search)
         .navigationTitle("Albums")
         .magpieScreen()
         .onDisappear { jumpTask?.cancel() }
         .task {
+            if search == nil { search = model.kindSearchModel(.albums) }
             if list == nil {
                 let model = model
                 list = PagedLetterList(pageSize: AppModel.albumsPageSize, articles: LetterIndex.navidromeArticles,
@@ -164,9 +179,39 @@ struct AlbumsListView: View {
     }
 }
 
+/// The albums read so far as one grid, or (D225: more than 25 and the A–Z bar on screen) a grid per loaded letter run
+/// under a pinned header. Tiles keep their place in the whole list ("album-N").
+private struct AlbumLetterGrid: View {
+    let albums: [Album]
+    let sections: [LetterIndex.Section]
+    let onAppearLast: () -> Void
+    @Environment(\.letterIndexShown) private var barShown
+
+    var body: some View {
+        let runs = LetterSectionHeader.runs(sections, itemCount: albums.count, barShown: barShown)
+        if runs.isEmpty {
+            AlbumGrid(albums: albums, subtitle: { $0.artist }, onAppearLast: onAppearLast)
+        } else {
+            LazyVStack(alignment: .leading, spacing: Tokens.Spacing.xl, pinnedViews: [.sectionHeaders]) {
+                ForEach(runs, id: \.range.lowerBound) { run in
+                    Section {
+                        AlbumGrid(albums: Array(albums[run.range]), subtitle: { $0.artist },
+                                  onAppearLast: run.range.upperBound == albums.count ? onAppearLast : nil,
+                                  firstIndex: run.range.lowerBound)
+                    } header: {
+                        LetterSectionHeader(key: run.key, pinned: true)
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// All playlists, A–Z, with the A–Z bar (P2; round 11 R2: the custom bar, so the letter bubble shows here too).
 /// Round 11 R8: "+" makes a new playlist (a name, then `createPlaylist`); the list reads again after any change.
 /// Round 22 R22P (owner, 2026-11-06): All or Yours above the list, remembered per account (D179, D180).
+/// Round 24 (owner, 2026-11-08): in All, who made each playlist under its name and what All covers at the end (D223); a
+/// header per letter past 25 playlists (D225).
 struct PlaylistsListView: View {
     @Environment(AppModel.self) private var model
     /// Every playlist but Discover's, A–Z; `show` picks what is listed from it.
@@ -184,7 +229,20 @@ struct PlaylistsListView: View {
         ScrollViewReader { proxy in
             List {
                 LoadableView(state: playlists, retry: load) { playlists in
-                    ForEach(listed(playlists), id: \.id) { playlist in row(playlist) }
+                    let shown = listed(playlists)
+                    LetterSectionedRows(items: shown, sections: sections, id: \.id) { playlist in row(playlist) }
+                    // Round 24 (D223): what All is: everything this account may see (Navidrome's own rule).
+                    if let footer = show.footer, !shown.isEmpty {
+                        Section {
+                            Text(footer)
+                                .font(.footnote)
+                                .foregroundStyle(themed.palette.ink2Color)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .listRowBackground(Color.clear)
+                                .listRowSeparator(.hidden)
+                                .accessibilityIdentifier("playlist-show-footer")
+                        }
+                    }
                 }
                 .listRowSeparatorTint(themed.palette.sepColor)
             }
@@ -272,6 +330,8 @@ struct PlaylistsListView: View {
                 Artwork(playlist.coverArtId, side: 56) { SleeveArt(image: $0, side: 56) }
                 VStack(alignment: .leading, spacing: 1) {
                     Text(playlist.name).font(.body)
+                    // Round 24 (D223): who made it, in All only; nothing for your own or an unknown owner.
+                    if show == .all { OwnerCaption(owner: playlist.owner, signedInUser: model.session?.username) }
                     HStack(spacing: 4) {
                         Text(playlist.songCount == 1 ? "1 song" : "\(playlist.songCount) songs")
                             .font(.footnote).foregroundStyle(themed.palette.ink2Color)

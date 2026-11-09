@@ -85,6 +85,12 @@ struct LetterIndexBar: View {
     }
 }
 
+extension EnvironmentValues {
+    /// Round 24 (owner, 2026-11-08): the A–Z bar is on screen over this list (set by `.letterIndex`), so a list of more
+    /// than 25 items shows letter headers (`LetterSectionHeader`, D225).
+    @Entry var letterIndexShown = false
+}
+
 extension View {
     /// The letter index along the right edge, over this scroll view, which keeps its rows clear of it.
     func letterIndex(available: Set<String>, hidden: Bool = false,
@@ -105,6 +111,7 @@ private struct LetterIndexOverlay: ViewModifier {
         // Hidden at accessibility sizes and when 27 letters don't fit (D15); then rows keep their full width too.
         let shown = !hidden && !typeSize.isAccessibilitySize && height >= LetterIndexBar.neededHeight
         content
+            .environment(\.letterIndexShown, shown)   // D225: the rows' letter headers follow the bar
             .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height = $0 }
             .contentMargins(.trailing, shown ? 14 : 0, for: .scrollContent)
             .overlay(alignment: .trailing) {

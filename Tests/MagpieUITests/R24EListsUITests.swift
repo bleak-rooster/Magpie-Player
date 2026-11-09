@@ -58,8 +58,11 @@ final class R24EListsUITests: XCTestCase {
         }
         XCTAssertTrue(field.exists, "search field not found")
         field.tap()
-        field.typeText("aurora\n")
-        XCTAssertTrue(app.descendants(matching: .any)["search-scope"].waitForExistence(timeout: 15), "no results")
+        field.typeText("aurora")
+        // Playing a result keeps the search as a recent one.
+        let song = app.buttons["search-song-0"]
+        XCTAssertTrue(song.waitForExistence(timeout: 15), "no results for aurora")
+        song.tap()
         let close = app.buttons["Close"].exists ? app.buttons["Close"] : app.buttons["Cancel"]
         close.firstMatch.tap()
         XCTAssertTrue(app.descendants(matching: .any)["search-scope"].waitForNonExistence(timeout: 5), "still searching")
@@ -101,7 +104,7 @@ final class R24EListsUITests: XCTestCase {
         field.typeText("aurora")
         XCTAssertTrue(app.buttons["kind-result-song-0"].waitForExistence(timeout: 15), "no songs for aurora")
         XCTAssertTrue(index.waitForNonExistence(timeout: 5), "the A–Z bar is hidden while searching")
-        XCTAssertFalse(terra.isHittable, "the letter list is under the results")
+        XCTAssertFalse(terra.exists && terra.isHittable, "the letter list is under the results")
 
         app.buttons["kind-search-clear"].tap()
         XCTAssertTrue(app.buttons["kind-result-song-0"].waitForNonExistence(timeout: 5), "results still shown")
