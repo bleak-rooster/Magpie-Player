@@ -226,12 +226,13 @@ private struct OwnedProof {
     }
 
     /// Fix round 1 I2: `file` (id, album and size) is in the artist's kept set, or in a finished `monitoringChange` whose
-    /// owner chose Delete them, with its album among the albums that change unmonitored.
+    /// owner chose Delete them, with its album among the albums that change unmonitored and not one it left out (m1).
     static func keptOrConfirmed(_ file: OwnedFile, artistId: Int, in book: MonitoringBook) -> Bool {
         if book.kept(artistId: artistId)?.files.contains(file) == true { return true }
         return book.intents.contains { change in
             change.kind == .monitoringChange && change.artistId == artistId && change.step == .done && !change.keepFiles
                 && change.files.contains(file) && change.unmonitorAlbumIds.contains(file.albumId)
+                && !change.excludedFileIds.contains(file.id)
         }
     }
 
@@ -246,6 +247,10 @@ private struct OwnedProof {
             throw Failure.refused("no clean-up the owner confirmed is open for this artist")
         }
         guard intent.matchesConfirmation else { throw Failure.refused("the clean-up isn't what the owner confirmed") }
+        // Fix round 2: exactly the batch the runner saved before the call (the gate built the request from it).
+        guard Set(ids) == Set(intent.pendingFileIds), ids.count == intent.pendingFileIds.count else {
+            throw Failure.refused("only the clean-up's saved batch")
+        }
         let named = Dictionary(intent.files.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         let excluded = Set(intent.excludedFileIds)
         guard ids.allSatisfy({ named[$0] != nil && !excluded.contains($0) }) else {

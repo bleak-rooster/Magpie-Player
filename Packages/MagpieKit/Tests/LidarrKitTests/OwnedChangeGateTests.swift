@@ -86,6 +86,17 @@ import MagpieTestSupport
             .init(status: 200, body: try! JSONSerialization.data(withJSONObject: object))
         }
 
+        /// As the runner does: the batch saved in the open clean-up, then `performCleanup` (the gate builds the request).
+        func deleting(_ gate: LidarrWriteGate, _ ids: [Int]) async -> WriteGateError? {
+            guard var open = try? await ledger.monitoringBook.intents.first(where: { $0.kind == .unmatchedCleanup && $0.isOpen }) else {
+                return await OwnedChangeGateTests.outcome { _ = try await gate.performCleanup(intentId: UUID()) }
+            }
+            open.pendingFileIds = ids
+            try? await ledger.saveIntent(open)
+            let id = open.id
+            return await OwnedChangeGateTests.outcome { _ = try await gate.performCleanup(intentId: id) }
+        }
+
         func gate(monitoringOn: Bool = true) async -> LidarrWriteGate {
             let confinement = WriteConfinement(ledger: ledger, roots: {
                 WriteConfinement.Roots(mainRoot: "/music/library", findsRoot: "/music/samples", findTagId: 2)
@@ -136,11 +147,16 @@ import MagpieTestSupport
     struct Monitor: Encodable, Sendable { var albumIds: [Int]; var monitored: Bool }
     struct Files: Encodable, Sendable { var trackFileIds: [Int] }
 
-    /// Sends and says how the gate answered: nil when sent.
+    /// Sends through the owned writes' one internal path (fix round 2: callers outside LidarrKit can't name these shapes;
+    /// the tests reach the confinement with any body) and says how the gate answered: nil when sent.
     static func answer(_ gate: LidarrWriteGate, _ method: String, _ path: String, _ body: (any Encodable & Sendable)?,
-                       _ shape: ConfinedShape) async -> WriteGateError? {
+                       _ shape: OwnedShape) async -> WriteGateError? {
+        await outcome { _ = try await gate.sendConfined(method, path, body: body, owned: shape) }
+    }
+
+    static func outcome(_ work: () async throws -> Void) async -> WriteGateError? {
         do {
-            _ = try await gate.send(method, path, body: body, confinedAs: shape)
+            try await work()
             return nil
         } catch let e as WriteGateError {
             return e
@@ -159,11 +175,11 @@ import MagpieTestSupport
         try await fake.change()
         let gate = await fake.gate()
         // The owner's other profile: never, even named by the caller.
-        #expect(Self.isRefused(await Self.answer(gate, "PUT", "artist/editor", Profile(artistIds: [20], metadataProfileId: 7), .ownedChange)))
+        #expect(Self.isRefused(await Self.answer(gate, "PUT", "artist/editor", Profile(artistIds: [20], metadataProfileId: 7), .change)))
         // Another Magpie profile than the one the owner's choice names: refused too.
-        #expect(Self.isRefused(await Self.answer(gate, "PUT", "artist/editor", Profile(artistIds: [20], metadataProfileId: 31), .ownedChange)))
+        #expect(Self.isRefused(await Self.answer(gate, "PUT", "artist/editor", Profile(artistIds: [20], metadataProfileId: 31), .change)))
         #expect(fake.writes.isEmpty)
-        #expect(await Self.answer(gate, "PUT", "artist/editor", Profile(artistIds: [20], metadataProfileId: 30), .ownedChange) == nil)
+        #expect(await Self.answer(gate, "PUT", "artist/editor", Profile(artistIds: [20], metadataProfileId: 30), .change) == nil)
         #expect(fake.writes.count == 1)
     }
 
@@ -171,7 +187,7 @@ import MagpieTestSupport
         let fake = Fake()
         try await fake.change(target: 7)   // an intent naming the owner's profile (a runner bug) still never passes
         let gate = await fake.gate()
-        #expect(Self.isRefused(await Self.answer(gate, "PUT", "artist/editor", Profile(artistIds: [20], metadataProfileId: 7), .ownedChange)))
+        #expect(Self.isRefused(await Self.answer(gate, "PUT", "artist/editor", Profile(artistIds: [20], metadataProfileId: 7), .change)))
         #expect(fake.writes.isEmpty)
     }
 
@@ -182,7 +198,7 @@ import MagpieTestSupport
         for extra in [#""rootFolderPath":"/music/library""#, #""moveFiles":false,"rootFolderPath":"/music/library""#,
                       #""monitored":true"#, #""qualityProfileId":2"#, #""monitorNewItems":"all""#] {
             let body = try JSONDecoder().decode(JSONValue.self, from: json(#"{"artistIds":[20],"metadataProfileId":30,"# + extra + "}"))
-            #expect(Self.isRefused(await Self.answer(gate, "PUT", "artist/editor", body, .ownedChange)), "\(extra)")
+            #expect(Self.isRefused(await Self.answer(gate, "PUT", "artist/editor", body, .change)), "\(extra)")
         }
         #expect(fake.writes.isEmpty)
     }
@@ -191,23 +207,23 @@ import MagpieTestSupport
         let fake = Fake()
         try await fake.change(artist: 21, mbid: Self.otherMBID)
         let gate = await fake.gate()
-        #expect(Self.isRefused(await Self.answer(gate, "PUT", "artist/editor", Profile(artistIds: [21], metadataProfileId: 30), .ownedChange)))
+        #expect(Self.isRefused(await Self.answer(gate, "PUT", "artist/editor", Profile(artistIds: [21], metadataProfileId: 30), .change)))
         struct Refresh: Encodable, Sendable { var name = "RefreshArtist"; var artistId: Int }
-        #expect(Self.isRefused(await Self.answer(gate, "POST", "command", Refresh(artistId: 21), .ownedChange)))
+        #expect(Self.isRefused(await Self.answer(gate, "POST", "command", Refresh(artistId: 21), .change)))
         #expect(fake.writes.isEmpty)
     }
 
     @Test func change_refusedWithoutAnIntentOrWithTheSwitchOff() async throws {
         let fake = Fake()
         let gate = await fake.gate()
-        #expect(Self.isRefused(await Self.answer(gate, "PUT", "artist/editor", Profile(artistIds: [20], metadataProfileId: 30), .ownedChange)))
+        #expect(Self.isRefused(await Self.answer(gate, "PUT", "artist/editor", Profile(artistIds: [20], metadataProfileId: 30), .change)))
         try await fake.change()
         let off = await fake.gate(monitoringOn: false)
-        #expect(Self.isRefused(await Self.answer(off, "PUT", "artist/editor", Profile(artistIds: [20], metadataProfileId: 30), .ownedChange)))
+        #expect(Self.isRefused(await Self.answer(off, "PUT", "artist/editor", Profile(artistIds: [20], metadataProfileId: 30), .change)))
         // Another artist's id reused for someone else: the MusicBrainz id the intent recorded must match.
         let other = Fake()
         try await other.change(mbid: Self.otherMBID)
-        #expect(Self.isRefused(await Self.answer(await other.gate(), "PUT", "artist/editor", Profile(artistIds: [20], metadataProfileId: 30), .ownedChange)))
+        #expect(Self.isRefused(await Self.answer(await other.gate(), "PUT", "artist/editor", Profile(artistIds: [20], metadataProfileId: 30), .change)))
         #expect(fake.writes.isEmpty && other.writes.isEmpty)
     }
 
@@ -217,10 +233,10 @@ import MagpieTestSupport
         let fake = Fake()
         try await fake.change()
         let gate = await fake.gate()
-        #expect(Self.isRefused(await Self.answer(gate, "PUT", "album/monitor", Monitor(albumIds: [1], monitored: false), .ownedChange)))
-        #expect(Self.isRefused(await Self.answer(gate, "PUT", "album/monitor", Monitor(albumIds: [2, 9], monitored: false), .ownedChange)))
+        #expect(Self.isRefused(await Self.answer(gate, "PUT", "album/monitor", Monitor(albumIds: [1], monitored: false), .change)))
+        #expect(Self.isRefused(await Self.answer(gate, "PUT", "album/monitor", Monitor(albumIds: [2, 9], monitored: false), .change)))
         #expect(fake.writes.isEmpty)
-        #expect(await Self.answer(gate, "PUT", "album/monitor", Monitor(albumIds: [2], monitored: false), .ownedChange) == nil)
+        #expect(await Self.answer(gate, "PUT", "album/monitor", Monitor(albumIds: [2], monitored: false), .change) == nil)
         #expect(fake.writes.count == 1)
     }
 
@@ -229,7 +245,7 @@ import MagpieTestSupport
         var intent = try await fake.change()
         intent.unmonitorAlbumIds = [1, 2]   // album 1 is an Album: Albums only still includes it
         try await fake.ledger.saveIntent(intent)
-        #expect(Self.isRefused(await Self.answer(await fake.gate(), "PUT", "album/monitor", Monitor(albumIds: [1], monitored: false), .ownedChange)))
+        #expect(Self.isRefused(await Self.answer(await fake.gate(), "PUT", "album/monitor", Monitor(albumIds: [1], monitored: false), .change)))
         #expect(fake.writes.isEmpty)
     }
 
@@ -239,7 +255,7 @@ import MagpieTestSupport
         try await fake.ledger.record(LedgerEntry(lidarrArtistId: 20, albumId: 2, rgMbid: MBID("00000000-0000-0000-0000-000000000002")!,
                                                  createdArtist: false, wasMonitoredBefore: false, root: "/music/library",
                                                  mode: .fallback, send: .applied))
-        #expect(Self.isRefused(await Self.answer(await fake.gate(), "PUT", "album/monitor", Monitor(albumIds: [2], monitored: false), .ownedChange)))
+        #expect(Self.isRefused(await Self.answer(await fake.gate(), "PUT", "album/monitor", Monitor(albumIds: [2], monitored: false), .change)))
         #expect(fake.writes.isEmpty)
     }
 
@@ -247,10 +263,10 @@ import MagpieTestSupport
         let fake = Fake()
         try await fake.change()
         let gate = await fake.gate()
-        #expect(Self.isRefused(await Self.answer(gate, "PUT", "album/monitor", Monitor(albumIds: [1], monitored: true), .ownedChange)), "there before")
-        #expect(Self.isRefused(await Self.answer(gate, "PUT", "album/monitor", Monitor(albumIds: [4], monitored: true), .ownedChange)), "a Single, not chosen")
+        #expect(Self.isRefused(await Self.answer(gate, "PUT", "album/monitor", Monitor(albumIds: [1], monitored: true), .change)), "there before")
+        #expect(Self.isRefused(await Self.answer(gate, "PUT", "album/monitor", Monitor(albumIds: [4], monitored: true), .change)), "a Single, not chosen")
         #expect(fake.writes.isEmpty)
-        #expect(await Self.answer(gate, "PUT", "album/monitor", Monitor(albumIds: [3], monitored: true), .ownedChange) == nil)
+        #expect(await Self.answer(gate, "PUT", "album/monitor", Monitor(albumIds: [3], monitored: true), .change) == nil)
     }
 
     // MARK: - The clean-up
@@ -260,38 +276,38 @@ import MagpieTestSupport
     @Test func cleanup_deletesANamedFile() async throws {
         let fake = Fake()
         try await fake.cleanup()
-        #expect(await Self.answer(await fake.gate(), "DELETE", "trackfile/bulk", Self.delete([200]), .unmatchedCleanup) == nil)
+        #expect(await fake.deleting(await fake.gate(), [200]) == nil)
         #expect(fake.writes.count == 1)
     }
 
     @Test func cleanup_neverDeletesFavouritedOrInPlaylist() async throws {
         let fake = Fake()
         try await fake.cleanup()
-        #expect(Self.isRefused(await Self.answer(await fake.gate(), "DELETE", "trackfile/bulk", Self.delete([200, 204]), .unmatchedCleanup)))
+        #expect(Self.isRefused(await fake.deleting(await fake.gate(), [200, 204])))
         #expect(fake.writes.isEmpty)
     }
 
     @Test func cleanup_refusesFileOutsideArtistFolder() async throws {
         let fake = Fake()
         try await fake.cleanup()
-        #expect(Self.isRefused(await Self.answer(await fake.gate(), "DELETE", "trackfile/bulk", Self.delete([201]), .unmatchedCleanup)))
+        #expect(Self.isRefused(await fake.deleting(await fake.gate(), [201])))
         #expect(fake.writes.isEmpty)
     }
 
     @Test func cleanup_refusesMonitoredAlbum() async throws {
         let fake = Fake()
         try await fake.cleanup()
-        #expect(Self.isRefused(await Self.answer(await fake.gate(), "DELETE", "trackfile/bulk", Self.delete([202]), .unmatchedCleanup)))
+        #expect(Self.isRefused(await fake.deleting(await fake.gate(), [202])))
         // The EP monitored again by the owner meanwhile: its files stay too.
         fake.state.withLock { $0.albumMonitored[2] = true }
-        #expect(Self.isRefused(await Self.answer(await fake.gate(), "DELETE", "trackfile/bulk", Self.delete([200]), .unmatchedCleanup)))
+        #expect(Self.isRefused(await fake.deleting(await fake.gate(), [200])))
         #expect(fake.writes.isEmpty)
     }
 
     @Test func cleanup_refusesChangedSize() async throws {
         let fake = Fake()
         try await fake.cleanup()
-        #expect(Self.isRefused(await Self.answer(await fake.gate(), "DELETE", "trackfile/bulk", Self.delete([203]), .unmatchedCleanup)))
+        #expect(Self.isRefused(await fake.deleting(await fake.gate(), [203])))
         #expect(fake.writes.isEmpty)
     }
 
@@ -299,7 +315,7 @@ import MagpieTestSupport
         let fake = Fake()
         try await fake.cleanup()
         fake.state.withLock { $0.trackFileFails = true }
-        #expect(await Self.answer(await fake.gate(), "DELETE", "trackfile/bulk", Self.delete([200]), .unmatchedCleanup) == .unconfirmed)
+        #expect(await fake.deleting(await fake.gate(), [200]) == .unconfirmed)
         #expect(fake.writes.isEmpty)
     }
 
@@ -309,9 +325,9 @@ import MagpieTestSupport
         let gate = await fake.gate()
         let fiftyOne = [200] + Array(205...254)
         #expect(fiftyOne.count == 51)
-        #expect(Self.isRefused(await Self.answer(gate, "DELETE", "trackfile/bulk", Self.delete(fiftyOne), .unmatchedCleanup)))
+        #expect(Self.isRefused(await fake.deleting(gate, fiftyOne)))
         #expect(fake.writes.isEmpty)
-        #expect(await Self.answer(gate, "DELETE", "trackfile/bulk", Self.delete(Array(fiftyOne.prefix(50))), .unmatchedCleanup) == nil)
+        #expect(await fake.deleting(gate, Array(fiftyOne.prefix(50))) == nil)
         #expect(WriteConfinement.maxCleanupFiles == 50)
     }
 
@@ -319,11 +335,11 @@ import MagpieTestSupport
         let fake = Fake()
         var intent = try await fake.cleanup(files: [OwnedFile(id: 205, albumId: 2, size: 1000)], excluded: [])
         let gate = await fake.gate()
-        #expect(Self.isRefused(await Self.answer(gate, "DELETE", "trackfile/bulk", Self.delete([200]), .unmatchedCleanup)))
+        #expect(Self.isRefused(await fake.deleting(gate, [200])))
         // A record widened after the owner confirmed (its hash no longer matches): nothing goes.
         intent.files.append(OwnedFile(id: 200, albumId: 2, size: 1000))
         try await fake.ledger.saveIntent(intent)
-        #expect(Self.isRefused(await Self.answer(gate, "DELETE", "trackfile/bulk", Self.delete([200]), .unmatchedCleanup)))
+        #expect(Self.isRefused(await fake.deleting(gate, [200])))
         #expect(fake.writes.isEmpty)
     }
 
@@ -333,20 +349,57 @@ import MagpieTestSupport
         try await fake.ledger.record(LedgerEntry(lidarrArtistId: 20, albumId: 3, rgMbid: MBID("00000000-0000-0000-0000-000000000003")!,
                                                  createdArtist: false, wasMonitoredBefore: false, root: "/music/library",
                                                  mode: .fallback, send: .applied, requestId: "r-1"))
-        #expect(Self.isRefused(await Self.answer(await fake.gate(), "DELETE", "trackfile/bulk", Self.delete([200]), .unmatchedCleanup)))
+        #expect(Self.isRefused(await fake.deleting(await fake.gate(), [200])))
         #expect(fake.writes.isEmpty)
     }
 
     @Test func cleanup_isTheBulkRouteOnly_andNeedsTheSwitch() async throws {
         let fake = Fake()
         try await fake.cleanup()
-        #expect(Self.isRefused(await Self.answer(await fake.gate(), "DELETE", "trackfile/200", nil, .unmatchedCleanup)))
-        #expect(Self.isRefused(await Self.answer(await fake.gate(monitoringOn: false), "DELETE", "trackfile/bulk", Self.delete([200]), .unmatchedCleanup)))
+        #expect(Self.isRefused(await Self.answer(await fake.gate(), "DELETE", "trackfile/200", nil, .cleanup)))
+        #expect(Self.isRefused(await fake.deleting(await fake.gate(monitoringOn: false), [200])))
         // Without the name, the owner's file is no find of Magpie's: the old rules refuse it.
         do {
             _ = try await (await fake.gate()).send("DELETE", "trackfile/bulk", body: Self.delete([200]))
             Issue.record("sent")
         } catch {}
+        #expect(fake.writes.isEmpty)
+    }
+
+    // MARK: - Fix round 2: the gate builds the owned requests itself
+
+    @Test func performOwned_buildsEachRequestFromTheSavedIntent() async throws {
+        let fake = Fake()
+        let intent = try await fake.change()
+        let gate = await fake.gate()
+        _ = try await gate.performOwned(intentId: intent.id, step: .unmonitor)
+        _ = try await gate.performOwned(intentId: intent.id, step: .profile)
+        let sent = fake.writes.map { (r: URLRequest) -> (String, NSDictionary) in
+            ("\(r.httpMethod ?? "") \(r.url?.path ?? "")",
+             (r.httpBody.flatMap { try? JSONSerialization.jsonObject(with: $0) } as? NSDictionary) ?? [:])
+        }
+        #expect(sent.map(\.0) == ["PUT /lidarr/api/v1/album/monitor", "PUT /lidarr/api/v1/artist/editor"])
+        #expect(sent.first?.1 == ["albumIds": [2], "monitored": false] as NSDictionary)
+        #expect(sent.last?.1 == ["artistIds": [20], "metadataProfileId": 30] as NSDictionary)
+        // An id the ledger doesn't have open, a step the intent has nothing for, a clean-up with no saved batch: refused.
+        #expect(Self.isRefused(await Self.outcome { _ = try await gate.performOwned(intentId: UUID(), step: .profile) }))
+        let cleanup = try await fake.cleanup()
+        #expect(Self.isRefused(await Self.outcome { _ = try await gate.performCleanup(intentId: cleanup.id) }), "no pending batch")
+        #expect(Self.isRefused(await Self.outcome { _ = try await gate.performOwned(intentId: cleanup.id, step: .refresh) }))
+        #expect(fake.writes.count == 2)
+    }
+
+    /// m1: a finished Delete them change never lets go a file it left out (favourited, saved, on the phone).
+    @Test func cleanup_neverAFileTheFinishedChangeLeftOut() async throws {
+        let fake = Fake()
+        var change = MonitoringIntent(kind: .monitoringChange, artistId: 20, artistMbid: Self.ownerMBID, previousProfileId: 5,
+                                      targetProfileId: 30, targetTypes: Self.albumsOnly, beforeAlbumIds: [1, 2],
+                                      unmonitorAlbumIds: [2], keepFiles: false,
+                                      files: [OwnedFile(id: 200, albumId: 2, size: 1000)], excludedFileIds: [200], createdAt: Date())
+        change.step = .done
+        try await fake.ledger.saveIntent(change)
+        try await fake.cleanup(files: [OwnedFile(id: 200, albumId: 2, size: 1000)], excluded: [], kept: false)
+        #expect(Self.isRefused(await fake.deleting(await fake.gate(), [200])))
         #expect(fake.writes.isEmpty)
     }
 
@@ -357,11 +410,11 @@ import MagpieTestSupport
     @Test func cleanup_refusesAFileTheOwnerUnmonitoredHimself() async throws {
         let fake = Fake()
         try await fake.cleanup(files: [OwnedFile(id: 200, albumId: 2, size: 1000)], excluded: [], kept: false)
-        #expect(Self.isRefused(await Self.answer(await fake.gate(), "DELETE", "trackfile/bulk", Self.delete([200]), .unmatchedCleanup)))
+        #expect(Self.isRefused(await fake.deleting(await fake.gate(), [200])))
         // A kept set for another file of the album doesn't widen it.
         try await fake.ledger.setKept(artistId: 20, UnmonitoredKept(artistId: 20, artistMbid: Self.ownerMBID, albumIds: [2],
                                                                     files: [OwnedFile(id: 205, albumId: 2, size: 1000)], recordedAt: Date()))
-        #expect(Self.isRefused(await Self.answer(await fake.gate(), "DELETE", "trackfile/bulk", Self.delete([200]), .unmatchedCleanup)))
+        #expect(Self.isRefused(await fake.deleting(await fake.gate(), [200])))
         #expect(fake.writes.isEmpty)
     }
 
@@ -375,11 +428,11 @@ import MagpieTestSupport
         change.step = .done
         try await fake.ledger.saveIntent(change)
         try await fake.cleanup(files: [OwnedFile(id: 200, albumId: 2, size: 1000)], excluded: [], kept: false)
-        #expect(Self.isRefused(await Self.answer(await fake.gate(), "DELETE", "trackfile/bulk", Self.delete([200]), .unmatchedCleanup)),
+        #expect(Self.isRefused(await fake.deleting(await fake.gate(), [200])),
                 "album 2 isn't one the change unmonitored")
         change.unmonitorAlbumIds = [2]
         try await fake.ledger.saveIntent(change)
-        #expect(await Self.answer(await fake.gate(), "DELETE", "trackfile/bulk", Self.delete([200]), .unmatchedCleanup) == nil)
+        #expect(await fake.deleting(await fake.gate(), [200]) == nil)
         #expect(fake.writes.count == 1)
     }
 
@@ -391,9 +444,9 @@ import MagpieTestSupport
                                                  createdArtist: false, wasMonitoredBefore: false, root: "/music/library",
                                                  mode: .fallback, send: .applied, requestId: "r-1"))
         let gate = await fake.gate()
-        #expect(Self.isRefused(await Self.answer(gate, "PUT", "artist/editor", Profile(artistIds: [20], metadataProfileId: 30), .ownedChange)))
+        #expect(Self.isRefused(await Self.answer(gate, "PUT", "artist/editor", Profile(artistIds: [20], metadataProfileId: 30), .change)))
         struct Refresh: Encodable, Sendable { var name = "RefreshArtist"; var artistId: Int }
-        #expect(Self.isRefused(await Self.answer(gate, "POST", "command", Refresh(artistId: 20), .ownedChange)))
+        #expect(Self.isRefused(await Self.answer(gate, "POST", "command", Refresh(artistId: 20), .change)))
         #expect(fake.writes.isEmpty)
     }
 
@@ -405,12 +458,12 @@ import MagpieTestSupport
         try await fake.cleanup()
         let gate = await fake.gate()
         let path = "artist/20?deleteFiles=false&addImportListExclusion=false"
-        #expect(Self.isRefused(await Self.answer(gate, "DELETE", path, nil, .ownedChange)))
-        #expect(Self.isRefused(await Self.answer(gate, "DELETE", path, nil, .unmatchedCleanup)))
+        #expect(Self.isRefused(await Self.answer(gate, "DELETE", path, nil, .change)))
+        #expect(Self.isRefused(await Self.answer(gate, "DELETE", path, nil, .cleanup)))
         do { _ = try await gate.send("DELETE", path, body: nil); Issue.record("sent") } catch {}
         struct Move: Encodable, Sendable { var artistIds: [Int]; var rootFolderPath: String; var moveFiles: Bool }
-        #expect(Self.isRefused(await Self.answer(gate, "PUT", "artist/editor", Move(artistIds: [20], rootFolderPath: "/music/other", moveFiles: true), .ownedChange)))
-        #expect(Self.isRefused(await Self.answer(gate, "DELETE", "queue/5?removeFromClient=true&blocklist=true&skipRedownload=true", nil, .ownedChange)))
+        #expect(Self.isRefused(await Self.answer(gate, "PUT", "artist/editor", Move(artistIds: [20], rootFolderPath: "/music/other", moveFiles: true), .change)))
+        #expect(Self.isRefused(await Self.answer(gate, "DELETE", "queue/5?removeFromClient=true&blocklist=true&skipRedownload=true", nil, .change)))
         #expect(fake.writes.isEmpty)
     }
 
@@ -426,13 +479,13 @@ import MagpieTestSupport
                                       targetProfileId: 5, createdAt: Date())
         try await fake.ledger.saveIntent(revert)
         let gate = await fake.gate()
-        #expect(Self.isRefused(await Self.answer(gate, "PUT", "artist/editor", Profile(artistIds: [20], metadataProfileId: 7), .ownedChange)))
+        #expect(Self.isRefused(await Self.answer(gate, "PUT", "artist/editor", Profile(artistIds: [20], metadataProfileId: 7), .change)))
         // The owner moved the artist off Magpie's profile meanwhile: left as it is.
         fake.state.withLock { $0.artistProfile = 7 }
-        #expect(Self.isRefused(await Self.answer(gate, "PUT", "artist/editor", Profile(artistIds: [20], metadataProfileId: 5), .ownedChange)))
+        #expect(Self.isRefused(await Self.answer(gate, "PUT", "artist/editor", Profile(artistIds: [20], metadataProfileId: 5), .change)))
         #expect(fake.writes.isEmpty)
         fake.state.withLock { $0.artistProfile = 30 }
-        #expect(await Self.answer(gate, "PUT", "artist/editor", Profile(artistIds: [20], metadataProfileId: 5), .ownedChange) == nil)
+        #expect(await Self.answer(gate, "PUT", "artist/editor", Profile(artistIds: [20], metadataProfileId: 5), .change) == nil)
         #expect(fake.writes.count == 1)
     }
 
@@ -442,7 +495,7 @@ import MagpieTestSupport
         let revert = MonitoringIntent(kind: .revert, artistId: 20, artistMbid: Self.ownerMBID, previousProfileId: 7,
                                       targetProfileId: 7, createdAt: Date())
         try await fake.ledger.saveIntent(revert)
-        #expect(Self.isRefused(await Self.answer(await fake.gate(), "PUT", "artist/editor", Profile(artistIds: [20], metadataProfileId: 7), .ownedChange)))
+        #expect(Self.isRefused(await Self.answer(await fake.gate(), "PUT", "artist/editor", Profile(artistIds: [20], metadataProfileId: 7), .change)))
         #expect(fake.writes.isEmpty)
     }
 }

@@ -30,6 +30,10 @@ final class MonitoringLidarr: @unchecked Sendable {
         var failCommands = 0
         /// The next refresh saves the artist with this profile (an earlier refresh racing the editor write).
         var resetProfileOnRefresh: Int?
+        /// Every refresh saves the artist with this profile (fix round 2 m2).
+        var resetProfileAlways: Int?
+        /// The editor answers 200 but doesn't take the profile (fix round 2 m3).
+        var ignoreEditor = false
     }
     static let ownerMBID = MBID("20202020-2020-4020-8020-202020202020")!
     let transport = MockTransport()
@@ -183,6 +187,7 @@ final class MonitoringLidarr: @unchecked Sendable {
                 applyRefresh()
                 state.withLockUnchecked { s in
                     if let back = s.resetProfileOnRefresh { s.profileId = back; s.resetProfileOnRefresh = nil }
+                    if let back = s.resetProfileAlways { s.profileId = back }
                 }
                 try loseAnswer("refresh")
             }
@@ -190,7 +195,7 @@ final class MonitoringLidarr: @unchecked Sendable {
         }
         t.stub(method: "PUT", pathSuffix: "/api/v1/artist/editor") { [self] req in
             let body = try JSONSerialization.jsonObject(with: req.httpBody!) as! [String: Any]
-            state.withLockUnchecked { s in if let p = body["metadataProfileId"] as? Int { s.profileId = p } }
+            state.withLockUnchecked { s in if let p = body["metadataProfileId"] as? Int, !s.ignoreEditor { s.profileId = p } }
             try loseAnswer("editor")
             return Self.reply([[String: Any]]())
         }
@@ -583,6 +588,62 @@ final class MonitoringLidarr: @unchecked Sendable {
         #expect(await changer.resume(artistId: 20) == .finished)
         #expect(fake.state.withLockUnchecked { $0.profileId } == 30)
         #expect(fake.writes.filter { $0.0 == "PUT artist/editor" }.count == 2)
+    }
+
+    // MARK: - Fix round 2
+
+    /// R1: a later change that stopped before its profile was sent never hides the one that set the profile: Revert still
+    /// goes back to the owner's, and the next change records the owner's as the one to go back to.
+    @Test func r1_aLaterStoppedChangeDoesntHideTheOneThatSetTheProfile() async throws {
+        let fake = await MonitoringLidarr()
+        let changer = fake.changer()
+        _ = try await changer.apply(try await changer.preview(artistId: 20, types: MonitoringLidarr.albumsOnly, keep: Self.nothingKept),
+                                    choice: .keep)
+        #expect(fake.state.withLockUnchecked { $0.profileId } == 30)
+        var stopped = MonitoringIntent(kind: .monitoringChange, artistId: 20, artistMbid: MonitoringLidarr.ownerMBID,
+                                       previousProfileId: 30, targetProfileId: 32, targetTypes: MonitoringLidarr.albumsEPs,
+                                       createdAt: Date().addingTimeInterval(60))
+        stopped.step = .abandoned
+        try await fake.ledger.saveIntent(stopped)
+        #expect(try await changer.current(artistId: 20).canRevert)
+        let next = try await changer.preview(artistId: 20, types: MonitoringLidarr.everything, keep: Self.nothingKept)
+        #expect(next.previousProfileId == 5, "the owner's profile, not Magpie's")
+    }
+
+    /// m2: Lidarr puts the profile back on every pass: exactly 5 editor writes, then the change stops (abandoned).
+    @Test func m2_aProfileLidarrAlwaysPutsBackGivesUpAfterFive() async throws {
+        let fake = await MonitoringLidarr()
+        let changer = fake.changer()
+        let preview = try await changer.preview(artistId: 20, types: MonitoringLidarr.albumsOnly, keep: Self.nothingKept)
+        fake.state.withLockUnchecked { $0.resetProfileAlways = 5 }
+        var outcome = try await changer.apply(preview, choice: .keep)
+        for _ in 0..<10 where outcome == .pending { outcome = await changer.resume(artistId: 20) ?? .pending }
+        #expect(outcome == .abandoned)
+        #expect(fake.writes.filter { $0.0 == "PUT artist/editor" }.count == 5)
+    }
+
+    /// m3: an editor write Lidarr doesn't take is a counted failure: 5 writes, then abandoned.
+    @Test func m3_aProfileLidarrDoesntTakeIsCounted() async throws {
+        let fake = await MonitoringLidarr()
+        let changer = fake.changer()
+        let preview = try await changer.preview(artistId: 20, types: MonitoringLidarr.albumsOnly, keep: Self.nothingKept)
+        fake.state.withLockUnchecked { $0.ignoreEditor = true }
+        var outcome = try await changer.apply(preview, choice: .keep)
+        for _ in 0..<10 where outcome == .pending { outcome = await changer.resume(artistId: 20) ?? .pending }
+        #expect(outcome == .abandoned)
+        #expect(fake.writes.filter { $0.0 == "PUT artist/editor" }.count == 5)
+    }
+
+    /// m3: a refresh Lidarr reports failed is a counted failure: 5 refreshes, then abandoned.
+    @Test func m3_aFailedRefreshIsCounted() async throws {
+        let fake = await MonitoringLidarr()
+        let changer = fake.changer()
+        let preview = try await changer.preview(artistId: 20, types: MonitoringLidarr.albumsOnly, keep: Self.nothingKept)
+        fake.state.withLockUnchecked { $0.refreshStatus = "failed" }
+        var outcome = try await changer.apply(preview, choice: .keep)
+        for _ in 0..<10 where outcome == .pending { outcome = await changer.resume(artistId: 20) ?? .pending }
+        #expect(outcome == .abandoned)
+        #expect(fake.writes.filter { $0.0 == "POST command" && $0.1["name"] as? String == "RefreshArtist" }.count == 5)
     }
 
     /// M2: after a lost answer, a profile that can't be read is never sent blind.

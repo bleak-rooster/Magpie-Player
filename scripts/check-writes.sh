@@ -105,6 +105,13 @@ allow=(
 [ -n "${G1_SRC:-}" ] && allow=("$G1_SRC/NavidromeKit/NavidromeClient.swift|auth/login"
                                "$G1_SRC/MagpieTestSupport/SharedLoginTransport.swift|auth/login")
 
+# R24H fix round 2: one normalised view of `file:line:text` hits: whole-line comments dropped, a trailing `//` comment
+# stripped (only when no quote follows it, so a URL in a string stays), leading and trailing space trimmed.
+clean_lines() {
+  perl -ne 'my ($f, $n, $t) = /^([^:]+):(\d+):(.*)$/ or next; next if $t =~ m{^\s*//};
+            $t =~ s{\s+//[^"]*$}{}; $t =~ s/^\s+|\s+$//g; print "$f:$n:$t\n"'
+}
+
 method_sets() {
   grep -rnE --include='*.swift' 'httpMethod[[:space:]]*=[^=]' "$@" \
     | grep -vE 'httpMethod[[:space:]]*=[[:space:]]*"(GET|HEAD)"' || true
@@ -113,7 +120,8 @@ method_sets() {
 hits=$(
   {
     method_sets "${product[@]}"
-    grep -rniE --include='*.swift' '"(POST|PUT|DELETE|PATCH)"' "${product[@]}" | grep -vE 'gate\.send\("' || true
+    grep -rniE --include='*.swift' '"(POST|PUT|DELETE|PATCH)"' "${product[@]}" | clean_lines |
+      grep -iE '^[^:]+:[0-9]+:.*"(POST|PUT|DELETE|PATCH)"' | grep -vE 'gate\.send\("' || true
     [ ${#tests[@]} -eq 0 ] || method_sets "${tests[@]}"
   } | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' | grep -v "^$gate:" | cut -d: -f1,2 | sort -u
 )
@@ -168,49 +176,65 @@ if [ -z "${G1_SRC:-}" ]; then
   if grep -rnE --include='*.swift' '(switcher|singlesSwitcher\??)\.store\.save\(' "${product[@]}" | grep -v "^$singlesfile:" | grep -q .; then
     echo "G1: a singles-switch journal saved outside SinglesSwitch.swift" >&2; bad=1
   fi
-  shaped=$(grep -rnE --include='*.swift' 'confinedAs:' "${product[@]}" | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' |
-           grep -v "^Packages/MagpieKit/Sources/LidarrKit/WriteGate.swift:" || true)
+  # R24H fix round 2 (controller ruling): every `confinedAs` (any spacing) is compared whole: the trimmed line, a trailing
+  # `//` comment dropped, must be exactly one of these `file|line` pins. Round 15 C3 (D147, D146) the trial Reject's
+  # delete and the singles switch's journal; round 22 (D172) a kept single's delete; round 23 (D191) the clean slate's
+  # blocklist delete; D49 / round 13 (D63) / Y5 I9 the restarter's and Stall's queue restarts and the restart's search.
+  # The owned-artist writes (round 24) have no shape a caller can name: `performOwned` / `performCleanup`, below.
+  shaped_pins=(
+    "$trialfile|_ = try await gate.send(\"DELETE\", \"trackfile/bulk\", body: TrackFileIdsBody(trackFileIds: ids), confinedAs: .trialDelete)"
+    "$keptsinglefile|_ = try await gate.send(\"DELETE\", \"trackfile/bulk\", body: TrackFileIdsBody(trackFileIds: ids), confinedAs: .keptSingleDelete)"
+    "$cleanslatefile|_ = try await gate.send(\"DELETE\", \"blocklist/bulk\", body: BlocklistIdsBody(ids: ids), confinedAs: .blocklistCleanup)"
+    "$singlesfile|_ = try await gate.send(\"PUT\", \"artist/editor\", body: FollowBody(artistIds: [job.artistId], monitorNewItems: \"none\"), confinedAs: .singlesSwitch)"
+    "$singlesfile|_ = try await gate.send(\"PUT\", \"artist/editor\", body: FollowBody(artistIds: [job.artistId], monitorNewItems: job.originalFollow), confinedAs: .singlesSwitch)"
+    "$singlesfile|_ = try await gate.send(\"PUT\", \"artist/editor\", body: ProfileBody(artistIds: [job.artistId], metadataProfileId: job.singlesProfileId!), confinedAs: .singlesSwitch)"
+    "$singlesfile|_ = try await gate.send(\"PUT\", \"artist/editor\", body: ProfileBody(artistIds: [job.artistId], metadataProfileId: job.originalProfileId), confinedAs: .singlesSwitch)"
+    "$singlesfile|let data = try await gate.send(\"POST\", \"command\", body: RefreshBody(name: \"RefreshArtist\", artistId: job.artistId), confinedAs: .singlesSwitch)"
+    "$singlesfile|_ = try await gate.send(\"PUT\", \"album/monitor\", body: UnmonitorBody(albumIds: extras, monitored: false), confinedAs: .singlesSwitch)"
+    "$stall|_ = try await gate.send(\"DELETE\", \"queue/\\(queueId)?\\(Self.queueRemoval)\", body: nil, confinedAs: .queueRestartAny)"
+    "$restarter|_ = try await gate.send(\"DELETE\", \"queue/\\(queueId)?\\(Self.queueRemoval)\", body: nil, confinedAs: .queueRestartAny)"
+    "$restarter|_ = try await gate.send(\"DELETE\", \"queue/\\(queueId)?\\(Self.queueRemoval)\", body: nil, confinedAs: .queueRestartAny, allowForeign: true)"
+    "$restarter|_ = try await gate.send(\"POST\", \"command\", body: SearchBody(name: \"AlbumSearch\", albumIds: rest), confinedAs: .restartSearch)"
+  )
+  shaped=$(grep -rnE --include='*.swift' 'confinedAs[[:space:]]*:' "${product[@]}" | grep -v "^$gate:" | clean_lines || true)
   while IFS= read -r s; do
     [ -n "$s" ] || continue
-    # Round 15 C3 (D147, D146): the trial Reject's one track file delete and the singles switch's one sender.
-    case "$s" in
-      "$trialfile":*'_ = try await gate.send("DELETE", "trackfile/bulk", body: TrackFileIdsBody(trackFileIds: ids), confinedAs: .trialDelete)') continue ;;
-      # Round 22 (D172): a kept single's removal, its one track file delete (the gate's keptSingleDelete rule).
-      "$keptsinglefile":*'_ = try await gate.send("DELETE", "trackfile/bulk", body: TrackFileIdsBody(trackFileIds: ids), confinedAs: .keptSingleDelete)') continue ;;
-      # Round 23 (D191): a removed artist's blocklist rows, its one delete (the gate's blocklistCleanup rule).
-      "$cleanslatefile":*'_ = try await gate.send("DELETE", "blocklist/bulk", body: BlocklistIdsBody(ids: ids), confinedAs: .blocklistCleanup)') continue ;;
-      # Round 24 (D243): an owner's artist's monitoring change and its clean-up, only in MonitoringChange.swift, only
-      # these forms; the gate allows them only as the artist's open intent in the ledger says (ownedChange,
-      # unmatchedCleanup), read fresh, and only while "Let Magpie change what Lidarr monitors" is on.
-      "$monitoringfile":*'_ = try await gate.send("PUT", "album/monitor", body: MonitorBody(albumIds: job.unmonitorAlbumIds, monitored: false), confinedAs: .ownedChange)') continue ;;
-      "$monitoringfile":*'_ = try await gate.send("PUT", "artist/editor", body: ProfileBody(artistIds: [job.artistId], metadataProfileId: target), confinedAs: .ownedChange)') continue ;;
-      "$monitoringfile":*'let data = try await gate.send("POST", "command", body: RefreshBody(name: "RefreshArtist", artistId: job.artistId), confinedAs: .ownedChange)') continue ;;
-      "$monitoringfile":*'_ = try await gate.send("PUT", "album/monitor", body: MonitorBody(albumIds: ids, monitored: true), confinedAs: .ownedChange)') continue ;;
-      "$monitoringfile":*'_ = try await gate.send("POST", "command", body: SearchBody(name: "AlbumSearch", albumIds: ids), confinedAs: .ownedChange)') continue ;;
-      "$monitoringfile":*'_ = try await gate.send("DELETE", "trackfile/bulk", body: TrackFileIdsBody(trackFileIds: ids), confinedAs: .unmatchedCleanup)') continue ;;
-      # D146 (review I1-I3): the singles switch's journal, only in SinglesSwitch.swift, only these forms; the gate allows
-      # them only for an artist whose switch is in the journal, and only the journal's values.
-      "$singlesfile":*'_ = try await gate.send("PUT", "artist/editor", body: FollowBody(artistIds: [job.artistId], monitorNewItems: "none"), confinedAs: .singlesSwitch)') continue ;;
-      "$singlesfile":*'_ = try await gate.send("PUT", "artist/editor", body: FollowBody(artistIds: [job.artistId], monitorNewItems: job.originalFollow), confinedAs: .singlesSwitch)') continue ;;
-      "$singlesfile":*'_ = try await gate.send("PUT", "artist/editor", body: ProfileBody(artistIds: [job.artistId], metadataProfileId: job.singlesProfileId!), confinedAs: .singlesSwitch)') continue ;;
-      "$singlesfile":*'_ = try await gate.send("PUT", "artist/editor", body: ProfileBody(artistIds: [job.artistId], metadataProfileId: job.originalProfileId), confinedAs: .singlesSwitch)') continue ;;
-      "$singlesfile":*'try await gate.send("POST", "command", body: RefreshBody(name: "RefreshArtist", artistId: job.artistId), confinedAs: .singlesSwitch)') continue ;;
-      "$singlesfile":*'_ = try await gate.send("PUT", "album/monitor", body: UnmonitorBody(albumIds: extras, monitored: false), confinedAs: .singlesSwitch)') continue ;;
-    esac
-    case "${s%%:*}" in
-      "$stall"|"$restarter") ;;
-      *) echo "G1: queueRestartAny named outside its two callers: ${s%%:*}" >&2; bad=1; continue ;;
-    esac
-    case "$s" in
-      *'gate.send("DELETE", "queue/\(queueId)?\(Self.queueRemoval)", body: nil, confinedAs: .queueRestartAny)'*) ;;
-      # Round 13 item 6 (D63): another app's download, only by the restarter, the flag a literal `true` (the restarter
-      # sets it only when its caller passed `allowForeign`, which only the flagged confirmation does; pinned below).
-      "$restarter":*'gate.send("DELETE", "queue/\(queueId)?\(Self.queueRemoval)", body: nil, confinedAs: .queueRestartAny, allowForeign: true)') ;;
-      # Y5 fix I9 merge: the restart's AlbumSearch, by the restarter only (the gate allows only albums it just restarted).
-      "$restarter":*'gate.send("POST", "command", body: SearchBody(name: "AlbumSearch", albumIds: rest), confinedAs: .restartSearch)'*) ;;
-      *) echo "G1: queueRestartAny not exactly a queue delete with the one query: ${s%%:*}" >&2; bad=1 ;;
-    esac
+    file="${s%%:*}" rest="${s#*:}"; text="${rest#*:}"
+    ok=0
+    for pin in "${shaped_pins[@]}"; do [ "$file|$text" = "$pin" ] && ok=1 && break; done
+    [ "$ok" = 1 ] || { echo "G1: a confined write that isn't exactly as pinned: $file:${rest%%:*}" >&2; bad=1; }
   done <<< "$shaped"
+  # R24H fix round 2: the owned-artist writes go only through the gate's own entry points, named only on these exact
+  # lines of MonitoringChange.swift; the gate builds each request from the saved intent.
+  owned_call_pins=(
+    "$monitoringfile|_ = try await gate.performOwned(intentId: job.id, step: .unmonitor)"
+    "$monitoringfile|_ = try await gate.performOwned(intentId: job.id, step: .profile)"
+    "$monitoringfile|let data = try await gate.performOwned(intentId: job.id, step: .refresh)"
+    "$monitoringfile|_ = try await gate.performOwned(intentId: job.id, step: .monitor)"
+    "$monitoringfile|_ = try await gate.performOwned(intentId: job.id, step: .search)"
+    "$monitoringfile|_ = try await gate.performCleanup(intentId: job.id)"
+  )
+  owned_calls=$(grep -rnE --include='*.swift' '\b(performOwned|performCleanup|sendConfined|OwnedShape)\b' "${product[@]}" | grep -v "^$gate:" | clean_lines || true)
+  while IFS= read -r s; do
+    [ -n "$s" ] || continue
+    file="${s%%:*}" rest="${s#*:}"; text="${rest#*:}"
+    ok=0
+    for pin in "${owned_call_pins[@]}"; do [ "$file|$text" = "$pin" ] && ok=1 && break; done
+    [ "$ok" = 1 ] || { echo "G1: an owned-artist write named outside its pinned lines: $file:${rest%%:*}" >&2; bad=1; }
+  done <<< "$owned_calls"
+  # 2 + 5: at most one write call per line anywhere, and never a write function taken as a value.
+  multi=$(grep -rnE --include='*.swift' 'gate\.(send|performOwned|performCleanup)[[:space:]]*\(.*gate\.(send|performOwned|performCleanup)[[:space:]]*\(' \
+            "${product[@]}" | grep -v "^$gate:" | clean_lines | grep -E 'gate\.(send|performOwned|performCleanup)[[:space:]]*\(.*gate\.(send|performOwned|performCleanup)[[:space:]]*\(' || true)
+  while IFS= read -r s; do
+    [ -n "$s" ] || continue
+    echo "G1: more than one gate write on one line: ${s%%:*}" >&2; bad=1
+  done <<< "$multi"
+  refs=$(grep -rnE --include='*.swift' 'gate\.(send|performOwned|performCleanup)' "${product[@]}" | grep -v "^$gate:" | clean_lines |
+           grep -E '=[[:space:]]*gate\.(send|performOwned|performCleanup)\b|gate\.(send|performOwned|performCleanup)([^(a-zA-Z]|$)' || true)
+  while IFS= read -r s; do
+    [ -n "$s" ] || continue
+    echo "G1: a gate write taken as a value, not called: ${s%%:*}" >&2; bad=1
+  done <<< "$refs"
   grep -qF 'static let queueRemoval = "removeFromClient=true&blocklist=true&skipRedownload=true"' "$restarter" ||
     { echo "G1: $restarter: queueRemoval isn't exactly removeFromClient=true&blocklist=true&skipRedownload=true" >&2; bad=1; }
   # Round 13 item 6 (D63; Z4 review I1): every `allowForeign:` / `includeForeign:` ARGUMENT in product code, whatever
@@ -269,8 +293,6 @@ if [ -z "${G1_SRC:-}" ]; then
       Packages/MagpieKit/Sources/Requests/RequestRunner+OnlyTheSong.swift) ;;
       # Round 22 (D172): a kept single's files, confined by `ConfinedShape.keptSingleDelete` (pinned above).
       Packages/MagpieKit/Sources/Requests/RequestRunner+KeptSingle.swift) ;;
-      # Round 24 (D242): an owner's artist's unmatched songs, confined by `ConfinedShape.unmatchedCleanup` (pinned above).
-      Packages/MagpieKit/Sources/Requests/MonitoringChange.swift) ;;
       *) echo "G1: track file delete outside Not for me and the MP3 rule: $f" >&2; bad=1 ;;
     esac
   done
@@ -352,11 +374,12 @@ if [ -z "${G1_SRC:-}" ]; then
   done
   # R24H fix round 1 I6: any mention (a trailing closure, a spaced call), the book's file, URL or types made anywhere
   # else; comment lines don't count.
-  book_hits=$(grep -rnE --include='*.swift' '\b(saveIntent|updateMonitoring|setKept|monitoringURL)\b|\b(MonitoringBook|MonitoringIntent)[[:space:]]*\(|-monitoring\.json' \
-                "${product[@]}" | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' | cut -d: -f1 | sort -u || true)
+  # Fix round 2 S1: also the book's key, its type as a value (`MonitoringBook.self`) or a declared type.
+  book_hits=$(grep -rnE --include='*.swift' '\b(saveIntent|updateMonitoring|setKept|monitoringURL|monitoringBookKey)\b|\b(MonitoringBook|MonitoringIntent)[[:space:]]*\(|-monitoring\.json|MonitoringBook\.self|:[[:space:]]*MonitoringBook\b' \
+                "${product[@]}" | clean_lines | cut -d: -f1 | sort -u || true)
   for f in $book_hits; do
     case "$f" in
-      "$lk/Ledger.swift"|Packages/MagpieKit/Sources/Requests/MonitoringChange.swift) ;;
+      "$lk/Ledger.swift"|Packages/MagpieKit/Sources/Requests/MonitoringChange.swift|"$lk/WriteGate.swift"|"$lk/WriteConfinement+Owned.swift"|"$lk/MonitoringIntent.swift") ;;
       *) echo "G1: the ledger's monitoring book written outside MonitoringChange.swift: $f" >&2; bad=1 ;;
     esac
   done
@@ -814,14 +837,19 @@ if [ -z "${G1_SRC:-}" ]; then
   #     or ArtistSearch (ArtistLidarr).
   # `removeCounting(…, restartAny: true)` (the queueRestartAny shape) only from the restarter.
   rq="Packages/MagpieKit/Sources/Requests"
-  sends=$(grep -rnE --include='*.swift' 'gate\.send\(' "${product[@]}" | grep -v "^$gate:" |
-          grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' || true)
-  while IFS= read -r s; do
-    [ -n "$s" ] || continue
-    file="${s%%:*}" rest="${s#*:}"; line="${rest%%:*}" text="${rest#*:}"
+  # R24H fix round 2: the line without its trailing comment, and every `gate.send(` on it (one per line is enforced
+  # above, but each is checked in case).
+  sends=$(grep -rnE --include='*.swift' 'gate\.send[[:space:]]*\(' "${product[@]}" | grep -v "^$gate:" | clean_lines || true)
+  while IFS= read -r s0; do
+    [ -n "$s0" ] || continue
+    file="${s0%%:*}" rest="${s0#*:}"; line="${rest%%:*}" text0="${rest#*:}"
+    count=$(printf '%s\n' "$text0" | perl -ne 'my $n = () = /gate\.send\s*\(/g; print $n')
+    for ((k = 0; k < count; k++)); do
+    text=$(printf '%s\n' "$text0" | perl -ne 'my @p = split /(?=gate\.send\s*\()/; my @s = grep { /^gate\.send/ } @p; print $s['"$k"']')
+    s="$file:$line:$text"
     parsed=$(printf '%s\n' "$text" | perl -ne '
       s/\\u\{([0-9a-fA-F]+)\}/chr(hex($1))/ge; s/%([0-9a-fA-F]{2})/chr(hex($1))/ge; $_ = lc;
-      if (/gate\.send\(\s*"([a-z]+)"\s*,\s*"([^"]*)"/) {
+      if (/^gate\.send\(\s*"([a-z]+)"\s*,\s*"([^"]*)"/) {
         my ($v, $p) = ($1, $2); $p =~ s#/{2,}#/#g; $p =~ s#^/##; $p =~ s#^api/v1/##; $p =~ s#^/##;
         print "$v $p\n";
       } else { print "-\n"; }')
@@ -836,7 +864,7 @@ if [ -z "${G1_SRC:-}" ]; then
     case "$verb $path" in
       "delete trackfile"*)
         case "$file" in
-          "$rq/RequestRunner+NotForMe.swift"|"$rq/RequestRunner+Lossless.swift"|"$rq/RequestRunner+Trial.swift"|"$rq/RequestRunner+OnlyTheSong.swift"|"$rq/RequestRunner+KeptSingle.swift"|"$rq/MonitoringChange.swift") ;;
+          "$rq/RequestRunner+NotForMe.swift"|"$rq/RequestRunner+Lossless.swift"|"$rq/RequestRunner+Trial.swift"|"$rq/RequestRunner+OnlyTheSong.swift"|"$rq/RequestRunner+KeptSingle.swift") ;;
           *) echo "L1: track file delete outside Not for me and the MP3 rule: $file:$line" >&2; bad=1 ;;
         esac ;;
       "delete blocklist"*)
@@ -860,15 +888,13 @@ if [ -z "${G1_SRC:-}" ]; then
           "albumsearch|$rq/RequestRunner.swift"|"albumsearch|$rq/RequestRunner+Lossless.swift"|\
           "albumsearch|$rq/RequestRunner+BringInMore.swift"|"albumsearch|$rq/DownloadsInLidarr.swift"|\
           "refreshartist|$rq/RequestRunner+Lossless.swift"|"artistsearch|$rq/ArtistLidarr.swift"|\
-          "refreshartist|$rq/SinglesSwitch.swift"|"artistsearch|$rq/RequestRunner+LibraryAdds.swift"|\
-          "refreshartist|$rq/MonitoringChange.swift"|"albumsearch|$rq/MonitoringChange.swift") ;;
-          # Round 24 (D239, D243): RefreshArtist after a monitoring change and the AlbumSearch for what it brought in, both
-          # named ownedChange (pinned above) and confined to the artist's open intent.
+          "refreshartist|$rq/SinglesSwitch.swift"|"artistsearch|$rq/RequestRunner+LibraryAdds.swift") ;;
           # Round 15 C3: RefreshArtist after "Include singles" (D146, any artist, confirmed) and the discography's
           # ArtistSearch after Add to library's own release (D135); the gate confines both to Magpie's artists.
           *) echo "L1: a Lidarr command (${name:-no literal name}) outside its pinned callers: $file:$line" >&2; bad=1 ;;
         esac ;;
     esac
+    done
   done <<< "$sends"
   for f in $(grep -rlE --include='*.swift' 'restartAny:[[:space:]]*true' "${product[@]}" | sort -u || true); do
     [ "$f" = "Packages/MagpieKit/Sources/Requests/DownloadsInLidarr.swift" ] ||

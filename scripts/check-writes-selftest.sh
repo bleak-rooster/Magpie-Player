@@ -115,6 +115,34 @@ for p in "${planted[@]}"; do
 done
 rm -f "$work/App/PlantedViolation.swift"
 
+# R24H fix round 2 (controller ruling): bypasses planted in place, each in the file where it would really go (appended to
+# a copy of it): a spaced `confinedAs :` from a new Requests file, two sends on one line, the pinned trial delete with a
+# clean-up on its line, a pinned call with code in front, a write function taken as a value behind a pinned comment, a
+# verb hidden by a trailing comment, and the book written through its key or decoded as its type.
+rq_src="Packages/MagpieKit/Sources/Requests"
+placed=(
+  "$rq_src/PlantedOwned.swift|_ = try await gate.send(\"PUT\", \"artist/editor\", body: B(artistIds: [1], metadataProfileId: 2), confinedAs : .ownedChange)"
+  "$rq_src/MonitoringChange.swift|_ = try await gate.send(\"POST\", \"command\", body: RefreshBody(name: \"RefreshArtist\", artistId: 1)); _ = try await gate.send(\"DELETE\", \"artist/1?deleteFiles=true\", body: nil)"
+  "$rq_src/RequestRunner+Trial.swift|_ = try await gate.send(\"DELETE\", \"trackfile/bulk\", body: TrackFileIdsBody(trackFileIds: ids), confinedAs: .trialDelete); _ = try await gate.performCleanup(intentId: other)"
+  "$rq_src/MonitoringChange.swift|evil(); _ = try await gate.performOwned(intentId: job.id, step: .profile)"
+  "$rq_src/MonitoringChange.swift|let write = gate.send // _ = try await gate.performOwned(intentId: job.id, step: .profile)"
+  "$rq_src/RequestRunner+NotForMe.swift|_ = try await lidarrWrite(\"DELETE\", \"artist/1?deleteFiles=true\") // gate.send(\""
+  "App/AppModel+Monitoring.swift|try Data().write(to: URL(fileURLWithPath: ledger.monitoringBookKey))"
+  "App/AppModel+Monitoring.swift|let book = try JSONDecoder().decode(MonitoringBook.self, from: data)"
+)
+for w in "${placed[@]}"; do
+  file="$work/${w%%|*}" code="${w#*|}"
+  [ -f "$file" ] && cp "$file" "$work/placed.orig" || rm -f "$work/placed.orig"
+  printf '\nfunc plantedInPlace() async throws {\n    %s\n}\n' "$code" >> "$file"
+  if out=$("$work/scripts/check-writes.sh" 2>&1); then
+    echo "selftest: NOT caught in place: ${w%%|*}: $code" >&2; failed=1
+  elif ! grep -qE 'L1:|G1:' <<< "$out"; then
+    echo "selftest: failed without a G1/L1 reason: $code" >&2; failed=1
+  fi
+  if [ -f "$work/placed.orig" ]; then cp "$work/placed.orig" "$file"; else rm -f "$file"; fi
+done
+planted+=("${placed[@]}")
+
 # Fix M1: weakenings of the Aurral allow-list itself (one at a time, each on a fresh copy of AurralClient.swift) must be
 # caught too: a read moved to a write verb, a route with a new query name, a token dropped or added, the retry route's
 # continuation loosened.

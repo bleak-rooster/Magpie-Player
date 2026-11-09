@@ -2,7 +2,7 @@ import Foundation
 import MagpieCore
 
 /// Round 24 (owner, 2026-11-08, D237, D242): the reads "Change what's monitored" and "Clean up unmatched songs" need.
-/// Reads only; every write goes through `LidarrWriteGate` (`ConfinedShape.ownedChange`, `.unmatchedCleanup`).
+/// Reads only; every write goes through `LidarrWriteGate` (`performOwned`, `performCleanup`).
 extension LidarrClient {
     /// Every track of the artist (`GET /track?artistId=`): which recording each file holds and its title, so songs the
     /// owner favourited or saved are left out of a delete.

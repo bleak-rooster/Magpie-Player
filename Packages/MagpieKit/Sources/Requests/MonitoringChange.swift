@@ -215,11 +215,13 @@ public actor MonitoringChanger {
         return Array(x.utf8) == Array(y.utf8)
     }
 
-    /// The last closed change of the artist: finished, or (fix round 1 I4) stopped partway once its profile was known.
-    private static func lastChange(_ book: MonitoringBook, _ artistId: Int) -> MonitoringIntent? {
-        book.intents.filter {
+    /// The newest closed change of the artist (finished, or stopped partway) whose profile the artist is on now (fix round
+    /// 2 R1: a later change that stopped before its profile was sent never hides the one that set it).
+    private static func lastChange(_ book: MonitoringBook, _ artistId: Int, onProfile current: Int?) -> MonitoringIntent? {
+        guard let current else { return nil }
+        return book.intents.filter {
             $0.artistId == artistId && $0.kind == .monitoringChange && ($0.step == .done || $0.step == .abandoned)
-                && $0.targetProfileId != nil
+                && $0.targetProfileId == current
         }.max { $0.createdAt < $1.createdAt }
     }
 
@@ -232,8 +234,8 @@ public actor MonitoringChanger {
     /// D244: the change Revert puts back: the last closed one (finished or stopped partway), while the artist is still on
     /// the profile it set.
     private static func revertSource(_ book: MonitoringBook, _ artist: LidarrArtist) -> MonitoringIntent? {
-        guard book.open(artistId: artist.id).isEmpty, let last = lastChange(book, artist.id),
-              let current = artist.metadataProfileId, current == last.targetProfileId, current != last.previousProfileId else {
+        guard book.open(artistId: artist.id).isEmpty, let current = artist.metadataProfileId,
+              let last = lastChange(book, artist.id, onProfile: current), current != last.previousProfileId else {
             return nil
         }
         return last
@@ -290,7 +292,7 @@ public actor MonitoringChanger {
             excluded += Self.kept(owned, tracks: tracks, albums: albums, keep: keep)
         }
         // The owner's own profile, kept across Magpie's changes: what Revert goes back to.
-        let previous = Self.lastChange(book, artistId).flatMap { $0.targetProfileId == profileId ? $0.previousProfileId : nil } ?? profileId
+        let previous = Self.lastChange(book, artistId, onProfile: profileId)?.previousProfileId ?? profileId
         return MonitoringPreview(artistId: artistId, artistName: artist.artistName, artistMbid: mbid, currentProfileId: profileId,
                                  currentTypes: currentTypes, previousProfileId: previous, target: target,
                                  beforeAlbumIds: albums.map(\.id).sorted(), unmonitorAlbumIds: unmonitor.sorted(),
@@ -462,6 +464,8 @@ public actor MonitoringChanger {
     private struct Abandon: Error {}
     /// The profile wasn't the target after the confirmed refresh: sent again on the next pass (a counted failure).
     private struct ProfileReverted: Error {}
+    /// Fix round 2 m3: Lidarr didn't take the profile, or the refresh failed: a counted failure.
+    private struct NotTaken: Error {}
 
     private func advance(_ start: MonitoringIntent) async -> Outcome {
         var job = start
@@ -540,15 +544,16 @@ public actor MonitoringChanger {
                     if job.sending == .unmonitored { done = try await unmonitored(job.unmonitorAlbumIds, artistId: job.artistId) }
                     if !done {
                         try await sending(&job, .unmonitored)
-                        _ = try await gate.send("PUT", "album/monitor", body: MonitorBody(albumIds: job.unmonitorAlbumIds, monitored: false), confinedAs: .ownedChange)
+                        _ = try await gate.performOwned(intentId: job.id, step: .unmonitor)
                     }
                 }
                 try await saved(&job, .unmonitored)
             case .unmonitored:
                 if try await profile(of: job.artistId) != target {
                     try await sending(&job, .profileSet)
-                    _ = try await gate.send("PUT", "artist/editor", body: ProfileBody(artistIds: [job.artistId], metadataProfileId: target), confinedAs: .ownedChange)
-                    guard try await profile(of: job.artistId) == target else { throw Pending() }
+                    _ = try await gate.performOwned(intentId: job.id, step: .profile)
+                    // Fix round 2 m3: Lidarr didn't take it: a counted failure (5 at most), never an endless retry.
+                    guard try await profile(of: job.artistId) == target else { throw NotTaken() }
                 }
                 try await saved(&job, .profileSet)
             case .profileSet:
@@ -567,7 +572,7 @@ public actor MonitoringChanger {
                     }
                 }
                 try await sending(&job, .refreshSent)
-                let data = try await gate.send("POST", "command", body: RefreshBody(name: "RefreshArtist", artistId: job.artistId), confinedAs: .ownedChange)
+                let data = try await gate.performOwned(intentId: job.id, step: .refresh)
                 guard let id = (try? JSONDecoder().decode(JSONValue.self, from: data))?["id"]?.intValue else { throw Pending() }
                 job.refreshCommandId = id
                 try await saved(&job, .refreshSent)
@@ -579,7 +584,7 @@ public actor MonitoringChanger {
                     job.refreshCommandId = nil
                     job.step = .profileSet
                     try await ledger.saveIntent(job)
-                    throw Pending()
+                    throw NotTaken()   // fix round 2 m3: counted
                 case .unknown: throw Pending()
                 }
             case .refreshed:
@@ -607,10 +612,10 @@ public actor MonitoringChanger {
                         // Read first (above): only albums Lidarr doesn't monitor yet are sent.
                         if ids.contains(where: { id in albums.first { $0.id == id }?.monitored != true }) {
                             try await sending(&job, .monitored)
-                            _ = try await gate.send("PUT", "album/monitor", body: MonitorBody(albumIds: ids, monitored: true), confinedAs: .ownedChange)
+                            _ = try await gate.performOwned(intentId: job.id, step: .monitor)
                         }
                         try await sending(&job, .searchSent)
-                        _ = try await gate.send("POST", "command", body: SearchBody(name: "AlbumSearch", albumIds: ids), confinedAs: .ownedChange)
+                        _ = try await gate.performOwned(intentId: job.id, step: .search)
                     }
                 }
                 try await saved(&job, .monitored)
@@ -676,7 +681,7 @@ public actor MonitoringChanger {
             job.pendingFileIds = ids
             job.step = .deleting
             try await sending(&job, .deleting)
-            _ = try await gate.send("DELETE", "trackfile/bulk", body: TrackFileIdsBody(trackFileIds: ids), confinedAs: .unmatchedCleanup)
+            _ = try await gate.performCleanup(intentId: job.id)
             job.deletedFileIds += ids
             job.pendingFileIds = []
             try await ledger.saveIntent(job)
@@ -719,9 +724,4 @@ public actor MonitoringChanger {
         return .unknown
     }
 
-    private struct ProfileBody: Encodable, Sendable { var artistIds: [Int]; var metadataProfileId: Int }
-    private struct RefreshBody: Encodable, Sendable { var name: String; var artistId: Int }
-    private struct SearchBody: Encodable, Sendable { var name: String; var albumIds: [Int] }
-    private struct MonitorBody: Encodable, Sendable { var albumIds: [Int]; var monitored: Bool }
-    private struct TrackFileIdsBody: Encodable, Sendable { var trackFileIds: [Int] }
 }

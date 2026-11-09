@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import MagpieCore
 import os
@@ -371,9 +372,11 @@ public actor Ledger {
     /// LidarrKit can write the book but through `saveIntent`, `updateMonitoring` and `setKept`.
     nonisolated var monitoringURL: URL? { fileURL.map(Self.monitoringURL(beside:)) }
 
-    /// Which book this ledger writes (its file, or the ledger itself when kept in memory): one change per artist and book.
+    /// Which book this ledger writes, as an opaque token (fix round 2 S1: a hash, never the file's path or URL): one change
+    /// per artist and book. Kept in memory: the ledger itself.
     public nonisolated var monitoringBookKey: String {
-        monitoringURL?.path ?? "memory-\(ObjectIdentifier(self).hashValue)"
+        guard let path = monitoringURL?.path else { return "memory-\(ObjectIdentifier(self).hashValue)" }
+        return "book-" + SHA256.hash(data: Data(path.utf8)).prefix(12).map { String(format: "%02x", $0) }.joined()
     }
 
     private func allMonitoring() throws -> MonitoringBook {
