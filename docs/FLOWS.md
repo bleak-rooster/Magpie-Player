@@ -113,6 +113,11 @@ Code: `MatchIndex/{MatchIndexStore,MatchIndex,Normalize}.swift`, `App/Screens/Sh
 
 Code: `Playback/{Player,AVQueueEngine,PlaybackEngine,Queue,NowPlayingBridge}.swift`, `App/Playback/NavidromeAdapters.swift`, `NavidromeClient.streamURL`, `LidarrKit/Provisioner.swift` (profiles), `project.yml` (background mode)
 
+Round 24 (D234–D235): next and previous (the car's and the phone's) play the song they land on when the player had
+stopped by itself (a song couldn't play, or the queue ended); after a pause they leave it paused. Previous past 3 s
+restarts the song: a seek on a file or an Original/MP3 stream, a fresh load on a converted (AAC/Opus) stream, which
+can't seek reliably.
+
 ### d. Scrobbling ("Count plays")
 - **When.** Whenever a song is loaded to play (including a retry after an error, a repeat-one replay or playing again after the queue ended), the app sends `scrobble?submission=false` ("now playing"). At 50 % of the song or 240 s, whichever comes first, it sends `submission=true` with the start time.
 - **Who forwards it.** Navidrome passes the play on to ListenBrainz or Last.fm if *you* have linked them in Navidrome. The app itself never posts listens to ListenBrainz.
@@ -134,6 +139,12 @@ Code: `Playback/Player.swift` (`scrobble`, `maybeSubmitScrobble`), `App/Playback
 - **All / Songs / Artists / Albums** (round 23, D201). A segmented choice ("Search in") pinned at the top of the results whenever there's a query: while typing, after the Search key, after scrolling, after a page and back, after a recent search, online and offline. It hides with an empty query (Recent searches). The choice is kept until you change it. It's the app's own picker, not the system scope bar, which showed only while the search field was active.
 
 Code: `Search/{MergedSearch,SearchSections}.swift`, `ListenBrainzKit/ListenBrainzClient.swift`, `App/AppModel.swift` (`mergedSearch`), `App/Screens/Search/*` (`SearchScopePicker.swift`: the choices)
+
+Round 24: a recent search's whole row is the button, and the Recent list refreshes when Search goes back to idle
+(D226). Library › Artists, Albums and Songs each have their own search field that searches only that kind with
+`search3` (no new route; offline, the offline catalogue's filter); while it holds a query the A–Z bar goes, and
+clearing returns to the same place (D224). Long A–Z lists (over 25, bar shown) have a header per letter run, and a
+letter jump lands on its header (D225). Playlists › All shows who made someone else's playlist (D223).
 
 ### f. Requesting a song ("Try")
 "Quick" here means Lidarr's normal search-and-download pipeline. **Quick fetch via slskd is not built in v1.**
@@ -200,6 +211,19 @@ Code: `Requests/{RequestRunner,RequestMachine,ReleasePicker,RequestStore}.swift`
 
 Code: `App/{FindsSetupStore,AppModel+Finds,AppModel+Keep,AppModel+NotForMe,AppModel+BringInMore}.swift`, `Requests/RequestRunner+{Keep,NotForMe,BringInMore}.swift`, `LidarrKit/{PathGuard,LidarrClient}.swift`, `App/Screens/Finds/FindsShelf.swift`
 
+Round 24, owner's own artists (D237–D244; off by default behind Settings › Lidarr "Let Magpie change what Lidarr
+monitors for my artists"): an artist's ⋯ › "Change what’s monitored" (Albums / EPs / Singles) moves it to Magpie's
+matching metadata profile; reducing asks Delete or Keep (Keep is the default); kept songs can later be removed with
+"Clean up unmatched songs"; "Put back how it was" restores the recorded profile. Every write goes through
+`LidarrWriteGate.performOwned` / `performCleanup`, built from an intent saved first and proven against fresh Lidarr
+reads (kept set, album unmonitored now and of a left-out type, size, path inside the artist's folder, no Try under
+way, at most 50 files). Resuming never deletes without a fresh keep list (favourites, playlists, phone downloads).
+
+slskd (D216–D221): its own Settings row and page. "Keep Soulseek connected" (off by default, per slskd) reads
+`GET /api/v0/server` every 60 s while Magpie runs (and once in the background refresh pass, at most 10 s), asks
+slskd to reconnect with `PUT /api/v0/server` only through `SlskdWriteGate` (at most once a minute, the ask saved
+first), and after 3 failed checks spanning at least 10 minutes posts one local notification and a Home banner.
+
 ### h. Made for you and "Not in your library"
 - **Made for you** appears only with a ListenBrainz token. The token is checked with `GET api.listenbrainz.org/1/validate-token` before it is saved to the Keychain.
 - **Reading the shelf:** `1/user/<name>/playlists/createdfor`, then `1/playlist/<mbid>`. Calls are spaced to 2 per second with a 5 s limit, and the shelf shows the newest playlist of each kind, at most 6.
@@ -211,6 +235,14 @@ Code: `App/{FindsSetupStore,AppModel+Finds,AppModel+Keep,AppModel+NotForMe,AppMo
 
 Code: `Search/{MadeForYou,ArtistNotYet}.swift`, `App/AppModel+MadeForYou.swift`, `App/LidarrConnectionStore.swift` (`ListenBrainzTokenStore`)
 
+Round 24, Aurral: each Aurral item (flow or shared playlist, anyone's) claims at most one of Aurral's Navidrome
+playlists, by the owner's name prefix, a saved proven claim, the songs, then a name no other item has; a tie claims
+nothing; only proven claims are saved (D202–D204). "Only mine" reads the claiming item's owner; with everyone's on,
+another user's rows show their name (D205). The user's own flow or playlist can be deleted from its page (D212).
+"Songs still coming" (Settings › Aurral, and a Home banner while a song is held) groups songs by state and offers
+Approve, Try another source (Aurral's deny) and Search now on the user's own songs only, each after a fresh
+ownership check (D213–D214). Aurral routes: 37, of which 18 are writes (D207–D209).
+
 ### i. CarPlay
 - **Tabs.** Home, Library, Finds and Search. The Finds tab exists only when the head unit allows 4 tabs, and it shows "not set up" without a Finds library.
 - **Keep.** Now Playing shows the system add-to-library (+) button as **Keep** for a find that may be kept. It is the same Keep as on the phone, one tap with no confirmation, and has no Bring in more.
@@ -220,6 +252,11 @@ Code: `Search/{MadeForYou,ArtistNotYet}.swift`, `App/AppModel+MadeForYou.swift`,
 - **Builds.** Device builds without the CarPlay entitlement drop the CarPlay scene.
 
 Code: `Packages/MagpieKit/Sources/CarPlayUI/*`, `App/CarPlay/CarPlaySceneDelegate.swift`, `App/AppModel+CarPlay.swift`, `project.yml`
+
+Round 24: a list longer than the head unit's ceiling ends with "More…" ("12 more, F to J"), and each later page
+starts with "Previous…"; a page replaces the one before it, so the template depth never grows (D231–D232).
+Playlists over the ceiling open on letter groups; Genres, Favourites, Discover and Downloads page in their own order
+(D230). With All on, someone else's playlist shows their name in its detail (D233).
 
 ### j. Safety layers
 - **Allow-changes switch.** Off by default and stored per Lidarr instance in UserDefaults (`magpie.lidarr.writesEnabled.<scope>`, where scope is a hash of the address and API key). It is reset on connect, disconnect and sign-out, so a new Lidarr always starts off.
