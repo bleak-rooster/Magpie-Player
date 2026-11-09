@@ -117,6 +117,10 @@ import Testing
         let jordan = Self.jordan(stub, accessFlow: true)
         #expect(try await jordan.deleteFlow("flow-9") == .alreadyGone)
         #expect(stub.chartFlowDeletedFiles.isEmpty)
+        // Fix round 1 M4: the flow is still there after Aurral's worker would have run a queued delete (two reads).
+        _ = try await client.status()
+        #expect(try await client.status().flows.contains { $0.id == "flow-9" }, "their flow is untouched")
+        #expect(stub.recipeFlowFields("flow-9") != nil)
     }
 
     @Test func delete_403_isNotPermitted() async throws {

@@ -431,7 +431,9 @@ public final class StubAurral: HTTPTransport, @unchecked Sendable {
     /// - either on a job that isn't `blocked` (or doesn't exist) is 404 "Blocked job not found".
     func heldSongAnswer(method: String, path: String, user: User) -> (Int, Any)? {
         let parts = path.split(separator: "/").map(String.init)
-        guard method != "GET", parts.count == 5, parts[0] == "api", parts[1] == "playlists", parts[2] == "jobs",
+        // G1 allowlist: stub aurral held songs (the verb the stub answers, as 2.13 routes only POST; it sends nothing).
+        let verb = "POST"
+        guard method == verb, parts.count == 5, parts[0] == "api", parts[1] == "playlists", parts[2] == "jobs",
               parts[4] == "approve" || parts[4] == "deny", features != nil else { return nil }
         guard user.role == "admin" || user.permissions?["accessFlow"] == true else {
             return (403, ["error": "Forbidden", "message": "Missing permission: accessFlow"])

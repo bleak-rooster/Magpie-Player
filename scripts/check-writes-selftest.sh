@@ -88,6 +88,12 @@ planted=(
   'aurral.ok(method: m, path: "api/playlists/jobs/" + id + "/cancel")'
   'aurral.ok(method: m, path: "api/playlists/jobs/" + id + "/manual-search")'
   'aurral.ok(method: m, path: "api/playlists/research-missing")'
+  # Fix round 1 M1: a manage write's verb read off its route case (around the pinned constants), or its path tail named
+  # outside the Aurral client.
+  'aurral.ok(method: AurralRoute.recipeFlowDelete.method, path: path)'
+  'aurral.ok(method: AurralRoute.jobApprove.method, path: path)'
+  'aurral.ok(method: m, path: base + "/deny")'
+  'AurralRoute.route(method: m, path: p) == .jobApprove'
 )
 failed=0
 for p in "${planted[@]}"; do
@@ -116,8 +122,9 @@ weakened=(
   's/        case .health, .login, .deezerPreview, .imageProxyFile: false/        case .health, .login, .deezerPreview, .imageProxyFile, .bootstrap: false/'
   's/            \&\& isPlainId(rest\[4\]) \&\& rest\[5\] == "research": .trackResearch/            \&\& rest[5] == "research": .trackResearch/'
   's/return Set(names).count == names.count \&\& names.allSatisfy(route.queryNames.contains)/return true/'
-  # Round 24 B (D207): approve's id check dropped, deny's verb given to a read.
+  # Round 24 B (D207): approve's and deny's id checks dropped, deny's verb given to a read.
   's/ \&\& isPlainId(rest\[2\]) \&\& rest\[3\] == "approve": .jobApprove/ \&\& rest[3] == "approve": .jobApprove/'
+  's/ \&\& isPlainId(rest\[2\]) \&\& rest\[3\] == "deny": .jobDeny/ \&\& rest[3] == "deny": .jobDeny/'
   's/        case .jobApprove, .jobDeny: Self.heldSongMethod/        case .jobApprove, .jobDeny: Self.heldSongMethod\n        case .playlistJobsById: Self.heldSongMethod/'
 )
 for w in "${weakened[@]}"; do

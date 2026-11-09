@@ -50,6 +50,8 @@
 #       `POST …/deny` (Try another source), each only on the owner's tap on their own song. With the two deletes
 #       (`DELETE /api/playlists/flows/:id`, `DELETE /api/playlists/shared-playlists/:id`, any own flow or playlist,
 #       D208) they are sent only from AurralKit/AurralClient+Manage.swift. Pinned below.
+#   Packages/MagpieKit/Sources/MagpieTestSupport/StubAurral.swift  G1 allowlist: stub aurral held songs
+#       The in-process stub names the verb it answers for approve and deny (POST only); it sends nothing.
 #   Packages/MagpieKit/Tests/RequestsTests/FindsIT.swift  G1 allowlist: devLidarr
 #       Raw requests to the dev Lidarr for IT set-up and clean-up (manual import, removing the test artist), after
 #       TryDevStack verified the host is local and the dev marker matches (G0). Never product code.
@@ -92,6 +94,7 @@ allow=(
   "Packages/MagpieKit/Sources/AurralKit/AurralClient.swift|G1 allowlist: aurral recipe flows"
   "Packages/MagpieKit/Sources/MagpieTestSupport/StubAurral.swift|G1 allowlist: stub aurral recipe flows"
   "Packages/MagpieKit/Sources/AurralKit/AurralClient.swift|G1 allowlist: aurral held songs"
+  "Packages/MagpieKit/Sources/MagpieTestSupport/StubAurral.swift|G1 allowlist: stub aurral held songs"
   "Tests/MagpieUITests/ChartFlowUITests.swift|G1 allowlist: stub reset"
   "Packages/MagpieKit/Tests/MagpieCoreTests/HTTPTransportTests.swift|RedirectStub"
   "Packages/MagpieKit/Tests/MagpieCoreTests/SharedLoginTransportTests.swift|auth/login"
@@ -524,6 +527,20 @@ if [ -z "${G1_SRC:-}" ]; then
       "$aurral"|"$aurral_discover"|"$aurral_manage"|Packages/MagpieKit/Sources/MagpieTestSupport/*) ;;
       *) grep -nE 'api/playlists/jobs' "$f" | grep -vE '^[0-9]+:[[:space:]]*(//|/\*|\*)' | grep -q . &&
            { echo "G1: an Aurral jobs route named outside the Aurral client: $f" >&2; bad=1; } ;;
+    esac
+  done
+  # Fix round 1 M1: no route case's verb is read off the case (`AurralRoute.<case>.method`), which would get round the
+  # one-send pins above (the client reads `route.method` on a route it matched, never a named case); approve's and
+  # deny's cases and path tails are named only in the Aurral client and its manage file.
+  if grep -rnE --include='*.swift' 'AurralRoute\.[A-Za-z]+\.method' "${product[@]}" | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' |
+       grep -v '^Packages/MagpieKit/Sources/MagpieTestSupport/' | grep -q .; then
+    echo "G1: an Aurral route's verb is read off its case (AurralRoute.<case>.method)" >&2; bad=1
+  fi
+  for f in $(grep -rlE --include='*.swift' '\.jobApprove|\.jobDeny|"/approve"|"/deny"' "${product[@]}" | sort -u || true); do
+    case "$f" in
+      "$aurral"|"$aurral_manage"|Packages/MagpieKit/Sources/MagpieTestSupport/*) ;;
+      *) grep -nE '\.jobApprove|\.jobDeny|"/approve"|"/deny"' "$f" | grep -vE '^[0-9]+:[[:space:]]*//' | grep -q . &&
+           { echo "G1: a held song's approve or deny named outside the Aurral client: $f" >&2; bad=1; } ;;
     esac
   done
   # Round 14 A1 (D83), A7 (D110): the preview resolver sends no login or cookie, asks Aurral for the clip itself
