@@ -145,6 +145,10 @@ struct AurralConnectionStore: AurralConnectionStoring {
     var everyoneRevision = 0
     /// Round 23 R23F (D199): "Search again for missing songs", per flow or playlist id, this session.
     var searchAgain: [String: SearchAgainRun] = [:]
+    /// Round 24 C (D212): the user's flows and playlists whose delete Aurral queued, by Aurral id, until it has run.
+    var removing: [String: AurralRemoval] = [:]
+    /// Round 24 C fix round 1 (I5): the songs (Aurral job ids) an Approve, Try another source or Search now is under way for.
+    var songsAsking: Set<String> = []
 
     init(store: any AurralConnectionStoring) {
         self.store = store
@@ -211,6 +215,8 @@ struct AurralConnectionStore: AurralConnectionStoring {
         lookups = [:]
         othersPlaylistIds = []   // R23F
         searchAgain = [:]   // R23F
+        removing = [:]   // R24C (D212)
+        songsAsking = []   // R24C fix round 1 (I5)
         refreshTask?.task.cancel()   // Round 13 Z2: the next account's first ask starts its own read
         refreshTask = nil
     }
