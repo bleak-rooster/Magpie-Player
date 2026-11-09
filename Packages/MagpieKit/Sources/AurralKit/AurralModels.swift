@@ -244,7 +244,8 @@ public struct AurralJob: Sendable, Equatable, Hashable {
     /// nil for anything else (never a trapping conversion).
     static func percent(_ value: Any?) -> Int? {
         var number: Double?
-        if let n = value as? NSNumber, !(value is Bool) { number = n.doubleValue }
+        // Follow-up m2: a JSON 0, 1 or 1.0 also bridges to Bool; only a real true/false is refused.
+        if let n = value as? NSNumber, CFGetTypeID(n) != CFBooleanGetTypeID() { number = n.doubleValue }
         if let text = value as? String, text.count <= 20 { number = Double(text.trimmingCharacters(in: .whitespaces)) }
         guard var v = number, v.isFinite else { return nil }
         if v > 0, v < 1 { v *= 100 }

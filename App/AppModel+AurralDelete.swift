@@ -97,18 +97,30 @@ extension AppModel {
         let result: AurralDeleteResult
         do {
             result = item.kind == .flow ? try await client.deleteFlow(item.id) : try await client.deleteSharedPlaylist(item.id)
-        } catch let refusal as AurralError {   // an answer Aurral gave (or a refusal before sending): nothing changed
-            discover.removing[item.id] = nil
-            noteAurralError(refusal)
-            throw refusal
         } catch {
-            return .unheard   // no answer: it may have gone through, so it is checked, never sent again by itself
+            guard Self.isDefiniteRefusal(error) else {
+                return .unheard   // no answer, or one that doesn't say no: it may have gone through, so it is checked
+            }
+            discover.removing[item.id] = nil   // Aurral said no (or nothing was sent): nothing changed
+            noteAurralError(error)
+            throw error
         }
         guard result != .alreadyGone else {
             await forgetRemovedAurralItem(item.id)
             return .alreadyGone
         }
         return .removing
+    }
+
+    /// Follow-up m1: an answer that certainly changed nothing: refused before sending, a 401/403/429 or another 4xx.
+    /// A 5xx (a gateway's 504 may follow a delete Aurral queued), an answer that didn't read, or no answer at all may
+    /// have gone through: checked, never "Nothing was changed".
+    nonisolated static func isDefiniteRefusal(_ error: Error) -> Bool {
+        switch error as? AurralError {
+        case .forbidden?, .unauthorized?, .notPermitted?, .badLogin?, .signInNeeded?, .rateLimited?: true
+        case .http(let status)?: (400...499).contains(status)
+        default: false
+        }
     }
 
     /// One look at whether Aurral has run the delete (a fresh status read): `.deleted` (and forgotten here) once the

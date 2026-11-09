@@ -13,17 +13,24 @@ final class LossyAurralRouting: HTTPTransport, @unchecked Sendable {
     let inner = AurralRouting()
     private let lock = NSLock()
     private var losesDeleteAnswers = false
+    private var deleteAnswer: Int?
     private var unreadable: Set<String> = []
 
     func loseDeleteAnswers(_ on: Bool) { lock.withLock { losesDeleteAnswers = on } }
+    /// Follow-up m1: Aurral runs the delete, but what reaches Magpie is this status (a gateway's 504, say).
+    func answerDeletes(with status: Int?) { lock.withLock { deleteAnswer = status } }
     func failJobsRead(for ids: Set<String>) { lock.withLock { unreadable = ids } }
 
     func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
         let path = request.url?.path ?? ""
-        let (lose, fail) = lock.withLock { (losesDeleteAnswers, unreadable) }
+        let (lose, fail, status) = lock.withLock { (losesDeleteAnswers, unreadable, deleteAnswer) }
         if fail.contains(where: { path == "/api/playlists/jobs/" + $0 }) { throw URLError(.timedOut) }
         let answer = try await inner.send(request)
         if lose, request.httpMethod == "DELETE" { throw URLError(.networkConnectionLost) }   // Aurral got it and ran it
+        if let status, request.httpMethod == "DELETE", let url = request.url,
+           let http = HTTPURLResponse(url: url, statusCode: status, httpVersion: "HTTP/1.1", headerFields: nil) {
+            return (Data("<html>Gateway Timeout</html>".utf8), http)
+        }
         return answer
     }
 }
@@ -235,6 +242,23 @@ final class LossyAurralRouting: HTTPTransport, @unchecked Sendable {
         #expect(await untilGone(model, "pl-dw") == .deleted)
         #expect(!model.discover.playlists.contains { $0.playlist.id == "pl-dw" })
         #expect(aurralWrites == ["DELETE /api/playlists/flows/flow-dw"], "never sent again")
+    }
+
+    /// Follow-up m1: a 504 (a gateway gave up while Aurral queued the delete) isn't a refusal: the record stays, Magpie
+    /// says it couldn't hear back and checks; the item goes once Aurral has run it; nothing is sent again.
+    @Test func aGatewayTimeoutIsUnheard() async throws {
+        let model = try await signedIn()
+        defer { model.signOut() }
+        transport.answerDeletes(with: 504)
+        #expect(try await delete(model, "pl-dw") == .unheard)
+        #expect(model.aurralRemoval(playlistId: "pl-dw") != nil)
+        nav.lists["pl-dw"] = nil
+        #expect(await untilGone(model, "pl-dw") == .deleted)
+        #expect(aurralWrites == ["DELETE /api/playlists/flows/flow-dw"], "never sent again")
+        #expect(AppModel.isDefiniteRefusal(AurralError.http(status: 409)))
+        #expect(!AppModel.isDefiniteRefusal(AurralError.http(status: 500)))
+        #expect(!AppModel.isDefiniteRefusal(AurralError.decoding))
+        #expect(!AppModel.isDefiniteRefusal(URLError(.timedOut)))
     }
 
     /// I1: a definite refusal (Aurral answered 403): the mark goes, "Aurral couldn't delete it. Nothing was changed.",

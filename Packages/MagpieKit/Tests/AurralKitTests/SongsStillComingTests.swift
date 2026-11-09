@@ -80,6 +80,11 @@ private let sams = AurralFlow(id: "flow-sam", name: "Late Night", ownerUserId: 2
         #expect(try decode(#","progress":"lots""#).progress == nil)
         #expect(try decode(#","progress":1e308"#).progress == 100)
         #expect(try decode("").progress == nil)
+        // Follow-up m2: numbers that bridge to Bool are numbers; a real boolean isn't a progress.
+        #expect(try decode(#","progress":0"#).progress == 0)
+        #expect(try decode(#","progress":1"#).progress == 1)
+        #expect(try decode(#","progress":1.0"#).progress == 1)
+        #expect(try decode(#","progress":true"#).progress == nil)
     }
 
     @Test func messageTrimmedAndBounded() throws {
