@@ -62,6 +62,9 @@ public protocol CarPlayCustomisationLibrary: AnyObject {
     func songIndex() async throws -> CPSongIndex
     /// Round 13: songs in that title order from `offset`, at most `size`.
     func songsByTitle(offset: Int, size: Int) async throws -> [Song]
+    /// Round 24 (D223's rule, D179): the signed-in user while everyone's playlists show (All), so the car's Playlists
+    /// say whose the others' are; nil for Yours (and when signed out).
+    var playlistCaptionUser: String? { get }
 }
 
 /// Home and Library from the owner's layout (spec §3, Task 22), the new rows' screens, genre play, the offline watch
@@ -73,7 +76,7 @@ extension CarPlayController {
         guard let home else { return }
         let library = library
         let sections = library.homeSections
-        let maxItems = Int(CPListTemplate.maximumItemCount), maxSections = Int(CPListTemplate.maximumSectionCount)
+        let (maxItems, maxSections) = listLimits()   // R24F: the same limits the pages use
         load(home) {
             let shelves = try await library.homeShelves(sections, size: CarPlayRows.homeShelfMaxSize)
             return { _ in CarPlayRows.home(shelves, maxItems: maxItems, maxSections: maxSections) }

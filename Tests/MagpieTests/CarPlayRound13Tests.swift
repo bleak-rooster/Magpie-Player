@@ -225,9 +225,9 @@ private func subsonic(_ body: String) -> Data {
         try await Task.sleep(for: .milliseconds(300))
         #expect(reads() == before, "same limits: nothing read again")
 
-        controller.listLimits = { (items: 4, sections: 12) }
+        controller.listLimits = { (items: 6, sections: 12) }   // R24F: six rows fit, so no page
         controller.sessionConfiguration(session, limitedUserInterfacesChanged: [.keyboard])
-        #expect(await eventually { controller.thirdRoot?.limits?.items == 4 }, "laid out again for the new limits")
+        #expect(await eventually { controller.thirdRoot?.limits?.items == 6 }, "laid out again for the new limits")
         try await Task.sleep(for: .milliseconds(300))
         #expect(reads() == before, "from what was read already")
         #expect(FakeCarInterface.texts(car.tab(2)) == ["Newest"] + Self.bands)

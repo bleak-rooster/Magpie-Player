@@ -178,9 +178,9 @@ extension CarPlayRows {
         return bandScreen(columns, kind: .songs, maxItems: maxItems)
     }
 
-    /// A song group's list (a leaf): letter sections in the order read, each song playing the list from it. When only
-    /// some of the group was read (`total`), the last row says how many.
-    public static func songPage(_ songs: [Song], total: Int?, playingId: String?) -> [CPSectionModel] {
+    /// A song group's page (a leaf): letter sections in the order read, each song playing the page from it. Round 24
+    /// (D231): the page is the group's songs for the car's ceiling, with "More…" past it, so it never says "Showing N of M".
+    public static func songPage(_ songs: [Song], playingId: String?) -> [CPSectionModel] {
         guard !songs.isEmpty else { return state(.empty) }
         let entries = songs.enumerated().map { i, song in
             CPLetterEntry(key: LetterIndex.key(song.title), sortName: song.title,
@@ -188,9 +188,7 @@ extension CarPlayRows {
                                           artworkKey: song.coverArtId, playing: song.id == playingId,
                                           action: .play(.songs(songs, startAt: i))))
         }
-        let note = total.flatMap { $0 > songs.count ? "Showing \(songs.count) of \($0)" : nil }
-        return letterSections(entries) + (note.map { [CPSectionModel(header: nil, rows: [CPRowModel(id: "az.more", title: $0,
-                                                                                                    action: .none)])] } ?? [])
+        return letterSections(entries)
     }
 
     // MARK: - Building the group screen
