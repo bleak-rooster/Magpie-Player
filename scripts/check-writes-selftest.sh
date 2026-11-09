@@ -76,6 +76,10 @@ planted=(
   'slskd.gate.enabled'
   'model.slskdAccess?.gate.enabled'
   'g as SlskdWriteGate'
+  # Round 24 (D218): the slskd reconnect sent or named outside the keep-connected check.
+  'slskd.gate.perform(.connect)'
+  'client.connection.send(.connect)'
+  'gate.perform(SlskdWrite.connect)'
   # Round 23 R23F (D200): a third caller of Retry a song (the research route).
   'client.retrySong(playlistId: "flow-1", jobId: "job-1")'
 )
@@ -186,7 +190,16 @@ slroute_src="$work/Packages/MagpieKit/Sources/SlskdKit/SlskdRoute.swift"
 slclient_src="$work/Packages/MagpieKit/Sources/SlskdKit/SlskdClient.swift"
 for f in "$slroute_src" "$slclient_src"; do cp "$f" "$f.orig"; done
 slskd_weakened=(
-  "$slroute_src|s/        case .downloads, .downloadsFolder: \"GET\"/        case .downloads: \"GET\"\n        case .downloadsFolder: Self.deleteMethod/"
+  "$slroute_src|s/        case .downloads, .downloadsFolder, .serverState: \"GET\"/        case .downloads, .serverState: \"GET\"\n        case .downloadsFolder: Self.deleteMethod/"
+  # Round 24 (D218): the server read made a write, a disconnect added, the connect's verb changed, the connect's proofs
+  # (its switch, the minute, slskd read down, the ask saved first) dropped.
+  "$slroute_src|s/        case .downloads, .downloadsFolder, .serverState: \"GET\"/        case .downloads, .downloadsFolder: \"GET\"\n        case .serverState: Self.connectMethod/"
+  "$slroute_src|s/^    case connect/    case connect\n    case disconnect/"
+  "$slroute_src|s/    static let connectMethod = \"PUT\"/    static let connectMethod = \"DELETE\"/"
+  "$slclient_src|s/        guard keepConnected else { throw SlskdGateError.refused(.*) }//"
+  "$slclient_src|s/        guard mayAskToConnect else { throw SlskdGateError.refused(\"asked less than a minute ago\") }//"
+  "$slclient_src|s/        guard state.condition == .down else { throw SlskdGateError.refused(.*) }//"
+  "$slclient_src|s/        defaults.set(now(), forKey: Self.lastConnectKey(scope: client.instanceScope))//"
   "$slroute_src|s/^    case deleteFolder(String)/    case deleteFolder(String)\n    case clearCompleted/"
   "$slroute_src|s/s != \".\", s != \"..\", //"
   "$slroute_src|s/\$0 == \"\\\\\\\\\" || //"

@@ -57,6 +57,9 @@
 #   Packages/MagpieKit/Sources/SlskdKit/SlskdRoute.swift, SlskdClient.swift  G1 allowlist: slskd clean-up
 #       Round 23 (D192): slskd's three clean-up DELETEs (a finished transfer's record, a file or folder directly inside
 #       its downloads folder), only through `SlskdWriteGate.perform`, only from the clean slate. Pinned below.
+#   Packages/MagpieKit/Sources/SlskdKit/SlskdRoute.swift  G1 allowlist: slskd keep connected
+#       Round 24 (D218): "Keep Soulseek connected" asks slskd to reconnect, `PUT /api/v0/server` with no body, only
+#       through the gate's `connect` shape, only from `SlskdKeepConnected.check`. Pinned below.
 #   Packages/MagpieKit/Sources/MagpieTestSupport/FakeSlskd.swift  G1 allowlist: stub slskd
 #       The in-process stub names the verb it answers for those routes; it sends nothing.
 #
@@ -91,6 +94,7 @@ allow=(
   "Packages/MagpieKit/Tests/MagpieCoreTests/SharedLoginTransportTests.swift|auth/login"
   "Packages/MagpieKit/Sources/SlskdKit/SlskdRoute.swift|G1 allowlist: slskd clean-up"
   "Packages/MagpieKit/Sources/SlskdKit/SlskdClient.swift|G1 allowlist: slskd clean-up"
+  "Packages/MagpieKit/Sources/SlskdKit/SlskdRoute.swift|G1 allowlist: slskd keep connected"
   "Packages/MagpieKit/Sources/MagpieTestSupport/FakeSlskd.swift|G1 allowlist: stub slskd"
 )
 [ -n "${G1_SRC:-}" ] && allow=("$G1_SRC/NavidromeKit/NavidromeClient.swift|auth/login"
@@ -739,11 +743,12 @@ if [ -z "${G1_SRC:-}" ]; then
   # name one level inside slskd's downloads folder; its writes go only through `SlskdWriteGate.perform`, called only by
   # the clean slate; the channel's send only from the gate; the gate made only by the app's slskd connection; the
   # `X-API-Key` header only in the slskd client (and the stub that checks it).
+  # Round 24 (D216-D218): seven calls: the server state read (`GET /api/v0/server`) and the reconnect (`PUT`, no body,
+  # the gate's `connect` shape, its one caller `SlskdKeepConnected.check`); never `DELETE /api/v0/server`.
   slroute="Packages/MagpieKit/Sources/SlskdKit/SlskdRoute.swift"
   slclient="Packages/MagpieKit/Sources/SlskdKit/SlskdClient.swift"
   for want in '    case downloads' '    case downloadsFolder(String)' '    case removeTransfer(username: String, id: UUID)' \
               '    case deleteFile(folder: String, file: String)' '    case deleteFolder(String)' \
-              '        case .downloads, .downloadsFolder: "GET"' \
               '        case .removeTransfer, .deleteFile, .deleteFolder: Self.deleteMethod' \
               '            return ["transfers", "downloads"]' \
               '            return ["files", "downloads", "directories", Self.base64(folder)]' \
@@ -752,17 +757,31 @@ if [ -z "${G1_SRC:-}" ]; then
               '        if case .removeTransfer = self { return [URLQueryItem(name: "remove", value: "true")] }' \
               '        guard !s.isEmpty, s != ".", s != "..", s.utf8.count <= 255, s.trimmingCharacters(in: .whitespaces) == s else {' \
               '        return !s.unicodeScalars.contains { $0 == "/" || $0 == "\\" || $0 == ":" || CharacterSet.controlCharacters.contains($0) }' \
-              '        components.percentEncodedPath = prefix + "/api/v0/" + segments.map(Self.encode).joined(separator: "/")'; do
+              '        components.percentEncodedPath = prefix + "/api/v0/" + segments.map(Self.encode).joined(separator: "/")' \
+              '    case serverState' '    case connect' \
+              '        case .downloads, .downloadsFolder, .serverState: "GET"' \
+              '        case .connect: Self.connectMethod' \
+              '    static let connectMethod = "PUT"'; do
     grep -qF -- "$want" "$slroute" || { echo "G1: $slroute: the slskd allow-list changed (missing: $want)" >&2; bad=1; }
   done
-  [ "$(grep -cE '^    case ' "$slroute")" = 5 ] || { echo "G1: $slroute: the slskd allow-list isn't exactly 5 routes" >&2; bad=1; }
-  [ "$(grep -cE '^            return \[' "$slroute")" = 5 ] || { echo "G1: $slroute: the slskd paths changed" >&2; bad=1; }
+  [ "$(grep -cE '^    case ' "$slroute")" = 7 ] || { echo "G1: $slroute: the slskd allow-list isn't exactly 7 routes" >&2; bad=1; }
+  [ "$(grep -cE '^            return \[' "$slroute")" = 7 ] || { echo "G1: $slroute: the slskd paths changed" >&2; bad=1; }
+  # Round 24: the server routes are exactly `server` (never a deeper or another path), and the only PUT is the connect.
+  [ "$(grep -cxF '            return ["server"]' "$slroute")" = 2 ] || { echo "G1: $slroute: the slskd server path changed" >&2; bad=1; }
+  [ "$(grep -cE '"(PUT|POST|PATCH)"' "$slroute")" = 1 ] || { echo "G1: $slroute: an slskd write verb besides the connect" >&2; bad=1; }
   for want in '        guard route.method == "GET" else { throw SlskdError.forbidden }' \
               '        guard let url = route.url(base: base) else { throw SlskdError.forbidden }' \
-              '        guard enabled else { throw SlskdGateError.disabled }'; do
+              '        guard enabled else { throw SlskdGateError.disabled }' \
+              '        if write == .connect { return try await connect() }   // Round 24 (D218): its own switch and proofs, below' \
+              '        guard keepConnected else { throw SlskdGateError.refused("Keep Soulseek connected is off for this slskd") }' \
+              '        guard mayAskToConnect else { throw SlskdGateError.refused("asked less than a minute ago") }' \
+              '        guard state.condition == .down else { throw SlskdGateError.refused("slskd isn'"'"'t disconnected now") }' \
+              '        defaults.set(now(), forKey: Self.lastConnectKey(scope: client.instanceScope))' \
+              '        let (_, response) = try await client.connection.send(.connect)'; do
     grep -qF -- "$want" "$slclient" || { echo "G1: $slclient: the slskd gate changed (missing: $want)" >&2; bad=1; }
   done
-  slhits=$(grep -rnE --include='*.swift' 'gate\.perform\(|perform\(\.(removeTransfer|deleteFile|deleteFolder)|SlskdWriteGate\(|connection\.send\(|X-API-Key' \
+  slkeep="Packages/MagpieKit/Sources/SlskdKit/SlskdServerState.swift"
+  slhits=$(grep -rnE --include='*.swift' 'gate\.perform\(|perform\(\.(removeTransfer|deleteFile|deleteFolder|connect)|SlskdWriteGate\(|connection\.send\(|X-API-Key' \
              "${product[@]}" | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' || true)
   while IFS= read -r s; do
     [ -n "$s" ] || continue
@@ -777,6 +796,9 @@ if [ -z "${G1_SRC:-}" ]; then
       *'SlskdWriteGate('*)
         case "$file" in App/AppModel+Slskd.swift) ;;
           *) echo "G1: an slskd write gate made outside the app's slskd connection: $file" >&2; bad=1 ;; esac ;;
+      *'perform(.connect)'*)
+        case "$file" in "$slkeep"|"$slclient") ;;
+          *) echo "G1: an slskd reconnect outside the keep-connected check: $file" >&2; bad=1 ;; esac ;;
       *)
         case "$file" in "$cleanslatefile") ;;
           *) echo "G1: an slskd write outside the clean slate: $file" >&2; bad=1 ;; esac ;;
@@ -794,6 +816,14 @@ if [ -z "${G1_SRC:-}" ]; then
   done
   [ "$(grep -cE 'slskd\.gate\.perform\(\.(removeTransfer|deleteFile|deleteFolder)\(' "$cleanslatefile")" = 3 ] ||
     { echo "G1: $cleanslatefile: the slskd writes aren't exactly its three" >&2; bad=1; }
+  # Round 24 (D218): the reconnect is sent from exactly one place, the keep-connected check, and nowhere names it but
+  # SlskdKit (the clean slate never reconnects).
+  [ "$(grep -cE '^            try await gate\.perform\(\.connect\)   // Round 24 \(D218\): the one caller of the connect shape$' "$slkeep")" = 1 ] ||
+    { echo "G1: $slkeep: the slskd reconnect isn't its one caller" >&2; bad=1; }
+  for f in $(grep -rlE --include='*.swift' '\bSlskdWrite\.connect\b|perform\(\.connect\)|send\(\.connect\)' "${product[@]}" | sort -u || true); do
+    case "$f" in "$slkeep"|"$slclient") ;;
+      *) echo "G1: the slskd reconnect named outside SlskdKit: $f" >&2; bad=1 ;; esac
+  done
 fi
 [ "$bad" = 0 ] || { echo "G1 check failed: route Lidarr writes through LidarrWriteGate (or extend the allowlist in $0)" >&2; exit 1; }
 echo "G1 check: no write verbs outside LidarrWriteGate in ${product[*]}${tests[*]:+ and ${tests[*]}} (allowlisted: Navidrome auth/login, dev-only IT helpers)"

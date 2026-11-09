@@ -12,6 +12,11 @@ import Foundation
 /// - `DELETE /api/v0/files/downloads/directories/{base64}` and `DELETE /api/v0/files/downloads/files/{base64}`: delete
 ///   a folder (with what is in it) or one file inside slskd's downloads folder; slskd refuses (403) unless its
 ///   `remote_file_management` option is on, and refuses any path that isn't relative to the downloads folder.
+/// Round 24 (owner, 2026-11-08, D217, D218): "Keep Soulseek connected" adds two (`ServerController`):
+/// - `GET  /api/v0/server`: slskd's connection to the Soulseek network (`SlskdServerState`);
+/// - `PUT  /api/v0/server`, no body: asks slskd to connect (it starts its connection watchdog, which then reconnects by
+///   itself). Sent only through `SlskdWriteGate`'s `connect` shape. `DELETE /api/v0/server` (disconnect) is never
+///   expressible.
 /// The API key goes only in the `X-API-Key` header. Nothing else is ever called: no uploads, searches, shares, options,
 /// users or the `incomplete` folder, and never `downloads/all/completed` (it would clear every user's records).
 public enum SlskdRoute: Sendable, Equatable {
@@ -20,17 +25,22 @@ public enum SlskdRoute: Sendable, Equatable {
     case removeTransfer(username: String, id: UUID)
     case deleteFile(folder: String, file: String)
     case deleteFolder(String)
+    case serverState
+    case connect
 
-    /// Reads are GETs; the three clean-up writes DELETE.
+    /// Reads are GETs; the three clean-up writes DELETE; the reconnect PUTs.
     public var method: String {
         switch self {
-        case .downloads, .downloadsFolder: "GET"
+        case .downloads, .downloadsFolder, .serverState: "GET"
         case .removeTransfer, .deleteFile, .deleteFolder: Self.deleteMethod
+        case .connect: Self.connectMethod
         }
     }
 
     // G1 allowlist: slskd clean-up (the three routes above; pinned in scripts/check-writes.sh)
     static let deleteMethod = "DELETE"
+    // G1 allowlist: slskd keep connected (the one reconnect, `PUT /api/v0/server`; pinned in scripts/check-writes.sh)
+    static let connectMethod = "PUT"
 
     /// The path below `api/v0/`, segment by segment (each percent-encoded when sent); nil when a name isn't safe.
     var segments: [String]? {
@@ -49,6 +59,10 @@ public enum SlskdRoute: Sendable, Equatable {
         case .deleteFolder(let folder):
             guard Self.isSafeName(folder) else { return nil }
             return ["files", "downloads", "directories", Self.base64(folder)]
+        case .serverState:
+            return ["server"]
+        case .connect:
+            return ["server"]
         }
     }
 

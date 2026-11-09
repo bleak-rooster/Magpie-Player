@@ -123,6 +123,11 @@ public struct SlskdClient: Sendable {
         return out
     }
 
+    /// Round 24 (D217): slskd's connection to the Soulseek network (`GET /api/v0/server`), read leniently.
+    public func serverState() async throws -> SlskdServerState {
+        try SlskdServerState.decode(try await ok(.serverState))
+    }
+
     /// One folder directly inside slskd's downloads folder; nil when there is none of that name.
     public func folder(_ name: String) async throws -> SlskdFolder? {
         do {
@@ -148,6 +153,9 @@ public enum SlskdWrite: Sendable, Equatable {
     case deleteFile(folder: String, file: String)
     /// An empty folder directly inside slskd's downloads folder (fix round 1 M2).
     case deleteFolder(String)
+    /// Round 24 (D218): ask slskd to connect to the Soulseek network (`PUT /api/v0/server`, no body). Only while
+    /// "Keep Soulseek connected" is on for this address and key, only when slskd says it is down, at most once a minute.
+    case connect
 }
 
 public enum SlskdGateError: Error, Sendable, Equatable {
@@ -169,16 +177,22 @@ public enum SlskdGateError: Error, Sendable, Equatable {
 /// Names are one level deep and never `.`/`..` or a separator (`SlskdRoute.isSafeName`), so nothing outside the
 /// downloads folder can be named. Which downloads are an artist's, the runner decides (`SlskdLeftovers`); this gate
 /// keeps that decision from reaching anything in progress or anything slskd didn't download.
+/// Round 24 (D218): one more shape, `connect` (ask slskd to reconnect to Soulseek), with its own switch ("Keep Soulseek
+/// connected", a record saved per slskd naming its address) instead of "Allow Magpie to change Soulseek": it changes
+/// no data. Refused unless that record is on for this address and key, slskd reads disconnected and not transitioning
+/// just now, and the last ask is a minute old; the time of the ask is saved before it is sent.
 public actor SlskdWriteGate {
     public static let enabledDefaultsKey = "magpie.slskd.writesEnabled"
     public static func enabledKey(scope: String) -> String { "\(enabledDefaultsKey).\(scope)" }
 
     private let client: SlskdClient
     private let defaults: UserDefaults
+    private let now: @Sendable () -> Date
 
-    public init(client: SlskdClient, defaultsSuite: String? = nil) {
+    public init(client: SlskdClient, defaultsSuite: String? = nil, now: @escaping @Sendable () -> Date = { Date() }) {
         self.client = client
         self.defaults = defaultsSuite.flatMap { UserDefaults(suiteName: $0) } ?? .standard
+        self.now = now
     }
 
     /// "Allow Magpie to change Soulseek". Persisted per slskd; false until the owner turns it on.
@@ -189,12 +203,14 @@ public actor SlskdWriteGate {
     /// Checks `write` on fresh reads and sends it. Throws `SlskdGateError` (nothing sent) or `SlskdError` (slskd's
     /// answer; a 404 means it was already gone).
     public func perform(_ write: SlskdWrite) async throws {
+        if write == .connect { return try await connect() }   // Round 24 (D218): its own switch and proofs, below
         guard enabled else { throw SlskdGateError.disabled }
         let route: SlskdRoute
         switch write {
         case .removeTransfer(let username, let id): route = .removeTransfer(username: username, id: id)
         case .deleteFile(let folder, let file): route = .deleteFile(folder: folder, file: file)
         case .deleteFolder(let folder): route = .deleteFolder(folder)
+        case .connect: throw SlskdGateError.refused("not a clean-up")
         }
         guard route.segments != nil else { throw SlskdGateError.refused("not a name inside the downloads folder") }
         let transfers: [SlskdTransfer]
@@ -208,6 +224,8 @@ public actor SlskdWriteGate {
             let listing = try await readFolder(folder)
             guard listing.files.contains(file) else { throw SlskdGateError.refused("no such file there now") }
             try Self.mayDelete(file, transfers)
+        case .connect:
+            throw SlskdGateError.refused("not a clean-up")
         case .deleteFolder(let folder):
             // Fix round 1 M2: slskd deletes a folder with everything in it, so only an empty one, read just now.
             let listing = try await readFolder(folder)
@@ -215,6 +233,60 @@ public actor SlskdWriteGate {
         }
         guard enabled else { throw SlskdGateError.disabled }   // turned off during the reads
         let (_, response) = try await client.connection.send(route)
+        switch response.statusCode {
+        case 200..<300: return
+        case 401, 403: throw SlskdError.unauthorized
+        default: throw SlskdError.http(status: response.statusCode)
+        }
+    }
+
+    // MARK: Round 24: Keep Soulseek connected (D218)
+
+    public static let keepConnectedDefaultsKey = "magpie.slskd.keepConnected"
+    public static func keepConnectedKey(scope: String) -> String { "\(keepConnectedDefaultsKey).\(scope)" }
+    public static func lastConnectKey(scope: String) -> String { "magpie.slskd.lastConnect.\(scope)" }
+
+    /// Where the owner's "Keep Soulseek connected" record for this slskd is saved: the address it was turned on for.
+    var keepConnectedRecordKey: String { Self.keepConnectedKey(scope: client.instanceScope) }
+
+    /// The address as the record names it (lower case, no trailing slash).
+    private var recordedBase: String {
+        var text = client.connection.base.absoluteString.lowercased()
+        while text.hasSuffix("/") { text.removeLast() }
+        return text
+    }
+
+    /// "Keep Soulseek connected": on only when its record, saved before any ask, names this address (and lives under
+    /// this address and key's scope). False until the owner turns it on.
+    public var keepConnected: Bool { defaults.string(forKey: keepConnectedRecordKey) == recordedBase }
+
+    /// Saves (or removes) the owner's record. Turned on, it names this address; a new address or key starts off.
+    public func setKeepConnected(_ on: Bool) {
+        if on { defaults.set(recordedBase, forKey: keepConnectedRecordKey) } else { defaults.removeObject(forKey: keepConnectedRecordKey) }
+    }
+
+    /// When Magpie last asked this slskd to connect (saved before the ask was sent).
+    public var lastConnect: Date? { defaults.object(forKey: Self.lastConnectKey(scope: client.instanceScope)) as? Date }
+
+    /// The switch is on and the last ask is at least `SlskdKeepConnected.connectCooldown` old.
+    public var mayAskToConnect: Bool {
+        guard keepConnected else { return false }
+        guard let lastConnect else { return true }
+        return now().timeIntervalSince(lastConnect) >= SlskdKeepConnected.connectCooldown
+    }
+
+    /// The `connect` shape: refused unless the owner's record is on for this address and key, the last ask is a minute
+    /// old, and slskd, read just now, says it is disconnected and not transitioning. The time of the ask is saved before
+    /// it is sent (M6), so a lost answer is never followed by another ask within the minute. Never a disconnect.
+    private func connect() async throws {
+        guard keepConnected else { throw SlskdGateError.refused("Keep Soulseek connected is off for this slskd") }
+        guard mayAskToConnect else { throw SlskdGateError.refused("asked less than a minute ago") }
+        let state: SlskdServerState
+        do { state = try await client.serverState() } catch { throw SlskdGateError.unconfirmed }
+        guard state.condition == .down else { throw SlskdGateError.refused("slskd isn't disconnected now") }
+        guard mayAskToConnect else { throw SlskdGateError.refused("turned off during the read") }
+        defaults.set(now(), forKey: Self.lastConnectKey(scope: client.instanceScope))
+        let (_, response) = try await client.connection.send(.connect)
         switch response.statusCode {
         case 200..<300: return
         case 401, 403: throw SlskdError.unauthorized
