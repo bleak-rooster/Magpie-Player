@@ -244,6 +244,7 @@ public final class CarPlayController: NSObject {
     }
 
     func open(_ destination: CPDestination) {
+        if case .page(let ref) = destination { return openPage(ref) }   // R24F (D232): in place of this page
         guard CPNavigator.allowsPush(atDepth: browseDepth) else {
             Log.logger("carplay").error("refused a push past the depth budget")
             return
@@ -551,8 +552,7 @@ public final class CarPlayController: NSObject {
     }
 
     func apply(_ sections: [CPSectionModel], to binding: ListBinding, placeholder: Bool) {
-        let fitted = clamp(sections, maxItems: Int(CPListTemplate.maximumItemCount),
-                           maxSections: Int(CPListTemplate.maximumSectionCount))
+        let fitted = fitPage(sections, for: binding)   // R24F (D231): pages within the car's limits (+Paging.swift)
         if !binding.shown.isEmpty, !needsRebuild(old: binding.shown, new: fitted) {
             updateInPlace(binding, fitted)
             binding.isPlaceholder = placeholder

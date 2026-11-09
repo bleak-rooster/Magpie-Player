@@ -40,9 +40,9 @@ import UIKit
         let clamped = clamp(sections, maxItems: 12, maxSections: 5)
         let rows = clamped.flatMap(\.rows)
         #expect(rows.count == 12)
-        // Never truncates silently: the last row says how much is shown, and does nothing.
-        #expect(rows.last?.title == "Showing 11 of 30")
-        #expect(rows.last?.action == RowAction.none)
+        // Never truncates silently: round 24 (D231), the last row leads to the next page (the controller links it).
+        #expect(rows.last?.title == "More\u{2026}")
+        #expect(rows.last?.detail == "10 more, Row 11 to Row 20")
         #expect(rows.dropLast().map(\.id) == (0..<11).map { "\($0)" })
     }
 
@@ -55,7 +55,7 @@ import UIKit
         ]
         let clamped = clamp(sections, maxItems: 50, maxSections: 2)
         #expect(clamped.map(\.header) == ["A", "B"])
-        #expect(clamped.flatMap(\.rows).last?.title == "Showing 2 of 4")
+        #expect(clamped.flatMap(\.rows).map(\.title).suffix(2) == ["Row b1", "More\u{2026}"])   // R24F (D231)
 
         let fits = clamp(Array(sections.prefix(3)), maxItems: 50, maxSections: 5)
         #expect(fits.flatMap(\.rows).map(\.id) == ["a1", "a2", "b1"])
@@ -165,6 +165,7 @@ import UIKit
                                                    playlists: [Playlist(id: "p", name: "P", songCount: 1, duration: 9)])
             case .madeForYou: CarPlayRows.madeForYou([.song(song("s")), .notYet(outside)], offer: .next, playingId: nil)
             case .discover: CarPlayRows.discover(twoPlaylists)   // Y6: its playlists are leaves at depth 3
+            case .page: []   // R24F (D232): a page replaces the list it belongs to, never deeper
             }
         }
         func walk(_ sections: [CPSectionModel], depth: Int) {

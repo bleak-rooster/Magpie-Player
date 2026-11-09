@@ -31,9 +31,9 @@ extension CarPlayController {
         let binding = bind(template)
         interface.pushTemplate(template, animated: true, completion: nil)
         let current = player.queue.current, upcoming = player.queue.upcoming
-        let maxItems = Int(CPListTemplate.maximumItemCount)
+        // Round 24 (D231): the whole queue; past the car's ceiling it is paged with "More…" (`fitPage`), never cut.
         load(binding) {
-            { CarPlayRows.upNext(current: current, upcoming: upcoming, maxItems: maxItems, playingId: $0) }
+            { CarPlayRows.upNext(current: current, upcoming: upcoming, playingId: $0) }
         }
     }
 

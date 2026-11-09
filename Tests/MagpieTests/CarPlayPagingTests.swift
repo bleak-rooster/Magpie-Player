@@ -161,8 +161,9 @@ private func subsonic(_ body: String) -> Data {
 
     @Test func carList_songPagesReadOnlyTheirSongs() async throws {
         let model = try await signedInModel()
-        let (car, controller) = car(model, limits: (items: 4, sections: 12))
+        let (car, controller) = car(model)
         defer { controller.disconnect() }
+        controller.listLimits = { (items: 4, sections: 12) }   // after the Library tab is laid out, so Songs shows
         car.tap("Songs", in: car.tab(1))
         #expect(await eventually { FakeCarInterface.texts(car.topList).first == "A\u{2013}E" })
         car.tap("A\u{2013}E", in: car.topList)
@@ -176,8 +177,10 @@ private func subsonic(_ body: String) -> Data {
                 }
                 .compactMap(\.query)
         }
-        let before = pageReads().count
+        let before = pageReads().count, depth = car.templates.count
         car.tap("More\u{2026}", in: car.topList)
+        #expect(car.templates.count == depth, "the page replaces the one before it")
+        #expect(car.topList?.title == "A\u{2013}E (2 of 14)")
         #expect(await eventually { FakeCarInterface.texts(car.topList) == ["Previous\u{2026}", "A03", "A04", "More\u{2026}"] })
         let reads = pageReads().dropFirst(before)
         #expect(reads.count == 1 && reads.allSatisfy { $0.contains("_start=3") && $0.contains("_end=5") }, "\(reads)")
