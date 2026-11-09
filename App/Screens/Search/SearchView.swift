@@ -124,6 +124,8 @@ private struct SearchContent: View {
         .sheet(item: $trying) { TrySheet(target: $0) }
         .songRemovalDialog($removing)
         .onChange(of: depth) { old, new in if new > old, !model.query.isEmpty { remember(model.query) } }
+        // Round 24 (D226): back at the start, the history as saved (a search kept with the Search key shows at once).
+        .onChange(of: model.phase == .idle) { _, idle in if idle { recents = RecentSearches().items } }
     }
 
     // MARK: - Start
@@ -139,6 +141,8 @@ private struct SearchContent: View {
                     Button { model.update(query: q) } label: {
                         Label(q, systemImage: "clock.arrow.circlepath")
                             .frame(maxWidth: .infinity, minHeight: Tokens.minHitSize, alignment: .leading)
+                            // Round 24 (owner, 2026-11-08, D226): the whole row runs the search, not just its words.
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .listRowBackground(Color.clear)

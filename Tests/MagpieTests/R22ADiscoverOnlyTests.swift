@@ -120,6 +120,9 @@ import Testing
 
     /// D181: Aurral's older names and a playlist file's name.
     @Test func everyNameAurralGives() async throws {
+        // Round 24 (D203): an item claims one playlist, so the older name is the flow's only one here (as once Aurral
+        // 2.13 has renamed it); beside its current name it stays Aurral's but goes unclaimed (R24AIdentityTests).
+        nav.lists["pl-empty"] = nil
         let model = try await signedIn(lists: ["pl-legacy": ("[A] Trending Mix", ["a-words"]),
                                                "pl-file": ("\(StubAurral.defaultUsername) - Rock_Pop", [])]) { aurral in
             aurral.setFlows([.init(id: "flow-dw", name: "Discover Weekly"), .init(id: "flow-tm", name: "Trending Mix"),

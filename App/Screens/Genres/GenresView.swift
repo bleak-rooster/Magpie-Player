@@ -41,7 +41,7 @@ struct GenresView: View {
                     }
                 } else {
                     LoadableView(state: genres, retry: load) { genres in
-                        if genres.isEmpty { empty } else { allList(genres) }
+                        if genres.isEmpty { empty } else { allList(genres, sections: indexSections) }
                     }
                 }
             }
@@ -49,8 +49,16 @@ struct GenresView: View {
         }
         // P2: over All genres, or the groups list; not while editing.
         .letterIndex(available: Set(indexSections.map(\.key)), hidden: editing || indexSections.isEmpty) { letter in
-            guard let target = LetterIndex.target(letter, in: indexSections) else { return }
-            withAnimation(nil) { proxy.scrollTo(indexIds[target.range.lowerBound], anchor: .top) }
+            guard let target = LetterIndex.target(letter, in: indexSections),
+                  indexIds.indices.contains(target.range.lowerBound) else { return }
+            // Round 24 (D225): All genres has letter headers; a jump lands on the header (grouped has none: the
+            // groups keep their own order, not A–Z).
+            let headed = model.preferences.genres.mode == .all ? indexSections : []
+            withAnimation(nil) {
+                proxy.scrollToLetter(index: target.range.lowerBound, sections: headed, itemCount: indexIds.count) {
+                    indexIds[$0]
+                }
+            }
         }
         }
         .refreshable {
@@ -115,9 +123,10 @@ struct GenresView: View {
             .accessibilityIdentifier("genres-empty")
     }
 
-    private func allList(_ genres: [Genre]) -> some View {
-        LazyVStack(spacing: 0) {
-            ForEach(genres, id: \.name) { genre in
+    /// Round 24 (owner, 2026-11-08): a pinned header per letter past 25 genres, as the other A–Z lists (D225).
+    private func allList(_ genres: [Genre], sections: [LetterIndex.Section]) -> some View {
+        LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
+            LetterSectionedRows(items: genres, sections: sections, id: \.name, pinned: true) { genre in
                 GenreRow(genre: genre).id(genre.name)
                 Divider().overlay(themed.palette.sepColor).padding(.leading, Tokens.Spacing.margin)
             }

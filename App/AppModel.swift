@@ -614,6 +614,7 @@ final class AppModel {
     /// ledgers with nothing open (`Ledger.forgetFinished`). Keeps the change log.
     func signOut() {
         let retiring = runner, doomed = requestStore
+        let signedOutScope = navidromeScope   // R24A fix round 1 (I1): Discover's per-account keys go after `session = nil`
         sleepTimer.cancel()
         player.play([], startAt: 0)
         playbackHint = nil
@@ -625,7 +626,7 @@ final class AppModel {
             appDefaults.removeObject(forKey: Self.autoMainLibraryKey(navidromeScope))
             appDefaults.removeObject(forKey: Self.lidarrLibrariesKey(navidromeScope))
             appDefaults.removeObject(forKey: Self.playlistShowKey(navidromeScope))   // R22P (D180)
-            for key in [Self.discoverPlaylistsKey, Self.discoverLibrariesKey, Self.aurralSongsKey] {   // Y6 fix M7
+            for key in [Self.discoverPlaylistsKey, Self.discoverLibrariesKey, Self.aurralSongsKey, Self.discoverClaimsKey] {   // Y6 fix M7; R24A (D204)
                 appDefaults.removeObject(forKey: key(navidromeScope))
             }
             let prefix = Self.findSongIdsKeyPrefix + navidromeScope + "."
@@ -666,7 +667,7 @@ final class AppModel {
         lidarrStatus = nil
         disconnectSlskd()   // R23 (D192)
         rebuildRunner()
-        forgetDiscover()   // Y6
+        forgetDiscover(scope: signedOutScope)   // Y6; R24A fix round 1 (I1): with the account's scope
         RecentSearches(defaults: appDefaults).clear()   // shared with the car
         // Every Lidarr's requests, and the ledgers with nothing open, now. Never the change log (the owner's undo map).
         let data = dataDirectory

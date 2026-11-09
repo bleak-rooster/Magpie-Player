@@ -393,5 +393,37 @@ for entry in "${slskd_inplace[@]}"; do
 done
 planted+=("${slskd_inplace[@]}")
 
+# Round 24 C fix round 1: Songs still coming's and Delete's bypasses, planted where they would really go.
+# I3: the Delete button's word is allowed on its one exact line only: a verb literal or a request's verb next to it, or
+# the old tag in another file, is caught. M6: one research call per allowed file, whatever the spelling. B-M1: a held
+# song decided without the fresh ownership guard, or from anywhere but `sendHeldDecision`.
+c_inplace=(
+  "App/AppModel+AurralDelete.swift|sed|s/^    static let confirm = \"Delete\"$/&\n    static let verb = \"DELETE\"/"
+  "App/AppModel+AurralDelete.swift|sed|s/^    static let confirm = \"Delete\"$/&\n    static func planted(_ r: inout URLRequest) { r.httpMethod = \"DELETE\" }/"
+  "App/AppModel+AurralDelete.swift|append|func plantedVerb(_ r: inout URLRequest) { r.httpMethod = \"DELETE\" }"
+  "App/AppModel+AurralDownloads.swift|append|// G1 allowlist: copy\nlet plantedVerb = \"DELETE\""
+  "App/AppModel+SearchAgain.swift|sed|s/_ = try await client.retrySong(playlistId: flow.id, jobId: job.id)/&; _ = try await client.retrySong (playlistId: flow.id, jobId: job.id)/"
+  "App/AppModel+AurralDownloads.swift|append|func plantedResearch(_ c: AurralClient) async throws { _ = try await c.\`retrySong\`(playlistId: \"f\", jobId: \"j\") }"
+  "App/AppModel+AurralDownloads.swift|append|func plantedApprove(_ c: AurralClient) async throws { try await c.approveHeldSong(\"job-1\") }"
+  "App/AppModel+AurralDownloads.swift|sed|/guard let user = discover.bootstrap?.user, let freshItem, freshItem.belongs(to: user) else { throw AurralError.notPermitted }/d"
+  "App/AppModel+AurralDownloads.swift|sed|s/let jobs = try await client.playlistJobs(row.item.id) ?? \[\]/let jobs: [AurralJob] = []/"
+  "App/Screens/Discover/AurralDownloadsView.swift|append|func plantedDeny(_ c: AurralClient) async throws { try await c.denyHeldSong (\"job-1\") }"
+)
+for entry in "${c_inplace[@]}"; do
+  rel="${entry%%|*}" rest="${entry#*|}"
+  mode="${rest%%|*}" text="${rest#*|}"
+  file="$work/$rel"
+  cp "$file" "$file.orig"
+  if [ "$mode" = append ]; then printf '%b\n' "$text" >> "$file"; else sed -i '' "$text" "$file"; fi
+  if cmp -s "$file.orig" "$file"; then echo "selftest: the plant didn't apply: $entry" >&2; failed=1
+  elif out=$("$work/scripts/check-writes.sh" 2>&1); then
+    echo "selftest: NOT caught: $entry" >&2; failed=1
+  elif ! grep -qE 'G1:' <<< "$out"; then
+    echo "selftest: failed without a G1 reason: $entry" >&2; failed=1
+  fi
+  cp "$file.orig" "$file"; rm -f "$file.orig"
+done
+planted+=("${c_inplace[@]}")
+
 [ "$failed" = 0 ] || exit 1
 echo "check-writes selftest: all ${#planted[@]} planted violations and ${#weakened[@]} allow-list weakenings caught; the clean tree passes"

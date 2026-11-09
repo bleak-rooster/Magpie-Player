@@ -35,7 +35,7 @@ struct DownloadsView: View {
                     OfflineNotice().padding(.horizontal, Tokens.Spacing.largeTitleMargin)
                 }
                 if let catalog {
-                    content(catalog)
+                    content(catalog, sections: index.sections)
                 } else {
                     ProgressView().frame(maxWidth: .infinity, minHeight: 200)
                 }
@@ -44,8 +44,13 @@ struct DownloadsView: View {
         }
         // P2: offline too, the index runs over what's on the phone.
         .letterIndex(available: Set(index.sections.map(\.key)), hidden: index.sections.isEmpty) { letter in
-            guard let target = LetterIndex.target(letter, in: index.sections) else { return }
-            proxy.scrollTo(index.ids[target.range.lowerBound], anchor: .top)
+            guard let target = LetterIndex.target(letter, in: index.sections),
+                  index.ids.indices.contains(target.range.lowerBound) else { return }
+            // Round 24 (D225): onto the letter's header (Genres, grouped in its own order, has none).
+            let headed = kind == .genres ? [] : index.sections
+            proxy.scrollToLetter(index: target.range.lowerBound, sections: headed, itemCount: index.ids.count) {
+                index.ids[$0]
+            }
         }
         }
         .navigationTitle("Downloads")
@@ -55,23 +60,26 @@ struct DownloadsView: View {
         .task(id: model.downloads?.localFiles.count) { catalog = await model.offlineCatalog }
     }
 
-    @ViewBuilder private func content(_ catalog: OfflineCatalog) -> some View {
+    /// `sections`: the shown kind's letter runs (the index's), for the letter headers past 25 (round 24, D225).
+    @ViewBuilder private func content(_ catalog: OfflineCatalog, sections: [LetterIndex.Section]) -> some View {
         switch kind {
         case .albums:
             let albums = catalog.albums()
-            if albums.isEmpty { empty } else { AlbumGrid(albums: albums) { $0.artist } }
+            if albums.isEmpty { empty } else { AlbumLetterGrid(albums: albums, sections: sections) }
         case .artists:
             let artists = catalog.artists()
-            if artists.isEmpty { empty } else { rows(artists, id: \.id) { artistRow($0) } }
+            if artists.isEmpty { empty } else { rows(artists, id: \.id, sections: sections) { artistRow($0) } }
         case .playlists:
             let playlists = catalog.playlists()
-            if playlists.isEmpty { empty } else { rows(playlists, id: \.id) { playlistRow($0) } }
+            if playlists.isEmpty { empty } else { rows(playlists, id: \.id, sections: sections) { playlistRow($0) } }
         case .songs:
             let songs = catalog.songs()
             if songs.isEmpty {
                 empty
             } else {
-                rows(Array(songs.enumerated()), id: \.element.id) { index, song in songRow(song, index: index, in: songs) }
+                rows(Array(songs.enumerated()), id: \.element.id, sections: sections) { index, song in
+                    songRow(song, index: index, in: songs)
+                }
             }
         case .genres:
             let sections = GenreGroups.grouped(catalog.genres(), preferences: model.preferences.genres)
@@ -99,9 +107,10 @@ struct DownloadsView: View {
     }
 
     private func rows<Item, ID: Hashable, Row: View>(_ items: [Item], id: KeyPath<Item, ID>,
+                                                     sections: [LetterIndex.Section],
                                                      @ViewBuilder row: @escaping (Item) -> Row) -> some View {
-        LazyVStack(spacing: 0) {
-            ForEach(items, id: id) { item in
+        LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
+            LetterSectionedRows(items: items, sections: sections, id: id, pinned: true) { item in
                 row(item).id(item[keyPath: id])
                 Divider().overlay(themed.palette.sepColor).padding(.leading, 76)
             }

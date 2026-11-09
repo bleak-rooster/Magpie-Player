@@ -40,6 +40,10 @@ public final class StubAurral: HTTPTransport, @unchecked Sendable {
         public var durationMs: Int?
         public var status: String
         public var finalPath: String?
+        /// Round 24 C fix round 1 (I4): a song's progress (sent as `progress`, which 2.13 doesn't have) and Aurral's
+        /// words about it (sent as 2.13's `error`). Not sent when nil.
+        public var progress: Double?
+        public var message: String?
         public init(flowId: String, artistName: String, trackName: String, albumName: String = "Single",
                     artistMbid: String? = nil, trackMbid: String? = nil, durationMs: Int? = nil, status: String = "done",
                     finalPath: String? = nil) {
@@ -413,6 +417,16 @@ public final class StubAurral: HTTPTransport, @unchecked Sendable {
     public func setJobStatus(_ jobId: String, _ status: String) {
         guard jobId.hasPrefix("job-"), let index = Int(jobId.dropFirst(4)) else { return }
         state.withLock { s in if s.jobs.indices.contains(index) { s.jobs[index].status = status } }
+    }
+
+    /// Round 24 C fix round 1 (I4): one song's (`job-<index>`) progress and Aurral's words about it.
+    public func setJobDetail(_ jobId: String, progress: Double?, message: String?) {
+        guard jobId.hasPrefix("job-"), let index = Int(jobId.dropFirst(4)) else { return }
+        state.withLock { s in
+            guard s.jobs.indices.contains(index) else { return }
+            s.jobs[index].progress = progress
+            s.jobs[index].message = message
+        }
     }
 
     /// Round 24 B: one song's status now (`job-<index>`), nil when there is no such job.
@@ -801,6 +815,8 @@ public final class StubAurral: HTTPTransport, @unchecked Sendable {
         if let v = j.trackMbid { body["trackMbid"] = v }
         if let v = j.durationMs { body["durationMs"] = v }
         if let v = j.finalPath, !hidePaths { body["finalPath"] = v }
+        if let v = j.progress { body["progress"] = v }
+        if let v = j.message { body["error"] = v }
         return body
     }
 }
