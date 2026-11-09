@@ -7,8 +7,10 @@ import Testing
 import UIKit
 @testable import Magpie
 
-/// T21b: Settings is a short list of eight pages, each row with its one-line summary, that fits the smallest iOS 27
-/// phone (375 × 667 pt) without scrolling at the default text size (at accessibility sizes it may scroll, D15).
+/// T21b: Settings is a short list of pages, each row with its one-line summary. On the smallest iOS 27 phone (375 × 667
+/// pt) at the default text size the Accounts & Servers block fits the first screen; round 24 (owner Q6, D216): with
+/// slskd's fifth row the list may scroll, with the next block's first row showing as the hint (at accessibility sizes it
+/// may scroll anyway, D15).
 /// Entry points open the page they are about: Finish setting up and Try open Requests (or Finds set-up).
 @MainActor @Suite(.serialized) struct SettingsTopLevelTests {
     private let home = URL(string: "http://homeserver:4533")!
@@ -69,12 +71,12 @@ import UIKit
     /// Downloads in Lidarr) are gone from the top level.
     @Test func accountsAndServersFirst() {
         #expect(SettingsCopy.accountsAndServers == "Accounts & Servers")
-        #expect(SettingsPage.accountsAndServers == [.account, .lidarr, .aurral, .listenBrainz])
-        #expect(SettingsPage.topLevel == [.account, .lidarr, .aurral, .listenBrainz,
+        #expect(SettingsPage.accountsAndServers == [.account, .lidarr, .aurral, .listenBrainz, .slskd])   // R24 (D216)
+        #expect(SettingsPage.topLevel == [.account, .lidarr, .aurral, .listenBrainz, .slskd,
                                           .playback, .downloads, .homeAndLibrary, .carPlay, .appearance, .about])
         #expect(SettingsView.identifier(.carPlay) == "settings-carplay", "Z3's CarPlay, promoted to the top level")
         #expect(SettingsPage.accountsAndServers.map(SettingsView.identifier)
-                == ["settings-account", "settings-lidarr-account", "settings-aurral", "settings-listenbrainz"])
+                == ["settings-account", "settings-lidarr-account", "settings-aurral", "settings-listenbrainz", "settings-slskd"])
         #expect([SettingsCopy.navidrome, SettingsCopy.lidarr, SettingsCopy.aurral, SettingsCopy.listenBrainz]
                 == ["Navidrome", "Lidarr", "Aurral", "ListenBrainz"])
     }
@@ -103,8 +105,10 @@ import UIKit
     }
 
     /// Signed in to a long plain-http public address (the "Not encrypted" warning row) with Lidarr connected, and
-    /// measured inside a real page-sheet presentation, as the app shows Settings.
-    @Test func topLevelFitsSmallestPhone() async throws {
+    /// measured inside a real page-sheet presentation, as the app shows Settings. Round 24 (owner Q6, D216): the
+    /// Accounts & Servers block (five rows) fits the first screen, and when the list is taller the next block's first row
+    /// starts on it (a visible scroll hint).
+    @Test func settingsTopLevel_fitsAccountsBlock_375x667() async throws {
         let name = "settings-small-\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: name)!
         let gateSuite = "settings-small-gate-\(UUID().uuidString)"
@@ -136,11 +140,19 @@ import UIKit
         defer { window.isHidden = true }
         let list = try #require(Self.scrollView(in: sheet.view), "the top level is a list")
         let rows = (0..<list.numberOfSections).reduce(0) { $0 + list.numberOfItems(inSection: $1) }
-        #expect(rows == 10, "round 13: four accounts and servers, then six pages (CarPlay among them)")
+        #expect(rows == 11, "round 24: five accounts and servers, then six pages (CarPlay among them)")
         let visible = list.bounds.height - list.adjustedContentInset.top - list.adjustedContentInset.bottom
         print("T21b settings: content \(list.contentSize.height) pt in \(visible) pt visible (sheet \(sheet.view.frame))")
         #expect(sheet.view.frame.height < 667, "measured inside the sheet, not the whole window")
-        #expect(list.contentSize.height <= visible, "the top level scrolls at the default text size")
+        #expect(list.numberOfItems(inSection: 0) == 5)
+        // The first screen, in the list's own coordinates, at rest.
+        let bottom = list.contentOffset.y + list.bounds.height - list.adjustedContentInset.bottom
+        let accounts = try #require(list.layoutAttributesForItem(at: IndexPath(item: 4, section: 0)))
+        #expect(accounts.frame.maxY <= bottom, "the Accounts & Servers block fits the first screen")
+        if list.contentSize.height > visible {
+            let next = try #require(list.layoutAttributesForItem(at: IndexPath(item: 0, section: 1)))
+            #expect(next.frame.minY < bottom, "the list scrolls, and the next row shows where it goes on")
+        }
 
         try Self.render(window, "settings-375x667.png")
 

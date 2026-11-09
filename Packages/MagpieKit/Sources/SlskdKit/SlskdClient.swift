@@ -250,8 +250,11 @@ public actor SlskdWriteGate {
     var keepConnectedRecordKey: String { Self.keepConnectedKey(scope: client.instanceScope) }
 
     /// The address as the record names it (lower case, no trailing slash).
-    private var recordedBase: String {
-        var text = client.connection.base.absoluteString.lowercased()
+    private var recordedBase: String { Self.keepConnectedRecord(for: client.connection.base) }
+
+    /// What the record saves for `base`: the address, lower case, without a trailing slash.
+    public static func keepConnectedRecord(for base: URL) -> String {
+        var text = base.absoluteString.lowercased()
         while text.hasSuffix("/") { text.removeLast() }
         return text
     }

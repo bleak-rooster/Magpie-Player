@@ -75,6 +75,7 @@ struct HomeView: View {
                 FinishSettingUpCard()
                     .padding(.horizontal, Tokens.Spacing.margin)
             }
+            SlskdOutageBanner().padding(.horizontal, Tokens.Spacing.margin)   // R24 (D219): slskd stayed disconnected
             LoadableView(state: model.homeFeed.state, retry: { await model.homeFeed.refresh(key) }) { read in
                 let shown = model.homeSections
                 let chips = HomeFilter.offered(for: shown.filter { shows($0, read) })

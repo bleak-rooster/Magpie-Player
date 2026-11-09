@@ -10,14 +10,15 @@ enum SettingsPage: Hashable {
     case lidarrDownloads
     /// Lidarr âº Finds.
     case findsSetup
-    /// Round 23 (D192): Lidarr › Soulseek (slskd), the optional slskd connection.
+    /// Round 23 (D192): the optional slskd connection, Soulseek (slskd). Round 24 (D216): its own row, the fifth under
+    /// Accounts & Servers (it was a page of Lidarr's).
     case slskd
     /// Round 13 (Z3): Settings âº CarPlay, the third tab and the car's Home. A top-level row since Z1's Accounts &
     /// Servers rework made room (it first opened from Home & Library).
     case carPlay
 
-    /// Round 13 item 14: the Accounts & Servers section, near the top, in this order.
-    static let accountsAndServers: [SettingsPage] = [.account, .lidarr, .aurral, .listenBrainz]
+    /// Round 13 item 14: the Accounts & Servers section, near the top, in this order. Round 24 (D216): slskd fifth.
+    static let accountsAndServers: [SettingsPage] = [.account, .lidarr, .aurral, .listenBrainz, .slskd]
     /// The pages under it.
     static let preferences: [SettingsPage] = [.playback, .downloads, .homeAndLibrary, .carPlay, .appearance, .about]
 
@@ -68,6 +69,7 @@ struct SettingsView: View {
             }
             .navigationDestination(for: SettingsPage.self) { destination($0) }
             .task(id: model.lidarr) { if model.lidarr != nil, !model.isOffline { _ = await model.lidarrAudit() } }
+            .task(id: model.slskd) { await model.refreshSlskdState() }   // R24 (D216): the row says whether slskd answers
         }
     }
 
@@ -89,6 +91,8 @@ struct SettingsView: View {
             SettingsServiceRow(title: SettingsCopy.aurral, symbol: "sparkles", summary: SettingsSummary(AurralCopy.summary(model)))
         case .listenBrainz:
             SettingsServiceRow(title: SettingsCopy.listenBrainz, symbol: "chart.bar", summary: SettingsSummaries.listenBrainz(model))
+        case .slskd:   // Round 24 (D216)
+            SettingsServiceRow(title: SlskdCopy.title, symbol: "point.3.connected.trianglepath.dotted", summary: SlskdCopy.rowSummary(model))
         case .playback:
             SettingsRow(title: "Playback", symbol: "play.circle",
                         summary: SettingsSummary(PlaybackSettingsView.summary(model.preferences.playback)))
@@ -105,7 +109,7 @@ struct SettingsView: View {
             SettingsRow(title: "Appearance", symbol: "paintpalette", summary: SettingsSummary(SettingsSummaries.appearance(model.theme)))
         case .about:
             SettingsRow(title: "About", symbol: "info.circle", summary: SettingsSummary(AboutView.summary))
-        case .lidarrDownloads, .findsSetup, .slskd:
+        case .lidarrDownloads, .findsSetup:
             EmptyView()   // not top-level rows
         }
     }

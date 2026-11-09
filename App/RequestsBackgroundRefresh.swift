@@ -9,6 +9,8 @@ import SwiftUI
 /// same `tick()` the foreground runs (Lidarr queue and history reads, the Navidrome match check, and only the retry
 /// searches the runner already had scheduled), which posts the ready notification through `requestBecameReady`.
 /// Best-effort: iOS decides if and when it runs; at most every 15 minutes is asked for.
+/// Round 24 (D220): the same pass also runs one "Keep Soulseek connected" check while that switch is on (even without
+/// Lidarr), and the next pass is asked for while it stays on. Never guaranteed: the page's footer says so.
 enum RequestsBackgroundRefresh {
     static let identifier = "com.bleak-rooster.magpie.requests"
     /// The iOS minimum hint for app refresh.
@@ -68,9 +70,11 @@ extension AppModel {
     /// Asks iOS for a background pass while any request is still on its way (on going to the background, and after
     /// each pass). Nothing is asked for otherwise.
     func scheduleRequestRefresh(submit: @escaping (BGTaskRequest) async throws -> Void = RequestsBackgroundRefresh.submit) {
-        guard let runner else { return }
+        let keepsSlskd = slskdKeep.isOn   // R24 (D220)
+        guard runner != nil || keepsSlskd else { return }
+        let runner = runner
         Task {
-            guard await runner.needsPolling else { return }
+            if !keepsSlskd { guard await runner?.needsPolling == true else { return } }
             try? await submit(RequestsBackgroundRefresh.request())
         }
     }
@@ -91,11 +95,17 @@ extension AppModel {
                                submit: @escaping (BGTaskRequest) async throws -> Void = RequestsBackgroundRefresh.submit)
         async -> Bool {
         if runner == nil, session != nil, reloadKeychainItems() { rebuildRunner() }
-        guard let runner else { return false }
+        guard let runner else {
+            // R24 (D220): without Lidarr, the pass is only slskd's check (when its switch is on).
+            let checked = await slskdBackgroundCheck()
+            scheduleRequestRefresh(submit: submit)
+            return checked
+        }
         guard !isOffline else {
             scheduleRequestRefresh(submit: submit)
             return false
         }
+        _ = await slskdBackgroundCheck()   // R24 (D220): first, so it never waits on the runner's pass
         let finished = await Self.within(limit) { await runner.tick(shouldStop: { stop.isStopped }) }
         if !finished { stop.stop() }
         scheduleRequestRefresh(submit: submit)   // the next one, while something is still on its way
