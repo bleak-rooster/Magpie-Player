@@ -16,8 +16,8 @@ import MagpieCore
 ///   in Lidarr now (`ReleaseTypes.profileName` of the intent's types, D238) or, for Revert, exactly the previous profile
 ///   a finished change recorded, while the artist is on a Magpie profile now (D244).
 /// - RefreshArtist: the artist of an open change or Revert.
-/// - `PUT /album/monitor false`: only albums of that artist the intent lists to unmonitor, none a live Magpie request
-///   is using; `true` and AlbumSearch: only albums of that artist the refresh brought in (not there before), listed in
+/// - `PUT /album/monitor false`: only albums of that artist the intent lists to unmonitor, of a type the intent's
+///   release types leave out (read fresh), none a live Magpie request is using; `true` and AlbumSearch: only albums of that artist the refresh brought in (not there before), listed in
 ///   the intent (saved before the write) and of a type the intent's release types include (read fresh).
 /// - `DELETE /trackfile/bulk` (clean-up): 1 to 50 distinct ids, all named by the intent and none it left out (favourited,
 ///   saved to a playlist, on the phone); each read fresh: that artist's, the album the intent recorded, the size it
@@ -193,6 +193,12 @@ private struct OwnedProof {
             }
             guard !ids.contains(where: { id in entries.contains { $0.albumId == id && $0.isOpen && !$0.isConfirmedKept } }) else {
                 throw Failure.refused("a request of Magpie's is using that album")
+            }
+            // Only albums the owner's choice leaves out (read fresh): what falls out, nothing it still includes.
+            guard let types = intent.targetTypes, ids.allSatisfy({ id in
+                albums.first { $0.id == id }.map { !types.includes(albumType: $0.albumType, secondaryTypes: $0.secondaryTypes) } == true
+            }) else {
+                throw Failure.refused("only albums the owner's choice leaves out")
             }
             return
         }

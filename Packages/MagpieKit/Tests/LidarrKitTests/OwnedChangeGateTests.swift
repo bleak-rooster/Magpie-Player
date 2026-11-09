@@ -215,6 +215,15 @@ import MagpieTestSupport
         #expect(fake.writes.count == 1)
     }
 
+    @Test func change_neverUnmonitorsAnAlbumTheChoiceStillIncludes() async throws {
+        let fake = Fake()
+        var intent = try await fake.change()
+        intent.unmonitorAlbumIds = [1, 2]   // album 1 is an Album: Albums only still includes it
+        try await fake.ledger.saveIntent(intent)
+        #expect(Self.isRefused(await Self.answer(await fake.gate(), "PUT", "album/monitor", Monitor(albumIds: [1], monitored: false), .ownedChange)))
+        #expect(fake.writes.isEmpty)
+    }
+
     @Test func change_neverUnmonitorsAnAlbumAMagpieRequestUses() async throws {
         let fake = Fake()
         try await fake.change()
