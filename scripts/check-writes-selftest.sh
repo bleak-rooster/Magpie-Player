@@ -287,13 +287,22 @@ slskd_inplace=(
   "Packages/MagpieKit/Sources/SlskdKit/SlskdClient.swift|append|    func b5() async throws { let s = connection.send; _ = try await s(.connect) }"
   "App/AppModel+Slskd.swift|append|        let p = gate.perform; Task { try? await p(.connect) }"
   "Packages/MagpieKit/Sources/SlskdKit/SlskdServerState.swift|append|            try await gate.perform (.connect)"
+  # Fix round 3 (R2): a pass made by an extension's initialiser, a value of any type made by a generic bit-cast in a
+  # new SlskdKit file, and the channel's send reached from another SlskdKit file, spaced, backticked or taken as a
+  # function (no `.connect` and no pass named, so only the send rule can see them).
+  "Packages/MagpieKit/Sources/SlskdKit/SlskdServerState.swift|append|extension SlskdGatePass { init(sneak: ()) {} }"
+  "Packages/MagpieKit/Sources/SlskdKit/SlskdPlanted.swift|new|func make<T>() -> T { unsafeBitCast((), to: T.self) }"
+  "Packages/MagpieKit/Sources/SlskdKit/SlskdLeftovers.swift|append|    func r1(_ c: SlskdClient, _ r: SlskdRoute) async throws { _ = try await c.connection.send (r, pass: make()) }"
+  "Packages/MagpieKit/Sources/SlskdKit/SlskdLeftovers.swift|append|    func r2(_ c: SlskdClient, _ r: SlskdRoute) async throws { _ = try await c.connection.\`send\`(r, pass: make()) }"
+  "Packages/MagpieKit/Sources/SlskdKit/SlskdLeftovers.swift|append|    func r3(_ c: SlskdClient) { let s = c.connection . send; _ = s }"
 )
 for entry in "${slskd_inplace[@]}"; do
   rel="${entry%%|*}" rest="${entry#*|}"
   mode="${rest%%|*}" text="${rest#*|}"
   file="$work/$rel"
+  [ -e "$file" ] || : > "$file"   # a new file (fix round 3): starts empty
   cp "$file" "$file.orig"
-  if [ "$mode" = append ]; then printf '%s\n' "$text" >> "$file"; else sed -i '' "$text" "$file"; fi
+  if [ "$mode" = append ] || [ "$mode" = new ]; then printf '%s\n' "$text" >> "$file"; else sed -i '' "$text" "$file"; fi
   if cmp -s "$file.orig" "$file"; then echo "selftest: the plant didn't apply: $entry" >&2; failed=1
   elif out=$("$work/scripts/check-writes.sh" 2>&1); then
     echo "selftest: NOT caught: $entry" >&2; failed=1
@@ -301,6 +310,7 @@ for entry in "${slskd_inplace[@]}"; do
     echo "selftest: failed without a G1 reason: $entry" >&2; failed=1
   fi
   cp "$file.orig" "$file"; rm -f "$file.orig"
+  [ "$mode" = new ] && rm -f "$file"
 done
 planted+=("${slskd_inplace[@]}")
 

@@ -170,7 +170,7 @@ extension AppModel {
     @discardableResult
     func checkSlskdKeepConnected() async -> SlskdCheck? {
         let flight: SlskdCheckFlight
-        if let running = slskdKeep.inFlight {
+        if let running = slskdKeep.inFlight, !running.isCancelled {   // fix round 3 m1: never join a cancelled check
             flight = running
         } else {
             flight = SlskdCheckFlight(Task { await self.performSlskdKeepConnectedCheck() })

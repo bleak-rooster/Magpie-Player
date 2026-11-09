@@ -63,13 +63,19 @@ import Testing
         let inner: FakeSlskd
         let holds = OSAllocatedUnfairLock(initialState: false)
         let waiting = OSAllocatedUnfairLock(initialState: 0)
+        /// Fix round 3: keep holding even when the request is cancelled (an answer that comes anyway).
+        let ignoresCancel = OSAllocatedUnfairLock(initialState: false)
         init(_ inner: FakeSlskd) { self.inner = inner }
         func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
             waiting.withLock { $0 += 1 }
             defer { waiting.withLock { $0 -= 1 } }
             let deadline = Date().addingTimeInterval(10)
             while holds.withLock({ $0 }), Date() < deadline {
-                try await Task.sleep(for: .milliseconds(5))
+                if ignoresCancel.withLock({ $0 }) {
+                    await Task.yield()
+                } else {
+                    try await Task.sleep(for: .milliseconds(5))
+                }
             }
             return try await inner.send(request)
         }
@@ -440,5 +446,26 @@ import Testing
         clock.advance(61)
         await model.setSlskdKeepConnected(true)
         #expect(connects == 4)
+    }
+
+    // MARK: - Fix round 3
+
+    /// m1: a check whose only caller was cancelled is never joined: the next call starts its own and gets a check,
+    /// even while the cancelled one hasn't finished yet.
+    @Test func aCancelledCheckIsNeverJoined() async {
+        let holding = HoldingTransport(slskd)
+        let model = makeModel(transport: holding)
+        await model.setSlskdKeepConnected(true)
+        holding.ignoresCancel.withLock { $0 = true }
+        holding.holds.withLock { $0 = true }
+        let cancelled = Task { await model.checkSlskdKeepConnected() }
+        #expect(await eventually { holding.waiting.withLock { $0 } == 1 })
+        cancelled.cancel()
+        #expect(await eventually { model.slskdKeep.inFlight?.isCancelled == true }, "cancelled, not yet finished")
+        let next = Task { await model.checkSlskdKeepConnected() }
+        #expect(await eventually { holding.waiting.withLock { $0 } == 2 }, "a check of its own, not the cancelled one")
+        holding.holds.withLock { $0 = false }
+        #expect(await next.value == .connected)
+        #expect(await cancelled.value == nil)
     }
 }

@@ -7,7 +7,11 @@ import MagpieCore
 /// Proof that a write comes from `SlskdWriteGate`: `SlskdConnection.send` takes nothing else, and only this file can make
 /// one.
 struct SlskdGatePass: Sendable {
-    fileprivate init() {}
+    /// Fix round 3 (R2.1): a stored value only this file's initialiser sets, so an initialiser added elsewhere (an
+    /// extension in another file) can't make one: it could never initialise `token`.
+    private let token: UInt8
+
+    fileprivate init() { token = 0x5D }
 }
 
 // MARK: - The gate

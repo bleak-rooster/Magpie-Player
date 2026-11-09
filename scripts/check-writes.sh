@@ -845,7 +845,7 @@ if [ -z "${G1_SRC:-}" ]; then
   done
   # Round 24 fix round 2 (R1): the gate in its own file, the only one that can make the pass the channel's writes need.
   for want in '        guard enabled else { throw SlskdGateError.disabled }' \
-              'struct SlskdGatePass: Sendable {' '    fileprivate init() {}' \
+              'struct SlskdGatePass: Sendable {' '    private let token: UInt8' '    fileprivate init() { token = 0x5D }' \
               '        if write == .connect { return try await connect() }   // Round 24 (D218): its own switch and proofs, below' \
               '        guard keepConnected else { throw SlskdGateError.refused("Keep Soulseek connected is off for this slskd") }' \
               '        guard mayAskToConnect() else { throw SlskdGateError.refused("asked less than a minute ago") }' \
@@ -913,6 +913,18 @@ if [ -z "${G1_SRC:-}" ]; then
     [ "$(slocc "\\b$word\\b" "$file")" = "$count" ] ||
       { echo "G1: $file: \`$word\` isn't named exactly $count times" >&2; bad=1; }
   done
+  # Fix round 3 (R2): the channel (internal to SlskdKit) is sent from the client and the gate only: `send` is never named
+  # in any other SlskdKit file, whatever its spelling (spaced, backticked, a function reference, spaces round the dot).
+  # And nothing in SlskdKit makes a value by reinterpreting memory (a pass made without naming it).
+  slkit="Packages/MagpieKit/Sources/SlskdKit"
+  for f in $(find "$slkit" -name '*.swift' | sort); do
+    case "$f" in "$slclient"|"$slgatef") continue ;; esac
+    [ "$(slocc '\bsend\b' "$f")" = 0 ] || { echo "G1: $f: names the slskd channel's send" >&2; bad=1; }
+  done
+  if grep -rnE --include='*.swift' 'unsafeBitCast|unsafeDowncast|Unsafe[A-Za-z]*Pointer|withUnsafe' "$slkit" |
+       grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' | grep -q .; then
+    echo "G1: $slkit: reinterprets memory (unsafe casts or pointers)" >&2; bad=1
+  fi
   for f in $(grep -rlE --include='*.swift' 'SlskdGatePass' "${product[@]}" | sort -u || true); do
     case "$f" in "$slclient"|"$slgatef") ;;
       *) [ "$(slocc 'SlskdGatePass' "$f")" = 0 ] || { echo "G1: the slskd gate's pass named outside the gate: $f" >&2; bad=1; } ;; esac
