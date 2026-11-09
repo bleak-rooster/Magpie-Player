@@ -903,6 +903,8 @@ final class AppModel {
     func forgetLidarrPermissions() {
         if let scope = lidarrScope {
             gateDefaults.removeObject(forKey: LidarrWriteGate.enabledKey(scope: scope))
+            gateDefaults.removeObject(forKey: LidarrWriteGate.monitoringChangesKey(scope: scope))   // R24H fix round 1 I3
+            Ledger.forgetMonitoring(otherThan: scope, in: dataDirectory)   // R24H fix round 3 H-L6
             setupStore.clear(scope: scope)
             findsStore.clear(lidarrScope: scope)
         }

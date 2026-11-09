@@ -113,6 +113,17 @@ public struct ReleaseTypes: Codable, Hashable, Sendable {
         name == Provisioner.findsMetadataName || all.contains { $0.profileName == name }
     }
 
+    /// Round 24 (owner, 2026-11-08, D237): the choice a Magpie profile name stands for (`profileName`), to preset "Change
+    /// what's monitored" from the artist's profile now. Nil for any other name ("Custom (set in Lidarr)"), "Magpie Finds"
+    /// included: its Albums, EPs and Singles are the Finds folder's, not a choice the owner made for this artist.
+    public init?(magpieProfileName name: String) {
+        // With every toggle off a profile is Studio, the same name as Studio on: the switches as the name reads.
+        guard let found = Self.all.first(where: { $0.profileName == name && ($0.studio || $0.soundtrack || $0.live) }) else {
+            return nil
+        }
+        self = found
+    }
+
     /// Round 15 C3 (re-review R2): these types widened so a release of `albumType` and `secondaryTypes` is listed (EP or
     /// Single added to the kinds, Studio / Live / Soundtrack switched on). Nil when it can't be expressed (another primary
     /// or secondary type): the add is refused before anything is sent.

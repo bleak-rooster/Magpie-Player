@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import MagpieCore
 import os
@@ -193,6 +194,8 @@ public actor Ledger {
     public nonisolated let instance: String?
     /// Only used when `fileURL` is nil.
     private var memory: [LedgerEntry] = []
+    /// Round 24: the monitoring book, only used when `fileURL` is nil.
+    private var monitoringMemory = MonitoringBook()
 
     /// `fileURL` nil keeps the ledger in memory only.
     public init(fileURL: URL?, instance: String? = nil) {
@@ -330,10 +333,120 @@ public actor Ledger {
                 try? LocalFile.save(kept, to: url)
             }
         }
+        forgetFinishedMonitoring(at: monitoringURL(beside: url))
+    }
+
+    /// Fix round 1 I3: the monitoring book the same way: a Lidarr with an open intent keeps its intents and kept sets
+    /// (a change may still need finishing when the owner reconnects); every other Lidarr's part is forgotten. The file
+    /// goes once nothing is left; an unreadable file is left alone.
+    static func forgetFinishedMonitoring(at url: URL) {
+        fileLock.withLock {
+            guard FileManager.default.fileExists(atPath: url.path),
+                  let all = try? LocalFile.load(MonitoringBook.self, from: url, fallback: MonitoringBook(), category: "ledger") else { return }
+            let open = Set(all.intents.filter(\.isOpen).map { $0.instance ?? "" })
+            let kept = MonitoringBook(intents: all.intents.filter { open.contains($0.instance ?? "") },
+                                      kept: all.kept.filter { open.contains($0.instance ?? "") })
+            guard kept != all else { return }
+            if kept.intents.isEmpty, kept.kept.isEmpty {
+                try? FileManager.default.removeItem(at: url)
+            } else {
+                try? LocalFile.save(kept, to: url)
+            }
+        }
+    }
+
+    /// Fix round 3 H-L6: at a disconnect, every part of the monitoring book that isn't `instance`'s (the Lidarr being
+    /// disconnected, which may come back) goes: a Lidarr no longer connected never steers a write.
+    public static func forgetMonitoring(otherThan instance: String?, in directory: URL = URL.applicationSupportDirectory) {
+        let url = monitoringURL(beside: defaultURL(in: directory))
+        fileLock.withLock {
+            guard FileManager.default.fileExists(atPath: url.path),
+                  let all = try? LocalFile.load(MonitoringBook.self, from: url, fallback: MonitoringBook(), category: "ledger") else { return }
+            let kept = MonitoringBook(intents: all.intents.filter { $0.instance == instance }, kept: all.kept.filter { $0.instance == instance })
+            guard kept != all else { return }
+            if kept.intents.isEmpty, kept.kept.isEmpty {
+                try? FileManager.default.removeItem(at: url)
+            } else {
+                try? LocalFile.save(kept, to: url)
+            }
+        }
+    }
+
+    /// `lidarr-ledger-monitoring.json` beside a ledger file.
+    static func monitoringURL(beside ledger: URL) -> URL {
+        ledger.deletingLastPathComponent().appending(path: ledger.deletingPathExtension().lastPathComponent + "-monitoring.json")
     }
 
     /// Whether Magpie created this artist on this server (same id and same MBID, `LedgerEntry.created`).
     public func createdArtist(_ artist: LidarrArtist) throws -> Bool {
         try entries.contains { $0.created(artist) }
+    }
+
+    // MARK: - Round 24 (owner, 2026-11-08): the monitoring book (D241, D243)
+
+    /// Beside the ledger file: `lidarr-ledger-monitoring.json`. Its own file, so the album entries (and every rule that
+    /// reads them) never see an owner's artist as one of Magpie's requests. Fix round 1 I6: internal, so nothing outside
+    /// LidarrKit can write the book but through `saveIntent`, `updateMonitoring` and `setKept`.
+    nonisolated var monitoringURL: URL? { fileURL.map(Self.monitoringURL(beside:)) }
+
+    /// Which book this ledger writes, as an opaque token (fix round 2 S1: a hash, never the file's path or URL): one change
+    /// per artist and book. Kept in memory: the ledger itself.
+    public nonisolated var monitoringBookKey: String {
+        guard let path = monitoringURL?.path else { return "memory-\(ObjectIdentifier(self).hashValue)" }
+        return "book-" + SHA256.hash(data: Data(path.utf8)).prefix(12).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private func allMonitoring() throws -> MonitoringBook {
+        guard let url = monitoringURL else { return monitoringMemory }
+        return try Self.fileLock.withLock {
+            try LocalFile.load(MonitoringBook.self, from: url, fallback: MonitoringBook(), category: "ledger")
+        }
+    }
+
+    /// This server's intents and kept sets. Throws when the file can't be read: callers refuse (nothing is sent).
+    public var monitoringBook: MonitoringBook {
+        get throws {
+            let all = try allMonitoring()
+            return MonitoringBook(intents: all.intents.filter { $0.instance == instance },
+                                  kept: all.kept.filter { $0.instance == instance })
+        }
+    }
+
+    /// Changes this server's part of the book in one read-modify-write and one save (M6: the save happens before the
+    /// write it records; a save that fails throws and nothing is sent).
+    public func updateMonitoring(_ change: (inout MonitoringBook) -> Void) throws {
+        let scope = instance
+        func merged(_ all: MonitoringBook, _ change: (inout MonitoringBook) -> Void) -> MonitoringBook {
+            var mine = MonitoringBook(intents: all.intents.filter { $0.instance == scope },
+                                      kept: all.kept.filter { $0.instance == scope })
+            change(&mine)
+            for i in mine.intents.indices { mine.intents[i].instance = scope }
+            for i in mine.kept.indices { mine.kept[i].instance = scope }
+            return MonitoringBook(intents: all.intents.filter { $0.instance != scope } + mine.intents,
+                                  kept: all.kept.filter { $0.instance != scope } + mine.kept)
+        }
+        guard let url = monitoringURL else { monitoringMemory = merged(monitoringMemory, change); return }
+        try withoutActuallyEscaping(change) { change in
+            try Self.fileLock.withLockUnchecked {
+                let all = try LocalFile.load(MonitoringBook.self, from: url, fallback: MonitoringBook(), category: "ledger")
+                try LocalFile.save(merged(all, change), to: url)
+            }
+        }
+    }
+
+    /// Saves `intent` (replacing the one with its id), stamped with this server.
+    public func saveIntent(_ intent: MonitoringIntent) throws {
+        try updateMonitoring { book in
+            book.intents.removeAll { $0.id == intent.id }
+            book.intents.append(intent)
+        }
+    }
+
+    /// The artist's kept set replaced (nil: forgotten).
+    public func setKept(artistId: Int, _ kept: UnmonitoredKept?) throws {
+        try updateMonitoring { book in
+            book.kept.removeAll { $0.artistId == artistId }
+            if let kept { book.kept.append(kept) }
+        }
     }
 }

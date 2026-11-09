@@ -183,4 +183,15 @@ import MagpieTestSupport
         let fake = try await Self.fake()
         await WriteConfinementTests.expectRefused(call, await fake.gate(), fake)
     }
+
+    /// Round 24 (D237): a Magpie profile name reads back as the switches it was made from; any other name is Custom.
+    @Test func aMagpieProfileNameReadsBack() {
+        for types in ReleaseTypes.all where types.studio || types.soundtrack || types.live {
+            #expect(ReleaseTypes(magpieProfileName: types.profileName) == types, "\(types.profileName)")
+        }
+        #expect(ReleaseTypes(magpieProfileName: "Magpie Albums+EPs \u{00B7} Studio") == ReleaseTypes(albums: true, eps: true, singles: false))
+        #expect(ReleaseTypes(magpieProfileName: "Owner Profile") == nil)
+        #expect(ReleaseTypes(magpieProfileName: Provisioner.findsMetadataName) == nil)
+        #expect(ReleaseTypes(magpieProfileName: "magpie albums \u{00B7} studio") == nil)
+    }
 }

@@ -41,6 +41,7 @@ extension AppModel {
     /// in the background and go on when Magpie is back. Playback carries on as normal.
     func scenePhaseChanged(_ phase: ScenePhase) {
         downloads?.setPresence(active: phase == .active, background: phase == .background)
+        monitoringSceneChanged(active: phase == .active)   // R24H fix round 4 (D-L2)
     }
 
     /// A manager built while Magpie isn't open (a launch for the car, or for the background session's events) knows it;
