@@ -6,12 +6,16 @@ import SwiftUI
 /// All artists, A–Z in Navidrome's order (its default articles dropped: "The Midnight Cartographers" under M), with
 /// the A–Z bar (P2; round 11 R2: the custom bar, so the letter bubble shows here too). Round 11 R11: album artists
 /// only, or every artist, from the toolbar's filter menu (the same preference as Settings › Library).
+/// Round 24 (owner, 2026-11-08): a "Search artists" field at the top (D224), and a header per letter past 25 artists
+/// (D225).
 struct ArtistsListView: View {
     @Environment(AppModel.self) private var model
     @State private var artists: Loadable<[Artist]> = .loading
     @State private var sections: [LetterIndex.Section] = []
     /// The "Album artists only" value the list was read for: coming back to the list doesn't read it again (M1).
     @State private var loadedFor: Bool?
+    /// Round 24 (D224): the list's own search, artists only.
+    @State private var search: SearchModel?
     private let themed = Themed()
 
     var body: some View {
@@ -19,17 +23,21 @@ struct ArtistsListView: View {
         ScrollViewReader { proxy in
             List {
                 LoadableView(state: artists, retry: load) { artists in
-                    ForEach(artists, id: \.id) { artist in row(artist) }
+                    LetterSectionedRows(items: artists, sections: sections, id: \.id) { artist in row(artist) }
                 }
                 .listRowSeparatorTint(themed.palette.sepColor)
             }
             .listStyle(.plain)
             .letterIndex(available: Set(sections.map(\.key)), hidden: sections.isEmpty) { letter in
                 guard let target = LetterIndex.target(letter, in: sections), let list = artists.value else { return }
-                proxy.scrollTo(list[target.range.lowerBound].id, anchor: .top)
+                proxy.scrollToLetter(index: target.range.lowerBound, sections: sections, itemCount: list.count) { list[$0].id }
             }
         }
+        // Fix round 1 (M4): no field over an empty or failed list.
+        .kindSearch(.artists, search, available: artists.value?.isEmpty == false)
+        .task { if search == nil { search = model.kindSearchModel(.artists) } }
         .navigationTitle("Artists")
+        .navigationBarTitleDisplayMode(.inline)   // the field sits where a large title would
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
@@ -97,12 +105,15 @@ struct ArtistsListView: View {
 }
 
 /// All albums, A–Z, a page at a time, with the letter index (P2: `PagedLetterList` jumps over the server's order,
-/// which drops Navidrome's default articles).
+/// which drops Navidrome's default articles). Round 24 (owner, 2026-11-08): a "Search albums" field at the top (D224),
+/// and a header per loaded letter run past 25 albums (D225).
 struct AlbumsListView: View {
     @Environment(AppModel.self) private var model
     @State private var list: PagedLetterList<Album>?
     /// The running letter jump (its seek reads the server), cancelled when the screen goes.
     @State private var jumpTask: Task<Void, Never>?
+    /// Round 24 (D224): the list's own search, albums only.
+    @State private var search: SearchModel?
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -117,7 +128,9 @@ struct AlbumsListView: View {
                             .padding(.top, Tokens.Spacing.s)
                             .accessibilityIdentifier("albums-earlier")
                         }
-                        AlbumGrid(albums: albums, subtitle: { $0.artist }, onAppearLast: { Task { await list.loadMore() } })
+                        AlbumLetterGrid(albums: albums, sections: list.sections,
+                                        onAppearLast: { Task { await list.loadMore() } },
+                                        scrollRequest: list.scrollRequest, proxy: proxy)
                             .padding(.vertical, Tokens.Spacing.l)
                         if let moreError = list.moreError {
                             VStack(spacing: Tokens.Spacing.s) {
@@ -138,14 +151,15 @@ struct AlbumsListView: View {
                 pick(letter)
             }
             .overlay { if list?.seeking == true { ProgressView().accessibilityLabel("Finding albums") } }
-            .onChange(of: list?.scrollRequest) { _, request in
-                if let request { proxy.scrollTo(request.id, anchor: .top) }
-            }
+            // The grid takes the list's scroll requests: it knows its headers and columns (fix round 1, I2).
         }
+        .kindSearch(.albums, search, available: list?.items.value?.isEmpty == false)   // fix round 1 (M4)
         .navigationTitle("Albums")
+        .navigationBarTitleDisplayMode(.inline)   // the field sits where a large title would
         .magpieScreen()
         .onDisappear { jumpTask?.cancel() }
         .task {
+            if search == nil { search = model.kindSearchModel(.albums) }
             if list == nil {
                 let model = model
                 list = PagedLetterList(pageSize: AppModel.albumsPageSize, articles: LetterIndex.navidromeArticles,
@@ -164,9 +178,72 @@ struct AlbumsListView: View {
     }
 }
 
+/// Albums as tiles in columns, A–Z: one grid, and (D225: more than 25 and the A–Z bar on screen) a pinned header per
+/// letter run in it (fix round 1, I1: one `LazyVGrid` with sections, one width, so a jump reaches any loaded run). Tiles
+/// keep their place in the whole list ("album-N"). It takes the list's scroll requests itself, since it knows whether
+/// headers show and how many tiles a row holds: a jump lands on the letter's header, never under it (I2).
+struct AlbumLetterGrid: View {
+    let albums: [Album]
+    let sections: [LetterIndex.Section]
+    var onAppearLast: (() -> Void)?
+    var scrollRequest: PagedLetterList<Album>.ScrollRequest?
+    var proxy: ScrollViewProxy?
+    @Environment(\.letterIndexShown) private var barShown
+    @Environment(\.dynamicTypeSize) private var typeSize
+    @State private var width: CGFloat = 350
+
+    private var columns: Int { AlbumGrid.columnCount(width: width, accessibility: typeSize.isAccessibilitySize) }
+    private var tileWidth: CGFloat { max(100, (width - CGFloat(columns - 1) * Tokens.Spacing.l) / CGFloat(columns)) }
+
+    var body: some View {
+        let runs = LetterSectionHeader.runs(sections, itemCount: albums.count, barShown: barShown)
+        LazyVGrid(columns: Array(repeating: GridItem(.fixed(tileWidth), spacing: Tokens.Spacing.l, alignment: .top),
+                                 count: columns),
+                  alignment: .leading, spacing: Tokens.Spacing.xl, pinnedViews: [.sectionHeaders]) {
+            if runs.isEmpty {
+                tiles(albums.indices)
+            } else {
+                ForEach(runs, id: \.range.lowerBound) { run in
+                    Section {
+                        tiles(run.range)
+                    } header: {
+                        // The grid sits on the page's margins; its header bar runs edge to edge.
+                        LetterSectionHeader(run: run, pinned: true)
+                            .padding(.horizontal, -Tokens.Spacing.largeTitleMargin)
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
+        .padding(.horizontal, Tokens.Spacing.largeTitleMargin)
+        .onChange(of: scrollRequest) { _, request in
+            guard let request, let proxy else { return }
+            guard let index = albums.firstIndex(where: { $0.id == request.id }) else {
+                return proxy.scrollTo(request.id, anchor: .top)
+            }
+            proxy.scrollToLetter(index: index, sections: sections, itemCount: albums.count, barShown: barShown,
+                                 rowLength: columns) { albums[$0].id }
+        }
+    }
+
+    private func tiles(_ indices: Range<Int>) -> some View {
+        ForEach(Array(zip(indices, albums[indices])), id: \.1.id) { index, album in
+            NavigationLink(value: Route.album(id: album.id)) {
+                AlbumTileView(album: album, subtitle: album.artist, width: tileWidth)
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("album-\(index)")
+            .onAppear { if index == albums.count - 1 { onAppearLast?() } }
+        }
+    }
+}
+
 /// All playlists, A–Z, with the A–Z bar (P2; round 11 R2: the custom bar, so the letter bubble shows here too).
 /// Round 11 R8: "+" makes a new playlist (a name, then `createPlaylist`); the list reads again after any change.
 /// Round 22 R22P (owner, 2026-11-06): All or Yours above the list, remembered per account (D179, D180).
+/// Round 24 (owner, 2026-11-08): in All, who made each playlist under its name and what All covers at the end (D223); a
+/// header per letter past 25 playlists (D225).
 struct PlaylistsListView: View {
     @Environment(AppModel.self) private var model
     /// Every playlist but Discover's, A–Z; `show` picks what is listed from it.
@@ -184,14 +261,31 @@ struct PlaylistsListView: View {
         ScrollViewReader { proxy in
             List {
                 LoadableView(state: playlists, retry: load) { playlists in
-                    ForEach(listed(playlists), id: \.id) { playlist in row(playlist) }
+                    let shown = listed(playlists)
+                    LetterSectionedRows(items: shown, sections: sections, id: \.id) { playlist in row(playlist) }
+                    // Round 24 (D223): what All is: everything this account may see (Navidrome's own rule).
+                    if let footer = show.footer, !shown.isEmpty {
+                        Section {
+                            Text(footer)
+                                .font(.footnote)
+                                .foregroundStyle(themed.palette.ink2Color)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .listRowBackground(Color.clear)
+                                .listRowSeparator(.hidden)
+                                .accessibilityIdentifier("playlist-show-footer")
+                        }
+                    }
                 }
                 .listRowSeparatorTint(themed.palette.sepColor)
             }
             .listStyle(.plain)
             .letterIndex(available: Set(sections.map(\.key)), hidden: sections.isEmpty) { letter in
                 guard let target = LetterIndex.target(letter, in: sections), let all = playlists.value else { return }
-                proxy.scrollTo(listed(all)[target.range.lowerBound].id, anchor: .top)
+                let shown = listed(all)
+                guard shown.indices.contains(target.range.lowerBound) else { return }
+                proxy.scrollToLetter(index: target.range.lowerBound, sections: sections, itemCount: shown.count) {
+                    shown[$0].id
+                }
             }
         }
         // Over the list, not a row in it, so no separators frame it (H3 M8). An empty Yours says so (D179).
@@ -272,6 +366,8 @@ struct PlaylistsListView: View {
                 Artwork(playlist.coverArtId, side: 56) { SleeveArt(image: $0, side: 56) }
                 VStack(alignment: .leading, spacing: 1) {
                     Text(playlist.name).font(.body)
+                    // Round 24 (D223): who made it, in All only; nothing for your own or an unknown owner.
+                    if show == .all { OwnerCaption(owner: playlist.owner, signedInUser: model.session?.username) }
                     HStack(spacing: 4) {
                         Text(playlist.songCount == 1 ? "1 song" : "\(playlist.songCount) songs")
                             .font(.footnote).foregroundStyle(themed.palette.ink2Color)
