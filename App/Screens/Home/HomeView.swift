@@ -76,6 +76,7 @@ struct HomeView: View {
                     .padding(.horizontal, Tokens.Spacing.margin)
             }
             SlskdOutageBanner().padding(.horizontal, Tokens.Spacing.margin)   // R24 (D219): slskd stayed disconnected
+            HeldSongsBanner().padding(.horizontal, Tokens.Spacing.margin)   // R24C (D213): a song held for review
             LoadableView(state: model.homeFeed.state, retry: { await model.homeFeed.refresh(key) }) { read in
                 let shown = model.homeSections
                 let chips = HomeFilter.offered(for: shown.filter { shows($0, read) })
