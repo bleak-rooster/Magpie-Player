@@ -1,8 +1,16 @@
 # Magpie
 
-Magpie is an iPhone and CarPlay app for listening to your own music library on a [Navidrome](https://www.navidrome.org)
-server. If you also run [Lidarr](https://lidarr.audio), it can ask Lidarr for songs and albums you don't have yet and
-put them in a separate "Finds" folder, so you can try them before they join your library.
+**Your own music server, with the feel of a streaming service.**
+
+Magpie is an iPhone and CarPlay app that tries to give you what a streaming app does (a Home screen that knows what
+you like, fresh playlists every week, charts, search that finds any song, and a way to get the songs you don't have
+yet) while every file stays on your own server. It plays your library from [Navidrome](https://www.navidrome.org),
+finds new music through [Aurral](https://github.com/lklynet/aurral) and [ListenBrainz](https://listenbrainz.org), and
+brings songs in with [Lidarr](https://lidarr.audio), [Tubifarry](https://github.com/TypNull/Tubifarry) and
+[slskd](https://github.com/slskd/slskd).
+
+Search for a song you don't have, tap **Try**, and a few minutes later it's playing. It lands in a separate *Finds*
+folder, so you can **Keep** it or let it go, much like adding a song to a streaming library.
 
 It is a personal project in early development: version 0.0.1, used day to day by its author against one home setup,
 distributed only through TestFlight. It is not on the App Store. Expect rough edges.
@@ -15,7 +23,43 @@ distributed only through TestFlight. It is not on the App Store. Expect rough ed
 </p>
 <p align="center"><sub>Screens rendered by the test suite from a made-up library, with generated covers. No real server or album art.</sub></p>
 
+## The streaming experience, self-hosted
+
+| What you'd expect from a streaming app | How Magpie does it |
+|---|---|
+| Playlists made for you, refreshed every week | Aurral's **flows**, plus ListenBrainz's weekly playlists |
+| Charts, trending and "recommended for you" | Aurral's Discover: recommendations, trending by genre, editorial playlists and charts |
+| Hear a song before you add it | 30-second previews, played through your Aurral server |
+| Search that finds anything, not just what you own | Your library first, then a "Not in your library" band with a **Try** button |
+| Add a song and it's just there | Lidarr fetches it (through Tubifarry and slskd), Navidrome picks it up, and Magpie tells you when it's ready |
+| An artist page with their top songs | From Aurral, ListenBrainz or your library, with previews for the ones you don't have |
+| Offline listening, in the car too | Downloads, a size-limited cache, and a full CarPlay app |
+
+Every part beyond Navidrome is optional. Each feature works, is hidden, or explains why not, depending on which
+services you connect. Navidrome alone is enough to use Magpie as a player.
+
 ## What it does
+
+**Discovery, through Aurral**
+
+Aurral is the heart of Magpie's discovery. It's a self-hosted discovery service that sits beside Lidarr and Navidrome
+and keeps playlists up to date for each person on your server. Magpie turns it into a streaming-style Discover tab:
+- **Recommended, Trending and editorial playlists**, with pictures and 30-second previews. All of it comes through
+  your own Aurral server: the phone never contacts Deezer or Apple itself.
+- **Flows**: playlists Aurral builds and keeps fresh on a schedule. Make your own from a mix you choose (discovery,
+  your library, trending, a focus, new releases), with how many songs each update brings, years, tags and related
+  artists. You can edit them, refresh them, or delete them.
+- **Chart flows**: turn a chart's top 10, 20, 25, 50 or 100 songs into a playlist of your own that follows the chart.
+- **Add** an editorial playlist as a flow, and say **Not for me** to a recommendation to teach Aurral your taste.
+- New flows start fetching their songs by themselves. **Songs still coming** shows what Aurral is still fetching,
+  with **Approve**, **Try another source** and **Search now** for your own songs, and **Search again** finds the ones
+  that went missing.
+- **Yours, or everyone's.** Each person signs in to Aurral as themselves, so Discover shows your own flows and
+  playlists. With **Show everyone's flows and playlists** on, you see the rest of the household's too. They're matched
+  to the person who made them, not by name, so two people's "Chill" stay apart (by Aurral's own record of each one's
+  songs when two share a name). Another person's name is shown only when Aurral tells Magpie whose it is, which it does
+  for Aurral admins.
+- Discover is in the car too.
 
 **Your library, through Navidrome**
 - Browse playlists, artists, albums, songs and genres; search as you type; star favourites. Artists, Albums and
@@ -32,16 +76,12 @@ distributed only through TestFlight. It is not on the App Store. Expect rough ed
   responding.
 - Three looks (Classic, Signature, Immersive), light and dark, and a Home screen and CarPlay layout you can rearrange.
 
-**CarPlay**
-- Home, Library, Finds and Search tabs, Now Playing with shuffle and repeat. It starts from the car even if the phone
-  is locked, once the phone has been unlocked after a restart.
-- Every list reaches its end, however small the car's screen: long lists open on letter groups or go on with "More…"
-  pages, within the limits the car sets.
-
-**Finds, through Lidarr (optional)**
+**Getting new music: Try, Finds and Keep (Lidarr, optional)**
 - Tap **Try** on a song or album you don't have (from search, an artist's page, a playlist or recommendations). Magpie
   works out which release holds it using MusicBrainz, then asks Lidarr to monitor and search for that release.
   Lidarr's own indexers and download clients do the downloading; Magpie never downloads music itself.
+- With Tubifarry and slskd behind Lidarr, a Try usually takes a few minutes, with a live progress screen. Without
+  Tubifarry, the button says **Ask for it**: the song shows up in Requests when Lidarr gets it.
 - New artists go into a separate Finds folder. **Keep** moves a find into your main library and lets Lidarr upgrade it
   to lossless. **Not for me** deletes it again.
 - After a Keep you can bring in more of the artist; if the find was a single, you choose to keep it or remove it once
@@ -53,30 +93,97 @@ distributed only through TestFlight. It is not on the App Store. Expect rough ed
 - While a request is searching, it shows which release it is looking for. Stopping a request waits for a search still
   running in Lidarr to finish, cancels any download it started, and removes the album from your Finds folder if it
   arrived anyway. Nothing in your main library is deleted.
-- Nothing is changed in Lidarr until you switch on **Allow Magpie to change Lidarr**. Every change goes through one
-  write gate that only allows a short list of requests. It only touches artists and albums Magpie itself added or
-  monitored, and logs each change on the phone before sending it. Your own artists, profiles and settings are left
-  alone, with one opt-in exception below.
+- **Safe by default.** Nothing is changed in Lidarr until you switch on **Allow Magpie to change Lidarr**. Every change
+  goes through one write gate that only allows a short list of requests. It only touches artists and albums Magpie
+  itself added or monitored, and logs each change on the phone before sending it. Your own artists, profiles and
+  settings are left alone, with one opt-in exception below.
 - **Change what's monitored (opt-in).** With **Let Magpie change what Lidarr monitors for my artists** switched on, an
   artist's menu lets you choose Albums, EPs and Singles. When fewer are monitored, Magpie asks whether to delete the
   songs that fall out or keep them (Keep is the default); kept songs can be removed later with **Clean up unmatched
   songs**, and **Put back how it was** restores the artist's previous profile. Favourites, songs in playlists and songs
   downloaded to the phone are never deleted, and every change is saved on the phone and checked against Lidarr before
   it is sent.
-- **Soulseek (slskd), optional.** Its own settings page. **Keep Soulseek connected** checks that slskd is connected,
-  asks it to reconnect when it isn't, and lets you know if it still can't after about ten minutes.
 
-**Discovery (optional)**
-- With [Aurral](https://github.com/lklynet/aurral): charts, recommendations, previews and Aurral's "flows" (playlists
-  it builds and keeps up to date). Flows and playlists are matched to the person who made them, not by name (by
-  Aurral's own record of each one's songs when two share a name), so two people's "Chill" stay apart. Another
-  person's name is shown only when Aurral tells Magpie whose it is, which it does for Aurral admins. You can delete your own flows and playlists, and **Songs still coming** shows what
-  Aurral is still fetching, with Approve, Try another source and Search now for your own songs.
-- With a [ListenBrainz](https://listenbrainz.org) token: your weekly playlists and recommendations. Plays are
-  scrobbled through Navidrome; songs in Finds are never scrobbled.
+**Soulseek (slskd, optional)**
+- Its own settings page. **Keep Soulseek connected** checks that slskd is connected, asks it to reconnect when it
+  isn't, and lets you know if it still can't after about ten minutes.
+- Removing an artist Magpie added also clears slskd's finished downloads of it (see the limits below).
 
-Every feature works, is hidden, or explains why not, depending on which of these you connect. Navidrome alone is
-enough to use Magpie as a player.
+**ListenBrainz (optional)**
+- With a ListenBrainz token: your weekly playlists and recommendations. Plays are scrobbled through Navidrome; songs in
+  Finds are never scrobbled.
+
+**CarPlay**
+- Home, Library, Finds and Search tabs, Now Playing with shuffle and repeat. It starts from the car even if the phone
+  is locked, once the phone has been unlocked after a restart.
+- Every list reaches its end, however small the car's screen: long lists open on letter groups or go on with "More…"
+  pages, within the limits the car sets.
+
+## Setting up your server
+
+Magpie is only the app. The full experience needs these services running on your own server (a home server, a NAS or
+a small Linux box; Docker is the usual way to run them). Start with Navidrome and add the rest as you want them.
+
+```mermaid
+flowchart LR
+    phone["Magpie<br/>(iPhone and CarPlay)"]
+    nav["Navidrome<br/>plays your library"]
+    aur["Aurral<br/>discovery and flows"]
+    lid["Lidarr + Tubifarry<br/>gets new music"]
+    slsk["slskd<br/>Soulseek client"]
+    lb["ListenBrainz<br/>(online)"]
+    music[("Your music folder")]
+
+    phone --> nav
+    phone --> aur
+    phone --> lid
+    phone -.-> slsk
+    phone -.-> lb
+    aur --> lid
+    aur --> nav
+    aur --> slsk
+    lid --> slsk
+    lid --> music
+    nav --> music
+```
+
+| Service | What it does for Magpie | Needed for |
+|---|---|---|
+| [Navidrome](https://www.navidrome.org) 0.63.2 or newer | Your library: browsing, streaming, playlists, favourites, lyrics | Everything (required) |
+| [Lidarr](https://lidarr.audio) 3.x | Monitors and downloads the songs and albums you Try | Try, Finds and Keep |
+| [Tubifarry](https://github.com/TypNull/Tubifarry) (a Lidarr plugin) | Lets Lidarr search and download from Soulseek through slskd | Fast Try ("a few minutes") |
+| [slskd](https://github.com/slskd/slskd) | The Soulseek client that Tubifarry (and Aurral) download through | Tubifarry; Keep Soulseek connected; clean-up |
+| [Aurral](https://github.com/lklynet/aurral) 2.13 or newer | Recommendations, trending, charts, previews and flows | Discover |
+| [ListenBrainz](https://listenbrainz.org) account | Weekly playlists, recommendations, scrobbling | Optional extras |
+
+**1. Navidrome (required).** Point it at your music folder. Sign in to Magpie with an admin account if you can: a
+normal account is fine for listening, but only an admin can ask Navidrome to scan, which Magpie does when new music
+arrives.
+
+**2. Lidarr.** Give Lidarr the **same music folder** as Navidrome as its root folder (Magpie checks that Navidrome
+lists a song before calling it ready). Set a recycle bin (Settings › Media Management): **Not for me** deletes files,
+and without one they're gone for good. For Finds, add a second root folder (for example `/music/finds`) that is not
+inside your main one, and add the same folder to Navidrome as a library.
+
+**3. slskd and Tubifarry.** Run slskd with your Soulseek account. Install Tubifarry in Lidarr, following Tubifarry's
+own instructions, and connect it to slskd so Lidarr can search and download from Soulseek. Magpie notices Tubifarry
+by itself. If you want Magpie to tidy slskd's downloads when it removes an artist, turn on slskd's remote file
+management.
+
+**4. Aurral.** Connect Aurral to your Lidarr and Navidrome and give it at least one download source (Soulseek through
+slskd works well). Create an Aurral user for each person who will use Magpie: Magpie signs in to Aurral as that
+person, so everyone gets their own flows.
+
+**5. In Magpie.**
+1. Sign in to Navidrome with its address, username and password.
+2. Settings › Lidarr: enter Lidarr's address and API key (Lidarr › Settings › General). Magpie shows what it found and
+   changes nothing yet. When you're ready, switch on **Allow Magpie to change Lidarr** and tap **Set up Magpie in
+   Lidarr** (it adds its own profiles and tags, and edits nothing you have). Then choose your Finds folder.
+3. Settings › Aurral: its address, and your Aurral username and password.
+4. Optional: Settings › Soulseek (slskd) (slskd's address and API key) and Settings › ListenBrainz (your token).
+
+Passwords and keys are kept in the iPhone's Keychain and never logged. Use HTTPS for any address that leaves your
+home; [`docs/RUNBOOK.md`](docs/RUNBOOK.md) has the full checklist and what Magpie sends to Lidarr, exactly.
 
 ## What it doesn't do, and known limits
 
@@ -89,9 +196,9 @@ enough to use Magpie as a player.
 - **Navidrome is required.** Magpie uses Navidrome's own API alongside the Subsonic one, so other Subsonic servers
   won't work. There's no Plex, Jellyfin or streaming-service support, and none is planned.
 - **Getting music depends on your Lidarr setup.** Whether a Try succeeds depends on your indexers and download
-  clients. It has been tested with Soulseek through [Tubifarry](https://github.com/TypNull/Tubifarry). The song also
-  needs to be in MusicBrainz and in Lidarr's metadata. A very new single sometimes isn't there yet; Magpie tries the
-  song's other releases, and otherwise tells you it couldn't find it.
+  clients. It has been tested with Soulseek through Tubifarry. The song also needs to be in MusicBrainz and in Lidarr's
+  metadata. A very new single sometimes isn't there yet; Magpie tries the song's other releases, and otherwise tells
+  you it couldn't find it.
 - **Finds don't expire on their own.** "Days left" is a reminder only. Keeping a find whose release was trimmed brings
   the whole release back in lossless.
 - **Plain `http://` is allowed** so home servers work without certificates. Magpie asks before sending your password
@@ -108,7 +215,7 @@ enough to use Magpie as a player.
   slskd's remote file management turned on, and leaves alone any folder it can't tie to the artist for certain.
 - **One developer, one test setup.** Most testing is automated against fakes. The full request path (search, grab,
   download, import, stop) is also tested against a real Lidarr in Docker, with a stand-in indexer and download client
-  that serve generated audio. Real Soulseek behaviour is only seen on the author's own server.
+  that serve generated audio. Real Soulseek and Aurral behaviour is only seen on the author's own server.
 
 ## Roadmap
 
@@ -176,5 +283,5 @@ Please report security or privacy problems privately, through GitHub's
 [MIT](LICENSE). You can use, change and redistribute Magpie, including in your own apps, as long as the copyright
 notice stays with it.
 
-Magpie is not affiliated with Navidrome, Lidarr, Tubifarry, Aurral, ListenBrainz or MusicBrainz. It relies on their
-work, and on the people who keep MusicBrainz's data accurate.
+Magpie is not affiliated with Navidrome, Lidarr, Tubifarry, slskd, Aurral, ListenBrainz or MusicBrainz. It relies on
+their work, and on the people who keep MusicBrainz's data accurate.
