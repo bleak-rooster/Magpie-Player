@@ -210,6 +210,99 @@ private let sams = item("f-s", "Chill", owner: 2, "sam")
         let took = ContinuousClock.now - start
         #expect(took < .seconds(1), "\(took)")
     }
+
+    // MARK: - Round 25 J (D251–D253)
+
+    /// The owner's case: the general jobs list holds neither item's songs (unreadable, or Library references), so a
+    /// shared name claims nothing (step 4 needs a name no other item carries); each item's own songs (`jobs/:id`)
+    /// prove both, and the proof is saved.
+    @Test func sameName_itemJobsProveBoth() {
+        let playlists = [playlist("p1", "Chill"), playlist("p2", "Chill")]
+        let entries = ["p1": [song("s1", "Halo"), song("s2", "Words")], "p2": [song("s3", "Lullaby"), song("s4", "Old")]]
+        let none = DiscoverIdentity.resolve(aurralItems: [jordans, sams], playlists: playlists, jobs: [], saved: [:],
+                                            entries: entries)
+        #expect(none.claims.isEmpty, "\(none.claims)")
+        let itemJobs = ["f-j": [job("library", "Lullaby"), job("library", "Old")], "f-s": [job("f-s", "Halo"), job("f-s", "Words")]]
+        let proven = DiscoverIdentity.resolve(aurralItems: [jordans, sams], playlists: playlists, jobs: [], saved: [:],
+                                              entries: entries, itemJobs: itemJobs)
+        #expect(proven.claims == ["f-j": "p2", "f-s": "p1"])
+        #expect(proven.proven == proven.claims)
+    }
+
+    /// Only the items a shared name leaves unproven need their own songs read: not one whose name no other item or
+    /// playlist shares (step 4 settles it), and none once the general list proved them.
+    @Test func unproven_onlySharedNamesNotYetProven() {
+        let mix = item("f-m", "Mix", owner: 1, "jordan")
+        let playlists = [playlist("p1", "Chill"), playlist("p2", "Chill"), playlist("p3", "Mix")]
+        let entries = ["p1": [song("s1", "Halo")], "p2": [song("s3", "Lullaby")], "p3": [song("s5", "Words")]]
+        #expect(DiscoverIdentity.unproven(aurralItems: [jordans, mix, sams], playlists: playlists, jobs: [], saved: [:],
+                                          entries: entries) == ["f-j", "f-s"])
+        let jobs = [job("f-j", "Lullaby"), job("f-s", "Halo")]
+        #expect(DiscoverIdentity.unproven(aurralItems: [jordans, mix, sams], playlists: playlists, jobs: jobs, saved: [:],
+                                          entries: entries).isEmpty)
+        // A saved claim the songs don't contradict is proof already.
+        #expect(DiscoverIdentity.unproven(aurralItems: [jordans, sams], playlists: playlists, jobs: [],
+                                          saved: ["f-j": "p2", "f-s": "p1"], entries: entries).isEmpty)
+    }
+
+    /// Not an admin: Aurral lists only the user's item, but the server holds Sam's same-named playlist too. The user's
+    /// item needs its songs; with them it claims its own playlist and Sam's stays unclaimed (no owner known).
+    @Test func notAdmin_sameNamePlaylistOfAnUnlistedUser() {
+        let playlists = [playlist("p1", "Chill"), playlist("p2", "Chill")]
+        let entries = ["p1": [song("s1", "Halo")], "p2": [song("s3", "Lullaby")]]
+        #expect(DiscoverIdentity.unproven(aurralItems: [jordans], playlists: playlists, jobs: [], saved: [:],
+                                          entries: entries) == ["f-j"])
+        let claims = DiscoverIdentity.assign(aurralItems: [jordans], playlists: playlists, jobs: [], saved: [:],
+                                             entries: entries, itemJobs: ["f-j": [job("f-j", "Lullaby")]])
+        #expect(claims == ["f-j": "p2"])
+    }
+
+    /// Never a wrong owner: an item's own songs that fit both playlists (a tie) claim neither, and its own songs that
+    /// fit neither playlist keep even a name no other item carries from being claimed.
+    @Test func itemJobs_tieOrContradiction_claimsNothing() {
+        let playlists = [playlist("p1", "Chill"), playlist("p2", "Chill")]
+        let same = [song("s1", "Halo")]
+        let tie = DiscoverIdentity.assign(aurralItems: [jordans, sams], playlists: playlists, jobs: [], saved: [:],
+                                          entries: ["p1": same, "p2": same],
+                                          itemJobs: ["f-j": [job("f-j", "Halo")], "f-s": [job("f-s", "Halo")]])
+        #expect(tie.isEmpty, "\(tie)")
+        let mix = item("f-m", "Mix", owner: 1, "jordan")
+        let wrong = DiscoverIdentity.assign(aurralItems: [mix], playlists: [playlist("p3", "Mix")], jobs: [], saved: [:],
+                                            entries: ["p3": [song("s5", "Words")]], itemJobs: ["f-m": [job("f-m", "Halo")]])
+        #expect(wrong.isEmpty, "\(wrong)")
+    }
+
+    // MARK: - Round 25 J fix round 1 (I1)
+
+    /// A general list holding only some of an item's songs (2.13 files the rest under "library") fails D62 against
+    /// its playlist: that item's own songs are needed even when its name is its alone.
+    @Test func unproven_partialGeneralList_uniqueName() {
+        let mix = item("f-m", "Mix", owner: 1, "jordan")
+        let entries = ["p3": [song("s1", "Halo"), song("s2", "Words"), song("s3", "Lullaby")]]
+        #expect(DiscoverIdentity.unproven(aurralItems: [mix], playlists: [playlist("p3", "Mix")], jobs: [job("f-m", "Halo")],
+                                          saved: [:], entries: entries) == ["f-m"])
+        // Read, its own songs prove it.
+        let own = [job("f-m", "Halo"), job("library", "Words"), job("library", "Lullaby")]
+        let read = DiscoverIdentity.resolve(aurralItems: [mix], playlists: [playlist("p3", "Mix")], jobs: [job("f-m", "Halo")],
+                                            saved: [:], entries: entries, itemJobs: ["f-m": own])
+        #expect(read.claims == ["f-m": "p3"] && read.proven == read.claims)
+    }
+
+    /// Its own songs couldn't be read: the partial general list never drops a saved claim, which is kept and saved
+    /// again. Read, only its own songs can contradict it.
+    @Test func savedClaim_partialGeneralList_unreadOwn_kept() {
+        let playlists = [playlist("p1", "Chill"), playlist("p2", "Chill")]
+        let entries = ["p1": [song("s1", "Halo"), song("s2", "Words"), song("s3", "Lullaby")], "p2": [song("s4", "Old")]]
+        let jobs = [job("f-j", "Halo"), job("f-s", "Old")]
+        let saved = ["f-j": "p1", "f-s": "p2"]
+        let kept = DiscoverIdentity.resolve(aurralItems: [jordans, sams], playlists: playlists, jobs: jobs, saved: saved,
+                                            entries: entries, unread: ["f-j"])
+        #expect(kept.claims == saved && kept.proven == saved)
+        let dropped = DiscoverIdentity.resolve(aurralItems: [jordans, sams], playlists: playlists, jobs: jobs, saved: saved,
+                                               entries: entries, itemJobs: ["f-j": [job("f-j", "Unrelated")]])
+        #expect(dropped.claims["f-j"] == nil && dropped.proven["f-j"] == nil)
+        #expect(dropped.claims["f-s"] == "p2")
+    }
 }
 
 /// A small seeded generator, so a shuffle is the same on every run.

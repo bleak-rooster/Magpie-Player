@@ -30,8 +30,11 @@ extension AppModel {
     /// D184; none claiming: no flow and no owner), and the set listed only under everyone's. `named`: the playlists
     /// named as an item on this read; `mine` and `others`: the user's items and other users' (`AurralStatus.scoped`).
     /// With no items listed at all (Z1's fail-closed status) nothing is reassigned or saved.
+    /// Round 25 J (D251): `proof`: the songs read for each item left unproven, and the items asked for that gave none
+    /// (`readDiscoverItemProof`; fix round 1, I1).
     func identifyDiscoverPlaylists(_ matched: [DiscoverPlaylist], mine: [AurralFlow], others: [AurralFlow],
                                    named: Set<String>, jobs: [AurralJob], entries: [String: [Song]],
+                                   proof: DiscoverItemProof = DiscoverItemProof(),
                                    scope: String) -> (playlists: [DiscoverPlaylist], notMine: Set<String>) {
         let before = othersDiscoverPlaylistIds
         func keptAsItWas(_ m: DiscoverPlaylist) -> Bool {   // R23F's rule for a playlist kept without a known flow
@@ -39,15 +42,14 @@ extension AppModel {
         }
         let items = mine + others
         guard !items.isEmpty else { return (matched, Set(matched.filter(keptAsItWas).map(\.playlist.id))) }
-        let saved = savedDiscoverClaims(scope: scope)
-            ?? DiscoverIdentity.migrate(oldIds: Set(appDefaults.stringArray(forKey: Self.discoverPlaylistsKey(scope)) ?? []),
-                                        aurralItems: items, playlists: matched.map(\.playlist))
+        let saved = discoverClaimsToResolve(scope: scope, items: items, playlists: matched.map(\.playlist))
         // Fix round 1 (I2): a run under way isn't evidence against a saved claim (D75); only proof is saved, never a
         // name-only claim, so another user's same-named playlist never becomes the user's for good.
         let assignment = DiscoverIdentity.resolve(aurralItems: items,
                                                   playlists: matched.map(\.playlist).filter { named.contains($0.id) },
                                                   jobs: jobs, saved: saved, entries: entries,
-                                                  running: Set(mine.map(\.id).filter(isFlowRunActive)))
+                                                  running: Set(mine.map(\.id).filter(isFlowRunActive)),
+                                                  itemJobs: proof.jobs, unread: proof.unread)
         let claims = assignment.claims
         appDefaults.set(assignment.proven, forKey: Self.discoverClaimsKey(scope))
         let claimedBy = Dictionary(claims.map { ($0.value, $0.key) }, uniquingKeysWith: { a, _ in a })
@@ -72,6 +74,13 @@ extension AppModel {
             return DiscoverPlaylist(flow: AurralFlow(id: "", name: m.playlist.name), playlist: m.playlist)   // Q1
         }
         return (playlists, notMine)
+    }
+
+    /// The saved claims a read starts from: D204's, else round 23's saved ids upgraded (`DiscoverIdentity.migrate`).
+    func discoverClaimsToResolve(scope: String, items: [AurralFlow], playlists: [Playlist]) -> [String: String] {
+        savedDiscoverClaims(scope: scope)
+            ?? DiscoverIdentity.migrate(oldIds: Set(appDefaults.stringArray(forKey: Self.discoverPlaylistsKey(scope)) ?? []),
+                                        aurralItems: items, playlists: playlists)
     }
 
     /// Hook from R24C's `forgetRemovedAurralItem`: Aurral has deleted the item, so its claim goes.

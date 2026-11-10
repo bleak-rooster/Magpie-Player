@@ -44,6 +44,9 @@ public final class StubAurral: HTTPTransport, @unchecked Sendable {
         /// words about it (sent as 2.13's `error`). Not sent when nil.
         public var progress: Double?
         public var message: String?
+        /// Round 25 J: the static playlist this Library job is a song of (2.13's track `canonicalJobId`): listed under
+        /// "library" in `/jobs`, and as that playlist's in its `jobs/:id`.
+        public var referencedBy: String?
         public init(flowId: String, artistName: String, trackName: String, albumName: String = "Single",
                     artistMbid: String? = nil, trackMbid: String? = nil, durationMs: Int? = nil, status: String = "done",
                     finalPath: String? = nil) {
@@ -546,6 +549,19 @@ public final class StubAurral: HTTPTransport, @unchecked Sendable {
     public func setJobs(_ jobs: [Job]) { state.withLock { $0.jobs = jobs } }
     /// Off: `/api/playlists/jobs` answers 404 (an Aurral without the route).
     public func setJobsRoute(_ on: Bool) { state.withLock { $0.jobsRoute = on } }
+    /// Round 25 J: the static playlist's songs become references to Library jobs, as Aurral 2.13 keeps a track added
+    /// from the Library (`canonicalJobId`): `GET /api/playlists/jobs` lists them as the Library's (`playlistId`
+    /// "library"), and only `GET /api/playlists/jobs/:playlistId` lists them as the playlist's (2.13's `jobs.ts`
+    /// rewrites a referenced job's `playlistId` to the playlist asked for). `titles`: only these songs (nil: every one).
+    /// Fix round 1 (M3): the reference is kept on the job itself, so it goes with it (`setJobs` replaces both).
+    public func referenceLibrarySongs(playlistId: String, titles: Set<String>? = nil) {
+        state.withLock { s in
+            for i in s.jobs.indices where s.jobs[i].flowId == playlistId && titles.map({ $0.contains(s.jobs[i].trackName) }) ?? true {
+                s.jobs[i].flowId = "library"
+                s.jobs[i].referencedBy = playlistId
+            }
+        }
+    }
     /// The flow's run is active (as after a start) or not.
     public func setRunning(_ flowId: String, _ on: Bool) {
         state.withLock { if on { $0.running.insert(flowId) } else { $0.running.remove(flowId) } }
@@ -647,7 +663,9 @@ public final class StubAurral: HTTPTransport, @unchecked Sendable {
         if let (status, body) = imageProxyAnswer(method: method, path: path, request: request) { return answer(status, body) }
         func visible(_ flowId: String?) -> Bool {
             if user.role == "admin" { return true }   // Aurral: an admin sees everything
+            if flowId == "library" { return true }   // Round 25 J: 2.13's canAccessJobType ("library" is everyone's)
             return snapshot.flows.first(where: { $0.id == flowId })?.ownerUserId == user.id
+                || snapshot.synced.first(where: { $0.id == flowId })?.ownerUserId == user.id
         }
         switch (method, path) {
         case (let m, "/api/auth/logout") where m != "GET":
@@ -665,6 +683,8 @@ public final class StubAurral: HTTPTransport, @unchecked Sendable {
             advanceCreations()   // round 14 A4 fix round 1: a queued Add flow is created after its reads
             var scoped = state.withLock { $0 }
             scoped.flows = snapshot.flows.filter { visible($0.id) }
+            // Round 25 J: as 2.13's getStaticPlaylistsForUser, a user who isn't an admin is shown only their own.
+            scoped.synced = scoped.synced.filter { user.role == "admin" || $0.ownerUserId == user.id }
             return answer(200, statusBody(scoped))
         case ("GET", "/api/playlists/jobs"):
             guard snapshot.jobsRoute else { return answer(404, ["error": "Not found"]) }
@@ -715,8 +735,13 @@ public final class StubAurral: HTTPTransport, @unchecked Sendable {
             || s.synced.first(where: { $0.id == flowId })?.ownerUserId == user.id)
         guard mine else { return (404, ["error": "Playlist not found"]) }
         guard Self.mayAccessFlows(user, s) else { return (403, ["error": "Forbidden"]) }
-        return (200, s.jobs.enumerated().filter { $0.element.flowId == flowId }
-            .map { Self.jobBody($0.element, index: $0.offset, hidePaths: true) })
+        // Round 25 J: the playlist's references to Library jobs too, as the playlist's (2.13's `jobs.ts`).
+        return (200, s.jobs.enumerated().filter { $0.element.flowId == flowId || $0.element.referencedBy == flowId }
+            .map { item -> [String: Any] in
+                var job = item.element
+                job.flowId = flowId
+                return Self.jobBody(job, index: item.offset, hidePaths: true)
+            })
     }
 
     /// The user as Aurral's login, `/api/auth/me` and bootstrap name them (2.13: with permissions).
