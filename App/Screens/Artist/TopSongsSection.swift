@@ -1,5 +1,6 @@
 import DesignSystem
 import MagpieCore
+import Requests
 import Search
 import SwiftUI
 import UIKit
@@ -10,9 +11,13 @@ import UIKit
 struct TopSongsSection: View {
     @Environment(AppModel.self) private var model
     let result: TopSongsResult
+    /// Round 25 I (D248): the page's Lidarr line's state (nil: not known yet, or no line). An artist Lidarr monitors
+    /// shows only the library's songs while "In your library only, for artists in Lidarr" is on.
+    var lidarr: ArtistLidarrState? = nil
     private let themed = Themed()
 
     var body: some View {
+        let shown = model.shownTopSongs(result, lidarr: lidarr)
         VStack(alignment: .leading, spacing: Tokens.Spacing.s) {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Top songs").magpieDisplay(.title2).accessibilityAddTraits(.isHeader)
@@ -22,10 +27,18 @@ struct TopSongsSection: View {
                 }
             }
             .padding(.horizontal, Tokens.Spacing.margin)
-            ForEach(result.rows) { row in
-                TopSongRowView(row: row, rows: result.rows).accessibilityIdentifier("top-song-\(row.id)")
+            if shown.rows.isEmpty {   // D250: every top song was outside the library
+                Label(TopSongsInLibraryCopy.noneInLibrary, systemImage: TopSongsInLibraryCopy.noneSymbol)
+                    .font(.footnote).foregroundStyle(themed.palette.ink2Color)
+                    .frame(minHeight: 44, alignment: .leading)
+                    .padding(.horizontal, Tokens.Spacing.margin)
+                    .accessibilityIdentifier("top-songs-none-in-library")
+            }
+            ForEach(shown.rows) { row in
+                TopSongRowView(row: row, rows: shown.rows).accessibilityIdentifier("top-song-\(row.id)")
             }
         }
+        .transaction { $0.animation = nil }   // D248: Lidarr's answer narrows the list in place, no animation
         .accessibilityIdentifier("top-songs")
     }
 }
