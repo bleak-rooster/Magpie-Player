@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 440 136" width="440" height="136" role="img" aria-labelledby="t">
+  <title id="t">Magpie</title>
+  <!-- The app icon (scripts/render-app-icon.swift): a forest-green field with a pale mint dome rising from the bottom. -->
+  <defs>
+    <linearGradient id="field" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1B4332"/>
+      <stop offset="1" stop-color="#40916C"/>
+    </linearGradient>
+    <linearGradient id="dome" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#D8F3DC"/>
+      <stop offset="1" stop-color="#B7E4C7"/>
+    </linearGradient>
+    <clipPath id="tile"><rect x="8" y="8" width="120" height="120" rx="27"/></clipPath>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="3.6"/></filter>
+  </defs>
+  <g clip-path="url(#tile)">
+    <rect x="8" y="8" width="120" height="120" fill="url(#field)"/>
+    <ellipse cx="68" cy="140" rx="31.8" ry="69.6" fill="#B7E4C7" fill-opacity="0.35" filter="url(#glow)"/>
+    <ellipse cx="68" cy="140" rx="31.8" ry="69.6" fill="url(#dome)"/>
+  </g>
+  <!-- Wordmark (docs/storyboard/canvas/Brand-Magpie.dc.html): the display serif, semibold, tight. -->
+  <text x="154" y="94" fill="#F4F1EA" font-family="ui-serif, 'New York', Newsreader, Georgia, 'Times New Roman', serif"
+        font-weight="600" font-size="76" letter-spacing="-1.5">Magpie</text>
+</svg>

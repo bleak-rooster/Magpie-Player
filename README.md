@@ -1,6 +1,11 @@
-# Magpie
+<h1 align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/logo-dark.svg">
+    <img src="docs/images/logo-light.svg" alt="Magpie" width="400">
+  </picture>
+</h1>
 
-**Your own music server, with the feel of a streaming service.**
+<p align="center"><b>Your own music server, with the feel of a streaming service.</b></p>
 
 Magpie is an iPhone and CarPlay app that tries to give you what a streaming app does (a Home screen that knows what
 you like, fresh playlists every week, charts, search that finds any song, and a way to get the songs you don't have
