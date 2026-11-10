@@ -35,9 +35,9 @@ import Testing
     }
 
     enum Kind { case playlists, flows }
-    /// What Navidrome has for the two items: nothing at all; two empty playlists of the name (what Aurral 2.13
-    /// publishes for a playlist whose songs aren't in yet); or only some other playlist.
-    enum InNavidrome { case nothing, twoEmpty }
+    /// What Navidrome has for the two items: no playlist of the name, or two empty playlists of the name (what Aurral
+    /// 2.13 publishes for a playlist whose songs aren't in yet).
+    enum InNavidrome: Sendable { case nothing, twoEmpty }
 
     static let jordanPassword = "jordan-pw"
 
@@ -82,7 +82,7 @@ import Testing
     private func rows(_ model: AppModel) async throws -> [Row] {
         try await model.discoverRows().map { row in
             let key: String = switch row.link {
-            case .item(let item): item.id
+            case .item(let item, _): item.id
             case .playlist(let playlist): "playlist:" + playlist.id
             }
             return Row(name: row.name, caption: model.discoverOwnerCaption(row: row), key: key)
@@ -136,9 +136,104 @@ import Testing
         try await expectWanted(model, mine: "sp-j", sams: "sp-s")
     }
 
-    @Test func playlists_notAdmin_notInNavidrome() async throws {
-        let model = try await signedIn(.playlists, admin: false, navidrome: .twoEmpty)
+    /// A user who isn't an admin is shown only their own items (2.13's getStaticPlaylistsForUser): only mine still
+    /// shows theirs, and everyone's adds nothing (Sam's is invisible to them).
+    @Test(arguments: [InNavidrome.nothing, .twoEmpty]) func playlists_notAdmin(_ navidrome: InNavidrome) async throws {
+        let model = try await signedIn(.playlists, admin: false, navidrome: navidrome)
         defer { model.signOut() }
         try await expectWanted(model, mine: "sp-j", sams: nil)
+    }
+
+    // MARK: - Flows
+
+    /// Two same-named flows, neither in Navidrome: the user's own is Your flows' row (round 16, never a second one
+    /// here); Sam's is a row of its own under everyone's, "sam" under it.
+    @Test(arguments: [InNavidrome.nothing, .twoEmpty]) func flows_admin(_ navidrome: InNavidrome) async throws {
+        let model = try await signedIn(.flows, admin: true, navidrome: navidrome)
+        defer { model.signOut() }
+        #expect(model.aurralCanManageFlows)
+        #expect(model.unpublishedRecipeFlows.map(\.id) == ["flow-j"])
+        #expect(try await rows(model).isEmpty)
+        model.showEveryonesFlows = true
+        #expect(try await rows(model) == [Row(name: "Chill", caption: "sam", key: "flow-s")])
+        #expect(try await carIds(model).isEmpty)
+    }
+
+    /// Without Your flows (an Aurral without flow management, 2.10), the user's own flow is a row here instead.
+    @Test func flows_admin_noFlowManagement() async throws {
+        let model = try await signedIn(.flows, admin: true, navidrome: .nothing)
+        defer { model.signOut() }
+        aurral.setFeatures(nil)
+        aurral.setVersion("2.10.0")
+        await model.refreshAurralCapabilities(force: true)
+        await model.refreshDiscover(force: true)
+        #expect(!model.aurralCanManageFlows)
+        try await expectWanted(model, mine: "flow-j", sams: "flow-s")
+    }
+
+    // MARK: - What stays as it was
+
+    /// The item's state, said beside a symbol: the user's own with songs on the way, how far; otherwise not ready yet.
+    @Test func itemState_downloadingThenNotReady() async throws {
+        let model = try await signedIn(.playlists, admin: true, navidrome: .nothing, downloading: true)
+        defer { model.signOut() }
+        let jordans = try #require(model.discover.itemRows.first { $0.item.id == "sp-j" })
+        #expect(model.discoverItemState(jordans.item, mine: true).text == DiscoverPagesCopy.downloading(0, 2))
+        let sams = try #require(model.discover.itemRows.first { $0.item.id == "sp-s" })
+        #expect(model.discoverItemState(sams.item, mine: false) == (DiscoverPagesCopy.notReady, "clock"))
+    }
+
+    /// The two empty playlists are never rows, but they are still Aurral's: never in Playlists (D182, D189).
+    @Test func emptyUnclaimed_stillOutOfPlaylists() async throws {
+        let model = try await signedIn(.playlists, admin: true, navidrome: .twoEmpty)
+        defer { model.signOut() }
+        #expect(model.isDiscoverPlaylist(id: "pl-e1") && model.isDiscoverPlaylist(id: "pl-e2"))
+        model.showEveryonesFlows = true
+        #expect(!(try await model.discoverPlaylists().map(\.id)).contains("pl-e1"))
+    }
+
+    /// Once songs are in, each playlist proves itself (D203) and is its item's row: the item never shows twice.
+    @Test func songsArrive_playlistIsTheRow() async throws {
+        let model = try await signedIn(.playlists, admin: true, navidrome: .twoEmpty)
+        defer { model.signOut() }
+        nav.lists["pl-e1"] = ("Chill", ["a-lullaby", "a-words"])
+        nav.lists["pl-e2"] = ("Chill", ["a-other", "a-nameonly"])
+        await model.refreshDiscover(force: true)
+        #expect(try await rows(model) == [Row(name: "Chill", caption: nil, key: "playlist:pl-e1")])
+        model.showEveryonesFlows = true
+        #expect(try await rows(model).sorted { $0.key < $1.key }
+                    == [Row(name: "Chill", caption: nil, key: "playlist:pl-e1"), Row(name: "Chill", caption: "sam", key: "playlist:pl-e2")])
+    }
+
+    /// D202's Q1 is kept where a playlist has songs nothing can tie to an owner: it stays a row with no caption, and
+    /// the items it may be don't get a second one.
+    @Test func unprovenWithSongs_staysQ1_noSecondRow() async throws {
+        let model = try await signedIn(.playlists, admin: true, navidrome: .twoEmpty)
+        defer { model.signOut() }
+        nav.lists["pl-e1"] = ("Chill", ["a-old"])   // one of Aurral's copies, neither item's
+        nav.lists["pl-e2"] = ("Chill", ["a-old"])
+        await model.refreshDiscover(force: true)
+        #expect(try await rows(model).isEmpty)
+        model.showEveryonesFlows = true
+        #expect(try await rows(model).sorted { $0.key < $1.key }
+                    == [Row(name: "Chill", caption: nil, key: "playlist:pl-e1"), Row(name: "Chill", caption: nil, key: "playlist:pl-e2")])
+    }
+
+    /// Sign-out forgets the rows with everything else read for the account.
+    @Test func signOut_forgetsItemRows() async throws {
+        let model = try await signedIn(.playlists, admin: true, navidrome: .twoEmpty)
+        #expect(model.discover.itemRows.count == 2 && model.discover.hiddenPlaylistIds == ["pl-e1", "pl-e2"])
+        model.signOut()
+        #expect(model.discover.itemRows.isEmpty && model.discover.hiddenPlaylistIds.isEmpty)
+    }
+
+    /// Reads only: nothing is sent to Aurral for any of this.
+    @Test func readsOnly() async throws {
+        let model = try await signedIn(.playlists, admin: true, navidrome: .twoEmpty)
+        defer { model.signOut() }
+        model.showEveryonesFlows = true
+        _ = try await rows(model)
+        let writes = aurral.asked.filter { !$0.hasPrefix("GET ") && !$0.hasSuffix("/api/auth/login") }
+        #expect(writes.isEmpty, "\(writes)")
     }
 }

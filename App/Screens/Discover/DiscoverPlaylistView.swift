@@ -238,7 +238,7 @@ struct DiscoverPlaylistView: View {
 /// Library › Discover: Aurral's flow playlists.
 struct DiscoverListView: View {
     @Environment(AppModel.self) private var model
-    @State private var playlists: Loadable<[Playlist]> = .loading
+    @State private var playlists: Loadable<[DiscoverRow]> = .loading   // round 26 L (D271): playlists and items
     @State private var editingFlow: RecipeFlowEditor.Target?
     @State private var deletingFlow: AurralFlow?
     @State private var message: String?
@@ -247,43 +247,11 @@ struct DiscoverListView: View {
     var body: some View {
         List {
             YourFlowsSection()   // round 16: the user's own recipe flows (New flow, Edit flow, Delete flow)
-            LoadableView(state: playlists, retry: load) { playlists in
-                ForEach(playlists, id: \.id) { playlist in
-                    // Round 16 (owner): a recipe flow shows once, as this row: greyed while its songs download, with
-                    // Edit flow and Delete flow on a long press or swipe.
-                    let flow = model.aurralCanManageFlows ? model.recipeFlow(playlistId: playlist.id) : nil
-                    let download = flow.flatMap(model.recipeFlowDownload)
-                    NavigationLink(value: Route.playlist(id: playlist.id)) {
-                        HStack(spacing: Tokens.Spacing.m) {
-                            Artwork(playlist.coverArtId, side: 56) { SleeveArt(image: $0, side: 56) }
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text(playlist.name).font(.body)
-                                // Round 24 (D205): another user's, under everyone's: who made it ("made by sam").
-                                OwnerCaption(owner: model.discoverOwnerCaption(playlistId: playlist.id), signedInUser: nil)
-                                if let download {
-                                    Label(download.text, systemImage: "arrow.down.circle.dotted")
-                                        .font(.footnote).foregroundStyle(themed.palette.ink2Color)
-                                } else {
-                                    Text(playlist.songCount == 1 ? "1 song" : "\(playlist.songCount) songs")
-                                        .font(.footnote).foregroundStyle(themed.palette.ink2Color)
-                                }
-                            }
-                        }
-                        .opacity(download == nil ? 1 : 0.45)
-                        .accessibilityElement(children: .combine)
-                    }
-                    .listRowBackground(Color.clear)
-                    .contextMenu {
-                        if let flow {
-                            Button(RecipeFlowCopy.editFlow, systemImage: "slider.horizontal.3") { editingFlow = .edit(flow) }
-                            Button(RecipeFlowCopy.deleteFlow, systemImage: "trash", role: .destructive) { deletingFlow = flow }
-                        }
-                    }
-                    .swipeActions {
-                        if let flow {
-                            Button(RecipeFlowCopy.deleteFlow, role: .destructive) { deletingFlow = flow }
-                            Button(RecipeFlowCopy.editFlow) { editingFlow = .edit(flow) }.tint(.accentColor)
-                        }
+            LoadableView(state: playlists, retry: load) { rows in
+                ForEach(rows) { row in
+                    switch row.link {
+                    case .playlist(let playlist): playlistRow(playlist)
+                    case .item(let item, let mine): itemRow(item, mine: mine, row: row)
                     }
                 }
             }
@@ -316,7 +284,7 @@ struct DiscoverListView: View {
                             titleVisibility: .visible, presenting: deletingFlow) { flow in
             Button(RecipeFlowCopy.deleteFlow, role: .destructive) {
                 Task {
-                    let gone = Set(model.discover.playlists.filter { $0.flow.id == flow.id }.map(\.playlist.id))
+                    let gone = Set(model.discover.playlists.filter { $0.flow.id == flow.id }.map { "playlist:" + $0.playlist.id })
                     do {
                         try await model.deleteRecipeFlow(flow)
                         if let list = playlists.value { playlists = .loaded(list.filter { !gone.contains($0.id) }) }
@@ -332,11 +300,74 @@ struct DiscoverListView: View {
         .task { await load() }
         // Round 16: a flow's playlist joins (or leaves) as the server publishes it.
         .onChange(of: model.discover.playlists.map(\.playlist.id)) { Task { await load() } }
+        .onChange(of: model.discover.itemRows.map(\.item.id)) { Task { await load() } }   // R26L (D271)
         .onChange(of: model.discover.everyoneRevision) { Task { await load() } }   // R23F (D190)
     }
 
+    /// One of Aurral's playlists: opens its page and plays.
+    @ViewBuilder private func playlistRow(_ playlist: Playlist) -> some View {
+        // Round 16 (owner): a recipe flow shows once, as this row: greyed while its songs download, with
+        // Edit flow and Delete flow on a long press or swipe.
+        let flow = model.aurralCanManageFlows ? model.recipeFlow(playlistId: playlist.id) : nil
+        let download = flow.flatMap(model.recipeFlowDownload)
+        NavigationLink(value: Route.playlist(id: playlist.id)) {
+            HStack(spacing: Tokens.Spacing.m) {
+                Artwork(playlist.coverArtId, side: 56) { SleeveArt(image: $0, side: 56) }
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(playlist.name).font(.body)
+                    // Round 24 (D205): another user's, under everyone's: who made it ("made by sam").
+                    OwnerCaption(owner: model.discoverOwnerCaption(playlistId: playlist.id), signedInUser: nil)
+                    if let download {
+                        Label(download.text, systemImage: "arrow.down.circle.dotted")
+                            .font(.footnote).foregroundStyle(themed.palette.ink2Color)
+                    } else {
+                        Text(playlist.songCount == 1 ? "1 song" : "\(playlist.songCount) songs")
+                            .font(.footnote).foregroundStyle(themed.palette.ink2Color)
+                    }
+                }
+            }
+            .opacity(download == nil ? 1 : 0.45)
+            .accessibilityElement(children: .combine)
+        }
+        .listRowBackground(Color.clear)
+        .contextMenu {
+            if let flow {
+                Button(RecipeFlowCopy.editFlow, systemImage: "slider.horizontal.3") { editingFlow = .edit(flow) }
+                Button(RecipeFlowCopy.deleteFlow, systemImage: "trash", role: .destructive) { deletingFlow = flow }
+            }
+        }
+        .swipeActions {
+            if let flow {
+                Button(RecipeFlowCopy.deleteFlow, role: .destructive) { deletingFlow = flow }
+                Button(RecipeFlowCopy.editFlow) { editingFlow = .edit(flow) }.tint(.accentColor)
+            }
+        }
+    }
+
+    /// Round 26 L (D271): an Aurral item no Navidrome playlist is known to be. It doesn't open (nothing of it plays
+    /// yet) and says why; another user's says whose ("sam") under everyone's.
+    private func itemRow(_ item: AurralFlow, mine: Bool, row: DiscoverRow) -> some View {
+        let state = model.discoverItemState(item, mine: mine)
+        return HStack(spacing: Tokens.Spacing.m) {
+            Image(systemName: "music.note.list").font(.title3).frame(width: 56, height: 56)
+                .foregroundStyle(themed.palette.ink2Color)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(item.name).font(.body)
+                OwnerCaption(owner: model.discoverOwnerCaption(row: row), signedInUser: nil)
+                Label(state.text, systemImage: state.symbol)
+                    .font(.footnote).foregroundStyle(themed.palette.ink2Color)
+            }
+            Spacer(minLength: 0)
+        }
+        .frame(minHeight: Tokens.minHitSize)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("discover-item-\(item.id)")
+        .listRowBackground(Color.clear)
+    }
+
     private func load() async {
-        do { playlists = .loaded(try await model.discoverPlaylists()) } catch {
+        do { playlists = .loaded(try await model.discoverRows()) } catch {
             playlists = playlists.failing(error, noticeTo: model)   // Round 13 Z2: also never for a load cut short
         }
     }

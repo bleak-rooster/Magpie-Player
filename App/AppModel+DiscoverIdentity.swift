@@ -41,7 +41,10 @@ extension AppModel {
             m.flow.id.isEmpty && (m.flow.ownerUserId != nil || m.flow.ownerUsername != nil || before.contains(m.playlist.id))
         }
         let items = mine + others
-        guard !items.isEmpty else { return (matched, Set(matched.filter(keptAsItWas).map(\.playlist.id))) }
+        guard !items.isEmpty else {
+            noteDiscoverItemRows(nil)   // R26L (D271): no items listed, no rows of their own
+            return (matched, Set(matched.filter(keptAsItWas).map(\.playlist.id)))
+        }
         let saved = discoverClaimsToResolve(scope: scope, items: items, playlists: matched.map(\.playlist))
         // Fix round 1 (I2): a run under way isn't evidence against a saved claim (D75); only proof is saved, never a
         // name-only claim, so another user's same-named playlist never becomes the user's for good.
@@ -73,6 +76,9 @@ extension AppModel {
             }
             return DiscoverPlaylist(flow: AurralFlow(id: "", name: m.playlist.name), playlist: m.playlist)   // Q1
         }
+        // R26L (D271, D272): the items no playlist is known to be are rows of their own, by Aurral id.
+        noteDiscoverItemRows(DiscoverItemRead(mine: mine, others: others, claims: claims, playlists: playlists,
+                                              named: named, entries: entries))
         return (playlists, notMine)
     }
 

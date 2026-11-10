@@ -43,8 +43,11 @@ extension AppModel {
     func isOthersDiscoverPlaylist(_ playlist: Playlist) -> Bool { othersDiscoverPlaylistIds.contains(playlist.id) }
 
     /// Whether Discover lists `playlist` (one of its playlists): the user's own always, another user's only with
-    /// "Show everyone's flows" on.
-    func isShownInDiscover(_ playlist: Playlist) -> Bool { showEveryonesFlows || !isOthersDiscoverPlaylist(playlist) }
+    /// "Show everyone's flows" on. Round 26 L (D271): never an empty one no Aurral item claimed (its items are rows of
+    /// their own).
+    func isShownInDiscover(_ playlist: Playlist) -> Bool {
+        !discover.hiddenPlaylistIds.contains(playlist.id) && (showEveryonesFlows || !isOthersDiscoverPlaylist(playlist))
+    }
 
     /// Hook from each read of Aurral (`performDiscoverRead`): the matched playlists Discover lists only under everyone's.
     /// Round 24 (D202): decided by the claiming Aurral item's owner (`identifyDiscoverPlaylists`), never by a name.
