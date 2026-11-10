@@ -16,14 +16,11 @@ extension AppModel {
     /// Lidarr line says Lidarr monitors, with the setting on: only the rows the library has (the same matching that
     /// decides "in library" or "preview"), in order. Otherwise every row, as before. `lidarr` is the page's
     /// `ArtistLidarrModel.state`: nil while it isn't known (or its read failed), so the page shows everything first and
-    /// keeps only the library's songs once Lidarr answers. A find, an unmonitored artist or one Lidarr doesn't have
-    /// shows everything (D249). Nothing is read or written here.
+    /// keeps only the library's songs once Lidarr answers. A kept find counts as monitored; a find on trial, an
+    /// unmonitored artist or one Lidarr doesn't have shows everything (D249, `countsAsMonitoredForTopSongs`). Nothing is
+    /// read or written here.
     func shownTopSongs(_ result: TopSongsResult, lidarr state: ArtistLidarrState?) -> TopSongsResult {
-        let monitored: Bool? = switch state {
-        case .monitored?: true
-        case nil: nil
-        default: false
-        }
+        let monitored = state?.countsAsMonitoredForTopSongs
         let applies = TopSongsInLibrary.applies(setting: preferences.layout.topSongsInLibraryOnly, lidarrSetUp: lidarr != nil,
                                                 provider: result.provider, artistMonitored: monitored)
         var shown = result

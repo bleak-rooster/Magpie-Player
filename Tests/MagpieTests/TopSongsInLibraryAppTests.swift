@@ -81,6 +81,23 @@ private let strangerMBID = MBID("44444444-4444-4444-8444-444444444444")!
         #expect(searching.rows.map(\.id) == [1, 3, 4], "searching for albums is still monitored")
     }
 
+    /// Controller ruling (D249): a find the owner kept is in the main library, monitored: filtered. A find on trial
+    /// (in your Finds, or being added) shows every song.
+    @Test func aKeptFindIsFilteredAndATrialFindShowsEverything() throws {
+        let model = try makeModel(lidarr: true)
+        defer { cleanUp(model) }
+        for lossless in [FindState.Lossless.lossless, .waiting(removedOn: nil), .mp3Removed] {
+            let kept = model.shownTopSongs(result(), lidarr: .find(lidarrId: 30, state: .inLibrary(lossless)))
+            #expect(kept.rows.map(\.id) == [1, 3, 4])
+        }
+        for trial in [FindState.find, .adding(queued: true), .adding(queued: false)] {
+            #expect(model.shownTopSongs(result(), lidarr: .find(lidarrId: 30, state: trial)) == result())
+        }
+        model.updatePreferences { $0.layout.topSongsInLibraryOnly = false }
+        #expect(model.shownTopSongs(result(), lidarr: .find(lidarrId: 30, state: .inLibrary(.lossless))) == result(),
+                "off: every song")
+    }
+
     @Test func offShowsEverySongWithPreviews() throws {
         let model = try makeModel(lidarr: true)
         defer { cleanUp(model) }
