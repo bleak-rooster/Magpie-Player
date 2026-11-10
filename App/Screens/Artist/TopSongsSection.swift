@@ -38,7 +38,6 @@ struct TopSongsSection: View {
                 TopSongRowView(row: row, rows: shown.rows).accessibilityIdentifier("top-song-\(row.id)")
             }
         }
-        .transaction { $0.animation = nil }   // D248: Lidarr's answer narrows the list in place, no animation
         .accessibilityIdentifier("top-songs")
     }
 }
