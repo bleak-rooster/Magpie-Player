@@ -267,15 +267,15 @@ extension AppModel {
             }
         }
         // Round 24 (D202–D204): each playlist's Aurral item by identity, then whose it is (D189), before Discover lists them.
-        // Round 25 J (D251): with the songs of each item a shared name leaves unproven, read for it.
+        // Round 25 J (D251): with the songs of each item left unproven, read for it.
         let named = Set(candidates.map(\.playlist.id))
-        let itemJobs = await readDiscoverItemProof(client: client, mine: flows, others: status.othersPlaylists,
-                                                   playlists: matched.map(\.playlist).filter { named.contains($0.id) },
-                                                   jobs: jobs ?? [], entries: entries, scope: scope)
+        let proof = await readDiscoverItemProof(client: client, mine: flows, others: status.othersPlaylists,
+                                                playlists: matched.map(\.playlist).filter { named.contains($0.id) },
+                                                jobs: jobs ?? [], entries: entries, scope: scope)
         guard navidromeScope == scope, discover.connection?.account == account else { return }
         let identified = identifyDiscoverPlaylists(matched, mine: flows, others: status.othersPlaylists,
                                                    named: named, jobs: jobs ?? [], entries: entries,
-                                                   itemJobs: itemJobs, scope: scope)
+                                                   proof: proof, scope: scope)
         matched = identified.playlists
         noteOthersPlaylists(identified.notMine, scope: scope)
         discover.playlists = matched

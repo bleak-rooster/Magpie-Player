@@ -47,10 +47,13 @@ public enum DiscoverIdentity {
     /// read has no songs to go by); `jobs`: every job Aurral listed (anyone's items' too, as an admin reads them);
     /// `running`: the items with a run under way (their jobs may not be the playlist's songs yet, D75).
     /// Round 25 J (D251): `itemJobs`: an item's own songs as Aurral lists them for it (`jobs/:id`), read for the items
-    /// `unproven` names; where one has any, they are that item's songs in place of the general list's.
+    /// `unproven` names; where one has any, they are that item's songs in place of the general list's, and only they
+    /// can contradict it. Fix round 1 (I1): `unread`: the items whose own songs were asked for but not given (an error,
+    /// or none listed). The general list may hold only some of an item's songs (2.13 files a playlist's Library songs
+    /// under "library"), so for these it never drops a saved claim: the claim holds, and is saved again.
     public static func resolve(aurralItems: [AurralFlow], playlists: [Playlist], jobs: [AurralJob], saved: [String: String],
                                entries: [String: [Song]], running: Set<String> = [],
-                               itemJobs: [String: [AurralJob]] = [:]) -> Assignment {
+                               itemJobs: [String: [AurralJob]] = [:], unread: Set<String> = []) -> Assignment {
         let index = Index(items: aurralItems, playlists: playlists, jobs: jobs, entries: entries, itemJobs: itemJobs)
         var state = Claims()
         var proven: [String: String] = [:]
@@ -65,9 +68,10 @@ public enum DiscoverIdentity {
             }
         }.map(\.key)
         for pair in state.claimUnique(prefixed) { proven[pair.item] = pair.playlist }
-        // 2. Saved claims, while still named as the item and not contradicted by its songs.
+        // 2. Saved claims, while still named as the item and not contradicted by its songs (R25J fix round 1: never by
+        //    a general list that may be partial, when the item's own songs couldn't be read).
         let stillNamed = saved.map { Pair(item: $0.key, playlist: $0.value) }
-            .filter { index.ranks[$0] != nil && !contradicted($0) }
+            .filter { index.ranks[$0] != nil && (unread.contains($0.item) || !contradicted($0)) }
         for pair in state.claimUnique(stillNamed) { proven[pair.item] = pair.playlist }
         // 3. The songs, best first; a tie claims nothing and holds both sides back from the name-only step.
         var scored: [(pair: Pair, score: Score)] = []
@@ -106,16 +110,21 @@ public enum DiscoverIdentity {
     /// never claimed by name (step 4), so these need their own songs (`jobs/:id`): Aurral's general jobs list doesn't
     /// always hold them (it may not be readable, and 2.13 lists a playlist's songs taken from the Library as the
     /// Library's). An item whose name nothing else shares is settled by name as before, and needs no read.
+    /// Fix round 1 (I1): also, whatever its name, an unproven item the general list contradicts on a playlist named as
+    /// it (its songs listed there fail D62): that list may hold only some of them, and a contradicted pair is never
+    /// claimed by name or by a saved claim, so only the item's own songs can say.
     public static func unproven(aurralItems: [AurralFlow], playlists: [Playlist], jobs: [AurralJob], saved: [String: String],
                                 entries: [String: [Song]], running: Set<String> = []) -> [String] {
         let proven = resolve(aurralItems: aurralItems, playlists: playlists, jobs: jobs, saved: saved, entries: entries,
                              running: running).proven
-        let index = Index(items: aurralItems, playlists: playlists, jobs: [], entries: [:])
+        let index = Index(items: aurralItems, playlists: playlists, jobs: jobs, entries: entries)
         let byItem = Dictionary(grouping: index.ranks.keys, by: \.item)
         var seen = Set<String>()
         return aurralItems.map(\.id).filter { id in
             guard proven[id] == nil, seen.insert(id).inserted, let pairs = byItem[id] else { return false }
-            return pairs.count > 1 || pairs.contains { (index.byPlaylist[$0.playlist]?.count ?? 0) > 1 }
+            let shared = pairs.count > 1 || pairs.contains { (index.byPlaylist[$0.playlist]?.count ?? 0) > 1 }
+            let contradicted = !running.contains(id) && pairs.contains { index.fit($0).map { !$0.passes } ?? false }
+            return shared || contradicted
         }
     }
 

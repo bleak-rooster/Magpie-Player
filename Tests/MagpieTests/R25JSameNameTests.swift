@@ -36,7 +36,9 @@ import Testing
     }
 
     enum Kind { case flows, playlists }
-    enum Gap { case listUnreadable, libraryReferences }
+    /// Fix round 1 (I1): `mixedReferences`: the general list is readable but holds only some of the user's songs (its
+    /// "Chill" keeps Words as its own and has Lullaby from the Library); Sam's are all his own.
+    enum Gap { case listUnreadable, libraryReferences, mixedReferences }
 
     /// The signed-in user's "Chill" (pl-c1: Lullaby, Words) and Sam's "Chill" (pl-c2: Unknown Song, Halo), as flows or
     /// as Aurral playlists. `admin`: the user is an Aurral admin (shown Sam's items) or not (shown only their own, as
@@ -67,6 +69,7 @@ import Testing
         case .listUnreadable: aurral.setJobsRoute(false)
         case .libraryReferences:
             for id in ["sp-c", "sp-sc"] { aurral.referenceLibrarySongs(playlistId: id) }
+        case .mixedReferences: aurral.referenceLibrarySongs(playlistId: "sp-c", titles: ["Lullaby"])
         }
         if !admin {
             aurral.setRole("user", for: StubAurral.defaultUsername)
@@ -181,7 +184,9 @@ import Testing
         })
         defer { model.signOut() }
         let before = itemReads.count
+        aurral.setItemJobsDelay(.milliseconds(50))   // each answer held a while, so the reads overlap
         await model.refreshDiscover(force: true)   // one read (none of these can be proven: they stay unproven)
+        #expect(aurral.itemJobsMaxInFlight == 4, "fix round 1 (M1): never more than four at once")
         let read = itemReads.dropFirst(before).map { String($0.dropFirst("GET /api/playlists/jobs/".count)) }
         #expect(read.count == AppModel.discoverItemProofLimit, "\(read)")
         #expect(Set((0..<7).map { "mine-\($0)" }).isSubset(of: read), "the user's own first: \(read)")
@@ -201,5 +206,36 @@ import Testing
         #expect(Set(try await model.discoverPlaylists().map(\.id)) == ["pl-c1", "pl-c2"])
         #expect(model.discoverOwnerCaption(playlistId: "pl-c2") == nil)
         #expect(model.discover.playlists.first { $0.playlist.id == "pl-c2" }?.flow.ownerUsername == nil)
+    }
+
+    // MARK: - Fix round 1 (I1): a general list holding only some of an item's songs
+
+    /// The user's "Solo" (a name nobody else's) has two of its three songs from the Library: the general list's one
+    /// song fails D62 against its playlist. Its own songs are read and prove it: shown under "only mine". And on a
+    /// later read whose item reads fail, its saved claim (and the shared-name one's) survive.
+    @Test(arguments: [true, false]) func mixedReferences_shownUnderOnlyMine_andSurviveAFailedRead(admin: Bool) async throws {
+        let model = try await signedIn(.playlists, admin: admin, gap: .mixedReferences, extra: { aurral in
+            aurral.addSharedPlaylist(id: "sp-u", name: "Solo", provider: nil, owner: 1,
+                                     songs: [("Lullaby", "Low", 251_000), ("Words", "Low", 200_000), ("Halo", "Low", 0)])
+            aurral.referenceLibrarySongs(playlistId: "sp-u", titles: ["Lullaby", "Words"])
+            self.nav.lists["pl-u"] = ("Solo", ["a-lullaby", "a-words", "a-nameonly"])
+        })
+        defer { model.signOut() }
+        let scope = try #require(model.navidromeScope)
+        func check(_ when: String) async throws {
+            #expect(try await model.discoverPlaylists().map(\.id).sorted() == ["pl-c1", "pl-u"], "\(when): only mine")
+            let saved = defaults.dictionary(forKey: AppModel.discoverClaimsKey(scope)) as? [String: String]
+            #expect(saved?["sp-c"] == "pl-c1" && saved?["sp-u"] == "pl-u", "\(when): \(saved ?? [:])")
+            #expect(model.discover.playlists.first { $0.playlist.id == "pl-c2" }?.flow.id == "", "\(when): never yours")
+            #expect(model.discoverFlow(playlistId: "pl-c2") == nil && model.searchAgainFlow(playlistId: "pl-c2") == nil)
+            model.showEveryonesFlows = true
+            #expect(model.discoverOwnerCaption(playlistId: "pl-c2") == (admin ? "sam" : nil), "\(when)")
+            #expect(model.discoverOwnerCaption(playlistId: "pl-c1") == nil && model.discoverOwnerCaption(playlistId: "pl-u") == nil)
+            model.showEveryonesFlows = false
+        }
+        try await check("first read")
+        aurral.setItemJobsFailure(500)
+        await model.refreshDiscover(force: true)
+        try await check("item reads failing")
     }
 }

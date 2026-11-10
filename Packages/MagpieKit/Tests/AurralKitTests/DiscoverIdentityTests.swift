@@ -271,6 +271,38 @@ private let sams = item("f-s", "Chill", owner: 2, "sam")
                                             entries: ["p3": [song("s5", "Words")]], itemJobs: ["f-m": [job("f-m", "Halo")]])
         #expect(wrong.isEmpty, "\(wrong)")
     }
+
+    // MARK: - Round 25 J fix round 1 (I1)
+
+    /// A general list holding only some of an item's songs (2.13 files the rest under "library") fails D62 against
+    /// its playlist: that item's own songs are needed even when its name is its alone.
+    @Test func unproven_partialGeneralList_uniqueName() {
+        let mix = item("f-m", "Mix", owner: 1, "jordan")
+        let entries = ["p3": [song("s1", "Halo"), song("s2", "Words"), song("s3", "Lullaby")]]
+        #expect(DiscoverIdentity.unproven(aurralItems: [mix], playlists: [playlist("p3", "Mix")], jobs: [job("f-m", "Halo")],
+                                          saved: [:], entries: entries) == ["f-m"])
+        // Read, its own songs prove it.
+        let own = [job("f-m", "Halo"), job("library", "Words"), job("library", "Lullaby")]
+        let read = DiscoverIdentity.resolve(aurralItems: [mix], playlists: [playlist("p3", "Mix")], jobs: [job("f-m", "Halo")],
+                                            saved: [:], entries: entries, itemJobs: ["f-m": own])
+        #expect(read.claims == ["f-m": "p3"] && read.proven == read.claims)
+    }
+
+    /// Its own songs couldn't be read: the partial general list never drops a saved claim, which is kept and saved
+    /// again. Read, only its own songs can contradict it.
+    @Test func savedClaim_partialGeneralList_unreadOwn_kept() {
+        let playlists = [playlist("p1", "Chill"), playlist("p2", "Chill")]
+        let entries = ["p1": [song("s1", "Halo"), song("s2", "Words"), song("s3", "Lullaby")], "p2": [song("s4", "Old")]]
+        let jobs = [job("f-j", "Halo"), job("f-s", "Old")]
+        let saved = ["f-j": "p1", "f-s": "p2"]
+        let kept = DiscoverIdentity.resolve(aurralItems: [jordans, sams], playlists: playlists, jobs: jobs, saved: saved,
+                                            entries: entries, unread: ["f-j"])
+        #expect(kept.claims == saved && kept.proven == saved)
+        let dropped = DiscoverIdentity.resolve(aurralItems: [jordans, sams], playlists: playlists, jobs: jobs, saved: saved,
+                                               entries: entries, itemJobs: ["f-j": [job("f-j", "Unrelated")]])
+        #expect(dropped.claims["f-j"] == nil && dropped.proven["f-j"] == nil)
+        #expect(dropped.claims["f-s"] == "p2")
+    }
 }
 
 /// A small seeded generator, so a shuffle is the same on every run.

@@ -44,6 +44,9 @@ public final class StubAurral: HTTPTransport, @unchecked Sendable {
         /// words about it (sent as 2.13's `error`). Not sent when nil.
         public var progress: Double?
         public var message: String?
+        /// Round 25 J: the static playlist this Library job is a song of (2.13's track `canonicalJobId`): listed under
+        /// "library" in `/jobs`, and as that playlist's in its `jobs/:id`.
+        public var referencedBy: String?
         public init(flowId: String, artistName: String, trackName: String, albumName: String = "Single",
                     artistMbid: String? = nil, trackMbid: String? = nil, durationMs: Int? = nil, status: String = "done",
                     finalPath: String? = nil) {
@@ -110,9 +113,6 @@ public final class StubAurral: HTTPTransport, @unchecked Sendable {
         var creationDelayReads = 1
         /// Round 24 B: the jobs whose held copy was denied.
         var denied: [String] = []
-        /// Round 25 J: each static playlist's songs that are references to Library jobs (2.13's track
-        /// `canonicalJobId`), by job index: listed under "library" in `/jobs`, under the playlist in `jobs/:id`.
-        var references: [String: [Int]] = [:]
     }
 
     struct PendingSynced {
@@ -552,12 +552,14 @@ public final class StubAurral: HTTPTransport, @unchecked Sendable {
     /// Round 25 J: the static playlist's songs become references to Library jobs, as Aurral 2.13 keeps a track added
     /// from the Library (`canonicalJobId`): `GET /api/playlists/jobs` lists them as the Library's (`playlistId`
     /// "library"), and only `GET /api/playlists/jobs/:playlistId` lists them as the playlist's (2.13's `jobs.ts`
-    /// rewrites a referenced job's `playlistId` to the playlist asked for).
-    public func referenceLibrarySongs(playlistId: String) {
+    /// rewrites a referenced job's `playlistId` to the playlist asked for). `titles`: only these songs (nil: every one).
+    /// Fix round 1 (M3): the reference is kept on the job itself, so it goes with it (`setJobs` replaces both).
+    public func referenceLibrarySongs(playlistId: String, titles: Set<String>? = nil) {
         state.withLock { s in
-            let indexes = s.jobs.indices.filter { s.jobs[$0].flowId == playlistId }
-            for i in indexes { s.jobs[i].flowId = "library" }
-            s.references[playlistId, default: []] += indexes
+            for i in s.jobs.indices where s.jobs[i].flowId == playlistId && titles.map({ $0.contains(s.jobs[i].trackName) }) ?? true {
+                s.jobs[i].flowId = "library"
+                s.jobs[i].referencedBy = playlistId
+            }
         }
     }
     /// The flow's run is active (as after a start) or not.
@@ -734,8 +736,7 @@ public final class StubAurral: HTTPTransport, @unchecked Sendable {
         guard mine else { return (404, ["error": "Playlist not found"]) }
         guard Self.mayAccessFlows(user, s) else { return (403, ["error": "Forbidden"]) }
         // Round 25 J: the playlist's references to Library jobs too, as the playlist's (2.13's `jobs.ts`).
-        let referenced = Set(s.references[flowId] ?? [])
-        return (200, s.jobs.enumerated().filter { $0.element.flowId == flowId || referenced.contains($0.offset) }
+        return (200, s.jobs.enumerated().filter { $0.element.flowId == flowId || $0.element.referencedBy == flowId }
             .map { item -> [String: Any] in
                 var job = item.element
                 job.flowId = flowId

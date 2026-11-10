@@ -30,11 +30,11 @@ extension AppModel {
     /// D184; none claiming: no flow and no owner), and the set listed only under everyone's. `named`: the playlists
     /// named as an item on this read; `mine` and `others`: the user's items and other users' (`AurralStatus.scoped`).
     /// With no items listed at all (Z1's fail-closed status) nothing is reassigned or saved.
-    /// Round 25 J (D251): `itemJobs`: the songs read for each item a shared name left unproven
-    /// (`readDiscoverItemProof`).
+    /// Round 25 J (D251): `proof`: the songs read for each item left unproven, and the items asked for that gave none
+    /// (`readDiscoverItemProof`; fix round 1, I1).
     func identifyDiscoverPlaylists(_ matched: [DiscoverPlaylist], mine: [AurralFlow], others: [AurralFlow],
                                    named: Set<String>, jobs: [AurralJob], entries: [String: [Song]],
-                                   itemJobs: [String: [AurralJob]] = [:],
+                                   proof: DiscoverItemProof = DiscoverItemProof(),
                                    scope: String) -> (playlists: [DiscoverPlaylist], notMine: Set<String>) {
         let before = othersDiscoverPlaylistIds
         func keptAsItWas(_ m: DiscoverPlaylist) -> Bool {   // R23F's rule for a playlist kept without a known flow
@@ -48,7 +48,8 @@ extension AppModel {
         let assignment = DiscoverIdentity.resolve(aurralItems: items,
                                                   playlists: matched.map(\.playlist).filter { named.contains($0.id) },
                                                   jobs: jobs, saved: saved, entries: entries,
-                                                  running: Set(mine.map(\.id).filter(isFlowRunActive)), itemJobs: itemJobs)
+                                                  running: Set(mine.map(\.id).filter(isFlowRunActive)),
+                                                  itemJobs: proof.jobs, unread: proof.unread)
         let claims = assignment.claims
         appDefaults.set(assignment.proven, forKey: Self.discoverClaimsKey(scope))
         let claimedBy = Dictionary(claims.map { ($0.value, $0.key) }, uniquingKeysWith: { a, _ in a })
