@@ -21,6 +21,10 @@ distributed only through TestFlight. It is not on the App Store. Expect rough ed
 - Browse playlists, artists, albums, songs and genres; search as you type; star favourites. Artists, Albums and
   Songs each have their own search field, and long lists have a header for each letter beside the A–Z bar.
 - Playlists can show only yours or everyone's shared ones; under everyone's, each playlist says who made it.
+- An artist's page shows their top songs (from Aurral, ListenBrainz or your library). With Lidarr connected, **In your
+  library only, for artists in Lidarr** (Settings › Home & Library › Artist top songs, on by default) keeps an artist's
+  top songs to the ones you already have when Lidarr looks after that artist; switch it off to see every top song,
+  with 30-second previews for the ones you don't have. Artists Lidarr doesn't have always show every top song.
 - A queue with shuffle and repeat, the lock screen and Control Centre, and synced lyrics when your server has them.
   Playback is gapless when the files carry gapless information.
 - Download albums and playlists for offline listening, with a size-limited cache for what you stream.
