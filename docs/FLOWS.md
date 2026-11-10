@@ -145,6 +145,11 @@ Round 24: a recent search's whole row is the button, and the Recent list refresh
 `search3` (no new route; offline, the offline catalogue's filter); while it holds a query the A–Z bar goes, and
 clearing returns to the same place (D224). Long A–Z lists (over 25, bar shown) have a header per letter run, and a
 letter jump lands on its header (D225). Playlists › All shows who made someone else's playlist (D223).
+Round 25: with Lidarr set up, Settings › Home & Library › Artist top songs has **In your library only, for artists in
+Lidarr** (on by default; hidden without Lidarr). While on, an artist page whose top songs come from Aurral or
+ListenBrainz, for an artist Lidarr monitors (or a find you kept), shows only the songs in your library, in order; with
+none it says "None of their top songs are in your library yet." Off, or for an artist not in Lidarr or a find still on
+trial, every top song shows with its preview as before (D247–D250).
 
 ### f. Requesting a song ("Try")
 "Quick" here means Lidarr's normal search-and-download pipeline. **Quick fetch via slskd is not built in v1.**
@@ -242,6 +247,12 @@ another user's rows show their name (D205). The user's own flow or playlist can 
 "Songs still coming" (Settings › Aurral, and a Home banner while a song is held) groups songs by state and offers
 Approve, Try another source (Aurral's deny) and Search now on the user's own songs only, each after a fresh
 ownership check (D213–D214). Aurral routes: 37, of which 18 are writes (D207–D209).
+Round 25, Aurral: when an item isn't proven yet and its name is shared (another user's item of that name, or two
+playlists of that name), or Aurral's general song list disagrees with its playlist, Discover reads that item's own
+songs from Aurral (at most ten items per read, yours first, four at a time, nothing written). Aurral's general list
+doesn't always hold them: it may be too big to read, and a playlist's songs taken from the Library are filed under the
+Library there. Once proven, the claim is saved; if the item's own songs can't be read, a saved claim stays. A playlist
+still left over is never guessed to be anyone's, so a non-admin sees another user's copy without a name (D251–D253).
 
 ### i. CarPlay
 - **Tabs.** Home, Library, Finds and Search. The Finds tab exists only when the head unit allows 4 tabs, and it shows "not set up" without a Finds library.

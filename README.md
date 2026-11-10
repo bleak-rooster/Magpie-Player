@@ -64,8 +64,9 @@ distributed only through TestFlight. It is not on the App Store. Expect rough ed
 
 **Discovery (optional)**
 - With [Aurral](https://github.com/lklynet/aurral): charts, recommendations, previews and Aurral's "flows" (playlists
-  it builds and keeps up to date). Flows and playlists are matched to the person who made them, not by name, so two
-  people's "Chill" stay apart. You can delete your own flows and playlists, and **Songs still coming** shows what
+  it builds and keeps up to date). Flows and playlists are matched to the person who made them, not by name (by
+  Aurral's own record of each one's songs when two share a name), so two people's "Chill" stay apart. Another
+  person's name is shown only when Aurral tells Magpie whose it is, which it does for Aurral admins. You can delete your own flows and playlists, and **Songs still coming** shows what
   Aurral is still fetching, with Approve, Try another source and Search now for your own songs.
 - With a [ListenBrainz](https://listenbrainz.org) token: your weekly playlists and recommendations. Plays are
   scrobbled through Navidrome; songs in Finds are never scrobbled.
