@@ -127,8 +127,8 @@ Requests and ideas are welcome as issues. Larger changes start as a short plan
 You need a Mac with Xcode 27.1 and [XcodeGen](https://github.com/yonaskolb/XcodeGen) (`brew install xcodegen`).
 
 ```sh
-git clone https://github.com/bleak-rooster/magpie.git
-cd magpie
+git clone https://github.com/bleak-rooster/Magpie-Player.git
+cd Magpie-Player
 scripts/build.sh                       # generates Magpie.xcodeproj from project.yml and builds for the simulator
 open Magpie.xcodeproj
 ```
@@ -169,7 +169,7 @@ If you use an AI coding assistant, point it at [`AGENTS.md`](AGENTS.md). Claude 
 [`CLAUDE.md`](CLAUDE.md) and the role definitions in [`.claude/agents/`](.claude/agents/).
 
 Please report security or privacy problems privately, through GitHub's
-[security advisories](https://github.com/bleak-rooster/magpie/security/advisories/new), not in a public issue.
+[security advisories](https://github.com/bleak-rooster/Magpie-Player/security/advisories/new), not in a public issue.
 
 ## Licence
 
