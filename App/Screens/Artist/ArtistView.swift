@@ -133,7 +133,7 @@ struct ArtistView: View {
             .frame(maxWidth: .infinity)
 
             if let outsideTop {   // round 14 A3: Top songs from the chosen source (owner answer 6)
-                TopSongsSection(result: outsideTop)
+                TopSongsSection(result: outsideTop, lidarr: lidarrLine?.state)   // Round 25 I (D248)
             } else if let topSongs = popular?.songs, !topSongs.isEmpty {
                 VStack(alignment: .leading, spacing: Tokens.Spacing.s) {
                     Text("Popular").magpieDisplay(.title2).accessibilityAddTraits(.isHeader)
