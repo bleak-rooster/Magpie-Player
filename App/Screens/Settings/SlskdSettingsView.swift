@@ -1,7 +1,9 @@
 import SwiftUI
 
-/// Round 23 (owner, 2026-11-07, D192): Settings › Lidarr › Soulseek (slskd). Optional: the address and API key (Test and
+/// Round 23 (owner, 2026-11-07, D192): Settings › Soulseek (slskd). Optional: the address and API key (Test and
 /// Connect), the write switch (off until the owner turns it on), and Disconnect. Named only here (the copy rule).
+/// Round 24 (owner, 2026-11-08, D216–D221): its own row under Accounts & Servers; whether slskd is connected to Soulseek
+/// (text and symbol), and "Keep Soulseek connected" (off by default, disabled with the reason until slskd is connected).
 struct SlskdSettingsView: View {
     @Environment(AppModel.self) private var model
     @State private var address = ""
@@ -21,6 +23,7 @@ struct SlskdSettingsView: View {
             } else {
                 connectForm
             }
+            keepConnectedSection
         }
         .navigationTitle(SlskdCopy.title)
         .navigationBarTitleDisplayMode(.inline)
@@ -77,6 +80,29 @@ struct SlskdSettingsView: View {
         }
     }
 
+    // MARK: - Round 24: Keep Soulseek connected (D217–D221)
+
+    @ViewBuilder private var keepConnectedSection: some View {
+        let reason = model.slskdKeepConnectedUnavailableReason
+        Section {
+            Toggle(SlskdKeepCopy.toggle, isOn: Binding(get: { model.slskdKeep.isOn },
+                                                       set: { on in Task { await model.setSlskdKeepConnected(on) } }))
+                .frame(minHeight: 44)
+                .disabled(reason != nil)
+                .accessibilityHint(reason ?? "")
+                .accessibilityIdentifier("slskd-keep-connected")
+        } footer: {
+            VStack(alignment: .leading, spacing: 6) {
+                if let reason { Text(reason) }
+                Text(SlskdKeepCopy.footer)
+                if let line = model.slskdKeepNotificationLine {
+                    Label(line, systemImage: model.slskdKeep.notificationsAllowed == true ? "bell" : "bell.slash")
+                        .accessibilityIdentifier("slskd-notification-state")
+                }
+            }
+        }
+    }
+
     private func connect() async {
         let url: URL
         switch ServerAddress.check(address) {
@@ -107,6 +133,19 @@ struct SlskdSettingsView: View {
         Section {
             LabeledContent("Address", value: connection.base.absoluteString)
             Label(SlskdCopy.rowSummaryOn, systemImage: "checkmark.circle")   // state as text and a symbol (D3)
+            if let check = model.slskdKeep.lastCheck {   // R24 (D217): slskd's own connection to Soulseek
+                let state = SlskdKeepCopy.state(check)
+                Label(state.text, systemImage: state.symbol)
+                    .accessibilityIdentifier("slskd-soulseek-state")
+            }
+            if let since = model.slskdKeep.pageBanner {
+                Label(since, systemImage: "clock.badge.exclamationmark")
+                    .accessibilityIdentifier("slskd-disconnected-since")
+            }
+            if model.slskdKeep.lastCheck == .keyCannotReconnect {
+                Label(SlskdKeepCopy.keyCannotReconnect, systemImage: "key")
+                    .font(.footnote)
+            }
         }
         Section {
             Toggle(SlskdCopy.allowChanges, isOn: Binding(get: { model.slskdChangesAllowed },

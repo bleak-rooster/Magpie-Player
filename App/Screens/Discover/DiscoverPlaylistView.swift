@@ -52,6 +52,7 @@ struct DiscoverPlaylistView: View {
         }
         .navigationTitle(page.value?.playlist.name ?? DiscoverCopy.title)
         .navigationBarTitleDisplayMode(.inline)
+        .aurralItemMenu(playlistId: playlistId, message: $message)   // R24C (D212): ⋯ › Delete, the user's own
         .magpieScreen()
         .songRemovalDialog($removing)
         .confirmationDialog("\(DiscoverCopy.refresh)?", isPresented: $confirmingRefresh, titleVisibility: .visible) {
@@ -101,6 +102,8 @@ struct DiscoverPlaylistView: View {
                     .padding(.bottom, Tokens.Spacing.s)
                 Text(page.playlist.name).magpieDisplay(.title).multilineTextAlignment(.center)
                     .accessibilityAddTraits(.isHeader)
+                // Round 24 (D205): another user's, under everyone's: who made it.
+                OwnerCaption(owner: model.discoverOwnerCaption(playlistId: page.playlist.id), signedInUser: nil)
                 Text("\(songs.count) \(songs.count == 1 ? "song" : "songs") · \(minutes) min")
                     .font(theme.numberFont(.footnote)).foregroundStyle(p.ink2Color)
                 // Round 14 A4 fix round 1 (M7): Add flow's playlist shows its download progress here too.
@@ -255,6 +258,8 @@ struct DiscoverListView: View {
                             Artwork(playlist.coverArtId, side: 56) { SleeveArt(image: $0, side: 56) }
                             VStack(alignment: .leading, spacing: 1) {
                                 Text(playlist.name).font(.body)
+                                // Round 24 (D205): another user's, under everyone's: who made it ("made by sam").
+                                OwnerCaption(owner: model.discoverOwnerCaption(playlistId: playlist.id), signedInUser: nil)
                                 if let download {
                                     Label(download.text, systemImage: "arrow.down.circle.dotted")
                                         .font(.footnote).foregroundStyle(themed.palette.ink2Color)

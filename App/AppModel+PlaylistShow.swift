@@ -19,6 +19,16 @@ enum PlaylistShow: String, CaseIterable, Sendable {
         case .yours: "You haven\u{2019}t made any playlists yet."
         }
     }
+
+    /// Round 24 (owner, 2026-11-08): under All's list, what it covers (plan item c, D223). Navidrome lists every
+    /// playlist the account may see (its own and everyone's shared ones; an admin's, everyone's), so All already is
+    /// "all"; this says so. Nothing under Yours.
+    var footer: String? {
+        switch self {
+        case .all: "You see your own and everyone\u{2019}s shared playlists."
+        case .yours: nil
+        }
+    }
 }
 
 extension AppModel {

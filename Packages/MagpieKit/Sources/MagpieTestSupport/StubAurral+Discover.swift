@@ -20,6 +20,12 @@ public struct StubAurralDiscover: Sendable {
     var delay: Duration = .zero
     /// Each Discover answer fails with this status (`{"error": ...}`) instead.
     var failure: Int?
+    /// Round 25 J fix round 1 (M1, I1): `GET /api/playlists/jobs/:id` alone waits this long, or fails with this status;
+    /// and how many of those answers were under way at once (now, and at most).
+    var itemJobsDelay: Duration = .zero
+    var itemJobsFailure: Int?
+    var itemJobsInFlight = 0
+    var itemJobsMaxInFlight = 0
     /// Deezer playlist ids already added (Add flow answers `alreadyAdded`).
     var added: [String: String] = [:]
     /// Round 14 A4 fix round 1: Discover playlists (Deezer ids) Aurral can't read (404).
@@ -265,6 +271,12 @@ public extension StubAurral {
     func setDiscoverDelay(_ delay: Duration) { discover.withLock { $0.delay = delay } }
     /// Every Discover answer fails with this status (nil: answers again).
     func setDiscoverFailure(_ status: Int?) { discover.withLock { $0.failure = status } }
+    /// Round 25 J fix round 1: `GET /api/playlists/jobs/:id` alone waits this long first.
+    func setItemJobsDelay(_ delay: Duration) { discover.withLock { $0.itemJobsDelay = delay } }
+    /// Round 25 J fix round 1: `GET /api/playlists/jobs/:id` alone fails with this status (nil: answers again).
+    func setItemJobsFailure(_ status: Int?) { discover.withLock { $0.itemJobsFailure = status } }
+    /// Round 25 J fix round 1 (M1): the most `GET /api/playlists/jobs/:id` answers ever under way at once.
+    var itemJobsMaxInFlight: Int { discover.withLock { $0.itemJobsMaxInFlight } }
     /// Where the preview redirects (nil: no preview, 404).
     func setPreviewTarget(_ target: String?) { discover.withLock { $0.previewTarget = target } }
     /// The preview answers this status instead of its redirect (nil: the redirect again).
@@ -315,6 +327,17 @@ public extension StubAurral {
             || path.hasPrefix("/api/playlists/flows/") || path.hasPrefix("/api/playlists/shared-playlists/")
             || path.hasPrefix("/api/playlists/jobs/")
         guard isDiscover, features != nil else { return nil }
+        if method == "GET", parts.count == 4, parts[1] == "playlists", parts[2] == "jobs" {
+            // Round 25 J fix round 1 (M1, I1): one item's songs, counted while under way; held or failed on its own.
+            let (wait, fails) = discover.withLock { s -> (Duration, Int?) in
+                s.itemJobsInFlight += 1
+                s.itemJobsMaxInFlight = max(s.itemJobsMaxInFlight, s.itemJobsInFlight)
+                return (s.itemJobsDelay, s.itemJobsFailure)
+            }
+            defer { discover.withLock { $0.itemJobsInFlight -= 1 } }
+            if wait > .zero { try await Task.sleep(for: wait) }
+            if let fails { return (fails, ["error": "Stub failure"]) }
+        }
         let (delay, failure) = discover.withLock { ($0.delay, $0.failure) }
         if delay > .zero { try await Task.sleep(for: delay) }
         if let failure { return (failure, ["error": "Stub failure"]) }

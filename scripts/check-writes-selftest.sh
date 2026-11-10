@@ -76,8 +76,37 @@ planted=(
   'slskd.gate.enabled'
   'model.slskdAccess?.gate.enabled'
   'g as SlskdWriteGate'
+  # Round 24 (D218): the slskd reconnect sent or named outside the keep-connected check.
+  'slskd.gate.perform(.connect)'
+  'client.connection.send(.connect)'
+  'gate.perform(SlskdWrite.connect)'
   # Round 23 R23F (D200): a third caller of Retry a song (the research route).
   'client.retrySong(playlistId: "flow-1", jobId: "job-1")'
+  # Round 24 (D242, D243): an owner's artist's change or clean-up named outside MonitoringChange.swift, or the ledger's
+  # monitoring book (the consent the gate reads) written elsewhere.
+  'gate.send("DELETE", "trackfile/bulk", body: TrackFileIdsBody(trackFileIds: ids), confinedAs: .unmatchedCleanup)'
+  'gate.send("PUT", "artist/editor", body: ProfileBody(artistIds: [job.artistId], metadataProfileId: target), confinedAs: .ownedChange)'
+  'ledger.saveIntent(intent)'
+  # R24H fix round 1 I6: the book written by a trailing closure, a spaced call, or straight to its file.
+  'ledger.updateMonitoring { $0.kept = [] }'
+  'ledger.saveIntent (intent)'
+  'LocalFile.save(MonitoringBook(), to: l.monitoringURL!)'
+  # Round 24 B (D207–D209): a held song decided, or a flow or playlist deleted, from anywhere but AurralClient+Manage.swift;
+  # Aurral's retry, cancel, manual search or research-missing named.
+  'aurral.ok(method: AurralRoute.heldSongMethod, path: "api/playlists/jobs/" + id + "/approve")'
+  'aurral.ok(method: AurralRoute.heldSongMethod, path: path)'
+  'aurral.ok(method: AurralRoute.recipeFlowDeleteMethod, path: path)'
+  'aurral.ok(method: AurralRoute.chartFlowDeleteMethod, path: path)'
+  'aurral.ok(method: m, path: "api/playlists/jobs/" + id + "/retry")'
+  'aurral.ok(method: m, path: "api/playlists/jobs/" + id + "/cancel")'
+  'aurral.ok(method: m, path: "api/playlists/jobs/" + id + "/manual-search")'
+  'aurral.ok(method: m, path: "api/playlists/research-missing")'
+  # Fix round 1 M1: a manage write's verb read off its route case (around the pinned constants), or its path tail named
+  # outside the Aurral client.
+  'aurral.ok(method: AurralRoute.recipeFlowDelete.method, path: path)'
+  'aurral.ok(method: AurralRoute.jobApprove.method, path: path)'
+  'aurral.ok(method: m, path: base + "/deny")'
+  'AurralRoute.route(method: m, path: p) == .jobApprove'
 )
 failed=0
 for p in "${planted[@]}"; do
@@ -89,6 +118,62 @@ for p in "${planted[@]}"; do
   fi
 done
 rm -f "$work/App/PlantedViolation.swift"
+
+# R24H fix round 2 (controller ruling): bypasses planted in place, each in the file where it would really go (appended to
+# a copy of it): a spaced `confinedAs :` from a new Requests file, two sends on one line, the pinned trial delete with a
+# clean-up on its line, a pinned call with code in front, a write function taken as a value behind a pinned comment, a
+# verb hidden by a trailing comment, and the book written through its key or decoded as its type.
+rq_src="Packages/MagpieKit/Sources/Requests"
+placed=(
+  "$rq_src/PlantedOwned.swift|_ = try await gate.send(\"PUT\", \"artist/editor\", body: B(artistIds: [1], metadataProfileId: 2), confinedAs : .ownedChange)"
+  "$rq_src/MonitoringChange.swift|_ = try await gate.send(\"POST\", \"command\", body: RefreshBody(name: \"RefreshArtist\", artistId: 1)); _ = try await gate.send(\"DELETE\", \"artist/1?deleteFiles=true\", body: nil)"
+  "$rq_src/RequestRunner+Trial.swift|_ = try await gate.send(\"DELETE\", \"trackfile/bulk\", body: TrackFileIdsBody(trackFileIds: ids), confinedAs: .trialDelete); _ = try await gate.performCleanup(intentId: other)"
+  "$rq_src/MonitoringChange.swift|evil(); _ = try await gate.performOwned(intentId: job.id, step: .profile)"
+  "$rq_src/MonitoringChange.swift|let write = gate.send // _ = try await gate.performOwned(intentId: job.id, step: .profile)"
+  "$rq_src/RequestRunner+NotForMe.swift|_ = try await lidarrWrite(\"DELETE\", \"artist/1?deleteFiles=true\") // gate.send(\""
+  "App/AppModel+Monitoring.swift|try Data().write(to: URL(fileURLWithPath: ledger.monitoringBookKey))"
+  "App/AppModel+Monitoring.swift|let book = try JSONDecoder().decode(MonitoringBook.self, from: data)"
+  # R24H fix round 3 N1: a confined send split across lines (V1), a gate kept under another name (V2), `gate` and
+  # `.send(` on two lines (V4); H-M2: the reviewer's probe writing the book beside the ledger.
+  $'Packages/MagpieKit/Sources/Requests/RequestRunner+Trial.swift|_ = try await gate.send("DELETE", "trackfile/bulk", body: TrackFileIdsBody(trackFileIds: other), confinedAs\n        : .trialDelete)'
+  $'Packages/MagpieKit/Sources/Requests/PlantedAlias.swift|let g = gate\n    _ = try await g.send(verb, path, body: nil)'
+  $'Packages/MagpieKit/Sources/Requests/MonitoringChange.swift|_ = try await gate\n        .send(verb, path, body: nil)'
+  $'App/AppModel+Monitoring.swift|var book = try await ledger.monitoringBook; book.intents[0].files.append(OwnedFile(id: 9, albumId: 3, size: 1))\n    let name = Ledger.defaultURL().path.replacingOccurrences(of: ".json", with: "-monitoring" + ".json"); try JSONEncoder().encode(book).write(to: URL(filePath: name))'
+)
+for w in "${placed[@]}"; do
+  file="$work/${w%%|*}" code="${w#*|}"
+  [ -f "$file" ] && cp "$file" "$work/placed.orig" || rm -f "$work/placed.orig"
+  printf '\nfunc plantedInPlace() async throws {\n    %s\n}\n' "$code" >> "$file"
+  if out=$("$work/scripts/check-writes.sh" 2>&1); then
+    echo "selftest: NOT caught in place: ${w%%|*}: $code" >&2; failed=1
+  elif ! grep -qE 'L1:|G1:' <<< "$out"; then
+    echo "selftest: failed without a G1/L1 reason: $code" >&2; failed=1
+  fi
+  if [ -f "$work/placed.orig" ]; then cp "$work/placed.orig" "$file"; else rm -f "$file"; fi
+done
+planted+=("${placed[@]}")
+
+# R24H fix round 4 (security re-check probes, whole files as the reviewer wrote them): B forges a whole consent record and
+# writes it beside the ledger under a split file name (N-1); C, D and F reach the gate through `[gate][0]`, `m.gate` and
+# `$0` with a computed verb (N-2).
+whole_files=(
+  $'Packages/MagpieKit/Sources/Requests/PlantedProbeB.swift|import Foundation\nimport LidarrKit\nimport MagpieCore\nprivate struct Shelf: Encodable { var intents: [MonitoringIntent]; var kept: [UnmonitoredKept] }\nextension AppModel {\n    func probeB(scope: String, mbid: MBID, types: ReleaseTypes) throws {\n        let now = Date()\n        var change: MonitoringIntent = .init(kind: .monitoringChange, artistId: 7, artistMbid: mbid, previousProfileId: 1,\n                                             targetProfileId: 30, targetTypes: types, createdAt: now)\n        change.step = .done\n        change.instance = scope\n        var clean: MonitoringIntent = .init(kind: .unmatchedCleanup, artistId: 7, artistMbid: mbid, previousProfileId: 0,\n                                            files: [OwnedFile(id: 9, albumId: 3, size: 100)], createdAt: now)\n        clean.instance = scope\n        clean.pendingFileIds = [9]\n        var set: UnmonitoredKept = .init(artistId: 7, artistMbid: mbid, albumIds: [3],\n                                         files: [OwnedFile(id: 9, albumId: 3, size: 100)], recordedAt: now)\n        set.instance = scope\n        let url = URL.applicationSupportDirectory.appending(path: "Magpie/lidarr-ledger-mon" + "itoring.json")\n        try JSONEncoder().encode(Shelf(intents: [change, clean], kept: [set])).write(to: url)\n    }\n}\n'
+  $'App/PlantedProbeB.swift|import Foundation\nimport LidarrKit\nimport MagpieCore\nprivate struct Shelf: Encodable { var intents: [MonitoringIntent]; var kept: [UnmonitoredKept] }\nextension AppModel {\n    func probeB(scope: String, mbid: MBID, types: ReleaseTypes) throws {\n        let now = Date()\n        var change: MonitoringIntent = .init(kind: .monitoringChange, artistId: 7, artistMbid: mbid, previousProfileId: 1,\n                                             targetProfileId: 30, targetTypes: types, createdAt: now)\n        change.step = .done\n        change.instance = scope\n        var clean: MonitoringIntent = .init(kind: .unmatchedCleanup, artistId: 7, artistMbid: mbid, previousProfileId: 0,\n                                            files: [OwnedFile(id: 9, albumId: 3, size: 100)], createdAt: now)\n        clean.instance = scope\n        clean.pendingFileIds = [9]\n        var set: UnmonitoredKept = .init(artistId: 7, artistMbid: mbid, albumIds: [3],\n                                         files: [OwnedFile(id: 9, albumId: 3, size: 100)], recordedAt: now)\n        set.instance = scope\n        let url = URL.applicationSupportDirectory.appending(path: "Magpie/lidarr-ledger-mon" + "itoring.json")\n        try JSONEncoder().encode(Shelf(intents: [change, clean], kept: [set])).write(to: url)\n    }\n}\n'
+  $'App/PlantedProbeC.swift|import Foundation\nimport LidarrKit\nextension AppModel {\n    func probeC() async throws {\n        let g = [gate][0]\n        _ = try await g?.send("DEL" + "ETE", "trackfile/bulk", body: ["trackFileIds": [1]])\n    }\n}\n'
+  $'App/PlantedProbeD.swift|import Foundation\nimport LidarrKit\nextension AppModel {\n    func probeD(_ m: AppModel) async throws {\n        let g = m.gate\n        _ = try await g?.send("DEL" + "ETE", "trackfile/bulk", body: ["trackFileIds": [1]])\n    }\n}\n'
+  $'App/PlantedProbeF.swift|import Foundation\nimport LidarrKit\nextension AppModel {\n    func probeF() async throws {\n        try await gate.map { try await $0.send("DEL" + "ETE", "trackfile/bulk", body: ["trackFileIds": [1]]) }\n    }\n}\n'
+)
+for w in "${whole_files[@]}"; do
+  dest="$work/${w%%|*}"
+  printf '%s' "${w#*|}" > "$dest"
+  if out=$("$work/scripts/check-writes.sh" 2>&1); then
+    echo "selftest: NOT caught as a whole file: ${w%%|*}" >&2; failed=1
+  elif ! grep -qE 'L1:|G1:' <<< "$out"; then
+    echo "selftest: failed without a G1/L1 reason: ${w%%|*}" >&2; failed=1
+  fi
+  rm -f "$dest"
+done
+planted+=("${whole_files[@]}")
 
 # Fix M1: weakenings of the Aurral allow-list itself (one at a time, each on a fresh copy of AurralClient.swift) must be
 # caught too: a read moved to a write verb, a route with a new query name, a token dropped or added, the retry route's
@@ -106,6 +191,10 @@ weakened=(
   's/        case .health, .login, .deezerPreview, .imageProxyFile: false/        case .health, .login, .deezerPreview, .imageProxyFile, .bootstrap: false/'
   's/            \&\& isPlainId(rest\[4\]) \&\& rest\[5\] == "research": .trackResearch/            \&\& rest[5] == "research": .trackResearch/'
   's/return Set(names).count == names.count \&\& names.allSatisfy(route.queryNames.contains)/return true/'
+  # Round 24 B (D207): approve's and deny's id checks dropped, deny's verb given to a read.
+  's/ \&\& isPlainId(rest\[2\]) \&\& rest\[3\] == "approve": .jobApprove/ \&\& rest[3] == "approve": .jobApprove/'
+  's/ \&\& isPlainId(rest\[2\]) \&\& rest\[3\] == "deny": .jobDeny/ \&\& rest[3] == "deny": .jobDeny/'
+  's/        case .jobApprove, .jobDeny: Self.heldSongMethod/        case .jobApprove, .jobDeny: Self.heldSongMethod\n        case .playlistJobsById: Self.heldSongMethod/'
 )
 for w in "${weakened[@]}"; do
   cp "$work/AurralClient.orig" "$aurral_src"
@@ -184,19 +273,29 @@ weakened+=("${s14_weakened[@]}")
 # climb out of the downloads folder, the write switch dropped, the GET-only read channel loosened.
 slroute_src="$work/Packages/MagpieKit/Sources/SlskdKit/SlskdRoute.swift"
 slclient_src="$work/Packages/MagpieKit/Sources/SlskdKit/SlskdClient.swift"
-for f in "$slroute_src" "$slclient_src"; do cp "$f" "$f.orig"; done
+slgate_src="$work/Packages/MagpieKit/Sources/SlskdKit/SlskdWriteGate.swift"
+for f in "$slroute_src" "$slclient_src" "$slgate_src"; do cp "$f" "$f.orig"; done
 slskd_weakened=(
-  "$slroute_src|s/        case .downloads, .downloadsFolder: \"GET\"/        case .downloads: \"GET\"\n        case .downloadsFolder: Self.deleteMethod/"
+  "$slroute_src|s/        case .downloads, .downloadsFolder, .serverState: \"GET\"/        case .downloads, .serverState: \"GET\"\n        case .downloadsFolder: Self.deleteMethod/"
+  # Round 24 (D218): the server read made a write, a disconnect added, the connect's verb changed, the connect's proofs
+  # (its switch, the minute, slskd read down, the ask saved first) dropped.
+  "$slroute_src|s/        case .downloads, .downloadsFolder, .serverState: \"GET\"/        case .downloads, .downloadsFolder: \"GET\"\n        case .serverState: Self.connectMethod/"
+  "$slroute_src|s/^    case connect/    case connect\n    case disconnect/"
+  "$slroute_src|s/    static let connectMethod = \"PUT\"/    static let connectMethod = \"DELETE\"/"
+  "$slgate_src|s/        guard keepConnected else { throw SlskdGateError.refused(.*) }//"
+  "$slgate_src|s/        guard mayAskToConnect() else { throw SlskdGateError.refused(\"asked less than a minute ago\") }//"
+  "$slgate_src|s/        guard state.condition == .down else { throw SlskdGateError.refused(.*) }//"
+  "$slgate_src|s/        defaults.set(now(), forKey: Self.lastConnectKey(scope: client.instanceScope))//"
   "$slroute_src|s/^    case deleteFolder(String)/    case deleteFolder(String)\n    case clearCompleted/"
   "$slroute_src|s/s != \".\", s != \"..\", //"
   "$slroute_src|s/\$0 == \"\\\\\\\\\" || //"
   "$slroute_src|s/            return \[\"transfers\", \"downloads\"\]/            return [\"transfers\", \"downloads\", \"all\", \"completed\"]/"
-  "$slclient_src|s/        guard enabled else { throw SlskdGateError.disabled }/        _ = enabled/"
+  "$slgate_src|s/        guard enabled else { throw SlskdGateError.disabled }/        _ = enabled/"
   "$slclient_src|s/        guard route.method == \"GET\" else { throw SlskdError.forbidden }//"
 )
 for w in "${slskd_weakened[@]}"; do
   file="${w%%|*}" expr="${w#*|}"
-  for f in "$slroute_src" "$slclient_src"; do cp "$f.orig" "$f"; done
+  for f in "$slroute_src" "$slclient_src" "$slgate_src"; do cp "$f.orig" "$f"; done
   cp "$file" "$work/before"
   sed -i '' "$expr" "$file"
   if cmp -s "$work/before" "$file"; then echo "selftest: the weakening didn't apply: $expr" >&2; failed=1; continue; fi
@@ -206,8 +305,147 @@ for w in "${slskd_weakened[@]}"; do
     echo "selftest: failed without a G1 reason: $expr" >&2; failed=1
   fi
 done
-for f in "$slroute_src" "$slclient_src"; do cp "$f.orig" "$f"; rm -f "$f.orig"; done
+for f in "$slroute_src" "$slclient_src" "$slgate_src"; do cp "$f.orig" "$f"; rm -f "$f.orig"; done
 weakened+=("${slskd_weakened[@]}")
+
+# Round 24 (D243): the owned-artist proofs weakened one at a time: the clean-up's cap, the fresh size check, the
+# monitoring switch, the editor's two keys, the unmonitored-album check.
+owned_src="$work/Packages/MagpieKit/Sources/LidarrKit/WriteConfinement+Owned.swift"
+ownedgate_src="$work/Packages/MagpieKit/Sources/LidarrKit/WriteGate.swift"
+for f in "$owned_src" "$ownedgate_src"; do cp "$f" "$f.orig"; done
+owned_weakened=(
+  "$owned_src|s/    public static let maxCleanupFiles = 50/    public static let maxCleanupFiles = 500/"
+  "$owned_src|s/guard let size = file.size, size == recorded.size else/guard let size = file.size else/"
+  "$owned_src|s/== \[\"artistids\", \"metadataprofileid\"\], body.count == 2,/.contains(\"artistids\"),/"
+  "$owned_src|s/}), !album.monitored else {/}) else {/"
+  "$ownedgate_src|s/guard monitoringChangesEnabled else { throw refused(target, \"changing what Lidarr monitors is off\") }/_ = monitoringChangesEnabled/"
+  # R24H fix round 1 M1: Revert's guards, the unmonitor guards, the monitor-true guards, the last check, I2 and I5.
+  "$owned_src|s/                  ReleaseTypes.isMagpieMetadataProfile(current) else {/                  true else {/"
+  "$owned_src|s/            guard profile == intent.previousProfileId, profiles/            guard profiles/"
+  "$owned_src|s/!types.includes(albumType: \$0.albumType, secondaryTypes: \$0.secondaryTypes) } == true/true } == true/"
+  "$owned_src|s/entries.contains { \$0.albumId == id \&\& \$0.isOpen \&\& !\$0.isConfirmedKept } }) else {/false }) else {/"
+  "$owned_src|s/              Set(ids).isDisjoint(with: intent.beforeAlbumIds) else {/              true else {/"
+  "$owned_src|s/            \&\& !OwnedProof.hasLiveTry(artistId, in: entries)/            \&\& true/"
+  "$owned_src|s/            guard Self.keptOrConfirmed(recorded, artistId: artistId, in: book) else {/            guard true else {/"
+  "$owned_src|s/        guard !Self.hasLiveTry(artistId, in: entries) else { throw Failure.refused(\"a Try of Magpie's is under way for the artist\") }//"
+)
+for w in "${owned_weakened[@]}"; do
+  file="${w%%|*}" expr="${w#*|}"
+  for f in "$owned_src" "$ownedgate_src"; do cp "$f.orig" "$f"; done
+  cp "$file" "$work/before"
+  sed -i '' "$expr" "$file"
+  if cmp -s "$work/before" "$file"; then echo "selftest: the weakening didn't apply: $expr" >&2; failed=1; continue; fi
+  if out=$("$work/scripts/check-writes.sh" 2>&1); then
+    echo "selftest: NOT caught: $expr" >&2; failed=1
+  elif ! grep -qE 'G1:' <<< "$out"; then
+    echo "selftest: failed without a G1 reason: $expr" >&2; failed=1
+  fi
+done
+for f in "$owned_src" "$ownedgate_src"; do cp "$f.orig" "$f"; rm -f "$f.orig"; done
+weakened+=("${owned_weakened[@]}")
+
+# Round 24 B (D207–D209): the four manage sends weakened: an id check dropped, a path turned to retry or cancel, a
+# delete given a body.
+manage_src="$work/Packages/MagpieKit/Sources/AurralKit/AurralClient+Manage.swift"
+cp "$manage_src" "$manage_src.orig"
+manage_weakened=(
+  's/guard AurralRoute.isPlainId(Substring(jobId)) else { throw AurralError.forbidden("approve /guard true else { throw AurralError.forbidden("approve /'
+  's/guard AurralRoute.isPlainId(Substring(flowId)) else { throw AurralError.forbidden("delete flow /guard true else { throw AurralError.forbidden("delete flow /'
+  's|path: "api/playlists/jobs/" + jobId + "/approve")|path: "api/playlists/jobs/" + jobId + "/retry")|'
+  's|path: "api/playlists/jobs/" + jobId + "/deny")|path: "api/playlists/jobs/" + jobId + "/cancel")|'
+  's|path: "api/playlists/shared-playlists/" + playlistId)|path: "api/playlists/shared-playlists/" + playlistId, body: Data())|'
+)
+for w in "${manage_weakened[@]}"; do
+  cp "$manage_src.orig" "$manage_src"
+  sed -i '' "$w" "$manage_src"
+  if cmp -s "$manage_src.orig" "$manage_src"; then echo "selftest: the weakening didn't apply: $w" >&2; failed=1; continue; fi
+  if out=$("$work/scripts/check-writes.sh" 2>&1); then
+    echo "selftest: NOT caught: $w" >&2; failed=1
+  elif ! grep -qE 'G1:' <<< "$out"; then
+    echo "selftest: failed without a G1 reason: $w" >&2; failed=1
+  fi
+done
+cp "$manage_src.orig" "$manage_src"; rm -f "$manage_src.orig"
+weakened+=("${manage_weakened[@]}")
+
+# Round 24 D fix round 1 (I1): slskd reconnect bypasses planted where they would really go (appended to, or edited
+# into, the file named): a connect through a typed variable in the clean slate, a second gate made and used by the app,
+# a second caller in the check, a reconnect on the client skipping the gate, the verb of another route swapped in, and
+# a read that sends the connect.
+slskd_inplace=(
+  "Packages/MagpieKit/Sources/Requests/RequestRunner+CleanSlate.swift|append|        let w: SlskdWrite = .connect; try await slskd.gate.perform(w)"
+  "App/AppModel+Slskd.swift|append|        let g = SlskdWriteGate(client: client, defaultsSuite: gateDefaultsSuite); try await g.perform(w)"
+  "Packages/MagpieKit/Sources/SlskdKit/SlskdServerState.swift|append|      try await gate.perform(.connect)"
+  "Packages/MagpieKit/Sources/SlskdKit/SlskdClient.swift|append|    public func reconnect() async throws { _ = try await connection.send(.connect) }"
+  "Packages/MagpieKit/Sources/SlskdKit/SlskdClient.swift|sed|s/request.httpMethod = route.method/request.httpMethod = route == .serverState ? SlskdRoute.connect.method : route.method/"
+  "Packages/MagpieKit/Sources/SlskdKit/SlskdClient.swift|sed|s/        guard route.method == \"GET\" else { throw SlskdError.forbidden }/&\n        if route == .serverState { return try await send(.connect) }/"
+  # Fix round 2 (R1): the re-review's variants: a connect on an existing perform line, a perform taken as a function, a
+  # backticked, spaced or function-reference send, a perform taken by the app, a spaced second caller.
+  "Packages/MagpieKit/Sources/Requests/RequestRunner+CleanSlate.swift|sed|s/try await slskd.gate.perform(.deleteFolder(folder.name)) }/&; let w: SlskdWrite = .connect; try await slskd.gate.perform(w)/"
+  "Packages/MagpieKit/Sources/Requests/RequestRunner+CleanSlate.swift|append|        let p = slskd.gate.perform; try await p(.connect)"
+  "Packages/MagpieKit/Sources/SlskdKit/SlskdClient.swift|append|    func b3() async throws { _ = try await connection.\`send\`(.connect) }"
+  "Packages/MagpieKit/Sources/SlskdKit/SlskdClient.swift|append|    func b4() async throws { _ = try await connection.send (.connect) }"
+  "Packages/MagpieKit/Sources/SlskdKit/SlskdClient.swift|append|    func b5() async throws { let s = connection.send; _ = try await s(.connect) }"
+  "App/AppModel+Slskd.swift|append|        let p = gate.perform; Task { try? await p(.connect) }"
+  "Packages/MagpieKit/Sources/SlskdKit/SlskdServerState.swift|append|            try await gate.perform (.connect)"
+  # Fix round 3 (R2): a pass made by an extension's initialiser, a value of any type made by a generic bit-cast in a
+  # new SlskdKit file, and the channel's send reached from another SlskdKit file, spaced, backticked or taken as a
+  # function (no `.connect` and no pass named, so only the send rule can see them).
+  "Packages/MagpieKit/Sources/SlskdKit/SlskdServerState.swift|append|extension SlskdGatePass { init(sneak: ()) {} }"
+  "Packages/MagpieKit/Sources/SlskdKit/SlskdPlanted.swift|new|func make<T>() -> T { unsafeBitCast((), to: T.self) }"
+  "Packages/MagpieKit/Sources/SlskdKit/SlskdLeftovers.swift|append|    func r1(_ c: SlskdClient, _ r: SlskdRoute) async throws { _ = try await c.connection.send (r, pass: make()) }"
+  "Packages/MagpieKit/Sources/SlskdKit/SlskdLeftovers.swift|append|    func r2(_ c: SlskdClient, _ r: SlskdRoute) async throws { _ = try await c.connection.\`send\`(r, pass: make()) }"
+  "Packages/MagpieKit/Sources/SlskdKit/SlskdLeftovers.swift|append|    func r3(_ c: SlskdClient) { let s = c.connection . send; _ = s }"
+)
+for entry in "${slskd_inplace[@]}"; do
+  rel="${entry%%|*}" rest="${entry#*|}"
+  mode="${rest%%|*}" text="${rest#*|}"
+  file="$work/$rel"
+  [ -e "$file" ] || : > "$file"   # a new file (fix round 3): starts empty
+  cp "$file" "$file.orig"
+  if [ "$mode" = append ] || [ "$mode" = new ]; then printf '%s\n' "$text" >> "$file"; else sed -i '' "$text" "$file"; fi
+  if cmp -s "$file.orig" "$file"; then echo "selftest: the plant didn't apply: $entry" >&2; failed=1
+  elif out=$("$work/scripts/check-writes.sh" 2>&1); then
+    echo "selftest: NOT caught: $entry" >&2; failed=1
+  elif ! grep -qE 'G1:' <<< "$out"; then
+    echo "selftest: failed without a G1 reason: $entry" >&2; failed=1
+  fi
+  cp "$file.orig" "$file"; rm -f "$file.orig"
+  [ "$mode" = new ] && rm -f "$file"
+done
+planted+=("${slskd_inplace[@]}")
+
+# Round 24 C fix round 1: Songs still coming's and Delete's bypasses, planted where they would really go.
+# I3: the Delete button's word is allowed on its one exact line only: a verb literal or a request's verb next to it, or
+# the old tag in another file, is caught. M6: one research call per allowed file, whatever the spelling. B-M1: a held
+# song decided without the fresh ownership guard, or from anywhere but `sendHeldDecision`.
+c_inplace=(
+  "App/AppModel+AurralDelete.swift|sed|s/^    static let confirm = \"Delete\"$/&\n    static let verb = \"DELETE\"/"
+  "App/AppModel+AurralDelete.swift|sed|s/^    static let confirm = \"Delete\"$/&\n    static func planted(_ r: inout URLRequest) { r.httpMethod = \"DELETE\" }/"
+  "App/AppModel+AurralDelete.swift|append|func plantedVerb(_ r: inout URLRequest) { r.httpMethod = \"DELETE\" }"
+  "App/AppModel+AurralDownloads.swift|append|// G1 allowlist: copy\nlet plantedVerb = \"DELETE\""
+  "App/AppModel+SearchAgain.swift|sed|s/_ = try await client.retrySong(playlistId: flow.id, jobId: job.id)/&; _ = try await client.retrySong (playlistId: flow.id, jobId: job.id)/"
+  "App/AppModel+AurralDownloads.swift|append|func plantedResearch(_ c: AurralClient) async throws { _ = try await c.\`retrySong\`(playlistId: \"f\", jobId: \"j\") }"
+  "App/AppModel+AurralDownloads.swift|append|func plantedApprove(_ c: AurralClient) async throws { try await c.approveHeldSong(\"job-1\") }"
+  "App/AppModel+AurralDownloads.swift|sed|/guard let user = discover.bootstrap?.user, let freshItem, freshItem.belongs(to: user) else { throw AurralError.notPermitted }/d"
+  "App/AppModel+AurralDownloads.swift|sed|s/let jobs = try await client.playlistJobs(row.item.id) ?? \[\]/let jobs: [AurralJob] = []/"
+  "App/Screens/Discover/AurralDownloadsView.swift|append|func plantedDeny(_ c: AurralClient) async throws { try await c.denyHeldSong (\"job-1\") }"
+)
+for entry in "${c_inplace[@]}"; do
+  rel="${entry%%|*}" rest="${entry#*|}"
+  mode="${rest%%|*}" text="${rest#*|}"
+  file="$work/$rel"
+  cp "$file" "$file.orig"
+  if [ "$mode" = append ]; then printf '%b\n' "$text" >> "$file"; else sed -i '' "$text" "$file"; fi
+  if cmp -s "$file.orig" "$file"; then echo "selftest: the plant didn't apply: $entry" >&2; failed=1
+  elif out=$("$work/scripts/check-writes.sh" 2>&1); then
+    echo "selftest: NOT caught: $entry" >&2; failed=1
+  elif ! grep -qE 'G1:' <<< "$out"; then
+    echo "selftest: failed without a G1 reason: $entry" >&2; failed=1
+  fi
+  cp "$file.orig" "$file"; rm -f "$file.orig"
+done
+planted+=("${c_inplace[@]}")
 
 [ "$failed" = 0 ] || exit 1
 echo "check-writes selftest: all ${#planted[@]} planted violations and ${#weakened[@]} allow-list weakenings caught; the clean tree passes"

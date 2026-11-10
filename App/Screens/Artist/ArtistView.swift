@@ -24,6 +24,7 @@ struct ArtistView: View {
     @State private var lidarrLine: ArtistLidarrModel?
     /// R4: the artist download (its ⋯ items, confirmation and status line share it).
     @State private var artistDownload = ArtistDownloadState()
+    @State private var monitoring = ArtistMonitoringState()   // Round 24 (D237, D242): Change what's monitored, Clean up
     private let themed = Themed()
 
     struct Page {
@@ -61,6 +62,7 @@ struct ArtistView: View {
                         PageMoreMenu(coverArtId: artist.coverArtId, identifier: "artist-more") {
                             ArtistDownloadMenuItems(state: artistDownload, artist: artist,
                                                     albums: page.albums.sorted { ($0.year ?? 0) > ($1.year ?? 0) })
+                            ArtistMonitoringMenuItems(state: monitoring, line: lidarrLine)   // Round 24
                         }
                     }
                 }
@@ -70,6 +72,7 @@ struct ArtistView: View {
         .magpieScreen()
         .immersiveArt(coverArtId: page.value?.artist.coverArtId)
         .findsKeepFlow(host: keepHost)
+        .artistMonitoring(monitoring, line: lidarrLine)   // Round 24 (D237, D242)
         // Again when offline mode changes, and offline when songs land on or leave the phone (the store may be
         // unreadable before first unlock): the downloaded albums offline, the server's online.
         .task(id: model.offlinePageKey) {
@@ -130,7 +133,7 @@ struct ArtistView: View {
             .frame(maxWidth: .infinity)
 
             if let outsideTop {   // round 14 A3: Top songs from the chosen source (owner answer 6)
-                TopSongsSection(result: outsideTop)
+                TopSongsSection(result: outsideTop, lidarr: lidarrLine?.state)   // Round 25 I (D248)
             } else if let topSongs = popular?.songs, !topSongs.isEmpty {
                 VStack(alignment: .leading, spacing: Tokens.Spacing.s) {
                     Text("Popular").magpieDisplay(.title2).accessibilityAddTraits(.isHeader)

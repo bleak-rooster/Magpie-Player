@@ -27,17 +27,8 @@ struct RequestsSettingsView: View {
             Group { lidarrSections }.disabled(model.isOffline)
             if model.lidarr != nil {
                 NewMusicDefaultsSection()   // R18 + R20
-                Section {   // Y4: was a top-level row while Lidarr is connected
-                    NavigationLink(value: SettingsPage.lidarrDownloads) {
-                        LabeledContent(LidarrDownloadsCopy.title, value: model.lidarrDownloadsAttention.map { LidarrDownloadsCopy.attention($0).text } ?? "")
-                    }
-                    .accessibilityIdentifier("settings-lidarr-downloads")
-                }
-                Section {   // R23 (D192): the optional slskd connection, next to Lidarr's
-                    NavigationLink(value: SettingsPage.slskd) {
-                        LabeledContent(SlskdCopy.title, value: model.slskd == nil ? SlskdCopy.rowSummaryOff : SlskdCopy.rowSummaryOn)
-                    }
-                    .accessibilityIdentifier("settings-slskd")
+                ForEach(Self.pageLinks, id: \.self) { page in
+                    Section { pageLink(page) }
                 }
             }
         }
@@ -53,6 +44,19 @@ struct RequestsSettingsView: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text(LidarrConnectCopy.plainHTTPMessage + "\n\n" + (model.lidarr.map { $0.base.host ?? $0.base.absoluteString } ?? ""))
+        }
+    }
+
+    /// The pages this one opens while Lidarr is connected. Round 24 (D216): slskd left for its own row under Accounts &
+    /// Servers.
+    static let pageLinks: [SettingsPage] = [.lidarrDownloads]
+
+    @ViewBuilder private func pageLink(_ page: SettingsPage) -> some View {
+        if page == .lidarrDownloads {   // Y4: was a top-level row while Lidarr is connected
+            NavigationLink(value: SettingsPage.lidarrDownloads) {
+                LabeledContent(LidarrDownloadsCopy.title, value: model.lidarrDownloadsAttention.map { LidarrDownloadsCopy.attention($0).text } ?? "")
+            }
+            .accessibilityIdentifier("settings-lidarr-downloads")
         }
     }
 
@@ -112,6 +116,7 @@ struct RequestsSettingsView: View {
             } footer: {
                 Text("Turn on to bring songs home. Every change is logged.")
             }
+            LidarrMonitoringToggle()   // Round 24 (Q10, D237): what Lidarr monitors for the owner's artists
             Section {   // R17 (R20's words)
                 Picker(RequestCopy.stuckCopySetting, selection: Binding(
                     get: { stuckCopyLimit },

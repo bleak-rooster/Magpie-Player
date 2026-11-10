@@ -218,6 +218,11 @@ public struct AurralJob: Sendable, Equatable, Hashable {
     /// Round 15 C2 re-review (M-a): a quality-upgrade job's original (2.13 `upgradeForJobId`); such a job is never the
     /// song's own in a chart flow.
     public var upgradeForJobId: String?
+    /// Round 24 C fix round 1 (I4, D213): how far along it is, 0–100, when Aurral says (2.13's public job has no
+    /// progress; `progress` is read for a later one), and Aurral's words about it (2.13: `error`; `message` and
+    /// `statusMessage` first if present), trimmed, at most 200 characters. Nil when absent or odd.
+    public var progress: Int?
+    public var message: String?
 
     public init(id: String, flowId: String?, artistName: String, trackName: String, albumName: String? = nil,
                 artistMBID: MBID? = nil, trackMBID: MBID? = nil, durationMs: Int? = nil, finalPath: String? = nil,
@@ -235,6 +240,24 @@ public struct AurralJob: Sendable, Equatable, Hashable {
         return path.split(separator: "/").contains("_flows")
     }
 
+    /// A progress as a whole percent: a number (or a short numeric string), 0–1 read as a fraction, clamped to 0–100;
+    /// nil for anything else (never a trapping conversion).
+    static func percent(_ value: Any?) -> Int? {
+        var number: Double?
+        // Follow-up m2: a JSON 0, 1 or 1.0 also bridges to Bool; only a real true/false is refused.
+        if let n = value as? NSNumber, CFGetTypeID(n) != CFBooleanGetTypeID() { number = n.doubleValue }
+        if let text = value as? String, text.count <= 20 { number = Double(text.trimmingCharacters(in: .whitespaces)) }
+        guard var v = number, v.isFinite else { return nil }
+        if v > 0, v < 1 { v *= 100 }
+        return Int(min(100, max(0, v)).rounded())
+    }
+
+    /// Aurral's words: a string, trimmed, at most 200 characters; nil when empty or not a string.
+    static func words(_ value: Any?) -> String? {
+        guard let text = (value as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return nil }
+        return String(text.prefix(200))
+    }
+
     /// The jobs array, bare or as `{"jobs": [...]}`; jobs without an id, artist or track are dropped.
     public static func decodeList(_ data: Data) throws -> [AurralJob] {
         let root = object(data)
@@ -249,6 +272,8 @@ public struct AurralJob: Sendable, Equatable, Hashable {
                                 trackMBID: j.mbid("trackMbid"), durationMs: j.int("durationMs"), finalPath: j.string("finalPath"),
                                 status: j.string("status"))
             job.upgradeForJobId = j.string("upgradeForJobId").flatMap { $0.isEmpty ? nil : String($0.prefix(100)) }
+            job.progress = Self.percent(j["progress"])
+            job.message = ["message", "statusMessage", "error"].lazy.compactMap { Self.words(j[$0]) }.first
             return job
         }
     }

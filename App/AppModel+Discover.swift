@@ -130,15 +130,21 @@ extension AppModel {
     /// user, session and password on this iPhone. Discover goes, and Aurral's library is listed again as any other
     /// library would be. Nothing else in Aurral changes.
     func disconnectAurral() {
+        disconnectAurral(scope: navidromeScope)
+    }
+
+    /// `scope`: the account whose Discover keys go (sign-out passes the one it is signing out of, as the session is
+    /// already gone by then: R24A fix round 1, I1).
+    private func disconnectAurral(scope: String?) {
         endAurralSession()
         discover.store.clear()
         discover.use(nil)
-        forgetDiscoverReads()
+        forgetDiscoverReads(scope: scope)
     }
 
-    /// Sign-out: the Aurral connection goes with the account.
-    func forgetDiscover() {
-        disconnectAurral()
+    /// Sign-out: the Aurral connection goes with the account (`scope`: the account signed out of).
+    func forgetDiscover(scope: String?) {
+        disconnectAurral(scope: scope)
     }
 
     /// `POST /api/auth/logout` for the saved session, sent and forgotten (never a new login for it; offline, or
@@ -149,17 +155,18 @@ extension AppModel {
         discover.pendingLogout = task
     }
 
-    private func forgetDiscoverReads() {
+    private func forgetDiscoverReads(scope: String? = nil) {
         discover.forgetReads()
         aurralFeeds?.forget()   // round 14 A4: Trending, Recommended and Discover playlists go with the user
         AurralImageProxies.eraseAll(dataDirectory: dataDirectory)   // S14 L3: the picture mapping and memory copies too
         homeFeedSlot?.discard(Set(HomeSection.allCases.filter { $0 == .discover || $0.isProvided }))   // Round 13 Z2: another Aurral (or user) never shows the last one's shelf
-        if let scope = navidromeScope {
+        if let scope = scope ?? navidromeScope {
             appDefaults.removeObject(forKey: Self.discoverPlaylistsKey(scope))
             appDefaults.removeObject(forKey: Self.discoverLibrariesKey(scope))
             appDefaults.removeObject(forKey: Self.aurralSongsKey(scope))
             appDefaults.removeObject(forKey: Self.ownPlaylistsKey(scope))   // R22A
             appDefaults.removeObject(forKey: Self.othersPlaylistsKeyPrefix + scope)   // R23F (D189)
+            appDefaults.removeObject(forKey: Self.discoverClaimsKey(scope))   // R24A (D204)
             forgetAutoDownloadRecords(scope: scope)   // R22A (D186)
         }
         syncLibraryScope()
@@ -259,7 +266,18 @@ extension AppModel {
                                                 evidence: &evidence)
             }
         }
-        noteOthersPlaylists(matched, others: others, scope: scope)   // Round 23 R23F (D189), before Discover lists them
+        // Round 24 (D202–D204): each playlist's Aurral item by identity, then whose it is (D189), before Discover lists them.
+        // Round 25 J (D251): with the songs of each item left unproven, read for it.
+        let named = Set(candidates.map(\.playlist.id))
+        let proof = await readDiscoverItemProof(client: client, mine: flows, others: status.othersPlaylists,
+                                                playlists: matched.map(\.playlist).filter { named.contains($0.id) },
+                                                jobs: jobs ?? [], entries: entries, scope: scope)
+        guard navidromeScope == scope, discover.connection?.account == account else { return }
+        let identified = identifyDiscoverPlaylists(matched, mine: flows, others: status.othersPlaylists,
+                                                   named: named, jobs: jobs ?? [], entries: entries,
+                                                   proof: proof, scope: scope)
+        matched = identified.playlists
+        noteOthersPlaylists(identified.notMine, scope: scope)
         discover.playlists = matched
         appDefaults.set(matched.map(\.playlist.id), forKey: Self.discoverPlaylistsKey(scope))
         if Set(matched.map(\.playlist.id)) != before {

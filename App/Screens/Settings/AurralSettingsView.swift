@@ -155,6 +155,7 @@ struct AurralSettingsView: View {
         } footer: {
             Text(EveryonesFlowsCopy.footer)
         }
+        SongsStillComingLink()   // R24C (D213): Songs still coming
         if model.aurralAwaitingConsent {
             Section {
                 Button {

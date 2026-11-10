@@ -98,6 +98,31 @@ public enum ConfinedShape: Sendable, Equatable {
     case blocklistCleanup
 }
 
+/// Round 24 (owner, 2026-11-08, D243; fix round 2, controller ruling): the owned-artist writes are not a `ConfinedShape`
+/// a caller can name. The gate builds them itself, from the persisted `MonitoringIntent` (`performOwned`,
+/// `performCleanup`): the caller chooses no path, verb or body. Internal, so nothing outside LidarrKit can name it.
+enum OwnedShape: Sendable, Equatable {
+    /// `PUT /artist/editor {artistIds: [one], metadataProfileId}`, RefreshArtist, `PUT /album/monitor`, AlbumSearch, each
+    /// only as the artist's open intent says, proven from fresh reads (`WriteConfinement+Owned.swift`).
+    case change
+    /// `DELETE /trackfile/bulk` of the intent's pending batch (at most 50), each file read fresh.
+    case cleanup
+}
+
+/// Round 24 fix round 2: which write of an open change `LidarrWriteGate.performOwned` builds from the intent.
+public enum OwnedStep: String, Sendable, Equatable {
+    /// `PUT /album/monitor {albumIds: intent.unmonitorAlbumIds, monitored: false}`.
+    case unmonitor
+    /// `PUT /artist/editor {artistIds: [intent.artistId], metadataProfileId: intent.targetProfileId}`.
+    case profile
+    /// `POST /command {name: RefreshArtist, artistId: intent.artistId}`.
+    case refresh
+    /// `PUT /album/monitor {albumIds: intent.monitorAlbumIds, monitored: true}`.
+    case monitor
+    /// `POST /command {name: AlbumSearch, albumIds: intent.monitorAlbumIds}`.
+    case search
+}
+
 /// One line of the Lidarr change log: what Magpie asked Lidarr to change. Never carries secrets.
 public struct ChangeLogEntry: Sendable, Equatable, Codable {
     public var date: Date
@@ -621,6 +646,21 @@ public actor LidarrWriteGate {
         defaults.set(on, forKey: Self.enabledKey(scope: connection.instanceScope))
     }
 
+    /// Round 24 (owner, 2026-11-08, Q10): "Let Magpie change what Lidarr monitors for my artists", per Lidarr instance,
+    /// off by default. The gate refuses every owned-artist write (`performOwned`, `performCleanup`) while it is off, whatever the
+    /// caller says (D243).
+    public static let monitoringChangesDefaultsKey = "magpie.lidarr.monitoringChanges"
+
+    public static func monitoringChangesKey(scope: String) -> String { "\(monitoringChangesDefaultsKey).\(scope)" }
+
+    public var monitoringChangesEnabled: Bool {
+        defaults.bool(forKey: Self.monitoringChangesKey(scope: connection.instanceScope))
+    }
+
+    public func setMonitoringChangesEnabled(_ on: Bool) {
+        defaults.set(on, forKey: Self.monitoringChangesKey(scope: connection.instanceScope))
+    }
+
     /// Round 15 C3 (D146): the singles switch's change-log line (information only; the undo is the journal's).
     /// Re-review 2 N1: stamped with the Lidarr it is for (the change log is one file for every Lidarr).
     public static func singlesNote(artistId: Int, metadataProfileId: Int?, monitorNewItems: String?, instance: String? = nil) -> String {
@@ -674,8 +714,74 @@ public actor LidarrWriteGate {
         try await send(method, path, body: body, shape: shape, allowForeign: allowForeign)
     }
 
+    // MARK: Round 24 fix round 2: the owned-artist writes, built here from the persisted intent
+
+    private struct OwnedMonitorBody: Encodable, Sendable { var albumIds: [Int]; var monitored: Bool }
+    private struct OwnedProfileBody: Encodable, Sendable { var artistIds: [Int]; var metadataProfileId: Int }
+    private struct OwnedRefreshBody: Encodable, Sendable { var name: String; var artistId: Int }
+    private struct OwnedSearchBody: Encodable, Sendable { var name: String; var albumIds: [Int] }
+    private struct OwnedTrackFilesBody: Encodable, Sendable { var trackFileIds: [Int] }
+
+    /// The open intent `id` as the ledger has it now. Unreadable: `unconfirmed`; missing or closed: refused.
+    private func openIntent(_ id: UUID) async throws -> MonitoringIntent {
+        guard let confinement else { throw WriteGateError.forbidden("deletes and artist edits need the ledger") }
+        let book: MonitoringBook
+        do { book = try await confinement.ledger.monitoringBook } catch { throw WriteGateError.unconfirmed }
+        guard let intent = book.intents.first(where: { $0.id == id }), intent.isOpen else {
+            throw WriteGateError.forbidden("no open change the owner confirmed with that id")
+        }
+        return intent
+    }
+
+    /// One write of the open change `intentId` (D243): the gate reads the intent and builds the request from it; the
+    /// confinement then proves it from fresh reads. `scripts/check-writes.sh` pins the callers.
+    public func performOwned(intentId: UUID, step: OwnedStep) async throws -> Data {
+        let intent = try await openIntent(intentId)
+        guard intent.kind != .unmatchedCleanup else { throw WriteGateError.forbidden("a clean-up has no change steps") }
+        switch step {
+        case .unmonitor:
+            guard intent.kind == .monitoringChange, !intent.unmonitorAlbumIds.isEmpty else { throw WriteGateError.forbidden("nothing to unmonitor") }
+            return try await sendConfined("PUT", "album/monitor", body: OwnedMonitorBody(albumIds: intent.unmonitorAlbumIds, monitored: false), owned: .change)
+        case .profile:
+            guard let profile = intent.targetProfileId else { throw WriteGateError.forbidden("the change's profile isn't known yet") }
+            return try await sendConfined("PUT", "artist/editor", body: OwnedProfileBody(artistIds: [intent.artistId], metadataProfileId: profile), owned: .change)
+        case .refresh:
+            return try await sendConfined("POST", "command", body: OwnedRefreshBody(name: "RefreshArtist", artistId: intent.artistId), owned: .change)
+        case .monitor, .search:
+            // Fix round 3 H-L4: the saved batch, at most 50 of the albums the refresh brought in.
+            let batch = intent.monitorBatch ?? []
+            guard intent.kind == .monitoringChange, (1...WriteConfinement.maxCleanupFiles).contains(batch.count),
+                  Set(batch).isSubset(of: intent.monitorAlbumIds) else {
+                throw WriteGateError.forbidden("no saved batch of the albums the change brought in")
+            }
+            if step == .monitor {
+                return try await sendConfined("PUT", "album/monitor", body: OwnedMonitorBody(albumIds: batch, monitored: true), owned: .change)
+            }
+            return try await sendConfined("POST", "command", body: OwnedSearchBody(name: "AlbumSearch", albumIds: batch), owned: .change)
+        }
+    }
+
+    /// The pending batch (`pendingFileIds`, saved by the runner before this call) of the open clean-up `intentId`
+    /// (D242): `DELETE /trackfile/bulk`, built here; each file proven from fresh reads.
+    public func performCleanup(intentId: UUID) async throws -> Data {
+        let intent = try await openIntent(intentId)
+        guard intent.kind == .unmatchedCleanup, !intent.pendingFileIds.isEmpty else {
+            throw WriteGateError.forbidden("no pending batch of a clean-up the owner confirmed")
+        }
+        return try await sendConfined("DELETE", "trackfile/bulk", body: OwnedTrackFilesBody(trackFileIds: intent.pendingFileIds),
+                                      owned: .cleanup, intentId: intentId)
+    }
+
+    /// The owned writes' one path through the gate (internal: LidarrKit and its tests only). `intentId`: the clean-up the
+    /// delete is for (fix round 3 H-L5: the confinement proves that very intent).
+    func sendConfined(_ method: String, _ path: String, body: (any Encodable & Sendable)?, owned: OwnedShape,
+                      intentId: UUID? = nil) async throws -> Data {
+        try await send(method, path, body: body, shape: nil, owned: owned, ownedIntent: intentId)
+    }
+
     private func send(_ method: String, _ path: String, body: (any Encodable & Sendable)?,
-                      shape: ConfinedShape?, allowForeign: Bool = false) async throws -> Data {
+                      shape: ConfinedShape?, allowForeign: Bool = false, owned: OwnedShape? = nil,
+                      ownedIntent: UUID? = nil) async throws -> Data {
         let target = try WriteTarget(method: method, path: path)
         if allowForeign, shape != .queueRestartAny { throw refused(target, "allowForeign goes with queueRestartAny only") }
         let data = try body.map { try JSONEncoder().encode($0) }
@@ -710,6 +816,28 @@ public actor LidarrWriteGate {
             default: throw refused(target, "singlesSwitch is an artist edit, a refresh or an unmonitor only")
             }
         }
+        // Round 24 (D243): an owned artist's change is only these four writes, its clean-up only a track file delete;
+        // never an artist delete, a move, a queue or blocklist write.
+        if owned == .change {
+            switch confined {
+            case .editor(let body)?: confined = .ownedEditor(body)
+            case .command(let name, _, let artistId?)? where name == "refreshartist": confined = .ownedRefresh(artistId)
+            case .command(let name, let ids, nil)? where name == "albumsearch": confined = .ownedSearch(ids)
+            case .albumMonitor(let ids, let monitored)?: confined = .ownedMonitor(albumIds: ids, monitored: monitored)
+            default: throw refused(target, "an owned change (performOwned) is a profile, a refresh, a monitor or a search only")
+            }
+        }
+        if owned == .cleanup {
+            guard case .trackFileDelete(let ids)? = confined, target.key == ["trackfile", "bulk"], let ownedIntent else {
+                throw refused(target, "an owned clean-up (performCleanup) is a bulk track file delete of one intent only")
+            }
+            confined = .ownedCleanup(ids, intent: ownedIntent)
+        }
+        if owned != nil {
+            guard confinement != nil else { throw refused(target, "deletes and artist edits need the ledger") }
+            guard enabled else { throw WriteGateError.disabled }
+            guard monitoringChangesEnabled else { throw refused(target, "changing what Lidarr monitors is off") }
+        }
         if confined != nil, confinement == nil { throw refused(target, "deletes and artist edits need the ledger") }
         guard enabled else { throw WriteGateError.disabled }
         if shape == .restartSearch {
@@ -739,6 +867,9 @@ public actor LidarrWriteGate {
             throw WriteGateError.unconfirmed
         }
         guard enabled else { throw WriteGateError.disabled }   // turned off during the reads
+        if owned != nil, !monitoringChangesEnabled {
+            throw refused(target, "changing what Lidarr monitors is off")
+        }
         // The ledger once more, right before a delete, by the rule that let it through (C4): a find delete refuses an
         // artist kept or keeping meanwhile (Keep saves its intent before it writes); a kept MP3 delete refuses one
         // whose Keep isn't confirmed now.
@@ -749,6 +880,7 @@ public actor LidarrWriteGate {
             case .keptLossyDelete: "the Keep isn't confirmed now"
             case .findDelete: "the artist was kept meanwhile"
             case .keptSingleDelete: "the single's removal isn't recorded or the Keep isn't confirmed now"
+            case .ownedCleanup: "the clean-up isn't open in the ledger now, or a Try started for the artist"
             default: "the trial was kept or ended meanwhile"
             }
             throw refused(target, why)

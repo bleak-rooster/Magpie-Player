@@ -42,9 +42,16 @@
 #       Round 16: the user's own flows from a recipe: `POST /api/playlists/flows` (New flow), `PUT …/:id/enabled`
 #       with exactly `{enabled: true}` (a new flow turned on so its songs download; never off), `PUT …/:id` (Edit flow:
 #       the changed fields) and `DELETE …/:id` (Delete flow), each only on the owner's tap. Pinned below (the four sends
-#       in AurralKit/RecipeFlows.swift).
+#       in AurralKit/RecipeFlows.swift; round 24 B moved the delete's send to AurralClient+Manage.swift).
 #   Packages/MagpieKit/Sources/MagpieTestSupport/StubAurral.swift  G1 allowlist: stub aurral recipe flows
 #       The in-process stub names the verbs it answers for those routes; it sends nothing.
+#   Packages/MagpieKit/Sources/AurralKit/AurralClient.swift  G1 allowlist: aurral held songs
+#       Round 24 B (D207, D209): a song Aurral held for review, `POST /api/playlists/jobs/:jobId/approve` (Approve) and
+#       `POST …/deny` (Try another source), each only on the owner's tap on their own song. With the two deletes
+#       (`DELETE /api/playlists/flows/:id`, `DELETE /api/playlists/shared-playlists/:id`, any own flow or playlist,
+#       D208) they are sent only from AurralKit/AurralClient+Manage.swift. Pinned below.
+#   Packages/MagpieKit/Sources/MagpieTestSupport/StubAurral.swift  G1 allowlist: stub aurral held songs
+#       The in-process stub names the verb it answers for approve and deny (POST only); it sends nothing.
 #   Packages/MagpieKit/Tests/RequestsTests/FindsIT.swift  G1 allowlist: devLidarr
 #       Raw requests to the dev Lidarr for IT set-up and clean-up (manual import, removing the test artist), after
 #       TryDevStack verified the host is local and the dev marker matches (G0). Never product code.
@@ -57,8 +64,14 @@
 #   Packages/MagpieKit/Sources/SlskdKit/SlskdRoute.swift, SlskdClient.swift  G1 allowlist: slskd clean-up
 #       Round 23 (D192): slskd's three clean-up DELETEs (a finished transfer's record, a file or folder directly inside
 #       its downloads folder), only through `SlskdWriteGate.perform`, only from the clean slate. Pinned below.
+#   Packages/MagpieKit/Sources/SlskdKit/SlskdRoute.swift  G1 allowlist: slskd keep connected
+#       Round 24 (D218): "Keep Soulseek connected" asks slskd to reconnect, `PUT /api/v0/server` with no body, only
+#       through the gate's `connect` shape, only from `SlskdKeepConnected.check`. Pinned below.
 #   Packages/MagpieKit/Sources/MagpieTestSupport/FakeSlskd.swift  G1 allowlist: stub slskd
 #       The in-process stub names the verb it answers for those routes; it sends nothing.
+#   App/AppModel+AurralDelete.swift  exactly the line `static let confirm = "Delete"`
+#       Round 24 C (D212, fix round 1 I3): the Delete confirmation's button says "Delete" (the plan's words); copy, never
+#       a request's verb. Only that one line in that one file; no tag is honoured for it.
 #
 # G1_SRC overrides the product tree to scan and skips the others (used to check this script against a planted
 # violation).
@@ -86,15 +99,42 @@ allow=(
   "Packages/MagpieKit/Sources/MagpieTestSupport/StubAurral.swift|G1 allowlist: stub aurral chart flows"
   "Packages/MagpieKit/Sources/AurralKit/AurralClient.swift|G1 allowlist: aurral recipe flows"
   "Packages/MagpieKit/Sources/MagpieTestSupport/StubAurral.swift|G1 allowlist: stub aurral recipe flows"
+  "Packages/MagpieKit/Sources/AurralKit/AurralClient.swift|G1 allowlist: aurral held songs"
+  "Packages/MagpieKit/Sources/MagpieTestSupport/StubAurral.swift|G1 allowlist: stub aurral held songs"
   "Tests/MagpieUITests/ChartFlowUITests.swift|G1 allowlist: stub reset"
   "Packages/MagpieKit/Tests/MagpieCoreTests/HTTPTransportTests.swift|RedirectStub"
   "Packages/MagpieKit/Tests/MagpieCoreTests/SharedLoginTransportTests.swift|auth/login"
   "Packages/MagpieKit/Sources/SlskdKit/SlskdRoute.swift|G1 allowlist: slskd clean-up"
   "Packages/MagpieKit/Sources/SlskdKit/SlskdClient.swift|G1 allowlist: slskd clean-up"
+  "Packages/MagpieKit/Sources/SlskdKit/SlskdRoute.swift|G1 allowlist: slskd keep connected"
   "Packages/MagpieKit/Sources/MagpieTestSupport/FakeSlskd.swift|G1 allowlist: stub slskd"
 )
 [ -n "${G1_SRC:-}" ] && allow=("$G1_SRC/NavidromeKit/NavidromeClient.swift|auth/login"
                                "$G1_SRC/MagpieTestSupport/SharedLoginTransport.swift|auth/login")
+
+# R24H fix round 2: one normalised view of `file:line:text` hits: whole-line comments dropped, a trailing `//` comment
+# stripped (only when no quote follows it, so a URL in a string stays), leading and trailing space trimmed.
+clean_lines() {
+  perl -ne 'my ($f, $n, $t) = /^([^:]+):(\d+):(.*)$/ or next; next if $t =~ m{^\s*//};
+            $t =~ s{\s+//[^"]*$}{}; $t =~ s/^\s+|\s+$//g; print "$f:$n:$t\n"'
+}
+
+# R24H fix round 3 N1: the Lidarr checks read a normalised copy of the product tree, in which a line that starts with
+# `.` or `:` is joined to the line before it (so `gate` / `.send(` or `confinedAs` / `: .trialDelete` across two lines
+# reads as one). `ngrep` greps it and answers with the product's own paths.
+norm_root=""
+ngrep() {
+  if [ -z "$norm_root" ]; then
+    norm_root=$(mktemp -d "${TMPDIR:-/tmp}/check-writes-norm.XXXXXX")
+    while IFS= read -r f; do
+      mkdir -p "$norm_root/$(dirname "$f")"
+      perl -0777 -pe 's/\n[ \t]*(?=[.:])/ /g' "$f" > "$norm_root/$f"
+    done < <(find "${product[@]}" -name '*.swift')
+  fi
+  (cd "$norm_root" && grep -rnE --include='*.swift' "$@" "${product[@]}") || true
+}
+cleanup_norm() { [ -n "$norm_root" ] && rm -rf "$norm_root"; return 0; }
+trap cleanup_norm EXIT
 
 method_sets() {
   grep -rnE --include='*.swift' 'httpMethod[[:space:]]*=[^=]' "$@" \
@@ -104,7 +144,8 @@ method_sets() {
 hits=$(
   {
     method_sets "${product[@]}"
-    grep -rniE --include='*.swift' '"(POST|PUT|DELETE|PATCH)"' "${product[@]}" | grep -vE 'gate\.send\("' || true
+    grep -rniE --include='*.swift' '"(POST|PUT|DELETE|PATCH)"' "${product[@]}" | clean_lines |
+      grep -iE '^[^:]+:[0-9]+:.*"(POST|PUT|DELETE|PATCH)"' | grep -vE 'gate\.send\("' || true
     [ ${#tests[@]} -eq 0 ] || method_sets "${tests[@]}"
   } | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' | grep -v "^$gate:" | cut -d: -f1,2 | sort -u
 )
@@ -113,6 +154,9 @@ bad=0
 for hit in $hits; do
   file="${hit%%:*}" line="${hit##*:}"
   ok=0
+  # Round 24 C fix round 1 (I3): the Delete button's word, on its one exact line.
+  if [ "$file" = "App/AppModel+AurralDelete.swift" ] &&
+     [ "$(sed -n "${line}p" "$file")" = '    static let confirm = "Delete"' ]; then ok=1; fi
   for entry in "${allow[@]}"; do
     if [ "$file" = "${entry%%|*}" ] &&
        sed -n "$((line > 3 ? line - 3 : 1)),${line}p" "$file" | grep -qF "${entry##*|}"; then ok=1; fi
@@ -144,6 +188,7 @@ if [ -z "${G1_SRC:-}" ]; then
   singlesfile="Packages/MagpieKit/Sources/Requests/SinglesSwitch.swift"
   keptsinglefile="Packages/MagpieKit/Sources/Requests/RequestRunner+KeptSingle.swift"
   cleanslatefile="Packages/MagpieKit/Sources/Requests/RequestRunner+CleanSlate.swift"
+  monitoringfile="Packages/MagpieKit/Sources/Requests/MonitoringChange.swift"
   # Round 15 C3 (re-review m2): the singles-switch journal the gate trusts is made and written only by its owners: the
   # store type only in SinglesSwitch.swift and the runner's rebuild (one shared store per Lidarr), and nothing else saves
   # to a switcher's store.
@@ -158,40 +203,130 @@ if [ -z "${G1_SRC:-}" ]; then
   if grep -rnE --include='*.swift' '(switcher|singlesSwitcher\??)\.store\.save\(' "${product[@]}" | grep -v "^$singlesfile:" | grep -q .; then
     echo "G1: a singles-switch journal saved outside SinglesSwitch.swift" >&2; bad=1
   fi
-  shaped=$(grep -rnE --include='*.swift' 'confinedAs:' "${product[@]}" | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' |
-           grep -v "^Packages/MagpieKit/Sources/LidarrKit/WriteGate.swift:" || true)
+  # R24H fix round 2 (controller ruling): every `confinedAs` (any spacing) is compared whole: the trimmed line, a trailing
+  # `//` comment dropped, must be exactly one of these `file|line` pins. Round 15 C3 (D147, D146) the trial Reject's
+  # delete and the singles switch's journal; round 22 (D172) a kept single's delete; round 23 (D191) the clean slate's
+  # blocklist delete; D49 / round 13 (D63) / Y5 I9 the restarter's and Stall's queue restarts and the restart's search.
+  # The owned-artist writes (round 24) have no shape a caller can name: `performOwned` / `performCleanup`, below.
+  shaped_pins=(
+    "$trialfile|_ = try await gate.send(\"DELETE\", \"trackfile/bulk\", body: TrackFileIdsBody(trackFileIds: ids), confinedAs: .trialDelete)"
+    "$keptsinglefile|_ = try await gate.send(\"DELETE\", \"trackfile/bulk\", body: TrackFileIdsBody(trackFileIds: ids), confinedAs: .keptSingleDelete)"
+    "$cleanslatefile|_ = try await gate.send(\"DELETE\", \"blocklist/bulk\", body: BlocklistIdsBody(ids: ids), confinedAs: .blocklistCleanup)"
+    "$singlesfile|_ = try await gate.send(\"PUT\", \"artist/editor\", body: FollowBody(artistIds: [job.artistId], monitorNewItems: \"none\"), confinedAs: .singlesSwitch)"
+    "$singlesfile|_ = try await gate.send(\"PUT\", \"artist/editor\", body: FollowBody(artistIds: [job.artistId], monitorNewItems: job.originalFollow), confinedAs: .singlesSwitch)"
+    "$singlesfile|_ = try await gate.send(\"PUT\", \"artist/editor\", body: ProfileBody(artistIds: [job.artistId], metadataProfileId: job.singlesProfileId!), confinedAs: .singlesSwitch)"
+    "$singlesfile|_ = try await gate.send(\"PUT\", \"artist/editor\", body: ProfileBody(artistIds: [job.artistId], metadataProfileId: job.originalProfileId), confinedAs: .singlesSwitch)"
+    "$singlesfile|let data = try await gate.send(\"POST\", \"command\", body: RefreshBody(name: \"RefreshArtist\", artistId: job.artistId), confinedAs: .singlesSwitch)"
+    "$singlesfile|_ = try await gate.send(\"PUT\", \"album/monitor\", body: UnmonitorBody(albumIds: extras, monitored: false), confinedAs: .singlesSwitch)"
+    "$stall|_ = try await gate.send(\"DELETE\", \"queue/\\(queueId)?\\(Self.queueRemoval)\", body: nil, confinedAs: .queueRestartAny)"
+    "$restarter|_ = try await gate.send(\"DELETE\", \"queue/\\(queueId)?\\(Self.queueRemoval)\", body: nil, confinedAs: .queueRestartAny)"
+    "$restarter|_ = try await gate.send(\"DELETE\", \"queue/\\(queueId)?\\(Self.queueRemoval)\", body: nil, confinedAs: .queueRestartAny, allowForeign: true)"
+    "$restarter|_ = try await gate.send(\"POST\", \"command\", body: SearchBody(name: \"AlbumSearch\", albumIds: rest), confinedAs: .restartSearch)"
+  )
+  shaped=$(ngrep 'confinedAs[[:space:]]*:' | grep -v "^$gate:" | clean_lines || true)
   while IFS= read -r s; do
     [ -n "$s" ] || continue
-    # Round 15 C3 (D147, D146): the trial Reject's one track file delete and the singles switch's one sender.
-    case "$s" in
-      "$trialfile":*'_ = try await gate.send("DELETE", "trackfile/bulk", body: TrackFileIdsBody(trackFileIds: ids), confinedAs: .trialDelete)') continue ;;
-      # Round 22 (D172): a kept single's removal, its one track file delete (the gate's keptSingleDelete rule).
-      "$keptsinglefile":*'_ = try await gate.send("DELETE", "trackfile/bulk", body: TrackFileIdsBody(trackFileIds: ids), confinedAs: .keptSingleDelete)') continue ;;
-      # Round 23 (D191): a removed artist's blocklist rows, its one delete (the gate's blocklistCleanup rule).
-      "$cleanslatefile":*'_ = try await gate.send("DELETE", "blocklist/bulk", body: BlocklistIdsBody(ids: ids), confinedAs: .blocklistCleanup)') continue ;;
-      # D146 (review I1-I3): the singles switch's journal, only in SinglesSwitch.swift, only these forms; the gate allows
-      # them only for an artist whose switch is in the journal, and only the journal's values.
-      "$singlesfile":*'_ = try await gate.send("PUT", "artist/editor", body: FollowBody(artistIds: [job.artistId], monitorNewItems: "none"), confinedAs: .singlesSwitch)') continue ;;
-      "$singlesfile":*'_ = try await gate.send("PUT", "artist/editor", body: FollowBody(artistIds: [job.artistId], monitorNewItems: job.originalFollow), confinedAs: .singlesSwitch)') continue ;;
-      "$singlesfile":*'_ = try await gate.send("PUT", "artist/editor", body: ProfileBody(artistIds: [job.artistId], metadataProfileId: job.singlesProfileId!), confinedAs: .singlesSwitch)') continue ;;
-      "$singlesfile":*'_ = try await gate.send("PUT", "artist/editor", body: ProfileBody(artistIds: [job.artistId], metadataProfileId: job.originalProfileId), confinedAs: .singlesSwitch)') continue ;;
-      "$singlesfile":*'try await gate.send("POST", "command", body: RefreshBody(name: "RefreshArtist", artistId: job.artistId), confinedAs: .singlesSwitch)') continue ;;
-      "$singlesfile":*'_ = try await gate.send("PUT", "album/monitor", body: UnmonitorBody(albumIds: extras, monitored: false), confinedAs: .singlesSwitch)') continue ;;
-    esac
-    case "${s%%:*}" in
-      "$stall"|"$restarter") ;;
-      *) echo "G1: queueRestartAny named outside its two callers: ${s%%:*}" >&2; bad=1; continue ;;
-    esac
-    case "$s" in
-      *'gate.send("DELETE", "queue/\(queueId)?\(Self.queueRemoval)", body: nil, confinedAs: .queueRestartAny)'*) ;;
-      # Round 13 item 6 (D63): another app's download, only by the restarter, the flag a literal `true` (the restarter
-      # sets it only when its caller passed `allowForeign`, which only the flagged confirmation does; pinned below).
-      "$restarter":*'gate.send("DELETE", "queue/\(queueId)?\(Self.queueRemoval)", body: nil, confinedAs: .queueRestartAny, allowForeign: true)') ;;
-      # Y5 fix I9 merge: the restart's AlbumSearch, by the restarter only (the gate allows only albums it just restarted).
-      "$restarter":*'gate.send("POST", "command", body: SearchBody(name: "AlbumSearch", albumIds: rest), confinedAs: .restartSearch)'*) ;;
-      *) echo "G1: queueRestartAny not exactly a queue delete with the one query: ${s%%:*}" >&2; bad=1 ;;
-    esac
+    file="${s%%:*}" rest="${s#*:}"; text="${rest#*:}"
+    ok=0
+    for pin in "${shaped_pins[@]}"; do [ "$file|$text" = "$pin" ] && ok=1 && break; done
+    [ "$ok" = 1 ] || { echo "G1: a confined write that isn't exactly as pinned: $file:${rest%%:*}" >&2; bad=1; }
   done <<< "$shaped"
+  # R24H fix round 2: the owned-artist writes go only through the gate's own entry points, named only on these exact
+  # lines of MonitoringChange.swift; the gate builds each request from the saved intent.
+  owned_call_pins=(
+    "$monitoringfile|_ = try await gate.performOwned(intentId: job.id, step: .unmonitor)"
+    "$monitoringfile|_ = try await gate.performOwned(intentId: job.id, step: .profile)"
+    "$monitoringfile|let data = try await gate.performOwned(intentId: job.id, step: .refresh)"
+    "$monitoringfile|_ = try await gate.performOwned(intentId: job.id, step: .monitor)"
+    "$monitoringfile|_ = try await gate.performOwned(intentId: job.id, step: .search)"
+    "$monitoringfile|_ = try await gate.performCleanup(intentId: job.id)"
+  )
+  owned_calls=$(ngrep '\b(performOwned|performCleanup|sendConfined|OwnedShape)\b' | grep -v "^$gate:" | clean_lines || true)
+  while IFS= read -r s; do
+    [ -n "$s" ] || continue
+    file="${s%%:*}" rest="${s#*:}"; text="${rest#*:}"
+    ok=0
+    for pin in "${owned_call_pins[@]}"; do [ "$file|$text" = "$pin" ] && ok=1 && break; done
+    [ "$ok" = 1 ] || { echo "G1: an owned-artist write named outside its pinned lines: $file:${rest%%:*}" >&2; bad=1; }
+  done <<< "$owned_calls"
+  # 2 + 5: at most one write call per line anywhere, and never a write function taken as a value.
+  multi=$(ngrep 'gate[[:space:]]*\.[[:space:]]*(send|performOwned|performCleanup)[[:space:]]*\(.*gate[[:space:]]*\.[[:space:]]*(send|performOwned|performCleanup)[[:space:]]*\(' \
+            | grep -v "^$gate:" | clean_lines | grep -E 'gate\.(send|performOwned|performCleanup)[[:space:]]*\(.*gate\.(send|performOwned|performCleanup)[[:space:]]*\(' || true)
+  while IFS= read -r s; do
+    [ -n "$s" ] || continue
+    echo "G1: more than one gate write on one line: ${s%%:*}" >&2; bad=1
+  done <<< "$multi"
+  refs=$(ngrep 'gate\.(send|performOwned|performCleanup)' | grep -v "^$gate:" | clean_lines |
+           grep -E '=[[:space:]]*gate\.(send|performOwned|performCleanup)\b|gate\.(send|performOwned|performCleanup)([^(a-zA-Z]|$)' || true)
+  while IFS= read -r s; do
+    [ -n "$s" ] || continue
+    echo "G1: a gate write taken as a value, not called: ${s%%:*}" >&2; bad=1
+  done <<< "$refs"
+  # N1 (V4, V2): a gate write split from `gate` (`gate` then `.send(` on the next line), and a write gate bound to any
+  # name but `gate` (`let g = gate`, a `g: LidarrWriteGate` parameter, a capture `[g = gate]`, a new gate kept as `g`):
+  # every write must read `gate.send(` / `gate.performOwned(` / `gate.performCleanup(` on one line.
+  split=$(ngrep 'gate[[:space:]]+\.[[:space:]]*[A-Za-z]|gate\.[[:space:]]+[A-Za-z]' | grep -v "^$gate:" | clean_lines |
+            grep -E 'gate[[:space:]]+\.[[:space:]]*[A-Za-z]|gate\.[[:space:]]+[A-Za-z]' || true)
+  while IFS= read -r s; do
+    [ -n "$s" ] || continue
+    echo "G1: a gate write split across lines or spaced: ${s%%:*}" >&2; bad=1
+  done <<< "$split"
+  gate_names=$(ngrep 'LidarrWriteGate|gate' | grep -v "^$gate:" | clean_lines | perl -ne '
+      my ($f, $n, $t) = /^([^:]+):(\d+):(.*)$/ or next;
+      next if "$f|$t" eq "App/AppModel+Requests.swift|let reader = gate ?? LidarrWriteGate(";
+      my @bad;
+      push @bad, $1 while $t =~ /\b(?:let|var)\s+(\w+)\s*(?::[^=]*)?=\s*(?:self\.)?gate\b(?!\s*\.)/g;
+      push @bad, $1 while $t =~ /\b(?:let|var)\s+(\w+)\s*(?::[^=]*)?=[^;]*\bLidarrWriteGate\s*\(/g;
+      push @bad, $1 while $t =~ /\b(\w+)\??\s*:\s*\[?\s*LidarrWriteGate\b(?!\s*\.)/g;
+      push @bad, $1 while $t =~ /\[\s*(?:weak\s+|unowned\s+)?(\w+)\s*=\s*(?:self\.)?gate\b/g;
+      print "$f:$n:$_\n" for grep { $_ ne "gate" } @bad;' || true)
+  while IFS= read -r s; do
+    [ -n "$s" ] || continue
+    echo "G1: a write gate bound to another name (${s##*:}): ${s%%:*}" >&2; bad=1
+  done <<< "$gate_names"
+  lk4="Packages/MagpieKit/Sources/LidarrKit"
+  # R24H fix round 4 N-2 (controller ruling): outside LidarrKit a `.send(` / `.performOwned(` / `.performCleanup(` has
+  # one of these literal receivers only (the gate's is `gate`; the others are HTTP transports, slskd's own gated
+  # connection and Aurral's client), so no alias (`g?`, `$0`, `[gate][0]`, `m.gate`, `self.gate`) can reach the gate.
+  receivers=$(ngrep '\.[[:space:]]*(send|performOwned|performCleanup)[[:space:]]*\(' | grep -v "^Packages/MagpieKit/Sources/LidarrKit/" | clean_lines |
+      perl -ne 'my ($f, $n, $t) = /^([^:]+):(\d+):(.*)$/ or next;
+                while ($t =~ /((?:[\w\$]+[?!]?\s*\.\s*)*[\w\$]+[?!]?|[\]\)])\s*\.\s*(?:send|performOwned|performCleanup)\s*\(/g) {
+                  my $r = $1; $r =~ s/\s+//g;
+                  print "$f:$n:$r\n" unless $r =~ /^(gate|transport|inner|probeTransport|client\.connection|Self)$/;
+                }' || true)
+  while IFS= read -r s; do
+    [ -n "$s" ] || continue
+    echo "G1: a send whose receiver isn't literally gate (${s##*:}): ${s%%:*}" >&2; bad=1
+  done <<< "$receivers"
+  # The verb of every gate send outside the gate is a literal on the line, nothing computed.
+  computed=$(ngrep 'gate\.send[[:space:]]*\(' | grep -v "^$gate:" | clean_lines |
+      perl -ne 'my ($f, $n, $t) = /^([^:]+):(\d+):(.*)$/ or next;
+                while ($t =~ /gate\.send\s*\(\s*(.{0,24})/g) { my $rest = $1; print "$f:$n\n" unless $rest =~ /^"(POST|PUT|DELETE)"\s*,/; }' || true)
+  while IFS= read -r s; do
+    [ -n "$s" ] || continue
+    echo "G1: a gate send whose verb isn't a literal: ${s%%:*}" >&2; bad=1
+  done <<< "$computed"
+  # No `[gate]`, and no other name bound to an expression's `.gate` (`let g = m.gate`).
+  wrapped=$(ngrep 'gate' | grep -v "^$gate:" | clean_lines |
+      perl -ne 'my ($f, $n, $t) = /^([^:]+):(\d+):(.*)$/ or next;
+                print "$f:$n:[gate]\n" if $t =~ /\[\s*(?:self\s*\.\s*)?gate\s*[?!]?\s*\]/;
+                while ($t =~ /\b(?:let|var)\s+(\w+)\s*(?::[^=]*)?=[^;{]*?[\w\$\])][?!]?\s*\.\s*gate\b/g) { print "$f:$n:$1\n" if $1 ne "gate"; }' || true)
+  while IFS= read -r s; do
+    [ -n "$s" ] || continue
+    echo "G1: a write gate wrapped or taken from another value (${s##*:}): ${s%%:*}" >&2; bad=1
+  done <<< "$wrapped"
+  # R24H fix round 4 N-1 (controller ruling): the consent records' types are named only by their owners, and the
+  # ledger's file name only by the ledger (in any spelling that starts it).
+  for f in $(ngrep '\b(MonitoringIntent|UnmonitoredKept|MonitoringBook)\b' | clean_lines |
+             grep -E '^[^:]+:[0-9]+:.*\b(MonitoringIntent|UnmonitoredKept|MonitoringBook)\b' | cut -d: -f1 | sort -u || true); do
+    case "$f" in
+      "$lk4/Ledger.swift"|"$lk4/MonitoringIntent.swift"|"$lk4/WriteGate.swift"|"$lk4/WriteConfinement.swift"|"$lk4/WriteConfinement+Owned.swift"|Packages/MagpieKit/Sources/Requests/MonitoringChange.swift) ;;
+      *) echo "G1: a monitoring consent record named outside its owners: $f" >&2; bad=1 ;;
+    esac
+  done
+  for f in $(ngrep 'lidarr-ledger|ledger-mon' | clean_lines | grep -E '^[^:]+:[0-9]+:.*(lidarr-ledger|ledger-mon)' | cut -d: -f1 | sort -u || true); do
+    [ "$f" = "$lk4/Ledger.swift" ] || { echo "G1: the ledger's file name spelled outside the ledger: $f" >&2; bad=1; }
+  done
   grep -qF 'static let queueRemoval = "removeFromClient=true&blocklist=true&skipRedownload=true"' "$restarter" ||
     { echo "G1: $restarter: queueRemoval isn't exactly removeFromClient=true&blocklist=true&skipRedownload=true" >&2; bad=1; }
   # Round 13 item 6 (D63; Z4 review I1): every `allowForeign:` / `includeForeign:` ARGUMENT in product code, whatever
@@ -283,11 +418,85 @@ if [ -z "${G1_SRC:-}" ]; then
   done
 fi
 if [ -z "${G1_SRC:-}" ]; then
+  # Round 24 (owner, 2026-11-08, D242, D243): the proofs that let Magpie change an owner's artist are pinned whole, so a
+  # weakening fails here: the switch, the shapes' exact forms, the body's two keys, the 50-file cap, the fresh size,
+  # folder and unmonitored-album checks, the confirmation's hash. And the ledger's monitoring book (the owner's consent
+  # the gate reads) is written only by MonitoringChange.swift.
+  lk="Packages/MagpieKit/Sources/LidarrKit"
+  owned_pins=(
+    "$lk/WriteGate.swift|            guard monitoringChangesEnabled else { throw refused(target, \"changing what Lidarr monitors is off\") }"
+    "$lk/WriteGate.swift|            guard case .trackFileDelete(let ids)? = confined, target.key == [\"trackfile\", \"bulk\"], let ownedIntent else {"
+    "$lk/WriteGate.swift|            default: throw refused(target, \"an owned change (performOwned) is a profile, a refresh, a monitor or a search only\")"
+    # R24H fix round 3: H-M1 (the current profile's types), H-L5 (that very intent), the H-L4 batch.
+    "$lk/WriteConfinement+Owned.swift|        guard let current, current.targetProfileId == artist.metadataProfileId, let types = current.targetTypes else {"
+    "$lk/WriteConfinement+Owned.swift|            guard !types.includes(albumType: album.albumType, secondaryTypes: album.secondaryTypes) else {"
+    "$lk/WriteConfinement+Owned.swift|        guard open.count == 1, let intent = open.first, intent.id == intentId else {"
+    "$lk/WriteGate.swift|            guard intent.kind == .monitoringChange, (1...WriteConfinement.maxCleanupFiles).contains(batch.count),"
+    "$lk/WriteConfinement.swift|        if let owned = await ownedCheck(write, lidarr: lidarr) { return owned }"
+    "$lk/WriteConfinement+Owned.swift|    public static let maxCleanupFiles = 50"
+    "$lk/WriteConfinement+Owned.swift|        guard Set(body.keys.map { \$0.lowercased() }) == [\"artistids\", \"metadataprofileid\"], body.count == 2,"
+    "$lk/WriteConfinement+Owned.swift|        guard !ids.isEmpty, ids.count <= WriteConfinement.maxCleanupFiles, Set(ids).count == ids.count else {"
+    "$lk/WriteConfinement+Owned.swift|        guard intent.matchesConfirmation else { throw Failure.refused(\"the clean-up isn't what the owner confirmed\") }"
+    "$lk/WriteConfinement+Owned.swift|        guard ids.allSatisfy({ named[\$0] != nil && !excluded.contains(\$0) }) else {"
+    "$lk/WriteConfinement+Owned.swift|            guard let size = file.size, size == recorded.size else { throw Failure.refused(\"the file changed\") }"
+    "$lk/WriteConfinement+Owned.swift|            guard mainGuard.isInside(file.path), inside.isInside(file.path) else {"
+    "$lk/WriteConfinement+Owned.swift|            guard let album = albums.first(where: { \$0.id == recorded.albumId }), !album.monitored else {"
+    "$lk/WriteConfinement+Owned.swift|        guard !Self.hasLiveTry(artistId, in: entries) else { throw Failure.refused(\"a Try of Magpie's is under way for the artist\") }"
+    "$lk/WriteConfinement+Owned.swift|                  let types = intent.targetTypes, name == types.profileName else {"
+    "$lk/WriteConfinement+Owned.swift|        guard let rootFolder = artist.rootFolderPath, Self.sameBytes(rootFolder, main),"
+    # R24H fix round 1 M1: Revert's guards, the unmonitor type and Magpie-request guards, the monitor-true guards, the
+    # clean-up's last check; I2's kept-or-confirmed rule; I5's Try guards.
+    "$lk/WriteConfinement+Owned.swift|            guard profile == intent.previousProfileId, profiles.contains(where: { \$0.id == profile }),"
+    "$lk/WriteConfinement+Owned.swift|                  book.intents.contains(where: { \$0.kind == .monitoringChange && \$0.artistId == artistId && !\$0.isOpen"
+    "$lk/WriteConfinement+Owned.swift|                  ReleaseTypes.isMagpieMetadataProfile(current) else {"
+    "$lk/WriteConfinement+Owned.swift|            guard !ids.contains(where: { id in entries.contains { \$0.albumId == id && \$0.isOpen && !\$0.isConfirmedKept } }) else {"
+    "$lk/WriteConfinement+Owned.swift|                albums.first { \$0.id == id }.map { !types.includes(albumType: \$0.albumType, secondaryTypes: \$0.secondaryTypes) } == true"
+    "$lk/WriteConfinement+Owned.swift|        guard let types = intent.targetTypes, Set(ids).isSubset(of: intent.monitorAlbumIds),"
+    "$lk/WriteConfinement+Owned.swift|              Set(ids).isDisjoint(with: intent.beforeAlbumIds) else {"
+    "$lk/WriteConfinement+Owned.swift|                  types.includes(albumType: album.albumType, secondaryTypes: album.secondaryTypes) else {"
+    "$lk/WriteConfinement+Owned.swift|            if search, !album.monitored { throw Failure.refused(\"a search only for an album just monitored\") }"
+    "$lk/WriteConfinement+Owned.swift|        return book.intents.contains { \$0.id == id && \$0.isOpen && \$0.kind == .unmatchedCleanup && \$0.artistId == artistId }"
+    "$lk/WriteConfinement+Owned.swift|            && !OwnedProof.hasLiveTry(artistId, in: entries)"
+    "$lk/WriteConfinement+Owned.swift|        if book.kept(artistId: artistId)?.files.contains(file) == true { return true }"
+    "$lk/WriteConfinement+Owned.swift|            change.kind == .monitoringChange && change.artistId == artistId && change.step == .done && !change.keepFiles"
+    "$lk/WriteConfinement+Owned.swift|                && change.files.contains(file) && change.unmonitorAlbumIds.contains(file.albumId)"
+    "$lk/WriteConfinement+Owned.swift|            guard Self.keptOrConfirmed(recorded, artistId: artistId, in: book) else {"
+    "$lk/WriteConfinement+Owned.swift|        guard !Self.hasLiveTry(artistId, in: entries) else { throw Failure.refused(\"a Try of Magpie's is under way for the artist\") }"
+    "$lk/WriteConfinement+Owned.swift|                guard !OwnedProof.hasLiveTry(artistId, in: entries) else { throw OwnedProof.Failure.refused(\"a Try of Magpie's is under way for the artist\") }"
+    "$lk/Ledger.swift|    nonisolated var monitoringURL: URL? { fileURL.map(Self.monitoringURL(beside:)) }"
+  )
+  for pin in "${owned_pins[@]}"; do
+    file="${pin%%|*}" want="${pin#*|}"
+    grep -qxF -- "$want" "$file" || { echo "G1: $file: a Round 24 owned-artist proof changed or is gone: ${want#"${want%%[![:space:]]*}"}" >&2; bad=1; }
+  done
+  # R24H fix round 1 I6: any mention (a trailing closure, a spaced call), the book's file, URL or types made anywhere
+  # else; comment lines don't count.
+  # Fix round 2 S1: also the book's key, its type as a value (`MonitoringBook.self`) or a declared type.
+  book_hits=$(ngrep '\b(saveIntent|updateMonitoring|setKept|monitoringURL|monitoringBookKey)\b|\b(MonitoringBook|MonitoringIntent)[[:space:]]*\(|-monitoring\.json|MonitoringBook\.self|:[[:space:]]*MonitoringBook\b|\.monitoringBook\b|monitoring"|"-monitoring|\bforgetMonitoring\b' \
+                | clean_lines | grep -E '^[^:]+:[0-9]+:.*(\b(saveIntent|updateMonitoring|setKept|monitoringURL|monitoringBookKey)\b|\b(MonitoringBook|MonitoringIntent)[[:space:]]*\(|-monitoring\.json|MonitoringBook\.self|:[[:space:]]*MonitoringBook\b|\.monitoringBook\b|monitoring"|"-monitoring)' \
+                | cut -d: -f1 | sort -u || true)
+  # Fix round 3 H-M2: the ledger's file is named only where the ledger is made.
+  for f in $(ngrep 'Ledger[[:space:]]*\.[[:space:]]*defaultURL\b' | clean_lines | grep -E 'Ledger[[:space:]]*\.[[:space:]]*defaultURL' | cut -d: -f1 | sort -u || true); do
+    case "$f" in
+      "$lk/Ledger.swift"|App/AppModel+Requests.swift) ;;
+      *) echo "G1: the ledger's file named outside its owners: $f" >&2; bad=1 ;;
+    esac
+  done
+  for f in $book_hits; do
+    case "$f" in
+      "$lk/Ledger.swift"|Packages/MagpieKit/Sources/Requests/MonitoringChange.swift|"$lk/WriteGate.swift"|"$lk/WriteConfinement+Owned.swift"|"$lk/MonitoringIntent.swift") ;;
+      *) echo "G1: the ledger's monitoring book written outside MonitoringChange.swift: $f" >&2; bad=1 ;;
+    esac
+  done
+fi
+if [ -z "${G1_SRC:-}" ]; then
   # Round 12 Y6 (D56), round 13 (D70), round 14 A1 (D81): Aurral. The client allows exactly the calls below, each its
-  # own `case N where` line (25 routes: the round-12/13 seven plus round 14's 2.13 reads and four writes), and nothing
-  # in the product names Aurral's dangerous routes.
+  # own `case N where` line (37 routes: the round-12/13 seven, round 14's 2.13 reads and four writes, the image proxy's
+  # two, round 15's four chart flow and round 16's four recipe flow writes, and round 24 B's approve and deny), and
+  # nothing in the product names Aurral's dangerous routes.
   aurral="Packages/MagpieKit/Sources/AurralKit/AurralClient.swift"
   aurral_discover="Packages/MagpieKit/Sources/AurralKit/AurralClient+Discover.swift"
+  aurral_manage="Packages/MagpieKit/Sources/AurralKit/AurralClient+Manage.swift"
   preview_resolver="Packages/MagpieKit/Sources/AurralKit/PreviewResolver.swift"
   open_transport="Packages/MagpieKit/Sources/AurralKit/AurralOpenTransport.swift"
   for want in 'case 1 where rest[0] == "health": .health' \
@@ -338,6 +547,9 @@ if [ -z "${G1_SRC:-}" ]; then
               'static let recipeFlowTurnOnMethod = "PUT"' \
               'static let recipeFlowUpdateMethod = "PUT"' \
               'static let recipeFlowDeleteMethod = "DELETE"' \
+              'case 4 where rest[0] == "playlists" && rest[1] == "jobs" && isPlainId(rest[2]) && rest[3] == "approve": .jobApprove' \
+              'case 4 where rest[0] == "playlists" && rest[1] == "jobs" && isPlainId(rest[2]) && rest[3] == "deny": .jobDeny' \
+              'static let heldSongMethod = "POST"' \
               'static let imageProxyMethod = "POST"' \
               'case .editorialAdd, .discoverFeedback, .flowDownload, .trackResearch: Self.discoverWriteMethod' \
               'static let discoverWriteMethod = "POST"' \
@@ -345,7 +557,7 @@ if [ -z "${G1_SRC:-}" ]; then
               'AurralRoute.isAllowed(method: method, path: path, query: query),'; do
     grep -qF -- "$want" "$aurral" || { echo "G1: $aurral: the Aurral allow-list changed (missing: $want)" >&2; bad=1; }
   done
-  [ "$(grep -cE 'case [0-9] where' "$aurral")" = 35 ] || { echo "G1: $aurral: the Aurral allow-list isn't exactly 35 routes" >&2; bad=1; }
+  [ "$(grep -cE 'case [0-9] where' "$aurral")" = 37 ] || { echo "G1: $aurral: the Aurral allow-list isn't exactly 37 routes" >&2; bad=1; }
   # Fix M1: the verb, token and query-name switches are pinned whole (each read GET, only the seven writes POST, only
   # health, login and the preview without the token, the six routes with queries and exactly their names), and the
   # trackResearch route's continuation line too.
@@ -370,6 +582,7 @@ if [ -z "${G1_SRC:-}" ]; then
         case .recipeFlowTurnOn: Self.recipeFlowTurnOnMethod
         case .recipeFlowUpdate: Self.recipeFlowUpdateMethod
         case .recipeFlowDelete: Self.recipeFlowDeleteMethod
+        case .jobApprove, .jobDeny: Self.heldSongMethod
         }'
   want_authorised='        switch self {
         case .health, .login, .deezerPreview, .imageProxyFile: false
@@ -386,7 +599,7 @@ if [ -z "${G1_SRC:-}" ]; then
         default: []
         }'
   [ "$(aurral_block 'var method: String {')" = "$want_method" ] ||
-    { echo "G1: $aurral: AurralRoute.method changed (each read GET, only the eight POSTs and the four chart flow writes)" >&2; bad=1; }
+    { echo "G1: $aurral: AurralRoute.method changed (each read GET; the writes only the eight POSTs, the four chart flow and four recipe flow writes, approve and deny)" >&2; bad=1; }
   [ "$(aurral_block 'var isAuthorised: Bool {')" = "$want_authorised" ] ||
     { echo "G1: $aurral: AurralRoute.isAuthorised changed" >&2; bad=1; }
   [ "$(aurral_block 'public var queryNames: [String] {')" = "$want_queries" ] ||
@@ -423,23 +636,65 @@ if [ -z "${G1_SRC:-}" ]; then
       *) echo "G1: Aurral's Download songs asked for outside its two callers: ${c%%:*}" >&2; bad=1 ;;
     esac
   done <<< "$dl_callers"
-  # Round 23 R23F (D200): Retry a song (the research route) is asked for from exactly two places: a synced playlist's
-  # per-song Retry (AppModel+DiscoverPlaylists.swift) and "Search again for missing songs" (AppModel+SearchAgain.swift),
-  # one call each, both on the owner's tap.
+  # Round 23 R23F (D200): Retry a song (the research route) is asked for from exactly three places: a synced playlist's
+  # per-song Retry (AppModel+DiscoverPlaylists.swift), "Search again for missing songs" (AppModel+SearchAgain.swift)
+  # and, round 24 C (D213), Songs still coming's Search now (AppModel+AurralDownloads.swift), one call each, all on the
+  # owner's tap.
   rs_callers=$(grep -rnF --include='*.swift' 'client.retrySong(' "${product[@]}" | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' || true)
-  [ "$(printf '%s\n' "$rs_callers" | grep -c .)" = 2 ] || { echo "G1: Aurral's Retry a song isn't asked for from exactly two calls" >&2; bad=1; }
+  [ "$(printf '%s\n' "$rs_callers" | grep -c .)" = 3 ] || { echo "G1: Aurral's Retry a song isn't asked for from exactly three calls" >&2; bad=1; }
   while IFS= read -r c; do
     [ -n "$c" ] || continue
     case "${c%%:*}" in
-      App/AppModel+DiscoverPlaylists.swift|App/AppModel+SearchAgain.swift) ;;
-      *) echo "G1: Aurral's Retry a song asked for outside its two callers: ${c%%:*}" >&2; bad=1 ;;
+      App/AppModel+DiscoverPlaylists.swift|App/AppModel+SearchAgain.swift|App/AppModel+AurralDownloads.swift) ;;
+      *) echo "G1: Aurral's Retry a song asked for outside its three callers: ${c%%:*}" >&2; bad=1 ;;
     esac
   done <<< "$rs_callers"
+  # Round 24 C fix round 1 (M6): `retrySong` named exactly so often in each file, whatever the spelling (spaced,
+  # backticked, taken as a function): one client call each in Search again and Songs still coming, the model's Retry
+  # (its definition and its one client call) and that method's one caller; nowhere else outside the client.
+  for f in $(grep -rlwE --include='*.swift' 'retrySong' "${product[@]}" || true); do
+    n=$(grep -owE 'retrySong' "$f" | grep -c . || true)
+    case "$f" in
+      Packages/MagpieKit/Sources/AurralKit/AurralClient+Discover.swift) want=$n ;;
+      App/AppModel+SearchAgain.swift|App/AppModel+AurralDownloads.swift|App/Screens/Discover/EditorialViews.swift) want=1 ;;
+      App/AppModel+DiscoverPlaylists.swift) want=2 ;;
+      *) want=0 ;;
+    esac
+    [ "$n" = "$want" ] || { echo "G1: Aurral's Retry a song named $n times in $f (allowed $want)" >&2; bad=1; }
+  done
+  # Round 24 C fix round 1 (B-M1): Aurral 2.13 checks no ownership on approve or deny, so a held song is decided only
+  # from `sendHeldDecision` (AppModel+AurralDownloads.swift), one call each, after the status and the item's songs are
+  # read fresh and the item is proven the user's on that fresh read and the song still held.
+  for name in approveHeldSong denyHeldSong; do
+    for f in $(grep -rlwE --include='*.swift' "$name" "${product[@]}" || true); do
+      n=$(grep -owE "$name" "$f" | grep -c . || true)
+      case "$f" in
+        Packages/MagpieKit/Sources/AurralKit/AurralClient+Manage.swift) want=$n ;;
+        App/AppModel+AurralDownloads.swift) want=1 ;;
+        *) want=0 ;;
+      esac
+      [ "$n" = "$want" ] || { echo "G1: $name named $n times in $f (allowed $want)" >&2; bad=1; }
+    done
+  done
+  held="App/AppModel+AurralDownloads.swift"
+  decide="$(awk '/private func sendHeldDecision\(/,/^    }$/' "$held" || true)"
+  last=0
+  for want in 'let client = try manageClient(action, row)' 'let fresh = try await client.status()' \
+              'let jobs = try await client.playlistJobs(row.item.id) ?? []' \
+              'let freshItem = (fresh.flows + fresh.sharedPlaylists).first { $0.id == row.item.id }' \
+              'guard let user = discover.bootstrap?.user, let freshItem, freshItem.belongs(to: user) else { throw AurralError.notPermitted }' \
+              'guard jobs.contains(where: { $0.id == row.job.id && $0.status?.lowercased() == "blocked" }) else {' \
+              'try await client.approveHeldSong(row.job.id)' 'try await client.denyHeldSong(row.job.id)'; do
+    at=$(grep -nF -- "$want" <<< "$decide" | head -1 | cut -d: -f1 || true)
+    if [ -z "$at" ]; then echo "G1: $held: sendHeldDecision no longer has: $want" >&2; bad=1
+    elif [ "$at" -le "$last" ]; then echo "G1: $held: sendHeldDecision out of order at: $want" >&2; bad=1
+    else last=$at; fi
+  done
   # Round 15 C2 (D131, fix round): the four chart flow writes are sent only from these exact lines in ChartFlows.swift
   # (each path a literal plus a plain id; the create's and append's bodies are built by chartFlowBody only, the
   # removal's is exactly {jobIds}). No PUT to a shared playlist (it left removed songs' files behind).
   chart_flows="Packages/MagpieKit/Sources/AurralKit/ChartFlows.swift"
-  for verb in chartFlowCreateMethod chartFlowAppendMethod chartFlowRemoveSongsMethod chartFlowDeleteMethod; do
+  for verb in chartFlowCreateMethod chartFlowAppendMethod chartFlowRemoveSongsMethod; do
     sends=$(grep -rnF --include='*.swift' "AurralRoute.$verb" "${product[@]}" | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' || true)
     { [ "$(printf '%s\n' "$sends" | grep -c .)" = 1 ] && [ "${sends%%:*}" = "$chart_flows" ]; } ||
       { echo "G1: the Aurral chart flow write $verb isn't exactly one send in $chart_flows" >&2; bad=1; }
@@ -451,7 +706,7 @@ if [ -z "${G1_SRC:-}" ]; then
               'path: "api/playlists/shared-playlists/" + playlistId + "/track-removals", body: body)' \
               'let body = try? JSONSerialization.data(withJSONObject: ["jobIds": jobIds], options: [.sortedKeys]) else {' \
               'jobIds.allSatisfy({ AurralRoute.isPlainId(Substring($0)) }),' \
-              '_ = try await ok(method: AurralRoute.chartFlowDeleteMethod, path: "api/playlists/shared-playlists/" + playlistId)' \
+              '_ = try await deleteSharedPlaylist(playlistId)   // round 24 B (D208): the one send, in AurralClient+Manage.swift' \
               'guard AurralRoute.isPlainId(Substring(playlistId)), Self.validChartFlowSongs(tracks),' \
               'guard AurralRoute.isPlainId(Substring(playlistId)) else { throw AurralError.forbidden("chart flow \(playlistId.count) chars") }' \
               'var o: [String: Any] = ["tracks": tracks.map(\.json)]'; do
@@ -460,7 +715,7 @@ if [ -z "${G1_SRC:-}" ]; then
   # Round 16: the four recipe flow writes are sent only from these exact lines in RecipeFlows.swift (each path a
   # literal plus a plain id); the turn-on body is exactly {enabled: true} (never off).
   recipe_flows="Packages/MagpieKit/Sources/AurralKit/RecipeFlows.swift"
-  for verb in recipeFlowCreateMethod recipeFlowTurnOnMethod recipeFlowUpdateMethod recipeFlowDeleteMethod; do
+  for verb in recipeFlowCreateMethod recipeFlowTurnOnMethod recipeFlowUpdateMethod; do
     sends=$(grep -rnF --include='*.swift' "AurralRoute.$verb" "${product[@]}" | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' || true)
     { [ "$(printf '%s\n' "$sends" | grep -c .)" = 1 ] && [ "${sends%%:*}" = "$recipe_flows" ]; } ||
       { echo "G1: the Aurral recipe flow write $verb isn't exactly one send in $recipe_flows" >&2; bad=1; }
@@ -469,12 +724,65 @@ if [ -z "${G1_SRC:-}" ]; then
               '_ = try await ok(method: AurralRoute.recipeFlowTurnOnMethod, path: "api/playlists/flows/" + flowId + "/enabled", body: body)' \
               'let body = Self.recipeFlowBody(["enabled": true]) else { throw AurralError.forbidden("turn on \(flowId.count) chars") }' \
               '_ = try await ok(method: AurralRoute.recipeFlowUpdateMethod, path: "api/playlists/flows/" + flowId, body: body)' \
-              '_ = try await ok(method: AurralRoute.recipeFlowDeleteMethod, path: "api/playlists/flows/" + flowId)'; do
+              '_ = try await deleteFlow(flowId)   // round 24 B (D208): the one send, in AurralClient+Manage.swift'; do
     grep -qF -- "$want" "$recipe_flows" || { echo "G1: $recipe_flows: a recipe flow write changed (missing: $want)" >&2; bad=1; }
   done
   if grep -nE '"enabled": *false|enabled: *false' "$recipe_flows" | grep -vE '^[0-9]+:[[:space:]]*//' | grep -q .; then
     echo "G1: $recipe_flows: a flow is turned off" >&2; bad=1
   fi
+  # Round 24 B (D207–D209): the two deletes (any own flow or shared playlist) and a held song's approve and deny are
+  # sent only from these exact lines in AurralClient+Manage.swift (each path a literal plus a plain id, checked first;
+  # no body, no query). Aurral's retry, cancel, manual search and research-missing are never named.
+  for verb in recipeFlowDeleteMethod chartFlowDeleteMethod; do
+    sends=$(grep -rnF --include='*.swift' "AurralRoute.$verb" "${product[@]}" | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' || true)
+    { [ "$(printf '%s\n' "$sends" | grep -c .)" = 1 ] && [ "${sends%%:*}" = "$aurral_manage" ]; } ||
+      { echo "G1: the Aurral delete $verb isn't exactly one send in $aurral_manage" >&2; bad=1; }
+  done
+  sends=$(grep -rnF --include='*.swift' 'AurralRoute.heldSongMethod' "${product[@]}" | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' || true)
+  [ "$(printf '%s\n' "$sends" | grep -c .)" = 2 ] || { echo "G1: Aurral's held-song decisions aren't exactly two sends" >&2; bad=1; }
+  while IFS= read -r w; do
+    [ -n "$w" ] || continue
+    [ "${w%%:*}" = "$aurral_manage" ] || { echo "G1: an Aurral held-song decision outside $aurral_manage: ${w%%:*}" >&2; bad=1; }
+  done <<< "$sends"
+  for want in 'guard AurralRoute.isPlainId(Substring(flowId)) else { throw AurralError.forbidden("delete flow \(flowId.count) chars") }' \
+              'let data = try await ok(method: AurralRoute.recipeFlowDeleteMethod, path: "api/playlists/flows/" + flowId)' \
+              'guard AurralRoute.isPlainId(Substring(playlistId)) else {' \
+              'let data = try await ok(method: AurralRoute.chartFlowDeleteMethod, path: "api/playlists/shared-playlists/" + playlistId)' \
+              'guard AurralRoute.isPlainId(Substring(jobId)) else { throw AurralError.forbidden("approve \(jobId.count) chars") }' \
+              '_ = try await ok(method: AurralRoute.heldSongMethod, path: "api/playlists/jobs/" + jobId + "/approve")' \
+              'guard AurralRoute.isPlainId(Substring(jobId)) else { throw AurralError.forbidden("deny \(jobId.count) chars") }' \
+              '_ = try await ok(method: AurralRoute.heldSongMethod, path: "api/playlists/jobs/" + jobId + "/deny")'; do
+    grep -qF -- "$want" "$aurral_manage" || { echo "G1: $aurral_manage: an Aurral manage write changed (missing: $want)" >&2; bad=1; }
+  done
+  [ "$(grep -cE 'try await ok\(' "$aurral_manage")" = 4 ] || { echo "G1: $aurral_manage: not exactly the four manage sends" >&2; bad=1; }
+  if grep -nE 'body:' "$aurral_manage" | grep -vE '^[0-9]+:[[:space:]]*//' | grep -q .; then
+    echo "G1: $aurral_manage: a manage write carries a body" >&2; bad=1
+  fi
+  if grep -rnE --include='*.swift' 'jobs/[^"]*"[^"]*"/(retry|cancel)|"/(retry|cancel)"|manual-search|research-missing' "${product[@]}" |
+       grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' | grep -v '^Packages/MagpieKit/Sources/MagpieTestSupport/' | grep -q .; then
+    echo "G1: Aurral's retry, cancel, manual search or research-missing is named in product code" >&2; bad=1
+  fi
+  for f in $(grep -rlE --include='*.swift' 'api/playlists/jobs' "${product[@]}" | sort -u || true); do
+    case "$f" in
+      "$aurral"|"$aurral_discover"|"$aurral_manage"|Packages/MagpieKit/Sources/MagpieTestSupport/*) ;;
+      *) grep -nE 'api/playlists/jobs' "$f" | grep -vE '^[0-9]+:[[:space:]]*(//|/\*|\*)' | grep -q . &&
+           { echo "G1: an Aurral jobs route named outside the Aurral client: $f" >&2; bad=1; } ;;
+    esac
+  done
+  # Fix round 1 M1: no route case's verb is read off the case (`AurralRoute.<case>.method`), which would get round the
+  # one-send pins above (the client reads `route.method` on a route it matched, never a named case); approve's and
+  # deny's cases and path tails are named only in the Aurral client and its manage file.
+  if grep -rnE --include='*.swift' 'AurralRoute\.[A-Za-z]+\.method' "${product[@]}" | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' |
+       grep -v '^Packages/MagpieKit/Sources/MagpieTestSupport/' | grep -q .; then
+    echo "G1: an Aurral route's verb is read off its case (AurralRoute.<case>.method)" >&2; bad=1
+  fi
+  for f in $(grep -rlE --include='*.swift' '\.jobApprove|\.jobDeny|"/approve"|"/deny"' "${product[@]}" | sort -u || true); do
+    case "$f" in
+      "$aurral"|"$aurral_manage"|Packages/MagpieKit/Sources/MagpieTestSupport/*) ;;
+      *) grep -nE '\.jobApprove|\.jobDeny|"/approve"|"/deny"' "$f" | grep -vE '^[0-9]+:[[:space:]]*//' | grep -q . &&
+           { echo "G1: a held song's approve or deny named outside the Aurral client: $f" >&2; bad=1; } ;;
+    esac
+  done
   # Round 14 A1 (D83), A7 (D110): the preview resolver sends no login or cookie, asks Aurral for the clip itself
   # (`?download`), follows no redirect (any 3xx refused) and takes the answer only from the configured Aurral host.
   # Its open transport (also the image proxy's pictures, D111) keeps no cookie or cache and never follows a redirect.
@@ -613,7 +921,7 @@ if [ -z "${G1_SRC:-}" ]; then
   done <<< "$discover_names"
   for f in $(grep -rlE --include='*.swift' 'api/playlists/flows|shared-playlists|api/deezer/preview' "${product[@]}" | sort -u || true); do
     case "$f" in
-      "$aurral_discover"|"$aurral"|"$chart_flows"|"$recipe_flows"|Packages/MagpieKit/Sources/AurralKit/AurralPreview.swift|Packages/MagpieKit/Sources/MagpieTestSupport/*) ;;
+      "$aurral_discover"|"$aurral"|"$aurral_manage"|"$chart_flows"|"$recipe_flows"|Packages/MagpieKit/Sources/AurralKit/AurralPreview.swift|Packages/MagpieKit/Sources/MagpieTestSupport/*) ;;
       *) grep -nE 'api/playlists/flows|shared-playlists|api/deezer/preview' "$f" | grep -vE '^[0-9]+:[[:space:]]*//' | grep -q . &&
            { echo "G1: an Aurral flow or preview route named outside AurralKit: $f" >&2; bad=1; } ;;
     esac
@@ -676,14 +984,19 @@ if [ -z "${G1_SRC:-}" ]; then
   #     or ArtistSearch (ArtistLidarr).
   # `removeCounting(…, restartAny: true)` (the queueRestartAny shape) only from the restarter.
   rq="Packages/MagpieKit/Sources/Requests"
-  sends=$(grep -rnE --include='*.swift' 'gate\.send\(' "${product[@]}" | grep -v "^$gate:" |
-          grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' || true)
-  while IFS= read -r s; do
-    [ -n "$s" ] || continue
-    file="${s%%:*}" rest="${s#*:}"; line="${rest%%:*}" text="${rest#*:}"
+  # R24H fix round 2: the line without its trailing comment, and every `gate.send(` on it (one per line is enforced
+  # above, but each is checked in case).
+  sends=$(ngrep 'gate\.send[[:space:]]*\(' | grep -v "^$gate:" | clean_lines || true)
+  while IFS= read -r s0; do
+    [ -n "$s0" ] || continue
+    file="${s0%%:*}" rest="${s0#*:}"; line="${rest%%:*}" text0="${rest#*:}"
+    count=$(printf '%s\n' "$text0" | perl -ne 'my $n = () = /gate\.send\s*\(/g; print $n')
+    for ((k = 0; k < count; k++)); do
+    text=$(printf '%s\n' "$text0" | perl -ne 'my @p = split /(?=gate\.send\s*\()/; my @s = grep { /^gate\.send/ } @p; print $s['"$k"']')
+    s="$file:$line:$text"
     parsed=$(printf '%s\n' "$text" | perl -ne '
       s/\\u\{([0-9a-fA-F]+)\}/chr(hex($1))/ge; s/%([0-9a-fA-F]{2})/chr(hex($1))/ge; $_ = lc;
-      if (/gate\.send\(\s*"([a-z]+)"\s*,\s*"([^"]*)"/) {
+      if (/^gate\.send\(\s*"([a-z]+)"\s*,\s*"([^"]*)"/) {
         my ($v, $p) = ($1, $2); $p =~ s#/{2,}#/#g; $p =~ s#^/##; $p =~ s#^api/v1/##; $p =~ s#^/##;
         print "$v $p\n";
       } else { print "-\n"; }')
@@ -728,6 +1041,7 @@ if [ -z "${G1_SRC:-}" ]; then
           *) echo "L1: a Lidarr command (${name:-no literal name}) outside its pinned callers: $file:$line" >&2; bad=1 ;;
         esac ;;
     esac
+    done
   done <<< "$sends"
   for f in $(grep -rlE --include='*.swift' 'restartAny:[[:space:]]*true' "${product[@]}" | sort -u || true); do
     [ "$f" = "Packages/MagpieKit/Sources/Requests/DownloadsInLidarr.swift" ] ||
@@ -739,11 +1053,13 @@ if [ -z "${G1_SRC:-}" ]; then
   # name one level inside slskd's downloads folder; its writes go only through `SlskdWriteGate.perform`, called only by
   # the clean slate; the channel's send only from the gate; the gate made only by the app's slskd connection; the
   # `X-API-Key` header only in the slskd client (and the stub that checks it).
+  # Round 24 (D216-D218): seven calls: the server state read (`GET /api/v0/server`) and the reconnect (`PUT`, no body,
+  # the gate's `connect` shape, its one caller `SlskdKeepConnected.check`); never `DELETE /api/v0/server`.
   slroute="Packages/MagpieKit/Sources/SlskdKit/SlskdRoute.swift"
   slclient="Packages/MagpieKit/Sources/SlskdKit/SlskdClient.swift"
+  slgatef="Packages/MagpieKit/Sources/SlskdKit/SlskdWriteGate.swift"
   for want in '    case downloads' '    case downloadsFolder(String)' '    case removeTransfer(username: String, id: UUID)' \
               '    case deleteFile(folder: String, file: String)' '    case deleteFolder(String)' \
-              '        case .downloads, .downloadsFolder: "GET"' \
               '        case .removeTransfer, .deleteFile, .deleteFolder: Self.deleteMethod' \
               '            return ["transfers", "downloads"]' \
               '            return ["files", "downloads", "directories", Self.base64(folder)]' \
@@ -752,17 +1068,36 @@ if [ -z "${G1_SRC:-}" ]; then
               '        if case .removeTransfer = self { return [URLQueryItem(name: "remove", value: "true")] }' \
               '        guard !s.isEmpty, s != ".", s != "..", s.utf8.count <= 255, s.trimmingCharacters(in: .whitespaces) == s else {' \
               '        return !s.unicodeScalars.contains { $0 == "/" || $0 == "\\" || $0 == ":" || CharacterSet.controlCharacters.contains($0) }' \
-              '        components.percentEncodedPath = prefix + "/api/v0/" + segments.map(Self.encode).joined(separator: "/")'; do
+              '        components.percentEncodedPath = prefix + "/api/v0/" + segments.map(Self.encode).joined(separator: "/")' \
+              '    case serverState' '    case connect' \
+              '        case .downloads, .downloadsFolder, .serverState: "GET"' \
+              '        case .connect: Self.connectMethod' \
+              '    static let connectMethod = "PUT"'; do
     grep -qF -- "$want" "$slroute" || { echo "G1: $slroute: the slskd allow-list changed (missing: $want)" >&2; bad=1; }
   done
-  [ "$(grep -cE '^    case ' "$slroute")" = 5 ] || { echo "G1: $slroute: the slskd allow-list isn't exactly 5 routes" >&2; bad=1; }
-  [ "$(grep -cE '^            return \[' "$slroute")" = 5 ] || { echo "G1: $slroute: the slskd paths changed" >&2; bad=1; }
+  [ "$(grep -cE '^    case ' "$slroute")" = 7 ] || { echo "G1: $slroute: the slskd allow-list isn't exactly 7 routes" >&2; bad=1; }
+  [ "$(grep -cE '^            return \[' "$slroute")" = 7 ] || { echo "G1: $slroute: the slskd paths changed" >&2; bad=1; }
+  # Round 24: the server routes are exactly `server` (never a deeper or another path), and the only PUT is the connect.
+  [ "$(grep -cxF '            return ["server"]' "$slroute")" = 2 ] || { echo "G1: $slroute: the slskd server path changed" >&2; bad=1; }
+  [ "$(grep -cE '"(PUT|POST|PATCH)"' "$slroute")" = 1 ] || { echo "G1: $slroute: an slskd write verb besides the connect" >&2; bad=1; }
   for want in '        guard route.method == "GET" else { throw SlskdError.forbidden }' \
               '        guard let url = route.url(base: base) else { throw SlskdError.forbidden }' \
-              '        guard enabled else { throw SlskdGateError.disabled }'; do
-    grep -qF -- "$want" "$slclient" || { echo "G1: $slclient: the slskd gate changed (missing: $want)" >&2; bad=1; }
+              '    func send(_ route: SlskdRoute, pass: SlskdGatePass) async throws -> (Data, HTTPURLResponse) {'; do
+    grep -qF -- "$want" "$slclient" || { echo "G1: $slclient: the slskd channel changed (missing: $want)" >&2; bad=1; }
   done
-  slhits=$(grep -rnE --include='*.swift' 'gate\.perform\(|perform\(\.(removeTransfer|deleteFile|deleteFolder)|SlskdWriteGate\(|connection\.send\(|X-API-Key' \
+  # Round 24 fix round 2 (R1): the gate in its own file, the only one that can make the pass the channel's writes need.
+  for want in '        guard enabled else { throw SlskdGateError.disabled }' \
+              'struct SlskdGatePass: Sendable {' '    private let token: UInt8' '    fileprivate init() { token = 0x5D }' \
+              '        if write == .connect { return try await connect() }   // Round 24 (D218): its own switch and proofs, below' \
+              '        guard keepConnected else { throw SlskdGateError.refused("Keep Soulseek connected is off for this slskd") }' \
+              '        guard mayAskToConnect() else { throw SlskdGateError.refused("asked less than a minute ago") }' \
+              '        guard state.condition == .down else { throw SlskdGateError.refused("slskd isn'"'"'t disconnected now") }' \
+              '        defaults.set(now(), forKey: Self.lastConnectKey(scope: client.instanceScope))' \
+              '        let (_, response) = try await client.connection.send(.connect, pass: SlskdGatePass())'; do
+    grep -qF -- "$want" "$slgatef" || { echo "G1: $slgatef: the slskd gate changed (missing: $want)" >&2; bad=1; }
+  done
+  slkeep="Packages/MagpieKit/Sources/SlskdKit/SlskdServerState.swift"
+  slhits=$(grep -rnE --include='*.swift' 'gate\.perform\(|perform\(\.(removeTransfer|deleteFile|deleteFolder|connect)|SlskdWriteGate\(|connection\.send\(|X-API-Key' \
              "${product[@]}" | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' || true)
   while IFS= read -r s; do
     [ -n "$s" ] || continue
@@ -772,11 +1107,14 @@ if [ -z "${G1_SRC:-}" ]; then
         case "$file" in "$slclient"|Packages/MagpieKit/Sources/MagpieTestSupport/FakeSlskd.swift) ;;
           *) echo "G1: the slskd key header outside the slskd client: $file" >&2; bad=1 ;; esac ;;
       *'connection.send('*)
-        case "$file" in "$slclient"|Packages/MagpieKit/Sources/LidarrKit/WriteGate.swift) ;;
+        case "$file" in "$slgatef"|Packages/MagpieKit/Sources/LidarrKit/WriteGate.swift) ;;
           *) echo "G1: a connection's send outside its gate: $file" >&2; bad=1 ;; esac ;;
       *'SlskdWriteGate('*)
         case "$file" in App/AppModel+Slskd.swift) ;;
           *) echo "G1: an slskd write gate made outside the app's slskd connection: $file" >&2; bad=1 ;; esac ;;
+      *'perform(.connect)'*)
+        case "$file" in "$slkeep"|"$slgatef") ;;
+          *) echo "G1: an slskd reconnect outside the keep-connected check: $file" >&2; bad=1 ;; esac ;;
       *)
         case "$file" in "$cleanslatefile") ;;
           *) echo "G1: an slskd write outside the clean slate: $file" >&2; bad=1 ;; esac ;;
@@ -794,6 +1132,80 @@ if [ -z "${G1_SRC:-}" ]; then
   done
   [ "$(grep -cE 'slskd\.gate\.perform\(\.(removeTransfer|deleteFile|deleteFolder)\(' "$cleanslatefile")" = 3 ] ||
     { echo "G1: $cleanslatefile: the slskd writes aren't exactly its three" >&2; bad=1; }
+  # Round 24 (D218): the reconnect is sent from exactly one place, the keep-connected check, and nowhere names it but
+  # SlskdKit (the clean slate never reconnects).
+  [ "$(grep -cE '^            try await gate\.perform\(\.connect\)   // Round 24 \(D218\): the one caller of the connect shape$' "$slkeep")" = 1 ] ||
+    { echo "G1: $slkeep: the slskd reconnect isn't its one caller" >&2; bad=1; }
+  # Fix round 1 I1: counted, whatever the spelling. Every `send(` in the slskd client is one of its five known lines;
+  # its request's verb is the route's own, set in one place; the keep-connected check performs exactly once; the clean
+  # slate performs exactly its three; the app's slskd connection makes exactly its two gates and performs nothing; and
+  # no product code takes another route's verb.
+  slnc() { grep -nE "$1" "$2" | grep -vE '^[0-9]+:[[:space:]]*//' || true; }
+  [ "$(slnc 'httpMethod' "$slclient" | cut -d: -f2-)" = '        request.httpMethod = route.method' ] ||
+    { echo "G1: $slclient: the slskd request's verb isn't exactly its route's" >&2; bad=1; }
+  # Fix round 2 (R1): occurrences, not lines, of the bare words, so a backticked (`send`), spaced (`send (`) or
+  # function-reference (`let s = connection.send`) spelling, or a second call on an existing line, counts too. The
+  # channel's writes also need the gate's pass, which only the gate's file can make (the compiler holds the rest).
+  slocc() { grep -vE '^[[:space:]]*//' "$2" | grep -oE "$1" | wc -l | tr -d ' '; }
+  for want in "send|$slclient|2" "exchange|$slclient|3" "SlskdGatePass|$slclient|1" \
+              "send|$slgatef|2" "perform|$slgatef|1" "SlskdGatePass|$slgatef|3" \
+              "perform|$slkeep|1" "perform|$cleanslatefile|3" "perform|App/AppModel+Slskd.swift|0"; do
+    word="${want%%|*}" rest="${want#*|}"
+    file="${rest%%|*}" count="${rest#*|}"
+    [ "$(slocc "\\b$word\\b" "$file")" = "$count" ] ||
+      { echo "G1: $file: \`$word\` isn't named exactly $count times" >&2; bad=1; }
+  done
+  # Fix round 3 (R2): the channel (internal to SlskdKit) is sent from the client and the gate only: `send` is never named
+  # in any other SlskdKit file, whatever its spelling (spaced, backticked, a function reference, spaces round the dot).
+  # And nothing in SlskdKit makes a value by reinterpreting memory (a pass made without naming it).
+  slkit="Packages/MagpieKit/Sources/SlskdKit"
+  for f in $(find "$slkit" -name '*.swift' | sort); do
+    case "$f" in "$slclient"|"$slgatef") continue ;; esac
+    [ "$(slocc '\bsend\b' "$f")" = 0 ] || { echo "G1: $f: names the slskd channel's send" >&2; bad=1; }
+  done
+  if grep -rnE --include='*.swift' 'unsafeBitCast|unsafeDowncast|Unsafe[A-Za-z]*Pointer|withUnsafe' "$slkit" |
+       grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' | grep -q .; then
+    echo "G1: $slkit: reinterprets memory (unsafe casts or pointers)" >&2; bad=1
+  fi
+  for f in $(grep -rlE --include='*.swift' 'SlskdGatePass' "${product[@]}" | sort -u || true); do
+    case "$f" in "$slclient"|"$slgatef") ;;
+      *) [ "$(slocc 'SlskdGatePass' "$f")" = 0 ] || { echo "G1: the slskd gate's pass named outside the gate: $f" >&2; bad=1; } ;; esac
+  done
+  # `.connect` (the reconnect shape and route, not a `.connect()` call) only on its pinned lines, once each: the route's
+  # two, the gate's four, the check's one; nowhere else in product code.
+  slconn='\.connect([^A-Za-z0-9_(]|$)'
+  want_conn=$(printf '%s\n' \
+    "$slroute|        case .connect: Self.connectMethod" \
+    "$slroute|        case .connect:" \
+    "$slgatef|        if write == .connect { return try await connect() }   // Round 24 (D218): its own switch and proofs, below" \
+    "$slgatef|        case .connect: throw SlskdGateError.refused(\"not a clean-up\")" \
+    "$slgatef|        case .connect:" \
+    "$slgatef|        let (_, response) = try await client.connection.send(.connect, pass: SlskdGatePass())" \
+    "$slkeep|            try await gate.perform(.connect)   // Round 24 (D218): the one caller of the connect shape" | sort)
+  have_conn=""
+  conn_occ=0
+  for f in $(grep -rlE --include='*.swift' "$slconn" "${product[@]}" | sort -u || true); do
+    lines=$(slnc "$slconn" "$f" | cut -d: -f2- | sed "s|^|$f\||")
+    [ -n "$lines" ] && have_conn="$have_conn$lines"$'\n'
+    conn_occ=$((conn_occ + $(slocc "$slconn" "$f")))
+  done
+  [ "$(printf '%s' "$have_conn" | sed '/^$/d' | sort)" = "$want_conn" ] ||
+    { echo "G1: the slskd reconnect (.connect) named off its pinned lines" >&2; bad=1; }
+  [ "$conn_occ" = 7 ] || { echo "G1: the slskd reconnect (.connect) named $conn_occ times, not 7" >&2; bad=1; }
+  slapp="App/AppModel+Slskd.swift"
+  [ -z "$(slnc 'perform\(' "$slapp")" ] || { echo "G1: $slapp: performs an slskd write itself" >&2; bad=1; }
+  want_gates=$(printf '%s\n' \
+    '        return RequestRunner.SlskdAccess(client: client, gate: SlskdWriteGate(client: client, defaultsSuite: gateDefaultsSuite))' \
+    '        let gate = SlskdWriteGate(client: client, defaultsSuite: gateDefaultsSuite, now: slskdKeep.clock)' | sort)
+  [ "$(slnc 'SlskdWriteGate\(' "$slapp" | cut -d: -f2- | sort)" = "$want_gates" ] ||
+    { echo "G1: $slapp: the slskd gates made aren't exactly its two" >&2; bad=1; }
+  for f in $(grep -rlE --include='*.swift' 'SlskdRoute\.[A-Za-z]+\.method' "${product[@]}" | sort -u || true); do
+    [ -n "$(slnc 'SlskdRoute\.[A-Za-z]+\.method' "$f")" ] && { echo "G1: another slskd route's verb taken: $f" >&2; bad=1; }
+  done
+  for f in $(grep -rlE --include='*.swift' '\bSlskdWrite\.connect\b|perform\(\.connect\)|send\(\.connect\)' "${product[@]}" | sort -u || true); do
+    case "$f" in "$slkeep"|"$slgatef") ;;
+      *) echo "G1: the slskd reconnect named outside SlskdKit: $f" >&2; bad=1 ;; esac
+  done
 fi
 [ "$bad" = 0 ] || { echo "G1 check failed: route Lidarr writes through LidarrWriteGate (or extend the allowlist in $0)" >&2; exit 1; }
 echo "G1 check: no write verbs outside LidarrWriteGate in ${product[*]}${tests[*]:+ and ${tests[*]}} (allowlisted: Navidrome auth/login, dev-only IT helpers)"

@@ -271,8 +271,6 @@ extension AurralClient {
     /// Remove flow: `DELETE /api/playlists/shared-playlists/:id` (no body). A playlist already gone (404) is removed.
     public func deleteChartFlow(playlistId: String) async throws {
         guard AurralRoute.isPlainId(Substring(playlistId)) else { throw AurralError.forbidden("chart flow \(playlistId.count) chars") }
-        do {
-            _ = try await ok(method: AurralRoute.chartFlowDeleteMethod, path: "api/playlists/shared-playlists/" + playlistId)
-        } catch AurralError.notFound { return }
+        _ = try await deleteSharedPlaylist(playlistId)   // round 24 B (D208): the one send, in AurralClient+Manage.swift
     }
 }
