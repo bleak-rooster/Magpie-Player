@@ -129,4 +129,77 @@ import Testing
         defer { model.signOut() }
         try await expectOwnersOutcome(model, admin: false, ownItem: "sp-c")
     }
+
+    // MARK: - Bounds and what stays as it was
+
+    private var itemReads: [String] {
+        aurral.asked.filter { $0.hasPrefix("GET /api/playlists/jobs/") }
+    }
+
+    /// D252: the proof is saved (D204), so the next read asks nothing more; nothing is ever written for it.
+    @Test func proofIsSaved_nextReadAsksNothing() async throws {
+        let model = try await signedIn(.flows, admin: true, gap: .listUnreadable)
+        defer { model.signOut() }
+        let scope = try #require(model.navidromeScope)
+        #expect(defaults.dictionary(forKey: AppModel.discoverClaimsKey(scope)) as? [String: String]
+                    == ["flow-c": "pl-c1", "flow-sc": "pl-c2"])
+        let before = itemReads.count
+        #expect(before >= 2)
+        await model.refreshDiscover(force: true)
+        #expect(itemReads.count == before, "\(itemReads)")
+        #expect(try await model.discoverPlaylists().map(\.id) == ["pl-c1"])
+        let writes = aurral.asked.filter { !$0.hasPrefix("GET ") && !$0.hasSuffix("/api/auth/login") }
+        #expect(writes.filter { $0.contains("/api/playlists/") }.isEmpty, "\(writes)")
+    }
+
+    /// Unique names are settled by name as before (D203 step 4): no item's songs are read for them.
+    @Test func uniqueNames_unchanged_noItemReads() async throws {
+        let model = try await signedIn(.flows, admin: true, gap: .listUnreadable, extra: { aurral in
+            aurral.setFlows([.init(id: "flow-c", name: "Chill"), .init(id: "flow-sl", name: "Late", ownerUserId: 2)])
+            self.nav.lists["pl-c2"] = ("Late", ["a-other", "a-nameonly"])
+        })
+        defer { model.signOut() }
+        #expect(itemReads.isEmpty, "\(itemReads)")
+        #expect(try await model.discoverPlaylists().map(\.id) == ["pl-c1"])
+        model.showEveryonesFlows = true
+        #expect(Set(try await model.discoverPlaylists().map(\.id)) == ["pl-c1", "pl-c2"])
+        #expect(model.discoverOwnerCaption(playlistId: "pl-c2") == "sam" && model.discoverOwnerCaption(playlistId: "pl-c1") == nil)
+    }
+
+    /// D251's bound: at most ten items' songs per read, the user's own first, four at a time.
+    @Test func itemReads_bounded_ownFirst() async throws {
+        let names = (1...7).map { "Mix \($0)" }
+        let model = try await signedIn(.flows, admin: true, gap: .listUnreadable, extra: { aurral in
+            aurral.setFlows(names.enumerated().flatMap { index, name in
+                [StubAurral.Flow(id: "mine-\(index)", name: name), .init(id: "sams-\(index)", name: name, ownerUserId: 2)]
+            })
+            self.nav.lists = [:]
+            for (index, name) in names.enumerated() {
+                self.nav.lists["pl-m\(index)"] = (name, ["a-lullaby"])
+                self.nav.lists["pl-s\(index)"] = (name, ["a-other"])
+            }
+        })
+        defer { model.signOut() }
+        let before = itemReads.count
+        await model.refreshDiscover(force: true)   // one read (none of these can be proven: they stay unproven)
+        let read = itemReads.dropFirst(before).map { String($0.dropFirst("GET /api/playlists/jobs/".count)) }
+        #expect(read.count == AppModel.discoverItemProofLimit, "\(read)")
+        #expect(Set((0..<7).map { "mine-\($0)" }).isSubset(of: read), "the user's own first: \(read)")
+        #expect(read.filter { $0.hasPrefix("sams-") }.count == 3, "\(read)")
+    }
+
+    /// Never a wrong owner: when Sam's item's songs can't be read (Aurral answers none), Sam's "Chill" stays unclaimed:
+    /// no caption, never a guess from the user's being proven (the one left over is not taken to be Sam's).
+    @Test func othersUnreadable_neverGuessed() async throws {
+        let model = try await signedIn(.flows, admin: true, gap: .listUnreadable, extra: { aurral in
+            aurral.setJobs([.init(flowId: "flow-c", artistName: "Low", trackName: "Lullaby", durationMs: 251_000),
+                            .init(flowId: "flow-c", artistName: "Low", trackName: "Words", durationMs: 200_000)])
+        })
+        defer { model.signOut() }
+        #expect(try await model.discoverPlaylists().map(\.id) == ["pl-c1"])
+        model.showEveryonesFlows = true
+        #expect(Set(try await model.discoverPlaylists().map(\.id)) == ["pl-c1", "pl-c2"])
+        #expect(model.discoverOwnerCaption(playlistId: "pl-c2") == nil)
+        #expect(model.discover.playlists.first { $0.playlist.id == "pl-c2" }?.flow.ownerUsername == nil)
+    }
 }
