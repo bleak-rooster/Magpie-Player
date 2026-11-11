@@ -330,4 +330,20 @@ private func ids(_ result: LidarrTopSongs.Result) -> [String] { result.rows.map(
                                            index: library([flow]), lidarr: .failed, avoiding: { $0 == "flow" })
         #expect(onlyFlow == .song(id: "flow"), "only a Discover copy: the merge skips it by its library")
     }
+
+    /// Round 26 K2 (K1 re-review m1): an Aurral row has no recording or ISRC, so its direct match is the artist MBID +
+    /// title tier; a Discover copy listed first there doesn't hide the main library's copy either.
+    @Test func link_titleTierPrefersACopyOutsideDiscover() {
+        let flow = albumSong("flow", album: "Flow")
+        let main = albumSong("main")
+        let aurral = LidarrTopSongs.recording(aurral: AurralSong(trackName: "Song", artistName: "Aurora Field",
+                                                                  durationMs: 246_000),
+                                              artistName: "Aurora Field", artistMBID: Self.artistMBID)
+        #expect(LidarrTopSongs.link(aurral, artistName: "Aurora Field", artistMBID: Self.artistMBID,
+                                    index: library([flow, main]), lidarr: .failed) == .song(id: "flow"),
+                "unchanged without a preference")
+        #expect(LidarrTopSongs.link(aurral, artistName: "Aurora Field", artistMBID: Self.artistMBID,
+                                    index: library([flow, main]), lidarr: .failed, avoiding: { $0 == "flow" })
+                == .song(id: "main"))
+    }
 }
