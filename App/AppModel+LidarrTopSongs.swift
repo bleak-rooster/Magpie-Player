@@ -59,8 +59,8 @@ extension AppModel {
     func waitForLidarrTopSongsAnswer(_ read: @escaping @MainActor () async -> LidarrTopSongsModel.LidarrAnswer) async
         -> LidarrTopSongsModel.LidarrAnswer {
         let task = Task { @MainActor in await read() }
+        let sleep = lidarrTopSongsSession.sleep(for: .lidarrAnswer)
         return await withTaskCancellationHandler {
-            let sleep = lidarrTopSongsSession.sleep(for: .lidarrAnswer)
             switch await Deadline.run(Self.lidarrTopSongsWait, sleep: sleep, { await task.value }) {
             case .success(let answer): answer
             case .failure: .unread
