@@ -245,8 +245,7 @@ struct LidarrTopSongsCache {
     func load(fresh: Bool, lidarr: @escaping @MainActor () async -> LidarrAnswer,
               ordinary: @escaping @MainActor () async -> Void) async {
         async let ordinaryRead: Void = ordinary()
-        await run(fresh: fresh, lidarr: lidarr)
-        let mine = generation
+        let mine = await run(fresh: fresh, lidarr: lidarr)   // fix round 2 (m1): this load's own run
         await ordinaryRead
         if mine == generation { retire() }
     }
@@ -260,27 +259,52 @@ struct LidarrTopSongsCache {
     /// D264: waits for Lidarr's answer (`lidarr`, at most `AppModel.lidarrTopSongsWait`; the read itself isn't cut short,
     /// so the page's line still shows when it comes), then refreshes when the artist qualifies, at most once every two
     /// minutes per artist in a session unless `fresh` (pull to refresh). Leaving Lidarr drops the saved list; Lidarr
-    /// unread keeps it and refreshes nothing.
-    func run(fresh: Bool, lidarr: @escaping @MainActor () async -> LidarrAnswer) async {
+    /// unread keeps it and refreshes nothing. Returns the run's generation (only the newest run changes the page).
+    ///
+    /// Fix round 2 (R1): a refresh is noted when it starts (fix round 1, M1), and the note is taken back when the run ends
+    /// without applying (the page left, a newer run replaced it, the account changed), so it never holds the next page
+    /// off. A page the gap refuses with nothing to show waits for the refresh already running for the artist and shows
+    /// what it saved, or refreshes itself if that one didn't apply; it never falls to the ordinary list meanwhile.
+    @discardableResult
+    func run(fresh: Bool, lidarr: @escaping @MainActor () async -> LidarrAnswer) async -> Int {
         generation += 1
         let mine = generation
         let answer = await app.waitForLidarrTopSongsAnswer(lidarr)
-        guard mine == generation, !Task.isCancelled else { return }   // fix round 1 (M1): a newer run decides
+        guard mine == generation, !Task.isCancelled else { return mine }   // fix round 1 (M1): a newer run decides
         switch answer {
         case .unread:
             phase = songs.isEmpty ? .ordinary : .shown
         case .answered(let state):
-            guard let lidarrId = state.topSongsLidarrArtistId else { return leave() }
-            guard fresh || app.lidarrTopSongsMayRefresh(key), owned else {
+            guard let lidarrId = state.topSongsLidarrArtistId else { leave(); return mine }
+            guard owned else {
                 phase = songs.isEmpty ? .ordinary : .shown
-                return
+                return mine
             }
-            app.noteLidarrTopSongsRefreshed(key)   // fix round 1 (M1): at the start, so a second page doesn't read too
+            if !fresh, !app.lidarrTopSongsMayRefresh(key) {
+                guard songs.isEmpty, let running = app.lidarrTopSongsRefreshInFlight(key) else {
+                    phase = songs.isEmpty ? .ordinary : .shown
+                    return mine
+                }
+                phase = .refreshing
+                await running.wait()
+                guard mine == generation, !Task.isCancelled, owned else { return mine }
+                if !app.lidarrTopSongsMayRefresh(key) {   // it applied: its list is saved (none saved: none found)
+                    show(await app.lidarrTopSongsSaved(key: key))
+                    phase = songs.isEmpty ? .ordinary : .shown
+                    return mine
+                }
+                // It ended without applying (its page left): this page refreshes instead.
+            }
+            let token = app.beginLidarrTopSongsRefresh(key)
+            var applied = false
+            defer { app.endLidarrTopSongsRefresh(key, token: token, applied: applied) }
             if songs.isEmpty { phase = .refreshing }
             let result = await app.readLidarrTopSongs(name: name, mbid: mbid, lidarrArtistId: lidarrId, fresh: fresh)
-            guard mine == generation, !Task.isCancelled, owned else { return }   // fix round 1 (I2): signed out meanwhile
+            guard mine == generation, !Task.isCancelled, owned else { return mine }   // fix round 1 (I2): signed out
             apply(result)
+            applied = true
         }
+        return mine
     }
 
     /// D264, D265: a complete refresh replaces the list (in place, only when its songs differ) and is saved; with no songs
@@ -344,9 +368,32 @@ struct LidarrTopSongsCache {
         return { try await sleep(wait, $0) }
     }
 
-    /// Sign-out: nothing of this account's is kept.
+    /// Fix round 2 (R1): the refresh each artist's note belongs to, and the signal its waiting pages are woken by.
+    var running: [String: (token: UUID, done: RefreshSignal)] = [:]
+
+    /// Sign-out: nothing of this account's is kept (and no page is left waiting).
     func forget() {
         refreshedAt = [:]
         aurral = [:]
+        for (_, refresh) in running { refresh.done.finish() }
+        running = [:]
+    }
+}
+
+/// Fix round 2 (R1): wakes the pages waiting for an artist's refresh once it has ended, applied or not.
+@MainActor final class RefreshSignal {
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private var finished = false
+
+    func wait() async {
+        guard !finished else { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func finish() {
+        finished = true
+        let woken = waiters
+        waiters = []
+        woken.forEach { $0.resume() }
     }
 }

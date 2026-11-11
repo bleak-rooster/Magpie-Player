@@ -772,10 +772,72 @@ private final class Answers: @unchecked Sendable {
         transport.hold("/rest/getTopSongs")
         let first = Task { await library.run(fresh: false) { self.monitored } }
         #expect(await eventually { self.transport.count("/rest/getTopSongs") == 1 })
-        await outside.run(fresh: false) { self.monitored }
+        // Fix round 2 (R1): the second page waits for the refresh already running, then shows its list.
+        let second = Task { await outside.run(fresh: false) { self.monitored } }
+        #expect(await eventually { outside.phase == .refreshing }, "waiting for the first page's refresh, not ordinary")
         transport.release("/rest/getTopSongs")
         await first.value
+        await second.value
         #expect(transport.count("/rest/getTopSongs") == 1)
+        #expect(ids(outside.songs) == Self.expected && !outside.wantsOrdinary)
+    }
+
+    /// Fix round 2 (R1): a refresh that never applied (the page left mid-read) doesn't count against the two-minute gap:
+    /// the artist's page opened again refreshes and shows the list, not the ordinary one.
+    @Test func fix2_R1_aCancelledRefreshDoesNotBlockTheNextOne() async throws {
+        let model = try await model()
+        defer { model.signOut() }
+        let left = try await page(model)
+        transport.hold("/rest/getTopSongs")
+        let run = Task { await left.run(fresh: false) { self.monitored } }
+        #expect(await eventually { self.transport.count("/rest/getTopSongs") == 1 })
+        run.cancel()
+        await run.value
+        transport.release("/rest/getTopSongs")
+        let again = try await page(model)
+        await again.run(fresh: false) { self.monitored }
+        #expect(ids(again.songs) == Self.expected && !again.wantsOrdinary)
+        #expect(transport.count("/rest/getTopSongs") == 2)
+    }
+
+    /// Fix round 2 (R1): a run replaced by a newer one on the same page leaves no note behind either.
+    @Test func fix2_R1_aSupersededRefreshDoesNotBlockTheNextOne() async throws {
+        let model = try await model()
+        defer { model.signOut() }
+        let only = try await page(model)
+        transport.hold("/rest/getTopSongs")
+        let older = Task { await only.run(fresh: false) { self.monitored } }
+        #expect(await eventually { self.transport.count("/rest/getTopSongs") == 1 })
+        let newer = Task { await only.run(fresh: false) { .answered(.notInLidarr(mbid: artistMBID)) } }
+        await newer.value
+        transport.release("/rest/getTopSongs")
+        await older.value
+        let reopened = try await page(model)
+        await reopened.run(fresh: false) { self.monitored }
+        #expect(ids(reopened.songs) == Self.expected, "the older run never applied, so it didn't count")
+    }
+
+    /// Fix round 2 (m1): a load whose run was superseded never retires the newer run's list.
+    @Test func fix2_m1_aSupersededLoadDoesNotRetire() async throws {
+        let model = try await model()
+        defer { model.signOut() }
+        try saved(["s-tide"], in: model)
+        let page = try await page(model)
+        let answer = OSAllocatedUnfairLock(initialState: false)
+        let asked = OSAllocatedUnfairLock(initialState: false)
+        let load = Task {
+            await page.load(fresh: false, lidarr: {
+                asked.withLock { $0 = true }
+                _ = await eventually(30) { answer.withLock { $0 } }
+                return .answered(.notInLidarr(mbid: artistMBID))
+            }, ordinary: {})
+        }
+        #expect(await eventually { asked.withLock { $0 } })
+        await page.run(fresh: false) { .answered(.notInLidarr(mbid: artistMBID)) }   // newer: leaving, rows kept
+        #expect(page.wantsOrdinary && ids(page.songs) == ["s-tide"])
+        answer.withLock { $0 = true }
+        await load.value
+        #expect(ids(page.songs) == ["s-tide"], "the older load's ordinary list isn't the newer run's to retire")
     }
 
     /// M4 (and design M5): one predicate says whether Aurral is used, for the footer and the read alike.

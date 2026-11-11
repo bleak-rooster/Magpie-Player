@@ -45,10 +45,7 @@ extension AppModel {
             let onPhone = Set(await offlineCatalog.songs().map(\.id))
             saved = (rows ?? []).map(\.song).filter { onPhone.contains($0.id) }
         } else {
-            saved = (cache?.load(key) ?? []).map(\.song)
-            if let index = await matchIndex?.index, index.count > 0 {
-                saved = saved.filter { index.contains(songId: $0.id) }
-            }
+            saved = await lidarrTopSongsSaved(key: key)
         }
         return LidarrTopSongsModel(app: self, key: key, name: name, mbid: mbid, offline: isOffline, cache: cache,
                                    saved: saved)
@@ -76,8 +73,40 @@ extension AppModel {
         return lidarrTopSongsSession.now().timeIntervalSince(at) >= Self.lidarrTopSongsRefreshGap
     }
 
-    func noteLidarrTopSongsRefreshed(_ key: String) {
-        lidarrTopSongsSession.refreshedAt[key] = lidarrTopSongsSession.now()
+    /// The saved list of `key` as it may show online: without songs the match index no longer holds (only when the index
+    /// is built and non-empty).
+    func lidarrTopSongsSaved(key: String) async -> [Song] {
+        guard let scope = navidromeScope else { return [] }
+        var saved = (LidarrTopSongsCache(root: dataDirectory, scope: scope).load(key) ?? []).map(\.song)
+        if let index = await matchIndex?.index, index.count > 0 {
+            saved = saved.filter { index.contains(songId: $0.id) }
+        }
+        return saved
+    }
+
+    /// Fix round 1 (M1), round 2 (R1): a refresh of `key` starts: it is noted against the two-minute gap, and pages
+    /// that the gap refuses can wait for it. A refresh it replaces wakes its waiters.
+    func beginLidarrTopSongsRefresh(_ key: String) -> UUID {
+        let session = lidarrTopSongsSession
+        session.running[key]?.done.finish()
+        let token = UUID()
+        session.refreshedAt[key] = session.now()
+        session.running[key] = (token, RefreshSignal())
+        return token
+    }
+
+    /// The refresh ended. One that didn't apply takes its note back, if it is still its own, so the next page refreshes.
+    func endLidarrTopSongsRefresh(_ key: String, token: UUID, applied: Bool) {
+        let session = lidarrTopSongsSession
+        guard let refresh = session.running[key], refresh.token == token else { return }
+        if !applied { session.refreshedAt[key] = nil }
+        session.running[key] = nil
+        refresh.done.finish()
+    }
+
+    /// The refresh of `key` running now, if any.
+    func lidarrTopSongsRefreshInFlight(_ key: String) -> RefreshSignal? {
+        lidarrTopSongsSession.running[key]?.done
     }
 
     /// Sign-out (D263): every account's saved Top songs, and this session's reads.
