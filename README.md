@@ -37,7 +37,7 @@ distributed only through TestFlight. It is not on the App Store. Expect rough ed
 | Hear a song before you add it | 30-second previews, played through your Aurral server |
 | Search that finds anything, not just what you own | Your library first, then a "Not in your library" band with a **Try** button |
 | Add a song and it's just there | Lidarr fetches it (through Tubifarry and slskd), Navidrome picks it up, and Magpie tells you when it's ready |
-| An artist page with their top songs | From Aurral, ListenBrainz or your library, with previews for the ones you don't have |
+| An artist page with their top songs | From Aurral, ListenBrainz and your library: the ones you have for artists you collect, with previews for the rest |
 | Offline listening, in the car too | Downloads, a size-limited cache, and a full CarPlay app |
 
 Every part beyond Navidrome is optional. Each feature works, is hidden, or explains why not, depending on which
@@ -61,9 +61,9 @@ and keeps playlists up to date for each person on your server. Magpie turns it i
   that went missing.
 - **Yours, or everyone's.** Each person signs in to Aurral as themselves, so Discover shows your own flows and
   playlists. With **Show everyone's flows and playlists** on, you see the rest of the household's too. They're matched
-  to the person who made them, not by name, so two people's "Chill" stay apart (by Aurral's own record of each one's
-  songs when two share a name). Another person's name is shown only when Aurral tells Magpie whose it is, which it does
-  for Aurral admins.
+  to the person who made them, not by name, so two people's "Chill" stay apart, even before their songs have reached
+  your library (they show as "Downloading" or "Not ready yet" until then). Another person's name is shown only when
+  Aurral tells Magpie whose it is, which it does for Aurral admins.
 - Discover is in the car too.
 
 **Your library, through Navidrome**
@@ -72,7 +72,8 @@ and keeps playlists up to date for each person on your server. Magpie turns it i
 - Playlists can show only yours or everyone's shared ones; under everyone's, each playlist says who made it.
 - An artist's page shows their top songs (from Aurral, ListenBrainz or your library, with 30-second previews for the
   ones you don't have). An artist Lidarr looks after shows up to five of their top songs that you already have — found
-  even when you have the album rather than the single — and the list is ready the moment you open the page.
+  even when you have the album rather than the single. The list is ready the moment you open the page, and is quietly
+  refreshed in the background while you look.
 - A queue with shuffle and repeat, the lock screen and Control Centre, and synced lyrics when your server has them.
   Playback is gapless when the files carry gapless information.
 - Download albums and playlists for offline listening, with a size-limited cache for what you stream.
