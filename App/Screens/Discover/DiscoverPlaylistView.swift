@@ -301,6 +301,7 @@ struct DiscoverListView: View {
         // Round 16: a flow's playlist joins (or leaves) as the server publishes it.
         .onChange(of: model.discover.playlists.map(\.playlist.id)) { Task { await load() } }
         .onChange(of: model.discover.itemRows.map(\.item.id)) { Task { await load() } }   // R26L (D271)
+        .onChange(of: model.discover.hiddenPlaylistIds) { Task { await load() } }   // R26L fix round 1 (M2, D273)
         .onChange(of: model.discover.everyoneRevision) { Task { await load() } }   // R23F (D190)
     }
 

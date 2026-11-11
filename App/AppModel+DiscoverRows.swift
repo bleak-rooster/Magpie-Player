@@ -68,12 +68,24 @@ struct DiscoverRow: Identifiable, Equatable {
 ///   the car and Home list only what plays.
 /// A user's own recipe flow without its playlist stays Your flows' row (round 16), never a second one here.
 extension AppModel {
+    nonisolated static let discoverHiddenPlaylistsKeyPrefix = "magpie.discoverHidden."
+    nonisolated static func discoverHiddenPlaylistsKey(_ scope: String) -> String { discoverHiddenPlaylistsKeyPrefix + scope }
+
+    /// D273: the playlists never listed: as last read, else as saved for the account (fix round 1, I1: before the
+    /// launch's first read, or with Aurral down, the empty playlists stay hidden, as D189's others' do).
+    var hiddenDiscoverPlaylistIds: Set<String> {
+        guard aurralSetUp else { return [] }
+        if discover.hiddenRead { return discover.hiddenPlaylistIds }
+        guard let scope = navidromeScope else { return [] }
+        return Set(appDefaults.stringArray(forKey: Self.discoverHiddenPlaylistsKey(scope)) ?? [])
+    }
+
     /// Hook from `identifyDiscoverPlaylists`, on each read of Aurral: which items are rows of their own and which of
-    /// Aurral's playlists are never rows. nil: no items listed (Z1's fail-closed status), so neither.
+    /// Aurral's playlists are never rows. nil: no items listed (Z1's fail-closed status): no item rows, and the last
+    /// hidden set is kept (such a read proves nothing new; fix round 1, I1).
     func noteDiscoverItemRows(_ read: DiscoverItemRead?) {
         guard let read else {
             discover.itemRows = []
-            discover.hiddenPlaylistIds = []
             return
         }
         let claimed = Set(read.claims.values)
@@ -87,6 +99,10 @@ extension AppModel {
         let byId = Dictionary((read.mine + read.others).map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         discover.itemRows = rows.items.compactMap { id in byId[id].map { DiscoverItemRow(item: $0, mine: mine.contains(id)) } }
         discover.hiddenPlaylistIds = rows.hidden
+        discover.hiddenRead = true
+        if let scope = navidromeScope {   // saved per account beside D189's others' (fix round 1, I1)
+            appDefaults.set(rows.hidden.sorted(), forKey: Self.discoverHiddenPlaylistsKey(scope))
+        }
     }
 
     /// Library › Discover's rows: Aurral's playlists (as `discoverPlaylists`), then the items that are rows of their own

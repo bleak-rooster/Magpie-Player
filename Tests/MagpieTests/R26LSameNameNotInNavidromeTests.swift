@@ -11,7 +11,7 @@ import Testing
 /// playlists with one name and different owners; "These are both only in Aurral, they are not present in Navidrome."
 /// Build 27: "when I see everyone's I see the playlist twice without any usernames underneath and when I want to see
 /// mine, I don't see it at all." Wanted: only mine shows mine; everyone's shows both, the other user's name under
-/// theirs (D271–D275). Against the stub Aurral and a mock Navidrome, never the owner's.
+/// theirs (D271–D274). Against the stub Aurral and a mock Navidrome, never the owner's.
 @MainActor @Suite(.serialized) final class R26LSameNameNotInNavidromeTests {
     let tmp = FileManager.default.temporaryDirectory.appending(path: "R26LSameNameTests-\(UUID().uuidString)")
     let store = SessionStore(keychain: KeychainStore(service: "com.bleak-rooster.magpie.tests.\(UUID().uuidString)"))
@@ -19,6 +19,8 @@ import Testing
     lazy var defaults = UserDefaults(suiteName: suite)!
     let transport = AurralRouting()
     let nav = DiscoverNavidrome()
+    /// Fix round 1 (I1): one Aurral store, so a fresh AppModel (a relaunch) comes up signed in to the same Aurral.
+    let aurralStore = MemoryAurralStore()
     var aurral: StubAurral { transport.aurral }
 
     deinit {
@@ -29,7 +31,7 @@ import Testing
 
     private func makeModel() -> AppModel {
         AppModel(store: store, lidarrStore: MemoryLidarrStore(), tokenStore: MemoryTokenStore(),
-                 aurralStore: MemoryAurralStore(), matchIndexDirectory: nil, dataDirectory: tmp, transport: transport,
+                 aurralStore: aurralStore, matchIndexDirectory: nil, dataDirectory: tmp, transport: transport,
                  probeTransport: transport, engine: FakeEngine(), defaults: defaults, systemNowPlaying: false,
                  notifications: false, network: FakeNetwork(.wifi), audioFetcher: FakeFetcher())
     }
@@ -225,6 +227,51 @@ import Testing
         #expect(model.discover.itemRows.count == 2 && model.discover.hiddenPlaylistIds == ["pl-e1", "pl-e2"])
         model.signOut()
         #expect(model.discover.itemRows.isEmpty && model.discover.hiddenPlaylistIds.isEmpty)
+    }
+
+    // MARK: - Fix round 1 (I1): the launch window
+
+    /// A relaunch with Aurral's status failing: the empty playlists the last read hid stay hidden (phone, car), under
+    /// everyone's too, and stay out of Playlists.
+    @Test func relaunch_statusFailing_emptyStayHidden() async throws {
+        let first = try await signedIn(.playlists, admin: true, navidrome: .twoEmpty)
+        first.showEveryonesFlows = true
+        let scope = try #require(first.navidromeScope)
+        #expect(Set(defaults.stringArray(forKey: AppModel.discoverHiddenPlaylistsKey(scope)) ?? []) == ["pl-e1", "pl-e2"])
+        aurral.setStatusFailure(500)
+        let model = makeModel()   // a cold start on the same Keychain, Aurral store and defaults
+        model.resumeSavedSession()
+        defer { model.signOut() }
+        #expect(model.aurralSetUp && model.navidromeScope == scope)
+        await model.refreshDiscover(force: true)
+        #expect(model.discover.playlists.isEmpty, "the read failed")
+        #expect(model.isDiscoverPlaylist(id: "pl-e1") && model.isDiscoverPlaylist(id: "pl-e2"), "still Aurral's")
+        let phone = try await model.discoverPlaylists().map(\.id)
+        #expect(!phone.contains("pl-e1") && !phone.contains("pl-e2"), "\(phone)")
+        let car = try await carIds(model)
+        #expect(!car.contains("pl-e1") && !car.contains("pl-e2"), "\(car)")
+    }
+
+    /// A read with no items listed (Z1's fail-closed status) keeps the last hidden set: it proves nothing new.
+    @Test func noItemsRead_keepsHidden() async throws {
+        let model = try await signedIn(.playlists, admin: true, navidrome: .twoEmpty)
+        defer { model.signOut() }
+        model.showEveryonesFlows = true
+        model.noteDiscoverItemRows(nil)
+        #expect(model.discover.itemRows.isEmpty)
+        #expect(model.discover.hiddenPlaylistIds == ["pl-e1", "pl-e2"])
+        let scope = try #require(model.navidromeScope)
+        #expect(Set(defaults.stringArray(forKey: AppModel.discoverHiddenPlaylistsKey(scope)) ?? []) == ["pl-e1", "pl-e2"])
+        #expect(try await model.discoverPlaylists().filter { $0.id.hasPrefix("pl-e") }.isEmpty)
+    }
+
+    /// Sign-out forgets the saved hidden set with the other Discover keys.
+    @Test func signOut_removesHiddenKey() async throws {
+        let model = try await signedIn(.playlists, admin: true, navidrome: .twoEmpty)
+        let scope = try #require(model.navidromeScope)
+        #expect(defaults.object(forKey: AppModel.discoverHiddenPlaylistsKey(scope)) != nil)
+        model.signOut()
+        #expect(defaults.object(forKey: AppModel.discoverHiddenPlaylistsKey(scope)) == nil)
     }
 
     /// Reads only: nothing is sent to Aurral for any of this.
