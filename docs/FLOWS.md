@@ -145,11 +145,20 @@ Round 24: a recent search's whole row is the button, and the Recent list refresh
 `search3` (no new route; offline, the offline catalogue's filter); while it holds a query the A–Z bar goes, and
 clearing returns to the same place (D224). Long A–Z lists (over 25, bar shown) have a header per letter run, and a
 letter jump lands on its header (D225). Playlists › All shows who made someone else's playlist (D223).
-Round 25: with Lidarr set up, Settings › Home & Library › Artist top songs has **In your library only, for artists in
-Lidarr** (on by default; hidden without Lidarr). While on, an artist page whose top songs come from Aurral or
-ListenBrainz, for an artist Lidarr monitors (or a find you kept), shows only the songs in your library, in order; with
-none it says "None of their top songs are in your library yet." Off, or for an artist not in Lidarr or a find still on
-trial, every top song shows with its preview as before (D247–D250).
+Round 26 (D256–D269): Settings' **In your library only, for artists in Lidarr** is gone (round 25 reverted). For an
+artist Lidarr has (monitored or not, or a find you kept; not a find still on trial), both artist pages show **Top
+songs**: up to five songs you already have, picked from Aurral's list, then ListenBrainz's, then the library's
+(Navidrome's own top songs), each top down; a song you haven't got is skipped and the next moves up, no song twice,
+never a Discover copy. A song is yours when the match index finds it with the same title (housekeeping notes such as
+Radio Edit or Single Version aside), or, when you have the album rather than the single, when Lidarr has the same title
+(radio edits, single and album versions count; live, remix, reprise, "with …" and the like don't) with a file on a
+studio, soundtrack or compilation album or EP of about the same length and the library holds that track. The list is
+saved per account and artist, so it shows the moment the page opens; once Lidarr confirms the artist, it is refreshed in
+the background (at most every two minutes; pull to refresh always) and replaces the shown list in place, without
+animation, only when its songs differ and every source it needed answered. Fewer than five shows those found; none
+shows the ordinary Top songs with previews. Offline, only the saved songs on the phone show. Rows keep their swipe and
+VoiceOver actions. Artists Lidarr doesn't have keep the source chosen in Settings (whose footer now says so) and aren't
+saved.
 
 ### f. Requesting a song ("Try")
 "Quick" here means Lidarr's normal search-and-download pipeline. **Quick fetch via slskd is not built in v1.**
@@ -253,6 +262,12 @@ songs from Aurral (at most ten items per read, yours first, four at a time, noth
 doesn't always hold them: it may be too big to read, and a playlist's songs taken from the Library are filed under the
 Library there. Once proven, the claim is saved; if the item's own songs can't be read, a saved claim stays. A playlist
 still left over is never guessed to be anyone's, so a non-admin sees another user's copy without a name (D251–D253).
+Round 26, Aurral (D271–D274): an Aurral flow or playlist that no Navidrome playlist is known to be (not in Navidrome
+yet, or only an empty copy there) is listed in Library › Discover as its own row, by its Aurral id: yours by Aurral's
+own record of whose it is, never by name, and with "Show everyone's" on, another user's with their name under it. It
+doesn't open yet; it says "Downloading d/t" or "Not ready yet. Check back later." Aurral's empty playlists that no item
+claims are never listed (still kept out of Playlists); which ones are hidden is saved per account, so they stay hidden at
+launch and with Aurral down, and is forgotten at sign-out.
 
 ### i. CarPlay
 - **Tabs.** Home, Library, Finds and Search. The Finds tab exists only when the head unit allows 4 tabs, and it shows "not set up" without a Finds library.

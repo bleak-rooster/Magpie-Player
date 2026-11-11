@@ -330,15 +330,11 @@ public struct LayoutPreferences: PreferenceArea {
     public var chartsCountry: ChartsCountry
     /// Round 14 A3 (owner answer 6): where every artist page's Top songs come from.
     public var artistTopSongs: ArtistTopSongsSource
-    /// Round 25 I (owner, 2026-11-10; D247): "In your library only, for artists in Lidarr": an artist Lidarr monitors
-    /// shows only the Top songs the library has. On by default; preferences saved before it read as on.
-    public var topSongsInLibraryOnly: Bool
 
     public init(home: OrderedVisibility<HomeSection>, library: OrderedVisibility<LibraryRow>, showsRecentlyAdded: Bool,
                 albumArtistsOnly: Bool = true, homeStyles: [String: HomeSectionStyle] = [:],
                 becauseYouLikeRows: Int = HomeSectionStyle.becauseYouLikeRange.upperBound,
-                chartsCountry: ChartsCountry = .automatic, artistTopSongs: ArtistTopSongsSource = .automatic,
-                topSongsInLibraryOnly: Bool = true) {
+                chartsCountry: ChartsCountry = .automatic, artistTopSongs: ArtistTopSongsSource = .automatic) {
         self.home = home
         self.library = library
         self.showsRecentlyAdded = showsRecentlyAdded
@@ -347,7 +343,6 @@ public struct LayoutPreferences: PreferenceArea {
         self.becauseYouLikeRows = becauseYouLikeRows
         self.chartsCountry = chartsCountry
         self.artistTopSongs = artistTopSongs
-        self.topSongsInLibraryOnly = topSongsInLibraryOnly
     }
 
     /// Hides or shows a Library row; false (no change) when it would leave none of the always-available rows visible.
@@ -370,8 +365,7 @@ public struct LayoutPreferences: PreferenceArea {
                                  showsRecentlyAdded: showsRecentlyAdded, albumArtistsOnly: albumArtistsOnly,
                                  homeStyles: HomeSectionStyle.normalised(homeStyles),
                                  becauseYouLikeRows: clamp(becauseYouLikeRows, HomeSectionStyle.becauseYouLikeRange),
-                                 chartsCountry: chartsCountry, artistTopSongs: artistTopSongs,
-                                 topSongsInLibraryOnly: topSongsInLibraryOnly)
+                                 chartsCountry: chartsCountry, artistTopSongs: artistTopSongs)
     }
 
     /// The Home sections to show, in the owner's order, for the phone and the car alike (the car shows Made for you too,

@@ -17,6 +17,10 @@ struct ArtistView: View {
     @State private var popular: PopularSongs?
     /// Round 14 A3: Top songs from the server or ListenBrainz (Settings › Home & Library › Artist top songs).
     @State private var outsideTop: TopSongsResult?
+    /// Round 26 K2 (D263, D264): Top songs for an artist Lidarr has: the saved list at once, then the refreshed one.
+    @State private var lidarrTop: LidarrTopSongsModel?
+    /// A pull to refresh is under way: the Top songs refresh whatever the two-minute gap says (D264).
+    @State private var pulling = false
     @State private var notYetAlbums: [NotYetAlbum] = []
     @State private var gathering = false
     @State private var playError: String?
@@ -42,6 +46,8 @@ struct ArtistView: View {
         // Round 13 Z2: in a task of its own, and a load cut short never shows an error (RefreshSafety).
         .refreshable {
             await RefreshSafety.run {
+                pulling = true
+                defer { pulling = false }
                 await model.refreshPage(artistId: artistId, coverArtIds: [page.value?.artist.coverArtId]) {
                     popular = nil   // the saved list is gone: read the server's afresh
                     await load()
@@ -132,25 +138,12 @@ struct ArtistView: View {
             }
             .frame(maxWidth: .infinity)
 
-            if let outsideTop {   // round 14 A3: Top songs from the chosen source (owner answer 6)
-                TopSongsSection(result: outsideTop, lidarr: lidarrLine?.state)   // Round 25 I (D248)
-            } else if let topSongs = popular?.songs, !topSongs.isEmpty {
-                VStack(alignment: .leading, spacing: Tokens.Spacing.s) {
-                    Text("Popular").magpieDisplay(.title2).accessibilityAddTraits(.isHeader)
-                        .padding(.horizontal, Tokens.Spacing.margin)
-                    ForEach(Array(topSongs.prefix(5).enumerated()), id: \.offset) { index, song in
-                        Button { model.play(Array(topSongs.prefix(5)), startAt: index) } label: {
-                            Artwork(song.coverArtId, side: 48) { image in
-                                SongRow(song: song, state: .library, artwork: image)
-                            }
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityAddTraits(.isButton)
-                        .contextMenu { SongQueueMenuItems(song: song); SongLibraryMenuItems(song: song) }   // R12, R7, R8
-                        .songSwipeActions(song, in: .stack)   // R12
-                    }
-                }
-                .transaction { $0.animation = nil }   // R3: a refreshed list swaps in place, no animation storm
+            // Round 26 K2 (D263; fix round 1, design H2): for an artist Lidarr has, "Top songs" in the library row view
+            // throughout (never "Popular" first); the ordinary list once Lidarr says it's theirs; without Lidarr, as before.
+            switch lidarrTop?.display(fallback: popular?.songs ?? []) ?? .ordinary {
+            case .lidarr(let songs): LidarrTopSongsSection(songs: songs)
+            case .ordinary: ordinaryTopSongs
+            case .nothing: EmptyView()
             }
 
             VStack(alignment: .leading, spacing: Tokens.Spacing.m) {
@@ -163,6 +156,30 @@ struct ArtistView: View {
         }
         .padding(.vertical, Tokens.Spacing.l)
         .foregroundStyle(p.inkColor)
+    }
+
+    /// The ordinary Top songs: D104's chosen source, or Popular when only the library can answer.
+    @ViewBuilder private var ordinaryTopSongs: some View {
+        if let outsideTop {   // round 14 A3: Top songs from the chosen source (owner answer 6)
+            TopSongsSection(result: outsideTop)
+        } else if let topSongs = popular?.songs, !topSongs.isEmpty {
+            VStack(alignment: .leading, spacing: Tokens.Spacing.s) {
+                Text("Popular").magpieDisplay(.title2).accessibilityAddTraits(.isHeader)
+                    .padding(.horizontal, Tokens.Spacing.margin)
+                ForEach(Array(topSongs.prefix(5).enumerated()), id: \.offset) { index, song in
+                    Button { model.play(Array(topSongs.prefix(5)), startAt: index) } label: {
+                        Artwork(song.coverArtId, side: 48) { image in
+                            SongRow(song: song, state: .library, artwork: image)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityAddTraits(.isButton)
+                    .contextMenu { SongQueueMenuItems(song: song); SongLibraryMenuItems(song: song) }   // R12, R7, R8
+                    .songSwipeActions(song, in: .stack)   // R12
+                }
+            }
+            .transaction { $0.animation = nil }   // R3: a refreshed list swaps in place, no animation storm
+        }
     }
 
     private var notYetSection: some View {
@@ -201,11 +218,13 @@ struct ArtistView: View {
         if model.isOffline || OfflineCatalog.isLocalId(artistId) {
             let catalog = await model.offlineCatalog
             popular = nil
+            outsideTop = nil   // Round 26 K2 (D268): offline, Top songs are only saved songs on the phone
             notYetAlbums = []
             guard let artist = catalog.artists().first(where: { $0.id == artistId }) else {
                 page = .failed(OfflineCopy.notOnPhone)
                 return
             }
+            lidarrTop = await model.lidarrTopSongs(name: artist.name, mbid: artist.mbid, artistId: artist.id)
             page = .loaded(Page(artist: artist, albums: catalog.albums(byArtist: artistId)))
             lidarrLine = ArtistLidarrModel(model: model, name: artist.name, mbid: artist.mbid)   // "You're offline"
             return
@@ -218,12 +237,16 @@ struct ArtistView: View {
             page = .loaded(Page(artist: artist, albums: albums))
             model.noteAlbumSongCounts(albums)   // P1: backfills downloads saved without the album's count
             model.noteFavourite(.artist(artist.id), artist.starred)   // R7
-            let name = artist.name
+            // Round 26 K2 (D263): the saved Top songs of an artist Lidarr has, ready with the page (kept on a reload, so a
+            // pull never clears it first).
+            if model.lidarr == nil || lidarrTop?.key != LidarrTopSongsCache.key(mbid: artist.mbid, artistId: artist.id)
+                || lidarrTop?.offline != false {
+                lidarrTop = await model.lidarrTopSongs(name: artist.name, mbid: artist.mbid, artistId: artist.id)
+            }
             // Both fill in after the page; neither waits for the other.
-            async let top: Void = loadTopSongs(name, mbid: artist.mbid)
+            async let top: Void = loadTopSongsAndLidarrLine(artist)
             async let notYet: Void = loadNotYetAlbums(artist, library: albums)
-            async let inLidarr: Void = loadLidarrLine(artist)
-            _ = await (top, notYet, inLidarr)
+            _ = await (top, notYet)
         } catch {
             page = page.failing(error, noticeTo: model)   // Round 13 Z2: never for a load cut short; the page shown stays
         }
@@ -245,6 +268,25 @@ struct ArtistView: View {
             outsideTop = nil
             if let popular, let result { await popular.refresh { result.rows.compactMap(\.library) } }
         }
+    }
+
+    /// Round 26 K2 (D257, D264): without Lidarr, the Top songs and the Lidarr line load side by side as before. With it,
+    /// the ordinary Top songs are read at once too (fix round 1, design H3: nothing waits for Lidarr), and the line's
+    /// answer (waited for at most 10 s) decides which list shows: an artist Lidarr has gets their list refreshed; any
+    /// other, or no list, the ordinary one.
+    private func loadTopSongsAndLidarrLine(_ artist: Artist) async {
+        guard let lidarrTop else {
+            async let top: Void = loadTopSongs(artist.name, mbid: artist.mbid)
+            async let inLidarr: Void = loadLidarrLine(artist)
+            _ = await (top, inLidarr)
+            return
+        }
+        await lidarrTop.load(fresh: pulling, lidarr: {
+            await loadLidarrLine(artist)
+            return lidarrLine?.state.map(LidarrTopSongsModel.LidarrAnswer.answered) ?? .unread
+        }, ordinary: {
+            await loadTopSongs(artist.name, mbid: artist.mbid)
+        })
     }
 
     private func loadLidarrLine(_ artist: Artist) async {

@@ -87,21 +87,38 @@ public struct MatchIndex: Sendable, Codable {
     public var count: Int { entries.count }
 
     /// The best library match for `r`, or nil. Callers merge only at ≥ `acceptThreshold`.
-    public func match(_ r: ExternalRecording) -> (songId: String, confidence: Double)? {
-        if let m = r.recordingMBID, let i = byRecording[m.rawValue] { return (entries[i].id, 1.0) }
+    ///
+    /// Round 26 K2 (owner, 2026-11-10; K1 re-review m1, D259): `avoiding` names song ids the caller knows are Discover
+    /// copies (the index doesn't keep a song's library). On every tier, of the songs that tier accepts, the first one
+    /// `avoiding` doesn't name is taken, else the first (a Discover copy that is the only one is still the answer). The
+    /// default names none, so every other caller (Try, search, charts) gets exactly what it got before.
+    public func match(_ r: ExternalRecording, avoiding: (String) -> Bool = { _ in false })
+        -> (songId: String, confidence: Double)? {
+        /// The tier's first song outside `avoiding`, else its first.
+        func pick(_ hits: [Int]) -> Int? { hits.first { !avoiding(entries[$0].id) } ?? hits.first }
+        /// A single-entry tier (recording, ISRC) keeps its first song; another song with the same key is looked for only
+        /// when that one is avoided.
+        func pick(_ first: Int, sharing key: (Entry) -> Bool) -> Int {
+            guard avoiding(entries[first].id) else { return first }
+            return entries.indices.first { key(entries[$0]) && !avoiding(entries[$0].id) } ?? first
+        }
+        if let m = r.recordingMBID, let i = byRecording[m.rawValue] {
+            return (entries[pick(i) { $0.recording == m.rawValue }].id, 1.0)
+        }
         for isrc in r.isrcs {
-            if let i = byISRC[isrc.uppercased()] { return (entries[i].id, 0.95) }
+            let key = isrc.uppercased()
+            if let i = byISRC[key] { return (entries[pick(i) { $0.isrcs?.contains(key) == true }].id, 0.95) }
         }
         let title = Normalize.name(r.title)
         if let m = r.artistMBID, let hits = byArtistMBIDTitle[m.rawValue + "\u{1F}" + title],
-           let i = hits.first(where: { durationsAgree(entries[$0].duration, r.duration) == true }) {
+           let i = pick(hits.filter({ durationsAgree(entries[$0].duration, r.duration) == true })) {
             return (entries[i].id, 0.9)
         }
         guard let hits = byKey[Normalize.key(artist: r.artist, title: r.title)] else { return nil }
-        if let i = hits.first(where: { durationsAgree(entries[$0].duration, r.duration) == true }) {
+        if let i = pick(hits.filter({ durationsAgree(entries[$0].duration, r.duration) == true })) {
             return (entries[i].id, 0.8)
         }
-        if let i = hits.first(where: { durationsAgree(entries[$0].duration, r.duration) == nil }) {
+        if let i = pick(hits.filter({ durationsAgree(entries[$0].duration, r.duration) == nil })) {
             return (entries[i].id, 0.6)
         }
         return nil
@@ -112,8 +129,9 @@ public struct MatchIndex: Sendable, Codable {
     /// step 5: "treat as in-library only if unambiguous"). LB search carries no durations, so without
     /// this every untagged library song would also show up as "Not in your library". A title that marks
     /// itself as another version ("Halo (Live)") never counts on a name-only match, so it can be tried.
-    public func librarySong(for r: ExternalRecording) -> String? {
-        guard let m = match(r) else { return nil }
+    /// Round 26 K2: `avoiding` as in `match` (default none: unchanged).
+    public func librarySong(for r: ExternalRecording, avoiding: (String) -> Bool = { _ in false }) -> String? {
+        guard let m = match(r, avoiding: avoiding) else { return nil }
         if m.confidence >= Self.acceptThreshold { return m.songId }
         if Normalize.hasVersionAside(r.title) { return nil }
         return byKey[Normalize.key(artist: r.artist, title: r.title)]?.count == 1 ? m.songId : nil

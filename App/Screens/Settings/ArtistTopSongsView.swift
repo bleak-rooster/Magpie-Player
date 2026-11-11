@@ -3,21 +3,32 @@ import SwiftUI
 
 /// Settings › Home & Library › Artist top songs (round 14 A3, owner answer 6): Automatic (Aurral, then ListenBrainz,
 /// then your library), Aurral, ListenBrainz or Your library. Settings may name the services. Without Aurral (or one that
-/// can't give an artist's top songs) the picker offers Automatic, ListenBrainz and Your library only. Round 25 I (owner,
-/// 2026-11-10; D247): with Lidarr, a switch below: "In your library only, for artists in Lidarr" (on by default).
+/// can't give an artist's top songs) the picker offers Automatic, ListenBrainz and Your library only.
 struct ArtistTopSongsView: View {
     @Environment(AppModel.self) private var model
     static let title = "Artist top songs"
 
     static func hasAurral(_ model: AppModel) -> Bool { model.aurralSetUp && model.aurralCapabilities.artistPreview }
 
-    /// Round 25 I (D247): "In your library only, for artists in Lidarr" shows only with Lidarr (no dead switches).
-    static func offersLibraryOnly(_ model: AppModel) -> Bool { model.lidarr != nil }
-
     /// The row's value: the choice (a stored Aurral without Aurral reads as Automatic, which is what happens).
     static func summary(_ model: AppModel) -> String {
         let chosen = model.preferences.layout.artistTopSongs
         return SongActionsCopy.sourceTitle(chosen == .aurral && !hasAurral(model) ? .automatic : chosen)
+    }
+
+    /// The footer. Round 26 K2 (D266, amends D104): with Lidarr set up, the choice is for artists Lidarr doesn't look
+    /// after, and the last sentence says what the others get, naming only the sources set up (Aurral with its artist
+    /// previews, ListenBrainz with a token). Without Lidarr, exactly as before.
+    static func footer(_ model: AppModel) -> String {
+        let token = model.hasListenBrainzToken ? "" : " ListenBrainz needs your token in Settings \u{203A} Scrobbling."
+        let rest = " If the choice has none for an artist, the next one in Automatic\u{2019}s order is used, with a note."
+            + token
+        guard model.lidarr != nil else { return "Used for the Top songs on every artist page." + rest }
+        // Fix round 1 (design M4): the Lidarr sentence second, then the fall-back sentence, the token sentence last.
+        let sources = model.lidarrTopSongsSourceNames.joined(separator: ", then ")
+        return "Used for the Top songs of artists Lidarr doesn\u{2019}t look after."
+            + " For artists Lidarr looks after, Top songs are up to five songs you already have, picked from \(sources)."
+            + rest
     }
 
     var body: some View {
@@ -45,19 +56,7 @@ struct ArtistTopSongsView: View {
                     .accessibilityIdentifier("artist-top-songs-\(source.rawValue)")
                 }
             } footer: {
-                Text("Used for the Top songs on every artist page. If the choice has none for an artist, the next one in Automatic\u{2019}s order is used, with a note."
-                     + (model.hasListenBrainzToken ? "" : " ListenBrainz needs your token in Settings \u{203A} Scrobbling."))
-            }
-            if Self.offersLibraryOnly(model) {   // Round 25 I (owner, 2026-11-10; D247): on by default
-                Section {
-                    Toggle(TopSongsInLibraryCopy.toggle, isOn: Binding(
-                        get: { model.preferences.layout.topSongsInLibraryOnly },
-                        set: { on in model.updatePreferences { $0.layout.topSongsInLibraryOnly = on } }))
-                        .frame(minHeight: 44)
-                        .accessibilityIdentifier("artist-top-songs-library-only")
-                } footer: {
-                    Text(TopSongsInLibraryCopy.footer)
-                }
+                Text(Self.footer(model))
             }
         }
         .navigationTitle(Self.title)

@@ -167,6 +167,7 @@ extension AppModel {
             appDefaults.removeObject(forKey: Self.ownPlaylistsKey(scope))   // R22A
             appDefaults.removeObject(forKey: Self.othersPlaylistsKeyPrefix + scope)   // R23F (D189)
             appDefaults.removeObject(forKey: Self.discoverClaimsKey(scope))   // R24A (D204)
+            appDefaults.removeObject(forKey: Self.discoverHiddenPlaylistsKey(scope))   // R26L (D273)
             forgetAutoDownloadRecords(scope: scope)   // R22A (D186)
         }
         syncLibraryScope()

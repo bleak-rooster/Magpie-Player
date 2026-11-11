@@ -29,6 +29,8 @@ sends no custom header) can be pointed at one; a test runner may instead send `X
                    artist MBID the editorial links answer), so S14 M2's name check (D116) passes for Whole artist
   playable-clip    the preview's ?download sends 12 s of silence the phone can really play (round 15 C1: the mini
                    player stays up while the UI test looks at its cover)
+  same-name-elsewhere  round 26 L: the status also lists two shared playlists "Late Night Chill", the user's and
+                   "sam"'s, neither in Navidrome
 Control (never sent by the app): GET /__stub/ping, GET /__stub/log (the requests seen, newest last, as
 "METHOD /path" without the scenario prefix and without query), GET /__stub/shared (the user's own playlists and their
 songs), POST /__stub/reset.
@@ -67,7 +69,8 @@ PREVIEW_CLIP = b"ID3" + b"\xff" * 2045
 PROXIED_PICTURE = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")
 SCENARIOS = {"default", "aurral210", "no-access-flow", "no-downloader", "region-us", "missing-sections",
-             "genre-not-ready", "slow", "failing", "redirects", "oversized", "lidarr-artist", "playable-clip"}
+             "genre-not-ready", "slow", "failing", "redirects", "oversized", "lidarr-artist", "playable-clip",
+             "same-name-elsewhere"}
 
 
 def silent_wav(seconds=12, rate=8000):
@@ -235,7 +238,18 @@ def flows_and_jobs():
     return flows, jobs
 
 
-def status_body():
+def same_name_elsewhere():
+    """Round 26 L (D271): two shared playlists of one name, the user's and another user's ("sam"), neither published to
+    Navidrome (no playlist of the name there): each is a Discover row of its own."""
+    def item(id_, owner_id, owner):
+        return {"id": id_, "name": "Late Night Chill", "ownerUserId": owner_id, "ownerUsername": owner, "trackCount": 2,
+                "sourceName": None, "sourceFlowId": None, "importedAt": "2026-11-05T00:00:00.000Z",
+                "createdAt": "2026-11-05T00:00:00.000Z", "recordHistory": True, "showTrackAvailability": False,
+                "artworkRevision": 1, "importSource": None}
+    return [item("sp-chill-mine", 1, USERNAME), item("sp-chill-sam", 2, "sam")]
+
+
+def status_body(scenario="default"):
     flows, jobs = flows_and_jobs()
     with LOCK:
         for pid in [pid for pid, p in STATE["shared"].items() if "deleting" in p]:   # queued deletes run now
@@ -252,6 +266,8 @@ def status_body():
                "sourceName": p.get("sourceName"), "sourceFlowId": None, "importedAt": "2026-11-05T00:00:00.000Z",
                "createdAt": "2026-11-05T00:00:00.000Z", "recordHistory": True, "showTrackAvailability": False,
                "artworkRevision": 1, "importSource": None} for pid, p in shared.items()]
+    if scenario == "same-name-elsewhere":
+        listed += same_name_elsewhere()
     return {"worker": {"running": True, "processing": False, "activeCount": 0},
             "flowStats": stats,
             "flows": flows, "sharedPlaylists": listed,
@@ -565,7 +581,7 @@ class Handler(BaseHTTPRequestHandler):
         if flow_reads and scenario != "aurral210" and not may_access_flows(scenario):
             return self.reply(403, {"error": "Forbidden", "message": "Missing permission: accessFlow"})
         if method == "GET" and path == "/api/playlists/status":
-            return self.reply(200, status_body())
+            return self.reply(200, status_body(scenario))
         if method == "GET" and path == "/api/playlists/jobs":
             _, jobs = flows_and_jobs()
             return self.reply(200, jobs)
