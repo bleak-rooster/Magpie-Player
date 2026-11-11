@@ -70,9 +70,8 @@ public enum LidarrTopSongs {
 
     public struct Result: Sendable, Equatable {
         public var rows: [Row]
-        /// False when a source the walk reached before the list was full `failed` (fix round 1, C3), a resolve said Lidarr
-        /// was unread, or the walk was cancelled: such a list never
-        /// replaces a saved one (D262, D264).
+        /// False when a source the walk reached before the list was full `failed` (fix round 1, I1 (ruling C3)), a
+        /// resolve said Lidarr was unread, or the walk was cancelled: such a list never replaces a saved one (D262, D264).
         public var complete: Bool
 
         public init(rows: [Row], complete: Bool) { self.rows = rows; self.complete = complete }
@@ -150,10 +149,8 @@ public enum LidarrTopSongs {
     /// library): a recording's copy outside them is taken first, so a Discover copy never hides the main one.
     public static func link(_ recording: ExternalRecording, artistName: String, artistMBID: MBID?, index: MatchIndex,
                             lidarr: LidarrReads, avoiding: (String) -> Bool = { _ in false }) -> Link {
-        if let rec = recording.recordingMBID, let id = index.songId(recording: rec, avoiding: avoiding) {
-            return .song(id: id)   // the ladder's tier 1, with the preference
-        }
-        if let id = index.librarySong(for: recording) { return .song(id: id) }
+        // Round 26 K2 (K1 re-review m1): the preference holds on every tier of the ladder, not only the recording's.
+        if let id = index.librarySong(for: recording, avoiding: avoiding) { return .song(id: id) }
         guard case .read(let albums, let tracks) = lidarr else { return .lidarrUnread }
         guard let track = AlbumTrackMatch.find(title: recording.title, duration: recording.duration,
                                                recording: recording.recordingMBID, albums: albums, tracks: tracks),

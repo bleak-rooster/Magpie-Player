@@ -16,6 +16,21 @@ struct ArtistTopSongsView: View {
         return SongActionsCopy.sourceTitle(chosen == .aurral && !hasAurral(model) ? .automatic : chosen)
     }
 
+    /// The footer. Round 26 K2 (D266, amends D104): with Lidarr set up, the choice is for artists Lidarr doesn't look
+    /// after, and the last sentence says what the others get, naming only the sources set up (Aurral with its artist
+    /// previews, ListenBrainz with a token). Without Lidarr, exactly as before.
+    static func footer(_ model: AppModel) -> String {
+        let token = model.hasListenBrainzToken ? "" : " ListenBrainz needs your token in Settings \u{203A} Scrobbling."
+        let rest = " If the choice has none for an artist, the next one in Automatic\u{2019}s order is used, with a note."
+            + token
+        guard model.lidarr != nil else { return "Used for the Top songs on every artist page." + rest }
+        // Fix round 1 (design M4): the Lidarr sentence second, then the fall-back sentence, the token sentence last.
+        let sources = model.lidarrTopSongsSourceNames.joined(separator: ", then ")
+        return "Used for the Top songs of artists Lidarr doesn\u{2019}t look after."
+            + " For artists Lidarr looks after, Top songs are up to five songs you already have, picked from \(sources)."
+            + rest
+    }
+
     var body: some View {
         let aurral = Self.hasAurral(model)
         let stored = model.preferences.layout.artistTopSongs
@@ -41,8 +56,7 @@ struct ArtistTopSongsView: View {
                     .accessibilityIdentifier("artist-top-songs-\(source.rawValue)")
                 }
             } footer: {
-                Text("Used for the Top songs on every artist page. If the choice has none for an artist, the next one in Automatic\u{2019}s order is used, with a note."
-                     + (model.hasListenBrainzToken ? "" : " ListenBrainz needs your token in Settings \u{203A} Scrobbling."))
+                Text(Self.footer(model))
             }
         }
         .navigationTitle(Self.title)
