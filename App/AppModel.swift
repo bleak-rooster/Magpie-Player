@@ -228,6 +228,7 @@ final class AppModel {
     @ObservationIgnored private var musicBrainzClient: MusicBrainzClient?
     /// R19: what the outside artist and album pages read from MusicBrainz, in memory for this session only.
     @ObservationIgnored var outsideCatalogStore: OutsideCatalog?
+    @ObservationIgnored let lidarrTopSongsSession = LidarrTopSongsSession()   // Round 26 K2 (D264)
     /// Spaces the app's `api.listenbrainz.org` calls ("Made for you"); labs search never waits on it.
     @ObservationIgnored let listenBrainzLimiter = RateLimiter(perSecond: 2)
     @ObservationIgnored private var unlockObserver: NSObjectProtocol?
@@ -650,6 +651,7 @@ final class AppModel {
         songActions.forget()   // round 14 A3
         letGo.forget()   // round 15 C3 (the file goes with the requests: RequestStore.eraseAll)
         PopularSongsCache.removeAll(root: dataDirectory)   // R3
+        forgetLidarrTopSongs()   // Round 26 K2 (D263): the saved Top songs and the session's reads
         advertisedExtensions = nil
         reconnectTask = nil
         noteReachable()   // nothing to reach; the next session starts online
