@@ -82,7 +82,7 @@ struct OutsideArtistView: View {
             case .failed:
                 OutsideFailed { Task { await model.load() } }
             case .loaded:
-                if let topSongs { TopSongsSection(result: topSongs, lidarr: model.lidarrLine.state) }   // Round 25 I (D248)
+                if let topSongs { TopSongsSection(result: topSongs) }
                 sections(model)
             }
         }
