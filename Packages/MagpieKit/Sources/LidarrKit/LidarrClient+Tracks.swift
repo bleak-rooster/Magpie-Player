@@ -11,9 +11,11 @@ public struct LidarrTrack: Sendable, Equatable, Decodable {
     public var foreignTrackId: String?
     public var foreignRecordingId: String?
 
-    public init(id: Int, albumId: Int?, trackFileId: Int?, foreignTrackId: String?, foreignRecordingId: String?) {
+    public init(id: Int, albumId: Int?, trackFileId: Int?, foreignTrackId: String?, foreignRecordingId: String?,
+                duration: TimeInterval? = nil) {
         self.id = id; self.albumId = albumId; self.trackFileId = trackFileId
         self.foreignTrackId = foreignTrackId; self.foreignRecordingId = foreignRecordingId
+        self.duration = duration
     }
 
     public var hasFile: Bool { (trackFileId ?? 0) > 0 }
@@ -21,7 +23,34 @@ public struct LidarrTrack: Sendable, Equatable, Decodable {
     /// Round 15 C3 (review I5): the track's title (a library trial's songs are matched by title and path).
     public var title: String?
 
-    enum CodingKeys: String, CodingKey { case id, albumId, trackFileId, foreignTrackId, foreignRecordingId, title }
+    /// Round 26 K1 (owner, 2026-11-10): the track's length in seconds, from Lidarr's `duration` (milliseconds), for the
+    /// top songs album step's length guard (D260). Nil when missing, not a number, 0 or less, or over 24 h; a bad length
+    /// never drops the track.
+    public var duration: TimeInterval?
+
+    /// The longest length believed (24 h, in milliseconds).
+    static let longestDurationMs: Double = 86_400_000
+
+    enum CodingKeys: String, CodingKey { case id, albumId, trackFileId, foreignTrackId, foreignRecordingId, title, duration }
+
+    /// The synthesised decoding's rules for every other field (a wrong type fails the track, as before); only the length
+    /// is read leniently.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(Int.self, forKey: .id)
+        albumId = try c.decodeIfPresent(Int.self, forKey: .albumId)
+        trackFileId = try c.decodeIfPresent(Int.self, forKey: .trackFileId)
+        foreignTrackId = try c.decodeIfPresent(String.self, forKey: .foreignTrackId)
+        foreignRecordingId = try c.decodeIfPresent(String.self, forKey: .foreignRecordingId)
+        title = try c.decodeIfPresent(String.self, forKey: .title)
+        duration = Self.seconds(milliseconds: (try? c.decodeIfPresent(Double.self, forKey: .duration)) ?? nil)
+    }
+
+    /// Bounded: finite, above zero and at most 24 h, else nil (never a trapping conversion).
+    static func seconds(milliseconds ms: Double?) -> TimeInterval? {
+        guard let ms, ms.isFinite, ms > 0, ms <= longestDurationMs else { return nil }
+        return ms / 1000
+    }
 }
 
 extension LidarrClient {
