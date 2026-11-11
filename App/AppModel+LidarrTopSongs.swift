@@ -88,12 +88,13 @@ extension AppModel {
 
     // MARK: - The sources this setup has (Settings' footer, D266)
 
-    /// Aurral can give an artist's top songs (with its artist-preview capability).
-    var lidarrTopSongsHasAurral: Bool { aurralSetUp && aurralCapabilities.artistPreview }
+    /// Aurral is one of the sources (set up, with its artist-preview capability, and reachable without asking consent).
+    /// Fix round 1 (M4, design M5): the one predicate for Settings' footer and the refresh, so they never disagree.
+    var lidarrTopSongsUsesAurral: Bool { aurralSetUp && aurralCapabilities.artistPreview && aurralClient != nil }
 
     /// The set-up sources in the fixed order, as Settings names them.
     var lidarrTopSongsSourceNames: [String] {
-        (lidarrTopSongsHasAurral ? ["Aurral"] : []) + (hasListenBrainzToken ? ["ListenBrainz"] : []) + ["your library"]
+        (lidarrTopSongsUsesAurral ? ["Aurral"] : []) + (hasListenBrainzToken ? ["ListenBrainz"] : []) + ["your library"]
     }
 
     // MARK: - The refresh (D262, D264)
@@ -105,7 +106,7 @@ extension AppModel {
     /// `lidarrTopSongsSearches`, `lidarrTopSongsSearchWait` each) and must pass the same rule. `fresh` (pull to refresh)
     /// asks Aurral again; otherwise its answer this session is used (a failure is never kept).
     func readLidarrTopSongs(name: String, mbid: MBID?, lidarrArtistId: Int, fresh: Bool) async -> LidarrTopSongs.Result {
-        let aurralOn = mbid != nil && previewsAvailable && aurralCapabilities.artistPreview && aurralClient != nil
+        let aurralOn = mbid != nil && !isOffline && lidarrTopSongsUsesAurral
         let listenBrainzOn = mbid != nil && hasListenBrainzToken
         async let aurral = readAurralTopSongs(mbid: aurralOn ? mbid : nil, name: name, fresh: fresh)
         async let listenBrainz = readListenBrainzTopSongs(mbid: listenBrainzOn ? mbid : nil)
@@ -135,6 +136,7 @@ extension AppModel {
     private func readAurralTopSongs(mbid: MBID?, name: String, fresh: Bool) async
         -> LidarrTopSongs.Answer<LidarrTopSongCandidate> {
         guard let mbid, let client = aurralClient else { return .unavailable }
+        let scope = navidromeScope
         if !fresh, let known = lidarrTopSongsSession.aurral[mbid] {
             return .answered(known.map(LidarrTopSongCandidate.aurral))
         }
@@ -142,7 +144,8 @@ extension AppModel {
             try await client.artistPreview(mbid, artistName: name)
         }) {
         case .success(let songs):
-            lidarrTopSongsSession.aurral[mbid] = songs   // only an answer is kept for the session
+            // Only an answer is kept for the session, and only for the account that asked (fix round 1, I2).
+            if navidromeScope == scope, lidarr != nil { lidarrTopSongsSession.aurral[mbid] = songs }
             return .answered(songs.map(LidarrTopSongCandidate.aurral))
         case .failure:
             return .failed
@@ -230,6 +233,12 @@ extension AppModel {
                     if case .api(code: 70, _)? = error as? NavidromeError { return .notInLibrary }
                     return .lidarrUnread
                 }
+            }
+            // Fix round 1 (I1, ruling C1): a direct-ladder match must also have the top song's strict title (the ladder's
+            // `Normalize` folds "(Reprise)" and the like). For top songs only: the ladder itself is unchanged.
+            if case .song = link {
+                let key = TopSongIdentity.titleKey(recording.title)
+                guard !key.isEmpty, TopSongIdentity.titleKey(song.title) == key else { return .notInLibrary }
             }
             // K1 I2 (controller ruling): the shown song must pass the strict rule on its full title.
             return LidarrTopSongs.confirms(song, link, artistName: name, artistMBID: mbid) ? .song(song) : .notInLibrary

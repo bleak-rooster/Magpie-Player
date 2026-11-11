@@ -18,6 +18,9 @@ struct OutsideArtistView: View {
     @State private var topSongs: TopSongsResult?
     /// Round 26 K2 (D267): an artist Lidarr has gets the same Top songs as their library page (the saved list by MBID).
     @State private var lidarrTop: LidarrTopSongsModel?
+    /// Fix round 1 (M1): bumped by each Top songs load; only the newest one sets the ordinary list (the page's task and a
+    /// pull can overlap).
+    @State private var topSongsGeneration = 0
     /// B1: bumped by a pull to refresh, so every picture that didn't load is asked for again.
     @State private var artAttempt = 0
     private let themed = Themed()
@@ -73,20 +76,19 @@ struct OutsideArtistView: View {
             .frame(maxWidth: .infinity)
             .padding(.horizontal, Tokens.Spacing.margin)
 
+            // Round 26 K2 (D267, D268; fix round 1, design M1): the saved list shows as soon as it's there, whether
+            // MusicBrainz is loading, failed or offline.
+            let shown = lidarrTop?.display(fallback: []) ?? .ordinary
+            if case .lidarr(let songs) = shown { LidarrTopSongsSection(songs: songs) }
             switch model.phase {
             case .loading:
                 ProgressView().frame(maxWidth: .infinity, minHeight: 120)
             case .offline:
-                if let lidarrTop, lidarrTop.showsList { LidarrTopSongsSection(songs: lidarrTop.songs) }   // D268
                 OfflineNotice().frame(maxWidth: .infinity).accessibilityIdentifier("outside-offline")
             case .failed:
                 OutsideFailed { Task { await model.load() } }
             case .loaded:
-                if let lidarrTop, lidarrTop.showsList {   // Round 26 K2 (D267)
-                    LidarrTopSongsSection(songs: lidarrTop.songs)
-                } else if let topSongs {
-                    TopSongsSection(result: topSongs)
-                }
+                if shown == .ordinary, let topSongs { TopSongsSection(result: topSongs) }
                 sections(model)
             }
         }
@@ -170,24 +172,27 @@ struct OutsideArtistView: View {
 
     /// Round 26 K2 (D267, D268): with Lidarr, the saved list at once, then Lidarr's answer for the artist (at most 10 s):
     /// an artist Lidarr has gets their list refreshed (`fresh`: a pull, whatever the two-minute gap); otherwise, or with
-    /// no list, the ordinary Top songs as before. Offline only the saved songs on the phone show and nothing is read.
+    /// no list, the ordinary Top songs, read at once side by side (fix round 1, design H3). Offline only the saved songs
+    /// on the phone show and nothing is read.
     private func loadTopSongs(fresh: Bool) async {
+        topSongsGeneration += 1
+        let mine = topSongsGeneration
         if app.lidarr == nil || lidarrTop?.offline != false {
             lidarrTop = await app.lidarrTopSongs(name: artist.name, mbid: artist.mbid, artistId: nil)
         }
         guard !app.isOffline else { return }
-        if let lidarrTop {
-            let (name, mbid) = (artist.name, artist.mbid)
-            await lidarrTop.run(fresh: fresh) {
-                ((try? await app.artistLidarrState(name: name, mbid: mbid)) ?? nil).map { .answered($0) } ?? .unread
-            }
-            guard lidarrTop.wantsOrdinary else { return }
-        }
         let (name, mbid) = (artist.name, artist.mbid)
-        let songs = await Deadline.run(OutsideArtistModel.defaultLoadTimeout) { @MainActor in
-            await app.artistTopSongs(name: name, mbid: mbid)
+        let ordinary: @MainActor () async -> Void = {
+            let songs = await Deadline.run(OutsideArtistModel.defaultLoadTimeout) { @MainActor in
+                await app.artistTopSongs(name: name, mbid: mbid)
+            }
+            guard mine == topSongsGeneration else { return }   // fix round 1 (M1): a newer load decides
+            if case .success(let found) = songs, found != nil || !fresh { topSongs = found }
         }
-        if case .success(let found) = songs, found != nil || !fresh { topSongs = found }
+        guard let lidarrTop else { return await ordinary() }
+        await lidarrTop.load(fresh: fresh, lidarr: {
+            ((try? await app.artistLidarrState(name: name, mbid: mbid)) ?? nil).map { .answered($0) } ?? .unread
+        }, ordinary: ordinary)
     }
 
     /// D125: each album's title and artist, for the cover source that finds covers by name.

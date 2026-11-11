@@ -25,6 +25,7 @@ struct LidarrTopSongsSection: View {
                 .buttonStyle(.plain)
                 .accessibilityAddTraits(.isButton)
                 .contextMenu { SongQueueMenuItems(song: song); SongLibraryMenuItems(song: song) }
+                .songSwipeActions(song, in: .stack)   // fix round 1 (design H1): swipes and Play next / Add to queue, as Popular
                 .padding(.horizontal, Tokens.Spacing.margin)
                 .accessibilityIdentifier("top-song-\(song.id)")
             }

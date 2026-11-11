@@ -138,27 +138,12 @@ struct ArtistView: View {
             }
             .frame(maxWidth: .infinity)
 
-            if let lidarrTop, lidarrTop.showsList {   // Round 26 K2: replaces both below for an artist Lidarr has (D263)
-                LidarrTopSongsSection(songs: lidarrTop.songs)
-            } else if let outsideTop {   // round 14 A3: Top songs from the chosen source (owner answer 6)
-                TopSongsSection(result: outsideTop)
-            } else if let topSongs = popular?.songs, !topSongs.isEmpty {
-                VStack(alignment: .leading, spacing: Tokens.Spacing.s) {
-                    Text("Popular").magpieDisplay(.title2).accessibilityAddTraits(.isHeader)
-                        .padding(.horizontal, Tokens.Spacing.margin)
-                    ForEach(Array(topSongs.prefix(5).enumerated()), id: \.offset) { index, song in
-                        Button { model.play(Array(topSongs.prefix(5)), startAt: index) } label: {
-                            Artwork(song.coverArtId, side: 48) { image in
-                                SongRow(song: song, state: .library, artwork: image)
-                            }
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityAddTraits(.isButton)
-                        .contextMenu { SongQueueMenuItems(song: song); SongLibraryMenuItems(song: song) }   // R12, R7, R8
-                        .songSwipeActions(song, in: .stack)   // R12
-                    }
-                }
-                .transaction { $0.animation = nil }   // R3: a refreshed list swaps in place, no animation storm
+            // Round 26 K2 (D263; fix round 1, design H2): for an artist Lidarr has, "Top songs" in the library row view
+            // throughout (never "Popular" first); the ordinary list once Lidarr says it's theirs; without Lidarr, as before.
+            switch lidarrTop?.display(fallback: popular?.songs ?? []) ?? .ordinary {
+            case .lidarr(let songs): LidarrTopSongsSection(songs: songs)
+            case .ordinary: ordinaryTopSongs
+            case .nothing: EmptyView()
             }
 
             VStack(alignment: .leading, spacing: Tokens.Spacing.m) {
@@ -171,6 +156,30 @@ struct ArtistView: View {
         }
         .padding(.vertical, Tokens.Spacing.l)
         .foregroundStyle(p.inkColor)
+    }
+
+    /// The ordinary Top songs: D104's chosen source, or Popular when only the library can answer.
+    @ViewBuilder private var ordinaryTopSongs: some View {
+        if let outsideTop {   // round 14 A3: Top songs from the chosen source (owner answer 6)
+            TopSongsSection(result: outsideTop)
+        } else if let topSongs = popular?.songs, !topSongs.isEmpty {
+            VStack(alignment: .leading, spacing: Tokens.Spacing.s) {
+                Text("Popular").magpieDisplay(.title2).accessibilityAddTraits(.isHeader)
+                    .padding(.horizontal, Tokens.Spacing.margin)
+                ForEach(Array(topSongs.prefix(5).enumerated()), id: \.offset) { index, song in
+                    Button { model.play(Array(topSongs.prefix(5)), startAt: index) } label: {
+                        Artwork(song.coverArtId, side: 48) { image in
+                            SongRow(song: song, state: .library, artwork: image)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityAddTraits(.isButton)
+                    .contextMenu { SongQueueMenuItems(song: song); SongLibraryMenuItems(song: song) }   // R12, R7, R8
+                    .songSwipeActions(song, in: .stack)   // R12
+                }
+            }
+            .transaction { $0.animation = nil }   // R3: a refreshed list swaps in place, no animation storm
+        }
     }
 
     private var notYetSection: some View {
@@ -262,8 +271,9 @@ struct ArtistView: View {
     }
 
     /// Round 26 K2 (D257, D264): without Lidarr, the Top songs and the Lidarr line load side by side as before. With it,
-    /// the Top songs wait (at most 10 s) for the line's answer: an artist Lidarr has gets their list refreshed; any other,
-    /// or no list, gets the ordinary Top songs.
+    /// the ordinary Top songs are read at once too (fix round 1, design H3: nothing waits for Lidarr), and the line's
+    /// answer (waited for at most 10 s) decides which list shows: an artist Lidarr has gets their list refreshed; any
+    /// other, or no list, the ordinary one.
     private func loadTopSongsAndLidarrLine(_ artist: Artist) async {
         guard let lidarrTop else {
             async let top: Void = loadTopSongs(artist.name, mbid: artist.mbid)
@@ -271,11 +281,12 @@ struct ArtistView: View {
             _ = await (top, inLidarr)
             return
         }
-        await lidarrTop.run(fresh: pulling) {
+        await lidarrTop.load(fresh: pulling, lidarr: {
             await loadLidarrLine(artist)
             return lidarrLine?.state.map(LidarrTopSongsModel.LidarrAnswer.answered) ?? .unread
-        }
-        if lidarrTop.wantsOrdinary { await loadTopSongs(artist.name, mbid: artist.mbid) }
+        }, ordinary: {
+            await loadTopSongs(artist.name, mbid: artist.mbid)
+        })
     }
 
     private func loadLidarrLine(_ artist: Artist) async {

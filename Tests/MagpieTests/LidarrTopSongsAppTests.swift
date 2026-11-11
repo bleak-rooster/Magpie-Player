@@ -92,8 +92,11 @@ final class TopSongsRouting: HTTPTransport, @unchecked Sendable {
     func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
         let path = request.url?.path ?? ""
         state.withLock { $0.sent.append(request) }
-        // A held source answers only once released; a deadline that cuts it cancels this wait.
+        // A held source answers only once released (at most 30 s: a test that forgets to release it fails, never hangs);
+        // a deadline that cuts it cancels this wait.
+        let until = Date().addingTimeInterval(30)
         while state.withLock({ s in s.held.contains { path.hasSuffix($0) } }) {
+            guard Date() < until else { throw URLError(.timedOut) }
             try await Task.sleep(for: .milliseconds(5))
         }
         if request.url?.host == aurral.host, path.hasPrefix("/api/artists/"), path.hasSuffix("/preview") {
@@ -336,8 +339,10 @@ private final class Answers: @unchecked Sendable {
         let page = try await page(model)
         #expect(ids(page.songs) == ["s-tide"])
         await page.run(fresh: false) { self.monitored }
-        #expect(page.songs.isEmpty && page.wantsOrdinary && !page.showsList)
+        #expect(page.wantsOrdinary && ids(page.songs) == ["s-tide"], "kept until the ordinary list is in (design M3)")
         #expect(try cache(model).load(key) == nil)
+        page.retire()
+        #expect(page.songs.isEmpty && !page.showsList)
         let ordinary = try #require(await model.artistTopSongs(name: "Aurora Field", mbid: artistMBID))
         #expect(ordinary.provider == .aurral && ordinary.rows.first?.preview != nil, "with its preview")
     }
@@ -486,8 +491,10 @@ private final class Answers: @unchecked Sendable {
             let page = try await page(model)
             #expect(page.showsList)
             await page.run(fresh: false) { .answered(state) }
-            #expect(page.songs.isEmpty && page.wantsOrdinary, "\(state)")
+            #expect(page.wantsOrdinary && ids(page.songs) == ["s-tide"], "\(state): shown until the ordinary list is in")
             #expect(try cache(model).load(key) == nil)
+            page.retire()
+            #expect(page.songs.isEmpty && page.display(fallback: []) == .ordinary)
         }
         #expect(transport.count("/rest/getTopSongs") == 0, "nothing read for an artist Lidarr doesn't have")
     }
@@ -521,7 +528,7 @@ private final class Answers: @unchecked Sendable {
         let answered = OSAllocatedUnfairLock(initialState: false)
         await slow.run(fresh: true) {
             // A Lidarr that answers only after the deadline (released at the end of the test).
-            while !answered.withLock({ $0 }) { try? await Task.sleep(for: .milliseconds(5)) }
+            _ = await eventually(30) { answered.withLock { $0 } }
             return .answered(.monitored(lidarrId: 20, searching: false))
         }
         answered.withLock { $0 = true }
@@ -664,14 +671,14 @@ private final class Answers: @unchecked Sendable {
 
     @Test func settingsFooterNamesOnlySetUpSources() async throws {
         let all = try await model()
-        #expect(ArtistTopSongsView.footer(all) == "Used for the Top songs of artists Lidarr doesn\u{2019}t look after. If the choice has none for an artist, the next one in Automatic\u{2019}s order is used, with a note. For artists Lidarr looks after, Top songs are up to five songs you already have, picked from Aurral, then ListenBrainz, then your library, in that order.")
+        #expect(ArtistTopSongsView.footer(all) == "Used for the Top songs of artists Lidarr doesn\u{2019}t look after. For artists Lidarr looks after, Top songs are up to five songs you already have, picked from Aurral, then ListenBrainz, then your library. If the choice has none for an artist, the next one in Automatic\u{2019}s order is used, with a note.")
         all.signOut()
         let noAurral = try await model(aurral: false)
-        #expect(ArtistTopSongsView.footer(noAurral).hasSuffix("picked from ListenBrainz, then your library, in that order."))
+        #expect(ArtistTopSongsView.footer(noAurral).contains("picked from ListenBrainz, then your library. If the choice"))
         noAurral.signOut()
         let libraryOnly = try await model(aurral: false, listenBrainzToken: nil)
         defer { libraryOnly.signOut() }
-        #expect(ArtistTopSongsView.footer(libraryOnly) == "Used for the Top songs of artists Lidarr doesn\u{2019}t look after. If the choice has none for an artist, the next one in Automatic\u{2019}s order is used, with a note. ListenBrainz needs your token in Settings \u{203A} Scrobbling. For artists Lidarr looks after, Top songs are up to five songs you already have, picked from your library.")
+        #expect(ArtistTopSongsView.footer(libraryOnly) == "Used for the Top songs of artists Lidarr doesn\u{2019}t look after. For artists Lidarr looks after, Top songs are up to five songs you already have, picked from your library. If the choice has none for an artist, the next one in Automatic\u{2019}s order is used, with a note. ListenBrainz needs your token in Settings \u{203A} Scrobbling.")
     }
 
     @Test func settingsFooterUnchangedWithoutLidarr() async throws {
@@ -694,5 +701,152 @@ private final class Answers: @unchecked Sendable {
         model.signOut()
         #expect(!FileManager.default.fileExists(atPath: file.path))
         #expect(model.lidarrTopSongsSession.refreshedAt.isEmpty && model.lidarrTopSongsSession.aurral.isEmpty)
+    }
+
+    // MARK: - Fix round 1
+
+    /// I1 (controller ruling C1): a direct-ladder link must also have the same strict title. ListenBrainz's "Song" (245 s)
+    /// finds only the library's "Song (Reprise)" (the index folds the note): not shown. The ladder itself is unchanged
+    /// for every other caller.
+    @Test func fix1_I1_directMatchToARepriseIsNotShown() async throws {
+        answers.update {
+            $0.listenBrainz = json([["artist_mbids": [artistMBID.rawValue], "artist_name": "Aurora Field",
+                                     "recording_mbid": "11111111-1111-4111-8111-111111111199", "recording_name": "Song",
+                                     "length": 245_000]])
+            $0.topSongs = []
+        }
+        let model = try await model()
+        defer { model.signOut() }
+        transport.setPreview([])
+        let recording = ExternalRecording(artistMBID: artistMBID, title: "Song", artist: "Aurora Field", duration: 245,
+                                          source: .listenBrainz)
+        #expect(await model.matchIndex?.index.librarySong(for: recording) == "s-reprise", "Try and search: unchanged")
+        let result = await model.readLidarrTopSongs(name: "Aurora Field", mbid: artistMBID, lidarrArtistId: 20, fresh: false)
+        #expect(!ids(result.rows.map(\.song)).contains("s-reprise"))
+    }
+
+    /// I2: a refresh that finishes after sign-out writes nothing (no file comes back, nothing lands in the session).
+    @Test func fix1_I2_aRefreshFinishingAfterSignOutWritesNothing() async throws {
+        let model = try await model()
+        let file = try cache(model).url
+        let page = try await page(model)
+        transport.hold("/rest/getTopSongs")
+        let refresh = Task { await page.run(fresh: true) { self.monitored } }
+        #expect(await eventually { self.transport.count("/rest/getTopSongs") == 1 })
+        model.signOut()
+        transport.release("/rest/getTopSongs")
+        await refresh.value
+        #expect(!FileManager.default.fileExists(atPath: file.path))
+        #expect(model.lidarrTopSongsSession.aurral.isEmpty && model.lidarrTopSongsSession.refreshedAt.isEmpty)
+    }
+
+    /// M1: a run that isn't the page's latest never changes it (the outside page's task and a pull can overlap).
+    @Test func fix1_M1_aSupersededRunIsDropped() async throws {
+        let model = try await model()
+        defer { model.signOut() }
+        let page = try await page(model)
+        let answer = OSAllocatedUnfairLock(initialState: false)
+        let asked = OSAllocatedUnfairLock(initialState: false)
+        let older = Task {
+            await page.run(fresh: true) {
+                asked.withLock { $0 = true }
+                _ = await eventually(30) { answer.withLock { $0 } }
+                return .answered(.notInLidarr(mbid: artistMBID))
+            }
+        }
+        #expect(await eventually { asked.withLock { $0 } }, "the older run is waiting for Lidarr")
+        await page.run(fresh: true) { self.monitored }
+        #expect(ids(page.songs) == Self.expected)
+        answer.withLock { $0 = true }
+        await older.value
+        #expect(ids(page.songs) == Self.expected && !page.wantsOrdinary, "the older run's answer is dropped")
+        #expect(try cache(model).load(key)?.map(\.id) == Self.expected)
+    }
+
+    /// M1: the refresh is noted when it starts, so two pages of one artist opened together refresh once.
+    @Test func fix1_M1_twoPagesOfOneArtistRefreshOnce() async throws {
+        let model = try await model()
+        defer { model.signOut() }
+        let library = try await page(model)
+        let outside = try await page(model, mbid: artistMBID, artistId: nil)
+        transport.hold("/rest/getTopSongs")
+        let first = Task { await library.run(fresh: false) { self.monitored } }
+        #expect(await eventually { self.transport.count("/rest/getTopSongs") == 1 })
+        await outside.run(fresh: false) { self.monitored }
+        transport.release("/rest/getTopSongs")
+        await first.value
+        #expect(transport.count("/rest/getTopSongs") == 1)
+    }
+
+    /// M4 (and design M5): one predicate says whether Aurral is used, for the footer and the read alike.
+    @Test func fix1_M4_footerAndReadAgreeOnAurral() async throws {
+        for aurral in [true, false] {
+            let model = try await model(aurral: aurral)
+            let before = transport.previewReads
+            _ = await model.readLidarrTopSongs(name: "Aurora Field", mbid: artistMBID, lidarrArtistId: 20, fresh: true)
+            let read = transport.previewReads > before
+            #expect(model.lidarrTopSongsUsesAurral == aurral && read == aurral)
+            #expect(ArtistTopSongsView.footer(model).contains("picked from Aurral") == aurral)
+            model.signOut()
+        }
+    }
+
+    /// Design H2: what the page shows as it learns. Lidarr's answer pending: only a saved list (nothing else, no space
+    /// held). Qualifying with nothing saved while the refresh runs: the library's own top songs (Popular's rows) under
+    /// "Top songs". Not qualifying: the ordinary list.
+    @Test func fix1_H2_theSectionNeverFlipsBetweenPopularAndTopSongs() async throws {
+        let model = try await model()
+        defer { model.signOut() }
+        let fallback = [Song(id: "s-tide", title: "Low Tide", artist: "Aurora Field", album: "Second Sight", duration: 190)]
+        let fresh = try await page(model)
+        #expect(fresh.display(fallback: fallback) == .nothing, "Lidarr hasn't answered: nothing, not Popular")
+
+        transport.hold("/rest/getTopSongs")
+        let refresh = Task { await fresh.run(fresh: true) { self.monitored } }
+        #expect(await eventually { self.transport.count("/rest/getTopSongs") == 1 })
+        #expect(fresh.display(fallback: fallback) == .lidarr(fallback), "qualifying: the library's songs, as Top songs")
+        #expect(fresh.display(fallback: Array(repeating: fallback[0], count: 8)) == .lidarr(Array(repeating: fallback[0], count: 5)),
+                "at most five")
+        transport.release("/rest/getTopSongs")
+        await refresh.value
+        #expect(fresh.display(fallback: fallback) == .lidarr(fresh.songs) && ids(fresh.songs) == Self.expected)
+
+        try saved(["s-north"], in: model)
+        let savedPage = try await page(model)
+        #expect(savedPage.display(fallback: fallback) == .lidarr(savedPage.songs), "a saved list shows while pending")
+
+        let other = try await page(model, mbid: MBID("22222222-2222-4222-8222-222222222222"), artistId: "ar9")
+        await other.run(fresh: false) { .answered(.notInLidarr(mbid: nil)) }
+        other.retire()
+        #expect(other.display(fallback: fallback) == .ordinary)
+    }
+
+    /// Design H3: the ordinary list is read at once, in parallel with Lidarr's answer, and shown only once that answer
+    /// says so; a list that was showing stays until the ordinary one is in, then goes in one step (design M3).
+    @Test func fix1_H3_theOrdinaryListIsReadWithoutWaitingForLidarr() async throws {
+        let model = try await model()
+        defer { model.signOut() }
+        try saved(["s-tide"], in: model)
+        let page = try await page(model)
+        let lidarrAnswered = OSAllocatedUnfairLock(initialState: false)
+        let ordinaryStarted = OSAllocatedUnfairLock(initialState: false)
+        let ordinaryDone = OSAllocatedUnfairLock(initialState: false)
+        let load = Task {
+            await page.load(fresh: false, lidarr: {
+                _ = await eventually(30) { lidarrAnswered.withLock { $0 } }
+                return .answered(.notInLidarr(mbid: artistMBID))
+            }, ordinary: {
+                ordinaryStarted.withLock { $0 = true }
+                _ = await eventually(30) { ordinaryDone.withLock { $0 } }
+            })
+        }
+        #expect(await eventually { ordinaryStarted.withLock { $0 } }, "the ordinary read doesn't wait for Lidarr")
+        #expect(page.display(fallback: []) == .lidarr(page.songs) && ids(page.songs) == ["s-tide"])
+        lidarrAnswered.withLock { $0 = true }
+        #expect(await eventually { page.wantsOrdinary })
+        #expect(ids(page.songs) == ["s-tide"], "kept until the ordinary list is in")
+        ordinaryDone.withLock { $0 = true }
+        await load.value
+        #expect(page.songs.isEmpty && page.display(fallback: []) == .ordinary)
     }
 }

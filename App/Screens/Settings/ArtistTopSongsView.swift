@@ -24,11 +24,11 @@ struct ArtistTopSongsView: View {
         let rest = " If the choice has none for an artist, the next one in Automatic\u{2019}s order is used, with a note."
             + token
         guard model.lidarr != nil else { return "Used for the Top songs on every artist page." + rest }
-        let sources = model.lidarrTopSongsSourceNames
-        let picked = sources.count == 1 ? "picked from \(sources[0])."
-            : "picked from \(sources.joined(separator: ", then ")), in that order."
-        return "Used for the Top songs of artists Lidarr doesn\u{2019}t look after." + rest
-            + " For artists Lidarr looks after, Top songs are up to five songs you already have, " + picked
+        // Fix round 1 (design M4): the Lidarr sentence second, then the fall-back sentence, the token sentence last.
+        let sources = model.lidarrTopSongsSourceNames.joined(separator: ", then ")
+        return "Used for the Top songs of artists Lidarr doesn\u{2019}t look after."
+            + " For artists Lidarr looks after, Top songs are up to five songs you already have, picked from \(sources)."
+            + rest
     }
 
     var body: some View {

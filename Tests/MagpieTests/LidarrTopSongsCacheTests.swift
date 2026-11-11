@@ -100,4 +100,41 @@ private func row(_ id: String, _ source: TopSongsProvider = .library) -> LidarrT
         LidarrTopSongsCache.removeAll(root: tmp)
         #expect(!FileManager.default.fileExists(atPath: cache.url.path))
     }
+
+    /// Fix round 1 (M2): offline, an entry saved under an MBID counts for a library artist only when every row is theirs.
+    @Test func fix1_M2_offlineLookupNeedsEveryRowToBeTheArtists() throws {
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        var other = row("b")
+        other.song.artistId = "ar2"
+        cache.save([row("a"), other], key: "mbid:\(mbid.rawValue)")
+        #expect(cache.load(offlineArtistId: "ar1") == nil, "a row of another artist: not theirs")
+        cache.save([row("a"), row("c")], key: "mbid:\(mbid.rawValue)")
+        #expect(cache.load(offlineArtistId: "ar1")?.map(\.id) == ["a", "c"])
+        #expect(cache.load(offlineArtistId: "ar2") == nil)
+    }
+
+    /// Fix round 1 (M3): a save never writes more than 1 MB; the artists saved longest ago go first.
+    @Test func fix1_M3_writesStayUnderTheSizeLimit() throws {
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let long = String(repeating: "x", count: 1_000)
+        for i in 0..<300 {
+            let rows = (0..<5).map { n -> LidarrTopSongs.Row in
+                var r = row("s\(i)-\(n)")
+                r.song.title = long
+                return r
+            }
+            cache.save(rows, key: "id:ar\(i)", now: start.addingTimeInterval(TimeInterval(i)))
+        }
+        let size = try Data(contentsOf: cache.url).count
+        #expect(size <= LidarrTopSongsCache.maxBytes)
+        #expect(cache.load("id:ar299")?.count == 5, "the newest is kept and reads")
+        #expect(cache.load("id:ar0") == nil, "the oldest went")
+        // Trimmed, not started again: the file stays nearly full and what's kept is exactly the most recent artists.
+        #expect(size > LidarrTopSongsCache.maxBytes * 9 / 10)
+        let kept = cache.count
+        #expect(kept > 100 && kept < 300)
+        #expect((300 - kept..<300).allSatisfy { cache.load("id:ar\($0)") != nil })
+        #expect(cache.load("id:ar\(299 - kept)") == nil)
+    }
 }
