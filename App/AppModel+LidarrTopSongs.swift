@@ -50,7 +50,8 @@ extension AppModel {
                 saved = saved.filter { index.contains(songId: $0.id) }
             }
         }
-        return LidarrTopSongsModel(app: self, key: key, name: name, mbid: mbid, offline: isOffline, cache: cache, saved: saved)
+        return LidarrTopSongsModel(app: self, key: key, name: name, mbid: mbid, offline: isOffline, cache: cache,
+                                   saved: saved)
     }
 
     /// Lidarr's answer for the page's artist, waited for at most `lidarrTopSongsWait`. The read itself goes on (the page's
@@ -59,7 +60,8 @@ extension AppModel {
         -> LidarrTopSongsModel.LidarrAnswer {
         let task = Task { @MainActor in await read() }
         return await withTaskCancellationHandler {
-            switch await Deadline.run(Self.lidarrTopSongsWait, sleep: lidarrTopSongsSession.sleep(for: .lidarrAnswer), { await task.value }) {
+            let sleep = lidarrTopSongsSession.sleep(for: .lidarrAnswer)
+            switch await Deadline.run(Self.lidarrTopSongsWait, sleep: sleep, { await task.value }) {
             case .success(let answer): answer
             case .failure: .unread
             }
@@ -130,9 +132,12 @@ extension AppModel {
         }
     }
 
-    private func readAurralTopSongs(mbid: MBID?, name: String, fresh: Bool) async -> LidarrTopSongs.Answer<LidarrTopSongCandidate> {
+    private func readAurralTopSongs(mbid: MBID?, name: String, fresh: Bool) async
+        -> LidarrTopSongs.Answer<LidarrTopSongCandidate> {
         guard let mbid, let client = aurralClient else { return .unavailable }
-        if !fresh, let known = lidarrTopSongsSession.aurral[mbid] { return .answered(known.map(LidarrTopSongCandidate.aurral)) }
+        if !fresh, let known = lidarrTopSongsSession.aurral[mbid] {
+            return .answered(known.map(LidarrTopSongCandidate.aurral))
+        }
         switch await Deadline.run(Self.lidarrTopSongsWait, sleep: lidarrTopSongsSession.sleep(for: .aurral), {
             try await client.artistPreview(mbid, artistName: name)
         }) {
@@ -170,8 +175,9 @@ extension AppModel {
     private func readLidarrTracks(artistId: Int?) async -> LidarrTopSongs.LidarrReads {
         guard let artistId, let client = lidarrClient else { return .failed }
         let sleep = lidarrTopSongsSession.sleep(for: .lidarrReads)
-        async let albums = Deadline.run(Self.lidarrTopSongsWait, sleep: sleep) { try await client.albums(artistId: artistId) }
-        async let tracks = Deadline.run(Self.lidarrTopSongsWait, sleep: sleep) { try await client.tracks(artistId: artistId) }
+        let wait = Self.lidarrTopSongsWait
+        async let albums = Deadline.run(wait, sleep: sleep) { try await client.albums(artistId: artistId) }
+        async let tracks = Deadline.run(wait, sleep: sleep) { try await client.tracks(artistId: artistId) }
         guard case .success(let a) = await albums, case .success(let t) = await tracks else { return .failed }
         return .read(albums: a, tracks: t)
     }
@@ -213,7 +219,8 @@ extension AppModel {
                 guard fetches < AppModel.lidarrTopSongsFetches else { return .notInLibrary }
                 fetches += 1
                 let app = app
-                switch await Deadline.run(AppModel.lidarrTopSongsWait, sleep: app.lidarrTopSongsSession.sleep(for: .song), { @MainActor in
+                let sleep = app.lidarrTopSongsSession.sleep(for: .song)
+                switch await Deadline.run(AppModel.lidarrTopSongsWait, sleep: sleep, { @MainActor in
                     try await app.request { try await $0.song(id: id) }
                 }) {
                 case .success(let fetched): song = fetched
@@ -231,7 +238,8 @@ extension AppModel {
             guard !title.isEmpty, searches < AppModel.lidarrTopSongsSearches else { return .notInLibrary }
             searches += 1
             let (app, query) = (app, "\(name) \(title)")
-            let found = await Deadline.run(AppModel.lidarrTopSongsSearchWait, sleep: app.lidarrTopSongsSession.sleep(for: .search), { @MainActor in
+            let sleep = app.lidarrTopSongsSession.sleep(for: .search)
+            let found = await Deadline.run(AppModel.lidarrTopSongsSearchWait, sleep: sleep, { @MainActor in
                 try await app.request { try await $0.search(query, songCount: 20, albumCount: 0, artistCount: 0) }
             })
             // A song too new for the index that the search doesn't find (or a slow search) is skipped; the next refresh

@@ -21,7 +21,8 @@ struct ArtistTopSongsView: View {
     /// previews, ListenBrainz with a token). Without Lidarr, exactly as before.
     static func footer(_ model: AppModel) -> String {
         let token = model.hasListenBrainzToken ? "" : " ListenBrainz needs your token in Settings \u{203A} Scrobbling."
-        let rest = " If the choice has none for an artist, the next one in Automatic\u{2019}s order is used, with a note." + token
+        let rest = " If the choice has none for an artist, the next one in Automatic\u{2019}s order is used, with a note."
+            + token
         guard model.lidarr != nil else { return "Used for the Top songs on every artist page." + rest }
         let sources = model.lidarrTopSongsSourceNames
         let picked = sources.count == 1 ? "picked from \(sources[0])."
