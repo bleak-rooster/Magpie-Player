@@ -143,6 +143,12 @@ struct AurralConnectionStore: AurralConnectionStoring {
     var othersPlaylistIds: Set<String> = []
     /// Round 24 R24A (D205): another user's claimed playlists' owners, by playlist id, as last read (the caption).
     var playlistOwners: [String: String] = [:]
+    /// Round 26 L (D271): the Aurral items no Navidrome playlist is known to be (rows of their own, by Aurral id), and
+    /// Aurral's empty playlists no item claimed (never rows), as last read.
+    var itemRows: [DiscoverItemRow] = []
+    var hiddenPlaylistIds: Set<String> = []
+    /// R26L fix round 1 (I1): a read this session set `hiddenPlaylistIds` (until then the saved set stands).
+    var hiddenRead = false
     /// Round 23 R23F (D190): bumped when "Show everyone's flows" changes (Library › Discover lists again).
     var everyoneRevision = 0
     /// Round 23 R23F (D199): "Search again for missing songs", per flow or playlist id, this session.
@@ -217,6 +223,9 @@ struct AurralConnectionStore: AurralConnectionStoring {
         lookups = [:]
         othersPlaylistIds = []   // R23F
         playlistOwners = [:]   // R24A (D205)
+        itemRows = []   // R26L (D271)
+        hiddenPlaylistIds = []
+        hiddenRead = false
         searchAgain = [:]   // R23F
         removing = [:]   // R24C (D212)
         songsAsking = []   // R24C fix round 1 (I5)
