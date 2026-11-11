@@ -70,7 +70,8 @@ public enum LidarrTopSongs {
 
     public struct Result: Sendable, Equatable {
         public var rows: [Row]
-        /// False when any source `failed`, a resolve said Lidarr was unread, or the walk was cancelled: such a list never
+        /// False when a source the walk reached before the list was full `failed` (fix round 1, C3), a resolve said Lidarr
+        /// was unread, or the walk was cancelled: such a list never
         /// replaces a saved one (D262, D264).
         public var complete: Bool
 
@@ -94,7 +95,9 @@ public enum LidarrTopSongs {
             let candidates: [Candidate]
             switch sources[provider] {
             case .unavailable: continue
-            case .failed: complete = false; continue
+            // Fix round 1 (controller ruling C3): a failure counts only when the walk reached it with a slot still open; a
+            // source after the five were filled couldn't have changed them.
+            case .failed: if rows.count < wanted { complete = false }; continue
             case .answered(let list): candidates = Array(list.prefix(readDepth(provider)))
             }
             for candidate in candidates where rows.count < wanted {
@@ -112,6 +115,7 @@ public enum LidarrTopSongs {
                 }
             }
         }
+        if Task.isCancelled { complete = false }   // fix round 1 (M2): cancelled inside the last resolve
         return Result(rows: rows, complete: complete)
     }
 
@@ -125,8 +129,12 @@ public enum LidarrTopSongs {
 
     /// What an Aurral or ListenBrainz song is in the library.
     public enum Link: Sendable, Equatable {
-        /// The library song's id: a direct match (D259), or the album step's track linked through the index (D260).
+        /// The library song's id from the direct ladder (D259): no re-check needed beyond being that song.
         case song(id: String)
+        /// Fix round 1 (I2): the album step's track linked through the index (D260). The index keeps `Normalize.name`d
+        /// titles, which fold "(Reprise)", "(Interlude)", "(Intro)", "(Outro)", "(Extended)", "(Dub)"… to the plain
+        /// title, so the fetched song must pass `confirms` (the strict title on its full title) before it is shown.
+        case albumSong(id: String, track: LidarrTrack, album: LidarrAlbum)
         /// The album step found a track with a file the index can't link (a song too new for it). The app may search for
         /// it and must hold what it finds to `AlbumTrackMatch.links` before showing it.
         case track(LidarrTrack, album: LidarrAlbum)
@@ -138,23 +146,43 @@ public enum LidarrTopSongs {
 
     /// D259, then D260: the match index's ladder (`MatchIndex.librarySong`, as for every outside song), else the album step
     /// through Lidarr's tracklist (`AlbumTrackMatch.find`) and its link to the library (`AlbumTrackMatch.librarySongId`).
+    /// `avoiding` names song ids the caller knows are Discover copies (fix round 1, M5; the index doesn't keep a song's
+    /// library): a recording's copy outside them is taken first, so a Discover copy never hides the main one.
     public static func link(_ recording: ExternalRecording, artistName: String, artistMBID: MBID?, index: MatchIndex,
-                            lidarr: LidarrReads) -> Link {
+                            lidarr: LidarrReads, avoiding: (String) -> Bool = { _ in false }) -> Link {
+        if let rec = recording.recordingMBID, let id = index.songId(recording: rec, avoiding: avoiding) {
+            return .song(id: id)   // the ladder's tier 1, with the preference
+        }
         if let id = index.librarySong(for: recording) { return .song(id: id) }
         guard case .read(let albums, let tracks) = lidarr else { return .lidarrUnread }
         guard let track = AlbumTrackMatch.find(title: recording.title, duration: recording.duration,
                                                recording: recording.recordingMBID, albums: albums, tracks: tracks),
               let album = AlbumTrackMatch.album(of: track, in: albums) else { return .none }
         if let id = AlbumTrackMatch.librarySongId(track: track, album: album, artistName: artistName,
-                                                  artistMBID: artistMBID, index: index) {
-            return .song(id: id)
+                                                  artistMBID: artistMBID, index: index, avoiding: avoiding) {
+            return .albumSong(id: id, track: track, album: album)
         }
         return .track(track, album: album)
+    }
+
+    /// Fix round 1 (I2): whether a fetched library song (`getSong`, or a search hit for `.track`) may be shown for a link.
+    /// `.song`: it is that song. `.albumSong`: it is that song and passes `AlbumTrackMatch.links` on its full title.
+    /// `.track`: it passes `AlbumTrackMatch.links`. Anything else: no. K2 calls this before its resolve answers `.song`.
+    public static func confirms(_ song: Song, _ link: Link, artistName: String, artistMBID: MBID?) -> Bool {
+        switch link {
+        case .song(let id): song.id == id
+        case .albumSong(let id, let track, let album):
+            song.id == id && AlbumTrackMatch.links(song, to: track, album: album, artistName: artistName, artistMBID: artistMBID)
+        case .track(let track, let album):
+            AlbumTrackMatch.links(song, to: track, album: album, artistName: artistName, artistMBID: artistMBID)
+        case .none, .lidarrUnread: false
+        }
     }
 
     /// An Aurral top song as the ladder reads it (D259): its title and length, with the page's artist name and MBID (the
     /// server's credit may add featured artists; it was asked for this artist's songs). A length that isn't one is nil.
     public static func recording(aurral song: AurralSong, artistName: String, artistMBID: MBID?) -> ExternalRecording {
+        // `.lidarr`: `ExternalSource` has no Aurral case, and `match`/`librarySong` never read the source.
         ExternalRecording(artistMBID: artistMBID, title: song.trackName, artist: artistName,
                           duration: AlbumTrackMatch.known(song.duration), source: .lidarr)
     }

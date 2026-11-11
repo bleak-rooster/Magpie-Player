@@ -118,8 +118,16 @@ private func ids(_ result: LidarrTopSongs.Result) -> [String] { result.rows.map(
         let failed = await merge(.answered([hit("a1")]), .failed, .answered([hit("n1")]))
         #expect(ids(failed) == ["a1", "n1"])
         #expect(!failed.complete)
+        // Fix round 1 (controller ruling C3): a failure counts only when the walk reached it before the five were filled.
         let laterFailed = await merge(.answered((1...5).map { hit("a\($0)") }), .answered([]), .failed)
-        #expect(ids(laterFailed).count == 5 && !laterFailed.complete, "any failed source, as D262 has it")
+        #expect(ids(laterFailed).count == 5 && laterFailed.complete, "a source after the list filled couldn't change it")
+        let laterBoth = await merge(.answered((1...5).map { hit("a\($0)") }), .failed, .failed)
+        #expect(laterBoth.complete)
+        let firstFailed = await merge(.failed, .answered((1...6).map { hit("l\($0)") }), .answered([hit("n1")]))
+        #expect(ids(firstFailed) == ["l1", "l2", "l3", "l4", "l5"])
+        #expect(!firstFailed.complete, "Aurral failed before anything was placed: its songs would have come first")
+        let fourThenFailed = await merge(.answered((1...4).map { hit("a\($0)") }), .failed, .answered([hit("n1")]))
+        #expect(ids(fourThenFailed).count == 5 && !fourThenFailed.complete, "reached with a slot still open")
         let unread = await merge(.answered([Pick(name: "a1", answer: .lidarrUnread), hit("a2")]), .answered([]),
                                  .answered([hit("n1")]))
         #expect(ids(unread) == ["a2", "n1"], "a song that couldn't be looked for on the albums is skipped")
@@ -149,6 +157,17 @@ private func ids(_ result: LidarrTopSongs.Result) -> [String] { result.rows.map(
         }
         let result = await task.value
         #expect(ids(result) == ["a1"] && !result.complete, "a refresh cut short is never complete")
+
+        // Fix round 1 (M2): cancelled inside the fifth resolve, the list fills and the loop ends: still incomplete.
+        let fifth = Task {
+            await LidarrTopSongs.merge(sources: .init(aurral: .answered((1...6).map { hit("a\($0)") }),
+                                                      listenBrainz: .unavailable, library: .unavailable)) { _, pick in
+                if pick.name == "a5" { withUnsafeCurrentTask { $0?.cancel() } }
+                return pick.answer
+            }
+        }
+        let full = await fifth.value
+        #expect(ids(full).count == 5 && !full.complete)
     }
 
     @Test func merge_seededFuzzNeverTrapsOrExceedsFive() async {
@@ -189,10 +208,16 @@ private func ids(_ result: LidarrTopSongs.Result) -> [String] { result.rows.map(
             #expect(!result.rows.contains { $0.song.libraryId.map(discover.contains) == true })
             let order = result.rows.map { LidarrTopSongs.order.firstIndex(of: $0.source) ?? -1 }
             #expect(order == order.sorted())
-            let anyFailed = [sources.aurral, sources.listenBrainz, sources.library].contains {
-                if case .failed = $0 { true } else { false }
+            // Fix round 1 (C3): a failed source counts only when the walk reached it before the list was full. Full at
+            // the start (limit ≤ 0): none is reached; full on the last row's source: only the sources before it.
+            let wanted = min(max(limit, 0), 5)
+            let fillPoint: Int = result.rows.count < wanted ? .max
+                : (result.rows.last.flatMap { LidarrTopSongs.order.firstIndex(of: $0.source) } ?? -1)
+            let reachedFailed = LidarrTopSongs.order.enumerated().contains { i, provider in
+                guard i < fillPoint || fillPoint == .max, case .failed = sources[provider] else { return false }
+                return true
             }
-            #expect(result.complete == !(anyFailed || unreadSeen))
+            #expect(result.complete == !(reachedFailed || unreadSeen))
             #expect(asked.count(.aurral) <= 6 && asked.count(.listenBrainz) <= 25 && asked.count(.library) <= 25)
         }
     }
@@ -233,9 +258,18 @@ private func ids(_ result: LidarrTopSongs.Result) -> [String] { result.rows.map(
         #expect(link(single(), index, .failed) == .song(id: "same"), "a direct match needs no Lidarr read")
     }
 
+    /// The id an album-step link carries, with its track and album (fix round 1, I2); nil for any other link.
+    private func albumStep(_ link: LidarrTopSongs.Link) -> String? {
+        guard case .albumSong(let id, let track, let album) = link, track.id == 11, album.id == 1 else { return nil }
+        return id
+    }
+
     @Test func link_singleOnlyMatchedThroughAlbum() {
         let index = library([albumSong("album", album: "First Light (Deluxe Edition)")])
-        #expect(link(single(), index, lidarr()) == .song(id: "album"))
+        #expect(albumStep(link(single(), index, lidarr())) == "album", "the album step hands back its track for the re-check")
+        #expect(LidarrTopSongs.confirms(albumSong("album", album: "First Light (Deluxe Edition)"),
+                                        link(single(), index, lidarr()), artistName: "Aurora Field",
+                                        artistMBID: Self.artistMBID))
         #expect(link(single(), index, lidarr("Album", ["Live"])) == .none, "never a live album's copy")
         #expect(link(single(), index, lidarr(file: false)) == .none)
         #expect(link(single("Song (Reprise)"), index, lidarr()) == .none)
@@ -261,6 +295,39 @@ private func ids(_ result: LidarrTopSongs.Result) -> [String] { result.rows.map(
         #expect(LidarrTopSongs.recording(aurral: AurralSong(trackName: "X", artistName: "Y", durationMs: -5),
                                          artistName: "Y", artistMBID: nil).duration == nil)
         let index = library([albumSong("album")])
-        #expect(link(recording, index, lidarr()) == .song(id: "album"))
+        #expect(albumStep(link(recording, index, lidarr())) == "album")
+    }
+
+    /// Fix round 1 (I2): the index keeps `Normalize.name`d titles, which fold "(Reprise)" to the plain title, so a library
+    /// that holds only the reprise (same album, same length) is linked by the index; the full song must then fail the
+    /// strict re-check, so it is never shown.
+    @Test func link_repriseLinkedByTheIndexFailsTheRecheck() {
+        let reprise = albumSong("reprise", "Song (Reprise)", 245)
+        let index = library([reprise])
+        let found = link(single(), index, lidarr())
+        #expect(albumStep(found) == "reprise", "the index alone can't tell")
+        guard case .albumSong(_, let track, let album) = found else { return }
+        #expect(!AlbumTrackMatch.links(reprise, to: track, album: album, artistName: "Aurora Field",
+                                       artistMBID: Self.artistMBID))
+        #expect(!LidarrTopSongs.confirms(reprise, found, artistName: "Aurora Field", artistMBID: Self.artistMBID))
+        #expect(LidarrTopSongs.confirms(albumSong("any"), .song(id: "any"), artistName: "Aurora Field",
+                                        artistMBID: Self.artistMBID), "a direct ladder match needs no re-check")
+        #expect(!LidarrTopSongs.confirms(albumSong("other"), .song(id: "any"), artistName: "Aurora Field",
+                                         artistMBID: Self.artistMBID), "a fetched song must be the linked one")
+        #expect(!LidarrTopSongs.confirms(reprise, .none, artistName: "Aurora Field", artistMBID: Self.artistMBID))
+    }
+
+    /// Fix round 1 (M5): a Discover copy of the recording listed first never hides the main library's copy.
+    @Test func link_recordingPrefersACopyOutsideDiscover() {
+        let flow = albumSong("flow", album: "Flow", rec: Self.rec)
+        let main = albumSong("main", rec: Self.rec)
+        let recording = ExternalRecording(recordingMBID: Self.rec, artistMBID: Self.artistMBID, title: "Song",
+                                          artist: "Aurora Field", duration: 246, source: .listenBrainz)
+        let found = LidarrTopSongs.link(recording, artistName: "Aurora Field", artistMBID: Self.artistMBID,
+                                        index: library([flow, main]), lidarr: .failed, avoiding: { $0 == "flow" })
+        #expect(found == .song(id: "main"))
+        let onlyFlow = LidarrTopSongs.link(recording, artistName: "Aurora Field", artistMBID: Self.artistMBID,
+                                           index: library([flow]), lidarr: .failed, avoiding: { $0 == "flow" })
+        #expect(onlyFlow == .song(id: "flow"), "only a Discover copy: the merge skips it by its library")
     }
 }

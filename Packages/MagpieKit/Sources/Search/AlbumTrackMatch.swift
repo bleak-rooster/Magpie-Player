@@ -85,8 +85,9 @@ public enum AlbumTrackMatch {
     /// same `TopSongIdentity.titleKey` and a length within 3 s of Lidarr's; else nil (none, or more than one). Never by
     /// name alone: Lidarr's length must be known.
     public static func librarySongId(track: LidarrTrack, album: LidarrAlbum, artistName: String, artistMBID: MBID?,
-                                     index: MatchIndex) -> String? {
-        if let id = track.foreignRecordingId.flatMap(MBID.init), let song = index.songId(recording: id) { return song }
+                                     index: MatchIndex, avoiding: (String) -> Bool = { _ in false }) -> String? {
+        if let id = track.foreignRecordingId.flatMap(MBID.init),
+           let song = index.songId(recording: id, avoiding: avoiding) { return song }   // fix round 1, M5
         let key = TopSongIdentity.titleKey(track.title ?? "")
         let albumKey = Normalize.name(album.title)
         guard !key.isEmpty, !albumKey.isEmpty, let length = known(track.duration) else { return nil }

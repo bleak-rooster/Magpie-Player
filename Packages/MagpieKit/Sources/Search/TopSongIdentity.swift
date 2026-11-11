@@ -22,8 +22,9 @@ public enum TopSongIdentity {
         "reimagined", "rerecorded", "taylors",
     ])
 
-    /// A note that starts with one of these words is a featured-artist credit.
-    private static let featuring: Set<String> = ["feat", "ft", "featuring", "with"]
+    /// A note that starts with one of these words is a featured-artist credit. Fix round 1 (M1 ruling): not "with", unlike
+    /// `SongIdentity`: "(With Strings)" is another arrangement; a skipped "(with Sam)" is the price.
+    private static let featuring: Set<String> = ["feat", "ft", "featuring"]
 
     /// The title's key: folded (case, accents, width, punctuation), housekeeping notes dropped, every other note kept.
     /// Empty only when the title has no letters or digits.

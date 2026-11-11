@@ -16,9 +16,12 @@ extension MatchIndex {
         public var recording: MBID?
     }
 
-    /// The library song with this recording MBID (the first, as the ladder's tier 1 takes it), or nil.
-    public func songId(recording: MBID) -> String? {
-        entries.first { $0.recording == recording.rawValue }?.id
+    /// The library song with this recording MBID, or nil: the first one `avoiding` doesn't name, else the first (as the
+    /// ladder's tier 1 takes it). Fix round 1 (M5): the index doesn't keep a song's library, so the caller names the ids
+    /// it knows are Discover copies; a Discover copy listed first then never hides the main library's copy.
+    public func songId(recording: MBID, avoiding: (String) -> Bool = { _ in false }) -> String? {
+        let all = entries.lazy.filter { $0.recording == recording.rawValue }.map(\.id)
+        return all.first { !avoiding($0) } ?? all.first
     }
 
     /// The artist's library songs: those tagged with `mbid`, and untagged ones whose artist has the same normalised name;

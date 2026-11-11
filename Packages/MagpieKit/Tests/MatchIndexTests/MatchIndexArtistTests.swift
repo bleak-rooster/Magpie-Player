@@ -22,6 +22,17 @@ private func song(_ id: String, _ artistName: String, _ title: String, album: St
         #expect(MatchIndex.empty.songId(recording: rec) == nil)
     }
 
+    /// Fix round 1 (M5): the index doesn't keep a song's library, so the caller says which ids are Discover copies; a copy
+    /// outside them wins, and a Discover copy is still the answer when it is the only one.
+    @Test func index_songIdByRecordingPrefersOutsideDiscover() {
+        let index = MatchIndex(songs: [song("flow", "Aurora Field", "Song", rec: rec), song("main", "Aurora Field", "Song", rec: rec)])
+        #expect(index.songId(recording: rec) == "flow", "unchanged without a preference")
+        #expect(index.songId(recording: rec, avoiding: { $0 == "flow" }) == "main")
+        #expect(MatchIndex(songs: [song("flow", "Aurora Field", "Song", rec: rec)])
+                    .songId(recording: rec, avoiding: { $0 == "flow" }) == "flow")
+        #expect(index.songId(recording: other, avoiding: { _ in true }) == nil)
+    }
+
     @Test func index_artistSongsByMBIDThenName() {
         let index = MatchIndex(songs: [
             song("tagged", "Aurora Field", "Tagged", 210, artistMBID: artist),

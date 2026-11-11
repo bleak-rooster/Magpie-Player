@@ -29,7 +29,7 @@ import Testing
     }
 
     @Test func identity_featuringAndRemasterAreNoise() {
-        for title in ["Song (feat. Sam)", "Song [ft. Sam]", "Song (featuring Sam & Alex)", "Song (with Sam)",
+        for title in ["Song (feat. Sam)", "Song [ft. Sam]", "Song (featuring Sam & Alex)",
                       "Song feat. Sam", "Song - Remastered 2011", "Song (2011 Remaster)", "Song [Remastered]",
                       "Song (Remastered Version)", "Song [Explicit]", "Song (Clean)", "Song (feat. Sam) [Radio Edit]",
                       "Söng", "song", "  Song  "] {
@@ -61,6 +61,14 @@ import Testing
             #expect(!same(title), "\(title)")
         }
         #expect(same("Song (Taylor's Version)", "Song (Taylor\u{2019}s Version)"))
+    }
+
+    /// Fix round 1 (M1 ruling): "with" is not a featuring word here: "(With Strings)" is another arrangement, and a
+    /// skipped "(with Sam)" is the price.
+    @Test func identity_withStringsStaysApart() {
+        for title in ["Song (With Strings)", "Song (with Orchestra)", "Song - With Strings", "Song (with Sam)"] {
+            #expect(!same(title), "\(title)")
+        }
     }
 
     @Test func identity_tryRuleUnchanged() {
