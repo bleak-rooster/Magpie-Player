@@ -49,7 +49,7 @@ Check these once; none of them need Magpie.
 | Same music folder seen by both | Compare Lidarr's root folder path with Navidrome's library path | v1 has no path mapping. If they differ, a song never becomes **Ready** even though Lidarr imported it (Magpie checks that Navidrome lists it) |
 | Subsonic connection works | Connect succeeded and Home shows shelves | Check the base path and that the address returns Subsonic JSON, not a login page |
 | `songLyrics` extension | Lyrics button appears in Now Playing | Without it the Lyrics button is hidden. Not a fault |
-| Last.fm agent (top songs) | Artist screen shows "Popular" | Hidden when your server has none. Not a fault |
+| Last.fm agent (top songs) | Artist screen shows "Popular" | Hidden when your server has none. Not a fault. For an artist in Lidarr it is the third source of their Top songs, after Aurral and ListenBrainz; without it those two still fill the list |
 | Tubifarry | Connect Lidarr summary says found / not found | Found: speed **Standard** ("Try it", live wait screen). Not found: **Patient** ("Ask for it", shows up later in Requests) |
 
 ## 3. What Try does to your Lidarr, exactly
