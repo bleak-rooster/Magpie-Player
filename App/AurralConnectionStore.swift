@@ -37,7 +37,9 @@ private struct LegacyAurralConnection: Decodable {
     var apiKey: String
 }
 
-/// One song's lookup for its main-library copy (fix M1): the copy, or none, and when it was looked up.
+/// One song's lookup for its main-library copy (fix M1): the copy, or none, and when it was looked up. Round 27 D1
+/// (D285): kept with the saved page across launches, used for a week (a copy the match index still holds) or a day
+/// (none), `DiscoverSnapshot.Lookup.isFresh`.
 struct DiscoverLookup: Equatable {
     var copy: Song?
     var at: Date
@@ -157,6 +159,13 @@ struct AurralConnectionStore: AurralConnectionStoring {
     var removing: [String: AurralRemoval] = [:]
     /// Round 24 C fix round 1 (I5): the songs (Aurral job ids) an Approve, Try another source or Search now is under way for.
     var songsAsking: Set<String> = []
+    /// Round 27 D1 (owner, 2026-11-14): every song in Aurral's libraries as last read in full this session (nil until
+    /// then, or when a read stopped at its page limit): a playlist song not in it is the main library's own (D285).
+    @ObservationIgnored var discoverLibrarySongIds: Set<String>?
+    /// Round 27 D1: the shared playlists (Aurral ids) among the saved rows, until Aurral's status is read (D283).
+    @ObservationIgnored var savedSharedItemIds: Set<String> = []
+    /// Round 27 D1: bumped when a read changed what Library › Discover lists (it swaps its rows in place, D284).
+    var rowsRevision = 0
 
     init(store: any AurralConnectionStoring) {
         self.store = store
@@ -229,6 +238,8 @@ struct AurralConnectionStore: AurralConnectionStoring {
         searchAgain = [:]   // R23F
         removing = [:]   // R24C (D212)
         songsAsking = []   // R24C fix round 1 (I5)
+        discoverLibrarySongIds = nil   // Round 27 D1 (D285)
+        savedSharedItemIds = []
         refreshTask?.task.cancel()   // Round 13 Z2: the next account's first ask starts its own read
         refreshTask = nil
     }
