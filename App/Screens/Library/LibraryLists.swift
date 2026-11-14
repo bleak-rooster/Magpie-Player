@@ -109,6 +109,7 @@ struct ArtistsListView: View {
 /// and a header per loaded letter run past 25 albums (D225).
 struct AlbumsListView: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.dynamicTypeSize) private var typeSize
     @State private var list: PagedLetterList<Album>?
     /// The running letter jump (its seek reads the server), cancelled when the screen goes.
     @State private var jumpTask: Task<Void, Never>?
@@ -159,14 +160,22 @@ struct AlbumsListView: View {
         .toolbar {
             // Round 27 H (owner, 2026-11-14): smaller or larger covers, the same setting as Settings › Home & Library
             // (D296). The label says what a tap does.
-            ToolbarItem(placement: .topBarTrailing) {
-                let covers = model.preferences.layout.albumCovers
-                Button { Self.toggleCovers(model) } label: {
-                    Image(systemName: AlbumCoversCopy.toolbarSymbol(covers))
-                        .frame(minWidth: Tokens.minHitSize, minHeight: Tokens.minHitSize)
+            // Fix round 1 (design H1, L1): hidden at accessibility sizes, where covers stay large (no dead control); a
+            // Label, so Large Content Viewer and Voice Control get its name; VoiceOver hears the new size.
+            if Self.showsCoverToggle(accessibility: typeSize.isAccessibilitySize) {
+                ToolbarItem(placement: .topBarTrailing) {
+                    let covers = model.preferences.layout.albumCovers
+                    Button {
+                        Self.toggleCovers(model)
+                        AccessibilityNotification.Announcement(
+                            AlbumCoversCopy.announcement(model.preferences.layout.albumCovers)).post()
+                    } label: {
+                        Label(AlbumCoversCopy.toolbarLabel(covers), systemImage: AlbumCoversCopy.toolbarSymbol(covers))
+                            .labelStyle(.iconOnly)
+                            .frame(minWidth: Tokens.minHitSize, minHeight: Tokens.minHitSize)
+                    }
+                    .accessibilityIdentifier("albums-cover-size")
                 }
-                .accessibilityLabel(AlbumCoversCopy.toolbarLabel(covers))
-                .accessibilityIdentifier("albums-cover-size")
             }
         }
         .magpieScreen()
@@ -183,6 +192,9 @@ struct AlbumsListView: View {
             if list?.items.value == nil { await list?.load() }
         }
     }
+
+    /// Fix round 1 (design H1): the toolbar button only where the choice changes the grid.
+    static func showsCoverToggle(accessibility: Bool) -> Bool { !accessibility }
 
     /// Round 27 H (D296): the toolbar's tap, Large to Small and back.
     static func toggleCovers(_ model: AppModel) {

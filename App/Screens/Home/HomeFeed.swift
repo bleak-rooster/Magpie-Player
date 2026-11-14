@@ -96,7 +96,26 @@ import Observation
     /// any read in flight. The read is the feed's own: the view going away (a tab switch) stops the wait, not the
     /// read, which still records and settles (fix N1).
     func show(_ key: HomeLoad.Key) async {
+        applyPendingOrders()   // Round 27 H fix round 1 (M3)
         await run(startRead(key, fresh: false, asked: false))
+    }
+
+    /// Round 27 H fix round 1 (M3, design L2): new orders for shelves already on screen (Your flows after a flow
+    /// played), applied the next time Home shows, never under the owner's eyes or VoiceOver's cursor, and without a read.
+    @ObservationIgnored private var pendingOrders: [HomeSection: @MainActor ([HomeShelf.Item]) -> [HomeShelf.Item]] = [:]
+
+    func reorderWhenShown(_ section: HomeSection, _ order: @escaping @MainActor ([HomeShelf.Item]) -> [HomeShelf.Item]) {
+        guard !isStopped else { return }
+        pendingOrders[section] = order
+    }
+
+    private func applyPendingOrders() {
+        guard !pendingOrders.isEmpty else { return }
+        let orders = pendingOrders
+        pendingOrders = [:]
+        guard var state = load else { return }
+        for (section, order) in orders { state.reorder(section, order) }
+        load = state
     }
 
     /// Pull to refresh (and Try again): everything again, failures shown at once.

@@ -48,6 +48,8 @@ struct HomeAndLibraryView: View {
                 .accessibilityIdentifier("settings-album-covers")
             } header: {
                 Text(AlbumCoversCopy.setting)
+            } footer: {
+                Text(AlbumCoversCopy.accessibilityNote)   // fix round 1 (design H1): always shown
             }
             // Round 27 H (owner, 2026-11-14): Your flows on Home, by last played or A to Z (D298), and (Q3) D190's one
             // "everyone's" switch, shown here too. Only with Aurral: Home has no flows without it.
@@ -61,14 +63,15 @@ struct HomeAndLibraryView: View {
                 } header: {
                     Text(HomeFlowsCopy.section)
                 } footer: {
-                    Text(HomeFlowsCopy.footer)
+                    // Fix round 1 (M2): it describes Last played only.
+                    if let footer = HomeFlowsCopy.footer(model.preferences.layout.homeFlowsOrder) { Text(footer) }
                 }
                 Section {
                     Toggle(EveryonesFlowsCopy.toggle, isOn: Binding(get: { model.showEveryonesFlows },
                                                                     set: { model.showEveryonesFlows = $0 }))
                         .accessibilityIdentifier("settings-home-everyones-flows")
                 } footer: {
-                    Text(EveryonesFlowsCopy.footer)
+                    Text(HomeFlowsCopy.everyoneFooter)   // fix round 1 (design M4): it isn't only Home's
                 }
             }
             // Round 14 A4 fix round 1 (owner): whose top songs Trending shows.
@@ -104,7 +107,12 @@ struct HomeAndLibraryView: View {
 enum HomeFlowsCopy {
     static let section = "Your flows on Home"
     static let order = "Order"
-    static let footer = "Flows you\u{2019}ve played lately come first; the rest follow A to Z."
+    static let lastPlayedFooter = "Flows you\u{2019}ve played lately come first; the rest follow A to Z."
+    /// D190's footer, and (fix round 1, design M4) what else the one switch governs.
+    static let everyoneFooter = EveryonesFlowsCopy.footer + " This also applies to Discover and the car."
+
+    /// Fix round 1 (M2): the Order footer, shown only for Last played.
+    static func footer(_ order: HomeFlowsOrder) -> String? { order == .lastPlayed ? lastPlayedFooter : nil }
 
     static func title(_ order: HomeFlowsOrder) -> String {
         switch order {

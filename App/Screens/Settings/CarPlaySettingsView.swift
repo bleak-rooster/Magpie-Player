@@ -59,7 +59,8 @@ struct CarPlaySettingsView: View {
 /// Round 27 H (D300): the words for Settings › CarPlay › Flows with your playlists (Settings may name Aurral).
 enum CarPlayFlowsCopy {
     static let toggle = "Flows with your playlists"
-    static let footer = "Shows your Aurral flows and playlists in the car\u{2019}s Playlists list, mixed in A to Z, instead of a separate Discover list."
+    /// Fix round 1 (M1; amends plan §8): true whatever the third tab is (a Discover tab the owner chose stays).
+    static let footer = "Your flows and Aurral playlists also appear in the car\u{2019}s Playlists list, A to Z."
 }
 
 /// Settings › CarPlay › Home: the car's shelves, ordered and switched on or off. Until changed it is the phone's Home

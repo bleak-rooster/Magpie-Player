@@ -21,13 +21,27 @@ extension AppModel {
     }
 
     /// Records that `playlistId` started playing, when it is a Discover playlist (never another playlist). Saved at
-    /// once; Home's Your flows reads again when it is ordered by last played, so the flow comes first there.
+    /// once. Fix round 1 (M3, design L2): with Last played, the Your flows shelf already loaded is put in the new
+    /// order the next time Home shows (`reorderWhenShown`): nothing is read again, and nothing moves under the owner's
+    /// eyes.
     func noteFlowPlayed(playlistId: String, at date: Date = Date()) {
         guard let scope = navidromeScope, isDiscoverPlaylist(id: playlistId) else { return }
         let plays = FlowPlays.noting(playlistId, at: date, in: flowPlays)
         flowPlaysSlot = (scope, plays)
         FlowPlaysStore(root: dataDirectory, scope: scope).save(plays)
-        if preferences.layout.homeFlowsOrder == .lastPlayed { homeFeedSlot?.sectionsChanged([.discover]) }
+        guard preferences.layout.homeFlowsOrder == .lastPlayed else { return }
+        homeFeedSlot?.reorderWhenShown(.discover) { [weak self] items in
+            guard let self else { return items }
+            return Self.reordered(items, preferences.layout.homeFlowsOrder, lastPlayed: flowPlays)
+        }
+    }
+
+    /// Your flows' tiles in `order`: its flows sorted, the For you tiles after them as they were.
+    nonisolated static func reordered(_ items: [HomeShelf.Item], _ order: HomeFlowsOrder,
+                                      lastPlayed: [String: Date]) -> [HomeShelf.Item] {
+        let flows = items.compactMap { item -> Playlist? in if case .playlist(let p) = item { p } else { nil } }
+        let rest = items.filter { if case .playlist = $0 { false } else { true } }
+        return order.sorted(flows, lastPlayed: lastPlayed).map(HomeShelf.Item.playlist) + rest
     }
 
     /// Sign-out: the plays in memory go (their file goes with Home's folder, `forgetHomeShelves`).

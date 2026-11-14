@@ -15,7 +15,8 @@ import Testing
     let store = SessionStore(keychain: KeychainStore(service: "com.bleak-rooster.magpie.tests.\(UUID().uuidString)"))
     let suite = "HomeFlowsOrderAppTests.\(UUID().uuidString)"
     lazy var defaults = UserDefaults(suiteName: suite)!
-    let transport = AurralRouting()
+    let gate = HeldAurral()   // counts each path's requests (CarPlayFlowsAppTests.swift)
+    var transport: AurralRouting { gate.inner }
     let nav = DiscoverNavidrome()
     let aurralStore = MemoryAurralStore()
     var aurral: StubAurral { transport.aurral }
@@ -28,7 +29,7 @@ import Testing
 
     private func makeModel() -> AppModel {
         AppModel(store: store, lidarrStore: MemoryLidarrStore(), tokenStore: MemoryTokenStore(), aurralStore: aurralStore,
-                 matchIndexDirectory: nil, dataDirectory: tmp, transport: transport, probeTransport: transport,
+                 matchIndexDirectory: nil, dataDirectory: tmp, transport: gate, probeTransport: gate,
                  engine: FakeEngine(), defaults: defaults, systemNowPlaying: false, notifications: false,
                  network: FakeNetwork(.wifi), audioFetcher: FakeFetcher())
     }
@@ -115,12 +116,18 @@ import Testing
         #expect(file.url.deletingLastPathComponent() == HomeShelfCache.directory(root: tmp))
         #expect(file.load() == ["pl-dw": t0], "saved at once")
         #expect(try file.url.resourceValues(forKeys: [.isExcludedFromBackupKey]).isExcludedFromBackup == true)
-        // A file someone else wrote, too big, reads as nothing; one over the limit is cut to it.
         model.signOut()
         #expect(!FileManager.default.fileExists(atPath: file.url.path), "removed at sign-out")
         #expect(model.flowPlays.isEmpty)
+        // One over the limit is cut to it; a file someone else wrote, too big (fix round 1, M5) or not plays, reads as
+        // nothing.
         file.save(Dictionary(uniqueKeysWithValues: (0..<400).map { ("x\($0)", t0.addingTimeInterval(Double($0))) }))
         #expect(file.load().count == 300 && file.load()["x399"] != nil && file.load()["x0"] == nil)
+        let huge = Data(repeating: UInt8(ascii: " "), count: HomeShelfCache.maxBytes + 1)
+        try huge.write(to: file.url)
+        #expect(file.load().isEmpty, "over \(HomeShelfCache.maxBytes) bytes: not read")
+        try Data("[1,2,3]".utf8).write(to: file.url)
+        #expect(file.load().isEmpty, "not a plays file")
     }
 
     // MARK: - D298: Your flows on Home
@@ -134,6 +141,29 @@ import Testing
         #expect(try await homeFlows(model) == ["pl-empty", "pl-dw"], "the one played lately first")
         model.noteFlowPlayed(playlistId: "pl-dw", at: t0.addingTimeInterval(5))
         #expect(try await homeFlows(model) == ["pl-dw", "pl-empty"])
+    }
+
+    /// Fix round 1 (M3, design L2): a play doesn't read Discover again or move Your flows while Home is on screen; the
+    /// shelf already loaded takes the new order the next time Home shows.
+    @Test func phoneHome_playReordersWhenHomeNextShows() async throws {
+        let model = try await signedIn()
+        defer { model.signOut() }
+        let key = HomeLoad.Key.make(sections: [.discover], offline: false, onPhone: nil, genres: .defaultValue)
+        await model.homeFeed.show(key)
+        func shown() -> [String] {
+            (model.homeFeed.load?.found[.discover]?.items ?? []).compactMap { if case .playlist(let p) = $0 { p.id } else { nil } }
+        }
+        #expect(shown() == ["pl-dw", "pl-empty"])
+        let reads = (gate.hits("getPlaylists"), gate.hits("/api/"))
+        model.noteFlowPlayed(playlistId: "pl-empty", at: t0)
+        #expect(!model.homeFeed.isReading, "no read of Your flows started")
+        #expect(shown() == ["pl-dw", "pl-empty"], "nothing moves under the owner's eyes")
+        #expect(gate.hits("getPlaylists") == reads.0 && gate.hits("/api/") == reads.1, "nothing read again")
+        await model.homeFeed.show(key)
+        #expect(shown() == ["pl-empty", "pl-dw"], "Home shows again: the flow played lately first")
+        #expect(AppModel.reordered([.playlist(Playlist(id: "b", name: "B", songCount: 1, duration: 1)),
+                                    .playlist(Playlist(id: "a", name: "A", songCount: 1, duration: 1))],
+                                   .alphabetical, lastPlayed: [:]).map(\.id) == ["playlist-a", "playlist-b"])
     }
 
     @Test func phoneHome_alphabetical() async throws {
@@ -188,7 +218,9 @@ import Testing
         #expect(HomeFlowsCopy.section == "Your flows on Home")
         #expect(HomeFlowsCopy.order == "Order")
         #expect(HomeFlowsOrder.allCases.map(HomeFlowsCopy.title) == ["Last played", "A to Z"])
-        #expect(HomeFlowsCopy.footer == "Flows you\u{2019}ve played lately come first; the rest follow A to Z.")
+        #expect(HomeFlowsCopy.footer(.lastPlayed) == "Flows you\u{2019}ve played lately come first; the rest follow A to Z.")
+        #expect(HomeFlowsCopy.footer(.alphabetical) == nil, "fix round 1 (M2): only for Last played")
+        #expect(HomeFlowsCopy.everyoneFooter == EveryonesFlowsCopy.footer + " This also applies to Discover and the car.")
         #expect(EveryonesFlowsCopy.toggle == "Show everyone\u{2019}s flows and playlists", "D190's, unchanged (Q3)")
     }
 

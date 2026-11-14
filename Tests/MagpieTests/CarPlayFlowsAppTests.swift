@@ -8,6 +8,47 @@ import Testing
 @testable import CarPlayUI
 @testable import Magpie
 
+/// The stub Aurral and the mock Navidrome (`AurralRouting`), with Aurral's answers held back while `hold()` is on, and
+/// each path's requests counted. Never the owner's.
+final class HeldAurral: HTTPTransport, @unchecked Sendable {
+    let inner = AurralRouting()
+    private let lock = NSLock()
+    private var held = false
+    private var waiting: [CheckedContinuation<Void, Never>] = []
+    private var counts: [String: Int] = [:]
+
+    func hold() { lock.withLock { held = true } }
+
+    func release() {
+        let resumed = lock.withLock { () -> [CheckedContinuation<Void, Never>] in
+            held = false
+            defer { waiting = [] }
+            return waiting
+        }
+        resumed.forEach { $0.resume() }
+    }
+
+    /// Requests whose path contains `path` so far.
+    func hits(_ path: String) -> Int { lock.withLock { counts.filter { $0.key.contains(path) }.values.reduce(0, +) } }
+    /// Aurral requests waiting now.
+    var heldCount: Int { lock.withLock { waiting.count } }
+
+    func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        lock.withLock { counts[request.url?.path ?? "", default: 0] += 1 }
+        if request.url?.host == inner.aurral.host {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                let goes = lock.withLock { () -> Bool in
+                    guard held else { return true }
+                    waiting.append(continuation)
+                    return false
+                }
+                if goes { continuation.resume() }
+            }
+        }
+        return try await inner.send(request)
+    }
+}
+
 /// Round 27 H (owner, 2026-11-14): "In carplay, in the home screen, it should present the flows as the latest one that
 /// was played, not in alphabetical order" (D297) and "there should be a switch in the settings to show aurral
 /// playlists/flows and playlists combined" (D300); another user's flow says whose in the car (D299). The app's adapter
@@ -17,12 +58,15 @@ import Testing
     let store = SessionStore(keychain: KeychainStore(service: "com.bleak-rooster.magpie.tests.\(UUID().uuidString)"))
     let suite = "CarPlayFlowsAppTests.\(UUID().uuidString)"
     lazy var defaults = UserDefaults(suiteName: suite)!
-    let transport = AurralRouting()
+    /// Fix round 1 (I1): Aurral's answers can be held back, to show a slow Aurral holds nothing else up.
+    let gate = HeldAurral()
+    var transport: AurralRouting { gate.inner }
     let nav = DiscoverNavidrome()
     let aurralStore = MemoryAurralStore()
     var aurral: StubAurral { transport.aurral }
 
     deinit {
+        gate.release()
         store.clear()
         UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite)
         try? FileManager.default.removeItem(at: tmp)
@@ -30,7 +74,7 @@ import Testing
 
     private func makeModel() -> AppModel {
         AppModel(store: store, lidarrStore: MemoryLidarrStore(), tokenStore: MemoryTokenStore(), aurralStore: aurralStore,
-                 matchIndexDirectory: nil, dataDirectory: tmp, transport: transport, probeTransport: transport,
+                 matchIndexDirectory: nil, dataDirectory: tmp, transport: gate, probeTransport: gate,
                  engine: FakeEngine(), defaults: defaults, systemNowPlaying: false, notifications: false,
                  network: FakeNetwork(.wifi), audioFetcher: FakeFetcher())
     }
@@ -74,6 +118,23 @@ import Testing
     private func setCombined(_ model: AppModel, _ on: Bool) { model.updatePreferences { $0.carPlay.flowsWithPlaylists = on } }
 
     // MARK: - D297: the car's Home, by last played
+
+    /// Fix round 1 (I1): the car's Discover shelf is read alongside the others. With Aurral holding its answer, the
+    /// Playlists shelf is already being read from the library well inside Discover's 3 s wait; both shelves come.
+    @Test func carHome_slowAurralHoldsNothingElseUp() async throws {
+        let model = try await signedIn()
+        defer { model.signOut() }
+        let adapter = CarPlayLibraryAdapter(model: model)
+        model.discover.now = { Date().addingTimeInterval(120) }   // Discover is due a fresh read of Aurral
+        let before = gate.hits("getPlaylists")
+        gate.hold()
+        let read = Task { try await adapter.homeShelves([.discover, .playlists], size: 4) }
+        #expect(await eventually(2) { self.gate.hits("getPlaylists") > before && self.gate.heldCount > 0 },
+                "the library's Playlists shelf waited for Aurral")
+        gate.release()
+        let shelves = try await read.value
+        #expect(shelves.map(\.section) == [.discover, .playlists])
+    }
 
     @Test func carHome_lastPlayedThenAtoZ() async throws {
         let model = try await signedIn()
@@ -220,6 +281,6 @@ import Testing
 
     @Test func carSettingsCopy() async throws {
         #expect(CarPlayFlowsCopy.toggle == "Flows with your playlists")
-        #expect(CarPlayFlowsCopy.footer == "Shows your Aurral flows and playlists in the car\u{2019}s Playlists list, mixed in A to Z, instead of a separate Discover list.")
+        #expect(CarPlayFlowsCopy.footer == "Your flows and Aurral playlists also appear in the car\u{2019}s Playlists list, A to Z.")
     }
 }

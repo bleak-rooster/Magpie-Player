@@ -54,12 +54,23 @@ extension CarPlayLibraryAdapter {
             && model.madeForYouShelf.isEmpty && madeForYouReadGeneration != generation
         if readsMadeForYou { madeForYouReadGeneration = generation }
         async let refreshed: Void = refreshMadeForYou(if: readsMadeForYou)
-        // Round 27 H (D297): Discover's shelf is the car's own, by last played, whatever the phone's Home order.
-        let flows = await carDiscoverShelf(if: sections.contains(.discover))
-        let shelves: [HomeShelf]
+        // Round 27 H (D297): Discover's shelf is the car's own, by last played, whatever the phone's Home order. Fix
+        // round 1 (I1): read alongside the other shelves, so a slow Aurral never holds them up. Each answer is awaited
+        // into its own constant (B1/D120's shape: never a `.success(try await …)` built inline).
+        async let discoverRead = carDiscoverShelf(if: sections.contains(.discover))
+        let others: Result<[HomeShelf], any Error>
         do {
-            shelves = try await model.homeShelves(for: sections.filter { $0 != .discover })
+            let read = try await model.homeShelves(for: sections.filter { $0 != .discover })
+            others = .success(read)
         } catch {
+            others = .failure(error)
+        }
+        let flows = await discoverRead
+        let shelves: [HomeShelf]
+        switch others {
+        case .success(let read):
+            shelves = read
+        case .failure(let error):
             // Every other section failed: still a Home while Discover's shelf read, as when it was one of them.
             // A read cut short stays cut short (P5): never an empty Home in its place.
             guard case .success? = flows, !AppModel.isCancellation(error) else { await refreshed; throw error }
@@ -108,7 +119,12 @@ extension CarPlayLibraryAdapter {
     /// nothing is asked (Discover isn't a Home section offline).
     private func carDiscoverShelf(if wanted: Bool) async -> Result<[Playlist], any Error>? {
         guard wanted, !model.isOffline else { return nil }
-        do { return .success(try await model.carDiscoverFlows()) } catch { return .failure(error) }
+        do {
+            let flows = try await model.carDiscoverFlows()   // B1 (D120): into a constant first
+            return .success(flows)
+        } catch {
+            return .failure(error)
+        }
     }
 
     // MARK: - Offline and Now Playing's star

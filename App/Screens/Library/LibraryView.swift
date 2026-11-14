@@ -232,7 +232,7 @@ struct AlbumGridTile: View {
 }
 
 /// Round 27 H (owner, 2026-11-14): "an option to view albums as smaller icons" (D296). A small cover with its title and
-/// subtitle on one line each (truncated), at least 44 pt high; VoiceOver reads both, and the download mark, as the
+/// subtitle on one line each (truncated; fix round 1: the title two lines from xLarge text up), at least 44 pt high; VoiceOver reads both, and the download mark, as the
 /// large tile does.
 struct SmallAlbumTile: View {
     let title: String
@@ -240,15 +240,19 @@ struct SmallAlbumTile: View {
     let artwork: Image?
     let width: CGFloat
     var mark: DownloadMark = .none
+    @Environment(\.dynamicTypeSize) private var typeSize
     private let themed = Themed()
 
     static func accessibilityLabel(title: String, subtitle: String) -> String { "\(title), \(subtitle)" }
+
+    /// Fix round 1 (design M1): from xLarge text up a title may take two lines, so it isn't cut to a few letters.
+    static func titleLines(_ typeSize: DynamicTypeSize) -> Int { typeSize >= .xLarge ? 2 : 1 }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Tokens.Spacing.xs) {
             SleeveArt(image: artwork, side: width)
             VStack(alignment: .leading, spacing: 1) {
-                Text(title).font(.footnote.weight(.semibold)).lineLimit(1)
+                Text(title).font(.footnote.weight(.semibold)).lineLimit(Self.titleLines(typeSize))
                 HStack(spacing: 2) {
                     Text(subtitle).font(.caption2).foregroundStyle(themed.palette.ink2Color).lineLimit(1)
                     DownloadMarkView(mark)
@@ -268,6 +272,10 @@ struct SmallAlbumTile: View {
 /// Round 27 H (D296): the words for album covers (Settings › Home & Library, Library › Albums' toolbar).
 enum AlbumCoversCopy {
     static let setting = "Album covers"
+    /// Fix round 1 (design H1): why the choice does nothing at the largest text sizes.
+    static let accessibilityNote = "At the largest text sizes, covers stay large so titles can be read."
+    /// Fix round 1 (design L1): said by VoiceOver after the toolbar's tap.
+    static func announcement(_ size: AlbumCoverSize) -> String { size == .small ? "Small covers" : "Large covers" }
 
     static func title(_ size: AlbumCoverSize) -> String {
         switch size {

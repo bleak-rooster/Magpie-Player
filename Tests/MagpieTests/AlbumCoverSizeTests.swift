@@ -57,6 +57,28 @@ import UIKit
         #expect(SmallAlbumTile.accessibilityLabel(title: "Glasshouse", subtitle: "Corin Hale") == "Glasshouse, Corin Hale")
     }
 
+    /// Fix round 1 (design M1): from xLarge text up a small tile's title may take two lines.
+    @Test func smallTileTitlesTakeTwoLinesFromXLarge() {
+        #expect([DynamicTypeSize.xSmall, .small, .medium, .large].allSatisfy { SmallAlbumTile.titleLines($0) == 1 })
+        #expect([DynamicTypeSize.xLarge, .xxLarge, .xxxLarge].allSatisfy { SmallAlbumTile.titleLines($0) == 2 })
+        func height(_ title: String) -> CGFloat {
+            UIHostingController(rootView: SmallAlbumTile(title: title, subtitle: "Corin Hale", artwork: nil, width: 101)
+                .environment(\.dynamicTypeSize, .xxxLarge))
+                .sizeThatFits(in: CGSize(width: 101, height: 1_000)).height
+        }
+        #expect(height("Atlas of Small Hours and Every Other Thing") > height("Glass"), "the long title wraps once")
+    }
+
+    /// Fix round 1 (design H1, L1): no cover toggle where it can't change the grid, and words for why and for the
+    /// change.
+    @Test func coverControlsAtAccessibilitySizes() {
+        #expect(AlbumsListView.showsCoverToggle(accessibility: false))
+        #expect(!AlbumsListView.showsCoverToggle(accessibility: true), "a dead control at accessibility sizes")
+        #expect(AlbumCoversCopy.accessibilityNote == "At the largest text sizes, covers stay large so titles can be read.")
+        #expect(AlbumCoversCopy.announcement(.small) == "Small covers")
+        #expect(AlbumCoversCopy.announcement(.large) == "Large covers")
+    }
+
     /// Library › Albums' toolbar button switches the one setting, saved like any preference.
     @Test func albumsToolbarToggles() throws {
         let name = "covers-\(UUID().uuidString)"
