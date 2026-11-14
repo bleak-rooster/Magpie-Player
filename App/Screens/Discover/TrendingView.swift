@@ -21,6 +21,8 @@ struct TrendingView: View {
     @State private var makingDefault = false
     /// Fix round M5: Make default on Automatic pinned a fixed country: say so.
     @State private var pinnedNote: String?
+    /// Round 27 D2: bumped by a pull to refresh, so the chart flow's songs are read again (D317).
+    @State private var reloads = 0
 
     private var feeds: AurralFeeds { model.aurralFeeds }
 
@@ -43,6 +45,7 @@ struct TrendingView: View {
             await RefreshSafety.run {
                 if picked == nil { await feeds.refresh(.trending, force: true) } else { await loadPicked(fresh: true) }
             }
+            reloads += 1
         }
         .navigationTitle(DiscoverPagesCopy.trending)
         .navigationBarTitleDisplayMode(.inline)
@@ -155,6 +158,7 @@ struct TrendingView: View {
         do {
             let page = try await model.chartPage(picked, fresh: fresh)
             if self.picked == picked { pickedPage = page }
+            await model.keepChartFlowUp(page)   // round 27 D2 (D319): a chart read keeps its flow up, once a day
         } catch {
             if self.picked == picked { pickedFailed = true }
         }
@@ -176,7 +180,8 @@ struct TrendingView: View {
                 }
             }
             .padding(.horizontal, Tokens.Spacing.margin)
-            ChartSongList(songs: page.songs, showsPosition: true, identifier: "trending-song")
+            ChartSongList(songs: page.songs, showsPosition: true, identifier: "trending-song", chart: hasChart ? page.chart : nil,
+                          reload: reloads)
         }
     }
 
@@ -292,6 +297,7 @@ struct GenreChartView: View {
     let genreId: Int
     let name: String
     @State private var loaded = false
+    @State private var reloads = 0
 
     private var feeds: AurralFeeds { model.aurralFeeds }
 
@@ -302,7 +308,8 @@ struct GenreChartView: View {
                 if let songs = feeds.genreCharts[genreId], !songs.isEmpty {
                     PlayPreviewsButton(items: songs.map(model.previewItem(for:)))
                         .padding(.horizontal, Tokens.Spacing.margin)
-                    ChartSongList(songs: songs, showsPosition: true, identifier: "genre-song")
+                    ChartSongList(songs: songs, showsPosition: true, identifier: "genre-song", chart: .genre(genreId),
+                                  reload: reloads)
                 } else if feeds.notReadyGenres.contains(genreId) {
                     UpdatingCard(text: DiscoverPagesCopy.notReady)
                 } else if loaded {
@@ -313,7 +320,10 @@ struct GenreChartView: View {
             }
             .padding(.vertical, Tokens.Spacing.l)
         }
-        .refreshable { await RefreshSafety.run { await feeds.refreshGenre(genreId) } }
+        .refreshable {
+            await RefreshSafety.run { await feeds.refreshGenre(genreId) }
+            reloads += 1
+        }
         .navigationTitle(name)
         .navigationBarTitleDisplayMode(.inline)
         .magpieScreen()

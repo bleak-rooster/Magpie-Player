@@ -125,6 +125,8 @@ struct ChartSongRow: View {
     /// Plays the library's copies from this one (the caller's list).
     let playCopy: () -> Void
     var showsPosition = false
+    /// Round 27 D2: the chart's flow is still getting this song ("On its way", D318).
+    var onItsWay = false
     @State private var picture: UIImage?
     private let themed = Themed()
 
@@ -148,7 +150,30 @@ struct ChartSongRow: View {
         .task(id: song.artwork?.raw) { picture = await model.aurralArtwork(song.artwork, side: 48) }
     }
 
+    /// Round 27 D2 (D317, D318): how a row shows: a song to play in full (the library's, or the chart flow's) as a
+    /// library row; one the chart's flow is still getting, with its preview and "On its way"; else its preview.
+    enum Kind: Equatable { case library, onItsWay, preview }
+
+    static func kind(copy: Song?, onItsWay: Bool) -> Kind {
+        if copy != nil { return .library }
+        return onItsWay ? .onItsWay : .preview
+    }
+
     @ViewBuilder private var row: some View {
+        if Self.kind(copy: copy, onItsWay: onItsWay) == .onItsWay {
+            VStack(alignment: .leading, spacing: 0) {
+                songRow
+                Label(ChartFlowRowCopy.onItsWay, systemImage: ChartFlowRowCopy.onItsWaySymbol)
+                    .font(.footnote).foregroundStyle(themed.palette.ink2Color)
+                    .padding(.horizontal, Tokens.Spacing.margin)
+                    .accessibilityIdentifier("chart-song-on-its-way")
+            }
+        } else {
+            songRow
+        }
+    }
+
+    @ViewBuilder private var songRow: some View {
         let art = picture.map { Image(uiImage: $0) }
         if copy != nil {
             Button(action: playCopy) {
@@ -172,28 +197,44 @@ struct ChartSongRow: View {
 }
 
 /// A list of chart or Discover playlist songs, with each one the library has played from the library.
+/// Round 27 D2 (owner item 16): for a chart with its own flow (`chart`), the rows the flow holds play its songs in full
+/// too, and a row it is still getting says "On its way" (D317, D318). `reload` (a pull to refresh) reads again.
 struct ChartSongList: View {
     @Environment(AppModel.self) private var model
     let songs: [ChartSong]
     var showsPosition = false
     var identifier = "chart-song"
-    @State private var copies: [Int: Song] = [:]
+    var chart: TrendingChart? = nil
+    var reload = 0
+    @State private var rows = ChartRows()
+
+    private struct Key: Equatable { var songs: [ChartSong]; var chart: TrendingChart?; var reload: Int }
 
     var body: some View {
         LazyVStack(alignment: .leading, spacing: 0) {
             ForEach(Array(songs.enumerated()), id: \.offset) { index, song in
-                ChartSongRow(song: song, copy: copies[index], playCopy: { play(from: index) }, showsPosition: showsPosition)
+                ChartSongRow(song: song, copy: rows.copies[index], playCopy: { play(from: index) }, showsPosition: showsPosition,
+                             onItsWay: rows.onItsWay.contains(index))
                     .accessibilityIdentifier("\(identifier)-\(index)")
             }
         }
-        .task(id: songs) { copies = await model.libraryCopies(of: songs) }
+        .task(id: Key(songs: songs, chart: chart, reload: reload)) {
+            let found = await model.chartRows(chart: chart, songs: songs)
+            if !Task.isCancelled { rows = found }   // swapped in place, no animation
+        }
     }
 
-    /// The library's copies in the list's order, from the tapped one.
-    private func play(from index: Int) {
+    /// The playable rows' songs in the list's order, and where the tapped one is among them (nil: it isn't playable).
+    static func playOrder(copies: [Int: Song], from index: Int) -> (songs: [Song], start: Int)? {
         let owned = copies.keys.sorted()
-        guard let start = owned.firstIndex(of: index) else { return }
-        model.play(owned.compactMap { copies[$0] }, startAt: start)
+        guard let start = owned.firstIndex(of: index) else { return nil }
+        return (owned.compactMap { copies[$0] }, start)
+    }
+
+    /// The shown playable rows, from the tapped one.
+    private func play(from index: Int) {
+        guard let order = Self.playOrder(copies: rows.copies, from: index) else { return }
+        model.play(order.songs, startAt: order.start)
     }
 }
 
