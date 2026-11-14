@@ -22,10 +22,13 @@ public enum FlowSource: String, CaseIterable, Sendable, Hashable {
 /// A flow's recipe, as Aurral 2.13 stores it (`flowPlaylistConfig.normalizeFlow`).
 public struct FlowRecipe: Sendable, Hashable {
     public var name: String
-    /// How many songs each update brings (Aurral's default 30; Magpie offers 1–100).
-    public var size: Int
-    /// Each source's share (Aurral normalises them to percentages); a source at 0 is off.
-    public var shares: [FlowSource: Int]
+    /// Round 27 D2 (owner, 2026-11-14): how many songs each source brings to an update, as Aurral's editor asks for
+    /// them (each 0–100; a source at 0 is off). Supersedes round 16's shares (D316, supersedes D150).
+    public var counts: [FlowSource: Int] {
+        didSet {
+            for (source, n) in counts where !(0...Self.maxSongs).contains(n) { counts[source] = min(max(n, 0), Self.maxSongs) }
+        }
+    }
     /// Deeper cuts: less obvious songs.
     public var deepDive: Bool
     public var recentListening: Bool
@@ -42,42 +45,64 @@ public struct FlowRecipe: Sendable, Hashable {
 
     public static let maxSongs = 100
     public static let defaultSize = 30
+    /// Round 27 D2: what checking a source in the editor gives it (D316).
+    public static let countWhenPicked = 10
     public static let maxListItems = 25
     public static let maxItemLength = 100
     public static let maxNameLength = 200
 
-    public init(name: String, size: Int = FlowRecipe.defaultSize,
-                shares: [FlowSource: Int] = [.discover: 34, .mix: 33, .trending: 33], deepDive: Bool = false,
+    /// The default recipe: Discover, Library and Trending, ten songs each (Aurral's 30).
+    public init(name: String, counts: [FlowSource: Int] = [.discover: 10, .mix: 10, .trending: 10], deepDive: Bool = false,
                 recentListening: Bool = false, autoDownload: Bool = true, yearFrom: Int? = nil, yearTo: Int? = nil,
                 tags: [String] = [], excludeTags: [String] = [], relatedArtists: [String] = [],
                 scheduleDays: [Int] = [5], scheduleHour: Int = 0) {
-        self.name = name; self.size = size; self.shares = shares; self.deepDive = deepDive
+        self.name = name; self.counts = counts.mapValues { min(max($0, 0), Self.maxSongs) }; self.deepDive = deepDive
         self.recentListening = recentListening; self.autoDownload = autoDownload; self.yearFrom = yearFrom
         self.yearTo = yearTo; self.tags = tags; self.excludeTags = excludeTags; self.relatedArtists = relatedArtists
         self.scheduleDays = scheduleDays; self.scheduleHour = scheduleHour
     }
 
-    /// The sources picked (share above 0), in Aurral's order.
-    public var sources: [FlowSource] { FlowSource.allCases.filter { (shares[$0] ?? 0) > 0 } }
+    /// Round 27 D2: how many songs an update brings: the counts' sum (Aurral's `flowDraftTotal`), 1–100 to be sent
+    /// (amends D148: the size is no longer a field of its own) (D316).
+    public var size: Int { FlowSource.allCases.reduce(0) { $0 + (counts[$1] ?? 0) } }
 
-    /// Every picked source the same share (Simple's chips).
-    public mutating func setSources(_ picked: Set<FlowSource>) {
-        let ordered = FlowSource.allCases.filter(picked.contains)
-        shares = [:]
-        guard !ordered.isEmpty else { return }
-        let each = 100 / ordered.count
-        for (index, source) in ordered.enumerated() { shares[source] = each + (index < 100 % ordered.count ? 1 : 0) }
+    /// The sources picked (count above 0), in Aurral's order.
+    public var sources: [FlowSource] { FlowSource.allCases.filter { (counts[$0] ?? 0) > 0 } }
+
+    /// Round 27 D2: the editor's checkmark: on gives the source ten songs (unless it has some), off gives it none (D316).
+    public mutating func setSource(_ source: FlowSource, on: Bool) {
+        if on { if (counts[source] ?? 0) == 0 { counts[source] = Self.countWhenPicked } } else { counts[source] = 0 }
     }
 
-    /// Shares that aren't equal: Simple can't show them.
-    public var hasUnevenShares: Bool {
-        let values = sources.map { shares[$0] ?? 0 }
-        return (values.max() ?? 0) - (values.min() ?? 0) > 1
+    /// Round 27 D2: Aurral's `splitFlowTotal` (`lib/flows.ts`): `total` songs split over the sources by their weights,
+    /// each the floor of its exact share, the rest one each to the largest remainders (ties in source order, as
+    /// JavaScript's stable sort leaves them). Nil when no weight is above 0. How a stored mix (Aurral normalises it to
+    /// percentages) becomes counts again (D316).
+    public static func splitFlowTotal(_ weights: [FlowSource: Double], total: Int) -> [FlowSource: Int]? {
+        let shares = FlowSource.allCases.map { source -> Double in
+            let w = weights[source] ?? 0
+            return w.isFinite && w > 0 ? w : 0
+        }
+        let sum = shares.reduce(0, +)
+        guard sum > 0, sum.isFinite else { return nil }
+        let total = max(total, 0)
+        let exact = shares.map { $0 / sum * Double(total) }
+        var counts = exact.map { Int($0.rounded(.down)) }
+        var left = total - counts.reduce(0, +)
+        let order = exact.indices.sorted { a, b in
+            let ra = exact[a] - exact[a].rounded(.down), rb = exact[b] - exact[b].rounded(.down)
+            return ra != rb ? ra > rb : a < b
+        }
+        for index in order where left > 0 {
+            counts[index] += 1
+            left -= 1
+        }
+        return Dictionary(uniqueKeysWithValues: zip(FlowSource.allCases, counts))
     }
 
-    /// Fields only Advanced shows are in use.
+    /// Fields only Advanced shows are in use (round 27 D2: counts show in both, D316).
     public var usesAdvanced: Bool {
-        hasUnevenShares || !excludeTags.isEmpty || !relatedArtists.isEmpty || !autoDownload
+        !excludeTags.isEmpty || !relatedArtists.isEmpty || !autoDownload
             || (recentListening && !(sources.contains(.focus) && tags.isEmpty))
     }
 
@@ -86,8 +111,9 @@ public struct FlowRecipe: Sendable, Hashable {
         let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
         if name.isEmpty { return "Give the flow a name." }
         if name.count > Self.maxNameLength { return "That name is too long." }
-        if !(1...Self.maxSongs).contains(size) { return "A flow holds 1 to \(Self.maxSongs) songs." }
-        if sources.isEmpty { return "Pick at least one source." }
+        // Round 27 D2: the counts' sum, refused unsent outside 1–100 (D316).
+        if size < 1 { return "Choose at least one song." }
+        if size > Self.maxSongs { return "A flow holds up to \(Self.maxSongs) songs in all." }
         if scheduleDays.isEmpty || !scheduleDays.allSatisfy((0...6).contains) { return "Pick at least one day to update on." }
         if !(0...23).contains(scheduleHour) { return "Pick an hour to update at." }
         for year in [yearFrom, yearTo].compactMap({ $0 }) where !(1000...9999).contains(year) {
@@ -110,7 +136,8 @@ public struct FlowRecipe: Sendable, Hashable {
         [
             "name": name.trimmingCharacters(in: .whitespacesAndNewlines),
             "size": size,
-            "mix": Dictionary(uniqueKeysWithValues: FlowSource.allCases.map { ($0.rawValue, max(0, shares[$0] ?? 0)) }),
+            // Round 27 D2: the counts themselves, all five keys (Aurral normalises them to percentages) (D316).
+            "mix": Dictionary(uniqueKeysWithValues: FlowSource.allCases.map { ($0.rawValue, max(0, counts[$0] ?? 0)) }),
             "deepDive": deepDive,
             "recentListening": recentListening,
             "autoDownload": autoDownload,
@@ -146,19 +173,22 @@ public struct FlowRecipe: Sendable, Hashable {
     /// A flow in Aurral's status (`flows[]`), read leniently; nil without a name.
     static func decode(_ f: [String: Any]) -> FlowRecipe? {
         guard let name = f.string("name") else { return nil }
-        var shares: [FlowSource: Int] = [:]
+        // Round 27 D2: the stored mix and size back to counts, as Aurral's editor does (`splitFlowTotal`) (D316).
+        var weights: [FlowSource: Double] = [:]
         let mix = f.dict("mix") ?? [:]
         for source in FlowSource.allCases {
             if let n = mix[source.rawValue] as? NSNumber, CFGetTypeID(n) != CFBooleanGetTypeID(), n.doubleValue.isFinite,
                n.doubleValue > 0 {
-                shares[source] = max(1, Int(n.doubleValue.rounded()))
+                weights[source] = n.doubleValue
             }
         }
+        let size = min(max(f.int("size") ?? defaultSize, 1), maxSongs)
+        let counts = splitFlowTotal(weights, total: size) ?? [:]
         let days = (f["scheduleDays"] as? [Any] ?? []).compactMap { ($0 as? NSNumber)?.intValue }.filter((0...6).contains)
         let hour = f.string("scheduleTime").flatMap { Int($0.split(separator: ":").first ?? "") }.flatMap {
             (0...23).contains($0) ? $0 : nil
         } ?? 0
-        return FlowRecipe(name: name, size: min(max(f.int("size") ?? defaultSize, 1), maxSongs), shares: shares,
+        return FlowRecipe(name: name, counts: counts,
                           deepDive: f.bool("deepDive") ?? false, recentListening: f.bool("recentListening") ?? false,
                           autoDownload: f.bool("autoDownload") ?? true, yearFrom: f.int("yearFrom"), yearTo: f.int("yearTo"),
                           tags: f.strings("tags", cap: maxListItems), excludeTags: f.strings("excludeTags", cap: maxListItems),
