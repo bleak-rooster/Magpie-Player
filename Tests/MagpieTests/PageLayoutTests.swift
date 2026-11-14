@@ -67,6 +67,49 @@ enum ScreenFixtureProbe {
         }
     }
 
+    /// Round 27 A fix round 1 (design M4, D305): the artist page's Play, Shuffle and Automix never take three rows below
+    /// accessibility sizes: on a 375 pt phone at xLarge to xxxLarge, in every Character, they're one row or two and one
+    /// (Play and Shuffle side by side, Automix full width below). Album's bar (`pairsBeforeStacking` off) keeps its rule.
+    @Test func artistBarGoesTwoAndOneAtXXXLarge() async throws {
+        func bar(pairs: Bool) -> AnyView {
+            AnyView(ActionBar(pairsBeforeStacking: pairs) {
+                ActionButton("Play", symbol: "play.fill", prominence: .primary) {}
+                ActionButton("Shuffle", symbol: "shuffle") {}
+                ActionButton(AutomixCopy.actionBar, symbol: AutomixCopy.symbol) {}
+            })
+        }
+        for size in [DynamicTypeSize.xLarge, .xxLarge, .xxxLarge] {
+            for character in DesignSystem.Character.allCases {
+                let label = "\(size) \(character)"
+                let frames = try await ActionBarTests.host(bar(pairs: true), theme: Theme(character: character), typeSize: size)
+                let a = (0..<3).compactMap { frames.byIndex[$0] }
+                #expect(a.count == 3, "\(label): \(a)")
+                guard a.count == 3 else { continue }
+                let rows = Set(a.map { ($0.minY * 2).rounded() }).count
+                #expect(rows <= 2, "\(label): never three rows \(a)")
+                if rows == 2 {
+                    #expect(abs(a[0].minY - a[1].minY) < 0.5 && abs(a[0].width - a[1].width) < 0.5, "\(label): \(a)")
+                    #expect(a[2].minY >= a[0].maxY && abs(a[2].minX - 16) < 0.5 && abs(a[2].maxX - 359) < 0.5, "\(label): \(a)")
+                }
+                // The same three without the opt-in keep the old rule (one row, else one to a row): Album's bar is unchanged.
+                let plain = try await ActionBarTests.host(bar(pairs: false), theme: Theme(character: character), typeSize: size)
+                let b = (0..<3).compactMap { plain.byIndex[$0] }
+                #expect(Set(b.map { ($0.minY * 2).rounded() }).count != 2, "\(label): no two and one without it \(b)")
+            }
+        }
+        // In this harness the three fit one row at 375 pt even at xxxLarge (labels scale to 0.8), so the two-and-one step
+        // itself is pinned by the pure rule below, and the page is held to asking for it.
+        // Pure rule.
+        #expect(ActionBarArrangement.rows(idealWidths: [150, 150, 150], width: 370, stacked: false, pairs: true) == [[0, 1], [2]])
+        #expect(ActionBarArrangement.rows(idealWidths: [150, 150, 150], width: 370, stacked: false) == [[0], [1], [2]])
+        #expect(ActionBarArrangement.rows(idealWidths: [90, 90, 90], width: 370, stacked: false, pairs: true) == [[0, 1, 2]])
+        #expect(ActionBarArrangement.rows(idealWidths: [150, 150, 150], width: 370, stacked: true, pairs: true) == [[0], [1], [2]])
+        // And the page itself asks for it.
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let source = try String(contentsOf: root.appending(path: "App/Screens/Artist/ArtistView.swift"), encoding: .utf8)
+        #expect(source.contains("ActionBar(pairsBeforeStacking: true)"))
+    }
+
     @Test func pagesStackTheBarAtAccessibilitySizes() async throws {
         let fixture = ScreenFixture()
         let model = try await fixture.signedInModel()

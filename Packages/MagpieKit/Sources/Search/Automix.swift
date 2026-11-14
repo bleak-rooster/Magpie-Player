@@ -83,8 +83,10 @@ public enum Automix {
     /// Balanced the nearest 70%; Adventurous all of it and the genre's songs, shuffled. The second is the rest (the
     /// artist's and the genre's songs, the list's further part). Each next song is the first in the first tier, then the
     /// second, that keeps the variety's spacing (counting `history`, the seed song, before the mix). Never a song of
-    /// `history`, one already `played` in this mix, an `excluded` one (a Discover copy, a find, a missing file) or a
+    /// `history`, one already `played` in this mix, an `excluded` one (the app passes Discover copies and finds) or a
     /// second copy of a song (by id, or the same artist and strict title, `TopSongIdentity`). Ties keep Navidrome's order.
+    /// Fix round 1 (review M3): `Song` carries no missing-file flag, so a missing file is left out only as far as the
+    /// server's reads leave it out (a known limit, RUNBOOK); `excluded` would carry such a flag if one is added.
     public static func pick<R: RandomNumberGenerator>(_ candidates: Candidates, length: Int, variety: Variety,
                                                       history: [Song] = [], played: Set<String> = [],
                                                       excluded: (Song) -> Bool = { _ in false },

@@ -52,13 +52,31 @@ private func row(_ id: String, _ source: TopSongsProvider = .library) -> LidarrT
         #expect(cache.load("id:ar1")?.map(\.id) == (1...15).map { "s\($0)" })
     }
 
-    @Test func cache_keeps300Artists() throws {
+    /// Round 27 A fix round 1 (review M4, D303): 200 artists (was 300), so fifteen rows each fit the 1 MB bound.
+    @Test func cache_keeps200Artists() throws {
         defer { try? FileManager.default.removeItem(at: tmp) }
         let start = Date(timeIntervalSince1970: 1_800_000_000)
-        for i in 0..<302 { cache.save([row("s\(i)")], key: "id:ar\(i)", now: start.addingTimeInterval(TimeInterval(i))) }
+        for i in 0..<202 { cache.save([row("s\(i)")], key: "id:ar\(i)", now: start.addingTimeInterval(TimeInterval(i))) }
         #expect(cache.load("id:ar0") == nil && cache.load("id:ar1") == nil, "the two saved longest ago go")
-        #expect(cache.load("id:ar2") != nil && cache.load("id:ar301") != nil)
-        #expect(cache.count == 300)
+        #expect(cache.load("id:ar2") != nil && cache.load("id:ar201") != nil)
+        #expect(cache.count == 200 && LidarrTopSongsCache.maxArtists == 200)
+    }
+
+    /// Fix round 1 (review M4): 200 artists of fifteen ordinary rows stay under 1 MB, so none is trimmed for size.
+    @Test func cache_fifteenRowsTimesMaxArtistsFit() throws {
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        for i in 0..<LidarrTopSongsCache.maxArtists {
+            let rows = (0..<15).map { n -> LidarrTopSongs.Row in
+                var r = row("song-\(i)-\(n)")
+                r.song.title = "A Fairly Long Song Title Number \(n) (Live at the Hall)"
+                r.song.album = "An Album With a Long-ish Name, Deluxe Edition"
+                return r
+            }
+            cache.save(rows, key: "mbid:00000000-0000-4000-8000-\(String(format: "%012d", i))", now: start.addingTimeInterval(TimeInterval(i)))
+        }
+        #expect(cache.count == LidarrTopSongsCache.maxArtists)
+        #expect(try Data(contentsOf: cache.url).count <= LidarrTopSongsCache.maxBytes)
     }
 
     @Test func cache_oversizedReadsAsNone() throws {
@@ -119,8 +137,8 @@ private func row(_ id: String, _ source: TopSongsProvider = .library) -> LidarrT
         defer { try? FileManager.default.removeItem(at: tmp) }
         let start = Date(timeIntervalSince1970: 1_800_000_000)
         let long = String(repeating: "x", count: 1_000)
-        for i in 0..<300 {
-            let rows = (0..<5).map { n -> LidarrTopSongs.Row in
+        for i in 0..<200 {   // round 27 A fix round 1: 200 artists kept
+            let rows = (0..<15).map { n -> LidarrTopSongs.Row in
                 var r = row("s\(i)-\(n)")
                 r.song.title = long
                 return r
@@ -129,13 +147,13 @@ private func row(_ id: String, _ source: TopSongsProvider = .library) -> LidarrT
         }
         let size = try Data(contentsOf: cache.url).count
         #expect(size <= LidarrTopSongsCache.maxBytes)
-        #expect(cache.load("id:ar299")?.count == 5, "the newest is kept and reads")
+        #expect(cache.load("id:ar199")?.count == 15, "the newest is kept and reads")
         #expect(cache.load("id:ar0") == nil, "the oldest went")
         // Trimmed, not started again: the file stays nearly full and what's kept is exactly the most recent artists.
         #expect(size > LidarrTopSongsCache.maxBytes * 9 / 10)
         let kept = cache.count
-        #expect(kept > 100 && kept < 300)
-        #expect((300 - kept..<300).allSatisfy { cache.load("id:ar\($0)") != nil })
-        #expect(cache.load("id:ar\(299 - kept)") == nil)
+        #expect(kept > 20 && kept < 200)   // round 27 A: fifteen rows of 1,000-character titles, 200 artists
+        #expect((200 - kept..<200).allSatisfy { cache.load("id:ar\($0)") != nil })
+        #expect(cache.load("id:ar\(199 - kept)") == nil)
     }
 }

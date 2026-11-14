@@ -9,9 +9,10 @@ import Search
 struct AutomixSeed: Identifiable {
     enum Kind {
         case song(Song)
-        /// `first`: the artist's first top song when the page knows one; else one of their songs starts it. `albums`:
-        /// the page's albums, for that song and the artist's own songs.
-        case artist(id: String, name: String, first: Song?, albums: [Album])
+        /// `top`: the artist's top songs the page knows (library songs, in order); one of the first three starts the mix
+        /// (seeded, fix round 1, design L4), else one of their songs. `albums`: the page's albums, for that song and the
+        /// artist's own songs.
+        case artist(id: String, name: String, top: [Song], albums: [Album])
     }
 
     let id = UUID()
@@ -28,16 +29,35 @@ enum AutomixCopy {
     static let symbol = "wand.and.stars"
     static let lengthLabel = "Length"
     static let varietyLabel = "Variety"
-    static let note = "Replaces what\u{2019}s coming up. Songs you chose with Play next stay."
     static let start = "Start Automix"
     static let adding = "Adding songs to your Automix\u{2026}"
-    static let none = "Couldn\u{2019}t find songs like this in your library."
+    /// Fix round 1 (design L2): the artist page's Automix button's VoiceOver hint.
+    static let artistHint = "Choose how long and how varied, then play songs like theirs."
+
+    /// The sheet's note. Fix round 1 (design H2): an artist's mix starts now in place of the song playing, so it says so.
+    static func note(_ seed: AutomixSeed) -> String {
+        switch seed.kind {
+        case .song: "Replaces what\u{2019}s coming up. Songs you chose with Play next stay."
+        case .artist: "Starts now, in place of what\u{2019}s playing. Songs you chose with Play next stay."
+        }
+    }
 
     static func intro(_ seed: AutomixSeed) -> String {
         switch seed.kind {
         case .song(let song): "Songs like \u{201C}\(song.title)\u{201D} from your library, added after it."
-        case .artist(_, let name, _, _): "Songs like \(name)\u{2019}s from your library, starting with one of theirs."
+        case .artist(_, let name, _, _): "Songs like \(name) from your library, starting with one of theirs."   // fix round 1, L1
         }
+    }
+
+    /// Nothing found. Fix round 1 (design H1): from a song nothing in the queue changed, and that is said.
+    static func none(queueKept: Bool) -> String {
+        queueKept ? "Couldn\u{2019}t find songs like this in your library. What\u{2019}s coming up hasn\u{2019}t changed."
+            : "Couldn\u{2019}t find songs like this in your library."
+    }
+
+    /// Fix round 1 (design M3): a mix shorter than the length asked for says what it found.
+    static func found(_ n: Int) -> String {
+        n == 1 ? "Automix found 1 song like this in your library." : "Automix found \(n) songs like this in your library."
     }
 
     static func length(_ length: Automix.Length) -> String { "\(length.rawValue) songs" }
@@ -141,7 +161,8 @@ extension AppModel {
     }
 
     /// Starts an Automix (the sheet's Start Automix). From a song: it plays on and what's coming up is replaced (Play next
-    /// songs stay). From an artist: their first top song (else one of theirs) plays at once, Play next songs after it.
+    /// songs stay) once the first batch is ready. From an artist: one of their top three (else one of theirs) plays at
+    /// once, Play next songs after it.
     /// The rest arrives in the background in batches of ten; the choices are remembered.
     func startAutomix(_ seed: AutomixSeed, length: Automix.Length, variety: Automix.Variety) {
         automixLength = length
@@ -156,29 +177,35 @@ extension AppModel {
 
     private func buildAutomix(_ seed: AutomixSeed, length: Int, variety: Automix.Variety, generation: Int) async {
         let builder = queueBuilder
+        var rng = Automix.Generator(seed: builder.seed ?? .random(in: .min ... .max))
         var history: [Song]
         let seedId: String, artistId: String?, albums: [Album]
+        /// From a song, the entry playing when Start was tapped: the queue is left alone until the first batch is ready.
+        var waitingOn: UUID?
         switch seed.kind {
         case .song(let song):
-            player.replaceUpcoming(with: [])
             history = [song]
             if let current = player.queue.current?.song, current.id != song.id { history.append(current) }
             (seedId, artistId, albums) = (song.id, song.artistId, [])
-        case .artist(let id, _, let first, let pageAlbums):
+            waitingOn = player.queue.current?.id
+        case .artist(let id, _, let top, let pageAlbums):
+            // Fix round 1 (design L4): one of their top three (seeded), else one of their songs.
+            let three = Array(top.filter { !isExcludedFromMix($0) }.prefix(3))
             let start: Song?
-            if let first, !isExcludedFromMix(first) { start = first } else { start = await oneSong(of: pageAlbums) }
+            if let pick = three.randomElement(using: &rng) { start = pick } else { start = await oneSong(of: pageAlbums, using: &rng) }
             guard builder.isCurrent(generation) else { return }
-            guard let start else { return libraryEdits.notify(AutomixCopy.none, symbol: "exclamationmark.triangle") }
+            guard let start else {
+                return libraryEdits.notify(AutomixCopy.none(queueKept: true), symbol: "exclamationmark.triangle")
+            }
             let playNext = player.queue.upNext.map(\.song)
             player.play([start], startAt: 0)
             if !playNext.isEmpty { player.playNext(playNext) }
             history = [start]
             (seedId, artistId, albums) = (id, id, pageAlbums)
+            builder.entries = Set(player.queue.current.map { [$0.id] } ?? [])
+            builder.anchor = player.queue.current?.id
         }
-        builder.entries = Set(player.queue.current.map { [$0.id] } ?? [])
-        builder.anchor = player.queue.current?.id
 
-        var rng = Automix.Generator(seed: builder.seed ?? .random(in: .min ... .max))
         let genre = history.first?.genre
         // Close always takes the artist's own songs; Adventurous always the genre's; the rest only when short.
         async let similarRead = similarSongs(seedId)
@@ -192,22 +219,54 @@ extension AppModel {
 
         var placed: [Song] = []
         let excluded = mixExclusion()
-        let first = Automix.pick(candidates, length: length, variety: variety, history: history, excluded: excluded,
+        var first = Automix.pick(candidates, length: length, variety: variety, history: history, excluded: excluded,
                                  using: &rng)
-        guard appendToMix(first, placed: &placed, generation: generation) else { return }
-        if placed.count < length {
+        if first.count < length {
             if own == nil { own = await artistSongs(artistId, albums: albums) }
             if ofGenre == nil { ofGenre = await genreSongs(genre, using: &rng) }
             guard builder.isCurrent(generation) else { return }
             candidates.artistSongs = own ?? []
             candidates.genreSongs = ofGenre ?? []
-            let more = Automix.pick(candidates, length: length - placed.count, variety: variety, history: history + placed,
-                                    played: Set(placed.map(\.id)), excluded: excluded, using: &rng)
-            guard appendToMix(more, placed: &placed, generation: generation) else { return }
+            if waitingOn != nil {
+                // Nothing is in the queue yet: pick again from everything.
+                first = Automix.pick(candidates, length: length, variety: variety, history: history, excluded: excluded,
+                                     using: &rng)
+            }
+        }
+        if let waitingOn {
+            // Fix round 1 (design H1): what was coming up stays until there is something to put in its place. A skip into
+            // it meanwhile keeps it and stops the mix; nothing found keeps it and says so.
+            guard player.queue.current?.id == waitingOn else { return builder.cancel() }
+            guard !first.isEmpty else {
+                builder.cancel()
+                return libraryEdits.notify(AutomixCopy.none(queueKept: true), symbol: "exclamationmark.triangle")
+            }
+            let batch = Array(first.prefix(QueueBuilder.batch))
+            player.replaceUpcoming(with: batch)
+            let main = player.queue.main
+            if let i = player.queue.currentIndex {
+                builder.entries = Set(main[i...].map(\.id))
+            }
+            builder.anchor = main.last?.id
+            placed = batch
+            builder.onAppend?(batch)
+            if player.hasEnded { player.next() }   // the song ended while the mix was read: the mix starts now
+            guard await appendToMix(Array(first.dropFirst(batch.count)), placed: &placed, generation: generation)
+            else { return }
+        } else {
+            guard await appendToMix(first, placed: &placed, generation: generation) else { return }
+            if placed.count < length {
+                let more = Automix.pick(candidates, length: length - placed.count, variety: variety,
+                                        history: history + placed, played: Set(placed.map(\.id)), excluded: excluded,
+                                        using: &rng)
+                guard await appendToMix(more, placed: &placed, generation: generation) else { return }
+            }
         }
         guard builder.isCurrent(generation) else { return }
         if placed.isEmpty {
-            libraryEdits.notify(AutomixCopy.none, symbol: "exclamationmark.triangle")
+            libraryEdits.notify(AutomixCopy.none(queueKept: false), symbol: "exclamationmark.triangle")
+        } else if placed.count < length {
+            libraryEdits.notify(AutomixCopy.found(placed.count), symbol: "checkmark.circle")
         } else {
             libraryEdits.notify(AutomixCopy.added(placed.count), symbol: "checkmark.circle")
         }
@@ -237,19 +296,23 @@ extension AppModel {
         return false
     }
 
-    /// Adds `songs` behind the queue in batches of ten while it is still the build's own; false when it stopped.
-    func appendToMix(_ songs: [Song], placed: inout [Song], generation: Int) -> Bool {
+    /// Adds `songs` behind the queue in batches of ten while it is still the build's own; false when it stopped. Fix round
+    /// 1 (review M1): the task yields between batches, so the queue check before each one sees what happened meanwhile;
+    /// (design M5) while the queue is shuffled each batch lands at seeded random places after the current song.
+    func appendToMix(_ songs: [Song], placed: inout [Song], generation: Int) async -> Bool {
         let builder = queueBuilder
         var rest = songs[...]
+        var rng = Automix.Generator(seed: builder.seed.map { $0 &+ UInt64(placed.count) } ?? .random(in: .min ... .max))
         while !rest.isEmpty {
+            if !placed.isEmpty || rest.count < songs.count { await Task.yield() }
             guard builder.isCurrent(generation), queueIsStillMix() else { return false }
             let batch = Array(rest.prefix(QueueBuilder.batch))
             rest = rest.dropFirst(batch.count)
             let before = Set(player.queue.main.map(\.id))
-            player.addToEnd(batch)
+            player.addToEnd(batch, shuffleSeed: rng.next())
             let added = player.queue.main.filter { !before.contains($0.id) }.map(\.id)
             builder.entries.formUnion(added)
-            builder.anchor = added.last ?? builder.anchor
+            if !player.isShuffled { builder.anchor = added.last ?? builder.anchor }
             placed += batch
             builder.onAppend?(batch)
         }
@@ -300,12 +363,12 @@ extension AppModel {
     }
 
     /// One of the artist's songs, from one of their albums at random, to start a mix with when no top song is known.
-    private func oneSong(of albums: [Album]) async -> Song? {
-        guard let album = albums.randomElement() else { return nil }
+    private func oneSong<R: RandomNumberGenerator>(of albums: [Album], using rng: inout R) async -> Song? {
+        guard let album = albums.randomElement(using: &rng) else { return nil }
         let wait = QueueBuilder.readWait
         let result = await Deadline.run(wait, sleep: queueBuilder.sleep) { @MainActor in
             try await self.request { try await $0.album(id: album.id).songs ?? [] }
         }
-        return ((try? result.get()) ?? []).filter { !isExcludedFromMix($0) }.randomElement()
+        return ((try? result.get()) ?? []).filter { !isExcludedFromMix($0) }.randomElement(using: &rng)
     }
 }

@@ -85,6 +85,23 @@ public struct PlayQueue: Codable, Sendable {
         main.replaceSubrange((i + 1)..., with: songs.map { QueueEntry(song: $0) })
     }
 
+    /// Round 27 A fix round 1 (design M5, D307): `songs` go into `main` at seeded random places after the current entry
+    /// (a shuffled queue's fill), never into Up Next. Starts an idle queue. Returns the new entries' ids in `songs`' order.
+    @discardableResult
+    public mutating func insertRandomly(_ songs: [Song], seed: UInt64) -> [UUID] {
+        guard !songs.isEmpty else { return [] }
+        let entries = songs.map { QueueEntry(song: $0) }
+        guard let i = currentIndex else {
+            startIdle(with: songs)
+            return Array(main.suffix(songs.count).map(\.id))
+        }
+        var rng = SplitMix64(seed: seed)
+        for entry in entries {
+            main.insert(entry, at: Int.random(in: (i + 1)...main.count, using: &rng))
+        }
+        return entries.map(\.id)
+    }
+
     private mutating func startIdle(with songs: [Song]) {
         let first = main.count
         main.append(contentsOf: songs.map { QueueEntry(song: $0) })

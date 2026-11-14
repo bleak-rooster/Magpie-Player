@@ -80,7 +80,8 @@ struct OutsideArtistView: View {
             // MusicBrainz is loading, failed or offline.
             let shown = lidarrTop?.display(fallback: []) ?? .ordinary
             if case .lidarr(let songs) = shown {
-                LidarrTopSongsSection(songs: songs, playTopSongs: playTopSongsAction(lidarrTop?.playable ?? songs, complete: true))
+                LidarrTopSongsSection(songs: songs, playTopSongs: playTopSongsAction(lidarrTop?.playable ?? songs,
+                                                                                 complete: lidarrTop?.isWholeList ?? false))
             }
             switch model.phase {
             case .loading:

@@ -28,8 +28,10 @@ struct LidarrTopSongsCache {
     }
 
     /// Artists kept (the ones saved most recently), rows per artist, and the file's size limit. Round 27 A (owner item 1,
-    /// D303, amends D263): fifteen rows, the five shown and the rest Play top songs queues behind them.
-    static let maxArtists = 300
+    /// D303, amends D263): fifteen rows, the five shown and the rest Play top songs queues behind them. Fix round 1
+    /// (review M4): 200
+    /// artists (was 300), so fifteen rows each stay inside the 1 MB bound (about 4–5 KB an artist).
+    static let maxArtists = 200
     static let maxRows = LidarrTopSongs.playLimit
     static let maxBytes = 1024 * 1024
 
@@ -196,6 +198,15 @@ struct LidarrTopSongsCache {
 
     /// Round 27 A (D303): the artist's top songs, at most fifteen: the list Play top songs queues.
     private(set) var playable: [Song]
+    /// Fix round 1 (review M8): the list is the whole of the artist's top songs (Play top songs adds nothing behind it)
+    /// only when it holds fifteen or was refreshed this session: an entry saved before round 27 holds five.
+    var isWholeList: Bool {
+        guard !playable.isEmpty else { return false }
+        if playable.count >= LidarrTopSongs.playLimit || refreshed { return true }
+        return app.lidarrTopSongsSession.refreshedAt[key] != nil && app.lidarrTopSongsRefreshInFlight(key) == nil
+    }
+    /// A complete refresh was applied to this page's list.
+    @ObservationIgnored private var refreshed = false
     /// The five the section shows (D303).
     var songs: [Song] { LidarrTopSongs.shown(playable) }
     private(set) var phase: Phase = .waiting
@@ -325,6 +336,7 @@ struct LidarrTopSongsCache {
                 show(fresh)
                 if owned { cache?.save(result.rows, key: key) }
                 phase = .shown
+                refreshed = true   // fix round 1 (review M8)
             }
         } else if !songs.isEmpty {
             phase = .shown   // a server blip never shuffles the list

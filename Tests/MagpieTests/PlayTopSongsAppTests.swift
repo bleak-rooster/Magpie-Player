@@ -202,6 +202,56 @@ private let artistMBID = MBID("4d8175ea-cc33-4565-8a8e-6b0f6c7a3f11")!
         #expect(Set(mainIds(model)) == Set(allTop) && mainIds(model).count == allTop.count)
     }
 
+    /// Fix round 1 (design M5, review M2): shuffled before the fill lands, the fill joins the shuffle (not bunched at the
+    /// end) and shuffle-off gives the list in order.
+    @Test func playTopSongs_shuffleBeforeFillLands() async throws {
+        let model = try await model()
+        defer { model.signOut() }
+        model.queueBuilder.seed = 11
+        transport.hold("/rest/getTopSongs")
+        defer { transport.release("/rest/getTopSongs") }
+        await model.playTopSongs(request(try songs(["own5"])))
+        model.player.setShuffled(true, seed: 5)
+        transport.release("/rest/getTopSongs")
+        await model.queueBuilder.task?.value
+        let fill = ["own3", "own1", "own2", "own8", "own4", "own6", "own7"]
+        #expect(mainIds(model).first == "own5" && Set(mainIds(model)) == Set(allTop))
+        #expect(Array(mainIds(model).dropFirst()) != fill, "spread through the shuffle")
+        model.player.setShuffled(false)
+        #expect(mainIds(model) == ["own5"] + fill)
+    }
+
+    /// Fix round 1 (review M6): offline, the one song on the phone plays.
+    @Test func playTopSongs_offlineOneOnThePhone() async throws {
+        let model = try await model()
+        defer { model.signOut() }
+        model.download(try songs(["own2"]), reason: .song)
+        await model.downloads?.settled()
+        model.updatePreferences { $0.downloads.offlineMode = .on }
+        await model.playTopSongs(request(try songs(["own1", "own2", "own3"])))
+        await model.queueBuilder.task?.value
+        #expect(mainIds(model) == ["own2"])
+    }
+
+    /// Fix round 1 (review M8): a saved list shorter than fifteen (saved before round 27) isn't the whole list until it
+    /// has been refreshed this session.
+    @Test func lidarrList_wholeOnlyWhenFifteenOrRefreshed() async throws {
+        let model = try await model(lidarr: true)
+        defer { model.signOut() }
+        let scope = try #require(model.navidromeScope)
+        let rows = try songs((1...5).map { "own\($0)" }).map { LidarrTopSongs.Row(song: $0, source: .library) }
+        LidarrTopSongsCache(root: tmp, scope: scope).save(rows, key: "mbid:\(artistMBID.rawValue)")
+        let page = try #require(await model.lidarrTopSongs(name: "Aurora Field", mbid: artistMBID, artistId: "ar1"))
+        #expect(!page.isWholeList, "five saved, never refreshed: Play top songs fills behind them")
+        page.apply(LidarrTopSongs.Result(rows: rows, complete: true))
+        #expect(page.isWholeList, "refreshed: the list is the whole of it")
+        bigLibrary()
+        let full = try songs((1...15).map { "own\($0)" }).map { LidarrTopSongs.Row(song: $0, source: .library) }
+        LidarrTopSongsCache(root: tmp, scope: scope).save(full, key: "mbid:\(artistMBID.rawValue)")
+        let again = try #require(await model.lidarrTopSongs(name: "Aurora Field", mbid: artistMBID, artistId: "ar1"))
+        #expect(again.isWholeList, "fifteen saved")
+    }
+
     /// "Ask before replacing the queue": the fill waits for the answer and lands only on Replace.
     @Test func playTopSongs_asksFirstThenFills() async throws {
         let model = try await model()

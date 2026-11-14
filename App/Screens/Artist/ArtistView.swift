@@ -125,7 +125,7 @@ struct ArtistView: View {
             VStack(spacing: Tokens.Spacing.m) {
                 header(page).padding(.horizontal, Tokens.Spacing.margin)
                 // Y7: the same ActionBar as Album and Playlist, keeping its own margins.
-                ActionBar {
+                ActionBar(pairsBeforeStacking: true) {   // fix round 1 (design M4): two and one before stacking
                     PlayShuffleActions(playTitle: gathering ? "Loading…" : "Play", disabled: albums.isEmpty || gathering) {
                         Task { await playAll(albums, shuffled: false) }
                     } shuffle: {
@@ -135,9 +135,10 @@ struct ArtistView: View {
                     if model.automixAvailable(artistId: page.artist.id, albums: page.albums) {
                         ActionButton(AutomixCopy.actionBar, symbol: AutomixCopy.symbol) {
                             automix = AutomixSeed(.artist(id: page.artist.id, name: page.artist.name,
-                                                          first: model.topSongsPlayable(topSongsRequest(page.artist).known).first,
+                                                          top: model.topSongsPlayable(topSongsRequest(page.artist).known),
                                                           albums: albums))
                         }
+                        .accessibilityHint(AutomixCopy.artistHint)   // fix round 1 (design L2)
                         .accessibilityIdentifier("artist-automix")
                     }
                 }
@@ -207,7 +208,7 @@ struct ArtistView: View {
         case .lidarr:
             if let lidarrTop, !lidarrTop.playable.isEmpty {
                 request.known = lidarrTop.playable
-                request.complete = true
+                request.complete = lidarrTop.isWholeList   // fix round 1 (review M8)
             } else {
                 request.known = popular?.songs ?? []
             }

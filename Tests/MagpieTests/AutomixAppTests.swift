@@ -146,8 +146,8 @@ final class AutomixLibrary: @unchecked Sendable {
     private func upcoming(_ model: AppModel) -> [String] { model.player.queue.upcoming.map(\.song.id) }
     private func mainIds(_ model: AppModel) -> [String] { model.player.queue.main.map(\.song.id) }
 
-    private func artistSeed(first: Song?) -> AutomixSeed {
-        AutomixSeed(.artist(id: "ar1", name: "Aurora Field", first: first,
+    private func artistSeed(top: [Song]) -> AutomixSeed {
+        AutomixSeed(.artist(id: "ar1", name: "Aurora Field", top: top,
                             albums: [Album(id: "al-1", name: "First Light", artist: "Aurora Field", artistId: "ar1", songCount: 4, duration: 800),
                                      Album(id: "al-2", name: "Second Sight", artist: "Aurora Field", artistId: "ar1", songCount: 4, duration: 800)]))
     }
@@ -169,13 +169,20 @@ final class AutomixLibrary: @unchecked Sendable {
         // The copy, exactly as plan §8.
         let s = try song("sim1")
         #expect(AutomixCopy.intro(AutomixSeed(.song(s))) == "Songs like \u{201C}Similar 1\u{201D} from your library, added after it.")
-        #expect(AutomixCopy.intro(artistSeed(first: nil)) == "Songs like Aurora Field\u{2019}s from your library, starting with one of theirs.")
+        // Fix round 1 (design L1, H2, M3, L2): the artist's intro, each seed's own note, a short mix's wording, the hint.
+        #expect(AutomixCopy.intro(artistSeed(top: [])) == "Songs like Aurora Field from your library, starting with one of theirs.")
+        #expect(AutomixCopy.note(artistSeed(top: [])) == "Starts now, in place of what\u{2019}s playing. Songs you chose with Play next stay.")
+        #expect(AutomixCopy.note(AutomixSeed(.song(s))) == "Replaces what\u{2019}s coming up. Songs you chose with Play next stay.")
+        #expect(AutomixCopy.found(1) == "Automix found 1 song like this in your library.")
+        #expect(AutomixCopy.found(7) == "Automix found 7 songs like this in your library.")
+        #expect(AutomixCopy.none(queueKept: true) == "Couldn\u{2019}t find songs like this in your library. What\u{2019}s coming up hasn\u{2019}t changed.")
+        #expect(AutomixCopy.none(queueKept: false) == "Couldn\u{2019}t find songs like this in your library.")
+        #expect(AutomixCopy.artistHint == "Choose how long and how varied, then play songs like theirs.")
         #expect(Automix.Length.allCases.map(AutomixCopy.length) == ["20 songs", "50 songs", "100 songs"])
         #expect(Automix.Variety.allCases.map(AutomixCopy.variety) == ["Close", "Balanced", "Adventurous"])
         #expect(Automix.Variety.allCases.map(AutomixCopy.footer) == ["Mostly this artist and the ones nearest them.",
                                                                       "Close matches with a few further out.",
                                                                       "Further afield, with fewer repeats of any one artist."])
-        #expect(AutomixCopy.note == "Replaces what\u{2019}s coming up. Songs you chose with Play next stay.")
         #expect(AutomixCopy.start == "Start Automix" && AutomixCopy.menuItem == "Automix\u{2026}" && AutomixCopy.title == "Automix")
         #expect(AutomixCopy.added(1) == "Automix added 1 song." && AutomixCopy.added(12) == "Automix added 12 songs.")
     }
@@ -236,14 +243,16 @@ final class AutomixLibrary: @unchecked Sendable {
         model.player.playNext([try song("gen9")])
         transport.hold("/rest/getSimilarSongs2")
         defer { transport.release("/rest/getSimilarSongs2") }
-        model.startAutomix(artistSeed(first: try song("own3")), length: .twenty, variety: .balanced)
-        #expect(await eventually { model.player.queue.current?.song.id == "own3" }, "their top song plays before any read")
+        let top = ["own3", "own1", "own5"]
+        model.startAutomix(artistSeed(top: try (top + ["own2", "own8"]).map(song)), length: .twenty, variety: .balanced)
+        #expect(await eventually { top.contains(model.player.queue.current?.song.id ?? "") },
+                "one of their top three plays before any read (fix round 1, design L4)")
         #expect(model.player.queue.upNext.map(\.song.id) == ["gen9"], "Play next songs stay, after it")
         #expect(model.libraryEdits.notice?.text == "Adding songs to your Automix\u{2026}")
         #expect(model.libraryEdits.notice?.symbol == "wand.and.stars")
         transport.release("/rest/getSimilarSongs2")
         await model.queueBuilder.task?.value
-        #expect(mainIds(model).first == "own3" && !mainIds(model).contains("gen6"), "what was coming is replaced")
+        #expect(top.contains(mainIds(model).first ?? "") && !mainIds(model).contains("gen6"), "what was coming is replaced")
         #expect(upcoming(model).count == 21, "Play next, then twenty")
         #expect(transport.count("/rest/getSimilarSongs2") == 1)
         #expect(transport.sent.contains { $0.url?.path.hasSuffix("/rest/getSimilarSongs2") == true && $0.url?.query?.contains("id=ar1") == true },
@@ -254,7 +263,7 @@ final class AutomixLibrary: @unchecked Sendable {
     @Test func build_fromArtistWithoutTopSongStartsWithOneOfTheirs() async throws {
         let model = try await model()
         defer { model.signOut() }
-        model.startAutomix(artistSeed(first: nil), length: .twenty, variety: .close)
+        model.startAutomix(artistSeed(top: []), length: .twenty, variety: .close)
         await model.queueBuilder.task?.value
         #expect(model.player.queue.current?.song.artistId == "ar1")
         #expect(upcoming(model).count == 20)
@@ -310,17 +319,70 @@ final class AutomixLibrary: @unchecked Sendable {
         #expect(!mix.contains("own1"))
     }
 
+    /// Fix round 1 (design H1): nothing found leaves what was coming up as it was, and says so.
     @Test func build_noSongsSaysSo() async throws {
         let model = try await model()
         defer { model.signOut() }
+        let (gen1, gen2) = (try song("gen1"), try song("gen2"))
         library.update { $0.similar = []; $0.genre = []; $0.own = [$0.own[0]] }
+        let seed = try song("own1")
+        model.player.play([seed, gen1, gen2], startAt: 0)
+        model.player.playNext([gen2])
+        let before = model.player.queue.upcoming.map(\.id)
+        model.startAutomix(AutomixSeed(.song(seed)), length: .twenty, variety: .balanced)
+        await model.queueBuilder.task?.value
+        #expect(model.player.queue.upcoming.map(\.id) == before, "the queue is untouched")
+        #expect(model.libraryEdits.notice?.text == "Couldn\u{2019}t find songs like this in your library. What\u{2019}s coming up hasn\u{2019}t changed.")
+        #expect(model.libraryEdits.notice?.symbol == "exclamationmark.triangle")
+    }
+
+    /// Fix round 1 (design H1): the song playing ends while the mix is read: the mix starts playing when it lands.
+    @Test func build_songEndsMidReadStartsMix() async throws {
+        let model = try await model()
+        defer { model.signOut() }
+        let seed = try song("sim1")
+        model.player.play([seed], startAt: 0)
+        transport.hold("/rest/getSimilarSongs2")
+        defer { transport.release("/rest/getSimilarSongs2") }
+        model.startAutomix(AutomixSeed(.song(seed)), length: .twenty, variety: .balanced)
+        #expect(await eventually { self.transport.count("/rest/getSimilarSongs2") == 1 })
+        let entry = try #require(model.player.queue.current?.id)
+        model.player.handle(.ended(entry))
+        #expect(model.player.hasEnded)
+        transport.release("/rest/getSimilarSongs2")
+        await model.queueBuilder.task?.value
+        #expect(model.player.queue.current?.song.id != "sim1" && !model.player.hasEnded, "the first new song plays")
+        #expect(model.player.queue.current?.song.id.hasPrefix("sim") == true || model.player.queue.current?.song.id.hasPrefix("own") == true)
+        #expect(upcoming(model).count == 19)
+    }
+
+    /// Fix round 1 (design H1): a skip into the old queue before the mix is ready keeps the old queue and stops the mix.
+    @Test func build_skipIntoOldQueueCancels() async throws {
+        let model = try await model()
+        defer { model.signOut() }
+        let seed = try song("sim1")
+        model.player.play([seed, try song("gen1"), try song("gen2")], startAt: 0)
+        transport.hold("/rest/getSimilarSongs2")
+        defer { transport.release("/rest/getSimilarSongs2") }
+        model.startAutomix(AutomixSeed(.song(seed)), length: .twenty, variety: .balanced)
+        #expect(await eventually { self.transport.count("/rest/getSimilarSongs2") == 1 })
+        model.player.next()
+        transport.release("/rest/getSimilarSongs2")
+        await model.queueBuilder.task?.value
+        #expect(model.player.queue.current?.song.id == "gen1" && upcoming(model) == ["gen2"])
+    }
+
+    /// Fix round 1 (design M3): a mix shorter than asked says how many it found.
+    @Test func build_shortMixSaysWhatItFound() async throws {
+        let model = try await model()
+        defer { model.signOut() }
+        library.update { $0.similar = Array($0.similar.prefix(4)); $0.genre = []; $0.own = [$0.own[0]] }
         let seed = try song("own1")
         model.player.play([seed], startAt: 0)
         model.startAutomix(AutomixSeed(.song(seed)), length: .twenty, variety: .balanced)
         await model.queueBuilder.task?.value
-        #expect(upcoming(model).isEmpty)
-        #expect(model.libraryEdits.notice?.text == "Couldn\u{2019}t find songs like this in your library.")
-        #expect(model.libraryEdits.notice?.symbol == "exclamationmark.triangle")
+        #expect(upcoming(model).count == 4)
+        #expect(model.libraryEdits.notice?.text == "Automix found 4 songs like this in your library.")
     }
 
     /// Never a Discover copy or a find.

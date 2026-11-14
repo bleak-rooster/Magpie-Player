@@ -358,6 +358,17 @@ public final class Player {
         wasIdle ? loadCurrent() : syncEngine()
     }
 
+    /// Round 27 A fix round 1 (design M5, D307): a builder's songs for the end of the queue. While shuffled they land at
+    /// seeded random places after the current song (not all at the end) and join the order shuffle-off restores, at
+    /// its end; otherwise as `addToEnd`.
+    public func addToEnd(_ songs: [Song], shuffleSeed: UInt64) {
+        guard isShuffled else { return addToEnd(songs) }
+        let wasIdle = queue.current == nil
+        let added = queue.insertRandomly(songs, seed: shuffleSeed)
+        unshuffledOrder?.append(contentsOf: added)
+        wasIdle ? loadCurrent() : syncEngine()
+    }
+
     /// Round 27 P (owner, 2026-11-14): Automix (Q5, D282): what's coming up after the current song becomes `songs`;
     /// the current song plays on and Play next songs stay. One re-send of the engine's list; an idle queue starts with
     /// them like `addToEnd`.

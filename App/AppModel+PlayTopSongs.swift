@@ -63,7 +63,7 @@ extension AppModel {
         let full = await fullRead
         guard builder.isCurrent(generation) else { return }
         var placed: [Song] = []
-        _ = appendToMix(TopSongsToPlay.fill(queued: queued, full: full), placed: &placed, generation: generation)
+        _ = await appendToMix(TopSongsToPlay.fill(queued: queued, full: full), placed: &placed, generation: generation)
     }
 
     /// The whole list in order: what was known, Navidrome's top songs, then the source's further library rows; each read
@@ -89,14 +89,17 @@ extension AppModel {
             guard hasListenBrainzToken else { return [] }
             let client = ListenBrainzClient(transport: transport, token: tokenStore.load(), limiter: listenBrainzLimiter)
             let depth = LidarrTopSongs.readDepth(.listenBrainz)
-            let read = await Deadline.run(QueueBuilder.readWait, sleep: queueBuilder.sleep) {
-                try await client.topRecordingsForArtist(mbid, limit: depth)
+            // Fix round 1 (design M5, review M2): the read and the look-ups together within the builder's deadline.
+            let found = await Deadline.run(QueueBuilder.readWait, sleep: queueBuilder.sleep) { @MainActor in
+                let recordings = try await client.topRecordingsForArtist(mbid, limit: depth)
+                var songs: [Song] = []
+                for recording in recordings.dropFirst(shown).prefix(10) {
+                    try Task.checkCancellation()
+                    if let song = await self.librarySong(for: recording) { songs.append(song) }
+                }
+                return songs
             }
-            var songs: [Song] = []
-            for recording in ((try? read.get()) ?? []).dropFirst(shown).prefix(10) {
-                if let song = await librarySong(for: recording) { songs.append(song) }
-            }
-            return songs
+            return (try? found.get()) ?? []
         case .aurral?:
             let rows = Array(await artistPreviewSongs(mbid, artistName: request.name).dropFirst(shown))
             let copies = await libraryCopies(of: rows.map(ChartSong.init))
