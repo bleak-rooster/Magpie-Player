@@ -357,8 +357,9 @@ private final class Answers: @unchecked Sendable {
         #expect(ids(page.songs) == ["s-tide", "s-ember"] && page.showsList && page.phase == .waiting, "before any read")
         await page.run(fresh: false) { self.monitored }
         #expect(ids(page.songs) == Self.expected && page.visibleChanges == 1)
-        #expect(try cache(model).load(key)?.map(\.id) == Self.expected, "saved for next time")
-        #expect(try cache(model).load(key)?.map(\.source) == ["aurral", "aurral", "listenBrainz", "library", "library"])
+        // Round 27 A (D303): the five shown and the rest behind them (up to fifteen) are saved.
+        #expect(try cache(model).load(key)?.map(\.id) == Self.expected + ["s-quiet"], "saved for next time")
+        #expect(try cache(model).load(key)?.map(\.source) == ["aurral", "aurral", "listenBrainz", "library", "library", "library"])
     }
 
     @Test func sameIdsDoNotSwap() async throws {
@@ -760,7 +761,7 @@ private final class Answers: @unchecked Sendable {
         answer.withLock { $0 = true }
         await older.value
         #expect(ids(page.songs) == Self.expected && !page.wantsOrdinary, "the older run's answer is dropped")
-        #expect(try cache(model).load(key)?.map(\.id) == Self.expected)
+        #expect(try cache(model).load(key)?.map(\.id) == Self.expected + ["s-quiet"])   // round 27 A (D303): up to fifteen
     }
 
     /// M1: the refresh is noted when it starts, so two pages of one artist opened together refresh once.

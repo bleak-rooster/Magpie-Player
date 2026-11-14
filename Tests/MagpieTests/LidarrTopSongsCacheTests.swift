@@ -45,10 +45,11 @@ private func row(_ id: String, _ source: TopSongsProvider = .library) -> LidarrT
         #expect(cache.load(key) == nil, "an empty list removes the artist")
     }
 
-    @Test func cache_keepsAtMostFiveRows() throws {
+    /// Round 27 A (D303, amends D263): fifteen rows, five of them shown.
+    @Test func cache_keepsAtMostFifteenRows() throws {
         defer { try? FileManager.default.removeItem(at: tmp) }
-        cache.save((1...8).map { row("s\($0)") }, key: "id:ar1")
-        #expect(cache.load("id:ar1")?.map(\.id) == ["s1", "s2", "s3", "s4", "s5"])
+        cache.save((1...18).map { row("s\($0)") }, key: "id:ar1")
+        #expect(cache.load("id:ar1")?.map(\.id) == (1...15).map { "s\($0)" })
     }
 
     @Test func cache_keeps300Artists() throws {

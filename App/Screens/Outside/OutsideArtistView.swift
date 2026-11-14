@@ -79,7 +79,9 @@ struct OutsideArtistView: View {
             // Round 26 K2 (D267, D268; fix round 1, design M1): the saved list shows as soon as it's there, whether
             // MusicBrainz is loading, failed or offline.
             let shown = lidarrTop?.display(fallback: []) ?? .ordinary
-            if case .lidarr(let songs) = shown { LidarrTopSongsSection(songs: songs) }
+            if case .lidarr(let songs) = shown {
+                LidarrTopSongsSection(songs: songs, playTopSongs: playTopSongsAction(lidarrTop?.playable ?? songs, complete: true))
+            }
             switch model.phase {
             case .loading:
                 ProgressView().frame(maxWidth: .infinity, minHeight: 120)
@@ -88,7 +90,10 @@ struct OutsideArtistView: View {
             case .failed:
                 OutsideFailed { Task { await model.load() } }
             case .loaded:
-                if shown == .ordinary, let topSongs { TopSongsSection(result: topSongs) }
+                if shown == .ordinary, let topSongs {
+                    TopSongsSection(result: topSongs, playTopSongs: playTopSongsAction(topSongs.rows.compactMap(\.library),
+                                                                                        provider: topSongs.provider))
+                }
                 sections(model)
             }
         }
@@ -193,6 +198,16 @@ struct OutsideArtistView: View {
         await lidarrTop.load(fresh: fresh, lidarr: {
             ((try? await app.artistLidarrState(name: name, mbid: mbid)) ?? nil).map { .answered($0) } ?? .unread
         }, ordinary: ordinary)
+    }
+
+    /// Round 27 A (owner item 1, D304): Play top songs for the songs shown that you have (an artist Lidarr has: their
+    /// list of up to fifteen, `complete`); nil when there are none (no button).
+    private func playTopSongsAction(_ known: [Song], complete: Bool = false, provider: TopSongsProvider? = nil)
+        -> (() -> Void)? {
+        guard !app.topSongsPlayable(known).isEmpty else { return nil }
+        let request = TopSongsPlayRequest(name: artist.name, mbid: artist.mbid, known: known, complete: complete,
+                                          provider: provider)
+        return { Task { await app.playTopSongs(request) } }
     }
 
     /// D125: each album's title and artist, for the cover source that finds covers by name.
