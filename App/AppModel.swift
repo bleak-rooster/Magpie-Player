@@ -270,6 +270,10 @@ final class AppModel {
     /// The song `playbackHint` was raised for: a new current song clears it (D276, AppModel+Playback.swift).
     @ObservationIgnored var playbackHintSongId: String?
     // End Round 27 P
+    // Round 27 A
+    /// The running Automix / Play top songs builder (AppModel+Automix.swift, D304, D307).
+    @ObservationIgnored let queueBuilder = QueueBuilder()
+    // End Round 27 A
     /// Whether the server answered last time it was tried (Task 14): Automatic offline mode follows it.
     var serverReachable = true { didSet { offlineInputsChanged() } }
     /// Offline as the URLs and the scrobbler read it, and Automatic mode's bookkeeping (AppModel+Offline.swift).
@@ -632,6 +636,7 @@ final class AppModel {
         let retiring = runner, doomed = requestStore
         let signedOutScope = navidromeScope   // R24A fix round 1 (I1): Discover's per-account keys go after `session = nil`
         sleepTimer.cancel()
+        queueBuilder.cancel()   // Round 27 A (D307): nothing more is added to the queue
         player.play([], startAt: 0)
         playbackHint = nil
         if let navidromeScope {

@@ -29,6 +29,8 @@ struct ArtistView: View {
     /// R4: the artist download (its ⋯ items, confirmation and status line share it).
     @State private var artistDownload = ArtistDownloadState()
     @State private var monitoring = ArtistMonitoringState()   // Round 24 (D237, D242): Change what's monitored, Clean up
+    /// Round 27 A (D305): the Automix sheet, seeded by this artist.
+    @State private var automix: AutomixSeed?
     private let themed = Themed()
 
     struct Page {
@@ -79,6 +81,7 @@ struct ArtistView: View {
         .immersiveArt(coverArtId: page.value?.artist.coverArtId)
         .findsKeepFlow(host: keepHost)
         .artistMonitoring(monitoring, line: lidarrLine)   // Round 24 (D237, D242)
+        .sheet(item: $automix) { AutomixSheet(seed: $0) }   // Round 27 A (D305)
         // Again when offline mode changes, and offline when songs land on or leave the phone (the store may be
         // unreadable before first unlock): the downloaded albums offline, the server's online.
         .task(id: model.offlinePageKey) {
@@ -122,11 +125,21 @@ struct ArtistView: View {
             VStack(spacing: Tokens.Spacing.m) {
                 header(page).padding(.horizontal, Tokens.Spacing.margin)
                 // Y7: the same ActionBar as Album and Playlist, keeping its own margins.
-                ActionBar {
+                ActionBar(pairsBeforeStacking: true) {   // fix round 1 (design M4): two and one before stacking
                     PlayShuffleActions(playTitle: gathering ? "Loading…" : "Play", disabled: albums.isEmpty || gathering) {
                         Task { await playAll(albums, shuffled: false) }
                     } shuffle: {
                         Task { await playAll(albums, shuffled: true) }
+                    }
+                    // Round 27 A (owner item 17, D305): Automix beside Play and Shuffle, seeded by the artist.
+                    if model.automixAvailable(artistId: page.artist.id, albums: page.albums) {
+                        ActionButton(AutomixCopy.actionBar, symbol: AutomixCopy.symbol) {
+                            automix = AutomixSeed(.artist(id: page.artist.id, name: page.artist.name,
+                                                          top: model.topSongsPlayable(topSongsRequest(page.artist).known),
+                                                          albums: albums))
+                        }
+                        .accessibilityHint(AutomixCopy.artistHint)   // fix round 1 (design L2)
+                        .accessibilityIdentifier("artist-automix")
                     }
                 }
                 if let playError {
@@ -140,9 +153,10 @@ struct ArtistView: View {
 
             // Round 26 K2 (D263; fix round 1, design H2): for an artist Lidarr has, "Top songs" in the library row view
             // throughout (never "Popular" first); the ordinary list once Lidarr says it's theirs; without Lidarr, as before.
+            // Round 27 A (D304): each with Play top songs under its heading when one of its songs is in the library.
             switch lidarrTop?.display(fallback: popular?.songs ?? []) ?? .ordinary {
-            case .lidarr(let songs): LidarrTopSongsSection(songs: songs)
-            case .ordinary: ordinaryTopSongs
+            case .lidarr(let songs): LidarrTopSongsSection(songs: songs, playTopSongs: playTopSongsAction(page.artist))
+            case .ordinary: ordinaryTopSongs(page.artist)
             case .nothing: EmptyView()
             }
 
@@ -159,13 +173,16 @@ struct ArtistView: View {
     }
 
     /// The ordinary Top songs: D104's chosen source, or Popular when only the library can answer.
-    @ViewBuilder private var ordinaryTopSongs: some View {
+    @ViewBuilder private func ordinaryTopSongs(_ artist: Artist) -> some View {
         if let outsideTop {   // round 14 A3: Top songs from the chosen source (owner answer 6)
-            TopSongsSection(result: outsideTop)
+            TopSongsSection(result: outsideTop, playTopSongs: playTopSongsAction(artist))
         } else if let topSongs = popular?.songs, !topSongs.isEmpty {
             VStack(alignment: .leading, spacing: Tokens.Spacing.s) {
                 Text("Popular").magpieDisplay(.title2).accessibilityAddTraits(.isHeader)
                     .padding(.horizontal, Tokens.Spacing.margin)
+                if let play = playTopSongsAction(artist) {   // Round 27 A (D304)
+                    PlayTopSongsButton(action: play).padding(.horizontal, Tokens.Spacing.margin)
+                }
                 ForEach(Array(topSongs.prefix(5).enumerated()), id: \.offset) { index, song in
                     Button { model.play(Array(topSongs.prefix(5)), startAt: index) } label: {
                         Artwork(song.coverArtId, side: 48) { image in
@@ -180,6 +197,39 @@ struct ArtistView: View {
             }
             .transaction { $0.animation = nil }   // R3: a refreshed list swaps in place, no animation storm
         }
+    }
+
+    /// Round 27 A (D304, D303): what Play top songs starts with, from what the page shows: an artist Lidarr has, their
+    /// list of up to fifteen (nothing filled behind it); while it's read, Popular's songs; otherwise the shown D104 rows'
+    /// library songs, or Popular's.
+    private func topSongsRequest(_ artist: Artist) -> TopSongsPlayRequest {
+        var request = TopSongsPlayRequest(name: artist.name, mbid: artist.mbid, known: [], complete: false, provider: nil)
+        switch lidarrTop?.display(fallback: popular?.songs ?? []) ?? .ordinary {
+        case .lidarr:
+            if let lidarrTop, !lidarrTop.playable.isEmpty {
+                request.known = lidarrTop.playable
+                request.complete = lidarrTop.isWholeList   // fix round 1 (review M8)
+            } else {
+                request.known = popular?.songs ?? []
+            }
+        case .ordinary:
+            if let outsideTop {
+                request.known = outsideTop.rows.compactMap(\.library)
+                request.provider = outsideTop.provider
+            } else {
+                request.known = popular?.songs ?? []
+            }
+        case .nothing:
+            break
+        }
+        return request
+    }
+
+    /// Play top songs for the page, or nil when none of its top songs is a library song (no button).
+    private func playTopSongsAction(_ artist: Artist) -> (() -> Void)? {
+        let request = topSongsRequest(artist)
+        guard !model.topSongsPlayable(request.known).isEmpty else { return nil }
+        return { Task { await model.playTopSongs(request) } }
     }
 
     private var notYetSection: some View {

@@ -90,6 +90,10 @@ public final class Player {
     @ObservationIgnored private var needsReload = false
     /// The current entry failed; engine item changes are ignored until the user acts.
     @ObservationIgnored private var failedEntryId: UUID?
+    /// Round 27 A fix round 2 (N1, D307): the entries the queue moved past by itself (a song ending, a gapless move, an
+    /// unplayable song passed over), newest last, at most 50; cleared by `play`. A builder tells a song ending from a skip
+    /// by it.
+    @ObservationIgnored public private(set) var leftNaturally: [UUID] = []
     /// `main` order before shuffle was switched on, so switching it off can put it back.
     @ObservationIgnored private var unshuffledOrder: [UUID]?
     @ObservationIgnored private var pendingScrobbles: [UUID: Task<Void, Never>] = [:]
@@ -176,6 +180,7 @@ public final class Player {
     // MARK: - Transport
 
     public func play(_ songs: [Song], startAt: Int) {
+        leftNaturally = []
         queue.replace(with: songs, startAt: startAt)
         isShuffled = false
         unshuffledOrder = nil
@@ -358,6 +363,17 @@ public final class Player {
         wasIdle ? loadCurrent() : syncEngine()
     }
 
+    /// Round 27 A fix round 1 (design M5, D307): a builder's songs for the end of the queue. While shuffled they land at
+    /// seeded random places after the current song (not all at the end) and join the order shuffle-off restores, at
+    /// its end; otherwise as `addToEnd`.
+    public func addToEnd(_ songs: [Song], shuffleSeed: UInt64) {
+        guard isShuffled else { return addToEnd(songs) }
+        let wasIdle = queue.current == nil
+        let added = queue.insertRandomly(songs, seed: shuffleSeed)
+        unshuffledOrder?.append(contentsOf: added)
+        wasIdle ? loadCurrent() : syncEngine()
+    }
+
     /// Round 27 P (owner, 2026-11-14): Automix (Q5, D282): what's coming up after the current song becomes `songs`;
     /// the current song plays on and Play next songs stay. One re-send of the engine's list; an idle queue starts with
     /// them like `addToEnd`.
@@ -481,7 +497,7 @@ public final class Player {
             // late event about a list replaced since (the engine was told to play the current entry): following it
             // would name a song that isn't playing and drop its ticks as stale (crash hunt 1).
             guard sent.contains(where: { $0.id == id }) else { return }
-            while queue.current?.id != id, queue.advance() != nil {}
+            advanceNaturally(to: id)
             adoptLoaded(id)
             beginEntry()
             topUpWindow()
@@ -715,12 +731,21 @@ public final class Player {
     /// The engine ran out of its window while playable songs remain after it (an `.itemChanged` went missing, so
     /// the window wasn't topped up): carry on with the first playable song after what the engine was last sent,
     /// instead of ending. Not under repeat one or stop after current, whose window is the current song alone.
+    /// Moves the queue on to `id` by itself (not a skip), noting each entry it leaves (N1).
+    private func advanceNaturally(to id: UUID) {
+        while let current = queue.current?.id, current != id {
+            guard queue.advance() != nil else { break }
+            leftNaturally.append(current)
+        }
+        if leftNaturally.count > 50 { leftNaturally.removeFirst(leftNaturally.count - 50) }
+    }
+
     private func continueAfterWindow() -> Bool {
         guard repeatMode != .one, !stopsAfterCurrent else { return false }
         let upcoming = queue.upcoming
         let start = sent.last.flatMap { last in upcoming.firstIndex { $0.id == last.id } }.map { $0 + 1 } ?? 0
         guard let target = upcoming[start...].first(where: { isPlayable($0.song) }) else { return false }
-        while queue.current?.id != target.id, queue.advance() != nil {}
+        advanceNaturally(to: target.id)
         loadCurrent()
         engine.play()
         isPlaying = true
@@ -731,7 +756,7 @@ public final class Player {
     /// song that can and keep playing. False when none is left.
     private func skipToNextPlayable() -> Bool {
         guard let target = queue.upcoming(limit: 1, where: { isPlayable($0.song) }).first else { return false }
-        while queue.current?.id != target.id, queue.advance() != nil {}
+        advanceNaturally(to: target.id)
         loadCurrent()
         engine.play()
         isPlaying = true
