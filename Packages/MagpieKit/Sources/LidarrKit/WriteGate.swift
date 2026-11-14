@@ -96,6 +96,12 @@ public enum ConfinedShape: Sendable, Equatable {
     /// confined by `WriteConfinement.blocklistCleanup` (every id read fresh from the blocklist, all of one artist that
     /// the artist delete itself would let go). `scripts/check-writes.sh` pins the one caller.
     case blocklistCleanup
+    /// Round 27 R (owner, 2026-11-14, D289): Lidarr's `MissingAlbumSearch` for the whole library, `POST /command` with a
+    /// body of exactly `{"name": "MissingAlbumSearch"}`. Supersedes the ledger confinement of commands for this shape
+    /// only: the gate checks the switch, a fresh `GET /command` (none queued or started) and its own ten-minute record,
+    /// saved before sending (`MissingAlbumSearch.swift`). Refused unnamed; refused for any other request.
+    /// `scripts/check-writes.sh` pins the one send line.
+    case missingAlbumSearch
 }
 
 /// Round 24 (owner, 2026-11-08, D243; fix round 2, controller ruling): the owned-artist writes are not a `ConfinedShape`
@@ -235,7 +241,15 @@ enum ForbiddenWrites {
     static let falseOnlyFlags: Set<String> = ["deletefiles", "addimportlistexclusion"]
     /// `POST /command` names Magpie may start. Anything else (rename, retag, backup, reset API key…) is refused.
     /// Round 12 M2: `refreshalbum` is gone (nothing sends it); every allowed command is confined to the ledger.
-    static let allowedCommands: Set<String> = ["albumsearch", "artistsearch", "refreshartist"]
+    /// Round 27 R (D289): `missingalbumsearch`, the one exception, only as `ConfinedShape.missingAlbumSearch` (checked in
+    /// `send`), with a body of exactly its name.
+    static let allowedCommands: Set<String> = ["albumsearch", "artistsearch", "refreshartist", "missingalbumsearch"]
+
+    /// Round 27 R (D289): the request is a `MissingAlbumSearch` command (whatever else its body holds).
+    static func isMissingAlbumSearch(_ t: WriteTarget, json: Any?) -> Bool {
+        guard t.method == "POST", t.key == ["command"], let object = json as? [String: Any] else { return false }
+        return object.contains { $0.key.lowercased() == "name" && ($0.value as? String)?.lowercased() == "missingalbumsearch" }
+    }
     /// `applyTags` values allowed in `PUT /artist/editor` (`replace` would wipe the owner's tags, A4).
     static let allowedApplyTags: Set<String> = ["add", "remove"]
     /// `monitorNewItems` values allowed in `PUT /artist/editor` (Follow new releases, Task 7.1b): only `new`. Never
@@ -432,6 +446,10 @@ enum ForbiddenWrites {
         let names = object.filter { $0.key.lowercased() == "name" }
         guard names.count == 1, let name = (names.first?.value as? String)?.lowercased(),
               allowedCommands.contains(name) else { return "command not allowed" }
+        // Round 27 R (D289): the whole library, so no id key at all: exactly `{name}`.
+        if name == "missingalbumsearch" {
+            return object.count == 1 ? nil : "MissingAlbumSearch body must be exactly its name"
+        }
         let idKey = name == "albumsearch" ? "albumids" : "artistid"
         let keys = object.keys.map { $0.lowercased() }
         guard keys.count == 2, Set(keys) == ["name", idKey], let ids = object.first(where: { $0.key.lowercased() == idKey })?.value else {
@@ -637,7 +655,20 @@ public actor LidarrWriteGate {
         self.logURL = logURL
         self.defaults = defaultsSuite.flatMap { UserDefaults(suiteName: $0) } ?? .standard
         self.now = now
+        self.missingSearchStore = DefaultsMissingAlbumSearchStore(defaults: self.defaults)
     }
+
+    /// Round 27 R (D289): when this gate last sent a `MissingAlbumSearch` to this Lidarr.
+    private var missingSearchStore: any MissingAlbumSearchStore
+
+    /// Round 27 R fix round 1 (M3): disconnect and sign-out forget this gate's MissingAlbumSearch record for that Lidarr
+    /// (the record's key and type stay in `MissingAlbumSearch.swift`). `scripts/check-writes.sh` pins the one caller.
+    public static func forgetMissingAlbumSearch(scope: String, in defaults: UserDefaults) {
+        MissingAlbumSearch.forgetRecord(scope: scope, in: defaults)
+    }
+
+    /// Tests only (`@testable`): a record that can't be saved.
+    func useMissingSearchStore(_ store: any MissingAlbumSearchStore) { missingSearchStore = store }
 
     /// The "Allow Magpie to change Lidarr" switch. Persisted; false until the owner turns it on.
     public var enabled: Bool { defaults.bool(forKey: Self.enabledKey(scope: connection.instanceScope)) }
@@ -714,6 +745,15 @@ public actor LidarrWriteGate {
         try await send(method, path, body: body, shape: shape, allowForeign: allowForeign)
     }
 
+    /// Round 27 R fix round 2 (security L-M2b, D292): the same, saying whether a download that finished but couldn't be
+    /// added (`importBlocked` / `importFailed`) may go. Clear all names `false`, so the gate's own fresh read refuses
+    /// one that flipped since Clear all's read; Restart (whose couldn't-import copies have their own confirmation)
+    /// names `true`, as the shorter overloads do.
+    public func send(_ method: String, _ path: String, body: (any Encodable & Sendable)?,
+                     confinedAs shape: ConfinedShape, allowForeign: Bool, allowFinished: Bool) async throws -> Data {
+        try await send(method, path, body: body, shape: shape, allowForeign: allowForeign, allowFinished: allowFinished)
+    }
+
     // MARK: Round 24 fix round 2: the owned-artist writes, built here from the persisted intent
 
     private struct OwnedMonitorBody: Encodable, Sendable { var albumIds: [Int]; var monitored: Bool }
@@ -780,17 +820,27 @@ public actor LidarrWriteGate {
     }
 
     private func send(_ method: String, _ path: String, body: (any Encodable & Sendable)?,
-                      shape: ConfinedShape?, allowForeign: Bool = false, owned: OwnedShape? = nil,
-                      ownedIntent: UUID? = nil) async throws -> Data {
+                      shape: ConfinedShape?, allowForeign: Bool = false, allowFinished: Bool = true,
+                      owned: OwnedShape? = nil, ownedIntent: UUID? = nil) async throws -> Data {
         let target = try WriteTarget(method: method, path: path)
         if allowForeign, shape != .queueRestartAny { throw refused(target, "allowForeign goes with queueRestartAny only") }
+        if !allowFinished, shape != .queueRestartAny { throw refused(target, "allowFinished goes with queueRestartAny only") }
         let data = try body.map { try JSONEncoder().encode($0) }
         if let why = ForbiddenWrites.reason(target, body: data, singlesSwitch: shape == .singlesSwitch) { throw refused(target, why) }
         let json = data.flatMap { try? JSONSerialization.jsonObject(with: $0, options: [.fragmentsAllowed]) }
+        // Round 27 R (D289): a MissingAlbumSearch is only ever the named shape, and the shape is only that.
+        let missingSearch = ForbiddenWrites.isMissingAlbumSearch(target, json: json)
+        if missingSearch, shape != .missingAlbumSearch || owned != nil {
+            throw refused(target, "a missing-album search is named missingAlbumSearch")
+        }
+        if shape == .missingAlbumSearch {
+            guard missingSearch, owned == nil else { throw refused(target, "missingAlbumSearch is a MissingAlbumSearch command only") }
+            return try await sendMissingAlbumSearch(target, data)
+        }
         var confined = ForbiddenWrites.confined(target, json: json)
         if shape == .queueRestartAny {
             guard case .queueDelete(let id)? = confined else { throw refused(target, "queueRestartAny is a queue delete only") }
-            confined = .queueRestartAny(id, allowForeign: allowForeign)
+            confined = .queueRestartAny(id, allowForeign: allowForeign, allowFinished: allowFinished)
         }
         if shape == .trialDelete {
             guard case .trackFileDelete(let ids)? = confined else { throw refused(target, "trialDelete is a track file delete only") }
@@ -892,6 +942,58 @@ public actor LidarrWriteGate {
             for id in albums { restartedAlbums[id] = t }
         }
         return answer
+    }
+
+    /// Round 27 R (owner, 2026-11-14, D289): the whole-library `MissingAlbumSearch`, already shown to be exactly
+    /// `{"name": "MissingAlbumSearch"}` by the allow list. Not checked against the ledger (it searches the owner's own
+    /// albums, as asked); instead, in turn with the confined writes so two can't pass the checks together:
+    /// the switch is on; the gate's record says the last went at least `MissingAlbumSearch.floor` ago (a time in the
+    /// future counts as now, and is set back to now); Lidarr's commands, read fresh, show none queued or started
+    /// (unreadable: not sent); the switch is still on; and the record's new time is saved before sending (not saved:
+    /// nothing sent).
+    private func sendMissingAlbumSearch(_ target: WriteTarget, _ data: Data?) async throws -> Data {
+        guard target.query.isEmpty else { throw refused(target, "missingAlbumSearch carries no query") }   // fix round 1 task M6
+        guard enabled else { throw WriteGateError.disabled }
+        await takeConfinedTurn()
+        defer { passConfinedTurn() }
+        let scope = connection.instanceScope
+        let t = now()
+        let previous = missingSearchStore.last(scope: scope)
+        if let last = previous {
+            if last > t {
+                try? missingSearchStore.save(t, scope: scope)   // the phone's clock went back: from now
+                throw refused(target, MissingAlbumSearch.tooSoon)
+            }
+            if t.timeIntervalSince(last) < MissingAlbumSearch.floor { throw refused(target, MissingAlbumSearch.tooSoon) }
+        }
+        guard let commands = try? await strictCommandNamesAndStatuses() else {
+            Log.logger("lidarr").error("not confirmed \(target.method, privacy: .public) \(target.logPath, privacy: .public)")
+            throw WriteGateError.unconfirmed
+        }
+        let running = commands.contains { $0.name == "missingalbumsearch" && ["queued", "started"].contains($0.status) }
+        if running { throw refused(target, MissingAlbumSearch.alreadyRunning) }
+        guard enabled else { throw WriteGateError.disabled }   // turned off during the read
+        do { try missingSearchStore.save(t, scope: scope) } catch { throw WriteGateError.logUnavailable }
+        do {
+            return try await deliver(target, data)
+        } catch WriteGateError.logUnavailable {
+            missingSearchStore.restore(previous, scope: scope)   // fix round 1 L6: nothing was sent after all
+            throw WriteGateError.logUnavailable
+        }
+    }
+
+    /// Fix round 1 L7: the proof that none is running reads `GET /command` strictly: a JSON array whose every entry is
+    /// an object with a string `name` and a string `status` (lower-cased here). Anything else throws (not sent).
+    private func strictCommandNamesAndStatuses() async throws -> [(name: String, status: String)] {
+        struct Unreadable: Error {}
+        let (data, response) = try await connection.get("command")
+        guard (200..<300).contains(response.statusCode),
+              let list = try JSONSerialization.jsonObject(with: data) as? [Any] else { throw Unreadable() }
+        return try list.map { entry in
+            guard let object = entry as? [String: Any], let name = object["name"] as? String,
+                  let status = object["status"] as? String else { throw Unreadable() }
+            return (name.lowercased(), status.lowercased())
+        }
     }
 
     /// Albums of downloads a `queueRestartAny` removed, and when (their `restartSearch` may follow for 10 minutes).

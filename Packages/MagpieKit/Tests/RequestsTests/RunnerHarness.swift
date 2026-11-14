@@ -63,6 +63,7 @@ struct HoldingTransport: HTTPTransport {
 
     func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
         if let latch = lidarr.shouldHold(request) { await latch.hold() }
+        if request.url?.path.contains("/api/v1/") == true { lidarr.with { $0.onEveryLidarrRequest }?(request) }
         if request.url?.path.contains("/api/v1/") == true, let answer = lidarr.with({ $0.everyLidarrAnswer }) {
             let http = HTTPURLResponse(url: request.url!, statusCode: answer.status, httpVersion: "HTTP/1.1",
                                        headerFields: answer.headers)!
@@ -83,6 +84,17 @@ struct HoldingTransport: HTTPTransport {
             return true
         }
         if editorTimesOut { throw URLError(.timedOut) }
+        // Round 27 R fix round 1 (L5): a queue delete Lidarr takes but doesn't answer in time.
+        let queueDeleteLost: Bool = lidarr.with { s in
+            guard request.httpMethod == "DELETE", request.url?.path.contains("/api/v1/queue/") == true,
+                  s.queueDeleteAnswersLost > 0 else { return false }
+            s.queueDeleteAnswersLost -= 1
+            return true
+        }
+        if queueDeleteLost {
+            _ = try await inner.send(request)
+            throw URLError(.timedOut)
+        }
         return try await inner.send(request)
     }
 }
@@ -278,6 +290,10 @@ final class FakeLidarr: @unchecked Sendable {
         var refreshStaysStarted = false
         /// Called on each `GET /command/{id}` (tests watch the runner during a long step).
         var onCommandRead: (@Sendable () -> Void)?
+        /// Round 27 R fix round 1: called on every Lidarr request (a test's clock moves with them).
+        var onEveryLidarrRequest: (@Sendable (URLRequest) -> Void)?
+        /// Round 27 R fix round 1 (L5): this many queue deletes are carried out but answered with a timeout.
+        var queueDeleteAnswersLost = 0
         /// Y4 fix round 2 N1: downloads with no grab in Lidarr's history (`GET /history?downloadId=…&eventType=1`).
         var ungrabbed: Set<String> = []
         /// Round 23 (D191, D193): Lidarr's blocklist rows (`GET /blocklist`, `DELETE /blocklist/bulk`; an artist's go with
@@ -743,7 +759,7 @@ final class FakeLidarr: @unchecked Sendable {
                                                 "implementationName": $0.name, "protocol": $0.protocolName] as [String: Any] }
             })
         }
-        for id in 901...940 {   // Y4: the bulk restart cap needs more than 25
+        for id in 901...1010 {   // Y4: the bulk restart cap needs more than 25; round 27 R: Clear all's 100
             t.stub(method: "DELETE", pathSuffix: "/api/v1/queue/\(id)") { [self] _ in
                 with { s in
                     s.queue.removeAll { $0.id == id }
@@ -943,7 +959,8 @@ struct Harness {
 
     init(changesOn: Bool = true, directory: URL? = nil, lidarr existing: FakeLidarr? = nil,
          base: URL = URL(string: "https://music.example/lidarr")!, setup: RequestRunner.Setup = Harness.setup,
-         keep: RequestRunner.KeepSetup? = Harness.keepSetup) async {
+         keep: RequestRunner.KeepSetup? = Harness.keepSetup,
+         gateNow: @escaping @Sendable () -> Date = { Date() }) async {
         let dir = directory ?? FileManager.default.temporaryDirectory.appending(path: "magpie-runner-\(UUID().uuidString)")
         let lidarr = existing ?? FakeLidarr()
         library = FakeLibrary(events: lidarr.events)
@@ -958,7 +975,7 @@ struct Harness {
                                    findTagId: keep?.findTagId)
         }, liveRequests: { await runnerRef.runner?.liveRequestIds })
         gate = LidarrWriteGate(client: client, logURL: dir.appending(path: "log.json"), defaultsSuite: suite,
-                               confinement: confinement)
+                               now: gateNow, confinement: confinement)
         await gate.setEnabled(changesOn)
         store = RequestStore(fileURL: RequestStore.defaultURL(in: dir, instance: client.instanceScope))
         let mb = MusicBrainzClient(transport: lidarr.clientTransport, userAgent: MusicBrainzClient.userAgent(version: "test"),
