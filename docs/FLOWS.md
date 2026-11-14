@@ -358,8 +358,9 @@ looked up (unless one of the flow's own Aurral jobs names them); a found copy is
 library still has it, "no copy" for a day, and pull to refresh asks again for every song. Copies found after you
 pressed Play replace those songs further down the queue in one go, once every lookup is done; the song playing and
 your Play next songs are left alone. The saved rows are only the last read's result: who owns what is decided exactly
-as before. A playlist deleted on the server leaves the list at the next read; its saved page stays in the file until
-it ages out (the oldest pages go first).
+as before. A playlist deleted on the server leaves the list at the next read; until then, opening it shows its saved
+page and the failed read is quiet (no note). Its saved page stays in the file until it ages out (the oldest pages go
+first).
 
 ### i. CarPlay
 - **Tabs.** Home, Library, Finds and Search. The Finds tab exists only when the head unit allows 4 tabs, and it shows "not set up" without a Finds library.
