@@ -743,7 +743,7 @@ final class FakeLidarr: @unchecked Sendable {
                                                 "implementationName": $0.name, "protocol": $0.protocolName] as [String: Any] }
             })
         }
-        for id in 901...940 {   // Y4: the bulk restart cap needs more than 25
+        for id in 901...1010 {   // Y4: the bulk restart cap needs more than 25; round 27 R: Clear all's 100
             t.stub(method: "DELETE", pathSuffix: "/api/v1/queue/\(id)") { [self] _ in
                 with { s in
                     s.queue.removeAll { $0.id == id }

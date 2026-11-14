@@ -347,6 +347,10 @@ if [ -z "${G1_SRC:-}" ]; then
     "$view|message = LidarrDownloadsCopy.summary(await restarter.restartAll(rows, includeForeign: includeForeign))"
     "$restarter|return await restartOne(row, allowForeign: allowForeign)"
     "$restarter|let outcome = await restartOne(row, allowForeign: includeForeign && row.foreign)"
+    # Round 27 R (D292): Restart and Clear all share one removal; each passes on the fresh read's "another app's",
+    # Clear all only past its `guard !foreign || includeForeign` (the confirmation's flag).
+    "$restarter|let removal = try await removeOne(queueId, item, albums: albums, allowForeign: foreign, deferred: false)"
+    "$restarter|let removal = try await removeOne(target.queueId, item, albums: albums, allowForeign: foreign, deferred: true)"
     "$restarter|"'_ = try await gate.send("DELETE", "queue/\(queueId)?\(Self.queueRemoval)", body: nil, confinedAs: .queueRestartAny, allowForeign: true)'
     "$lk/WriteGate.swift|try await send(method, path, body: body, shape: shape, allowForeign: allowForeign)"
     "$lk/WriteGate.swift|confined = .queueRestartAny(id, allowForeign: allowForeign)"
