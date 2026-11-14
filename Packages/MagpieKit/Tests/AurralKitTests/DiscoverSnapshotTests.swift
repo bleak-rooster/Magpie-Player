@@ -148,6 +148,28 @@ import Testing
                 "Aurral's library not learnt yet: looked up (the lookups are how it is learnt)")
     }
 
+    /// Fix round 1 (I2): a song one of the flow's own Aurral jobs names is Aurral's, whatever the last library read
+    /// said (the flow rotated since; a library learnt later): it is looked up.
+    @Test func flowJobSongIsNeverTheLibrarysOwn() {
+        let newSong = Song(id: "a-new", title: "New One", artist: "Fresh", album: "A", duration: 200)
+        let jobs = [AurralJob(id: "j1", flowId: "flow-dw", artistName: "fresh", trackName: "New  One", durationMs: 201_000)]
+        #expect(!DiscoverSnapshot.isOwnLibraryCopy(newSong, discoverLibraries: [2], discoverLibrarySongIds: ["a-1"],
+                                                   flowJobs: jobs, flowId: "flow-dw"))
+        #expect(!DiscoverSnapshot.isOwnLibraryCopy(Song(id: "a-new", title: "New One", artist: "Fresh", album: "A", duration: 200,
+                                                        libraryId: 1),
+                                                   discoverLibraries: [2], discoverLibrarySongIds: nil, flowJobs: jobs, flowId: "flow-dw"),
+                "a library learnt later: still Aurral's by its job")
+        let byRecording = [AurralJob(id: "j2", flowId: "flow-dw", artistName: "Other", trackName: "Other",
+                                     trackMBID: MBID("0383dadf-2a4e-4d10-a46a-e9e041da8eb3"))]
+        #expect(!DiscoverSnapshot.isOwnLibraryCopy(song("a-r"), discoverLibraries: [2], discoverLibrarySongIds: ["a-1"],
+                                                   flowJobs: byRecording, flowId: "flow-dw"), "by recording id")
+        // Another flow's job, or a duration more than 3 s off, says nothing about this song.
+        let elsewhere = [AurralJob(id: "j3", flowId: "flow-tm", artistName: "Fresh", trackName: "New One"),
+                         AurralJob(id: "j4", flowId: "flow-dw", artistName: "Fresh", trackName: "New One", durationMs: 260_000)]
+        #expect(DiscoverSnapshot.isOwnLibraryCopy(newSong, discoverLibraries: [2], discoverLibrarySongIds: ["a-1"],
+                                                  flowJobs: elsewhere, flowId: "flow-dw"))
+    }
+
     // MARK: - The background pass
 
     @Test func backgroundPassOrderAndSkips() {

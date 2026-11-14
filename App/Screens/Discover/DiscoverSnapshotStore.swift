@@ -62,10 +62,20 @@ struct DiscoverSnapshotFile {
     var lastPassLookups = 0
     /// D285: a saved page being refreshed behind what the car showed, by playlist id.
     var behind: [String: Task<Void, Never>] = [:]
-    /// D284: while a background pass runs, its pages are kept in memory and written once when it ends (one file write,
-    /// not one per page).
-    var holdsWrites = false
+    /// D284, fix round 1 (M2): a background pass's own pages are kept in memory (`update(held:)`) and written with the
+    /// next write that isn't held (a page the owner opened, a read's rows) or when the pass ends.
     private var unwritten = false
+    /// Fix round 1 (M6): bumped by `forget`, so a read of the file started before it never lands after it.
+    private var generation = 0
+
+    /// Fix round 1 (M6): reads `scope`'s file off the main actor (up to 4 MB), once; the first screen awaits it.
+    func prewarm(root: URL, scope: String) async {
+        if let loaded, loaded.scope == scope { return }
+        let file = DiscoverSnapshotFile(root: root, scope: scope), started = generation
+        let read = await Task.detached(priority: .userInitiated) { file.load() }.value
+        guard generation == started, loaded?.scope != scope else { return }
+        loaded = (scope, read ?? DiscoverSnapshot())
+    }
 
     /// The snapshot for `scope`: as in memory, else as saved, else empty.
     func snapshot(root: URL, scope: String) -> DiscoverSnapshot {
@@ -76,10 +86,10 @@ struct DiscoverSnapshotFile {
     }
 
     /// Changes `scope`'s snapshot and saves it; `change` returns false to leave it (and the file) as it was.
-    func update(root: URL, scope: String, _ change: (inout DiscoverSnapshot) -> Bool) {
+    func update(root: URL, scope: String, held: Bool = false, _ change: (inout DiscoverSnapshot) -> Bool) {
         var snapshot = self.snapshot(root: root, scope: scope)
         guard change(&snapshot) else { return }
-        guard !holdsWrites else {
+        guard !held else {
             loaded = (scope, snapshot.bounded())
             unwritten = true
             return
@@ -89,14 +99,13 @@ struct DiscoverSnapshotFile {
 
     /// Writes what a background pass kept in memory, if it is still this account's.
     func flush(root: URL, scope: String) {
-        holdsWrites = false
         guard unwritten else { return }
-        unwritten = false
         guard let loaded, loaded.scope == scope else { return }
         write(loaded.snapshot, root: root, scope: scope)
     }
 
     private func write(_ snapshot: DiscoverSnapshot, root: URL, scope: String) {
+        unwritten = false
         let fitted = (try? snapshot.fitted()) ?? snapshot.bounded()
         loaded = (scope, fitted)
         DiscoverSnapshotFile(root: root, scope: scope).save(fitted)
@@ -109,8 +118,8 @@ struct DiscoverSnapshotFile {
         passStartedAt = nil
         for task in behind.values { task.cancel() }
         behind = [:]
-        holdsWrites = false
         unwritten = false
+        generation += 1
         loaded = nil
         DiscoverSnapshotFile.removeAll(root: root)
     }
@@ -187,7 +196,10 @@ extension DiscoverPage {
     @ObservationIgnored private(set) var visibleChanges = 0
 
     func load(_ model: AppModel) async {
-        if rows.value == nil, let now = model.discoverRowsNow() { show(now) }   // the saved rows, before any wait
+        if rows.value == nil {
+            await model.prewarmDiscoverSnapshot()   // fix round 1 (M6): read off the main actor
+            if let now = model.discoverRowsNow() { show(now) }   // the saved rows, before any wait
+        }
         do {
             let fresh = try await model.discoverRows()
             show(fresh)

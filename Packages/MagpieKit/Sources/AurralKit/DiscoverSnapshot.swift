@@ -241,11 +241,29 @@ public struct DiscoverSnapshot: Codable, Equatable, Sendable {
     /// D285: a playlist song that is the main library's own file needs no lookup (Aurral 2.13 files a static playlist's
     /// library songs as the library's, D251). Known only once Aurral's libraries are learnt: by the song's library when
     /// the read names it, else by Aurral's library as read in full (`discoverLibrarySongIds`; nil when not read in full).
-    public static func isOwnLibraryCopy(_ song: Song, discoverLibraries: Set<Int>, discoverLibrarySongIds: Set<String>?) -> Bool {
+    /// Fix round 1 (I2): never a song one of the flow's own Aurral jobs names (`flowJobs` of `flowId`: by recording id,
+    /// else artist + title, the duration within 3 s when both are known): the flow may have rotated since the last
+    /// library read, or the library been learnt later. The app never keeps this answer as a lookup; it is asked anew
+    /// each time.
+    public static func isOwnLibraryCopy(_ song: Song, discoverLibraries: Set<Int>, discoverLibrarySongIds: Set<String>?,
+                                        flowJobs: [AurralJob] = [], flowId: String? = nil) -> Bool {
         guard !discoverLibraries.isEmpty else { return false }
+        if let flowId, !flowId.isEmpty, flowJobs.contains(where: { $0.flowId == flowId && isJob($0, of: song) }) { return false }
         if let library = song.libraryId { return !discoverLibraries.contains(library) }
         guard let ids = discoverLibrarySongIds, !ids.isEmpty else { return false }
         return !ids.contains(song.id)
+    }
+
+    /// Whether `job` is `song`'s: the same recording id, else the same artist and title (folded) with the durations
+    /// within `DiscoverRules.durationTolerance` when both are known.
+    static func isJob(_ job: AurralJob, of song: Song) -> Bool {
+        if let recording = song.recordingMBID, let track = job.trackMBID { return recording == track }
+        guard DiscoverRules.normalised(job.artistName) == DiscoverRules.normalised(song.artist),
+              DiscoverRules.normalised(job.trackName) == DiscoverRules.normalised(song.title) else { return false }
+        if let duration = job.duration, duration > 0, song.duration > 0 {
+            return abs(duration - song.duration) <= DiscoverRules.durationTolerance
+        }
+        return true
     }
 
     /// D284: the pages a background pass reads, newest-changed first (never-changed last), at most `limit`; a playlist

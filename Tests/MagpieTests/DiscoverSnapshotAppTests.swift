@@ -264,7 +264,8 @@ import Testing
         let clock = ContinuousClock(), start = clock.now
         let page = DiscoverPageModel(playlistId: "pl-dw")
         await page.load(model, fresh: false)
-        #expect(clock.now - start < .seconds(8), "took \(clock.now - start)")
+        // Fix round 1 (M5): the bound itself, and the one playlist read and its few lookups after it.
+        #expect(clock.now - start < AppModel.discoverWait + .milliseconds(500), "took \(clock.now - start)")
         #expect(page.page?.entries.count == 5)
     }
 
@@ -333,6 +334,101 @@ import Testing
         await loading.value
         #expect(model.player.queue.current?.song.id == "a-lullaby", "the song playing plays on")
         #expect(model.player.queue.upcoming.map(\.song.id) == ["m-words", "a-unknown", "m-ref1", "m-ref2"])
+    }
+
+    /// Fix round 1 (I2): the flow rotated after Aurral's library was read: its new song (a job of the flow) is looked up
+    /// when the page opens, and again after the next read; never taken for the library's own and kept so for a day.
+    @Test func newAurralSongAfterLibraryReadIsLookedUp() async throws {
+        let model = try await signedIn()
+        defer { model.signOut() }
+        #expect(model.discover.discoverLibrarySongIds != nil, "Aurral's library read in full")
+        nav.add(.init(id: "a-new", title: "New One", artist: "Fresh", duration: 200, mbid: nil, library: 2))
+        nav.add(.init(id: "m-new", title: "New One", artist: "Fresh", duration: 201, mbid: nil, library: 1))
+        nav.setList("pl-dw", "Discover Weekly", ["a-lullaby", "a-words", "a-unknown", "m-ref1", "m-ref2", "a-new"],
+                    changed: "2026-11-02T10:00:00Z")
+        aurral.setJobs([
+            .init(flowId: "flow-dw", artistName: "Low", trackName: "Lullaby", trackMbid: Self.recording, durationMs: 251_000,
+                  finalPath: "/data/downloads/aurral/_flows/flow-dw/Low/Single/Lullaby.flac"),
+            .init(flowId: "flow-dw", artistName: "Fresh", trackName: "New One", durationMs: 200_000,
+                  finalPath: "/data/downloads/aurral/_flows/flow-dw/Fresh/Single/New One.flac"),
+        ])
+        model.discover.statusReadAt = nil
+        await model.refreshDiscover(force: true)   // the jobs name the new song; the library read is before it landed
+        model.discover.discoverLibrarySongIds?.remove("a-new")
+        nav.reset()
+        let first = DiscoverPageModel(playlistId: "pl-dw")
+        await first.load(model, fresh: false)
+        #expect(nav.search3.contains("new one"), "looked up on the first open: \(nav.search3)")
+        #expect(first.page?.entries.last?.song.id == "m-new")
+        await model.refreshDiscover(force: true)
+        let again = DiscoverPageModel(playlistId: "pl-dw")
+        await again.load(model, fresh: false)
+        #expect(again.page?.entries.last?.song.id == "m-new", "reopened: its library copy, never a day-long miss")
+    }
+
+    /// Fix round 1 (I2): a song skipped as the library's own leaves no lookup behind (asked anew on each open).
+    @Test func ownLibrarySkipLeavesNoLookup() async throws {
+        let model = try await signedIn()
+        defer { model.signOut() }
+        model.discover.lookups = [:]
+        await DiscoverPageModel(playlistId: "pl-dw").load(model, fresh: true)
+        #expect(model.discover.lookups["m-ref1"] == nil && model.discover.lookups["m-ref2"] == nil)
+        let saved = DiscoverSnapshotFile(root: tmp, scope: try #require(model.aurralFeedsScope)).load()
+        #expect(saved?.pages["pl-dw"]?.lookups["m-ref1"] == nil)
+    }
+
+    /// Fix round 1 (I3): the car and Play next take a saved page only while it is the playlist as Discover lists it
+    /// now (same `changed` and song count); once a read lists it changed, the playlist is read.
+    @Test func carReadsAPageThatChangedSinceItWasSaved() async throws {
+        let model = try await signedIn()
+        defer { model.signOut() }
+        _ = try await model.discoverPage(playlistId: "pl-dw")
+        nav.reset()
+        _ = try await model.discoverPage(playlistId: "pl-dw")
+        await model.discoverSnapshots.behind["pl-dw"]?.value
+        #expect(nav.getPlaylist == ["pl-dw"], "the saved page, refreshed behind it: \(nav.getPlaylist)")
+        nav.add(.init(id: "a-new", title: "New One", artist: "Fresh", duration: 200, mbid: nil, library: 2))
+        nav.setList("pl-dw", "Discover Weekly", ["a-lullaby", "a-words", "a-unknown", "m-ref1", "m-ref2", "a-new"],
+                    changed: "2026-11-02T10:00:00Z")
+        await model.refreshDiscover(force: true)
+        nav.state.withLock { $0.failPlaylistReads = true }
+        await #expect(throws: (any Error).self, "changed since it was saved: read, never the old copy") {
+            try await model.discoverPage(playlistId: "pl-dw")
+        }
+        nav.state.withLock { $0.failPlaylistReads = false }
+        let car = try await CarPlayLibraryAdapter(model: model).playlist(id: "pl-dw")
+        #expect(car.1.map(\.id).last == "a-new")
+    }
+
+    /// Fix round 1 (M2): a background pass's pages wait in memory, and go to the file with the next write that isn't
+    /// held (here a page the owner opened), never all held until the pass ends.
+    @Test func heldPassPagesWrittenWithTheNextWrite() async throws {
+        let model = try await signedIn(extraFlows: 1)
+        defer { model.signOut() }
+        let url = try file(model)
+        let scope = try #require(model.aurralFeedsScope)
+        try await model.openDiscoverPage(playlistId: "pl-x0", fresh: false, waitForRead: false, background: true) { _ in }
+        #expect(DiscoverSnapshotFile(root: tmp, scope: scope).load()?.pages["pl-x0"] == nil, "held")
+        await DiscoverPageModel(playlistId: "pl-dw").load(model, fresh: false)
+        let saved = try #require(DiscoverSnapshotFile(root: tmp, scope: scope).load())
+        #expect(saved.pages["pl-x0"] != nil && saved.pages["pl-dw"] != nil)
+        #expect(FileManager.default.fileExists(atPath: url.path))
+    }
+
+    /// Fix round 1 (M3, D286): the first read after a launch starts from the restored playlists, as a later read starts
+    /// from the last: a known playlist no flow is named as now (its flow renamed first) keeps the flow it had, even with
+    /// Aurral's jobs unreadable (without the restore it would have had none: no Refresh Flow).
+    @Test func restoredFlowsCarryIntoTheFirstRead() async throws {
+        _ = try await signedIn()
+        let model = await relaunched()
+        defer { model.signOut() }
+        aurral.setFlows([.init(id: "flow-dw", name: "Weekly Picks")])
+        aurral.setJobsRoute(false)
+        #expect(model.discoverRowsNow()?.map(\.id) == ["playlist:pl-dw"])
+        await model.refreshDiscover(force: true)
+        #expect(model.discover.statusReadAt != nil)
+        #expect(model.discoverFlow(playlistId: "pl-dw")?.id == "flow-dw")
+        #expect(model.discoverFlow(playlistId: "pl-dw")?.name == "Weekly Picks")
     }
 
     // MARK: - Every page, in the background

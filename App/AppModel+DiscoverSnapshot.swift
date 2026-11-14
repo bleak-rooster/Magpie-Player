@@ -88,6 +88,12 @@ extension AppModel {
         if !announced { homeFeedSlot?.sectionsChanged([.discover]) }
     }
 
+    /// Fix round 1 (M6): the saved file read off the main actor before the first screen uses it.
+    func prewarmDiscoverSnapshot() async {
+        guard aurralSetUp, let feeds = aurralFeedsScope else { return }
+        await discoverSnapshots.prewarm(root: dataDirectory, scope: feeds)
+    }
+
     /// Hook from sign-out, Aurral sign-out and another Aurral user, beside D90's feeds file.
     func forgetDiscoverSnapshots() {
         discoverSnapshots.forget(root: dataDirectory)
@@ -111,8 +117,9 @@ extension AppModel {
                             entries: saved.discoverEntries)
     }
 
-    /// Saves `page` with its songs' lookups (the session's, as they stand).
-    func saveDiscoverPage(_ page: DiscoverPage) {
+    /// Saves `page` with its songs' lookups (the session's, as they stand). `held`: a background pass's page, written
+    /// with the next write (fix round 1, M2).
+    func saveDiscoverPage(_ page: DiscoverPage, held: Bool = false) {
         guard let feeds = aurralFeedsScope else { return }
         let lookups = Dictionary(page.entries.compactMap { entry in
             discover.lookups[entry.original.id].map { (entry.original.id, DiscoverSnapshot.Lookup(copyId: $0.copy?.id, at: $0.at)) }
@@ -120,7 +127,7 @@ extension AppModel {
         let record = DiscoverSnapshot.Page(playlist: page.playlist, savedAt: discover.now(),
                                            entries: page.entries.map { ($0.original, $0.inYourLibrary ? $0.song : nil) },
                                            lookups: lookups)
-        discoverSnapshots.update(root: dataDirectory, scope: feeds) { snapshot in
+        discoverSnapshots.update(root: dataDirectory, scope: feeds, held: held) { snapshot in
             guard snapshot.pages[page.playlist.id] != record else { return false }
             snapshot.pages[page.playlist.id] = record
             return true
@@ -138,7 +145,10 @@ extension AppModel {
                           budget: DiscoverLookupBudget? = nil,
                           show: @escaping (DiscoverPage) -> Void) async throws -> DiscoverPage {
         let feeds = aurralFeedsScope
-        if !background { restoreSavedDiscover() }
+        if !background {
+            await prewarmDiscoverSnapshot()
+            restoreSavedDiscover()
+        }
         let saved = fresh ? nil : savedDiscoverPage(playlistId: playlistId)
         let savedRecord = fresh || feeds == nil ? nil
             : feeds.flatMap { discoverSnapshots.snapshot(root: dataDirectory, scope: $0).pages[playlistId] }
@@ -175,7 +185,7 @@ extension AppModel {
         guard aurralFeedsScope == feeds else { throw CancellationError() }
         page.entries = DiscoverRules.swapped(songs, copies: copies)
         show(page)
-        saveDiscoverPage(page)
+        saveDiscoverPage(page, held: background)
         return page
     }
 
@@ -188,13 +198,25 @@ extension AppModel {
 
     /// D285: the car (and the queue's Play next) get the saved page at once, refreshed behind it; without one, the
     /// page is read as the phone's is, never waiting for the Discover read.
+    /// Fix round 1 (I3): only a saved page that is still the playlist as last listed (`isCurrentSavedPage`); any other
+    /// is read, as it would be without one.
     func discoverPageSavedOrRead(playlistId: String, fresh: Bool) async throws -> DiscoverPage {
+        await prewarmDiscoverSnapshot()
         restoreSavedDiscover()
-        if !fresh, let saved = savedDiscoverPage(playlistId: playlistId) {
+        if !fresh, isCurrentSavedPage(playlistId), let saved = savedDiscoverPage(playlistId: playlistId) {
             refreshDiscoverPageBehind(playlistId)
             return saved
         }
         return try await openDiscoverPage(playlistId: playlistId, fresh: fresh, waitForRead: false) { _ in }
+    }
+
+    /// Fix round 1 (I3): the saved page of `playlistId` matches the playlist's row as Discover knows it now (its
+    /// `changed`, known, and its song count): the car and Play next take it without a read.
+    func isCurrentSavedPage(_ playlistId: String) -> Bool {
+        guard let feeds = aurralFeedsScope,
+              let row = discover.playlists.first(where: { $0.playlist.id == playlistId })?.playlist, let changed = row.changed,
+              let saved = discoverSnapshots.snapshot(root: dataDirectory, scope: feeds).pages[playlistId] else { return false }
+        return saved.changed == changed && saved.songIds.count == row.songCount
     }
 
     /// The saved page of `playlistId` read again and saved, once at a time (tests wait on it).
@@ -227,7 +249,6 @@ extension AppModel {
         let budget = DiscoverLookupBudget(Self.discoverPassLookups)
         let queue = DiscoverPassQueue(ids)
         let root = dataDirectory
-        store.holdsWrites = true
         store.passTask = Task { [weak self] in
             async let first: Void = self?.discoverPassWorker(queue, feeds: feeds, budget: budget) ?? ()
             async let second: Void = self?.discoverPassWorker(queue, feeds: feeds, budget: budget) ?? ()   // two at a time

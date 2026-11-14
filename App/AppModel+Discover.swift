@@ -340,6 +340,7 @@ extension AppModel {
     /// (`discoverRowsNow`).
     func discoverPlaylists() async throws -> [Playlist] {
         guard aurralSetUp, !isOffline else { return [] }
+        await prewarmDiscoverSnapshot()   // fix round 1 (M6): the file read off the main actor
         restoreSavedDiscover()
         await refreshDiscover(waitingAtMost: Self.discoverWait)   // Round 13 Z2: never held up by a slow Aurral
         guard !discover.flowsNotPermitted else { return [] }   // round 14: no accessFlow, Discover hides
@@ -426,8 +427,9 @@ extension AppModel {
             if !fresh, let known = discover.lookups[song.id], isFreshDiscoverLookup(known, now: now, index: index) {
                 if let copy = known.copy { copies[song.id] = copy }
             } else if DiscoverSnapshot.isOwnLibraryCopy(song, discoverLibraries: discoverLibraries,
-                                                        discoverLibrarySongIds: discover.discoverLibrarySongIds) {
-                discover.lookups[song.id] = DiscoverLookup(copy: nil, at: now)   // its own copy: nothing to find
+                                                        discoverLibrarySongIds: discover.discoverLibrarySongIds,
+                                                        flowJobs: jobs, flowId: flowId) {
+                continue   // its own copy: nothing to find. Fix round 1 (I2): never kept as a lookup, decided anew each time
             } else if !toLookUp.contains(where: { $0.id == song.id }), budget?.take() ?? true {
                 toLookUp.append(song)
             }
