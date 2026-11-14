@@ -85,6 +85,7 @@ private let cell = NetworkStatus(isConnected: true, isCellular: true, isConstrai
             $0.downloads.preDownload = 1; $0.downloads.overMobileData = false
         }
         model.play([song("s0"), song("s1")], startAt: 0)
+        model.player.listen(model.player.queue.current!.id, from: 0, to: 15.5)   // R27 P (D280): after 15 s of a converted song
         let manager = try #require(model.downloads)
         #expect(await eventually { manager.localQualities["s1"] == .opusMedium })
         await manager.settled()

@@ -258,6 +258,10 @@ final class AppModel {
     @ObservationIgnored var shownTranscodeHint = false
     /// A footnote under the Now Playing scrubber (the transcode fallback); nil when none.
     var playbackHint: String?
+    // Round 27 P
+    /// The song `playbackHint` was raised for: a new current song clears it (D276, AppModel+Playback.swift).
+    @ObservationIgnored var playbackHintSongId: String?
+    // End Round 27 P
     /// Whether the server answered last time it was tried (Task 14): Automatic offline mode follows it.
     var serverReachable = true { didSet { offlineInputsChanged() } }
     /// Offline as the URLs and the scrobbler read it, and Automatic mode's bookkeeping (AppModel+Offline.swift).

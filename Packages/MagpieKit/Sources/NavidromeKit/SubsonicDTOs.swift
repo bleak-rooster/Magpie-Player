@@ -51,6 +51,8 @@ struct SubsonicBody: Decodable {
     let scanStatus: ScanStatus?
     let musicFolders: MusicFolders?
     let randomSongs: RandomSongs?
+    /// Round 27 P (D282): `getSimilarSongs2`.
+    let similarSongs2: TopSongs?
 }
 
 struct SubsonicMusicFolder: Decodable {

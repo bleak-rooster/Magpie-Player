@@ -163,7 +163,9 @@ import os
         let comps = URLComponents(url: url, resolvingAgainstBaseURL: false)!
         let items = Dictionary(uniqueKeysWithValues: comps.queryItems!.map { ($0.name, $0.value ?? "") })
         #expect(comps.path == "/navidrome/rest/stream")
-        #expect(items["estimateContentLength"] == "true")
+        #expect(items["estimateContentLength"] == nil, "R27 P (D282): a converted MP3 goes out chunked too")
+        #expect(client.streamURL(songId: "a", maxBitRate: nil, format: "raw")!.absoluteString
+            .contains("estimateContentLength=true"), "the original keeps the estimate")
         #expect(items["id"] == "abc 123")
         #expect(items["maxBitRate"] == "320")
         #expect(items["format"] == "mp3")
