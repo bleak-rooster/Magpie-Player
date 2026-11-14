@@ -78,6 +78,16 @@ import UIKit
 
     @Test(arguments: GridHost.allCases, typeSizes)
     func albumGridWidthSettles(host: GridHost, typeSize: DynamicTypeSize) async throws {
+        try await albumGrid(host: host, typeSize: typeSize, covers: .large)
+    }
+
+    /// Round 27 H (D296): the Small covers' grid (three columns at least) settles too, with the same allowances.
+    @Test(arguments: GridHost.allCases, typeSizes)
+    func layoutSettlesSmall(host: GridHost, typeSize: DynamicTypeSize) async throws {
+        try await albumGrid(host: host, typeSize: typeSize, covers: .small)
+    }
+
+    private func albumGrid(host: GridHost, typeSize: DynamicTypeSize, covers: AlbumCoverSize) async throws {
         let albums = (0..<30).map { Album(id: "a\($0)", name: "Album \($0) with a longer name", artist: "Artist", songCount: 1, duration: 0) }
         let name = "settle-grid-\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: name))
@@ -85,6 +95,7 @@ import UIKit
         let model = AppModel(store: SessionStore(keychain: KeychainStore(service: "com.bleak-rooster.magpie.tests.\(UUID().uuidString)")),
                              matchIndexDirectory: nil, dataDirectory: nil, engine: FakeEngine(), defaults: defaults,
                              systemNowPlaying: false, notifications: false)
+        model.updatePreferences { $0.layout.albumCovers = covers }
         let log = Log()
         let grid = AlbumGrid(albums: albums) { $0.artist }
             .onGeometryChange(for: CGSize.self) { $0.size } action: { log.writes.append("\($0)") }
@@ -101,11 +112,11 @@ import UIKit
                 .environment(model).environment(\.dynamicTypeSize, typeSize))
             try await Task.sleep(for: .seconds(0.3))
             let first = log.writes.count
-            #expect(try await writes(during: 0.3, log) == 0, "\(host) \(size) \(typeSize): still resizing: \(log.writes.suffix(6))")
+            #expect(try await writes(during: 0.3, log) == 0, "\(host) \(covers) \(size) \(typeSize): still resizing: \(log.writes.suffix(6))")
             // R21 (D166): iOS 26's SwiftUI measures the grid's text at xSmall a few more times before it settles
             // (measured 7–10 sizes, the same every run); the settle check above holds there as on iOS 27.
             let budget = if #available(iOS 27, *) { 6 } else { 12 }
-            #expect(first <= budget, "\(host) \(size) \(typeSize): \(first) sizes to lay out: \(log.writes)")
+            #expect(first <= budget, "\(host) \(covers) \(size) \(typeSize): \(first) sizes to lay out: \(log.writes)")
         }
     }
 }
