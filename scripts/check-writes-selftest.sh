@@ -447,5 +447,50 @@ for entry in "${c_inplace[@]}"; do
 done
 planted+=("${c_inplace[@]}")
 
+# Round 27 R (D289–D293): the whole-library MissingAlbumSearch and Clear all, planted where they would really go: an
+# unnamed send, a body with an artist, the gate's body rule, guard and checks loosened, the shape on a second line or in
+# another file, the record's key or store elsewhere, a raw queue delete for Clear all, a search (or a restart) before
+# every removal was tried, the confirmation's flag set elsewhere, the restarter made elsewhere.
+wg="Packages/MagpieKit/Sources/LidarrKit/WriteGate.swift"
+dl="Packages/MagpieKit/Sources/Requests/DownloadsInLidarr.swift"
+r_inplace=(
+  'App/AppModel+MissingAlbums.swift|append|extension AppModel { func plantedUnnamed() async throws { guard let gate else { return }; _ = try await gate.send("POST", "command", body: MissingAlbumSearch.Body()) } }'
+  'App/AppModel+MissingAlbums.swift|append|private struct PlantedBody: Encodable { var name = "MissingAlbumSearch"; var artistId = 3 }'
+  'App/AppModel+Requests.swift|append|private struct PlantedBody: Encodable { var name = "missingAlbumSearch" }'
+  "$wg|sed|s/return object.count == 1 ? nil : \"MissingAlbumSearch body must be exactly its name\"/return nil/"
+  "$wg|sed|s/\"refreshartist\", \"missingalbumsearch\"\\]/\"refreshartist\", \"missingalbumsearch\", \"renamefiles\"]/"
+  "$wg|sed|s/if missingSearch, shape != .missingAlbumSearch || owned != nil {/if missingSearch, false {/"
+  "$wg|sed|s/if running { throw refused(target, MissingAlbumSearch.alreadyRunning) }/_ = running/"
+  "$wg|sed|s/if t.timeIntervalSince(last) < MissingAlbumSearch.floor { throw refused(target, MissingAlbumSearch.tooSoon) }/_ = last/"
+  "$wg|sed|/do { try missingSearchStore.save(t, scope: scope) } catch { throw WriteGateError.logUnavailable }/d"
+  'App/AppModel+MissingAlbums.swift|append|    _ = try await gate.send("POST", "command", body: MissingAlbumSearch.Body(), confinedAs: .missingAlbumSearch)'
+  'Packages/MagpieKit/Sources/Requests/RequestRunner+Stall.swift|append|    _ = try await gate.send("POST", "command", body: MissingAlbumSearch.Body(), confinedAs: .missingAlbumSearch)'
+  'App/AppModel+MissingAlbums.swift|append|let plantedKey = "magpie.lidarr.missingSearch." + "abc"'
+  'App/AppModel+Requests.swift|append|let plantedKey = MissingAlbumSearch.recordKey(scope: "abc")'
+  'App/AppModel+MissingAlbums.swift|append|struct PlantedStore: MissingAlbumSearchStore {}'
+  'App/AppModel+MissingAlbums.swift|append|func plantedClear(_ id: Int) async throws { _ = try await gate.send("DELETE", "queue/\\(id)?\\(Self.queueRemoval)", body: nil, confinedAs: .queueRestartAny) }'
+  "$dl|sed|s/^                removed.append((albums, removal.request, removal.album))\$/&; _ = await searchFor(albums)/"
+  "$dl|sed|s/^                if firstRemoval == nil { firstRemoval = startedAt }\$/&; if let r = removal.request { await runner?.clearAllSearch(r) }/"
+  "$dl|sed|s/let removal = try await removeOne(target.queueId, item, albums: albums, allowForeign: foreign, deferred: true)/let removal = try await removeOne(target.queueId, item, albums: albums, allowForeign: foreign, deferred: false)/"
+  'App/Screens/Settings/LidarrDownloadsView.swift|append|func plantedFlag(_ m: AppModel, _ p: ClearAllPlan) { Task { await m.clearAllDownloads(p, includeForeign: true) } }'
+  'App/AppModel+Requests.swift|append|let plantedRestarter = LidarrDownloadRestarter(lidarr: client, gate: gate, runner: runner)'
+  'App/AppModel+Requests.swift|append|func plantedRun(_ restarter: LidarrDownloadRestarter, _ p: ClearAllPlan) async { _ = await restarter.clearAll(p, includeForeign: false) }'
+)
+for entry in "${r_inplace[@]}"; do
+  rel="${entry%%|*}" rest="${entry#*|}"
+  mode="${rest%%|*}" text="${rest#*|}"
+  file="$work/$rel"
+  cp "$file" "$file.orig"
+  if [ "$mode" = append ]; then printf '%b\n' "$text" >> "$file"; else sed -i '' "$text" "$file"; fi
+  if cmp -s "$file.orig" "$file"; then echo "selftest: the plant didn't apply: $entry" >&2; failed=1
+  elif out=$("$work/scripts/check-writes.sh" 2>&1); then
+    echo "selftest: NOT caught: $entry" >&2; failed=1
+  elif ! grep -qE 'L1:|G1:' <<< "$out"; then
+    echo "selftest: failed without a G1/L1 reason: $entry" >&2; failed=1
+  fi
+  cp "$file.orig" "$file"; rm -f "$file.orig"
+done
+planted+=("${r_inplace[@]}")
+
 [ "$failed" = 0 ] || exit 1
 echo "check-writes selftest: all ${#planted[@]} planted violations and ${#weakened[@]} allow-list weakenings caught; the clean tree passes"
