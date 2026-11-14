@@ -273,6 +273,16 @@ public final class Player {
         wasIdle ? loadCurrent() : syncEngine()
     }
 
+    /// Round 27 P (owner, 2026-11-14): Automix (Q5, D282): what's coming up after the current song becomes `songs`;
+    /// the current song plays on and Play next songs stay. One re-send of the engine's list; an idle queue starts with
+    /// them like `addToEnd`.
+    public func replaceUpcoming(with songs: [Song]) {
+        let wasIdle = queue.current == nil
+        queue.replaceUpcoming(with: songs)
+        guard queue.current != nil else { return }
+        wasIdle ? loadCurrent() : syncEngine()
+    }
+
     public func remove(id: UUID) {
         let current = queue.current?.id
         queue.remove(id: id)
