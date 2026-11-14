@@ -30,6 +30,17 @@ import MagpieTestSupport
             #expect(q["estimateContentLength"] == nil && q["format"] == format)
         }
         let mp3 = items(client.streamURL(songId: "a", maxBitRate: 320, format: "mp3", timeOffset: 10))
-        #expect(mp3["estimateContentLength"] == "true" && mp3["timeOffset"] == "10")
+        #expect(mp3["timeOffset"] == "10")
+    }
+
+    /// Round 27 P (cause 3 of plan §2.7, shown by `TranscodeIT.mp3OfAVBRFileEndsAtItsLength` on the dev image: MP3 192
+    /// and 128 of a VBR source were cut short, -1005, with the estimate): a converted MP3 goes out chunked like AAC and
+    /// Opus. Only the original keeps the estimate (its length is exact).
+    @Test(arguments: [320, 192, 128])
+    func streamURL_mp3NoLongerEstimated(_ rate: Int) async throws {
+        let (client, _) = makeClient()
+        #expect(items(client.streamURL(songId: "a", maxBitRate: rate, format: "mp3"))["estimateContentLength"] == nil)
+        #expect(items(client.streamURL(songId: "a", maxBitRate: nil, format: "raw"))["estimateContentLength"] == "true")
+        #expect(items(client.streamURL(songId: "a", maxBitRate: nil, format: nil))["estimateContentLength"] == "true")
     }
 }

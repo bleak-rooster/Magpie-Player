@@ -368,10 +368,11 @@ public actor NavidromeClient {
         if let maxBitRate { extra.append(URLQueryItem(name: "maxBitRate", value: String(maxBitRate))) }
         if let format { extra.append(URLQueryItem(name: "format", value: format)) }
         if let timeOffset { extra.append(URLQueryItem(name: "timeOffset", value: String(max(timeOffset, 0)))) }
-        // Navidrome's estimate is exact for the original file and for CBR mp3, but ffmpeg's AAC and Opus run past it
-        // and the server cuts the stream ("wrote more than the declared Content-Length"), so they go out chunked
-        // (D42, D45; TranscodeIT).
-        if format != "aac" && format != "opus" { extra.append(URLQueryItem(name: "estimateContentLength", value: "true")) }
+        // Navidrome's estimate is exact for the original file, but ffmpeg's AAC and Opus run past it and the server cuts
+        // the stream ("wrote more than the declared Content-Length"), so they go out chunked (D42, D45; TranscodeIT).
+        // Round 27 P (owner item 11, D282): so does MP3: on the dev image MP3 192 and 128 of a VBR file were cut short
+        // the same way (`TranscodeIT.mp3OfAVBRFileEndsAtItsLength`), a song ending early. Only the original keeps it.
+        if format == nil || format == "raw" { extra.append(URLQueryItem(name: "estimateContentLength", value: "true")) }
         return Self.subsonicURL(endpoint: endpoint, session: session.withLock { $0 }, method: "stream",
                                 extra: extra, password: credentials.password, clientName: clientName)
     }

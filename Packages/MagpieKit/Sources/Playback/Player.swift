@@ -245,7 +245,7 @@ public final class Player {
     private var stoppedOnItsOwn: Bool { failedEntryId != nil || hasEnded }
 
     /// Previous past 3 s (or on the first song) starts the song again. Stopped on its own, the song loads and plays as a
-    /// new play. Otherwise a song that seeks (a file on the phone, an Original or MP3 stream) seeks to 0 as before.
+    /// new play. Otherwise a song that seeks (a file on the phone, an original stream) seeks to 0 as before.
     /// Round 24 G (owner item 11, D235), defensive, the cause unconfirmed on a device: a converted AAC or Opus stream
     /// comes chunked, with no byte ranges (D42, D45), so a seek to 0 may leave the sound where it was while Now Playing
     /// shows 0:00; that one is loaded afresh instead. Emptying the engine's list first makes it drop the item, so the
@@ -313,7 +313,8 @@ public final class Player {
     }
 
     /// Round 24 G (D235): whether a seek on `url` lands: a file on the phone, or a stream sent with its length
-    /// (`estimateContentLength`: Original and MP3). A converted AAC or Opus stream goes out chunked without it (D42, D45).
+    /// (`estimateContentLength`: the original). A converted AAC or Opus stream goes out chunked without it (D42, D45),
+    /// and since round 27 P a converted MP3 too (D282).
     nonisolated static func seeksReliably(_ url: URL) -> Bool {
         if url.isFileURL { return true }
         let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
