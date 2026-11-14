@@ -218,6 +218,23 @@ private let disconnected = NetworkStatus(isConnected: false, isCellular: false, 
         #expect(f.maxInFlight == 1)
     }
 
+    /// Fix round 2 (N1): when the limit loosens on a song change, the old plan's queued pre-downloads don't start: the
+    /// song that just became current (queued while the last one held) is dropped first, and the new plan's start.
+    @Test func preDownload_looseningOnASkipDoesntStartTheOldPlan() async throws {
+        let f = FakeFetcher()
+        let (model, network) = try await signedIn(cellular, fetcher: f)
+        defer { model.signOut() }
+        model.updatePreferences { $0.downloads.preDownload = 3 }
+        model.play(["s1", "s2", "s3", "s4"].map(song), startAt: 0)
+        #expect(await eventually { model.preDownloadSnapshot?.pacing == .hold })
+        await model.downloads!.settled()
+        #expect(fetchedIds(f).isEmpty, "s2, s3 and s4 wait while s1's first 15 s play")
+        network.status = .wifi   // and in the same turn, a skip to s2
+        model.player.next()
+        #expect(await eventually { Set(self.fetchedIds(f)).isSuperset(of: ["s3", "s4"]) })
+        #expect(!fetchedIds(f).contains("s2"), "the song now playing isn't pre-downloaded: \(fetchedIds(f))")
+    }
+
     @Test func preDownload_wifiUnchanged() async throws {
         let f = FakeFetcher()
         f.hold(after: 0)

@@ -121,7 +121,8 @@ extension AppModel {
     private func queueChanged(_ snapshot: PreDownloadSnapshot, previous: PreDownloadSnapshot?, manager: DownloadManager) {
         let plan = PreDownloadPlan.songs(upcoming: snapshot.upcoming.map(\.song), count: snapshot.count,
                                          isLocal: { manager.localFiles[$0] != nil })
-        manager.cacheRunCap = Self.cacheRunCap(snapshot.pacing)   // R27 P (D280): before the plan, so it applies to it
+        // R27 P (D280): set before the plan, which pumps under it (setting the cap alone starts nothing, N1).
+        manager.cacheRunCap = Self.cacheRunCap(snapshot.pacing)
         manager.preDownload(isOffline ? [] : plan, quality: currentStreamQuality)   // offline: nothing to fetch from
 
         let current = snapshot.current?.song.id
