@@ -61,7 +61,8 @@ extension CarPlayLibraryAdapter {
             shelves = try await model.homeShelves(for: sections.filter { $0 != .discover })
         } catch {
             // Every other section failed: still a Home while Discover's shelf read, as when it was one of them.
-            guard case .success? = flows else { await refreshed; throw error }
+            // A read cut short stays cut short (P5): never an empty Home in its place.
+            guard case .success? = flows, !AppModel.isCancellation(error) else { await refreshed; throw error }
             shelves = []
         }
         // Discover was the only section asking the server, and it failed: the read failed (as before round 27).
