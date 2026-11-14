@@ -956,17 +956,23 @@ if [ -z "${G1_SRC:-}" ]; then
   fi
   # L fix round 1 (LL1): the app makes LRCLIB's client only with its own transport, which never follows a redirect
   # and keeps no cookie.
-  for hit in $(grep -rnE --include='*.swift' 'LrcLib[[:space:]]*\(' "${product[@]}" | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' |
-               grep -vF 'LrcLib(transport: LrcLibTransport(), userAgent:' | cut -d: -f1,2 || true); do
-    echo "G1: LRCLIB's client made without its no-redirect transport: $hit" >&2; bad=1
-  done
+  # Fix round 2 (N2): every construction counted (`LrcLib(`, `LrcLib.init(`, several on a line): exactly one, the
+  # pinned one.
+  lrclib_makes=$(grep -rnE --include='*.swift' 'LrcLib(\.init)?[[:space:]]*\(' "${product[@]}" | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' || true)
+  { [ "$(printf '%s\n' "$lrclib_makes" | grep -oE 'LrcLib(\.init)?[[:space:]]*\(' | grep -c . || true)" = 1 ] &&
+    printf '%s\n' "$lrclib_makes" | grep -qF 'LrcLib(transport: LrcLibTransport(), userAgent:'; } ||
+    { echo "G1: LRCLIB's client made other than once, with its no-redirect transport" >&2; bad=1; }
   lrclib_transport="Packages/MagpieKit/Sources/MagpieCore/LrcLibTransport.swift"
   if [ -f "$lrclib_src" ]; then
     { [ "$(grep -cxF '                        newRequest request: URLRequest) async -> URLRequest? { nil }' "$lrclib_transport")" = 2 ] &&
       grep -qxF '    static let session = URLSession(configuration: sessionConfiguration(), delegate: NoRedirects.shared, delegateQueue: nil)' "$lrclib_transport" &&
       grep -qxF '        config.httpCookieStorage = nil' "$lrclib_transport" &&
       grep -qxF '            let task = session.dataTask(with: request)' "$lrclib_transport" &&
-      ! grep -vE '^[[:space:]]*//' "$lrclib_transport" | grep -qE 'SameOriginRedirects|URLSession\.shared|lrclib\.'; } ||
+      ! grep -vE '^[[:space:]]*//' "$lrclib_transport" | grep -qE 'SameOriginRedirects|URLSession\.shared|lrclib\.' &&
+      # Fix round 2 (N3): one session, one cookie setting, one data task, one delegate argument.
+      ( for want in 'URLSession[[:space:]]*\(' 'httpCookieStorage' 'dataTask[[:space:]]*\(' 'delegate:'; do
+        [ "$(grep -vE '^[[:space:]]*//' "$lrclib_transport" | grep -oE "$want" | grep -c . || true)" = 1 ] || exit 1
+      done ); } ||
       { echo "G1: $lrclib_transport: LRCLIB's transport may follow a redirect or keep cookies" >&2; bad=1; }
   fi
   # Round 14 A1 (D81): `api/discover` only as one of the allowed spellings, and the flow write routes only in the

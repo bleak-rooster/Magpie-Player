@@ -272,9 +272,10 @@ extension AppModel {
         keeper.inFlight[id] = LyricsKeeper.Read(task: task, quiet: quiet)
         Task { [weak self, keeper] in
             _ = await task.value
-            guard keeper.generation == generation, keeper.inFlight[id]?.task == task else { return }
-            keeper.inFlight[id] = nil
-            self?.startWaitingLyricsRead()
+            guard keeper.generation == generation else { return }
+            if keeper.inFlight[id]?.task == task { keeper.inFlight[id] = nil }
+            // Fix round 2 (N1): a finished quiet read frees its slot even when the pane's retry already took its place.
+            if quiet || keeper.inFlight[id] == nil { self?.startWaitingLyricsRead() }
         }
         return task
     }

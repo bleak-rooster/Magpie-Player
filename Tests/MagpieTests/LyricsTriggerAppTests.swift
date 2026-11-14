@@ -35,6 +35,7 @@ final class LyricsRouting: HTTPTransport, @unchecked Sendable {
         var sent: [URLRequest] = []
         var cancelled: [URLRequest] = []
         var down: Set<String> = []
+        var failOnce: Set<String> = []
     }
     private let state = OSAllocatedUnfairLock(initialState: State())
 
@@ -45,6 +46,8 @@ final class LyricsRouting: HTTPTransport, @unchecked Sendable {
     /// The Navidrome host fails like an unplugged server.
     func setDown(_ down: Bool) { state.withLock { $0.down = down ? ["192.168.1.2"] : [] } }
     func setDown(hosts: Set<String>) { state.withLock { $0.down = hosts } }
+    /// The song's next lyrics read fails like a dropped connection (once).
+    func failOnce(_ songId: String) { state.withLock { _ = $0.failOnce.insert(songId) } }
     /// LRCLIB calls whose wait was cancelled.
     var cancelledOnline: Int { cancelled.filter { $0.url?.host() == "lrclib.net" }.count }
 
@@ -76,6 +79,9 @@ final class LyricsRouting: HTTPTransport, @unchecked Sendable {
             }
         }
         if let host = request.url?.host, state.withLock({ $0.down.contains(host) }) { throw URLError(.cannotConnectToHost) }
+        if let song = lyricsRead(request), state.withLock({ $0.failOnce.remove(song) != nil }) {
+            throw URLError(.networkConnectionLost)
+        }
         if request.url?.host == aurral.host { return try await aurral.send(request) }
         return try await mock.send(request)
     }
@@ -255,6 +261,28 @@ final class LyricsRouting: HTTPTransport, @unchecked Sendable {
         transport.setDown(hosts: [])
     }
 
+    /// Fix round 2 (N1, and the I2 gap): the pane waits for a quiet read still in flight; when it fails, the pane tries
+    /// once more through `request`, and the slot the quiet read held goes to the song waiting for one.
+    @Test func pane_retriesAFailedQuietReadAndFreesItsSlot() async throws {
+        let model = try await model()
+        defer { model.signOut() }
+        for id in ["s1", "s2", "s3"] { transport.hold(id) }
+        transport.failOnce("s1")
+        model.play(["s1", "s2", "s3", "s4"].map(song), startAt: 0)
+        for id in ["s1", "s2", "s3"] {
+            #expect(await eventually { self.transport.lyricsReads(id) == 1 }, "\(id)")
+            model.player.next()
+        }
+        #expect(await eventually { model.lyricsKeeper.waiting == "s4" })
+        let pane = Task { try await model.lyricsForPane(self.song("s1")) }
+        #expect(await eventually { self.transport.lyricsReads("s1") == 1 && model.lyricsKeeper.inFlight["s1"]?.quiet == true })
+        transport.release("s1")   // the quiet read fails; the pane's retry goes through `request`
+        let shown = try await pane.value
+        #expect(shown?.source == .library && transport.lyricsReads("s1") == 2, "retried once through request")
+        #expect(await eventually { self.transport.lyricsReads("s4") == 1 }, "the freed slot went to the waiting song")
+        for id in ["s2", "s3"] { transport.release(id) }
+    }
+
     /// M1: offline with nothing kept, the pane says it's offline.
     @Test func pane_offlineSaysSo() {
         #expect(LyricsContent.emptyTitle(offline: true) == AppModel.offlineCopy)
@@ -288,6 +316,7 @@ final class LyricsRouting: HTTPTransport, @unchecked Sendable {
         #expect(try await model.lyricsForPane(song("s2")) == nil)
         #expect(Date().timeIntervalSince(started) < 5, "given up, not waited out")
         #expect(model.lyricsKeeper.online("s2") == nil, "nothing kept")
+        #expect(model.lyricsKeeper.hasAskedOnline("s2"), "a call that timed out still counts: once per song")
         transport.release("lrclib")
     }
 

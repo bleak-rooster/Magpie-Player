@@ -65,6 +65,9 @@ planted=(
   # L fix round 1 (LL1): LRCLIB's client made with a transport that follows redirects.
   'LrcLib(transport: URLSessionTransport(), userAgent: "Magpie/1")'
   'LrcLib (transport: transport, userAgent: ua)'
+  # Fix round 2 (N2): through `.init(`, and a second construction on the pinned line.
+  'LrcLib.init(transport: URLSessionTransport(), userAgent: "Magpie/1")'
+  'LrcLib(transport: LrcLibTransport(), userAgent: ua); _ = LrcLib(transport: URLSessionTransport(), userAgent: ua)'
   'aurral.ok(method: AurralRoute.imageProxyMethod, path: "api/image-proxy", body: other)'
   # Round 22 R22A (D186): a third caller of Download songs.
   'client.downloadFlow("flow-1")'
@@ -274,6 +277,9 @@ lrclib_weakened=(
   'T|s#newRequest request: URLRequest) async -> URLRequest? { nil }#newRequest request: URLRequest) async -> URLRequest? { request }#'
   'T|s#delegate: NoRedirects.shared#delegate: SameOriginRedirects.shared#'
   'T|s#        config.httpCookieStorage = nil#        config.httpCookieStorage = .shared#'
+  # Fix round 2 (N3): a second session beside the pinned one, and cookies switched back on after the pinned line.
+  'T|s#^    static let session = URLSession(configuration: sessionConfiguration(), delegate: NoRedirects.shared, delegateQueue: nil)#&\n    static let other = URLSession(configuration: .default)#'
+  'T|s#^        config.httpCookieStorage = nil#&\n        config.httpCookieStorage = .shared#'
 )
 lrclib_transport_src="$work/Packages/MagpieKit/Sources/MagpieCore/LrcLibTransport.swift"
 cp "$lrclib_transport_src" "$work/LrcLibTransport.orig"
