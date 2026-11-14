@@ -17,10 +17,14 @@ public struct CPHomeShelf: Sendable, Hashable {
 
     public var section: HomeSection
     public var items: [Item]
+    /// Round 27 H (owner, 2026-11-14): whose a playlist tile is, by playlist id, for another user's flow on the Discover
+    /// shelf (D299: the row's detail ends " · sam"); empty for every other shelf.
+    public var captions: [String: String]
 
-    public init(section: HomeSection, items: [Item]) {
+    public init(section: HomeSection, items: [Item], captions: [String: String] = [:]) {
         self.section = section
         self.items = items
+        self.captions = captions
     }
 }
 
@@ -89,7 +93,11 @@ extension CarPlayRows {
     /// Downloaded albums open from the phone.
     public static func home(_ shelves: [CPHomeShelf], maxItems: Int = 12, maxSections: Int = 12) -> [CPSectionModel] {
         let built = shelves.map { shelf in
-            CPSectionModel(header: shelf.section.title, rows: unique(shelf.items.map { homeRow($0, shelf.section) }, \.id))
+            CPSectionModel(header: shelf.section.title, rows: unique(shelf.items.map { item in
+                let row = homeRow(item, shelf.section)
+                guard case .playlist(let playlist) = item else { return row }
+                return captioned(row, shelf.captions[playlist.id])   // round 27 H (D299)
+            }, \.id))
         }.filter { !$0.rows.isEmpty }.prefix(max(0, maxSections))
         let sizes = homeShelfSizes(built.map(\.rows.count), maxItems: maxItems)
         let sections = zip(built, sizes).compactMap { section, size in
