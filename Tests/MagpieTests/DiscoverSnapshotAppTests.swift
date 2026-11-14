@@ -350,18 +350,62 @@ import Testing
         let loading = Task { await page.load(model, fresh: false) }
         #expect(await eventually { page.page != nil })
         let songs = try #require(page.page).songs   // Lullaby, Words, Unknown Song, Ref One, Ref Two
-        model.play([songs[2], songs[0], songs[1]], startAt: 0)   // Unknown Song plays; Lullaby and Words to come
+        // Unknown Song plays; Ref One (no copy) is next, then Lullaby and Words (copies on the way).
+        model.play([songs[2], songs[3], songs[0], songs[1]], startAt: 0)
         let current = try #require(engine.setItemsCalls.last?.items.first)
+        let next = try #require(engine.setItemsCalls.last?.items.dropFirst().first)
         let callsBefore = engine.setItemsCalls.count, seeksBefore = engine.seeks.count
         nav.releaseLookups()
         await loading.value
         #expect(model.player.queue.current?.song.id == "a-unknown")
-        #expect(model.player.queue.upcoming.map(\.song.id) == ["m-lullaby", "m-words"])
+        #expect(model.player.queue.upcoming.map(\.song.id) == ["m-ref1", "m-lullaby", "m-words"])
         let after = engine.setItemsCalls.dropFirst(callsBefore)
+        // Fix round 2 (N2): the unchanged next item is the very same item (id and URL): its stream never opens twice.
+        #expect(after.allSatisfy { $0.items.dropFirst().first?.0 == next.0 && $0.items.dropFirst().first?.1 == next.1 },
+                "the next item, unchanged, is never handed over anew")
         #expect(after.count == 1, "one swap, not one per copy: \(after.count)")
         #expect(after.allSatisfy { $0.items.first?.0 == current.0 && $0.items.first?.1 == current.1 && $0.startAt == 0 },
                 "the current item is the one already loaded")
         #expect(engine.seeks.count == seeksBefore, "never reloaded and sought")
+    }
+
+    /// Fix round 2 (N3): signed out of Aurral while the saved file is still being read: the page sends nothing, restores
+    /// nothing and saves nothing.
+    @Test func signOutDuringThePrewarmSendsNothing() async throws {
+        let first = try await signedIn()
+        _ = try await first.discoverPage(playlistId: "pl-dw")
+        let model = await relaunched()
+        defer { model.signOut() }
+        let gate = D1Gate()
+        model.discoverSnapshots.holdRead = { await gate.wait() }
+        let url = try file(model)
+        nav.reset()
+        let loading = Task { await DiscoverPageModel(playlistId: "pl-dw").load(model, fresh: false) }
+        #expect(await eventually { model.discoverSnapshots.prewarmReads == 1 })
+        model.disconnectAurral()
+        gate.open()
+        await loading.value
+        #expect(nav.getPlaylist.isEmpty, "\(nav.getPlaylist)")
+        #expect(model.discover.playlists.isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: url.path))
+    }
+
+    /// Fix round 2 (N4): screens asking at once share one read of the file.
+    @Test func concurrentPrewarmsDecodeOnce() async throws {
+        _ = try await signedIn()
+        let model = await relaunched()
+        defer { model.signOut() }
+        let gate = D1Gate()
+        model.discoverSnapshots.holdRead = { await gate.wait() }
+        async let one: Void = model.prewarmDiscoverSnapshot()
+        async let two: Void = model.prewarmDiscoverSnapshot()
+        async let three: Void = model.prewarmDiscoverSnapshot()
+        #expect(await eventually { model.discoverSnapshots.prewarmReads >= 1 })
+        for _ in 0..<200 { await Task.yield() }
+        gate.open()
+        _ = await (one, two, three)
+        #expect(model.discoverSnapshots.prewarmReads == 1)
+        #expect(model.discoverRowsNow()?.map(\.id) == ["playlist:pl-dw"])
     }
 
     /// Fix round 1 (I2): the flow rotated after Aurral's library was read: its new song (a job of the flow) is looked up

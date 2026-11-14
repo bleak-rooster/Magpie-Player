@@ -69,13 +69,36 @@ struct DiscoverSnapshotFile {
     private var generation = 0
 
     /// Fix round 1 (M6): reads `scope`'s file off the main actor (up to 4 MB), once; the first screen awaits it.
+    /// Fix round 2 (N4): callers at once share one read (by scope and generation), never one decode each.
     func prewarm(root: URL, scope: String) async {
         if let loaded, loaded.scope == scope { return }
-        let file = DiscoverSnapshotFile(root: root, scope: scope), started = generation
-        let read = await Task.detached(priority: .userInitiated) { file.load() }.value
+        let started = generation
+        let read: Task<DiscoverSnapshot?, Never>
+        if let running = prewarming, running.scope == scope, running.generation == started {
+            read = running.task
+        } else {
+            let file = DiscoverSnapshotFile(root: root, scope: scope)
+            let hold = holdRead
+            read = Task.detached(priority: .userInitiated) {
+                await hold?()
+                return file.load()
+            }
+            prewarming = (scope, started, read)
+            prewarmCount += 1
+        }
+        let snapshot = await read.value
+        if let running = prewarming, running.scope == scope, running.generation == started { prewarming = nil }
         guard generation == started, loaded?.scope != scope else { return }
-        loaded = (scope, read ?? DiscoverSnapshot())
+        loaded = (scope, snapshot ?? DiscoverSnapshot())
     }
+
+    /// Fix round 2 (N4): the read of the file under way, if any.
+    private var prewarming: (scope: String, generation: Int, task: Task<DiscoverSnapshot?, Never>)?
+    /// Tests only: awaited before the file is read (so a test can sign out while a read is under way).
+    var holdRead: (@Sendable () async -> Void)?
+    /// How many times the file was decoded off the main actor (tests).
+    var prewarmReads: Int { prewarmCount }
+    private var prewarmCount = 0
 
     /// The snapshot for `scope`: as in memory, else as saved, else empty.
     func snapshot(root: URL, scope: String) -> DiscoverSnapshot {
@@ -120,6 +143,7 @@ struct DiscoverSnapshotFile {
         behind = [:]
         unwritten = false
         generation += 1
+        prewarming = nil
         loaded = nil
         DiscoverSnapshotFile.removeAll(root: root)
     }

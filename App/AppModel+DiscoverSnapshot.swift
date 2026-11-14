@@ -22,8 +22,9 @@ import NavidromeKit
 ///   at once; the ordinary read runs behind and only a real difference replaces them, in place (D283, D284);
 /// - a page waits at most `discoverWait` for the Discover read, shows its songs after one `getPlaylist`, and fills the
 ///   library copies in row by row; a main-library song needs no lookup; lookups are kept with the page (a copy for a
-///   week while the match index holds it, none for a day); a copy found after Play replaces that song where it is still
-///   to come in the queue (D59's swap) (D285);
+///   week while the match index holds it, none for a day); copies found after Play replace those songs where they are
+///   still to come in the queue (D59's swap), all at once and only when every lookup of the page is done, each in its
+///   own slot; the song playing now and Play next songs are left alone (D285; fix rounds 1 and 2: I1, N1, N2);
 /// - after Library › Discover shows, every shown page is read and saved in the background, bounded (D284).
 /// Which playlists are Aurral's and whose they are is still decided only by the read (D286): the saved rows are only
 /// what the last read decided, used before the next one.
@@ -147,6 +148,7 @@ extension AppModel {
         let feeds = aurralFeedsScope
         if !background {
             await prewarmDiscoverSnapshot()
+            guard aurralFeedsScope == feeds else { throw CancellationError() }   // fix round 2 (N3): signed out meanwhile
             restoreSavedDiscover()
         }
         let saved = fresh ? nil : savedDiscoverPage(playlistId: playlistId)
@@ -190,15 +192,13 @@ extension AppModel {
     }
 
     /// D285 (D59's swap), fix round 1 (I1, D282): the library copies found for a page replace those Discover songs in
-    /// what's coming up, all at once when the page's lookups are done (`Player.replaceUpcoming`: one re-send of the
-    /// engine's list). The song playing now is never touched, so its item is never loaded again; Play next songs stay as
-    /// the owner chose them.
+    /// what's coming up, all at once and only when every one of the page's lookups is done (none swapped as each lands).
+    /// The song playing now is never touched, so its item is never loaded again; Play next songs are left as the owner
+    /// chose them. Fix round 2 (N2): each in its own slot (`Player.replaceUpcomingSongs`), so every unchanged item
+    /// keeps its id and the next stream is never opened twice.
     func swapQueuedDiscoverCopies(_ copies: [String: Song]) {
-        guard !copies.isEmpty, player.queue.current != nil else { return }
-        let rest = player.queue.upcoming.dropFirst(player.queue.upNext.count).map(\.song)
-        let swapped = rest.map { copies[$0.id] ?? $0 }
-        guard swapped != rest else { return }
-        player.replaceUpcoming(with: swapped)
+        guard !copies.isEmpty else { return }
+        player.replaceUpcomingSongs(copies)
     }
 
     /// D285: the car (and the queue's Play next) get the saved page at once, refreshed behind it; without one, the
