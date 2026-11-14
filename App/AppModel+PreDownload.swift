@@ -45,21 +45,28 @@ extension AppModel {
         return ended || position >= preDownloadGrace ? .oneAtATime : .hold
     }
 
-    /// What of `plan` may start under `pacing`.
-    static func paced(_ plan: [Song], _ pacing: PreDownloadPacing) -> [Song] {
+    /// How many pre-downloads the manager may run at once under `pacing` (`DownloadManager.cacheRunCap`). The whole
+    /// plan is still handed over: the manager starts the first it accepts, and any job ending (landed or failed) lets
+    /// the next one start (fix round 1, I1).
+    static func cacheRunCap(_ pacing: PreDownloadPacing) -> Int? {
         switch pacing {
-        case .normal: plan
-        case .hold: []
-        case .oneAtATime: Array(plan.prefix(1))
+        case .normal: nil
+        case .hold: 0
+        case .oneAtATime: 1
         }
     }
 
-    /// The pacing now. Reads the position only for a converted stream on mobile data, so elsewhere the watcher isn't
-    /// woken by every tick.
+    /// The pacing now. Reads the position only for a converted stream on mobile data, and only until the grace has
+    /// passed for this entry (fix round 1, M5): after that the watcher isn't woken by every tick.
     private var currentPreDownloadPacing: PreDownloadPacing {
         let status = network.status
         guard status.isCellular || status.isConstrained, let url = player.currentURL else { return .normal }
         _ = player.lastFallbackSongId   // a switch to the original changes the URL: look again
+        let past = Self.preDownloadPacing(currentURL: url, status: status, position: Self.preDownloadGrace, ended: true)
+        if past == .oneAtATime, let last = preDownloadSnapshot, last.pacing == .oneAtATime,
+           last.current?.id == player.queue.current?.id {
+            return .oneAtATime   // already past the grace for this entry: no need to read the position again
+        }
         return Self.preDownloadPacing(currentURL: url, status: status, position: player.position, ended: player.hasEnded)
     }
 
@@ -102,7 +109,6 @@ extension AppModel {
     /// can't stay over it until the next song change.
     func preDownloadLanded() {
         guard let manager = downloads else { return }
-        replanPacedPreDownloads(manager: manager)   // R27 P (D280): one at a time: the next one starts now
         cacheEviction?.cancel()
         let delay = cacheEvictionDebounce
         cacheEviction = Task { [weak self] in
@@ -112,19 +118,11 @@ extension AppModel {
         }
     }
 
-    /// Round 27 P (D280): while pre-downloads go one at a time, a landing one makes way for the next.
-    private func replanPacedPreDownloads(manager: DownloadManager) {
-        guard let snapshot = preDownloadSnapshot, snapshot.pacing == .oneAtATime, !isOffline else { return }
-        let plan = PreDownloadPlan.songs(upcoming: snapshot.upcoming.map(\.song), count: snapshot.count,
-                                         isLocal: { manager.localFiles[$0] != nil })
-        manager.preDownload(Self.paced(plan, .oneAtATime), quality: currentStreamQuality)
-    }
-
     private func queueChanged(_ snapshot: PreDownloadSnapshot, previous: PreDownloadSnapshot?, manager: DownloadManager) {
         let plan = PreDownloadPlan.songs(upcoming: snapshot.upcoming.map(\.song), count: snapshot.count,
                                          isLocal: { manager.localFiles[$0] != nil })
-        let paced = Self.paced(plan, snapshot.pacing)   // R27 P (D280)
-        manager.preDownload(isOffline ? [] : paced, quality: currentStreamQuality)   // offline: nothing to fetch from
+        manager.cacheRunCap = Self.cacheRunCap(snapshot.pacing)   // R27 P (D280): before the plan, so it applies to it
+        manager.preDownload(isOffline ? [] : plan, quality: currentStreamQuality)   // offline: nothing to fetch from
 
         let current = snapshot.current?.song.id
         let currentChanged = snapshot.current?.id != previous?.current?.id

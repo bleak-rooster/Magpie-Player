@@ -202,6 +202,22 @@ private let disconnected = NetworkStatus(isConnected: false, isCellular: false, 
         #expect(f.maxInFlight == 1)
     }
 
+    /// Fix round 1 (I1): one at a time doesn't stop when one fails: the next song is still fetched.
+    @Test func preDownload_aFailedOneLetsTheNextStart() async throws {
+        let f = FakeFetcher()
+        f.hold(after: 0)
+        let (model, _) = try await signedIn(cellular, fetcher: f)
+        defer { model.signOut() }
+        model.updatePreferences { $0.downloads.preDownload = 3 }
+        model.play(["s1", "s2", "s3", "s4"].map(song), startAt: 0)
+        model.player.listen(model.player.queue.current!.id, from: 0, to: 20)
+        #expect(await eventually { self.fetchedIds(f) == ["s2"] })
+        f.failWith(URLError(.badServerResponse))
+        f.release()
+        #expect(await eventually { self.fetchedIds(f).contains("s3") }, "the next one starts after a failure too")
+        #expect(f.maxInFlight == 1)
+    }
+
     @Test func preDownload_wifiUnchanged() async throws {
         let f = FakeFetcher()
         f.hold(after: 0)
@@ -228,10 +244,9 @@ private let disconnected = NetworkStatus(isConnected: false, isCellular: false, 
         #expect(AppModel.preDownloadPacing(currentURL: raw, status: cellular, position: 3, ended: false) == P.normal)
         #expect(AppModel.preDownloadPacing(currentURL: file, status: cellular, position: 3, ended: false) == P.normal)
         #expect(AppModel.preDownloadPacing(currentURL: nil, status: cellular, position: 3, ended: false) == P.normal)
-        let plan = ["a", "b", "c"].map(song)
-        #expect(AppModel.paced(plan, P.normal).map(\.id) == ["a", "b", "c"])
-        #expect(AppModel.paced(plan, P.oneAtATime).map(\.id) == ["a"])
-        #expect(AppModel.paced(plan, P.hold).isEmpty)
+        #expect(AppModel.cacheRunCap(P.normal) == nil)
+        #expect(AppModel.cacheRunCap(P.oneAtATime) == 1)
+        #expect(AppModel.cacheRunCap(P.hold) == 0)
     }
 
     // MARK: - D282: the current item is kept (real engine)

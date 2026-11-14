@@ -222,6 +222,53 @@ import Testing
         #expect(r.engine.setItemsCalls.count == sends, "the wait that ends later does nothing")
     }
 
+    /// Fix round 1 (M1): paused during the wait, the pick-up reloads without playing and the hint goes with it.
+    @Test func network_pausedPickUpClearsTheHint() async throws {
+        let r = rig()
+        dropConnection(r, at: 50)
+        await settle { r.sleeper.pending == 1 }
+        r.player.toggle()   // pause during the wait
+        r.sleeper.release()
+        await settle { query(r.engine.currentURL)["timeOffset"] == "50" }
+        #expect(!r.player.isPlaying && r.player.reconnectingSongId == nil, "nothing is picking up while paused")
+    }
+
+    /// Fix round 1 (M2): after a pick-up, an unrecognised failure in the new load's first second is the network again
+    /// (another try), not a conversion failure (the original).
+    @Test func network_unknownFailureRightAfterAPickUpIsNetwork() async throws {
+        let r = rig()
+        let id = r.player.queue.current!.id
+        dropConnection(r, at: 40)
+        await settle { r.sleeper.pending == 1 }
+        r.sleeper.release()
+        await settle { query(r.engine.currentURL)["timeOffset"] == "40" }
+        r.engine.causes[id] = .unknown
+        r.player.handle(.time(id, 0.5, duration: nil))
+        r.player.handle(.failed(id, "The operation couldn't be completed."))
+        #expect(query(r.engine.currentURL)["format"] == "aac", "not the original")
+        #expect(r.player.reconnectingSongId == "1")
+        await settle { r.sleeper.pending == 1 }
+        #expect(r.sleeper.asked == [.seconds(1), .seconds(3)])
+    }
+
+    @Test func network_retryCountResetsWhenTheEntryLoadsAgain() async throws {
+        let r = rig()
+        let id = r.player.queue.current!.id
+        for _ in 0..<2 {
+            dropConnection(r, at: 5)
+            await settle { r.sleeper.pending == 1 }
+            r.sleeper.release()
+            await settle { r.sleeper.pending == 0 && r.player.reconnectingSongId == "1" && r.engine.setItemsCalls.count > 0 }
+            await settle { false }
+        }
+        r.player.next()
+        r.player.previous()   // back to the same entry: it loads again from the start
+        #expect(r.player.queue.current?.id == id && r.player.position == 0)
+        dropConnection(r, at: 10)
+        await settle { r.sleeper.pending == 1 }
+        #expect(r.sleeper.asked.count == 3, "a fresh load gets its tries again")
+    }
+
     @Test func network_onAnOriginalStreamIsTodays() async throws {
         let r = rig()
         r.urls.format = "raw"

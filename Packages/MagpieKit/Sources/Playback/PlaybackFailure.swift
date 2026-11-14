@@ -33,8 +33,13 @@ public enum PlaybackFailure {
     static let coreMediaDomain = "CoreMediaErrorDomain"
     /// A failure before this much has played (that isn't the network) is the server's conversion failing.
     public static let conversionWindow: TimeInterval = 1
-    /// How deep a chain of underlying errors is followed.
+    /// Fix round 1 (M3): socket errors that mean the connection went: broken pipe, reset by the peer, not connected,
+    /// timed out (EPIPE, ECONNRESET, ENOTCONN, ETIMEDOUT).
+    static let posixNetworkCodes: Set<Int> = [32, 54, 57, 60]
+    /// How deep a chain of underlying errors is followed, and how many errors in all (`NSMultipleUnderlyingErrorsKey`
+    /// can branch).
     static let maxDepth = 8
+    static let maxErrors = 64
 
     public static func kind(of error: (any Error)?, playedFor: TimeInterval) -> Kind {
         kind(cause: cause(of: error), playedFor: playedFor)
@@ -52,32 +57,47 @@ public enum PlaybackFailure {
     public static func cause(of error: (any Error)?) -> Cause {
         guard let error else { return .unknown }
         if AVQueueEngine.isUndecodable(error) { return .undecodable }
-        if isNetwork(error as NSError, depth: 0) { return .network }
-        if hasServerError(error as NSError, depth: 0) { return .serverError }
+        var budget = maxErrors
+        if isNetwork(error as NSError, depth: 0, budget: &budget) { return .network }
+        budget = maxErrors
+        if hasServerError(error as NSError, depth: 0, budget: &budget) { return .serverError }
         return .unknown
     }
 
-    /// A URL error of `networkCodes`, directly or under AVFoundation's wrappers and CoreMedia.
-    private static func isNetwork(_ ns: NSError, depth: Int) -> Bool {
-        guard depth < maxDepth else { return false }
-        if ns.domain == NSURLErrorDomain { return networkCodes.contains(ns.code) }
-        let wraps = (ns.domain == AVFoundationErrorDomain && avWrapperCodes.contains(ns.code)) || ns.domain == coreMediaDomain
-        guard wraps, let inner = ns.userInfo[NSUnderlyingErrorKey] as? NSError else { return false }
-        return isNetwork(inner, depth: depth + 1)
+    /// The errors under `ns`: `NSUnderlyingErrorKey`, then `NSMultipleUnderlyingErrorsKey`'s (fix round 1, M3).
+    private static func underlying(_ ns: NSError) -> [NSError] {
+        let one = (ns.userInfo[NSUnderlyingErrorKey] as? NSError).map { [$0] } ?? []
+        let many = (ns.userInfo[NSMultipleUnderlyingErrorsKey] as? [Any])?.compactMap { $0 as? NSError } ?? []
+        return one + many
+    }
+
+    /// A URL error of `networkCodes` or a POSIX socket error of `posixNetworkCodes`, directly or under a URL error with
+    /// another code, AVFoundation's wrappers, CoreMedia or an OSStatus. Bounded by depth and by `budget` errors in all.
+    private static func isNetwork(_ ns: NSError, depth: Int, budget: inout Int) -> Bool {
+        guard depth < maxDepth, budget > 0 else { return false }
+        budget -= 1
+        if ns.domain == NSURLErrorDomain, networkCodes.contains(ns.code) { return true }
+        if ns.domain == NSPOSIXErrorDomain { return posixNetworkCodes.contains(ns.code) }
+        let wraps = ns.domain == NSURLErrorDomain || ns.domain == coreMediaDomain || ns.domain == NSOSStatusErrorDomain
+            || (ns.domain == AVFoundationErrorDomain && avWrapperCodes.contains(ns.code))
+        guard wraps else { return false }
+        for inner in underlying(ns) where isNetwork(inner, depth: depth + 1, budget: &budget) { return true }
+        return false
     }
 
     /// An HTTP 5xx anywhere in the chain: AVFoundation words it "HTTP 500: …" in the description (UNCONFIRMED per iOS
     /// version), or a status code in the user info.
-    private static func hasServerError(_ ns: NSError, depth: Int) -> Bool {
-        guard depth < maxDepth else { return false }
+    private static func hasServerError(_ ns: NSError, depth: Int, budget: inout Int) -> Bool {
+        guard depth < maxDepth, budget > 0 else { return false }
+        budget -= 1
         for key in ["statusCode", "HTTPStatusCode", "NSHTTPStatusCode"] {
             if let code = ns.userInfo[key] as? Int, (500...599).contains(code) { return true }
         }
         let texts = [ns.localizedDescription, ns.userInfo[NSLocalizedFailureReasonErrorKey] as? String,
                      ns.userInfo[NSDebugDescriptionErrorKey] as? String].compactMap { $0 }
         if texts.contains(where: saysServerError) { return true }
-        guard let inner = ns.userInfo[NSUnderlyingErrorKey] as? NSError else { return false }
-        return hasServerError(inner, depth: depth + 1)
+        for inner in underlying(ns) where hasServerError(inner, depth: depth + 1, budget: &budget) { return true }
+        return false
     }
 
     /// "HTTP 5" followed by two digits.

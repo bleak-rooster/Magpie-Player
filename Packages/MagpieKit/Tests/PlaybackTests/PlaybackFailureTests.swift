@@ -78,4 +78,43 @@ import Testing
         for _ in 0..<500 { e = Self.wrapped(e) }
         #expect(PlaybackFailure.kind(of: e, playedFor: 60) == .other)
     }
+
+    /// Fix round 1 (M3): a socket reset, not connected, timed out or broken pipe is the network too, directly, under a
+    /// wrapper or under a URL error whose own code isn't listed.
+    @Test(arguments: [54, 57, 60, 32])
+    func failure_posixSocketErrorsAreNetwork(_ code: Int) {
+        let posix = NSError(domain: NSPOSIXErrorDomain, code: code)
+        #expect(PlaybackFailure.kind(of: posix, playedFor: 60) == .network)
+        #expect(PlaybackFailure.kind(of: Self.wrapped(posix), playedFor: 60) == .network)
+        #expect(PlaybackFailure.kind(of: Self.wrapped(posix, domain: NSURLErrorDomain, code: -1), playedFor: 60) == .network)
+        #expect(PlaybackFailure.kind(of: NSError(domain: NSPOSIXErrorDomain, code: 2), playedFor: 60) == .other,
+                "other POSIX codes aren't")
+    }
+
+    @Test func failure_multipleUnderlyingErrorsAreFollowed() {
+        let several = NSError(domain: AVFoundationErrorDomain, code: -11800, userInfo: [
+            NSMultipleUnderlyingErrorsKey: [NSError(domain: "SomeDomain", code: 1), URLError(.networkConnectionLost)]])
+        #expect(PlaybackFailure.kind(of: several, playedFor: 60) == .network)
+        let http = NSError(domain: "CoreMediaErrorDomain", code: -12939,
+                           userInfo: [NSLocalizedDescriptionKey: "HTTP 503: Service Unavailable"])
+        let both = NSError(domain: AVFoundationErrorDomain, code: -11800, userInfo: [NSMultipleUnderlyingErrorsKey: [http]])
+        #expect(PlaybackFailure.kind(of: both, playedFor: 60) == .conversion)
+    }
+
+    @Test func failure_urlErrorUnderOSStatusIsNetwork() {
+        let status = NSError(domain: NSOSStatusErrorDomain, code: -12345,
+                             userInfo: [NSUnderlyingErrorKey: URLError(.timedOut)])
+        #expect(PlaybackFailure.kind(of: Self.wrapped(status), playedFor: 60) == .network)
+        #expect(PlaybackFailure.kind(of: status, playedFor: 60) == .network)
+    }
+
+    @Test func failure_wideTreeIsBounded() {
+        // Many siblings at every level: the walk stops after a fixed number of errors.
+        func tree(_ depth: Int) -> NSError {
+            guard depth > 0 else { return NSError(domain: "Leaf", code: 0) }
+            let kids = (0..<6).map { _ in tree(depth - 1) }
+            return NSError(domain: AVFoundationErrorDomain, code: -11800, userInfo: [NSMultipleUnderlyingErrorsKey: kids])
+        }
+        #expect(PlaybackFailure.kind(of: tree(6), playedFor: 60) == .other)
+    }
 }

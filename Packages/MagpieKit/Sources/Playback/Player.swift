@@ -113,6 +113,9 @@ public final class Player {
     @ObservationIgnored private var retryGeneration = 0
     /// The engine's own clock for the current load (no offset): how long this load has played, for `PlaybackFailure`.
     @ObservationIgnored private var engineTime: TimeInterval = 0
+    /// Fix round 1 (M2): the current load is a pick-up. Its first second isn't the conversion's first second, so an
+    /// unrecognised failure then counts as the network again, not as a conversion failure.
+    @ObservationIgnored private var pickedUpLoad = false
     /// Round 27 P (D282): stalls of the current entry, logged by kind of stream only.
     @ObservationIgnored private var stalls: (entryId: UUID, count: Int)?
 
@@ -269,6 +272,7 @@ public final class Player {
         engine.setItems([], startAt: 0)
         loaded = nil
         engineTime = 0
+        pickedUpLoad = false
         syncEngine()
         position = 0
         anchorTick(at: 0)
@@ -296,6 +300,7 @@ public final class Player {
         engine.setItems([], startAt: 0)
         loaded = (current.id, url)
         engineTime = 0
+        pickedUpLoad = false
         syncEngine()
         let start = TimeInterval(StreamOffset.seconds(in: url))
         var at = start
@@ -514,7 +519,9 @@ public final class Player {
             let key = FallbackKey(entryId: id, songId: current.song.id)
             let loadedURL = loaded?.url
             // Round 27 P (D277): what kind of failure, from the engine's cause and how long this load had played.
-            let kind = PlaybackFailure.kind(cause: engine.failureCause(for: id), playedFor: engineTime)
+            var cause = engine.failureCause(for: id)
+            if cause == .unknown, pickedUpLoad { cause = .network }   // fix round 1 (M2)
+            let kind = PlaybackFailure.kind(cause: cause, playedFor: engineTime)
             if !fellBack.contains(key), let loadedURL, loadedURL.isFileURL {
                 // The song's file on the phone failed: it streams instead, once (the app drops the file only when it
                 // is damaged). Without a connection there is no stream, and it is skipped like any song that can't play.
@@ -681,6 +688,7 @@ public final class Player {
     private func restartCurrent(rebuild: Bool) {
         let resumeAt = position
         engineTime = 0
+        pickedUpLoad = false
         syncEngine(rebuildCurrent: rebuild)
         let offset = TimeInterval(StreamOffset.seconds(in: loaded?.url))   // R27 P: 0 unless the URL starts part-way
         if resumeAt > offset { engine.seek(to: resumeAt - offset) }
@@ -742,6 +750,7 @@ public final class Player {
         pendingRetry = nil
         networkRetries = nil
         engineTime = 0
+        pickedUpLoad = false
         stalls = nil
     }
 
@@ -788,6 +797,9 @@ public final class Player {
         } else {
             reloadCurrent(on: base, seekTo: at, play: plays)
         }
+        pickedUpLoad = true   // fix round 1 (M2): after `reloadCurrent`, which clears it
+        // Fix round 1 (M1): paused, nothing is picking up any more: the hint goes now, not at some later play.
+        if !plays { reconnectingSongId = nil }
     }
 
     /// The current entry can't play on: when it can't play right now (offline) the next song that can plays; otherwise
