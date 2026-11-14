@@ -408,7 +408,9 @@ final class ChartWriteRouting: HTTPTransport, @unchecked Sendable {
     }
 
     /// I3: a Refresh now or Songs: N during a keep-up is refused (and the other way round): never a second append.
-    @Test func keepUp_lockedAgainstHandSends() async throws {
+    /// Fix round 2 (m2): the hand sends run in their own tasks and must be refused while the keep-up's write is still
+    /// held, so an unlocked build fails here instead of hanging.
+    @Test(.timeLimit(.minutes(1))) func keepUp_lockedAgainstHandSends() async throws {
         let model = try await model()
         defer { model.signOut(); transport.holdWrites(false) }
         let start = Date()
@@ -420,8 +422,17 @@ final class ChartWriteRouting: HTTPTransport, @unchecked Sendable {
         transport.holdWrites(true)
         let keepUp = model.keepChartFlowUpInBackground(moved)
         #expect(await eventually { self.transport.heldCount == 1 }, "the keep-up's first write is on its way")
-        await #expect(throws: AurralError.runActive) { _ = try await model.refreshChartFlow(.worldwide) }
-        await #expect(throws: AurralError.runActive) { _ = try await model.resizeChartFlow(page, count: 5) }
+        let answers = HandSendAnswers()
+        Task {
+            do { _ = try await model.refreshChartFlow(.worldwide); answers.refresh = .some(nil) } catch { answers.refresh = .some(error) }
+        }
+        Task {
+            do { _ = try await model.resizeChartFlow(page, count: 5); answers.resize = .some(nil) } catch { answers.resize = .some(error) }
+        }
+        let refused = await eventually { answers.refresh != nil && answers.resize != nil }
+        #expect(refused && transport.heldCount == 1, "both answered while the keep-up's write is still held")
+        #expect((answers.refresh ?? nil) as? AurralError == .runActive)
+        #expect((answers.resize ?? nil) as? AurralError == .runActive)
         transport.holdWrites(false)
         #expect(await keepUp.value)
         let base = "/api/playlists/shared-playlists/\(flow.playlistId)"
@@ -517,4 +528,10 @@ final class ChartWriteRouting: HTTPTransport, @unchecked Sendable {
         decoder.dateDecodingStrategy = .deferredToDate
         return (try? decoder.decode(File.self, from: data))?.chartFlows
     }
+}
+
+/// Fix round 2 (m2): what each hand send answered (nil: not yet; .some(nil): it went through).
+@MainActor final class HandSendAnswers {
+    var refresh: Error??
+    var resize: Error??
 }

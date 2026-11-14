@@ -336,6 +336,7 @@ struct GenreChartView: View {
         .refreshable {
             await RefreshSafety.run { await feeds.refreshGenre(genreId) }
             reloads += 1
+            keepUp()   // fix round 2 (m1): a pull to refresh is a read too
         }
         .navigationTitle(name)
         .navigationBarTitleDisplayMode(.inline)

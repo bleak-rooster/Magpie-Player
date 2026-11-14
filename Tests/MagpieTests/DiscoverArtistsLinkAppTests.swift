@@ -258,6 +258,32 @@ final class ArtistLinkRouting: HTTPTransport, @unchecked Sendable {
         #expect(add.maxX <= 375.5)
     }
 
+    /// Fix round 2 (R1): from an artist's page opened in the sheet, an album opens too (the sheet's path takes the
+    /// pages' own routes as well as the artist page).
+    @Test func albumFromSheetArtistPageOpens() async throws {
+        artists = []
+        let model = try await signedIn()
+        defer { model.signOut() }
+        var path = NavigationPath()
+        path.append(ArtistPage(route: .outsideArtist(NotYetArtist(name: "Low", mbid: nil))))
+        path.append(Route.album(id: "al-sheet-1"))   // what the artist page's album link appends
+        let scene = try #require(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let window = UIWindow(windowScene: scene)
+        window.frame = CGRect(x: 0, y: 0, width: 375, height: 700)
+        let host = UIHostingController(rootView: DiscoverArtistsView(artists: [], adder: DiscoverArtistAdder(), path: path)
+            .environment(model))
+        window.rootViewController = host
+        window.isHidden = false
+        defer { window.isHidden = true }
+        let albumAsked = await eventually {
+            host.view.layoutIfNeeded()
+            return self.transport.navidrome.requests.contains {
+                $0.url?.path.hasSuffix("/rest/getAlbum") == true && $0.url?.query?.contains("id=al-sheet-1") == true
+            }
+        }
+        #expect(albumAsked, "the album page appeared and read its album")
+    }
+
     /// Hosts `view` in a window and collects what the layout probe reports (until `waitFor` all arrived, or a deadline).
     static func host(_ view: some View, typeSize: DynamicTypeSize, height: CGFloat = 400,
                      model: AppModel? = nil, waitFor: Set<String>) async throws -> [String: CGRect] {

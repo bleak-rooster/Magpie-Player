@@ -60,11 +60,19 @@ struct DiscoverArtistsView: View {
     @Environment(\.dismiss) private var dismiss
     let artists: [DiscoverArtist]
     let adder: DiscoverArtistAdder
-    @State private var path: [ArtistPage] = []
+    /// Fix round 2 (R1): a `NavigationPath`, so the artist page's own links (albums, `Route`s) push too.
+    @State private var path: NavigationPath
     /// The artist whose page is being looked up (by `DiscoverArtist.id`).
     @State private var opening: String?
     /// Where each artist opened, this sheet only (by `DiscoverArtist.id`).
     @State private var opened: [String: Route] = [:]
+
+    /// `path`: pages already open (tests start on one).
+    init(artists: [DiscoverArtist], adder: DiscoverArtistAdder, path: NavigationPath = NavigationPath()) {
+        self.artists = artists
+        self.adder = adder
+        _path = State(initialValue: path)
+    }
     private let themed = Themed()
 
     var body: some View {
