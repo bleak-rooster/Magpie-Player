@@ -158,6 +158,7 @@ extension AppModel {
     private func forgetDiscoverReads(scope: String? = nil) {
         discover.forgetReads()
         aurralFeeds?.forget()   // round 14 A4: Trending, Recommended and Discover playlists go with the user
+        forgetDiscoverSnapshots()   // Round 27 D1 (D283): the saved rows and pages too
         AurralImageProxies.eraseAll(dataDirectory: dataDirectory)   // S14 L3: the picture mapping and memory copies too
         homeFeedSlot?.discard(Set(HomeSection.allCases.filter { $0 == .discover || $0.isProvided }))   // Round 13 Z2: another Aurral (or user) never shows the last one's shelf
         if let scope = scope ?? navidromeScope {
@@ -241,10 +242,17 @@ extension AppModel {
         let candidates = DiscoverRules.flowPlaylists(flows: flows + others, playlists: all)
         var entries: [String: [Song]] = [:]
         // Round 13 Z2: the known Discover playlists no flow is named as now are read too (`discoverPlaylistsToRead`).
-        for id in Self.discoverPlaylistsToRead(candidates: candidates, before: before, all: all) {
-            if let (_, songs) = try? await request({ try await $0.playlist(id: id) }) {
-                entries[id] = songs
+        // Round 27 D1 (D284): four at a time, not one after another.
+        await withTaskGroup(of: (String, [Song]?).self) { group in
+            var started = 0
+            for id in Self.discoverPlaylistsToRead(candidates: candidates, before: before, all: all) {
+                if started >= 4, let done = await group.next(), let songs = done.1 { entries[done.0] = songs }
+                started += 1
+                group.addTask { [weak self] in
+                    (id, try? await self?.request { try await $0.playlist(id: id) }.1)
+                }
             }
+            for await done in group { if let songs = done.1 { entries[done.0] = songs } }
         }
         guard navidromeScope == scope, discover.connection?.account == account else { return }
         // Round 13 Z2: a read that can't confirm a playlist (jobs unreadable, a run under way, a playlist that didn't
@@ -281,10 +289,12 @@ extension AppModel {
         noteOthersPlaylists(identified.notMine, scope: scope)
         discover.playlists = matched
         appDefaults.set(matched.map(\.playlist.id), forKey: Self.discoverPlaylistsKey(scope))
-        if Set(matched.map(\.playlist.id)) != before {
+        let idsChanged = Set(matched.map(\.playlist.id)) != before
+        if idsChanged {
             libraryEdits.playlistsRevision += 1   // Playlists read again
             homeFeedSlot?.sectionsChanged([.discover, .playlists])   // Round 13 Z2: and Home's two shelves
         }
+        saveDiscoverRows(announced: idsChanged)   // Round 27 D1 (D283, D284): saved, and swapped in where they differ
         if !unknown { await refreshAurralLibrary(entries: aurralSongs) }
     }
 
@@ -296,12 +306,18 @@ extension AppModel {
         guard let scope = navidromeScope else { return }
         if savedDiscoverLibraryIds.isEmpty, !entries.isEmpty { _ = await libraryCopies(for: entries, flowId: nil) }
         var ids = Set(entries.map(\.id))
+        // Round 27 D1 (D285): Aurral's libraries' own songs, kept apart when read in full (a playlist song outside them
+        // is the main library's own and needs no lookup).
+        var inLibraries = Set<String>(), complete = !savedDiscoverLibraryIds.isEmpty
         for library in savedDiscoverLibraryIds.sorted() {
             guard let read = try? await request({ try await $0.songs(inLibrary: library, maxPages: 20) }) else { return }
             ids.formUnion(read.songs.map(\.id))
+            inLibraries.formUnion(read.songs.map(\.id))
+            complete = complete && read.complete
         }
         guard navidromeScope == scope else { return }
         discover.aurralSongIds = ids
+        discover.discoverLibrarySongIds = complete ? inLibraries : nil
         appDefaults.set(Array(ids).sorted().prefix(Self.aurralSongsLimit).map { $0 }, forKey: Self.aurralSongsKey(scope))
     }
 
@@ -319,9 +335,16 @@ extension AppModel {
 
     /// Discover's playlists for Home, Library and the car: read again when stale; if Aurral doesn't answer, the
     /// server's playlists that were Discover's last time.
+    /// Round 27 D1 (D283): the saved rows before anything is read this session; with rows known, the read runs behind
+    /// (whatever it changes reaches Library › Discover and Home by itself) and nothing waits for it.
     func discoverPlaylists() async throws -> [Playlist] {
         guard aurralSetUp, !isOffline else { return [] }
-        await refreshDiscover(waitingAtMost: Self.discoverWait)   // Round 13 Z2: never held up by a slow Aurral
+        restoreSavedDiscover()
+        if discover.playlists.isEmpty {
+            await refreshDiscover(waitingAtMost: Self.discoverWait)   // Round 13 Z2: never held up by a slow Aurral
+        } else {
+            startDiscoverRead()
+        }
         guard !discover.flowsNotPermitted else { return [] }   // round 14: no accessFlow, Discover hides
         // Round 23 R23F (D189, D190): the user's own, and other users' only with "Show everyone's flows" on.
         if !discover.playlists.isEmpty { return discover.playlists.map(\.playlist).filter(isShownInDiscover) }
@@ -347,7 +370,8 @@ extension AppModel {
     }
 
     func isSyncedPlaylist(flowId: String) -> Bool {
-        discover.status?.sharedPlaylists.contains { $0.id == flowId } ?? false
+        guard let status = discover.status else { return discover.savedSharedItemIds.contains(flowId) }   // Round 27 D1: as saved
+        return status.sharedPlaylists.contains { $0.id == flowId }
     }
 
     /// Round 14 A4 fix round 1 (I2): a shared playlist Add flow made (a Deezer playlist, or one this phone added).
@@ -361,13 +385,10 @@ extension AppModel {
     // MARK: - A Discover playlist's page
 
     /// The playlist with each flow song the main library has shown as the library's copy, in its place. Each song's
-    /// lookup is kept for the session (`lookupLifetime`); `fresh` (pull to refresh) looks them all up again.
+    /// lookup is kept (`DiscoverSnapshot.Lookup.isFresh`); `fresh` (pull to refresh) looks them all up again.
+    /// Round 27 D1 (D285): the saved page at once, refreshed behind it (the car, the queue's actions).
     func discoverPage(playlistId: String, fresh: Bool = false) async throws -> DiscoverPage {
-        let (playlist, songs) = try await request { try await $0.playlist(id: playlistId) }
-        noteFlowSongs(songs)
-        let flow = discoverFlow(playlistId: playlistId)
-        let copies = await libraryCopies(for: songs, flowId: flow?.id, fresh: fresh)
-        return DiscoverPage(playlist: playlist, flow: flow, entries: DiscoverRules.swapped(songs, copies: copies))
+        try await discoverPageSavedOrRead(playlistId: playlistId, fresh: fresh)
     }
 
     /// The flow songs as Aurral's copies: never a "library copy" of anything, and an artist page hides an album of
@@ -379,28 +400,38 @@ extension AppModel {
         }
     }
 
-    /// How long a song's lookup (its library copy, or none) is kept (fix M1).
-    nonisolated static let lookupLifetime: TimeInterval = 30 * 60
-
     /// The main library's copy of each of `songs` that has one (by the song's id). Looks each song up: by recording id
     /// (the song's, else Aurral's job's) through the server's lookup, which also says which library each copy is in
     /// (and so where Aurral's files are: `learnDiscoverLibrary`); else by title, matched on artist + title + duration.
-    /// A lookup made in the last `lookupLifetime` is used as it is (hits and misses), unless `fresh`. The match index
-    /// isn't used: it answers ids only and matches by name too, which the swap never does.
+    /// The match index isn't used to find a copy: it answers ids only and matches by name too, which the swap never does.
     func libraryCopies(for songs: [Song], flowId: String?, fresh: Bool = false) async -> [String: Song] {
+        await lookUpLibraryCopies(for: songs, flowId: flowId, fresh: fresh)
+    }
+
+    /// Round 27 D1 (D285): `libraryCopies`, with each lookup's answer handed to `landed` as it lands (the page fills in
+    /// row by row). A lookup is used as it is while fresh (a copy for a week while the match index still holds it, none
+    /// for a day; fix M1's 30 minutes before), unless `fresh`; a song that is the main library's own file is never
+    /// looked up; a background pass's lookups come out of its `budget` (a song left over is not looked up this time).
+    func lookUpLibraryCopies(for songs: [Song], flowId: String?, fresh: Bool = false, budget: DiscoverLookupBudget? = nil,
+                             landed: ((String, Song?) -> Void)? = nil) async -> [String: Song] {
         guard session != nil, !isOffline, !songs.isEmpty else { return [:] }
+        let index = await discoverMatchIndex()
         let now = discover.now()
         let jobs = discover.jobs
         let excluding = knownAurralSongIds.union(songs.map(\.id)).union(findSongs.map(\.id))
         let libraries = listedLibraryIds.map(Set.init)
         let notLibraries = separateLibraryIds
+        let discoverLibraries = savedDiscoverLibraryIds
         var copies: [String: Song] = [:]
         var rows: [String: [Song]] = [:]
         var toLookUp: [Song] = []
         for song in songs {
-            if !fresh, let known = discover.lookups[song.id], now.timeIntervalSince(known.at) < Self.lookupLifetime {
+            if !fresh, let known = discover.lookups[song.id], isFreshDiscoverLookup(known, now: now, index: index) {
                 if let copy = known.copy { copies[song.id] = copy }
-            } else if !toLookUp.contains(where: { $0.id == song.id }) {
+            } else if DiscoverSnapshot.isOwnLibraryCopy(song, discoverLibraries: discoverLibraries,
+                                                        discoverLibrarySongIds: discover.discoverLibrarySongIds) {
+                discover.lookups[song.id] = DiscoverLookup(copy: nil, at: now)   // its own copy: nothing to find
+            } else if !toLookUp.contains(where: { $0.id == song.id }), budget?.take() ?? true {
                 toLookUp.append(song)
             }
         }
@@ -410,6 +441,7 @@ extension AppModel {
                 if started >= 4, let done = await group.next() {   // four at a time
                     copies[done.0] = done.1
                     rows[done.0] = done.2
+                    landed?(done.0, done.1)
                 }
                 started += 1
                 let recording = song.recordingMBID ?? DiscoverRules.jobRecording(for: song, jobs: jobs, flowId: flowId)
@@ -423,6 +455,7 @@ extension AppModel {
             for await done in group {
                 copies[done.0] = done.1
                 rows[done.0] = done.2
+                landed?(done.0, done.1)
             }
         }
         for song in toLookUp { discover.lookups[song.id] = DiscoverLookup(copy: copies[song.id], at: now) }

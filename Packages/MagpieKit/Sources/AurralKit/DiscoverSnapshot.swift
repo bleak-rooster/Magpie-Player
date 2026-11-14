@@ -206,22 +206,22 @@ public struct DiscoverSnapshot: Codable, Equatable, Sendable {
         return copy
     }
 
-    /// The file's bytes: bounded, and with the pages saved longest ago dropped until it fits `maxBytes`.
-    public func encoded() throws -> Data {
+    /// The file's bytes: `fitted()`.
+    public func encoded() throws -> Data { try JSONEncoder().encode(fitted()) }
+
+    /// Bounded, and with the pages saved longest ago dropped until it encodes within `maxBytes` (a bigger file would
+    /// read as none, losing every page).
+    public func fitted() throws -> DiscoverSnapshot {
         var copy = bounded()
         let encoder = JSONEncoder()
-        var data = try encoder.encode(copy)
-        var size = data.count
+        var size = try encoder.encode(copy).count
         var oldest = copy.oldestPages().makeIterator()
         while size > Self.maxBytes, let id = oldest.next() {
-            // The page, its key and a little punctuation; encoded again exactly once the estimate says it fits.
+            // The page, its key and a little punctuation; measured again exactly once the estimate says it fits.
             if let page = copy.pages.removeValue(forKey: id) { size -= try encoder.encode(page).count + id.utf8.count + 4 }
-            if size <= Self.maxBytes {
-                data = try encoder.encode(copy)
-                size = data.count
-            }
+            if size <= Self.maxBytes { size = try encoder.encode(copy).count }
         }
-        return data
+        return copy
     }
 
     /// The saved file, or nil when it is too big, another version, or doesn't read.

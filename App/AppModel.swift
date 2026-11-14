@@ -229,6 +229,9 @@ final class AppModel {
     /// R19: what the outside artist and album pages read from MusicBrainz, in memory for this session only.
     @ObservationIgnored var outsideCatalogStore: OutsideCatalog?
     @ObservationIgnored let lidarrTopSongsSession = LidarrTopSongsSession()   // Round 26 K2 (D264)
+    // Round 27 D1: Discover's saved rows and pages (AppModel+DiscoverSnapshot.swift, D283); removed with D90's feeds
+    // file in `forgetDiscoverReads` (sign-out, Aurral sign-out, another Aurral user).
+    @ObservationIgnored let discoverSnapshots = DiscoverSnapshotStore()
     /// Spaces the app's `api.listenbrainz.org` calls ("Made for you"); labs search never waits on it.
     @ObservationIgnored let listenBrainzLimiter = RateLimiter(perSecond: 2)
     @ObservationIgnored private var unlockObserver: NSObjectProtocol?
