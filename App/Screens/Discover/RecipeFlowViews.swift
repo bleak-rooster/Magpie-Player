@@ -97,9 +97,12 @@ struct YourFlowsSection: View {
     }
 }
 
-/// Round 16: the recipe editor (New flow, Edit flow): Simple shows the everyday fields, Advanced adds each source's
-/// share, tags to leave out, similar artists, recent listening and automatic download. Switching never drops a value.
+/// Round 16: the recipe editor (New flow, Edit flow): Simple shows the everyday fields, Advanced adds tags to leave out,
+/// similar artists, recent listening and automatic download. Switching never drops a value.
+/// Round 27 D2 (owner item 13, 2026-11-14): both ask for a number of songs per source (a checkmark and a stepper each),
+/// with "N songs in all" below, as Aurral's editor does; the size field and the share sliders are gone (D316).
 struct RecipeFlowEditor: View {
+    @Environment(\.discoverLayoutProbe) private var probe
     enum Target: Identifiable {
         case new(FlowRecipe)
         case edit(AurralFlow)
@@ -146,10 +149,6 @@ struct RecipeFlowEditor: View {
                     .accessibilityIdentifier("recipe-flow-mode")
                     TextField(RecipeFlowCopy.name, text: $recipe.name)
                         .accessibilityIdentifier("recipe-flow-name")
-                    Stepper(value: $recipe.size, in: 1...FlowRecipe.maxSongs) {
-                        Text(RecipeFlowCopy.songs(recipe.size)).monospacedDigit()
-                    }
-                    .accessibilityIdentifier("recipe-flow-size")
                 } footer: {
                     if !advanced, recipe.usesAdvanced { Text(RecipeFlowCopy.usesAdvanced) }
                 }
@@ -222,45 +221,19 @@ struct RecipeFlowEditor: View {
         }
     }
 
-    @ViewBuilder private var sourcesSection: some View {
+    /// Round 27 D2: each source's count (Simple and Advanced alike), the total below (D316).
+    private var sourcesSection: some View {
         Section {
-            if advanced {
-                let total = max(1, recipe.sources.reduce(0) { $0 + (recipe.shares[$1] ?? 0) })
-                ForEach(FlowSource.allCases, id: \.self) { source in
-                    VStack(alignment: .leading) {
-                        HStack {
-                            Text(RecipeFlowCopy.source(source))
-                            Spacer()
-                            Text("\(Int((Double(recipe.shares[source] ?? 0) / Double(total) * 100).rounded()))%")
-                                .monospacedDigit().foregroundStyle(.secondary)
-                        }
-                        Slider(value: Binding(get: { Double(recipe.shares[source] ?? 0) },
-                                              set: { recipe.shares[source] = Int($0.rounded()) }), in: 0...100, step: 5)
-                            .accessibilityIdentifier("recipe-flow-share-\(source.rawValue)")
-                    }
-                }
-            } else {
-                ForEach(FlowSource.allCases, id: \.self) { source in
-                    let on = recipe.sources.contains(source)
-                    Button {
-                        var picked = Set(recipe.sources)
-                        if on { picked.remove(source) } else { picked.insert(source) }
-                        recipe.setSources(picked)
-                    } label: {
-                        HStack {
-                            Text(RecipeFlowCopy.source(source)).foregroundStyle(Color.primary)
-                            Spacer()
-                            if on { Image(systemName: "checkmark").foregroundStyle(Color.accentColor) }
-                        }
-                    }
-                    .accessibilityAddTraits(on ? .isSelected : [])
-                    .accessibilityIdentifier("recipe-flow-source-\(source.rawValue)")
-                }
+            ForEach(FlowSource.allCases, id: \.self) { source in
+                SourceCountRow(source: source, recipe: $recipe)
             }
         } header: {
             Text(RecipeFlowCopy.sources)
         } footer: {
-            Text(advanced ? RecipeFlowCopy.sharesNote : RecipeFlowCopy.sourcesNote)
+            Text(RecipeFlowCountCopy.songsInAll(recipe.size))
+                .monospacedDigit()
+                .accessibilityIdentifier("recipe-flow-total")
+                .discoverProbe(probe, "total:" + RecipeFlowCountCopy.songsInAll(recipe.size))
         }
     }
 
@@ -319,6 +292,146 @@ struct RecipeFlowEditor: View {
         } catch {
             message = DiscoverCopy.message(for: error)
         }
+    }
+}
+
+/// Round 27 D2 (owner item 13, 2026-11-14): one source's songs: Include / Leave out (the checkmark and the source's
+/// name: on gives it ten, off none) and "N songs" with Fewer and More (hold to keep stepping, a light tap of feedback
+/// each step; 0–100). At accessibility sizes the count goes under the name. For VoiceOver the row is one element,
+/// "<Source>, N songs", adjustable, with the actions Include / Leave out, 5 more and 5 fewer (D316; fix round 1 H3,
+/// H4, M4, M5, M6).
+private struct SourceCountRow: View {
+    @Environment(\.discoverLayoutProbe) private var probe
+    @Environment(\.dynamicTypeSize) private var typeSize
+    let source: FlowSource
+    @Binding var recipe: FlowRecipe
+    /// The symbols grow with the text, but no further than fits a 44 pt target (H3).
+    @ScaledMetric(relativeTo: .title2) private var symbolSize: CGFloat = 24
+
+    private var count: Int { recipe.counts[source] ?? 0 }
+    private var symbol: Font { .system(size: min(symbolSize, 34)) }
+
+    var body: some View {
+        let on = count > 0
+        Group {
+            if typeSize.isAccessibilitySize {
+                VStack(alignment: .leading, spacing: Tokens.Spacing.xs) {
+                    include(on)
+                    HStack(spacing: Tokens.Spacing.s) { countText(on); Spacer(minLength: 0); steppers }
+                }
+            } else {
+                HStack(spacing: Tokens.Spacing.s) {
+                    include(on)
+                    Spacer(minLength: Tokens.Spacing.s)
+                    countText(on)
+                    steppers
+                }
+            }
+        }
+        .sensoryFeedback(.selection, trigger: count)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(RecipeFlowCountCopy.sourceLabel(source, count))
+        .accessibilityHint(on ? "" : RecipeFlowCountCopy.offHint)
+        .accessibilityAddTraits(on ? .isSelected : [])
+        .accessibilityAdjustableAction { direction in
+            switch direction {
+            case .increment: RecipeFlowCountCopy.step(&recipe, source, by: 1)
+            case .decrement: RecipeFlowCountCopy.step(&recipe, source, by: -1)
+            @unknown default: break
+            }
+        }
+        .accessibilityAction { recipe.setSource(source, on: !on) }
+        .accessibilityAction(named: on ? RecipeFlowCountCopy.leaveOutAction : RecipeFlowCountCopy.includeAction) {
+            recipe.setSource(source, on: !on)
+        }
+        .accessibilityAction(named: RecipeFlowCountCopy.fiveMore) {
+            RecipeFlowCountCopy.step(&recipe, source, by: RecipeFlowCountCopy.longPressStep)
+        }
+        .accessibilityAction(named: RecipeFlowCountCopy.fiveFewer) {
+            RecipeFlowCountCopy.step(&recipe, source, by: -RecipeFlowCountCopy.longPressStep)
+        }
+        .accessibilityIdentifier("recipe-flow-source-\(source.rawValue)")
+        .discoverProbe(probe, "source:" + RecipeFlowCountCopy.sourceLabel(source, count))
+    }
+
+    /// The checkmark and the source's name: one button (L1: the name toggles too).
+    private func include(_ on: Bool) -> some View {
+        Button { recipe.setSource(source, on: !on) } label: {
+            HStack(spacing: Tokens.Spacing.s) {
+                Image(systemName: on ? "checkmark.circle.fill" : "circle")
+                    .font(symbol)
+                    .foregroundStyle(on ? Color.accentColor : Color.secondary)
+                Text(RecipeFlowCopy.source(source)).foregroundStyle(Color.primary)
+            }
+            .frame(minHeight: Tokens.minHitSize)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(on ? RecipeFlowCountCopy.leaveOut(source) : RecipeFlowCountCopy.include(source))
+        .accessibilityIdentifier("recipe-flow-include-\(source.rawValue)")
+        .discoverProbe(probe, "include:\(source.rawValue)")
+    }
+
+    private func countText(_ on: Bool) -> some View {
+        Text(RecipeFlowCopy.songs(count)).monospacedDigit().foregroundStyle(on ? Color.primary : Color.secondary)
+    }
+
+    private var steppers: some View {
+        HStack(spacing: Tokens.Spacing.xs) {
+            stepButton("minus.circle", label: RecipeFlowCountCopy.fewer, by: -1, enabled: count > 0, id: "fewer")
+            stepButton("plus.circle", label: RecipeFlowCountCopy.more, by: 1,
+                       enabled: count < FlowRecipe.maxSongsPerSource, id: "more")   // M4: not past 100
+        }
+    }
+
+    /// A step of one; held, it keeps stepping (M5).
+    private func stepButton(_ name: String, label: String, by step: Int, enabled: Bool, id: String) -> some View {
+        Button { RecipeFlowCountCopy.step(&recipe, source, by: step) } label: {
+            Image(systemName: name)
+                .font(symbol)
+                .frame(minWidth: Tokens.minHitSize, minHeight: Tokens.minHitSize)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .buttonRepeatBehavior(.enabled)
+        .foregroundStyle(enabled ? Color.accentColor : Color.secondary.opacity(0.5))
+        .disabled(!enabled)
+        .accessibilityLabel(label)
+        .accessibilityIdentifier("recipe-flow-\(id)-\(source.rawValue)")
+        .discoverProbe(probe, "\(id):\(source.rawValue)")
+    }
+}
+
+/// Round 27 D2: the count editor's words and steps (D316; copy as plan §8, fix round 1 amendments).
+enum RecipeFlowCountCopy {
+    /// What the "5 more" / "5 fewer" actions step by.
+    static let longPressStep = 5
+    static let fewer = "Fewer"
+    static let more = "More"
+    static let includeAction = "Include"
+    static let leaveOutAction = "Leave out"
+    static let fiveMore = "5 more"
+    static let fiveFewer = "5 fewer"
+    /// On a source that's off (H4).
+    static let offHint = "Include it to bring songs from here."
+
+    static func include(_ source: FlowSource) -> String { "Include \(RecipeFlowCopy.source(source))" }
+    static func leaveOut(_ source: FlowSource) -> String { "Leave out \(RecipeFlowCopy.source(source))" }
+
+    /// "30 songs in all".
+    static func songsInAll(_ n: Int) -> String { "\(RecipeFlowCopy.songs(n)) in all" }
+
+    /// VoiceOver: "Library, 12 songs".
+    static func sourceLabel(_ source: FlowSource, _ n: Int) -> String {
+        "\(RecipeFlowCopy.source(source)), \(RecipeFlowCopy.songs(n))"
+    }
+
+    /// Steps a source's count: never below 0, never up past 100 (a count already over 100, from a flow made bigger on
+    /// the server, only steps down: fix round 1 I4).
+    static func step(_ recipe: inout FlowRecipe, _ source: FlowSource, by step: Int) {
+        let current = recipe.counts[source] ?? 0
+        let next = current + step
+        recipe.counts[source] = step > 0 ? min(next, max(current, FlowRecipe.maxSongsPerSource)) : max(next, 0)
     }
 }
 

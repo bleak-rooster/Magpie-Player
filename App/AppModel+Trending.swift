@@ -24,8 +24,14 @@ extension AppModel {
         snapshot.chart = server.flatMap { TrendingChart(key: "country:" + $0) }
         let wanted = setting.chart(phoneRegion: aurralFeeds.phoneRegion(), serverRegion: server,
                                    countriesWithCharts: Set(AurralFeeds.chartPlaylists.keys))
-        guard let wanted, wanted != snapshot.chart else { return snapshot }
-        if case .country(let code) = wanted, AurralFeeds.chartPlaylists[code] == nil { return snapshot }   // no such chart
+        guard let wanted, wanted != snapshot.chart else {
+            keepTrendingFlowUp(snapshot)
+            return snapshot
+        }
+        if case .country(let code) = wanted, AurralFeeds.chartPlaylists[code] == nil {   // no such chart
+            keepTrendingFlowUp(snapshot)
+            return snapshot
+        }
         do {
             let page = try await readChart(wanted, client: client)
             snapshot.songs = page.songs
@@ -39,7 +45,18 @@ extension AppModel {
         } catch {
             snapshot.showingServerInstead = server ?? ""
         }
+        keepTrendingFlowUp(snapshot)
         return snapshot
+    }
+
+    /// Round 27 D2 (D319): the default chart was just read (Trending, or Home's shelf), so its flow keeps up with it,
+    /// in the background.
+    private func keepTrendingFlowUp(_ snapshot: TrendingSnapshot) {
+        guard let chart = snapshot.chart, let songs = snapshot.songs, !songs.isEmpty, chartFlow(for: chart)?.confirmed == true
+        else { return }
+        let page = ChartPage(chart: chart, name: snapshot.chartName ?? chartTitle(chart), songs: songs,
+                             playlistId: snapshot.chartPlaylistId, libraryPlaylistId: snapshot.libraryPlaylistId)
+        keepChartFlowUpInBackground(page)
     }
 
     /// A chart or Discover playlist song as a preview item (its Deezer id keys it).

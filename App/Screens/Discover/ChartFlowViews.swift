@@ -59,6 +59,10 @@ struct ChartFlowControl: View {
                         }
                         if flow.confirmed {
                             if case .live(let live)? = phase { SyncedFailures(playlistId: flow.playlistId, phase: live) }
+                            // Round 27 D2 (D319): it follows the chart by itself.
+                            Text(ChartFlowRowCopy.keepsUp)
+                                .font(.footnote).foregroundStyle(themed.palette.ink2Color)
+                                .accessibilityIdentifier("chart-flow-keeps-up")
                         }
                     }
                 } else {
@@ -108,8 +112,13 @@ struct ChartFlowSheet: View {
     init(page: ChartPage, flow: ChartFlow?) {
         self.page = page
         self.flow = flow
+        _count = State(initialValue: Self.initialCount(page: page, flow: flow))
+    }
+
+    /// Round 27 D2 (per owner Q4, D320): a new flow starts at the whole chart (up to 100); an existing one at its N.
+    static func initialCount(page: ChartPage, flow: ChartFlow?) -> Int {
         let most = max(1, min(page.songs.count, ChartFlowPlan.maxSongs))
-        _count = State(initialValue: min(most, flow?.count ?? ChartFlowPlan.defaultCount(chartLength: page.songs.count)))
+        return min(most, flow?.count ?? AppModel.newChartFlowCount(chartLength: page.songs.count))
     }
 
     private var most: Int { max(1, min(page.songs.count, ChartFlowPlan.maxSongs)) }

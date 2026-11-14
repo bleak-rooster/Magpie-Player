@@ -240,6 +240,11 @@ final class AppModel {
     /// Settings › Lidarr › Missing albums: the last search's answer and a Clear all's run (AppModel+MissingAlbums, D290–D292).
     let missingAlbums = MissingAlbumsState()
     // Round 27 R end
+    // Round 27 D2
+    /// Round 27 D2 fix round 1 (I3, D319): the chart flows (Aurral playlist ids) being sent right now, by hand (Refresh
+    /// now, Songs: N) or by keeping up; one at a time per flow (AppModel+ChartFlows.swift).
+    @ObservationIgnored var chartFlowsSending: Set<String> = []
+    // Round 27 D2 end
     /// Spaces the app's `api.listenbrainz.org` calls ("Made for you"); labs search never waits on it.
     @ObservationIgnored let listenBrainzLimiter = RateLimiter(perSecond: 2)
     @ObservationIgnored private var unlockObserver: NSObjectProtocol?

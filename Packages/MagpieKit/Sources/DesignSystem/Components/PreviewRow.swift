@@ -14,25 +14,29 @@ public struct PreviewRow<MenuItems: View>: View {
     private let status: PreviewStatus?
     private let onPreview: () -> Void
     private let menu: MenuItems?
+    /// Round 27 D2 fix round 1 (design M1): words added to the row's VoiceOver label (", on its way"); nil: none.
+    private let accessibilityNote: String?
     private let themed = ThemedPalette()
     @Environment(\.dynamicTypeSize) private var typeSize
     @ScaledMetric(relativeTo: .body) private var thumb: CGFloat = 48
 
     public init(title: String, artist: String, artwork: Image? = nil, inLibrary: Bool = false, status: PreviewStatus?,
-                onPreview: @escaping () -> Void, @ViewBuilder menu: () -> MenuItems) {
+                accessibilityNote: String? = nil, onPreview: @escaping () -> Void, @ViewBuilder menu: () -> MenuItems) {
         self.init(title: title, artist: artist, artwork: artwork, inLibrary: inLibrary, status: status,
-                  onPreview: onPreview, menuItems: menu())
+                  onPreview: onPreview, menuItems: menu(), accessibilityNote: accessibilityNote)
     }
 
     /// The one place the row's fields are set (both public initialisers come here).
     fileprivate init(title: String, artist: String, artwork: Image?, inLibrary: Bool, status: PreviewStatus?,
-                     onPreview: @escaping () -> Void, menuItems: MenuItems?) {
+                     onPreview: @escaping () -> Void, menuItems: MenuItems?, accessibilityNote: String? = nil) {
         self.title = title; self.artist = artist; self.artwork = artwork; self.inLibrary = inLibrary
-        self.status = status; self.onPreview = onPreview; self.menu = menuItems
+        self.status = status; self.onPreview = onPreview; self.menu = menuItems; self.accessibilityNote = accessibilityNote
     }
 
-    public static func accessibilityLabel(title: String, artist: String, inLibrary: Bool) -> String {
-        inLibrary ? "\(title), \(artist), in your library" : "\(title), \(artist)"
+    public static func accessibilityLabel(title: String, artist: String, inLibrary: Bool, note: String? = nil) -> String {
+        let base = inLibrary ? "\(title), \(artist), in your library" : "\(title), \(artist)"
+        guard let note, !note.isEmpty else { return base }
+        return "\(base), \(note)"
     }
 
     public var body: some View {
@@ -51,7 +55,8 @@ public struct PreviewRow<MenuItems: View>: View {
                     }
                 }
                 .accessibilityElement(children: .ignore)
-                .accessibilityLabel(Self.accessibilityLabel(title: title, artist: artist, inLibrary: inLibrary))
+                .accessibilityLabel(Self.accessibilityLabel(title: title, artist: artist, inLibrary: inLibrary,
+                                                            note: accessibilityNote))
                 if let status, wordsBelow { PreviewButton(status: status, action: onPreview) }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -94,9 +99,9 @@ public struct PreviewRow<MenuItems: View>: View {
 public extension PreviewRow where MenuItems == EmptyView {
     /// A row with no ⋯ menu.
     init(title: String, artist: String, artwork: Image? = nil, inLibrary: Bool = false, status: PreviewStatus?,
-         onPreview: @escaping () -> Void) {
+         accessibilityNote: String? = nil, onPreview: @escaping () -> Void) {
         self.init(title: title, artist: artist, artwork: artwork, inLibrary: inLibrary, status: status,
-                  onPreview: onPreview, menuItems: nil)
+                  onPreview: onPreview, menuItems: nil, accessibilityNote: accessibilityNote)
     }
 }
 
