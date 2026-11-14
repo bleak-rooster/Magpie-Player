@@ -42,6 +42,7 @@ extension AppModel {
     func scenePhaseChanged(_ phase: ScenePhase) {
         downloads?.setPresence(active: phase == .active, background: phase == .background)
         monitoringSceneChanged(active: phase == .active)   // R24H fix round 4 (D-L2)
+        missingAlbumsSceneChanged(active: phase == .active)   // Round 27 R (D291): the missing-album schedule
     }
 
     /// A manager built while Magpie isn't open (a launch for the car, or for the background session's events) knows it;

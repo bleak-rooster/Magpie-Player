@@ -248,6 +248,8 @@ struct LidarrDownloadsView: View {
     @State private var pendingForeign: [LidarrDownloads.Row] = []
     /// A row whose Restart asks first (still going, couldn't import, or another app's: the flagged confirmation).
     @State private var pendingOne: LidarrDownloads.Row?
+    /// Round 27 R (D292): what Clear all read for its confirmation.
+    @State private var clearPlan: ClearAllPlan?
 
     var body: some View {
         List {
@@ -330,6 +332,10 @@ struct LidarrDownloadsView: View {
         } message: {
             Text(pendingOne.flatMap { LidarrDownloadsCopy.confirmOne($0.ask, phase: $0.phase) } ?? "")
         }
+        .clearAllConfirmation(plan: $clearPlan)   // Round 27 R (D292)
+        .onChange(of: model.missingAlbums.clearing) { _, clearing in
+            if !clearing { Task { await screen.refresh(model) } }   // the list after a Clear all
+        }
     }
 
     /// One row's Restart (round 13, D63): a stalled or failed copy restarts at once; one still going, one that couldn't
@@ -343,11 +349,15 @@ struct LidarrDownloadsView: View {
         }
     }
 
-    private var canChange: Bool { model.changesAllowed && !model.isOffline && !screen.restarting }
+    private var canChange: Bool {
+        model.changesAllowed && !model.isOffline && !screen.restarting && !model.missingAlbums.clearing   // Round 27 R
+    }
 
     @ViewBuilder private func restartAllSection(_ board: LidarrDownloads) -> some View {
         let anyToRestart = !board.restartable.isEmpty || !board.restartableForeign.isEmpty
-        if anyToRestart || !model.changesAllowed {
+        // Round 27 R (D292): Clear all, beside Restart all, while anything is listed.
+        let anyListed = !(board.active + board.stalled + board.failed + board.couldntImport + board.notStarted).isEmpty
+        if anyToRestart || anyListed || !model.changesAllowed {
             Section {
                 if anyToRestart {
                     Button(role: .destructive) {
@@ -361,6 +371,9 @@ struct LidarrDownloadsView: View {
                     }
                     .disabled(!canChange)
                     .accessibilityIdentifier("lidarr-downloads-restart-all")
+                }
+                if anyListed {
+                    ClearAllButton(identifier: "lidarr-downloads-clear-all", plan: $clearPlan)   // Round 27 R (D292)
                 }
             } footer: {
                 Text(model.changesAllowed ? LidarrDownloadsCopy.footer : LidarrDownloadsCopy.changesOff)

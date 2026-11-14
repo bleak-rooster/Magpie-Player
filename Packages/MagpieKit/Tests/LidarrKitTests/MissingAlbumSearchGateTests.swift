@@ -247,6 +247,37 @@ import MagpieTestSupport
         }
     }
 
+    /// Plan §5 R "Done when", on the local dev Lidarr only (G0: `LidarrDevStack.load` refuses anything but 127.0.0.1 with
+    /// the dev marker): one MissingAlbumSearch lands, and a second is refused (the gate's ten minutes; and, while Lidarr
+    /// still lists the first as queued or started, Lidarr's own command list for a gate without that record).
+    @Test(.enabled(if: LidarrDevStack.enabled, "set MAGPIE_IT=1 (scripts/it.sh) to run integration tests"))
+    func missingAlbumSearchIT() async throws {
+        let cfg = try LidarrDevStack.load()
+        let client = LidarrClient(base: cfg.url, apiKey: cfg.apiKey, transport: URLSessionTransport())
+        let env = GateEnv(), other = GateEnv()
+        defer {
+            UserDefaults(suiteName: env.defaults)?.removePersistentDomain(forName: env.defaults)
+            UserDefaults(suiteName: other.defaults)?.removePersistentDomain(forName: other.defaults)
+        }
+        let gate = await env.gate(client, enabled: true)
+        let running = { try await client.commands().contains {
+            $0.name.lowercased() == "missingalbumsearch" && ["queued", "started"].contains($0.status.lowercased())
+        } }
+        if try await running() {
+            await #expect(throws: WriteGateError.forbidden(MissingAlbumSearch.alreadyRunning)) { try await send(gate) }
+            return   // one left over from an earlier run: refused, nothing sent
+        }
+        try await send(gate)
+        await #expect(throws: WriteGateError.forbidden(MissingAlbumSearch.tooSoon)) { try await send(gate) }
+        if try await running() {
+            let fresh = await other.gate(client, enabled: true)
+            await #expect(throws: WriteGateError.forbidden(MissingAlbumSearch.alreadyRunning)) { try await send(fresh) }
+        }
+        let posts = await gate.changeLog().filter { $0.method == "POST" }
+        #expect(posts.count == 1, "it landed once")
+        #expect(posts.first.flatMap(\.status).map { (200..<300).contains($0) } == true)
+    }
+
     /// The other commands are still the ledger's: an AlbumSearch for an owner's album is refused.
     @Test func albumSearchStillLedgerConfined() async throws {
         let fake = Fake()

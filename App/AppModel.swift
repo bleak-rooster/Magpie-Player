@@ -229,6 +229,10 @@ final class AppModel {
     /// R19: what the outside artist and album pages read from MusicBrainz, in memory for this session only.
     @ObservationIgnored var outsideCatalogStore: OutsideCatalog?
     @ObservationIgnored let lidarrTopSongsSession = LidarrTopSongsSession()   // Round 26 K2 (D264)
+    // Round 27 R
+    /// Settings › Lidarr › Missing albums: the last search's answer and a Clear all's run (AppModel+MissingAlbums, D290–D292).
+    let missingAlbums = MissingAlbumsState()
+    // Round 27 R end
     /// Spaces the app's `api.listenbrainz.org` calls ("Made for you"); labs search never waits on it.
     @ObservationIgnored let listenBrainzLimiter = RateLimiter(perSecond: 2)
     @ObservationIgnored private var unlockObserver: NSObjectProtocol?
@@ -906,6 +910,7 @@ final class AppModel {
         if let scope = lidarrScope {
             gateDefaults.removeObject(forKey: LidarrWriteGate.enabledKey(scope: scope))
             gateDefaults.removeObject(forKey: LidarrWriteGate.monitoringChangesKey(scope: scope))   // R24H fix round 1 I3
+            forgetMissingAlbums(scope: scope)   // Round 27 R (D291)
             Ledger.forgetMonitoring(otherThan: scope, in: dataDirectory)   // R24H fix round 3 H-L6
             setupStore.clear(scope: scope)
             findsStore.clear(lidarrScope: scope)
