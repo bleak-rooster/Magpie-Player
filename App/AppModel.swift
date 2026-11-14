@@ -233,6 +233,9 @@ final class AppModel {
     /// R19: what the outside artist and album pages read from MusicBrainz, in memory for this session only.
     @ObservationIgnored var outsideCatalogStore: OutsideCatalog?
     @ObservationIgnored let lidarrTopSongsSession = LidarrTopSongsSession()   // Round 26 K2 (D264)
+    // Round 27 D1: Discover's saved rows and pages (AppModel+DiscoverSnapshot.swift, D283); removed with D90's feeds
+    // file in `forgetDiscoverReads` (sign-out, Aurral sign-out, another Aurral user).
+    @ObservationIgnored let discoverSnapshots = DiscoverSnapshotStore()
     /// Spaces the app's `api.listenbrainz.org` calls ("Made for you"); labs search never waits on it.
     @ObservationIgnored let listenBrainzLimiter = RateLimiter(perSecond: 2)
     @ObservationIgnored private var unlockObserver: NSObjectProtocol?
@@ -269,6 +272,10 @@ final class AppModel {
     /// The watcher that asks the server for each new song's lyrics (D310).
     @ObservationIgnored var lyricsWatch: Task<Void, Never>?
     // End Round 27 L
+    // Round 27 A
+    /// The running Automix / Play top songs builder (AppModel+Automix.swift, D304, D307).
+    @ObservationIgnored let queueBuilder = QueueBuilder()
+    // End Round 27 A
     /// Whether the server answered last time it was tried (Task 14): Automatic offline mode follows it.
     var serverReachable = true { didSet { offlineInputsChanged() } }
     /// Offline as the URLs and the scrobbler read it, and Automatic mode's bookkeeping (AppModel+Offline.swift).
@@ -633,6 +640,7 @@ final class AppModel {
         let retiring = runner, doomed = requestStore
         let signedOutScope = navidromeScope   // R24A fix round 1 (I1): Discover's per-account keys go after `session = nil`
         sleepTimer.cancel()
+        queueBuilder.cancel()   // Round 27 A (D307): nothing more is added to the queue
         player.play([], startAt: 0)
         playbackHint = nil
         if let navidromeScope {
