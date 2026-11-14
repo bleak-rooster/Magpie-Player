@@ -480,6 +480,18 @@ r_inplace=(
   "$wg|sed|/private func sendMissingAlbumSearch/,/return try await deliver/s/^        await takeConfinedTurn()\$/        \\/\\/ no turn/"
   "$wg|sed|/if running { throw/,/missingSearchStore.save/s/^        guard enabled else { throw WriteGateError.disabled }   \\/\\/ turned off during the read\$/        \\/\\/ no second check/"
   "$wg|sed|s/\\[\"queued\", \"started\"\\].contains(\$0.status) }/\$0.status == \"started\" }/"
+  # Fix round 2 (the security re-check's plants A–D, F, G): the shared restarter driven from elsewhere (SM1); the ask
+  # step reached from elsewhere, a spaced call, a function reference (L-M3b); a computed property that searches on the
+  # way (L-L2b); a second deliver in the gate's MissingAlbumSearch send (L-L1b); Clear all's removal saying a finished
+  # copy may go (L-M2b).
+  'App/AppModel+Requests.swift|append|extension AppModel { func plantedRestart(_ rows: [LidarrDownloads.Row]) async { _ = await lidarrRestarter?.restartAll(rows) } }'
+  'App/AppModel+MissingAlbums.swift|append|extension AppModel { func plantedAsk() async { _ = await askAndRecord(now: Date()) } }'
+  'App/Screens/Settings/LidarrDownloadsView.swift|append|extension AppModel { func plantedSearch2() { Task { await self.searchMissingAlbumsNow () } } }'
+  'App/Screens/Settings/LidarrDownloadsView.swift|append|extension AppModel { func plantedSearch3() { let f = self.searchMissingAlbumsNow; Task { await f(Date()) } } }'
+  "$dl|append|extension LidarrDownloadRestarter { var sneak: Void { Task { _ = await self.searchFor([1]) } } }"
+  "$wg|sed|s/^        do { try missingSearchStore.save(t, scope: scope) } catch { throw WriteGateError.logUnavailable }\$/&\n        if target.key.isEmpty { _ = try? await deliver(target, data) }/"
+  "$dl|sed|s/confinedAs: .queueRestartAny, allowForeign: false, allowFinished: !deferred)/confinedAs: .queueRestartAny, allowForeign: false, allowFinished: true)/"
+  'App/AppModel+Requests.swift|append|extension AppModel { func plantedRun(_ m: AppModel) async { _ = try? await m.lidarrRestarter?.clearAllPlan() } }'
   "$wg|sed|s/guard let commands = try? await strictCommandNamesAndStatuses() else {/guard let commands = try? await reader.commands().map({ (\$0.name.lowercased(), \$0.status.lowercased()) }) else {/"
   "$dl|sed|s/^                if firstRemoval == nil { firstRemoval = startedAt }\$/&; if let r = removal.request { await runner?.clearAllSearch(r) }/"
   "$dl|sed|s/let removal = try await removeOne(target.queueId, item, albums: albums, allowForeign: foreign, deferred: true)/let removal = try await removeOne(target.queueId, item, albums: albums, allowForeign: foreign, deferred: false)/"

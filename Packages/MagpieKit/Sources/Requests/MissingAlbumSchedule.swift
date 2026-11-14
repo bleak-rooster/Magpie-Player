@@ -61,12 +61,17 @@ public enum MissingAlbumSchedule {
     public static func everyKey(scope: String) -> String { "\(everyKeyPrefix).\(scope)" }
     /// When Magpie last asked that Lidarr (by hand or on schedule), shown as "Last asked".
     public static func askedKey(scope: String) -> String { "\(askedKeyPrefix).\(scope)" }
+    static let scheduleFromKeyPrefix = "magpie.lidarr.missingSearchFrom"
+    /// Fix round 2 N4: when the schedule was chosen; its first wait starts then. Used only for "due", never shown.
+    public static func scheduleFromKey(scope: String) -> String { "\(scheduleFromKeyPrefix).\(scope)" }
 
-    public static func isDue(every: Every, lastAsked: Date?, now: Date, situation: Situation) -> Bool {
+    /// Due when the chosen day or week has passed since the later of the last ask and when the schedule was chosen.
+    public static func isDue(every: Every, lastAsked: Date?, scheduleFrom: Date? = nil, now: Date,
+                             situation: Situation) -> Bool {
         guard situation.trigger == .becameActive, situation.online, situation.lidarrConnected, situation.changesAllowed,
               let interval = every.interval else { return false }
-        guard let lastAsked else { return true }
-        return now >= lastAsked && now.timeIntervalSince(lastAsked) >= interval
+        guard let since = [lastAsked, scheduleFrom].compactMap({ $0 }).max() else { return true }
+        return now >= since && now.timeIntervalSince(since) >= interval
     }
 
     /// A saved time ahead of the phone's clock (the clock was put back) counts as now, so the wait starts again from
@@ -123,10 +128,20 @@ public enum MissingAlbumSchedule {
             }
         }
 
+        /// Fix round 2 N4: when the schedule was chosen.
+        public var scheduleFrom: Date? {
+            get { defaults.object(forKey: MissingAlbumSchedule.scheduleFromKey(scope: scope)) as? Date }
+            set {
+                if let newValue { defaults.set(newValue, forKey: MissingAlbumSchedule.scheduleFromKey(scope: scope)) }
+                else { defaults.removeObject(forKey: MissingAlbumSchedule.scheduleFromKey(scope: scope)) }
+            }
+        }
+
         /// Disconnect and sign-out (with the other Lidarr keys).
         public func forget() {
             defaults.removeObject(forKey: MissingAlbumSchedule.everyKey(scope: scope))
             defaults.removeObject(forKey: MissingAlbumSchedule.askedKey(scope: scope))
+            defaults.removeObject(forKey: MissingAlbumSchedule.scheduleFromKey(scope: scope))
         }
     }
 }

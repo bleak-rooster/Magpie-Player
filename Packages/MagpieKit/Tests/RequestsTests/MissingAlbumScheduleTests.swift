@@ -104,6 +104,28 @@ import LidarrKit
         #expect(!due(.week, last: t0, after: 30 * 24 * hour, background))
     }
 
+    /// Fix round 2 N4: choosing a schedule starts its wait (`scheduleFrom`), used only for "due"; "Last asked" stays a
+    /// real ask.
+    @Test func scheduleFromDelaysTheFirstAsk() throws {
+        func due(_ last: Date?, from: Date?, after seconds: TimeInterval) -> Bool {
+            MissingAlbumSchedule.isDue(every: .day, lastAsked: last, scheduleFrom: from, now: t0.addingTimeInterval(seconds),
+                                       situation: ready)
+        }
+        #expect(!due(nil, from: t0, after: 23 * hour))
+        #expect(due(nil, from: t0, after: 24 * hour))
+        #expect(!due(t0.addingTimeInterval(-48 * hour), from: t0, after: hour), "the later of the two counts")
+        #expect(!due(t0, from: t0.addingTimeInterval(-48 * hour), after: hour))
+        let suite = "magpie-missing-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = MissingAlbumSchedule.Store(defaults: defaults, scope: "aaa")
+        store.scheduleFrom = t0
+        #expect(store.scheduleFrom == t0 && store.lastAsked == nil)
+        #expect(MissingAlbumSchedule.scheduleFromKey(scope: "aaa") == "magpie.lidarr.missingSearchFrom.aaa")
+        store.forget()
+        #expect(store.scheduleFrom == nil)
+    }
+
     /// Per Lidarr: its own keys, forgotten with the others.
     @Test func keysArePerLidarrAndForgotten() throws {
         let suite = "magpie-missing-\(UUID().uuidString)"

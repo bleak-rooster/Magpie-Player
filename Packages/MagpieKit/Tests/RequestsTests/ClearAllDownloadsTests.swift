@@ -144,11 +144,13 @@ import MagpieCore
                                        WriteConfinement.Roots(mainRoot: "/music/library", findsRoot: nil, findTagId: nil)
                                    }))
         await gate.setEnabled(true)
-        // The run reads the clock once a download; each takes 100 s.
-        let r = LidarrDownloadRestarter(lidarr: h.lidarrClient, gate: gate, runner: nil, now: {
-            clock.withLock { $0 = $0.addingTimeInterval(100); return $0 }
-        })
-        let outcome = await r.clearAll(try await r.clearAllPlan(), includeForeign: true)
+        // Each removal takes 100 s (fix round 2: the clock moves with Lidarr's answers, not with the run's reads).
+        let r = LidarrDownloadRestarter(lidarr: h.lidarrClient, gate: gate, runner: nil, now: { clock.withLock { $0 } })
+        let plan = try await r.clearAllPlan()
+        h.server.with { $0.onEveryLidarrRequest = { request in
+            if request.httpMethod == "DELETE" { clock.withLock { $0 = $0.addingTimeInterval(100) } }
+        } }
+        let outcome = await r.clearAll(plan, includeForeign: true)
         #expect(outcome.cleared == 3, "the fourth would start five minutes after the first")
         #expect(outcome.left == 7)
         #expect(outcome.searchedAlbums == 3 && outcome.clearedWithoutSearch == 0, "every search inside the gate's window")
@@ -236,6 +238,118 @@ import MagpieCore
         let outcome = await r.clearAll(plan, includeForeign: true)
         #expect(outcome.changesOff && outcome.cleared == 0)
         #expect(h.server.writes.isEmpty)
+    }
+
+    // MARK: - Fix round 2
+
+    /// N1: the 570 s rule. The clock jumps while the removals go (250 s on the second's delete, 330 s on the third's): the
+    /// first two removals are 580 s old when the searches start, so theirs aren't sent (cleared without a new search, never
+    /// sent to be turned down); the third's still goes.
+    @Test func clearAll_searchNotStartedOnceItsRemovalIs570sOld() async throws {
+        let clock = OSAllocatedUnfairLock(initialState: Date(timeIntervalSince1970: 3_000_000))
+        let h = await Harness(gateNow: { clock.withLock { $0 } })
+        h.server.with { s in s.queue = (901...903).map { queued($0, status: "failed", tracked: "downloadFailed") } }
+        let r = restarter(h, now: { clock.withLock { $0 } })
+        let plan = try await r.clearAllPlan()
+        h.server.with { $0.onEveryLidarrRequest = { request in
+            guard request.httpMethod == "DELETE" else { return }
+            let jump: TimeInterval = request.url?.path.hasSuffix("/queue/902") == true ? 250
+                : request.url?.path.hasSuffix("/queue/903") == true ? 330 : 0
+            clock.withLock { $0 = $0.addingTimeInterval(jump) }
+        } }
+        let outcome = await r.clearAll(plan, includeForeign: true)
+        #expect(outcome.cleared == 3)
+        #expect(searches(h) == [[43]], "only the third removal's search was started")
+        #expect(outcome.clearedWithoutSearch == 2 && outcome.searchedAlbums == 1)
+        #expect(outcome.searchesTurnedDown == 0)
+    }
+
+    /// N2: two downloads of one album, and another album a held request is searching itself: each album searched once,
+    /// and the removals that shared it count as searched.
+    @Test func clearAll_sharedAlbumsAreSearchedOnce() async throws {
+        let h = await Harness()
+        h.server.ownerHasArtist(albumMonitored: false)
+        let id = try await h.runner.tryRecording(h.recording(recAlbumOnly), tier: .standard)
+        await h.runner.settle()
+        h.server.with { s in
+            // 901 + 902: one download carrying the request's album and an owner's (35); 903: another of album 35;
+            // 904, 905: two of album 41.
+            s.queue = [
+                FakeLidarr.Queued(albumId: 31, size: 100, sizeleft: 60, status: "failed", tracked: "downloadFailed", id: 901,
+                                  artistId: 7, client: "SABnzbd", downloadId: "with-owner"),
+                queued(902, album: 35, status: "failed", tracked: "downloadFailed", download: "with-owner"),
+                queued(903, album: 35, status: "failed", tracked: "downloadFailed"),
+                queued(904, album: 41, status: "failed", tracked: "downloadFailed"),
+                queued(905, album: 41, status: "failed", tracked: "downloadFailed"),
+            ]
+        }
+        let before = h.server.writes.count
+        let r = restarter(h)
+        let outcome = await r.clearAll(try await r.clearAllPlan(), includeForeign: true)
+        await h.runner.settle()
+        let sent = Array(h.server.writeBodies().dropFirst(before)).filter { $0.0 == "POST command" }.compactMap { $0.1["albumIds"] as? [Int] }
+        #expect(outcome.cleared == 4)
+        #expect(sent.filter { $0.contains(41) }.count == 1, "album 41 searched once for two downloads")
+        #expect(sent.filter { $0.contains(35) }.count == 1, "album 35 searched once for two downloads")
+        #expect(sent.filter { $0.contains(31) }.count == 1, "the held request's album only by the request itself")
+        #expect(outcome.searchesTurnedDown == 0)
+        #expect(outcome.clearedWithoutSearch == 0, "every removal's album was searched")
+        _ = id
+    }
+
+    /// N3: only a request that may have left (a timeout, a dropped connection) is "may have been cleared"; an error
+    /// before anything went is "couldn't clear".
+    @Test func lostAnswerIsOnlyAfterTheRequestCouldHaveLeft() {
+        #expect(LidarrDownloadRestarter.lostAnswer(URLError(.timedOut)))
+        #expect(LidarrDownloadRestarter.lostAnswer(URLError(.networkConnectionLost)))
+        #expect(!LidarrDownloadRestarter.lostAnswer(URLError(.cannotConnectToHost)))
+        #expect(!LidarrDownloadRestarter.lostAnswer(URLError(.notConnectedToInternet)))
+        #expect(!LidarrDownloadRestarter.lostAnswer(CancellationError()))
+        #expect(!LidarrDownloadRestarter.lostAnswer(WriteGateError.unconfirmed))
+    }
+
+    /// Security L-M2b: Clear all's removal names `allowFinished: false`, so the gate's own fresh read refuses a download
+    /// that has meanwhile finished but couldn't be added; Restart's confirmed path still may.
+    @Test func gateRefusesAFinishedButNotAddedCopyForClearAll() async throws {
+        let h = await Harness()
+        h.server.with { s in
+            s.queue = [queued(901, status: "completed", tracked: "importBlocked", sizeleft: 0),
+                       queued(902, status: "completed", tracked: "importFailed", sizeleft: 0)]
+        }
+        let q = "?removeFromClient=true&blocklist=true&skipRedownload=true"
+        await #expect(throws: WriteGateError.self) {
+            _ = try await h.gate.send("DELETE", "queue/901" + q, body: nil as JSONValue?, confinedAs: .queueRestartAny,
+                                      allowForeign: false, allowFinished: false)
+        }
+        #expect(h.server.writes.isEmpty)
+        _ = try await h.gate.send("DELETE", "queue/902" + q, body: nil as JSONValue?, confinedAs: .queueRestartAny,
+                                  allowForeign: false, allowFinished: true)
+        #expect(h.server.with { $0.removedFromQueue } == [902])
+    }
+
+    /// Stuck transport: the run has an overall deadline (fifteen minutes from its start). A live request's removal that
+    /// took longer (every Lidarr request 200 s) gets no search of its own from Clear all; the request is let go (not left
+    /// busy) for its own failed-download path.
+    @Test func clearAll_overallDeadline() async throws {
+        let clock = OSAllocatedUnfairLock(initialState: Date(timeIntervalSince1970: 4_000_000))
+        let h = await Harness(gateNow: { clock.withLock { $0 } })
+        h.server.ownerHasArtist(albumMonitored: false)
+        let id = try await h.runner.tryRecording(h.recording(recAlbumOnly), tier: .standard)
+        await h.runner.settle()
+        h.server.with { s in
+            s.queue = [FakeLidarr.Queued(albumId: 31, size: 100, sizeleft: 60, status: "failed", tracked: "downloadFailed",
+                                         id: 901, artistId: 7, client: "SABnzbd")]
+        }
+        let r = restarter(h, now: { clock.withLock { $0 } })
+        let plan = try await r.clearAllPlan()
+        let before = h.server.writes.count
+        h.server.with { $0.onEveryLidarrRequest = { _ in clock.withLock { $0 = $0.addingTimeInterval(200) } } }
+        let outcome = await r.clearAll(plan, includeForeign: true)
+        h.server.with { $0.onEveryLidarrRequest = nil }
+        #expect(LidarrDownloadRestarter.clearDeadline == 900)
+        #expect(outcome.cleared == 1 && outcome.clearedWithoutSearch == 1 && outcome.searchedAlbums == 0)
+        #expect(Array(writes(h).dropFirst(before)) == ["DELETE queue/901"], "no search after the deadline")
+        #expect(await h.runner.requestBusy(id) == false, "the request isn't left held")
     }
 
     // MARK: - Fix round 1

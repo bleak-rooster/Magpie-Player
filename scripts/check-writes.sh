@@ -219,8 +219,8 @@ if [ -z "${G1_SRC:-}" ]; then
     "$singlesfile|let data = try await gate.send(\"POST\", \"command\", body: RefreshBody(name: \"RefreshArtist\", artistId: job.artistId), confinedAs: .singlesSwitch)"
     "$singlesfile|_ = try await gate.send(\"PUT\", \"album/monitor\", body: UnmonitorBody(albumIds: extras, monitored: false), confinedAs: .singlesSwitch)"
     "$stall|_ = try await gate.send(\"DELETE\", \"queue/\\(queueId)?\\(Self.queueRemoval)\", body: nil, confinedAs: .queueRestartAny)"
-    "$restarter|_ = try await gate.send(\"DELETE\", \"queue/\\(queueId)?\\(Self.queueRemoval)\", body: nil, confinedAs: .queueRestartAny)"
-    "$restarter|_ = try await gate.send(\"DELETE\", \"queue/\\(queueId)?\\(Self.queueRemoval)\", body: nil, confinedAs: .queueRestartAny, allowForeign: true)"
+    "$restarter|_ = try await gate.send(\"DELETE\", \"queue/\\(queueId)?\\(Self.queueRemoval)\", body: nil, confinedAs: .queueRestartAny, allowForeign: false, allowFinished: !deferred)"
+    "$restarter|_ = try await gate.send(\"DELETE\", \"queue/\\(queueId)?\\(Self.queueRemoval)\", body: nil, confinedAs: .queueRestartAny, allowForeign: true, allowFinished: !deferred)"
     "$restarter|_ = try await gate.send(\"POST\", \"command\", body: SearchBody(name: \"AlbumSearch\", albumIds: rest), confinedAs: .restartSearch)"
     # Round 27 R (D289, D293): the whole-library MissingAlbumSearch, sent from this one line only (counted below too).
     "App/AppModel+MissingAlbums.swift|_ = try await gate.send(\"POST\", \"command\", body: MissingAlbumSearch.Body(), confinedAs: .missingAlbumSearch)"
@@ -357,10 +357,14 @@ if [ -z "${G1_SRC:-}" ]; then
     # sets the flag; the model passes it on to the restarter.
     "App/Screens/Settings/MissingAlbumsSection.swift|Task { await model.clearAllDownloads(confirmed, includeForeign: true) }"
     "App/AppModel+MissingAlbums.swift|let outcome = await restarter.clearAll(plan, includeForeign: includeForeign) { done, total in"
-    "$restarter|"'_ = try await gate.send("DELETE", "queue/\(queueId)?\(Self.queueRemoval)", body: nil, confinedAs: .queueRestartAny, allowForeign: true)'
+    "$restarter|"'_ = try await gate.send("DELETE", "queue/\(queueId)?\(Self.queueRemoval)", body: nil, confinedAs: .queueRestartAny, allowForeign: true, allowFinished: !deferred)'
     "$lk/WriteGate.swift|try await send(method, path, body: body, shape: shape, allowForeign: allowForeign)"
-    "$lk/WriteGate.swift|confined = .queueRestartAny(id, allowForeign: allowForeign)"
-    "$lk/WriteConfinement.swift|return await Self.queueRestartAny(id, allowForeign: allowForeign, lidarr: lidarr)"
+    "$lk/WriteGate.swift|confined = .queueRestartAny(id, allowForeign: allowForeign, allowFinished: allowFinished)"
+    "$lk/WriteConfinement.swift|return await Self.queueRestartAny(id, allowForeign: allowForeign, allowFinished: allowFinished, lidarr: lidarr)"
+    # Round 27 R fix round 2 (L-M2b): the gate's overload that also says whether a finished-but-not-added copy may go,
+    # and the restarter's non-foreign removal, which names allowForeign: false with it.
+    "$lk/WriteGate.swift|try await send(method, path, body: body, shape: shape, allowForeign: allowForeign, allowFinished: allowFinished)"
+    "$restarter|"'_ = try await gate.send("DELETE", "queue/\(queueId)?\(Self.queueRemoval)", body: nil, confinedAs: .queueRestartAny, allowForeign: false, allowFinished: !deferred)'
   )
   seen_flag_lines=""
   while IFS= read -r s; do
@@ -421,26 +425,73 @@ if [ -z "${G1_SRC:-}" ]; then
   for f in $(ngrep '\bforgetRecord\(' | clean_lines | cut -d: -f1 | sort -u || true); do
     case "$f" in "$mas"|"$gate") ;; *) echo "G1: the missing-album search record forgotten outside the gate: $f" >&2; bad=1 ;; esac
   done
-  entry_pins=(
-    "$missingfile|LidarrWriteGate.forgetMissingAlbumSearch(scope: scope, in: gateDefaults)   // fix round 1 M3"
-    "App/Screens/Settings/MissingAlbumsSection.swift|Button(MissingAlbumsCopy.confirmButton) { Task { await model.searchMissingAlbumsNow() } }"
+  # Fix round 2 (L-M3b, L-L2b, SM1): every mention (a call, a spaced call, a function reference, a declaration) of the
+  # Missing albums entry points, the steps they go through, the shared restarter and Clear all's search and hold steps
+  # is one of these exact lines (trimmed), each once. Comment lines don't count.
+  mention_names='forgetMissingAlbumSearch|searchMissingAlbumsNow|runMissingAlbumSchedule|missingAlbumsSceneChanged|askAndRecord|askLidarrForMissingAlbums|lidarrRestarter|searchFor|clearAllSearch|clearAllRemove'
+  mention_pins=(
+    "$missingfile|private func askLidarrForMissingAlbums() async -> MissingAlbumSchedule.Answer {"
+    "$missingfile|private func askAndRecord(now: Date) async -> MissingAlbumSchedule.Answer {"
+    "$missingfile|let answer = await askLidarrForMissingAlbums()"
+    "$missingfile|func searchMissingAlbumsNow(now: Date = Date()) async {"
+    "$missingfile|missingAlbums.searchAnswer = await askAndRecord(now: now)"
+    "$missingfile|func missingAlbumsSceneChanged(active: Bool) {"
     "$missingfile|Task { await runMissingAlbumSchedule() }"
+    "$missingfile|func runMissingAlbumSchedule(now: Date = Date()) async {"
+    "$missingfile|_ = await askAndRecord(now: now)"
+    "$missingfile|LidarrWriteGate.forgetMissingAlbumSearch(scope: scope, in: gateDefaults)   // fix round 1 M3"
+    "$missingfile|var lidarrRestarter: LidarrDownloadRestarter? {"
+    "$missingfile|let restarter = lidarrRestarter else { return nil }"
+    "$missingfile|guard missingAlbumsUsable, !missingAlbums.clearing, let restarter = lidarrRestarter else { return }"
     "App/AppModel+DownloadActivity.swift|missingAlbumsSceneChanged(active: phase == .active)   // Round 27 R (D291): the missing-album schedule"
+    "$view|private func restarter(_ model: AppModel) -> LidarrDownloadRestarter? { model.lidarrRestarter }"
+    "App/Screens/Settings/MissingAlbumsSection.swift|Button(MissingAlbumsCopy.confirmButton) { Task { await model.searchMissingAlbumsNow() } }"
+    "$gate|public static func forgetMissingAlbumSearch(scope: String, in defaults: UserDefaults) {"
+    "$restarter|return await searchFor(rest) ? .restarted : .removedNotSearched"
+    "$restarter|if let runner, deferred { held = try await runner.clearAllRemove(item, albums: Set(albums), counted: !allowForeign) }"
+    "$restarter|func searchFor(_ rest: [Int]) async -> Bool {"
+    "$restarter|if await searchFor(rest) {"
+    "$restarter|if await runner.clearAllSearch(request) {"
+    "$restarter|func clearAllRemove(_ item: QueueItem, albums: Set<Int>, counted: Bool) async throws -> (RequestID, Int)? {"
+    "$restarter|func clearAllSearch(_ id: RequestID) async -> Bool {"
   )
-  entries=$(grep -rnE --include='*.swift' '\b(forgetMissingAlbumSearch|searchMissingAlbumsNow|runMissingAlbumSchedule|missingAlbumsSceneChanged)\(' "${product[@]}" |
-              grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' |
-              perl -ne 'my ($f, $n, $t) = /^([^:]+):(\d+):(.*)$/ or next; $t =~ s/^\s+|\s+$//g;
-                        (my $u = $t) =~ s/\bfunc\s+(forgetMissingAlbumSearch|searchMissingAlbumsNow|runMissingAlbumSchedule|missingAlbumsSceneChanged)\s*\(//g;
-                        next unless $u =~ /\b(forgetMissingAlbumSearch|searchMissingAlbumsNow|runMissingAlbumSchedule|missingAlbumsSceneChanged)\(/;
-                        print "$f|$t\n"' || true)
+  mentions=$(grep -rnwE --include='*.swift' "$mention_names" "${product[@]}" | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' |
+               perl -ne 'my ($f, $n, $t) = /^([^:]+):(\d+):(.*)$/ or next; $t =~ s/^\s+|\s+$//g; print "$f|$t\n"' || true)
+  seen_mentions=""
   while IFS= read -r s; do
     [ -n "$s" ] || continue
     ok=0
-    for p in "${entry_pins[@]}"; do [ "$s" = "$p" ] && ok=1 && break; done
-    [ "$ok" = 1 ] || { echo "G1: a missing-album search entry point called outside its pinned line: ${s%%|*}" >&2; bad=1; }
-  done <<< "$entries"
-  [ "$(grep -c . <<< "$entries")" = "${#entry_pins[@]}" ] ||
-    { echo "G1: a missing-album search entry point called more (or less) than its pinned lines" >&2; bad=1; }
+    for p in "${mention_pins[@]}"; do [ "$s" = "$p" ] && ok=1 && break; done
+    if [ "$ok" = 0 ]; then
+      echo "G1: a Missing albums or Clear all step named outside its pinned lines: ${s%%|*}" >&2; bad=1
+    elif grep -qxF -- "$s" <<< "$seen_mentions"; then
+      echo "G1: a pinned Missing albums or Clear all line appears twice: ${s%%|*}" >&2; bad=1
+    else
+      seen_mentions+="$s"$'\n'
+    fi
+  done <<< "$mentions"
+  [ "$(grep -c . <<< "$mentions")" = "${#mention_pins[@]}" ] ||
+    { echo "G1: a Missing albums or Clear all step's pinned line is missing" >&2; bad=1; }
+  # Fix round 2 (SM1): a restarter's restart, Restart all or Clear all is called only from Downloads in Lidarr's screen
+  # (restart, restartAll) and the model (clearAll, clearAllPlan), whatever it is called through.
+  rcalls=$(ngrep '[Rr]estarter[?!]?[[:space:]]*\.[[:space:]]*(restart|restartAll|clearAll|clearAllPlan)\b' | clean_lines || true)
+  while IFS= read -r s; do
+    [ -n "$s" ] || continue
+    file="${s%%:*}" rest="${s#*:}"; text="${rest#*:}"
+    case "$file" in
+      "$view") [[ "$text" =~ [Rr]estarter[?!]?[[:space:]]*\.[[:space:]]*(clearAll|clearAllPlan)\b ]] &&
+                 { echo "G1: Clear all run from the Downloads screen: $file" >&2; bad=1; } ;;
+      "$missingfile") [[ "$text" =~ [Rr]estarter[?!]?[[:space:]]*\.[[:space:]]*restart(All)?[[:space:]]*\( ]] &&
+                 { echo "G1: a restart run from the model: $file" >&2; bad=1; } ;;
+      *) echo "G1: a restarter's restart or Clear all called outside its screen and the model: $file" >&2; bad=1 ;;
+    esac
+  done <<< "$rcalls"
+  # Fix round 2 (L-L1b): exactly one deliver inside the gate's MissingAlbumSearch send, after the record is saved.
+  perl -ne 'BEGIN { $in = 0 } $in = 1 if /private func sendMissingAlbumSearch\(/; next unless $in;
+            $save ||= $. if /missingSearchStore\.save\(t, scope: scope\) \} catch/;
+            if (/\bdeliver\s*\(/) { $n++; $d = $. } if (/^    \}$/) { $in = 0; last }
+            END { exit(($n == 1 && $save && $d > $save) ? 0 : 1) }' "$lk/WriteGate.swift" ||
+    { echo "G1: $lk/WriteGate.swift: the MissingAlbumSearch send delivers other than once, after its record" >&2; bad=1; }
   # The shape named on exactly one line outside the gate, its body built only there, and its name spelled as a string only
   # in the gate, its own file and the artist page's "searching" list.
   ms_named=$(ngrep '\.missingAlbumSearch\b' | grep -v "^$gate:" | clean_lines || true)

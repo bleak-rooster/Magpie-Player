@@ -53,8 +53,8 @@ extension AppModel {
             guard let store = missingAlbumsStore else { return }
             let old = store.every
             store.every = newValue
-            // Fix round 1 L8: choosing a day or a week starts its wait now; nothing is sent until it has passed.
-            if newValue != .off, newValue != old { store.lastAsked = Date() }
+            // Fix round 1 L8, round 2 N4: choosing a day or a week starts its wait now (its own key, never shown as asked).
+            if newValue != .off, newValue != old { store.scheduleFrom = Date() }
             missingAlbums.revision += 1
         }
     }
@@ -123,7 +123,7 @@ extension AppModel {
         let situation = MissingAlbumSchedule.Situation(trigger: .becameActive, online: !isOffline,
                                                        lidarrConnected: lidarr != nil && gate != nil,
                                                        changesAllowed: changesAllowed)
-        guard MissingAlbumSchedule.isDue(every: store.every, lastAsked: store.lastAsked, now: now, situation: situation) else {
+        guard MissingAlbumSchedule.isDue(every: store.every, lastAsked: store.lastAsked, scheduleFrom: store.scheduleFrom, now: now, situation: situation) else {
             return
         }
         missingAlbums.scheduleRunning = true

@@ -745,6 +745,15 @@ public actor LidarrWriteGate {
         try await send(method, path, body: body, shape: shape, allowForeign: allowForeign)
     }
 
+    /// Round 27 R fix round 2 (security L-M2b, D292): the same, saying whether a download that finished but couldn't be
+    /// added (`importBlocked` / `importFailed`) may go. Clear all names `false`, so the gate's own fresh read refuses
+    /// one that flipped since Clear all's read; Restart (whose couldn't-import copies have their own confirmation)
+    /// names `true`, as the shorter overloads do.
+    public func send(_ method: String, _ path: String, body: (any Encodable & Sendable)?,
+                     confinedAs shape: ConfinedShape, allowForeign: Bool, allowFinished: Bool) async throws -> Data {
+        try await send(method, path, body: body, shape: shape, allowForeign: allowForeign, allowFinished: allowFinished)
+    }
+
     // MARK: Round 24 fix round 2: the owned-artist writes, built here from the persisted intent
 
     private struct OwnedMonitorBody: Encodable, Sendable { var albumIds: [Int]; var monitored: Bool }
@@ -811,10 +820,11 @@ public actor LidarrWriteGate {
     }
 
     private func send(_ method: String, _ path: String, body: (any Encodable & Sendable)?,
-                      shape: ConfinedShape?, allowForeign: Bool = false, owned: OwnedShape? = nil,
-                      ownedIntent: UUID? = nil) async throws -> Data {
+                      shape: ConfinedShape?, allowForeign: Bool = false, allowFinished: Bool = true,
+                      owned: OwnedShape? = nil, ownedIntent: UUID? = nil) async throws -> Data {
         let target = try WriteTarget(method: method, path: path)
         if allowForeign, shape != .queueRestartAny { throw refused(target, "allowForeign goes with queueRestartAny only") }
+        if !allowFinished, shape != .queueRestartAny { throw refused(target, "allowFinished goes with queueRestartAny only") }
         let data = try body.map { try JSONEncoder().encode($0) }
         if let why = ForbiddenWrites.reason(target, body: data, singlesSwitch: shape == .singlesSwitch) { throw refused(target, why) }
         let json = data.flatMap { try? JSONSerialization.jsonObject(with: $0, options: [.fragmentsAllowed]) }
@@ -830,7 +840,7 @@ public actor LidarrWriteGate {
         var confined = ForbiddenWrites.confined(target, json: json)
         if shape == .queueRestartAny {
             guard case .queueDelete(let id)? = confined else { throw refused(target, "queueRestartAny is a queue delete only") }
-            confined = .queueRestartAny(id, allowForeign: allowForeign)
+            confined = .queueRestartAny(id, allowForeign: allowForeign, allowFinished: allowFinished)
         }
         if shape == .trialDelete {
             guard case .trackFileDelete(let ids)? = confined else { throw refused(target, "trialDelete is a track file delete only") }

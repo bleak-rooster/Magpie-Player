@@ -535,7 +535,7 @@ public actor LidarrDownloadRestarter {
         if let runner, deferred { held = try await runner.clearAllRemove(item, albums: Set(albums), counted: !allowForeign) }
         if allowForeign {
             do {
-                _ = try await gate.send("DELETE", "queue/\(queueId)?\(Self.queueRemoval)", body: nil, confinedAs: .queueRestartAny, allowForeign: true)
+                _ = try await gate.send("DELETE", "queue/\(queueId)?\(Self.queueRemoval)", body: nil, confinedAs: .queueRestartAny, allowForeign: true, allowFinished: !deferred)
             } catch {
                 if let held { await runner?.clearAllRelease(held.0) }
                 throw error
@@ -546,7 +546,7 @@ public actor LidarrDownloadRestarter {
         if let runner, !deferred, let album = try await runner.restartFromDownloads(item, albums: Set(albums)) {
             return (nil, album)
         }
-        _ = try await gate.send("DELETE", "queue/\(queueId)?\(Self.queueRemoval)", body: nil, confinedAs: .queueRestartAny)
+        _ = try await gate.send("DELETE", "queue/\(queueId)?\(Self.queueRemoval)", body: nil, confinedAs: .queueRestartAny, allowForeign: false, allowFinished: !deferred)
         return (nil, nil)
     }
 
@@ -702,10 +702,18 @@ extension LidarrDownloadRestarter {
         }, more: targets.count - taken.count, couldntImport: notAdded.subtracting(done).count)
     }
 
-    /// Sent, but no answer came (not the gate's refusal, nor Lidarr's own error, nor the runner's): it may have gone.
+    /// Fix round 2 (stuck transport): no removal and no search starts this long after the run began (longer than the
+    /// 570 s search rule, which it never undercuts; it bounds the held requests' searches and a run slowed by a stuck
+    /// transport); a held request
+    /// whose search would start later is let go to its own failed-download path.
+    static let clearDeadline: TimeInterval = 900
+
+    /// The removal may have gone but no answer came. Fix round 2 N3: only a timeout or a dropped connection, which can
+    /// happen after the request left; anything else (the gate's refusal, Lidarr's own error, the runner's, a host that
+    /// couldn't be reached, a cancellation) means nothing went.
     static func lostAnswer(_ error: Error) -> Bool {
-        !(error is WriteGateError) && !(error is LidarrError) && !(error is RequestRunner.DownloadRestartError)
-            && !(error is CancellationError)
+        guard let url = error as? URLError else { return false }
+        return url.code == .timedOut || url.code == .networkConnectionLost
     }
 
     /// Clear all, after its confirmation. At most `maxClear` downloads of `plan`, one at a time: read fresh (gone: not
@@ -727,10 +735,12 @@ extension LidarrDownloadRestarter {
         var unavailableInARow = 0
         var firstRemoval: Date?
         var tried = 0
+        let runStart = now()
         for target in targets {
             // Read before the removal, so the windows count from no later than the gate's own time for it.
             let startedAt = now()
             if let firstRemoval, startedAt.timeIntervalSince(firstRemoval) >= Self.clearRemovalWindow { break }
+            if startedAt.timeIntervalSince(runStart) >= Self.clearDeadline { break }
             guard await gate.enabled else { outcome.changesOff = true; break }
             if unavailableInARow >= Self.maxUnavailableInARow { outcome.stoppedUnreachable = true; break }
             tried += 1
@@ -777,27 +787,34 @@ extension LidarrDownloadRestarter {
         }
         if unavailableInARow >= Self.maxUnavailableInARow { outcome.stoppedUnreachable = true }
         outcome.left += targets.count - tried
-        // Every removal has been tried: now the searches. The windowed restart searches first, in removal order.
-        var searched = Set<Int>()
-        for (index, removal) in removed.enumerated() {
-            let rest = removal.albums.filter { $0 != removal.requestAlbum }
-            guard !rest.isEmpty, now().timeIntervalSince(removal.at) < Self.clearSearchWindow else { continue }
+        // Every removal has been tried: now the searches. The windowed restart searches first, in removal order. Fix
+        // round 2 N2: an album a held request searches itself, or one an earlier search here already asked for, isn't
+        // asked for again (a removal sharing it counts as searched once that search went).
+        let heldAlbums = Set(removed.compactMap { $0.request == nil ? nil : $0.requestAlbum })
+        var askedFor = Set<Int>()
+        for removal in removed {
+            let rest = removal.albums.filter { !heldAlbums.contains($0) && !askedFor.contains($0) }
+            guard !rest.isEmpty else { continue }
+            guard now().timeIntervalSince(removal.at) < Self.clearSearchWindow else { continue }   // fix round 1 M1: the 570 s rule
+            guard now().timeIntervalSince(runStart) < Self.clearDeadline else { continue }
             if await searchFor(rest) {
                 outcome.searchedAlbums += rest.count
-                searched.insert(index)
+                askedFor.formUnion(rest)
             } else {
                 outcome.searchesTurnedDown += 1
             }
         }
-        // Then the held requests' own searches (ledger-confined, not windowed), each request freed after its own.
-        for (index, removal) in removed.enumerated() {
+        // Then the held requests' own searches (ledger-confined, not windowed), each request freed after its own; past
+        // the deadline, let go without one.
+        for removal in removed {
             guard let request = removal.request, let runner else { continue }
+            guard now().timeIntervalSince(runStart) < Self.clearDeadline else { await runner.clearAllRelease(request); continue }
             if await runner.clearAllSearch(request) {
                 outcome.searchedAlbums += 1
-                searched.insert(index)
+                if let album = removal.requestAlbum { askedFor.insert(album) }
             }
         }
-        outcome.clearedWithoutSearch = removed.indices.filter { !searched.contains($0) }.count
+        outcome.clearedWithoutSearch = removed.filter { !$0.albums.contains(where: askedFor.contains) }.count
         return outcome
     }
 }

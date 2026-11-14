@@ -209,8 +209,11 @@ private let lidarrScope = LidarrClient(base: lidarrBase, apiKey: "key", transpor
         #expect(model.missingSearchEvery == .off, "Off by default")
         let chosenAt = Date()
         model.missingSearchEvery = .day
-        // Fix round 1 L8: choosing Every day starts its wait now, so opening Magpie doesn't send at once.
-        let started = try #require(model.missingSearchLastAsked)
+        // Fix round 1 L8, round 2 N4: choosing Every day starts its wait now (its own key), so opening Magpie doesn't
+        // send at once; "Last asked" still says not asked yet.
+        #expect(model.missingSearchLastAsked == nil)
+        #expect(MissingAlbumsCopy.lastAsked(model.missingSearchLastAsked, now: Date()) == "Not asked yet")
+        let started = try #require(UserDefaults(suiteName: gateSuite)?.object(forKey: MissingAlbumSchedule.scheduleFromKey(scope: lidarrScope)) as? Date)
         #expect(abs(started.timeIntervalSince(chosenAt)) < 5)
         await model.setChangesAllowed(true)
         await model.runMissingAlbumSchedule()
@@ -219,7 +222,7 @@ private let lidarrScope = LidarrClient(base: lidarrBase, apiKey: "key", transpor
         let tomorrow = Date().addingTimeInterval(25 * 3_600)
         await model.runMissingAlbumSchedule(now: tomorrow)
         #expect(missingSearches.isEmpty, "changes off: nothing")
-        #expect(model.missingSearchLastAsked == started)
+        #expect(model.missingSearchLastAsked == nil)
         await model.setChangesAllowed(true)
         await model.runMissingAlbumSchedule(now: tomorrow)
         #expect(missingSearches.count == 1)
@@ -230,10 +233,10 @@ private let lidarrScope = LidarrClient(base: lidarrBase, apiKey: "key", transpor
         UserDefaults(suiteName: gateSuite)?.removeObject(forKey: MissingAlbumSearch.recordKey(scope: lidarrScope))
         await model.runMissingAlbumSchedule(now: tomorrow.addingTimeInterval(25 * 3_600))
         #expect(missingSearches.count == 2)
-        // Choosing the same again doesn't restart the wait; Off and back does.
-        let asked = model.missingSearchLastAsked
+        // Choosing the same again doesn't restart the wait.
+        let from = UserDefaults(suiteName: gateSuite)?.object(forKey: MissingAlbumSchedule.scheduleFromKey(scope: lidarrScope)) as? Date
         model.missingSearchEvery = .day
-        #expect(model.missingSearchLastAsked == asked)
+        #expect(UserDefaults(suiteName: gateSuite)?.object(forKey: MissingAlbumSchedule.scheduleFromKey(scope: lidarrScope)) as? Date == from)
         model.missingAlbumsSceneChanged(active: false)
         #expect(missingSearches.count == 2)
     }
@@ -250,7 +253,7 @@ private let lidarrScope = LidarrClient(base: lidarrBase, apiKey: "key", transpor
         #expect(suite.object(forKey: MissingAlbumSearch.recordKey(scope: lidarrScope)) != nil)
         model.disconnectLidarr()
         for key in [MissingAlbumSearch.recordKey(scope: lidarrScope), MissingAlbumSchedule.everyKey(scope: lidarrScope),
-                    MissingAlbumSchedule.askedKey(scope: lidarrScope)] {
+                    MissingAlbumSchedule.askedKey(scope: lidarrScope), MissingAlbumSchedule.scheduleFromKey(scope: lidarrScope)] {
             #expect(suite.object(forKey: key) == nil, "\(key)")
         }
     }
