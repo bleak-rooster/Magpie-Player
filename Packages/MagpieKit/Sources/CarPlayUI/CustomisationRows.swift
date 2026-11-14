@@ -41,15 +41,19 @@ public struct CPLayout: Sendable, Hashable {
     public var library: [LibraryRow]
     public var offline: Bool
     public var tab: CarPlayTab
+    /// Round 27 H (D300): Settings › CarPlay › Flows with your playlists, as it applies now.
+    public var flowsWithPlaylists: Bool
 
-    public init(home: [HomeSection], library: [LibraryRow], offline: Bool, tab: CarPlayTab = .playlists) {
+    public init(home: [HomeSection], library: [LibraryRow], offline: Bool, tab: CarPlayTab = .playlists,
+                flowsWithPlaylists: Bool = false) {
         self.home = home; self.library = library; self.offline = offline; self.tab = tab
+        self.flowsWithPlaylists = flowsWithPlaylists
     }
 }
 
 /// What a layout change does to the tabs: Home reloads when its sections change or the car goes offline or back
 /// online (the same sections then read elsewhere); the Library tab is redrawn when its rows change; a new third tab
-/// (round 13) rebuilds the tab bar.
+/// (round 13), or (round 27 H) Flows with your playlists switched, rebuilds the tab bar.
 public struct CPLayoutChange: Sendable, Hashable {
     public var reloadsHome: Bool
     public var redrawsLibrary: Bool
@@ -61,7 +65,8 @@ public struct CPLayoutChange: Sendable, Hashable {
 
     public init(from old: CPLayout, to new: CPLayout) {
         self.init(reloadsHome: old.home != new.home || old.offline != new.offline, redrawsLibrary: old.library != new.library,
-                  rebuildsTabs: old.tab != new.tab)
+                  // Round 27 H (D300): the Playlists tab is read once, so the switch builds the tabs again.
+                  rebuildsTabs: old.tab != new.tab || old.flowsWithPlaylists != new.flowsWithPlaylists)
     }
 }
 

@@ -16,15 +16,32 @@ extension CarPlayLibraryAdapter {
                                                       discoverSetUp: model.aurralSetUp)
     }
 
-    /// The phone's Library rows without Requests. Offline: Downloads, and Genres when shown.
-    var libraryRows: [LibraryRow] { model.libraryRows(carPlay: true) }
+    /// The phone's Library rows without Requests. Offline: Downloads, and Genres when shown. Round 27 H (D300): with
+    /// Flows with your playlists on, no Discover row (its playlists are in Playlists).
+    var libraryRows: [LibraryRow] {
+        let rows = model.libraryRows(carPlay: true)
+        return model.carFlowsWithPlaylists ? rows.filter { $0 != .discover } : rows
+    }
 
     /// Round 24 (D223's rule, D179): while Playlists show All, the signed-in user, so the car's rows say whose the
-    /// others' playlists are; nil for Yours.
+    /// others' playlists are; nil for Yours. Round 27 H (D299, D300): with Flows with your playlists on, in Yours too,
+    /// so another user's flow there says whose (Yours' own playlists name nobody either way).
     var playlistCaptionUser: String? {
-        guard model.playlistShow == .all, let user = model.session?.username, !user.isEmpty else { return nil }
+        guard model.playlistShow == .all || model.carFlowsWithPlaylists, let user = model.session?.username, !user.isEmpty
+        else { return nil }
         return user
     }
+
+    // MARK: - Round 27 H: flows by last played, and whose (D297, D299)
+
+    /// D300: Flows with your playlists as it applies now (with Aurral set up); a change rebuilds the car's tabs.
+    var flowsWithPlaylists: Bool { model.carFlowsWithPlaylists }
+
+    /// A play started from a playlist's page in the car: kept when it is a flow (`noteFlowPlayed`).
+    func notePlaylistPlayed(id: String) { model.noteFlowPlayed(playlistId: id) }
+
+    /// Another user's flow's Aurral username while everyone's show (D205's caption); nil otherwise.
+    func discoverOwnerCaption(playlistId: String) -> String? { model.homeFlowCaption(playlistId: playlistId) }
 
     /// The phone's shelves (offline, nothing is asked of the server), each cut to `size`, with Made for you's from its
     /// own shelf (read first when it is empty, as the phone's Home does). A downloaded album is an album here; the
@@ -37,7 +54,22 @@ extension CarPlayLibraryAdapter {
             && model.madeForYouShelf.isEmpty && madeForYouReadGeneration != generation
         if readsMadeForYou { madeForYouReadGeneration = generation }
         async let refreshed: Void = refreshMadeForYou(if: readsMadeForYou)
-        let shelves = try await model.homeShelves(for: sections)
+        // Round 27 H (D297): Discover's shelf is the car's own, by last played, whatever the phone's Home order.
+        let flows = await carDiscoverShelf(if: sections.contains(.discover))
+        let shelves: [HomeShelf]
+        do {
+            shelves = try await model.homeShelves(for: sections.filter { $0 != .discover })
+        } catch {
+            // Every other section failed: still a Home while Discover's shelf read, as when it was one of them.
+            guard case .success? = flows else { await refreshed; throw error }
+            shelves = []
+        }
+        // Discover was the only section asking the server, and it failed: the read failed (as before round 27).
+        if case .failure(let error)? = flows,
+           !sections.contains(where: { $0 != .discover && $0 != .downloaded && $0.readsShelf }) {
+            await refreshed
+            throw error
+        }
         await refreshed
         let count = max(0, size)
         let madeForYou = model.isOffline ? [] : model.madeForYouShelf.prefix(count).map {
@@ -46,6 +78,14 @@ extension CarPlayLibraryAdapter {
         return sections.compactMap { section -> CPHomeShelf? in
             if section == .madeForYou {
                 return madeForYou.isEmpty ? nil : CPHomeShelf(section: section, items: madeForYou)
+            }
+            if section == .discover {   // round 27 H (D297, D299)
+                guard case .success(let read)? = flows else { return nil }
+                let shown = Array(read.prefix(count))
+                guard !shown.isEmpty else { return nil }
+                let captions = Dictionary(shown.compactMap { p in model.homeFlowCaption(playlistId: p.id).map { (p.id, $0) } },
+                                          uniquingKeysWith: { first, _ in first })
+                return CPHomeShelf(section: section, items: shown.map(CPHomeShelf.Item.playlist), captions: captions)
             }
             guard let shelf = shelves.first(where: { $0.section == section }) else { return nil }
             return CPHomeShelf(section: section, items: shelf.items.prefix(count).compactMap { item -> CPHomeShelf.Item? in
@@ -61,6 +101,13 @@ extension CarPlayLibraryAdapter {
 
     private func refreshMadeForYou(if needed: Bool) async {
         if needed { await model.refreshMadeForYou() }
+    }
+
+    /// Round 27 H (D297): the car's Discover home shelf, played newest first then A to Z; nil when not shown. Offline
+    /// nothing is asked (Discover isn't a Home section offline).
+    private func carDiscoverShelf(if wanted: Bool) async -> Result<[Playlist], any Error>? {
+        guard wanted, !model.isOffline else { return nil }
+        do { return .success(try await model.carDiscoverFlows()) } catch { return .failure(error) }
     }
 
     // MARK: - Offline and Now Playing's star

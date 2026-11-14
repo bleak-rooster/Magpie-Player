@@ -93,10 +93,14 @@ final class CarPlayLibraryAdapter: CarPlayLibrary {
     }
 
     func playlists() async throws -> [Playlist] {
+        // Round 27 H (D300): with Settings › CarPlay › Flows with your playlists, the flows Discover shows join them.
+        let combined = model.carFlowsWithPlaylists
         // Round 22 R22A (D185): downloaded Discover playlists stay out too (the account's saved Discover ids).
-        if model.isOffline { return await model.offlineCatalog.playlists().filter { !model.leavesOutOfPlaylists($0) } }
+        if model.isOffline { return model.carOfflinePlaylists(await model.offlineCatalog.playlists(), combined: combined) }
         let all = try await model.request { try await $0.playlists() }.filter { !model.leavesOutOfPlaylists($0) }   // Y6, D188
-        return model.shownPlaylists(all)   // All or Yours, as on the phone (D179)
+        let shown = model.shownPlaylists(all)   // All or Yours, as on the phone (D179)
+        guard combined else { return shown }
+        return model.carPlaylistsWithFlows(shown, flows: try await model.discoverPlaylists())
     }
 
     /// Y6: Library › Discover.

@@ -36,10 +36,30 @@ struct CarPlaySettingsView: View {
             } footer: {
                 Text("Choose the shelves CarPlay's Home shows, and their order.")
             }
+            // Round 27 H (owner, 2026-11-14): flows and playlists combined in the car (D300); only with Aurral.
+            if Self.showsFlowsWithPlaylists(model) {
+                Section {
+                    Toggle(CarPlayFlowsCopy.toggle, isOn: Binding(
+                        get: { car.flowsWithPlaylists },
+                        set: { on in model.updatePreferences { $0.carPlay.flowsWithPlaylists = on } }))
+                        .accessibilityIdentifier("carplay-flows-with-playlists")
+                } footer: {
+                    Text(CarPlayFlowsCopy.footer)
+                }
+            }
         }
         .navigationTitle("CarPlay")
         .navigationBarTitleDisplayMode(.inline)
     }
+
+    /// Round 27 H (D300): the switch shows only while Aurral is set up (without it there are no flows to mix in).
+    static func showsFlowsWithPlaylists(_ model: AppModel) -> Bool { model.aurralSetUp }
+}
+
+/// Round 27 H (D300): the words for Settings › CarPlay › Flows with your playlists (Settings may name Aurral).
+enum CarPlayFlowsCopy {
+    static let toggle = "Flows with your playlists"
+    static let footer = "Shows your Aurral flows and playlists in the car\u{2019}s Playlists list, mixed in A to Z, instead of a separate Discover list."
 }
 
 /// Settings › CarPlay › Home: the car's shelves, ordered and switched on or off. Until changed it is the phone's Home

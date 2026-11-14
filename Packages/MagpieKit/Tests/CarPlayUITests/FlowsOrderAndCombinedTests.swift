@@ -44,6 +44,20 @@ import Testing
         #expect(combined.first(where: { $0.id == "p2" })?.owner == "sam", "a playlist's own owner is kept")
     }
 
+    /// Turning the switch on or off while the car shows its tabs builds them again, so the Playlists tab (read once)
+    /// lists the flows at once, and Library loses or gets back its Discover row.
+    @Test func car_switchRebuildsTheTabs() {
+        let off = CPLayout(home: [.discover], library: [.playlists, .discover], offline: false)
+        var on = off
+        on.flowsWithPlaylists = true
+        on.library = [.playlists]
+        #expect(!off.flowsWithPlaylists, "off by default")
+        #expect(CPLayoutChange(from: off, to: on).rebuildsTabs)
+        #expect(CPLayoutChange(from: on, to: off).rebuildsTabs)
+        #expect(!CPLayoutChange(from: on, to: on).rebuildsTabs)
+        #expect(!CPLayoutChange(from: off, to: off).reloadsHome, "the car's Home is unchanged by it")
+    }
+
     // MARK: - D299: whose flow, in the car's Discover rows
 
     @Test func carRow_captionOnlyForOthers() {
