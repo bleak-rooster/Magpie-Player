@@ -469,7 +469,18 @@ r_inplace=(
   'App/AppModel+Requests.swift|append|let plantedKey = MissingAlbumSearch.recordKey(scope: "abc")'
   'App/AppModel+MissingAlbums.swift|append|struct PlantedStore: MissingAlbumSearchStore {}'
   'App/AppModel+MissingAlbums.swift|append|func plantedClear(_ id: Int) async throws { _ = try await gate.send("DELETE", "queue/\\(id)?\\(Self.queueRemoval)", body: nil, confinedAs: .queueRestartAny) }'
-  "$dl|sed|s/^                removed.append((albums, removal.request, removal.album))\$/&; _ = await searchFor(albums)/"
+  "$dl|sed|s/^                removed.append((albums, removal.request, removal.album, startedAt))\$/&; _ = await searchFor(albums)/"
+  # Fix round 1: a helper that searches on the way (L2), the record forgotten or an entry point called elsewhere (M3),
+  # the gate's turn, second switch check, running predicate or strict read loosened (L1, L7).
+  "$dl|sed|s/^                outcome.cleared += 1\$/&; await sneak(albums)/"
+  'App/AppModel+Requests.swift|append|func plantedForget(_ d: UserDefaults) { MissingAlbumSearch.forgetRecord(scope: "x", in: d) }'
+  'App/Screens/Settings/LidarrDownloadsView.swift|append|func plantedSearch(_ m: AppModel) async { await m.searchMissingAlbumsNow() }'
+  'App/AppModel+Requests.swift|append|func plantedSchedule() async { await runMissingAlbumSchedule() }'
+  'App/AppModel+Requests.swift|append|func plantedForget2(_ d: UserDefaults) { LidarrWriteGate.forgetMissingAlbumSearch(scope: "x", in: d) }'
+  "$wg|sed|/private func sendMissingAlbumSearch/,/return try await deliver/s/^        await takeConfinedTurn()\$/        \\/\\/ no turn/"
+  "$wg|sed|/if running { throw/,/missingSearchStore.save/s/^        guard enabled else { throw WriteGateError.disabled }   \\/\\/ turned off during the read\$/        \\/\\/ no second check/"
+  "$wg|sed|s/\\[\"queued\", \"started\"\\].contains(\$0.status) }/\$0.status == \"started\" }/"
+  "$wg|sed|s/guard let commands = try? await strictCommandNamesAndStatuses() else {/guard let commands = try? await reader.commands().map({ (\$0.name.lowercased(), \$0.status.lowercased()) }) else {/"
   "$dl|sed|s/^                if firstRemoval == nil { firstRemoval = startedAt }\$/&; if let r = removal.request { await runner?.clearAllSearch(r) }/"
   "$dl|sed|s/let removal = try await removeOne(target.queueId, item, albums: albums, allowForeign: foreign, deferred: true)/let removal = try await removeOne(target.queueId, item, albums: albums, allowForeign: foreign, deferred: false)/"
   'App/Screens/Settings/LidarrDownloadsView.swift|append|func plantedFlag(_ m: AppModel, _ p: ClearAllPlan) { Task { await m.clearAllDownloads(p, includeForeign: true) } }'

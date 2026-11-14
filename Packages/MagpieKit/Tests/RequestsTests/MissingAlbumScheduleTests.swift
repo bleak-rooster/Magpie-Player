@@ -64,11 +64,13 @@ import LidarrKit
     }
 
     @Test func alreadyRunningCountsAsSent() {
-        for error in [WriteGateError.forbidden(MissingAlbumSearch.alreadyRunning), .forbidden(MissingAlbumSearch.tooSoon)] {
-            let answer = MissingAlbumSchedule.answer(for: error)
-            #expect(answer == .alreadyRunning)
-            #expect(MissingAlbumSchedule.lastAsked(after: answer, previous: nil, askedAt: t0) == t0)
-        }
+        let running = MissingAlbumSchedule.answer(for: WriteGateError.forbidden(MissingAlbumSearch.alreadyRunning))
+        #expect(running == .alreadyRunning)
+        #expect(MissingAlbumSchedule.lastAsked(after: running, previous: nil, askedAt: t0) == t0)
+        // Fix round 1 L6: the gate's ten minutes has its own answer (its own words), and counts as asked too.
+        let soon = MissingAlbumSchedule.answer(for: WriteGateError.forbidden(MissingAlbumSearch.tooSoon))
+        #expect(soon == .tooSoon)
+        #expect(MissingAlbumSchedule.lastAsked(after: soon, previous: nil, askedAt: t0) == t0)
         #expect(MissingAlbumSchedule.answer(for: nil) == .sent)
         #expect(MissingAlbumSchedule.lastAsked(after: .sent, previous: t0.addingTimeInterval(-hour), askedAt: t0) == t0)
     }

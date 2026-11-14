@@ -164,7 +164,6 @@ enum LidarrDownloadsCopy {
     private(set) var unreachable = false
     private(set) var restarting = false
     private(set) var message: String?
-    @ObservationIgnored private var restarter: (gate: ObjectIdentifier, restarter: LidarrDownloadRestarter)?
 
     /// One read of the queue and the download clients.
     func refresh(_ model: AppModel, now: Date = Date()) async {
@@ -226,13 +225,8 @@ enum LidarrDownloadsCopy {
         await refresh(model)
     }
 
-    private func restarter(_ model: AppModel) -> LidarrDownloadRestarter? {
-        guard let gate = model.gate, let client = model.lidarrClient else { return nil }
-        if let restarter, restarter.gate == ObjectIdentifier(gate) { return restarter.restarter }
-        let made = LidarrDownloadRestarter(lidarr: client, gate: gate, runner: model.runner)
-        restarter = (ObjectIdentifier(gate), made)
-        return made
-    }
+    /// Round 27 R fix round 1 (L4): the model's one restarter, shared with Clear all, so their runs take turns.
+    private func restarter(_ model: AppModel) -> LidarrDownloadRestarter? { model.lidarrRestarter }
 }
 
 /// Settings › Downloads in Lidarr: everything in Lidarr's queue, whoever asked for it (D49), as Active,

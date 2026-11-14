@@ -661,6 +661,12 @@ public actor LidarrWriteGate {
     /// Round 27 R (D289): when this gate last sent a `MissingAlbumSearch` to this Lidarr.
     private var missingSearchStore: any MissingAlbumSearchStore
 
+    /// Round 27 R fix round 1 (M3): disconnect and sign-out forget this gate's MissingAlbumSearch record for that Lidarr
+    /// (the record's key and type stay in `MissingAlbumSearch.swift`). `scripts/check-writes.sh` pins the one caller.
+    public static func forgetMissingAlbumSearch(scope: String, in defaults: UserDefaults) {
+        MissingAlbumSearch.forgetRecord(scope: scope, in: defaults)
+    }
+
     /// Tests only (`@testable`): a record that can't be saved.
     func useMissingSearchStore(_ store: any MissingAlbumSearchStore) { missingSearchStore = store }
 
@@ -936,30 +942,48 @@ public actor LidarrWriteGate {
     /// (unreadable: not sent); the switch is still on; and the record's new time is saved before sending (not saved:
     /// nothing sent).
     private func sendMissingAlbumSearch(_ target: WriteTarget, _ data: Data?) async throws -> Data {
+        guard target.query.isEmpty else { throw refused(target, "missingAlbumSearch carries no query") }   // fix round 1 task M6
         guard enabled else { throw WriteGateError.disabled }
         await takeConfinedTurn()
         defer { passConfinedTurn() }
         let scope = connection.instanceScope
         let t = now()
-        if let last = missingSearchStore.last(scope: scope) {
+        let previous = missingSearchStore.last(scope: scope)
+        if let last = previous {
             if last > t {
                 try? missingSearchStore.save(t, scope: scope)   // the phone's clock went back: from now
                 throw refused(target, MissingAlbumSearch.tooSoon)
             }
             if t.timeIntervalSince(last) < MissingAlbumSearch.floor { throw refused(target, MissingAlbumSearch.tooSoon) }
         }
-        let commands: [CommandStatus]
-        do { commands = try await reader.commands() } catch {
+        guard let commands = try? await strictCommandNamesAndStatuses() else {
             Log.logger("lidarr").error("not confirmed \(target.method, privacy: .public) \(target.logPath, privacy: .public)")
             throw WriteGateError.unconfirmed
         }
-        let running = commands.contains {
-            $0.name.lowercased() == "missingalbumsearch" && ["queued", "started"].contains($0.status.lowercased())
-        }
+        let running = commands.contains { $0.name == "missingalbumsearch" && ["queued", "started"].contains($0.status) }
         if running { throw refused(target, MissingAlbumSearch.alreadyRunning) }
         guard enabled else { throw WriteGateError.disabled }   // turned off during the read
         do { try missingSearchStore.save(t, scope: scope) } catch { throw WriteGateError.logUnavailable }
-        return try await deliver(target, data)
+        do {
+            return try await deliver(target, data)
+        } catch WriteGateError.logUnavailable {
+            missingSearchStore.restore(previous, scope: scope)   // fix round 1 L6: nothing was sent after all
+            throw WriteGateError.logUnavailable
+        }
+    }
+
+    /// Fix round 1 L7: the proof that none is running reads `GET /command` strictly: a JSON array whose every entry is
+    /// an object with a string `name` and a string `status` (lower-cased here). Anything else throws (not sent).
+    private func strictCommandNamesAndStatuses() async throws -> [(name: String, status: String)] {
+        struct Unreadable: Error {}
+        let (data, response) = try await connection.get("command")
+        guard (200..<300).contains(response.statusCode),
+              let list = try JSONSerialization.jsonObject(with: data) as? [Any] else { throw Unreadable() }
+        return try list.map { entry in
+            guard let object = entry as? [String: Any], let name = object["name"] as? String,
+                  let status = object["status"] as? String else { throw Unreadable() }
+            return (name.lowercased(), status.lowercased())
+        }
     }
 
     /// Albums of downloads a `queueRestartAny` removed, and when (their `restartSearch` may follow for 10 minutes).

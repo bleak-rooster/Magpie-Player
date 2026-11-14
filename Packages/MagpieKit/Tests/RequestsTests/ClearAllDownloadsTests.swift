@@ -48,18 +48,17 @@ import MagpieCore
                 queued(905, status: "downloadClientUnavailable"),
                 queued(906, status: "warning", client: "Slskd"),
                 queued(907, status: "failed", tracked: "downloadFailed"),
-                queued(908, status: "completed", tracked: "importBlocked", sizeleft: 0, messages: ["Artist name mismatch"]),
             ]
         }
         let r = restarter(h)
         let plan = try await r.clearAllPlan()
-        #expect(plan.targets.map(\.queueId) == Array(901...908))
+        #expect(plan.targets.map(\.queueId) == Array(901...907))
         #expect(plan.foreign == 0 && plan.more == 0)
         let outcome = await r.clearAll(plan, includeForeign: true)
-        #expect(outcome.cleared == 8)
-        #expect(outcome.searchedAlbums == 8)
+        #expect(outcome.cleared == 7)
+        #expect(outcome.searchedAlbums == 7)
         #expect(outcome.notCleared == 0 && outcome.left == 0 && outcome.clearedWithoutSearch == 0)
-        #expect(h.server.with { $0.removedFromQueue } == Array(901...908))
+        #expect(h.server.with { $0.removedFromQueue } == Array(901...907))
         #expect(h.server.writes.filter { $0.httpMethod == "DELETE" }.allSatisfy { $0.url?.query == Self.deleteQuery })
     }
 
@@ -133,8 +132,8 @@ import MagpieCore
         #expect(searches(h) == [[41, 42], [43]])
     }
 
-    /// Every search lands inside the gate's ten minutes after its removal: removals stop once eight minutes have gone
-    /// since the first, and the rest wait for the next tap.
+    /// Every search lands inside the gate's ten minutes after its removal: removals stop once five minutes have gone
+    /// since the first (fix round 1 M1), and the rest wait for the next tap.
     @Test func clearAll_searchesInsideTenMinutes() async throws {
         let h = await Harness()
         h.server.with { s in s.queue = (901...910).map { queued($0, status: "failed", tracked: "downloadFailed") } }
@@ -150,10 +149,11 @@ import MagpieCore
             clock.withLock { $0 = $0.addingTimeInterval(100); return $0 }
         })
         let outcome = await r.clearAll(try await r.clearAllPlan(), includeForeign: true)
-        #expect(outcome.cleared == 5, "the sixth would start eight minutes after the first")
-        #expect(outcome.left == 5)
-        #expect(outcome.searchedAlbums == 5 && outcome.clearedWithoutSearch == 0, "every search inside the gate's window")
-        #expect(searches(h) == [[41], [42], [43], [44], [45]])
+        #expect(outcome.cleared == 3, "the fourth would start five minutes after the first")
+        #expect(outcome.left == 7)
+        #expect(outcome.searchedAlbums == 3 && outcome.clearedWithoutSearch == 0, "every search inside the gate's window")
+        #expect(outcome.searchesTurnedDown == 0)
+        #expect(searches(h) == [[41], [42], [43]])
     }
 
     @Test func clearAll_atMostHundred() async throws {
@@ -202,7 +202,7 @@ import MagpieCore
         await h.runner.settle()
         #expect(outcome.cleared == 2 && outcome.searchedAlbums == 2)
         #expect(Array(writes(h).dropFirst(before)) == ["DELETE queue/901", "DELETE queue/902", "POST command", "POST command"])
-        #expect(Set(searches(h).suffix(2)) == [[31], [35]])
+        #expect(searches(h).suffix(2) == [[35], [31]], "the windowed restart search first, the request's own last (M1)")
         let r1 = try #require(await h.request(id))
         #expect(r1.stallRetries == 1, "counted toward the request's five")
         #expect(r1.state == .searching)
@@ -236,6 +236,124 @@ import MagpieCore
         let outcome = await r.clearAll(plan, includeForeign: true)
         #expect(outcome.changesOff && outcome.cleared == 0)
         #expect(h.server.writes.isEmpty)
+    }
+
+    // MARK: - Fix round 1
+
+    /// M1: slow removals (every Lidarr request takes 30 s, a removal about two and a half minutes) and a live request: removals stop five minutes after the
+    /// first; the windowed restart searches go first and none is ever started once its removal is 570 s old, so the gate
+    /// never turns one down; the request's own search goes last; only searches actually sent are counted (task M2).
+    @Test func clearAll_slowRemovalsAndRunnerSearchesStayInsideWindow() async throws {
+        let clock = OSAllocatedUnfairLock(initialState: Date(timeIntervalSince1970: 2_000_000))
+        let h = await Harness(gateNow: { clock.withLock { $0 } })
+        h.server.ownerHasArtist(albumMonitored: false)
+        let id = try await h.runner.tryRecording(h.recording(recAlbumOnly), tier: .standard)
+        await h.runner.settle()
+        #expect(await h.state(id) == .searching)
+        h.server.with { s in
+            s.queue = [FakeLidarr.Queued(albumId: 31, size: 100, sizeleft: 60, status: "failed", tracked: "downloadFailed",
+                                         id: 901, artistId: 7, client: "SABnzbd")]
+                + (902...909).map { queued($0, status: "failed", tracked: "downloadFailed") }
+        }
+        let r = restarter(h, now: { clock.withLock { $0 } })
+        let plan = try await r.clearAllPlan()
+        let before = h.server.writes.count
+        h.server.with { $0.onEveryLidarrRequest = { _ in clock.withLock { $0 = $0.addingTimeInterval(30) } } }
+        let outcome = await r.clearAll(plan, includeForeign: true)
+        h.server.with { $0.onEveryLidarrRequest = nil }
+        await h.runner.settle()
+        #expect(outcome.searchesTurnedDown == 0, "the gate never refused a search")
+        #expect(outcome.cleared >= 2 && outcome.left > 0, "removals stopped inside five minutes")
+        let sent = Array(h.server.writeBodies().dropFirst(before)).filter { $0.0 == "POST command" }.compactMap { $0.1["albumIds"] as? [Int] }
+        #expect(outcome.searchedAlbums == sent.reduce(0) { $0 + $1.count }, "only searches actually sent are counted")
+        #expect(outcome.searchedAlbums + outcome.clearedWithoutSearch >= outcome.cleared)
+        #expect(sent.count >= 2 && sent.last == [31], "a restart search first, the request's own last")
+        #expect(await h.request(id)?.stallRetries == 1)
+    }
+
+    /// Security M2: a finished copy that couldn't be added is the owner's to check: never in Clear all, and the
+    /// confirmation says how many were left.
+    @Test func clearAll_couldntImportIsLeftAlone() async throws {
+        let h = await Harness()
+        h.server.with { s in
+            s.queue = [queued(901),
+                       queued(902, status: "completed", tracked: "importBlocked", sizeleft: 0, messages: ["Artist name mismatch"]),
+                       queued(903, status: "completed", tracked: "importFailed", sizeleft: 0, messages: ["Has missing tracks"])]
+        }
+        let r = restarter(h)
+        let plan = try await r.clearAllPlan()
+        #expect(plan.targets.map(\.queueId) == [901])
+        #expect(plan.couldntImport == 2)
+        _ = await r.clearAll(plan, includeForeign: true)
+        #expect(h.server.with { $0.removedFromQueue } == [901])
+    }
+
+    /// L3: never more than 100, whatever plan it is handed.
+    @Test func clearAll_neverMoreThanHundredEvenIfPlanSays() async throws {
+        let h = await Harness()
+        h.server.with { s in s.queue = (901...1005).map { queued($0, status: "failed", tracked: "downloadFailed") } }
+        let targets = (901...1005).map { ClearAllPlan.Target(queueId: $0, downloadId: "dl-\($0)", foreign: false) }
+        let outcome = await restarter(h).clearAll(ClearAllPlan(targets: targets, more: 0), includeForeign: true)
+        #expect(outcome.cleared == 100 && outcome.left == 5)
+        #expect(h.server.with { $0.removedFromQueue }.count == 100)
+    }
+
+    /// L5: Lidarr took a removal but didn't answer: said apart ("may have been cleared"), not as left alone.
+    @Test func clearAll_lostAnswerIsSaidApart() async throws {
+        let h = await Harness()
+        h.server.with { s in
+            s.queue = (901...903).map { queued($0, status: "failed", tracked: "downloadFailed") }
+            s.queueDeleteAnswersLost = 1
+        }
+        let r = restarter(h)
+        let outcome = await r.clearAll(try await r.clearAllPlan(), includeForeign: true)
+        #expect(outcome.maybeCleared == 1)
+        #expect(outcome.cleared == 2 && outcome.notCleared == 0)
+        #expect(h.server.with { $0.removedFromQueue } == [901, 902, 903])
+    }
+
+    /// L9: another app's download of an album a live request is waiting on: the request is held while it goes (never
+    /// counted toward its five, as D63), and its own search follows the removals.
+    @Test func clearAll_foreignDownloadOfALiveRequestHoldsIt() async throws {
+        let h = await Harness()
+        h.server.ownerHasArtist(albumMonitored: false)
+        let id = try await h.runner.tryRecording(h.recording(recAlbumOnly), tier: .standard)
+        await h.runner.settle()
+        h.server.with { s in
+            s.queue = [FakeLidarr.Queued(albumId: 31, size: 100, sizeleft: 60, status: "failed", tracked: "downloadFailed",
+                                         id: 901, artistId: 7, client: "Slskd")]
+            s.ungrabbed = ["dl-901"]
+        }
+        let before = h.server.writes.count
+        let r = restarter(h)
+        let outcome = await r.clearAll(try await r.clearAllPlan(), includeForeign: true)
+        await h.runner.settle()
+        #expect(outcome.cleared == 1)
+        #expect(Array(writes(h).dropFirst(before)) == ["DELETE queue/901", "POST command"])
+        #expect(searches(h).last == [31])
+        #expect((await h.request(id)?.stallRetries ?? 0) == 0, "another app's copy is never counted")
+        #expect(await h.request(id)?.state == .searching)
+    }
+
+    /// L4: Restart all and Clear all on the one restarter run one after the other, never interleaved.
+    @Test func restartAllAndClearAllTakeTurns() async throws {
+        let h = await Harness()
+        h.server.with { s in s.queue = (901...904).map { queued($0, status: "failed", tracked: "downloadFailed") } }
+        let r = restarter(h)
+        let plan = try await r.clearAllPlan()
+        let items = try await h.lidarrClient.queueDetails(albumIds: [])
+        var cache = GrabCache()
+        while await cache.lookUp(items, soulseekClients: [], lidarr: h.lidarrClient, now: Date()) > 0 {}
+        let board = LidarrDownloads(items, soulseekClients: [], watch: QueueStallWatch(), grabs: cache, stallLimit: 60, now: Date())
+        async let restarted = r.restartAll(Array(board.restartable.prefix(2)))
+        async let cleared = r.clearAll(plan, includeForeign: true)
+        _ = await (restarted, cleared)
+        // Restart all writes DELETE, POST pairs; Clear all writes all its DELETEs, then its POSTs. Either may go first,
+        // but one's writes never fall between the other's.
+        let p = "POST command"
+        let restartFirst = ["DELETE queue/901", p, "DELETE queue/902", p, "DELETE queue/903", "DELETE queue/904", p, p]
+        let clearFirst = ["DELETE queue/901", "DELETE queue/902", "DELETE queue/903", "DELETE queue/904", p, p, p, p]
+        #expect(writes(h) == restartFirst || writes(h) == clearFirst, "\(writes(h))")
     }
 
     /// Progress is reported as "i of n" before each download.

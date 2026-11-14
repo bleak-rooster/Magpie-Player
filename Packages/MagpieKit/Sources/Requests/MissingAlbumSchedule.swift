@@ -44,12 +44,14 @@ public enum MissingAlbumSchedule {
     public enum Answer: Sendable, Equatable {
         /// Lidarr took it.
         case sent
-        /// One is queued or running in Lidarr, or this gate sent one less than ten minutes ago.
+        /// One is queued or running in Lidarr.
         case alreadyRunning
         /// Refused before anything was sent (switch off, Lidarr unreadable, change log), or Lidarr turned it down.
         case refused
         /// Sent, but no answer came back: Lidarr may be looking already.
         case lostAnswer
+        /// Fix round 1 L6: this gate sent one less than ten minutes ago (its own words; counts as asked).
+        case tooSoon
     }
 
     static let everyKeyPrefix = "magpie.lidarr.missingSearchEvery"
@@ -78,8 +80,10 @@ public enum MissingAlbumSchedule {
     public static func answer(for error: Error?) -> Answer {
         guard let error else { return .sent }
         switch error {
-        case WriteGateError.forbidden(let why) where why == MissingAlbumSearch.alreadyRunning || why == MissingAlbumSearch.tooSoon:
+        case WriteGateError.forbidden(let why) where why == MissingAlbumSearch.alreadyRunning:
             return .alreadyRunning
+        case WriteGateError.forbidden(let why) where why == MissingAlbumSearch.tooSoon:
+            return .tooSoon
         case is WriteGateError:
             return .refused
         case LidarrError.unauthorized:

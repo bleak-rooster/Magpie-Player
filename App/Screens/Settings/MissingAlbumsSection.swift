@@ -45,6 +45,8 @@ enum MissingAlbumsCopy {
         case .alreadyRunning: ("Lidarr is already looking for missing albums.", "clock")
         case .refused: ("Couldn\u{2019}t ask Lidarr just now. Nothing was sent.", "exclamationmark.triangle")
         case .lostAnswer: ("Magpie couldn\u{2019}t hear back from Lidarr. It may already be looking.", "exclamationmark.triangle")
+        // Fix round 1 L6: the gate's ten minutes, in its own words.
+        case .tooSoon: ("Magpie asked Lidarr a few minutes ago. Try again shortly.", "clock")
         }
     }
 
@@ -52,12 +54,16 @@ enum MissingAlbumsCopy {
 
     static func clearTitle(_ count: Int) -> String { "Clear \(downloads(count)) and search again?" }
 
-    /// The confirmation's message; per Q2 a second line names how many another app started, and a third how many are
-    /// past the run's 100.
-    static func clearMessage(foreign: Int, more: Int) -> String {
+    /// Fix round 1 (security M2): downloads that finished but couldn't be added stay out of Clear all.
+    static let couldntImportLeft = "Downloads that finished but couldn\u{2019}t be added are left for you to check."
+
+    /// The confirmation's message; per Q2 a second line names how many another app started, then (fix round 1) that
+    /// finished ones that couldn't be added are left, then how many are past the run's 100.
+    static func clearMessage(foreign: Int, more: Int, couldntImport: Int = 0) -> String {
         var text = "Each one is stopped, removed and blocked so the same copy isn\u{2019}t picked again. Once they\u{2019}re "
             + "all gone, Magpie asks Lidarr to look for those albums again. Anything importing is left alone."
         if foreign > 0 { text += "\n\n\(foreign) of them " + (foreign == 1 ? "was" : "were") + " started by another app." }
+        if couldntImport > 0 { text += "\n\n" + couldntImportLeft }
         if more > 0 { text += "\n\n" + stillQueued(more) }
         return text
     }
@@ -87,9 +93,17 @@ enum MissingAlbumsCopy {
             parts.append(o.notCleared == 1 ? "Couldn\u{2019}t clear 1 download. It was left as it was."
                          : "Couldn\u{2019}t clear \(o.notCleared) downloads. They were left as they were.")
         }
+        // Fix round 1 L5: sent, but Lidarr didn't say whether it went.
+        if o.maybeCleared > 0 { parts.append("\(o.maybeCleared) may have been cleared; Lidarr didn\u{2019}t answer in time.") }
         if o.left > 0 { parts.append(stillQueued(o.left)) }
         if o.changesOff { parts.append(changesOff) }
         return parts.isEmpty ? LidarrDownloadsCopy.empty : parts.joined(separator: " ")
+    }
+
+    /// Fix round 1 task M4: the outcome's symbol: done when everything tried was cleared, a warning when anything wasn't.
+    static func clearSymbol(_ o: ClearAllOutcome) -> String {
+        if o.changesOff || o.notCleared > 0 || o.maybeCleared > 0 || o.stoppedUnreachable { return "exclamationmark.triangle" }
+        return o.cleared > 0 ? "checkmark.circle" : "info.circle"
     }
 }
 
@@ -177,7 +191,7 @@ struct ClearAllButton: View {
                 .font(.footnote)
                 .accessibilityIdentifier("clear-all-progress")
         } else if let message = state.clearMessage {
-            Label(message, systemImage: "info.circle")
+            Label(message, systemImage: state.clearSymbol)
                 .font(.footnote)
                 .accessibilityIdentifier("clear-all-message")
         }
@@ -208,7 +222,8 @@ private struct ClearAllConfirmation: ViewModifier {
             }
             Button("Cancel", role: .cancel) { plan = nil }
         } message: {
-            Text(MissingAlbumsCopy.clearMessage(foreign: plan?.foreign ?? 0, more: plan?.more ?? 0))
+            Text(MissingAlbumsCopy.clearMessage(foreign: plan?.foreign ?? 0, more: plan?.more ?? 0,
+                                                couldntImport: plan?.couldntImport ?? 0))
         }
     }
 }

@@ -31,8 +31,9 @@ public enum MissingAlbumSearch {
     /// The gate's record for one Lidarr instance (`LidarrClient.instanceScope`), in the gate's UserDefaults.
     public static func recordKey(scope: String) -> String { "\(recordKeyPrefix).\(scope)" }
 
-    /// Disconnect and sign-out forget it with the other Lidarr keys (the next Lidarr starts afresh).
-    public static func forgetRecord(scope: String, in defaults: UserDefaults) {
+    /// Disconnect and sign-out forget it with the other Lidarr keys (the next Lidarr starts afresh). Fix round 1 M3:
+    /// internal; the app goes through `LidarrWriteGate.forgetMissingAlbumSearch`.
+    static func forgetRecord(scope: String, in defaults: UserDefaults) {
         defaults.removeObject(forKey: recordKey(scope: scope))
     }
 }
@@ -42,6 +43,12 @@ protocol MissingAlbumSearchStore: Sendable {
     func last(scope: String) -> Date?
     /// Throws when the time can't be shown to be saved: then nothing is sent (M6).
     func save(_ date: Date, scope: String) throws
+    /// Fix round 1 L6: puts back what was there (nil: none) when nothing was sent after all.
+    func restore(_ date: Date?, scope: String)
+}
+
+extension MissingAlbumSearchStore {
+    func restore(_ date: Date?, scope: String) {}
 }
 
 /// The record in the gate's UserDefaults suite, read back after it is written.
@@ -55,5 +62,10 @@ struct DefaultsMissingAlbumSearchStore: MissingAlbumSearchStore, @unchecked Send
     func save(_ date: Date, scope: String) throws {
         defaults.set(date, forKey: MissingAlbumSearch.recordKey(scope: scope))
         guard last(scope: scope) == date else { throw NotSaved() }
+    }
+
+    func restore(_ date: Date?, scope: String) {
+        if let date { defaults.set(date, forKey: MissingAlbumSearch.recordKey(scope: scope)) }
+        else { defaults.removeObject(forKey: MissingAlbumSearch.recordKey(scope: scope)) }
     }
 }

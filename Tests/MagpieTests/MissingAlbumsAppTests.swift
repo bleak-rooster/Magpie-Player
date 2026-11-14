@@ -54,6 +54,28 @@ private let lidarrScope = LidarrClient(base: lidarrBase, apiKey: "key", transpor
         #expect(Copy.clearMessage(foreign: 3, more: 0) == base + "\n\n3 of them were started by another app.")
         #expect(Copy.clearMessage(foreign: 1, more: 0) == base + "\n\n1 of them was started by another app.")
         #expect(Copy.clearMessage(foreign: 0, more: 7).contains("7 more downloads are still in the queue."))
+        // Fix round 1 (security M2): finished ones that couldn't be added are left, and the confirmation says so.
+        #expect(Copy.clearMessage(foreign: 0, more: 0, couldntImport: 2)
+                == base + "\n\nDownloads that finished but couldn\u{2019}t be added are left for you to check.")
+    }
+
+    /// Fix round 1: the gate's ten minutes in its own words (L6), a lost answer said apart (L5), and a warning symbol for
+    /// anything that wasn't cleared (task M4).
+    @Test func fixRoundCopy() {
+        #expect(Copy.answer(.tooSoon).text == "Magpie asked Lidarr a few minutes ago. Try again shortly.")
+        #expect(Copy.answer(.tooSoon).symbol == "clock")
+        var o = ClearAllOutcome()
+        o.cleared = 3; o.searchedAlbums = 3; o.maybeCleared = 1
+        #expect(Copy.clearOutcome(o) == "Cleared 3 downloads. Looking for 3 albums again. 1 may have been cleared; Lidarr didn\u{2019}t answer in time.")
+        #expect(Copy.clearSymbol(o) == "exclamationmark.triangle")
+        o.maybeCleared = 0
+        #expect(Copy.clearSymbol(o) == "checkmark.circle")
+        o.notCleared = 1
+        #expect(Copy.clearSymbol(o) == "exclamationmark.triangle")
+        var off = ClearAllOutcome()
+        off.changesOff = true
+        #expect(Copy.clearSymbol(off) == "exclamationmark.triangle")
+        #expect(Copy.clearSymbol(ClearAllOutcome()) == "info.circle")
     }
 
     @Test func clearOutcomeReadsPlainly() {
@@ -175,7 +197,7 @@ private let lidarrScope = LidarrClient(base: lidarrBase, apiKey: "key", transpor
         // At once again: the gate's ten minutes.
         await model.searchMissingAlbumsNow()
         #expect(missingSearches.count == 1)
-        #expect(model.missingAlbums.searchAnswer == .alreadyRunning)
+        #expect(model.missingAlbums.searchAnswer == .tooSoon, "fix round 1 L6: its own words")
     }
 
     /// Checked when Magpie becomes active; due once a day; changes off asks nothing and keeps the time.
@@ -185,22 +207,33 @@ private let lidarrScope = LidarrClient(base: lidarrBase, apiKey: "key", transpor
         try await model.signIn(urls: [home], username: "jordan", password: "pw")
         _ = try await model.connectLidarr(base: lidarrBase, apiKey: "key")
         #expect(model.missingSearchEvery == .off, "Off by default")
+        let chosenAt = Date()
         model.missingSearchEvery = .day
-        await model.runMissingAlbumSchedule()
-        #expect(missingSearches.isEmpty, "changes off: nothing")
-        #expect(model.missingSearchLastAsked == nil)
+        // Fix round 1 L8: choosing Every day starts its wait now, so opening Magpie doesn't send at once.
+        let started = try #require(model.missingSearchLastAsked)
+        #expect(abs(started.timeIntervalSince(chosenAt)) < 5)
         await model.setChangesAllowed(true)
-        model.missingAlbumsSceneChanged(active: true)
-        #expect(await eventually { self.missingSearches.count == 1 })
-        #expect(await eventually { model.missingSearchLastAsked != nil })
         await model.runMissingAlbumSchedule()
+        #expect(missingSearches.isEmpty, "not due for a day after choosing it")
+        await model.setChangesAllowed(false)
+        let tomorrow = Date().addingTimeInterval(25 * 3_600)
+        await model.runMissingAlbumSchedule(now: tomorrow)
+        #expect(missingSearches.isEmpty, "changes off: nothing")
+        #expect(model.missingSearchLastAsked == started)
+        await model.setChangesAllowed(true)
+        await model.runMissingAlbumSchedule(now: tomorrow)
+        #expect(missingSearches.count == 1)
+        #expect(model.missingSearchLastAsked == tomorrow)
+        await model.runMissingAlbumSchedule(now: tomorrow.addingTimeInterval(3_600))
         #expect(missingSearches.count == 1, "not due again for a day")
         // A day on (the gate's own ten-minute record runs on the real clock, so it is cleared as a day would).
         UserDefaults(suiteName: gateSuite)?.removeObject(forKey: MissingAlbumSearch.recordKey(scope: lidarrScope))
-        let tomorrow = Date().addingTimeInterval(25 * 3_600)
-        await model.runMissingAlbumSchedule(now: tomorrow)
+        await model.runMissingAlbumSchedule(now: tomorrow.addingTimeInterval(25 * 3_600))
         #expect(missingSearches.count == 2)
-        #expect(model.missingSearchLastAsked == tomorrow)
+        // Choosing the same again doesn't restart the wait; Off and back does.
+        let asked = model.missingSearchLastAsked
+        model.missingSearchEvery = .day
+        #expect(model.missingSearchLastAsked == asked)
         model.missingAlbumsSceneChanged(active: false)
         #expect(missingSearches.count == 2)
     }
@@ -240,6 +273,21 @@ private let lidarrScope = LidarrClient(base: lidarrBase, apiKey: "key", transpor
     }
 
     /// Clear all with nothing to clear says so; Lidarr unreachable says so; nothing is sent either way.
+    /// Fix round 1 L4: Downloads in Lidarr's Restart and Clear all share the model's one restarter (one run at a time),
+    /// made again for another gate.
+    @Test func oneRestarterForBothScreens() async throws {
+        let model = model()
+        defer { tearDown(model) }
+        #expect(model.lidarrRestarter == nil, "no Lidarr: none")
+        try await model.signIn(urls: [home], username: "jordan", password: "pw")
+        _ = try await model.connectLidarr(base: lidarrBase, apiKey: "key")
+        let first = try #require(model.lidarrRestarter)
+        #expect(model.lidarrRestarter === first)
+        model.rebuildRunner()   // a new gate
+        let second = try #require(model.lidarrRestarter)
+        #expect(second !== first)
+    }
+
     @Test func clearAllPrepares() async throws {
         let model = model()
         defer { tearDown(model) }

@@ -377,7 +377,10 @@ if [ -z "${G1_SRC:-}" ]; then
   done <<< "$flagged"
   callers=$(grep -rnE --include='*.swift' '(restarter|screen)\.(restart|restartAll)\(|LidarrDownloadRestarter\(|LidarrDownloadsScreen\(' \
               "${product[@]}" | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' | grep -v "^$view:" | clean_lines |
-              grep -vxE '^App/AppModel\+MissingAlbums\.swift:[0-9]+:return LidarrDownloadRestarter\(lidarr: client, gate: gate, runner: runner\)$' || true)
+              grep -vxE '^App/AppModel\+MissingAlbums\.swift:[0-9]+:let made = LidarrDownloadRestarter\(lidarr: client, gate: gate, runner: runner\)$' || true)
+  # Round 27 R fix round 1 (L4): that one restarter (the model's, shared with Downloads in Lidarr) is made on one line.
+  [ "$(grep -rcF --include='*.swift' 'LidarrDownloadRestarter(lidarr:' "${product[@]}" | awk -F: '{s+=$2} END {print s}')" = 1 ] ||
+    { echo "G1: the restarter is made in more than one place" >&2; bad=1; }
   while IFS= read -r s; do
     [ -n "$s" ] || continue
     echo "G1: the restarter is made or called outside Downloads in Lidarr's screen: ${s%%:*}" >&2; bad=1
@@ -393,16 +396,48 @@ if [ -z "${G1_SRC:-}" ]; then
     'guard missingSearch, owned == nil else { throw refused(target, "missingAlbumSearch is a MissingAlbumSearch command only") }' \
     'if t.timeIntervalSince(last) < MissingAlbumSearch.floor { throw refused(target, MissingAlbumSearch.tooSoon) }' \
     'if running { throw refused(target, MissingAlbumSearch.alreadyRunning) }' \
+    'let running = commands.contains { $0.name == "missingalbumsearch" && ["queued", "started"].contains($0.status) }' \
+    'guard let commands = try? await strictCommandNamesAndStatuses() else {' \
+    'guard target.query.isEmpty else { throw refused(target, "missingAlbumSearch carries no query") }   // fix round 1 task M6' \
+    'missingSearchStore.restore(previous, scope: scope)   // fix round 1 L6: nothing was sent after all' \
     'do { try missingSearchStore.save(t, scope: scope) } catch { throw WriteGateError.logUnavailable }'; do
     [ "$(grep -cF -- "$pinned_line" "$lk/WriteGate.swift")" = 1 ] ||
       { echo "G1: $lk/WriteGate.swift: the MissingAlbumSearch rule isn't exactly as pinned: $pinned_line" >&2; bad=1; }
   done
-  # In the gate's send for it: the record is saved before the one deliver, and the command read comes before both.
-  perl -ne 'BEGIN { $in = 0 } $in = 1 if /private func sendMissingAlbumSearch\(/; next unless $in;
-            $read ||= $. if /reader\.commands\(\)/; $save ||= $. if /missingSearchStore\.save\(t, scope: scope\) \} catch/;
+  # Fix round 1 L1: in the gate's send for it, in this order: the switch, the confined turn, the record's floor, the
+  # strict command read, the switch again, the record saved, the one deliver.
+  perl -ne 'BEGIN { $in = 0; $n = 0 } $in = 1 if /private func sendMissingAlbumSearch\(/; next unless $in;
+            if (/^\s*guard enabled else \{ throw WriteGateError\.disabled \}/) { $n++; $on1 ||= $. if $n == 1; $on2 = $. if $n == 2 }
+            $turn ||= $. if /^\s*await takeConfinedTurn\(\)$/; $pass ||= $. if /^\s*defer \{ passConfinedTurn\(\) \}$/;
+            $floor ||= $. if /t\.timeIntervalSince\(last\) < MissingAlbumSearch\.floor/;
+            $read ||= $. if /strictCommandNamesAndStatuses\(\)/; $save ||= $. if /missingSearchStore\.save\(t, scope: scope\) \} catch/;
             $send ||= $. if /return try await deliver\(target, data\)/; if (/^    \}$/) { $in = 0; last }
-            END { exit(($read && $save && $send && $read < $save && $save < $send) ? 0 : 1) }' "$lk/WriteGate.swift" ||
-    { echo "G1: $lk/WriteGate.swift: the MissingAlbumSearch record isn't saved before it is sent" >&2; bad=1; }
+            END { exit(($n == 2 && $on1 && $turn && $pass && $floor && $read && $on2 && $save && $send
+                        && $on1 < $turn && $turn < $pass && $pass < $floor && $floor < $read && $read < $on2
+                        && $on2 < $save && $save < $send) ? 0 : 1) }' "$lk/WriteGate.swift" ||
+    { echo "G1: $lk/WriteGate.swift: the MissingAlbumSearch checks aren't in their pinned order" >&2; bad=1; }
+  # Fix round 1 M3: the record is forgotten only through the gate's helper, from disconnect and sign-out; the entry
+  # points are called from their one line each.
+  for f in $(ngrep '\bforgetRecord\(' | clean_lines | cut -d: -f1 | sort -u || true); do
+    case "$f" in "$mas"|"$gate") ;; *) echo "G1: the missing-album search record forgotten outside the gate: $f" >&2; bad=1 ;; esac
+  done
+  entry_pins=(
+    "$missingfile|LidarrWriteGate.forgetMissingAlbumSearch(scope: scope, in: gateDefaults)   // fix round 1 M3"
+    "App/Screens/Settings/MissingAlbumsSection.swift|Button(MissingAlbumsCopy.confirmButton) { Task { await model.searchMissingAlbumsNow() } }"
+    "$missingfile|Task { await runMissingAlbumSchedule() }"
+    "App/AppModel+DownloadActivity.swift|missingAlbumsSceneChanged(active: phase == .active)   // Round 27 R (D291): the missing-album schedule"
+  )
+  entries=$(grep -rnE --include='*.swift' '\b(forgetMissingAlbumSearch|searchMissingAlbumsNow|runMissingAlbumSchedule|missingAlbumsSceneChanged)\(' "${product[@]}" |
+              grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' | grep -vE ':[0-9]+:[[:space:]]*(public |private |static |@[A-Za-z]+ )*func ' |
+              perl -ne 'my ($f, $n, $t) = /^([^:]+):(\d+):(.*)$/ or next; $t =~ s/^\s+|\s+$//g; print "$f|$t\n"' || true)
+  while IFS= read -r s; do
+    [ -n "$s" ] || continue
+    ok=0
+    for p in "${entry_pins[@]}"; do [ "$s" = "$p" ] && ok=1 && break; done
+    [ "$ok" = 1 ] || { echo "G1: a missing-album search entry point called outside its pinned line: ${s%%|*}" >&2; bad=1; }
+  done <<< "$entries"
+  [ "$(grep -c . <<< "$entries")" = "${#entry_pins[@]}" ] ||
+    { echo "G1: a missing-album search entry point called more (or less) than its pinned lines" >&2; bad=1; }
   # The shape named on exactly one line outside the gate, its body built only there, and its name spelled as a string only
   # in the gate, its own file and the artist page's "searching" list.
   ms_named=$(ngrep '\.missingAlbumSearch\b' | grep -v "^$gate:" | clean_lines || true)
@@ -444,10 +479,20 @@ if [ -z "${G1_SRC:-}" ]; then
     exit 1 unless defined $end;
     my @b = @l[$start..$end];
     my ($loop, $loopEnd, $remove, $firstSearch, $removes, $bad) = (undef, undef, undef, undef, 0, 0);
+    # Fix round 1 L2: inside the removal loop only these calls (no helper that could search on the way).
+    my %allowed = map { $_ => 1 } qw(now progress queueDetails first filter contains grabbed removeOne append compactMap
+                                      outcome lostAnswer timeIntervalSince);
     for my $i (0..$#b) {
       my $t = $b[$i]; next if $t =~ m{^\s*//};
-      if (!defined $loop && $t =~ /^        for target in plan\.targets \{$/) { $loop = $i; next }
+      if (!defined $loop && $t =~ /^        for target in targets \{$/) { $loop = $i; next }
       if (defined $loop && !defined $loopEnd && $t =~ /^        \}$/) { $loopEnd = $i; next }
+      if (defined $loop && !defined $loopEnd) {
+        (my $code = $t) =~ s/"(?:[^"\\]|\\.)*"//g;
+        while ($code =~ /\b([A-Za-z_]\w*)\s*\(/g) {
+          my $name = $1; next if $name =~ /^(if|guard|for|while|switch|catch|return|where|case|let|var)$/;
+          $bad = 1 unless $allowed{$name};
+        }
+      }
       if ($t =~ /removeOne\(/) { $removes++; $remove = $i; $bad = 1 unless $t =~ /deferred: true\)/ }
       if ($t =~ /(searchFor|clearAllSearch|searchAgainNow|restartOne|restartFromDownloads|restartSearch|gate\.send)\b/) { $firstSearch //= $i }
     }

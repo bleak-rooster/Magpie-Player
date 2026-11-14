@@ -278,6 +278,68 @@ import MagpieTestSupport
         #expect(posts.first.flatMap(\.status).map { (200..<300).contains($0) } == true)
     }
 
+    // MARK: - Fix round 1
+
+    /// L1: two sends at once on one gate: the turn makes one land and the other meet the record.
+    @Test func missing_twoConcurrentSendsOneLands() async throws {
+        let fake = Fake()
+        let gate = await fake.gate()
+        async let a = outcome(gate)
+        async let b = outcome(gate)
+        let both = await [a, b]
+        #expect(both.filter { $0 == "sent" }.count == 1)
+        #expect(both.contains("refused: " + MissingAlbumSearch.tooSoon))
+        #expect(fake.writes.count == 1)
+    }
+
+    /// L6: the change log can't be saved (so nothing went): the record goes back to what it was.
+    @Test func missing_logUnavailablePutsTheRecordBack() async throws {
+        let fake = Fake()
+        let blocker = FileManager.default.temporaryDirectory.appending(path: "magpie-blocker-\(UUID().uuidString)")
+        try Data("x".utf8).write(to: blocker)   // a file where the log's folder should be
+        defer { try? FileManager.default.removeItem(at: blocker) }
+        let clock = fake.clock
+        let gate = LidarrWriteGate(client: fake.client, logURL: blocker.appending(path: "log.json"), defaultsSuite: fake.env.defaults,
+                                   now: { clock.withLock { $0 } })
+        await gate.setEnabled(true)
+        await #expect(throws: WriteGateError.logUnavailable) { try await send(gate) }
+        #expect(fake.writes.isEmpty)
+        #expect(UserDefaults(suiteName: fake.env.defaults)?.object(forKey: MissingAlbumSearch.recordKey(scope: fake.client.instanceScope)) == nil,
+                "nothing went, so the next ask isn't held back ten minutes")
+    }
+
+    /// L7: the proof that none is running reads every command strictly: one it can't read refuses.
+    @Test(arguments: [#"[{"id":1,"name":"MissingAlbumSearch"}]"#, #"[{"id":1,"status":"started"}]"#, #"[{"name":"RssSync","status":"queued"}, 7]"#,
+                      #"{"records":[]}"#, #"[{"name":7,"status":"completed"}]"#, "not json"])
+    func missing_undecodableCommandRefuses(_ body: String) async throws {
+        let fake = Fake()
+        let transport = MockTransport()
+        transport.stub(pathSuffix: "/api/v1/command", body: json(body))
+        transport.stub(method: "POST", pathSuffix: "", body: json("{}"))
+        let client = LidarrClient(base: testBase, apiKey: testKey, transport: transport)
+        let gate = await fake.env.gate(client, enabled: true)
+        await #expect(throws: WriteGateError.unconfirmed) { try await send(gate) }
+        #expect(transport.requests.allSatisfy { ($0.httpMethod ?? "GET") == "GET" })
+    }
+
+    /// Task M6: the shape carries no query at all.
+    @Test func missing_queryRefused() async throws {
+        let fake = Fake()
+        let gate = await fake.gate()
+        #expect(await outcome(gate, path: "command?artistId=3") != "sent")
+        #expect(fake.transport.requests.isEmpty)
+    }
+
+    /// M3: the record is forgotten through the gate's own helper (disconnect, sign-out).
+    @Test func missing_recordForgottenThroughTheGate() async throws {
+        let fake = Fake()
+        let gate = await fake.gate()
+        #expect(await outcome(gate) == "sent")
+        let defaults = try #require(UserDefaults(suiteName: fake.env.defaults))
+        LidarrWriteGate.forgetMissingAlbumSearch(scope: fake.client.instanceScope, in: defaults)
+        #expect(defaults.object(forKey: MissingAlbumSearch.recordKey(scope: fake.client.instanceScope)) == nil)
+    }
+
     /// The other commands are still the ledger's: an AlbumSearch for an owner's album is refused.
     @Test func albumSearchStillLedgerConfined() async throws {
         let fake = Fake()

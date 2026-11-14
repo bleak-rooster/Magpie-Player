@@ -16,12 +16,15 @@ import Requests
     /// Clear all is under way: "Clearing downloads: done of total".
     var clearProgress: (done: Int, total: Int)?
     var clearing: Bool { clearProgress != nil }
-    /// A Clear all's outcome, or why it couldn't start.
+    /// A Clear all's outcome, or why it couldn't start, with its symbol (fix round 1 task M4: a failure is a warning).
     var clearMessage: String?
+    var clearSymbol = "info.circle"
     /// Changes when the schedule's saved choice or time changes, so the section re-reads them.
     var revision = 0
     /// An ask on schedule is on its way (one at a time).
     @ObservationIgnored var scheduleRunning = false
+    /// Fix round 1 L4: the one restarter Downloads in Lidarr and Clear all share (per gate), so their runs take turns.
+    @ObservationIgnored var restarter: (gateId: ObjectIdentifier, restarter: LidarrDownloadRestarter)?
 }
 
 /// Round 27 R (D294): the section is there only while Lidarr is connected (Navidrome alone and + Aurral: none).
@@ -47,7 +50,11 @@ extension AppModel {
             return missingAlbumsStore?.every ?? .off
         }
         set {
-            missingAlbumsStore?.every = newValue
+            guard let store = missingAlbumsStore else { return }
+            let old = store.every
+            store.every = newValue
+            // Fix round 1 L8: choosing a day or a week starts its wait now; nothing is sent until it has passed.
+            if newValue != .off, newValue != old { store.lastAsked = Date() }
             missingAlbums.revision += 1
         }
     }
@@ -127,7 +134,7 @@ extension AppModel {
     /// Disconnect and sign-out forget the schedule and the gate's record with the other Lidarr keys.
     func forgetMissingAlbums(scope: String) {
         MissingAlbumSchedule.Store(defaults: gateDefaults, scope: scope).forget()
-        MissingAlbumSearch.forgetRecord(scope: scope, in: gateDefaults)
+        LidarrWriteGate.forgetMissingAlbumSearch(scope: scope, in: gateDefaults)   // fix round 1 M3
         missingAlbums.searchAnswer = nil
         missingAlbums.clearMessage = nil
         missingAlbums.revision += 1
@@ -135,25 +142,35 @@ extension AppModel {
 
     // MARK: Clear all downloads and search again (D292)
 
-    private var clearAllRestarter: LidarrDownloadRestarter? {
+    /// Fix round 1 L4: the one restarter for the connected Lidarr's gate, shared by Downloads in Lidarr's Restart and
+    /// Clear all, so a restart and a clear take turns (the restarter runs one at a time). Made again for a new gate.
+    var lidarrRestarter: LidarrDownloadRestarter? {
         guard let gate, let client = lidarrClient else { return nil }
-        return LidarrDownloadRestarter(lidarr: client, gate: gate, runner: runner)
+        if let kept = missingAlbums.restarter, kept.gateId == ObjectIdentifier(gate) { return kept.restarter }
+        let made = LidarrDownloadRestarter(lidarr: client, gate: gate, runner: runner)
+        missingAlbums.restarter = (ObjectIdentifier(gate), made)
+        return made
     }
 
     /// Reads the whole queue for the confirmation. Nil (with the reason in `clearMessage`) when there's nothing to clear
     /// or Lidarr can't be read; nothing is sent.
     func prepareClearAll() async -> ClearAllPlan? {
         guard missingAlbumsUsable, !missingAlbums.clearing, !missingAlbums.preparing,
-              let restarter = clearAllRestarter else { return nil }
+              let restarter = lidarrRestarter else { return nil }
         missingAlbums.preparing = true
         defer { missingAlbums.preparing = false }
         missingAlbums.clearMessage = nil
         do {
             let plan = try await restarter.clearAllPlan()
-            if plan.count == 0 { missingAlbums.clearMessage = LidarrDownloadsCopy.empty; return nil }
+            if plan.count == 0 {
+                missingAlbums.clearMessage = LidarrDownloadsCopy.empty
+                missingAlbums.clearSymbol = "info.circle"
+                return nil
+            }
             return plan
         } catch {
             missingAlbums.clearMessage = MissingAlbumsCopy.unreachable
+            missingAlbums.clearSymbol = "exclamationmark.triangle"
             return nil
         }
     }
@@ -161,7 +178,7 @@ extension AppModel {
     /// Clear all, after its confirmation. `includeForeign` comes only from that confirmation (per Q2 it names how many
     /// another app started); `scripts/check-writes.sh` pins the lines that pass it on.
     func clearAllDownloads(_ plan: ClearAllPlan, includeForeign: Bool) async {
-        guard missingAlbumsUsable, !missingAlbums.clearing, let restarter = clearAllRestarter else { return }
+        guard missingAlbumsUsable, !missingAlbums.clearing, let restarter = lidarrRestarter else { return }
         let state = missingAlbums
         state.clearMessage = nil
         state.clearProgress = (0, plan.count)
@@ -170,5 +187,6 @@ extension AppModel {
         }
         state.clearProgress = nil
         state.clearMessage = MissingAlbumsCopy.clearOutcome(outcome)
+        state.clearSymbol = MissingAlbumsCopy.clearSymbol(outcome)
     }
 }
