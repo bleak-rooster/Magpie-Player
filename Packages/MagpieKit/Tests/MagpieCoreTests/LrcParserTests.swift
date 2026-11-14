@@ -78,6 +78,17 @@ import Testing
         #expect(plain.lines.count == 2_000 && plain.lines.allSatisfy { $0.text.count <= 500 })
     }
 
+    /// L fix round 1, LL5: format characters (a bidi override, a zero-width space) are dropped like control characters,
+    /// and a line's Unicode scalars are capped (500 characters can't hide thousands of combining marks).
+    @Test func lrc_dropsFormatCharactersAndCapsScalars() throws {
+        let tricky = try #require(LrcParser.plain("a\u{202E}b\u{200B}c\u{0007}d"))
+        #expect(tricky.lines.map(\.text) == ["abcd"])
+        let zalgo = "e" + String(repeating: "\u{0301}", count: 5_000) + " tail"
+        let capped = try #require(LrcParser.synced("[00:01.00]" + zalgo))
+        #expect(capped.lines[0].text.unicodeScalars.count <= LrcParser.maxLineScalars)
+        #expect(LrcParser.maxLineScalars == 1_000)
+    }
+
     /// Seeded fuzz: 500 random LRC-like texts (stamps, tags, brackets, digits, unicode and control characters). Never a
     /// trap; every answer within the bounds, sorted, with finite non-negative starts.
     @Test func lrc_boundsAndGarbage() {

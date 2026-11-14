@@ -82,7 +82,8 @@ import Testing
         mock.stub(pathSuffix: "/api/get", status: 404)
         _ = await client(mock).get(title: "Wide Open", artist: "Aurora Field", album: "First Light", duration: 240)
         let request = try #require(mock.requests.first)
-        #expect(Set((request.allHTTPHeaderFields ?? [:]).keys.map { $0.lowercased() }) == ["user-agent"])
+        #expect(Set((request.allHTTPHeaderFields ?? [:]).keys.map { $0.lowercased() }) == ["user-agent", "accept-language"])
+        #expect(request.value(forHTTPHeaderField: "Accept-Language") == "en", "a fixed language, not the phone's")
         #expect(request.httpShouldHandleCookies == false)
         let url = try #require(request.url?.absoluteString.lowercased())
         for leak in ["navidrome", "nas.local", "music.example", "192.168.", "jordan", "token", "u=", "t=", "s=", "apikey", "api_key"] {
@@ -208,6 +209,17 @@ import Testing
             func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) { throw URLError(.notConnectedToInternet) }
         }
         #expect(await LrcLib(transport: Down(), userAgent: "Magpie/1").get(title: "A", artist: "B", album: nil, duration: 9) == nil)
+    }
+
+    /// L fix round 1, LH1 (crash hunt 4): an answer nested past what the parser's stack holds is none, not a crash.
+    @Test func lrclib_deepNestingIsNoneNotACrash() async {
+        let brackets = MockTransport()
+        brackets.stub(pathSuffix: "/api/get", body: Data(String(repeating: "[", count: 100_000).utf8))
+        #expect(await client(brackets).get(title: "A", artist: "B", album: nil, duration: nil) == nil)
+        let objects = MockTransport()
+        objects.stub(pathSuffix: "/api/get", body: Data((String(repeating: #"{"a":"#, count: 100_000) + "1"
+            + String(repeating: "}", count: 100_000)).utf8))
+        #expect(await client(objects).get(title: "A", artist: "B", album: nil, duration: nil) == nil)
     }
 
     @Test func userAgentIsJustTheAppAndVersion() {

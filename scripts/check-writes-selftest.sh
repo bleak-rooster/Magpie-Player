@@ -62,6 +62,9 @@ planted=(
   # Round 27 L (D311): LRCLIB's host named outside LrcLib.swift.
   'URLSession.shared.data(from: URL(string: "https://lrclib.net/api/search?q=x")!)'
   'URLSession.shared.data(from: URL(string: "https://LRCLIB.NET/api/get")!)'
+  # L fix round 1 (LL1): LRCLIB's client made with a transport that follows redirects.
+  'LrcLib(transport: URLSessionTransport(), userAgent: "Magpie/1")'
+  'LrcLib (transport: transport, userAgent: ua)'
   'aurral.ok(method: AurralRoute.imageProxyMethod, path: "api/image-proxy", body: other)'
   # Round 22 R22A (D186): a third caller of Download songs.
   'client.downloadFlow("flow-1")'
@@ -258,18 +261,35 @@ lrclib_weakened=(
   's#(data, response) = try await transport.send(request, maxBytes: Self.maxResponseBytes)#(data, response) = try await transport.send(request)#'
   's#(data, response) = try await transport.send(request, maxBytes: Self.maxResponseBytes)#&; _ = try await transport.send(request, maxBytes: 1)#'
   's#url.scheme == "https", url.host() == getURL.host(), url.path == getURL.path#true#'
+  # L fix round 1 (LM1): the security review's spellings 1-5 and 7, and an unmeasured JSON parse (LH1).
+  's#        request.setValue(userAgent, forHTTPHeaderField: "User-Agent")#&\n        request.setValue ("dev-1", forHTTPHeaderField: "X-Device")#'
+  's#        request.httpShouldHandleCookies = false#&\n        request.httpShouldHandleCookies = true#'
+  's#        components.queryItems = items#        items.append(URLQueryItem(name: "server", value: userAgent))\n&#'
+  's#        request.setValue("en", forHTTPHeaderField: "Accept-Language")#&\n        request.url = getURL.deletingLastPathComponent().appending(path: "search")#'
+  's#        switch response.statusCode {#        _ = try? await URLSession.shared.data(for: request)\n&#'
+  's#        switch response.statusCode {#        let s: @Sendable (URLRequest) async throws -> (Data, HTTPURLResponse) = transport.send; _ = try? await s(request)\n&#'
+  's#JSONNesting.object(with: data) as? \[String: Any\]#(try? JSONSerialization.jsonObject(with: data)) as? [String: Any]#'
+  's#URLQueryItem(name: "album_name", value: album)#URLQueryItem(name: albumKey, value: album)#'
+  # L fix round 1 (LL1): LRCLIB's transport follows a redirect or keeps cookies (lines in LrcLibTransport.swift).
+  'T|s#newRequest request: URLRequest) async -> URLRequest? { nil }#newRequest request: URLRequest) async -> URLRequest? { request }#'
+  'T|s#delegate: NoRedirects.shared#delegate: SameOriginRedirects.shared#'
+  'T|s#        config.httpCookieStorage = nil#        config.httpCookieStorage = .shared#'
 )
-for expr in "${lrclib_weakened[@]}"; do
-  cp "$work/LrcLib.orig" "$lrclib_src"
-  sed -i '' "$expr" "$lrclib_src"
-  if cmp -s "$work/LrcLib.orig" "$lrclib_src"; then echo "selftest: the weakening didn't apply: $expr" >&2; failed=1; continue; fi
+lrclib_transport_src="$work/Packages/MagpieKit/Sources/MagpieCore/LrcLibTransport.swift"
+cp "$lrclib_transport_src" "$work/LrcLibTransport.orig"
+for entry in "${lrclib_weakened[@]}"; do
+  cp "$work/LrcLib.orig" "$lrclib_src"; cp "$work/LrcLibTransport.orig" "$lrclib_transport_src"
+  target="$lrclib_src" expr="$entry" orig="$work/LrcLib.orig"
+  case "$entry" in T\|*) target="$lrclib_transport_src" expr="${entry#T|}" orig="$work/LrcLibTransport.orig" ;; esac
+  sed -i '' "$expr" "$target"
+  if cmp -s "$orig" "$target"; then echo "selftest: the weakening didn't apply: $expr" >&2; failed=1; continue; fi
   if out=$("$work/scripts/check-writes.sh" 2>&1); then
     echo "selftest: NOT caught: $expr" >&2; failed=1
   elif ! grep -qE 'G1:' <<< "$out"; then
     echo "selftest: failed without a G1 reason: $expr" >&2; failed=1
   fi
 done
-cp "$work/LrcLib.orig" "$lrclib_src"
+cp "$work/LrcLib.orig" "$lrclib_src"; cp "$work/LrcLibTransport.orig" "$lrclib_transport_src"
 weakened+=("${lrclib_weakened[@]}")
 
 # S14 L5 (D119): the id validators, Not for me's body, the picture fetch's allow-list check and the 8 MB cap weakened.

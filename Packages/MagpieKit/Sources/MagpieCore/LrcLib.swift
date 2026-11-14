@@ -10,7 +10,8 @@ public enum FoundLyrics: Sendable, Hashable {
 /// Round 27 L (owner, 2026-11-14): Find lyrics online, the one outside lyrics source (D311). The only file that names
 /// LRCLIB's host (`scripts/check-writes.sh` pins it): https only, only `GET /api/get`, only the song's title, artist,
 /// album and length in the query, `User-Agent: Magpie/<version>` and nothing else (no key, no cookie, no account, no
-/// server name), the answer capped at 512 KB. A 404 is none; a 429 is none and nothing more is sent until its
+/// server name; a fixed `Accept-Language: en`), the answer capped at 512 KB, through `LrcLibTransport` (no redirect, no
+/// cookie, nothing kept; L fix round 1, LL1). A 404 is none; a 429 is none and nothing more is sent until its
 /// `Retry-After` has passed (at most an hour; a minute when it doesn't say). Any other failure is none. Which songs are
 /// asked, and how often, is the app's (`AppModel+Lyrics.swift`: only with the switch on, only after the server had none,
 /// once per song per session).
@@ -55,6 +56,8 @@ public actor LrcLib {
         request.httpShouldHandleCookies = false
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
+        // L fix round 1 (LL2): a fixed language, so URLSession doesn't send the phone's.
+        request.setValue("en", forHTTPHeaderField: "Accept-Language")
         return request
     }
 
@@ -110,7 +113,8 @@ public actor LrcLib {
 
     /// `{syncedLyrics, plainLyrics, instrumental}`; anything else in the answer is ignored.
     static func decode(_ data: Data) -> FoundLyrics? {
-        guard let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return nil }
+        // L fix round 1 (LH1, crash hunt 4): measured before it's parsed; past `JSONNesting.limit` it's none.
+        guard let object = JSONNesting.object(with: data) as? [String: Any] else { return nil }
         return LrcParser.answer(synced: object["syncedLyrics"] as? String, plain: object["plainLyrics"] as? String,
                                 instrumental: object["instrumental"] as? Bool ?? false)
     }
@@ -119,10 +123,12 @@ public actor LrcLib {
 /// Round 27 L (owner, 2026-11-14): LRCLIB's lyrics, read on the phone (D312). Synced lyrics first: LRC lines with one
 /// or more `[mm:ss]`, `[mm:ss.x]`, `[mm:ss.xx]` or `[mm:ss.xxx]` stamps (minutes up to 999), sorted by time, `[offset:]`
 /// applied (positive shows lines sooner) and every other tag skipped. Then plain lyrics, then the instrumental note. At
-/// most 2,000 lines of 500 characters, trimmed; nothing that reads (no line with words) is none.
+/// most 2,000 lines of 500 characters (and 1,000 Unicode scalars), trimmed, without control or format characters;
+/// nothing that reads (no line with words) is none.
 public enum LrcParser {
     public static let maxLines = 2_000
     public static let maxLineLength = 500
+    public static let maxLineScalars = 1_000
     /// Raw lines looked at, at most (the answer is already capped at 512 KB).
     static let maxRawLines = 20_000
 
@@ -204,8 +210,12 @@ public enum LrcParser {
     }
 
     /// Trimmed, without control characters, at most `maxLineLength` characters.
+    /// L fix round 1 (LL5): format characters (bidi overrides, zero-width marks) go too, and at most `maxLineScalars`
+    /// scalars are kept before the characters are counted.
     private static func clean(_ s: Substring) -> String {
-        let kept = s.unicodeScalars.filter { $0.properties.generalCategory != .control }
+        let kept = s.unicodeScalars.lazy
+            .filter { $0.properties.generalCategory != .control && $0.properties.generalCategory != .format }
+            .prefix(maxLineScalars)
         let text = String(String.UnicodeScalarView(kept)).trimmingCharacters(in: .whitespaces)
         return String(text.prefix(maxLineLength))
     }

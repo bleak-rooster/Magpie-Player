@@ -34,7 +34,7 @@ final class LyricsRouting: HTTPTransport, @unchecked Sendable {
         var held: Set<String> = []
         var sent: [URLRequest] = []
         var cancelled: [URLRequest] = []
-        var down = false
+        var down: Set<String> = []
     }
     private let state = OSAllocatedUnfairLock(initialState: State())
 
@@ -43,7 +43,10 @@ final class LyricsRouting: HTTPTransport, @unchecked Sendable {
     var sent: [URLRequest] { state.withLock { $0.sent } }
     var cancelled: [URLRequest] { state.withLock { $0.cancelled } }
     /// The Navidrome host fails like an unplugged server.
-    func setDown(_ down: Bool) { state.withLock { $0.down = down } }
+    func setDown(_ down: Bool) { state.withLock { $0.down = down ? ["192.168.1.2"] : [] } }
+    func setDown(hosts: Set<String>) { state.withLock { $0.down = hosts } }
+    /// LRCLIB calls whose wait was cancelled.
+    var cancelledOnline: Int { cancelled.filter { $0.url?.host() == "lrclib.net" }.count }
 
     /// Lyrics reads sent for `id`.
     func lyricsReads(_ id: String) -> Int { sent.filter { lyricsRead($0) == id }.count }
@@ -62,7 +65,8 @@ final class LyricsRouting: HTTPTransport, @unchecked Sendable {
 
     func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
         state.withLock { $0.sent.append(request) }
-        let song = lyricsRead(request)
+        // A held song's lyrics read, or every LRCLIB call while "lrclib" is held.
+        let song = lyricsRead(request) ?? (request.url?.host() == "lrclib.net" ? "lrclib" : nil)
         let until = Date().addingTimeInterval(10)
         while let song, state.withLock({ $0.held.contains(song) }) {
             guard Date() < until else { throw URLError(.timedOut) }
@@ -71,7 +75,7 @@ final class LyricsRouting: HTTPTransport, @unchecked Sendable {
                 throw error
             }
         }
-        if request.url?.host == "192.168.1.2", state.withLock({ $0.down }) { throw URLError(.cannotConnectToHost) }
+        if let host = request.url?.host, state.withLock({ $0.down.contains(host) }) { throw URLError(.cannotConnectToHost) }
         if request.url?.host == aurral.host { return try await aurral.send(request) }
         return try await mock.send(request)
     }
@@ -92,7 +96,7 @@ final class LyricsRouting: HTTPTransport, @unchecked Sendable {
 
     deinit { store.clear() }
 
-    func model(songLyrics: Bool = true, lidarr: Bool = false, aurral: Bool = false) async throws -> AppModel {
+    func model(songLyrics: Bool = true, lidarr: Bool = false, aurral: Bool = false, urls: [URL] = [home]) async throws -> AppModel {
         let mock = transport.mock
         mock.stub(pathSuffix: "/rest/ping", body: okJSON)
         mock.stub(method: "POST", pathSuffix: "/auth/login", body: loginJSON)
@@ -113,7 +117,9 @@ final class LyricsRouting: HTTPTransport, @unchecked Sendable {
                              engine: FakeEngine(), previewTransport: transport, defaults: defaults, systemNowPlaying: false,
                              notifications: false, network: FakeNetwork(.wifi), audioFetcher: FakeFetcher())
         model.aurralFeeds.phoneRegion = { nil }
-        try await model.signIn(urls: [home], username: "jordan", password: "pw")
+        // LRCLIB answers from the mock: the app's own transport would go to the internet.
+        model.lyricsKeeper.lrclib = LrcLib(transport: transport, userAgent: LrcLib.userAgent(version: AppModel.marketingVersion))
+        try await model.signIn(urls: urls, username: "jordan", password: "pw")
         if aurral {
             _ = try await model.connectAurral(base: transport.aurral.base, username: StubAurral.defaultUsername,
                                               password: StubAurral.defaultPassword)
@@ -172,6 +178,8 @@ final class LyricsRouting: HTTPTransport, @unchecked Sendable {
         #expect(transport.lyricsReads("s1") == 0)
     }
 
+    /// L fix round 1 (I1): a skip never abandons the older song's read (nd-lyrics may be fetching for it): it runs to
+    /// its answer and is kept, and the older song is never sent again.
     @Test func trigger_newSongDoesNotResendOld() async throws {
         let model = try await model()
         defer { model.signOut() }
@@ -180,12 +188,124 @@ final class LyricsRouting: HTTPTransport, @unchecked Sendable {
         #expect(await eventually { self.transport.lyricsReads("s1") == 1 })
         model.player.next()
         #expect(await eventually { self.transport.lyricsReads("s2") == 1 })
-        #expect(await eventually { self.transport.cancelledReads("s1") == 1 },
-                "waiting for the older answer stopped: one read in flight")
+        #expect(await eventually(0.3) { self.transport.cancelledReads("s1") > 0 } == false, "the older read goes on")
         transport.release("s1")
+        #expect(await eventually { model.lyricsKeeper.library("s1") != nil }, "the older answer completes and is kept")
+        #expect(model.lyricsKeeper.shown("s1")?.source == .library)
         model.player.previous()
         #expect(await eventually { model.player.queue.current?.song.id == "s1" })
         #expect(await eventually(0.3) { self.transport.lyricsReads("s1") > 1 } == false, "the older song isn't asked again")
+    }
+
+    /// I1: at most three background reads at once. With three out, the current song waits for a slot; a song that is no
+    /// longer current when a slot frees isn't asked (nor marked asked), so it is asked when it plays again.
+    @Test func trigger_atMostThreeInFlight() async throws {
+        let model = try await model()
+        defer { model.signOut() }
+        for id in ["s1", "s2", "s3", "s4"] { transport.hold(id) }
+        model.play(["s1", "s2", "s3", "s4", "s5"].map(song), startAt: 0)
+        for id in ["s1", "s2", "s3"] {
+            #expect(await eventually { self.transport.lyricsReads(id) == 1 }, "\(id)")
+            if id != "s3" { model.player.next() }
+        }
+        model.player.next()   // s4, with three out
+        #expect(await eventually { model.lyricsKeeper.waiting == "s4" })
+        #expect(transport.lyricsReads("s4") == 0 && !model.lyricsKeeper.hasAskedServer("s4"))
+        transport.release("s1")
+        #expect(await eventually { self.transport.lyricsReads("s4") == 1 }, "a slot freed while s4 is current")
+        model.player.next()   // s5: s2, s3, s4 out
+        #expect(await eventually { model.lyricsKeeper.waiting == "s5" })
+        model.player.previous()   // back to s4 (asked already)
+        #expect(await eventually { model.player.queue.current?.song.id == "s4" })
+        transport.release("s2")
+        #expect(await eventually { model.lyricsKeeper.waiting == nil })
+        #expect(await eventually(0.3) { self.transport.lyricsReads("s5") > 0 } == false, "s5 isn't current: not sent")
+        #expect(!model.lyricsKeeper.hasAskedServer("s5"))
+        model.player.next()   // s5 again, two out
+        #expect(await eventually { self.transport.lyricsReads("s5") == 1 })
+        for id in ["s3", "s4"] { transport.release(id) }
+    }
+
+    /// M2: a song that started while offline is asked once Magpie is back online.
+    @Test func trigger_asksOnComingBackOnline() async throws {
+        let model = try await model()
+        defer { model.signOut() }
+        model.updatePreferences { $0.downloads.offlineMode = .on }
+        model.play([song("s1")], startAt: 0)
+        #expect(await eventually(0.3) { self.transport.lyricsReads("s1") > 0 } == false)
+        model.updatePreferences { $0.downloads.offlineMode = .automatic }
+        #expect(await eventually { self.transport.lyricsReads("s1") == 1 }, "asked once back online")
+    }
+
+    /// I2: the pane's read goes through `request`: after the network changed (home address gone), a failed background
+    /// read is tried again by the pane on the address that answers.
+    @Test func pane_readFailsOverAfterANetworkChange() async throws {
+        let away = URL(string: "https://music.example.com/navidrome")!
+        let model = try await model(urls: [home, away])
+        defer { model.signOut() }
+        #expect(await model.lyricsQuietlyAdvertised())
+        transport.setDown(hosts: ["192.168.1.2"])
+        // The background ask's read, without playing (playback's own requests would fail over first).
+        _ = await model.startLyricsRead("s1", quiet: true).value
+        #expect(transport.lyricsReads("s1") == 1 && model.lyricsKeeper.readsInFlight == 0, "the quiet background read failed")
+        #expect(model.lyricsKeeper.library("s1") == nil)
+        let shown = try await model.lyricsForPane(song("s1"))
+        #expect(shown?.source == .library, "the pane's read failed over")
+        #expect(transport.sent.contains { self.transport.lyricsRead($0) == "s1" && $0.url?.host == "music.example.com" })
+        transport.setDown(hosts: [])
+    }
+
+    /// M1: offline with nothing kept, the pane says it's offline.
+    @Test func pane_offlineSaysSo() {
+        #expect(LyricsContent.emptyTitle(offline: true) == AppModel.offlineCopy)
+        #expect(LyricsContent.emptyTitle(offline: false) == "No lyrics for this song")
+        #expect(LyricsContent.emptySymbol(offline: true) == "wifi.slash")
+    }
+
+    /// M4: LRCLIB's kept lyrics aren't shown once Find lyrics online is off.
+    @Test func lrclib_keptOnlineHiddenWhenSwitchedOff() async throws {
+        let model = try await model()
+        defer { model.signOut() }
+        stubLrclib()
+        model.lyricsKeeper.findOnline = true
+        #expect(try await model.lyricsForPane(song("s2"))?.source == .online)
+        model.lyricsKeeper.findOnline = false
+        #expect(model.lyricsKeeper.shown("s2") == nil)
+        #expect(try await model.lyricsForPane(song("s2")) == nil)
+        #expect(transport.lrclibCalls.count == 1)
+    }
+
+    /// LL3: an LRCLIB call that doesn't answer is given up after 15 s (shortened here); nothing is kept.
+    @Test func lrclib_overallTimeLimit() async throws {
+        #expect(LyricsKeeper().onlineDeadline == .seconds(15))
+        let model = try await model()
+        defer { model.signOut() }
+        stubLrclib()
+        model.lyricsKeeper.findOnline = true
+        model.lyricsKeeper.onlineDeadline = .milliseconds(150)
+        transport.hold("lrclib")
+        let started = Date()
+        #expect(try await model.lyricsForPane(song("s2")) == nil)
+        #expect(Date().timeIntervalSince(started) < 5, "given up, not waited out")
+        #expect(model.lyricsKeeper.online("s2") == nil, "nothing kept")
+        transport.release("lrclib")
+    }
+
+    /// LL4: an LRCLIB call the pane gave up on (closed, or another song) is neither kept as none nor counted as asked.
+    @Test func lrclib_cancelledCallIsNotKept() async throws {
+        let model = try await model()
+        defer { model.signOut() }
+        stubLrclib()
+        model.lyricsKeeper.findOnline = true
+        transport.hold("lrclib")
+        let pane = Task { try await model.lyricsForPane(self.song("s2")) }
+        #expect(await eventually { self.transport.lrclibCalls.count == 1 })
+        pane.cancel()
+        #expect(await eventually { !model.lyricsKeeper.hasAskedOnline("s2") })
+        #expect(model.lyricsKeeper.online("s2") == nil)
+        transport.release("lrclib")
+        let again = try await model.lyricsForPane(song("s2"))
+        #expect(again?.source == .online && transport.lrclibCalls.count == 2, "asked again next time")
     }
 
     /// Found by the full suite (OfflineAppTests.threeSecondBlipNeitherGoesOfflineNorSkips): the background ask is quiet.
@@ -197,7 +317,7 @@ final class LyricsRouting: HTTPTransport, @unchecked Sendable {
         let before = transport.sent.count
         // The two reads the trigger makes, without playing (playback's own reads would muddy the count).
         #expect(await model.lyricsQuietlyAdvertised() == false)
-        let result = await model.serverLyricsRead("s1").value
+        let result = await model.startLyricsRead("s1", quiet: true).value
         #expect((try? result.get()) == nil, "the read failed")
         let sent = transport.sent.dropFirst(before)
         #expect(sent.contains { $0.url?.path.hasSuffix("/rest/getOpenSubsonicExtensions") == true })
@@ -321,7 +441,7 @@ final class LyricsRouting: HTTPTransport, @unchecked Sendable {
         #expect(transport.query(call) == ["track_name": "Wide Open", "artist_name": "Aurora Field", "album_name": "First Light",
                                           "duration": "240"])
         #expect(call.value(forHTTPHeaderField: "User-Agent") == "Magpie/\(AppModel.marketingVersion)")
-        #expect(Set((call.allHTTPHeaderFields ?? [:]).keys) == ["User-Agent"])
+        #expect(Set((call.allHTTPHeaderFields ?? [:]).keys) == ["User-Agent", "Accept-Language"])
         let text = call.url?.absoluteString ?? ""
         for leak in ["192.168.1.2", "jordan", "tok", "jwt", "salt"] { #expect(!text.contains(leak), "\(leak)") }
     }

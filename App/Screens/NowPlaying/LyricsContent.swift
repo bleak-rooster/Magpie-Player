@@ -78,7 +78,7 @@ struct LyricsContent: View {
                         instrumental(footer: ShownLyrics.instrumental(source).footer)
                     default:
                         ContentUnavailableView {
-                            Label("No lyrics for this song", systemImage: "quote.bubble")
+                            Label(Self.emptyTitle(offline: model.isOffline), systemImage: Self.emptySymbol(offline: model.isOffline))
                         } actions: {
                             if !model.isOffline {
                                 Button("Try again") { Task { await load(song, fresh: true) } }
@@ -152,6 +152,11 @@ struct LyricsContent: View {
             .frame(maxWidth: .infinity, minHeight: Tokens.minHitSize / 2, alignment: .leading)
             .multilineTextAlignment(.leading)
     }
+
+    /// L fix round 1 (M1): with nothing kept and Magpie offline, the pane says it's offline rather than that the song
+    /// has no lyrics.
+    static func emptyTitle(offline: Bool) -> String { offline ? AppModel.offlineCopy : "No lyrics for this song" }
+    static func emptySymbol(offline: Bool) -> String { offline ? "wifi.slash" : "quote.bubble" }
 
     /// Round 27 L (D311): the instrumental note, with where it came from.
     private func instrumental(footer: String) -> some View {

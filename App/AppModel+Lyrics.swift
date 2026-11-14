@@ -50,6 +50,8 @@ enum ShownLyrics: Sendable, Equatable {
     nonisolated static let capacity = 100
     /// Songs remembered as asked this session (far more than are kept: a "none" isn't asked again).
     nonisolated static let askedCapacity = 5_000
+    /// L fix round 1 (I1): background reads in flight at once, each left to finish (nd-lyrics may be fetching).
+    nonisolated static let maxBackgroundReads = 3
 
     /// Find lyrics online: off by default, per phone (D311).
     var findOnline = false { didSet { defaults?.set(findOnline, forKey: Self.findOnlineKey) } }
@@ -60,13 +62,21 @@ enum ShownLyrics: Sendable, Equatable {
         var online: FoundLyrics??
     }
 
+    /// A server read in flight: `quiet` for the background ask (no failover, never counted towards going offline).
+    struct Read {
+        var task: Task<Result<Lyrics?, any Error>, Never>
+        var quiet: Bool
+    }
+
     @ObservationIgnored private var defaults: UserDefaults?
     @ObservationIgnored private(set) var entries: [String: Entry] = [:]
     @ObservationIgnored private var order: [String] = []
     @ObservationIgnored private var askedServer = BoundedSet(capacity: LyricsKeeper.askedCapacity)
     @ObservationIgnored private var askedOnline = BoundedSet(capacity: LyricsKeeper.askedCapacity)
-    /// The one server read in flight (D310: at most one).
-    @ObservationIgnored var inFlight: (songId: String, task: Task<Result<Lyrics?, any Error>, Never>)?
+    /// The server reads in flight, by song.
+    @ObservationIgnored var inFlight: [String: Read] = [:]
+    /// The song whose background read waits for a free slot (only ever the current song; not yet marked asked).
+    @ObservationIgnored var waiting: String?
     /// Bumped by `forget()`: an answer that lands after it is dropped.
     @ObservationIgnored private(set) var generation = 0
     @ObservationIgnored var lrclib: LrcLib?
@@ -76,6 +86,11 @@ enum ShownLyrics: Sendable, Equatable {
     @ObservationIgnored var serverWait: Duration = .seconds(6)
     /// How long a server read may take (D310: 20 s; tests shorten it).
     @ObservationIgnored var serverDeadline: Duration = .seconds(20)
+    /// L fix round 1 (LL3): how long an LRCLIB call may take in all (tests shorten it).
+    @ObservationIgnored var onlineDeadline: Duration = .seconds(15)
+
+    var backgroundReads: Int { inFlight.values.filter(\.quiet).count }
+    var readsInFlight: Int { inFlight.count }
 
     func attach(defaults: UserDefaults, lrclib: LrcLib) {
         self.defaults = nil   // reading the switch writes nothing: off stays unset
@@ -86,8 +101,10 @@ enum ShownLyrics: Sendable, Equatable {
 
     func hasAskedServer(_ id: String) -> Bool { askedServer.contains(id) }
     func noteAskedServer(_ id: String) { askedServer.insert(id) }
+    func forgetAskedServer(_ id: String) { askedServer.remove(id) }
     func hasAskedOnline(_ id: String) -> Bool { askedOnline.contains(id) }
     func noteAskedOnline(_ id: String) { askedOnline.insert(id) }
+    func forgetAskedOnline(_ id: String) { askedOnline.remove(id) }
 
     /// The server's kept answer: nil when none is kept, `.some(nil)` when it had none.
     func library(_ id: String) -> Lyrics?? { touch(id); return entries[id]?.library ?? nil }
@@ -100,18 +117,20 @@ enum ShownLyrics: Sendable, Equatable {
 
     func keepOnline(_ id: String, _ found: FoundLyrics?) { update(id) { $0.online = .some(found) } }
 
-    /// D313: what's kept for the pane: the server's lyrics first, then LRCLIB's; nil when neither has any.
+    /// D313: what's kept for the pane: the server's lyrics first, then LRCLIB's (only while Find lyrics online is on,
+    /// L fix round 1 M4); nil when neither has any.
     func shown(_ id: String) -> ShownLyrics? {
         if case .some(.some(let lyrics)) = library(id) { return .lines(lyrics, .library) }
-        if case .some(let found) = online(id) { return ShownLyrics(online: found) }
+        if findOnline, case .some(let found) = online(id) { return ShownLyrics(online: found) }
         return nil
     }
 
-    /// Sign-out: every answer, every "asked", and the read in flight.
+    /// Sign-out: every answer, every "asked", and the reads in flight.
     func forget() {
         generation += 1
-        inFlight?.task.cancel()
-        inFlight = nil
+        inFlight.values.forEach { $0.task.cancel() }
+        inFlight = [:]
+        waiting = nil
         extensions = nil
         entries = [:]
         order = []
@@ -145,8 +164,23 @@ enum ShownLyrics: Sendable, Equatable {
             order.append(id)
             if order.count > capacity { members.remove(order.removeFirst()) }
         }
+        mutating func remove(_ id: String) {
+            guard members.remove(id) != nil else { return }
+            order.removeAll { $0 == id }
+        }
     }
 }
+
+/// What the background ask watches (L fix round 1 M2): the current song, and whether a read can go now, so a song that
+/// started offline or before sign-in is asked once Magpie is online and signed in.
+private struct LyricsTriggerInputs: Equatable {
+    var songId: String?
+    var signedIn: Bool
+    var offline: Bool
+}
+
+/// A background read given up before it was sent (offline by then): not counted as asked.
+private struct LyricsReadSkipped: Error {}
 
 /// Round 27 L (owner, 2026-11-14, items 14 and 15).
 ///
@@ -154,6 +188,10 @@ enum ShownLyrics: Sendable, Equatable {
 /// plugin runs only for a song with no lyrics in or beside its file). So Magpie asks — `getLyricsBySongId`, the
 /// ordinary read — when a song becomes current, online, signed in, the server advertising `songLyrics`, once per song
 /// per session, whether or not the pane is open; the answer is kept for the pane. Nothing else goes on the wire.
+/// L fix round 1 (I1): every background read runs to its 20 s deadline (a skip never abandons it), at most three at
+/// once; with three out, the current song's waits for a slot and is asked only if it is still current then. The
+/// background read is quiet (I2): the current client, no failover, never counted towards going offline. The pane's
+/// reads go through `request` as every other screen's do.
 ///
 /// D311: with Find lyrics online on, the pane asks LRCLIB (`LrcLib`) when the server had none or hasn't answered in
 /// 6 s; the server's read goes on either way, and its answer is used next time (D313: what's on show stays).
@@ -161,16 +199,20 @@ extension AppModel {
     /// Called once from `init`: the switch, LRCLIB's client, and the watcher on the current song.
     func watchLyrics() {
         lyricsKeeper.attach(defaults: appDefaults,
-                            lrclib: LrcLib(transport: transport, userAgent: LrcLib.userAgent(version: Self.marketingVersion)))
+                            lrclib: LrcLib(transport: LrcLibTransport(), userAgent: LrcLib.userAgent(version: Self.marketingVersion)))
         lyricsWatch = Task { [weak self, player] in
-            for await id in Observations({ @MainActor in player.queue.current?.song.id }) {
+            let inputs = Observations { @MainActor [weak self] in
+                LyricsTriggerInputs(songId: player.queue.current?.song.id, signedIn: self?.session != nil,
+                                    offline: self?.isOffline ?? true)
+            }
+            for await input in inputs {
                 guard let self else { return }
-                self.lyricsSongBecameCurrent(id)
+                self.lyricsSongBecameCurrent(input.songId)
             }
         }
     }
 
-    /// Sign-out: the kept lyrics and the read under way.
+    /// Sign-out: the kept lyrics and the reads under way.
     func forgetLyrics() { lyricsKeeper.forget() }
 
     /// D310: the background ask for the song now current (the main player's queue: never a preview, which plays in its
@@ -180,38 +222,78 @@ extension AppModel {
         let generation = lyricsKeeper.generation
         Task { [weak self] in
             guard let self, await self.lyricsQuietlyAdvertised() else { return }
-            guard self.lyricsKeeper.generation == generation, self.player.queue.current?.song.id == id,
-                  !self.isOffline, !self.lyricsKeeper.hasAskedServer(id) else { return }
-            _ = self.serverLyricsRead(id)
+            guard self.lyricsKeeper.generation == generation, self.player.queue.current?.song.id == id else { return }
+            self.startBackgroundRead(id)
         }
     }
 
-    /// The server's read for `id`: the one in flight when it's for the same song, otherwise a new one (a newer song stops
-    /// waiting for the older answer; the older song is never asked again by the trigger). Its answer is kept.
-    func serverLyricsRead(_ id: String) -> Task<Result<Lyrics?, any Error>, Never> {
+    /// I1: a background read for `id` unless it was asked or is under way; with three out, it waits for a slot.
+    func startBackgroundRead(_ id: String) {
         let keeper = lyricsKeeper
-        if let running = keeper.inFlight, running.songId == id { return running.task }
-        keeper.inFlight?.task.cancel()
+        guard session != nil, !isOffline, keeper.inFlight[id] == nil, !keeper.hasAskedServer(id) else { return }
+        guard keeper.backgroundReads < LyricsKeeper.maxBackgroundReads else { keeper.waiting = id; return }
+        if keeper.waiting == id { keeper.waiting = nil }
+        startLyricsRead(id, quiet: true)
+    }
+
+    /// A slot freed: the waiting song's read starts if it is still the current song; otherwise it is dropped, not asked.
+    private func startWaitingLyricsRead() {
+        let keeper = lyricsKeeper
+        guard let id = keeper.waiting, keeper.backgroundReads < LyricsKeeper.maxBackgroundReads else { return }
+        keeper.waiting = nil
+        guard player.queue.current?.song.id == id else { return }
+        startBackgroundRead(id)
+    }
+
+    /// One server read for `id`, kept when it answers. Quiet reads (the background ask) use the current client with no
+    /// failover and check Offline mode just before sending (M3); the others go through `request`.
+    @discardableResult
+    func startLyricsRead(_ id: String, quiet: Bool) -> Task<Result<Lyrics?, any Error>, Never> {
+        let keeper = lyricsKeeper
         keeper.noteAskedServer(id)
         let generation = keeper.generation, deadline = keeper.serverDeadline
         let task = Task { [weak self] () -> Result<Lyrics?, any Error> in
             let result = await Deadline.run(deadline) { [weak self] () async throws -> Lyrics? in
                 guard let self else { throw CancellationError() }
-                // Quiet: the current client, no failover, never counted towards going offline (a background read
-                // mustn't take the app offline during a blip).
-                guard let client = await self.session?.client else { throw NavidromeError.noReachableServer }
-                return try await client.lyrics(songId: id)
+                if quiet {
+                    guard let client = await self.quietLyricsClient() else { throw LyricsReadSkipped() }
+                    return try await client.lyrics(songId: id)
+                }
+                return try await self.request { try await $0.lyrics(songId: id) }
             }
             guard let self, self.lyricsKeeper.generation == generation else { return result }
-            if case .success(let lyrics) = result { self.lyricsKeeper.keepLibrary(id, lyrics) }
+            switch result {
+            case .success(let lyrics): self.lyricsKeeper.keepLibrary(id, lyrics)
+            case .failure(let error) where error is LyricsReadSkipped: self.lyricsKeeper.forgetAskedServer(id)
+            case .failure: break
+            }
             return result
         }
-        keeper.inFlight = (id, task)
-        Task { [keeper] in
+        keeper.inFlight[id] = LyricsKeeper.Read(task: task, quiet: quiet)
+        Task { [weak self, keeper] in
             _ = await task.value
-            if keeper.inFlight?.task == task { keeper.inFlight = nil }
+            guard keeper.generation == generation, keeper.inFlight[id]?.task == task else { return }
+            keeper.inFlight[id] = nil
+            self?.startWaitingLyricsRead()
         }
         return task
+    }
+
+    /// M3: the client for a quiet read, nil when Offline mode (or signing out) means nothing may be sent now.
+    private func quietLyricsClient() -> NavidromeClient? {
+        guard !isOffline else { return nil }
+        return session?.client
+    }
+
+    /// I2: the pane's server read. One under way for the song is awaited; a quiet one that failed is tried once more
+    /// through `request` (which fails over and reconnects).
+    func paneLyricsRead(_ id: String) async -> Result<Lyrics?, any Error> {
+        if let running = lyricsKeeper.inFlight[id] {
+            let result = await running.task.value
+            guard running.quiet, case .failure(let error) = result, !(error is CancellationError) else { return result }
+            return await startLyricsRead(id, quiet: false).value
+        }
+        return await startLyricsRead(id, quiet: false).value
     }
 
     /// Whether the server advertises `songLyrics`: the session's known extensions, else one quiet read of them (no
@@ -232,16 +314,20 @@ extension AppModel {
         return (try? await serverAdvertises("songLyrics")) ?? false
     }
 
-    /// What the pane shows for `song`. Kept answers first, without a read (D310); offline, only those (D313). `fresh`
-    /// (Try again) reads the server afresh; LRCLIB is still asked at most once per song per session.
+    /// What the pane shows for `song`. Kept answers first, without a read (D310); offline, only those (D313; the pane
+    /// says it's offline, M1). `fresh` (Try again) reads the server afresh; LRCLIB is still asked at most once per song
+    /// per session.
     func lyricsForPane(_ song: Song, fresh: Bool = false) async throws -> ShownLyrics? {
         let keeper = lyricsKeeper
         if !fresh, let kept = keeper.shown(song.id) { return kept }
         guard session != nil, !isOffline else { return nil }
-        let advertises = await lyricsQuietlyAdvertised()
+        let advertises = (try? await serverAdvertises("songLyrics")) ?? false
         let keptNone: Bool = if case .some(.none) = keeper.library(song.id) { true } else { false }
         guard advertises, fresh || !keptNone else { return await onlineLyrics(song) }
-        let read = serverLyricsRead(song.id)
+        let read = Task { [weak self] () -> Result<Lyrics?, any Error> in
+            guard let self else { return .failure(CancellationError()) }
+            return await self.paneLyricsRead(song.id)
+        }
         guard keeper.findOnline else { return try Self.library(await read.value) }
         // D311: the server first, for up to 6 s; its read goes on behind whatever LRCLIB answers.
         switch await Deadline.run(keeper.serverWait, { await read.value }) {
@@ -258,7 +344,8 @@ extension AppModel {
         }
     }
 
-    /// LRCLIB's answer for `song`: only with the switch on, online, and once per song per session (D311).
+    /// LRCLIB's answer for `song`: only with the switch on, online, and once per song per session (D311), within 15 s
+    /// in all (LL3). A call the pane gave up on (cancelled) is neither kept nor counted as asked (LL4).
     func onlineLyrics(_ song: Song) async -> ShownLyrics? {
         let keeper = lyricsKeeper
         guard keeper.findOnline, session != nil, !isOffline, let lrclib = keeper.lrclib else { return nil }
@@ -266,10 +353,21 @@ extension AppModel {
         guard !keeper.hasAskedOnline(song.id) else { return nil }
         keeper.noteAskedOnline(song.id)
         let generation = keeper.generation
-        let found = await lrclib.get(title: song.title, artist: song.artist, album: song.album, duration: song.duration)
+        let (title, artist, album, duration) = (song.title, song.artist, song.album, song.duration)
+        let result = await Deadline.run(keeper.onlineDeadline) {
+            await lrclib.get(title: title, artist: artist, album: album, duration: duration)
+        }
         guard keeper.generation == generation else { return nil }
-        keeper.keepOnline(song.id, found)
-        return ShownLyrics(online: found)
+        switch result {
+        case .success(let found):
+            keeper.keepOnline(song.id, found)
+            return ShownLyrics(online: found)
+        case .failure(let error) where error is CancellationError:
+            keeper.forgetAskedOnline(song.id)
+            return nil
+        case .failure:
+            return nil   // past the limit: asked, nothing kept
+        }
     }
 
     private static func library(_ result: Result<Lyrics?, any Error>) throws -> ShownLyrics? {
