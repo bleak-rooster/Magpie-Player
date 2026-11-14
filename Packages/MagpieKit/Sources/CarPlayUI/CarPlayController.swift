@@ -228,7 +228,9 @@ public final class CarPlayController: NSObject {
         switch action {
         case .none: break
         case .open(let destination): open(destination)
-        case .play(let request): play(request)
+        case .play(let request):
+            notePlaylistPlay()   // Round 27 H (D297): a flow played from its page (+Customisation.swift)
+            play(request)
         case .tryNext(let recording): offerTry(recording)
         case .onItsWay: showOnItsWay()
         case .queueEntry(let id): playQueueEntry(id)   // round 13: Up Next (CarPlayController+UpNext.swift)

@@ -307,6 +307,41 @@ extension PreferenceArea {
 
 private func clamp(_ value: Int, _ range: ClosedRange<Int>) -> Int { min(max(value, range.lowerBound), range.upperBound) }
 
+/// Round 27 H (owner, 2026-11-14): "There should be an option to view albums as smaller icons" (D296). One choice for
+/// every album grid (Library › Albums, artist pages, Favourites, the genre browser): Large keeps columns of at least
+/// 150 pt (two on a phone), Small columns of at least 100 pt (three on a 375 pt phone).
+public enum AlbumCoverSize: String, CaseIterable, Codable, Hashable, Sendable {
+    case large, small
+}
+
+/// Round 27 H (owner, 2026-11-14): "present your flows alphabetically or based on last played" (D298), and the car's
+/// Home always by last played (D297).
+public enum HomeFlowsOrder: String, CaseIterable, Codable, Hashable, Sendable {
+    case lastPlayed, alphabetical
+
+    /// `playlists` in this order. Last played: the ones in `lastPlayed` newest first, then the rest A to Z; A to Z:
+    /// every one by name. Names compare ignoring case and accents; equal names (and equal dates) keep a stable order
+    /// by id.
+    public func sorted(_ playlists: [Playlist], lastPlayed: [String: Date]) -> [Playlist] {
+        func byName(_ a: Playlist, _ b: Playlist) -> Bool {
+            switch a.name.compare(b.name, options: [.caseInsensitive, .diacriticInsensitive]) {
+            case .orderedAscending: true
+            case .orderedDescending: false
+            case .orderedSame: a.id < b.id
+            }
+        }
+        guard self == .lastPlayed else { return playlists.sorted(by: byName) }
+        return playlists.sorted { a, b in
+            switch (lastPlayed[a.id], lastPlayed[b.id]) {
+            case let (at?, bt?): at != bt ? at > bt : byName(a, b)
+            case (.some, nil): true
+            case (nil, .some): false
+            case (nil, nil): byName(a, b)
+            }
+        }
+    }
+}
+
 public struct LayoutPreferences: PreferenceArea {
     public static let key = "magpie.prefs.layout"
     public static let alwaysAvailableRows: Set<LibraryRow> = [.playlists, .artists, .albums, .songs, .genres, .favourites, .downloads]
@@ -330,11 +365,16 @@ public struct LayoutPreferences: PreferenceArea {
     public var chartsCountry: ChartsCountry
     /// Round 14 A3 (owner answer 6): where every artist page's Top songs come from.
     public var artistTopSongs: ArtistTopSongsSource
+    /// Round 27 H (owner, 2026-11-14): every album grid's covers, Large (as before) or Small (D296).
+    public var albumCovers: AlbumCoverSize
+    /// Round 27 H (owner, 2026-11-14): the order of Home's Your flows, Last played (the default) or A to Z (D298).
+    public var homeFlowsOrder: HomeFlowsOrder
 
     public init(home: OrderedVisibility<HomeSection>, library: OrderedVisibility<LibraryRow>, showsRecentlyAdded: Bool,
                 albumArtistsOnly: Bool = true, homeStyles: [String: HomeSectionStyle] = [:],
                 becauseYouLikeRows: Int = HomeSectionStyle.becauseYouLikeRange.upperBound,
-                chartsCountry: ChartsCountry = .automatic, artistTopSongs: ArtistTopSongsSource = .automatic) {
+                chartsCountry: ChartsCountry = .automatic, artistTopSongs: ArtistTopSongsSource = .automatic,
+                albumCovers: AlbumCoverSize = .large, homeFlowsOrder: HomeFlowsOrder = .lastPlayed) {
         self.home = home
         self.library = library
         self.showsRecentlyAdded = showsRecentlyAdded
@@ -343,6 +383,8 @@ public struct LayoutPreferences: PreferenceArea {
         self.becauseYouLikeRows = becauseYouLikeRows
         self.chartsCountry = chartsCountry
         self.artistTopSongs = artistTopSongs
+        self.albumCovers = albumCovers
+        self.homeFlowsOrder = homeFlowsOrder
     }
 
     /// Hides or shows a Library row; false (no change) when it would leave none of the always-available rows visible.
@@ -365,7 +407,8 @@ public struct LayoutPreferences: PreferenceArea {
                                  showsRecentlyAdded: showsRecentlyAdded, albumArtistsOnly: albumArtistsOnly,
                                  homeStyles: HomeSectionStyle.normalised(homeStyles),
                                  becauseYouLikeRows: clamp(becauseYouLikeRows, HomeSectionStyle.becauseYouLikeRange),
-                                 chartsCountry: chartsCountry, artistTopSongs: artistTopSongs)
+                                 chartsCountry: chartsCountry, artistTopSongs: artistTopSongs,
+                                 albumCovers: albumCovers, homeFlowsOrder: homeFlowsOrder)
     }
 
     /// The Home sections to show, in the owner's order, for the phone and the car alike (the car shows Made for you too,

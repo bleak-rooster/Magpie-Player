@@ -85,14 +85,20 @@ public struct CarPlayPreferences: PreferenceArea {
     public var thirdTab: CarPlayTab
     /// The car's own Home; nil while it follows the phone's.
     public var home: OrderedVisibility<CarPlayHomeShelf>?
+    /// Round 27 H (owner, 2026-11-14): "a switch in the settings to show aurral playlists/flows and playlists combined"
+    /// (D300). On, the car's Playlists list holds the flows Discover shows too, A to Z, and Library › Discover hides;
+    /// off (the default) as before (D185, D188).
+    public var flowsWithPlaylists: Bool
 
-    public init(thirdTab: CarPlayTab, home: OrderedVisibility<CarPlayHomeShelf>?) {
+    public init(thirdTab: CarPlayTab, home: OrderedVisibility<CarPlayHomeShelf>?, flowsWithPlaylists: Bool = false) {
         self.thirdTab = thirdTab
         self.home = home
+        self.flowsWithPlaylists = flowsWithPlaylists
     }
 
     public func normalised() -> CarPlayPreferences {
-        CarPlayPreferences(thirdTab: thirdTab, home: home?.normalised(against: Self.hiddenShelves))
+        CarPlayPreferences(thirdTab: thirdTab, home: home?.normalised(against: Self.hiddenShelves),
+                           flowsWithPlaylists: flowsWithPlaylists)
     }
 
     /// The tab shown: a saved Discover shows Playlists while Aurral isn't set up.

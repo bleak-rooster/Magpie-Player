@@ -141,6 +141,10 @@ final class AppModel {
     var madeForYouShelf: [MadeForYou.Playlist] = []
     /// Home's feed for the signed-in account (P5, HomeFeed.swift).
     @ObservationIgnored var homeFeedSlot: HomeFeed?
+    // Round 27 H
+    /// Round 27 H (D297): the account's flow plays as last loaded or noted (AppModel+FlowPlays.swift).
+    @ObservationIgnored var flowPlaysSlot: (scope: String, plays: [String: Date])?
+    // Round 27 H end
     /// B1: recommended artists' pictures (AppModel+OutsideArt.swift).
     @ObservationIgnored var recommendedArtSlot: OutsideArtLoader?
     /// B1: the outside pictures' disk cache (one per account).
@@ -664,6 +668,7 @@ final class AppModel {
         box.set(nil)
         ArtworkCache.shared.removeAll()
         forgetHomeShelves()
+        forgetFlowPlays()   // Round 27 H (D297): the file goes with Home's folder above
         forgetOutsideArt()   // B1
         stopMatchIndex(erase: true)
         forgetLidarrPermissions()

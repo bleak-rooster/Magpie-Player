@@ -1,3 +1,4 @@
+import DesignSystem
 import MagpieCore
 import SwiftUI
 
@@ -35,6 +36,44 @@ struct HomeAndLibraryView: View {
                 }
                 .accessibilityIdentifier("settings-library-layout")
             }
+            // Round 27 H (owner, 2026-11-14): every album grid's covers, Large or Small (D296).
+            Section {
+                Picker(AlbumCoversCopy.setting, selection: Binding(
+                    get: { model.preferences.layout.albumCovers },
+                    set: { size in model.updatePreferences { $0.layout.albumCovers = size } })) {
+                    ForEach(AlbumCoverSize.allCases, id: \.self) { Text(AlbumCoversCopy.title($0)).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .frame(minHeight: Tokens.minHitSize)
+                .accessibilityIdentifier("settings-album-covers")
+            } header: {
+                Text(AlbumCoversCopy.setting)
+            } footer: {
+                Text(AlbumCoversCopy.accessibilityNote)   // fix round 1 (design H1): always shown
+            }
+            // Round 27 H (owner, 2026-11-14): Your flows on Home, by last played or A to Z (D298), and (Q3) D190's one
+            // "everyone's" switch, shown here too. Only with Aurral: Home has no flows without it.
+            if Self.showsFlowsSection(model) {
+                Section {
+                    Picker(HomeFlowsCopy.order, selection: Binding(get: { model.preferences.layout.homeFlowsOrder },
+                                                                   set: { model.setHomeFlowsOrder($0) })) {
+                        ForEach(HomeFlowsOrder.allCases, id: \.self) { Text(HomeFlowsCopy.title($0)).tag($0) }
+                    }
+                    .accessibilityIdentifier("settings-home-flows-order")
+                } header: {
+                    Text(HomeFlowsCopy.section)
+                } footer: {
+                    // Fix round 1 (M2): it describes Last played only.
+                    if let footer = HomeFlowsCopy.footer(model.preferences.layout.homeFlowsOrder) { Text(footer) }
+                }
+                Section {
+                    Toggle(EveryonesFlowsCopy.toggle, isOn: Binding(get: { model.showEveryonesFlows },
+                                                                    set: { model.showEveryonesFlows = $0 }))
+                        .accessibilityIdentifier("settings-home-everyones-flows")
+                } footer: {
+                    Text(HomeFlowsCopy.everyoneFooter)   // fix round 1 (design M4): it isn't only Home's
+                }
+            }
             // Round 14 A4 fix round 1 (owner): whose top songs Trending shows.
             if model.aurralFeeds?.can.trending == true {
                 Section {
@@ -58,6 +97,28 @@ struct HomeAndLibraryView: View {
         }
         .navigationTitle("Home & Library")
         .navigationBarTitleDisplayMode(.inline)
+    }
+
+    /// Round 27 H (D298): Your flows on Home shows only while Aurral is set up (no dead controls without it).
+    static func showsFlowsSection(_ model: AppModel) -> Bool { model.aurralSetUp }
+}
+
+/// Round 27 H (D298): the words for Your flows on Home (Settings › Home & Library).
+enum HomeFlowsCopy {
+    static let section = "Your flows on Home"
+    static let order = "Order"
+    static let lastPlayedFooter = "Flows you\u{2019}ve played lately come first; the rest follow A to Z."
+    /// D190's footer, and (fix round 1, design M4) what else the one switch governs.
+    static let everyoneFooter = EveryonesFlowsCopy.footer + " This also applies to Discover and the car."
+
+    /// Fix round 1 (M2): the Order footer, shown only for Last played.
+    static func footer(_ order: HomeFlowsOrder) -> String? { order == .lastPlayed ? lastPlayedFooter : nil }
+
+    static func title(_ order: HomeFlowsOrder) -> String {
+        switch order {
+        case .lastPlayed: "Last played"
+        case .alphabetical: "A to Z"
+        }
     }
 }
 
