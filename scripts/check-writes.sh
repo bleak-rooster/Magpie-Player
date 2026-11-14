@@ -905,6 +905,35 @@ if [ -z "${G1_SRC:-}" ]; then
   grep -qF 'let host = url.host()?.lowercased(), !host.isEmpty, !RefusedMediaHosts.refuses(host: host) else { return nil }' \
        Packages/MagpieKit/Sources/MagpieCore/OutsideArt.swift ||
     { echo "G1: OutsideArt.swift: outside art no longer refuses Deezer's and Apple's hosts" >&2; bad=1; }
+  # Round 27 L (owner, 2026-11-14, Q1 yes; D311): Find lyrics online is the one direct call to LRCLIB. Its host is named
+  # only in MagpieCore/LrcLib.swift (comments included, anywhere else in product code), on exactly one line (the https
+  # `GET /api/get` URL); that file names no other URL, sends only through the one capped send, sets only the plain
+  # User-Agent, turns cookies off, refuses a built URL that isn't that scheme, host and path, and keeps the 512 KB cap.
+  lrclib_src="Packages/MagpieKit/Sources/MagpieCore/LrcLib.swift"
+  if grep -rniE --include='*.swift' 'lrclib\.[a-z]' "${product[@]}" | grep -v "^$lrclib_src:" | grep -q .; then
+    echo "G1: LRCLIB's host is named in product code outside $lrclib_src" >&2; bad=1
+  fi
+  if [ -f "$lrclib_src" ]; then
+    want_lrclib='    public static let getURL = URL(string: "https://lrclib.net/api/get")!'
+    lrclib_lines=$(grep -niE 'lrclib\.[a-z]' "$lrclib_src" | grep -vE '^[0-9]+:[[:space:]]*///?' || true)
+    { [ "$(printf '%s\n' "$lrclib_lines" | grep -c .)" = 1 ] && [ "${lrclib_lines#*:}" = "$want_lrclib" ]; } ||
+      { echo "G1: $lrclib_src: LRCLIB's one https GET /api/get URL changed or is named twice" >&2; bad=1; }
+    [ "$(grep -nE '[A-Za-z][A-Za-z0-9+.-]*://' "$lrclib_src" | grep -vE '^[0-9]+:[[:space:]]*///?' | grep -c .)" = 1 ] ||
+      { echo "G1: $lrclib_src: a URL other than LRCLIB's one route" >&2; bad=1; }
+    [ "$(grep -cE 'transport\.send\(' "$lrclib_src")" = 1 ] &&
+      grep -qF '(data, response) = try await transport.send(request, maxBytes: Self.maxResponseBytes)' "$lrclib_src" ||
+      { echo "G1: $lrclib_src: LRCLIB is sent other than through the one capped send" >&2; bad=1; }
+    for want in '    public static let maxResponseBytes = 512 * 1024' \
+                '    public static func userAgent(version: String) -> String { "Magpie/\(version)" }' \
+                '        request.httpMethod = "GET"' \
+                '        request.httpShouldHandleCookies = false' \
+                '        request.setValue(userAgent, forHTTPHeaderField: "User-Agent")' \
+                '        guard let url = components.url, url.scheme == "https", url.host() == getURL.host(), url.path == getURL.path else {'; do
+      grep -qxF -- "$want" "$lrclib_src" || { echo "G1: $lrclib_src: LRCLIB's request rules changed (missing: $want)" >&2; bad=1; }
+    done
+    [ "$(grep -cE 'setValue\(|addValue\(|allHTTPHeaderFields|httpMethod' "$lrclib_src")" = 2 ] ||
+      { echo "G1: $lrclib_src: LRCLIB's request sets another header or verb" >&2; bad=1; }
+  fi
   # Round 14 A1 (D81): `api/discover` only as one of the allowed spellings, and the flow write routes only in the
   # Aurral client (the stub for tests aside).
   discover_names=$(grep -rnoE --include='*.swift' 'api/discover[A-Za-z0-9/_.?&=-]*' "${product[@]}" |

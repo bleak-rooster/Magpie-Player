@@ -59,6 +59,9 @@ planted=(
   'URLSession.shared.data(from: URL(string: "https://is1-ssl.mzstatic.com/image/thumb/a.jpg")!)'
   'URLSession.shared.data(from: URL(string: "https://rss.applemarketingtools.com/api/v2/au")!)'
   'URLSession.shared.data(from: URL(string: "https://itunes.apple.com/lookup?id=1")!)'
+  # Round 27 L (D311): LRCLIB's host named outside LrcLib.swift.
+  'URLSession.shared.data(from: URL(string: "https://lrclib.net/api/search?q=x")!)'
+  'URLSession.shared.data(from: URL(string: "https://LRCLIB.NET/api/get")!)'
   'aurral.ok(method: AurralRoute.imageProxyMethod, path: "api/image-proxy", body: other)'
   # Round 22 R22A (D186): a third caller of Download songs.
   'client.downloadFlow("flow-1")'
@@ -236,6 +239,38 @@ for w in "${host_weakened[@]}"; do
 done
 cp "$work/RefusedMediaHosts.orig" "$hosts_src"; cp "$work/OutsideArt.orig" "$art_src"
 weakened+=("${host_weakened[@]}")
+
+# Round 27 L (D311): LRCLIB's one request weakened: plain http, another route, a second URL, another header or verb, a
+# second send, cookies on, the 512 KB cap or the User-Agent changed, the built URL's check dropped.
+lrclib_src="$work/Packages/MagpieKit/Sources/MagpieCore/LrcLib.swift"
+cp "$lrclib_src" "$work/LrcLib.orig"
+lrclib_weakened=(
+  's#"https://lrclib.net/api/get"#"http://lrclib.net/api/get"#'
+  's#"https://lrclib.net/api/get"#"https://lrclib.net/api/search"#'
+  's#^public actor LrcLib {#public actor LrcLib {\n    static let search = URL(string: "https://lrclib.net/api/search")!#'
+  's#^public actor LrcLib {#public actor LrcLib {\n    static let other = URL(string: "https://lyrics.example/api")!#'
+  's#        request.setValue(userAgent, forHTTPHeaderField: "User-Agent")#&\n        request.setValue("x", forHTTPHeaderField: "Authorization")#'
+  's#        request.setValue(userAgent, forHTTPHeaderField: "User-Agent")#&\n        request.addValue("jordan", forHTTPHeaderField: "X-User")#'
+  's#        request.httpMethod = "GET"#        request.httpMethod = "POST"#'
+  's#        request.httpShouldHandleCookies = false#        request.httpShouldHandleCookies = true#'
+  's#    public static let maxResponseBytes = 512 \* 1024#    public static let maxResponseBytes = 64 * 1024 * 1024#'
+  's#"Magpie/\\(version)"#"Magpie/\\(version) (jordan)"#'
+  's#(data, response) = try await transport.send(request, maxBytes: Self.maxResponseBytes)#(data, response) = try await transport.send(request)#'
+  's#(data, response) = try await transport.send(request, maxBytes: Self.maxResponseBytes)#&; _ = try await transport.send(request, maxBytes: 1)#'
+  's#url.scheme == "https", url.host() == getURL.host(), url.path == getURL.path#true#'
+)
+for expr in "${lrclib_weakened[@]}"; do
+  cp "$work/LrcLib.orig" "$lrclib_src"
+  sed -i '' "$expr" "$lrclib_src"
+  if cmp -s "$work/LrcLib.orig" "$lrclib_src"; then echo "selftest: the weakening didn't apply: $expr" >&2; failed=1; continue; fi
+  if out=$("$work/scripts/check-writes.sh" 2>&1); then
+    echo "selftest: NOT caught: $expr" >&2; failed=1
+  elif ! grep -qE 'G1:' <<< "$out"; then
+    echo "selftest: failed without a G1 reason: $expr" >&2; failed=1
+  fi
+done
+cp "$work/LrcLib.orig" "$lrclib_src"
+weakened+=("${lrclib_weakened[@]}")
 
 # S14 L5 (D119): the id validators, Not for me's body, the picture fetch's allow-list check and the 8 MB cap weakened.
 discover_src="$work/Packages/MagpieKit/Sources/AurralKit/AurralClient+Discover.swift"
