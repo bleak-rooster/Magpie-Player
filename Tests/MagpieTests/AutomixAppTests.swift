@@ -370,6 +370,52 @@ final class AutomixLibrary: @unchecked Sendable {
         transport.release("/rest/getSimilarSongs2")
         await model.queueBuilder.task?.value
         #expect(model.player.queue.current?.song.id == "gen1" && upcoming(model) == ["gen2"])
+        #expect(model.libraryEdits.notice?.text == "What\u{2019}s coming up hasn\u{2019}t changed.",
+                "fix round 2 (N1): a skip stops the mix and says so, never silently")
+    }
+
+    /// Fix round 2 (N1): the seed song ends by itself while the mix is read, and so does the next: the queue moves on
+    /// (the engine goes to the next item by itself, gapless) and the mix follows the song playing then, in place of what
+    /// was after it, with no gap or restart. (The engine always holds the song after the current one, so a song with
+    /// others after it ends as `.itemChanged`; `.ended` comes only at the end of the list, `build_songEndsMidReadStartsMix`.)
+    @Test func build_seedEndsNaturallyMixFollowsTheNextSong() async throws {
+        let model = try await model()
+        defer { model.signOut() }
+        let seed = try song("sim1")
+        model.player.play([seed, try song("gen1"), try song("gen2"), try song("gen3")], startAt: 0)
+        transport.hold("/rest/getSimilarSongs2")
+        defer { transport.release("/rest/getSimilarSongs2") }
+        model.startAutomix(AutomixSeed(.song(seed)), length: .twenty, variety: .balanced)
+        #expect(await eventually { self.transport.count("/rest/getSimilarSongs2") == 1 })
+        model.player.handle(.itemChanged(try #require(model.player.queue.upcoming.first?.id)))
+        model.player.handle(.itemChanged(try #require(model.player.queue.upcoming.first?.id)))
+        let moved = try #require(model.player.queue.current)
+        #expect(moved.song.id == "gen2")
+        transport.release("/rest/getSimilarSongs2")
+        await model.queueBuilder.task?.value
+        #expect(model.player.queue.current?.id == moved.id, "gen2 plays on, not restarted")
+        let mix = upcoming(model)
+        #expect(mix.count == 20 && !mix.contains("gen3") && !mix.contains("sim1"), "the mix follows gen2: \(mix)")
+        #expect(model.libraryEdits.notice?.text == "Automix added 20 songs.")
+    }
+
+    /// Fix round 2 (N1): the same when the engine moves on by itself without a gap (`.itemChanged`).
+    @Test func build_seedMovesOnGaplessMixFollows() async throws {
+        let model = try await model()
+        defer { model.signOut() }
+        let seed = try song("sim1")
+        model.player.play([seed, try song("gen1"), try song("gen2")], startAt: 0)
+        transport.hold("/rest/getSimilarSongs2")
+        defer { transport.release("/rest/getSimilarSongs2") }
+        model.startAutomix(AutomixSeed(.song(seed)), length: .twenty, variety: .balanced)
+        #expect(await eventually { self.transport.count("/rest/getSimilarSongs2") == 1 })
+        let next = try #require(model.player.queue.upcoming.first)
+        model.player.handle(.itemChanged(next.id))
+        #expect(model.player.queue.current?.id == next.id)
+        transport.release("/rest/getSimilarSongs2")
+        await model.queueBuilder.task?.value
+        #expect(model.player.queue.current?.id == next.id)
+        #expect(upcoming(model).count == 20 && !upcoming(model).contains("gen2"))
     }
 
     /// Fix round 1 (design M3): a mix shorter than asked says how many it found.

@@ -30,6 +30,8 @@ enum AutomixCopy {
     static let lengthLabel = "Length"
     static let varietyLabel = "Variety"
     static let start = "Start Automix"
+    /// Fix round 2 (N1): a skip into what was coming up stopped the mix before anything was added.
+    static let stopped = "What\u{2019}s coming up hasn\u{2019}t changed."
     static let adding = "Adding songs to your Automix\u{2026}"
     /// Fix round 1 (design L2): the artist page's Automix button's VoiceOver hint.
     static let artistHint = "Choose how long and how varied, then play songs like theirs."
@@ -236,7 +238,13 @@ extension AppModel {
         if let waitingOn {
             // Fix round 1 (design H1): what was coming up stays until there is something to put in its place. A skip into
             // it meanwhile keeps it and stops the mix; nothing found keeps it and says so.
-            guard player.queue.current?.id == waitingOn else { return builder.cancel() }
+            // Fix round 2 (N1): a song ending by itself moves the queue on; that is no skip. The mix then follows the
+            // song playing now. A skip (or anything else that changed the song) stops it, and says so.
+            guard player.queue.current?.id == waitingOn || movedOnByItself(from: waitingOn) else {
+                builder.cancel()
+                return libraryEdits.notify(AutomixCopy.stopped, symbol: "info.circle")
+            }
+            if let playing = player.queue.current?.song.id { first.removeAll { $0.id == playing } }   // moved on to it
             guard !first.isEmpty else {
                 builder.cancel()
                 return libraryEdits.notify(AutomixCopy.none(queueKept: true), symbol: "exclamationmark.triangle")
@@ -270,6 +278,16 @@ extension AppModel {
         } else {
             libraryEdits.notify(AutomixCopy.added(placed.count), symbol: "checkmark.circle")
         }
+    }
+
+    /// Fix round 2 (N1): the queue went from entry `from` to the current one only by songs ending (each entry between
+    /// them, `from` included, was left by itself, `Player.leftNaturally`), not by a skip, a jump or a new queue.
+    func movedOnByItself(from: UUID) -> Bool {
+        let main = player.queue.main
+        guard let start = main.firstIndex(where: { $0.id == from }), let now = player.queue.currentIndex, now > start
+        else { return false }
+        let left = Set(player.leftNaturally)
+        return main[start..<now].allSatisfy { left.contains($0.id) }
     }
 
     /// Never mixed in (D306): a Discover copy (its id is one Discover knows, or it lives in one of Discover's
