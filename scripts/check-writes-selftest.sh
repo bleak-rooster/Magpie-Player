@@ -508,5 +508,78 @@ for entry in "${c_inplace[@]}"; do
 done
 planted+=("${c_inplace[@]}")
 
+# Round 27 R (D289–D293): the whole-library MissingAlbumSearch and Clear all, planted where they would really go: an
+# unnamed send, a body with an artist, the gate's body rule, guard and checks loosened, the shape on a second line or in
+# another file, the record's key or store elsewhere, a raw queue delete for Clear all, a search (or a restart) before
+# every removal was tried, the confirmation's flag set elsewhere, the restarter made elsewhere.
+wg="Packages/MagpieKit/Sources/LidarrKit/WriteGate.swift"
+dl="Packages/MagpieKit/Sources/Requests/DownloadsInLidarr.swift"
+r_inplace=(
+  'App/AppModel+MissingAlbums.swift|append|extension AppModel { func plantedUnnamed() async throws { guard let gate else { return }; _ = try await gate.send("POST", "command", body: MissingAlbumSearch.Body()) } }'
+  'App/AppModel+MissingAlbums.swift|append|private struct PlantedBody: Encodable { var name = "MissingAlbumSearch"; var artistId = 3 }'
+  'App/AppModel+Requests.swift|append|private struct PlantedBody: Encodable { var name = "missingAlbumSearch" }'
+  "$wg|sed|s/return object.count == 1 ? nil : \"MissingAlbumSearch body must be exactly its name\"/return nil/"
+  "$wg|sed|s/\"refreshartist\", \"missingalbumsearch\"\\]/\"refreshartist\", \"missingalbumsearch\", \"renamefiles\"]/"
+  "$wg|sed|s/if missingSearch, shape != .missingAlbumSearch || owned != nil {/if missingSearch, false {/"
+  "$wg|sed|s/if running { throw refused(target, MissingAlbumSearch.alreadyRunning) }/_ = running/"
+  "$wg|sed|s/if t.timeIntervalSince(last) < MissingAlbumSearch.floor { throw refused(target, MissingAlbumSearch.tooSoon) }/_ = last/"
+  "$wg|sed|/do { try missingSearchStore.save(t, scope: scope) } catch { throw WriteGateError.logUnavailable }/d"
+  'App/AppModel+MissingAlbums.swift|append|    _ = try await gate.send("POST", "command", body: MissingAlbumSearch.Body(), confinedAs: .missingAlbumSearch)'
+  'Packages/MagpieKit/Sources/Requests/RequestRunner+Stall.swift|append|    _ = try await gate.send("POST", "command", body: MissingAlbumSearch.Body(), confinedAs: .missingAlbumSearch)'
+  'App/AppModel+MissingAlbums.swift|append|let plantedKey = "magpie.lidarr.missingSearch." + "abc"'
+  'App/AppModel+Requests.swift|append|let plantedKey = MissingAlbumSearch.recordKey(scope: "abc")'
+  'App/AppModel+MissingAlbums.swift|append|struct PlantedStore: MissingAlbumSearchStore {}'
+  'App/AppModel+MissingAlbums.swift|append|func plantedClear(_ id: Int) async throws { _ = try await gate.send("DELETE", "queue/\\(id)?\\(Self.queueRemoval)", body: nil, confinedAs: .queueRestartAny) }'
+  "$dl|sed|s/^                removed.append((albums, removal.request, removal.album, startedAt))\$/&; _ = await searchFor(albums)/"
+  # Fix round 1: a helper that searches on the way (L2), the record forgotten or an entry point called elsewhere (M3),
+  # the gate's turn, second switch check, running predicate or strict read loosened (L1, L7).
+  "$dl|sed|s/^                outcome.cleared += 1\$/&; await sneak(albums)/"
+  'App/AppModel+Requests.swift|append|func plantedForget(_ d: UserDefaults) { MissingAlbumSearch.forgetRecord(scope: "x", in: d) }'
+  'App/Screens/Settings/LidarrDownloadsView.swift|append|func plantedSearch(_ m: AppModel) async { await m.searchMissingAlbumsNow() }'
+  'App/AppModel+Requests.swift|append|func plantedSchedule() async { await runMissingAlbumSchedule() }'
+  'App/AppModel+Requests.swift|append|func plantedForget2(_ d: UserDefaults) { LidarrWriteGate.forgetMissingAlbumSearch(scope: "x", in: d) }'
+  "$wg|sed|/private func sendMissingAlbumSearch/,/return try await deliver/s/^        await takeConfinedTurn()\$/        \\/\\/ no turn/"
+  "$wg|sed|/if running { throw/,/missingSearchStore.save/s/^        guard enabled else { throw WriteGateError.disabled }   \\/\\/ turned off during the read\$/        \\/\\/ no second check/"
+  "$wg|sed|s/\\[\"queued\", \"started\"\\].contains(\$0.status) }/\$0.status == \"started\" }/"
+  # Fix round 2 (the security re-check's plants A–D, F, G): the shared restarter driven from elsewhere (SM1); the ask
+  # step reached from elsewhere, a spaced call, a function reference (L-M3b); a computed property that searches on the
+  # way (L-L2b); a second deliver in the gate's MissingAlbumSearch send (L-L1b); Clear all's removal saying a finished
+  # copy may go (L-M2b).
+  'App/AppModel+Requests.swift|append|extension AppModel { func plantedRestart(_ rows: [LidarrDownloads.Row]) async { _ = await lidarrRestarter?.restartAll(rows) } }'
+  'App/AppModel+MissingAlbums.swift|append|extension AppModel { func plantedAsk() async { _ = await askAndRecord(now: Date()) } }'
+  'App/Screens/Settings/LidarrDownloadsView.swift|append|extension AppModel { func plantedSearch2() { Task { await self.searchMissingAlbumsNow () } } }'
+  'App/Screens/Settings/LidarrDownloadsView.swift|append|extension AppModel { func plantedSearch3() { let f = self.searchMissingAlbumsNow; Task { await f(Date()) } } }'
+  "$dl|append|extension LidarrDownloadRestarter { var sneak: Void { Task { _ = await self.searchFor([1]) } } }"
+  "$wg|sed|s/^        do { try missingSearchStore.save(t, scope: scope) } catch { throw WriteGateError.logUnavailable }\$/&\n        if target.key.isEmpty { _ = try? await deliver(target, data) }/"
+  "$dl|sed|s/confinedAs: .queueRestartAny, allowForeign: false, allowFinished: !deferred)/confinedAs: .queueRestartAny, allowForeign: false, allowFinished: true)/"
+  'App/AppModel+Requests.swift|append|extension AppModel { func plantedRun(_ m: AppModel) async { _ = try? await m.lidarrRestarter?.clearAllPlan() } }'
+  # Fix round 3: two delivers on the MissingAlbumSearch line (G2), a gate extension that delivers (H), the restarter's
+  # cache no longer fileprivate (L-SM1c).
+  "$wg|sed|/private func sendMissingAlbumSearch/,/^    }\$/s/^            return try await deliver(target, data)\$/            _ = try? await deliver(target, data); return try await deliver(target, data)/"
+  "$wg|append|extension LidarrWriteGate { func plantedNudge(_ t: WriteTarget) async { _ = try? await deliver(t, Data(\"{}\".utf8)) } }"
+  'App/AppModel+MissingAlbums.swift|sed|s/    @ObservationIgnored fileprivate var restarter:/    @ObservationIgnored var restarter:/'
+  "$wg|sed|s/guard let commands = try? await strictCommandNamesAndStatuses() else {/guard let commands = try? await reader.commands().map({ (\$0.name.lowercased(), \$0.status.lowercased()) }) else {/"
+  "$dl|sed|s/^                if firstRemoval == nil { firstRemoval = startedAt }\$/&; if let r = removal.request { await runner?.clearAllSearch(r) }/"
+  "$dl|sed|s/let removal = try await removeOne(target.queueId, item, albums: albums, allowForeign: foreign, deferred: true)/let removal = try await removeOne(target.queueId, item, albums: albums, allowForeign: foreign, deferred: false)/"
+  'App/Screens/Settings/LidarrDownloadsView.swift|append|func plantedFlag(_ m: AppModel, _ p: ClearAllPlan) { Task { await m.clearAllDownloads(p, includeForeign: true) } }'
+  'App/AppModel+Requests.swift|append|let plantedRestarter = LidarrDownloadRestarter(lidarr: client, gate: gate, runner: runner)'
+  'App/AppModel+Requests.swift|append|func plantedRun(_ restarter: LidarrDownloadRestarter, _ p: ClearAllPlan) async { _ = await restarter.clearAll(p, includeForeign: false) }'
+)
+for entry in "${r_inplace[@]}"; do
+  rel="${entry%%|*}" rest="${entry#*|}"
+  mode="${rest%%|*}" text="${rest#*|}"
+  file="$work/$rel"
+  cp "$file" "$file.orig"
+  if [ "$mode" = append ]; then printf '%b\n' "$text" >> "$file"; else sed -i '' "$text" "$file"; fi
+  if cmp -s "$file.orig" "$file"; then echo "selftest: the plant didn't apply: $entry" >&2; failed=1
+  elif out=$("$work/scripts/check-writes.sh" 2>&1); then
+    echo "selftest: NOT caught: $entry" >&2; failed=1
+  elif ! grep -qE 'L1:|G1:' <<< "$out"; then
+    echo "selftest: failed without a G1/L1 reason: $entry" >&2; failed=1
+  fi
+  cp "$file.orig" "$file"; rm -f "$file.orig"
+done
+planted+=("${r_inplace[@]}")
+
 [ "$failed" = 0 ] || exit 1
 echo "check-writes selftest: all ${#planted[@]} planted violations and ${#weakened[@]} allow-list weakenings caught; the clean tree passes"
