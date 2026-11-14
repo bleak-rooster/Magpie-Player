@@ -33,7 +33,7 @@ enum ScreenFixtureProbe {
         let pages: [(String, AnyView, Int)] = [
             ("album", AnyView(AlbumView(albumId: "a1")), 3),
             ("playlist", AnyView(PlaylistView(playlistId: "p1")), 3),
-            ("artist", AnyView(ArtistView(artistId: "ar1")), 2),
+            ("artist", AnyView(ArtistView(artistId: "ar1")), 3),   // round 27 A (D305): Play, Shuffle, Automix
             ("genre", AnyView(GenreView(name: "Ambient")), 2),
             ("favourites", AnyView(FavouritesView()), 2),   // phase 2: Favourites gets Play and Shuffle too
         ]
