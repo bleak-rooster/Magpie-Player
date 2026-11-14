@@ -236,6 +236,8 @@ public struct WriteConfinement: Sendable {
             case .command(let name, let albumIds, let artistId):
                 // Y5 fix I9: a search can make Lidarr grab and replace files, so only albums the ledger knows (Magpie
                 // recorded each before it monitored or searched it); a refresh only for an artist the ledger knows.
+                // Round 27 R (D289): the whole-library MissingAlbumSearch never comes here: the gate sends it only as
+                // `ConfinedShape.missingAlbumSearch`, by its own rules (`LidarrWriteGate.sendMissingAlbumSearch`).
                 switch name.lowercased() {
                 case "albumsearch":
                     guard !albumIds.isEmpty, albumIds.allSatisfy({ id in entries.contains { $0.albumId == id } }) else {
