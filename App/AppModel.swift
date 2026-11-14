@@ -259,6 +259,12 @@ final class AppModel {
     /// The song `playbackHint` was raised for: a new current song clears it (D276, AppModel+Playback.swift).
     @ObservationIgnored var playbackHintSongId: String?
     // End Round 27 P
+    // Round 27 L
+    /// The lyrics asked for each song played, kept for the pane, and Find lyrics online (D310–D313, AppModel+Lyrics.swift).
+    @ObservationIgnored let lyricsKeeper = LyricsKeeper()
+    /// The watcher that asks the server for each new song's lyrics (D310).
+    @ObservationIgnored var lyricsWatch: Task<Void, Never>?
+    // End Round 27 L
     /// Whether the server answered last time it was tried (Task 14): Automatic offline mode follows it.
     var serverReachable = true { didSet { offlineInputsChanged() } }
     /// Offline as the URLs and the scrobbler read it, and Automatic mode's bookkeeping (AppModel+Offline.swift).
@@ -414,12 +420,14 @@ final class AppModel {
         wireAurralFeeds()   // round 14 A4
         readLidarrPermissions()
         readSlskdConnection()   // R23 (D192)
+        watchLyrics()   // Round 27 L (D310)
     }
 
     isolated deinit {
         qualityWatch?.cancel()
         hintWatch?.cancel()
         preDownloadWatch?.cancel()
+        lyricsWatch?.cancel()   // Round 27 L (D310)
     }
 
     /// The write switch and setup of the connected Lidarr (both are kept per instance).
@@ -656,6 +664,7 @@ final class AppModel {
         letGo.forget()   // round 15 C3 (the file goes with the requests: RequestStore.eraseAll)
         PopularSongsCache.removeAll(root: dataDirectory)   // R3
         forgetLidarrTopSongs()   // Round 26 K2 (D263): the saved Top songs and the session's reads
+        forgetLyrics()   // Round 27 L (D310): the kept lyrics and the read under way
         advertisedExtensions = nil
         reconnectTask = nil
         noteReachable()   // nothing to reach; the next session starts online

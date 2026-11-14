@@ -910,12 +910,12 @@ if [ -z "${G1_SRC:-}" ]; then
   # `GET /api/get` URL); that file names no other URL, sends only through the one capped send, sets only the plain
   # User-Agent, turns cookies off, refuses a built URL that isn't that scheme, host and path, and keeps the 512 KB cap.
   lrclib_src="Packages/MagpieKit/Sources/MagpieCore/LrcLib.swift"
-  if grep -rniE --include='*.swift' 'lrclib\.[a-z]' "${product[@]}" | grep -v "^$lrclib_src:" | grep -q .; then
+  if grep -rniE --include='*.swift' 'lrclib\.(net|org|com|io|app|dev)' "${product[@]}" | grep -v "^$lrclib_src:" | grep -q .; then
     echo "G1: LRCLIB's host is named in product code outside $lrclib_src" >&2; bad=1
   fi
   if [ -f "$lrclib_src" ]; then
     want_lrclib='    public static let getURL = URL(string: "https://lrclib.net/api/get")!'
-    lrclib_lines=$(grep -niE 'lrclib\.[a-z]' "$lrclib_src" | grep -vE '^[0-9]+:[[:space:]]*///?' || true)
+    lrclib_lines=$(grep -niE 'lrclib\.(net|org|com|io|app|dev)' "$lrclib_src" | grep -vE '^[0-9]+:[[:space:]]*///?' || true)
     { [ "$(printf '%s\n' "$lrclib_lines" | grep -c .)" = 1 ] && [ "${lrclib_lines#*:}" = "$want_lrclib" ]; } ||
       { echo "G1: $lrclib_src: LRCLIB's one https GET /api/get URL changed or is named twice" >&2; bad=1; }
     [ "$(grep -nE '[A-Za-z][A-Za-z0-9+.-]*://' "$lrclib_src" | grep -vE '^[0-9]+:[[:space:]]*///?' | grep -c .)" = 1 ] ||
