@@ -59,6 +59,15 @@ planted=(
   'URLSession.shared.data(from: URL(string: "https://is1-ssl.mzstatic.com/image/thumb/a.jpg")!)'
   'URLSession.shared.data(from: URL(string: "https://rss.applemarketingtools.com/api/v2/au")!)'
   'URLSession.shared.data(from: URL(string: "https://itunes.apple.com/lookup?id=1")!)'
+  # Round 27 L (D311): LRCLIB's host named outside LrcLib.swift.
+  'URLSession.shared.data(from: URL(string: "https://lrclib.net/api/search?q=x")!)'
+  'URLSession.shared.data(from: URL(string: "https://LRCLIB.NET/api/get")!)'
+  # L fix round 1 (LL1): LRCLIB's client made with a transport that follows redirects.
+  'LrcLib(transport: URLSessionTransport(), userAgent: "Magpie/1")'
+  'LrcLib (transport: transport, userAgent: ua)'
+  # Fix round 2 (N2): through `.init(`, and a second construction on the pinned line.
+  'LrcLib.init(transport: URLSessionTransport(), userAgent: "Magpie/1")'
+  'LrcLib(transport: LrcLibTransport(), userAgent: ua); _ = LrcLib(transport: URLSessionTransport(), userAgent: ua)'
   'aurral.ok(method: AurralRoute.imageProxyMethod, path: "api/image-proxy", body: other)'
   # Round 22 R22A (D186): a third caller of Download songs.
   'client.downloadFlow("flow-1")'
@@ -236,6 +245,58 @@ for w in "${host_weakened[@]}"; do
 done
 cp "$work/RefusedMediaHosts.orig" "$hosts_src"; cp "$work/OutsideArt.orig" "$art_src"
 weakened+=("${host_weakened[@]}")
+
+# Round 27 L (D311): LRCLIB's one request weakened: plain http, another route, a second URL, another header or verb, a
+# second send, cookies on, the 512 KB cap or the User-Agent changed, the built URL's check dropped.
+lrclib_src="$work/Packages/MagpieKit/Sources/MagpieCore/LrcLib.swift"
+cp "$lrclib_src" "$work/LrcLib.orig"
+lrclib_weakened=(
+  's#"https://lrclib.net/api/get"#"http://lrclib.net/api/get"#'
+  's#"https://lrclib.net/api/get"#"https://lrclib.net/api/search"#'
+  's#^public actor LrcLib {#public actor LrcLib {\n    static let search = URL(string: "https://lrclib.net/api/search")!#'
+  's#^public actor LrcLib {#public actor LrcLib {\n    static let other = URL(string: "https://lyrics.example/api")!#'
+  's#        request.setValue(userAgent, forHTTPHeaderField: "User-Agent")#&\n        request.setValue("x", forHTTPHeaderField: "Authorization")#'
+  's#        request.setValue(userAgent, forHTTPHeaderField: "User-Agent")#&\n        request.addValue("jordan", forHTTPHeaderField: "X-User")#'
+  's#        request.httpMethod = "GET"#        request.httpMethod = "POST"#'
+  's#        request.httpShouldHandleCookies = false#        request.httpShouldHandleCookies = true#'
+  's#    public static let maxResponseBytes = 512 \* 1024#    public static let maxResponseBytes = 64 * 1024 * 1024#'
+  's#"Magpie/\\(version)"#"Magpie/\\(version) (jordan)"#'
+  's#(data, response) = try await transport.send(request, maxBytes: Self.maxResponseBytes)#(data, response) = try await transport.send(request)#'
+  's#(data, response) = try await transport.send(request, maxBytes: Self.maxResponseBytes)#&; _ = try await transport.send(request, maxBytes: 1)#'
+  's#url.scheme == "https", url.host() == getURL.host(), url.path == getURL.path#true#'
+  # L fix round 1 (LM1): the security review's spellings 1-5 and 7, and an unmeasured JSON parse (LH1).
+  's#        request.setValue(userAgent, forHTTPHeaderField: "User-Agent")#&\n        request.setValue ("dev-1", forHTTPHeaderField: "X-Device")#'
+  's#        request.httpShouldHandleCookies = false#&\n        request.httpShouldHandleCookies = true#'
+  's#        components.queryItems = items#        items.append(URLQueryItem(name: "server", value: userAgent))\n&#'
+  's#        request.setValue("en", forHTTPHeaderField: "Accept-Language")#&\n        request.url = getURL.deletingLastPathComponent().appending(path: "search")#'
+  's#        switch response.statusCode {#        _ = try? await URLSession.shared.data(for: request)\n&#'
+  's#        switch response.statusCode {#        let s: @Sendable (URLRequest) async throws -> (Data, HTTPURLResponse) = transport.send; _ = try? await s(request)\n&#'
+  's#JSONNesting.object(with: data) as? \[String: Any\]#(try? JSONSerialization.jsonObject(with: data)) as? [String: Any]#'
+  's#URLQueryItem(name: "album_name", value: album)#URLQueryItem(name: albumKey, value: album)#'
+  # L fix round 1 (LL1): LRCLIB's transport follows a redirect or keeps cookies (lines in LrcLibTransport.swift).
+  'T|s#newRequest request: URLRequest) async -> URLRequest? { nil }#newRequest request: URLRequest) async -> URLRequest? { request }#'
+  'T|s#delegate: NoRedirects.shared#delegate: SameOriginRedirects.shared#'
+  'T|s#        config.httpCookieStorage = nil#        config.httpCookieStorage = .shared#'
+  # Fix round 2 (N3): a second session beside the pinned one, and cookies switched back on after the pinned line.
+  'T|s#^    static let session = URLSession(configuration: sessionConfiguration(), delegate: NoRedirects.shared, delegateQueue: nil)#&\n    static let other = URLSession(configuration: .default)#'
+  'T|s#^        config.httpCookieStorage = nil#&\n        config.httpCookieStorage = .shared#'
+)
+lrclib_transport_src="$work/Packages/MagpieKit/Sources/MagpieCore/LrcLibTransport.swift"
+cp "$lrclib_transport_src" "$work/LrcLibTransport.orig"
+for entry in "${lrclib_weakened[@]}"; do
+  cp "$work/LrcLib.orig" "$lrclib_src"; cp "$work/LrcLibTransport.orig" "$lrclib_transport_src"
+  target="$lrclib_src" expr="$entry" orig="$work/LrcLib.orig"
+  case "$entry" in T\|*) target="$lrclib_transport_src" expr="${entry#T|}" orig="$work/LrcLibTransport.orig" ;; esac
+  sed -i '' "$expr" "$target"
+  if cmp -s "$orig" "$target"; then echo "selftest: the weakening didn't apply: $expr" >&2; failed=1; continue; fi
+  if out=$("$work/scripts/check-writes.sh" 2>&1); then
+    echo "selftest: NOT caught: $expr" >&2; failed=1
+  elif ! grep -qE 'G1:' <<< "$out"; then
+    echo "selftest: failed without a G1 reason: $expr" >&2; failed=1
+  fi
+done
+cp "$work/LrcLib.orig" "$lrclib_src"; cp "$work/LrcLibTransport.orig" "$lrclib_transport_src"
+weakened+=("${lrclib_weakened[@]}")
 
 # S14 L5 (D119): the id validators, Not for me's body, the picture fetch's allow-list check and the 8 MB cap weakened.
 discover_src="$work/Packages/MagpieKit/Sources/AurralKit/AurralClient+Discover.swift"
