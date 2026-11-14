@@ -54,9 +54,11 @@ and keeps playlists up to date for each person on your server. Magpie turns it i
 - **Recommended, Trending and editorial playlists**, with pictures and 30-second previews. All of it comes through
   your own Aurral server: the phone never contacts Deezer or Apple itself.
 - **Flows**: playlists Aurral builds and keeps fresh on a schedule. Make your own from a mix you choose (discovery,
-  your library, trending, a focus, new releases), with how many songs each update brings, years, tags and related
-  artists. You can edit them, refresh them, or delete them.
-- **Chart flows**: turn a chart's top 10, 20, 25, 50 or 100 songs into a playlist of your own that follows the chart.
+  your library, trending, a focus, new releases), with how many songs each kind brings (up to 100 each, as in Aurral's
+  own editor), years, tags and related artists. You can edit them, refresh them, or delete them.
+- **Chart flows**: turn a chart (the whole of it to start, up to 100 songs, or its top 10, 20, 25 or 50) into a
+  playlist of your own that keeps up with the chart once a day. Open that chart on Trending and the songs your flow
+  holds play in full, with **Play** for all of them; one still downloading says "On its way".
 - **Add** an editorial playlist as a flow, and say **Not for me** to a recommendation to teach Aurral your taste.
 - New flows start fetching their songs by themselves. **Songs still coming** shows what Aurral is still fetching,
   with **Approve**, **Try another source** and **Search now** for your own songs, and **Search again** finds the ones
@@ -68,7 +70,8 @@ and keeps playlists up to date for each person on your server. Magpie turns it i
   Aurral tells Magpie whose it is, which it does for Aurral admins.
 - **Discover opens at once.** Your flows and Aurral playlists are saved on the phone and refreshed in the background,
   changing in place when something is new. A flow's page shows its songs straight away and fills in your library's
-  copies as it goes, so even a big flow opens quickly.
+  copies as it goes, so even a big flow opens quickly. Tap an artist in a playlist's artist list to open their page,
+  whether you have them or not, and **Add** the ones you don't.
 - Discover is in the car too.
 
 **Your library, through Navidrome**

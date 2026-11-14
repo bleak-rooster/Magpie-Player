@@ -361,6 +361,33 @@ your Play next songs are left alone. The saved rows are only the last read's res
 as before. A playlist deleted on the server leaves the list at the next read; until then, opening it shows its saved
 page and the failed read is quiet (no note). Its saved page stays in the file until it ages out (the oldest pages go
 first).
+Round 27, artists in a playlist (D315): in a Discover playlist's **Artists in this playlist**, tap an artist to open
+their page inside the sheet. Magpie looks the name up in your listed libraries only (`search3`, artists only): the
+artist with the same MusicBrainz id, or else the only artist with that name, opens their library page; anything else
+(not in your library, two of that name, or no answer within 5 s) opens their outside page. While it looks, the row
+shows a spinner and VoiceOver says "Opening <artist>"; an answer is reused while the sheet is open, and albums on the
+page open too. Offline or signed out the rows don't open and show no chevron. The button beside each artist says
+**Add**, on one line (under the name at the largest text sizes), and starts the usual add; the link and Add are
+separate VoiceOver elements.
+Round 27, the flow editor (D316): each source has a number of songs, 0 to 100 (Include gives it 10, Leave out takes it
+to 0; Fewer and More step one at a time and repeat while held; VoiceOver's actions step five). The flow holds their sum,
+at least one song and up to 500, as Aurral's own editor allows; "N songs in all" sits under the sources. Magpie sends
+the counts as the flow's mix and the sum as its size, and editing a flow turns Aurral's stored mix and size back into
+counts the way Aurral's editor does (largest remainder), keeping its real size. Simple and Advanced both show the
+counts; there are no share sliders.
+Round 27, Trending and its chart flow (D317–D320): when the chart on screen has its own flow (confirmed, with its
+playlist in Discover), each row the flow holds plays that song in full: matched by the song Magpie sent for it, or
+else by exactly one song in the flow's playlist with the same artist, title and length (within 3 s). A copy in your
+main library still comes first and keeps its "in your library" tick; a flow's copy shows no tick and nothing about
+where it lives. The No. 1 then shows **Play**, and **Play** beside **Play previews** plays the chart's full songs in
+order (Play previews only the rest). A song the flow is still fetching says **On its way**, keeps its preview, and its
+menu offers only Save to playlist; every other row is as before. The flow's playlist is read when the list opens, on
+pull to refresh, and again when its songs' states change. Once a day, after the chart is read (Trending, Home's
+Trending shelf, or a genre chart page), if the chart's top songs differ from the flow's, Magpie updates the flow with the
+same removal and append as Refresh now (leaving the page doesn't stop it), marking it sent first; it never does so offline, for
+someone else's flow, while the flow or a Refresh now is running, or from a chart read shorter than the flow. The flow
+control says "Keeps up with the chart once a day." A new chart flow starts at the whole chart (at most 100); existing
+flows keep their size.
 
 ### i. CarPlay
 - **Tabs.** Home, Library, Finds and Search. The Finds tab exists only when the head unit allows 4 tabs, and it shows "not set up" without a Finds library.
@@ -449,5 +476,8 @@ Code: `LidarrKit/{WriteGate,WriteConfinement,Ledger,LocalFile}.swift`, `MagpieCo
 - Round 27: whose flow it is comes from Aurral's username, whose playlist it is from Navidrome's. Where one person's two usernames differ, their flows and their playlists carry different names in the same list (the car's mixed Playlists list, §3i).
 - Round 27: car Home doesn't reorder while shown; a flow just played moves up the next time Home is read (§3i).
 - Round 27: Clear all downloads and search again asks Lidarr to search only after every removal has been tried; if Magpie is stopped in between, those searches are lost (Magpie's own requests recover through their usual failed-download path, §3f).
+- Round 27: an artist in a playlist's artist list whose lookup in your library takes longer than 5 s opens their outside page, even if you have them (§3h).
+- Round 27: a chart flow keeps up with its chart only when Magpie reads that chart (Trending, Home's Trending shelf or the genre's chart page) with the app open; there is no background update. If the phone fails to save when it last sent, a later launch may update the flow again within the day, but only if the chart has changed since.
+- Round 27: Trending matches a chart song to its flow's song strictly (the song Magpie sent, or one same artist, title and length); a song Aurral filed under a different title or length stays a preview (§3h).
 - Round 27: Automix and Play top songs can't tell a song whose file is missing on the server; they rely on Navidrome leaving missing files out of its similar-songs, genre, album and top-songs reads (§3c).
 - More: [RUNBOOK §5](RUNBOOK.md#5-known-limits-risks-and-troubleshooting) and the residual risks in [security-v1-finds.md](reviews/security-v1-finds.md#residual-risks-accepted-or-out-of-client-reach).

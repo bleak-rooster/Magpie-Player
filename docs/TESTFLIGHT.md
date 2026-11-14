@@ -43,8 +43,8 @@ Round 27. The numbers follow your list of 17.
 1. **Play top songs.** Open an artist and tap **Play top songs** under Top songs (or Popular). Up to fifteen of their songs you have play in order; open the queue and shuffle them.
 2. **Discover opens at once.** Open Library › Discover, close Magpie, open it again: the flows and playlists are there straight away and change in place, without a jump, if anything is new.
 3. **A flow's page opens quickly.** Open a big flow: its songs show at once and your library's copies fill in row by row. Open it again later: it should be instant.
-4. **Artist rows open their page.** In a flow's "Artists in this playlist", tap an artist, whether you have them or not.
-5. **Add.** The button in that list says **Add**, on one line.
+4. **Artist rows open their page.** In a flow's "Artists in this playlist", tap an artist you have: their library page opens inside the list (Done takes you back). Tap one you don't have: their outside page opens. Open an album from there too. Offline, the rows don't open.
+5. **Add.** The button in that list says **Add**, on one line, even at the largest text size (where it moves under the name).
 6. **Smaller album covers.** Library › Albums: tap the grid button at the top for three across, again for two. Settings › Home & Library › Album covers sets it for every album grid.
 7. **Missing albums** (Settings › Lidarr › Missing albums, with "Allow Magpie to change your library" on). Tap **Search for missing albums now** and check Lidarr › System › Tasks (or Activity). Set **Search automatically** to Every day and open Magpie again the next day: "Last asked" should move. **Clear all downloads and search again** on a queue with a stuck download: watch "Clearing downloads: i of n", then the outcome. This searches for real and can bring in a lot of music.
 8. **Flows by last played in the car.** Play a flow in the car (or on the phone), go back to the car's Home tab: it comes first in the Discover shelf.
@@ -52,10 +52,10 @@ Round 27. The numbers follow your list of 17.
 10. **The error goes with its song.** If a song fails and shows an error in Now Playing, skip: the next song starts clean.
 11. **Converted songs don't skip.** On mobile data with a converted quality, play a long album on a drive. A dropped signal should say "Connection dropped. Picking up where it left off…" and carry on from the same place, not jump to the start or to the original file. Seeking in a converted song should land where you dragged.
 12. **Your flows on Home.** Settings › Home & Library › Your flows on Home: Order (Last played or A to Z) and Show everyone's flows and playlists. Play a flow and go back to Home: it comes first. With everyone's on, another person's flow has their name under it.
-13. **Song counts in the flow editor.** Create or edit a flow: each kind of song is a number of songs, not a percentage.
+13. **Song counts in the flow editor.** Create or edit a flow: each kind of song has its own number (tick it for 10, then Fewer and More; hold to keep stepping, up to 100 each), and "N songs in all" adds them up. Edit a flow made in Aurral: its counts should match what Aurral's editor shows.
 14. **Lyrics from your server's plugin.** Play a song with no lyrics, then open Lyrics a minute later: if nd-lyrics found them, they're there (it needs `nd-lyrics` in Navidrome's `LyricsPriority`, see the RUNBOOK).
 15. **Find lyrics online.** Settings › Playback › Lyrics › Find lyrics online (off by default). Open Lyrics for a song your library lacks: the footer says "Lyrics found online".
-16. **Trending plays your chart flow's songs in full.** Open a Trending chart you made a chart flow from: its songs play in full, not as previews.
+16. **Trending plays your chart flow's songs in full.** Open a Trending chart you made a chart flow from: the songs the flow holds play in full, not as previews, and **Play** beside Play previews plays them in order. A song still downloading says "On its way". The flow control says "Keeps up with the chart once a day": open the chart again the next day after it changes, and the flow follows it. A new chart flow starts at the whole chart.
 17. **Automix.** In Now Playing's ⋯ menu choose **Automix…**, pick a length and a variety, and Start: the song plays on and the queue fills with songs like it from your library. Try it from an artist page's **Automix** button too, and try each variety.
 
 ## Free alternative (no paid membership)
