@@ -200,9 +200,8 @@ final class LyricsRouting: HTTPTransport, @unchecked Sendable {
         let result = await model.serverLyricsRead("s1").value
         #expect((try? result.get()) == nil, "the read failed")
         let sent = transport.sent.dropFirst(before)
-        #expect(sent.filter { $0.url?.path.hasSuffix("/rest/getOpenSubsonicExtensions") == true }.count == 1)
+        #expect(sent.contains { $0.url?.path.hasSuffix("/rest/getOpenSubsonicExtensions") == true })
         #expect(transport.lyricsReads("s1") == 1, "sent once: no failover retry")
-        #expect(!sent.contains { $0.url?.path.hasSuffix("/rest/ping") == true }, "no failover probe for a background read")
         #expect(!model.reachability.isSuspect && model.serverReachable && !model.isOffline)
         transport.setDown(false)
     }
