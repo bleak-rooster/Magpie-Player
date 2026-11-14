@@ -10,12 +10,19 @@ struct PlaylistTile: View {
     let artwork: Image?
     var width: CGFloat = 140
     var mark: DownloadMark = .none
+    @Environment(AppModel.self) private var model
     @Environment(\.dynamicTypeSize) private var typeSize
     private let themed = Themed()
 
     /// "Playlist · 12 songs"; "Playlist · 1 song".
     nonisolated static func subtitle(songCount: Int) -> String {
         "Playlist \u{00B7} " + (songCount == 1 ? "1 song" : "\(songCount) songs")
+    }
+
+    /// What VoiceOver reads: "Late Night, made by sam, Playlist · 3 songs" for another user's flow (D299).
+    static func accessibilityLabel(name: String, subtitle: String, owner: String?) -> String {
+        [name, OwnerCaption.accessibilityText(owner: owner, signedInUser: nil), subtitle].compactMap { $0 }
+            .joined(separator: ", ")
     }
 
     /// How far each sleeve behind peeks out above the cover.
@@ -25,6 +32,8 @@ struct PlaylistTile: View {
         let p = themed.palette
         let side = typeSize.isAccessibilitySize ? max(width, AlbumTile.accessibilityWidth) : width
         let subtitle = Self.subtitle(songCount: playlist.songCount)
+        // Round 27 H (owner, 2026-11-14): another user's flow says whose under its name (D299; D205's caption).
+        let owner = model.homeFlowCaption(playlistId: playlist.id)
         VStack(alignment: .leading, spacing: Tokens.Spacing.s) {
             ZStack(alignment: .bottom) {
                 // Two sleeves behind, narrower and higher each time: the stacked frame.
@@ -50,6 +59,7 @@ struct PlaylistTile: View {
             .padding(.top, 2 * Self.stackStep)
             VStack(alignment: .leading, spacing: 2) {
                 Text(playlist.name).font(.subheadline.weight(.semibold)).lineLimit(typeSize.isAccessibilitySize ? 4 : 2)
+                OwnerCaption(owner: owner, signedInUser: nil)
                 HStack(spacing: 4) {
                     Text(subtitle).font(.caption).foregroundStyle(p.ink2Color)
                         .lineLimit(typeSize.isAccessibilitySize ? 3 : 1)
@@ -60,7 +70,7 @@ struct PlaylistTile: View {
         .frame(width: side, alignment: .leading)
         .foregroundStyle(p.inkColor)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(playlist.name), \(subtitle)")
+        .accessibilityLabel(Self.accessibilityLabel(name: playlist.name, subtitle: subtitle, owner: owner))
         .accessibilityValue(mark.joined(to: nil))
     }
 }

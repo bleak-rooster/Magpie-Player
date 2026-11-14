@@ -17,10 +17,14 @@ public struct CPHomeShelf: Sendable, Hashable {
 
     public var section: HomeSection
     public var items: [Item]
+    /// Round 27 H (owner, 2026-11-14): whose a playlist tile is, by playlist id, for another user's flow on the Discover
+    /// shelf (D299: the row's detail ends " · sam"); empty for every other shelf.
+    public var captions: [String: String]
 
-    public init(section: HomeSection, items: [Item]) {
+    public init(section: HomeSection, items: [Item], captions: [String: String] = [:]) {
         self.section = section
         self.items = items
+        self.captions = captions
     }
 }
 
@@ -37,15 +41,19 @@ public struct CPLayout: Sendable, Hashable {
     public var library: [LibraryRow]
     public var offline: Bool
     public var tab: CarPlayTab
+    /// Round 27 H (D300): Settings › CarPlay › Flows with your playlists, as it applies now.
+    public var flowsWithPlaylists: Bool
 
-    public init(home: [HomeSection], library: [LibraryRow], offline: Bool, tab: CarPlayTab = .playlists) {
+    public init(home: [HomeSection], library: [LibraryRow], offline: Bool, tab: CarPlayTab = .playlists,
+                flowsWithPlaylists: Bool = false) {
         self.home = home; self.library = library; self.offline = offline; self.tab = tab
+        self.flowsWithPlaylists = flowsWithPlaylists
     }
 }
 
 /// What a layout change does to the tabs: Home reloads when its sections change or the car goes offline or back
 /// online (the same sections then read elsewhere); the Library tab is redrawn when its rows change; a new third tab
-/// (round 13) rebuilds the tab bar.
+/// (round 13), or (round 27 H) Flows with your playlists switched, rebuilds the tab bar.
 public struct CPLayoutChange: Sendable, Hashable {
     public var reloadsHome: Bool
     public var redrawsLibrary: Bool
@@ -57,7 +65,8 @@ public struct CPLayoutChange: Sendable, Hashable {
 
     public init(from old: CPLayout, to new: CPLayout) {
         self.init(reloadsHome: old.home != new.home || old.offline != new.offline, redrawsLibrary: old.library != new.library,
-                  rebuildsTabs: old.tab != new.tab)
+                  // Round 27 H (D300): the Playlists tab is read once, so the switch builds the tabs again.
+                  rebuildsTabs: old.tab != new.tab || old.flowsWithPlaylists != new.flowsWithPlaylists)
     }
 }
 
@@ -89,7 +98,11 @@ extension CarPlayRows {
     /// Downloaded albums open from the phone.
     public static func home(_ shelves: [CPHomeShelf], maxItems: Int = 12, maxSections: Int = 12) -> [CPSectionModel] {
         let built = shelves.map { shelf in
-            CPSectionModel(header: shelf.section.title, rows: unique(shelf.items.map { homeRow($0, shelf.section) }, \.id))
+            CPSectionModel(header: shelf.section.title, rows: unique(shelf.items.map { item in
+                let row = homeRow(item, shelf.section)
+                guard case .playlist(let playlist) = item else { return row }
+                return captioned(row, shelf.captions[playlist.id])   // round 27 H (D299)
+            }, \.id))
         }.filter { !$0.rows.isEmpty }.prefix(max(0, maxSections))
         let sizes = homeShelfSizes(built.map(\.rows.count), maxItems: maxItems)
         let sections = zip(built, sizes).compactMap { section, size in
