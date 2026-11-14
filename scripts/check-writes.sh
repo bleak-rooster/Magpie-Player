@@ -1096,6 +1096,76 @@ if [ -z "${G1_SRC:-}" ]; then
   grep -qF 'let host = url.host()?.lowercased(), !host.isEmpty, !RefusedMediaHosts.refuses(host: host) else { return nil }' \
        Packages/MagpieKit/Sources/MagpieCore/OutsideArt.swift ||
     { echo "G1: OutsideArt.swift: outside art no longer refuses Deezer's and Apple's hosts" >&2; bad=1; }
+  # Round 27 L (owner, 2026-11-14, Q1 yes; D311): Find lyrics online is the one direct call to LRCLIB. Its host is named
+  # only in MagpieCore/LrcLib.swift (comments included, anywhere else in product code), on exactly one line (the https
+  # `GET /api/get` URL); that file names no other URL, sends only through the one capped send, sets only the plain
+  # User-Agent, turns cookies off, refuses a built URL that isn't that scheme, host and path, and keeps the 512 KB cap.
+  # Known limit (L fix round 1, LM1 #6): a host spelled in pieces ("lrc" + "lib.net") in another file isn't caught by
+  # a grep; review catches that (D312).
+  lrclib_src="Packages/MagpieKit/Sources/MagpieCore/LrcLib.swift"
+  if grep -rniE --include='*.swift' 'lrclib\.(net|org|com|io|app|dev)' "${product[@]}" | grep -v "^$lrclib_src:" | grep -q .; then
+    echo "G1: LRCLIB's host is named in product code outside $lrclib_src" >&2; bad=1
+  fi
+  if [ -f "$lrclib_src" ]; then
+    want_lrclib='    public static let getURL = URL(string: "https://lrclib.net/api/get")!'
+    lrclib_lines=$(grep -niE 'lrclib\.(net|org|com|io|app|dev)' "$lrclib_src" | grep -vE '^[0-9]+:[[:space:]]*///?' || true)
+    { [ "$(printf '%s\n' "$lrclib_lines" | grep -c .)" = 1 ] && [ "${lrclib_lines#*:}" = "$want_lrclib" ]; } ||
+      { echo "G1: $lrclib_src: LRCLIB's one https GET /api/get URL changed or is named twice" >&2; bad=1; }
+    # Counted per occurrence, not per line (two on one line are two).
+    [ "$(grep -vE '^[[:space:]]*///?' "$lrclib_src" | grep -oE '[A-Za-z][A-Za-z0-9+.-]*://' | grep -c .)" = 1 ] ||
+      { echo "G1: $lrclib_src: a URL other than LRCLIB's one route" >&2; bad=1; }
+    # L fix round 1 (LM1): every count below reads the file without its comment lines, per occurrence, with any space
+    # before a bracket. `.send` as a word (a send taken as a value counts too).
+    lrclib_code=$(grep -vE '^[[:space:]]*//' "$lrclib_src")
+    lcount() { printf '%s\n' "$lrclib_code" | grep -oE "$1" | grep -c . || true; }
+    [ "$(lcount '\.send([^A-Za-z0-9_]|$)')" = 1 ] &&
+      grep -qxF '            (data, response) = try await transport.send(request, maxBytes: Self.maxResponseBytes)' "$lrclib_src" ||
+      { echo "G1: $lrclib_src: LRCLIB is sent other than through the one capped send" >&2; bad=1; }
+    for want in '    public static let maxResponseBytes = 512 * 1024' \
+                '    public static func userAgent(version: String) -> String { "Magpie/\(version)" }' \
+                '        request.httpMethod = "GET"' \
+                '        request.httpShouldHandleCookies = false' \
+                '        request.setValue(userAgent, forHTTPHeaderField: "User-Agent")' \
+                '        request.setValue("en", forHTTPHeaderField: "Accept-Language")' \
+                '        components.percentEncodedQuery = components.percentEncodedQuery?.replacingOccurrences(of: "+", with: "%2B")' \
+                '        guard let object = JSONNesting.object(with: data) as? [String: Any] else { return nil }' \
+                '        guard let url = components.url, url.scheme == "https", url.host() == getURL.host(), url.path == getURL.path else {'; do
+      grep -qxF -- "$want" "$lrclib_src" || { echo "G1: $lrclib_src: LRCLIB's request rules changed (missing: $want)" >&2; bad=1; }
+    done
+    [ "$(lcount '(setValue|addValue|allHTTPHeaderFields|httpAdditionalHeaders|httpMethod)([^A-Za-z0-9_]|$)')" = 3 ] ||
+      { echo "G1: $lrclib_src: LRCLIB's request sets another header or verb" >&2; bad=1; }
+    { [ "$(lcount 'httpShouldHandleCookies')" = 1 ] && [ "$(lcount 'URLRequest[[:space:]]*\(')" = 1 ] &&
+      [ "$(lcount '\.queryItems[[:space:]]*=')" = 1 ] && [ "$(lcount 'percentEncodedQuery(Items)?[[:space:]]*=[^=]')" = 1 ]; } ||
+      { echo "G1: $lrclib_src: LRCLIB's request is built more than once, or its cookies or query set twice" >&2; bad=1; }
+    # Only the four query names, each a literal.
+    { [ "$(lcount 'URLQueryItem[[:space:]]*\(')" = 4 ] &&
+      [ "$(lcount 'URLQueryItem\(name: "(track_name|artist_name|album_name|duration)"')" = 4 ]; } ||
+      { echo "G1: $lrclib_src: LRCLIB's query has a name other than track_name, artist_name, album_name, duration" >&2; bad=1; }
+    if printf '%s\n' "$lrclib_code" | grep -qE 'URLSession|\.url[[:space:]]*=[^=]|\.data[[:space:]]*\([[:space:]]*for|JSONSerialization'; then
+      echo "G1: $lrclib_src: a session, a re-pointed request, or an unmeasured JSON parse in LRCLIB's client" >&2; bad=1
+    fi
+  fi
+  # L fix round 1 (LL1): the app makes LRCLIB's client only with its own transport, which never follows a redirect
+  # and keeps no cookie.
+  # Fix round 2 (N2): every construction counted (`LrcLib(`, `LrcLib.init(`, several on a line): exactly one, the
+  # pinned one.
+  lrclib_makes=$(grep -rnE --include='*.swift' 'LrcLib(\.init)?[[:space:]]*\(' "${product[@]}" | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' || true)
+  { [ "$(printf '%s\n' "$lrclib_makes" | grep -oE 'LrcLib(\.init)?[[:space:]]*\(' | grep -c . || true)" = 1 ] &&
+    printf '%s\n' "$lrclib_makes" | grep -qF 'LrcLib(transport: LrcLibTransport(), userAgent:'; } ||
+    { echo "G1: LRCLIB's client made other than once, with its no-redirect transport" >&2; bad=1; }
+  lrclib_transport="Packages/MagpieKit/Sources/MagpieCore/LrcLibTransport.swift"
+  if [ -f "$lrclib_src" ]; then
+    { [ "$(grep -cxF '                        newRequest request: URLRequest) async -> URLRequest? { nil }' "$lrclib_transport")" = 2 ] &&
+      grep -qxF '    static let session = URLSession(configuration: sessionConfiguration(), delegate: NoRedirects.shared, delegateQueue: nil)' "$lrclib_transport" &&
+      grep -qxF '        config.httpCookieStorage = nil' "$lrclib_transport" &&
+      grep -qxF '            let task = session.dataTask(with: request)' "$lrclib_transport" &&
+      ! grep -vE '^[[:space:]]*//' "$lrclib_transport" | grep -qE 'SameOriginRedirects|URLSession\.shared|lrclib\.' &&
+      # Fix round 2 (N3): one session, one cookie setting, one data task, one delegate argument.
+      ( for want in 'URLSession[[:space:]]*\(' 'httpCookieStorage' 'dataTask[[:space:]]*\(' 'delegate:'; do
+        [ "$(grep -vE '^[[:space:]]*//' "$lrclib_transport" | grep -oE "$want" | grep -c . || true)" = 1 ] || exit 1
+      done ); } ||
+      { echo "G1: $lrclib_transport: LRCLIB's transport may follow a redirect or keep cookies" >&2; bad=1; }
+  fi
   # Round 14 A1 (D81): `api/discover` only as one of the allowed spellings, and the flow write routes only in the
   # Aurral client (the stub for tests aside).
   discover_names=$(grep -rnoE --include='*.swift' 'api/discover[A-Za-z0-9/_.?&=-]*' "${product[@]}" |

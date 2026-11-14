@@ -47,9 +47,25 @@ struct PlaybackSettingsView: View {
             } footer: {
                 Text("When you tap a song to play while other songs are queued. Never in the car.")
             }
+            lyricsSection
         }
         .navigationTitle("Playback")
         .navigationBarTitleDisplayMode(.inline)
+    }
+
+    /// Round 27 L (owner, 2026-11-14, item 15, Q1 yes): Find lyrics online, off by default, the phone's own (D311).
+    static let findOnlineFooter = "When your library has no lyrics for a song, Magpie looks them up on LRCLIB, a free lyrics site. It sends only the song\u{2019}s title, artist, album and length."
+
+    private var lyricsSection: some View {
+        @Bindable var keeper = model.lyricsKeeper
+        return Section {
+            Toggle("Find lyrics online", isOn: $keeper.findOnline)
+                .accessibilityIdentifier("find-lyrics-online")
+        } header: {
+            Text("Lyrics")
+        } footer: {
+            Text(Self.findOnlineFooter)
+        }
     }
 
     private func swipePicker(_ title: String, _ selection: Binding<SwipeAction>) -> some View {

@@ -95,6 +95,17 @@ Code: `App/ServerAddress.swift`, `App/AppModel.swift`, `App/SessionStore.swift`,
 
 Code: `MatchIndex/{MatchIndexStore,MatchIndex,Normalize}.swift`, `App/Screens/Shared/Artwork.swift`, `App/Screens/Home/HomeView.swift`, `App/Screens/Library/*`
 
+Round 27, Home and Library (D296–D299): album covers are **Large** (two columns on a phone) or **Small** (three or
+more, title and subtitle on a line each). One setting covers every album grid: Library › Albums and Recently added,
+artist pages, Favourites, the genre browser and Downloads. Change it in Settings › Home & Library › Album covers, or
+with the button at the top of Library › Albums ("Smaller covers" / "Larger covers"). At the largest text sizes the
+grid stays large and the button is hidden. Home's **Your flows** lists the flows you played most recently first, then
+the rest A to Z; Settings › Home & Library › Your flows on Home › **Order** switches to A to Z. A play moves its flow up
+the next time Home shows (nothing moves while you look). The same section has **Show everyone’s flows and playlists**:
+one switch, also in Settings › Aurral, for Home, Library › Discover and the car. Another person's flow on Home shows
+their name under it ("made by sam" for VoiceOver). Library › Discover keeps the server's order. Without Aurral the
+section isn't shown.
+
 ### c. Playback and streaming
 - **Stream URL.** `GET /rest/stream?id=<song>&estimateContentLength=true` plus the Subsonic auth parameters. The app sends **no `format` and no `maxBitRate`**: the stream-URL builder supports them, but they are always nil. **Magpie never transcodes.** Whatever transcoding happens is Navidrome's own server-side choice. With no format requested, Navidrome sends the original file unless a transcoding is configured for the Magpie player on the server.
 - **What gets stored on the server** is decided by the Magpie quality profiles in Lidarr:
@@ -117,6 +128,43 @@ Round 24 (D234–D235): next and previous (the car's and the phone's) play the s
 stopped by itself (a song couldn't play, or the queue ended); after a pause they leave it paused. Previous past 3 s
 restarts the song: a seek on a file or an Original/MP3 stream, a fresh load on a converted (AAC/Opus) stream, which
 can't seek reliably.
+
+Round 27, converted streams (D276–D282, D322): Now Playing's hint and error belong to the song they were raised for
+and go, without animation, when the next song starts. A song converted for streaming that loses its connection picks
+up from where it was, on the same quality, twice at most (after 1 s, then 3 s), saying "Connection dropped. Picking up
+where it left off…" until the sound comes back; then it stops with the error. Only a song the server couldn't convert
+(a server error, or a failure in its first second) still switches to the original, once. A pause during the wait holds;
+Play picks up at once. Where the server supports `transcodeOffset`, a pick-up, a seek and Previous's restart start the
+conversion at that point (`timeOffset`), so seeks on a converted song are exact; without it seeks are approximate and a
+pick-up reloads and seeks. The next song's stream opens in the current song's last 20 s, using the song's length from
+the server when the stream has none. On mobile data (or Low Data Mode), while a converted song plays, pre-downloads
+wait for its first 15 s and then go one at a time. Converted MP3 streams now go out without a length estimate, like
+AAC and Opus (a VBR file's MP3 was cut short with it), so MP3 seeks count as a converted stream's; only the original
+keeps the estimate. The song playing is never reloaded by a pre-download landing, a cache swap, a quality change or a
+finished download. Stalls are logged by stream kind only.
+
+Round 27, Automix (D305–D308): **Now Playing ⋯ › Automix…** (from the song) or **Automix** on a library artist page
+(from the artist), online only and never for a find. Choose **Length** (20, 50 or 100 songs) and **Variety** (Close,
+Balanced or Adventurous); both are remembered. From a song it plays on, and what's coming up stays until the first ten
+songs are found, then is replaced by them (Play next songs stay); a song that ends meanwhile moves on as usual and the
+mix follows it, while a skip into the old queue stops the mix ("What’s coming up hasn’t changed."). From an artist, one
+of their top songs plays at once. Songs come from your library only: Navidrome's similar songs, then the artist's and
+the genre's songs, keeping any one artist from bunching up (Close: at most 2 in 5, Balanced 1 in 4, Adventurous 1 in
+6), never the seed, a repeat, a Discover copy or a find. They are added ten at a time while the queue is still the mix
+(spread through it if shuffled). Notices: "Adding songs to your Automix…", "Automix added <n> songs.", "Automix found <n>
+songs like this in your library." when it found fewer, or "Couldn’t find songs like this in your library. What’s coming
+up hasn’t changed." Nothing is saved as a playlist and nothing is written. Not in the car.
+
+Round 27, lyrics (D310–D314): when a song starts playing (or Magpie comes online or signs in with it playing), Magpie
+quietly asks your server for its lyrics with `getLyricsBySongId`, once per song per session, at most three at a time,
+each running to its 20 s limit even after a skip. That's what makes the nd-lyrics plugin fetch them (when Navidrome's
+`LyricsPriority` names it). These background reads never fail over or count towards going offline. The answer is kept
+in memory, so opening Lyrics shows it at once. With **Settings › Playback › Lyrics › Find lyrics online** on (off by
+default), a song your library has no lyrics for, or one your server takes more than 6 s to answer, is looked up on
+LRCLIB from the pane (§4); the footer says "Lyrics found online" instead of "Lyrics from your library", and the next
+time you open it your library's lyrics win if they've arrived. Synced lyrics are preferred, then plain, then "No
+lyrics: it’s an instrumental." Offline, only lyrics already fetched this session show, else "You’re offline". The
+Lyrics button shows when the server supports lyrics or Find lyrics online is on.
 
 ### d. Scrobbling ("Count plays")
 - **When.** Whenever a song is loaded to play (including a retry after an error, a repeat-one replay or playing again after the queue ended), the app sends `scrobble?submission=false` ("now playing"). At 50 % of the song or 240 s, whichever comes first, it sends `submission=true` with the start time.
@@ -159,6 +207,12 @@ animation, only when its songs differ and every source it needed answered. Fewer
 shows the ordinary Top songs with previews. Offline, only the saved songs on the phone show. Rows keep their swipe and
 VoiceOver actions. Artists Lidarr doesn't have keep the source chosen in Settings (whose footer now says so) and aren't
 saved.
+Round 27, Play top songs (D303–D304): under the Top songs or Popular heading of both artist pages, **Play top songs**
+plays up to fifteen of the artist's top songs you have, in order from the first, never shuffled (shuffle them from the
+queue). For an artist in Lidarr it is their saved list: fifteen are kept, five shown (the saved file keeps at most 200
+artists). For anyone else it is the shown songs you have, then the library's own top songs, then the chosen source's
+further songs, added behind while the first plays. Never a Discover copy or a find; offline, only songs on the phone;
+hidden when none of the list is in your library. "Ask before replacing the queue" applies as to any tap to play.
 
 ### f. Requesting a song ("Try")
 "Quick" here means Lidarr's normal search-and-download pipeline. **Quick fetch via slskd is not built in v1.**
@@ -199,6 +253,28 @@ saved.
 - **A clean slate** (round 23, D191–D194): right before either removal of an artist Magpie added (Not for me's last step, the stopped find's artist) sends `DELETE /artist`, and only once `mayRemoveArtist` has proved it may go: Lidarr's import history of the artist is read (where it picked each file up), then its blocklist rows go (`DELETE /blocklist/bulk {ids}`, named `blocklistCleanup` at the gate: every id read fresh, all of that one artist, which must pass the artist delete's own rule), then, with **Soulseek (slskd)** connected in Settings › Lidarr and "Allow Magpie to change Soulseek" on, slskd's finished downloads tied to those imports (a group whose own folder has Lidarr's folder name and whose every song Lidarr imported; those files one by one, the folder once empty, then their transfer records; never anything in progress, never anything else; fix round 1). Saved on the request (`cleanSlate`) before the first write and run once; a failure is recorded (and in the change log) and the artist still goes. An artist that stays, or the owner's, is never touched.
 
 Code: `Requests/{RequestRunner,RequestMachine,ReleasePicker,RequestStore}.swift`, `ListenBrainzKit/MusicBrainzClient.swift`, `App/AppModel+Requests.swift`, `App/AppModel+Landing.swift`, `Playback/LandingRule.swift`, `App/ReadyNotifier.swift`, `App/Screens/Try/TrySheet.swift`
+
+Round 27, missing albums (D289–D294): **Settings › Lidarr › Missing albums** (only with Lidarr; disabled offline and
+while "Allow Magpie to change your library" is off). **Search for missing albums now** asks, after a confirmation
+("Search for every missing album?"), Lidarr's `MissingAlbumSearch`: every monitored album of a monitored artist with no
+files, minus what is already downloading. **Search automatically** (Off by default, Every day, Every week, per Lidarr)
+asks when Magpie becomes active (launch included), once a day or a week has passed since it last asked or since the
+choice was made; never in a background pass. The command goes through the write gate as its own named shape (body
+exactly `{"name":"MissingAlbumSearch"}`, no query): with the switch on, never while one is queued or running in Lidarr
+(a fresh, strictly read `GET /command`), never twice within ten minutes, and its time saved before it is sent. The
+outcome is said in words with a symbol ("Lidarr is looking for your missing albums.", already looking, "Magpie asked
+Lidarr a few minutes ago. Try again shortly.", "Couldn’t ask Lidarr just now. Nothing was sent.", "Magpie couldn’t hear
+back from Lidarr. It may already be looking."); a refusal puts the previous "Last asked" back.
+**Clear all downloads and search again** (here and on Downloads in Lidarr, beside Restart all) reads the whole queue
+fresh and, after a confirmation that counts them (and says how many another app started, and how many are past 100),
+stops, removes and blocks every download that isn't importing or done, another app's included, at most 100 a run, one
+at a time through Restart's own removal. Downloads that finished but couldn't be added are left alone, and the
+confirmation says so. Only after every removal has been tried does it ask Lidarr to look again for the albums the
+removed downloads named, each album once, none whose removal is more than 570 s old; a download Lidarr can't tie to an
+album is cleared without a new search, and the outcome says how many. A Magpie request waiting on the album is held
+while its copy goes and then searches itself. The run stops starting removals 300 s after the first one, after two
+"can't reach Lidarr" in a row, or when changes are switched off; nothing at all starts after 900 s. What's left shows as
+"<n> more downloads are still in the queue"; progress reads "Clearing downloads: <i> of <n>".
 
 ### g. Finds
 - **Setup** writes nothing to Lidarr. You start by turning on "Use a Finds folder"; the folder, library and mapping choices appear once it is on, and Finds mode only starts when all of them are done. You pick a Finds root from Lidarr's root folders and confirm it ("Use … for Finds?"). It is refused if it equals, holds or sits inside another root or the main root. You then pick the Navidrome library that is the same folder (`/api/library`, which needs an admin login on some versions) and, if Lidarr and Navidrome see different mount paths, a Lidarr→Navidrome path mapping. The setup is stored in UserDefaults per Lidarr instance and Navidrome account (`magpie.finds.<lidarr>.<navidrome>`).
@@ -268,6 +344,23 @@ own record of whose it is, never by name, and with "Show everyone's" on, another
 doesn't open yet; it says "Downloading d/t" or "Not ready yet. Check back later." Aurral's empty playlists that no item
 claims are never listed (still kept out of Playlists); which ones are hidden is saved per account, so they stay hidden at
 launch and with Aurral down, and is forgotten at sign-out.
+Round 27, Discover saved and quick (D283–D286): Discover's rows (with whose each is, the captions and the hidden set) and
+each playlist's page (songs, library copies, lookups) are saved on the phone per Navidrome account and Aurral user
+(`Discover/<hash>-lists.json`: at most 60 playlists, 500 songs a page, 4 MB; excluded from backup; removed with the
+Discover feeds file). Library › Discover shows the saved rows at once, before any read; Home's Discover shelf and the
+car's Discover list still wait up to 3 s for a fresh read, then use the saved rows. The read behind is the same as
+before (candidate playlists four at a time); rows that changed are swapped in place without animation and saved, and a
+failed read keeps what is shown. After Library › Discover shows, up to 40 pages are fetched and saved in the
+background (two at a time, at most 400 lookups, one pass every 10 minutes at most, unchanged pages skipped without a
+read). A flow's page opens from its saved copy; otherwise it shows its songs after one `getPlaylist`, and your
+library's copies fill their rows in place as each lookup lands. Songs that are the main library's own file are never
+looked up (unless one of the flow's own Aurral jobs names them); a found copy is remembered for a week while the
+library still has it, "no copy" for a day, and pull to refresh asks again for every song. Copies found after you
+pressed Play replace those songs further down the queue in one go, once every lookup is done; the song playing and
+your Play next songs are left alone. The saved rows are only the last read's result: who owns what is decided exactly
+as before. A playlist deleted on the server leaves the list at the next read; until then, opening it shows its saved
+page and the failed read is quiet (no note). Its saved page stays in the file until it ages out (the oldest pages go
+first).
 
 ### i. CarPlay
 - **Tabs.** Home, Library, Finds and Search. The Finds tab exists only when the head unit allows 4 tabs, and it shows "not set up" without a Finds library.
@@ -284,12 +377,26 @@ starts with "Previous…"; a page replaces the one before it, so the template de
 Playlists over the ceiling open on letter groups; Genres, Favourites, Discover and Downloads page in their own order
 (D230). With All on, someone else's playlist shows their name in its detail (D233).
 
+Round 27 (D297, D299, D300): the car's Discover shelf on Home lists flows by when you last played them (newest first),
+then the rest A to Z. A play counts when a flow starts from its page on the phone, from Home's quick grid (Play or
+Shuffle), or from a playlist's page in the car; plays are kept per account (at most 300) and forgotten at sign-out. The
+shelf is read alongside Home's other shelves, so a slow Aurral holds nothing else up. Car Home doesn't move while you
+look at it: a flow you just played moves up the next time Home is read (when you come back to the tab). With
+**Settings › CarPlay › Flows with your playlists** on (off by default; shown only with Aurral; footer "Your flows and
+Aurral playlists also appear in the car’s Playlists list, A to Z."), the car's Playlists list (Library › Playlists and
+the Playlists tab) mixes in the flows and Aurral playlists Discover shows, each once, A to Z in the usual letter groups
+and pages, and the Library › Discover row goes; the Discover tab, if you chose it, stays, and car Home is the same either
+way. Offline, downloaded flows join the downloaded playlists. Switching it rebuilds the car's tabs at once. With
+everyone's flows shown, another person's flow ends " · sam" in the car's Discover rows and in the mixed Playlists list,
+never your own or one with no known owner. The car opens a flow from Discover's saved copy when it is still current
+(same change date and song count as the playlist's row), else it reads it (D285).
+
 ### j. Safety layers
 - **Allow-changes switch.** Off by default and stored per Lidarr instance in UserDefaults (`magpie.lidarr.writesEnabled.<scope>`, where scope is a hash of the address and API key). It is reset on connect, disconnect and sign-out, so a new Lidarr always starts off.
 - **WriteGate (G1).** `LidarrClient` can only send GETs. Only `WriteGate.swift` can send a Lidarr POST, PUT or DELETE, and `scripts/check-writes.sh` enforces that (the Navidrome login POST is the one allowlisted exception).
   - **Never-call list:** `config/*`, root folders, indexers, download clients, notifications, import lists, `system`, changing or deleting profiles, `missing` cleanup, `DELETE artist/editor`, and any `deleteFiles` or `addImportListExclusion` that isn't false.
   - **Allow list:**
-    - `POST` `tag`, `qualityprofile`, `metadataprofile`, `artist`, and `command` (AlbumSearch, ArtistSearch, RefreshArtist or RefreshAlbum only);
+    - `POST` `tag`, `qualityprofile`, `metadataprofile`, `artist`, and `command` (AlbumSearch, ArtistSearch, RefreshArtist or RefreshAlbum only; round 27 adds MissingAlbumSearch, only as its own named shape with a body of exactly `{"name":"MissingAlbumSearch"}`, D289);
     - `PUT` `artist/editor` (limited keys, one artist) and `album/monitor`;
     - `DELETE` `artist/{id}` (with both flags false) and `trackfile/{id|bulk}`.
   - **Body check:** request bodies are scanned for non-ASCII or duplicate keys.
@@ -313,6 +420,10 @@ Code: `LidarrKit/{WriteGate,WriteConfinement,Ledger,LocalFile}.swift`, `MagpieCo
 | Match index snapshot, change log, ledger, requests | `Application Support/Magpie/…` | atomic writes, `completeFileProtectionUntilFirstUserAuthentication`, excluded from backup. On sign-out: snapshot and every requests file erased; ledger entries kept only for a Lidarr with an open entry; change log never deleted |
 | Cover art | memory only | cleared on sign-in/out |
 | Audio | nowhere: streamed | n/a |
+| Round 27: Discover's saved rows and pages (row fields, ids and owners' usernames only; never URLs, tokens, MBIDs, ISRCs or addresses) | `Application Support/Magpie/Discover/<hash>-lists.json`, per account and Aurral user, at most 4 MB | excluded from backup; removed with the Discover feeds file (Aurral sign-out, sign-out, another Aurral user) |
+| Round 27: flow plays (playlist id and date, at most 300) | `Magpie/Home/<scope>.flowplays.json` | excluded from backup; removed at sign-out with Home's folder |
+| Round 27: missing-album search schedule (`missingSearchEvery`, `missingSearchAsked`, `missingSearchFrom`) and the gate's ten-minute record (`magpie.lidarr.missingSearch.<scope>`), per Lidarr; Automix length and variety; Find lyrics online | UserDefaults | none (not secret); the Lidarr keys go on disconnect and sign-out |
+| Round 27: lyrics fetched this session (100 songs) and LRCLIB's answers | memory only | forgotten at sign-out; never written to disk |
 
 | Host | What is sent |
 |---|---|
@@ -322,6 +433,7 @@ Code: `LidarrKit/{WriteGate,WriteConfinement,Ledger,LocalFile}.swift`, `MagpieCo
 | api.listenbrainz.org | token, your ListenBrainz user name in the path (Made for you, token check) |
 | musicbrainz.org | recording MBID with a User-Agent (Try, and Bring in more: its offer and "This album only") |
 | Lidarr's metadata server (indirectly) | search terms and MBIDs, via Lidarr's `search` and `lookup` |
+| lrclib.net (round 27, D311) | Only with Settings › Playback › Lyrics › Find lyrics online on (off by default), only from the Lyrics pane, for a song your library has no lyrics for (or whose server hasn't answered within 6 s). One https `GET /api/get` with the song's title, artist, album and length (whole seconds). The headers are `User-Agent: Magpie/<version>` and `Accept-Language: en`, plus the system's own `Accept`, `Accept-Encoding`, `Host` and `Connection`. No account, key, cookie or server name. Redirects are never followed. At most once per song per session, 15 s in all. A 429 pauses LRCLIB for as long as it asks (at most an hour). |
 
 ## 5. Known limits
 - Requests advance only while the app is running. There is no background fetch, and the ready notice is local only.
@@ -333,4 +445,9 @@ Code: `LidarrKit/{WriteGate,WriteConfinement,Ledger,LocalFile}.swift`, `MagpieCo
 - Sign-out erases every requests file, so finds from before a sign-out can't be kept or let go of from Magpie any more (Keep and Not for me need their request). Their ledger entries are still kept: a Lidarr's open entries can't be closed afterwards and stay on the phone, keeping that Lidarr's Magpie-added artists recognised as Magpie's after a reconnect.
 - AVPlayer follows stream redirects itself, so the same-origin rule doesn't cover streams. Stream URLs carry a replayable token, so use HTTPS away from home.
 - CarPlay hasn't been visually verified. Physical-device CarPlay needs Apple's entitlement.
+- Round 27: exact seeks and pick-ups on converted streams need Navidrome's `transcodeOffset` extension; without it seeks are approximate and a pick-up restarts the conversion and seeks (§3c).
+- Round 27: whose flow it is comes from Aurral's username, whose playlist it is from Navidrome's. Where one person's two usernames differ, their flows and their playlists carry different names in the same list (the car's mixed Playlists list, §3i).
+- Round 27: car Home doesn't reorder while shown; a flow just played moves up the next time Home is read (§3i).
+- Round 27: Clear all downloads and search again asks Lidarr to search only after every removal has been tried; if Magpie is stopped in between, those searches are lost (Magpie's own requests recover through their usual failed-download path, §3f).
+- Round 27: Automix and Play top songs can't tell a song whose file is missing on the server; they rely on Navidrome leaving missing files out of its similar-songs, genre, album and top-songs reads (§3c).
 - More: [RUNBOOK §5](RUNBOOK.md#5-known-limits-risks-and-troubleshooting) and the residual risks in [security-v1-finds.md](reviews/security-v1-finds.md#residual-risks-accepted-or-out-of-client-reach).
