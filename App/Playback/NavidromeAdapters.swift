@@ -208,7 +208,10 @@ final class NavidromeStreamURLs: StreamURLProvider {
     }
 
     /// A server stream of the file as it is (`format=raw`, no bit-rate cap), whatever auth it was signed with.
-    func isOriginal(_ url: URL) -> Bool {
+    func isOriginal(_ url: URL) -> Bool { Self.isOriginalStream(url) }
+
+    /// The same rule without an instance (round 27 P, D280: pre-downloads read it for the URL the player holds).
+    nonisolated static func isOriginalStream(_ url: URL) -> Bool {
         guard !url.isFileURL, url.path.hasSuffix("/rest/stream"),
               let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems else { return false }
         return query.first { $0.name == "format" }?.value == StreamQuality.original.format
