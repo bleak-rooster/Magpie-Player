@@ -150,7 +150,9 @@ public struct WriteConfinement: Sendable {
         case command(name: String, albumIds: [Int], artistId: Int?)
         /// The same request, named `ConfinedShape.queueRestartAny` by Settings › Downloads in Lidarr (D49); round 13
         /// (D63): `allowForeign` from its flagged confirmation, for a download Lidarr never grabbed.
-        case queueRestartAny(Int, allowForeign: Bool)
+        /// Round 27 R fix round 2 (L-M2b): `allowFinished` false (Clear all) refuses a download that finished but couldn't
+        /// be added.
+        case queueRestartAny(Int, allowForeign: Bool, allowFinished: Bool)
         /// Round 15 C3 (D147): `ConfinedShape.trialDelete`'s track file delete.
         case trialDelete([Int])
         /// Round 22 (D172): `ConfinedShape.keptSingleDelete`'s track file delete.
@@ -174,8 +176,8 @@ public struct WriteConfinement: Sendable {
     func check(_ write: Write, lidarr: LidarrClient) async -> Verdict {
         guard ledger.instance == lidarr.instanceScope else { return .refused("the ledger belongs to another Lidarr") }
         if case .queueDelete(let id) = write { return await queueDelete(id, lidarr: lidarr) }
-        if case .queueRestartAny(let id, let allowForeign) = write {
-            return await Self.queueRestartAny(id, allowForeign: allowForeign, lidarr: lidarr)
+        if case .queueRestartAny(let id, let allowForeign, let allowFinished) = write {
+            return await Self.queueRestartAny(id, allowForeign: allowForeign, allowFinished: allowFinished, lidarr: lidarr)
         }
         if let owned = await ownedCheck(write, lidarr: lidarr) { return owned }
         do {
@@ -236,6 +238,8 @@ public struct WriteConfinement: Sendable {
             case .command(let name, let albumIds, let artistId):
                 // Y5 fix I9: a search can make Lidarr grab and replace files, so only albums the ledger knows (Magpie
                 // recorded each before it monitored or searched it); a refresh only for an artist the ledger knows.
+                // Round 27 R (D289): the whole-library MissingAlbumSearch never comes here: the gate sends it only as
+                // `ConfinedShape.missingAlbumSearch`, by its own rules (`LidarrWriteGate.sendMissingAlbumSearch`).
                 switch name.lowercased() {
                 case "albumsearch":
                     guard !albumIds.isEmpty, albumIds.allSatisfy({ id in entries.contains { $0.albumId == id } }) else {
@@ -332,7 +336,8 @@ public struct WriteConfinement: Sendable {
     /// Round 13 (D63) supersedes fix round 1 C1's second layer: a copy that's queued, paused, held back or whose client
     /// can't be reached may be restarted too (the owner's "restart anything"); the screen asks first for those.
     /// The queue only, before import: it never touches library files.
-    static func queueRestartAny(_ id: Int, allowForeign: Bool = false, lidarr: LidarrClient) async -> Verdict {
+    static func queueRestartAny(_ id: Int, allowForeign: Bool = false, allowFinished: Bool = true,
+                                lidarr: LidarrClient) async -> Verdict {
         let items: [QueueItem]
         do { items = try await lidarr.queueDetails(albumIds: []) } catch { return .unknown }
         guard let item = items.first(where: { $0.id == id }) else { return .refused("not in the queue now") }
@@ -340,6 +345,12 @@ public struct WriteConfinement: Sendable {
         guard !item.isImportingOrDone else { return .refused("that copy is importing or done") }
         guard !items.contains(where: { $0.downloadId == downloadId && $0.isImportingOrDone }) else {
             return .refused("another album of that download is importing or done")
+        }
+        // Round 27 R fix round 2 (L-M2b): for Clear all, never a download that finished but couldn't be added.
+        let notAdded: Set<String> = ["importblocked", "importfailed"]
+        if !allowFinished,
+           items.contains(where: { $0.downloadId == downloadId && notAdded.contains($0.trackedDownloadState.lowercased()) }) {
+            return .refused("that download finished but couldn't be added")
         }
         let albums = Set(items.filter { $0.downloadId == downloadId }.compactMap(\.albumId))
         if allowForeign { return .confined(artists: [], rule: .queueRestart(albums: albums)) }

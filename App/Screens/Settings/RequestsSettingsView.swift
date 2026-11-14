@@ -117,6 +117,7 @@ struct RequestsSettingsView: View {
                 Text("Turn on to bring songs home. Every change is logged.")
             }
             LidarrMonitoringToggle()   // Round 24 (Q10, D237): what Lidarr monitors for the owner's artists
+            MissingAlbumsSection()   // Round 27 R (D290–D292): search for missing albums; clear all and search again
             Section {   // R17 (R20's words)
                 Picker(RequestCopy.stuckCopySetting, selection: Binding(
                     get: { stuckCopyLimit },
