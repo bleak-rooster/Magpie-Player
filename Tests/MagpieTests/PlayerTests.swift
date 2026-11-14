@@ -21,6 +21,9 @@ final class FakeEngine: PlaybackEngine {
     private(set) var setVolumeCalls: [Float] = []
     /// What a real engine would hold per entry (it keeps an enqueued item when only its URL changed).
     var enqueuedURLs: [UUID: URL] = [:]
+    /// Round 27 P: the API lengths last sent (D279), and the cause each failure answers (D277).
+    private(set) var lengths: [UUID: TimeInterval] = [:]
+    var causes: [UUID: PlaybackFailure.Cause] = [:]
 
     init() { (events, continuation) = AsyncStream.makeStream() }
 
@@ -32,6 +35,8 @@ final class FakeEngine: PlaybackEngine {
     func setVolumes(_ volumes: [UUID: Float]) { setVolumesCalls.append(volumes) }
     func setVolume(_ volume: Float) { setVolumeCalls.append(volume) }
     func enqueuedURL(for id: UUID) -> URL? { enqueuedURLs[id] }
+    func setLengths(_ lengths: [UUID: TimeInterval]) { self.lengths = lengths }
+    func failureCause(for id: UUID) -> PlaybackFailure.Cause { causes[id] ?? .unknown }
 }
 
 actor FakeScrobbler: Scrobbler {

@@ -104,6 +104,11 @@ extension AppModel {
         await sharedDiscoverRead(force: force).value
     }
 
+    /// Round 27 D1 (D284): starts the read (when stale) without waiting for it: the saved rows show meanwhile.
+    func startDiscoverRead() {
+        sharedDiscoverRead(force: false)
+    }
+
     @discardableResult
     private func sharedDiscoverRead(force: Bool) -> Task<Void, Never> {
         if let running = discover.refreshTask, !force { return running.task }

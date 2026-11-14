@@ -216,7 +216,8 @@ extension AppModel {
             return try await homeAurralShelves.items(for: section, limit: size * rows).prefix(size * rows)
                 .map(HomeShelf.Item.outside)
         case .discover:   // Y6: Aurral's flow playlists (AppModel+Discover.swift)
-            let flows = try await discoverPlaylists().prefix(size).map(HomeShelf.Item.playlist)
+            // Round 27 H (D298): in Settings › Home & Library's order, Last played or A to Z (AppModel+FlowPlays.swift).
+            let flows = homeFlowsSorted(try await discoverPlaylists()).prefix(size).map(HomeShelf.Item.playlist)
             return flows + (await forYouOnHome(limit: size - flows.count)).map(HomeShelf.Item.outside)   // round 14 A4
         }
     }

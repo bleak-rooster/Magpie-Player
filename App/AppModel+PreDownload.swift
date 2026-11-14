@@ -16,6 +16,58 @@ extension AppModel {
         var count: Int
         var keepRecentlyPlayed: Bool
         var cacheLimit: CacheLimit
+        /// Round 27 P (D280): how pre-downloads run alongside the song playing now.
+        var pacing: PreDownloadPacing = .normal
+    }
+
+    /// Round 27 P (owner item 11, 2026-11-14, D280): pre-downloads give way to a converted stream on mobile data, which
+    /// otherwise shared the link with up to three other transfers (and the server with as many conversions) from its
+    /// first second.
+    enum PreDownloadPacing: Equatable, Sendable {
+        /// Wi-Fi, or the song plays from the phone or as the original: as before (`concurrent` at once).
+        case normal
+        /// A converted song's first 15 s on mobile data: none start.
+        case hold
+        /// After those 15 s (or once a shorter song ends): one at a time.
+        case oneAtATime
+    }
+
+    /// How long a converted song on mobile data plays before the first pre-download starts.
+    static let preDownloadGrace: TimeInterval = 15
+
+    /// The pacing for a song playing from `currentURL` at `position` (`ended`: it played to its end) over `status`.
+    /// Mobile data counts Low Data Mode, as the stream quality does.
+    static func preDownloadPacing(currentURL: URL?, status: NetworkStatus, position: TimeInterval, ended: Bool)
+        -> PreDownloadPacing {
+        guard let currentURL, status.isCellular || status.isConstrained, !currentURL.isFileURL,
+              currentURL.scheme == "http" || currentURL.scheme == "https",
+              !NavidromeStreamURLs.isOriginalStream(currentURL) else { return .normal }
+        return ended || position >= preDownloadGrace ? .oneAtATime : .hold
+    }
+
+    /// How many pre-downloads the manager may run at once under `pacing` (`DownloadManager.cacheRunCap`). The whole
+    /// plan is still handed over: the manager starts the first it accepts, and any job ending (landed or failed) lets
+    /// the next one start (fix round 1, I1).
+    static func cacheRunCap(_ pacing: PreDownloadPacing) -> Int? {
+        switch pacing {
+        case .normal: nil
+        case .hold: 0
+        case .oneAtATime: 1
+        }
+    }
+
+    /// The pacing now. Reads the position only for a converted stream on mobile data, and only until the grace has
+    /// passed for this entry (fix round 1, M5): after that the watcher isn't woken by every tick.
+    private var currentPreDownloadPacing: PreDownloadPacing {
+        let status = network.status
+        guard status.isCellular || status.isConstrained, let url = player.currentURL else { return .normal }
+        _ = player.lastFallbackSongId   // a switch to the original changes the URL: look again
+        let past = Self.preDownloadPacing(currentURL: url, status: status, position: Self.preDownloadGrace, ended: true)
+        if past == .oneAtATime, let last = preDownloadSnapshot, last.pacing == .oneAtATime,
+           last.current?.id == player.queue.current?.id {
+            return .oneAtATime   // already past the grace for this entry: no need to read the position again
+        }
+        return Self.preDownloadPacing(currentURL: url, status: status, position: player.position, ended: player.hasEnded)
     }
 
     /// Engine window (QC): the engine is handed as many upcoming songs as are pre-downloaded, at least its own 3 and
@@ -40,7 +92,8 @@ extension AppModel {
                 return PreDownloadSnapshot(current: player.queue.current,
                                            upcoming: player.queue.upcoming(limit: max(player.lookahead, prefs.preDownload)),
                                            count: prefs.preDownload, keepRecentlyPlayed: prefs.keepRecentlyPlayed,
-                                           cacheLimit: prefs.cacheLimit)
+                                           cacheLimit: prefs.cacheLimit,
+                                           pacing: self?.currentPreDownloadPacing ?? .normal)   // R27 P (D280)
             }
             var previous: PreDownloadSnapshot?
             for await snapshot in snapshots where snapshot != previous {
@@ -68,6 +121,8 @@ extension AppModel {
     private func queueChanged(_ snapshot: PreDownloadSnapshot, previous: PreDownloadSnapshot?, manager: DownloadManager) {
         let plan = PreDownloadPlan.songs(upcoming: snapshot.upcoming.map(\.song), count: snapshot.count,
                                          isLocal: { manager.localFiles[$0] != nil })
+        // R27 P (D280): set before the plan, which pumps under it (setting the cap alone starts nothing, N1).
+        manager.cacheRunCap = Self.cacheRunCap(snapshot.pacing)
         manager.preDownload(isOffline ? [] : plan, quality: currentStreamQuality)   // offline: nothing to fetch from
 
         let current = snapshot.current?.song.id

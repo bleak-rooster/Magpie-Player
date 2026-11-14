@@ -75,6 +75,13 @@ struct HomeLoad: Equatable {
         done.subtract(sections)
     }
 
+    /// Round 27 H fix round 1 (M3): `section`'s tiles put in a new order, nothing read again.
+    mutating func reorder(_ section: HomeSection, _ order: ([HomeShelf.Item]) -> [HomeShelf.Item]) {
+        guard var shelf = found[section] else { return }
+        shelf.items = order(shelf.items)
+        found[section] = shelf
+    }
+
     /// Round 13 Z2 (review M5): `sections`' shelves go too (they belong to someone else now) and are read again.
     mutating func drop(_ sections: Set<HomeSection>) {
         for section in sections { found[section] = nil }

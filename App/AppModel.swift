@@ -141,6 +141,10 @@ final class AppModel {
     var madeForYouShelf: [MadeForYou.Playlist] = []
     /// Home's feed for the signed-in account (P5, HomeFeed.swift).
     @ObservationIgnored var homeFeedSlot: HomeFeed?
+    // Round 27 H
+    /// Round 27 H (D297): the account's flow plays as last loaded or noted (AppModel+FlowPlays.swift).
+    @ObservationIgnored var flowPlaysSlot: (scope: String, plays: [String: Date])?
+    // Round 27 H end
     /// B1: recommended artists' pictures (AppModel+OutsideArt.swift).
     @ObservationIgnored var recommendedArtSlot: OutsideArtLoader?
     /// B1: the outside pictures' disk cache (one per account).
@@ -229,6 +233,9 @@ final class AppModel {
     /// R19: what the outside artist and album pages read from MusicBrainz, in memory for this session only.
     @ObservationIgnored var outsideCatalogStore: OutsideCatalog?
     @ObservationIgnored let lidarrTopSongsSession = LidarrTopSongsSession()   // Round 26 K2 (D264)
+    // Round 27 D1: Discover's saved rows and pages (AppModel+DiscoverSnapshot.swift, D283); removed with D90's feeds
+    // file in `forgetDiscoverReads` (sign-out, Aurral sign-out, another Aurral user).
+    @ObservationIgnored let discoverSnapshots = DiscoverSnapshotStore()
     // Round 27 R
     /// Settings › Lidarr › Missing albums: the last search's answer and a Clear all's run (AppModel+MissingAlbums, D290–D292).
     let missingAlbums = MissingAlbumsState()
@@ -259,6 +266,10 @@ final class AppModel {
     @ObservationIgnored var shownTranscodeHint = false
     /// A footnote under the Now Playing scrubber (the transcode fallback); nil when none.
     var playbackHint: String?
+    // Round 27 P
+    /// The song `playbackHint` was raised for: a new current song clears it (D276, AppModel+Playback.swift).
+    @ObservationIgnored var playbackHintSongId: String?
+    // End Round 27 P
     /// Whether the server answered last time it was tried (Task 14): Automatic offline mode follows it.
     var serverReachable = true { didSet { offlineInputsChanged() } }
     /// Offline as the URLs and the scrobbler read it, and Automatic mode's bookkeeping (AppModel+Offline.swift).
@@ -664,6 +675,7 @@ final class AppModel {
         box.set(nil)
         ArtworkCache.shared.removeAll()
         forgetHomeShelves()
+        forgetFlowPlays()   // Round 27 H (D297): the file goes with Home's folder above
         forgetOutsideArt()   // B1
         stopMatchIndex(erase: true)
         forgetLidarrPermissions()
