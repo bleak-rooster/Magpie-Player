@@ -305,7 +305,9 @@ public final class Player {
         }
         position = at
         anchorTick(at: at)   // a jump is not listening
-        restartedAt = (current.id, now())
+        // A tick from the load before (its clock far from this one's start) is dropped, as after D235's restart. Not
+        // after a seek: the new load's own ticks are near the old position then.
+        restartedAt = seekTo == nil ? (current.id, now()) : nil
         if play {
             engine.play()
             isPlaying = true

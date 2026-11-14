@@ -154,6 +154,8 @@ import Testing
         #expect(query(r.engine.currentURL)["timeOffset"] == nil)
         #expect(r.engine.seeks.last == 70, "then a best-effort seek")
         #expect(r.player.position == 70)
+        r.player.handle(.time(r.player.queue.current!.id, 70.5, duration: nil))
+        #expect(r.player.position == 70.5 && r.player.reconnectingSongId == nil, "the seek's own ticks are followed")
     }
 
     @Test func network_twoRetriesThenStops() async throws {
