@@ -311,6 +311,7 @@ private let home = URL(string: "http://192.168.1.2:4533")!
                                                                                 isConstrained: false))
         model.updatePreferences { $0.downloads.preDownload = 1 }
         model.play([song("s1"), song("s2")], startAt: 0)
+        model.player.listen(model.player.queue.current!.id, from: 0, to: 15.5)   // R27 P (D280): after 15 s of a converted song
         #expect(await eventually { await model.downloads!.store.entry(songId: "s2") != nil })
         let url = try #require(f.urls.first)
         #expect(url.query?.contains("format=aac") == true && url.query?.contains("maxBitRate=160") == true)

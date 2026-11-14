@@ -118,6 +118,11 @@ final class DownloadManager {
     @ObservationIgnored private(set) var tasks: [UUID: Task<Void, Never>] = [:]
     /// Job runs still unwinding, cancelled or not (run id → song id): these hold the concurrency slots.
     @ObservationIgnored private(set) var activeRuns: [UUID: String] = [:]   // (+CacheQuality, read only)
+    /// Round 27 P (D280): the most pre-downloads (cache jobs) that may run at once while a converted song streams on
+    /// mobile data (0: none start; nil: only `concurrent` applies). Any job ending pumps again, so the next one starts
+    /// whether the last landed or failed. Setting it doesn't pump: the caller hands over the new plan next
+    /// (`preDownload`, which pumps), so a loosened cap never starts the old plan's queued jobs (fix round 2, N1).
+    @ObservationIgnored var cacheRunCap: Int?
     @ObservationIgnored private var generation = 0
     @ObservationIgnored private var networkWatch: Task<Void, Never>?
     /// Covers to fetch once manual downloads may use the network.
@@ -582,8 +587,10 @@ final class DownloadManager {
         guard isStarted else { return }
         let prefs = preferences().normalised()
         let allowed = manualAllowed(prefs)
+        var cacheRunning = jobs.filter { $0.kind == .cache && $0.isRunning }.count   // R27 P (D280)
         for i in jobs.indices {
             guard jobs[i].state == .queued else { continue }
+            if jobs[i].kind == .cache, let cap = cacheRunCap, cacheRunning >= cap { continue }
             let needsNetwork = jobs[i].kind == .replace || kinds[jobs[i].songId] == nil
             if jobs[i].isManual, needsNetwork, !allowed { jobs[i].state = .waiting; continue }
             if needsNetwork, isHeld { continue }   // P1: paused, or Magpie is in the background
@@ -592,6 +599,7 @@ final class DownloadManager {
             guard !activeRuns.values.contains(songId) else { continue }
             let run = UUID(), id = jobs[i].id
             jobs[i].state = .running(run)
+            if jobs[i].kind == .cache { cacheRunning += 1 }
             jobs[i].needsNetwork = needsNetwork
             activeRuns[run] = songId
             tasks[run] = Task { [weak self] in
