@@ -21,6 +21,7 @@ struct NowPlayingLinks: Equatable {
 
 /// What the More menu offers for a song (round 11 R9, with the appraisal's groups, R20):
 /// 1. a find: Keep · Not for me…;
+/// 1a. Automix… (round 27 A, D305: online, signed in, not a find);
 /// 2. Add to playlist… · Favourite (lyrics mode only, where the star is hidden);
 /// 3. Download / Remove download;
 /// 4. Go to album · Go to artist;
@@ -33,6 +34,8 @@ struct NowPlayingMoreItems: Equatable {
     var download: DownloadItem
     var album: Route?
     var artist: Route?
+    /// Round 27 A (owner item 17, D305): Automix… seeded by this song.
+    var automix = false
 
     enum DownloadItem: Equatable { case download, remove, cancel }
 
@@ -41,6 +44,7 @@ struct NowPlayingMoreItems: Equatable {
         var groups: [[String]] = []
         let find = [keep.map { _ in "Keep" }, notForMe.map { _ in "Not for me…" }].compactMap { $0 }
         if !find.isEmpty { groups.append(find) }
+        if automix { groups.append([AutomixCopy.menuItem]) }
         groups.append(["Add to playlist…"] + (favourite.map { [$0 ? "Unfavourite" : "Favourite"] } ?? []))
         switch download {
         case .download: groups.append(["Download"])
@@ -72,7 +76,8 @@ extension AppModel {
         }
         return NowPlayingMoreItems(keep: keep, notForMe: notForMe,
                                    favourite: lyricsMode ? isFavourite(.song(song.id)) : nil,
-                                   download: download, album: links.album, artist: links.artist)
+                                   download: download, album: links.album, artist: links.artist,
+                                   automix: automixAvailable(for: song))
     }
 }
 
@@ -92,6 +97,7 @@ struct NowPlayingMoreMenu: View {
     @State private var addingMore: AddFlowRequest?
     @State private var asking: NotForMeConfirm?
     @State private var busy = false
+    @State private var automix: AutomixSeed?   // Round 27 A (D305)
 
     var body: some View {
         let items = model.nowPlayingMoreItems(song, lyricsMode: lyricsMode, links: links)
@@ -105,6 +111,11 @@ struct NowPlayingMoreMenu: View {
                         Button("Not for me…", systemImage: "hand.thumbsdown", role: .destructive) { askNotForMe(id) }
                             .disabled(busy)
                     }
+                }
+            }
+            if items.automix {
+                Section {
+                    Button(AutomixCopy.menuItem, systemImage: AutomixCopy.symbol) { automix = AutomixSeed(.song(song)) }
                 }
             }
             Section {
@@ -146,6 +157,7 @@ struct NowPlayingMoreMenu: View {
             AddToPlaylistSheet(songIds: addingToPlaylist ?? [])
         }
         .sheet(isPresented: $showsInfo) { SongInfoSheet(song: song) }
+        .sheet(item: $automix) { AutomixSheet(seed: $0) }
         .addFlow($addingMore) { message = $0.message }
         .songRemovalDialog($removing)
         .alert(message ?? "", isPresented: Binding(get: { message != nil }, set: { if !$0 { message = nil } })) {
