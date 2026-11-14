@@ -36,7 +36,10 @@ import Testing
 
     /// Signed in to the small Navidrome; with `aurral`, Aurral 2.13 too: the user's "Discover Weekly" (pl-dw) and
     /// "Trending Mix" (pl-empty), and Sam's "Late Night" (pl-sam, "sam - Late Night").
-    private func signedIn(aurral connects: Bool = true) async throws -> AppModel {
+    /// `extraFlows` more of the user's flows, "Mix 00", "Mix 01", … (pl-x00, …), each holding one song (fix round 2).
+    private func signedIn(aurral connects: Bool = true, extraFlows: Int = 0) async throws -> AppModel {
+        let extras = (0..<extraFlows).map { String(format: "%02d", $0) }
+        for n in extras { nav.lists["pl-x\(n)"] = ("Mix \(n)", ["a-words"]) }
         nav.lists["pl-sam"] = ("sam - Late Night", ["a-old"])
         nav.lists["pl-empty"] = ("Trending Mix", ["a-words"])
         nav.lists["pl-mine"] = nil   // no same-named playlist of the owner's: Discover Weekly is plainly the user's flow
@@ -44,8 +47,9 @@ import Testing
         aurral.useAurral213()
         aurral.addUser(id: 2, username: "sam", password: "sam-pw")
         aurral.setFlows([.init(id: "flow-dw", name: "Discover Weekly"), .init(id: "flow-tm", name: "Trending Mix"),
-                         .init(id: "flow-sam", name: "Late Night", ownerUserId: 2)])
-        aurral.setJobs([.init(flowId: "flow-dw", artistName: "Low", trackName: "Lullaby", durationMs: 251_000),
+                         .init(id: "flow-sam", name: "Late Night", ownerUserId: 2)]
+                        + extras.map { .init(id: "flow-x\($0)", name: "Mix \($0)") })
+        aurral.setJobs(extras.map { .init(flowId: "flow-x\($0)", artistName: "Low", trackName: "Words", durationMs: 200_000) } + [.init(flowId: "flow-dw", artistName: "Low", trackName: "Lullaby", durationMs: 251_000),
                         .init(flowId: "flow-dw", artistName: "Low", trackName: "Words", status: "failed"),
                         .init(flowId: "flow-dw", artistName: "Nobody", trackName: "Unknown Song", durationMs: 180_000,
                               status: "saved"),
@@ -164,6 +168,28 @@ import Testing
         #expect(AppModel.reordered([.playlist(Playlist(id: "b", name: "B", songCount: 1, duration: 1)),
                                     .playlist(Playlist(id: "a", name: "A", songCount: 1, duration: 1))],
                                    .alphabetical, lastPlayed: [:]).map(\.id) == ["playlist-a", "playlist-b"])
+    }
+
+    /// Fix round 2 (R1): a flow played from past the loaded shelf (Your flows holds the first `homeShelfSize`) can't be
+    /// brought in by a new order: the shelf is read again the next time Home shows, and the flow comes first.
+    @Test func phoneHome_playPastTheShelfReadsAgainWhenHomeNextShows() async throws {
+        let model = try await signedIn(extraFlows: AppModel.homeShelfSize + 2)
+        defer { model.signOut() }
+        let all = try await model.discoverPlaylists().map(\.id)
+        #expect(all.count > AppModel.homeShelfSize, "more flows than the shelf holds: \(all.count)")
+        let key = HomeLoad.Key.make(sections: [.discover], offline: false, onPhone: nil, genres: .defaultValue)
+        await model.homeFeed.show(key)
+        func shown() -> [String] {
+            (model.homeFeed.load?.found[.discover]?.items ?? []).compactMap { if case .playlist(let p) = $0 { p.id } else { nil } }
+        }
+        let before = shown()
+        #expect(before.count == AppModel.homeShelfSize)
+        let past = try #require(all.first { !before.contains($0) }, "a flow past the shelf")
+        model.noteFlowPlayed(playlistId: past, at: t0)
+        #expect(!model.homeFeed.isReading && shown() == before, "nothing moves under the owner's eyes")
+        await model.homeFeed.show(key)
+        #expect(shown().first == past, "Home shows again: the flow played lately first, read in: \(shown().prefix(3))")
+        #expect(shown().count == AppModel.homeShelfSize)
     }
 
     @Test func phoneHome_alphabetical() async throws {

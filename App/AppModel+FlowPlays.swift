@@ -23,17 +23,26 @@ extension AppModel {
     /// Records that `playlistId` started playing, when it is a Discover playlist (never another playlist). Saved at
     /// once. Fix round 1 (M3, design L2): with Last played, the Your flows shelf already loaded is put in the new
     /// order the next time Home shows (`reorderWhenShown`): nothing is read again, and nothing moves under the owner's
-    /// eyes.
+    /// eyes. Fix round 2 (R1): a flow the loaded shelf doesn't hold (past its first `homeShelfSize`, or a shelf not
+    /// read yet) can't be brought in by a new order, so the shelf is read again then instead (`readAgainWhenShown`).
     func noteFlowPlayed(playlistId: String, at date: Date = Date()) {
         guard let scope = navidromeScope, isDiscoverPlaylist(id: playlistId) else { return }
         let plays = FlowPlays.noting(playlistId, at: date, in: flowPlays)
         flowPlaysSlot = (scope, plays)
         FlowPlaysStore(root: dataDirectory, scope: scope).save(plays)
-        guard preferences.layout.homeFlowsOrder == .lastPlayed else { return }
-        homeFeedSlot?.reorderWhenShown(.discover) { [weak self] items in
+        guard preferences.layout.homeFlowsOrder == .lastPlayed, let feed = homeFeedSlot else { return }
+        guard Self.holds(feed.load?.found[.discover]?.items ?? [], playlistId: playlistId) else {
+            return feed.readAgainWhenShown(.discover)
+        }
+        feed.reorderWhenShown(.discover) { [weak self] items in
             guard let self else { return items }
             return Self.reordered(items, preferences.layout.homeFlowsOrder, lastPlayed: flowPlays)
         }
+    }
+
+    /// Whether Your flows' loaded tiles include the flow `playlistId`.
+    nonisolated static func holds(_ items: [HomeShelf.Item], playlistId: String) -> Bool {
+        items.contains { if case .playlist(let p) = $0 { p.id == playlistId } else { false } }
     }
 
     /// Your flows' tiles in `order`: its flows sorted, the For you tiles after them as they were.

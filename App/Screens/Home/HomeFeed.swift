@@ -105,16 +105,28 @@ import Observation
     @ObservationIgnored private var pendingOrders: [HomeSection: @MainActor ([HomeShelf.Item]) -> [HomeShelf.Item]] = [:]
 
     func reorderWhenShown(_ section: HomeSection, _ order: @escaping @MainActor ([HomeShelf.Item]) -> [HomeShelf.Item]) {
-        guard !isStopped else { return }
+        guard !isStopped, !pendingReads.contains(section) else { return }   // a read gives the order anyway
         pendingOrders[section] = order
     }
 
+    /// Round 27 H fix round 2 (R1): shelves to read again the next time Home shows (a flow played that the loaded Your
+    /// flows shelf doesn't hold: a new order alone can't bring it in). Their tiles stay on screen meanwhile.
+    @ObservationIgnored private var pendingReads: Set<HomeSection> = []
+
+    func readAgainWhenShown(_ section: HomeSection) {
+        guard !isStopped else { return }
+        pendingOrders[section] = nil
+        pendingReads.insert(section)
+    }
+
     private func applyPendingOrders() {
-        guard !pendingOrders.isEmpty else { return }
-        let orders = pendingOrders
+        guard !pendingOrders.isEmpty || !pendingReads.isEmpty else { return }
+        let orders = pendingOrders, reads = pendingReads
         pendingOrders = [:]
+        pendingReads = []
         guard var state = load else { return }
-        for (section, order) in orders { state.reorder(section, order) }
+        for (section, order) in orders where !reads.contains(section) { state.reorder(section, order) }
+        state.forget(reads)   // the read `show` starts now asks for them again
         load = state
     }
 
