@@ -6,8 +6,8 @@ import MagpieCore
 ///
 /// Holds the list from `Player` (the current entry and a window after it) but keeps at most `maxEnqueued`
 /// items in the AVQueuePlayer:
-/// the next item is appended once the current one has `prefetchLead` seconds or less left
-/// (immediately when the current item's length is unknown, e.g. a live transcode).
+/// the next item is appended once the current one has `prefetchLead` seconds or less left. A chunked transcode has no
+/// length of its own: the API's length (`setLengths`) stands in for it (round 27 P, D279); with neither, at once.
 ///
 /// On iOS the audio session is configured `.playback` / `.longFormAudio` at init but activated
 /// only on the first `play()` — activating early cuts off the car's own audio (FM radio) in CarPlay.
@@ -46,6 +46,11 @@ public final class AVQueueEngine: PlaybackEngine {
     private var volumes: [UUID: Float] = [:]
     /// Overall volume from `setVolume`; survives a media-services rebuild.
     private var volume: Float = 1
+    /// Round 27 P (D279): the API's length per entry (`setLengths`), for items whose own length is indefinite.
+    private var lengths: [UUID: TimeInterval] = [:]
+    /// Round 27 P (D277): what the error behind each entry's last `.failed` said; dropped when the entry is enqueued
+    /// again or leaves the list.
+    private var failureCauses: [UUID: PlaybackFailure.Cause] = [:]
     /// What the user asked for; survives interruptions so we know whether to resume.
     private var wantsToPlay = false
     private var playerObservers: [Any] = []
@@ -121,6 +126,8 @@ public final class AVQueueEngine: PlaybackEngine {
 
     public func setItems(_ urls: [(UUID, URL)], startAt: Int) {
         list = urls.map { (id: $0.0, url: $0.1) }
+        let ids = Set(list.map(\.id))
+        failureCauses = failureCauses.filter { ids.contains($0.key) }
         guard list.indices.contains(startAt) else {
             clearPlayer()
             return
@@ -182,6 +189,15 @@ public final class AVQueueEngine: PlaybackEngine {
         enqueuedItems.first { $0.id == id }?.url
     }
 
+    public func setLengths(_ lengths: [UUID: TimeInterval]) {
+        self.lengths = lengths   // read by the next `topUp` (`setItems` follows and runs one)
+    }
+
+    public func failureCause(for id: UUID) -> PlaybackFailure.Cause { failureCauses[id] ?? .unknown }
+
+    /// Diagnostics (round 27 P, D282): which `AVPlayerItem` is current, so a test can tell a kept item from a reload.
+    public var currentItemIdentity: ObjectIdentifier? { player.currentItem.map(ObjectIdentifier.init) }
+
     public func setVolume(_ volume: Float) {
         self.volume = volume
         updatePlayerVolume()
@@ -236,20 +252,34 @@ public final class AVQueueEngine: PlaybackEngine {
         guard let current = player.currentItem, current.status != .failed else { return }
         let items = player.items()
         guard items.count < Self.maxEnqueued, items.count == 1 else { return }
-        let duration = current.duration.seconds
-        let remaining = duration.isFinite ? duration - current.currentTime().seconds : 0
-        guard remaining <= Self.prefetchLead, let next = indexAfterCurrent() else { return }
+        let info = enqueued[ObjectIdentifier(current)]
+        let left = Self.remaining(itemDuration: current.duration.seconds, apiLength: info.flatMap { lengths[$0.id] },
+                                  offset: StreamOffset.seconds(in: info?.url), currentTime: current.currentTime().seconds)
+        guard left <= Self.prefetchLead, let next = indexAfterCurrent() else { return }
         enqueue(list[next])
     }
 
+    /// Round 27 P (owner item 11, D279): seconds left of the current item. Its own length when finite; for a chunked
+    /// transcode (indefinite) the API's length, less where the stream started (`timeOffset`); unknown: 0, so the next
+    /// item is appended at once as before. Before, every converted song opened the next song's stream in its first
+    /// second, and two transcodes shared the connection for the whole song.
+    nonisolated static func remaining(itemDuration: TimeInterval, apiLength: TimeInterval?, offset: Int,
+                                      currentTime: TimeInterval) -> TimeInterval {
+        let t = currentTime.isFinite ? currentTime : 0
+        if itemDuration.isFinite, itemDuration > 0 { return itemDuration - t }
+        guard let apiLength, apiLength.isFinite, apiLength > 0 else { return 0 }
+        return apiLength - TimeInterval(offset) - t
+    }
+
     private func enqueue(_ entry: (id: UUID, url: URL)) {
+        failureCauses[entry.id] = nil   // a fresh item: an earlier failure's cause no longer applies
         let item = AVPlayerItem(url: entry.url)
         let oid = ObjectIdentifier(item)
         let observation = item.observe(\.status, options: [.new]) { [weak self] item, _ in
             guard item.status == .failed else { return }
             let message = item.error?.localizedDescription ?? "Playback failed"
-            let undecodable = AVQueueEngine.isUndecodable(item.error)
-            Task { @MainActor [weak self] in self?.itemFailed(oid, message, undecodable: undecodable) }
+            let undecodable = AVQueueEngine.isUndecodable(item.error), cause = PlaybackFailure.cause(of: item.error)
+            Task { @MainActor [weak self] in self?.itemFailed(oid, message, undecodable: undecodable, cause: cause) }
         }
         enqueued[oid] = Enqueued(item: item, id: entry.id, url: entry.url, statusObservation: observation)
         apply(volumes[entry.id] ?? 1, to: item, force: true)
@@ -322,7 +352,8 @@ public final class AVQueueEngine: PlaybackEngine {
         if let dropped = enqueued.values.first(where: { !live.contains(ObjectIdentifier($0.item)) && $0.id == reportedId }),
            dropped.item.status == .failed {
             haltOnFailure(dropped.id, dropped.item.error?.localizedDescription ?? "Playback failed",
-                          undecodable: Self.isUndecodable(dropped.item.error))
+                          undecodable: Self.isUndecodable(dropped.item.error),
+                          cause: PlaybackFailure.cause(of: dropped.item.error))
             return
         }
         for (oid, e) in enqueued where !live.contains(oid) {
@@ -337,28 +368,30 @@ public final class AVQueueEngine: PlaybackEngine {
 
     /// A failed current item stops playback (no auto-advance past it). A failed upcoming item is
     /// dropped from the AVQueuePlayer; `itemEnded` enqueues a fresh copy when it is reached.
-    private func itemFailed(_ oid: ObjectIdentifier, _ message: String, undecodable: Bool) {
+    private func itemFailed(_ oid: ObjectIdentifier, _ message: String, undecodable: Bool, cause: PlaybackFailure.Cause) {
         guard let info = enqueued[oid] else { return }
         if info.id == reportedId {
-            haltOnFailure(info.id, message, undecodable: undecodable)
+            haltOnFailure(info.id, message, undecodable: undecodable, cause: cause)
             return
         }
         if let item = player.items().first(where: { ObjectIdentifier($0) == oid }) {
             player.remove(item)
             forget(item)
         }
+        failureCauses[info.id] = cause
         continuation.yield(.failed(info.id, message, undecodable: undecodable))
     }
 
     /// Stops on the failed current entry: pause, empty the AVQueuePlayer (it may already sit on the
     /// next song), keep `reportedId` on the failed entry, and report the failure once.
-    private func haltOnFailure(_ id: UUID, _ message: String, undecodable: Bool) {
+    private func haltOnFailure(_ id: UUID, _ message: String, undecodable: Bool, cause: PlaybackFailure.Cause) {
         guard haltedId != id else { return }
         wantsToPlay = false
         player.pause()
         clearPlayer()
         reportedId = id
         haltedId = id
+        failureCauses[id] = cause
         continuation.yield(.failed(id, message, undecodable: undecodable))
     }
 
@@ -411,10 +444,10 @@ public final class AVQueueEngine: PlaybackEngine {
             let oid = (note.object as AnyObject?).map(ObjectIdentifier.init)
             let error = note.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? Error
             let message = error?.localizedDescription ?? "Playback failed"
-            let undecodable = AVQueueEngine.isUndecodable(error)
+            let undecodable = AVQueueEngine.isUndecodable(error), cause = PlaybackFailure.cause(of: error)
             MainActor.assumeIsolated {
                 guard let oid else { return }
-                self?.itemFailed(oid, message, undecodable: undecodable)
+                self?.itemFailed(oid, message, undecodable: undecodable, cause: cause)
             }
         })
     }

@@ -38,12 +38,21 @@ public protocol PlaybackEngine: AnyObject {
     /// The URL the engine actually holds for this entry, if it has it enqueued. An enqueued item is kept when
     /// only its URL changed, so this can differ from the URL last sent; nil when unknown.
     func enqueuedURL(for id: UUID) -> URL?
+    /// Round 27 P (owner item 11, 2026-11-14): each entry's length as the server's API gives it, keyed by entry id
+    /// (unknown lengths left out), sent before `setItems` like the volumes. A converted stream comes chunked with no
+    /// length of its own; the engine reads this one to open the next song's stream only near the end (D279).
+    func setLengths(_ lengths: [UUID: TimeInterval])
+    /// Round 27 P (D277): what the error behind the last `.failed` for this entry said (`PlaybackFailure.cause`);
+    /// `.unknown` when the engine can't tell.
+    func failureCause(for id: UUID) -> PlaybackFailure.Cause
 }
 
 public extension PlaybackEngine {
     func setVolumes(_ volumes: [UUID: Float]) {}
     func setVolume(_ volume: Float) {}
     func enqueuedURL(for id: UUID) -> URL? { nil }
+    func setLengths(_ lengths: [UUID: TimeInterval]) {}
+    func failureCause(for id: UUID) -> PlaybackFailure.Cause { .unknown }
 }
 
 /// Records a play with the server. Sendable so `Player` can call it off the main actor.
