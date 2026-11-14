@@ -335,16 +335,13 @@ extension AppModel {
 
     /// Discover's playlists for Home, Library and the car: read again when stale; if Aurral doesn't answer, the
     /// server's playlists that were Discover's last time.
-    /// Round 27 D1 (D283): the saved rows before anything is read this session; with rows known, the read runs behind
-    /// (whatever it changes reaches Library › Discover and Home by itself) and nothing waits for it.
+    /// Round 27 D1 (D283): before anything is read this session, the saved rows stand in when Aurral doesn't answer
+    /// in time (instead of every playlist and the saved ids). Library › Discover shows them before waiting at all
+    /// (`discoverRowsNow`).
     func discoverPlaylists() async throws -> [Playlist] {
         guard aurralSetUp, !isOffline else { return [] }
         restoreSavedDiscover()
-        if discover.playlists.isEmpty {
-            await refreshDiscover(waitingAtMost: Self.discoverWait)   // Round 13 Z2: never held up by a slow Aurral
-        } else {
-            startDiscoverRead()
-        }
+        await refreshDiscover(waitingAtMost: Self.discoverWait)   // Round 13 Z2: never held up by a slow Aurral
         guard !discover.flowsNotPermitted else { return [] }   // round 14: no accessFlow, Discover hides
         // Round 23 R23F (D189, D190): the user's own, and other users' only with "Show everyone's flows" on.
         if !discover.playlists.isEmpty { return discover.playlists.map(\.playlist).filter(isShownInDiscover) }

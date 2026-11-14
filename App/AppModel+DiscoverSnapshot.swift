@@ -38,15 +38,15 @@ extension AppModel {
     /// D283: the saved rows, used while nothing has been read this session (launch, Aurral slow): `discover.playlists`
     /// and what the last read decided about them (whose, the captions, the item rows, the hidden ones). Never without
     /// Aurral, offline, or while Aurral refuses this user its flows; never when the saved rows don't hold every playlist
-    /// kept out of Playlists (D185: the saved ids stand alone then).
+    /// kept out of Playlists, nor without those ids at all (D185: the saved ids stand alone then; none: nothing known).
     func restoreSavedDiscover() {
         guard aurralSetUp, !isOffline, !discover.flowsNotPermitted, discover.playlists.isEmpty, discover.statusReadAt == nil,
               let scope = navidromeScope, let feeds = aurralFeedsScope else { return }
         let snapshot = discoverSnapshots.snapshot(root: dataDirectory, scope: feeds)
         guard !snapshot.rows.isEmpty else { return }
         let playlists = snapshot.rows.map(\.discoverPlaylist)
-        let keptOut = Set(appDefaults.stringArray(forKey: Self.discoverPlaylistsKey(scope)) ?? [])
-        guard keptOut.isSubset(of: Set(playlists.map(\.playlist.id))) else { return }
+        guard let keptOut = appDefaults.stringArray(forKey: Self.discoverPlaylistsKey(scope)).map(Set.init),
+              keptOut.isSubset(of: Set(playlists.map(\.playlist.id))) else { return }
         discover.playlists = playlists
         discover.othersPlaylistIds = Set(snapshot.othersPlaylistIds)
         discover.playlistOwners = Dictionary(snapshot.rows.compactMap { row in row.caption.map { (row.playlist.id, $0) } },
@@ -144,7 +144,11 @@ extension AppModel {
             : feeds.flatMap { discoverSnapshots.snapshot(root: dataDirectory, scope: $0).pages[playlistId] }
         if let saved { show(saved) }
         if waitForRead {   // the phone's page: the read when stale, waited for only with nothing to show
-            if discover.playlists.isEmpty, saved == nil { await refreshDiscover(waitingAtMost: Self.discoverWait) } else { startDiscoverRead() }
+            if discover.playlists.isEmpty, saved == nil {
+                await refreshDiscover(waitingAtMost: Self.discoverWait)
+            } else {
+                startDiscoverRead()
+            }
         }
         let (playlist, songs) = try await request { try await $0.playlist(id: playlistId) }
         guard aurralFeedsScope == feeds else { throw CancellationError() }   // another account or Aurral meanwhile
@@ -200,7 +204,7 @@ extension AppModel {
         let store = discoverSnapshots
         let task = Task { [weak self] in
             _ = try? await self?.openDiscoverPage(playlistId: playlistId, fresh: false, waitForRead: false) { _ in }
-            store.behind[playlistId] = nil
+            if !Task.isCancelled { store.behind[playlistId] = nil }   // cancelled: `forget` let go of it already
         }
         store.behind[playlistId] = task
         return task
@@ -222,11 +226,15 @@ extension AppModel {
         let ids = DiscoverSnapshot.pagesToRefresh(rows: rows, saved: saved, limit: Self.discoverPassPlaylists)
         let budget = DiscoverLookupBudget(Self.discoverPassLookups)
         let queue = DiscoverPassQueue(ids)
+        let root = dataDirectory
+        store.holdsWrites = true
         store.passTask = Task { [weak self] in
             async let first: Void = self?.discoverPassWorker(queue, feeds: feeds, budget: budget) ?? ()
             async let second: Void = self?.discoverPassWorker(queue, feeds: feeds, budget: budget) ?? ()   // two at a time
             _ = await (first, second)
+            guard !Task.isCancelled else { return }   // sign-out or another account: `forget` let go of everything
             store.lastPassLookups = budget.used
+            store.flush(root: root, scope: feeds)   // one write for the whole pass
             store.passTask = nil
         }
     }

@@ -312,7 +312,8 @@ final class D1Routing: HTTPTransport, @unchecked Sendable {
 
     // MARK: - Saved rows
 
-    /// At launch with Aurral not answering, Discover's rows come from the file: no wait and no read of every playlist.
+    /// At launch with Aurral not answering, Discover's rows come from the file: Library › Discover shows them before
+    /// any wait, and after the bound they stand in, never a read of every playlist.
     @Test func savedRowsShowAtLaunchWithoutAnyRead() async throws {
         let first = try await signedIn()
         _ = first
@@ -320,10 +321,8 @@ final class D1Routing: HTTPTransport, @unchecked Sendable {
         let model = await relaunched()
         defer { transport.releaseStatus(); model.signOut() }
         nav.reset()
-        let clock = ContinuousClock()
-        let start = clock.now
-        let rows = try await model.discoverPlaylists()
-        #expect(clock.now - start < .seconds(1), "waited \(clock.now - start)")
+        #expect(model.discoverRowsNow()?.map(\.id) == ["playlist:pl-dw"], "at once, nothing awaited")
+        let rows = try await model.discoverPlaylists()   // after the bound, the saved rows stand in
         #expect(rows.map(\.id) == ["pl-dw"])
         #expect(rows.first?.name == "Discover Weekly")
         #expect(nav.getPlaylists == 0, "no read of every playlist")

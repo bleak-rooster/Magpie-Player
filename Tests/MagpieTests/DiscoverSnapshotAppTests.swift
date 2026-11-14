@@ -378,6 +378,7 @@ import Testing
         nav.setList("pl-x0", "Extra 0", ["a-x0-0", "a-x0-1", "a-x0-9"], changed: "2026-11-03T10:00:00Z")
         transport.releaseStatus()
         await model.refreshDiscover(force: true)
+        transport.holdStatus()   // the pass alone reads playlists
         let now = Date()
         model.discover.now = { now.addingTimeInterval(11 * 60) }
         nav.reset()
