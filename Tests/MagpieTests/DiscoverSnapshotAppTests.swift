@@ -20,6 +20,8 @@ import Testing
     let transport = D1Routing()
     let aurralStore = MemoryAurralStore()
     let lidarrStore = MemoryLidarrStore()
+    /// Fix round 1 (I1): the player's engine, so a test can see what it was sent.
+    let engine = FakeEngine()
     var aurral: StubAurral { transport.aurral }
     var nav: D1Navidrome { transport.navidrome }
 
@@ -38,7 +40,7 @@ import Testing
     func makeModel() -> AppModel {
         AppModel(store: store, lidarrStore: lidarrStore, tokenStore: MemoryTokenStore(),
                  aurralStore: aurralStore, matchIndexDirectory: nil, dataDirectory: tmp, transport: transport,
-                 probeTransport: transport, engine: FakeEngine(), defaults: defaults, systemNowPlaying: false,
+                 probeTransport: transport, engine: engine, defaults: defaults, systemNowPlaying: false,
                  notifications: false, network: FakeNetwork(.wifi), audioFetcher: FakeFetcher())
     }
 
@@ -334,6 +336,32 @@ import Testing
         await loading.value
         #expect(model.player.queue.current?.song.id == "a-lullaby", "the song playing plays on")
         #expect(model.player.queue.upcoming.map(\.song.id) == ["m-words", "a-unknown", "m-ref1", "m-ref2"])
+    }
+
+    /// Fix round 1 (I1, D282): copies found while a song plays are swapped into what's coming up once, when the lookups
+    /// are done: one re-send of the engine's list, and the current item is never set again or sought (no reload).
+    @Test func lateCopiesSwapOnceCurrentNeverReloaded() async throws {
+        let model = try await signedIn()
+        defer { nav.releaseLookups(); model.signOut() }
+        model.discover.lookups = [:]
+        model.discover.copies = [:]
+        nav.holdLookups()
+        let page = DiscoverPageModel(playlistId: "pl-dw")
+        let loading = Task { await page.load(model, fresh: false) }
+        #expect(await eventually { page.page != nil })
+        let songs = try #require(page.page).songs   // Lullaby, Words, Unknown Song, Ref One, Ref Two
+        model.play([songs[2], songs[0], songs[1]], startAt: 0)   // Unknown Song plays; Lullaby and Words to come
+        let current = try #require(engine.setItemsCalls.last?.items.first)
+        let callsBefore = engine.setItemsCalls.count, seeksBefore = engine.seeks.count
+        nav.releaseLookups()
+        await loading.value
+        #expect(model.player.queue.current?.song.id == "a-unknown")
+        #expect(model.player.queue.upcoming.map(\.song.id) == ["m-lullaby", "m-words"])
+        let after = engine.setItemsCalls.dropFirst(callsBefore)
+        #expect(after.count == 1, "one swap, not one per copy: \(after.count)")
+        #expect(after.allSatisfy { $0.items.first?.0 == current.0 && $0.items.first?.1 == current.1 && $0.startAt == 0 },
+                "the current item is the one already loaded")
+        #expect(engine.seeks.count == seeksBefore, "never reloaded and sought")
     }
 
     /// Fix round 1 (I2): the flow rotated after Aurral's library was read: its new song (a job of the flow) is looked up

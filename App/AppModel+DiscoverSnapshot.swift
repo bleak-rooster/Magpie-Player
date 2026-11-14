@@ -137,8 +137,8 @@ extension AppModel {
     /// D285: opens a Discover playlist's page. The saved one is `show`n at once (unless `fresh`); the Discover read is
     /// waited for at most `discoverWait` when nothing is known yet (`waitForRead`, the phone's page; the car never
     /// waits); the playlist is read; when its songs are the saved ones the saved entries stay, otherwise the new songs
-    /// show at once, each as Aurral's copy until its lookup lands; then each library copy fills its row in place, and
-    /// replaces that song where it is still to come in the queue. The page is saved when done. `background`: a page
+    /// show at once, each as Aurral's copy until its lookup lands; then each library copy fills its row in place; once all
+    /// have landed, the copies replace those songs in what is still to come (fix round 1, I1). The page is saved when done. `background`: a page
     /// whose songs are the saved ones is left as it is (no lookups), and lookups come out of `budget` (D284).
     @discardableResult
     func openDiscoverPage(playlistId: String, fresh: Bool, waitForRead: Bool, background: Bool = false,
@@ -175,25 +175,30 @@ extension AppModel {
                                 entries: songs.map { DiscoverEntry(song: known[$0.id] ?? $0, original: $0) })
         }
         show(page)
-        let copies = await lookUpLibraryCopies(for: songs, flowId: flow?.id, fresh: fresh, budget: budget) { [weak self] id, copy in
+        let copies = await lookUpLibraryCopies(for: songs, flowId: flow?.id, fresh: fresh, budget: budget) { id, copy in
             page.entries = page.entries.map { entry in
                 entry.original.id == id ? DiscoverEntry(song: copy ?? entry.original, original: entry.original) : entry
             }
             show(page)
-            if let copy { self?.replaceQueuedDiscoverSong(id, with: copy) }
         }
         guard aurralFeedsScope == feeds else { throw CancellationError() }
         page.entries = DiscoverRules.swapped(songs, copies: copies)
         show(page)
+        swapQueuedDiscoverCopies(copies)   // fix round 1 (I1): once, when every lookup is done
         saveDiscoverPage(page, held: background)
         return page
     }
 
-    /// D285 (D59's swap): a library copy found after Play replaces that Discover song where it is still to come; the
-    /// song playing now plays on as it is (no restart mid-song).
-    func replaceQueuedDiscoverSong(_ id: String, with copy: Song) {
-        guard player.queue.current?.song.id != id, player.queue.upcoming.contains(where: { $0.song.id == id }) else { return }
-        player.replaceSong(id: id, with: copy)
+    /// D285 (D59's swap), fix round 1 (I1, D282): the library copies found for a page replace those Discover songs in
+    /// what's coming up, all at once when the page's lookups are done (`Player.replaceUpcoming`: one re-send of the
+    /// engine's list). The song playing now is never touched, so its item is never loaded again; Play next songs stay as
+    /// the owner chose them.
+    func swapQueuedDiscoverCopies(_ copies: [String: Song]) {
+        guard !copies.isEmpty, player.queue.current != nil else { return }
+        let rest = player.queue.upcoming.dropFirst(player.queue.upNext.count).map(\.song)
+        let swapped = rest.map { copies[$0.id] ?? $0 }
+        guard swapped != rest else { return }
+        player.replaceUpcoming(with: swapped)
     }
 
     /// D285: the car (and the queue's Play next) get the saved page at once, refreshed behind it; without one, the
