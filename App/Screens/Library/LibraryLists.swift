@@ -109,6 +109,7 @@ struct ArtistsListView: View {
 /// and a header per loaded letter run past 25 albums (D225).
 struct AlbumsListView: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.dynamicTypeSize) private var typeSize
     @State private var list: PagedLetterList<Album>?
     /// The running letter jump (its seek reads the server), cancelled when the screen goes.
     @State private var jumpTask: Task<Void, Never>?
@@ -156,6 +157,27 @@ struct AlbumsListView: View {
         .kindSearch(.albums, search, available: list?.items.value?.isEmpty == false)   // fix round 1 (M4)
         .navigationTitle("Albums")
         .navigationBarTitleDisplayMode(.inline)   // the field sits where a large title would
+        .toolbar {
+            // Round 27 H (owner, 2026-11-14): smaller or larger covers, the same setting as Settings › Home & Library
+            // (D296). The label says what a tap does.
+            // Fix round 1 (design H1, L1): hidden at accessibility sizes, where covers stay large (no dead control); a
+            // Label, so Large Content Viewer and Voice Control get its name; VoiceOver hears the new size.
+            if Self.showsCoverToggle(accessibility: typeSize.isAccessibilitySize) {
+                ToolbarItem(placement: .topBarTrailing) {
+                    let covers = model.preferences.layout.albumCovers
+                    Button {
+                        Self.toggleCovers(model)
+                        AccessibilityNotification.Announcement(
+                            AlbumCoversCopy.announcement(model.preferences.layout.albumCovers)).post()
+                    } label: {
+                        Label(AlbumCoversCopy.toolbarLabel(covers), systemImage: AlbumCoversCopy.toolbarSymbol(covers))
+                            .labelStyle(.iconOnly)
+                            .frame(minWidth: Tokens.minHitSize, minHeight: Tokens.minHitSize)
+                    }
+                    .accessibilityIdentifier("albums-cover-size")
+                }
+            }
+        }
         .magpieScreen()
         .onDisappear { jumpTask?.cancel() }
         .task {
@@ -169,6 +191,14 @@ struct AlbumsListView: View {
             }
             if list?.items.value == nil { await list?.load() }
         }
+    }
+
+    /// Fix round 1 (design H1): the toolbar button only where the choice changes the grid.
+    static func showsCoverToggle(accessibility: Bool) -> Bool { !accessibility }
+
+    /// Round 27 H (D296): the toolbar's tap, Large to Small and back.
+    static func toggleCovers(_ model: AppModel) {
+        model.updatePreferences { $0.layout.albumCovers = $0.layout.albumCovers == .large ? .small : .large }
     }
 
     /// A letter picked while a jump runs joins it (the latest wins); otherwise a new jump, kept so leaving cancels it.
@@ -188,18 +218,23 @@ struct AlbumLetterGrid: View {
     var onAppearLast: (() -> Void)?
     var scrollRequest: PagedLetterList<Album>.ScrollRequest?
     var proxy: ScrollViewProxy?
+    @Environment(AppModel.self) private var model
     @Environment(\.letterIndexShown) private var barShown
     @Environment(\.dynamicTypeSize) private var typeSize
     @State private var width: CGFloat = 350
 
-    private var columns: Int { AlbumGrid.columnCount(width: width, accessibility: typeSize.isAccessibilitySize) }
-    private var tileWidth: CGFloat { max(100, (width - CGFloat(columns - 1) * Tokens.Spacing.l) / CGFloat(columns)) }
+    /// Round 27 H (D296): the one album covers setting, as every `AlbumGrid`; the letter jump's row length follows it.
+    private var size: AlbumCoverSize { model.preferences.layout.albumCovers }
+    private var small: Bool { AlbumGrid.usesSmallTiles(size, accessibility: typeSize.isAccessibilitySize) }
+    private var columns: Int { AlbumGrid.columnCount(width: width, accessibility: typeSize.isAccessibilitySize, size: size) }
+    private var tileWidth: CGFloat { AlbumGrid.tileWidth(width: width, columns: columns, size: size) }
 
     var body: some View {
         let runs = LetterSectionHeader.runs(sections, itemCount: albums.count, barShown: barShown)
         LazyVGrid(columns: Array(repeating: GridItem(.fixed(tileWidth), spacing: Tokens.Spacing.l, alignment: .top),
                                  count: columns),
-                  alignment: .leading, spacing: Tokens.Spacing.xl, pinnedViews: [.sectionHeaders]) {
+                  alignment: .leading, spacing: small ? Tokens.Spacing.l : Tokens.Spacing.xl,
+                  pinnedViews: [.sectionHeaders]) {
             if runs.isEmpty {
                 tiles(albums.indices)
             } else {
@@ -230,7 +265,7 @@ struct AlbumLetterGrid: View {
     private func tiles(_ indices: Range<Int>) -> some View {
         ForEach(Array(zip(indices, albums[indices])), id: \.1.id) { index, album in
             NavigationLink(value: Route.album(id: album.id)) {
-                AlbumTileView(album: album, subtitle: album.artist, width: tileWidth)
+                AlbumGridTile(album: album, subtitle: album.artist, width: tileWidth, small: small)
             }
             .buttonStyle(.plain)
             .accessibilityIdentifier("album-\(index)")

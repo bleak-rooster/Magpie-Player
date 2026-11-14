@@ -65,6 +65,20 @@ public protocol CarPlayCustomisationLibrary: AnyObject {
     /// Round 24 (D223's rule, D179): the signed-in user while everyone's playlists show (All), so the car's Playlists
     /// say whose the others' are; nil for Yours (and when signed out).
     var playlistCaptionUser: String? { get }
+    /// Round 27 H (owner, 2026-11-14): a play started from the playlist's page in the car; the app keeps it when the
+    /// playlist is a flow, for the car's Home order (D297). Nothing by default.
+    func notePlaylistPlayed(id: String)
+    /// Round 27 H (D299): whose a Discover playlist is ("sam"), for another user's only while everyone's show; nil
+    /// otherwise (and by default).
+    func discoverOwnerCaption(playlistId: String) -> String?
+    /// Round 27 H (D300): whether Flows with your playlists applies now (false by default). Observable.
+    var flowsWithPlaylists: Bool { get }
+}
+
+extension CarPlayCustomisationLibrary {
+    public var flowsWithPlaylists: Bool { false }
+    public func notePlaylistPlayed(id: String) {}
+    public func discoverOwnerCaption(playlistId: String) -> String? { nil }
 }
 
 /// Home and Library from the owner's layout (spec §3, Task 22), the new rows' screens, genre play, the offline watch
@@ -118,7 +132,8 @@ extension CarPlayController {
     }
 
     private static func layout(of library: any CarPlayLibrary) -> CPLayout {
-        CPLayout(home: library.homeSections, library: library.libraryRows, offline: library.isOffline, tab: library.carPlayTab)
+        CPLayout(home: library.homeSections, library: library.libraryRows, offline: library.isOffline, tab: library.carPlayTab,
+                 flowsWithPlaylists: library.flowsWithPlaylists)
     }
 
     /// The screens of the destinations added with the layout. Each reads through the library, which offline reads the
@@ -166,8 +181,12 @@ extension CarPlayController {
                 let offer = library.tryOffer
                 return { CarPlayRows.madeForYou(tracks, offer: offer, playingId: $0) }
             }
-        case .discover:   // Y6 (CarPlayDiscover.swift)
-            return { let playlists = try await library.discoverPlaylists(); return { _ in CarPlayRows.discover(playlists) } }
+        case .discover:   // Y6 (CarPlayDiscover.swift); round 27 H (D299): another user's rows end " · sam"
+            return {
+                let playlists = try await library.discoverPlaylists()
+                let captions = Self.discoverCaptions(playlists, library)
+                return { _ in CarPlayRows.discover(playlists, captions: captions) }
+            }
         case .finds:
             // Read again first, so the list isn't what the phone last saw (the Finds tab refreshes the same way).
             return {
@@ -177,6 +196,29 @@ extension CarPlayController {
             }
         default:
             return { { _ in CarPlayRows.state(.empty) } }
+        }
+    }
+
+    /// Round 27 H (D299): the captions of the Discover playlists another user made, by playlist id.
+    static func discoverCaptions(_ playlists: [Playlist], _ library: any CarPlayLibrary) -> [String: String] {
+        Dictionary(playlists.compactMap { p in library.discoverOwnerCaption(playlistId: p.id).map { (p.id, $0) } },
+                   uniquingKeysWith: { first, _ in first })
+    }
+
+    /// Round 27 H (owner, 2026-11-14; D297): a play tapped on a playlist's page (the list on top, or a page of it) is
+    /// told to the library, which keeps it when the playlist is a flow. Called by `perform` before the play starts.
+    func notePlaylistPlay() {
+        guard let top = interface.topTemplate, let destination = bindings[ObjectIdentifier(top)]?.destination,
+              let id = Self.playlistId(of: destination) else { return }
+        library.notePlaylistPlayed(id: id)
+    }
+
+    /// The playlist a list shows: a playlist's page, downloaded or not, or a page of one (D232); nil for any other.
+    static func playlistId(of destination: CPDestination) -> String? {
+        switch destination {
+        case .playlist(let id, _), .downloadedPlaylist(let id, _): id
+        case .page(let ref): ref.base.flatMap(playlistId)
+        default: nil
         }
     }
 

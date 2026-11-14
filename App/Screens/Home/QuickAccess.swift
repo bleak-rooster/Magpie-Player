@@ -78,10 +78,12 @@ struct QuickAccessStore {
 }
 
 extension AppModel {
-    /// Played from an album's, playlist's or flow's page: it heads Home's quick grid.
+    /// Played from an album's, playlist's or flow's page: it heads Home's quick grid. Round 27 H (owner, 2026-11-14): a
+    /// Discover playlist's play is also kept for Your flows' and the car's last played order (D297).
     func noteRecentlyPlayed(_ play: RecentPlay?) {
         guard let play else { return }
         homeFeed.notePlayed(play)
+        if play.kind == .playlist { noteFlowPlayed(playlistId: play.itemId) }
     }
 
     /// The quick grid's tiles now: the history and the Quick access shelf's albums.
