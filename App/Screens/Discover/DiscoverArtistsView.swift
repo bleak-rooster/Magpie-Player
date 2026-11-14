@@ -53,14 +53,18 @@ import SwiftUI
 /// Round 27 D2 (owner items 4 and 5, 2026-11-14): each row opens the artist's page, pushed inside the sheet: their
 /// library page when the library has them, else the outside page (`AppModel.discoverArtistRoute`, resolved on the tap).
 /// Offline the rows don't open and show no chevron. The row's Add says "Add" on one line (D315).
+/// Fix round 1 (design L2, M6): the artist's page keeps Done; an artist looked up once opens at once the next time
+/// (this sheet only); VoiceOver hears "Opening <artist>" while it's looked up.
 struct DiscoverArtistsView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     let artists: [DiscoverArtist]
     let adder: DiscoverArtistAdder
-    @State private var path: [Route] = []
+    @State private var path: [ArtistPage] = []
     /// The artist whose page is being looked up (by `DiscoverArtist.id`).
     @State private var opening: String?
+    /// Where each artist opened, this sheet only (by `DiscoverArtist.id`).
+    @State private var opened: [String: Route] = [:]
     private let themed = Themed()
 
     var body: some View {
@@ -84,18 +88,47 @@ struct DiscoverArtistsView: View {
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
             }
+            .navigationDestination(for: ArtistPage.self) { page in
+                ArtistPageDestination(route: page.route)
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
+                    }
+            }
             .magpieRoutes()
         }
     }
 
-    /// Looks the artist up (at most 5 s), then pushes their page; one at a time.
+    /// Looks the artist up (at most 5 s; once per sheet), then pushes their page; one at a time.
     private func open(_ artist: DiscoverArtist) {
         guard opening == nil else { return }
+        if let known = opened[artist.id] {
+            path.append(ArtistPage(route: known))
+            return
+        }
         opening = artist.id
+        AccessibilityNotification.Announcement(DiscoverArtistLinkCopy.openingAnnouncement(artist.name)).post()
         Task {
             let route = await model.discoverArtistRoute(artist)
             opening = nil
-            if let route { path.append(route) }
+            guard let route else { return }
+            opened[artist.id] = route
+            path.append(ArtistPage(route: route))
+        }
+    }
+}
+
+/// Round 27 D2 fix round 1 (L2): an artist's page pushed from the sheet (so it can carry the sheet's Done).
+struct ArtistPage: Hashable { var route: Route }
+
+/// The library or outside artist page for a sheet row's route.
+private struct ArtistPageDestination: View {
+    let route: Route
+
+    var body: some View {
+        switch route {
+        case .artist(let id): ArtistView(artistId: id)
+        case .outsideArtist(let artist): OutsideArtistView(artist: artist)
+        default: EmptyView()   // the sheet's rows open only these two
         }
     }
 }
@@ -119,6 +152,7 @@ private struct DiscoverArtistRow: View {
 /// each at least 44 pt (D315).
 struct DiscoverArtistRowContent: View {
     @Environment(\.discoverLayoutProbe) private var probe
+    @Environment(\.dynamicTypeSize) private var typeSize
     let name: String
     let status: (text: String, symbol: String)?
     let showsAdd: Bool
@@ -128,26 +162,39 @@ struct DiscoverArtistRowContent: View {
     private let themed = Themed()
 
     var body: some View {
-        HStack(spacing: Tokens.Spacing.m) {
-            if let open {
-                Button(action: open) { linkLabel(chevron: true) }
-                    .buttonStyle(.plain)
-                    .accessibilityElement(children: .ignore)
-                    .accessibilityLabel(DiscoverArtistLinkCopy.linkLabel(name: name, status: status?.text))
-                    .accessibilityAddTraits(.isButton)
-                    .accessibilityIdentifier("discover-artist-link")
-                    .discoverProbe(probe, "link:" + DiscoverArtistLinkCopy.linkLabel(name: name, status: status?.text))
+        // Fix round 1 (design M7): at accessibility sizes Add goes under the name and status.
+        Group {
+            if typeSize.isAccessibilitySize {
+                VStack(alignment: .leading, spacing: Tokens.Spacing.s) { link; addButton }
             } else {
-                linkLabel(chevron: false)
-                    .accessibilityElement(children: .ignore)
-                    .accessibilityLabel(DiscoverArtistLinkCopy.linkLabel(name: name, status: status?.text))
-            }
-            if showsAdd {
-                DiscoverAddButton(artistName: name, action: add)
-                    .discoverProbe(probe, "add:" + DiscoverArtistLinkCopy.addLabel(name))
+                HStack(spacing: Tokens.Spacing.m) { link; addButton }
             }
         }
         .accessibilityElement(children: .contain)
+    }
+
+    @ViewBuilder private var link: some View {
+        if let open {
+            Button(action: open) { linkLabel(chevron: true) }
+                .buttonStyle(.plain)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(DiscoverArtistLinkCopy.linkLabel(name: name, status: status?.text))
+                .accessibilityValue(opening ? DiscoverArtistLinkCopy.opening : "")   // design M6
+                .accessibilityAddTraits(.isButton)
+                .accessibilityIdentifier("discover-artist-link")
+                .discoverProbe(probe, "link:" + DiscoverArtistLinkCopy.linkLabel(name: name, status: status?.text))
+        } else {
+            linkLabel(chevron: false)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(DiscoverArtistLinkCopy.linkLabel(name: name, status: status?.text))
+        }
+    }
+
+    @ViewBuilder private var addButton: some View {
+        if showsAdd {
+            DiscoverAddButton(artistName: name, action: add)
+                .discoverProbe(probe, "add:" + DiscoverArtistLinkCopy.addLabel(name))
+        }
     }
 
     private func linkLabel(chevron: Bool) -> some View {

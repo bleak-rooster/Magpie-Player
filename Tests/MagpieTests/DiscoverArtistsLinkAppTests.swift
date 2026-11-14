@@ -244,6 +244,20 @@ final class ArtistLinkRouting: HTTPTransport, @unchecked Sendable {
         #expect(frames.keys.allSatisfy { !$0.hasPrefix("link:") && !$0.hasPrefix("add:") }, "\(frames.keys)")
     }
 
+    /// Fix round 1 (design M7, M6): at accessibility sizes Add goes under the name and status; "Opening" while looked up.
+    @Test func addUnderNameAtAccessibilitySizes() async throws {
+        #expect(DiscoverArtistLinkCopy.opening == "Opening" && DiscoverArtistLinkCopy.openingAnnouncement("Low") == "Opening Low")
+        let frames = try await Self.host(List {
+            DiscoverArtistRowContent(name: "The Midnight Cartographers", status: ("Not in Lidarr", "plus.circle"),
+                                     showsAdd: true, opening: false, open: {}, add: {})
+        }, typeSize: .accessibility3, height: 900, waitFor: ["link:The Midnight Cartographers, Not in Lidarr",
+                                                             "add:Add The Midnight Cartographers to your library"])
+        let link = try #require(frames["link:The Midnight Cartographers, Not in Lidarr"])
+        let add = try #require(frames["add:Add The Midnight Cartographers to your library"])
+        #expect(add.minY >= link.maxY - 1, "Add under the name: \(link) \(add)")
+        #expect(add.maxX <= 375.5)
+    }
+
     /// Hosts `view` in a window and collects what the layout probe reports (until `waitFor` all arrived, or a deadline).
     static func host(_ view: some View, typeSize: DynamicTypeSize, height: CGFloat = 400,
                      model: AppModel? = nil, waitFor: Set<String>) async throws -> [String: CGRect] {

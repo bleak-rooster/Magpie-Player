@@ -12,14 +12,33 @@ import SwiftUI
 struct OutsideSongMenu: View {
     @Environment(AppModel.self) private var model
     let song: OutsideSong
+    /// Round 27 D2 fix round 1 (design H2): the chart's flow is already getting this song: only that, and Save to
+    /// playlist (never a second Try or Add for it).
+    var onItsWay = false
 
     init(song: OutsideSong) { self.song = song }
-    init(song: AurralSong) { self.song = OutsideSong(song) }
+    init(song: AurralSong, onItsWay: Bool = false) { self.song = OutsideSong(song); self.onItsWay = onItsWay }
 
     @MainActor static func isAvailable(_ model: AppModel) -> Bool { model.outsideSongMenuAvailable }
 
+    /// What the menu holds (round 27 D2 fix round 1: pinned by tests).
+    enum Item: Equatable { case status, retry, tryIt, addToLibrary, addArtist, onItsWay, save }
+
+    /// The menu's items for a song (`status`/`retry` only when the model has them).
+    static func items(onItsWay: Bool, hasStatus: Bool = false, hasStopped: Bool = false) -> [Item] {
+        if onItsWay { return [.onItsWay, .save] }
+        return (hasStatus ? [.status] : []) + (hasStopped ? [.retry] : []) + [.tryIt, .addToLibrary, .addArtist, .save]
+    }
+
     var body: some View {
-        if model.outsideSongMenuAvailable {
+        if model.outsideSongMenuAvailable, onItsWay {
+            Label(ChartFlowRowCopy.onItsWay, systemImage: ChartFlowRowCopy.onItsWaySymbol)
+                .accessibilityIdentifier("song-menu-on-its-way")
+            Button { model.askToSave(song) } label: {
+                Label(SongActionsCopy.saveToPlaylist, systemImage: "text.badge.plus")
+            }
+            .accessibilityIdentifier("song-menu-save")
+        } else if model.outsideSongMenuAvailable {
             // Round 15 C3 (owner item 6, D135, D136, D139): where it stands, then Try (temporary) and Add to library
             // (permanent). With Allow changes off (or Try not set up) the subtitles and a tap say why.
             if let status = model.libraryStatus(for: song) {
@@ -127,6 +146,8 @@ struct ChartSongRow: View {
     var showsPosition = false
     /// Round 27 D2: the chart's flow is still getting this song ("On its way", D318).
     var onItsWay = false
+    /// Round 27 D2 fix round 1 (design H1): `copy` is the chart flow's: played in full, with no "in your library" tick.
+    var flowCopy = false
     @State private var picture: UIImage?
     private let themed = Themed()
 
@@ -159,6 +180,9 @@ struct ChartSongRow: View {
         return onItsWay ? .onItsWay : .preview
     }
 
+    /// Fix round 1 (design H1; owner: "without saying that"): only the main library's copy shows the tick.
+    static func showsInLibrary(flowCopy: Bool) -> Bool { !flowCopy }
+
     @ViewBuilder private var row: some View {
         if Self.kind(copy: copy, onItsWay: onItsWay) == .onItsWay {
             VStack(alignment: .leading, spacing: 0) {
@@ -166,6 +190,7 @@ struct ChartSongRow: View {
                 Label(ChartFlowRowCopy.onItsWay, systemImage: ChartFlowRowCopy.onItsWaySymbol)
                     .font(.footnote).foregroundStyle(themed.palette.ink2Color)
                     .padding(.horizontal, Tokens.Spacing.margin)
+                    .accessibilityHidden(true)   // design M1: said in the row's own label
                     .accessibilityIdentifier("chart-song-on-its-way")
             }
         } else {
@@ -177,7 +202,8 @@ struct ChartSongRow: View {
         let art = picture.map { Image(uiImage: $0) }
         if copy != nil {
             Button(action: playCopy) {
-                PreviewRow(title: song.title, artist: song.artist, artwork: art, inLibrary: true, status: nil, onPreview: {})
+                PreviewRow(title: song.title, artist: song.artist, artwork: art, inLibrary: Self.showsInLibrary(flowCopy: flowCopy),
+                           status: nil, onPreview: {})
             }
             .buttonStyle(.plain)
             .accessibilityAddTraits(.isButton)
@@ -185,11 +211,12 @@ struct ChartSongRow: View {
             let item = model.previewItem(for: song)
             let status = model.previewsAvailable
                 ? PreviewCopy.status(model.previewPlayer.state(for: item), player: model.previewPlayer) : nil
+            let note = onItsWay ? ChartFlowRowCopy.onItsWayNote : nil
             if OutsideSongMenu.isAvailable(model) {
-                PreviewRow(title: song.title, artist: song.artist, artwork: art, status: status,
-                           onPreview: { model.togglePreview(item) }) { OutsideSongMenu(song: song.song) }
+                PreviewRow(title: song.title, artist: song.artist, artwork: art, status: status, accessibilityNote: note,
+                           onPreview: { model.togglePreview(item) }) { OutsideSongMenu(song: song.song, onItsWay: onItsWay) }
             } else {
-                PreviewRow(title: song.title, artist: song.artist, artwork: art, status: status,
+                PreviewRow(title: song.title, artist: song.artist, artwork: art, status: status, accessibilityNote: note,
                            onPreview: { model.togglePreview(item) })
             }
         }
@@ -206,34 +233,37 @@ struct ChartSongList: View {
     var identifier = "chart-song"
     var chart: TrendingChart? = nil
     var reload = 0
+    /// Fix round 1 (I1): the rows as read, handed up (Trending's No. 1, Play and Play previews use the same read).
+    var onRows: ((ChartRows) -> Void)? = nil
     @State private var rows = ChartRows()
 
-    private struct Key: Equatable { var songs: [ChartSong]; var chart: TrendingChart?; var reload: Int }
+    /// Fix round 1 (M4): the flow's playlist and its songs' states too, so rows follow Discover and finished downloads.
+    private struct Key: Equatable { var songs: [ChartSong]; var chart: TrendingChart?; var reload: Int; var flow: String }
 
     var body: some View {
         LazyVStack(alignment: .leading, spacing: 0) {
             ForEach(Array(songs.enumerated()), id: \.offset) { index, song in
                 ChartSongRow(song: song, copy: rows.copies[index], playCopy: { play(from: index) }, showsPosition: showsPosition,
-                             onItsWay: rows.onItsWay.contains(index))
+                             onItsWay: rows.onItsWay.contains(index), flowCopy: rows.flowRows.contains(index))
                     .accessibilityIdentifier("\(identifier)-\(index)")
             }
         }
-        .task(id: Key(songs: songs, chart: chart, reload: reload)) {
+        .task(id: Key(songs: songs, chart: chart, reload: reload, flow: model.chartFlowSignature(chart))) {
             let found = await model.chartRows(chart: chart, songs: songs)
-            if !Task.isCancelled { rows = found }   // swapped in place, no animation
+            guard !Task.isCancelled else { return }
+            rows = found   // swapped in place, no animation
+            onRows?(found)
         }
     }
 
     /// The playable rows' songs in the list's order, and where the tapped one is among them (nil: it isn't playable).
     static func playOrder(copies: [Int: Song], from index: Int) -> (songs: [Song], start: Int)? {
-        let owned = copies.keys.sorted()
-        guard let start = owned.firstIndex(of: index) else { return nil }
-        return (owned.compactMap { copies[$0] }, start)
+        ChartRows(copies: copies).playOrder(from: index)
     }
 
     /// The shown playable rows, from the tapped one.
     private func play(from index: Int) {
-        guard let order = Self.playOrder(copies: rows.copies, from: index) else { return }
+        guard let order = rows.playOrder(from: index) else { return }
         model.play(order.songs, startAt: order.start)
     }
 }

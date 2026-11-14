@@ -58,6 +58,10 @@ enum DiscoverArtistLinkCopy {
     /// VoiceOver's label for Add, unchanged from before: "Add <artist> to your library".
     static func addLabel(_ name: String) -> String { DiscoverCopy.addArtist(name) }
 
+    /// Fix round 1 (design M6): the link's VoiceOver value while its page is looked up, and what's said on the tap.
+    static let opening = "Opening"
+    static func openingAnnouncement(_ name: String) -> String { "Opening \(name)" }
+
     /// The link's VoiceOver label: "<artist>, <status>".
     static func linkLabel(name: String, status: String?) -> String {
         guard let status, !status.isEmpty else { return name }

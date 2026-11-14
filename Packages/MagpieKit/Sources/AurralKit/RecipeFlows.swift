@@ -23,10 +23,12 @@ public enum FlowSource: String, CaseIterable, Sendable, Hashable {
 public struct FlowRecipe: Sendable, Hashable {
     public var name: String
     /// Round 27 D2 (owner, 2026-11-14): how many songs each source brings to an update, as Aurral's editor asks for
-    /// them (each 0–100; a source at 0 is off). Supersedes round 16's shares (D316, supersedes D150).
+    /// them (a source at 0 is off; up to `maxSongsPerSource` to be sent). Supersedes round 16's shares (D316,
+    /// supersedes D150). Fix round 1 (I4): never shrunk here (a flow made bigger on Aurral reads back whole and is
+    /// refused, not cut, if a source is over 100); only held to 0…`maxStored`.
     public var counts: [FlowSource: Int] {
         didSet {
-            for (source, n) in counts where !(0...Self.maxSongs).contains(n) { counts[source] = min(max(n, 0), Self.maxSongs) }
+            for (source, n) in counts where !(0...Self.maxStored).contains(n) { counts[source] = min(max(n, 0), Self.maxStored) }
         }
     }
     /// Deeper cuts: less obvious songs.
@@ -43,7 +45,12 @@ public struct FlowRecipe: Sendable, Hashable {
     /// 0–23 (Aurral keeps minutes at 00).
     public var scheduleHour: Int
 
-    public static let maxSongs = 100
+    /// Fix round 1 (I4, as Aurral's editor: `MAX_SOURCE_TRACKS`): the most songs one source may bring.
+    public static let maxSongsPerSource = 100
+    /// The most songs a flow may hold: every source at its most (supersedes D148's 100).
+    public static let maxSongs = maxSongsPerSource * FlowSource.allCases.count
+    /// The largest size or count read from a server (a bound, not a rule).
+    static let maxStored = 10_000
     public static let defaultSize = 30
     /// Round 27 D2: what checking a source in the editor gives it (D316).
     public static let countWhenPicked = 10
@@ -56,14 +63,14 @@ public struct FlowRecipe: Sendable, Hashable {
                 recentListening: Bool = false, autoDownload: Bool = true, yearFrom: Int? = nil, yearTo: Int? = nil,
                 tags: [String] = [], excludeTags: [String] = [], relatedArtists: [String] = [],
                 scheduleDays: [Int] = [5], scheduleHour: Int = 0) {
-        self.name = name; self.counts = counts.mapValues { min(max($0, 0), Self.maxSongs) }; self.deepDive = deepDive
+        self.name = name; self.counts = counts.mapValues { min(max($0, 0), Self.maxStored) }; self.deepDive = deepDive
         self.recentListening = recentListening; self.autoDownload = autoDownload; self.yearFrom = yearFrom
         self.yearTo = yearTo; self.tags = tags; self.excludeTags = excludeTags; self.relatedArtists = relatedArtists
         self.scheduleDays = scheduleDays; self.scheduleHour = scheduleHour
     }
 
-    /// Round 27 D2: how many songs an update brings: the counts' sum (Aurral's `flowDraftTotal`), 1–100 to be sent
-    /// (amends D148: the size is no longer a field of its own) (D316).
+    /// Round 27 D2: how many songs an update brings: the counts' sum (Aurral's `flowDraftTotal`), at least 1 to be
+    /// sent (supersedes D148: the size is no longer a field of its own; fix round 1: up to 500, 100 a source) (D316).
     public var size: Int { FlowSource.allCases.reduce(0) { $0 + (counts[$1] ?? 0) } }
 
     /// The sources picked (count above 0), in Aurral's order.
@@ -111,9 +118,11 @@ public struct FlowRecipe: Sendable, Hashable {
         let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
         if name.isEmpty { return "Give the flow a name." }
         if name.count > Self.maxNameLength { return "That name is too long." }
-        // Round 27 D2: the counts' sum, refused unsent outside 1–100 (D316).
+        // Round 27 D2: at least one song, at most 100 a source (fix round 1, I4: as Aurral), refused unsent (D316).
         if size < 1 { return "Choose at least one song." }
-        if size > Self.maxSongs { return "A flow holds up to \(Self.maxSongs) songs in all." }
+        if counts.values.contains(where: { $0 > Self.maxSongsPerSource }) {
+            return "A source holds up to \(Self.maxSongsPerSource) songs."
+        }
         if scheduleDays.isEmpty || !scheduleDays.allSatisfy((0...6).contains) { return "Pick at least one day to update on." }
         if !(0...23).contains(scheduleHour) { return "Pick an hour to update at." }
         for year in [yearFrom, yearTo].compactMap({ $0 }) where !(1000...9999).contains(year) {
@@ -182,7 +191,7 @@ public struct FlowRecipe: Sendable, Hashable {
                 weights[source] = n.doubleValue
             }
         }
-        let size = min(max(f.int("size") ?? defaultSize, 1), maxSongs)
+        let size = min(max(f.int("size") ?? defaultSize, 1), maxStored)   // fix round 1 (I4): the real size
         let counts = splitFlowTotal(weights, total: size) ?? [:]
         let days = (f["scheduleDays"] as? [Any] ?? []).compactMap { ($0 as? NSNumber)?.intValue }.filter((0...6).contains)
         let hour = f.string("scheduleTime").flatMap { Int($0.split(separator: ":").first ?? "") }.flatMap {

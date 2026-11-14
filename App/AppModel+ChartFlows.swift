@@ -336,14 +336,16 @@ extension AppModel {
     /// or its Home shelf), so its flow follows it, at most once a day. Sent only when:
     /// - Aurral is set up, online, with accessFlow, and the chart has a **confirmed** flow that the user's own list
     ///   (the status, scoped to them) still holds: never another user's;
-    /// - its songs were last sent at least `chartFlowKeepUpInterval` ago, and no Refresh now or Songs: N is under way;
+    /// - its songs were last sent at least `chartFlowKeepUpInterval` ago, and nothing is sending it now (a Refresh now,
+    ///   Songs: N or another keep-up: `chartFlowsSending`, fix round 1 I3);
     /// - its run isn't under way (D61's `isFlowRunActive`);
-    /// - the chart's top N (artist and title, `ChartFlowPlan.tracks`) differ from the flow's songs as Discover last read
-    ///   them (its jobs: the songs Magpie sent). Unknown jobs: nothing (when in doubt, don't write).
+    /// - the chart still lists at least the flow's N songs (fix round 1 M3: a short read never shrinks the flow), and
+    ///   its top N (artist and title, `ChartFlowPlan.tracks`) differ from the flow's songs as Discover last read them
+    ///   (its jobs: the songs Magpie sent). Unknown jobs: nothing (when in doubt, don't write).
     /// Then the time is saved as "sent" before anything goes (M6: a failed send waits for the next day), and the
     /// existing update goes: the songs that left are removed, the new ones added (`sendChartFlow`, the same routes and
     /// bodies as Refresh now; it reads the flow's songs fresh and sends nothing if they already match). A 404 forgets
-    /// the flow (D131). Answers whether it sent.
+    /// the flow (D131). Answers whether it sent. Screens call `keepChartFlowUpInBackground` (fix round 1 I2).
     @discardableResult
     func keepChartFlowUp(_ page: ChartPage) async -> Bool {
         guard aurralSetUp, !isOffline, aurralCanAddFlow, aurralClient != nil else { return false }
@@ -351,15 +353,18 @@ extension AppModel {
         guard discover.status?.sharedPlaylists.contains(where: { $0.id == flow.playlistId }) == true else { return false }
         let now = aurralFeeds.now()
         guard now.timeIntervalSince(flow.refreshedAt) >= Self.chartFlowKeepUpInterval,
-              !chartFlowsSendingByHand.contains(flow.playlistId), !isFlowRunActive(flow.playlistId) else { return false }
+              !chartFlowsSending.contains(flow.playlistId), !isFlowRunActive(flow.playlistId) else { return false }
         let wanted = ChartFlowPlan.tracks(from: Self.flowTracks(page.songs), count: flow.count)
         let jobs = discover.jobs.filter { $0.flowId == flow.playlistId }
-        guard !wanted.isEmpty, !jobs.isEmpty else { return false }
+        guard !wanted.isEmpty, wanted.count >= flow.count, !jobs.isEmpty else { return false }
         let change = ChartFlowPlan.changes(jobs: jobs, wanted: wanted)
         guard !change.remove.isEmpty || !change.add.isEmpty else { return false }
-        // M6: saved as sent before it goes (no await between the checks above and this mark).
+        // M6: saved as sent before it goes (no await between the checks above and this mark); held as sending until
+        // it's done, so a Refresh now or Songs: N waits its turn (I3).
         flow.refreshedAt = now
         aurralFeeds.noteChartFlow(flow)
+        chartFlowsSending.insert(flow.playlistId)
+        defer { chartFlowsSending.remove(flow.playlistId) }
         Log.logger("discover").info("chart flow keeps up: \(change.remove.count, privacy: .public) out, \(change.add.count, privacy: .public) in")
         do {
             _ = try await sendChartFlow(page, count: flow.count)
@@ -369,19 +374,21 @@ extension AppModel {
         }
     }
 
-    /// Runs a Refresh now or Songs: N with the flow marked as being sent by hand, so a chart read meanwhile doesn't
-    /// keep it up at the same time.
-    private func whileSendingByHand<T>(_ chart: TrendingChart, _ work: () async throws -> T) async throws -> T {
-        guard let id = chartFlow(for: chart)?.playlistId else { return try await work() }
-        chartFlowsSendingByHand.insert(id)
-        defer { chartFlowsSendingByHand.remove(id) }
-        return try await work()
+    /// Fix round 1 (I2): keeps the chart's flow up in its own task, so leaving the page, switching charts or a pull to
+    /// refresh never cancels a send half way (its songs out but not yet in, marked as sent for a day).
+    @discardableResult
+    func keepChartFlowUpInBackground(_ page: ChartPage) -> Task<Bool, Never> {
+        Task { [weak self] in await self?.keepChartFlowUp(page) ?? false }
     }
 
-    /// Round 27 D2: the chart flows a Refresh now or Songs: N is sending right now (by Aurral playlist id).
-    private var chartFlowsSendingByHand: Set<String> {
-        get { ChartFlowsSending.ids[ObjectIdentifier(self)] ?? [] }
-        set { ChartFlowsSending.ids[ObjectIdentifier(self)] = newValue.isEmpty ? nil : newValue }
+    /// Runs a Refresh now or Songs: N with the flow marked as sending; refused (`runActive`, "try again in a moment")
+    /// while a keep-up or another change is sending it (fix round 1 I3: never two sends of one flow at once).
+    private func whileSendingByHand<T>(_ chart: TrendingChart, _ work: () async throws -> T) async throws -> T {
+        guard let id = chartFlow(for: chart)?.playlistId else { return try await work() }
+        guard !chartFlowsSending.contains(id) else { throw AurralError.runActive }
+        chartFlowsSending.insert(id)
+        defer { chartFlowsSending.remove(id) }
+        return try await work()
     }
 
     /// Your flows and Home's shelf read again behind the change (the playlist joins, changes or leaves as the server
@@ -392,11 +399,6 @@ extension AppModel {
             self?.homeFeedSlot?.sectionsChanged([.discover])
         }
     }
-}
-
-/// Round 27 D2: the chart flows each model is sending by hand (Refresh now, Songs: N), held only while it lasts.
-@MainActor private enum ChartFlowsSending {
-    static var ids: [ObjectIdentifier: Set<String>] = [:]
 }
 
 /// A chart flow's state on Trending (fix round I1): being made on the server, not made (Retry), or A4's phases once

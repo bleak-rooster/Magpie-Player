@@ -39,20 +39,39 @@ import Testing
         #expect(r.counts[.focus] == 10 && r.size == 27)
         r.setSource(.discover, on: false)
         #expect(r.counts[.discover] == 0 && r.size == 15 && r.sources == [.trending, .focus])
-        r.counts[.mix] = 150   // each count is held to 0–100
-        #expect(r.counts[.mix] == 100)
-        r.counts[.mix] = -3
+        r.counts[.mix] = -3   // never below 0
         #expect(r.counts[.mix] == 0)
         #expect(FlowRecipe(name: "New").size == FlowRecipe.defaultSize)
     }
 
+    /// Fix round 1 (I4): as Aurral's editor, up to 100 songs a source and so up to 500 in all; a source over 100 is
+    /// refused unsent; 100 in each of two sources (200 in all) is fine.
     @Test func counts_overHundredRefused() async {
-        let r = Self.recipe([.discover: 60, .mix: 41])
-        #expect(r.size == 101)
-        #expect(r.problem == "A flow holds up to 100 songs in all.")
-        #expect(Self.recipe([.discover: 60, .mix: 40]).problem == nil)
+        let r = Self.recipe([.discover: 101, .mix: 40])
+        #expect(r.counts[.discover] == 101, "kept as it is, refused, never shrunk")
+        #expect(r.problem == "A source holds up to 100 songs.")
+        #expect(Self.recipe([.discover: 100, .mix: 100]).problem == nil)
+        #expect(Self.recipe([.discover: 100, .mix: 100]).size == 200)
+        #expect(FlowRecipe.maxSongsPerSource == 100 && FlowRecipe.maxSongs == 500)
         await #expect(throws: AurralError.self) { try await client.createRecipeFlow(r) }
         #expect(stub.asked.isEmpty)
+    }
+
+    /// Fix round 1 (I4): a flow of 150 songs (made on Aurral) reads back at 150 and an unchanged save sends nothing;
+    /// a changed name sends only the name.
+    @Test func counts_150SongFlowRoundTrips() throws {
+        let flow = try #require(FlowRecipe.decode(["name": "Big", "size": 150, "scheduleDays": [5],
+                                                   "mix": ["discover": 66.67, "mix": 33.33, "trending": 0, "focus": 0, "newReleases": 0]]))
+        #expect(flow.size == 150)
+        #expect(flow.counts[.discover] == 100 && flow.counts[.mix] == 50)
+        #expect(flow.problem == nil)
+        #expect(flow.changes(from: flow).isEmpty)
+        var renamed = flow
+        renamed.name = "Bigger"
+        #expect(Set(renamed.changes(from: flow).keys) == ["name"])
+        // A stored size over what one source may hold still reads back whole (the editor then asks to bring it down).
+        let one = try #require(FlowRecipe.decode(["name": "One", "size": 150, "scheduleDays": [5], "mix": ["discover": 100]]))
+        #expect(one.size == 150 && one.problem == "A source holds up to 100 songs.")
     }
 
     @Test func counts_zeroRefused() async {

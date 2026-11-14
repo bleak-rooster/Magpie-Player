@@ -56,7 +56,7 @@ extension AppModel {
         else { return }
         let page = ChartPage(chart: chart, name: snapshot.chartName ?? chartTitle(chart), songs: songs,
                              playlistId: snapshot.chartPlaylistId, libraryPlaylistId: snapshot.libraryPlaylistId)
-        Task { [weak self] in await self?.keepChartFlowUp(page) }
+        keepChartFlowUpInBackground(page)
     }
 
     /// A chart or Discover playlist song as a preview item (its Deezer id keys it).

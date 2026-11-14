@@ -225,8 +225,6 @@ enum RecipeFlowCopy {
     static let advanced = "Advanced"
     static let name = "Name"
     static let sources = "Sources"
-    static let sourcesNote = "Where the songs come from. Each source picked gets an equal share."
-    static let sharesNote = "Each source\u{2019}s share of the songs."
     static let deeperCuts = "Deeper cuts"
     static let deeperCutsNote = "Less obvious songs from the same artists."
     static let updates = "Updates"

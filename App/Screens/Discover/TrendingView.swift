@@ -23,6 +23,8 @@ struct TrendingView: View {
     @State private var pinnedNote: String?
     /// Round 27 D2: bumped by a pull to refresh, so the chart flow's songs are read again (D317).
     @State private var reloads = 0
+    /// Round 27 D2 fix round 1 (I1): the song list's rows as last read, and for which songs.
+    @State private var listed: ListedRows?
 
     private var feeds: AurralFeeds { model.aurralFeeds }
 
@@ -158,7 +160,9 @@ struct TrendingView: View {
         do {
             let page = try await model.chartPage(picked, fresh: fresh)
             if self.picked == picked { pickedPage = page }
-            await model.keepChartFlowUp(page)   // round 27 D2 (D319): a chart read keeps its flow up, once a day
+            // Round 27 D2 (D319): a chart read keeps its flow up, once a day; fix round 1 (I2): in its own task, so
+            // switching charts or leaving never cancels a send half way.
+            model.keepChartFlowUpInBackground(page)
         } catch {
             if self.picked == picked { pickedFailed = true }
         }
@@ -167,12 +171,13 @@ struct TrendingView: View {
     /// The No. 1, then Top songs with Play previews, the chart's flow and the songs.
     @ViewBuilder private func topSongs(page: ChartPage, first: ChartSong, days: Int?, subtitle: String?, title: String? = nil,
                                        hasChart: Bool = true) -> some View {
-        spotlight(first, days: days)
+        let rows = listed?.songs == page.songs ? listed?.rows ?? ChartRows() : ChartRows()
+        spotlight(first, days: days, rows: rows)
         VStack(alignment: .leading, spacing: Tokens.Spacing.m) {
             PageSectionTitle(title: title ?? DiscoverPagesCopy.topSongs(chart: model.chartTitle(page.chart)), subtitle: subtitle)
                 .accessibilityIdentifier("trending-top-songs")
             VStack(alignment: .leading, spacing: Tokens.Spacing.s) {
-                PlayPreviewsButton(items: page.songs.map(model.previewItem(for:)))
+                ChartPlayButtons(songs: page.songs, rows: rows)
                 if hasChart { ChartFlowControl(page: page) }
                 // Round 14's Add flow (the whole chart, synced by the server), when one was made: its state only.
                 if let id = page.playlistId, let legacy = feeds.added[id] ?? page.libraryPlaylistId {
@@ -181,11 +186,11 @@ struct TrendingView: View {
             }
             .padding(.horizontal, Tokens.Spacing.margin)
             ChartSongList(songs: page.songs, showsPosition: true, identifier: "trending-song", chart: hasChart ? page.chart : nil,
-                          reload: reloads)
+                          reload: reloads) { found in listed = ListedRows(songs: page.songs, rows: found) }
         }
     }
 
-    private func spotlight(_ song: ChartSong, days: Int?) -> some View {
+    private func spotlight(_ song: ChartSong, days: Int?, rows: ChartRows) -> some View {
         HStack(spacing: Tokens.Spacing.m) {
             AurralArt(image: song.artwork, side: 96)
             VStack(alignment: .leading, spacing: Tokens.Spacing.xs) {
@@ -195,7 +200,14 @@ struct TrendingView: View {
                 if let days, days > 0 {
                     Text(DiscoverPagesCopy.daysAtTop(days)).font(.caption).foregroundStyle(themed.palette.ink2Color)
                 }
-                PreviewControl(item: model.previewItem(for: song))
+                // Fix round 1 (I1): the No. 1 plays in full when the list has it (the library's or the chart flow's).
+                if let order = rows.playOrder(from: 0) {
+                    CapsuleButton(ChartFlowRowCopy.play, symbol: "play.fill") { model.play(order.songs, startAt: order.start) }
+                        .accessibilityLabel("\(ChartFlowRowCopy.play) \(song.title)")
+                        .accessibilityIdentifier("trending-spotlight-play")
+                } else {
+                    PreviewControl(item: model.previewItem(for: song))
+                }
             }
         }
         .padding(.horizontal, Tokens.Spacing.margin)
@@ -298,6 +310,7 @@ struct GenreChartView: View {
     let name: String
     @State private var loaded = false
     @State private var reloads = 0
+    @State private var listed: ListedRows?
 
     private var feeds: AurralFeeds { model.aurralFeeds }
 
@@ -306,10 +319,10 @@ struct GenreChartView: View {
             LazyVStack(alignment: .leading, spacing: Tokens.Spacing.l) {
                 PageSectionTitle(title: name, subtitle: DiscoverPagesCopy.worldwide)
                 if let songs = feeds.genreCharts[genreId], !songs.isEmpty {
-                    PlayPreviewsButton(items: songs.map(model.previewItem(for:)))
+                    ChartPlayButtons(songs: songs, rows: listed?.songs == songs ? listed?.rows ?? ChartRows() : ChartRows())
                         .padding(.horizontal, Tokens.Spacing.margin)
                     ChartSongList(songs: songs, showsPosition: true, identifier: "genre-song", chart: .genre(genreId),
-                                  reload: reloads)
+                                  reload: reloads) { found in listed = ListedRows(songs: songs, rows: found) }
                 } else if feeds.notReadyGenres.contains(genreId) {
                     UpdatingCard(text: DiscoverPagesCopy.notReady)
                 } else if loaded {
@@ -330,6 +343,49 @@ struct GenreChartView: View {
         .task {
             await feeds.refreshGenre(genreId)
             loaded = true
+            keepUp()
         }
+    }
+
+    /// Round 27 D2 fix round 1 (M5, D319): a genre chart read keeps its flow up too, in its own task.
+    private func keepUp() {
+        guard let songs = feeds.genreCharts[genreId], !songs.isEmpty else { return }
+        model.keepChartFlowUpInBackground(ChartPage(chart: .genre(genreId), name: name, songs: songs, playlistId: nil,
+                                                    libraryPlaylistId: nil))
+    }
+}
+
+/// Round 27 D2 fix round 1: a chart list's rows as read, and for which songs (a newer list never shows older rows).
+struct ListedRows: Equatable {
+    var songs: [ChartSong]
+    var rows: ChartRows
+}
+
+/// Round 27 D2 fix round 1 (I1, design M3; plan §8 amendment "Play"): above a chart's songs, **Play** when any row plays
+/// in full (the playable rows in chart order), and **Play previews** for the rows that only have a preview (hidden
+/// when every row plays in full).
+struct ChartPlayButtons: View {
+    @Environment(AppModel.self) private var model
+    let songs: [ChartSong]
+    let rows: ChartRows
+
+    var body: some View {
+        HStack(spacing: Tokens.Spacing.s) {
+            if let order = Self.playOrder(rows) {
+                CapsuleButton(ChartFlowRowCopy.play, symbol: "play.fill", style: .fill) { model.play(order.songs, startAt: 0) }
+                    .accessibilityIdentifier("chart-play")
+            }
+            PlayPreviewsButton(items: Self.previewSongs(songs, rows).map(model.previewItem(for:)))
+        }
+    }
+
+    /// The songs Play plays: every playable row, in chart order (nil: none).
+    static func playOrder(_ rows: ChartRows) -> (songs: [Song], start: Int)? {
+        rows.copies.keys.min().flatMap { rows.playOrder(from: $0) }
+    }
+
+    /// The songs Play previews plays: the rows with no song to play in full.
+    static func previewSongs(_ songs: [ChartSong], _ rows: ChartRows) -> [ChartSong] {
+        rows.previewOnly(songs.count).map { songs[$0] }
     }
 }

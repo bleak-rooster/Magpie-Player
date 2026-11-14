@@ -17,6 +17,22 @@ final class ChartWriteRouting: HTTPTransport, @unchecked Sendable {
     private let lock = NSLock()
     private var failing = false
     private var savedAtWrite: [Data] = []
+    private var holding = false
+    private var held: [CheckedContinuation<Void, Never>] = []
+
+    /// Fix round 1: chart-flow song writes wait (until released) once they arrive.
+    func holdWrites(_ on: Bool) {
+        let waiting: [CheckedContinuation<Void, Never>] = lock.withLock {
+            holding = on
+            guard !on else { return [] }
+            defer { held = [] }
+            return held
+        }
+        waiting.forEach { $0.resume() }
+    }
+
+    /// How many writes are waiting.
+    var heldCount: Int { lock.withLock { held.count } }
 
     init(dataDirectory: URL) { self.dataDirectory = dataDirectory }
 
@@ -33,6 +49,16 @@ final class ChartWriteRouting: HTTPTransport, @unchecked Sendable {
             let fail = lock.withLock { () -> Bool in
                 if let saved { savedAtWrite.append(saved) }
                 return failing
+            }
+            if lock.withLock({ holding }) {
+                await withCheckedContinuation { continuation in
+                    let wait = lock.withLock { () -> Bool in
+                        guard holding else { return false }
+                        held.append(continuation)
+                        return true
+                    }
+                    if !wait { continuation.resume() }
+                }
             }
             if fail, let url = request.url {
                 return (Data(#"{"error":"boom"}"#.utf8), HTTPURLResponse(url: url, statusCode: 500, httpVersion: nil, headerFields: nil)!)
@@ -300,6 +326,147 @@ final class ChartWriteRouting: HTTPTransport, @unchecked Sendable {
         let base = "/api/playlists/shared-playlists/\(flow.playlistId)"
         #expect(await eventually { self.chartWrites.contains("POST \(base)/tracks") }, "\(chartWrites)")
         #expect(Set(aurral.sharedPlaylistSongs(flow.playlistId)?.map(\.title) ?? []) == Set((3...7).map { "World Song \($0)" }))
+    }
+
+    // MARK: - Fix round 1
+
+    /// I1: the No. 1 and Play play in full what the list has; Play previews leaves those rows out (and hides when every
+    /// row plays in full).
+    @Test func trending_spotlightAndPlayButtonsPlayInFull() async throws {
+        let model = try await model()
+        defer { model.signOut() }
+        let (page, _) = try await flowOnServer(model, count: 10, published: Array(1...10))
+        let rows = await model.chartRows(chart: .worldwide, songs: page.songs)
+        #expect(rows.playOrder(from: 0)?.songs.first?.id == "w-1", "the No. 1 plays the flow's song")
+        let play = try #require(ChartPlayButtons.playOrder(rows))
+        #expect(play.songs.map(\.id) == (1...10).map { "w-\($0)" } && play.start == 0)
+        let previews = ChartPlayButtons.previewSongs(page.songs, rows)
+        #expect(previews.count == page.songs.count - 10)
+        #expect(!previews.contains { song in (1...10).contains { song.title == "World Song \($0)" } }, "no preview of a song it holds")
+        let all = ChartRows(copies: Dictionary(uniqueKeysWithValues: page.songs.indices.map {
+            ($0, Song(id: "x\($0)", title: "", artist: "", album: "", duration: 1))
+        }))
+        #expect(ChartPlayButtons.previewSongs(page.songs, all).isEmpty, "Play previews hides")
+        #expect(ChartPlayButtons.playOrder(ChartRows()) == nil, "no Play without a row to play")
+        #expect(ChartFlowRowCopy.play == "Play")
+    }
+
+    /// Design H1: the flow's copies are never said to be "in your library".
+    @Test func trending_flowCopyNotInLibrary() async throws {
+        let model = try await model()
+        defer { model.signOut() }
+        let (page, _) = try await flowOnServer(model, count: 4, published: [1, 2, 3, 4])
+        let rows = await model.chartRows(chart: .worldwide, songs: page.songs)
+        #expect(rows.flowRows == Set(0..<4))
+        #expect(!ChartSongRow.showsInLibrary(flowCopy: true) && ChartSongRow.showsInLibrary(flowCopy: false))
+        #expect(PreviewRow<EmptyView>.accessibilityLabel(title: "World Song 1", artist: "World Artist 1",
+                                                         inLibrary: ChartSongRow.showsInLibrary(flowCopy: true))
+                == "World Song 1, World Artist 1")
+    }
+
+    /// Design H2, M1: a row on its way offers no second Try or Add, and says "on its way" in its own label.
+    @Test func trending_onItsWayNoSecondTry() {
+        #expect(OutsideSongMenu.items(onItsWay: true) == [.onItsWay, .save])
+        #expect(OutsideSongMenu.items(onItsWay: false) == [.tryIt, .addToLibrary, .addArtist, .save])
+        #expect(PreviewRow<EmptyView>.accessibilityLabel(title: "World Song 5", artist: "World Artist 5", inLibrary: false,
+                                                         note: ChartFlowRowCopy.onItsWayNote)
+                == "World Song 5, World Artist 5, on its way")
+    }
+
+    /// M4: the list's key follows the flow's playlist and its songs' states.
+    @Test func trending_rowsFollowDownloads() async throws {
+        let model = try await model()
+        defer { model.signOut() }
+        #expect(model.chartFlowSignature(.worldwide).isEmpty)
+        let (_, flow) = try await flowOnServer(model, count: 3, published: [1, 2, 3])
+        let before = model.chartFlowSignature(.worldwide)
+        #expect(before.hasPrefix("pl-top|"))
+        let job = try #require(model.discover.jobs.first { $0.flowId == flow.playlistId })
+        aurral.setJobStatus(job.id, "pending")
+        await model.refreshDiscover(force: true)
+        #expect(model.chartFlowSignature(.worldwide) != before)
+    }
+
+    /// I2: a keep-up started from a page that goes away (its task cancelled) still finishes.
+    @Test func keepUp_backgroundSurvivesCancel() async throws {
+        let model = try await model()
+        defer { model.signOut() }
+        let start = Date()
+        model.aurralFeeds.now = { start }
+        let (_, flow) = try await flowOnServer(model, count: 10, published: Array(1...10))
+        aurral.setWorldwideChartOffset(3)
+        let moved = try await model.chartPage(.worldwide, fresh: true)
+        model.aurralFeeds.now = { start.addingTimeInterval(AppModel.chartFlowKeepUpInterval + 60) }
+        let page = Task { @MainActor () -> Task<Bool, Never> in
+            withUnsafeCurrentTask { $0?.cancel() }   // the page went away (switching charts)
+            return model.keepChartFlowUpInBackground(moved)
+        }
+        let inner = await page.value
+        #expect(await inner.value, "the send finished")
+        let base = "/api/playlists/shared-playlists/\(flow.playlistId)"
+        #expect(chartWrites.suffix(2) == ["POST \(base)/track-removals", "POST \(base)/tracks"])
+    }
+
+    /// I3: a Refresh now or Songs: N during a keep-up is refused (and the other way round): never a second append.
+    @Test func keepUp_lockedAgainstHandSends() async throws {
+        let model = try await model()
+        defer { model.signOut(); transport.holdWrites(false) }
+        let start = Date()
+        model.aurralFeeds.now = { start }
+        let (page, flow) = try await flowOnServer(model, count: 10, published: Array(1...10))
+        aurral.setWorldwideChartOffset(3)
+        let moved = try await model.chartPage(.worldwide, fresh: true)
+        model.aurralFeeds.now = { start.addingTimeInterval(AppModel.chartFlowKeepUpInterval + 60) }
+        transport.holdWrites(true)
+        let keepUp = model.keepChartFlowUpInBackground(moved)
+        #expect(await eventually { self.transport.heldCount == 1 }, "the keep-up's first write is on its way")
+        await #expect(throws: AurralError.runActive) { _ = try await model.refreshChartFlow(.worldwide) }
+        await #expect(throws: AurralError.runActive) { _ = try await model.resizeChartFlow(page, count: 5) }
+        transport.holdWrites(false)
+        #expect(await keepUp.value)
+        let base = "/api/playlists/shared-playlists/\(flow.playlistId)"
+        #expect(chartWrites.filter { $0 == "POST \(base)/tracks" }.count == 1, "one append")
+        // The other way round: a Songs: N under way, then a chart read a day later sends nothing.
+        model.aurralFeeds.now = { start.addingTimeInterval(3 * AppModel.chartFlowKeepUpInterval) }
+        aurral.setWorldwideChartOffset(6)
+        let movedAgain = try await model.chartPage(.worldwide, fresh: true)
+        await model.refreshDiscover(force: true)
+        transport.holdWrites(true)
+        let resize = Task { try await model.resizeChartFlow(movedAgain, count: 10) }
+        #expect(await eventually { self.transport.heldCount == 1 })
+        #expect(await !model.keepChartFlowUp(movedAgain))
+        transport.holdWrites(false)
+        _ = try await resize.value
+    }
+
+    /// M2: nothing is sent while the flow's songs aren't known, or without accessFlow; M3: nor from a short read.
+    @Test func keepUp_noWriteWhenUnsure() async throws {
+        let model = try await model()
+        defer { model.signOut() }
+        let start = Date()
+        model.aurralFeeds.now = { start }
+        let (_, _) = try await flowOnServer(model, count: 10, published: Array(1...10))
+        aurral.setWorldwideChartOffset(3)
+        let moved = try await model.chartPage(.worldwide, fresh: true)
+        model.aurralFeeds.now = { start.addingTimeInterval(AppModel.chartFlowKeepUpInterval + 60) }
+        let before = chartWrites
+        // A chart read that lists fewer songs than the flow holds.
+        var short = moved
+        short.songs = Array(moved.songs.prefix(6))
+        #expect(await !model.keepChartFlowUp(short))
+        // The flow's songs unknown (Discover hasn't read them).
+        let jobs = model.discover.jobs
+        model.discover.jobs = []
+        #expect(await !model.keepChartFlowUp(moved))
+        model.discover.jobs = jobs
+        // accessFlow gone.
+        let bootstrap = model.discover.bootstrap
+        model.discover.bootstrap = nil
+        #expect(!model.aurralCanAddFlow)
+        #expect(await !model.keepChartFlowUp(moved))
+        model.discover.bootstrap = bootstrap
+        #expect(chartWrites == before)
+        #expect(await model.keepChartFlowUp(moved), "and with all of it known, it does")
     }
 
     // MARK: - A new flow's length (D320)
