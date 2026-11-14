@@ -34,6 +34,7 @@ final class LyricsRouting: HTTPTransport, @unchecked Sendable {
         var held: Set<String> = []
         var sent: [URLRequest] = []
         var cancelled: [URLRequest] = []
+        var down = false
     }
     private let state = OSAllocatedUnfairLock(initialState: State())
 
@@ -41,6 +42,8 @@ final class LyricsRouting: HTTPTransport, @unchecked Sendable {
     func release(_ songId: String) { state.withLock { _ = $0.held.remove(songId) } }
     var sent: [URLRequest] { state.withLock { $0.sent } }
     var cancelled: [URLRequest] { state.withLock { $0.cancelled } }
+    /// The Navidrome host fails like an unplugged server.
+    func setDown(_ down: Bool) { state.withLock { $0.down = down } }
 
     /// Lyrics reads sent for `id`.
     func lyricsReads(_ id: String) -> Int { sent.filter { lyricsRead($0) == id }.count }
@@ -68,6 +71,7 @@ final class LyricsRouting: HTTPTransport, @unchecked Sendable {
                 throw error
             }
         }
+        if request.url?.host == "192.168.1.2", state.withLock({ $0.down }) { throw URLError(.cannotConnectToHost) }
         if request.url?.host == aurral.host { return try await aurral.send(request) }
         return try await mock.send(request)
     }
@@ -182,6 +186,25 @@ final class LyricsRouting: HTTPTransport, @unchecked Sendable {
         model.player.previous()
         #expect(await eventually { model.player.queue.current?.song.id == "s1" })
         #expect(await eventually(0.3) { self.transport.lyricsReads("s1") > 1 } == false, "the older song isn't asked again")
+    }
+
+    /// Found by the full suite (OfflineAppTests.threeSecondBlipNeitherGoesOfflineNorSkips): the background ask is quiet.
+    /// A read that fails during a blip never fails over and never counts towards going offline.
+    @Test func trigger_failedBackgroundReadNeverCountsTowardsOffline() async throws {
+        let model = try await model()
+        defer { model.signOut() }
+        transport.setDown(true)
+        let before = transport.sent.count
+        // The two reads the trigger makes, without playing (playback's own reads would muddy the count).
+        #expect(await model.lyricsQuietlyAdvertised() == false)
+        let result = await model.serverLyricsRead("s1").value
+        #expect((try? result.get()) == nil, "the read failed")
+        let sent = transport.sent.dropFirst(before)
+        #expect(sent.filter { $0.url?.path.hasSuffix("/rest/getOpenSubsonicExtensions") == true }.count == 1)
+        #expect(transport.lyricsReads("s1") == 1, "sent once: no failover retry")
+        #expect(!sent.contains { $0.url?.path.hasSuffix("/rest/ping") == true }, "no failover probe for a background read")
+        #expect(!model.reachability.isSuspect && model.serverReachable && !model.isOffline)
+        transport.setDown(false)
     }
 
     @Test func trigger_answerFromAnotherSessionIsForgotten() async throws {

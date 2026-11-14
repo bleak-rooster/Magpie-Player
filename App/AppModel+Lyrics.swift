@@ -70,6 +70,8 @@ enum ShownLyrics: Sendable, Equatable {
     /// Bumped by `forget()`: an answer that lands after it is dropped.
     @ObservationIgnored private(set) var generation = 0
     @ObservationIgnored var lrclib: LrcLib?
+    /// The server's extensions, read quietly by the background ask when the session hadn't read them yet.
+    @ObservationIgnored var extensions: Set<String>?
     /// How long the pane waits for the server before LRCLIB is asked (D311: 6 s; tests shorten it).
     @ObservationIgnored var serverWait: Duration = .seconds(6)
     /// How long a server read may take (D310: 20 s; tests shorten it).
@@ -110,6 +112,7 @@ enum ShownLyrics: Sendable, Equatable {
         generation += 1
         inFlight?.task.cancel()
         inFlight = nil
+        extensions = nil
         entries = [:]
         order = []
         askedServer = BoundedSet(capacity: Self.askedCapacity)
@@ -176,7 +179,7 @@ extension AppModel {
         guard let id, session != nil, !isOffline, !lyricsKeeper.hasAskedServer(id) else { return }
         let generation = lyricsKeeper.generation
         Task { [weak self] in
-            guard let self, (try? await self.serverAdvertises("songLyrics")) == true else { return }
+            guard let self, await self.lyricsQuietlyAdvertised() else { return }
             guard self.lyricsKeeper.generation == generation, self.player.queue.current?.song.id == id,
                   !self.isOffline, !self.lyricsKeeper.hasAskedServer(id) else { return }
             _ = self.serverLyricsRead(id)
@@ -194,7 +197,10 @@ extension AppModel {
         let task = Task { [weak self] () -> Result<Lyrics?, any Error> in
             let result = await Deadline.run(deadline) { [weak self] () async throws -> Lyrics? in
                 guard let self else { throw CancellationError() }
-                return try await self.request { try await $0.lyrics(songId: id) }
+                // Quiet: the current client, no failover, never counted towards going offline (a background read
+                // mustn't take the app offline during a blip).
+                guard let client = await self.session?.client else { throw NavidromeError.noReachableServer }
+                return try await client.lyrics(songId: id)
             }
             guard let self, self.lyricsKeeper.generation == generation else { return result }
             if case .success(let lyrics) = result { self.lyricsKeeper.keepLibrary(id, lyrics) }
@@ -206,6 +212,18 @@ extension AppModel {
             if keeper.inFlight?.task == task { keeper.inFlight = nil }
         }
         return task
+    }
+
+    /// Whether the server advertises `songLyrics`: the session's known extensions, else one quiet read of them (no
+    /// failover, never counted towards going offline), kept until sign-out.
+    func lyricsQuietlyAdvertised() async -> Bool {
+        if let known = advertisedExtensions { return known.contains("songLyrics") }
+        if let known = lyricsKeeper.extensions { return known.contains("songLyrics") }
+        guard let client = session?.client, !isOffline else { return false }
+        let generation = lyricsKeeper.generation
+        guard let found = try? await client.extensions() else { return false }
+        if lyricsKeeper.generation == generation { lyricsKeeper.extensions = found }
+        return found.contains("songLyrics")
     }
 
     /// The Lyrics button shows when the server advertises `songLyrics` or Find lyrics online is on (D311, D314).
@@ -220,7 +238,7 @@ extension AppModel {
         let keeper = lyricsKeeper
         if !fresh, let kept = keeper.shown(song.id) { return kept }
         guard session != nil, !isOffline else { return nil }
-        let advertises = (try? await serverAdvertises("songLyrics")) ?? false
+        let advertises = await lyricsQuietlyAdvertised()
         let keptNone: Bool = if case .some(.none) = keeper.library(song.id) { true } else { false }
         guard advertises, fresh || !keptNone else { return await onlineLyrics(song) }
         let read = serverLyricsRead(song.id)
