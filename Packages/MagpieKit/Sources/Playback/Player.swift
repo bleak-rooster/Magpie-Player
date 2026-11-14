@@ -379,6 +379,14 @@ public final class Player {
         wasIdle ? loadCurrent() : syncEngine()
     }
 
+    /// Round 27 D1 fix round 2 (N2, D285): a Discover page's late library copies swapped into what's coming up, each in
+    /// its own slot (`PlayQueue.replaceRestSongs`): one re-send of the engine's list in which every unchanged item keeps
+    /// its id and URL, so the next stream is never opened twice; the current song and Play next songs stay.
+    public func replaceUpcomingSongs(_ copies: [String: Song]) {
+        guard queue.current != nil, queue.replaceRestSongs(copies) else { return }
+        syncEngine()
+    }
+
     public func remove(id: UUID) {
         let current = queue.current?.id
         queue.remove(id: id)
