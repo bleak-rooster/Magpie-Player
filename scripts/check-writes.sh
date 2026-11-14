@@ -489,9 +489,17 @@ if [ -z "${G1_SRC:-}" ]; then
   # Fix round 2 (L-L1b): exactly one deliver inside the gate's MissingAlbumSearch send, after the record is saved.
   perl -ne 'BEGIN { $in = 0 } $in = 1 if /private func sendMissingAlbumSearch\(/; next unless $in;
             $save ||= $. if /missingSearchStore\.save\(t, scope: scope\) \} catch/;
-            if (/\bdeliver\s*\(/) { $n++; $d = $. } if (/^    \}$/) { $in = 0; last }
-            END { exit(($n == 1 && $save && $d > $save) ? 0 : 1) }' "$lk/WriteGate.swift" ||
+            if (/\bdeliver\s*\(/) { $n += () = /\bdeliver\s*\(/g; $d = $.; $exact = /^            return try await deliver\(target, data\)$/ }
+            if (/^    \}$/) { $in = 0; last }
+            END { exit(($n == 1 && $exact && $save && $d > $save) ? 0 : 1) }' "$lk/WriteGate.swift" ||
     { echo "G1: $lk/WriteGate.swift: the MissingAlbumSearch send delivers other than once, after its record" >&2; bad=1; }
+  # Fix round 3 (L-G2): `deliver` appears in the gate exactly as often as now (its declaration and four calls), every
+  # match counted, comment lines aside: a second deliver on a line, or a new extension that delivers, is caught.
+  [ "$(perl -ne 'next if m{^\s*//}; $n += () = /\bdeliver\s*\(/g; END { print $n + 0 }' "$lk/WriteGate.swift")" = 5 ] ||
+    { echo "G1: $lk/WriteGate.swift: deliver is called more (or less) often than pinned" >&2; bad=1; }
+  # Fix round 3 (L-SM1c): the shared restarter's cache is fileprivate (the compiler keeps it to its file).
+  [ "$(grep -cxF '    @ObservationIgnored fileprivate var restarter: (gateId: ObjectIdentifier, restarter: LidarrDownloadRestarter)?' "$missingfile")" = 1 ] ||
+    { echo "G1: $missingfile: the shared restarter's cache isn't fileprivate" >&2; bad=1; }
   # The shape named on exactly one line outside the gate, its body built only there, and its name spelled as a string only
   # in the gate, its own file and the artist page's "searching" list.
   ms_named=$(ngrep '\.missingAlbumSearch\b' | grep -v "^$gate:" | clean_lines || true)

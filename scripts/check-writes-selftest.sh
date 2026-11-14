@@ -492,6 +492,11 @@ r_inplace=(
   "$wg|sed|s/^        do { try missingSearchStore.save(t, scope: scope) } catch { throw WriteGateError.logUnavailable }\$/&\n        if target.key.isEmpty { _ = try? await deliver(target, data) }/"
   "$dl|sed|s/confinedAs: .queueRestartAny, allowForeign: false, allowFinished: !deferred)/confinedAs: .queueRestartAny, allowForeign: false, allowFinished: true)/"
   'App/AppModel+Requests.swift|append|extension AppModel { func plantedRun(_ m: AppModel) async { _ = try? await m.lidarrRestarter?.clearAllPlan() } }'
+  # Fix round 3: two delivers on the MissingAlbumSearch line (G2), a gate extension that delivers (H), the restarter's
+  # cache no longer fileprivate (L-SM1c).
+  "$wg|sed|/private func sendMissingAlbumSearch/,/^    }\$/s/^            return try await deliver(target, data)\$/            _ = try? await deliver(target, data); return try await deliver(target, data)/"
+  "$wg|append|extension LidarrWriteGate { func plantedNudge(_ t: WriteTarget) async { _ = try? await deliver(t, Data(\"{}\".utf8)) } }"
+  'App/AppModel+MissingAlbums.swift|sed|s/    @ObservationIgnored fileprivate var restarter:/    @ObservationIgnored var restarter:/'
   "$wg|sed|s/guard let commands = try? await strictCommandNamesAndStatuses() else {/guard let commands = try? await reader.commands().map({ (\$0.name.lowercased(), \$0.status.lowercased()) }) else {/"
   "$dl|sed|s/^                if firstRemoval == nil { firstRemoval = startedAt }\$/&; if let r = removal.request { await runner?.clearAllSearch(r) }/"
   "$dl|sed|s/let removal = try await removeOne(target.queueId, item, albums: albums, allowForeign: foreign, deferred: true)/let removal = try await removeOne(target.queueId, item, albums: albums, allowForeign: foreign, deferred: false)/"

@@ -24,7 +24,8 @@ import Requests
     /// An ask on schedule is on its way (one at a time).
     @ObservationIgnored var scheduleRunning = false
     /// Fix round 1 L4: the one restarter Downloads in Lidarr and Clear all share (per gate), so their runs take turns.
-    @ObservationIgnored var restarter: (gateId: ObjectIdentifier, restarter: LidarrDownloadRestarter)?
+    /// Fix round 3 (L-SM1c): fileprivate, so nothing outside this file reaches it but through `lidarrRestarter`.
+    @ObservationIgnored fileprivate var restarter: (gateId: ObjectIdentifier, restarter: LidarrDownloadRestarter)?
 }
 
 /// Round 27 R (D294): the section is there only while Lidarr is connected (Navidrome alone and + Aurral: none).
@@ -119,6 +120,9 @@ extension AppModel {
         if let saved = store.lastAsked, saved > now {   // the phone's clock went back: the wait starts from now
             store.lastAsked = MissingAlbumSchedule.lastAskedClamped(saved, now: now)
             missingAlbums.revision += 1
+        }
+        if let from = store.scheduleFrom, from > now {   // fix round 3 (L-N4b): likewise when the schedule was chosen
+            store.scheduleFrom = MissingAlbumSchedule.lastAskedClamped(from, now: now)
         }
         let situation = MissingAlbumSchedule.Situation(trigger: .becameActive, online: !isOffline,
                                                        lidarrConnected: lidarr != nil && gate != nil,

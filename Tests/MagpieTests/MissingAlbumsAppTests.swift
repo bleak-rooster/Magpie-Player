@@ -241,6 +241,25 @@ private let lidarrScope = LidarrClient(base: lidarrBase, apiKey: "key", transpor
         #expect(missingSearches.count == 2)
     }
 
+    /// Fix round 3 (L-N4b): a schedule start ahead of the phone's clock (the clock was put back) counts as now, so the
+    /// first ask is a day after now, not a day after a time that hasn't come.
+    @Test func futureScheduleStartCountsAsNow() async throws {
+        let model = model()
+        defer { tearDown(model) }
+        try await model.signIn(urls: [home], username: "jordan", password: "pw")
+        _ = try await model.connectLidarr(base: lidarrBase, apiKey: "key")
+        await model.setChangesAllowed(true)
+        model.missingSearchEvery = .day
+        let key = MissingAlbumSchedule.scheduleFromKey(scope: lidarrScope)
+        let now = Date()
+        UserDefaults(suiteName: gateSuite)?.set(now.addingTimeInterval(10 * 24 * 3_600), forKey: key)
+        await model.runMissingAlbumSchedule(now: now)
+        #expect(missingSearches.isEmpty)
+        #expect(UserDefaults(suiteName: gateSuite)?.object(forKey: key) as? Date == now, "set back to now")
+        await model.runMissingAlbumSchedule(now: now.addingTimeInterval(25 * 3_600))
+        #expect(missingSearches.count == 1, "a day after now, not ten days on")
+    }
+
     @Test func forgottenOnDisconnect() async throws {
         let model = model()
         defer { tearDown(model) }
