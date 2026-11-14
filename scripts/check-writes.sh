@@ -428,8 +428,11 @@ if [ -z "${G1_SRC:-}" ]; then
     "App/AppModel+DownloadActivity.swift|missingAlbumsSceneChanged(active: phase == .active)   // Round 27 R (D291): the missing-album schedule"
   )
   entries=$(grep -rnE --include='*.swift' '\b(forgetMissingAlbumSearch|searchMissingAlbumsNow|runMissingAlbumSchedule|missingAlbumsSceneChanged)\(' "${product[@]}" |
-              grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' | grep -vE ':[0-9]+:[[:space:]]*(public |private |static |@[A-Za-z]+ )*func ' |
-              perl -ne 'my ($f, $n, $t) = /^([^:]+):(\d+):(.*)$/ or next; $t =~ s/^\s+|\s+$//g; print "$f|$t\n"' || true)
+              grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' |
+              perl -ne 'my ($f, $n, $t) = /^([^:]+):(\d+):(.*)$/ or next; $t =~ s/^\s+|\s+$//g;
+                        (my $u = $t) =~ s/\bfunc\s+(forgetMissingAlbumSearch|searchMissingAlbumsNow|runMissingAlbumSchedule|missingAlbumsSceneChanged)\s*\(//g;
+                        next unless $u =~ /\b(forgetMissingAlbumSearch|searchMissingAlbumsNow|runMissingAlbumSchedule|missingAlbumsSceneChanged)\(/;
+                        print "$f|$t\n"' || true)
   while IFS= read -r s; do
     [ -n "$s" ] || continue
     ok=0
