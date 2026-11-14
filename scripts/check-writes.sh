@@ -918,10 +918,11 @@ if [ -z "${G1_SRC:-}" ]; then
     lrclib_lines=$(grep -niE 'lrclib\.(net|org|com|io|app|dev)' "$lrclib_src" | grep -vE '^[0-9]+:[[:space:]]*///?' || true)
     { [ "$(printf '%s\n' "$lrclib_lines" | grep -c .)" = 1 ] && [ "${lrclib_lines#*:}" = "$want_lrclib" ]; } ||
       { echo "G1: $lrclib_src: LRCLIB's one https GET /api/get URL changed or is named twice" >&2; bad=1; }
-    [ "$(grep -nE '[A-Za-z][A-Za-z0-9+.-]*://' "$lrclib_src" | grep -vE '^[0-9]+:[[:space:]]*///?' | grep -c .)" = 1 ] ||
+    # Counted per occurrence, not per line (two on one line are two).
+    [ "$(grep -vE '^[[:space:]]*///?' "$lrclib_src" | grep -oE '[A-Za-z][A-Za-z0-9+.-]*://' | grep -c .)" = 1 ] ||
       { echo "G1: $lrclib_src: a URL other than LRCLIB's one route" >&2; bad=1; }
-    [ "$(grep -cE 'transport\.send\(' "$lrclib_src")" = 1 ] &&
-      grep -qF '(data, response) = try await transport.send(request, maxBytes: Self.maxResponseBytes)' "$lrclib_src" ||
+    [ "$(grep -oE '\.send[[:space:]]*\(' "$lrclib_src" | grep -c .)" = 1 ] &&
+      grep -qxF '            (data, response) = try await transport.send(request, maxBytes: Self.maxResponseBytes)' "$lrclib_src" ||
       { echo "G1: $lrclib_src: LRCLIB is sent other than through the one capped send" >&2; bad=1; }
     for want in '    public static let maxResponseBytes = 512 * 1024' \
                 '    public static func userAgent(version: String) -> String { "Magpie/\(version)" }' \
@@ -931,7 +932,7 @@ if [ -z "${G1_SRC:-}" ]; then
                 '        guard let url = components.url, url.scheme == "https", url.host() == getURL.host(), url.path == getURL.path else {'; do
       grep -qxF -- "$want" "$lrclib_src" || { echo "G1: $lrclib_src: LRCLIB's request rules changed (missing: $want)" >&2; bad=1; }
     done
-    [ "$(grep -cE 'setValue\(|addValue\(|allHTTPHeaderFields|httpMethod' "$lrclib_src")" = 2 ] ||
+    [ "$(grep -oE 'setValue\(|addValue\(|allHTTPHeaderFields|httpMethod|httpAdditionalHeaders' "$lrclib_src" | grep -c .)" = 2 ] ||
       { echo "G1: $lrclib_src: LRCLIB's request sets another header or verb" >&2; bad=1; }
   fi
   # Round 14 A1 (D81): `api/discover` only as one of the allowed spellings, and the flow write routes only in the
