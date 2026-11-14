@@ -192,7 +192,7 @@ private func ids(_ result: LidarrTopSongs.Result) -> [String] { result.rows.map(
             }
             let sources = LidarrTopSongs.Sources(aurral: answer(), listenBrainz: answer(), library: answer())
             let discover: Set<Int> = rng.chance(0.5) ? [3] : []
-            let limit = Int.random(in: -1...7, using: &rng)
+            let limit = Int.random(in: -1...17, using: &rng)   // round 27 A (D303): up to 15 now
             let asked = Asked()
             var unreadSeen = false
             let result = await LidarrTopSongs.merge(sources: sources, discoverLibraries: discover, limit: limit) { p, pick in
@@ -200,7 +200,7 @@ private func ids(_ result: LidarrTopSongs.Result) -> [String] { result.rows.map(
                 if case .lidarrUnread = pick.answer { unreadSeen = true }
                 return pick.answer
             }
-            #expect(result.rows.count <= min(max(limit, 0), 5))
+            #expect(result.rows.count <= min(max(limit, 0), LidarrTopSongs.playLimit))
             #expect(Set(result.rows.map(\.song.id)).count == result.rows.count)
             // A song with no title has no strict title to compare: told apart by its id only.
             let keys = result.rows.map { TopSongIdentity.titleKey($0.song.title) }.filter { !$0.isEmpty }
@@ -210,7 +210,7 @@ private func ids(_ result: LidarrTopSongs.Result) -> [String] { result.rows.map(
             #expect(order == order.sorted())
             // Fix round 1 (C3): a failed source counts only when the walk reached it before the list was full. Full at
             // the start (limit ≤ 0): none is reached; full on the last row's source: only the sources before it.
-            let wanted = min(max(limit, 0), 5)
+            let wanted = min(max(limit, 0), LidarrTopSongs.playLimit)
             let fillPoint: Int = result.rows.count < wanted ? .max
                 : (result.rows.last.flatMap { LidarrTopSongs.order.firstIndex(of: $0.source) } ?? -1)
             let reachedFailed = LidarrTopSongs.order.enumerated().contains { i, provider in

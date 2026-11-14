@@ -15,6 +15,13 @@ import MatchIndex
 public enum LidarrTopSongs {
     /// "A total of 5 songs".
     public static let limit = 5
+    /// Round 27 A (owner item 1, 2026-11-14: "in the queue there should be maximum 15 of the top songs"; D303, amends
+    /// D258): the walk may fill up to fifteen, kept behind the five shown, so Play top songs has its list at once. The
+    /// same reads (depth 25) give them.
+    public static let playLimit = 15
+    /// The first five of `songs`: what the section shows (D303).
+    public static func shown(_ songs: [Song]) -> [Song] { Array(songs.prefix(limit)) }
+
     /// The fixed order (D258): the Settings picker doesn't apply to an artist in Lidarr (D266).
     public static let order: [TopSongsProvider] = [.aurral, .listenBrainz, .library]
 
@@ -78,15 +85,15 @@ public enum LidarrTopSongs {
     }
 
     /// Walks Aurral's list, then ListenBrainz's, then Navidrome's, each top-down to its `readDepth`, and places each
-    /// candidate `resolve` finds in the library, until `limit` (at most 5) are placed. A song is skipped when its id is
-    /// placed already, when a song with the same strict title (`TopSongIdentity`) is (two copies of one song), or when it
-    /// lives in one of Discover's libraries. Nothing is resolved once the list is full.
+    /// candidate `resolve` finds in the library, until `limit` (5 by default, at most `playLimit`, D303) are placed. A
+    /// song is skipped when its id is placed already, when a song with the same strict title (`TopSongIdentity`) is (two
+    /// copies of one song), or when it lives in one of Discover's libraries. Nothing is resolved once the list is full.
     public static func merge<Candidate: Sendable>(
         sources: Sources<Candidate>, discoverLibraries: Set<Int> = [], limit: Int = limit,
         isolation: isolated (any Actor)? = #isolation,
         resolve: (TopSongsProvider, Candidate) async -> Resolution
     ) async -> Result {
-        let wanted = min(max(limit, 0), Self.limit)
+        let wanted = min(max(limit, 0), Self.playLimit)
         var rows: [Row] = []
         var ids = Set<String>(), titles = Set<String>()
         var complete = true
