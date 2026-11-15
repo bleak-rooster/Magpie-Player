@@ -301,7 +301,6 @@ final class LockableStore: SessionStoring {
         let config = ArtworkCache.sessionConfiguration
         #expect(config.urlCache == nil)
         #expect(config.requestCachePolicy == .reloadIgnoringLocalCacheData)
-        #expect(NowPlayingBridge.artworkSession.configuration.urlCache == nil)
     }
 }
 

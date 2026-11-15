@@ -43,6 +43,7 @@ extension AppModel {
         downloads?.setPresence(active: phase == .active, background: phase == .background)
         monitoringSceneChanged(active: phase == .active)   // R24H fix round 4 (D-L2)
         missingAlbumsSceneChanged(active: phase == .active)   // Round 27 R (D291): the missing-album schedule
+        reachabilitySceneChanged(active: phase == .active)   // Round 28 O1 (D326): coming to the front checks the library
     }
 
     /// A manager built while Magpie isn't open (a launch for the car, or for the background session's events) knows it;

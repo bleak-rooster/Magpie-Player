@@ -50,7 +50,7 @@ import Testing
         var parts = try #require(URLComponents(url: root.appending(path: "s/default"), resolvingAgainstBaseURL: false))
         parts.host = parts.host == "127.0.0.1" ? "LocalHost" : parts.host?.uppercased()
         let base = try #require(parts.url)
-        let resolver = PreviewResolver(base: base)
+        let resolver = PreviewResolver(base: base, transport: PreviewResolver.defaultTransport())   // Round 28 O1 fix round 1: no default
         let result = try await resolver.resolve(AurralPreview(trackId: "3135556")!)
         guard case .clip(let clip) = result else { Issue.record("\(result)"); return }
         #expect(!clip.isEmpty, "A7: the stub sends the clip itself for ?download")
@@ -78,14 +78,14 @@ import Testing
         let root = try #require(Self.stubURL)
         let preview = AurralPreview(trackId: "3135556")!
         // The default scenario plays (so the refusals below are the transport's, not a broken stub).
-        guard case .clip = try await PreviewResolver(base: root.appending(path: "s/default")).resolve(preview) else {
+        guard case .clip = try await PreviewResolver(base: root.appending(path: "s/default"), transport: PreviewResolver.defaultTransport()).resolve(preview) else {
             Issue.record("the default clip didn't play"); return
         }
         await #expect(throws: PreviewError.refused) {
-            _ = try await PreviewResolver(base: root.appending(path: "s/redirects")).resolve(preview)
+            _ = try await PreviewResolver(base: root.appending(path: "s/redirects"), transport: PreviewResolver.defaultTransport()).resolve(preview)
         }
         await #expect(throws: PreviewError.refused) {
-            _ = try await PreviewResolver(base: root.appending(path: "s/oversized")).resolve(preview)
+            _ = try await PreviewResolver(base: root.appending(path: "s/oversized"), transport: PreviewResolver.defaultTransport()).resolve(preview)
         }
 
         let client = try await Self.client(root.appending(path: "s/default"))

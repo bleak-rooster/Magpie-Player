@@ -572,7 +572,7 @@ private final class RouterRig: Sendable {
         try await model.scrobbles.scrobble(song("s1"), submission: true, at: t0)
         model.updatePreferences { $0.downloads.offlineMode = .automatic }
         #expect(await eventually { await model.scrobbles.queue.pending(.navidrome).isEmpty })
-        let inner = try #require((model.transport as? HostSwitchTransport)?.inner)
+        let inner = try #require((model.injectedTransport as? HostSwitchTransport)?.inner)   // Round 28 O1: under the gate
         let sent = inner.requests.filter { $0.url?.path.hasSuffix("/rest/scrobble") == true }
         #expect(sent.map { queryValue($0, "time") } == ["1700000000000"])
         model.signOut()
@@ -582,7 +582,7 @@ private final class RouterRig: Sendable {
     @Test func rejectedTokenSurfacesUntilSavedAgain() async throws {
         try tokens.save("old")
         let model = try await signedInModel(fetcher: FakeFetcher())
-        let inner = try #require((model.transport as? HostSwitchTransport)?.inner)
+        let inner = try #require((model.injectedTransport as? HostSwitchTransport)?.inner)   // Round 28 O1: under the gate
         inner.stub(method: "POST", pathSuffix: "/1/submit-listens", status: 401)
         model.updatePreferences { $0.scrobbling.viaListenBrainz = true }
         try await model.scrobbles.scrobble(song("s1"), submission: true, at: t0)

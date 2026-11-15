@@ -31,6 +31,11 @@ public struct URLSessionTransport: HTTPTransport {
         let config = URLSessionConfiguration.ephemeral
         config.urlCache = nil
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
+        // Round 28 O1 fix round 1 (security L3): no cookies kept or sent (a proxy's or portal's cookie never rides
+        // along to the library, Lidarr or Aurral).
+        config.httpCookieStorage = nil
+        config.httpShouldSetCookies = false
+        config.httpCookieAcceptPolicy = .never
         return config
     }
 

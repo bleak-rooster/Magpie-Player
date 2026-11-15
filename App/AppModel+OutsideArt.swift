@@ -24,10 +24,11 @@ extension AppModel {
     /// cover falls back to a release's front, then the cover Lidarr's lookup names; every loader takes turns through
     /// one limiter (four at once).
     func makeOutsideArt(maxPixel: Int = 500, maxArtistLookups: Int = OutsideArtPolicy.maxArtistLookups) -> OutsideArtLoader {
-        var transport: HTTPTransport = OutsideArtTransport()
+        var outside: HTTPTransport = OutsideArtTransport()
         #if DEBUG
-        if let testing = Self.outsideArtTransportForTesting { transport = testing }
+        if let testing = Self.outsideArtTransportForTesting { outside = testing }
         #endif
+        let transport = GatedTransport(outside, gate: offlineGate, role: .outside)   // Round 28 O1 (D328)
         let musicBrainz = musicBrainz
         return OutsideArtLoader(
             transport: transport, userAgent: MusicBrainzClient.userAgent(version: Self.marketingVersion),

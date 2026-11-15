@@ -33,8 +33,9 @@ public struct PreviewResolver: Sendable {
     public let base: URL
     private let transport: HTTPTransport
 
-    /// `transport` defaults to `defaultTransport()`: its own ephemeral session that never follows a redirect.
-    public init(base: URL, transport: HTTPTransport = PreviewResolver.defaultTransport()) {
+    /// `transport`: the app passes `defaultTransport()` (its own ephemeral session that never follows a redirect) under
+    /// the offline gate (Round 28 O1 fix round 1, M4: no default, so nothing makes one past the gate).
+    public init(base: URL, transport: HTTPTransport) {   // Round 28 O1 fix round 1 (M4): no default, so the app passes its gated one
         self.base = base
         self.transport = transport
     }

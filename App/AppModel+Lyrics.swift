@@ -206,7 +206,7 @@ extension AppModel {
     /// Called once from `init`: the switch, LRCLIB's client, and the watcher on the current song.
     func watchLyrics() {
         lyricsKeeper.attach(defaults: appDefaults,
-                            lrclib: LrcLib(transport: LrcLibTransport(), userAgent: LrcLib.userAgent(version: Self.marketingVersion)))
+                            lrclib: LrcLib(transport: GatedTransport(LrcLibTransport(), gate: offlineGate, role: .outside), userAgent: LrcLib.userAgent(version: Self.marketingVersion)))   // Round 28 O1 (D328)
         lyricsKeeper.onFindOnlineOff = { [weak self] in self?.findLyricsOnlineTurnedOff() }   // Round 28 O2 (L4)
         lyricsWatch = Task { [weak self, player] in
             let inputs = Observations { @MainActor [weak self] in

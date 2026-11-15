@@ -78,13 +78,18 @@ private let noNetwork = NetworkStatus(isConnected: false, isCellular: false, isC
 
     // MARK: - The brief's tests
 
+    /// Round 28 O1 (D324): suspect at the first failure, offline 30 s later (no longer at the second failed reconnect).
     @Test func automaticOfflineWhenUnreachable() async throws {
         let model = try await signedInModel(fetcher: FakeFetcher())
+        let clock = ManualReachabilityClock()
+        model.useReachabilityClock(clock)
         #expect(!model.isOffline)
         transport.setDown(["192.168.1.2"])
         await #expect(throws: URLError.self) { _ = try await model.request { try await $0.albumList(.newest, size: 1, offset: 0) } }
         #expect(!model.isOffline && model.reachability.isSuspect, "ruling (a): one failure is only suspect")
-        await model.checkReachability()   // a second failed reconnect
+        await model.checkReachability()   // a second failed reconnect: still suspect (D324)
+        #expect(!model.isOffline && model.reachability.isSuspect)
+        #expect(await model.advanceReachability(clock, to: 30))
         #expect(model.isOffline && !model.serverReachable)
         transport.setDown([])
         await model.checkReachability()
@@ -117,9 +122,12 @@ private let noNetwork = NetworkStatus(isConnected: false, isCellular: false, isC
     @Test func offlineCurrentStreamFailureSkipsToNextLocal() async throws {
         let model = try await signedInModel(fetcher: FakeFetcher())
         model.download([song("s3")], reason: .song); await model.downloads!.settled()
+        let clock = ManualReachabilityClock()
+        model.useReachabilityClock(clock)
         model.play([song("s1"), song("s2"), song("s3")], startAt: 0)      // s1 streams
         transport.setDown(["192.168.1.2"])
-        await model.checkReachability(); await model.checkReachability()   // two failed reconnects: offline
+        await model.checkReachability()                                     // a failed reconnect: suspect
+        #expect(await model.advanceReachability(clock, to: 30))           // 30 s unanswered: offline (D324)
         #expect(model.isOffline && model.player.queue.current?.song.id == "s1")
         model.player.handle(.failed(model.player.queue.current!.id, "offline"))
         #expect(model.player.queue.current?.song.id == "s3" && model.player.isPlaying && model.player.lastError == nil)
@@ -214,17 +222,24 @@ private let noNetwork = NetworkStatus(isConnected: false, isCellular: false, isC
     }
 
     /// Unreachable: probed again when the network comes back, and online again once the server answers.
+    /// Round 28 O1 (Q1): with no network path at all, offline after 2 s (not 30); the probe comes 2 s after the path.
     @Test func probesWhenTheNetworkReturns() async throws {
         let network = FakeNetwork(.wifi)
         let model = makeModel(fetcher: FakeFetcher(), network: network)
         try await model.signIn(urls: [home], username: "admin", password: "pw")
+        let clock = ManualReachabilityClock()
+        model.useReachabilityClock(clock)
         network.status = noNetwork
         transport.setDown(["192.168.1.2"], with: .notConnectedToInternet)
         _ = try? await model.request { try await $0.albumList(.newest, size: 1, offset: 0) }
-        await model.checkReachability()   // the second failed reconnect
+        #expect(await eventually { model.reachability.machine.connected == false })
+        #expect(!model.isOffline, "a path gone for less than 2 s")
+        #expect(await model.advanceReachability(clock, to: 2))
         #expect(model.isOffline)
         transport.setDown([])
         network.status = .wifi
+        #expect(await eventually { model.reachability.machine.nextWake == 4 }, "the probe, 2 s after the path returned")
+        #expect(await model.advanceReachability(clock, to: 4))
         #expect(await eventually { !model.isOffline })
     }
 
@@ -250,8 +265,7 @@ private let noNetwork = NetworkStatus(isConnected: false, isCellular: false, isC
         transport.setDown(["192.168.1.2"], with: .notConnectedToInternet)
         let f = FakeFetcher()
         let model = makeModel(fetcher: f, network: FakeNetwork(noNetwork))
-        model.reachability.suspectInterval = .milliseconds(100)   // the second probe comes soon
-        model.resumeSavedSession()
+        model.resumeSavedSession()   // Round 28 O1 (Q1): no network path for 2 s goes offline at once
         #expect(model.session != nil)
         #expect(await eventually { model.isOffline }, "unreachable without any screen asking")
         await model.downloads!.settled()
@@ -369,7 +383,7 @@ private let noNetwork = NetworkStatus(isConnected: false, isCellular: false, isC
         #expect(seen.urls.isEmpty, "sent: \(seen.urls.map(\.path))")
         #expect(f.urls.isEmpty)
         #expect(engine.setItemsCalls.last!.items.allSatisfy { $0.1.isFileURL })
-        #expect(model.reachability.probes.isEmpty)
+        #expect(!model.reachability.hasScheduledWake && model.reachability.probeTask == nil)
     }
 
     /// I2: the offline album shows its saved cover; songs carry their own (`mf-…`), the saved one is the album's.
@@ -421,28 +435,36 @@ private let noNetwork = NetworkStatus(isConnected: false, isCellular: false, isC
     }
 
     /// Ruling (a): a 3 s blip neither goes offline nor skips; the failed song plays again where it was.
+    /// Round 28 O1 (D324): on the test clock; the 5 s probe finds the server back.
     @Test func threeSecondBlipNeitherGoesOfflineNorSkips() async throws {
         let model = try await signedInModel(fetcher: FakeFetcher())
+        let clock = ManualReachabilityClock()
+        model.useReachabilityClock(clock)
         model.play([song("s1"), song("s2")], startAt: 0)
         transport.setDown(["192.168.1.2"])
         model.player.handle(.failed(model.player.queue.current!.id, "The network connection was lost."))
         #expect(await eventually { model.reachability.isSuspect })
-        try await Task.sleep(for: .seconds(3))
+        #expect(await model.advanceReachability(clock, to: 3))
         #expect(!model.isOffline && model.player.queue.current?.song.id == "s1")
         #expect(engine.setItemsCalls.last!.items.count == 2, "nothing left out of the window")
         transport.setDown([])
+        #expect(await model.advanceReachability(clock, to: 5))
         #expect(await eventually(10) { model.player.lastError == nil && model.player.isPlaying })
         #expect(!model.isOffline && !model.reachability.isSuspect && model.player.queue.current?.song.id == "s1")
     }
 
-    /// Ruling (a): unreachable for `offlineAfter` goes offline even before a second failed reconnect.
+    /// Round 28 O1 (D324, supersedes ruling (a)'s 10 s): unreachable for 30 s goes offline by the timer, with no
+    /// second failure; not a moment before.
     @Test func unreachableLongEnoughGoesOffline() async throws {
         let model = try await signedInModel(fetcher: FakeFetcher())
-        model.reachability.offlineAfter = 0.1
+        let clock = ManualReachabilityClock()
+        model.useReachabilityClock(clock)
+        transport.setDown(["192.168.1.2"])
         model.noteUnreachable()
         #expect(!model.isOffline)
-        try await Task.sleep(for: .milliseconds(150))
-        model.noteUnreachable()
+        #expect(await model.advanceReachability(clock, to: 29.9))
+        #expect(!model.isOffline, "29.9 s")
+        #expect(await model.advanceReachability(clock, to: 30))
         #expect(model.isOffline)
     }
 
@@ -462,17 +484,18 @@ private let noNetwork = NetworkStatus(isConnected: false, isCellular: false, isC
 
     // MARK: - Fix round 2
 
-    /// B: the server answers ping but every login fails: suspect ends offline within two probes, with the stream
-    /// that failed moving on to the song on the phone instead of waiting for ever.
+    /// B: the server answers ping but every login fails: suspect ends offline (Round 28 O1: at 30 s, D324), with the
+    /// stream that failed moving on to the song on the phone instead of waiting for ever.
     @Test func loginFailuresEndOffline() async throws {
         let model = try await signedInModel(fetcher: FakeFetcher())
         model.download([song("s2")], reason: .song); await model.downloads!.settled()
-        model.reachability.suspectInterval = .milliseconds(50)
-        model.reachability.interval = .milliseconds(50)
+        let clock = ManualReachabilityClock()
+        model.useReachabilityClock(clock)
         model.play([song("s1"), song("s2")], startAt: 0)
         loginStatus.withLock { $0 = 500 }
         model.player.handle(.failed(model.player.queue.current!.id, "The network connection was lost."))
         model.noteUnreachable()
+        #expect(await model.advanceReachability(clock, to: 30))
         #expect(await eventually(3) { model.isOffline })
         #expect(await eventually { model.player.queue.current?.song.id == "s2" && model.player.isPlaying })
     }

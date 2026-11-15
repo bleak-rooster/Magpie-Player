@@ -18,7 +18,7 @@ extension AppModel {
     /// Tests: answers `path` with a Subsonic `ok` body holding `fragment` (the fixture's `HostSwitchTransport`).
     func transport(stub path: String, _ fragment: String) {
         let body = #"{"subsonic-response":{"status":"ok","version":"1.16.1","# + fragment + "}}"
-        (transport as? HostSwitchTransport)?.inner.stub(pathSuffix: path, body: Data(body.utf8))
+        (injectedTransport as? HostSwitchTransport)?.inner.stub(pathSuffix: path, body: Data(body.utf8))   // Round 28 O1: under the gate
     }
 }
 
@@ -263,7 +263,7 @@ extension AppModel {
         let model = try await signedInModel(fetcher: FakeFetcher())
         model.favouritesDebounce = .milliseconds(50)
         let starred = Mutex("[]")
-        let transport = try #require(model.transport as? HostSwitchTransport)
+        let transport = try #require(model.injectedTransport as? HostSwitchTransport)   // Round 28 O1: under the gate
         transport.inner.stub(pathSuffix: "/rest/getStarred2") { _ in
             let songs = starred.withLock { $0 }
             let body = #"{"subsonic-response":{"status":"ok","version":"1.16.1","starred2":{"song":"# + songs + "}}}"

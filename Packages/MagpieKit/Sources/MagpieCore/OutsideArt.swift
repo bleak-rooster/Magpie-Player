@@ -233,7 +233,7 @@ public final class OutsideArtLoader {
     ///   - maxArtistLookups: Lidarr lookups per result set (a search's visible artist rows); a page of recommended
     ///     artists passes more.
     ///   - stepTimeout: the most one network step may take once it has its turn.
-    public init(transport: HTTPTransport = OutsideArtTransport(), userAgent: String, artistImage: ArtistImage?,
+    public init(transport: HTTPTransport, userAgent: String, artistImage: ArtistImage?,   // Round 28 O1 fix round 1 (M4): no default
                 isOffline: @escaping @MainActor () -> Bool, maxPixel: Int = 500,
                 maxArtistLookups: Int = OutsideArtPolicy.maxArtistLookups, covers: OutsideCoverFallbacks = .init(),
                 disk: OutsideArtDiskCache? = nil, limiter: AsyncLimiter? = nil, stepTimeout: Duration = .seconds(20)) {

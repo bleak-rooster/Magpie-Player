@@ -140,17 +140,19 @@ import UIKit
         defer { window.isHidden = true }
         let list = try #require(Self.scrollView(in: sheet.view), "the top level is a list")
         let rows = (0..<list.numberOfSections).reduce(0) { $0 + list.numberOfItems(inSection: $1) }
-        #expect(rows == 11, "round 24: five accounts and servers, then six pages (CarPlay among them)")
+        // Round 28 O1 (D323): Offline mode first, in a section of its own; then the five accounts and servers.
+        #expect(rows == 12, "Offline mode, five accounts and servers, then six pages (CarPlay among them)")
+        #expect(list.numberOfItems(inSection: 0) == 1, "Offline mode, alone at the top")
         let visible = list.bounds.height - list.adjustedContentInset.top - list.adjustedContentInset.bottom
         print("T21b settings: content \(list.contentSize.height) pt in \(visible) pt visible (sheet \(sheet.view.frame))")
         #expect(sheet.view.frame.height < 667, "measured inside the sheet, not the whole window")
-        #expect(list.numberOfItems(inSection: 0) == 5)
+        #expect(list.numberOfItems(inSection: 1) == 5)
         // The first screen, in the list's own coordinates, at rest.
         let bottom = list.contentOffset.y + list.bounds.height - list.adjustedContentInset.bottom
-        let accounts = try #require(list.layoutAttributesForItem(at: IndexPath(item: 4, section: 0)))
+        let accounts = try #require(list.layoutAttributesForItem(at: IndexPath(item: 4, section: 1)))
         #expect(accounts.frame.maxY <= bottom, "the Accounts & Servers block fits the first screen")
         if list.contentSize.height > visible {
-            let next = try #require(list.layoutAttributesForItem(at: IndexPath(item: 0, section: 1)))
+            let next = try #require(list.layoutAttributesForItem(at: IndexPath(item: 0, section: 2)))
             #expect(next.frame.minY < bottom, "the list scrolls, and the next row shows where it goes on")
         }
 

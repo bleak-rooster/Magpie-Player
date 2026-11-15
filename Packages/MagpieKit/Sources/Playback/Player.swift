@@ -619,6 +619,11 @@ public final class Player {
         guard let current = queue.current, !isPlayable(current.song), loaded?.url.isFileURL != true else { return }
         if skipToNextPlayable() { return }
         engine.pause()
+        // Round 28 O1 fix round 1 (security M1): nothing on the phone can play, so the remote item is released (no
+        // stream URL with its credentials stays loaded); Play loads it again (`needsReload`).
+        engine.setItems([], startAt: 0)
+        sent = []
+        loaded = nil
         isPlaying = false
         lastError = message
         failedEntryId = current.id

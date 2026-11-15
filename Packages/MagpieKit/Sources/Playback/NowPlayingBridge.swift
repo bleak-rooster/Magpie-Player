@@ -13,8 +13,10 @@ public final class NowPlayingBridge {
     /// Round 14 A2 (D86): while a preview loads, plays or is paused, the lock screen shows it and the remote commands go
     /// to it; when it stops, the main player's info comes back.
     private let preview: PreviewPlayer?
+    /// Round 28 O1 fix round 1 (security L1): no longer fetched (the bridge shows only `artworkImage`); the parameter
+    /// stays so the callers keep their shape.
     private let artworkURL: (Song) -> URL?
-    /// The app's artwork, through its caches (P4); when given, `artworkURL` isn't used.
+    /// The app's artwork, through its caches (P4) and the offline gate; nil shows no cover.
     private let artworkImage: (@MainActor (Song) async -> UIImage?)?
     private let onLike: (Song) -> Void
     /// The like button's state for a song: the app's star state (with its unsaved flips), observed.
@@ -179,34 +181,18 @@ public final class NowPlayingBridge {
         }
     }
 
+    /// Round 28 O1 fix round 1 (security L1): only through the app's artwork (its caches and its offline gate); the
+    /// bridge's own URL fetch is gone, so nothing here can ask a server past the gate.
     private func fetchArtwork(for song: Song) {
-        guard let id = song.coverArtId, artwork?.coverArtId != id else { return }
-        if let artworkImage {   // the app's caches: a cached cover costs no request, and shows offline
-            artworkTask?.cancel()
-            artworkTask = Task { [weak self] in
-                guard let image = await artworkImage(song), !Task.isCancelled, let self else { return }
-                self.artwork = (id, Self.makeArtwork(image))
-                if self.player.queue.current?.song.coverArtId == id { self.publish(loadArtwork: false) }
-            }
-            return
-        }
-        guard let url = artworkURL(song) else { return }
+        guard let id = song.coverArtId, artwork?.coverArtId != id, let artworkImage else { return }
         artworkTask?.cancel()
         artworkTask = Task { [weak self] in
-            guard let (data, _) = try? await Self.artworkSession.data(from: url, delegate: SameOriginRedirects.shared),
-                  let image = UIImage(data: data), !Task.isCancelled, let self else { return }
+            guard let image = await artworkImage(song), !Task.isCancelled, let self else { return }
             self.artwork = (id, Self.makeArtwork(image))
             if self.player.queue.current?.song.coverArtId == id { self.publish(loadArtwork: false) }
         }
     }
 
-    /// Artwork URLs carry server auth in the query: no disk cache, no shared session, and no redirect to
-    /// another origin (security M1).
-    public nonisolated static let artworkSession: URLSession = {
-        let config = URLSessionConfiguration.ephemeral
-        config.urlCache = nil
-        return SameOriginRedirects.session(configuration: config)
-    }()
 
     /// MediaPlayer calls the artwork handler off the main thread (lock screen, CarPlay). Built in
     /// a nonisolated context so the closure is not main-actor-isolated (which would trap there).

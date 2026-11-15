@@ -107,7 +107,9 @@ private let lidarrScope = LidarrClient(base: lidarrBase, apiKey: "key", transpor
         #expect(message == ConnectErrorCopy.notAMusicServer, "got: \(message)")
     }
 
-    /// The proxy's session expires mid-session: browsing says what happened, never fails over, never crashes.
+    /// The proxy's session expires mid-session: browsing says what happened, never crashes. Round 28 O1 (D325,
+    /// supersedes "never fails over"): a non-Subsonic answer is no answer from the library, so it probes like a
+    /// connection error; the proxy answers the ping with its page too, so the library is suspect.
     @Test func proxySignInPageMidSession() async throws {
         stubNavidrome()
         transport.inner.stub(pathSuffix: "/rest/getArtists", body: proxyPage)
@@ -119,7 +121,7 @@ private let lidarrScope = LidarrClient(base: lidarrBase, apiKey: "key", transpor
         let error = try #require(thrown)
         #expect(error as? NavidromeError == .unexpectedResponse)
         #expect(BrowseErrorCopy.message(for: error) == BrowseErrorCopy.unexpectedResponse)
-        #expect(transport.inner.requests.filter { $0.url?.path.hasSuffix("/rest/ping") == true }.count == probes)
+        #expect(transport.inner.requests.filter { $0.url?.path.hasSuffix("/rest/ping") == true }.count > probes)
         tearDown(model)
     }
 

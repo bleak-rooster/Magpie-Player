@@ -290,6 +290,10 @@ final class AppModel {
     /// Offline as the URLs and the scrobbler read it, and Automatic mode's bookkeeping (AppModel+Offline.swift).
     @ObservationIgnored let offlineBox = OfflineBox()
     @ObservationIgnored let reachability = ReachabilityState()
+    // Round 28 O1
+    /// Round 28 O1 (owner, 2026-11-15): every transport the app owns sends through this gate (D328, AppModel+Offline).
+    @ObservationIgnored let offlineGate = OfflineGate()
+    // Round 28 O1 end
     /// Downloads for the signed-in scope (AppModel+Downloads.swift); nil when signed out.
     @ObservationIgnored var downloads: DownloadManager?
     /// What the player plays from the phone (Task 13); set from `downloads.localFiles`, built before `player`.
@@ -354,8 +358,11 @@ final class AppModel {
         self.discover = DiscoverState(store: aurralStore)
         self.matchIndexDirectory = matchIndexDirectory
         self.lidarr = lidarrStore.load()
-        self.transport = transport
-        self.probeTransport = probeTransport
+        // Round 28 O1 (D328): the main and probe transports through the offline gate.
+        let gatedTransport = GatedTransport(transport, gate: offlineGate, role: .main)
+        self.transport = gatedTransport
+        self.probeTransport = GatedTransport(probeTransport, gate: offlineGate, role: .probe)
+        // Round 28 O1 end
         self.box = box
         self.theme = theme
         let preferencesStore = PreferencesStore(defaults: defaults)
@@ -395,7 +402,9 @@ final class AppModel {
         let scrobbles = ScrobbleRouter(
             box: box, counting: counting, findsIdentity: findsIdentity, settings: scrobbleSettings,
             queue: ScrobbleQueue(fileURL: ScrobbleQueue.defaultURL(in: data)),
-            listenBrainz: { [tokenStore, transport, listenBrainzLimiter] in   // the token is read at send time
+            // Round 28 O1 (D328): the gated transport, not the parameter.
+            listenBrainz: { [tokenStore, transport = gatedTransport, listenBrainzLimiter] in   // the token is read at send time
+            // Round 28 O1 end
                 tokenStore.load().map { ListenBrainzClient(transport: transport, token: $0, limiter: listenBrainzLimiter,
                                                            clientVersion: Self.marketingVersion) }
             },
@@ -415,11 +424,14 @@ final class AppModel {
                              scrobbleRule: { scrobbleSettings.value.rule })
         self.sleepTimer = SleepTimer(player: player)
         self.previewPlayer = PreviewPlayer(engine: previewEngine ?? AVPreviewEngine(), mainPlayer: player)
-        self.previewTransport = previewTransport ?? PreviewResolver.defaultTransport()
+        // Round 28 O1 (D328): previews and Aurral's image proxy through the offline gate.
+        self.previewTransport = GatedTransport(previewTransport ?? PreviewResolver.defaultTransport(), gate: offlineGate, role: .outside)
+        // Round 28 O1 end
         applyEngineWindow()
         localFiles.setOnDamaged { [weak self] in self?.downloads?.dropBadFile(songId: $0) }
         scrobbles.setOnListenBrainzRejected { [weak self] in Task { @MainActor in self?.listenBrainzRejected = true } }
         offlineInputsChanged()   // Offline mode On from the last run
+        startReachability()   // Round 28 O1 (D324, D326): the machine, the network and Low Power Mode
         #if os(iOS)
         if systemNowPlaying {
             nowPlaying = NowPlayingBridge(
@@ -448,6 +460,10 @@ final class AppModel {
         hintWatch?.cancel()
         preDownloadWatch?.cancel()
         lyricsWatch?.cancel()   // Round 27 L (D310)
+        // Round 28 O1
+        reachability.inputsWatch?.cancel()
+        reachability.timer?.cancel()
+        // Round 28 O1 end
     }
 
     /// The write switch and setup of the connected Lidarr (both are kept per instance).
@@ -557,6 +573,7 @@ final class AppModel {
     func protectedDataBecameAvailable() {
         reloadScrobbleQueue()   // a launch before first unlock couldn't read it (T17 fix round 1)
         reloadPreferences()     // nor the preferences, so the car showed the default layout (T23)
+        reloadReachabilityChoice()   // Round 28 O1 fix round 1 (security L5): nor Go offline automatically's choice
         guard isWaitingForUnlock else { return }
         resumeSavedSession()
     }
@@ -586,6 +603,7 @@ final class AppModel {
     /// Tries each address in order; the first that answers is used. Saves to the Keychain on success.
     func signIn(urls: [URL], username: String, password: String) async throws {
         guard !urls.isEmpty else { throw SignInError.noAddress }
+        leaveOfflineModeForSignIn()   // Round 28 O1 fix round 1 (security H1): signing in is an explicit act
         // H4: when ATS would refuse every address, say so before anything is tried.
         let blocked = urls.filter(atsBlocks)
         guard blocked.count < urls.count else {
@@ -726,43 +744,57 @@ final class AppModel {
 
     // MARK: - Requests with failover
 
+    // Round 28 O1
     /// Runs `op` against the current client. On a connection error, re-probes the addresses, moves
     /// to the first that answers (rebuilding the client and the player's stream URLs) and retries once.
+    /// Round 28 O1 (owner, 2026-11-15, D325): a server-path failure (502/503/504/511, a non-Subsonic answer, a refused
+    /// redirect) is handled like a connection error; any answer from the library ends "suspect"; automatically offline
+    /// nothing is asked (D328).
     func request<T: Sendable>(_ op: @Sendable (NavidromeClient) async throws -> T) async throws -> T {
         // A reconnect under way (a resumed launch, a failover) is about to replace the client: use its result, so
         // the client it retires never logs in on its own (O3).
         try requireNotForcedOffline()   // Task 14: Offline mode On sends nothing
+        try requireNotAutomaticallyOffline()
         if let pending = reconnectTask { _ = await pending.value }
         guard let client = session?.client else { throw NavidromeError.noReachableServer }
         do {
-            return try noteLocalSuccess(await op(client))
-        } catch where Self.isConnectionError(error) {
+            return try noteLibraryAnswered(noteLocalSuccess(await op(client)))
+        } catch where Self.isConnectionError(error) || Self.isServerPathFailure(error) {
             guard await reconnect(rebuildAlways: false), let retry = session?.client else {
                 try rethrowAuthRejection()   // the server answered and refused the login: say so, don't go offline
                 if session?.client === client { noteUnreachable() }   // not a session that has since changed
                 throw error
             }
-            return try noteLocalSuccess(await op(retry))
+            return try noteLibraryAnswered(noteLocalSuccess(await op(retry)))
+        } catch {
+            noteLibraryAnswer(in: error)   // a Subsonic error is an answer (D325)
+            throw error
         }
     }
 
     /// Runs `op` once, for a write that isn't safe to repeat (a playlist edit: round 11 review fix I1). On a
     /// connection error it still moves to an address that answers, for what comes next, but never sends `op` again:
     /// the request may have arrived and only the reply been lost. The caller reads back to learn what happened.
+    /// Round 28 O1 (D325): the same for a server-path failure; still never a resend.
     func requestOnce<T: Sendable>(_ op: @Sendable (NavidromeClient) async throws -> T) async throws -> T {
         try requireNotForcedOffline()
+        try requireNotAutomaticallyOffline()
         if let pending = reconnectTask { _ = await pending.value }
         guard let client = session?.client else { throw NavidromeError.noReachableServer }
         do {
-            return try noteLocalSuccess(await op(client))
-        } catch where Self.isConnectionError(error) {
+            return try noteLibraryAnswered(noteLocalSuccess(await op(client)))
+        } catch where Self.isConnectionError(error) || Self.isServerPathFailure(error) {
             if await !reconnect(rebuildAlways: false) {
                 try rethrowAuthRejection()
                 if session?.client === client { noteUnreachable() }
             }
             throw error
+        } catch {
+            noteLibraryAnswer(in: error)
+            throw error
         }
     }
+    // Round 28 O1 end
 
     /// T3: a request to a home address worked, so the Local Network setting is on (fix M1: only an IP literal or a
     /// `.local` name proves it; a single-label name may have gone over Tailscale).
@@ -813,7 +845,7 @@ final class AppModel {
             return false
         }
         // A blip; the same address answers again. While suspect, a ping isn't enough: the login must work too (B).
-        if base == old.activeBase, !rebuildAlways, !reachability.isSuspect {
+        if base == old.activeBase, !rebuildAlways, !reachability.machine.isDown {   // Round 28 O1 fix round 1 (task M1)
             noteReachable()
             return true
         }
@@ -838,7 +870,7 @@ final class AppModel {
             for await error in errors where error != nil {
                 guard let self else { return }
                 guard self.session != nil else { continue }
-                await self.reconnect(rebuildAlways: false)
+                await self.streamCouldNotConnect()   // Round 28 O1 (D325): at most one check each 5 s
             }
         }
     }
@@ -852,7 +884,12 @@ final class AppModel {
             URLQueryItem(name: "f", value: "json"),
         ]) else { return URLError(.badURL) }
         do {
-            let (data, response) = try await probeTransport.send(URLRequest(url: url))
+            // Round 28 O1 fix round 1 (security M2): capped at 16 KiB, and over by `probeDeadline` whatever the transport does.
+            let transport = probeTransport, request = URLRequest(url: url)
+            let (data, response) = try await withReachabilityDeadline(Self.probeDeadline) {
+                try await transport.send(request, maxBytes: NavidromeClient.pingMaxBytes)
+            }
+            // Round 28 O1 fix round 1 end
             guard (200..<300).contains(response.statusCode) else { return NavidromeError.http(status: response.statusCode) }
             return SubsonicPing.isServerAnswer(data) ? nil : NavidromeError.unexpectedResponse
         } catch {

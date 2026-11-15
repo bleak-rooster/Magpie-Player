@@ -61,6 +61,8 @@
 #       A POST into a URLProtocol stub (redirect policy test); nothing leaves the process.
 #   Packages/MagpieKit/Tests/MagpieCoreTests/SharedLoginTransportTests.swift  auth/login
 #       A login request handed to MockTransport.
+#   Packages/MagpieKit/Tests/MagpieCoreTests/OfflineGateTests.swift  auth/login
+#       Round 28 O1 (D328): a login request the offline gate is asked about, handed to MockTransport.
 #   Packages/MagpieKit/Sources/SlskdKit/SlskdRoute.swift, SlskdClient.swift  G1 allowlist: slskd clean-up
 #       Round 23 (D192): slskd's three clean-up DELETEs (a finished transfer's record, a file or folder directly inside
 #       its downloads folder), only through `SlskdWriteGate.perform`, only from the clean slate. Pinned below.
@@ -104,6 +106,7 @@ allow=(
   "Tests/MagpieUITests/ChartFlowUITests.swift|G1 allowlist: stub reset"
   "Packages/MagpieKit/Tests/MagpieCoreTests/HTTPTransportTests.swift|RedirectStub"
   "Packages/MagpieKit/Tests/MagpieCoreTests/SharedLoginTransportTests.swift|auth/login"
+  "Packages/MagpieKit/Tests/MagpieCoreTests/OfflineGateTests.swift|auth/login"
   "Packages/MagpieKit/Sources/SlskdKit/SlskdRoute.swift|G1 allowlist: slskd clean-up"
   "Packages/MagpieKit/Sources/SlskdKit/SlskdClient.swift|G1 allowlist: slskd clean-up"
   "Packages/MagpieKit/Sources/SlskdKit/SlskdRoute.swift|G1 allowlist: slskd keep connected"
@@ -1147,11 +1150,12 @@ if [ -z "${G1_SRC:-}" ]; then
   fi
   # L fix round 1 (LL1): the app makes LRCLIB's client only with its own transport, which never follows a redirect
   # and keeps no cookie.
+  # Round 28 O1 (D328): wrapped in the offline gate.
   # Fix round 2 (N2): every construction counted (`LrcLib(`, `LrcLib.init(`, several on a line): exactly one, the
   # pinned one.
   lrclib_makes=$(grep -rnE --include='*.swift' 'LrcLib(\.init)?[[:space:]]*\(' "${product[@]}" | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' || true)
   { [ "$(printf '%s\n' "$lrclib_makes" | grep -oE 'LrcLib(\.init)?[[:space:]]*\(' | grep -c . || true)" = 1 ] &&
-    printf '%s\n' "$lrclib_makes" | grep -qF 'LrcLib(transport: LrcLibTransport(), userAgent:'; } ||
+    printf '%s\n' "$lrclib_makes" | grep -qF 'LrcLib(transport: GatedTransport(LrcLibTransport(), gate: offlineGate, role: .outside), userAgent:'; } ||
     { echo "G1: LRCLIB's client made other than once, with its no-redirect transport" >&2; bad=1; }
   lrclib_transport="Packages/MagpieKit/Sources/MagpieCore/LrcLibTransport.swift"
   if [ -f "$lrclib_src" ]; then
@@ -1473,5 +1477,103 @@ if [ -z "${G1_SRC:-}" ]; then
       *) echo "G1: the slskd reconnect named outside SlskdKit: $f" >&2; bad=1 ;; esac
   done
 fi
+if [ -z "${G1_SRC:-}" ]; then
+  # Round 28 O1 (owner, 2026-11-15, D328; fix round 1, security M4): everything the app sends goes through the offline
+  # gate. The download fetchers aren't HTTP transports (the download manager makes no task offline, pinned by tests);
+  # the playing stream is AVPlayer's (accepted, D328).
+  og_model="App/AppModel.swift"
+  og_gate="Packages/MagpieKit/Sources/MagpieCore/OfflineGate.swift"
+  og_art="App/Screens/Shared/Artwork.swift"
+  og_lines() { grep -rnE --include='*.swift' "$1" "${@:2}" | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' |
+               sed -E 's/^([^:]+):[0-9]+:[[:space:]]*/\1|/' | sort || true; }
+  og_same() {   # $1 what, $2 have, $3 want
+    [ "$2" = "$3" ] || { echo "G1: $1 (D328): $(diff <(printf '%s\n' "$3") <(printf '%s\n' "$2") | grep -E '^[<>]' | head -3 | tr '\n' ' ')" >&2; bad=1; }
+  }
+  # Every transport made, wrapped or named in App/ is one of these exact lines.
+  og_same "a transport made in App/ outside the offline gate's pinned lines" \
+    "$(og_lines '[A-Za-z]*Transport[[:space:]]*\(|defaultTransport[[:space:]]*\(' App)" \
+    "$(printf '%s\n' \
+      "App/AppModel+Lyrics.swift|lrclib: LrcLib(transport: GatedTransport(LrcLibTransport(), gate: offlineGate, role: .outside), userAgent: LrcLib.userAgent(version: Self.marketingVersion)))   // Round 28 O1 (D328)" \
+      "App/AppModel+OutsideArt.swift|let transport = GatedTransport(outside, gate: offlineGate, role: .outside)   // Round 28 O1 (D328)" \
+      "App/AppModel+OutsideArt.swift|var outside: HTTPTransport = OutsideArtTransport()" \
+      "App/AppModel.swift|let gatedTransport = GatedTransport(transport, gate: offlineGate, role: .main)" \
+      "App/AppModel.swift|probeTransport: HTTPTransport = URLSessionTransport(timeout: 6)," \
+      "App/AppModel.swift|self.previewTransport = GatedTransport(previewTransport ?? PreviewResolver.defaultTransport(), gate: offlineGate, role: .outside)" \
+      "App/AppModel.swift|self.probeTransport = GatedTransport(probeTransport, gate: offlineGate, role: .probe)" \
+      "App/AppModel.swift|transport: HTTPTransport = URLSessionTransport()," \
+      "App/Screens/Shared/Artwork.swift|URLSessionTransport(timeout: 20, session: SameOriginRedirects.session(configuration: sessionConfiguration))" \
+      "App/Screens/Shared/Artwork.swift|let transport = GatedTransport(raw, gate: gate, role: .main)" | sort)"
+  # No transport type of the app's own, no other session, and the two fetchers only where they are made.
+  og_same "an HTTP transport type declared in App/" "$(og_lines '(^|[[:space:]])(struct|class|actor|enum|extension)[[:space:]][^{]*HTTPTransport' App)" ""
+  og_same "a URL session or fetcher made in App/ off its pinned lines" \
+    "$(og_lines 'URLSession[[:space:]]*\(|URLSession\.shared|Fetcher[[:space:]]*\(' App)" \
+    "$(printf '%s\n' \
+      "App/AppModel.swift|self.audioFetcher = audioFetcher ?? URLSessionAudioFetcher()" \
+      "App/Downloads/BackgroundAudioFetcher.swift|return URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)" \
+      "App/Downloads/BackgroundAudioFetcher.swift|static let shared = BackgroundAudioFetcher(" | sort)"
+  # Artwork's own session only under the model's gate.
+  og_same "ArtworkCache's session used off its gated line" \
+    "$(og_lines 'ArtworkCache\.transport|Self\.transport' App)" "$og_art|var raw = Self.transport"
+  # No default transport parameter in product code but the app's two (wrapped in init) and the image proxy's (the app
+  # passes its gated preview transport).
+  og_same "a default transport parameter in product code" \
+    "$(og_lines '(^|[(,])[[:space:]]*[A-Za-z]*[Tt]ransport:[[:space:]]*HTTPTransport\??[[:space:]]*=' App Packages/MagpieKit/Sources)" \
+    "$(printf '%s\n' \
+      "App/AppModel.swift|probeTransport: HTTPTransport = URLSessionTransport(timeout: 6)," \
+      "App/AppModel.swift|transport: HTTPTransport = URLSessionTransport()," \
+      "App/AppModel.swift|previewTransport: HTTPTransport? = nil," \
+      "Packages/MagpieKit/Sources/AurralKit/AurralImageProxy.swift|public init(base: URL, directory: URL?, openTransport: HTTPTransport = AurralOpenTransport()) {" | sort)"
+  # One gate, set in one place; reconnects hold it in balanced pairs.
+  og_same "an offline gate made elsewhere" "$(og_lines 'OfflineGate[[:space:]]*\(' App Packages/MagpieKit/Sources)" \
+    "$og_model|@ObservationIgnored let offlineGate = OfflineGate()"
+  og_same "the offline gate's mode set elsewhere" "$(og_lines '\.setMode[[:space:]]*\(' App)" \
+    "App/AppModel+Offline.swift|offlineGate.setMode(forced ? .manual : offline ? .automatic : .open)   // Round 28 O1 (D328)"
+  [ "$(og_lines 'beginReconnect[[:space:]]*\(' App | grep -c .)" = "$(og_lines 'endReconnect[[:space:]]*\(' App | grep -c .)" ] ||
+    { echo "G1: the offline gate's reconnect hold isn't balanced (beginReconnect vs endReconnect)" >&2; bad=1; }
+  og_same "the offline gate's reconnect hold off its pinned lines" "$(og_lines '(begin|end)Reconnect[[:space:]]*\(' App)" \
+    "$(printf '%s\n' \
+      "App/AppModel+Offline.swift|gate.beginReconnect()" \
+      "App/AppModel+Offline.swift|gate.beginReconnect()   // automatic offline lets this reconnect's login out (D328)" \
+      "App/AppModel+Offline.swift|gate.endReconnect()" \
+      "App/AppModel+Offline.swift|gate.endReconnect()" | sort)"
+  # The kept transports are assigned once each; in `init` the parameters are named only on these lines, so no closure
+  # keeps the ungated one.
+  [ "$(grep -cE '^[[:space:]]*self\.(transport|probeTransport|previewTransport)[[:space:]]*=' "$og_model")" = 3 ] &&
+    grep -qxF '        self.transport = gatedTransport' "$og_model" ||
+    { echo "G1: $og_model: a kept transport assigned other than once, from the gate" >&2; bad=1; }
+  og_same "$og_model: init names an ungated transport" \
+    "$(awk '/^    init\(store: any SessionStoring/,/^    isolated deinit/' "$og_model" | grep -vE '^[[:space:]]*//' |
+       grep -E '(^|[^.A-Za-z0-9_])(transport|probeTransport|previewTransport)([^A-Za-z0-9_]|$)' | sed -E 's/^[[:space:]]+//' | sort)" \
+    "$(printf '%s\n' \
+      'transport: HTTPTransport = URLSessionTransport(),' \
+      'probeTransport: HTTPTransport = URLSessionTransport(timeout: 6),' \
+      'previewTransport: HTTPTransport? = nil,' \
+      'let gatedTransport = GatedTransport(transport, gate: offlineGate, role: .main)' \
+      'self.probeTransport = GatedTransport(probeTransport, gate: offlineGate, role: .probe)' \
+      'listenBrainz: { [tokenStore, transport = gatedTransport, listenBrainzLimiter] in   // the token is read at send time' \
+      'tokenStore.load().map { ListenBrainzClient(transport: transport, token: $0, limiter: listenBrainzLimiter,' \
+      'self.previewTransport = GatedTransport(previewTransport ?? PreviewResolver.defaultTransport(), gate: offlineGate, role: .outside)' | sort)"
+  # The gate itself: `inner` private (its test peek Debug-only and used by no product code), asked before both sends,
+  # sent only those two ways, manual refuses everything, and automatic's rule is exactly these lines.
+  for want in '    private let inner: HTTPTransport' '        case .manual: return false' \
+              '            guard role != .outside, let url = request.url else { return false }' \
+              '            if isBarePing(request, url: url) { return true }' \
+              '            return role == .main && reconnecting && url == loginURL && isLogin(request, url: url)' \
+              '            if ok, s.mode == .automatic, let url = request.url, url == s.loginURL { s.loginURL = nil }' \
+              '    public var innerForTesting: HTTPTransport { inner }'; do
+    grep -qxF -- "$want" "$og_gate" || { echo "G1: $og_gate: the gate's rule changed (missing: $want)" >&2; bad=1; }
+  done
+  [ "$(grep -vE '^[[:space:]]*//' "$og_gate" | grep -cE '\binner\b')" = 6 ] || { echo "G1: $og_gate: the inner transport is named off its six lines" >&2; bad=1; }
+  awk '/^    #if DEBUG$/{d=1} /^    #endif$/{d=0} /innerForTesting/ && !d {exit 1}' "$og_gate" ||
+    { echo "G1: $og_gate: the test peek at the inner transport outside #if DEBUG" >&2; bad=1; }
+  og_same "the gate's inner transport peeked at by product code" "$(og_lines 'innerForTesting' App Packages/MagpieKit/Sources | grep -v "^$og_gate|")" ""
+  [ "$(grep -cxF '        guard gate.admit(request, role: role) else { throw URLError(.notConnectedToInternet) }' "$og_gate")" = 2 ] ||
+    { echo "G1: $og_gate: a gated send no longer asks the gate first" >&2; bad=1; }
+  [ "$(grep -cE 'inner\.send\(' "$og_gate")" = 2 ] || { echo "G1: $og_gate: the inner transport is sent more than its two ways" >&2; bad=1; }
+  # The offline mode is applied to the gate where offline mode is applied.
+  grep -qxF '        offlineGate.setMode(forced ? .manual : offline ? .automatic : .open)   // Round 28 O1 (D328)' App/AppModel+Offline.swift ||
+    { echo "G1: App/AppModel+Offline.swift: the offline gate's wiring changed" >&2; bad=1; }
+fi
+
 [ "$bad" = 0 ] || { echo "G1 check failed: route Lidarr writes through LidarrWriteGate (or extend the allowlist in $0)" >&2; exit 1; }
 echo "G1 check: no write verbs outside LidarrWriteGate in ${product[*]}${tests[*]:+ and ${tests[*]}} (allowlisted: Navidrome auth/login, dev-only IT helpers)"
