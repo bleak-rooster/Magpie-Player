@@ -102,10 +102,15 @@ struct OwnedSongRow: View {
     let model: SearchModel
     let onPlay: () -> Void
     private let themed = Themed()
+    /// Fix round 1 (review I1, design H2): the title and artist lines wrap at accessibility sizes.
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
         let r = item.recording
         let failed = model.ownedFailed.contains(item.songId)
+        // Round 28 S (D338): "Song · <artist>"; VoiceOver "<title>, song by <artist>".
+        let detail = SearchRowText.songDetail(artist: r.artist)
+        let label = SearchRowText.songLabel(title: r.title, artist: r.artist)
         Button {
             onPlay()
             let app = app, model = model, id = item.songId
@@ -117,8 +122,9 @@ struct OwnedSongRow: View {
                 }
                 .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(r.title).font(.callout).lineLimit(1)
-                    Text(r.artist).font(.footnote).foregroundStyle(themed.palette.ink2Color).lineLimit(1)
+                    Text(r.title).font(.callout).lineLimit(typeSize.isAccessibilitySize ? nil : 1)
+                    Text(detail).font(.footnote).foregroundStyle(themed.palette.ink2Color)
+                        .lineLimit(typeSize.isAccessibilitySize ? nil : 1)
                     Label(failed ? SearchCopy.couldNotPlay : SearchCopy.inYourLibrary,
                           systemImage: failed ? "exclamationmark.circle" : "checkmark.circle")
                         .font(.caption).foregroundStyle(themed.palette.ink2Color)
@@ -131,9 +137,10 @@ struct OwnedSongRow: View {
         }
         .buttonStyle(.plain)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(r.title), \(r.artist)")
+        .accessibilityLabel(label)
         .accessibilityValue(failed ? SearchCopy.couldNotPlay : SearchCopy.inYourLibrary)
         .accessibilityAddTraits(.isButton)
+        .searchRowProbe("search-owned-\(item.songId)", detail: detail, label: label)
         .listRowInsets(EdgeInsets())
         .listRowBackground(Color.clear)
     }

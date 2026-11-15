@@ -296,14 +296,15 @@ public enum CarPlayRows {
                                      offer: CPTryOffer = .unavailable, onTheirWay: [Int: String] = [:],
                                      playingId: String?) -> [CPSectionModel] {
         let songs = CPSectionModel(header: "Songs", rows: result.songs.enumerated().map { i, song in
-            CPRowModel(id: "song.\(i).\(song.id)", title: display(song.title, untitled), detail: song.artist,
-                       artworkKey: song.coverArtId, playing: song.id == playingId,
+            // Round 28 S fix round 1 (design H1, D338): "Song · <artist>", "Song" when the artist is blank.
+            CPRowModel(id: "song.\(i).\(song.id)", title: display(song.title, untitled),
+                       detail: SearchRowText.songDetail(song), artworkKey: song.coverArtId, playing: song.id == playingId,
                        action: .play(.songs(result.songs, startAt: i)))
         })
         let artists = CPSectionModel(header: "Artists", rows: searchArtistRows(result.artists))   // R19
-        let albums = CPSectionModel(header: "Albums", rows: unique(result.albums, \.id).map { albumRow($0, id: "album.\($0.id)") })
+        let albums = CPSectionModel(header: "Albums", rows: unique(result.albums, \.id).map(searchAlbumRow))
         let outside = CPSectionModel(header: RowState.notYet.statusText,
-                                     rows: notYetRows(notYet, offer: offer, onTheirWay: onTheirWay))
+                                     rows: notYetRows(notYet, offer: offer, onTheirWay: onTheirWay, inSearch: true))
         let sections = [songs, artists, albums, outside].filter { !$0.rows.isEmpty }
         return sections.isEmpty ? state(.empty) : sections
     }
@@ -313,15 +314,22 @@ public enum CarPlayRows {
     public static func searchItems(_ result: LibrarySearchResult, notYet: [ExternalRecording] = [],
                                    offer: CPTryOffer = .unavailable, onTheirWay: [Int: String] = [:]) -> [CPRowModel] {
         let songs = result.songs.enumerated().map { i, song in
-            CPRowModel(id: "song.\(i).\(song.id)", title: display(song.title, untitled), detail: "Song · \(song.artist)",
-                       artworkKey: song.coverArtId, action: .play(.songs(result.songs, startAt: i)))
+            // Round 28 S fix round 1 (design H1, D338): the phone's Search wording, never a dangling " · ".
+            CPRowModel(id: "song.\(i).\(song.id)", title: display(song.title, untitled),
+                       detail: SearchRowText.songDetail(song), artworkKey: song.coverArtId,
+                       action: .play(.songs(result.songs, startAt: i)))
         }
-        let albums = unique(result.albums, \.id).map {
-            let name = display($0.name, untitledAlbum)
-            return CPRowModel(id: "album.\($0.id)", title: name, detail: "Album · \($0.artist)",
-                              artworkKey: $0.coverArtId, action: .open(.album(id: $0.id, title: name)))
-        }
-        return songs + searchArtistRows(result.artists) + albums + notYetRows(notYet, offer: offer, onTheirWay: onTheirWay)
+        let albums = unique(result.albums, \.id).map(searchAlbumRow)
+        return songs + searchArtistRows(result.artists) + albums
+            + notYetRows(notYet, offer: offer, onTheirWay: onTheirWay, inSearch: true)
+    }
+
+    /// Round 28 S fix round 1 (design H1, D338): an album found by search, "Album · <artist>" ("Album" when the artist
+    /// is blank); it opens its page. The library's album lists keep the artist alone (`albumRow`).
+    static func searchAlbumRow(_ album: Album) -> CPRowModel {
+        let name = display(album.name, untitledAlbum)
+        return CPRowModel(id: "album.\(album.id)", title: name, detail: SearchRowText.albumDetail(artist: album.artist),
+                          artworkKey: album.coverArtId, action: .open(.album(id: album.id, title: name)))
     }
 
     /// R19: an artist found by search opens the artist page (its albums play there, within D12's depth budget).
@@ -351,20 +359,24 @@ public enum CarPlayRows {
     /// Try is possible here; then a tap offers "Try it next". Otherwise the row does nothing.
     /// R17 / R20: a song in `onTheirWay` (by index) shows its request's status and a tap says it's on its way; never a
     /// second Try.
+    /// Round 28 S fix round 1 (design M4, D338): `inSearch` rows leave a blank artist out (the status alone, as the
+    /// phone's Search leaves the kind alone); elsewhere it reads "Unknown artist", as before.
     static func notYetRows(_ recordings: [ExternalRecording], offer: CPTryOffer,
-                           onTheirWay: [Int: String] = [:]) -> [CPRowModel] {
+                           onTheirWay: [Int: String] = [:], inSearch: Bool = false) -> [CPRowModel] {
         let state = RowState.notYet
         let status = offer == .unavailable ? state.statusText : "\(state.statusText) · Try"
         return recordings.enumerated().map { i, recording in
             let id = "\(notYetPrefix)\(i).\(recording.recordingMBID?.rawValue ?? recording.title)"
-            let artist = display(recording.artist, unknownArtist)
+            let blank = recording.artist.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            let artist: String? = inSearch && blank ? nil : display(recording.artist, unknownArtist)
+            func line(_ lead: String) -> String { artist.map { "\(lead) · \($0)" } ?? lead }
             // R15: its release's cover from outside, in memory only (`OutsideArtKey`); a plain record without.
             let art = OutsideArtKey.cover(releaseGroup: nil, release: recording.releaseMBID)?.token
             if let live = onTheirWay[i] {
-                return CPRowModel(id: id, title: display(recording.title, untitled), detail: "\(live) · \(artist)",
+                return CPRowModel(id: id, title: display(recording.title, untitled), detail: line(live),
                                   artworkKey: art, round: true, action: .onItsWay, statusSymbol: "arrow.down.circle")
             }
-            return CPRowModel(id: id, title: display(recording.title, untitled), detail: "\(status) · \(artist)",
+            return CPRowModel(id: id, title: display(recording.title, untitled), detail: line(status),
                               artworkKey: art, round: true,
                               action: offer == .unavailable ? .none : .tryNext(recording), statusSymbol: state.statusSymbol)
         }
