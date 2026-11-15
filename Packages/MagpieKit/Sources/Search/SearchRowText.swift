@@ -31,10 +31,14 @@ public enum SearchRowText {
     /// VoiceOver: "Glasshouse, album by Corin Hale"; an outside album "Low Tide, EP by Corin Hale".
     public static func albumLabel(name: String, artist: String, kind: String? = nil) -> String {
         let word = albumKind(kind)
-        // Spoken mid-sentence: "single", "album"; an initialism ("EP") stays as it is.
-        let spoken = word == word.uppercased() ? word : word.lowercased()
+        // Spoken mid-sentence: "single", "album", "live" (even "LIVE"); only a short initialism on the allow-list stays
+        // in capitals ("EP"), fix round 1 (L3).
+        let spoken = spokenInitialisms.contains(word.uppercased()) ? word.uppercased() : word.lowercased()
         return label(title: name, kind: spoken, artist: artist)
     }
+
+    /// Kinds VoiceOver reads letter by letter.
+    static let spokenInitialisms: Set = ["EP", "LP"]
 
     // MARK: - Private
 

@@ -57,4 +57,13 @@ import Testing
         #expect(SearchRowText.albumLabel(name: "Glasshouse", artist: "") == "Glasshouse, album")
         #expect(SearchRowText.albumLabel(name: "Low Tide", artist: "  ", kind: "EP") == "Low Tide, EP")
     }
+
+    /// Fix round 1 (L3): a kind is spoken in lower case, even all in capitals ("LIVE"), unless it's a short initialism
+    /// on the allow-list (EP, LP).
+    @Test func labels_kindSpokenLowerCaseExceptInitialisms() {
+        #expect(SearchRowText.albumLabel(name: "Night Shift", artist: "Corin Hale", kind: "LIVE") == "Night Shift, live by Corin Hale")
+        #expect(SearchRowText.albumLabel(name: "Low Tide", artist: "Corin Hale", kind: "ep") == "Low Tide, EP by Corin Hale")
+        #expect(SearchRowText.albumLabel(name: "Long Play", artist: "Corin Hale", kind: "LP") == "Long Play, LP by Corin Hale")
+        #expect(SearchRowText.albumLabel(name: "Rooms", artist: "Corin Hale", kind: "Compilation") == "Rooms, compilation by Corin Hale")
+    }
 }
