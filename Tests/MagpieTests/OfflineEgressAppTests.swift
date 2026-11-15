@@ -107,6 +107,12 @@ private let home = URL(string: "http://192.168.1.2:4533")!
         let passed = model.offlineGate.passedCount
         await everything(model, clock, until: 600)
         model.download([song("s9")], reason: .song); await model.downloads!.settled()
+        // Fix round 1 (security L1): cover art goes through the model's gate too, not only through its URL builder.
+        let covers = ArtworkCache(), coverRequests = MockTransport()
+        covers.transportForTesting = coverRequests
+        let cover = await covers.image(key: "k", url: URL(string: "http://192.168.1.2:4533/rest/getCoverArt?id=al-1")!,
+                                       gate: model.offlineGate)
+        #expect(cover == nil && coverRequests.requests.isEmpty, "artwork asks nothing in Offline mode")
         #expect(model.offlineGate.passedCount == passed, "the gate let nothing out")
         #expect(model.offlineGate.refusedCount > 0, "and was asked")
         #expect(main.inner.requests.count == sent.0, "main: \(main.inner.requests.dropFirst(sent.0).map { $0.url!.path })")

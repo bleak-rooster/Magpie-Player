@@ -27,8 +27,10 @@ private let away = URL(string: "https://music.example.com/navidrome")!
     let transport = HostSwitchTransport()
 
     /// What stands between Magpie and the library (nil: nothing, the library answers).
-    enum Front: Sendable { case status(Int), portal, redirect, subsonicError, slowPages }
+    enum Front: Sendable { case status(Int), bare(Int), portal, redirect, subsonicError, slowPages, subsonic500 }
     let front = OSAllocatedUnfairLock<Front?>(initialState: nil)
+    /// Fix round 1 (L4): what the login answers instead, with a JSON body (nil: as `front` says).
+    let loginStatus = OSAllocatedUnfairLock<Int?>(initialState: nil)
 
     init() {
         let front = self.front
@@ -36,6 +38,8 @@ private let away = URL(string: "https://music.example.com/navidrome")!
             { _ in
                 switch front.withLock({ $0 }) {
                 case .status(let code)?: return .init(status: code, body: Data("<html>Bad gateway</html>".utf8))
+                case .bare(let code)?: return .init(status: code)
+                case .subsonic500? where page: return .init(status: 500, body: subsonicError)
                 case .portal?: return .init(status: 200, body: portal, headers: ["Content-Type": "text/html"])
                 case .redirect?: return .init(status: 302, headers: ["Location": "http://portal.example/login"])
                 case .subsonicError? where page: return .init(status: 200, body: subsonicError)
@@ -45,7 +49,11 @@ private let away = URL(string: "https://music.example.com/navidrome")!
             }
         }
         transport.inner.stub(pathSuffix: "/rest/ping", handler: answer(ok, page: false))
-        transport.inner.stub(method: "POST", pathSuffix: "/auth/login", handler: answer(loginJSON, page: false))
+        let loginStatus = self.loginStatus, login = answer(loginJSON, page: false)
+        transport.inner.stub(method: "POST", pathSuffix: "/auth/login") { r in
+            if let code = loginStatus.withLock({ $0 }) { return .init(status: code, body: Data(#"{"error":"Too many requests"}"#.utf8)) }
+            return try login(r)
+        }
         transport.inner.stub(pathSuffix: "/rest/getAlbumList2", handler: answer(albums, page: true))
         transport.inner.stub(pathSuffix: "/rest/createPlaylist", handler: answer(ok, page: true))
         transport.inner.stub(pathSuffix: "/api/song", body: Data("[]".utf8), headers: ["X-Total-Count": "0"])
@@ -76,12 +84,12 @@ private let away = URL(string: "https://music.example.com/navidrome")!
         let (model, clock) = try await signedIn()
         front.withLock { $0 = .status(502) }
         let pings = count("/rest/ping")
-        await #expect(throws: NavidromeError.http(status: 502)) { try await self.page(model) }
+        await #expect(throws: NavidromeError.unexpectedResponse) { try await self.page(model) }
         #expect(count("/rest/ping") > pings, "a probe, as for a connection error")
         #expect(model.reachability.isSuspect && !model.isOffline)
         #expect(await model.advanceReachability(clock, to: 30))
         #expect(model.isOffline, "a stopped library behind a proxy goes offline at 30 s")
-        for code in [503, 504] { #expect(AppModel.isServerPathFailure(NavidromeError.http(status: code))) }
+        for code in [502, 503, 504, 407, 511, 520, 525, 530] { #expect(AppModel.isServerPathFailure(NavidromeError.http(status: code)), "\(code)") }
     }
 
     @Test func request_captivePortalHTMLCountsTowardsOffline() async throws {
@@ -110,7 +118,7 @@ private let away = URL(string: "https://music.example.com/navidrome")!
         let (model, _) = try await signedIn()
         front.withLock { $0 = .status(503) }
         let before = count("/rest/createPlaylist")
-        await #expect(throws: NavidromeError.http(status: 503)) {
+        await #expect(throws: NavidromeError.unexpectedResponse) {
             _ = try await model.requestOnce { try await $0.createPlaylist(name: "Road trip", songIds: []) }
         }
         #expect(count("/rest/createPlaylist") == before + 1, "sent once, never again")
@@ -153,6 +161,75 @@ private let away = URL(string: "https://music.example.com/navidrome")!
         #expect(await model.advanceReachability(clock, to: 31))
         #expect(!model.isOffline)
         #expect(AppModel.isLibraryAnswer(NavidromeError.http(status: 500)) && AppModel.isLibraryAnswer(NavidromeError.badCredentials))
+    }
+
+    /// Fix round 1 (security M3): Cloudflare's 530 page, and a portal's 403 page, are not the library; a bare 530 or
+    /// 407 isn't either; a 500 carrying a Subsonic body is the library answering.
+    @Test func request_cloudflare530AndPortal403AreNoAnswer() async throws {
+        for front in [Front.status(530), .status(403), .bare(530), .bare(407)] {
+            let (model, _) = try await signedIn()
+            self.front.withLock { $0 = front }
+            await #expect(throws: (any Error).self) { try await self.page(model) }
+            #expect(model.reachability.isSuspect, "\(front)")
+            #expect(!model.reachability.authRejected, "\(front): never the sign-in error")
+            self.front.withLock { $0 = nil }
+            model.signOut()
+        }
+    }
+
+    @Test func request_500WithSubsonicBodyIsAnAnswer() async throws {
+        let (model, clock) = try await signedIn()
+        model.noteUnreachable()
+        front.withLock { $0 = .subsonic500 }
+        await #expect(throws: NavidromeError.http(status: 500)) { try await self.page(model) }
+        #expect(!model.reachability.isSuspect)
+        #expect(await model.advanceReachability(clock, to: 31))
+        #expect(!model.isOffline)
+    }
+
+    /// Security M2: a ping that never finishes (a trickling answer) ends at the probe's deadline on the reachability
+    /// clock, so the probe always finishes and the schedule goes on.
+    @Test func probe_tricklingPingEndsAtItsDeadline() async throws {
+        let (model, clock) = try await signedIn()
+        transport.setDown(["192.168.1.2"])
+        model.noteUnreachable()   // suspect at 0; first check at 5
+        transport.setDown([])
+        let hold = Hold()
+        transport.setHook { r in if r.url?.path == "/rest/ping" { await hold.wait() } }
+        clock.set(5)
+        #expect(await eventually { model.reachability.probeTask != nil && model.reachability.checking })
+        clock.set(5 + AppModel.probeDeadline - 0.1)
+        #expect(await eventually(0.3) { model.reachability.probeTask == nil } == false, "still waiting before the deadline")
+        clock.set(5 + AppModel.probeDeadline)
+        #expect(await eventually { model.reachability.probeTask == nil && !model.reachability.checking })
+        #expect(model.reachability.machine.nextProbeAt != nil, "the schedule goes on")
+        transport.setHook(nil)
+        hold.release()
+    }
+
+    /// Security L4: a login answered with 429 (or a 5xx carrying the library's JSON) is the library answering: online,
+    /// never offline; and no login is tried again for 60 s after a 429.
+    @Test func login429CountsAsAnsweredAndHoldsLogins() async throws {
+        let (model, clock) = try await signedIn()
+        loginStatus.withLock { $0 = 429 }
+        let logins = { self.transport.inner.requests.filter { $0.url?.path.hasSuffix("/auth/login") == true }.count }
+        model.noteUnreachable()
+        #expect(model.reachability.isSuspect)
+        let before = logins()
+        await model.checkReachability()   // ping answers; the login is refused for now
+        #expect(!model.reachability.machine.isDown && !model.isOffline, "a 429 is an answer")
+        #expect(logins() == before + 1)
+        model.noteUnreachable()
+        await model.checkReachability()
+        #expect(logins() == before + 1, "held for 60 s after a 429")
+        #expect(!model.reachability.machine.isDown)
+        #expect(await model.advanceReachability(clock, to: 61))
+        loginStatus.withLock { $0 = nil }
+        model.noteUnreachable()
+        await model.checkReachability()
+        #expect(logins() == before + 2, "tried again after the hold")
+        #expect(AppModel.isLoginAnswer(NavidromeError.http(status: 503)) == false, "a bare gateway 503 is no answer")
+        #expect(AppModel.isLoginAnswer(NavidromeError.http(status: 500)) && AppModel.isLoginAnswer(NavidromeError.http(status: 429)))
     }
 
     /// Automatically offline, `request` asks nothing (D328): a screen's read fails at once; the machine's checks bring

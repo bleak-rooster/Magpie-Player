@@ -573,6 +573,7 @@ final class AppModel {
     func protectedDataBecameAvailable() {
         reloadScrobbleQueue()   // a launch before first unlock couldn't read it (T17 fix round 1)
         reloadPreferences()     // nor the preferences, so the car showed the default layout (T23)
+        reloadReachabilityChoice()   // Round 28 O1 fix round 1 (security L5): nor Go offline automatically's choice
         guard isWaitingForUnlock else { return }
         resumeSavedSession()
     }
@@ -602,6 +603,7 @@ final class AppModel {
     /// Tries each address in order; the first that answers is used. Saves to the Keychain on success.
     func signIn(urls: [URL], username: String, password: String) async throws {
         guard !urls.isEmpty else { throw SignInError.noAddress }
+        leaveOfflineModeForSignIn()   // Round 28 O1 fix round 1 (security H1): signing in is an explicit act
         // H4: when ATS would refuse every address, say so before anything is tried.
         let blocked = urls.filter(atsBlocks)
         guard blocked.count < urls.count else {
@@ -843,7 +845,7 @@ final class AppModel {
             return false
         }
         // A blip; the same address answers again. While suspect, a ping isn't enough: the login must work too (B).
-        if base == old.activeBase, !rebuildAlways, !reachability.isSuspect {
+        if base == old.activeBase, !rebuildAlways, !reachability.machine.isDown {   // Round 28 O1 fix round 1 (task M1)
             noteReachable()
             return true
         }
@@ -882,7 +884,12 @@ final class AppModel {
             URLQueryItem(name: "f", value: "json"),
         ]) else { return URLError(.badURL) }
         do {
-            let (data, response) = try await probeTransport.send(URLRequest(url: url))
+            // Round 28 O1 fix round 1 (security M2): capped at 16 KiB, and over by `probeDeadline` whatever the transport does.
+            let transport = probeTransport, request = URLRequest(url: url)
+            let (data, response) = try await withReachabilityDeadline(Self.probeDeadline) {
+                try await transport.send(request, maxBytes: NavidromeClient.pingMaxBytes)
+            }
+            // Round 28 O1 fix round 1 end
             guard (200..<300).contains(response.statusCode) else { return NavidromeError.http(status: response.statusCode) }
             return SubsonicPing.isServerAnswer(data) ? nil : NavidromeError.unexpectedResponse
         } catch {

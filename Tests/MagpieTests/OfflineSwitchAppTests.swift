@@ -13,6 +13,30 @@ private let loginJSON = Data(#"""
 {"id":"u1","isAdmin":true,"name":"Admin","subsonicSalt":"salt","subsonicToken":"tok","token":"jwt","username":"jordan"}
 """#.utf8)
 private let home = URL(string: "http://192.168.1.2:4533")!
+private let noNetwork = NetworkStatus(isConnected: false, isCellular: false, isConstrained: false)
+
+/// Holds an awaiting send until released (cancellation lets it go too).
+final class Hold: Sendable {
+    private let state = OSAllocatedUnfairLock<(released: Bool, waiting: [CheckedContinuation<Void, Never>])>(initialState: (false, []))
+    func wait() async {
+        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+            let go = state.withLock { s -> Bool in
+                if s.released { return true }
+                s.waiting.append(c)
+                return false
+            }
+            if go { c.resume() }
+        }
+    }
+    func release() {
+        let waiting = state.withLock { s -> [CheckedContinuation<Void, Never>] in
+            s.released = true
+            defer { s.waiting = [] }
+            return s.waiting
+        }
+        waiting.forEach { $0.resume() }
+    }
+}
 
 /// Round 28 O1 (owner, 2026-11-15): the switch and its mapping (D323), the notice (D329), relaunch (D327), coming to
 /// the front (D326), the 30 s rule at launch (D324) and the transitions (D330), in all four setups.
@@ -61,11 +85,31 @@ private let home = URL(string: "http://192.168.1.2:4533")!
     func song(_ id: String) -> Song { PlayerTests.song(id) }
 
     /// Unreachable from t = 0, offline at 30 s.
-    func goAutomaticallyOffline(_ model: AppModel, _ clock: ManualReachabilityClock) async {
+    func goAutomaticallyOffline(_ model: AppModel, _ clock: ManualReachabilityClock, from start: Double = 0) async {
         transport.setDown(["192.168.1.2"])
+        #expect(await model.advanceReachability(clock, to: start))
         model.noteUnreachable()
-        #expect(await model.advanceReachability(clock, to: 30))
+        #expect(await model.advanceReachability(clock, to: start + 30))
         #expect(model.offlineState == .automatic)
+    }
+
+    /// No network path from `time`: offline 2 s later (Q1).
+    func dropThePath(_ model: AppModel, _ clock: ManualReachabilityClock, at time: Double) async {
+        #expect(await model.advanceReachability(clock, to: time))
+        transport.setDown(["192.168.1.2"], with: .notConnectedToInternet)
+        (model.network as? FakeNetwork)?.status = noNetwork
+        #expect(await eventually { !model.reachability.machine.connected })
+        #expect(await model.advanceReachability(clock, to: time + 2))
+        #expect(model.isOffline)
+    }
+
+    /// The path and the library are back: the check 2 s after the path answers.
+    func restoreThePath(_ model: AppModel, _ clock: ManualReachabilityClock) async {
+        transport.setDown([])
+        (model.network as? FakeNetwork)?.status = .wifi
+        #expect(await eventually { model.reachability.machine.connected })
+        #expect(await model.advanceReachability(clock, to: clock.now() + 2))
+        #expect(await eventually { !model.isOffline })
     }
 
     // MARK: - The switch (D323)
@@ -129,7 +173,15 @@ private let home = URL(string: "http://192.168.1.2:4533")!
         #expect(OfflineModeCopy.stateLine(.suspect, automatic: true).text == OfflineModeCopy.automaticOn)
         #expect(OfflineModeCopy.stateLine(.online, automatic: false) == SettingsSummary("Stays online", symbol: "wifi"))
         #expect(OfflineModeCopy.automaticTitle == "Go offline automatically")
-        #expect(OfflineModeCopy.automaticFooter == "When your library can’t be reached for 30 seconds, Magpie plays what’s on this phone and keeps trying to reconnect. It switches back by itself.")
+        // Fix round 1 (design L1): the footer names the no-connection case too.
+        #expect(OfflineModeCopy.automaticFooter == "When your library can’t be reached for 30 seconds, or at once with no connection, Magpie plays what’s on this phone and keeps trying to reconnect. It switches back by itself.")
+        // Fix round 1 (design M2, approved copy): no network path at all.
+        #expect(OfflineModeCopy.stateLine(.automatic, automatic: true, noConnection: true)
+            == SettingsSummary("Offline for now: no connection", symbol: "wifi.slash"))
+        #expect(OfflineNotice.variant(.automatic, checking: false, noConnection: true)?.text == "No connection. Showing music on this phone.")
+        // Design M3: Settings offers Try again in the automatic state only.
+        #expect(OfflineModeSection.offersTryAgain(.automatic) && !OfflineModeSection.offersTryAgain(.manual)
+            && !OfflineModeSection.offersTryAgain(.online) && !OfflineModeSection.offersTryAgain(.suspect))
     }
 
     // MARK: - The notice (D329)
@@ -141,7 +193,9 @@ private let home = URL(string: "http://192.168.1.2:4533")!
         #expect(variant == .init(text: "Offline mode is on", symbol: "wifi.slash", action: .goOnline, actionTitle: "Go online",
                                  actionIdentifier: "offline-go-online"))
         model.goOnline()
-        #expect(model.offlineState == .online && !model.isOffline && model.preferences.downloads.offlineMode == .automatic)
+        #expect(model.preferences.downloads.offlineMode == .automatic)
+        // Fix round 1 (design H1): online once the check has answered, not before.
+        #expect(await eventually { model.offlineState == .online && !model.isOffline })
     }
 
     @Test func notice_automaticOffersTryAgain() async throws {
@@ -172,6 +226,8 @@ private let home = URL(string: "http://192.168.1.2:4533")!
         #expect(OfflineNotice.variant(.online, checking: false) == nil)
     }
 
+    /// Each switch is said once: Offline mode from the notice's Go online says "Back online." only once the login has
+    /// answered (fix round 1, design H1); a change made by the Settings switch itself says nothing (design M5).
     @Test func voiceOver_announcesEachSwitchOnce() async throws {
         let (model, clock) = try await signedIn()
         var heard: [String] = []
@@ -179,19 +235,141 @@ private let home = URL(string: "http://192.168.1.2:4533")!
         model.setOfflineMode(on: true)
         model.setOfflineMode(on: true)
         #expect(heard == ["Offline. Showing music on this phone."])
-        model.setOfflineMode(on: false)
+        #expect(await model.advanceReachability(clock, to: 30))
+        model.goOnline()
+        #expect(await eventually { !model.isOffline })
         #expect(heard == ["Offline. Showing music on this phone.", "Back online."])
         heard = []
-        await goAutomaticallyOffline(model, clock)
+        #expect(await model.advanceReachability(clock, to: 200))
+        await goAutomaticallyOffline(model, clock, from: 200)
         #expect(heard == ["Offline. Showing music on this phone."])
         model.setOfflineMode(on: true)   // offline already: no second announcement
         #expect(heard.count == 1)
-        // A launch already in Offline mode is not a switch.
-        var launched: [String] = []
-        let relaunch = makeModel()
-        relaunch.reachability.announce = { launched.append($0) }
-        #expect(relaunch.isForcedOffline && launched.isEmpty)
     }
+
+    /// Task review M2: a launch already in Offline mode is not a switch (read from the model's own record, so the test
+    /// can fail: the announcer can't be swapped in before `init`).
+    @Test func voiceOver_launchInOfflineModeSaysNothing() async throws {
+        let first = makeModel()
+        first.setOfflineMode(on: true)
+        #expect(first.reachability.announced == ["Offline. Showing music on this phone."])
+        let relaunch = makeModel()
+        #expect(relaunch.isForcedOffline && relaunch.reachability.announced.isEmpty)
+    }
+
+    /// Design M5: the Settings switch speaks for itself (VoiceOver reads its new value): no announcement on top.
+    @Test func voiceOver_settingsSwitchSaysNothing() async throws {
+        let (model, clock) = try await signedIn()
+        var heard: [String] = []
+        model.reachability.announce = { heard.append($0) }
+        model.setOfflineMode(on: true, fromSettings: true)
+        #expect(model.isForcedOffline && heard.isEmpty)
+        #expect(await model.advanceReachability(clock, to: 30))
+        model.setOfflineMode(on: false, fromSettings: true)
+        #expect(await eventually { !model.isOffline })
+        #expect(heard.isEmpty)
+    }
+
+    /// Design H2: announcements only, with hysteresis: five drops in two minutes are said at most twice.
+    @Test func voiceOver_flappingIsSaidAtMostTwice() async throws {
+        let (model, clock) = try await signedIn()
+        var heard: [String] = []
+        model.reachability.announce = { heard.append($0) }
+        var t = 0.0
+        for _ in 0..<5 {
+            await dropThePath(model, clock, at: t)   // offline 2 s later (Q1)
+            t = clock.now() + 10
+            #expect(await model.advanceReachability(clock, to: t))
+            await restoreThePath(model, clock)       // the check 2 s later answers
+            t = clock.now() + 8
+            #expect(await model.advanceReachability(clock, to: t))
+        }
+        #expect(t <= 120, "five cycles inside two minutes (\(t) s)")
+        #expect(heard.count <= 2, "heard: \(heard)")
+        #expect(heard.first == "Offline. Showing music on this phone.")
+    }
+
+    /// Design H1: Go online with no connection shows "Trying…" in place, then the no-connection notice; it never says
+    /// "Back online.".
+    @Test func goOnline_withThePathDownNeverSaysBackOnline() async throws {
+        let (model, clock) = try await signedIn()
+        model.setOfflineMode(on: true)
+        var heard: [String] = []
+        model.reachability.announce = { heard.append($0) }
+        (model.network as? FakeNetwork)?.status = noNetwork
+        transport.setDown(["192.168.1.2"], with: .notConnectedToInternet)
+        #expect(await eventually { !model.reachability.machine.connected })
+        let hold = Hold()
+        transport.setHook { r in if r.url?.path == "/rest/ping" { await hold.wait() } }
+        model.goOnline()
+        #expect(await eventually { model.reachability.checking })
+        let trying = try #require(OfflineNotice.variant(for: model))
+        #expect(trying.text == "Offline mode is on" && trying.action == .trying && trying.actionTitle == "Trying…",
+                "Trying… in place of Go online")
+        hold.release()
+        #expect(await eventually { !model.reachability.checking })
+        #expect(model.isOffline && model.offlineState == .automatic)
+        let after = try #require(OfflineNotice.variant(for: model))
+        #expect(after.text == "No connection. Showing music on this phone." && after.action == .tryAgain)
+        #expect(OfflineModeCopy.stateLine(for: model).text == "Offline for now: no connection")
+        #expect(await model.advanceReachability(clock, to: 100))
+        #expect(!heard.contains("Back online."), "heard: \(heard)")
+    }
+
+    /// Design M1: a Try again that finds the library still out of reach says so, on screen and to VoiceOver; a pull to
+    /// refresh (not the button) says nothing.
+    @Test func tryAgain_failedSaysStillOutOfReach() async throws {
+        let (model, clock) = try await signedIn()
+        await goAutomaticallyOffline(model, clock)
+        var heard: [String] = []
+        model.reachability.announce = { heard.append($0) }
+        await model.reconnectNow()
+        #expect(!model.reachability.stillOutOfReach && heard.isEmpty, "pull to refresh: nothing said")
+        await model.tryAgain()
+        #expect(model.reachability.stillOutOfReach && heard == ["Still out of reach"])
+        let variant = try #require(OfflineNotice.variant(for: model))
+        #expect(variant.detail == "Still out of reach" && variant.action == .tryAgain)
+        transport.setDown([])
+        await model.tryAgain()
+        #expect(!model.isOffline && !model.reachability.stillOutOfReach)
+    }
+
+    /// Security H1 (= task I1): signing in is an explicit act: it turns Offline mode off first, in every setup, and
+    /// Connect says so beforehand.
+    @Test func signIn_withOfflineModeOn_goesOnline() async throws {
+        let aurralConnection = AurralConnection(base: URL(string: "http://aurral:3001")!, username: "jordan", password: "pw",
+                                                login: AurralLogin(token: "t", expiresAt: nil, user: AurralUser(id: 1, username: "jordan", role: "user")))
+        #expect(ConnectOfflineCopy.line == "Offline mode is on. Signing in turns it off.")
+        for setup in ["navidrome", "lidarr", "aurral", "all"] {
+            store.clear()
+            defaults.removePersistentDomain(forName: suite)
+            let lidarr = MemoryLidarrStore()
+            if setup == "lidarr" || setup == "all" {
+                try lidarr.save(LidarrConnection(base: URL(string: "http://127.0.0.1:8686")!, apiKey: "test-key"))
+            }
+            let aurral = MemoryAurralStore()
+            if setup == "aurral" || setup == "all" { try aurral.save(aurralConnection) }
+            let model = makeModel(lidarrStore: lidarr, tokenStore: MemoryTokenStore(setup == "all" ? "lb-token" : nil),
+                                  aurralStore: aurral)
+            model.setOfflineMode(on: true)
+            #expect(model.session == nil && model.isForcedOffline, "\(setup)")
+            try await model.signIn(urls: [home], username: "jordan", password: "pw")
+            #expect(model.session != nil && !model.isOffline && model.offlineState == .online, "\(setup)")
+            #expect(model.preferences.downloads.offlineMode == .automatic && model.offlineGate.mode == .open, "\(setup)")
+            model.signOut()
+        }
+    }
+
+    /// Security L5: the remembered Go offline automatically is read again once the phone is unlocked (a launch before
+    /// first unlock couldn't read it).
+    @Test func unlockReadsTheRememberedChoiceAgain() async throws {
+        let model = makeModel()
+        model.setOfflineMode(on: true)
+        defaults.set(false, forKey: AppModel.automaticChoiceKey)
+        model.protectedDataBecameAvailable()
+        #expect(!model.goesOfflineAutomatically && !model.reachability.machine.automaticEnabled)
+    }
+
 
     // MARK: - Relaunch (D327)
 
@@ -294,6 +472,22 @@ private let home = URL(string: "http://192.168.1.2:4533")!
         model.setOfflineMode(on: true)
         #expect(model.player.queue.current?.song.id == "s2" && model.player.isPlaying)
         #expect(engine.setItemsCalls.last!.items.allSatisfy { $0.1.isFileURL })
+    }
+
+    /// Security M1: Offline mode turned on with a song streaming and nothing on the phone: the remote item is released
+    /// (no stream URL stays loaded); Play loads it again once back online.
+    @Test func transitions_manualWithNothingOnThePhoneReleasesTheStream() async throws {
+        let (model, clock) = try await signedIn()
+        model.play([song("s1"), song("s2")], startAt: 0)   // both stream
+        #expect(engine.setItemsCalls.last!.items.contains { !$0.1.isFileURL })
+        model.setOfflineMode(on: true)
+        #expect(!model.player.isPlaying && model.player.lastError == "You're offline")
+        #expect(engine.setItemsCalls.last!.items.isEmpty, "the remote item is released")
+        #expect(await model.advanceReachability(clock, to: 30))
+        model.setOfflineMode(on: false)
+        #expect(await eventually { !model.isOffline })
+        if !model.player.isPlaying { model.player.toggle() }
+        #expect(await eventually { self.engine.setItemsCalls.last!.items.first.map { !$0.1.isFileURL } == true })
     }
 
     /// Back online: queued plays are sent, waiting downloads land, and a song that failed plays again from where it was;
@@ -417,7 +611,7 @@ extension AppModel {
     /// (`MagpieCore.` because MadeForYouAppTests has a `GatedTransport` of its own.)
     var injectedTransport: HTTPTransport {
         let kept: HTTPTransport = transport
-        return (kept as? MagpieCore.GatedTransport)?.inner ?? kept
+        return (kept as? MagpieCore.GatedTransport)?.innerForTesting ?? kept
     }
 
     /// Tests: moves `clock` to `time` one wake at a time (each probe finishes before the next wake), as the real clock

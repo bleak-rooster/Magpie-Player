@@ -37,6 +37,10 @@ public actor NavidromeClient {
     /// Round 28 O1 fix round 1 (security M2): the most a ping's answer may be; a Subsonic ping is a few dozen bytes.
     public static let pingMaxBytes = 16 * 1024
 
+    /// Round 28 O1 fix round 1 (security L2): the login URL on the first address, the one a reconnect's client (made
+    /// with the address that answered first) signs in at; the app's offline gate lets exactly that one out.
+    public nonisolated var firstLoginURL: URL? { endpoint.bases.first.flatMap { endpoint.url($0, path: "auth/login") } }
+
     /// Picks the first base answering `/rest/ping` with a Subsonic answer, then logs in. Concurrent callers share one login.
     public func connect() async throws -> LoginResult {
         let s = try await singleFlightLogin(reprobe: true, staleGeneration: nil)
@@ -95,7 +99,7 @@ public actor NavidromeClient {
         let (data, response) = try await transport.send(request)
         switch response.statusCode {
         case 200..<300: break
-        default: throw Self.failure(status: response.statusCode, data, refusals: [401, 403])
+        default: throw Self.failure(status: response.statusCode, data, refusals: [401, 403], emptyIsForeign: true)
         }
         let dto = try Self.decode(LoginDTO.self, data)
         let login = LoginResult(userId: dto.id, isAdmin: dto.isAdmin ?? false,
@@ -176,9 +180,13 @@ public actor NavidromeClient {
     /// Round 28 O1 fix round 1 (security M3, D325): a failed answer is judged by its body. Text that isn't JSON (a
     /// proxy's or portal's page, a CDN's error) is `unexpectedResponse` at any status: it isn't the library, so the app
     /// fails over and probes. An empty or JSON body is the library's (or a gateway's bare) answer and keeps its status.
-    static func failure(status: Int, _ data: Data, refusals: Set<Int>) -> NavidromeError {
+    /// `emptyIsForeign` (the login): there only the library's JSON is its answer, so an empty failure (other than a
+    /// refusal) isn't either (security L4 with M3).
+    static func failure(status: Int, _ data: Data, refusals: Set<Int>, emptyIsForeign: Bool = false) -> NavidromeError {
         if isForeignBody(data) { return .unexpectedResponse }
-        return refusals.contains(status) ? .badCredentials : .http(status: status)
+        if refusals.contains(status) { return .badCredentials }
+        if emptyIsForeign, !data.contains(where: { !$0.isASCIIWhitespace }) { return .unexpectedResponse }
+        return .http(status: status)
     }
 
     /// Non-empty and not JSON.

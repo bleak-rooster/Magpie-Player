@@ -60,7 +60,9 @@ import Testing
                 default: break
                 }
                 // Invariants.
-                if m.state == .manualOffline || wasManual {
+                // Fix round 1 (design H1): leaving manual checks at once (and stays offline until it answers).
+                let leavingManual = wasManual && event == .manual(on: false)
+                if m.state == .manualOffline || (wasManual && !leavingManual) {
                     if effects.contains(.probeNow) { return "manual offline asked for a probe after \(event)" }
                     if effects.contains(where: { if case .scheduleProbe = $0 { true } else { false } }) {
                         return "manual offline scheduled a probe after \(event)"
@@ -76,7 +78,7 @@ import Testing
                     if case .suspect(let since) = previous {
                         byWindow = now - since >= ReachabilityMachine.window - 1e-9 && (firstFailure.map { since >= $0 - 1e-9 } ?? false)
                     }
-                    if !byPath, !byWindow { return "went offline without 30 s unanswered or 2 s with no path (after \(event))" }
+                    if !byPath, !byWindow, !leavingManual { return "went offline without 30 s unanswered or 2 s with no path (after \(event))" }
                 }
                 if case .answered = event, !wasManual, m.state != .online { return "an answer didn't bring it online" }
                 if effects.contains(.probeNow) {

@@ -132,7 +132,16 @@ public struct ReachabilityMachine: Sendable, Equatable {
                 fx += cancel()
                 if wasOffline { fx.append(.goOnline) }   // manual takes over; leaving it starts online
             } else if state == .manualOffline {
-                state = .online   // the app logs in first; a failure then starts a fresh window
+                // Fix round 1 (design H1): offline by itself until a check (ping and login) answers, so nothing says
+                // "Back online." before the library has; a failed check leaves it offline with no blip. Off (never
+                // offline) or no session: online, and the app logs in.
+                if automaticEnabled, hasSession {
+                    state = .automaticOffline(since: now)
+                    fx.append(.goOffline)
+                    fx += probeNow()
+                } else {
+                    state = .online
+                }
             }
         case .automatic(let enabled):
             guard enabled != automaticEnabled else { break }

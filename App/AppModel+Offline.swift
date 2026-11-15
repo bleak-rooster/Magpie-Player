@@ -69,6 +69,29 @@ enum OfflineState: Equatable {
     @ObservationIgnored var lastStreamProbe: Double?
     nonisolated static let probeRequestSpacing: Double = 5
 
+    // Round 28 O1 fix round 1
+    /// Design H1: Offline mode was just turned off; its check is running ("Trying…" in place of Go online) and nothing
+    /// says "Back online." until the login has answered.
+    var leavingManual = false
+    /// Design M1: the last Try again (the button) found the library still out of reach.
+    var stillOutOfReach = false
+    /// Task review M2: what was said, newest last (the last 20), so a test can see a launch said nothing.
+    @ObservationIgnored var announced: [String] = []
+    /// Design H2: announcement hysteresis. When the last offline spell began, when Magpie last went offline at all,
+    /// and whether this spell was said.
+    @ObservationIgnored var offlineSpellStart: Double?
+    @ObservationIgnored var lastOfflineTransition: Double?
+    @ObservationIgnored var spellAnnounced = false
+    /// Design M5: the next switch was the Settings switch's own (it speaks for itself).
+    @ObservationIgnored var quietNextSwitch = false
+    /// Design H1 with Go offline automatically off: "Back online." waits for the login.
+    @ObservationIgnored var pendingBackOnline = false
+    /// The switch being applied is Offline mode going off (set by `offlineInputsChanged` around the announcement).
+    @ObservationIgnored var appliedForcedJustLeft = false
+    /// Security L4: no login until then (seconds on `clock`) after a 429.
+    @ObservationIgnored var loginHeldUntil: Double?
+    // Round 28 O1 fix round 1 end
+
     var isSuspect: Bool { machine.isSuspect }
     /// A wake (probe or 30 s mark) is set.
     var hasScheduledWake: Bool { timer != nil }
@@ -142,10 +165,15 @@ extension AppModel {
     /// D325: a 502, 503 or 504 (a proxy whose server has stopped), 511 or any other non-Subsonic answer (a captive
     /// portal or a proxy's sign-in page: `unexpectedResponse`), or a redirect `SameOriginRedirects` refused (the 3xx
     /// itself comes back, which the client surfaces as `NavidromeError.http(status: 3xx)`): the library didn't answer.
+    /// Fix round 1 (security M3): a failure is judged by its body first (HTML or other text is `unexpectedResponse` at
+    /// any status, in the client); these statuses arrive here only bare, and are a gateway's, not the library's: 407
+    /// (a proxy wants a sign-in), 502–504, 511 (a portal), 520–530 (a CDN in front of a stopped origin).
+    nonisolated static let gatewayStatuses: Set<Int> = Set([407, 502, 503, 504, 511]).union(520...530)
+
     nonisolated static func isServerPathFailure(_ error: Error) -> Bool {
         switch error as? NavidromeError {
         case .unexpectedResponse?: true
-        case .http(let status)?: [502, 503, 504, 511].contains(status) || (300..<400).contains(status)
+        case .http(let status)?: Self.gatewayStatuses.contains(status) || (300..<400).contains(status)
         default: false
         }
     }
@@ -176,19 +204,53 @@ extension AppModel {
     // MARK: - Round 28 O1: the switch (D323)
 
     /// Offline mode on: `.on`, remembering whether Go offline automatically was on; off: `.automatic` or `.off` by
-    /// that remembered choice. Nothing in `Preferences` changes shape.
-    func setOfflineMode(on: Bool) {
+    /// that remembered choice. Nothing in `Preferences` changes shape. Fix round 1 (design M5): `fromSettings`, the
+    /// switch's own change, is not announced (VoiceOver reads the switch's new value).
+    func setOfflineMode(on: Bool, fromSettings: Bool = false) {
         let mode = preferences.downloads.offlineMode
         if on {
             guard mode != .on else { return }
             rememberAutomaticChoice(mode == .automatic)
+            reachability.quietNextSwitch = fromSettings
             updatePreferences { $0.downloads.offlineMode = .on }
         } else {
             guard mode == .on else { return }
             let automatic = reachability.automaticChoice
+            reachability.quietNextSwitch = fromSettings
             updatePreferences { $0.downloads.offlineMode = automatic ? .automatic : .off }
         }
     }
+
+    /// Security L5: the remembered choice again, once the phone is unlocked (a launch before first unlock couldn't
+    /// read it).
+    func reloadReachabilityChoice() {
+        guard let saved = appDefaults.object(forKey: Self.automaticChoiceKey) as? Bool,
+              saved != reachability.automaticChoice else { return }
+        reachability.automaticChoice = saved
+        offlineInputsChanged()
+    }
+
+    /// Security H1 (task I1): signing in is an explicit act: Offline mode goes off first, so the sign-in can reach the
+    /// library. True when it was on (Connect said so beforehand).
+    @discardableResult
+    func leaveOfflineModeForSignIn() -> Bool {
+        guard isForcedOffline else { return false }
+        setOfflineMode(on: false, fromSettings: true)
+        return true
+    }
+
+    /// Design M1: the notice's Try again. A check now; if the library is still out of reach, it says so (on screen and
+    /// to VoiceOver). Pull to refresh (`reconnectNow`) says nothing.
+    func tryAgain() async {
+        reachability.stillOutOfReach = false
+        await reconnectNow()
+        guard isOffline, !isForcedOffline else { return }
+        reachability.stillOutOfReach = true
+        say(OfflineNoticeCopy.stillOutOfReach)
+    }
+
+    /// No network path at all (Q1's offline): the notice and Settings say "No connection" (design M2).
+    var offlineNoConnection: Bool { offlineState == .automatic && !reachability.machine.connected }
 
     /// Go offline automatically: with Offline mode on only the remembered choice changes.
     func setGoOfflineAutomatically(_ on: Bool) {
@@ -235,7 +297,9 @@ extension AppModel {
         r.started = true
     }
 
+    #if DEBUG
     /// Tests: runs the machine on `clock` from now on (the path is read again, so its times are on the new clock).
+    /// Fix round 1 (task M6): Debug only.
     func useReachabilityClock(_ clock: any ReachabilityClock) {
         let r = reachability
         r.clock = clock
@@ -243,6 +307,60 @@ extension AppModel {
         let connected = network.status.isConnected
         if !connected { reachabilityEvent(.pathChanged(connected: true)) }
         reachabilityEvent(.pathChanged(connected: connected))
+    }
+    #endif
+
+    /// Fix round 1 (security M2): each address's ping, and a reconnect's login, end by these (seconds on the
+    /// reachability clock) whatever the transport does, so a trickling answer can't hold a probe open and
+    /// `probeFinished` always comes.
+    nonisolated static let probeDeadline: Double = 8
+    nonisolated static let loginDeadline: Double = 16
+
+    /// `op`, or `URLError(.timedOut)` once `seconds` pass on the reachability clock.
+    func withReachabilityDeadline<T: Sendable>(_ seconds: Double, _ op: @escaping @Sendable () async throws -> T) async throws -> T {
+        let clock = reachability.clock
+        let result = await Deadline.run(.seconds(seconds), sleep: { limit in
+            let parts = limit.components
+            try await clock.sleep(until: clock.now() + Double(parts.seconds) + Double(parts.attoseconds) / 1e18)
+        }, op)
+        switch result {
+        case .success(let value): return value
+        case .failure(let error): throw error is Deadline.Exceeded ? URLError(.timedOut) : error
+        }
+    }
+
+    // MARK: - Round 28 O1 fix round 1: what VoiceOver hears (D329)
+
+    /// Says `text` to VoiceOver, and keeps it for tests.
+    func say(_ text: String) {
+        let r = reachability
+        r.announced = Array((r.announced + [text]).suffix(20))
+        r.announce(text)
+    }
+
+    /// Design H2: each switch once, with hysteresis. Going offline is said unless Magpie last went offline under 60 s
+    /// ago; coming back is said if the spell was said, or lasted 20 s or more. Design M5: not when the Settings switch
+    /// made the change. Design H1: "Back online." only once the library has answered.
+    func announceSwitch(offline: Bool) {
+        let r = reachability
+        let now = r.clock.now()
+        let quiet = r.quietNextSwitch
+        r.quietNextSwitch = false
+        if offline {
+            let recent = r.lastOfflineTransition.map { now - $0 < 60 } ?? false
+            r.lastOfflineTransition = now
+            r.offlineSpellStart = now
+            r.spellAnnounced = !recent && !quiet
+            r.pendingBackOnline = false
+            if r.spellAnnounced { say(OfflineNoticeCopy.announceOffline) }
+        } else {
+            let spell = r.offlineSpellStart.map { now - $0 } ?? 0
+            r.offlineSpellStart = nil
+            guard !quiet, r.spellAnnounced || spell >= 20 else { return }
+            // Leaving Offline mode with Go offline automatically off goes online before the login: wait for it.
+            if r.appliedForcedJustLeft, !r.machine.isDown { r.pendingBackOnline = true; return }
+            say(OfflineNoticeCopy.announceOnline)
+        }
     }
 
     /// The path came back or changed interface, it went away, or Low Power Mode changed (D326, Q1).
@@ -294,6 +412,7 @@ extension AppModel {
     private func startMachineProbe() {
         let r = reachability
         r.checking = true
+        r.stillOutOfReach = false
         let ping = r.machine.state == .online
         let gate = offlineGate
         r.probeTask = Task { [weak self] in
@@ -302,6 +421,8 @@ extension AppModel {
             gate.endReconnect()
             guard let self else { return }
             self.reachability.checking = false
+            if self.reachability.leavingManual, self.isOffline { self.reachability.quietNextSwitch = false }
+            self.reachability.leavingManual = false   // design H1: answered (online) or not (the automatic notice)
             self.reachability.probeTask = nil
             self.reachabilityEvent(.probeFinished)
         }
@@ -321,6 +442,7 @@ extension AppModel {
         guard !isForcedOffline else { return }
         reachability.failures += 1
         reachability.authRejected = false   // a real outage now: "isn't answering", not the sign-in error
+        reachability.pendingBackOnline = false   // fix round 1 (design H1): the login didn't answer; nothing to say
         downloads?.serverDropConfirmed()
         noteUnreachable()
     }
@@ -344,6 +466,10 @@ extension AppModel {
         r.lastAnswerAt = session == nil ? nil : r.clock.now()
         reachabilityEvent(session == nil ? .signedOut : .answered)
         if !serverReachable { serverReachable = true }
+        if r.pendingBackOnline, session != nil {   // fix round 1 (design H1): Offline mode left, and the library answered
+            r.pendingBackOnline = false
+            say(OfflineNoticeCopy.announceOnline)
+        }
         // Downloads that failed meanwhile count as attempts, and the rest go again.
         if wasDown || downloads?.hasAwaitingVerdict == true { downloads?.serverAnswered() }
         guard wasDown else { return }
@@ -354,21 +480,42 @@ extension AppModel {
 
     /// A reconnect's login (fix round 2, B). A refusal (401/403) means the server answered: it is reachable, and
     /// `request` throws the sign-in error instead of going offline. Any other failure counts as a failed reconnect.
+    ///
+    /// Round 28 O1 fix round 1: the gate lets out only this login, by its exact URL (security L2); the whole login ends
+    /// by `loginDeadline` (security M2); a 429, or a 5xx carrying the library's JSON, is the library answering, and after
+    /// a 429 no login is tried for 60 s (security L4).
     func reconnectLogin(_ client: NavidromeClient, replacing old: NavidromeClient) async -> LoginResult? {
+        let r = reachability
+        if let held = r.loginHeldUntil, r.clock.now() < held {
+            noteReachable()   // it answered "too many" a moment ago: there, but not asked again yet
+            return nil
+        }
+        r.loginHeldUntil = nil
+        if let url = client.firstLoginURL { offlineGate.permitLoginOnce(url) }
         do {
-            let login = try await client.connect()
-            reachability.authRejected = false
+            let login = try await withReachabilityDeadline(Self.loginDeadline) { try await client.connect() }
+            r.authRejected = false
             return login
         } catch {
             guard session?.client === old else { return nil }   // signed out or in meanwhile
             if Self.isAuthRejection(error) {
                 noteReachable()
-                reachability.authRejected = true
+                r.authRejected = true
+            } else if Self.isLoginAnswer(error) {
+                if case .http(429)? = error as? NavidromeError { r.loginHeldUntil = r.clock.now() + 60 }
+                noteReachable()
             } else {
                 reconnectFailed()
             }
             return nil
         }
+    }
+
+    /// Security L4: a login answer that isn't a refusal or a gateway's: 429 (too many tries), or a 5xx with the
+    /// library's own (JSON or empty, not a gateway status) body.
+    nonisolated static func isLoginAnswer(_ error: Error) -> Bool {
+        guard case .http(let status)? = error as? NavidromeError else { return false }
+        return status == 429 || ((500..<600).contains(status) && !isServerPathFailure(error))
     }
 
     nonisolated static func isAuthRejection(_ error: Error) -> Bool {
@@ -443,14 +590,21 @@ extension AppModel {
         let enteredForced = forced && !r.appliedForced
         r.appliedForced = forced
         guard offline != r.appliedOffline else {
-            if leftForced { restoreAfterOffline(reconnecting: true) }   // On to Off with the server reachable
+            // Leaving On: fix round 1 (design H1) the machine checks (offline until the login answers), so only a
+            // reachable library with nothing to check reconnects here.
+            if leftForced, !r.machine.isDown { restoreAfterOffline(reconnecting: true) }
+            if leftForced { r.quietNextSwitch = r.quietNextSwitch && r.machine.isDown }
             // Round 28 O1 (D330): from automatic offline (where a stream plays on) to On, which sends nothing.
             if enteredForced { player.stopUnplayableCurrent(message: Self.offlineCopy) }
             return
         }
         r.appliedOffline = offline
         offlineBox.set(offline)
-        if r.started { r.announce(offline ? OfflineNoticeCopy.announceOffline : OfflineNoticeCopy.announceOnline) }   // D329
+        if r.started {   // D329, with fix round 1's hysteresis and quiet Settings switch
+            r.appliedForcedJustLeft = leftForced
+            announceSwitch(offline: offline)
+            r.appliedForcedJustLeft = false
+        }
         player.isPlayable = offline ? { [localFiles] in localFiles.hasFile($0.id) } : { _ in true }
         player.upcomingURLsChanged()
         downloads?.networkChanged()   // manual downloads wait while offline, pre-downloads stop; both go again after
@@ -471,7 +625,11 @@ extension AppModel {
         let mode = preferences.downloads.offlineMode
         let automatic = mode == .on ? reachability.automaticChoice : mode == .automatic
         if reachability.machine.automaticEnabled != automatic { reachabilityEvent(.automatic(enabled: automatic)) }
-        if (reachability.machine.state == .manualOffline) != (mode == .on) { reachabilityEvent(.manual(on: mode == .on)) }
+        if (reachability.machine.state == .manualOffline) != (mode == .on) {
+            reachabilityEvent(.manual(on: mode == .on))
+            // Fix round 1 (design H1): leaving On checks first; the notice shows "Trying…" in place meanwhile.
+            reachability.leavingManual = mode != .on && reachability.machine.isAutomaticOffline && reachability.checking
+        }
     }
 
     /// Back online (I4): what offline held back. Leaving On logs in first (nothing was sent while it was on).

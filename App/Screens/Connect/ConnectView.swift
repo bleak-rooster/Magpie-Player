@@ -35,6 +35,12 @@ struct ConnectView: View {
                         .font(.body).foregroundStyle(p.ink2Color)
                     Text("Your music server (Navidrome)")
                         .font(.footnote).foregroundStyle(p.ink2Color)
+                    if model.isForcedOffline {
+                        // Round 28 O1 fix round 1 (security H1): signing in turns Offline mode off; said beforehand.
+                        Label(ConnectOfflineCopy.line, systemImage: "wifi.slash")
+                            .font(.footnote).foregroundStyle(p.ink2Color)
+                            .accessibilityIdentifier("connect-offline-mode")
+                    }
 
                     groupHeader("Addresses").padding(.top, 18)
                     group {
@@ -302,4 +308,9 @@ struct ConnectView: View {
             self.error = ConnectErrorCopy.message(for: error)
         }
     }
+}
+
+/// Round 28 O1 fix round 1 (security H1): the one line Connect shows while Offline mode is on.
+enum ConnectOfflineCopy {
+    static let line = "Offline mode is on. Signing in turns it off."
 }

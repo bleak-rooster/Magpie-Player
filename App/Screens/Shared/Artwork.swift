@@ -52,14 +52,18 @@ final class ArtworkCache {
 
     /// Fetches the image; `fetched` gets the bytes of one that decoded, with the generation it was started in (the
     /// disk cache saves them), unless a sign-out or sign-in came in between.
-    func image(key: String, url: URL, fetched: (@MainActor (_ data: Data, _ generation: Int) -> Void)? = nil) async -> UIImage? {
+    /// Round 28 O1 fix round 1 (security L1, D328): through the model's offline gate, so cover art asks nothing offline by
+    /// construction too, not only because its URL isn't built.
+    func image(key: String, url: URL, gate: OfflineGate,
+               fetched: (@MainActor (_ data: Data, _ generation: Int) -> Void)? = nil) async -> UIImage? {
         if let hit = cached(key) { return hit }
         if let task = inFlight[key] { return await task.value.image }
         let started = generation
-        var transport = Self.transport
+        var raw = Self.transport
         #if DEBUG
-        if let transportForTesting { transport = transportForTesting }
+        if let transportForTesting { raw = transportForTesting }
         #endif
+        let transport = GatedTransport(raw, gate: gate, role: .main)
         let task = Task<(image: UIImage?, data: Data?), Never> { [transport] in
             guard let (data, response) = try? await transport.send(URLRequest(url: url)),
                   response.statusCode == 200 else { return (nil, nil) }

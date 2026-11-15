@@ -59,6 +59,15 @@ import Testing
         busy.stub(method: "POST", pathSuffix: "/auth/login", status: 429, body: Data(#"{"error":"too many"}"#.utf8))
         let (limited, _) = makeClient(transport: busy)
         await #expect(throws: NavidromeError.http(status: 429)) { _ = try await limited.connect() }
+        // Only the library's JSON is its answer at the login: an empty 500 is not (security L4 with M3).
+        let empty = MockTransport()
+        empty.stub(method: "POST", pathSuffix: "/auth/login", status: 500)
+        let (bare, _) = makeClient(transport: empty)
+        await #expect(throws: NavidromeError.unexpectedResponse) { _ = try await bare.connect() }
+        let json = MockTransport()
+        json.stub(method: "POST", pathSuffix: "/auth/login", status: 500, body: Data(#"{"error":"db locked"}"#.utf8))
+        let (answered, _) = makeClient(transport: json)
+        await #expect(throws: NavidromeError.http(status: 500)) { _ = try await answered.connect() }
     }
 
     @Test func pingAnswerOver16KiBIsNotAServer() async throws {

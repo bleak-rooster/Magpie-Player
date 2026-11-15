@@ -32,7 +32,7 @@ extension AppModel {
         }
         guard let url = coverArtURL(coverArtId, size: size) else { return nil }   // offline: the placeholder
         var fetched: (data: Data, generation: Int)?
-        let image = await memory.image(key: key, url: url) { fetched = ($0, $1) }
+        let image = await memory.image(key: key, url: url, gate: offlineGate) { fetched = ($0, $1) }   // Round 28 O1 fix round 1 (L1)
         if let fetched {   // saved before returning, so the next ask (or a relaunch) finds it on disk
             await disk.save(fetched.data, scope: scope, coverArtId: coverArtId, size: size, generation: fetched.generation)
         }

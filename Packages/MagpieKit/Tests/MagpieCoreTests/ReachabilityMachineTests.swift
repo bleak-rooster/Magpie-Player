@@ -110,10 +110,21 @@ import Testing
         _ = m.handle(.tick, now: 30)
         #expect(m.state == .automaticOffline(since: 30))
         #expect(m.handle(.manual(on: true), now: 31).contains(.goOnline), "manual takes over from automatic")
-        #expect(m.handle(.manual(on: false), now: 40).isEmpty, "the app logs in first; the machine just leaves manual")
-        #expect(m.state == .online)
+        // Fix round 1 (design H1): leaving manual stays offline (automatically) until a check answers, so the screens
+        // say "Trying…" and never "Back online." before the login has worked.
+        #expect(m.handle(.manual(on: false), now: 40) == [.goOffline, .probeNow])
+        #expect(m.state == .automaticOffline(since: 40))
         _ = m.handle(.failure, now: 41)
-        #expect(m.state == .suspect(since: 41), "a failed login after leaving manual starts a fresh window")
+        _ = m.handle(.probeFinished, now: 41)
+        #expect(m.state == .automaticOffline(since: 40), "a failed check: straight on offline, nothing in between")
+        #expect(m.handle(.answered, now: 50).contains(.goOnline) && m.state == .online)
+        // With Go offline automatically off it goes online at once (Off never offline); the app logs in.
+        var off = online(automatic: false)
+        _ = off.handle(.manual(on: true), now: 0)
+        #expect(off.handle(.manual(on: false), now: 1).isEmpty && off.state == .online)
+        // With no session (signed out in Offline mode) it just leaves manual.
+        var none = M(manual: true)
+        #expect(none.handle(.manual(on: false), now: 0).isEmpty && none.state == .online)
     }
 
     @Test func machine_offModeNeverOffline() {
