@@ -21,6 +21,8 @@ import UIKit
 @MainActor @Observable
 final class DownloadManager {
     static let coverSize = 600
+    /// Fix round 1 (security L1): the biggest cover file kept.
+    static let maxCoverBytes = 5 * 1024 * 1024
     static let pendingName = "pending.json"
 
     /// The response was not the kind of file asked for (an error page or a Subsonic error body).
@@ -257,10 +259,16 @@ final class DownloadManager {
             }
         }
         if let coverArtId, !pendingCovers.contains(coverArtId) { pendingCovers.append(coverArtId) }
-        // Round 28 O2 (D334): a song downloaded on its own saves the cover its rows show (an album's songs show the
-        // album's, saved once above).
-        if coverArtId == nil, reason == .song || reason == .favourites {
-            for id in songs.compactMap(\.coverArtId) where !pendingCovers.contains(id) { pendingCovers.append(id) }
+        // Round 28 O2 (D334): a song downloaded on its own, as a favourite or with a playlist (a flow kept in step
+        // included, fix round 1 I2) saves the cover its rows show, each distinct cover once; an album's songs show the
+        // album's, saved once above.
+        let ownCovers: Bool = switch reason {
+        case .song, .favourites, .playlist: true
+        default: false
+        }
+        if ownCovers {
+            var queued = Set(pendingCovers)
+            for id in songs.compactMap(\.coverArtId) where queued.insert(id).inserted { pendingCovers.append(id) }
         }
         let quality = preferences().normalised().quality
         // A song already stored still gets a job: it gains the reason without using the network.
@@ -324,6 +332,7 @@ final class DownloadManager {
                                      playlistId: playlistId))
             }
             self.savePending()
+            await self.pruneCovers()   // fix round 1 (task M2): every removal path prunes, after the jobs that keep covers
             self.pump()
         }
     }
@@ -395,6 +404,7 @@ final class DownloadManager {
         let removals = deferredRemovals, playlists = deferredPlaylists
         deferredRemovals = []; deferredPlaylists = []
         for removal in removals { await applyRemoval(removal) }
+        if !removals.isEmpty { await pruneCovers() }   // fix round 1 (task M2)
         for playlist in playlists { await savePlaylist(playlist, gen) }
         for i in jobs.indices where jobs[i].state == .blocked { jobs[i].state = .queued }
         await refresh()
@@ -463,6 +473,7 @@ final class DownloadManager {
         failed = []
         pendingCovers = []
         pendingArtistCovers = []   // Round 28 O2
+        coversInFlight = []   // fix round 1 (security L2)
         parkedRecords = []
         deferredRemovals = []
         deferredPlaylists = []
@@ -761,6 +772,7 @@ final class DownloadManager {
         guard job(id) == nil, isLive(gen),
               !jobs.contains(where: { $0.songId == songId && $0.kind == .download(reason) }) else { return }
         _ = try? await store.removeReason(reason, songIds: [songId])   // the store just took a write: it is ready
+        await pruneCovers()   // fix round 1 (task M2)
     }
 
     private func setNeedsNetwork(_ id: UUID, _ value: Bool) {
@@ -824,6 +836,9 @@ final class DownloadManager {
                     defer { try? FileManager.default.removeItem(at: fetched.file) }
                     guard self?.isLive(gen) == true else { return }
                     guard Self.isImage(fetched.mimeType) else { throw DownloadError.unexpectedContent }
+                    // Fix round 1 (security L1): a "cover" over 5 MB is refused, sized before it is read.
+                    let size = (try? fetched.file.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? Int.max
+                    guard size <= Self.maxCoverBytes else { throw DownloadError.unexpectedContent }
                     try await store.saveCover(Data(contentsOf: fetched.file), coverArtId: id)
                 } catch AudioStoreError.notReady {
                     if self?.isLive(gen) == true, self?.pendingCovers.contains(id) == false,
@@ -891,14 +906,14 @@ final class DownloadManager {
         var changed = false
         for song in record.songs where kinds[song.id] == .download {
             guard isCurrent() else { break }
-            if (try? await refreshSnapshot(song, for: record)) == true { changed = true }
+            if await refreshSnapshot(song, for: record) { changed = true }
         }
         if isCurrent() {
             switch try? await write(record) {
             case .written?: changed = true; recorded(record)
             case .unchanged?: recorded(record)
             case .noDownload?: if isQueued(record) { park(record) }
-            case nil: break   // the store can't be written yet: the next read asks again
+            case .refused?, nil: break   // refused, or the store can't be written yet (the next read asks again)
             }
         }
         if changed {
@@ -936,11 +951,12 @@ final class DownloadManager {
         let gen = generation
         var changed = false
         for record in parkedRecords {
-            guard isLive(gen) else { return }
+            guard isLive(gen), !isOffline() else { break }   // fix round 1 (task M1): never written once offline
             for song in record.songs where kinds[song.id] == .download {
-                if (try? await refreshSnapshot(song, for: record)) == true { changed = true }
+                guard isLive(gen), !isOffline() else { break }
+                if await refreshSnapshot(song, for: record) { changed = true }
             }
-            guard isLive(gen) else { return }
+            guard isLive(gen), !isOffline() else { break }
             switch try? await write(record) {
             case .written?:
                 changed = true
@@ -951,6 +967,8 @@ final class DownloadManager {
                 parkedRecords.removeAll { $0.key == record.key }
             case .noDownload?:
                 if !isQueued(record) { parkedRecords.removeAll { $0.key == record.key } }
+            case .refused?:
+                parkedRecords.removeAll { $0.key == record.key }
             case nil:
                 break
             }
@@ -958,11 +976,24 @@ final class DownloadManager {
         if changed { recordsChanged() }
     }
 
-    private func refreshSnapshot(_ song: Song, for record: PageRecord) async throws -> Bool {
+    /// D332: refreshes a downloaded song's snapshot from the page; a cover id that changed is saved too (fix round 1,
+    /// I1), so the next prune never leaves the song with none.
+    private func refreshSnapshot(_ song: Song, for record: PageRecord) async -> Bool {
+        let before = await store.entry(songId: song.id)?.metadata.coverArtId
+        let refreshed: Bool
         if case .album(_, _, let artist, let artistId) = record {
-            return try await store.refreshMetadata(song, albumArtist: artist, albumArtistId: artistId)
+            refreshed = (try? await store.refreshMetadata(song, albumArtist: artist, albumArtistId: artistId)) == true
+        } else {
+            refreshed = (try? await store.refreshMetadata(song)) == true
         }
-        return try await store.refreshMetadata(song)
+        if refreshed, let cover = song.coverArtId, cover != before { queueCover(cover) }
+        return refreshed
+    }
+
+    private func queueCover(_ id: String) {
+        guard OfflineRecords.isId(id), !pendingCovers.contains(id) else { return }
+        pendingCovers.append(id)
+        fetchCovers()
     }
 
     private func write(_ record: PageRecord) async throws -> AudioStore.RecordOutcome {
@@ -973,11 +1004,36 @@ final class DownloadManager {
         }
     }
 
-    /// A recorded artist's picture is saved too (D334).
+    /// The cover a record names is saved too (D334): an artist's picture at 300 px; fix round 1 (I1) an album's or a
+    /// playlist's cover, so the record's page shows it offline.
     private func recorded(_ record: PageRecord) {
-        guard case .artist(let r) = record, let cover = r.coverArtId else { return }
-        if !pendingArtistCovers.contains(cover) { pendingArtistCovers.append(cover) }
-        fetchCovers()
+        switch record {
+        case .artist(let r):
+            guard let cover = r.coverArtId else { return }
+            if !pendingArtistCovers.contains(cover) { pendingArtistCovers.append(cover) }
+            fetchCovers()
+        case .album(let r, _, _, _):
+            if let cover = r.coverArtId { queueCover(cover) }
+        case .playlist(let r, _):
+            if let cover = r.coverArtId { queueCover(cover) }
+        }
+    }
+
+    /// Fix round 1 (security L5): lyrics kept on the phone are written as tracked work (sign-out waits for it and a
+    /// later account never gets it).
+    func keepLyrics(_ lyrics: OfflineLyrics) {
+        track { [weak self, store] gen in
+            guard self?.isLive(gen) == true else { return }
+            _ = try? await store.saveLyrics(lyrics)
+        }
+    }
+
+    /// Fix round 1 (security L4, D336 amended): Find lyrics online turned off: the kept lyrics found online go.
+    func forgetLyricsFoundOnline() {
+        track { [weak self, store] gen in
+            guard self?.isLive(gen) == true else { return }
+            await store.removeLyrics(source: .online)
+        }
     }
 
     /// D334: after a removal, covers nothing on the phone or under way names go (records and lyrics went in the store).

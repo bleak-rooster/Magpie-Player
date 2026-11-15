@@ -53,8 +53,15 @@ enum ShownLyrics: Sendable, Equatable {
     /// L fix round 1 (I1): background reads in flight at once, each left to finish (nd-lyrics may be fetching).
     nonisolated static let maxBackgroundReads = 3
 
-    /// Find lyrics online: off by default, per phone (D311).
-    var findOnline = false { didSet { defaults?.set(findOnline, forKey: Self.findOnlineKey) } }
+    /// Find lyrics online: off by default, per phone (D311). Round 28 O2 fix round 1 (security L4, D336 amended):
+    /// turning it off removes the lyrics found online kept on the phone (`onFindOnlineOff`).
+    var findOnline = false {
+        didSet {
+            defaults?.set(findOnline, forKey: Self.findOnlineKey)
+            if oldValue, !findOnline { onFindOnlineOff?() }
+        }
+    }
+    @ObservationIgnored var onFindOnlineOff: (@MainActor () -> Void)?
 
     /// One song's kept answers: the server's (`nil` lyrics = none) and LRCLIB's (`nil` = none).
     struct Entry: Equatable {
@@ -200,6 +207,7 @@ extension AppModel {
     func watchLyrics() {
         lyricsKeeper.attach(defaults: appDefaults,
                             lrclib: LrcLib(transport: LrcLibTransport(), userAgent: LrcLib.userAgent(version: Self.marketingVersion)))
+        lyricsKeeper.onFindOnlineOff = { [weak self] in self?.findLyricsOnlineTurnedOff() }   // Round 28 O2 (L4)
         lyricsWatch = Task { [weak self, player] in
             let inputs = Observations { @MainActor [weak self] in
                 LyricsTriggerInputs(songId: player.queue.current?.song.id, signedIn: self?.session != nil,

@@ -49,34 +49,40 @@ extension AppModel {
 extension AppModel {
     // MARK: - Records
 
-    /// The downloads a record may be written for now: signed in and online (never in automatic or manual offline).
-    private var recordableDownloads: DownloadManager? {
-        guard session != nil, !isOffline, let downloads else { return nil }
-        return downloads
+    /// The downloads `target` may be written for now: still the signed-in account's own (fix round 1, security M3: the
+    /// caller captured it before its read), signed in and online (never in automatic or manual offline).
+    private func recordable(_ target: DownloadManager?) -> DownloadManager? {
+        guard session != nil, !isOffline, let target, target === downloads else { return nil }
+        return target
     }
 
-    /// An album page read online with `songs` (its songs in the server's order).
-    func recordAlbumPage(_ album: Album, songs: [Song]) async {
-        guard let downloads = recordableDownloads else { return }
+    /// An album page read online with `songs` (its songs in the server's order). `target`: `downloads` as it was
+    /// **before** the read (O3: `let target = model.downloads` first, then read, then
+    /// `await model.recordAlbumPage(album, songs: songs, into: target)`), so a read that answers after a sign-out or
+    /// another sign-in writes nothing.
+    func recordAlbumPage(_ album: Album, songs: [Song], into target: DownloadManager?) async {
+        guard let downloads = recordable(target) else { return }
         let record = OfflineRecords.AlbumRecord(album: album, songs: songs, savedAt: .now)
         await downloads.applyRecord(.album(record, songs: songs, albumArtist: album.artist, albumArtistId: album.artistId),
-                                    isCurrent: { [weak self] in self?.recordableDownloads === downloads })
+                                    isCurrent: { [weak self] in self?.recordable(downloads) != nil })
     }
 
     /// An artist page read online with `albums` (in the server's order). A recorded artist's picture is saved at 300 px.
-    func recordArtistPage(_ artist: Artist, albums: [Album]) async {
-        guard let downloads = recordableDownloads else { return }
+    /// `target` as for `recordAlbumPage`.
+    func recordArtistPage(_ artist: Artist, albums: [Album], into target: DownloadManager?) async {
+        guard let downloads = recordable(target) else { return }
         let record = OfflineRecords.ArtistRecord(artist: artist, albums: albums, savedAt: .now)
-        await downloads.applyRecord(.artist(record), isCurrent: { [weak self] in self?.recordableDownloads === downloads })
+        await downloads.applyRecord(.artist(record), isCurrent: { [weak self] in self?.recordable(downloads) != nil })
     }
 
     /// A playlist (or flow) page read online with `songs` (its order). Per Q3, recorded whether or not it is
-    /// downloaded, as long as it holds a download.
-    func recordPlaylistPage(_ playlist: Playlist, songs: [Song], kind: OfflinePlaylistKind) async {
-        guard let downloads = recordableDownloads else { return }
+    /// downloaded, as long as it holds a download. `target` as for `recordAlbumPage`.
+    func recordPlaylistPage(_ playlist: Playlist, songs: [Song], kind: OfflinePlaylistKind,
+                            into target: DownloadManager?) async {
+        guard let downloads = recordable(target) else { return }
         let record = OfflineRecords.playlistRecord(playlist, songs: songs, kind: kind, savedAt: .now)
         await downloads.applyRecord(.playlist(record, songs: songs),
-                                    isCurrent: { [weak self] in self?.recordableDownloads === downloads })
+                                    isCurrent: { [weak self] in self?.recordable(downloads) != nil })
     }
 
     // MARK: - Flows on the phone (D335)
@@ -144,11 +150,22 @@ extension AppModel {
     /// known): new songs download under today's rules (Wi-Fi unless mobile data is allowed), songs that left lose the
     /// flow's reason (and leave the phone unless something else keeps them). Never offline; a flow not downloaded is
     /// left be.
-    @discardableResult
-    func followDownloadedFlow(_ page: DiscoverPage) -> Task<Void, Never>? {
-        guard !isOffline, session != nil, downloads != nil else { return nil }
-        let songs = page.entries.map(\.song)
-        return Task { [weak self] in await self?.refreshDownloadedPlaylist(page.playlist, songs: songs) }
+    ///
+    /// Fix round 1 (security M1): only a page whose lookups all finished (`complete`) is followed, and each song is
+    /// matched by its original id: whichever of its copies is already on the phone (the page's, the original, or the
+    /// `earlier` page's copy) stays, so a lookup that found nothing this time never swaps a library copy for Aurral's.
+    /// Security M3: the downloads are captured here and the work is the manager's (tracked; a sign-out drops it).
+    func followDownloadedFlow(_ page: DiscoverPage, earlier: DiscoverPage? = nil, complete: Bool = true) {
+        guard complete, !isOffline, session != nil, let downloads else { return }
+        let earlierCopies = Dictionary((earlier?.entries ?? []).map { ($0.original.id, $0.song) }, uniquingKeysWith: { a, _ in a })
+        let songs = page.entries.map { entry -> Song in
+            let candidates = [entry.song, entry.original, earlierCopies[entry.original.id]].compactMap { $0 }
+            return candidates.first { downloads.kind(of: $0.id) == .download } ?? entry.song
+        }
+        downloads.track { [weak self, weak downloads] gen in
+            guard let self, let downloads, downloads.isLive(gen) else { return }
+            await self.refreshDownloadedPlaylist(page.playlist, songs: songs, in: downloads, asFlow: true)
+        }
     }
 
     // MARK: - Lyrics (D336)
@@ -174,7 +191,11 @@ extension AppModel {
         case .instrumental(let source):
             kept = OfflineLyrics(songId: songId, source: source == .library ? .library : .online, lyrics: nil, savedAt: .now)
         }
-        let store = downloads.store
-        Task { _ = try? await store.saveLyrics(kept) }
+        downloads.keepLyrics(kept)   // fix round 1 (security L5): tracked by the manager
+    }
+
+    /// Fix round 1 (security L4, D336 amended): hook from Find lyrics online turned off: the kept lyrics found online go.
+    func findLyricsOnlineTurnedOff() {
+        downloads?.forgetLyricsFoundOnline()
     }
 }

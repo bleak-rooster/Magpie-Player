@@ -27,6 +27,7 @@ private let extensionsJSON = Data(#"""
     let defaults = UserDefaults(suiteName: "OfflineRecordsAppTests.\(UUID().uuidString)")!
     let transport = HostSwitchTransport()
     let fetcher = FakeFetcher()
+    let network = FakeNetwork(.wifi)
 
     init() {
         transport.inner.stub(pathSuffix: "/rest/ping", body: ok)
@@ -46,7 +47,7 @@ private let extensionsJSON = Data(#"""
         AppModel(store: store, lidarrStore: MemoryLidarrStore(), tokenStore: MemoryTokenStore(),
                  matchIndexDirectory: nil, dataDirectory: tmp, transport: transport, probeTransport: transport,
                  engine: FakeEngine(), defaults: defaults, systemNowPlaying: false, notifications: false,
-                 network: FakeNetwork(.wifi), audioFetcher: fetcher)
+                 network: network, audioFetcher: fetcher)
     }
 
     func signedIn() async throws -> AppModel {
@@ -73,6 +74,10 @@ private let extensionsJSON = Data(#"""
         await model.downloads!.settled()
     }
 
+    /// Automatic offline, the one place these tests enter it (O1 may move this to its own API at merge).
+    func goAutomaticOffline(_ model: AppModel) { model.serverReachable = false }
+    func comeBackOnline(_ model: AppModel) { model.serverReachable = true }
+
     func records(_ model: AppModel) async -> OfflineRecords { await model.downloads!.store.records() }
 
     var recordsFile: URL? {
@@ -88,25 +93,25 @@ private let extensionsJSON = Data(#"""
         let songs = (1...3).map { Self.song("s\($0)") }
         await download(model, [songs[0]])
         model.updatePreferences { $0.downloads.offlineMode = .on }   // manual offline
-        await model.recordAlbumPage(Self.album(), songs: songs)
+        await model.recordAlbumPage(Self.album(), songs: songs, into: model.downloads)
         #expect(await records(model).isEmpty, "manual offline: nothing written")
         model.updatePreferences { $0.downloads.offlineMode = .automatic }
-        model.serverReachable = false   // automatic offline
+        goAutomaticOffline(model)
         #expect(model.isOffline)
-        await model.recordAlbumPage(Self.album(), songs: songs)
-        await model.recordArtistPage(Artist(id: "va", name: "Various", albumCount: 1), albums: [Self.album()])
+        await model.recordAlbumPage(Self.album(), songs: songs, into: model.downloads)
+        await model.recordArtistPage(Artist(id: "va", name: "Various", albumCount: 1), albums: [Self.album()], into: model.downloads)
         #expect(await records(model).isEmpty, "automatic offline: nothing written")
-        model.serverReachable = true
+        comeBackOnline(model)
         #expect(!model.isOffline)
-        await model.recordAlbumPage(Self.album(), songs: songs)
+        await model.recordAlbumPage(Self.album(), songs: songs, into: model.downloads)
         #expect(await records(model).albums["al1"]?.songIds == ["s1", "s2", "s3"])
     }
 
     @Test func records_onlyForPagesWithADownload() async throws {
         let model = try await signedIn()
-        await model.recordAlbumPage(Self.album(), songs: (1...3).map { Self.song("s\($0)") })
+        await model.recordAlbumPage(Self.album(), songs: (1...3).map { Self.song("s\($0)") }, into: model.downloads)
         await model.recordPlaylistPage(Playlist(id: "p1", name: "Mix", songCount: 1, duration: 1), songs: [Self.song("s1")],
-                                       kind: .playlist)
+                                       kind: .playlist, into: model.downloads)
         #expect(await records(model).isEmpty)
         #expect(recordsFile.map { FileManager.default.fileExists(atPath: $0.path) } != true)
     }
@@ -117,7 +122,7 @@ private let extensionsJSON = Data(#"""
         let songs = (1...2).map { Self.song("s\($0)") }
         let album = Self.album(count: 2)
         model.download(songs, reason: .album("al1"), coverArtId: album.coverArtId)
-        await model.recordAlbumPage(album, songs: songs)
+        await model.recordAlbumPage(album, songs: songs, into: model.downloads)
         await model.downloads!.settled()
         #expect(await eventually { await self.records(model).albums["al1"]?.artist == "Various" })
         let catalog = await model.offlineCatalog
@@ -130,7 +135,7 @@ private let extensionsJSON = Data(#"""
         let model = try await signedIn()
         let songs = (1...2).map { Self.song("s\($0)", artistId: "va") }
         model.download(songs, reason: .artist("va"), coverArtId: "al-al1")
-        await model.recordArtistPage(Artist(id: "va", name: "Various", albumCount: 1), albums: [Self.album()])
+        await model.recordArtistPage(Artist(id: "va", name: "Various", albumCount: 1), albums: [Self.album()], into: model.downloads)
         await model.downloads!.settled()
         #expect(await eventually { await self.records(model).artists["va"]?.albumIds == ["al1"] })
     }
@@ -140,7 +145,7 @@ private let extensionsJSON = Data(#"""
         let model = try await signedIn()
         await download(model, [Self.song("s2")])
         let mix = Playlist(id: "p1", name: "Sam's mix", songCount: 3, duration: 600, owner: "sam")
-        await model.recordPlaylistPage(mix, songs: ["s1", "s2", "s3"].map { Self.song($0) }, kind: .playlist)
+        await model.recordPlaylistPage(mix, songs: ["s1", "s2", "s3"].map { Self.song($0) }, kind: .playlist, into: model.downloads)
         model.updatePreferences { $0.downloads.offlineMode = .on }
         let catalog = await model.offlineCatalog
         #expect(catalog.playlists(includingRecorded: true).map(\.name) == ["Sam's mix"])
@@ -151,7 +156,7 @@ private let extensionsJSON = Data(#"""
     @Test func records_erasedAtSignOut() async throws {
         let model = try await signedIn()
         await download(model, [Self.song("s1")])
-        await model.recordAlbumPage(Self.album(), songs: [Self.song("s1")])
+        await model.recordAlbumPage(Self.album(), songs: [Self.song("s1")], into: model.downloads)
         let file = try #require(recordsFile)
         #expect(FileManager.default.fileExists(atPath: file.path))
         model.signOut()
@@ -159,16 +164,114 @@ private let extensionsJSON = Data(#"""
         #expect(!FileManager.default.fileExists(atPath: file.path))
     }
 
+    // MARK: - Fix round 1
+
+    /// Security M3: a page read under one account never lands in another's records, even when it answers after the
+    /// switch (the caller captures the downloads before the read).
+    @Test func records_readUnderOneAccountNeverLandsInAnother() async throws {
+        let model = try await signedIn()
+        await download(model, [Self.song("s1")])
+        let jordans = model.downloads
+        model.signOut()
+        await model.downloadsTeardown?.value
+        try await model.signIn(urls: [home], username: "sam", password: "pw-o2")
+        await model.downloads!.settled()
+        await download(model, [Self.song("s1")])
+        await model.recordAlbumPage(Self.album(), songs: [Self.song("s1")], into: jordans)
+        await model.recordPlaylistPage(Playlist(id: "p1", name: "Mix", songCount: 1, duration: 1), songs: [Self.song("s1")],
+                                       kind: .playlist, into: jordans)
+        #expect(await records(model).isEmpty, "jordan's read never lands in sam's records")
+        await model.recordAlbumPage(Self.album(), songs: [Self.song("s1")], into: model.downloads)
+        #expect(await records(model).albums["al1"] != nil, "sam's own read does")
+    }
+
+    /// Task M4: the same user on another server starts with nothing of the first server's.
+    @Test func records_sameUserOnAnotherServerStartsEmpty() async throws {
+        let model = try await signedIn()
+        await download(model, [Self.song("s1")])
+        await model.recordAlbumPage(Self.album(), songs: [Self.song("s1")], into: model.downloads)
+        #expect(await records(model).albums["al1"] != nil)
+        let first = model.downloads!.store.directory
+        try await model.signIn(urls: [URL(string: "http://nas.local:4533")!], username: "jordan", password: "pw-o2")
+        await model.downloads!.settled()
+        #expect(await records(model).isEmpty)
+        #expect(await model.offlineCatalog.albums().isEmpty)
+        #expect(model.downloads!.store.directory != first, "another server is another folder")
+        #expect(!FileManager.default.fileExists(atPath: first.path), "the other server's folder went")
+    }
+
+    /// Task I1: a recorded album's cover is saved for offline; a song whose cover changed gets the new one.
+    @Test func covers_recordedAlbumCoverSavedForOffline() async throws {
+        let model = try await signedIn()
+        await download(model, [Self.song("s1")])
+        var album = Self.album()
+        album.coverArtId = "al-x"
+        var renamed = Self.song("s1")
+        renamed.coverArtId = "mf-s1-new"
+        await model.recordAlbumPage(album, songs: [renamed], into: model.downloads)
+        await model.downloads!.settled()
+        model.updatePreferences { $0.downloads.offlineMode = .on }
+        let cover = try #require(model.localCoverURL("al-x"))
+        #expect(FileManager.default.fileExists(atPath: cover.path), "the album's cover is on the phone")
+        #expect(await model.offlineCatalog.albums().first?.coverArtId == "al-x")
+        let songCover = try #require(model.localCoverURL("mf-s1-new"))
+        #expect(FileManager.default.fileExists(atPath: songCover.path), "the song's new cover too")
+    }
+
+    /// Task I2: a downloaded playlist saves each of its songs' covers, under the downloads' mobile-data rule.
+    @Test func covers_savedForEachSongOfADownloadedPlaylist() async throws {
+        let model = try await signedIn()
+        network.status = NetworkStatus(isConnected: true, isCellular: true, isConstrained: false)
+        let songs = [Self.song("s1"), Self.song("s2"), Self.song("s3", album: "al2")]
+        let snapshot = DownloadedPlaylist(id: "p1", name: "Mix", coverArtId: "pl-1", songIds: songs.map(\.id), savedAt: .now)
+        model.download(songs, reason: .playlist("p1"), playlist: snapshot, coverArtId: "pl-1")
+        await model.downloads!.settled()
+        #expect(fetcher.urls.filter { $0.path.hasSuffix("/rest/getCoverArt") }.isEmpty, "mobile data not allowed: nothing yet")
+        network.status = .wifi
+        let store = model.downloads!.store
+        #expect(await eventually {
+            await model.downloads!.settled()
+            for id in ["mf-s1", "mf-s2", "mf-s3", "pl-1"] where await store.coverURL(coverArtId: id) == nil { return false }
+            return true
+        })
+        #expect(coverFetches("mf-s1") == 1)
+    }
+
+    /// Security L1: a "cover" over 5 MB is refused before it is read.
+    @Test func covers_oversizeImageRefused() async throws {
+        let model = try await signedIn()
+        fetcher.bytes = 6 * 1024 * 1024
+        await download(model, [Self.song("s1")])
+        #expect(coverFetches("mf-s1") == 1)
+        #expect(await model.downloads!.store.coverURL(coverArtId: "mf-s1") == nil)
+    }
+
+    /// Security L4 (D336 amended): turning Find lyrics online off removes the lyrics found online kept on the phone.
+    @Test func lyrics_foundOnlineGoWhenFindLyricsOnlineTurnsOff() async throws {
+        let model = try await signedIn()
+        await download(model, [Self.song("s1"), Self.song("s2")])
+        let store = model.downloads!.store
+        let lines = Lyrics(synced: false, lines: [LyricLine(text: "la")])
+        try await store.saveLyrics(OfflineLyrics(songId: "s1", source: .online, lyrics: lines, savedAt: .now))
+        try await store.saveLyrics(OfflineLyrics(songId: "s2", source: .library, lyrics: lines, savedAt: .now))
+        model.lyricsKeeper.findOnline = true
+        model.lyricsKeeper.findOnline = false
+        await model.downloads!.settled()
+        #expect(await store.savedLyrics(songId: "s1") == nil)
+        #expect(await store.savedLyrics(songId: "s2") != nil, "the library's stay")
+    }
+
+
     // MARK: - Privacy at rest
 
     @Test func records_noURLsTokensOrAddresses() async throws {
         let model = try await signedIn()
         let song = Self.song("s1")
         await download(model, [song], reason: .album("al1"), coverArtId: "al-al1")
-        await model.recordAlbumPage(Self.album(), songs: [song])
-        await model.recordArtistPage(Artist(id: "va", name: "Various", albumCount: 1, coverArtId: "ar-va"), albums: [Self.album()])
+        await model.recordAlbumPage(Self.album(), songs: [song], into: model.downloads)
+        await model.recordArtistPage(Artist(id: "va", name: "Various", albumCount: 1, coverArtId: "ar-va"), albums: [Self.album()], into: model.downloads)
         await model.recordPlaylistPage(Playlist(id: "p1", name: "Mix", songCount: 1, duration: 1, owner: "jordan", changed: .now),
-                                       songs: [song], kind: .playlist)
+                                       songs: [song], kind: .playlist, into: model.downloads)
         _ = try await model.lyricsForPane(song)
         let scope = try #require(recordsFile).deletingLastPathComponent()
         #expect(await eventually { FileManager.default.fileExists(atPath: scope.appending(path: "lyrics").path) })
@@ -192,10 +295,10 @@ private let extensionsJSON = Data(#"""
         let model = try await signedIn()
         await download(model, [Self.song("s1", title: "Old name")])
         model.updatePreferences { $0.downloads.offlineMode = .on }
-        await model.recordAlbumPage(Self.album(), songs: [Self.song("s1", title: "Offline name")])
+        await model.recordAlbumPage(Self.album(), songs: [Self.song("s1", title: "Offline name")], into: model.downloads)
         #expect(await model.offlineCatalog.songs().map(\.title) == ["Old name"], "never offline")
         model.updatePreferences { $0.downloads.offlineMode = .automatic }
-        await model.recordAlbumPage(Self.album(), songs: [Self.song("s1", title: "New name")])
+        await model.recordAlbumPage(Self.album(), songs: [Self.song("s1", title: "New name")], into: model.downloads)
         let catalog = await model.offlineCatalog
         #expect(catalog.songs().map(\.title) == ["New name"])
         #expect(catalog.albums().first?.artist == "Various")
@@ -205,7 +308,7 @@ private let extensionsJSON = Data(#"""
     @Test func catalog_songGoneFromServerStaysOnPhone() async throws {
         let model = try await signedIn()
         await download(model, [Self.song("s1"), Self.song("s2")], reason: .album("al1"), coverArtId: "al-al1")
-        await model.recordAlbumPage(Self.album(count: 1), songs: [Self.song("s1")])
+        await model.recordAlbumPage(Self.album(count: 1), songs: [Self.song("s1")], into: model.downloads)
         let catalog = await model.offlineCatalog
         #expect(catalog.songs().map(\.id) == ["s1", "s2"])
         #expect(catalog.albumPage(id: "al1")?.album.songs?.map(\.id) == ["s1", "s2"])
@@ -229,7 +332,7 @@ private let extensionsJSON = Data(#"""
         await download(model, (1...3).map { Self.song("s\($0)") }, reason: .album("al1"), coverArtId: "al-al1")
         #expect(coverFetches("al-al1") == 1)
         #expect(coverFetches("mf-s1") == 0, "an album's songs show its cover")
-        await model.recordArtistPage(Artist(id: "va", name: "Various", albumCount: 1, coverArtId: "ar-va"), albums: [Self.album()])
+        await model.recordArtistPage(Artist(id: "va", name: "Various", albumCount: 1, coverArtId: "ar-va"), albums: [Self.album()], into: model.downloads)
         await model.downloads!.settled()
         #expect(await eventually { await model.downloads!.store.coverURL(coverArtId: "ar-va") != nil })
         #expect(fetcher.urls.contains { $0.query?.contains("id=ar-va") == true && $0.query?.contains("size=300") == true },
@@ -250,7 +353,7 @@ private let extensionsJSON = Data(#"""
         model.updatePreferences { $0.downloads.offlineMode = .on }
         model.download([Self.song("s1")], reason: .song)
         await model.downloads!.settled()
-        await model.recordArtistPage(Artist(id: "ar-ann", name: "Ann", albumCount: 1, coverArtId: "ar-ann"), albums: [])
+        await model.recordArtistPage(Artist(id: "ar-ann", name: "Ann", albumCount: 1, coverArtId: "ar-ann"), albums: [], into: model.downloads)
         await model.downloads!.settled()
         #expect(fetcher.urls.filter { $0.path.hasSuffix("/rest/getCoverArt") }.isEmpty)
     }
@@ -263,7 +366,8 @@ private let extensionsJSON = Data(#"""
         _ = try await model.lyricsForPane(Self.song("s1"))
         _ = try await model.lyricsForPane(Self.song("s2"))
         let store = model.downloads!.store
-        #expect(await eventually { await store.savedLyrics(songId: "s1") != nil })
+        await model.downloads!.settled()   // fix round 1 (security L5): the save is tracked by the manager
+        #expect(await store.savedLyrics(songId: "s1") != nil)
         #expect(await store.savedLyrics(songId: "s2") == nil, "not a download: memory only, as before")
         await model.removeSongDownload("s1")
         #expect(await store.savedLyrics(songId: "s1") == nil, "lyrics go with the song")

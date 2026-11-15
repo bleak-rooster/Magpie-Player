@@ -168,19 +168,29 @@ extension AppModel {
 
     /// A downloaded playlist opened with a connection: songs added since are downloaded, songs taken out lose the
     /// playlist (and leave the phone unless something else keeps them). A playlist that isn't downloaded is left be.
-    func refreshDownloadedPlaylist(_ playlist: Playlist, songs: [Song]) async {
-        guard !isOffline, let downloads,   // Round 28 O2: never offline (Q4, D335)
+    ///
+    /// Round 28 O2: never offline (Q4, D335). Fix round 1: `target` is the downloads captured when the work began
+    /// (security M3); a flow's (saved as one, or one of Discover's while Aurral is set up) follows only its flow page
+    /// (`asFlow`, with library copies), never the ordinary playlist page, which would swap the copies back (security M1).
+    func refreshDownloadedPlaylist(_ playlist: Playlist, songs: [Song], in target: DownloadManager? = nil,
+                                   asFlow: Bool = false) async {
+        guard !isOffline, let downloads = target ?? self.downloads, downloads === self.downloads,
               let saved = await downloads.store.playlists().first(where: { $0.id == playlist.id }),
               self.downloads === downloads else { return }
+        if !asFlow, aurralSetUp, saved.kind == .flow || isDiscoverPlaylist(id: playlist.id) { return }
         let ids = songs.map(\.id)
         guard saved.songIds != ids || saved.name != playlist.name || saved.coverArtId != playlist.coverArtId else { return }
         let kept = Set(ids), before = Set(saved.songIds)
         await downloads.remove(.playlist(playlist.id), songIds: saved.songIds.filter { !kept.contains($0) })
         guard self.downloads === downloads else { return }
-        // Round 28 O2: what kind it is (a flow stays a flow) and its owner carry over (D331).
-        let snapshot = DownloadedPlaylist(id: playlist.id, name: playlist.name, coverArtId: playlist.coverArtId,
-                                          songIds: ids, savedAt: .now, owner: playlist.owner ?? saved.owner,
-                                          kind: saved.kind, changed: playlist.changed ?? saved.changed)
+        // Round 28 O2: what kind it is (a flow stays a flow) and its owner carry over (D331); fix round 1: a flow keeps
+        // its own owner (task M6: the library's playlist owner is Aurral's account), and name and owner are bounded
+        // (security M2).
+        let owner = saved.kind == .flow ? saved.owner : (playlist.owner ?? saved.owner)
+        let snapshot = DownloadedPlaylist(id: playlist.id, name: OfflineRecords.text(playlist.name),
+                                          coverArtId: playlist.coverArtId, songIds: ids, savedAt: .now,
+                                          owner: owner.map(OfflineRecords.text), kind: saved.kind,
+                                          changed: playlist.changed ?? saved.changed)
         downloads.download(songs.filter { !before.contains($0.id) }, reason: .playlist(playlist.id), playlist: snapshot,
                            coverArtId: playlist.coverArtId)
     }

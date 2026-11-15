@@ -19,6 +19,7 @@ import Testing
     let transport = D1Routing()
     let aurralStore = MemoryAurralStore()
     let lidarrStore = MemoryLidarrStore()
+    let network = FakeNetwork(.wifi)
     var aurral: StubAurral { transport.aurral }
     var nav: D1Navidrome { transport.navidrome }
 
@@ -35,7 +36,7 @@ import Testing
         AppModel(store: store, lidarrStore: lidarrStore, tokenStore: MemoryTokenStore(),
                  aurralStore: aurralStore, matchIndexDirectory: nil, dataDirectory: tmp, transport: transport,
                  probeTransport: transport, engine: FakeEngine(), defaults: defaults, systemNowPlaying: false,
-                 notifications: false, network: FakeNetwork(.wifi), audioFetcher: FakeFetcher())
+                 notifications: false, network: network, audioFetcher: FakeFetcher())
     }
 
     /// Discover Weekly (the user's flow: Lullaby with a library copy, Unknown Song without, one main-library song) and,
@@ -162,29 +163,83 @@ import Testing
         let page = try await model.openDiscoverPage(playlistId: "pl-dw", fresh: false, waitForRead: false) { _ in }
         let songs = page.entries.map(\.song)
         #expect(songs.map(\.id) == ["m-lullaby", "a-unknown", "m-ref1"], "library copies where found")
-        let snapshot = DownloadedPlaylist(id: "pl-dw", name: "Discover Weekly", coverArtId: nil, songIds: songs.map(\.id),
-                                          savedAt: .now, kind: .flow)
-        model.download(songs, reason: .playlist("pl-dw"), playlist: snapshot)
-        await model.downloads!.settled()
+        try await downloadFlow(model, page)
+        await download(model, ["m-ref1"])   // also downloaded on its own
         #expect(model.downloads!.localFiles.keys.sorted() == ["a-unknown", "m-lullaby", "m-ref1"])
 
         // Offline, the follow does nothing.
         nav.setList("pl-dw", "Discover Weekly", ["a-lullaby", "m-ref2"], changed: "2026-11-08T10:00:00Z")
         model.updatePreferences { $0.downloads.offlineMode = .on }
-        await model.followDownloadedFlow(DiscoverPage(playlist: page.playlist, flow: page.flow,
-                                                      entries: [DiscoverEntry(song: Self.song("m-ref2"), original: Self.song("m-ref2"))]))?.value
+        model.followDownloadedFlow(DiscoverPage(playlist: page.playlist, flow: page.flow,
+                                                      entries: [DiscoverEntry(song: Self.song("m-ref2"), original: Self.song("m-ref2"))]))
         await model.downloads!.settled()
         #expect(model.downloads!.localFiles.keys.sorted() == ["a-unknown", "m-lullaby", "m-ref1"])
 
-        // Online, the refreshed page brings its new song and lets go of the ones that left.
+        // Online on mobile data (not allowed for downloads): the songs that left go, the new one waits for Wi-Fi.
         model.updatePreferences { $0.downloads.offlineMode = .automatic }
+        network.status = NetworkStatus(isConnected: true, isCellular: true, isConstrained: false)
         _ = try await model.openDiscoverPage(playlistId: "pl-dw", fresh: false, waitForRead: false) { _ in }
         #expect(await eventually {
             await model.downloads!.settled()
-            return model.downloads!.localFiles.keys.sorted() == ["m-lullaby", "m-ref2"]
+            return model.downloads!.localFiles.keys.sorted() == ["m-lullaby", "m-ref1"]
+        }, "a-unknown left; m-ref1 left the flow but is kept for itself (task M9)")
+        #expect(model.downloads!.localFiles["m-ref2"] == nil, "the new song waits for Wi-Fi (task M9)")
+        #expect(model.downloads!.reasons(for: "m-ref1") == [.song])
+        network.status = .wifi
+        #expect(await eventually {
+            await model.downloads!.settled()
+            return model.downloads!.localFiles.keys.sorted() == ["m-lullaby", "m-ref1", "m-ref2"]
         })
         let saved = await model.downloads!.store.playlists().first { $0.id == "pl-dw" }
         #expect(saved?.songIds == ["m-lullaby", "m-ref2"] && saved?.kind == .flow, "the flow stays a flow")
+        #expect(saved?.owner == nil, "the flow's own owner isn't replaced by the library's (task M6)")
+    }
+
+    /// The flow downloaded as a whole, as O3's Download does (library copies where found).
+    func downloadFlow(_ model: AppModel, _ page: DiscoverPage) async throws {
+        let songs = page.entries.map(\.song)
+        let snapshot = DownloadedPlaylist(id: page.playlist.id, name: page.playlist.name, coverArtId: nil,
+                                          songIds: songs.map(\.id), savedAt: .now, kind: .flow)
+        model.download(songs, reason: .playlist(page.playlist.id), playlist: snapshot)
+        await model.downloads!.settled()
+    }
+
+    /// Security M1: a background read whose lookups didn't all finish never swaps a library copy on the phone for
+    /// Aurral's.
+    @Test func flows_followKeepsDownloadedCopyWhenLookupIncomplete() async throws {
+        let model = try await signedIn()
+        let page = try await model.openDiscoverPage(playlistId: "pl-dw", fresh: false, waitForRead: false) { _ in }
+        try await downloadFlow(model, page)
+        #expect(model.downloads!.localFiles["m-lullaby"] != nil)
+        nav.setList("pl-dw", "Discover Weekly", ["a-lullaby", "a-unknown", "m-ref1"], changed: "2026-11-09T10:00:00Z")
+        _ = try await model.openDiscoverPage(playlistId: "pl-dw", fresh: true, waitForRead: false, background: true,
+                                             budget: DiscoverLookupBudget(0)) { _ in }
+        await model.downloads!.settled()
+        #expect(model.downloads!.localFiles["m-lullaby"] != nil, "the library copy stays")
+        #expect(model.downloads!.localFiles["a-lullaby"] == nil, "Aurral's copy isn't fetched in its place")
+        let saved = await model.downloads!.store.playlists().first { $0.id == "pl-dw" }
+        #expect(saved?.songIds == ["m-lullaby", "a-unknown", "m-ref1"])
+        // A complete read whose lookup for Lullaby found nothing this time still keeps the copy on the phone.
+        let incomplete = DiscoverPage(playlist: page.playlist, flow: page.flow, entries: page.entries.map {
+            DiscoverEntry(song: $0.original, original: $0.original)
+        })
+        model.followDownloadedFlow(incomplete, earlier: page)
+        await model.downloads!.settled()
+        #expect(model.downloads!.localFiles["m-lullaby"] != nil && model.downloads!.localFiles["a-lullaby"] == nil,
+                "compared by the original id: the copy already on the phone is kept")
+    }
+
+    /// Security M1: the ordinary playlist page's refresh (Aurral's songs, no lookups) never swaps a downloaded flow's
+    /// library copies back.
+    @Test func flows_playlistViewRefreshDoesNotSwapCopiesBack() async throws {
+        let model = try await signedIn()
+        let page = try await model.openDiscoverPage(playlistId: "pl-dw", fresh: false, waitForRead: false) { _ in }
+        try await downloadFlow(model, page)
+        let raw = page.entries.map(\.original)
+        await model.refreshDownloadedPlaylist(page.playlist, songs: raw)
+        await model.downloads!.settled()
+        #expect(model.downloads!.localFiles.keys.sorted() == ["a-unknown", "m-lullaby", "m-ref1"])
+        #expect(await model.downloads!.store.playlists().first { $0.id == "pl-dw" }?.songIds == ["m-lullaby", "a-unknown", "m-ref1"])
     }
 
     // MARK: - Four setups
@@ -195,10 +250,10 @@ import Testing
         if aurralSetUp { try await openPages(model, ["pl-dw"]) }
         await download(model, ["m-ref1"])
         let album = Album(id: "al-m-ref1", name: "A", artist: "Q", artistId: "ar-q", songCount: 2, duration: 200)
-        await model.recordAlbumPage(album, songs: [Self.song("m-ref1"), Self.song("m-x")])
-        await model.recordArtistPage(Artist(id: "ar-q", name: "Q", albumCount: 1), albums: [album])
+        await model.recordAlbumPage(album, songs: [Self.song("m-ref1"), Self.song("m-x")], into: model.downloads)
+        await model.recordArtistPage(Artist(id: "ar-q", name: "Q", albumCount: 1), albums: [album], into: model.downloads)
         await model.recordPlaylistPage(Playlist(id: "pl-road", name: "Road trip", songCount: 2, duration: 200),
-                                       songs: [Self.song("m-x"), Self.song("m-ref1")], kind: .playlist)
+                                       songs: [Self.song("m-x"), Self.song("m-ref1")], kind: .playlist, into: model.downloads)
         model.updatePreferences { $0.downloads.offlineMode = .on }
         let catalog = await model.offlineCatalog
         #expect(catalog.albumPage(id: "al-m-ref1")?.total == 2, "albums (\(lidarr), \(aurralSetUp))")

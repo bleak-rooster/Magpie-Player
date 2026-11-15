@@ -188,7 +188,11 @@ extension AppModel {
         show(page)
         swapQueuedDiscoverCopies(copies)   // fix round 1 (I1): once, when every lookup is done
         saveDiscoverPage(page, held: background)
-        followDownloadedFlow(page)   // Round 28 O2 (Q4, D335): a downloaded flow keeps in step
+        // Round 28 O2 (Q4, D335): a downloaded flow keeps in step; fix round 1 (security M1) only from a page whose
+        // lookups all finished, keeping whichever copy is already on the phone (the last saved page's included).
+        followDownloadedFlow(page, earlier: savedRecord.map { DiscoverPage(playlist: $0.playlist.playlist, flow: flow,
+                                                                           entries: $0.discoverEntries) },
+                             complete: budget.map { $0.remaining > 0 } ?? true)
         return page
     }
 

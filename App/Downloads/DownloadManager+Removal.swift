@@ -82,6 +82,7 @@ extension DownloadManager {
         stoppedByFull = []
         pendingCovers = []
         pendingArtistCovers = []   // Round 28 O2
+        coversInFlight = []   // fix round 1 (security L2)
         parkedRecords = []
         deferredRemovals = []
         deferredPlaylists = []
