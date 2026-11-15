@@ -79,7 +79,7 @@ struct DiscoverPlaylistView: View {
                     .listRowBackground(Color.clear)
             }
         }
-        .task(id: failed) { phoneCopy = failed ? await model.offlineFlowPage(id: playlistId) : nil }
+        .task(id: failed) { phoneCopy = await Self.phoneCopy(model, playlistId: playlistId, failed: failed) }
         .transaction { $0.animation = nil }   // Round 27 D1 (D284): a swap behind the owner never animates
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
@@ -168,6 +168,7 @@ struct DiscoverPlaylistView: View {
                     PlayShuffleButtons(songs: songs, recent: .playlist(page.playlist))   // round 14: quick grid
                     if Self.showsDownloadToPhone(model) { downloadToPhone(page) }   // round 28 O3 (D343)
                 }
+                if Self.showsDownloadToPhone(model), !page.songs.isEmpty { flowDownloadNote(page) }   // fix round 1 (M2)
                 ActionBar {
                     if liveFlow(page) != nil {
                         ActionButton(runActive ? DiscoverCopy.refreshing : DiscoverCopy.refresh, symbol: "arrow.clockwise",
@@ -186,7 +187,7 @@ struct DiscoverPlaylistView: View {
                         .accessibilityIdentifier("discover-artists")
                     // Round 14 A4 (owner answer 10): a flow made with auto-download off.
                     if let flow = liveFlow(page), flow.autoDownload == false, model.aurralCanAddFlow {
-                        ActionButton(DiscoverPagesCopy.downloadSongs, symbol: "arrow.down.circle") {
+                        ActionButton(DiscoverPagesCopy.downloadSongs, symbol: DiscoverPagesCopy.downloadSongsSymbol) {
                             Task {
                                 do { try await model.downloadFlowSongs(flowId: flow.id) } catch {
                                     message = error as? AurralError == .noDownloader ? DiscoverPagesCopy.noDownloader
@@ -255,31 +256,45 @@ struct DiscoverPlaylistView: View {
         Color.clear.frame(height: Tokens.Spacing.l)
     }
 
-    /// Round 28 O3 (D343): **Download** until the flow is on its way to the phone; then today's download capsule (its
-    /// status, opening Remove download, or Cancel download while songs come), as on album and playlist pages, beside the
-    /// mark under the title. Design note: one ⋯ per page (Delete flow's) is kept, so Remove download lives in the capsule.
+    /// Round 28 O3 (D343; fix round 1, design M3, ruling Q1): today's download capsule in both states, as on album and
+    /// playlist pages ("Download", `arrow.down.to.line`; then its status, opening Remove download, or Cancel download
+    /// while songs come). One ⋯ per page (Delete flow's) is kept, so Remove download lives in the capsule.
     @ViewBuilder private func downloadToPhone(_ page: DiscoverPage) -> some View {
         let songs = page.songs
-        let status = model.downloadStatus(songs.map(\.id), reason: .playlist(page.playlist.id))
-        if status == .none {
-            ActionButton(OfflinePageCopy.downloadFlow, symbol: OfflinePageCopy.downloadFlowSymbol) {
-                Self.downloadToPhone(model, page)
-            }
-            .disabled(songs.isEmpty)
+        DownloadControl(status: flowStatus(page), canStart: !songs.isEmpty, start: { Self.downloadToPhone(model, page) },
+                        retry: { model.retryDownloads() },
+                        remove: { Task { await model.removeDownload(.playlist(page.playlist.id)) } })
             .accessibilityLabel(OfflinePageCopy.downloadFlowLabel)
-            .accessibilityIdentifier("discover-download-to-phone")
-        } else {
-            DownloadControl(status: status, canStart: !songs.isEmpty, start: { Self.downloadToPhone(model, page) },
-                            retry: { model.retryDownloads() },
-                            remove: { Task { await model.removeDownload(.playlist(page.playlist.id)) } })
-        }
+            .accessibilityHint(OfflinePageCopy.downloadFlowHint)
+    }
+
+    private func flowStatus(_ page: DiscoverPage) -> DownloadStatus {
+        model.downloadStatus(page.songs.map(\.id), reason: .playlist(page.playlist.id))
+    }
+
+    /// Fix round 1 (design M2): under the bar, how much a download takes before, and that it keeps in step after (Q4).
+    @ViewBuilder private func flowDownloadNote(_ page: DiscoverPage) -> some View {
+        let text = flowStatus(page) == .none ? OfflinePageCopy.flowAbout(page.songs.count) : OfflinePageCopy.flowFollows
+        Text(text)
+            .font(.footnote)
+            .foregroundStyle(themed.palette.ink2Color)
+            .multilineTextAlignment(.center)
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, Tokens.Spacing.margin)
+            .accessibilityIdentifier("discover-download-note")
+    }
+
+    /// Round 28 O3 (D341; fix round 1, review M3): the phone's copy of a flow whose read failed with nothing on screen
+    /// (from the saved Discover file, D335); nil otherwise.
+    static func phoneCopy(_ model: AppModel, playlistId: String, failed: Bool) async -> OfflinePlaylistPage? {
+        failed ? await model.offlineFlowPage(id: playlistId) : nil
     }
 
     /// Round 28 O3 (D341): the flow's read failed with nothing on screen and the phone has it: its songs on the phone, in
-    /// the flow's order, with the note; pull to refresh reads again.
+    /// the flow's order, with the note; Try again and pull to refresh read again.
     @ViewBuilder private func phoneCopyContent(_ copy: OfflinePlaylistPage) -> some View {
         let p = themed.palette
-        PhoneCopyNote()
+        PhoneCopyNote(retry: { await load(fresh: true) })
         VStack(spacing: Tokens.Spacing.s) {
             Artwork(copy.playlist.coverArtId, side: 220) { SleeveArt(image: $0, side: 220) }
                 .padding(.bottom, Tokens.Spacing.s)
@@ -301,7 +316,7 @@ struct DiscoverPlaylistView: View {
                 .buttonStyle(.plain)
                 .accessibilityAddTraits(.isButton)
                 .accessibilityIdentifier("track-\(index)")
-                .contextMenu { SongQueueMenuItems(song: song); SongDownloadMenuItem(song: song, removing: $removing) }
+                .contextMenu { PhoneSongMenuItems(song: song, removing: $removing) }   // fix round 1 (design M10)
                 Divider().overlay(p.sepColor).padding(.leading, 76)
             }
             .foregroundStyle(p.inkColor)
@@ -357,6 +372,19 @@ struct DiscoverListView: View {
 
     /// Round 28 O3 (D343): the flows Library › Discover lists offline; none without Aurral.
     static func offlineFlows(_ model: AppModel) async -> [Playlist] { await model.offlineFlows() }
+
+    /// Fix round 1 (review M6): one offline row: the flow, its songs on the phone and how many it has.
+    struct OfflineRow { var playlist: Playlist; var onPhone: Int; var total: Int? }
+
+    /// Fix round 1 (review M6): the flows on the phone with their counts (each flow's page from the saved file).
+    static func offlineRows(_ model: AppModel) async -> [OfflineRow] {
+        var rows: [OfflineRow] = []
+        for flow in await model.offlineFlows() {
+            let page = await model.offlineFlowPage(id: flow.id)
+            rows.append(OfflineRow(playlist: flow, onPhone: page?.onPhone ?? flow.songCount, total: page?.total))
+        }
+        return rows
+    }
 
     private var online: some View {
         List {
@@ -491,21 +519,25 @@ struct DiscoverListView: View {
 /// Round 28 O3 (owner, 2026-11-15, item 1: "flows"; D340, D343): Library › Discover offline: the flows holding a song on
 /// the phone, in Discover's order, each with its owner's caption (D205) and how many of its songs are here; a row opens
 /// the flow's page from the phone. Nothing on the phone says "Nothing downloaded yet".
+/// Fix round 1 (review M6, design H3): each row says "<n> of <m> songs on this phone"; empty, "No flows on this phone"
+/// (or "Nothing downloaded yet" with nothing downloaded).
 private struct OfflineFlowsList: View {
     @Environment(AppModel.self) private var model
-    @State private var flows: [Playlist]?
+    @State private var rows: [DiscoverListView.OfflineRow]?
+    @State private var phoneEmpty = false
     private let themed = Themed()
 
     var body: some View {
         List {
-            ForEach(flows ?? [], id: \.id) { playlist in
-                NavigationLink(value: Route.playlist(id: playlist.id)) {
+            ForEach(rows ?? [], id: \.playlist.id) { row in
+                NavigationLink(value: Route.playlist(id: row.playlist.id)) {
                     HStack(spacing: Tokens.Spacing.m) {
-                        Artwork(playlist.coverArtId, side: 56) { SleeveArt(image: $0, side: 56) }
+                        Artwork(row.playlist.coverArtId, side: 56) { SleeveArt(image: $0, side: 56) }
                         VStack(alignment: .leading, spacing: 1) {
-                            Text(playlist.name).font(.body)
-                            OwnerCaption(owner: playlist.owner, signedInUser: nil)
-                            Label(OfflinePageCopy.onPhone(playlist.songCount, of: nil) ?? "",
+                            Text(row.playlist.name).font(.body)
+                            OwnerCaption(owner: row.playlist.owner, signedInUser: nil)
+                            Label(OfflinePageCopy.onPhone(row.onPhone, of: row.total)
+                                      ?? (row.onPhone == 1 ? "1 song" : "\(row.onPhone) songs"),
                                   systemImage: OfflinePageCopy.onPhoneSymbol)
                                 .font(.footnote).foregroundStyle(themed.palette.ink2Color)
                         }
@@ -518,11 +550,19 @@ private struct OfflineFlowsList: View {
         }
         .listStyle(.plain)
         .overlay {
-            if flows == nil { ProgressView() } else if flows?.isEmpty == true { NothingDownloadedView() }
+            if rows == nil {
+                ProgressView()
+            } else if rows?.isEmpty == true {
+                let empty = OfflineLists.empty(.flows, phoneEmpty: phoneEmpty)
+                NothingDownloadedView(title: empty.title, detail: empty.detail)
+            }
         }
         .navigationTitle(DiscoverCopy.title)
         .navigationBarTitleDisplayMode(.inline)
         .magpieScreen()
-        .task(id: model.offlinePageKey) { flows = await DiscoverListView.offlineFlows(model) }
+        .task(id: model.offlinePageKey) {
+            phoneEmpty = await OfflineLists.phoneEmpty(model)
+            rows = await DiscoverListView.offlineRows(model)
+        }
     }
 }

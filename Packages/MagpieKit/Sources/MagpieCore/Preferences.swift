@@ -444,9 +444,11 @@ public struct LayoutPreferences: PreferenceArea {
     /// need a server (Favourites, Finds, Requests, Trending, Recommended) hide (D340; amends Task 14's Downloads only).
     public func visibleLibraryRows(offline: Bool, findsSetUp: Bool, lidarrConnected: Bool, carPlay: Bool,
                                    discoverSetUp: Bool = false, trendingSetUp: Bool = false,
-                                   recommendedSetUp: Bool = false) -> [LibraryRow] {
+                                   recommendedSetUp: Bool = false, favouritesOnPhone: Bool = false) -> [LibraryRow] {
         if offline {
-            let onPhone: Set<LibraryRow> = [.playlists, .artists, .albums, .songs, .genres, .discover]
+            // Fix round 1 (design M7, amends D340): Favourites too while favourites are kept downloaded (the phone's).
+            var onPhone: Set<LibraryRow> = [.playlists, .artists, .albums, .songs, .genres, .discover]
+            if favouritesOnPhone { onPhone.insert(.favourites) }
             return library.entries.filter { entry in
                 entry.item == .downloads
                     || (entry.visible && onPhone.contains(entry.item) && (entry.item != .discover || discoverSetUp))

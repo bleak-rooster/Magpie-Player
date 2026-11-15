@@ -33,7 +33,9 @@ struct HomeView: View {
         // Round 28 O3 (O1's design M4, D329): the notice above the scroll view, never a row in it.
         .safeAreaInset(edge: .top, spacing: 0) { OfflineNoticeInset() }
         .refreshable {
-            guard !model.isOffline else { return await model.reconnectNow() }
+            // Round 28 O3 fix round 1 (design M5): offline by itself it tries the library; in Offline mode it reads the
+            // phone again and says Offline mode is on.
+            if await OfflineRefresh.run(model, reread: { await model.homeFeed.refresh(key) }) { return }
             async let made: Void = model.refreshMadeForYou()
             await model.homeFeed.refresh(key)
             await made
@@ -68,7 +70,10 @@ struct HomeView: View {
             if model.madeForYouShelf.isEmpty, !model.isOffline { await model.refreshMadeForYou() }
         }
         // Round 28 O3 (D340): offline, which of the quick grid's tiles open on the phone (again as songs come and go).
-        .task(id: model.offlinePageKey) { quickOnPhone = await model.offlineQuickIds() }
+        // Fix round 1 (review M4): and again as plays are noted (a tile played offline joins at once).
+        .task(id: Self.quickKey(pageKey: model.offlinePageKey, plays: model.homeFeed.recentPlays.count)) {
+            quickOnPhone = await model.offlineQuickIds()
+        }
         .sheet(isPresented: $editsHome) {
             LayoutEditorSheet(doneIdentifier: "home-edit-done") { HomeLayoutView() }
         }
@@ -76,6 +81,7 @@ struct HomeView: View {
 
     private var content: some View {
         VStack(alignment: .leading, spacing: Tokens.Spacing.xxl) {
+            OfflineNoticeRow()   // round 28 O3 fix round 1 (design H5): at accessibility sizes, it scrolls away
             if !model.isOffline, model.showsFinishSettingUp {   // final fix 2 B-M2: only while a step is left
                 FinishSettingUpCard()
                     .padding(.horizontal, Tokens.Spacing.margin)
@@ -83,7 +89,14 @@ struct HomeView: View {
             SlskdOutageBanner().padding(.horizontal, Tokens.Spacing.margin)   // R24 (D219): slskd stayed disconnected
             HeldSongsBanner().padding(.horizontal, Tokens.Spacing.margin)   // R24C (D213): a song held for review
             LoadableView(state: model.homeFeed.state, retry: { await model.homeFeed.refresh(key) }) { read in
-                let shown = model.homeSections
+                let all = model.homeSections
+                // Round 28 O3 fix round 1 (design M9): offline, Recently downloaded follows its switch unless Home would
+                // otherwise be empty.
+                let shown = model.isOffline
+                    ? Self.offlineSections(all, downloadedOn: model.preferences.layout.home.entries
+                                               .contains { $0.item == .downloaded && $0.visible },
+                                           hasContent: { shows($0, read) })
+                    : all
                 let chips = HomeFilter.offered(for: shown.filter { shows($0, read) })
                 let picked = chips.contains(filter) ? filter : .all
                 let sections = picked.apply(shown).filter { shows($0, read, chips: chips) }
@@ -122,6 +135,18 @@ struct HomeView: View {
         }
         .padding(.vertical, Tokens.Spacing.l)
     }
+
+    /// Round 28 O3 fix round 1 (design M9): offline, Recently downloaded (always among the offline sections) shows when
+    /// it's switched on, or when no other section has anything (so Home is never empty with downloads on the phone).
+    static func offlineSections(_ sections: [HomeSection], downloadedOn: Bool,
+                                hasContent: (HomeSection) -> Bool) -> [HomeSection] {
+        guard !downloadedOn else { return sections }
+        let others = sections.filter { $0 != .downloaded && !$0.isChrome }
+        return others.contains(where: hasContent) ? sections.filter { $0 != .downloaded } : sections
+    }
+
+    /// Fix round 1 (review M4): what the quick grid's offline tiles are read again on.
+    static func quickKey(pageKey: String, plays: Int) -> String { "\(pageKey)|\(plays)" }
 
     /// Whether `section` has something to show. The greeting always does; the chips when there is more than All to
     /// pick; the quick grid when it has a tile. A section never stands in for another (round 13).

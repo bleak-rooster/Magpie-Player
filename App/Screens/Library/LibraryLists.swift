@@ -19,6 +19,8 @@ struct ArtistsListView: View {
     @State private var loadedFor: String?
     /// Round 24 (D224): the list's own search, artists only.
     @State private var search: SearchModel?
+    /// Round 28 O3 fix round 1 (design H3): offline, nothing at all is on the phone.
+    @State private var phoneEmpty = false
     private let themed = Themed()
 
     var body: some View {
@@ -37,7 +39,13 @@ struct ArtistsListView: View {
             }
         }
         // Round 28 O3 (D340): offline with nothing on the phone, today's Home copy.
-        .overlay { if model.isOffline, artists.value?.isEmpty == true { NothingDownloadedView() } }
+        // Fix round 1 (design H3): with songs on the phone, the list is empty only through "Album artists only".
+        .overlay {
+            if model.isOffline, artists.value?.isEmpty == true {
+                let empty = OfflineLists.empty(.albumArtists, phoneEmpty: phoneEmpty)
+                NothingDownloadedView(title: empty.title, detail: empty.detail)
+            }
+        }
         // Fix round 1 (M4): no field over an empty or failed list.
         .kindSearch(.artists, search, available: artists.value?.isEmpty == false)
         .task { if search == nil { search = model.kindSearchModel(.artists) } }
@@ -98,6 +106,7 @@ struct ArtistsListView: View {
             let read = model.isOffline
                 ? await OfflineLists.artists(model, albumArtistsOnly: model.preferences.layout.albumArtistsOnly)
                 : try await model.libraryArtists()
+            if model.isOffline { phoneEmpty = await OfflineLists.phoneEmpty(model) }
             let sorted = Self.sorted(read)
             sections = LetterIndex.sections(sorted, ignoringArticles: LetterIndex.navidromeArticles, name: \.name)
             artists = .loaded(sorted)
@@ -309,9 +318,8 @@ struct PlaylistsListView: View {
     @State private var createError: String?
     /// The playlists revision (round 28 O3: and the offline key) the list was read for (M1).
     @State private var loadedRevision: String?
-    /// Round 28 O3 (D345): offline, the downloaded playlists: their long press and swipes queue the songs on the phone;
-    /// a playlist only recorded (Q3) has none, as the queue can't read it.
-    @State private var downloadedIds: Set<String> = []
+    /// Round 28 O3 fix round 1 (design H3): offline, nothing at all is on the phone (the empty list says so).
+    @State private var phoneEmpty = false
     private let themed = Themed()
 
     var body: some View {
@@ -321,7 +329,7 @@ struct PlaylistsListView: View {
                     let shown = listed(playlists)
                     LetterSectionedRows(items: shown, sections: sections, id: \.id) { playlist in row(playlist) }
                     // Round 24 (D223): what All is: everything this account may see (Navidrome's own rule).
-                    if let footer = show.footer, !shown.isEmpty {
+                    if let footer = show.footer(offline: model.isOffline), !shown.isEmpty {   // round 28 O3 fix round 1
                         Section {
                             Text(footer)
                                 .font(.footnote)
@@ -346,11 +354,15 @@ struct PlaylistsListView: View {
             }
         }
         // Over the list, not a row in it, so no separators frame it (H3 M8). An empty Yours says so (D179).
-        // Round 28 O3 (D340): offline with nothing on the phone, today's Home copy.
+        // Round 28 O3 (D340; fix round 1, design H3): offline, "Nothing downloaded yet" only with nothing on the phone;
+        // otherwise what this list lacks (Yours with only others' playlists here says so too).
         .overlay {
             if let all = playlists.value, listed(all).isEmpty {
-                if model.isOffline, all.isEmpty { NothingDownloadedView() } else {
-                    ContentUnavailableView(show.emptyTitle, systemImage: "music.note.list")
+                if model.isOffline, all.isEmpty {
+                    let empty = OfflineLists.empty(.playlists, phoneEmpty: phoneEmpty)
+                    NothingDownloadedView(title: empty.title, detail: empty.detail)
+                } else {
+                    ContentUnavailableView(show.emptyTitle(offline: model.isOffline), systemImage: "music.note.list")
                 }
             }
         }
@@ -424,21 +436,8 @@ struct PlaylistsListView: View {
         AppModel.shown(all, show, user: model.session?.username ?? "", isDiscover: model.isDiscoverPlaylist)
     }
 
+    /// Round 28 O3 fix round 1 (review I3): offline too, every row's long press and swipes queue its songs on the phone.
     private func row(_ playlist: Playlist) -> some View {
-        Group {
-            if !model.isOffline || downloadedIds.contains(playlist.id) {
-                link(playlist)
-                    .collectionMenu(.playlist(playlist.id), coverArtId: playlist.coverArtId)   // R12, P4
-                    .collectionSwipeActions(.playlist(playlist.id), in: .list)   // R12
-            } else {
-                link(playlist)   // round 28 O3 (D345): nothing that would queue nothing
-            }
-        }
-        .listRowBackground(Color.clear)
-        .id(playlist.id)
-    }
-
-    private func link(_ playlist: Playlist) -> some View {
         NavigationLink(value: Route.playlist(id: playlist.id)) {
             HStack(spacing: Tokens.Spacing.m) {
                 Artwork(playlist.coverArtId, side: 56) { SleeveArt(image: $0, side: 56) }
@@ -455,6 +454,10 @@ struct PlaylistsListView: View {
             }
             .accessibilityElement(children: .combine)
         }
+        .collectionMenu(.playlist(playlist.id), coverArtId: playlist.coverArtId)   // R12, P4
+        .collectionSwipeActions(.playlist(playlist.id), in: .list)   // R12
+        .listRowBackground(Color.clear)
+        .id(playlist.id)
     }
 
     private func load() async {
@@ -464,7 +467,7 @@ struct PlaylistsListView: View {
             let sorted: [Playlist]
             if model.isOffline {
                 sorted = await OfflineLists.playlists(model)
-                downloadedIds = Set(await model.offlineCatalog.playlists().map(\.id))
+                phoneEmpty = await OfflineLists.phoneEmpty(model)
             } else {
                 sorted = try await model.libraryPlaylists()
             }
@@ -500,6 +503,22 @@ enum OfflineLists {
         guard albumArtistsOnly else { return all }
         return await Task.detached { all.filter { catalog.artistPage(id: $0.id)?.albums.isEmpty == false } }.value
     }
+
+    /// Fix round 1 (design H3): nothing at all downloaded.
+    static func phoneEmpty(_ model: AppModel) async -> Bool { await model.offlineCatalog.songs().isEmpty }
+
+    /// Fix round 1 (design H3): the lists that can be empty with songs on the phone.
+    enum Kind { case playlists, flows, albumArtists }
+
+    /// What an empty offline list says: "Nothing downloaded yet" only when nothing is; otherwise what this list lacks.
+    static func empty(_ kind: Kind, phoneEmpty: Bool) -> (title: String, detail: String?) {
+        if phoneEmpty { return (OfflinePageCopy.nothingDownloaded, OfflinePageCopy.nothingDownloadedDetail) }
+        switch kind {
+        case .playlists: return ("No playlists on this phone", "Download a playlist and it plays here without a connection.")
+        case .flows: return ("No flows on this phone", nil)
+        case .albumArtists: return ("No album artists on this phone. Turn off Album artists only to see everyone.", nil)
+        }
+    }
 }
 
 /// Round 28 O3 (D340): Library › Albums offline: the albums on the phone as the same lettered grid (A–Z bar, headers past
@@ -507,6 +526,7 @@ enum OfflineLists {
 struct OfflineAlbumsList: View {
     @Environment(AppModel.self) private var model
     @State private var albums: [Album]?
+    @State private var search: SearchModel?
     @State private var sections: [LetterIndex.Section] = []
 
     var body: some View {
@@ -528,9 +548,12 @@ struct OfflineAlbumsList: View {
         .overlay {
             if albums == nil { ProgressView() } else if albums?.isEmpty == true { NothingDownloadedView() }
         }
+        // Fix round 1 (design M6): "Search albums" offline too (it searches the phone, KindSearchField).
+        .kindSearch(.albums, search, available: albums?.isEmpty == false)
         .navigationTitle("Albums")
         .navigationBarTitleDisplayMode(.inline)
         .magpieScreen()
+        .task { if search == nil { search = model.kindSearchModel(.albums) } }
         .task(id: model.offlinePageKey) {
             let read = await OfflineLists.albums(model)
             sections = LetterIndex.sections(read, name: \.name)
@@ -546,6 +569,7 @@ struct OfflineSongsList: View {
     @State private var songs: [Song]?
     @State private var sections: [LetterIndex.Section] = []
     @State private var removing: Song?
+    @State private var search: SearchModel?
     private let themed = Themed()
 
     var body: some View {
@@ -572,6 +596,9 @@ struct OfflineSongsList: View {
         .overlay {
             if songs == nil { ProgressView() } else if songs?.isEmpty == true { NothingDownloadedView() }
         }
+        // Fix round 1 (design M6): "Search songs" offline too (it searches the phone, KindSearchField).
+        .kindSearch(.songs, search, available: songs?.isEmpty == false)
+        .task { if search == nil { search = model.kindSearchModel(.songs) } }
         .navigationTitle("Songs")
         .navigationBarTitleDisplayMode(.inline)
         .magpieScreen()

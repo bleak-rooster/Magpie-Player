@@ -47,9 +47,6 @@ struct ArtistView: View {
         var source: PageSource = .server
     }
 
-    /// Round 28 O3: the page as one load shows it.
-    typealias Shown = Page
-
     var body: some View {
         ScrollView {
             LoadableView(state: page, retry: load) { page in
@@ -117,7 +114,8 @@ struct ArtistView: View {
             .reloadArtworkMenu(page.source == .server ? page.artist.coverArtId : nil)
             Text(page.artist.name).magpieDisplay(.largeTitle).multilineTextAlignment(.center)
                 .accessibilityAddTraits(.isHeader)
-            DownloadMarkLine(model.downloadIndex.mark(artistId: page.artist.id, albums: page.albums))
+            // Fix round 1 (design H1): on the phone's page everything shown is here; no mark to say so again.
+            DownloadMarkLine(page.source.isPhone ? .none : model.downloadIndex.mark(artistId: page.artist.id, albums: page.albums))
                 .artistDownload(artistDownload, artist: page.artist)   // R4: its confirmation and status line
             // R18 + R20: an artist only in your Finds offers Keep <artist> as the page's one capsule; the Lidarr
             // status line stays visible (R20).
@@ -137,16 +135,16 @@ struct ArtistView: View {
         // Round 28 O3 (D341): the phone's page plays what's on the phone, its albums then its other songs.
         let phoneSongs = page.source.isPhone ? Self.phoneSongs(page) : []
         return VStack(alignment: .leading, spacing: Tokens.Spacing.xxl) {
-            if page.source == .phoneCopy { PhoneCopyNote() }
+            if page.source == .phoneCopy { PhoneCopyNote(retry: load) }
             VStack(spacing: Tokens.Spacing.m) {
                 header(page).padding(.horizontal, Tokens.Spacing.margin)
                 // Y7: the same ActionBar as Album and Playlist, keeping its own margins.
                 ActionBar(pairsBeforeStacking: true) {   // fix round 1 (design M4): two and one before stacking
                     PlayShuffleActions(playTitle: gathering ? "Loading…" : "Play",
                                        disabled: (page.source.isPhone ? phoneSongs.isEmpty : albums.isEmpty) || gathering) {
-                        if page.source.isPhone { model.play(phoneSongs, startAt: 0) } else { Task { await playAll(albums, shuffled: false) } }
+                        if page.source.isPhone { Self.play(page, model: model, shuffled: false) } else { Task { await playAll(albums, shuffled: false) } }
                     } shuffle: {
-                        if page.source.isPhone { model.shuffle(phoneSongs) } else { Task { await playAll(albums, shuffled: true) } }
+                        if page.source.isPhone { Self.play(page, model: model, shuffled: true) } else { Task { await playAll(albums, shuffled: true) } }
                     }
                     // Round 27 A (owner item 17, D305): Automix beside Play and Shuffle, seeded by the artist.
                     if page.source == .server, model.automixAvailable(artistId: page.artist.id, albums: page.albums) {
@@ -259,8 +257,16 @@ struct ArtistView: View {
         page.albums.sorted { ($0.year ?? 0) > ($1.year ?? 0) }.flatMap { $0.songs ?? [] } + page.songs
     }
 
-    /// Round 28 O3 (D341): "Songs on this phone": the artist's songs on albums that aren't theirs (a featured song, a
-    /// compilation track), each playing from the phone.
+    /// Round 28 O3 (D341; fix round 1, review M3): the phone's page's Play and Shuffle: what's on the phone, at once,
+    /// with nothing asked of the server.
+    static func play(_ page: Page, model: AppModel, shuffled: Bool) {
+        let songs = phoneSongs(page)
+        guard !songs.isEmpty else { return }
+        shuffled ? model.shuffle(songs) : model.play(songs, startAt: 0)
+    }
+
+    /// Round 28 O3 (D341): "Also on this phone" (fix round 1, design M8): the artist's songs on albums that aren't theirs
+    /// (a featured song, a compilation track), each playing from the phone; their menu only queues (no server items).
     private func songsOnThisPhone(_ songs: [Song]) -> some View {
         VStack(alignment: .leading, spacing: Tokens.Spacing.s) {
             Text(OfflinePageCopy.songsOnThisPhone).magpieDisplay(.title2).accessibilityAddTraits(.isHeader)
@@ -318,7 +324,7 @@ struct ArtistView: View {
             popular = model.popularSongs(artistId: artistId)
         }
         var loaded: Page?
-        await Self.load(model, artistId: artistId) { outcome in
+        await Self.load(model, artistId: artistId, onScreen: page.value?.source) { outcome in
             switch outcome {
             case .shown(let new):
                 page = .loaded(new)
@@ -364,7 +370,7 @@ struct ArtistView: View {
     /// (Task 14), or an artist the catalog grouped itself: the phone's page (O2's `artistPage`). Online: the server's; a
     /// failed read (but one cut short, D77) shows the phone's copy when it has one. The record goes into the downloads
     /// captured **before** the read (O2, security M3).
-    static func load(_ model: AppModel, artistId: String, show: (Outcome) -> Void) async {
+    static func load(_ model: AppModel, artistId: String, onScreen: PageSource? = nil, show: (Outcome) -> Void) async {
         if model.isOffline || OfflineCatalog.isLocalId(artistId) {
             show(await phonePage(model, artistId: artistId, source: .phone).map(Outcome.shown) ?? .notOnPhone)
             return
@@ -378,7 +384,8 @@ struct ArtistView: View {
             model.noteFavourite(.artist(artist.id), artist.starred)   // R7
             await model.recordArtistPage(artist, albums: albums, into: target)   // round 28 O3 (O2's D333)
         } catch {
-            if PageSource.fallsBack(after: error), let copy = await phonePage(model, artistId: artistId, source: .phoneCopy) {
+            if PageSource.fallsBack(after: error, onScreen: onScreen),
+               let copy = await phonePage(model, artistId: artistId, source: .phoneCopy) {
                 show(.shown(copy))
             } else {
                 show(.failed(error))

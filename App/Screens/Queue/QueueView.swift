@@ -3,11 +3,23 @@ import MagpieCore
 import Playback
 import SwiftUI
 
+/// Round 28 O3 fix round 1 (review M3): a hosted test's ear on the queue's rows: each row reports its song and whether it
+/// showed "Not on this phone". Nil (nothing reported) in the app.
+struct QueueRowProbe {
+    let report: (String, Bool) -> Void
+    init(_ report: @escaping (String, Bool) -> Void) { self.report = report }
+}
+
+extension EnvironmentValues {
+    @Entry var queueRowProbe: QueueRowProbe? = nil
+}
+
 /// The queue: what's playing, Shuffle and Repeat, Up Next (plays before the rest), then the rest
 /// of what's queued. Edit turns on drag handles; swipe a row to remove it; Clear drops everything
 /// after the current song.
 struct QueueView: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.queueRowProbe) private var queueRowProbe
     @State private var confirmClear = false
     private let themed = Themed()
 
@@ -94,6 +106,7 @@ struct QueueView: View {
     private func row(_ entry: QueueEntry) -> some View {
         let skipped = Self.skippedOffline(entry.song.id, offline: model.isOffline,
                                           onPhone: { model.downloads?.localFiles[$0] != nil })
+        queueRowProbe?.report(entry.song.id, skipped)   // fix round 1 (review M3): what each row showed, for tests
         return Group {
             if skipped {
                 VStack(alignment: .leading, spacing: 0) {

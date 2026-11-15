@@ -36,6 +36,15 @@ import Testing
         #expect(!noAurral.contains(.discover), "no flows offline without Aurral")
     }
 
+    /// Fix round 1 (design M7, amends D340): with favourites kept downloaded, Favourites stays offline (phone only).
+    @Test func layout_offlineFavouritesWhenKeptOnThePhone() {
+        let l = LayoutPreferences.defaultValue
+        #expect(l.visibleLibraryRows(offline: true, findsSetUp: false, lidarrConnected: false, carPlay: false,
+                                     favouritesOnPhone: true)
+                == [.playlists, .artists, .albums, .songs, .genres, .favourites, .downloads])
+        #expect(!l.visibleLibraryRows(offline: true, findsSetUp: false, lidarrConnected: false, carPlay: false).contains(.favourites))
+    }
+
     /// Home offline: the greeting, the quick grid, Recently downloaded (always), Your flows (with Aurral) and Playlists,
     /// in the owner's order and switches; nothing else.
     @Test func layout_offlineHomeSections() {

@@ -24,6 +24,7 @@ struct DownloadsView: View {
         ScrollViewReader { proxy in
         ScrollView {
             VStack(alignment: .leading, spacing: Tokens.Spacing.l) {
+                OfflineNoticeRow()   // round 28 O3 fix round 1 (design H5): at accessibility sizes, it scrolls away
                 DownloadingNowLink().padding(.horizontal, Tokens.Spacing.largeTitleMargin)   // P1, while anything downloads
                 Picker("Show", selection: $kind) {
                     ForEach(Kind.allCases) { Text($0.rawValue).tag($0) }
@@ -54,8 +55,11 @@ struct DownloadsView: View {
         // offline tries the library again (D326), online reads the phone again.
         .safeAreaInset(edge: .top, spacing: 0) { OfflineNoticeInset() }
         .refreshable {
-            if model.isOffline { await model.reconnectNow() }
-            catalog = await model.offlineCatalog
+            // Fix round 1 (review M5): in its own task, so a pull cut short never shows an error (Z2).
+            await RefreshSafety.run {
+                if model.isOffline { await model.reconnectNow() }
+                catalog = await model.offlineCatalog
+            }
         }
         .navigationTitle("Downloads")
         .magpieScreen()

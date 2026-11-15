@@ -191,7 +191,12 @@ extension AppModel {
             switch collection {
             case .album(let id): return catalog.album(id: id)?.songs ?? []
             case .artist(let id), .downloadedArtist(let id): return catalog.albums(byArtist: id).flatMap { $0.songs ?? [] }
-            case .playlist(let id), .downloadedPlaylist(let id): return catalog.songs(inPlaylist: id)
+            case .downloadedPlaylist(let id): return catalog.songs(inPlaylist: id)
+            // Round 28 O3 fix round 1 (review I3, design H4): offline, a playlist's songs on the phone wherever the phone
+            // has it: downloaded or recorded (Q3), else a flow on the phone (D335).
+            case .playlist(let id):
+                if let page = catalog.playlistPage(id: id) { return page.songs }
+                return await offlineFlowPage(id: id)?.songs ?? []
             }
         }
         switch collection {

@@ -78,16 +78,25 @@ final class OfflinePagesUITests: XCTestCase {
         let app = try launchSignedIn()
         setOfflineMode(true, app)
         libraryRoot(app)
-        XCTAssertTrue(app.staticTexts["Offline mode is on"].waitForExistence(timeout: 10), "the notice, as a top inset")
-        for row in ["playlists", "artists", "albums", "songs", "downloads"] {
+        let notice = app.staticTexts["Offline mode is on"]
+        XCTAssertTrue(notice.waitForExistence(timeout: 10), "the notice, as a top inset")
+        XCTAssertTrue(app.buttons["offline-go-online"].exists, "with its way back")
+        let rows = ["playlists", "artists", "albums", "songs", "genres", "downloads"]
+        for row in rows {
             XCTAssertTrue(app.buttons["library-\(row)"].exists, "\(row) stays offline")
         }
-        XCTAssertFalse(app.buttons["library-favourites"].exists, "Favourites needs the server")
-        XCTAssertFalse(app.buttons["library-requests"].exists)
-        // A list opens from the phone: nothing downloaded yet says so.
+        // The owner's order, under the notice.
+        let frames = rows.map { app.buttons["library-\($0)"].frame.minY }
+        XCTAssertEqual(frames, frames.sorted(), "rows in the owner's order")
+        XCTAssertLessThan(notice.frame.minY, frames[0], "the notice sits above the rows")
+        for row in ["favourites", "requests", "finds", "trending", "recommended", "discover"] {
+            XCTAssertFalse(app.buttons["library-\(row)"].exists, "\(row) needs the server (or Aurral)")
+        }
+        XCTAssertFalse(app.descendants(matching: .any)["library-recently-added"].exists, "no Recently added grid")
+        // A fresh install has nothing downloaded: a list opened offline says so, in so many words.
         app.buttons["library-albums"].tap()
-        XCTAssertTrue(app.descendants(matching: .any)["offline-empty"].waitForExistence(timeout: 10)
-                      || app.buttons["album-0"].waitForExistence(timeout: 2))
+        XCTAssertTrue(app.descendants(matching: .any)["offline-empty"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["Nothing downloaded yet"].exists)
         libraryRoot(app)
         setOfflineMode(false, app)
     }

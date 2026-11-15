@@ -20,16 +20,20 @@ struct LibraryView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Tokens.Spacing.xxl) {
+                OfflineNoticeRow()   // fix round 1 (design H5): at accessibility sizes, it scrolls away
                 rows
                 if model.showsRecentlyAddedGrid { recentlyAdded }
             }
             .padding(.vertical, Tokens.Spacing.s)
         }
-        // Round 28 O3 (O1's design M4, D329): the notice above the scroll view, never a row in it.
+        // Round 28 O3 (O1's design M4, D329): the notice above the scroll view, never a row in the list.
         .safeAreaInset(edge: .top, spacing: 0) { OfflineNoticeInset() }
         .refreshable {
             await RefreshSafety.run {   // Round 13 Z2
-                if model.isOffline { await model.reconnectNow() } else if model.showsRecentlyAddedGrid { await load() }
+                // Round 28 O3 fix round 1 (design M5): Offline mode reads the phone again (the rows are the phone's) and
+                // says so; offline by itself tries the library.
+                if await OfflineRefresh.run(model, reread: {}) { return }
+                if model.showsRecentlyAddedGrid { await load() }
             }
         }
         .magpieLargeTitle("Library")

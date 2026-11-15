@@ -280,7 +280,9 @@ extension AppModel {
                                               lidarrConnected: lidarr != nil, carPlay: carPlay,
                                               discoverSetUp: aurralSetUp,   // Y6
                                               trendingSetUp: aurralFeeds?.can.trending ?? false,   // round 14 A4
-                                              recommendedSetUp: aurralFeeds?.can.recommendations ?? false)
+                                              recommendedSetUp: aurralFeeds?.can.recommendations ?? false,
+                                              // Round 28 O3 fix round 1 (design M7): the phone's (the car's is O4's).
+                                              favouritesOnPhone: !carPlay && preferences.downloads.keepFavourites)
     }
 
     /// The Recently added grid at the bottom of the Library: its own switch, and never offline.
@@ -293,7 +295,13 @@ extension AppModel {
     }
 
     /// Library › Favourites: every starred song, album and artist (`getStarred2`), noted as favourites (R7).
+    /// Round 28 O3 fix round 1 (design M7, amends D340): offline, with favourites kept downloaded, the favourite songs on
+    /// the phone (downloads kept for being favourites), asking nothing.
     func favourites() async throws -> Starred {
+        if isOffline, preferences.downloads.keepFavourites, let downloads {   // otherwise offline refuses, as before
+            let songs = await offlineCatalog.songs().filter { downloads.reasons(for: $0.id).contains(.favourites) }
+            return Starred(songs: songs)
+        }
         let starred = try await request { try await $0.starred() }
         noteFavourites(starred)
         return starred

@@ -83,6 +83,8 @@ struct SearchContent: View {
     var body: some View {
         let sections = model.results
         List {
+            // Round 28 O3 fix round 1 (design H5): at accessibility sizes the notice is the first row and scrolls away.
+            OfflineNoticeRow().listRowBackground(Color.clear).listRowSeparator(.hidden)
             switch model.phase {
             case .idle:
                 recentSection
@@ -121,9 +123,11 @@ struct SearchContent: View {
             }
         }
         // Round 28 O3 (D326): pull to refresh offline tries the library again (as Home and Library do); online it searches
-        // again.
+        // again. Fix round 1 (design M5): in Offline mode it searches the phone again and says Offline mode is on.
         .refreshable {
-            if app.isOffline { await app.reconnectNow() } else if !model.query.isEmpty { model.update(query: model.query) }
+            let again = { if !model.query.isEmpty { model.update(query: model.query) } }
+            if await OfflineRefresh.run(app, reread: { again() }) { return }
+            again()
         }
         .navigationTitle("Search")
         .magpieScreen()

@@ -99,7 +99,7 @@ import Testing
         #expect(saved?.kind == .flow && saved?.copies?["a-lullaby"] == "m-lullaby", "its original→copy map is kept (O2)")
         #expect(model.downloadStatus(page.songs.map(\.id), reason: .playlist("pl-dw")) == .downloaded,
                 "today's mark and Remove download follow")
-        #expect(OfflinePageCopy.downloadFlowLabel == "Download this flow to your phone")
+        #expect(OfflinePageCopy.downloadFlowLabel == "Download" && OfflinePageCopy.downloadFlowHint == "Downloads this flow to this phone")
     }
 
     @Test func flow_downloadHiddenOffline() async throws {
@@ -205,5 +205,113 @@ import Testing
         #expect(byId[.playlists] == ["playlist-pl-road"], "Playlists: on the phone (recorded, Q3)")
         #expect(byId[.downloaded] == ["album-al-m-ref1"])
         #expect(byId[.quickAccess] == nil, "the server's recently played isn't asked offline")
+    }
+
+    // MARK: - Fix round 1
+
+    /// I3 / design H4: offline, a playlist's long press (Home's tiles, Library's rows) queues the songs on the phone, for a
+    /// recorded playlist and a flow too.
+    @Test func queue_recordedPlaylistAndFlowQueueThePhonesSongs() async throws {
+        let model = try await signedIn()
+        _ = try await page(model)
+        await download(model, ["m-ref1"])
+        await PlaylistView.load(model, playlistId: "pl-road", fromPhone: false) { _ in }
+        #expect(await eventually { await model.downloads!.store.records().playlists["pl-road"] != nil })
+        manualOffline(model)
+        #expect(try await model.songs(of: .playlist("pl-road")).map(\.id) == ["m-ref1"], "recorded (Q3)")
+        #expect(try await model.songs(of: .playlist("pl-dw")).map(\.id) == ["m-ref1"], "a flow on the phone")
+        await model.queue(.playlist("pl-road"), .end, shuffled: false)
+        #expect(model.player.queue.current?.song.id == "m-ref1" || model.player.queue.upcoming.contains { $0.song.id == "m-ref1" })
+    }
+
+    /// M2: a Discover playlist read through the playlist page is never recorded as an ordinary playlist.
+    @Test func records_neverAFlowAsAPlaylist() async throws {
+        let model = try await signedIn()
+        _ = try await page(model)
+        await download(model, ["m-ref1"])
+        #expect(model.isDiscoverPlaylist(id: "pl-dw"))
+        await PlaylistView.load(model, playlistId: "pl-dw", fromPhone: false) { _ in }
+        await PlaylistView.load(model, playlistId: "pl-road", fromPhone: false) { _ in }
+        #expect(await eventually { await model.downloads!.store.records().playlists["pl-road"] != nil })
+        #expect(await model.downloads!.store.records().playlists["pl-dw"] == nil)
+    }
+
+    /// M6: Library › Discover offline says how many of each flow's songs are here.
+    @Test func discover_offlineRowsCountSongsOnThePhone() async throws {
+        let model = try await signedIn()
+        _ = try await page(model)
+        await download(model, ["m-ref1"])
+        manualOffline(model)
+        let rows = await DiscoverListView.offlineRows(model)
+        #expect(rows.map(\.playlist.id) == ["pl-dw"])
+        #expect(rows.first.flatMap { OfflinePageCopy.onPhone($0.onPhone, of: $0.total) } == "1 of 3 songs on this phone")
+    }
+
+    /// M3: a flow's page whose read fails shows the phone's copy (from the saved file).
+    @Test func flow_phoneCopyWhenTheReadFails() async throws {
+        let model = try await signedIn()
+        _ = try await page(model)
+        await download(model, ["m-ref1"])
+        let copy = await DiscoverPlaylistView.phoneCopy(model, playlistId: "pl-dw", failed: true)
+        #expect(copy?.songs.map(\.id) == ["m-ref1"])
+        #expect(await DiscoverPlaylistView.phoneCopy(model, playlistId: "pl-dw", failed: false) == nil)
+    }
+
+    /// Design H3: "Nothing downloaded yet" only when nothing is; otherwise each list says what it lacks.
+    @Test func emptyLists_sayWhatTheyLack() {
+        #expect(OfflineLists.empty(.playlists, phoneEmpty: true).title == "Nothing downloaded yet")
+        #expect(OfflineLists.empty(.playlists, phoneEmpty: false).title == "No playlists on this phone")
+        #expect(OfflineLists.empty(.playlists, phoneEmpty: false).detail == "Download a playlist and it plays here without a connection.")
+        #expect(OfflineLists.empty(.flows, phoneEmpty: false).title == "No flows on this phone")
+        #expect(OfflineLists.empty(.albumArtists, phoneEmpty: false).title
+                == "No album artists on this phone. Turn off Album artists only to see everyone.")
+        #expect(PlaylistShow.all.footer(offline: true) == "Playlists with songs on this phone.")
+        #expect(PlaylistShow.all.footer(offline: false) == PlaylistShow.all.footer)
+        #expect(PlaylistShow.yours.emptyTitle(offline: true) == "None of your playlists are on this phone")
+        #expect(PlaylistShow.all.emptyTitle(offline: true) == "No playlists on this phone")
+    }
+
+    /// Design M7 (amends D340): with favourites kept downloaded, Favourites stays offline, listing the favourites on the
+    /// phone and asking nothing.
+    @Test func favourites_offlineWhenKeptDownloaded() async throws {
+        let model = try await signedIn()
+        model.updatePreferences { $0.downloads.keepFavourites = true }
+        model.download([Self.song("m-ref1")], reason: .favourites)
+        await model.downloads!.settled()
+        await download(model, ["m-ref2"])
+        manualOffline(model)
+        #expect(model.libraryRows.contains(.favourites))
+        #expect(!model.libraryRows(carPlay: true).contains(.favourites), "the car's Favourites is O4's")
+        let before = nav.state.withLock { $0.getPlaylists }
+        #expect(try await model.favourites().songs.map(\.id) == ["m-ref1"])
+        #expect(nav.state.withLock { $0.getPlaylists } == before)
+        model.updatePreferences { $0.downloads.keepFavourites = false }
+        #expect(!model.libraryRows.contains(.favourites))
+    }
+
+    /// Design M9, H5, M5, H2, M2, M3; review M4: Home, the notice, pull to refresh and the flow's Download.
+    @Test func homeNoticeRefreshAndFlowCopy() {
+        // M9: Recently downloaded follows its switch unless Home would otherwise be empty.
+        let sections: [HomeSection] = [.greeting, .quickAccess, .downloaded, .playlists]
+        #expect(HomeView.offlineSections(sections, downloadedOn: false, hasContent: { $0 == .playlists })
+                == [.greeting, .quickAccess, .playlists])
+        #expect(HomeView.offlineSections(sections, downloadedOn: false, hasContent: { $0 == .downloaded })
+                == sections, "nothing else to show: it shows")
+        #expect(HomeView.offlineSections(sections, downloadedOn: true, hasContent: { _ in true }) == sections)
+        // Review M4: the quick grid reads again as plays are noted.
+        #expect(HomeView.quickKey(pageKey: "offline|1|0", plays: 2) != HomeView.quickKey(pageKey: "offline|1|0", plays: 3))
+        // H5: at accessibility sizes the notice scrolls with the page.
+        #expect(OfflineNoticeInset.pinned(accessibility: false) && !OfflineNoticeInset.pinned(accessibility: true))
+        // M5: in Offline mode pull to refresh reads the phone again and says so; by itself it tries the library.
+        #expect(OfflineRefresh.action(.manual) == .rereadAndAnnounce)
+        #expect(OfflineRefresh.action(.automatic) == .reconnect)
+        #expect(OfflineRefresh.action(.online) == .online && OfflineRefresh.action(.suspect) == .online)
+        // H2: Aurral's own download says what it does.
+        #expect(DiscoverPagesCopy.downloadSongs == "Add these songs to your library")
+        #expect(DiscoverPagesCopy.downloadSongsSymbol == "plus.circle")
+        // M2, M3: the flow's Download.
+        #expect(OfflinePageCopy.flowAbout(12) == "About 12 songs" && OfflinePageCopy.flowAbout(1) == "About 1 song")
+        #expect(OfflinePageCopy.flowFollows == "New songs download when this flow changes")
+        #expect(OfflinePageCopy.downloadFlowHint == "Downloads this flow to this phone")
     }
 }

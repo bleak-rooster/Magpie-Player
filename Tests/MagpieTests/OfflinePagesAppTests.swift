@@ -1,10 +1,13 @@
+import DesignSystem
 import Foundation
 import MagpieCore
 import MagpieTestSupport
 import NavidromeKit
 import Playback
 import os
+import SwiftUI
 import Testing
+import UIKit
 @testable import Magpie
 
 private let ok = Data(#"{"subsonic-response":{"status":"ok","version":"1.16.1"}}"#.utf8)
@@ -49,6 +52,10 @@ private func songJSON(_ id: String, album: String = "al1", artist: String = "Ann
         let status = pageStatus
         transport.inner.stub(pathSuffix: path) { _ in
             let code = status.withLock { $0 }
+            // Fix round 1 (I1): 70 is the library's own "not found" (a Subsonic error in a 200), an answer, not silence.
+            if code == 70 {
+                return MockTransport.Response(status: 200, body: Data(#"{"subsonic-response":{"status":"failed","version":"1.16.1","error":{"code":70,"message":"Not found"}}}"#.utf8))
+            }
             return MockTransport.Response(status: code, body: code == 200 ? data : Data("<html>Bad gateway</html>".utf8))
         }
     }
@@ -94,21 +101,22 @@ private func songJSON(_ id: String, album: String = "al1", artist: String = "Ann
         #expect(await eventually { !model.isOffline })
     }
 
-    func album(_ model: AppModel, _ id: String = "al1") async -> AlbumView.Outcome? {
+    func album(_ model: AppModel, _ id: String = "al1", onScreen: PageSource? = nil) async -> AlbumView.Outcome? {
         var result: AlbumView.Outcome?
-        await AlbumView.load(model, albumId: id) { result = $0 }
+        await AlbumView.load(model, albumId: id, onScreen: onScreen) { result = $0 }
         return result
     }
 
-    func artist(_ model: AppModel, _ id: String) async -> ArtistView.Outcome? {
+    func artist(_ model: AppModel, _ id: String, onScreen: PageSource? = nil) async -> ArtistView.Outcome? {
         var result: ArtistView.Outcome?
-        await ArtistView.load(model, artistId: id) { result = $0 }
+        await ArtistView.load(model, artistId: id, onScreen: onScreen) { result = $0 }
         return result
     }
 
-    func playlist(_ model: AppModel, _ id: String = "p1", fromPhone: Bool = false) async -> PlaylistView.Outcome? {
+    func playlist(_ model: AppModel, _ id: String = "p1", fromPhone: Bool = false,
+                  onScreen: PageSource? = nil) async -> PlaylistView.Outcome? {
         var result: PlaylistView.Outcome?
-        await PlaylistView.load(model, playlistId: id, fromPhone: fromPhone) { result = $0 }
+        await PlaylistView.load(model, playlistId: id, fromPhone: fromPhone, onScreen: onScreen) { result = $0 }
         return result
     }
 
@@ -181,7 +189,7 @@ private func songJSON(_ id: String, album: String = "al1", artist: String = "Ann
         guard case .shown(let page)? = await artist(model, "ar-ann") else { Issue.record("no track artist page"); return }
         #expect(page.albums.isEmpty, "Ann isn't the album artist")
         #expect(page.songs.map(\.id) == ["s1"])
-        #expect(OfflinePageCopy.songsOnThisPhone == "Songs on this phone")
+        #expect(OfflinePageCopy.songsOnThisPhone == "Also on this phone")   // fix round 1 (design M8)
         // Play plays what's on the phone, asking nothing.
         let sent = transport.inner.requests.count
         #expect(ArtistView.phoneSongs(page).map(\.id) == ["s1"])
@@ -298,5 +306,144 @@ private func songJSON(_ id: String, album: String = "al1", artist: String = "Ann
         #expect(LyricsContent.emptyTitle(offline: true) == "You're offline", "none kept: D313's line")
         #expect(LyricsContent.reloadKey(songId: "s1", offline: true) != LyricsContent.reloadKey(songId: "s1", offline: false),
                 "the pane reads again when Magpie goes offline or comes back")
+    }
+
+    // MARK: - Fix round 1
+
+    /// I1: only silence (no answer, a proxy or portal page, Offline mode) falls back; the library's own answer — a Subsonic
+    /// error such as 70 (gone), or a refused sign-in — keeps today's error.
+    @Test func fallback_libraryAnswerKeepsTheError() async throws {
+        let model = try await signedIn()
+        await download(model, [Self.song("s1", track: 1)])
+        _ = await album(model)
+        #expect(await eventually { await model.downloads!.store.records().albums["al1"] != nil })
+        pageStatus.withLock { $0 = 70 }
+        guard case .failed? = await album(model) else { Issue.record("a Subsonic error must not show the phone's copy"); return }
+        #expect(!PageSource.fallsBack(after: NavidromeError.api(code: 70, message: "Not found")))
+        #expect(!PageSource.fallsBack(after: NavidromeError.badCredentials))
+        #expect(!PageSource.fallsBack(after: NavidromeError.http(status: 401)))
+        #expect(PageSource.fallsBack(after: URLError(.cannotConnectToHost)))
+        #expect(PageSource.fallsBack(after: NavidromeError.http(status: 503)))
+        #expect(PageSource.fallsBack(after: NavidromeError.unexpectedResponse))
+        #expect(PageSource.fallsBack(after: NavidromeError.http(status: 302)), "a refused redirect")
+        #expect(PageSource.fallsBack(after: AppModel.forcedOfflineError))
+    }
+
+    /// I2: a server page on screen stays on a failed read (Z2's quiet failure); the phone's copy shows only over nothing,
+    /// or over what already came from the phone.
+    @Test func fallback_serverPageOnScreenStays() async throws {
+        let model = try await signedIn()
+        await download(model, [Self.song("s1", track: 1)])
+        guard case .shown(let server)? = await album(model) else { Issue.record("no album"); return }
+        #expect(await eventually { await model.downloads!.store.records().albums["al1"] != nil })
+        pageStatus.withLock { $0 = 503 }
+        guard case .failed(let error)? = await album(model, onScreen: .server) else {
+            Issue.record("a server page on screen must not be swapped for the phone's copy"); return
+        }
+        let kept = Loadable<AlbumView.Shown>.loaded(server).failing(error)
+        #expect(kept.value?.source == .server && kept.value?.album.songs?.count == 3, "the server's page stays")
+        guard case .shown(let copy)? = await album(model, onScreen: .phoneCopy) else { Issue.record("no copy"); return }
+        #expect(copy.source == .phoneCopy)
+        guard case .failed? = await artist(model, "va", onScreen: .server) else { Issue.record("artist swapped"); return }
+        guard case .failed? = await playlist(model, onScreen: .server) else { Issue.record("playlist swapped"); return }
+    }
+
+    /// M3: the artist page's copy from the phone when its read fails.
+    @Test func fallback_artistShowsThePhonesCopy() async throws {
+        let model = try await signedIn()
+        await download(model, [Self.song("s1", track: 1)])
+        _ = await album(model)
+        _ = await artist(model, "va")
+        #expect(await eventually { await model.downloads!.store.records().artists["va"] != nil })
+        pageStatus.withLock { $0 = 503 }
+        guard case .shown(let copy)? = await artist(model, "va") else { Issue.record("no phone copy"); return }
+        #expect(copy.source == .phoneCopy && copy.albums.map(\.id) == ["al1"])
+    }
+
+    /// M1: a download started on the album page records it into the downloads the page loaded with, never another
+    /// account's.
+    @Test func album_downloadStartRecordsIntoTheLoadTimeStore() async throws {
+        let model = try await signedIn()
+        guard case .shown(let shown)? = await album(model) else { Issue.record("no album"); return }
+        #expect(shown.target === model.downloads)
+        model.signOut()
+        try await model.signIn(urls: [home], username: "jordan", password: "pw-o3")
+        await model.downloads!.settled()
+        await download(model, [Self.song("s1", track: 1)])
+        await AlbumView.recordStartedDownload(shown, model: model)
+        #expect(await model.downloads!.store.records().albums["al1"] == nil, "the old page's store is gone")
+    }
+
+    /// M3: a page read that answers after a sign-out and a new sign-in records nothing in the new account's store.
+    @Test func records_goIntoTheStoreCapturedBeforeTheRead() async throws {
+        let model = try await signedIn()
+        let gate = D1Gate()
+        let reached = OSAllocatedUnfairLock(initialState: false)
+        let armed = OSAllocatedUnfairLock(initialState: true)
+        transport.setHook { request in
+            guard request.url?.path.hasSuffix("/rest/getAlbum") == true, armed.withLock({ $0 }) else { return }
+            reached.withLock { $0 = true }
+            await gate.wait()
+        }
+        let load = Task { await self.album(model) }
+        #expect(await eventually { reached.withLock { $0 } })
+        armed.withLock { $0 = false }
+        model.signOut()
+        try await model.signIn(urls: [home], username: "jordan", password: "pw-o3")
+        await model.downloads!.settled()
+        await download(model, [Self.song("s1", track: 1)])
+        gate.open()
+        _ = await load.value
+        transport.setHook(nil)
+        #expect(await model.downloads!.store.records().albums["al1"] == nil)
+    }
+
+    /// M3: the artist page's Play and Shuffle on the phone's page play what's here and ask the server nothing.
+    @Test func artist_playFromThePhoneAsksNothing() async throws {
+        let model = try await signedIn()
+        await download(model, [Self.song("s1", track: 1)])
+        _ = await album(model)
+        manualOffline(model)
+        guard case .shown(let page)? = await artist(model, "ar-ann") else { Issue.record("no page"); return }
+        let sent = transport.inner.requests.count
+        ArtistView.play(page, model: model, shuffled: false)
+        #expect(model.player.queue.current?.song.id == "s1")
+        ArtistView.play(page, model: model, shuffled: true)
+        #expect(transport.inner.requests.count == sent, "nothing asked of the server")
+    }
+
+    /// M3: the queue view itself labels the entries not on the phone offline, and only those.
+    @Test func queue_viewLabelsSkippedRows() async throws {
+        let model = try await signedIn()
+        await download(model, [Self.song("s2"), Self.song("s4")])
+        model.play([Self.song("s1"), Self.song("s2"), Self.song("s3"), Self.song("s4")], startAt: 0)
+        manualOffline(model)   // Offline mode moves on from s1 (not here) to s2; s3 and s4 are up next
+        let labelled = OSAllocatedUnfairLock(initialState: [String: Bool]())
+        let scene = try #require(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let window = UIWindow(windowScene: scene)
+        window.frame = CGRect(x: 0, y: 0, width: 402, height: 2000)
+        window.rootViewController = UIHostingController(rootView: QueueView()
+            .environment(model)
+            .magpieTheme(Theme())
+            .environment(\.queueRowProbe, QueueRowProbe { id, skipped in labelled.withLock { $0[id] = skipped } }))
+        window.isHidden = false
+        let drawn = await eventually { labelled.withLock { $0.keys.count } >= 2 }
+        #expect(drawn, "queue \(model.player.queue.current?.song.id ?? "-") \(model.player.queue.upcoming.map(\.song.id)) rows \(labelled.withLock { $0 })")
+        #expect(labelled.withLock { $0 } == ["s3": true, "s4": false], "\(labelled.withLock { $0 })")
+        window.isHidden = true
+    }
+
+    /// Design H1, M8, M10: one answer per page; the artist's other songs are "Also on this phone"; the phone's pages' row
+    /// menus hold only what works without the server.
+    @Test func phonePages_oneAnswerAndOfflineMenus() {
+        #expect(!OfflinePageCopy.showsMark(.phone, onPhone: 1, total: 3), "the count line says it")
+        #expect(!OfflinePageCopy.showsMark(.phone, onPhone: 2, total: nil))
+        #expect(OfflinePageCopy.showsMark(.phone, onPhone: 3, total: 3), "all here: the mark says Downloaded")
+        #expect(OfflinePageCopy.showsMark(.server, onPhone: 1, total: 3))
+        #expect(OfflinePageCopy.songsOnThisPhone == "Also on this phone")
+        #expect(OfflinePageCopy.serverRowMenus(.server, offline: false))
+        #expect(!OfflinePageCopy.serverRowMenus(.phoneCopy, offline: false), "the phone's copy: like offline")
+        #expect(!OfflinePageCopy.serverRowMenus(.phone, offline: true))
+        #expect(OfflinePageCopy.tryAgain == "Try again")
     }
 }
