@@ -225,6 +225,61 @@ final class CarOfflineRoutes: HTTPTransport, @unchecked Sendable {
         gate.open()
     }
 
+    /// Fix round 2 (N2): only the server lists open when the car went offline go when the wait ends; a list opened
+    /// during the wait (Library › Albums at second 10) is still there at second 15. With none of them left, no pop.
+    @Test func car_listsOpenedDuringTheWaitStay() async throws {
+        let model = try await signedIn()
+        await download(model, [Self.song("m-ref1")])
+        let clock = ManualReachabilityClock()
+        model.useReachabilityClock(clock)
+        let gate = Gate()
+        let (car, controller) = await car(model, popWait: { await gate.wait() })
+        defer { controller.disconnect() }
+        routes.down = true
+        model.reachabilityEvent(.pathChanged(connected: false))
+        #expect(await model.advanceReachability(clock, to: 3))
+        #expect(await eventually { gate.count == 1 })
+        controller.open(.albums)   // second 10: Library › Albums (the phone's), opened offline
+        let albums = try #require(car.topList)
+        #expect(car.templates.count == 2)
+        gate.open()                         // second 15
+        for _ in 0..<20 { await Task.yield() }
+        #expect(car.templates.count == 2 && car.topList === albums, "a list opened during the wait stays")
+
+        // A server list open when it went offline goes; one opened after it, above it, goes with it.
+        car.pop(to: car.tabs!, animated: false, completion: nil)
+        routes.down = false
+        model.reachabilityEvent(.pathChanged(connected: true))
+        #expect(await model.advanceReachability(clock, to: 10))
+        #expect(await eventually(10) { !model.isOffline })
+        controller.open(.album(id: "al-server", title: "On the server"))
+        let server = try #require(car.topList)
+        routes.down = true
+        model.reachabilityEvent(.pathChanged(connected: false))
+        #expect(await model.advanceReachability(clock, to: 13))
+        #expect(await eventually { gate.count == 1 })
+        gate.open()
+        #expect(await eventually { !car.templates.contains { $0 === server } }, "the server album open at the switch goes")
+    }
+
+    /// Fix round 2 (m1): the tabs going (another account, the phone locked) take a waiting pop with them.
+    @Test func car_resetCancelsAWaitingPop() async throws {
+        let model = try await signedIn()
+        let clock = ManualReachabilityClock()
+        model.useReachabilityClock(clock)
+        let gate = Gate()
+        let (_, controller) = await car(model, popWait: { await gate.wait() })
+        defer { controller.disconnect() }
+        routes.down = true
+        model.reachabilityEvent(.pathChanged(connected: false))
+        #expect(await model.advanceReachability(clock, to: 3))
+        #expect(await eventually { gate.count == 1 })
+        let waiting = try #require(controller.offlinePopTask)
+        controller.setAvailability(.ready(account: "two"))
+        #expect(waiting.isCancelled && controller.offlinePopTask == nil)
+        gate.open()
+    }
+
     /// Back online before the 15 s are up: nothing moves.
     @Test func car_backOnlineWithinTheWaitDoesntPop() async throws {
         let model = try await signedIn()

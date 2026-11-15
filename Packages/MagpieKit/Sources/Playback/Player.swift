@@ -208,6 +208,7 @@ public final class Player {
         if isPlaying {
             engine.pause()
             isPlaying = false
+            clearStall()   // Round 28 O4 fix round 2 (N1): a pause ends the offline stall's wait
         } else {
             resume()
         }
@@ -361,6 +362,7 @@ public final class Player {
     public func seek(_ t: TimeInterval) {
         guard t.isFinite else { return }   // NaN or infinity would trap where the position becomes whole seconds
         hasEnded = false
+        clearStall()   // Round 28 O4 fix round 2 (m3): a seek ends the offline stall's wait
         restartedAt = nil   // R24 G (D235): a seek after a restart is followed at once
         // Round 27 P (D281): a converted stream has no byte ranges to seek in (D42, D45); where the server starts a
         // conversion part-way, it is asked for from the target instead. Paused stays paused.
@@ -866,7 +868,6 @@ public final class Player {
         forgetPickUp()
     }
 
-    /// Round 27 P (D276, D278): a new current entry: no pick-up, hint or stall count carries over from the last one.
     /// Round 28 O4 fix round 1 (owner, 2026-11-15; design H1, D349): offline (no server to reach), the current stream
     /// stalled: a tunnel's silence. It gets `offlineStallGrace` to start again (a tick past where it stopped); if it
     /// doesn't, it counts as failed: the next song on the phone plays, or the player waits on it (`holdUnplayable`).
@@ -896,7 +897,8 @@ public final class Player {
         guard generation == stallGeneration, let stall = stalledAt, let current = queue.current,
               current.id == stall.entryId else { return }
         clearStall()
-        guard !canReachServer() else { return }
+        // Fix round 2 (N1): paused meanwhile (or back online), nothing starts.
+        guard isPlaying, !canReachServer() else { return }
         Log.logger("playback").info("an offline stall outlasted its grace: moving on")
         if isPlayable(current.song) {
             stopOnFailure(current, message: unplayableMessage)
@@ -905,6 +907,7 @@ public final class Player {
         }
     }
 
+    /// Round 27 P (D276, D278): a new current entry: no pick-up, hint or stall count carries over from the last one.
     private func forgetPickUp() {
         clearStall()
         reconnectingSongId = nil

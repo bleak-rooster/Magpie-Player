@@ -191,13 +191,16 @@ extension CarPlayController {
     }
 
     /// Design H2: offline by itself, the pop waits `offlinePopWait` (15 s), called off if the library answers sooner.
+    /// Fix round 2 (N2): only the server lists on screen when the car went offline go then (a list opened during the
+    /// wait was opened offline, from the phone, and stays); with none of them left, nothing is popped.
     func popServerListsAfterTheWait() {
         offlinePopTask?.cancel()
         let wait = offlinePopWait
+        let atTheSwitch = Set(interface.templates.filter(isServerList).map(ObjectIdentifier.init))
         offlinePopTask = Task { [weak self] in
             await wait()
             guard !Task.isCancelled, let self, self.library.isOffline, self.tabBar != nil else { return }
-            self.popServerLists()
+            self.popServerLists(onlyFrom: atTheSwitch)
         }
     }
 
@@ -205,13 +208,17 @@ extension CarPlayController {
     /// play); the phone's own lists below it stay (fix round 1, design H2), and so does the chosen tab. Now Playing, if
     /// it was above, is put back on top. The tabs' first lists are read again now from what's on the phone. Only on the
     /// way to offline: coming back online leaves the car where it is.
-    func popServerLists() {
+    /// `onlyFrom`: the lists that may be popped from (fix round 2, N2); nil: any server list.
+    func popServerLists(onlyFrom: Set<ObjectIdentifier>? = nil) {
         offlinePopTask?.cancel()
         offlinePopTask = nil
         guard tabBar != nil else { return }
         let templates = interface.templates
         let nowPlaying = CPNowPlayingTemplate.shared
-        if let cut = templates.indices.dropFirst().first(where: { isServerList(templates[$0]) }) {
+        let popsFrom: (CPTemplate) -> Bool = { template in
+            onlyFrom.map { $0.contains(ObjectIdentifier(template)) } ?? self.isServerList(template)
+        }
+        if let cut = templates.indices.dropFirst().first(where: { popsFrom(templates[$0]) }) {
             let keep = templates[cut - 1]
             let popped = templates[cut...]
             let putBack = popped.contains { $0 === nowPlaying }

@@ -462,6 +462,8 @@ public final class CarPlayController: NSObject {
     }
 
     func resetBindings() {
+        offlinePopTask?.cancel()   // Round 28 O4 fix round 2 (m1): a pop waiting for these tabs goes with them
+        offlinePopTask = nil
         // Z3 review I1: the layout watch goes with the tabs, so it can never bring them back over a state screen.
         if let old = layoutWatch {
             old.cancel()

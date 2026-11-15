@@ -147,6 +147,38 @@ import Testing
         #expect(!r.player.isHeldUnplayable && r.player.isPlaying && r.currentId == "s1")
     }
 
+    /// Fix round 2 (N1): paused during the grace, nothing starts when it runs out: no play, nothing new loaded.
+    @Test func playback_pauseDuringTheStallGraceNeverStartsMusic() async {
+        let sleeper = Sleeper()
+        let r = rig(local: ["s3"], sleeper: sleeper)
+        r.player.play(songs(["s1", "s2", "s3"]), startAt: 0)
+        r.goOffline(manual: false)
+        r.player.handle(.stalled)
+        #expect(await settle { sleeper.count == 1 })
+        r.player.toggle()   // pause (the remote pause command does the same)
+        #expect(!r.player.isPlaying && !r.player.isStalled, "pausing ends the stall")
+        let items = r.engine.items.map(\.0)
+        sleeper.releaseAll()
+        for _ in 0..<50 { await Task.yield() }
+        #expect(!r.player.isPlaying && !r.engine.wantsToPlay, "no play")
+        #expect(r.engine.items.map(\.0) == items && r.currentId == "s1", "nothing new loaded")
+    }
+
+    /// Fix round 2 (m3): a seek during an offline stall ends it; the grace running out then does nothing.
+    @Test func playback_seekDuringTheStallClearsIt() async {
+        let sleeper = Sleeper()
+        let r = rig(local: ["s3"], sleeper: sleeper)
+        r.player.play(songs(["s1", "s2", "s3"]), startAt: 0)
+        r.goOffline(manual: false)
+        r.player.handle(.stalled)
+        #expect(await settle { sleeper.count == 1 })
+        r.player.seek(30)
+        #expect(!r.player.isStalled)
+        sleeper.releaseAll()
+        for _ in 0..<50 { await Task.yield() }
+        #expect(r.currentId == "s1" && r.player.isPlaying, "the same song, where it was sought")
+    }
+
     /// Online a stall is today's (D282): no grace, nothing moves on.
     @Test func playback_onlineStallHasNoGrace() async {
         let sleeper = Sleeper()
