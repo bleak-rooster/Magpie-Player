@@ -897,7 +897,7 @@ final class DownloadManager {
             switch try? await write(record) {
             case .written?: changed = true; recorded(record)
             case .unchanged?: recorded(record)
-            case .noDownload?: if record.songs.contains(where: { isQueued($0.id) }) { park(record) }
+            case .noDownload?: if isQueued(record) { park(record) }
             case nil: break   // the store can't be written yet: the next read asks again
             }
         }
@@ -909,6 +909,16 @@ final class DownloadManager {
 
     /// Whether a manual download of `songId` is queued, running or waiting.
     func isQueued(_ songId: String) -> Bool { jobs.contains { $0.songId == songId && $0.isManual } }
+
+    /// Whether a download that would make `record` recordable is under way: one of its songs, or for an artist one of
+    /// their albums or their "Download all songs".
+    private func isQueued(_ record: PageRecord) -> Bool {
+        guard case .artist(let r) = record else { return record.songs.contains { isQueued($0.id) } }
+        let albums = Set(r.albumIds)
+        return jobs.contains { job in
+            job.kind == .download(.artist(r.id)) || job.metadata.albumId.map(albums.contains) == true
+        }
+    }
 
     func recordsChanged() { recordsRevision &+= 1 }
 
@@ -940,7 +950,7 @@ final class DownloadManager {
                 recorded(record)
                 parkedRecords.removeAll { $0.key == record.key }
             case .noDownload?:
-                if !record.songs.contains(where: { isQueued($0.id) }) { parkedRecords.removeAll { $0.key == record.key } }
+                if !isQueued(record) { parkedRecords.removeAll { $0.key == record.key } }
             case nil:
                 break
             }

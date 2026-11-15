@@ -125,6 +125,16 @@ private let extensionsJSON = Data(#"""
         #expect(catalog.albumPage(id: "al1")?.total == 2)
     }
 
+    /// An artist's "Download all songs" started from their page records the page once a song lands.
+    @Test func records_artistWrittenWhenTheirDownloadStartsFromThePage() async throws {
+        let model = try await signedIn()
+        let songs = (1...2).map { Self.song("s\($0)", artistId: "va") }
+        model.download(songs, reason: .artist("va"), coverArtId: "al-al1")
+        await model.recordArtistPage(Artist(id: "va", name: "Various", albumCount: 1), albums: [Self.album()])
+        await model.downloads!.settled()
+        #expect(await eventually { await self.records(model).artists["va"]?.albumIds == ["al1"] })
+    }
+
     /// Q3: a playlist not downloaded but holding a download is recorded and listed offline with only that song.
     @Test func records_playlistHoldingADownloadListedOffline() async throws {
         let model = try await signedIn()
