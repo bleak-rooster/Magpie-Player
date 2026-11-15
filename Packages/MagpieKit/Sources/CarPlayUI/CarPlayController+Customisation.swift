@@ -113,13 +113,22 @@ extension CarPlayController {
             for await layout in layouts where layout != last {
                 guard let self, !Task.isCancelled else { return }
                 let change = CPLayoutChange(from: last, to: layout)
+                let wentOffline = !last.offline && layout.offline, cameOnline = last.offline && !layout.offline
                 last = layout
+                if wentOffline {   // Round 28 O4 (D347): back to each tab's first list (and this watch with them)
+                    guard self.tabBar != nil else { return }
+                    self.goToFirstLists()
+                    return
+                }
                 if change.rebuildsTabs {   // round 13: a new third tab; the tabs are built again (and this watch with them)
                     guard self.tabBar != nil else { return }   // Z3 review I1: only while the tabs are showing
                     self.resetBindings()
                     self.showTabs()
                     return
                 }
+                // Round 28 O4 (D347): back online the car stays where it is; the third tab reads the library again the
+                // next time it is chosen (its list was the phone's).
+                if cameOnline { self.thirdRoot?.isPlaceholder = true }
                 if change.reloadsHome { self.loadCustomHome() }
                 if change.redrawsLibrary, let libraryRoot = self.libraryRoot {
                     let rows = CarPlayRows.libraryRoot(layout.library)
@@ -129,6 +138,33 @@ extension CarPlayController {
         }
         layoutWatch = task
         watches.append(task)
+    }
+
+    // MARK: - Round 28 O4: going offline (owner, 2026-11-15; D347, D348)
+
+    /// The car went offline: a list pushed over the tabs (a server album, say) would be rows that can't play, so the
+    /// tabs are built again from what's on the phone and each is back at its first list, the one chosen still chosen.
+    /// Now Playing, if it was open, is put back on top. Only on the way to offline (`watchLayout`): coming back online
+    /// leaves the car where it is, and a list on screen keeps its shape until it is off screen (`apply`).
+    func goToFirstLists() {
+        let nowPlaying = CPNowPlayingTemplate.shared
+        let keepsNowPlaying = interface.templates.contains { $0 === nowPlaying }
+        let selected = tabBar.flatMap { tabs in
+            tabs.selectedTemplate.flatMap { chosen in tabs.templates.firstIndex { $0 === chosen } }
+        }
+        resetBindings()
+        showTabs()
+        if let selected, let tabs = tabBar, selected > 0, tabs.templates.indices.contains(selected) {
+            tabs.selectTemplate(at: selected)
+        }
+        if keepsNowPlaying { interface.pushTemplate(nowPlaying, animated: false, completion: nil) }
+    }
+
+    /// D348: offline, an empty list (Search's results aside, which say nothing matched) reads "Nothing downloaded yet".
+    func offlineCopy(_ sections: [CPSectionModel], for binding: ListBinding) -> [CPSectionModel] {
+        guard library.isOffline else { return sections }
+        if case .searchResults? = binding.destination { return sections }
+        return CarPlayRows.offlineEmpty(sections)
     }
 
     private static func layout(of library: any CarPlayLibrary) -> CPLayout {
@@ -161,7 +197,9 @@ extension CarPlayController {
         case .downloadedAlbum(let id, _):
             return {
                 guard let album = await library.downloadedAlbum(id: id) else { return { _ in CarPlayRows.state(.empty) } }
-                return { CarPlayRows.downloadedAlbum(album, playingId: $0) }
+                // Round 28 O4 (D347): `songCount` is the album's, `songs` those on the phone.
+                return { CarPlayRows.onPhone(CarPlayRows.downloadedAlbum(album, playingId: $0),
+                                             songs: album.songs?.count ?? 0, total: album.songCount) }
             }
         case .downloadedArtist(let id, _):
             let albumsOpen = CPNavigator.allowsPush(atDepth: browseDepth)   // fix round 1 (I2)
@@ -172,7 +210,7 @@ extension CarPlayController {
         case .downloadedPlaylist(let id, _):
             return {
                 guard let page = await library.downloadedPlaylist(id: id) else { return { _ in CarPlayRows.state(.empty) } }
-                return { CarPlayRows.playlist(page.0, songs: page.1, playingId: $0) }
+                return { CarPlayRows.playlist(page.0, songs: page.1, playingId: $0, onPhone: true) }   // D347
             }
         case .madeForYou(let id, _):
             return {

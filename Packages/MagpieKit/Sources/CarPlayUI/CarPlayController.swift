@@ -275,11 +275,16 @@ public final class CarPlayController: NSObject {
         let library = library
         switch destination {
         case .album(let id, _):
-            return { let a = try await library.album(id: id); return { CarPlayRows.album(a, playingId: $0) } }
+            return {
+                let a = try await library.album(id: id)
+                let onPhone = library.isOffline   // Round 28 O4 (D347): offline, "<n> of <m> on this iPhone"
+                return { CarPlayRows.album(a, playingId: $0, onPhone: onPhone) }
+            }
         case .playlist(let id, _):
             return {
                 let (p, songs) = try await library.playlist(id: id)
-                return { CarPlayRows.playlist(p, songs: songs, playingId: $0) }
+                let onPhone = library.isOffline   // Round 28 O4 (D347)
+                return { CarPlayRows.playlist(p, songs: songs, playingId: $0, onPhone: onPhone) }
             }
         case .artist(let id, _):
             let albumsOpen = CPNavigator.allowsPush(atDepth: browseDepth)   // I2: the album page fits below this one
@@ -488,7 +493,8 @@ public final class CarPlayController: NSObject {
         binding.generation += 1
         let generation = binding.generation
         let playing = player.queue.current?.song.id
-        let sections = await Task.detached(priority: .userInitiated) { content(playing) }.value
+        let built = await Task.detached(priority: .userInitiated) { content(playing) }.value
+        let sections = offlineCopy(built, for: binding)   // Round 28 O4 (D348): "Nothing downloaded yet"
         guard bindings[ObjectIdentifier(binding.template)] === binding, binding.generation == generation else { return }
         apply(sections, to: binding, placeholder: CarPlayRows.isPlaceholder(sections))
     }
