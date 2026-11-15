@@ -23,6 +23,8 @@ final class DownloadManager {
     static let coverSize = 600
     /// Fix round 1 (security L1): the biggest cover file kept.
     static let maxCoverBytes = 5 * 1024 * 1024
+    /// Fix round 2 (SN6): the most cover fetches out at once.
+    static let maxCoverFetches = 4
     static let pendingName = "pending.json"
 
     /// The response was not the kind of file asked for (an error page or a Subsonic error body).
@@ -133,6 +135,11 @@ final class DownloadManager {
     /// keeps them).
     @ObservationIgnored var pendingArtistCovers: [String] = []   // (+Removal)
     @ObservationIgnored var coversInFlight: Set<String> = []   // (+Removal)
+    /// Fix round 2 (SN6): covers waiting to be fetched, how many fetches run (at most `maxCoverFetches`), and the epoch
+    /// a fetch belongs to (Remove all and sign-out start a new one).
+    @ObservationIgnored var coverQueue: [(id: String, isArtist: Bool)] = []
+    @ObservationIgnored var coversRunning = 0
+    @ObservationIgnored var coverEpoch = 0
     /// Round 28 O2 (D334): an artist picture's address at 300 px (the app sets it; nil: none fetched).
     @ObservationIgnored var artistCoverURL: @MainActor (String) -> URL? = { _ in nil }
     /// Round 28 O2 (D331): bumped when page records (or the songs' snapshots) change, so offline pages reload.
@@ -471,9 +478,7 @@ final class DownloadManager {
         jobs = []
         stoppedByFull = []
         failed = []
-        pendingCovers = []
-        pendingArtistCovers = []   // Round 28 O2
-        coversInFlight = []   // fix round 1 (security L2)
+        dropCoverFetches()   // Round 28 O2 (fix rounds 1 and 2: security L2, SN6)
         parkedRecords = []
         deferredRemovals = []
         deferredPlaylists = []
@@ -821,27 +826,50 @@ final class DownloadManager {
     /// (`manualAllowed`); recorded artists' pictures at 300 px (D334).
     func fetchCovers() {
         let prefs = preferences().normalised()
-        guard isStarted, !pendingCovers.isEmpty || !pendingArtistCovers.isEmpty, manualAllowed(prefs), !isHeld else { return }
-        let ids = pendingCovers.map { ($0, false) } + pendingArtistCovers.map { ($0, true) }
+        guard isStarted, !pendingCovers.isEmpty || !pendingArtistCovers.isEmpty || !coverQueue.isEmpty,
+              manualAllowed(prefs), !isHeld else { return }
+        // Fix round 2 (SN6): queued, at most `maxCoverFetches` at a time.
+        var queued = Set(coverQueue.map(\.id)).union(coversInFlight)
+        for id in pendingCovers where queued.insert(id).inserted { coverQueue.append((id, false)) }
+        for id in pendingArtistCovers where queued.insert(id).inserted { coverQueue.append((id, true)) }
         pendingCovers = []
         pendingArtistCovers = []
-        for (id, isArtist) in ids {
+        pumpCovers()
+    }
+
+    /// Starts queued cover fetches while fewer than `maxCoverFetches` run and manual downloads may use the network.
+    /// Fix round 2 (SN6): each fetch belongs to the current `coverEpoch`; Remove all (or sign-out) starts a new one, and
+    /// a fetch of an earlier one saves nothing.
+    private func pumpCovers() {
+        let prefs = preferences().normalised()
+        while coversRunning < Self.maxCoverFetches, !coverQueue.isEmpty, manualAllowed(prefs), !isHeld {
+            let (id, isArtist) = coverQueue.removeFirst()
             guard let url = isArtist ? artistCoverURL(id) : coverArtURL(id) else { continue }
             coversInFlight.insert(id)
+            coversRunning += 1
+            let epoch = coverEpoch
             track { [weak self, store, fetcher] gen in
-                defer { if self?.isLive(gen) == true { self?.coversInFlight.remove(id) } }
+                defer {
+                    if let self, self.isLive(gen), self.coverEpoch == epoch {
+                        self.coversInFlight.remove(id)
+                        self.coversRunning -= 1
+                        self.pumpCovers()
+                    }
+                }
                 guard await store.coverURL(coverArtId: id) == nil else { return }
                 do {
                     let fetched = try await fetcher.fetch(url, allowsCellular: prefs.overMobileData)
                     defer { try? FileManager.default.removeItem(at: fetched.file) }
-                    guard self?.isLive(gen) == true else { return }
+                    guard self?.isLive(gen) == true, self?.coverEpoch == epoch else { return }
                     guard Self.isImage(fetched.mimeType) else { throw DownloadError.unexpectedContent }
                     // Fix round 1 (security L1): a "cover" over 5 MB is refused, sized before it is read.
                     let size = (try? fetched.file.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? Int.max
                     guard size <= Self.maxCoverBytes else { throw DownloadError.unexpectedContent }
-                    try await store.saveCover(Data(contentsOf: fetched.file), coverArtId: id)
+                    let data = try Data(contentsOf: fetched.file)
+                    guard self?.isLive(gen) == true, self?.coverEpoch == epoch else { return }   // SN6: still wanted
+                    try await store.saveCover(data, coverArtId: id)
                 } catch AudioStoreError.notReady {
-                    if self?.isLive(gen) == true, self?.pendingCovers.contains(id) == false,
+                    if self?.isLive(gen) == true, self?.coverEpoch == epoch, self?.pendingCovers.contains(id) == false,
                        self?.pendingArtistCovers.contains(id) == false {
                         if isArtist { self?.pendingArtistCovers.append(id) } else { self?.pendingCovers.append(id) }
                         self?.blockedOnStore()
@@ -852,6 +880,16 @@ final class DownloadManager {
                 }
             }
         }
+    }
+
+    /// Fix round 2 (SN6): every queued and running cover fetch is dropped (Remove all, sign-out).
+    func dropCoverFetches() {
+        coverEpoch &+= 1
+        coverQueue = []
+        coversRunning = 0
+        coversInFlight = []
+        pendingCovers = []
+        pendingArtistCovers = []
     }
 
     // MARK: - Mirrors and persistence
@@ -1021,9 +1059,10 @@ final class DownloadManager {
 
     /// Fix round 1 (security L5): lyrics kept on the phone are written as tracked work (sign-out waits for it and a
     /// later account never gets it).
-    func keepLyrics(_ lyrics: OfflineLyrics) {
+    /// Fix round 2 (SN3): `stillWanted` is asked again just before the write (Find lyrics online may have gone off).
+    func keepLyrics(_ lyrics: OfflineLyrics, stillWanted: @escaping @MainActor () -> Bool) {
         track { [weak self, store] gen in
-            guard self?.isLive(gen) == true else { return }
+            guard self?.isLive(gen) == true, stillWanted() else { return }
             _ = try? await store.saveLyrics(lyrics)
         }
     }

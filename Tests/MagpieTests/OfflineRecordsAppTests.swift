@@ -3,6 +3,7 @@ import MagpieCore
 import MagpieTestSupport
 import NavidromeKit
 import Playback
+import os
 import Testing
 @testable import Magpie
 
@@ -27,9 +28,11 @@ private let extensionsJSON = Data(#"""
     let defaults = UserDefaults(suiteName: "OfflineRecordsAppTests.\(UUID().uuidString)")!
     let transport = HostSwitchTransport()
     let fetcher = FakeFetcher()
+    let covers: CoverGateFetcher
     let network = FakeNetwork(.wifi)
 
     init() {
+        covers = CoverGateFetcher(inner: fetcher)
         transport.inner.stub(pathSuffix: "/rest/ping", body: ok)
         transport.inner.stub(method: "POST", pathSuffix: "/auth/login", body: loginJSON)
         transport.inner.stub(pathSuffix: "/api/song", body: Data("[]".utf8), headers: ["X-Total-Count": "0"])
@@ -47,7 +50,7 @@ private let extensionsJSON = Data(#"""
         AppModel(store: store, lidarrStore: MemoryLidarrStore(), tokenStore: MemoryTokenStore(),
                  matchIndexDirectory: nil, dataDirectory: tmp, transport: transport, probeTransport: transport,
                  engine: FakeEngine(), defaults: defaults, systemNowPlaying: false, notifications: false,
-                 network: network, audioFetcher: fetcher)
+                 network: network, audioFetcher: covers)
     }
 
     func signedIn() async throws -> AppModel {
@@ -162,6 +165,105 @@ private let extensionsJSON = Data(#"""
         model.signOut()
         await model.downloadsTeardown?.value
         #expect(!FileManager.default.fileExists(atPath: file.path))
+    }
+
+    // MARK: - Fix round 2
+
+    /// SN3: Find lyrics online switched off while LRCLIB is being asked: nothing found online is written to the phone.
+    @Test func lyrics_switchedOffMidLookupWritesNoOnlineFile() async throws {
+        let model = try await signedIn()
+        await download(model, [Self.song("s1")])
+        let lrclib = GatedLrcLib()
+        model.lyricsKeeper.lrclib = LrcLib(transport: lrclib, userAgent: LrcLib.userAgent(version: AppModel.marketingVersion))
+        model.lyricsKeeper.findOnline = true
+        let lookup = Task { await model.onlineLyrics(Self.song("s1")) }
+        #expect(await eventually { lrclib.asked })
+        model.lyricsKeeper.findOnline = false
+        lrclib.gate.open()
+        let shown = await lookup.value
+        await model.downloads!.settled()
+        #expect(shown == nil, "nothing shown once the switch is off")
+        #expect(await model.downloads!.store.savedLyrics(songId: "s1") == nil, "nothing found online kept")
+        // And `keepLyricsOnPhone` refuses lyrics found online while the switch is off.
+        model.keepLyricsOnPhone("s1", .lines(Lyrics(synced: false, lines: [LyricLine(text: "x")]), .online))
+        await model.downloads!.settled()
+        #expect(await model.downloads!.store.savedLyrics(songId: "s1") == nil)
+    }
+
+    /// SN5: the playlist page captures the downloads before its read: a read that answers after a switch to sam (who
+    /// has the same playlist downloaded) changes nothing of sam's.
+    @Test func playlist_readCapturedBeforeTheReadNeverChangesAnotherAccount() async throws {
+        transport.inner.stub(pathSuffix: "/rest/getPlaylist", body: Data(#"""
+        {"subsonic-response":{"status":"ok","version":"1.16.1","playlist":{"id":"p1","name":"Mix","owner":"jordan","songCount":1,"entry":[{"id":"s1","title":"Ts1","artist":"Ann","album":"A","duration":200}]}}}
+        """#.utf8))
+        let model = try await signedIn()
+        let songs = [Self.song("s1"), Self.song("s2")]
+        let mix = DownloadedPlaylist(id: "p1", name: "Mix", coverArtId: nil, songIds: ["s1", "s2"], savedAt: .now)
+        model.download(songs, reason: .playlist("p1"), playlist: mix)
+        await model.downloads!.settled()
+        let gate = D1Gate()
+        let held = OSAllocatedUnfairLock(initialState: false)
+        transport.setHook { request in
+            if request.url?.path.hasSuffix("/rest/getPlaylist") == true { held.withLock { $0 = true }; await gate.wait() }
+        }
+        let read = Task { try await model.readPlaylistPage(id: "p1") }
+        #expect(await eventually { held.withLock { $0 } })
+        model.signOut()
+        await model.downloadsTeardown?.value
+        try await model.signIn(urls: [home], username: "sam", password: "pw-o2")
+        await model.downloads!.settled()
+        model.download(songs, reason: .playlist("p1"), playlist: mix)
+        await model.downloads!.settled()
+        gate.open()
+        _ = try? await read.value
+        await model.downloads!.settled()
+        transport.setHook(nil)
+        #expect(model.downloads!.localFiles.keys.sorted() == ["s1", "s2"], "sam's copy is untouched")
+        #expect(await model.downloads!.store.playlists().first?.songIds == ["s1", "s2"])
+    }
+
+    /// SN6: a cover still being fetched when Remove all runs is never saved afterwards; L2: nothing is left in flight.
+    @Test func covers_removeAllDropsAnInFlightCover() async throws {
+        let model = try await signedIn()
+        covers.hold()
+        model.download([Self.song("s1")], reason: .song)
+        #expect(await eventually { self.covers.outstanding == 1 })
+        #expect(model.downloads!.coversInFlight.contains("mf-s1"))
+        await model.removeAllDownloads()
+        #expect(model.downloads!.coversInFlight.isEmpty, "security L2: cleared with the queues")
+        covers.release()
+        await model.downloads!.settled()
+        #expect(await model.downloads!.store.coverURL(coverArtId: "mf-s1") == nil, "the late cover isn't saved")
+    }
+
+    /// SN6: a playlist with 200 covers never has more than 4 cover fetches out at once.
+    @Test func covers_atMostFourAtOnce() async throws {
+        let model = try await signedIn()
+        covers.hold()
+        let songs = (0..<200).map { Self.song("c\($0)") }
+        let snapshot = DownloadedPlaylist(id: "p1", name: "Big", coverArtId: nil, songIds: songs.map(\.id), savedAt: .now)
+        model.download(songs, reason: .playlist("p1"), playlist: snapshot)
+        #expect(await eventually { self.covers.outstanding == 4 })
+        covers.release()
+        await model.downloads!.settled()
+        #expect(covers.peak <= 4, "peak \(covers.peak)")
+        #expect(covers.fetched == 200)
+    }
+
+    /// Task M1 (re-review): a parked record is never written when Magpie went offline before its song landed.
+    @Test func records_parkedRecordNotWrittenWhenOfflineBeforeItLands() async throws {
+        let model = try await signedIn()
+        let gate = StoreGate(["s1"])
+        model.downloads!.beforeStoreForTesting = { await gate.pass($0) }
+        model.download([Self.song("s1")], reason: .album("al1"), coverArtId: "al-al1")
+        await model.recordAlbumPage(Self.album(count: 1), songs: [Self.song("s1")], into: model.downloads)
+        #expect(await eventually { gate.isWaiting("s1") })
+        #expect(model.downloads!.parkedRecords.count == 1)
+        model.updatePreferences { $0.downloads.offlineMode = .on }
+        gate.release("s1")
+        await model.downloads!.settled()
+        #expect(model.downloads!.localFiles["s1"] != nil, "the song landed")
+        #expect(await records(model).isEmpty, "but nothing was recorded offline")
     }
 
     // MARK: - Fix round 1
@@ -386,5 +488,44 @@ private let extensionsJSON = Data(#"""
         guard case .lines(let lyrics, let source)? = shown else { Issue.record("no kept lyrics offline"); return }
         #expect(lyrics.lines.map(\.text) == ["Kept on the phone"] && source == .library)
         #expect(await model.savedLyrics(songId: "s1") == shown)
+    }
+}
+
+/// Round 28 O2 fix round 2: LRCLIB on a gate (never the real host): answers plain lyrics once the test opens it.
+final class GatedLrcLib: HTTPTransport, @unchecked Sendable {
+    let gate = D1Gate()
+    private let state = OSAllocatedUnfairLock(initialState: false)
+    var asked: Bool { state.withLock { $0 } }
+    func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        state.withLock { $0 = true }
+        await gate.wait()
+        let body = Data(#"{"id":1,"plainLyrics":"Found online","syncedLyrics":null,"instrumental":false}"#.utf8)
+        return (body, HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil,
+                                      headerFields: ["Content-Type": "application/json"])!)
+    }
+}
+
+/// Round 28 O2 fix round 2: audio through `FakeFetcher`; covers counted (outstanding, peak, fetched) and, while held,
+/// waiting until released.
+final class CoverGateFetcher: AudioFetching, @unchecked Sendable {
+    let inner: FakeFetcher
+    private struct State { var held = false; var outstanding = 0; var peak = 0; var fetched = 0; var gate: D1Gate? }
+    private let state = OSAllocatedUnfairLock(initialState: State())
+    init(inner: FakeFetcher) { self.inner = inner }
+    var outstanding: Int { state.withLock { $0.outstanding } }
+    var peak: Int { state.withLock { $0.peak } }
+    var fetched: Int { state.withLock { $0.fetched } }
+    func hold() { state.withLock { $0.gate = D1Gate() } }
+    func release() { state.withLock { s in s.gate?.open(); s.gate = nil } }
+    func fetch(_ url: URL, allowsCellular: Bool) async throws -> (file: URL, mimeType: String?) {
+        guard url.path.hasSuffix("/rest/getCoverArt") else { return try await inner.fetch(url, allowsCellular: allowsCellular) }
+        let gate = state.withLock { s -> D1Gate? in
+            s.outstanding += 1
+            s.peak = max(s.peak, s.outstanding)
+            return s.gate
+        }
+        defer { state.withLock { $0.outstanding -= 1; $0.fetched += 1 } }
+        await gate?.wait()
+        return try await inner.fetch(url, allowsCellular: allowsCellular)
     }
 }

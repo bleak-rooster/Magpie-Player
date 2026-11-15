@@ -4,6 +4,7 @@ import MagpieCore
 import MagpieTestSupport
 import NavidromeKit
 import Playback
+import os
 import Testing
 @testable import Magpie
 
@@ -16,15 +17,16 @@ import Testing
     let store = SessionStore(keychain: KeychainStore(service: "com.bleak-rooster.magpie.tests.\(UUID().uuidString)"))
     let suite = "OfflineFlowsAppTests.\(UUID().uuidString)"
     lazy var defaults = UserDefaults(suiteName: suite)!
-    let transport = D1Routing()
+    let transport = FailableD1Routing()
+    let fetcher = FakeFetcher()
     let aurralStore = MemoryAurralStore()
     let lidarrStore = MemoryLidarrStore()
     let network = FakeNetwork(.wifi)
-    var aurral: StubAurral { transport.aurral }
-    var nav: D1Navidrome { transport.navidrome }
+    var aurral: StubAurral { transport.inner.aurral }
+    var nav: D1Navidrome { transport.inner.navidrome }
 
     deinit {
-        transport.releaseStatus()
+        transport.inner.releaseStatus()
         store.clear()
         UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite)
         try? FileManager.default.removeItem(at: tmp)
@@ -36,7 +38,7 @@ import Testing
         AppModel(store: store, lidarrStore: lidarrStore, tokenStore: MemoryTokenStore(),
                  aurralStore: aurralStore, matchIndexDirectory: nil, dataDirectory: tmp, transport: transport,
                  probeTransport: transport, engine: FakeEngine(), defaults: defaults, systemNowPlaying: false,
-                 notifications: false, network: network, audioFetcher: FakeFetcher())
+                 notifications: false, network: network, audioFetcher: fetcher)
     }
 
     /// Discover Weekly (the user's flow: Lullaby with a library copy, Unknown Song without, one main-library song) and,
@@ -197,11 +199,71 @@ import Testing
 
     /// The flow downloaded as a whole, as O3's Download does (library copies where found).
     func downloadFlow(_ model: AppModel, _ page: DiscoverPage) async throws {
-        let songs = page.entries.map(\.song)
-        let snapshot = DownloadedPlaylist(id: page.playlist.id, name: page.playlist.name, coverArtId: nil,
-                                          songIds: songs.map(\.id), savedAt: .now, kind: .flow)
-        model.download(songs, reason: .playlist(page.playlist.id), playlist: snapshot)
+        model.downloadFlowToPhone(page)
         await model.downloads!.settled()
+    }
+
+    func streamed(_ id: String) -> Bool {
+        fetcher.urls.contains { $0.path.hasSuffix("/rest/stream") && $0.query?.contains("id=\(id)") == true }
+    }
+
+    // MARK: - Fix round 2
+
+    /// SN1 + N2: lookups that fail (on a page read again, twice, and on pull to refresh) never drop the library copy on
+    /// the phone, never fetch Aurral's copy in its place, never change the downloaded flow's songs, and are never kept.
+    @Test func flows_lookupErrorsNeverDropTheCopyOnThePhone() async throws {
+        let model = try await signedIn()
+        let page = try await model.openDiscoverPage(playlistId: "pl-dw", fresh: false, waitForRead: false) { _ in }
+        try await downloadFlow(model, page)
+        let before = await model.downloads!.store.playlists().first { $0.id == "pl-dw" }?.songIds
+        #expect(before == ["m-lullaby", "a-unknown", "m-ref1"])
+        transport.failLookups = true
+        model.discover.lookups = [:]   // nothing known: every song is looked up again
+        nav.setList("pl-dw", "Discover Weekly", ["a-lullaby", "a-unknown", "m-ref1"], changed: "2026-11-10T10:00:00Z")
+        for fresh in [false, false, true] {
+            _ = try? await model.openDiscoverPage(playlistId: "pl-dw", fresh: fresh, waitForRead: false) { _ in }
+            await model.downloads!.settled()
+            #expect(model.downloads!.localFiles["m-lullaby"] != nil, "fresh \(fresh): the library copy stays")
+            #expect(!streamed("a-lullaby"), "fresh \(fresh): Aurral's copy is never fetched")
+            #expect(await model.downloads!.store.playlists().first { $0.id == "pl-dw" }?.songIds == before)
+            #expect(model.discover.lookups["a-lullaby"].map { $0.copy?.id == "m-lullaby" } ?? true,
+                    "fresh \(fresh): an errored lookup is never kept as \"no copy\"")
+        }
+        // Even a page treated as complete whose Lullaby shows as Aurral's keeps the copy the flow has (the map).
+        let originals = DiscoverPage(playlist: page.playlist, flow: page.flow, entries: page.entries.map {
+            DiscoverEntry(song: $0.original, original: $0.original)
+        })
+        model.followDownloadedFlow(originals, complete: true)
+        await model.downloads!.settled()
+        #expect(model.downloads!.localFiles["m-lullaby"] != nil && !streamed("a-lullaby"))
+        #expect(await model.downloads!.store.playlists().first { $0.id == "pl-dw" }?.songIds == before)
+    }
+
+    /// SN1: a song whose original really left the flow still leaves (unless something else keeps it).
+    @Test func flows_songThatLeftStillLeaves() async throws {
+        let model = try await signedIn()
+        let page = try await model.openDiscoverPage(playlistId: "pl-dw", fresh: false, waitForRead: false) { _ in }
+        try await downloadFlow(model, page)
+        await download(model, ["m-ref1"])
+        nav.setList("pl-dw", "Discover Weekly", ["a-lullaby"], changed: "2026-11-11T10:00:00Z")
+        _ = try await model.openDiscoverPage(playlistId: "pl-dw", fresh: false, waitForRead: false) { _ in }
+        await model.downloads!.settled()
+        #expect(model.downloads!.localFiles.keys.sorted() == ["m-lullaby", "m-ref1"], "a-unknown left; m-ref1 kept for itself")
+        let saved = await model.downloads!.store.playlists().first { $0.id == "pl-dw" }
+        #expect(saved?.songIds == ["m-lullaby"] && saved?.copies == ["a-lullaby": "m-lullaby"])
+    }
+
+    /// N1 / SN2: with Aurral removed after the download, the ordinary playlist page still never refreshes the flow.
+    @Test func flows_ordinaryPageNeverRefreshesAFlowAfterAurralIsRemoved() async throws {
+        let model = try await signedIn()
+        let page = try await model.openDiscoverPage(playlistId: "pl-dw", fresh: false, waitForRead: false) { _ in }
+        try await downloadFlow(model, page)
+        model.disconnectAurral()
+        #expect(!model.aurralSetUp)
+        await model.refreshDownloadedPlaylist(page.playlist, songs: page.entries.map(\.original))
+        await model.downloads!.settled()
+        #expect(model.downloads!.localFiles.keys.sorted() == ["a-unknown", "m-lullaby", "m-ref1"])
+        #expect(!streamed("a-lullaby"))
     }
 
     /// Security M1: a background read whose lookups didn't all finish never swaps a library copy on the phone for
@@ -223,7 +285,7 @@ import Testing
         let incomplete = DiscoverPage(playlist: page.playlist, flow: page.flow, entries: page.entries.map {
             DiscoverEntry(song: $0.original, original: $0.original)
         })
-        model.followDownloadedFlow(incomplete, earlier: page)
+        model.followDownloadedFlow(incomplete)
         await model.downloads!.settled()
         #expect(model.downloads!.localFiles["m-lullaby"] != nil && model.downloads!.localFiles["a-lullaby"] == nil,
                 "compared by the original id: the copy already on the phone is kept")
@@ -260,5 +322,24 @@ import Testing
         #expect(catalog.artistPage(id: "ar-q")?.albums.map(\.id) == ["al-m-ref1"], "artists")
         #expect(catalog.playlists(includingRecorded: true).map(\.id) == ["pl-road"], "playlists")
         #expect(await model.offlineFlows().map(\.id) == (aurralSetUp ? ["pl-dw"] : []), "flows only with Aurral")
+    }
+}
+
+/// Round 28 O2 fix round 2: `D1Routing`, whose library-copy lookups (search and recording id) can be made to fail with
+/// a server error (never a dropped connection, so nothing goes offline).
+final class FailableD1Routing: HTTPTransport, @unchecked Sendable {
+    let inner = D1Routing()
+    private let failing = OSAllocatedUnfairLock(initialState: false)
+    var failLookups: Bool {
+        get { failing.withLock { $0 } }
+        set { failing.withLock { $0 = newValue } }
+    }
+    func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        let isLookup = request.url?.path.hasSuffix("/rest/search3") == true
+            || request.url?.query?.contains("mbz_recording_id") == true
+        if isLookup, failLookups {
+            return (Data(), HTTPURLResponse(url: request.url!, statusCode: 500, httpVersion: nil, headerFields: nil)!)
+        }
+        return try await inner.send(request)
     }
 }

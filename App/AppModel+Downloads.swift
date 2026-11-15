@@ -177,7 +177,8 @@ extension AppModel {
         guard !isOffline, let downloads = target ?? self.downloads, downloads === self.downloads,
               let saved = await downloads.store.playlists().first(where: { $0.id == playlist.id }),
               self.downloads === downloads else { return }
-        if !asFlow, aurralSetUp, saved.kind == .flow || isDiscoverPlaylist(id: playlist.id) { return }
+        // Fix round 2 (N1, SN2): a flow saved as one never follows the ordinary page, Aurral set up or not.
+        if !asFlow, saved.kind == .flow || (aurralSetUp && isDiscoverPlaylist(id: playlist.id)) { return }
         let ids = songs.map(\.id)
         guard saved.songIds != ids || saved.name != playlist.name || saved.coverArtId != playlist.coverArtId else { return }
         let kept = Set(ids), before = Set(saved.songIds)

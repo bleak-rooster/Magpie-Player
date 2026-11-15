@@ -192,10 +192,10 @@ struct PlaylistView: View {
             return
         }
         do {
-            let (playlist, songs) = try await model.request { [playlistId] in try await $0.playlist(id: playlistId) }
+            // Loaded with a connection: a downloaded playlist follows the server's version. Round 28 O2 fix round 2 (SN5):
+            // into the downloads as they were before the read (`readPlaylistPage`).
+            let (playlist, songs) = try await model.readPlaylistPage(id: playlistId)
             page = .loaded(Page(playlist: playlist, songs: songs))
-            // Loaded with a connection: a downloaded playlist follows the server's version.
-            await model.refreshDownloadedPlaylist(playlist, songs: songs)
         } catch {
             // Deleted (here or elsewhere): nothing to show; the list behind reads again.
             page = page.failing(error, noticeTo: model)   // Round 13 Z2: also never for a load cut short

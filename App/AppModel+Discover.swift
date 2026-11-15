@@ -412,7 +412,18 @@ extension AppModel {
     /// looked up; a background pass's lookups come out of its `budget` (a song left over is not looked up this time).
     func lookUpLibraryCopies(for songs: [Song], flowId: String?, fresh: Bool = false, budget: DiscoverLookupBudget? = nil,
                              landed: ((String, Song?) -> Void)? = nil) async -> [String: Song] {
-        guard session != nil, !isOffline, !songs.isEmpty else { return [:] }
+        await lookUpLibraryCopiesReporting(for: songs, flowId: flowId, fresh: fresh, budget: budget, landed: landed).copies
+    }
+
+    /// Round 28 O2 fix round 2 (security SN1): `lookUpLibraryCopies`, also saying whether every lookup the page needed
+    /// was made and answered. A lookup whose read failed is not "no copy": it is never kept (asked again next time) and,
+    /// like one the budget left over, makes the page incomplete (a downloaded flow never follows it).
+    func lookUpLibraryCopiesReporting(for songs: [Song], flowId: String?, fresh: Bool = false,
+                                      budget: DiscoverLookupBudget? = nil,
+                                      landed: ((String, Song?) -> Void)? = nil) async -> (copies: [String: Song], complete: Bool) {
+        guard session != nil, !isOffline, !songs.isEmpty else { return ([:], songs.isEmpty) }
+        var complete = true
+        var failed = Set<String>()
         let index = await discoverMatchIndex()
         let now = discover.now()
         let jobs = discover.jobs
@@ -430,57 +441,74 @@ extension AppModel {
                                                         discoverLibrarySongIds: discover.discoverLibrarySongIds,
                                                         flowJobs: jobs, flowId: flowId) {
                 continue   // its own copy: nothing to find. Fix round 1 (I2): never kept as a lookup, decided anew each time
-            } else if !toLookUp.contains(where: { $0.id == song.id }), budget?.take() ?? true {
-                toLookUp.append(song)
+            } else if !toLookUp.contains(where: { $0.id == song.id }) {
+                if budget?.take() ?? true { toLookUp.append(song) } else { complete = false }   // left over: incomplete
             }
         }
-        await withTaskGroup(of: (String, Song?, [Song]).self) { group in
+        await withTaskGroup(of: (String, Song?, [Song], Bool).self) { group in
             var started = 0
             for song in toLookUp {
                 if started >= 4, let done = await group.next() {   // four at a time
                     copies[done.0] = done.1
                     rows[done.0] = done.2
+                    if done.3 { failed.insert(done.0) }
                     landed?(done.0, done.1)
                 }
                 started += 1
                 let recording = song.recordingMBID ?? DiscoverRules.jobRecording(for: song, jobs: jobs, flowId: flowId)
                 group.addTask { [weak self] in
-                    guard let self else { return (song.id, nil, []) }
-                    let (copy, found) = await self.libraryCopy(of: song, recording: recording, excluding: excluding,
-                                                               libraries: libraries, notLibraries: notLibraries)
-                    return (song.id, copy, found)
+                    guard let self else { return (song.id, nil, [], true) }
+                    let (copy, found, failed) = await self.libraryCopy(of: song, recording: recording, excluding: excluding,
+                                                                       libraries: libraries, notLibraries: notLibraries)
+                    return (song.id, copy, found, failed)
                 }
             }
             for await done in group {
                 copies[done.0] = done.1
                 rows[done.0] = done.2
+                if done.3 { failed.insert(done.0) }
                 landed?(done.0, done.1)
             }
         }
-        for song in toLookUp { discover.lookups[song.id] = DiscoverLookup(copy: copies[song.id], at: now) }
+        // Round 28 O2 fix round 2 (SN1): an errored lookup is never kept, and its song keeps what was known.
+        for song in toLookUp where !failed.contains(song.id) {
+            discover.lookups[song.id] = DiscoverLookup(copy: copies[song.id], at: now)
+        }
+        if !failed.isEmpty { complete = false }
         let found = copies.compactMapValues { $0 }
-        for song in songs { discover.copies[song.id] = found[song.id] }
-        learnDiscoverLibrary(entries: toLookUp, rows: rows)
-        return found
+        for song in songs where !failed.contains(song.id) { discover.copies[song.id] = found[song.id] }
+        learnDiscoverLibrary(entries: toLookUp.filter { !failed.contains($0.id) }, rows: rows)
+        return (found, complete)
     }
 
+    /// Round 28 O2 fix round 2 (security SN1): `failed` when a read the lookup needed failed (an error, not "none
+    /// found"); its answer is then not to be trusted or kept.
     private func libraryCopy(of song: Song, recording: MBID?, excluding: Set<String>, libraries: Set<Int>?,
-                             notLibraries: Set<Int>) async -> (Song?, [Song]) {
+                             notLibraries: Set<Int>) async -> (Song?, [Song], failed: Bool) {
         var rows: [Song] = []
         if let recording {
-            rows = (try? await request { try await $0.songs(recordingMBID: recording, excludingLibrary: nil) }) ?? []
+            do {
+                rows = try await request { try await $0.songs(recordingMBID: recording, excludingLibrary: nil) }
+            } catch {
+                return (nil, [], true)
+            }
             if let copy = DiscoverRules.mainCopy(for: song, recording: recording, mbidMatches: rows, textMatches: [],
                                                  excluding: excluding, libraries: libraries, notLibraries: notLibraries) {
-                return (copy, rows)
+                return (copy, rows, false)
             }
         }
-        guard song.duration > 0, !song.title.isEmpty else { return (nil, rows) }
-        let hits = (try? await request { [title = song.title] in
-            try await $0.search(title, songCount: 20, albumCount: 0, artistCount: 0)
-        })?.songs ?? []
+        guard song.duration > 0, !song.title.isEmpty else { return (nil, rows, false) }
+        let hits: [Song]
+        do {
+            hits = try await request { [title = song.title] in
+                try await $0.search(title, songCount: 20, albumCount: 0, artistCount: 0)
+            }.songs
+        } catch {
+            return (nil, rows, true)
+        }
         let copy = DiscoverRules.mainCopy(for: song, recording: nil, mbidMatches: [], textMatches: hits,
                                           excluding: excluding, libraries: libraries, notLibraries: notLibraries)
-        return (copy, rows)
+        return (copy, rows, false)
     }
 
     /// Learns the library Aurral's flow files are in from its job paths (`DiscoverRules.discoverLibraries`): never the

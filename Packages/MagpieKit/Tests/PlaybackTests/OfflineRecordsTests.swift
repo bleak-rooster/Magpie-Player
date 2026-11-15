@@ -294,6 +294,29 @@ import MagpieCore
         #expect(ContinuousClock.now - started < .seconds(10))
     }
 
+    /// Fix round 2 (SN4): ids that JSON escapes (control characters take six bytes each) still leave a file within
+    /// 8 MB, which a fresh store reads back.
+    @Test func records_controlCharacterIdsStayWithinTheFile() async throws {
+        var records = OfflineRecords()
+        let control = String(repeating: "\u{1}", count: OfflineRecords.maxIdBytes - 6)
+        for i in 0..<OfflineRecords.maxAlbums {
+            let id = control + String(format: "%06d", i)
+            records.albums[id] = OfflineRecords.AlbumRecord(album: Album(id: id, name: "A", artist: "B", songCount: 1, duration: 1),
+                                                            songs: [Self.song(control + "s\(i)")],
+                                                            savedAt: Date(timeIntervalSince1970: TimeInterval(i)))
+        }
+        let bounded = records.bounded()
+        let size = try #require(bounded.encoded()?.count)
+        #expect(size <= OfflineRecords.maxBytes, "\(size) bytes")
+        #expect(!bounded.albums.isEmpty)
+        let store = await store()
+        try await download(store, Self.song("s1"))
+        try await store.writeRecords(bounded)
+        let fresh = AudioStore(root: tmp, scope: "abc")
+        await fresh.load()
+        #expect(await fresh.records().albums.count == bounded.albums.count, "read back, not as none")
+    }
+
     /// Fix round 1 (security M2): text is bounded by UTF-8 bytes, cut between characters; long ids leave the lists.
     @Test func records_textBoundedByBytes() throws {
         var album = Self.album()

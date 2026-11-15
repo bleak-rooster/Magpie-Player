@@ -80,9 +80,7 @@ extension DownloadManager {
         jobs.removeAll { $0.kind != .cache }
         failed = []
         stoppedByFull = []
-        pendingCovers = []
-        pendingArtistCovers = []   // Round 28 O2
-        coversInFlight = []   // fix round 1 (security L2)
+        dropCoverFetches()   // Round 28 O2 (fix rounds 1 and 2: security L2, SN6): no late cover lands after this
         parkedRecords = []
         deferredRemovals = []
         deferredPlaylists = []

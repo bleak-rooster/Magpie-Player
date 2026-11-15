@@ -198,22 +198,36 @@ public struct OfflineRecords: Codable, Equatable, Sendable {
         var sized: [(date: Date, order: String, key: Key, bytes: Int)] = []
         func size<T: Encodable>(_ value: T, _ id: String) -> Int? {
             guard let n = try? encoder.encode(value).count, n <= Self.maxRecordBytes else { return nil }
-            return n + id.utf8.count + 8   // the key, its quotes, the colon and the comma
+            // Fix round 2 (SN4): the key as JSON writes it (escapes and quotes), plus its colon and comma.
+            let key = (try? encoder.encode(id).count) ?? id.utf8.count * 6 + 2
+            return n + key + 2
         }
         for (id, r) in copy.albums { if let n = size(r, id) { sized.append((r.savedAt, "a" + id, .album(id), n)) } else { copy.albums[id] = nil } }
         for (id, r) in copy.artists { if let n = size(r, id) { sized.append((r.savedAt, "r" + id, .artist(id), n)) } else { copy.artists[id] = nil } }
         for (id, r) in copy.playlists { if let n = size(r, id) { sized.append((r.savedAt, "p" + id, .playlist(id), n)) } else { copy.playlists[id] = nil } }
         let limit = Self.maxBytes - 1024   // room for the outer keys
         var total = sized.reduce(0) { $0 + $1.bytes }
-        guard total > limit else { return copy }
-        for item in sized.sorted(by: { ($0.date, $0.order) < ($1.date, $1.order) }) where total > limit {
-            switch item.key {
+        let oldestFirst = sized.sorted(by: { ($0.date, $0.order) < ($1.date, $1.order) })
+        func drop(_ key: Key) {
+            switch key {
             case .album(let id): copy.albums[id] = nil
             case .artist(let id): copy.artists[id] = nil
             case .playlist(let id): copy.playlists[id] = nil
             }
-            total -= item.bytes
         }
+        var dropped = 0
+        if total > limit {
+            for item in oldestFirst where total > limit {
+                drop(item.key)
+                total -= item.bytes
+                dropped += 1
+            }
+        }
+        // Fix round 2 (SN4): one final check of the real size, with one bounded extra trim (the oldest tenth left).
+        guard total > limit / 2, let real = try? encoder.encode(copy).count, real > Self.maxBytes else { return copy }
+        let left = oldestFirst.dropFirst(dropped)
+        for item in left.prefix(max(1, left.count / 10)) { drop(item.key) }
+        if let again = try? encoder.encode(copy).count, again > Self.maxBytes { return OfflineRecords() }
         return copy
     }
 

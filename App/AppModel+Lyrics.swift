@@ -372,6 +372,11 @@ extension AppModel {
             await lrclib.get(title: title, artist: artist, album: album, duration: duration)
         }
         guard keeper.generation == generation else { return nil }
+        // Round 28 O2 fix round 2 (SN3): switched off while LRCLIB was asked: nothing is shown or kept.
+        guard keeper.findOnline else {
+            keeper.forgetAskedOnline(song.id)
+            return nil
+        }
         switch result {
         case .success(let found):
             keeper.keepOnline(song.id, found)

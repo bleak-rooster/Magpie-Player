@@ -95,11 +95,15 @@ public struct DownloadedPlaylist: Codable, Hashable, Sendable {
     public var owner: String?
     public var kind: OfflinePlaylistKind?
     public var changed: Date?
+    /// Round 28 O2 fix round 2 (security SN1): a downloaded flow's songs by their original (Aurral's) id: which song
+    /// of each is the one on the phone (its library copy, or itself). A song stays while its original is in the flow.
+    /// Nil for playlists, and for flows downloaded before it was kept.
+    public var copies: [String: String]?
 
     public init(id: String, name: String, coverArtId: String?, songIds: [String], savedAt: Date, owner: String? = nil,
-                kind: OfflinePlaylistKind? = nil, changed: Date? = nil) {
+                kind: OfflinePlaylistKind? = nil, changed: Date? = nil, copies: [String: String]? = nil) {
         self.id = id; self.name = name; self.coverArtId = coverArtId; self.songIds = songIds; self.savedAt = savedAt
-        self.owner = owner; self.kind = kind; self.changed = changed
+        self.owner = owner; self.kind = kind; self.changed = changed; self.copies = copies
     }
 }
 
@@ -182,5 +186,6 @@ extension DownloadedPlaylist {
         owner = (try? c.decodeIfPresent(String.self, forKey: .owner)).flatMap { $0 }
         kind = (try? c.decodeIfPresent(OfflinePlaylistKind.self, forKey: .kind)).flatMap { $0 }
         changed = (try? c.decodeIfPresent(Date.self, forKey: .changed)).flatMap { $0 }
+        copies = (try? c.decodeIfPresent([String: String].self, forKey: .copies)).flatMap { $0 }
     }
 }

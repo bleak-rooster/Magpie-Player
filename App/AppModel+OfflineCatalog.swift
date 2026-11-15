@@ -149,23 +149,75 @@ extension AppModel {
     /// Hook from `openDiscoverPage` (Q4): a flow downloaded as a whole follows its refreshed page (library copies where
     /// known): new songs download under today's rules (Wi-Fi unless mobile data is allowed), songs that left lose the
     /// flow's reason (and leave the phone unless something else keeps them). Never offline; a flow not downloaded is
-    /// left be.
-    ///
-    /// Fix round 1 (security M1): only a page whose lookups all finished (`complete`) is followed, and each song is
-    /// matched by its original id: whichever of its copies is already on the phone (the page's, the original, or the
-    /// `earlier` page's copy) stays, so a lookup that found nothing this time never swaps a library copy for Aurral's.
+    /// left be. Only a page whose lookups all finished and answered (`complete`) is followed (security M1, SN1).
     /// Security M3: the downloads are captured here and the work is the manager's (tracked; a sign-out drops it).
-    func followDownloadedFlow(_ page: DiscoverPage, earlier: DiscoverPage? = nil, complete: Bool = true) {
+    func followDownloadedFlow(_ page: DiscoverPage, complete: Bool = true) {
         guard complete, !isOffline, session != nil, let downloads else { return }
-        let earlierCopies = Dictionary((earlier?.entries ?? []).map { ($0.original.id, $0.song) }, uniquingKeysWith: { a, _ in a })
-        let songs = page.entries.map { entry -> Song in
-            let candidates = [entry.song, entry.original, earlierCopies[entry.original.id]].compactMap { $0 }
-            return candidates.first { downloads.kind(of: $0.id) == .download } ?? entry.song
-        }
         downloads.track { [weak self, weak downloads] gen in
             guard let self, let downloads, downloads.isLive(gen) else { return }
-            await self.refreshDownloadedPlaylist(page.playlist, songs: songs, in: downloads, asFlow: true)
+            await self.followFlow(page, in: downloads)
         }
+    }
+
+    /// Fix round 2 (security SN1, N2): the downloaded flow keeps, by each song's **original** id, the song of it on the
+    /// phone (`DownloadedPlaylist.copies`). A song it has stays while its original is on the page, whatever this read's
+    /// lookup said (a lookup that failed or found nothing never swaps a library copy for Aurral's). Only a song whose
+    /// original left the page loses the flow's reason; a new original downloads the page's song for it (its library
+    /// copy where found). A flow downloaded before the map was kept gets one from its songs and the page.
+    func followFlow(_ page: DiscoverPage, in target: DownloadManager) async {
+        let id = page.playlist.id
+        guard !isOffline, target === downloads,
+              let saved = await target.store.playlists().first(where: { $0.id == id }), target === downloads else { return }
+        var known = saved.copies ?? [:]
+        if saved.copies == nil {   // before the map: each saved song by the page's original it is, or is the copy of
+            for songId in saved.songIds {
+                if let entry = page.entries.first(where: { $0.original.id == songId || $0.song.id == songId }) {
+                    known[entry.original.id] = songId
+                }
+            }
+        }
+        var copies: [String: String] = [:]
+        var ids: [String] = []
+        var added: [Song] = []
+        for entry in page.entries where copies[entry.original.id] == nil {
+            if let have = known[entry.original.id] {
+                copies[entry.original.id] = have
+                ids.append(have)
+            } else {
+                copies[entry.original.id] = entry.song.id
+                ids.append(entry.song.id)
+                added.append(entry.song)
+            }
+        }
+        guard ids != saved.songIds || copies != saved.copies || saved.name != page.playlist.name else { return }
+        let kept = Set(ids)
+        await target.remove(.playlist(id), songIds: saved.songIds.filter { !kept.contains($0) })
+        guard target === downloads, !isOffline else { return }
+        let snapshot = DownloadedPlaylist(id: id, name: OfflineRecords.text(page.playlist.name),
+                                          coverArtId: page.playlist.coverArtId ?? saved.coverArtId, songIds: ids, savedAt: .now,
+                                          owner: saved.owner, kind: .flow, changed: page.playlist.changed ?? saved.changed,
+                                          copies: copies)
+        target.download(added, reason: .playlist(id), playlist: snapshot, coverArtId: page.playlist.coverArtId)
+    }
+
+    /// For O3's Download on a flow's page (D343): the flow's songs (library copies where found) with the map of each
+    /// original to the song downloaded for it, kind `flow`, and its cover.
+    func downloadFlowToPhone(_ page: DiscoverPage) {
+        let songs = page.entries.map(\.song)
+        let copies = Dictionary(page.entries.map { ($0.original.id, $0.song.id) }, uniquingKeysWith: { a, _ in a })
+        let snapshot = DownloadedPlaylist(id: page.playlist.id, name: OfflineRecords.text(page.playlist.name),
+                                          coverArtId: page.playlist.coverArtId, songIds: songs.map(\.id), savedAt: .now,
+                                          kind: .flow, changed: page.playlist.changed, copies: copies)
+        download(songs, reason: .playlist(page.playlist.id), playlist: snapshot, coverArtId: page.playlist.coverArtId)
+    }
+
+    /// Fix round 2 (security SN5): the playlist page's online read, with the downloads captured **before** the read, so
+    /// a read that answers after a sign-out or another sign-in never changes another account's downloaded playlist.
+    func readPlaylistPage(id: String) async throws -> (Playlist, [Song]) {
+        let target = downloads
+        let (playlist, songs) = try await request { try await $0.playlist(id: id) }
+        if let target { await refreshDownloadedPlaylist(playlist, songs: songs, in: target) }
+        return (playlist, songs)
     }
 
     // MARK: - Lyrics (D336)
@@ -182,8 +234,11 @@ extension AppModel {
 
     /// Keeps what the pane would show for a downloaded song (lines or the instrumental note); anything else, and
     /// songs that aren't downloads, stay in memory only (D310).
+    /// Fix round 2 (SN3): lyrics found online are kept only while Find lyrics online is on, asked again just before the
+    /// write.
     func keepLyricsOnPhone(_ songId: String, _ shown: ShownLyrics?) {
         guard let shown, let downloads, downloads.kind(of: songId) == .download else { return }
+        guard shown.source == .library || lyricsKeeper.findOnline else { return }
         let kept: OfflineLyrics
         switch shown {
         case .lines(let lyrics, let source):
@@ -191,7 +246,10 @@ extension AppModel {
         case .instrumental(let source):
             kept = OfflineLyrics(songId: songId, source: source == .library ? .library : .online, lyrics: nil, savedAt: .now)
         }
-        downloads.keepLyrics(kept)   // fix round 1 (security L5): tracked by the manager
+        let online = kept.source == .online
+        downloads.keepLyrics(kept) { [weak self] in   // fix round 1 (security L5): tracked by the manager
+            !online || self?.lyricsKeeper.findOnline == true
+        }
     }
 
     /// Fix round 1 (security L4, D336 amended): hook from Find lyrics online turned off: the kept lyrics found online go.
