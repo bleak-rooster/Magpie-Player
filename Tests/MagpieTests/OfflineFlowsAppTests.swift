@@ -111,6 +111,7 @@ import Testing
         #expect(page.songs.map(\.id) == ["m-lullaby"] && page.total == 3 && page.kind == .flow)
         #expect(await model.offlineFlowPage(id: "pl-sam") == nil)
         model.updatePreferences { $0.downloads.offlineMode = .automatic }
+        #expect(await eventually { !model.isOffline })   // Round 28 O1 fix round 1 (design H1): online once the check answers
         await download(model, ["m-ref1", "a-sam1"])
         model.updatePreferences { $0.downloads.offlineMode = .on }
         #expect(await model.offlineFlowPage(id: "pl-dw")?.songs.map(\.id) == ["m-lullaby", "m-ref1"], "in the flow's order")
@@ -179,6 +180,7 @@ import Testing
 
         // Online on mobile data (not allowed for downloads): the songs that left go, the new one waits for Wi-Fi.
         model.updatePreferences { $0.downloads.offlineMode = .automatic }
+        #expect(await eventually { !model.isOffline })   // Round 28 O1 fix round 1 (design H1): online once the check answers
         network.status = NetworkStatus(isConnected: true, isCellular: true, isConstrained: false)
         _ = try await model.openDiscoverPage(playlistId: "pl-dw", fresh: false, waitForRead: false) { _ in }
         #expect(await eventually {

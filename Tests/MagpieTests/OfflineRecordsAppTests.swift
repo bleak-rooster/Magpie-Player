@@ -400,6 +400,7 @@ private let extensionsJSON = Data(#"""
         await model.recordAlbumPage(Self.album(), songs: [Self.song("s1", title: "Offline name")], into: model.downloads)
         #expect(await model.offlineCatalog.songs().map(\.title) == ["Old name"], "never offline")
         model.updatePreferences { $0.downloads.offlineMode = .automatic }
+        #expect(await eventually { !model.isOffline })   // Round 28 O1 fix round 1 (design H1): online once the check answers
         await model.recordAlbumPage(Self.album(), songs: [Self.song("s1", title: "New name")], into: model.downloads)
         let catalog = await model.offlineCatalog
         #expect(catalog.songs().map(\.title) == ["New name"])
