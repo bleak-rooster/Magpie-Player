@@ -285,7 +285,9 @@ private func subsonic(_ body: String) -> Data {
         let model = try await signedInModel(fetcher: FakeFetcher())
         model.updatePreferences { $0.downloads.offlineMode = .on }
         let adapter = CarPlayLibraryAdapter(model: model)
-        #expect(adapter.isOffline && adapter.libraryRows == [.genres, .downloads] && adapter.homeSections == [.downloaded])
+        // Round 28 O4 (D347): car Home offline is Downloaded and Playlists (Discover too with Aurral), in the car's order.
+        #expect(adapter.isOffline && adapter.libraryRows == [.genres, .downloads]
+                && Set(adapter.homeSections) == [.downloaded, .playlists])
         model.updatePreferences { $0.layout.setLibraryRow(.genres, visible: false) }
         #expect(adapter.libraryRows == [.downloads])
     }
