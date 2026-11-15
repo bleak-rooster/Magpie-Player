@@ -78,6 +78,8 @@ final class DownloadManager {
     #if DEBUG
     /// Tests: runs after a song's bytes have arrived and before they are written to the store.
     @ObservationIgnored var beforeStoreForTesting: (@MainActor (_ songId: String) async -> Void)?
+    /// Round 28 O2 fix round 3 (SN9a) tests: runs in a flow's follow after its removal and before its download.
+    @ObservationIgnored var beforeFollowDownloadForTesting: (@MainActor () async -> Void)?
     #endif
 
     // Members below marked "(+Removal)" are internal, not private, only because DownloadManager+Removal.swift
@@ -140,6 +142,9 @@ final class DownloadManager {
     @ObservationIgnored var coverQueue: [(id: String, isArtist: Bool)] = []
     @ObservationIgnored var coversRunning = 0
     @ObservationIgnored var coverEpoch = 0
+    /// Fix round 3 (SN9a): advanced by Remove all and sign-out; a downloaded flow's follow begun before it does nothing
+    /// after it.
+    @ObservationIgnored var followEpoch = 0
     /// Round 28 O2 (D334): an artist picture's address at 300 px (the app sets it; nil: none fetched).
     @ObservationIgnored var artistCoverURL: @MainActor (String) -> URL? = { _ in nil }
     /// Round 28 O2 (D331): bumped when page records (or the songs' snapshots) change, so offline pages reload.
@@ -479,6 +484,7 @@ final class DownloadManager {
         stoppedByFull = []
         failed = []
         dropCoverFetches()   // Round 28 O2 (fix rounds 1 and 2: security L2, SN6)
+        followEpoch &+= 1   // fix round 3 (SN9a)
         parkedRecords = []
         deferredRemovals = []
         deferredPlaylists = []

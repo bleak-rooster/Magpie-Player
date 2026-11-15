@@ -81,6 +81,7 @@ extension DownloadManager {
         failed = []
         stoppedByFull = []
         dropCoverFetches()   // Round 28 O2 (fix rounds 1 and 2: security L2, SN6): no late cover lands after this
+        followEpoch &+= 1   // fix round 3 (SN9a): no follow under way removes or downloads after this
         parkedRecords = []
         deferredRemovals = []
         deferredPlaylists = []

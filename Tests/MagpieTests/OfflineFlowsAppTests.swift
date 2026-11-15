@@ -194,7 +194,7 @@ import Testing
         })
         let saved = await model.downloads!.store.playlists().first { $0.id == "pl-dw" }
         #expect(saved?.songIds == ["m-lullaby", "m-ref2"] && saved?.kind == .flow, "the flow stays a flow")
-        #expect(saved?.owner == nil, "the flow's own owner isn't replaced by the library's (task M6)")
+        #expect(saved?.owner == page.playlist.owner, "the follow keeps the owner saved at download (task M6, SN10)")
     }
 
     /// The flow downloaded as a whole, as O3's Download does (library copies where found).
@@ -205,6 +205,81 @@ import Testing
 
     func streamed(_ id: String) -> Bool {
         fetcher.urls.contains { $0.path.hasSuffix("/rest/stream") && $0.query?.contains("id=\(id)") == true }
+    }
+
+    // MARK: - Fix round 3
+
+    /// SN8: a page with no songs (a flow emptied while it refreshes) is never followed: nothing leaves the phone.
+    @Test func flows_emptyPageNeverFollowed() async throws {
+        let model = try await signedIn()
+        let page = try await model.openDiscoverPage(playlistId: "pl-dw", fresh: false, waitForRead: false) { _ in }
+        try await downloadFlow(model, page)
+        let before = await model.downloads!.store.playlists().first { $0.id == "pl-dw" }?.songIds
+        nav.setList("pl-dw", "Discover Weekly", [], changed: "2026-11-12T10:00:00Z")
+        _ = try await model.openDiscoverPage(playlistId: "pl-dw", fresh: false, waitForRead: false) { _ in }
+        await model.downloads!.settled()
+        #expect(await model.downloads!.store.playlists().first { $0.id == "pl-dw" }?.songIds == before)
+        #expect(model.downloads!.localFiles.keys.sorted() == ["a-unknown", "m-lullaby", "m-ref1"])
+    }
+
+    /// SN7: a playlist downloaded through the ordinary page and later read as a Discover page without a flow keeps its
+    /// kind, so with Aurral gone it still follows its ordinary page.
+    @Test func flows_syncedPlaylistKeepsItsKindAndFollowsItsOrdinaryPage() async throws {
+        let model = try await signedIn()
+        let playlist = Playlist(id: "pl-dw", name: "Discover Weekly", songCount: 1, duration: 100)
+        let snapshot = DownloadedPlaylist(id: "pl-dw", name: "Discover Weekly", coverArtId: nil, songIds: ["m-ref1"], savedAt: .now)
+        model.download([Self.song("m-ref1")], reason: .playlist("pl-dw"), playlist: snapshot)
+        await model.downloads!.settled()
+        let entries = ["m-ref1", "m-ref2"].map { DiscoverEntry(song: Self.song($0), original: Self.song($0)) }
+        model.followDownloadedFlow(DiscoverPage(playlist: playlist, flow: nil, entries: entries))
+        await model.downloads!.settled()
+        let followed = await model.downloads!.store.playlists().first { $0.id == "pl-dw" }
+        #expect(followed?.songIds == ["m-ref1", "m-ref2"])
+        #expect(followed?.kind == nil, "no flow: not made a flow")
+        model.disconnectAurral()
+        await model.refreshDownloadedPlaylist(playlist, songs: [Self.song("m-ref2")])
+        await model.downloads!.settled()
+        #expect(model.downloads!.localFiles.keys.sorted() == ["m-ref2"], "it follows its ordinary page")
+    }
+
+    /// SN9a: Remove all in the middle of a follow leaves no playlist and no jobs behind.
+    @Test func flows_removeAllMidFollowLeavesNothing() async throws {
+        let model = try await signedIn()
+        let page = try await model.openDiscoverPage(playlistId: "pl-dw", fresh: false, waitForRead: false) { _ in }
+        try await downloadFlow(model, page)
+        let gate = D1Gate()
+        let reached = OSAllocatedUnfairLock(initialState: false)
+        model.downloads!.beforeFollowDownloadForTesting = { reached.withLock { $0 = true }; await gate.wait() }
+        nav.setList("pl-dw", "Discover Weekly", ["a-lullaby", "m-ref2"], changed: "2026-11-13T10:00:00Z")
+        _ = try await model.openDiscoverPage(playlistId: "pl-dw", fresh: false, waitForRead: false) { _ in }
+        #expect(await eventually { reached.withLock { $0 } })
+        await model.removeAllDownloads()
+        gate.open()
+        await model.downloads!.settled()
+        #expect(await model.downloads!.store.playlists().isEmpty, "no playlist")
+        #expect(model.downloads!.jobs.isEmpty, "no jobs")
+        #expect(model.downloads!.localFiles.isEmpty)
+    }
+
+    /// SN10: a flow saved with Aurral's ids and no map (before the map was kept), read as a complete page, keeps every
+    /// song and gains an identity map; a flow downloaded now keeps its owner.
+    @Test func flows_savedWithoutAMapKeepsEverySongAndGainsOne() async throws {
+        let model = try await signedIn()
+        let page = try await model.openDiscoverPage(playlistId: "pl-dw", fresh: false, waitForRead: false) { _ in }
+        let originals = page.entries.map(\.original)
+        let old = DownloadedPlaylist(id: "pl-dw", name: "Discover Weekly", coverArtId: nil, songIds: originals.map(\.id),
+                                     savedAt: .now, kind: .flow)
+        model.download(originals, reason: .playlist("pl-dw"), playlist: old)
+        await model.downloads!.settled()
+        model.followDownloadedFlow(page, complete: true)
+        await model.downloads!.settled()
+        let saved = await model.downloads!.store.playlists().first { $0.id == "pl-dw" }
+        #expect(saved?.songIds == originals.map(\.id), "every song kept")
+        #expect(saved?.copies == Dictionary(uniqueKeysWithValues: originals.map { ($0.id, $0.id) }), "an identity map")
+        #expect(model.downloads!.localFiles["m-lullaby"] == nil, "nothing swapped in")
+        model.downloadFlowToPhone(page)
+        await model.downloads!.settled()
+        #expect(await model.downloads!.store.playlists().first { $0.id == "pl-dw" }?.owner == page.playlist.owner)
     }
 
     // MARK: - Fix round 2

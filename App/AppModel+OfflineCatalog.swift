@@ -152,7 +152,8 @@ extension AppModel {
     /// left be. Only a page whose lookups all finished and answered (`complete`) is followed (security M1, SN1).
     /// Security M3: the downloads are captured here and the work is the manager's (tracked; a sign-out drops it).
     func followDownloadedFlow(_ page: DiscoverPage, complete: Bool = true) {
-        guard complete, !isOffline, session != nil, let downloads else { return }
+        // Fix round 3 (SN8): a page with no songs (a flow emptied while it refreshes) is never followed.
+        guard complete, !page.entries.isEmpty, !isOffline, session != nil, let downloads else { return }
         downloads.track { [weak self, weak downloads] gen in
             guard let self, let downloads, downloads.isLive(gen) else { return }
             await self.followFlow(page, in: downloads)
@@ -166,6 +167,9 @@ extension AppModel {
     /// copy where found). A flow downloaded before the map was kept gets one from its songs and the page.
     func followFlow(_ page: DiscoverPage, in target: DownloadManager) async {
         let id = page.playlist.id
+        // Fix round 3 (SN9a): Remove all advances the epoch; a follow begun before it neither removes nor downloads
+        // after it. (SN9b is accepted by the controller, fix round 3.)
+        let epoch = target.followEpoch
         guard !isOffline, target === downloads,
               let saved = await target.store.playlists().first(where: { $0.id == id }), target === downloads else { return }
         var known = saved.copies ?? [:]
@@ -191,11 +195,17 @@ extension AppModel {
         }
         guard ids != saved.songIds || copies != saved.copies || saved.name != page.playlist.name else { return }
         let kept = Set(ids)
+        guard target.followEpoch == epoch else { return }
         await target.remove(.playlist(id), songIds: saved.songIds.filter { !kept.contains($0) })
-        guard target === downloads, !isOffline else { return }
+        #if DEBUG
+        if let hook = target.beforeFollowDownloadForTesting { await hook() }
+        #endif
+        guard target === downloads, !isOffline, target.followEpoch == epoch else { return }
+        // Fix round 3 (SN7): a flow when the page has one; otherwise the playlist keeps the kind it was saved with.
         let snapshot = DownloadedPlaylist(id: id, name: OfflineRecords.text(page.playlist.name),
                                           coverArtId: page.playlist.coverArtId ?? saved.coverArtId, songIds: ids, savedAt: .now,
-                                          owner: saved.owner, kind: .flow, changed: page.playlist.changed ?? saved.changed,
+                                          owner: saved.owner, kind: page.flow != nil ? .flow : saved.kind,
+                                          changed: page.playlist.changed ?? saved.changed,
                                           copies: copies)
         target.download(added, reason: .playlist(id), playlist: snapshot, coverArtId: page.playlist.coverArtId)
     }
@@ -207,6 +217,7 @@ extension AppModel {
         let copies = Dictionary(page.entries.map { ($0.original.id, $0.song.id) }, uniquingKeysWith: { a, _ in a })
         let snapshot = DownloadedPlaylist(id: page.playlist.id, name: OfflineRecords.text(page.playlist.name),
                                           coverArtId: page.playlist.coverArtId, songIds: songs.map(\.id), savedAt: .now,
+                                          owner: page.playlist.owner.map(OfflineRecords.text),   // fix round 3 (SN10)
                                           kind: .flow, changed: page.playlist.changed, copies: copies)
         download(songs, reason: .playlist(page.playlist.id), playlist: snapshot, coverArtId: page.playlist.coverArtId)
     }
