@@ -94,7 +94,7 @@ import Testing
         big.append(Data(#""}"#.utf8))
         t.stub(method: "POST", pathSuffix: "/auth/login", body: big)
         let (client, _) = makeClient(transport: t)
-        await #expect(throws: ResponseTooLarge.self) { _ = try await client.connect() }
+        await #expect(throws: NavidromeError.unexpectedResponse, "too big to be the library's answer") { _ = try await client.connect() }
         #expect(NavidromeClient.loginMaxBytes == 64 * 1024)
     }
 

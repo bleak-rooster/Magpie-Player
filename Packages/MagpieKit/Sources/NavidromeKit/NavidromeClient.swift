@@ -98,7 +98,11 @@ public actor NavidromeClient {
         request.httpBody = try JSONEncoder().encode(["username": credentials.username,
                                                       "password": credentials.password])
         Log.request(request)
-        let (data, response) = try await transport.send(request, maxBytes: Self.loginMaxBytes)   // Round 28 O1 fix round 2 (SN5)
+        // Round 28 O1 fix round 2 (SN5): capped; an answer bigger than a login is no answer from the library.
+        let (data, response): (Data, HTTPURLResponse)
+        do { (data, response) = try await transport.send(request, maxBytes: Self.loginMaxBytes) } catch is ResponseTooLarge {
+            throw NavidromeError.unexpectedResponse
+        }
         switch response.statusCode {
         case 200..<300: break
         default: throw Self.failure(status: response.statusCode, data, refusals: [401, 403], emptyIsForeign: true, needsShape: true)

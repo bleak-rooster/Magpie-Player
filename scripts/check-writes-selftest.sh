@@ -597,6 +597,26 @@ r_inplace=(
   'Packages/MagpieKit/Sources/MagpieCore/OfflineGate.swift|sed|s/            guard role != .outside, let url = request.url else { return false }/            guard let url = request.url else { return false }/'
   'Packages/MagpieKit/Sources/AurralKit/PreviewResolver.swift|sed|s/    public init(base: URL, transport: HTTPTransport) {/    public init(base: URL, transport: HTTPTransport = PreviewResolver.defaultTransport()) {/'
   'App/AppModel+Slskd.swift|append|func plantedPeek(_ t: GatedTransport) -> HTTPTransport { t.innerForTesting }'
+  # Round 28 O1 fix round 2 (security SN1–SN3): `.init(`, a session by type or `.init`, `.shared` across a line break, a
+  # session through `SameOriginRedirects`, an alias, a pinned line hidden in a block comment or `#if false`, reflection,
+  # new package sessions and transports, a default put back or named otherwise or `any`, and the other ways out (images,
+  # media, web, sockets, contents-of reads). Named after the security re-check's evasions (N…).
+  'App/AppModel+Slskd.swift|append|let plantedN1b = URLSessionTransport.init()'
+  'App/AppModel+Slskd.swift|append|let plantedN2b: URLSession = .init(configuration: .ephemeral)'
+  'App/AppModel+Slskd.swift|append|let plantedN3 = URLSession\n    .shared'
+  'App/AppModel+Slskd.swift|append|let plantedN4b = SameOriginRedirects.session(configuration: .ephemeral)'
+  'App/AppModel+Slskd.swift|append|typealias PlantedN5b = URLSessionTransport'
+  'Packages/MagpieKit/Sources/MagpieCore/OfflineGate.swift|sed|s/^        case .manual: return false$/        case .manual: return true \/* case .manual: return false *\//'
+  'Packages/MagpieKit/Sources/MagpieCore/OfflineGate.swift|append|#if false\n        case .manual: return false\n#endif'
+  'App/AppModel+Slskd.swift|append|func plantedN9(_ t: GatedTransport) -> HTTPTransport? { Mirror(reflecting: t).children.first?.value as? HTTPTransport }'
+  'Packages/MagpieKit/Sources/AurralKit/AurralClient.swift|append|let plantedN12 = URLSession(configuration: .default)'
+  'Packages/MagpieKit/Sources/MagpieCore/LrcLib.swift|append|let plantedN16 = URLSessionTransport()'
+  'Packages/MagpieKit/Sources/AurralKit/AurralImageProxy.swift|sed|s/public init(base: URL, directory: URL?, openTransport: HTTPTransport) {/public init(base: URL, directory: URL?, openTransport: HTTPTransport = AurralOpenTransport()) {/'
+  'App/AppModel+Slskd.swift|append|extension AppModel { func plantedN17(via t: HTTPTransport = PreviewResolver.defaultTransport()) {} }'
+  'Packages/MagpieKit/Sources/AurralKit/AurralClient.swift|append|func plantedN18(_ t: any HTTPTransport = AurralOpenTransport()) {}'
+  'App/Screens/Shared/Artwork.swift|append|struct PlantedN11: View { var body: some View { AsyncImage(url: URL(string: "https://music.example/a.jpg")) } }'
+  'App/AppModel+Slskd.swift|append|let plantedN22 = AVURLAsset(url: URL(string: "https://music.example/a.mp3")!)'
+  'App/AppModel+Slskd.swift|append|let plantedN23 = try? Data(contentsOf: URL(string: "https://music.example/a")!)'
 )
 for entry in "${r_inplace[@]}"; do
   rel="${entry%%|*}" rest="${entry#*|}"
