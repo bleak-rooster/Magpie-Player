@@ -376,8 +376,8 @@ struct SearchContent: View {
     @ViewBuilder private func notYetAlbumRow(_ album: NotYetAlbum) -> some View {
         if let request = RequestLinks.request(releaseGroup: album.mbid, in: app.requests) {   // R17
             // Round 28 S (D338): the same never-blank line as the album's own row.
-            RequestedItemRow(title: album.title,
-                             detail: SearchRowText.albumDetail(artist: album.artist, kind: album.kind), request: request)
+            RequestedItemRow(title: album.title, detail: SearchRowText.albumDetail(artist: album.artist, kind: album.kind),
+                             request: request)
                 .listRowBackground(Color.clear)
         } else if album.mbid != nil {
             // R19: opens the outside album page.
@@ -416,7 +416,8 @@ struct SearchContent: View {
     }
 
     private func plainNotYetAlbumRow(_ album: NotYetAlbum) -> some View {
-        // Round 28 S (D338): "<kind> · <artist>" ("EP" alone when the artist is blank); VoiceOver "<name>, EP by <artist>".
+        // Round 28 S (D338): "<kind> · <artist>" ("EP" alone when the artist is blank); VoiceOver "<name>, EP by
+        // <artist>".
         let detail = SearchRowText.albumDetail(artist: album.artist, kind: album.kind)
         let label = SearchRowText.albumLabel(name: album.title, artist: album.artist, kind: album.kind)
         return OutsideArtwork(model.outsideArt, key: album.mbid.map(OutsideArtKey.releaseGroup)) { art in   // R15
@@ -454,7 +455,9 @@ struct SearchContent: View {
             app.play(songs, startAt: index)
         } label: {
             // Round 28 S (D338): "Song · <artist>", and VoiceOver "<title>, song by <artist>".
-            Artwork(song.coverArtId, side: 48) { SongRow(song: song, state: .library, artwork: $0, detail: detail, label: label) }
+            Artwork(song.coverArtId, side: 48) {
+                SongRow(song: song, state: .library, artwork: $0, detail: detail, label: label)
+            }
         }
         .buttonStyle(.plain)
         .accessibilityAddTraits(.isButton)

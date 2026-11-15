@@ -46,7 +46,8 @@ public struct SongRow: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text(song.title).font(.callout).lineLimit(typeSize.isAccessibilitySize ? nil : 1)
                 HStack(spacing: 6) {
-                    Text(detail ?? screenText?.detail(song) ?? song.artist).font(.footnote).foregroundStyle(themed.palette.ink2Color)
+                    Text(detail ?? screenText?.detail(song) ?? song.artist)
+                        .font(.footnote).foregroundStyle(themed.palette.ink2Color)
                         .lineLimit(typeSize.isAccessibilitySize ? nil : 1)
                     if let quality { Hallmark(quality) }
                     DownloadMarkView(mark)
