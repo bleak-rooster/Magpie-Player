@@ -253,17 +253,8 @@ final class HeldAurral: HTTPTransport, @unchecked Sendable {
         #expect(adapter.playlistCaptionUser == nil, "Yours without the switch: as before")
     }
 
-    /// Offline, the downloaded flows Discover shows join the downloaded playlists (`offlinePlaylists`' rule).
-    @Test func car_combinedOfflineIncludesDownloadedDiscover() async throws {
-        let model = try await signedIn()
-        defer { model.signOut() }
-        model.showEveryonesFlows = false
-        let downloaded = ["pl-dw", "pl-sam", "pl-road"].map { Playlist(id: $0, name: $0, songCount: 1, duration: 1) }
-        #expect(model.carOfflinePlaylists(downloaded, combined: false).map(\.id) == ["pl-road"])
-        #expect(model.carOfflinePlaylists(downloaded, combined: true).map(\.id).sorted() == ["pl-dw", "pl-road"])
-        model.showEveryonesFlows = true
-        #expect(model.carOfflinePlaylists(downloaded, combined: true).map(\.id).sorted() == ["pl-dw", "pl-road", "pl-sam"])
-    }
+    // Round 28 O4 fix round 1 (review M6): offline Playlists with the switch are pinned by
+    // `CarPlayOfflineAppTests.car_offlineDiscoverListsFlowsOnThePhone` (the flows on the phone, D300).
 
     /// The car's Home doesn't change with the switch (D300).
     @Test func carHomeUnchangedByCombined() async throws {

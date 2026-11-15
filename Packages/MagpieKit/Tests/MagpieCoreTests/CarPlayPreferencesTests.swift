@@ -100,8 +100,13 @@ import Testing
         let shown = car.visibleHomeSections(phone: phone, offline: false, hasListenBrainzToken: false, discoverSetUp: false)
         #expect(shown == [.recentlyAdded, .mostPlayed, .playlists], "no token: no Made for you; no Aurral: no Discover")
         #expect(!shown.contains(.randomAlbums))
+        // Round 28 O4 (D347): offline, the shelves the phone fills from what's on it, in the car's order.
+        // Fix round 1 (design M5): only the shelves switched on, Downloaded always.
+        let entries = car.homeList(following: phone.home).entries
+        let order = entries.filter { $0.visible || $0.item == .downloaded }.map(\.item.section)
         #expect(car.visibleHomeSections(phone: phone, offline: true, hasListenBrainzToken: true, discoverSetUp: true)
-                == [.downloaded], "offline the car shows what's on the phone, as the phone does")
+                == order.filter { [.downloaded, .discover, .playlists].contains($0) },
+                "offline the car shows what's on the phone, as the phone does")
     }
 
     @Test func savedAndReadBack() throws {

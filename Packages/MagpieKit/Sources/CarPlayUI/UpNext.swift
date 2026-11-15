@@ -26,4 +26,25 @@ extension CarPlayRows {
         if !next.isEmpty { sections.append(CPSectionModel(header: "Up next", rows: next)) }
         return sections
     }
+
+    /// Round 28 O4 fix round 1 (owner, 2026-11-15; design H4, D349): offline, the queue's songs that aren't on the phone
+    /// (`notOnPhone`, by entry) say "Not on this iPhone" with `wifi.slash` and do nothing (the player skips them).
+    public static func upNextOffline(_ sections: [CPSectionModel], notOnPhone: Set<UUID>) -> [CPSectionModel] {
+        guard !notOnPhone.isEmpty else { return sections }
+        return sections.map { section in
+            var section = section
+            section.rows = section.rows.map { row in
+                guard row.id.hasPrefix(upNextRowPrefix), let id = UUID(uuidString: String(row.id.dropFirst(upNextRowPrefix.count))),
+                      notOnPhone.contains(id) else { return row }
+                var row = row
+                row.detail = "Not on this iPhone"
+                row.statusSymbol = "wifi.slash"
+                row.action = .none
+                return row
+            }
+            return section
+        }
+    }
+
+    static let upNextRowPrefix = "queue."
 }

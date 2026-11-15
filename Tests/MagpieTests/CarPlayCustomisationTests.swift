@@ -286,6 +286,8 @@ private func subsonic(_ body: String) -> Data {
         let model = try await signedInModel(fetcher: FakeFetcher())
         model.updatePreferences { $0.downloads.offlineMode = .on }
         let adapter = CarPlayLibraryAdapter(model: model)
+        // Round 28 O4 fix round 1 (design M5, D347): car Home offline keeps the owner's switches (build 13's car Home
+        // has Playlists off), Downloaded always. Round 28 O3 (D340): the Library rows list what's on the phone.
         #expect(adapter.isOffline && adapter.libraryRows == [.playlists, .artists, .albums, .songs, .genres, .downloads]
                 && adapter.homeSections == [.downloaded])
         model.updatePreferences { $0.layout.setLibraryRow(.genres, visible: false) }

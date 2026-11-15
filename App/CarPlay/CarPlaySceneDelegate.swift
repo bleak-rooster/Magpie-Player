@@ -50,6 +50,10 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
 
 /// The app's session, artwork cache and recent searches, as CarPlay reads them. Offline (Task 14) the lists, albums,
 /// artists and playlists come from what's on the phone (T23), and nothing is asked of the server.
+/// Round 28 O4 (owner, 2026-11-15; D347): offline they are the phone's pages (O2's records): an album or playlist's
+/// `songCount` is how many songs it has and its songs those on the phone (the car says "<n> of <m> on this iPhone"),
+/// artists include album artists, Playlists hold the playlists with a download (per Q3) and Discover the flows on the
+/// phone.
 @MainActor
 final class CarPlayLibraryAdapter: CarPlayLibrary {
     let model: AppModel
@@ -69,7 +73,7 @@ final class CarPlayLibraryAdapter: CarPlayLibrary {
 
     func album(id: String) async throws -> Album {
         if model.isOffline {
-            guard let album = await model.offlineCatalog.album(id: id) else { throw AppModel.forcedOfflineError }
+            guard let album = await downloadedAlbum(id: id) else { throw AppModel.forcedOfflineError }
             return album
         }
         return try await model.request { try await $0.album(id: id) }
@@ -95,21 +99,26 @@ final class CarPlayLibraryAdapter: CarPlayLibrary {
     func playlists() async throws -> [Playlist] {
         // Round 27 H (D300): with Settings › CarPlay › Flows with your playlists, the flows Discover shows join them.
         let combined = model.carFlowsWithPlaylists
-        // Round 22 R22A (D185): downloaded Discover playlists stay out too (the account's saved Discover ids).
-        if model.isOffline { return model.carOfflinePlaylists(await model.offlineCatalog.playlists(), combined: combined) }
+        // Round 22 R22A (D185): downloaded Discover playlists stay out too (the account's saved Discover ids). Round 28
+        // O4 (D347): the playlists holding a download (Q3), and with D300 the flows on the phone.
+        if model.isOffline { return await offlinePlaylists(combined: combined) }
         let all = try await model.request { try await $0.playlists() }.filter { !model.leavesOutOfPlaylists($0) }   // Y6, D188
         let shown = model.shownPlaylists(all)   // All or Yours, as on the phone (D179)
         guard combined else { return shown }
         return model.carPlaylistsWithFlows(shown, flows: try await model.discoverPlaylists())
     }
 
-    /// Y6: Library › Discover.
-    func discoverPlaylists() async throws -> [Playlist] { try await model.discoverPlaylists() }
+    /// Y6: Library › Discover. Round 28 O4 (D347): offline, the flows on the phone (O2's saved Discover file).
+    func discoverPlaylists() async throws -> [Playlist] {
+        if model.isOffline { return await model.offlineFlows() }
+        return try await model.discoverPlaylists()
+    }
 
-    /// Offline, a downloaded playlist with its songs on the phone (Downloads opens playlists this way).
+    /// Offline, a downloaded playlist with its songs on the phone (Downloads opens playlists this way). Round 28 O4
+    /// (D347): or one read online that holds a download (Q3), or a flow on the phone.
     func playlist(id: String) async throws -> (Playlist, [Song]) {
         if model.isOffline {
-            guard let page = await downloadedPlaylist(id: id) else { throw AppModel.forcedOfflineError }
+            guard let page = await offlinePlaylistPage(id: id) else { throw AppModel.forcedOfflineError }
             return page
         }
         if model.isDiscoverPlaylist(id: id) {   // Y6: the library's copies in place, as on the phone

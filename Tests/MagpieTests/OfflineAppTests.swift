@@ -272,7 +272,8 @@ private let noNetwork = NetworkStatus(isConnected: false, isCellular: false, isC
         let albums = await model.offlineCatalog.albums()
         #expect(albums.count == 1 && albums[0].songs?.map(\.id) == ["s1", "s2"])
         model.play([song("s0")] + (albums[0].songs ?? []), startAt: 0)   // s0 isn't on the phone
-        model.player.handle(.failed(model.player.queue.current!.id, "The Internet connection appears to be offline."))
+        // Round 28 O4 (D349): offline s0's stream is never tried; the first song on the phone plays at once.
+        #expect(model.player.queue.main.first?.song.id == "s0", "s0 stays in the queue")
         #expect(model.player.queue.current?.song.id == "s1" && model.player.isPlaying && model.player.lastError == nil)
         #expect(engine.setItemsCalls.last!.items.map(\.1.isFileURL) == [true, true])
         #expect(f.urls.isEmpty, "nothing fetched offline")
@@ -348,8 +349,10 @@ private let noNetwork = NetworkStatus(isConnected: false, isCellular: false, isC
         let offlineRows: [LibraryRow] = [.playlists, .artists, .albums, .songs, .genres, .downloads]
         #expect(model.libraryRows == offlineRows && !model.showsRecentlyAddedGrid)
         // The car (T22) mirrors it: Home is the Downloaded shelf, opened from the phone, and the Library the offline rows.
+        // Round 28 O4 fix round 1 (design M5, D347): offline the car keeps the shelves the phone can fill that are
+        // switched on (every one is here): Downloaded and Playlists (none holds a download, so no Playlists shelf).
         let car = CarPlayLibraryAdapter(model: model)
-        #expect(car.homeSections == [.downloaded] && car.libraryRows == offlineRows)
+        #expect(Set(car.homeSections) == [.downloaded, .playlists] && car.libraryRows == offlineRows)
         #expect(car.isOffline)
         let carHome = CarPlayRows.home(try await car.homeShelves(car.homeSections, size: CarPlayRows.homeShelfMaxSize))
         #expect(carHome.map(\.header) == ["Recently downloaded"])   // Y3: the shelf's new name
