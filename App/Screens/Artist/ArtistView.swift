@@ -7,6 +7,11 @@ import SwiftUI
 /// Artist: name, Play / Shuffle (every album), Popular (hidden when the server has no top songs, A13), Albums, then
 /// "Not in your library" (Task 7.1c: the artist's other albums, from Lidarr when connected; information only, filled
 /// in after the page and left out when there are none or they can't be read).
+/// Round 28 O3 (owner, 2026-11-15, item 1; D341): offline, the phone's page (O2's `artistPage`, for an album-artist or a
+/// track-artist id): the albums with a song on the phone where they are the album artist, then "Songs on this phone"
+/// (songs where they are only the track artist); Top songs per D268, Play top songs per D304, Automix hidden (D305), the
+/// Lidarr line "You're offline"; Play and Shuffle play what's on the phone. Online, a read records the page (O2) and a
+/// failed read shows the phone's copy with `PhoneCopyNote`.
 struct ArtistView: View {
     @Environment(AppModel.self) private var model
     let artistId: String
@@ -36,7 +41,14 @@ struct ArtistView: View {
     struct Page {
         var artist: Artist
         var albums: [Album]
+        /// Round 28 O3 (D341): on the phone's page, the songs where they are only the track artist.
+        var songs: [Song] = []
+        /// Round 28 O3 (D341): where the page came from.
+        var source: PageSource = .server
     }
+
+    /// Round 28 O3: the page as one load shows it.
+    typealias Shown = Page
 
     var body: some View {
         ScrollView {
@@ -63,7 +75,8 @@ struct ArtistView: View {
             // R4: the download's items are in the same ⋯; offline it stays for "Remove download" only.
             if let page = page.value {
                 let artist = page.artist
-                let online = !model.isOffline && !OfflineCatalog.isLocalId(artist.id)
+                // Round 28 O3 (D341): the phone's copy of a failed read is no server page either.
+                let online = !model.isOffline && !OfflineCatalog.isLocalId(artist.id) && page.source == .server
                 if online || model.downloads?.artistStatus(artist.id) ?? .none != .none {
                     ToolbarItemGroup(placement: .topBarTrailing) {
                         if online { FavouriteButton(target: .artist(artist.id)) }
@@ -101,7 +114,7 @@ struct ArtistView: View {
                     .overlay { if image == nil { ArtistMonogram(name: page.artist.name) } }
                     .clipShape(Circle())
             }
-            .reloadArtworkMenu(page.artist.coverArtId)
+            .reloadArtworkMenu(page.source == .server ? page.artist.coverArtId : nil)
             Text(page.artist.name).magpieDisplay(.largeTitle).multilineTextAlignment(.center)
                 .accessibilityAddTraits(.isHeader)
             DownloadMarkLine(model.downloadIndex.mark(artistId: page.artist.id, albums: page.albums))
@@ -121,18 +134,22 @@ struct ArtistView: View {
     private func content(_ page: Page) -> some View {
         let p = themed.palette
         let albums = page.albums.sorted { ($0.year ?? 0) > ($1.year ?? 0) }
+        // Round 28 O3 (D341): the phone's page plays what's on the phone, its albums then its other songs.
+        let phoneSongs = page.source.isPhone ? Self.phoneSongs(page) : []
         return VStack(alignment: .leading, spacing: Tokens.Spacing.xxl) {
+            if page.source == .phoneCopy { PhoneCopyNote() }
             VStack(spacing: Tokens.Spacing.m) {
                 header(page).padding(.horizontal, Tokens.Spacing.margin)
                 // Y7: the same ActionBar as Album and Playlist, keeping its own margins.
                 ActionBar(pairsBeforeStacking: true) {   // fix round 1 (design M4): two and one before stacking
-                    PlayShuffleActions(playTitle: gathering ? "Loading…" : "Play", disabled: albums.isEmpty || gathering) {
-                        Task { await playAll(albums, shuffled: false) }
+                    PlayShuffleActions(playTitle: gathering ? "Loading…" : "Play",
+                                       disabled: (page.source.isPhone ? phoneSongs.isEmpty : albums.isEmpty) || gathering) {
+                        if page.source.isPhone { model.play(phoneSongs, startAt: 0) } else { Task { await playAll(albums, shuffled: false) } }
                     } shuffle: {
-                        Task { await playAll(albums, shuffled: true) }
+                        if page.source.isPhone { model.shuffle(phoneSongs) } else { Task { await playAll(albums, shuffled: true) } }
                     }
                     // Round 27 A (owner item 17, D305): Automix beside Play and Shuffle, seeded by the artist.
-                    if model.automixAvailable(artistId: page.artist.id, albums: page.albums) {
+                    if page.source == .server, model.automixAvailable(artistId: page.artist.id, albums: page.albums) {
                         ActionButton(AutomixCopy.actionBar, symbol: AutomixCopy.symbol) {
                             automix = AutomixSeed(.artist(id: page.artist.id, name: page.artist.name,
                                                           top: model.topSongsPlayable(topSongsRequest(page.artist).known),
@@ -160,11 +177,15 @@ struct ArtistView: View {
             case .nothing: EmptyView()
             }
 
-            VStack(alignment: .leading, spacing: Tokens.Spacing.m) {
-                Text("Albums").magpieDisplay(.title2).accessibilityAddTraits(.isHeader)
-                    .padding(.horizontal, Tokens.Spacing.largeTitleMargin)
-                AlbumGrid(albums: albums) { $0.year.map(String.init) ?? "" }
+            if !albums.isEmpty || page.source == .server {
+                VStack(alignment: .leading, spacing: Tokens.Spacing.m) {
+                    Text("Albums").magpieDisplay(.title2).accessibilityAddTraits(.isHeader)
+                        .padding(.horizontal, Tokens.Spacing.largeTitleMargin)
+                    AlbumGrid(albums: albums) { $0.year.map(String.init) ?? "" }
+                }
             }
+
+            if !page.songs.isEmpty { songsOnThisPhone(page.songs) }   // round 28 O3 (D341)
 
             if !notYetAlbums.isEmpty { notYetSection }
         }
@@ -232,6 +253,34 @@ struct ArtistView: View {
         return { Task { await model.playTopSongs(request) } }
     }
 
+    /// Round 28 O3 (D341): what Play and Shuffle start on the phone's page: its albums' songs on the phone (newest album
+    /// first, as the grid), then the songs where they are only the track artist. Nothing is asked of the server.
+    static func phoneSongs(_ page: Page) -> [Song] {
+        page.albums.sorted { ($0.year ?? 0) > ($1.year ?? 0) }.flatMap { $0.songs ?? [] } + page.songs
+    }
+
+    /// Round 28 O3 (D341): "Songs on this phone": the artist's songs on albums that aren't theirs (a featured song, a
+    /// compilation track), each playing from the phone.
+    private func songsOnThisPhone(_ songs: [Song]) -> some View {
+        VStack(alignment: .leading, spacing: Tokens.Spacing.s) {
+            Text(OfflinePageCopy.songsOnThisPhone).magpieDisplay(.title2).accessibilityAddTraits(.isHeader)
+                .padding(.horizontal, Tokens.Spacing.largeTitleMargin)
+            ForEach(Array(songs.enumerated()), id: \.element.id) { index, song in
+                Button { model.play(songs, startAt: index) } label: {
+                    Artwork(song.coverArtId, side: 48) { image in
+                        SongRow(song: song, state: .library, artwork: image)
+                    }
+                }
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(.isButton)
+                .accessibilityIdentifier("artist-phone-song-\(index)")
+                .contextMenu { SongQueueMenuItems(song: song) }
+                .songSwipeActions(song, in: .stack)
+            }
+        }
+        .accessibilityIdentifier("artist-songs-on-phone")
+    }
+
     private var notYetSection: some View {
         let p = themed.palette
         return VStack(alignment: .leading, spacing: Tokens.Spacing.m) {
@@ -264,42 +313,83 @@ struct ArtistView: View {
 
     private func load() async {
         loadedOffline = model.isOffline
-        // Offline (Task 14), or an artist the catalog grouped itself: their downloaded albums, from the phone.
-        if model.isOffline || OfflineCatalog.isLocalId(artistId) {
-            let catalog = await model.offlineCatalog
+        // R3: the saved Popular is ready the moment the page is, without waiting for the server's top songs.
+        if !model.isOffline, !OfflineCatalog.isLocalId(artistId), popular?.artistId != artistId {
+            popular = model.popularSongs(artistId: artistId)
+        }
+        var loaded: Page?
+        await Self.load(model, artistId: artistId) { outcome in
+            switch outcome {
+            case .shown(let new):
+                page = .loaded(new)
+                loaded = new
+            case .notOnPhone:
+                page = .failed(OfflineCopy.notOnPhone)
+            case .failed(let error):
+                page = page.failing(error, noticeTo: model)   // Round 13 Z2: never for a load cut short; the page shown stays
+            }
+        }
+        guard let loaded else { return }
+        let artist = loaded.artist
+        if loaded.source.isPhone {
+            // Offline (Task 14), the phone's copy (round 28 O3), or an artist the catalog grouped itself.
             popular = nil
             outsideTop = nil   // Round 26 K2 (D268): offline, Top songs are only saved songs on the phone
             notYetAlbums = []
-            guard let artist = catalog.artists().first(where: { $0.id == artistId }) else {
-                page = .failed(OfflineCopy.notOnPhone)
-                return
-            }
             lidarrTop = await model.lidarrTopSongs(name: artist.name, mbid: artist.mbid, artistId: artist.id)
-            page = .loaded(Page(artist: artist, albums: catalog.albums(byArtist: artistId)))
             lidarrLine = ArtistLidarrModel(model: model, name: artist.name, mbid: artist.mbid)   // "You're offline"
             return
         }
-        // R3: the saved Popular is ready the moment the page is, without waiting for the server's top songs.
-        if popular?.artistId != artistId { popular = model.popularSongs(artistId: artistId) }
+        // Round 26 K2 (D263): the saved Top songs of an artist Lidarr has, ready with the page (kept on a reload, so a
+        // pull never clears it first).
+        if model.lidarr == nil || lidarrTop?.key != LidarrTopSongsCache.key(mbid: artist.mbid, artistId: artist.id)
+            || lidarrTop?.offline != false {
+            lidarrTop = await model.lidarrTopSongs(name: artist.name, mbid: artist.mbid, artistId: artist.id)
+        }
+        // Both fill in after the page; neither waits for the other.
+        async let top: Void = loadTopSongsAndLidarrLine(artist)
+        async let notYet: Void = loadNotYetAlbums(artist, library: loaded.albums)
+        _ = await (top, notYet)
+    }
+
+    /// Round 28 O3 (D341): what one load of the page gives.
+    enum Outcome {
+        case shown(Page)
+        /// Offline (or an artist the phone grouped itself) with nothing of theirs on the phone.
+        case notOnPhone
+        case failed(any Error)
+    }
+
+    /// Round 28 O3 (D341): one load of the artist page, handed to `show`, then (online) recorded for the phone. Offline
+    /// (Task 14), or an artist the catalog grouped itself: the phone's page (O2's `artistPage`). Online: the server's; a
+    /// failed read (but one cut short, D77) shows the phone's copy when it has one. The record goes into the downloads
+    /// captured **before** the read (O2, security M3).
+    static func load(_ model: AppModel, artistId: String, show: (Outcome) -> Void) async {
+        if model.isOffline || OfflineCatalog.isLocalId(artistId) {
+            show(await phonePage(model, artistId: artistId, source: .phone).map(Outcome.shown) ?? .notOnPhone)
+            return
+        }
+        let target = model.downloads
         do {
             let (artist, read) = try await model.request { [artistId] in try await $0.artist(id: artistId) }
             let albums = model.hidingFlowDuplicates(read)   // Y6: not Aurral's copy of what the library has
-            page = .loaded(Page(artist: artist, albums: albums))
+            show(.shown(Page(artist: artist, albums: albums)))
             model.noteAlbumSongCounts(albums)   // P1: backfills downloads saved without the album's count
             model.noteFavourite(.artist(artist.id), artist.starred)   // R7
-            // Round 26 K2 (D263): the saved Top songs of an artist Lidarr has, ready with the page (kept on a reload, so a
-            // pull never clears it first).
-            if model.lidarr == nil || lidarrTop?.key != LidarrTopSongsCache.key(mbid: artist.mbid, artistId: artist.id)
-                || lidarrTop?.offline != false {
-                lidarrTop = await model.lidarrTopSongs(name: artist.name, mbid: artist.mbid, artistId: artist.id)
-            }
-            // Both fill in after the page; neither waits for the other.
-            async let top: Void = loadTopSongsAndLidarrLine(artist)
-            async let notYet: Void = loadNotYetAlbums(artist, library: albums)
-            _ = await (top, notYet)
+            await model.recordArtistPage(artist, albums: albums, into: target)   // round 28 O3 (O2's D333)
         } catch {
-            page = page.failing(error, noticeTo: model)   // Round 13 Z2: never for a load cut short; the page shown stays
+            if PageSource.fallsBack(after: error), let copy = await phonePage(model, artistId: artistId, source: .phoneCopy) {
+                show(.shown(copy))
+            } else {
+                show(.failed(error))
+            }
         }
+    }
+
+    /// Round 28 O3 (D341): the phone's page for an album-artist or a track-artist id.
+    private static func phonePage(_ model: AppModel, artistId: String, source: PageSource) async -> Page? {
+        guard let page = await model.offlineCatalog.artistPage(id: artistId) else { return nil }
+        return Page(artist: page.artist, albums: page.albums, songs: page.songs, source: source)
     }
 
     private func loadTopSongs(_ name: String, mbid: MBID?) async {

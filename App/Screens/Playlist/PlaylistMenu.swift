@@ -17,16 +17,27 @@ enum PlaylistMenuItem: Hashable, CaseIterable {
 }
 
 /// The `ellipsis.circle` menu in the playlist page's toolbar.
+/// Round 28 O3 (D341): on the phone's page (offline, or the phone's copy of a failed read) only Add to queue: the rest
+/// needs the server.
 struct PlaylistMoreMenu: View {
     @Environment(AppModel.self) private var model
     let playlist: Playlist
     let songs: [Song]
+    /// Round 28 O3: the server's page, online.
+    var onServer = true
     let rename: () -> Void
     let delete: () -> Void
 
+    /// Round 28 O3 (D341, D345): the items a page shows: offline or on the phone's page, Add to queue alone.
+    static func items(editable: Bool, onServer: Bool, offline: Bool) -> [PlaylistMenuItem] {
+        guard onServer, !offline else { return [.addToQueue] }
+        return PlaylistMenuItem.items(editable: editable)
+    }
+
     var body: some View {
         Menu {
-            ForEach(PlaylistMenuItem.items(editable: model.canEdit(playlist)), id: \.self) { item in
+            ForEach(Self.items(editable: model.canEdit(playlist), onServer: onServer, offline: model.isOffline),
+                    id: \.self) { item in
                 button(item)
             }
         } label: {
