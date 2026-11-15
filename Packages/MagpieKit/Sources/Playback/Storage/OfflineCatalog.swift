@@ -19,12 +19,25 @@ public struct OfflineCatalog: Sendable {
     private let cache: [AudioEntry]
     private let savedPlaylists: [DownloadedPlaylist]
     private let records: OfflineRecords
+    /// Fix round 1 (security L3): built once per catalogue, not on every call: the downloads by song id, grouped by
+    /// album, and their albums (by id and A to Z).
+    private let byId: [String: AudioMetadata]
+    private let groups: [String: [AudioMetadata]]
+    private let albumsById: [String: Album]
+    private let sortedAlbums: [Album]
 
     public init(entries: [AudioEntry], playlists: [DownloadedPlaylist], records: OfflineRecords = OfflineRecords()) {
-        downloads = entries.filter { $0.kind == .download }
+        let downloads = entries.filter { $0.kind == .download }
+        self.downloads = downloads
         cache = entries.filter { $0.kind == .cache }
         savedPlaylists = playlists
         self.records = records
+        byId = Dictionary(downloads.map { ($0.songId, $0.metadata) }, uniquingKeysWith: { a, _ in a })
+        let groups = Dictionary(grouping: downloads.map(\.metadata), by: Self.albumKey)
+        self.groups = groups
+        let albums = Dictionary(uniqueKeysWithValues: groups.map { ($0.key, Self.makeAlbum(id: $0.key, $0.value, records: records)) })
+        albumsById = albums
+        sortedAlbums = albums.values.sorted { Self.ordered($0.name, $0.id, $1.name, $1.id) }
     }
 
     /// Ids made here for albums and artists the server gave none.
@@ -36,15 +49,11 @@ public struct OfflineCatalog: Sendable {
     // MARK: - Albums
 
     /// The downloads grouped by album, sorted by name (case-insensitive).
-    public func albums() -> [Album] {
-        albumGroups().map { makeAlbum(id: $0.key, $0.value) }
-            .sorted { Self.ordered($0.name, $0.id, $1.name, $1.id) }
-    }
+    public func albums() -> [Album] { sortedAlbums }
 
     /// The album with its downloaded songs, ordered by disc and track.
     public func album(id: String) -> Album? {
-        let songs = downloads.map(\.metadata).filter { Self.albumKey($0) == id }
-        return songs.isEmpty ? nil : makeAlbum(id: id, songs)
+        albumsById[id]
     }
 
     /// The downloaded albums of the artist with `id` (from `artists()`): albums with a song by them, and (round 28 O2)
@@ -60,9 +69,7 @@ public struct OfflineCatalog: Sendable {
     /// the server's order (else by disc and track; songs the server no longer lists come last, D55), how many are on the
     /// phone and how many the album has (nil when not known). Nil when none of its songs is downloaded.
     public func albumPage(id: String) -> OfflineAlbumPage? {
-        let metas = downloads.map(\.metadata).filter { Self.albumKey($0) == id }
-        guard !metas.isEmpty else { return nil }
-        var album = makeAlbum(id: id, metas)
+        guard let metas = groups[id], !metas.isEmpty, var album = albumsById[id] else { return nil }
         let record = records.albums[id]
         if let record, let songs = album.songs {
             let position = Dictionary(record.songIds.enumerated().map { ($1, $0) }, uniquingKeysWith: { a, _ in a })
@@ -81,7 +88,7 @@ public struct OfflineCatalog: Sendable {
     /// The downloaded album and artist pages a downloaded song belongs to (their ids here), or nil when it isn't
     /// downloaded (round 11 R10: Now Playing's links offline).
     public func pages(ofSong songId: String) -> (albumId: String, artistId: String)? {
-        guard let meta = downloads.first(where: { $0.songId == songId })?.metadata else { return nil }
+        guard let meta = byId[songId] else { return nil }
         return (Self.albumKey(meta), Self.artistKey(meta.artistId, meta.artist))
     }
 
@@ -113,7 +120,7 @@ public struct OfflineCatalog: Sendable {
             }
         }
         for (id, entries) in Dictionary(grouping: ownAlbum, by: { Self.albumKey($0.metadata) }) {
-            let album = makeAlbum(id: id, entries.map(\.metadata))
+            let album = Self.makeAlbum(id: id, entries.map(\.metadata), records: records)
             dated.append((.album(album), entries.map(\.downloadedAt).max()!, album.name))
         }
         let landed = Dictionary(downloads.map { ($0.songId, $0.downloadedAt) }, uniquingKeysWith: max)
@@ -135,8 +142,7 @@ public struct OfflineCatalog: Sendable {
     public func artists() -> [Artist] {
         var names: [String: String] = [:]
         var albums: [String: Set<String>] = [:]
-        for (albumId, songs) in albumGroups().sorted(by: { $0.key < $1.key }) {
-            let album = makeAlbum(id: albumId, songs)
+        for (albumId, album) in albumsById.sorted(by: { $0.key < $1.key }) {
             let key = Self.artistKey(album.artistId, album.artist)
             if names[key] == nil { names[key] = album.artist }
             albums[key, default: []].insert(albumId)
@@ -214,7 +220,6 @@ public struct OfflineCatalog: Sendable {
         base.owner = base.owner ?? other?.owner
         base.kind = base.kind ?? other?.kind
         base.changed = base.changed ?? other?.changed
-        let byId = Dictionary(downloads.map { ($0.songId, $0.metadata) }, uniquingKeysWith: { a, _ in a })
         let songs = base.songIds.compactMap { byId[$0].map(Self.song) }
         guard !songs.isEmpty else { return nil }
         let playlist = Playlist(id: id, name: base.name, songCount: songs.count, duration: songs.reduce(0) { $0 + $1.duration },
@@ -225,13 +230,12 @@ public struct OfflineCatalog: Sendable {
 
     /// Round 28 O2: a downloaded song as the catalogue shows it; nil when it isn't a download.
     public func song(id: String) -> Song? {
-        downloads.first { $0.songId == id }.map { Self.song($0.metadata) }
+        byId[id].map(Self.song)
     }
 
     /// The playlist's songs in its order, skipping those not downloaded.
     public func songs(inPlaylist id: String) -> [Song] {
         guard let saved = savedPlaylists.first(where: { $0.id == id }) else { return [] }
-        let byId = Dictionary(downloads.map { ($0.songId, $0.metadata) }, uniquingKeysWith: { a, _ in a })
         return saved.songIds.compactMap { byId[$0].map(Self.song) }
     }
 
@@ -284,14 +288,10 @@ public struct OfflineCatalog: Sendable {
         artistId ?? localPrefix + "artist|" + name
     }
 
-    private func albumGroups() -> [String: [AudioMetadata]] {
-        Dictionary(grouping: downloads.map(\.metadata), by: Self.albumKey)
-    }
-
     /// An album of downloaded songs (`songs` not empty), ordered by disc and track. Round 28 O2: the header from its
     /// record when there is one; the album artist from the record, else from a song that knows it, else the first
     /// track's artist (as before).
-    private func makeAlbum(id: String, _ songs: [AudioMetadata]) -> Album {
+    private static func makeAlbum(id: String, _ songs: [AudioMetadata], records: OfflineRecords) -> Album {
         let ordered = songs.sorted {
             ($0.disc ?? 1, $0.track ?? Int.max, $0.title, $0.songId) < ($1.disc ?? 1, $1.track ?? Int.max, $1.title, $1.songId)
         }

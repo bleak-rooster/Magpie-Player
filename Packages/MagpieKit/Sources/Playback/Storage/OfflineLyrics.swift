@@ -96,6 +96,21 @@ extension AudioStore {
 
     func setLyricsTotalLimitForTesting(_ bytes: Int64) { lyricsTotalLimit = bytes }
 
+    /// Fix round 1 (security L4, D336 amended): removes every kept file from `source` (Find lyrics online turned off:
+    /// the ones found online go). Returns how many went.
+    @discardableResult
+    public func removeLyrics(source: OfflineLyrics.Source) -> Int {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: lyricsDirectory.path)) ?? []
+        var removed = 0
+        for name in names where name.hasSuffix(".json") {
+            let url = lyricsDirectory.appending(path: name)
+            guard let data = try? reader(url), data.count <= OfflineLyrics.maxFileBytes,
+                  let kept = try? JSONDecoder().decode(OfflineLyrics.self, from: data), kept.source == source else { continue }
+            if (try? FileManager.default.removeItem(at: url)) != nil { removed += 1 }
+        }
+        return removed
+    }
+
     /// Every kept file whose song isn't a download goes (and any file that isn't one of ours).
     func pruneLyrics(keeping songIds: Set<String>) {
         let names = (try? FileManager.default.contentsOfDirectory(atPath: lyricsDirectory.path)) ?? []

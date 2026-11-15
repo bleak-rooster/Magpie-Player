@@ -141,6 +141,54 @@ import Testing
         #expect(c.songs().map(\.id) == ["s1", "s2"])
     }
 
+    /// Fix round 1 (task M5): ids are compared only when both sides have them, else names.
+    @Test func catalog_compilationComparesIdsOnlyWhenBothHaveThem() throws {
+        let album = Album(id: "al1", name: "Solo", artist: "Ann", artistId: nil, songCount: 2, duration: 1)
+        let mixed = [Song(id: "s1", title: "a", artist: "Ann", artistId: "a-ann", album: "Solo", duration: 1),
+                     Song(id: "s2", title: "b", artist: "Ann", artistId: nil, album: "Solo", duration: 1)]
+        #expect(!OfflineRecords.AlbumRecord(album: album, songs: mixed, savedAt: .now).compilation,
+                "one artist, given an id on one song only, is not a compilation")
+        var withId = album
+        withId.artistId = "a-ann"
+        #expect(!OfflineRecords.AlbumRecord(album: withId, songs: mixed, savedAt: .now).compilation)
+        let various = Album(id: "al2", name: "Hits", artist: "Various", artistId: "va", songCount: 2, duration: 1)
+        let two = [Song(id: "s3", title: "a", artist: "Ann", artistId: "a-ann", album: "Hits", duration: 1),
+                   Song(id: "s4", title: "b", artist: "Bob", artistId: nil, album: "Hits", duration: 1)]
+        #expect(OfflineRecords.AlbumRecord(album: various, songs: two, savedAt: .now).compilation)
+    }
+
+    /// Fix round 1 (security L3): a big phone builds its catalogue and pages within a deadline.
+    @Test func catalog_twentyThousandDownloadsWithinADeadline() throws {
+        let started = ContinuousClock.now
+        var entries: [AudioEntry] = []
+        var records = OfflineRecords()
+        for i in 0..<20_000 {
+            entries.append(Self.entry(Self.meta("s\(i)", album: "al\(i % 2_000)", artist: "Artist \(i % 500)",
+                                                artistId: "ar\(i % 500)", track: i % 13,
+                                                albumArtist: i % 7 == 0 ? "Various" : nil, albumArtistId: i % 7 == 0 ? "va" : nil)))
+        }
+        for a in 0..<2_000 {
+            records.albums["al\(a)"] = .init(album: Album(id: "al\(a)", name: "Album \(a)", artist: "Artist \(a % 500)",
+                                                          artistId: "ar\(a % 500)", songCount: 12, duration: 1),
+                                             songs: (0..<10).map { Self.song("s\(a + $0 * 2_000)") }, savedAt: .now)
+        }
+        for p in 0..<300 {
+            records.playlists["p\(p)"] = OfflineRecords.playlistRecord(Playlist(id: "p\(p)", name: "P\(p)", songCount: 1, duration: 1),
+                                                                      songs: (0..<200).map { Self.song("s\(p * 60 + $0)") },
+                                                                      kind: .playlist, savedAt: .now)
+        }
+        let c = OfflineCatalog(entries: entries, playlists: [], records: records)
+        #expect(c.albums().count == 2_000)
+        let artists = c.artists()
+        #expect(artists.count >= 500)
+        #expect(c.playlists(includingRecorded: true).count == 300)
+        for artist in artists.prefix(200) { _ = c.artistPage(id: artist.id) }
+        for a in 0..<500 { #expect(c.albumPage(id: "al\(a)") != nil) }
+        for p in 0..<300 { _ = c.playlistPage(id: "p\(p)") }
+        _ = c.search("artist 4")
+        #expect(ContinuousClock.now - started < .seconds(20), "took \(ContinuousClock.now - started)")
+    }
+
     @Test func catalog_withoutRecordsFallsBackToSnapshots() throws {
         let entries = [Self.entry(Self.meta("s2", artist: "Ann", artistId: "a-ann", track: 2)),
                        Self.entry(Self.meta("s1", artist: "Bob", artistId: "a-bob", track: 1))]

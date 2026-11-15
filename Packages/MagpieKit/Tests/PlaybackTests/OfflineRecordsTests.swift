@@ -272,6 +272,44 @@ import MagpieCore
         #expect(await early.records().albums["al1"] != nil, "read once it can be")
     }
 
+    /// Fix round 1 (security M2): one oversized record is refused, never written by evicting everything else; quickly.
+    @Test func records_oversizeRecordRefusedOthersKept() async throws {
+        let started = ContinuousClock.now
+        let store = await store()
+        try await download(store, Self.song("s1"))
+        try await store.recordAlbum(.init(album: Self.album(), songs: [Self.song("s1")], savedAt: .now))
+        let longId = String(repeating: "x", count: OfflineRecords.maxIdBytes + 1)
+        var hostile = Self.album(longId)
+        hostile.name = String(repeating: "n", count: 2_000_000)
+        #expect(try await store.recordAlbum(.init(album: hostile, songs: [Self.song("s1")], savedAt: .distantFuture)) == .refused,
+                "an id too long to keep")
+        let huge = (0..<OfflineRecords.maxPlaylistSongs).map { Self.song("s1-" + String(repeating: "\($0 % 10)", count: 200) + "\($0)") }
+        await store.setRecordByteLimitForTesting(100_000)
+        let big = OfflineRecords.playlistRecord(Playlist(id: "p-big", name: "Big", songCount: 1, duration: 1),
+                                                songs: [Self.song("s1")] + huge, kind: .playlist, savedAt: .distantFuture)
+        #expect(try await store.recordPlaylist(big) == .refused, "bigger than one record may be")
+        let records = await store.records()
+        #expect(records.albums.keys.sorted() == ["al1"], "the others are kept")
+        #expect(records.playlists.isEmpty)
+        #expect(ContinuousClock.now - started < .seconds(10))
+    }
+
+    /// Fix round 1 (security M2): text is bounded by UTF-8 bytes, cut between characters; long ids leave the lists.
+    @Test func records_textBoundedByBytes() throws {
+        var album = Self.album()
+        album.name = String(repeating: "é", count: 400)   // 800 bytes
+        album.artist = String(repeating: "👩‍👩‍👧", count: 100)
+        let longSong = Self.song(String(repeating: "z", count: OfflineRecords.maxIdBytes + 1))
+        let record = OfflineRecords.AlbumRecord(album: album, songs: [Self.song("s1"), longSong], savedAt: .now)
+        #expect(record.name.utf8.count <= OfflineRecords.maxText && record.name.allSatisfy { $0 == "é" } && !record.name.isEmpty)
+        #expect(record.artist.utf8.count <= OfflineRecords.maxText && record.artist.allSatisfy { $0 == "👩‍👩‍👧" })
+        #expect(record.songIds == ["s1"], "an id too long to keep leaves the list")
+        let playlist = OfflineRecords.playlistRecord(Playlist(id: "p1", name: String(repeating: "ß", count: 600), songCount: 1,
+                                                              duration: 1, owner: String(repeating: "ø", count: 600)),
+                                                     songs: [Self.song("s1")], kind: .playlist, savedAt: .now)
+        #expect(playlist.name.utf8.count <= OfflineRecords.maxText && (playlist.owner?.utf8.count ?? 0) <= OfflineRecords.maxText)
+    }
+
     @Test func records_oldDownloadedPlaylistFileStillReads() throws {
         let old = Data(#"{"id":"p1","name":"Mix","coverArtId":"pl-1","songIds":["s1","s2"],"savedAt":10}"#.utf8)
         let playlist = try JSONDecoder().decode(DownloadedPlaylist.self, from: old)

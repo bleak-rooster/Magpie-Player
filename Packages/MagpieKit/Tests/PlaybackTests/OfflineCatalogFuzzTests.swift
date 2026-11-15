@@ -114,6 +114,25 @@ import MagpieCore
         let downloads = await store.entries().filter { $0.kind == .download }
         let records = await store.records()
         #expect(records == records.pruned(downloads: downloads.map(\.metadata)), "seed \(seed): a record outlived its downloads")
+        // Fix round 1 (task M3): an oracle that doesn't use the store's own prune, straight from the files on disk.
+        let metas = downloads.map(\.metadata)
+        for (id, album) in records.albums {
+            #expect(metas.contains { $0.albumId == id || album.songIds.contains($0.songId) }, "seed \(seed): album \(id) orphaned")
+        }
+        for (id, artist) in records.artists {
+            let held = metas.contains { meta in
+                meta.artistId == id || meta.albumArtistId == id || meta.albumId.map { artist.albumIds.contains($0) } == true
+                    || records.albums.values.contains { $0.artistId == id && ($0.id == meta.albumId || $0.songIds.contains(meta.songId)) }
+            }
+            #expect(held, "seed \(seed): artist \(id) orphaned")
+        }
+        for (id, playlist) in records.playlists {
+            #expect(metas.contains { playlist.songIds.contains($0.songId) }, "seed \(seed): playlist \(id) orphaned")
+        }
+        if let data = try? Data(contentsOf: store.directory.appending(path: "records.json")),
+           let onDisk = try? JSONDecoder().decode(OfflineRecords.self, from: data) {
+            #expect(onDisk.bounded() == records, "seed \(seed): memory and disk disagree")
+        }
         let ids = Set(downloads.map(\.songId))
         let lyricsDir = store.directory.appending(path: "lyrics")
         let lyricsNames = Set((try? FileManager.default.contentsOfDirectory(atPath: lyricsDir.path)) ?? [])

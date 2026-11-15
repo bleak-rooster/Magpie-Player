@@ -21,8 +21,14 @@ public struct OfflineRecords: Codable, Equatable, Sendable {
     public static let maxAlbumSongs = 500
     public static let maxArtistAlbums = 500
     public static let maxPlaylistSongs = 2_000
-    /// A name, artist or genre longer than this is cut (a server can send anything).
+    /// A name, artist, owner or genre longer than this many UTF-8 bytes is cut (a server can send anything).
+    /// Fix round 1 (security M2): bytes, not characters, so a record's size is bounded whatever the script.
     public static let maxText = 500
+    /// Fix round 1 (security M2): an id (a record's, a song's, an album's, a cover's) longer than this many UTF-8 bytes
+    /// is not kept: a record with one is refused, a list leaves it out (it can't be cut without naming something else).
+    public static let maxIdBytes = 256
+    /// Fix round 1 (security M2): one record bigger than this is refused (never written by evicting the others).
+    public static let maxRecordBytes = 1024 * 1024
 
     public var version = OfflineRecords.currentVersion
     public var albums: [String: AlbumRecord] = [:]
@@ -59,17 +65,31 @@ public struct OfflineRecords: Codable, Equatable, Sendable {
             id = album.id
             name = OfflineRecords.text(album.name)
             artist = OfflineRecords.text(album.artist)
-            artistId = album.artistId
+            artistId = OfflineRecords.id(album.artistId)
             year = album.year ?? album.originalYear
             let genres = songs.compactMap { $0.genre?.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
             genre = genres.first.map(OfflineRecords.text)
             songCount = max(0, max(album.songCount, songs.count))
             duration = OfflineRecords.length(album.duration)
-            coverArtId = album.coverArtId
-            let trackArtists = Set(songs.map { $0.artistId ?? $0.artist })
-            compilation = trackArtists.count > 1 && songs.contains { ($0.artistId ?? $0.artist) != (album.artistId ?? album.artist) }
-            songIds = Array(songs.map(\.id).prefix(OfflineRecords.maxAlbumSongs))
+            coverArtId = OfflineRecords.id(album.coverArtId)
+            compilation = Self.isCompilation(album: album, songs: songs)
+            songIds = OfflineRecords.ids(songs.map(\.id), OfflineRecords.maxAlbumSongs)
             self.savedAt = savedAt
+        }
+
+        /// More than one track artist, and a song not by the album artist. Fix round 1 (task M5): ids are compared only
+        /// when both sides have one; otherwise names (a server that gives some ids and not others).
+        static func isCompilation(album: Album, songs: [Song]) -> Bool {
+            func same(_ aId: String?, _ aName: String, _ bId: String?, _ bName: String) -> Bool {
+                if let aId, let bId { return aId == bId }
+                return aName.caseInsensitiveCompare(bName) == .orderedSame
+            }
+            var artists: [(id: String?, name: String)] = []
+            for song in songs where !artists.contains(where: { same($0.id, $0.name, song.artistId, song.artist) }) {
+                artists.append((song.artistId, song.artist))
+                if artists.count > 1 { break }
+            }
+            return artists.count > 1 && songs.contains { !same($0.artistId, $0.artist, album.artistId, album.artist) }
         }
 
         /// Whether it shows the same as `other` (when it was saved doesn't count).
@@ -92,8 +112,8 @@ public struct OfflineRecords: Codable, Equatable, Sendable {
         public init(artist: Artist, albums: [Album], savedAt: Date) {
             id = artist.id
             name = OfflineRecords.text(artist.name)
-            coverArtId = artist.coverArtId
-            albumIds = Array(albums.map(\.id).prefix(OfflineRecords.maxArtistAlbums))
+            coverArtId = OfflineRecords.id(artist.coverArtId)
+            albumIds = OfflineRecords.ids(albums.map(\.id), OfflineRecords.maxArtistAlbums)
             self.savedAt = savedAt
         }
 
@@ -107,8 +127,8 @@ public struct OfflineRecords: Codable, Equatable, Sendable {
     /// The record of `playlist` as read with `songs` (its order), as `kind`.
     public static func playlistRecord(_ playlist: Playlist, songs: [Song], kind: OfflinePlaylistKind,
                                       savedAt: Date) -> DownloadedPlaylist {
-        DownloadedPlaylist(id: playlist.id, name: text(playlist.name), coverArtId: playlist.coverArtId,
-                           songIds: Array(songs.map(\.id).prefix(maxPlaylistSongs)), savedAt: savedAt,
+        DownloadedPlaylist(id: playlist.id, name: text(playlist.name), coverArtId: id(playlist.coverArtId),
+                           songIds: ids(songs.map(\.id), maxPlaylistSongs), savedAt: savedAt,
                            owner: playlist.owner.map(text), kind: kind, changed: playlist.changed)
     }
 
@@ -145,38 +165,55 @@ public struct OfflineRecords: Codable, Equatable, Sendable {
             + playlists.values.compactMap(\.coverArtId))
     }
 
-    /// Within every bound: each record's lists, then the counts (the records saved longest ago go first), then the
-    /// size (the oldest go until the file fits). Records whose key isn't their id are dropped.
+    /// Within every bound: each record's lists and ids, then the counts (the records saved longest ago go first), then
+    /// the size (the oldest go until the file fits). Records whose key isn't their id, whose id is too long, or that are
+    /// over `maxRecordBytes` on their own, are dropped. Fix round 1 (task M7): each record is encoded once and the file's
+    /// size is summed from them; nothing is trimmed unless it is over.
     public func bounded() -> OfflineRecords {
         var copy = self
         copy.version = Self.currentVersion
-        copy.albums = albums.filter { $0.key == $0.value.id }.mapValues { record in
+        copy.albums = albums.filter { $0.key == $0.value.id && Self.isId($0.key) }.mapValues { record in
             var r = record
-            r.songIds = Array(r.songIds.prefix(Self.maxAlbumSongs))
+            r.songIds = Self.ids(r.songIds, Self.maxAlbumSongs)
             r.songCount = max(0, r.songCount)
             r.duration = Self.length(r.duration)
             return r
         }
-        copy.artists = artists.filter { $0.key == $0.value.id }.mapValues { record in
+        copy.artists = artists.filter { $0.key == $0.value.id && Self.isId($0.key) }.mapValues { record in
             var r = record
-            r.albumIds = Array(r.albumIds.prefix(Self.maxArtistAlbums))
+            r.albumIds = Self.ids(r.albumIds, Self.maxArtistAlbums)
             return r
         }
-        copy.playlists = playlists.filter { $0.key == $0.value.id }.mapValues { record in
+        copy.playlists = playlists.filter { $0.key == $0.value.id && Self.isId($0.key) }.mapValues { record in
             var r = record
-            r.songIds = Array(r.songIds.prefix(Self.maxPlaylistSongs))
+            r.songIds = Self.ids(r.songIds, Self.maxPlaylistSongs)
             return r
         }
         copy.albums = Self.newest(copy.albums, Self.maxAlbums, \.savedAt)
         copy.artists = Self.newest(copy.artists, Self.maxArtists, \.savedAt)
         copy.playlists = Self.newest(copy.playlists, Self.maxPlaylists, \.savedAt)
-        // The size: drop the oldest tenth of what's left until it fits (bounded: at most 64 passes).
-        var passes = 0
-        while passes < 64, let size = copy.encoded()?.count, size > Self.maxBytes, !copy.isEmpty {
-            passes += 1
-            copy.dropOldest(max(1, copy.count / 10))
+
+        enum Key { case album(String), artist(String), playlist(String) }
+        let encoder = JSONEncoder()
+        var sized: [(date: Date, order: String, key: Key, bytes: Int)] = []
+        func size<T: Encodable>(_ value: T, _ id: String) -> Int? {
+            guard let n = try? encoder.encode(value).count, n <= Self.maxRecordBytes else { return nil }
+            return n + id.utf8.count + 8   // the key, its quotes, the colon and the comma
         }
-        if let size = copy.encoded()?.count, size > Self.maxBytes { return OfflineRecords() }
+        for (id, r) in copy.albums { if let n = size(r, id) { sized.append((r.savedAt, "a" + id, .album(id), n)) } else { copy.albums[id] = nil } }
+        for (id, r) in copy.artists { if let n = size(r, id) { sized.append((r.savedAt, "r" + id, .artist(id), n)) } else { copy.artists[id] = nil } }
+        for (id, r) in copy.playlists { if let n = size(r, id) { sized.append((r.savedAt, "p" + id, .playlist(id), n)) } else { copy.playlists[id] = nil } }
+        let limit = Self.maxBytes - 1024   // room for the outer keys
+        var total = sized.reduce(0) { $0 + $1.bytes }
+        guard total > limit else { return copy }
+        for item in sized.sorted(by: { ($0.date, $0.order) < ($1.date, $1.order) }) where total > limit {
+            switch item.key {
+            case .album(let id): copy.albums[id] = nil
+            case .artist(let id): copy.artists[id] = nil
+            case .playlist(let id): copy.playlists[id] = nil
+            }
+            total -= item.bytes
+        }
         return copy
     }
 
@@ -192,27 +229,34 @@ public struct OfflineRecords: Codable, Equatable, Sendable {
 
     var count: Int { albums.count + artists.count + playlists.count }
 
-    private mutating func dropOldest(_ n: Int) {
-        enum Key { case album(String), artist(String), playlist(String) }
-        let dated: [(Date, String, Key)] = albums.map { ($0.value.savedAt, "a" + $0.key, .album($0.key)) }
-            + artists.map { ($0.value.savedAt, "r" + $0.key, .artist($0.key)) }
-            + playlists.map { ($0.value.savedAt, "p" + $0.key, .playlist($0.key)) }
-        for (_, _, key) in dated.sorted(by: { ($0.0, $0.1) < ($1.0, $1.1) }).prefix(n) {
-            switch key {
-            case .album(let id): albums[id] = nil
-            case .artist(let id): artists[id] = nil
-            case .playlist(let id): playlists[id] = nil
-            }
-        }
-    }
-
     private static func newest<T>(_ records: [String: T], _ limit: Int, _ date: KeyPath<T, Date>) -> [String: T] {
         guard records.count > limit else { return records }
         let kept = records.sorted { ($0.value[keyPath: date], $0.key) > ($1.value[keyPath: date], $1.key) }.prefix(limit)
         return Dictionary(uniqueKeysWithValues: kept.map { ($0.key, $0.value) })
     }
 
-    static func text(_ s: String) -> String { s.count > maxText ? String(s.prefix(maxText)) : s }
+    /// At most `maxText` UTF-8 bytes, cut between characters (fix round 1, security M2).
+    public static func text(_ s: String) -> String {
+        guard s.utf8.count > maxText else { return s }
+        var out = ""
+        var bytes = 0
+        for character in s {
+            let n = character.utf8.count
+            guard bytes + n <= maxText else { break }
+            out.append(character)
+            bytes += n
+        }
+        return out
+    }
+
+    /// Whether `id` may be kept: not empty, at most `maxIdBytes` UTF-8 bytes.
+    public static func isId(_ id: String) -> Bool { !id.isEmpty && id.utf8.count <= maxIdBytes }
+
+    /// An optional id, or nil when it can't be kept.
+    static func id(_ id: String?) -> String? { id.flatMap { isId($0) ? $0 : nil } }
+
+    /// The ids that may be kept, at most `limit`.
+    static func ids(_ ids: [String], _ limit: Int) -> [String] { Array(ids.lazy.filter(isId).prefix(limit)) }
 
     /// A length JSON can hold: finite and not negative.
     static func length(_ t: TimeInterval) -> TimeInterval { t.isFinite ? max(0, t) : 0 }
@@ -232,7 +276,11 @@ extension AudioStore {
         case unchanged
         /// None of the page's songs is a download: nothing written.
         case noDownload
+        /// Fix round 1 (security M2): the record can't be kept (its id is too long, or it is too big on its own).
+        case refused
     }
+
+    func setRecordByteLimitForTesting(_ bytes: Int) { recordByteLimit = bytes }
 
     static let recordsName = "records.json"
     nonisolated var recordsURL: URL { directory.appending(path: Self.recordsName) }
@@ -245,6 +293,7 @@ extension AudioStore {
     @discardableResult
     public func recordAlbum(_ record: OfflineRecords.AlbumRecord) throws -> RecordOutcome {
         try ensureReady()
+        guard isStorable(record, id: record.id) else { return .refused }
         let songIds = Set(record.songIds)
         guard downloadMetadata().contains(where: { $0.albumId == record.id || songIds.contains($0.songId) }) else {
             return .noDownload
@@ -260,6 +309,7 @@ extension AudioStore {
     @discardableResult
     public func recordArtist(_ record: OfflineRecords.ArtistRecord) throws -> RecordOutcome {
         try ensureReady()
+        guard isStorable(record, id: record.id) else { return .refused }
         let albums = Set(record.albumIds)
         guard downloadMetadata().contains(where: {
             $0.artistId == record.id || $0.albumArtistId == record.id || $0.albumId.map(albums.contains) == true
@@ -278,7 +328,8 @@ extension AudioStore {
         let downloads = Set(downloadMetadata().map(\.songId))
         guard record.songIds.contains(where: downloads.contains) else { return .noDownload }
         var bounded = record
-        bounded.songIds = Array(record.songIds.prefix(OfflineRecords.maxPlaylistSongs))
+        bounded.songIds = OfflineRecords.ids(record.songIds, OfflineRecords.maxPlaylistSongs)
+        guard isStorable(bounded, id: record.id) else { return .refused }
         return try changeRecords { records in
             if let saved = records.playlists[record.id], OfflineRecords.showsSame(saved, bounded) { return false }
             records.playlists[record.id] = bounded
@@ -323,6 +374,13 @@ extension AudioStore {
     }
 
     // MARK: - Internal
+
+    /// Fix round 1 (security M2): a record may be kept when its id is short enough and it fits `recordByteLimit` on
+    /// its own; a bigger one is refused before anything else is touched.
+    func isStorable<T: Encodable>(_ record: T, id: String) -> Bool {
+        guard OfflineRecords.isId(id), let size = try? JSONEncoder().encode(record).count else { return false }
+        return size <= recordByteLimit
+    }
 
     /// The downloads' snapshots (never the cache's).
     func downloadMetadata() -> [AudioMetadata] {

@@ -34,6 +34,8 @@ public actor AudioStore {
     var recordsCache: OfflineRecords?
     /// Round 28 O2: the most all kept lyrics may take (D336: 20 MB; tests lower it).
     var lyricsTotalLimit = OfflineLyrics.maxTotalBytes
+    /// Fix round 1 (security M2): the most one record may take (`OfflineRecords.maxRecordBytes`; tests lower it).
+    var recordByteLimit = 1024 * 1024
 
     struct Index: Codable, Equatable {
         var entries: [String: AudioEntry] = [:]

@@ -87,6 +87,19 @@ import MagpieCore
         #expect(await store.savedLyrics(songId: "d1") == nil, "the oldest went")
     }
 
+    /// Fix round 1 (security L4): turning Find lyrics online off removes the ones found online; the library's stay.
+    @Test func lyrics_foundOnlineRemovedBySource() async throws {
+        let store = await store()
+        for id in ["d1", "d2", "d3"] { try await add(store, id) }
+        try await store.saveLyrics(OfflineLyrics(songId: "d1", source: .online, lyrics: Self.lines, savedAt: .now))
+        try await store.saveLyrics(OfflineLyrics(songId: "d2", source: .online, lyrics: nil, savedAt: .now))
+        try await store.saveLyrics(OfflineLyrics(songId: "d3", source: .library, lyrics: Self.lines, savedAt: .now))
+        #expect(await store.removeLyrics(source: .online) == 2)
+        #expect(await store.savedLyrics(songId: "d1") == nil)
+        #expect(await store.savedLyrics(songId: "d2") == nil)
+        #expect(await store.savedLyrics(songId: "d3") != nil)
+    }
+
     @Test func lyrics_goWithTheSong() async throws {
         let store = await store()
         try await add(store, "d1")
