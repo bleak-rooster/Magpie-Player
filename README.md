@@ -37,7 +37,9 @@ distributed only through TestFlight. It is not on the App Store. Expect rough ed
 | Hear a song before you add it | 30-second previews, played through your Aurral server |
 | Search that finds anything, not just what you own | Your library first, then a "Not in your library" band with a **Try** button |
 | Add a song and it's just there | Lidarr fetches it (through Tubifarry and slskd), Navidrome picks it up, and Magpie tells you when it's ready |
-| An artist page with their top songs | From Aurral, ListenBrainz and your library: the ones you have for artists you collect, with previews for the rest |
+| An artist page with their top songs | From Aurral, ListenBrainz and your library: the ones you have for artists you collect, with previews for the rest, and **Play top songs** to play up to fifteen in order |
+| A mix that keeps going from any song | **Automix**: songs like this one, or like this artist, from your own library, 20 to 100 of them, as close or as adventurous as you like |
+| Lyrics for whatever's playing | Your server's lyrics (its lyrics plugin is asked for every song you play), and optionally lyrics looked up online |
 | Offline listening, in the car too | Downloads, a size-limited cache, and a full CarPlay app |
 
 Every part beyond Navidrome is optional. Each feature works, is hidden, or explains why not, depending on which
@@ -52,9 +54,11 @@ and keeps playlists up to date for each person on your server. Magpie turns it i
 - **Recommended, Trending and editorial playlists**, with pictures and 30-second previews. All of it comes through
   your own Aurral server: the phone never contacts Deezer or Apple itself.
 - **Flows**: playlists Aurral builds and keeps fresh on a schedule. Make your own from a mix you choose (discovery,
-  your library, trending, a focus, new releases), with how many songs each update brings, years, tags and related
-  artists. You can edit them, refresh them, or delete them.
-- **Chart flows**: turn a chart's top 10, 20, 25, 50 or 100 songs into a playlist of your own that follows the chart.
+  your library, trending, a focus, new releases), with how many songs each kind brings (up to 100 each, as in Aurral's
+  own editor), years, tags and related artists. You can edit them, refresh them, or delete them.
+- **Chart flows**: turn a chart (the whole of it to start, up to 100 songs, or its top 10, 20, 25 or 50) into a
+  playlist of your own that keeps up with the chart once a day. Open that chart on Trending and the songs your flow
+  holds play in full, with **Play** for all of them; one still downloading says "On its way".
 - **Add** an editorial playlist as a flow, and say **Not for me** to a recommendation to teach Aurral your taste.
 - New flows start fetching their songs by themselves. **Songs still coming** shows what Aurral is still fetching,
   with **Approve**, **Try another source** and **Search now** for your own songs, and **Search again** finds the ones
@@ -64,6 +68,10 @@ and keeps playlists up to date for each person on your server. Magpie turns it i
   to the person who made them, not by name, so two people's "Chill" stay apart, even before their songs have reached
   your library (they show as "Downloading" or "Not ready yet" until then). Another person's name is shown only when
   Aurral tells Magpie whose it is, which it does for Aurral admins.
+- **Discover opens at once.** Your flows and Aurral playlists are saved on the phone and refreshed in the background,
+  changing in place when something is new. A flow's page shows its songs straight away and fills in your library's
+  copies as it goes, so even a big flow opens quickly. Tap an artist in a playlist's artist list to open their page,
+  whether you have them or not, and **Add** the ones you don't.
 - Discover is in the car too.
 
 **Your library, through Navidrome**
@@ -73,12 +81,23 @@ and keeps playlists up to date for each person on your server. Magpie turns it i
 - An artist's page shows their top songs (from Aurral, ListenBrainz or your library, with 30-second previews for the
   ones you don't have). An artist Lidarr looks after shows up to five of their top songs that you already have — found
   even when you have the album rather than the single. The list is ready the moment you open the page, and is quietly
-  refreshed in the background while you look.
-- A queue with shuffle and repeat, the lock screen and Control Centre, and synced lyrics when your server has them.
-  Playback is gapless when the files carry gapless information.
+  refreshed in the background while you look. **Play top songs** plays up to fifteen of an artist's top songs that
+  you have, in order, ready to shuffle.
+- **Automix** from Now Playing or an artist page: songs like this one from your library, 20, 50 or 100 of them, Close,
+  Balanced or Adventurous. The first song plays straight away while the rest of the queue is built behind it; nothing
+  is saved as a playlist.
+- A queue with shuffle and repeat, the lock screen and Control Centre, and synced lyrics. Magpie asks your server for
+  every song's lyrics as it starts, so a lyrics plugin such as nd-lyrics can fetch them; **Find lyrics online** (off
+  by default) looks up the rest on LRCLIB, sending only the song's title, artist, album and length. Playback is
+  gapless when the files carry gapless information.
+- Songs converted for mobile data no longer skip: a dropped connection picks up where it left off on the same
+  quality, seeks land where you drag (on servers that support it), and an error under Now Playing goes when the next
+  song starts.
 - Download albums and playlists for offline listening, with a size-limited cache for what you stream.
 - Several server addresses (home and away). Magpie uses the first that answers and switches when one stops
   responding.
+- Album covers large or small (three across) in every album grid.
+- **Your flows on Home** by last played or A to Z, with other people's names on their flows when you show everyone's.
 - Three looks (Classic, Signature, Immersive), light and dark, and a Home screen and CarPlay layout you can rearrange.
 
 **Getting new music: Try, Finds and Keep (Lidarr, optional)**
@@ -102,6 +121,10 @@ and keeps playlists up to date for each person on your server. Magpie turns it i
   goes through one write gate that only allows a short list of requests. It only touches artists and albums Magpie
   itself added or monitored, and logs each change on the phone before sending it. Your own artists, profiles and
   settings are left alone, with one opt-in exception below.
+- **Missing albums.** Ask Lidarr to search for every missing album of the artists it watches, now or automatically
+  every day or week when you open Magpie. **Clear all downloads and search again** clears stuck and pending downloads
+  (another app's too, never one that's importing or finished) and, once they're all gone, asks Lidarr to look for
+  those albums again.
 - **Change what's monitored (opt-in).** With **Let Magpie change what Lidarr monitors for my artists** switched on, an
   artist's menu lets you choose Albums, EPs and Singles. When fewer are monitored, Magpie asks whether to delete the
   songs that fall out or keep them (Keep is the default); kept songs can be removed later with **Clean up unmatched
@@ -123,6 +146,8 @@ and keeps playlists up to date for each person on your server. Magpie turns it i
   is locked, once the phone has been unlocked after a restart.
 - Every list reaches its end, however small the car's screen: long lists open on letter groups or go on with "More…"
   pages, within the limits the car sets.
+- Your flows on the car's Home are in the order you last played them, and an option mixes your flows and Aurral
+  playlists into the car's Playlists list, A to Z, with other people's names on theirs.
 
 ## Setting up your server
 
@@ -163,7 +188,8 @@ flowchart LR
 
 **1. Navidrome (required).** Point it at your music folder. Sign in to Magpie with an admin account if you can: a
 normal account is fine for listening, but only an admin can ask Navidrome to scan, which Magpie does when new music
-arrives.
+arrives. If you use a lyrics plugin such as nd-lyrics, add it to Navidrome's `LyricsPriority` (for example
+`embedded,.lrc,nd-lyrics`) so it runs when Magpie asks for a song's lyrics.
 
 **2. Lidarr.** Give Lidarr the **same music folder** as Navidrome as its root folder (Magpie checks that Navidrome
 lists a song before calling it ready). Set a recycle bin (Settings › Media Management): **Not for me** deletes files,
@@ -212,7 +238,7 @@ home; [`docs/RUNBOOK.md`](docs/RUNBOOK.md) has the full checklist and what Magpi
 - **Background work is limited by iOS.** Requests are followed while the app runs and whenever iOS grants background
   time, so a download that finishes while the app is closed may only show up the next time you open it.
 - **Not built yet:**
-  - in CarPlay: Not for me;
+  - in CarPlay: Not for me, Automix and lyrics;
   - Siri;
   - Live Activities.
 - **Removing an artist Magpie added clears what it left behind** (Lidarr's blocklist entries for it, and, with the

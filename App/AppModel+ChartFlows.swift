@@ -24,6 +24,8 @@ struct ChartPage: Codable, Equatable, Sendable {
 ///   (Songs: N, Refresh now, Remove flow), each sending only the songs that leave (with their files) and come in. Each only on the owner's tap and only with accessFlow; Aurral downloads,
 ///   matches and publishes it to Navidrome. Magpie keeps each chart's flow (its playlist and N) per Navidrome account
 ///   and Aurral user with Discover's feeds (removed on sign-out).
+/// - Round 27 D2 (owner item 16, 2026-11-14): a new flow starts at the whole chart (up to 100; existing flows keep their
+///   N) (D320), and a confirmed flow keeps up with its chart once a day when the chart is read (D319).
 extension AppModel {
     // MARK: - Reading a chart
 
@@ -178,7 +180,7 @@ extension AppModel {
             if let client = try? chartFlowClient() { try? await client.deleteChartFlow(playlistId: old.playlistId) }
             aurralFeeds.forgetChartFlow(page.chart.key, removed: true)   // a late retry of it is never taken back
         }
-        return try await createChartFlow(page, count: old?.count ?? ChartFlowPlan.defaultCount(chartLength: page.songs.count))
+        return try await createChartFlow(page, count: old?.count ?? Self.newChartFlowCount(chartLength: page.songs.count))
     }
 
     /// The chart's flow as the server has it now (Trending's state line), or nil when there is none:
@@ -238,7 +240,7 @@ extension AppModel {
                 && !book.wasRemoved($0.id)   // re-review I3: removed or dropped here: its queued delete hasn't run yet
         }) else { return false }
         let now = aurralFeeds.now()
-        let count = min(ChartFlowPlan.maxSongs, max(1, found.size ?? ChartFlowPlan.defaultCount(chartLength: page.songs.count)))
+        let count = min(ChartFlowPlan.maxSongs, max(1, found.size ?? Self.newChartFlowCount(chartLength: page.songs.count)))
         aurralFeeds.noteChartFlow(ChartFlow(chartKey: page.chart.key, playlistId: found.id, name: found.name, count: count,
                                             createdAt: now, refreshedAt: now, confirmed: true))
         return true
@@ -261,7 +263,7 @@ extension AppModel {
     /// with their files, the ones that come in are added.
     @discardableResult
     func resizeChartFlow(_ page: ChartPage, count: Int) async throws -> ChartFlow {
-        try await sendChartFlow(page, count: count)
+        try await whileSendingByHand(page.chart) { try await sendChartFlow(page, count: count) }
     }
 
     /// Refresh now: the chart is read again and the flow given its top N as they are now.
@@ -270,9 +272,11 @@ extension AppModel {
         guard let flow = chartFlow(for: chart) else { throw AurralError.notFound }
         guard flow.confirmed else { throw AurralError.runActive }
         _ = try chartFlowClient()
-        let page = try await chartPage(chart, fresh: true)
-        if aurralFeeds.trending?.chart == chart { await aurralFeeds.refresh(.trending, force: true) }
-        return try await sendChartFlow(page, count: flow.count)
+        return try await whileSendingByHand(chart) {
+            let page = try await chartPage(chart, fresh: true)
+            if aurralFeeds.trending?.chart == chart { await aurralFeeds.refresh(.trending, force: true) }
+            return try await sendChartFlow(page, count: flow.count)
+        }
     }
 
     /// Fix round I2: the changes between the flow's songs (its jobs on the server) and the top `count`, sent as one
@@ -317,6 +321,74 @@ extension AppModel {
         }
         aurralFeeds.forgetChartFlow(chart.key, removed: true)
         afterChartFlowChange()
+    }
+
+    // MARK: - New flows and keeping up (round 27 D2)
+
+    /// Round 27 D2 (per owner Q4, D320; supersedes D134's "25 to start"): Create flow… starts at the whole chart, up to
+    /// 100 songs.
+    nonisolated static func newChartFlowCount(chartLength: Int) -> Int { max(1, min(chartLength, ChartFlowPlan.maxSongs)) }
+
+    /// How long a flow waits between keeping up with its chart.
+    nonisolated static let chartFlowKeepUpInterval: TimeInterval = 24 * 60 * 60
+
+    /// Round 27 D2 (owner item 16, D319; amends D134, whose Refresh now stays for "now"): the chart was read (Trending,
+    /// or its Home shelf), so its flow follows it, at most once a day. Sent only when:
+    /// - Aurral is set up, online, with accessFlow, and the chart has a **confirmed** flow that the user's own list
+    ///   (the status, scoped to them) still holds: never another user's;
+    /// - its songs were last sent at least `chartFlowKeepUpInterval` ago, and nothing is sending it now (a Refresh now,
+    ///   Songs: N or another keep-up: `chartFlowsSending`, fix round 1 I3);
+    /// - its run isn't under way (D61's `isFlowRunActive`);
+    /// - the chart still lists at least the flow's N songs (fix round 1 M3: a short read never shrinks the flow), and
+    ///   its top N (artist and title, `ChartFlowPlan.tracks`) differ from the flow's songs as Discover last read them
+    ///   (its jobs: the songs Magpie sent). Unknown jobs: nothing (when in doubt, don't write).
+    /// Then the time is saved as "sent" before anything goes (M6: a failed send waits for the next day), and the
+    /// existing update goes: the songs that left are removed, the new ones added (`sendChartFlow`, the same routes and
+    /// bodies as Refresh now; it reads the flow's songs fresh and sends nothing if they already match). A 404 forgets
+    /// the flow (D131). Answers whether it sent. Screens call `keepChartFlowUpInBackground` (fix round 1 I2).
+    @discardableResult
+    func keepChartFlowUp(_ page: ChartPage) async -> Bool {
+        guard aurralSetUp, !isOffline, aurralCanAddFlow, aurralClient != nil else { return false }
+        guard var flow = chartFlow(for: page.chart), flow.confirmed else { return false }
+        guard discover.status?.sharedPlaylists.contains(where: { $0.id == flow.playlistId }) == true else { return false }
+        let now = aurralFeeds.now()
+        guard now.timeIntervalSince(flow.refreshedAt) >= Self.chartFlowKeepUpInterval,
+              !chartFlowsSending.contains(flow.playlistId), !isFlowRunActive(flow.playlistId) else { return false }
+        let wanted = ChartFlowPlan.tracks(from: Self.flowTracks(page.songs), count: flow.count)
+        let jobs = discover.jobs.filter { $0.flowId == flow.playlistId }
+        guard !wanted.isEmpty, wanted.count >= flow.count, !jobs.isEmpty else { return false }
+        let change = ChartFlowPlan.changes(jobs: jobs, wanted: wanted)
+        guard !change.remove.isEmpty || !change.add.isEmpty else { return false }
+        // M6: saved as sent before it goes (no await between the checks above and this mark); held as sending until
+        // it's done, so a Refresh now or Songs: N waits its turn (I3).
+        flow.refreshedAt = now
+        aurralFeeds.noteChartFlow(flow)
+        chartFlowsSending.insert(flow.playlistId)
+        defer { chartFlowsSending.remove(flow.playlistId) }
+        Log.logger("discover").info("chart flow keeps up: \(change.remove.count, privacy: .public) out, \(change.add.count, privacy: .public) in")
+        do {
+            _ = try await sendChartFlow(page, count: flow.count)
+            return true
+        } catch {
+            return false   // noted by the send; a 404 forgot the flow
+        }
+    }
+
+    /// Fix round 1 (I2): keeps the chart's flow up in its own task, so leaving the page, switching charts or a pull to
+    /// refresh never cancels a send half way (its songs out but not yet in, marked as sent for a day).
+    @discardableResult
+    func keepChartFlowUpInBackground(_ page: ChartPage) -> Task<Bool, Never> {
+        Task { [weak self] in await self?.keepChartFlowUp(page) ?? false }
+    }
+
+    /// Runs a Refresh now or Songs: N with the flow marked as sending; refused (`runActive`, "try again in a moment")
+    /// while a keep-up or another change is sending it (fix round 1 I3: never two sends of one flow at once).
+    private func whileSendingByHand<T>(_ chart: TrendingChart, _ work: () async throws -> T) async throws -> T {
+        guard let id = chartFlow(for: chart)?.playlistId else { return try await work() }
+        guard !chartFlowsSending.contains(id) else { throw AurralError.runActive }
+        chartFlowsSending.insert(id)
+        defer { chartFlowsSending.remove(id) }
+        return try await work()
     }
 
     /// Your flows and Home's shelf read again behind the change (the playlist joins, changes or leaves as the server

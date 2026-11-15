@@ -26,7 +26,8 @@ struct DiscoverPlaylistView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.magpieTheme) private var theme
     let playlistId: String
-    @State private var page: Loadable<DiscoverPage> = .loading
+    /// Round 27 D1 (D285): the saved page at once, the playlist read behind it, library copies filling in place.
+    @State private var pageModel: DiscoverPageModel
     @State private var confirmingRefresh = false
     @State private var message: String?
     @State private var showsArtists = false
@@ -35,6 +36,13 @@ struct DiscoverPlaylistView: View {
     @State private var editingFlow: RecipeFlowEditor.Target?
     private let themed = Themed()
 
+    init(playlistId: String) {
+        self.playlistId = playlistId
+        _pageModel = State(initialValue: DiscoverPageModel(playlistId: playlistId))
+    }
+
+    private var page: Loadable<DiscoverPage> { pageModel.state }
+
     var body: some View {
         List {
             LoadableView(state: page, retry: load) { page in content(page) }
@@ -42,6 +50,7 @@ struct DiscoverPlaylistView: View {
                 .listRowSeparator(.hidden)
                 .listRowBackground(Color.clear)
         }
+        .transaction { $0.animation = nil }   // Round 27 D1 (D284): a swap behind the owner never animates
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .refreshable {
@@ -88,8 +97,14 @@ struct DiscoverPlaylistView: View {
         }
     }
 
-    private var flowId: String? { page.value?.flow?.id ?? model.discoverFlow(playlistId: playlistId)?.id }
+    private var flowId: String? { page.value.flatMap { liveFlow($0)?.id } ?? model.discoverFlow(playlistId: playlistId)?.id }
     private var runActive: Bool { flowId.map(model.isFlowRunActive) ?? false }
+
+    /// Round 27 D1 (D283): the page's flow as now known: a page opened from the saved rows before Aurral was read takes
+    /// the flow the read finds (Refresh Flow, Download songs) without opening again.
+    private func liveFlow(_ page: DiscoverPage) -> AurralFlow? {
+        model.discover.status != nil ? model.discoverFlow(playlistId: page.playlist.id) : page.flow
+    }
 
     @ViewBuilder private func content(_ page: DiscoverPage) -> some View {
         let p = themed.palette
@@ -120,7 +135,7 @@ struct DiscoverPlaylistView: View {
             VStack(spacing: Tokens.Spacing.s) {
                 ActionBar { PlayShuffleButtons(songs: songs, recent: .playlist(page.playlist)) }   // round 14: quick grid
                 ActionBar {
-                    if page.flow != nil {
+                    if liveFlow(page) != nil {
                         ActionButton(runActive ? DiscoverCopy.refreshing : DiscoverCopy.refresh, symbol: "arrow.clockwise",
                                      busy: runActive) {
                             confirmingRefresh = true
@@ -129,14 +144,14 @@ struct DiscoverPlaylistView: View {
                         .accessibilityIdentifier("discover-refresh")
                     }
                     // Round 16: a recipe flow of the user's: Edit flow (its recipe, Delete flow inside).
-                    if model.aurralCanManageFlows, let flow = page.flow.flatMap({ model.recipeFlow(id: $0.id) }) {
+                    if model.aurralCanManageFlows, let flow = liveFlow(page).flatMap({ model.recipeFlow(id: $0.id) }) {
                         ActionButton(RecipeFlowCopy.editFlow, symbol: "slider.horizontal.3") { editingFlow = .edit(flow) }
                             .accessibilityIdentifier("discover-edit-flow")
                     }
                     ActionButton(DiscoverCopy.artistsInPlaylist, symbol: "person.2") { showsArtists = true }
                         .accessibilityIdentifier("discover-artists")
                     // Round 14 A4 (owner answer 10): a flow made with auto-download off.
-                    if let flow = page.flow, flow.autoDownload == false, model.aurralCanAddFlow {
+                    if let flow = liveFlow(page), flow.autoDownload == false, model.aurralCanAddFlow {
                         ActionButton(DiscoverPagesCopy.downloadSongs, symbol: "arrow.down.circle") {
                             Task {
                                 do { try await model.downloadFlowSongs(flowId: flow.id) } catch {
@@ -148,7 +163,7 @@ struct DiscoverPlaylistView: View {
                         .accessibilityIdentifier("discover-download-songs")
                     }
                     // Round 22 R22A (D186): its songs couldn't start by themselves; said quietly, here only.
-                    if let flow = page.flow, let note = model.autoDownloadNote(flowId: flow.id) {
+                    if let flow = liveFlow(page), let note = model.autoDownloadNote(flowId: flow.id) {
                         Label(AurralAutoDownloadCopy.note(note), systemImage: "info.circle")
                             .font(.footnote).foregroundStyle(p.ink2Color)
                             .multilineTextAlignment(.center)
@@ -192,7 +207,7 @@ struct DiscoverPlaylistView: View {
                     SongDownloadMenuItem(song: entry.song, removing: $removing)
                     if !entry.inYourLibrary, model.lidarr != nil {
                         Button {
-                            adder.add(model.discoverArtist(for: entry.original, flowId: page.flow?.id), model: model)
+                            adder.add(model.discoverArtist(for: entry.original, flowId: liveFlow(page)?.id), model: model)
                         } label: {
                             Label(DiscoverCopy.addArtist(entry.original.artist), systemImage: "plus")
                         }
@@ -208,7 +223,7 @@ struct DiscoverPlaylistView: View {
 
     /// The worker's progress while a run is under way, else Aurral's own line ("Next update in 5 days").
     private func statusLine(_ page: DiscoverPage) -> (text: String, symbol: String)? {
-        guard let flowId = page.flow?.id else { return nil }
+        guard let flowId = liveFlow(page)?.id else { return nil }
         if model.isFlowRunActive(flowId) {
             if let progress = model.discover.status?.progress(flowId: flowId) {
                 return (DiscoverCopy.progress(progress), "arrow.down.circle.dotted")
@@ -225,24 +240,25 @@ struct DiscoverPlaylistView: View {
 
     private func load() async { await load(fresh: false) }
 
+    /// Round 27 D1 (D285, supersedes the unbounded wait for the whole Discover read): the saved page shows at once; the
+    /// read is waited for at most `discoverWait` only when nothing is known. Round 13 Z2: a load cut short is never an
+    /// error; a failure with a page on screen is quiet unless the owner pulled to refresh.
     private func load(fresh: Bool) async {
-        do {
-            if model.discover.playlists.isEmpty { await model.refreshDiscover() }
-            page = .loaded(try await model.discoverPage(playlistId: playlistId, fresh: fresh))
-        } catch {
-            page = page.failing(error, noticeTo: model)   // Round 13 Z2: also never for a load cut short
-        }
+        await pageModel.load(model, fresh: fresh)
     }
 }
 
 /// Library › Discover: Aurral's flow playlists.
 struct DiscoverListView: View {
     @Environment(AppModel.self) private var model
-    @State private var playlists: Loadable<[DiscoverRow]> = .loading   // round 26 L (D271): playlists and items
+    /// Round 26 L (D271): playlists and items. Round 27 D1 (D283, D284): the saved rows at once, swapped in place.
+    @State private var list = DiscoverListModel()
     @State private var editingFlow: RecipeFlowEditor.Target?
     @State private var deletingFlow: AurralFlow?
     @State private var message: String?
     private let themed = Themed()
+
+    private var playlists: Loadable<[DiscoverRow]> { list.rows }
 
     var body: some View {
         List {
@@ -256,6 +272,7 @@ struct DiscoverListView: View {
                 }
             }
             .listRowSeparatorTint(themed.palette.sepColor)
+            .transaction { $0.animation = nil }   // Round 27 D1 (D284): a swap behind the owner never animates
             // Round 14 A4 (owner answer 1): For you underneath, then Browse more playlists.
             ForYouSection()
                 .padding(.vertical, Tokens.Spacing.l)
@@ -287,7 +304,7 @@ struct DiscoverListView: View {
                     let gone = Set(model.discover.playlists.filter { $0.flow.id == flow.id }.map { "playlist:" + $0.playlist.id })
                     do {
                         try await model.deleteRecipeFlow(flow)
-                        if let list = playlists.value { playlists = .loaded(list.filter { !gone.contains($0.id) }) }
+                        list.remove(gone)
                     } catch { message = DiscoverCopy.message(for: error) }
                 }
             }
@@ -303,6 +320,7 @@ struct DiscoverListView: View {
         .onChange(of: model.discover.itemRows.map(\.item.id)) { Task { await load() } }   // R26L (D271)
         .onChange(of: model.discover.hiddenPlaylistIds) { Task { await load() } }   // R26L fix round 1 (M2, D273)
         .onChange(of: model.discover.everyoneRevision) { Task { await load() } }   // R23F (D190)
+        .onChange(of: model.discover.rowsRevision) { Task { await load() } }   // Round 27 D1 (D284): a read changed them
     }
 
     /// One of Aurral's playlists: opens its page and plays.
@@ -368,8 +386,6 @@ struct DiscoverListView: View {
     }
 
     private func load() async {
-        do { playlists = .loaded(try await model.discoverRows()) } catch {
-            playlists = playlists.failing(error, noticeTo: model)   // Round 13 Z2: also never for a load cut short
-        }
+        await list.load(model)
     }
 }

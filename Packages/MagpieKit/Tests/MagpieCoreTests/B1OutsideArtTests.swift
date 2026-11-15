@@ -38,6 +38,23 @@ final class SlowArtTransport: HTTPTransport, @unchecked Sendable {
     }
 }
 
+/// The first request waits until it is cancelled (it throws) or released (it answers with a picture); every later
+/// one answers at once with a picture (R27X).
+final class FirstRequestHangsTransport: HTTPTransport, @unchecked Sendable {
+    private let state = OSAllocatedUnfairLock(initialState: (started: 0, released: false))
+    var started: Int { state.withLock { $0.started } }
+    func release() { state.withLock { $0.released = true } }
+    func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        if state.withLock({ $0.started += 1; return $0.started }) == 1 {
+            let deadline = ContinuousClock.now + .seconds(10)
+            while !state.withLock({ $0.released }), ContinuousClock.now < deadline {
+                try await Task.sleep(for: .milliseconds(2))   // throws once cancelled
+            }
+        }
+        return (b1png(), HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+    }
+}
+
 /// B1 (owner items 4–6): outside pictures fill every time. An album's cover falls back (release group → a release →
 /// Lidarr's named cover → placeholder), pictures that loaded are kept on disk and shown at once next time, a miss or a
 /// load cut short is never kept (a later look or a pull to refresh tries again), loads take turns (at most a few at
@@ -115,15 +132,21 @@ final class SlowArtTransport: HTTPTransport, @unchecked Sendable {
     }
 
     /// A load cut short (the screen closed) keeps nothing, and the next look loads it.
-    @Test func aCancelledLoadNeverPoisonsTheCache() async {
-        let slow = SlowArtTransport(delay: .milliseconds(300))
-        let art = loader(slow)
+    /// Round 27 crash hunt (R27X): the reset lands while the first request is on the wire (waited for, not slept for),
+    /// and that request answers only once released after the reset, so a busy machine can't let it finish first.
+    @Test func aCancelledLoadNeverPoisonsTheCache() async throws {
+        let wire = FirstRequestHangsTransport()
+        let art = loader(wire)
         async let first = art.image(.releaseGroup(Self.rg))
-        try? await Task.sleep(for: .milliseconds(50))
+        let deadline = ContinuousClock.now + .seconds(10)
+        while wire.started == 0, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(2)) }
+        try #require(wire.started == 1, "the first load reached the network")
         art.reset()
+        wire.release()   // had the reset not cancelled it, the first request would now answer with a picture
         #expect(await first == nil)
         #expect(OutsideArtDiskCache(directory: dir).count == 0)
         #expect(await art.image(.releaseGroup(Self.rg)) != nil, "asked again, it loads")
+        #expect(wire.started == 2)
     }
 
     /// A source that never answers is cut off at the timeout; the page never waits on it.

@@ -38,3 +38,56 @@ extension CarPlayRows {
         return owner
     }
 }
+
+// Round 27 H (owner, 2026-11-14): "In carplay, there should be a switch in the settings to show aurral playlists/flows
+// and playlists combined" (D300), and "if it includes other people's ones, then their username should be on it
+// somewhere" (D299, D233's " · sam" in the car).
+
+extension CarPlayRows {
+    /// D300: the car's Playlists list with Settings › CarPlay › Flows with your playlists on: `playlists` (as All or
+    /// Yours lists them) and `flows` (the Discover playlists Discover shows), each once, A to Z (ignoring case and
+    /// accents; `playlistBands` files them in D230's letter sections or groups). A flow's row names whose it is the way
+    /// a playlist's does (`playlistBands`' `signedInUser` rule): its owner becomes `captions[id]` (another user's, as
+    /// the app decided, D205) or else `signedInUser`, so the user's own flows name nobody whoever the server says made
+    /// the playlist. A playlist that isn't a flow keeps its owner.
+    public static func playlistsWithFlows(_ playlists: [Playlist], flows: [Playlist], captions: [String: String],
+                                          signedInUser: String?) -> [Playlist] {
+        let flowIds = Set(flows.map(\.id))
+        let named = flows.map { flow -> Playlist in
+            var flow = flow
+            flow.owner = captions[flow.id] ?? signedInUser
+            return flow
+        }
+        let merged = unique(playlists.filter { !flowIds.contains($0.id) } + named, \.id)
+        return merged.sorted { a, b in
+            switch a.name.compare(b.name, options: [.caseInsensitive, .diacriticInsensitive]) {
+            case .orderedAscending: true
+            case .orderedDescending: false
+            case .orderedSame: a.id < b.id
+            }
+        }
+    }
+
+    /// D299: Library › Discover's rows (`discover(_:)`), another user's ending " · sam" (`captions`: the app's
+    /// `discoverOwnerCaption`, by playlist id; never the user's own or an ownerless one).
+    public static func discover(_ playlists: [Playlist], captions: [String: String]) -> [CPSectionModel] {
+        discover(playlists).map { section in
+            var section = section
+            section.rows = section.rows.map { row in
+                guard row.id.hasPrefix(discoverRowPrefix) else { return row }   // the empty state's row
+                return captioned(row, captions[String(row.id.dropFirst(discoverRowPrefix.count))])
+            }
+            return section
+        }
+    }
+
+    static let discoverRowPrefix = "discover."
+
+    /// `row` with " · caption" after its detail; as it is without a caption.
+    static func captioned(_ row: CPRowModel, _ caption: String?) -> CPRowModel {
+        guard let caption, !caption.isEmpty else { return row }
+        var row = row
+        row.detail = (row.detail ?? "") + " \u{00B7} \(caption)"
+        return row
+    }
+}

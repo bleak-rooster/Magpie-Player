@@ -16,6 +16,10 @@ import MagpieCore
 // restarts at once; a copy that couldn't import keeps its own confirmation; a download Lidarr never grabbed asks with
 // the flagged confirmation, the only place `allowForeign` is set. Restart all takes stalled, failed and couldn't-import
 // copies, and another app's only when the owner turns that on in its confirmation.
+//
+// Round 27 R (owner, 2026-11-14, D292): Clear all downloads and search again. Every download not importing or done,
+// another app's too (owner's Q2), at most 100 a run, each removed through the same removal as Restart (one at a time,
+// re-checked on a fresh read); the searches go only once every removal has been tried.
 
 /// How a queue row looked when it last changed: what R17's stall rule compares (`StallWatch.Signature` is this).
 public struct QueueSignature: Sendable, Equatable {
@@ -431,14 +435,17 @@ public actor LidarrDownloadRestarter {
         var albumIds: [Int]
     }
 
-    private let lidarr: LidarrClient
-    private let gate: LidarrWriteGate
-    private let runner: RequestRunner?
+    let lidarr: LidarrClient
+    let gate: LidarrWriteGate
+    let runner: RequestRunner?
+    /// Round 27 R (D292): Clear all's clock (its removals stop inside the search window).
+    let now: @Sendable () -> Date
     private var running = false
     private var waiting: [CheckedContinuation<Void, Never>] = []
 
-    public init(lidarr: LidarrClient, gate: LidarrWriteGate, runner: RequestRunner?) {
-        self.lidarr = lidarr; self.gate = gate; self.runner = runner
+    public init(lidarr: LidarrClient, gate: LidarrWriteGate, runner: RequestRunner?,
+                now: @escaping @Sendable () -> Date = { Date() }) {
+        self.lidarr = lidarr; self.gate = gate; self.runner = runner; self.now = now
     }
 
     /// Restarts one row, if it's still what the board showed. `allowForeign` (round 13, D63): only from the flagged
@@ -471,12 +478,12 @@ public actor LidarrDownloadRestarter {
         return outcomes
     }
 
-    private func takeTurn() async {
+    func takeTurn() async {
         guard running else { running = true; return }
         await withCheckedContinuation { waiting.append($0) }
     }
 
-    private func passTurn() {
+    func passTurn() {
         if waiting.isEmpty { running = false } else { waiting.removeFirst().resume() }
     }
 
@@ -502,31 +509,60 @@ public actor LidarrDownloadRestarter {
         guard LidarrDownloads.stillRestartable(item, as: row) else { return .skipped }
         var albums: [Int] = []
         for album in rows.compactMap(\.albumId) where !albums.contains(album) { albums.append(album) }
-        var searched: Int?
+        let searched: Int?
         do {
-            if foreign {
-                // Another app's copy is never a Magpie request's grab: removed directly, never counted.
-                _ = try await gate.send("DELETE", "queue/\(queueId)?\(Self.queueRemoval)", body: nil, confinedAs: .queueRestartAny, allowForeign: true)
-            } else if let runner, let album = try await runner.restartFromDownloads(item, albums: Set(albums)) {
-                searched = album
-            } else {
-                _ = try await gate.send("DELETE", "queue/\(queueId)?\(Self.queueRemoval)", body: nil, confinedAs: .queueRestartAny)
-            }
+            let removal = try await removeOne(queueId, item, albums: albums, allowForeign: foreign, deferred: false)
+            searched = removal.album
         } catch {
             return Self.outcome(error)
         }
         let rest = albums.filter { $0 != searched }
         guard !rest.isEmpty else { return albums.isEmpty ? .removedNothingToLookFor : .restarted }
+        return await searchFor(rest) ? .restarted : .removedNotSearched
+    }
+
+    /// One download's removal, already re-checked by the caller on a fresh read (Restart and Clear all share it). Another
+    /// app's (`allowForeign`, from the flagged confirmation, or Clear all's per Q2) is never a Magpie request's grab:
+    /// removed directly, never counted. A live request's goes through its counted removal: with its search now
+    /// (`restartFromDownloads`, Restart) or held back, the request kept busy (`clearAllRemove`, Clear all, round 27 R
+    /// D292). Returns that request (held back only) and its album.
+    func removeOne(_ queueId: Int, _ item: QueueItem, albums: [Int], allowForeign: Bool,
+                   deferred: Bool) async throws -> (request: RequestID?, album: Int?) {
+        // Fix round 1 L9: Clear all looks for a live request first, another app's download included: the request is
+        // held (busy) while the download goes, so nothing else steps it, and its own search follows. Another app's
+        // copy is still never counted toward its five (D63).
+        var held: (RequestID, Int)?
+        if let runner, deferred { held = try await runner.clearAllRemove(item, albums: Set(albums), counted: !allowForeign) }
+        if allowForeign {
+            do {
+                _ = try await gate.send("DELETE", "queue/\(queueId)?\(Self.queueRemoval)", body: nil, confinedAs: .queueRestartAny, allowForeign: true, allowFinished: !deferred)
+            } catch {
+                if let held { await runner?.clearAllRelease(held.0) }
+                throw error
+            }
+            return (held?.0, held?.1)
+        }
+        if let held { return (held.0, held.1) }
+        if let runner, !deferred, let album = try await runner.restartFromDownloads(item, albums: Set(albums)) {
+            return (nil, album)
+        }
+        _ = try await gate.send("DELETE", "queue/\(queueId)?\(Self.queueRemoval)", body: nil, confinedAs: .queueRestartAny, allowForeign: false, allowFinished: !deferred)
+        return (nil, nil)
+    }
+
+    /// The restart's AlbumSearch for the albums a removed download named (the gate's `restartSearch`: only within ten
+    /// minutes of its removal). False when it didn't start (Lidarr will still look on its own schedule).
+    func searchFor(_ rest: [Int]) async -> Bool {
         do {
             _ = try await gate.send("POST", "command", body: SearchBody(name: "AlbumSearch", albumIds: rest), confinedAs: .restartSearch)
-            return .restarted
+            return true
         } catch {
             Log.logger("requests").error("restart: search not started: \(Log.category(of: error), privacy: .public)")
-            return .removedNotSearched
+            return false
         }
     }
 
-    private static func outcome(_ error: Error) -> Outcome {
+    static func outcome(_ error: Error) -> Outcome {
         switch error {
         case WriteGateError.disabled: .changesOff
         case WriteGateError.forbidden(let why): .refused(why)
@@ -567,5 +603,266 @@ extension RequestRunner {
         }
         await searchAgainNow(r.id)
         return albumId
+    }
+}
+
+// MARK: - Round 27 R: Clear all downloads and search again
+
+/// Round 27 R (owner, 2026-11-14, D292): what "Clear all downloads and search again" will act on, read fresh when the
+/// owner taps it (the confirmation counts these): one row per download (removing one row removes the whole download),
+/// every download Lidarr lists by name that has nothing importing, imported or complete, at most
+/// `LidarrDownloadRestarter.maxClear`. Per the owner's Q2 answer, another app's downloads are in it too, counted.
+/// Fix round 1 (security M2): a download that finished but couldn't be added (`importBlocked` / `importFailed`) is
+/// never in it: its files are the owner's to check (Restart keeps its own confirmation for those); counted for the
+/// confirmation's line.
+public struct ClearAllPlan: Sendable, Equatable {
+    public struct Target: Sendable, Equatable {
+        /// Lidarr's queue id of the download's first row.
+        public var queueId: Int
+        public var downloadId: String
+        /// Lidarr never grabbed it (its message, or no grab in its history, read when the plan was made).
+        public var foreign: Bool
+    }
+
+    public private(set) var targets: [Target]
+    /// Downloads past the cap, left for another tap.
+    public private(set) var more: Int
+    /// Downloads that finished but couldn't be added, left out.
+    public private(set) var couldntImport = 0
+
+    public var count: Int { targets.count }
+    /// How many of them another app started (the confirmation's second line).
+    public var foreign: Int { targets.filter(\.foreign).count }
+}
+
+/// How a Clear all went, for its one outcome line.
+public struct ClearAllOutcome: Sendable, Equatable {
+    /// Downloads removed.
+    public var cleared = 0
+    /// Albums a new search actually went out for (the runner's own for a Magpie request, `restartSearch` for the rest).
+    public var searchedAlbums = 0
+    /// Removed downloads that got no new search: Lidarr names no album for them (usually another app's), the window
+    /// for it had passed, or the search didn't go.
+    public var clearedWithoutSearch = 0
+    /// `restartSearch`es the gate turned down (fix round 1 M1: kept at none by the window rule).
+    public var searchesTurnedDown = 0
+    /// Fix round 1 L5: removals Lidarr may have carried out but didn't answer in time.
+    public var maybeCleared = 0
+    /// Tried and left as they were: started importing meanwhile, another app's without the flag, refused by the gate,
+    /// a request's five removals used up, or Lidarr couldn't be reached.
+    public var notCleared = 0
+    /// Not tried: past the cap, or after the run stopped.
+    public var left = 0
+    /// "Allow Magpie to change your library" was off (or turned off during the run).
+    public var changesOff = false
+    /// Two in a row couldn't reach Lidarr (D49's rule), so the run stopped.
+    public var stoppedUnreachable = false
+
+    public init() {}
+}
+
+extension LidarrDownloadRestarter {
+    /// Clear all removes at most this many downloads a run (supersedes D49's 25 for this action only).
+    public static let maxClear = 100
+    /// Fix round 1 M1: no removal starts this long after the first; the rest are left for the next tap.
+    static let clearRemovalWindow: TimeInterval = 300
+    /// Fix round 1 M1: no `restartSearch` starts once its removal is this old (the gate allows 600 s); it is counted as
+    /// cleared without a new search instead of being sent to be turned down.
+    static let clearSearchWindow: TimeInterval = 570
+
+    /// A download that finished but couldn't be added (security M2: never in Clear all).
+    static func finishedButNotAdded(_ item: QueueItem) -> Bool { LidarrDownloads.couldntImport(item) }
+
+    /// Reads the whole queue fresh (and the grab history of each download) for the confirmation. Throws when Lidarr
+    /// can't be read.
+    public func clearAllPlan() async throws -> ClearAllPlan {
+        let queue = try await lidarr.queueDetails(albumIds: [])
+        let done = Set(queue.filter(\.isImportingOrDone).compactMap(\.downloadId))
+        let notAdded = Set(queue.filter(Self.finishedButNotAdded).compactMap(\.downloadId))
+        var targets: [(id: Int, downloadId: String, says: Bool)] = []
+        var seen = Set<String>()
+        for item in queue {
+            guard let id = item.id, let downloadId = item.downloadId, !done.contains(downloadId),
+                  !notAdded.contains(downloadId), seen.insert(downloadId).inserted else { continue }
+            let says = queue.contains { $0.downloadId == downloadId && $0.saysNotGrabbedByLidarr }
+            targets.append((id, downloadId, says))
+        }
+        let taken = Array(targets.prefix(Self.maxClear))
+        var grabbed: [String: Bool] = [:]
+        let asked = taken.filter { !$0.says }.map(\.downloadId)
+        for batch in stride(from: 0, to: asked.count, by: GrabCache.concurrency) {
+            let ids = Array(asked[batch..<min(batch + GrabCache.concurrency, asked.count)])
+            try await withThrowingTaskGroup(of: (String, Bool).self) { group in
+                for id in ids { group.addTask { [lidarr] in (id, try await lidarr.grabbed(downloadId: id)) } }
+                for try await (id, answer) in group { grabbed[id] = answer }
+            }
+        }
+        return ClearAllPlan(targets: taken.map { t in
+            ClearAllPlan.Target(queueId: t.id, downloadId: t.downloadId, foreign: t.says || grabbed[t.downloadId] != true)
+        }, more: targets.count - taken.count, couldntImport: notAdded.subtracting(done).count)
+    }
+
+    /// Fix round 2 (stuck transport): no removal and no search starts this long after the run began (longer than the
+    /// 570 s search rule, which it never undercuts; it bounds the held requests' searches and a run slowed by a stuck
+    /// transport); a held request
+    /// whose search would start later is let go to its own failed-download path.
+    static let clearDeadline: TimeInterval = 900
+
+    /// The removal may have gone but no answer came. Fix round 2 N3: only a timeout or a dropped connection, which can
+    /// happen after the request left; anything else (the gate's refusal, Lidarr's own error, the runner's, a host that
+    /// couldn't be reached, a cancellation) means nothing went.
+    static func lostAnswer(_ error: Error) -> Bool {
+        guard let url = error as? URLError else { return false }
+        return url.code == .timedOut || url.code == .networkConnectionLost
+    }
+
+    /// Clear all, after its confirmation. At most `maxClear` downloads of `plan`, one at a time: read fresh (gone: not
+    /// counted; its download changed, or something of it is importing, done or couldn't be added: left alone), whose it
+    /// is read fresh (another app's only with `includeForeign`, set by the confirmation), then removed through the
+    /// restarter's own removal (a live Magpie request held, its counted removal for its own copy, its search held back).
+    /// Only once every removal has been tried do the searches go (fix round 1 M1): first the windowed `restartSearch`es,
+    /// in removal order, none started once its removal is `clearSearchWindow` old; then the requests' own searches (the
+    /// runner's, ledger-confined, not windowed). Stops when changes are off, after two in a row couldn't reach Lidarr,
+    /// or `clearRemovalWindow` after the first removal.
+    public func clearAll(_ plan: ClearAllPlan, includeForeign: Bool,
+                         progress: @escaping @Sendable (Int, Int) async -> Void = { _, _ in }) async -> ClearAllOutcome {
+        await takeTurn()
+        defer { passTurn() }
+        let targets = Array(plan.targets.prefix(Self.maxClear))
+        var outcome = ClearAllOutcome()
+        outcome.left = plan.more + plan.targets.count - targets.count
+        var removed: [(albums: [Int], request: RequestID?, requestAlbum: Int?, at: Date)] = []
+        var unavailableInARow = 0
+        var firstRemoval: Date?
+        var tried = 0
+        let runStart = now()
+        for target in targets {
+            // Read before the removal, so the windows count from no later than the gate's own time for it.
+            let startedAt = now()
+            if let firstRemoval, startedAt.timeIntervalSince(firstRemoval) >= Self.clearRemovalWindow { break }
+            if startedAt.timeIntervalSince(runStart) >= Self.clearDeadline { break }
+            guard await gate.enabled else { outcome.changesOff = true; break }
+            if unavailableInARow >= Self.maxUnavailableInARow { outcome.stoppedUnreachable = true; break }
+            tried += 1
+            await progress(tried, targets.count)
+            let queue: [QueueItem]
+            do { queue = try await lidarr.queueDetails(albumIds: []) } catch {
+                unavailableInARow += 1; outcome.notCleared += 1; continue
+            }
+            unavailableInARow = 0
+            guard let item = queue.first(where: { $0.id == target.queueId }) else { continue }   // gone already
+            let rows = queue.filter { $0.downloadId == target.downloadId }
+            guard item.downloadId == target.downloadId, !rows.contains(where: \.isImportingOrDone),
+                  !rows.contains(where: Self.finishedButNotAdded) else {
+                outcome.notCleared += 1; continue
+            }
+            let foreign: Bool
+            if rows.contains(where: \.saysNotGrabbedByLidarr) {
+                foreign = true
+            } else {
+                do { foreign = try await !lidarr.grabbed(downloadId: target.downloadId) } catch {
+                    unavailableInARow += 1; outcome.notCleared += 1; continue
+                }
+            }
+            guard !foreign || includeForeign else { outcome.notCleared += 1; continue }
+            var albums: [Int] = []
+            for album in rows.compactMap(\.albumId) where !albums.contains(album) { albums.append(album) }
+            do {
+                let removal = try await removeOne(target.queueId, item, albums: albums, allowForeign: foreign, deferred: true)
+                removed.append((albums, removal.request, removal.album, startedAt))
+                if firstRemoval == nil { firstRemoval = startedAt }
+                outcome.cleared += 1
+            } catch {
+                if Self.lostAnswer(error) {
+                    outcome.maybeCleared += 1; unavailableInARow += 1; continue
+                }
+                outcome.notCleared += 1
+                switch Self.outcome(error) {
+                case .changesOff: outcome.changesOff = true
+                case .unavailable: unavailableInARow += 1
+                default: break
+                }
+                if outcome.changesOff { break }
+            }
+        }
+        if unavailableInARow >= Self.maxUnavailableInARow { outcome.stoppedUnreachable = true }
+        outcome.left += targets.count - tried
+        // Every removal has been tried: now the searches. The windowed restart searches first, in removal order. Fix
+        // round 2 N2: an album a held request searches itself, or one an earlier search here already asked for, isn't
+        // asked for again (a removal sharing it counts as searched once that search went).
+        let heldAlbums = Set(removed.compactMap { $0.request == nil ? nil : $0.requestAlbum })
+        var askedFor = Set<Int>()
+        for removal in removed {
+            let rest = removal.albums.filter { !heldAlbums.contains($0) && !askedFor.contains($0) }
+            guard !rest.isEmpty else { continue }
+            guard now().timeIntervalSince(removal.at) < Self.clearSearchWindow else { continue }   // fix round 1 M1: the 570 s rule
+            guard now().timeIntervalSince(runStart) < Self.clearDeadline else { continue }
+            if await searchFor(rest) {
+                outcome.searchedAlbums += rest.count
+                askedFor.formUnion(rest)
+            } else {
+                outcome.searchesTurnedDown += 1
+            }
+        }
+        // Then the held requests' own searches (ledger-confined, not windowed), each request freed after its own; past
+        // the deadline, let go without one.
+        for removal in removed {
+            guard let request = removal.request, let runner else { continue }
+            guard now().timeIntervalSince(runStart) < Self.clearDeadline else { await runner.clearAllRelease(request); continue }
+            if await runner.clearAllSearch(request) {
+                outcome.searchedAlbums += 1
+                if let album = removal.requestAlbum { askedFor.insert(album) }
+            }
+        }
+        outcome.clearedWithoutSearch = removed.filter { !$0.albums.contains(where: askedFor.contains) }.count
+        return outcome
+    }
+}
+
+extension RequestRunner {
+    /// Round 27 R (D292): Clear all's hold on a live request waiting on one of `albums`: the request is kept busy, so
+    /// nothing else steps it, until `clearAllSearch` sends its own search once every removal has been tried.
+    /// `counted` (its own copy): the removal goes now through `removeCounting` (counted toward its five, saved before
+    /// it's sent), as `restartFromDownloads` does but without its search; and, fix round 1 M1, `searchAgainAt` is saved
+    /// at once, so a Magpie stopped before the searches leaves the request to its own failed-download path. Not
+    /// counted (fix round 1 L9: another app's copy of its album): only held; the restarter removes it. Returns that
+    /// request and its album, or nil when no request of Magpie's is waiting on any of `albums`.
+    func clearAllRemove(_ item: QueueItem, albums: Set<Int>, counted: Bool) async throws -> (RequestID, Int)? {
+        guard let r = list.first(where: { $0.isActive && $0.joinedTo == nil && $0.albumId.map(albums.contains) == true }),
+              let albumId = r.albumId else { return nil }
+        guard !stopped, r.canSearchAgain, !busy.contains(r.id) else { throw DownloadRestartError.notNow }
+        guard !counted || !r.removalsUsedUp else { throw DownloadRestartError.limitReached }
+        busy.insert(r.id)
+        guard counted else { return (r.id, albumId) }
+        do {
+            guard try await removeCounting([item], for: r.id, manual: true, restartAny: true) > 0 else {
+                throw DownloadRestartError.limitReached
+            }
+        } catch {
+            busy.remove(r.id)
+            throw error
+        }
+        let t = now()
+        await mutate(r.id) { $0.searchAgainAt = t }
+        try? await persist()
+        return (r.id, albumId)
+    }
+
+    /// Fix round 1 L9: a hold whose removal didn't go.
+    func clearAllRelease(_ id: RequestID) { busy.remove(id) }
+
+    /// Round 27 R (D292): the held request's own search (as after Find another copy), then it is free again. True when
+    /// a search actually went (task M2: Lidarr took a new AlbumSearch for it).
+    func clearAllSearch(_ id: RequestID) async -> Bool {
+        defer { busy.remove(id) }
+        let before = request(id)?.searchCommandId
+        let t = now()
+        await mutate(id) {
+            $0.searchAgainAt = t
+            $0.sourceStalledAt = nil
+        }
+        await searchAgainNow(id)
+        let after = request(id)?.searchCommandId
+        return after != nil && after != before
     }
 }

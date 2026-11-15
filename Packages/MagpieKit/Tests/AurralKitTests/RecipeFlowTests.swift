@@ -18,9 +18,8 @@ import Testing
     }
 
     static func recipe(_ name: String = "My flow") -> FlowRecipe {
-        var r = FlowRecipe(name: name, size: 12, tags: ["indie"], scheduleDays: [1, 5], scheduleHour: 9)
-        r.setSources([.discover, .trending])
-        return r
+        // Round 27 D2: counts per source (D316).
+        FlowRecipe(name: name, counts: [.discover: 6, .trending: 6], tags: ["indie"], scheduleDays: [1, 5], scheduleHour: 9)
     }
 
     @Test func theFourRoutesAndNothingNear() {
@@ -47,7 +46,7 @@ import Testing
         #expect(fields["scheduleTime"] as? String == "09:00")
         #expect(fields["scheduleDays"] as? [Int] == [1, 5])
         #expect(fields["tags"] as? [String] == ["indie"])
-        #expect((fields["mix"] as? [String: Int]) == ["discover": 50, "mix": 0, "trending": 50, "focus": 0, "newReleases": 0])
+        #expect((fields["mix"] as? [String: Int]) == ["discover": 6, "mix": 0, "trending": 6, "focus": 0, "newReleases": 0])
         #expect(fields["autoDownload"] as? Bool == true)
         let status = try await client.status()
         let flow = try #require(status.flows.first { $0.id == id })
@@ -91,11 +90,11 @@ import Testing
 
     @Test func refusedUnsent() async throws {
         var bad = Self.recipe()
-        bad.shares = [:]
+        bad.counts = [:]
         #expect(bad.problem != nil)
         await #expect(throws: AurralError.self) { try await client.createRecipeFlow(bad) }
         var focus = Self.recipe()
-        focus.setSources([.focus])
+        focus.counts = [.focus: 12]
         focus.tags = []
         #expect(focus.problem != nil)
         focus.recentListening = true
@@ -104,11 +103,10 @@ import Testing
         #expect(stub.asked.isEmpty)
     }
 
-    @Test func simpleSharesAndAdvancedDetection() {
+    @Test func advancedDetection() {
         var r = FlowRecipe(name: "x")
-        r.setSources([.discover, .mix, .trending])
-        #expect(r.shares.values.reduce(0, +) == 100 && !r.hasUnevenShares && !r.usesAdvanced)
-        r.shares[.discover] = 80
-        #expect(r.hasUnevenShares && r.usesAdvanced)
+        #expect(!r.usesAdvanced)
+        r.excludeTags = ["metal"]
+        #expect(r.usesAdvanced)
     }
 }

@@ -10,6 +10,8 @@ import UIKit
 struct TopSongsSection: View {
     @Environment(AppModel.self) private var model
     let result: TopSongsResult
+    /// Round 27 A (D304): Play top songs under the heading; nil: no button (none of the rows is a library song).
+    var playTopSongs: (() -> Void)? = nil
     private let themed = Themed()
 
     var body: some View {
@@ -20,6 +22,7 @@ struct TopSongsSection: View {
                     Text(SongActionsCopy.topSongsNote(result.provider)).font(.caption).foregroundStyle(themed.palette.ink2Color)
                         .accessibilityIdentifier("top-songs-note")
                 }
+                if let playTopSongs { PlayTopSongsButton(action: playTopSongs) }
             }
             .padding(.horizontal, Tokens.Spacing.margin)
             ForEach(result.rows) { row in
@@ -76,5 +79,19 @@ private struct TopSongRowView: View {
             }
         }
         .padding(.horizontal, Tokens.Spacing.margin)
+    }
+}
+
+/// Round 27 A (owner item 1, 2026-11-14: "there should be an option to play the top songs"; D304): the capsule under an
+/// artist page's Top songs or Popular heading. Plays up to fifteen of the artist's top songs you have, in order, from the
+/// first (`AppModel.playTopSongs`). Shown only when one of them is in the library (offline: on the phone).
+struct PlayTopSongsButton: View {
+    static let title = "Play top songs"
+    let action: () -> Void
+
+    var body: some View {
+        CapsuleButton(Self.title, symbol: "play.fill", action: action)
+            .accessibilityLabel(Self.title)
+            .accessibilityIdentifier("top-songs-play")
     }
 }

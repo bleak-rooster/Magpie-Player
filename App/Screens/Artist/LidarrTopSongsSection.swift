@@ -10,11 +10,14 @@ import SwiftUI
 struct LidarrTopSongsSection: View {
     @Environment(AppModel.self) private var model
     let songs: [Song]
+    /// Round 27 A (D304): Play top songs under the heading (the artist's fifteen); nil: no button.
+    var playTopSongs: (() -> Void)? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: Tokens.Spacing.s) {
             Text("Top songs").magpieDisplay(.title2).accessibilityAddTraits(.isHeader)
                 .padding(.horizontal, Tokens.Spacing.margin)
+            if let playTopSongs { PlayTopSongsButton(action: playTopSongs).padding(.horizontal, Tokens.Spacing.margin) }
             ForEach(Array(songs.enumerated()), id: \.element.id) { index, song in
                 Button { model.play(songs, startAt: index) } label: {
                     Artwork(song.coverArtId, side: 48) { image in

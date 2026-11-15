@@ -75,6 +75,49 @@ public struct PlayQueue: Codable, Sendable {
         main.append(contentsOf: songs.map { QueueEntry(song: $0) })
     }
 
+    /// Round 27 P (owner, 2026-11-14): Automix's "replaces what's coming up" (Q5, D282): the rest of `main` after the
+    /// current entry becomes `songs`; history, the current entry and Up Next (Play next songs) stay. Starts an idle queue.
+    public mutating func replaceUpcoming(with songs: [Song]) {
+        guard let i = currentIndex else {
+            guard !songs.isEmpty else { return }
+            return startIdle(with: songs)
+        }
+        main.replaceSubrange((i + 1)..., with: songs.map { QueueEntry(song: $0) })
+    }
+
+    /// Round 27 A fix round 1 (design M5, D307): `songs` go into `main` at seeded random places after the current entry
+    /// (a shuffled queue's fill), never into Up Next. Starts an idle queue. Returns the new entries' ids in `songs`' order.
+    @discardableResult
+    public mutating func insertRandomly(_ songs: [Song], seed: UInt64) -> [UUID] {
+        guard !songs.isEmpty else { return [] }
+        let entries = songs.map { QueueEntry(song: $0) }
+        guard let i = currentIndex else {
+            startIdle(with: songs)
+            return Array(main.suffix(songs.count).map(\.id))
+        }
+        var rng = SplitMix64(seed: seed)
+        for entry in entries {
+            main.insert(entry, at: Int.random(in: (i + 1)...main.count, using: &rng))
+        }
+        return entries.map(\.id)
+    }
+
+    /// Round 27 D1 fix round 2 (N2): the songs still to come in `main` (after the current entry) that have a copy in
+    /// `copies` (by song id) become it, each in its own slot (same entry id); history, the current entry and Up Next
+    /// stay. Returns whether any slot changed.
+    @discardableResult
+    public mutating func replaceRestSongs(_ copies: [String: Song]) -> Bool {
+        guard let i = currentIndex else { return false }
+        var changed = false
+        for j in main.indices where j > i {
+            if let copy = copies[main[j].song.id], copy != main[j].song {
+                main[j] = QueueEntry(id: main[j].id, song: copy)
+                changed = true
+            }
+        }
+        return changed
+    }
+
     private mutating func startIdle(with songs: [Song]) {
         let first = main.count
         main.append(contentsOf: songs.map { QueueEntry(song: $0) })

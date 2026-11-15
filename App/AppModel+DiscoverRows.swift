@@ -109,7 +109,20 @@ extension AppModel {
     /// (the user's; another user's only with "Show everyone's flows" on), as Aurral lists them. Not a recipe flow Your
     /// flows already shows, nor one being deleted.
     func discoverRows() async throws -> [DiscoverRow] {
-        let playlists = try await discoverPlaylists().map { DiscoverRow(link: .playlist($0)) }
+        discoverRows(playlists: try await discoverPlaylists())
+    }
+
+    /// Round 27 D1 (D283): Library › Discover's rows as known right now, without waiting for any read: the saved rows
+    /// at launch, else the last read's; nil when none are known (or without Aurral, offline, flows refused).
+    func discoverRowsNow() -> [DiscoverRow]? {
+        guard aurralSetUp, !isOffline else { return nil }
+        restoreSavedDiscover()
+        guard !discover.flowsNotPermitted, !discover.playlists.isEmpty else { return nil }
+        return discoverRows(playlists: discover.playlists.map(\.playlist).filter(isShownInDiscover))
+    }
+
+    private func discoverRows(playlists listed: [Playlist]) -> [DiscoverRow] {
+        let playlists = listed.map { DiscoverRow(link: .playlist($0)) }
         guard aurralSetUp, !isOffline, !discover.flowsNotPermitted else { return playlists }
         let inYourFlows = aurralCanManageFlows ? Set(unpublishedRecipeFlows.map(\.id)) : []
         let items = discover.itemRows.filter { row in

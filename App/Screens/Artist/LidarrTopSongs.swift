@@ -27,9 +27,12 @@ struct LidarrTopSongsCache {
         try? FileManager.default.removeItem(at: directory(root: root))
     }
 
-    /// Artists kept (the ones saved most recently), rows per artist ("a total of 5 songs"), and the file's size limit.
-    static let maxArtists = 300
-    static let maxRows = LidarrTopSongs.limit
+    /// Artists kept (the ones saved most recently), rows per artist, and the file's size limit. Round 27 A (owner item 1,
+    /// D303, amends D263): fifteen rows, the five shown and the rest Play top songs queues behind them. Fix round 1
+    /// (review M4): 200
+    /// artists (was 300), so fifteen rows each stay inside the 1 MB bound (about 4–5 KB an artist).
+    static let maxArtists = 200
+    static let maxRows = LidarrTopSongs.playLimit
     static let maxBytes = 1024 * 1024
 
     /// An artist's key: `mbid:<artist MBID>` (shared by the library and outside pages, D267), else `id:<library artist
@@ -58,7 +61,7 @@ struct LidarrTopSongsCache {
     /// How many artists are saved (tests).
     var count: Int { read()?.artists.count ?? 0 }
 
-    /// Saves `rows` (the first five) as `key`'s Top songs; an empty list removes the artist.
+    /// Saves `rows` (the first fifteen, D303) as `key`'s Top songs; an empty list removes the artist.
     func save(_ rows: [LidarrTopSongs.Row], key: String, now: Date = .now) {
         write(rows.prefix(Self.maxRows).map(Row.init), key: key, now: now)
     }
@@ -193,7 +196,19 @@ struct LidarrTopSongsCache {
         case unread
     }
 
-    private(set) var songs: [Song]
+    /// Round 27 A (D303): the artist's top songs, at most fifteen: the list Play top songs queues.
+    private(set) var playable: [Song]
+    /// Fix round 1 (review M8): the list is the whole of the artist's top songs (Play top songs adds nothing behind it)
+    /// only when it holds fifteen or was refreshed this session: an entry saved before round 27 holds five.
+    var isWholeList: Bool {
+        guard !playable.isEmpty else { return false }
+        if playable.count >= LidarrTopSongs.playLimit || refreshed { return true }
+        return app.lidarrTopSongsSession.refreshedAt[key] != nil && app.lidarrTopSongsRefreshInFlight(key) == nil
+    }
+    /// A complete refresh was applied to this page's list.
+    @ObservationIgnored private var refreshed = false
+    /// The five the section shows (D303).
+    var songs: [Song] { LidarrTopSongs.shown(playable) }
     private(set) var phase: Phase = .waiting
     /// How many times a refresh changed which songs show (tests).
     @ObservationIgnored private(set) var visibleChanges = 0
@@ -214,7 +229,7 @@ struct LidarrTopSongsCache {
     init(app: AppModel, key: String, name: String, mbid: MBID?, offline: Bool, cache: LidarrTopSongsCache?, saved: [Song]) {
         self.app = app; self.key = key; self.name = name; self.mbid = mbid; self.offline = offline; self.cache = cache
         scope = app.navidromeScope
-        songs = saved
+        playable = Array(saved.prefix(LidarrTopSongs.playLimit))
     }
 
     /// The app is still on this list's account, with Lidarr.
@@ -299,7 +314,8 @@ struct LidarrTopSongsCache {
             var applied = false
             defer { app.endLidarrTopSongsRefresh(key, token: token, applied: applied) }
             if songs.isEmpty { phase = .refreshing }
-            let result = await app.readLidarrTopSongs(name: name, mbid: mbid, lidarrArtistId: lidarrId, fresh: fresh)
+            let result = await app.readLidarrTopSongs(name: name, mbid: mbid, lidarrArtistId: lidarrId, fresh: fresh,
+                                                      limit: LidarrTopSongs.playLimit)   // round 27 A (D303)
             guard mine == generation, !Task.isCancelled, owned else { return mine }   // fix round 1 (I2): signed out
             apply(result)
             applied = true
@@ -320,6 +336,7 @@ struct LidarrTopSongsCache {
                 show(fresh)
                 if owned { cache?.save(result.rows, key: key) }
                 phase = .shown
+                refreshed = true   // fix round 1 (review M8)
             }
         } else if !songs.isEmpty {
             phase = .shown   // a server blip never shuffles the list
@@ -340,13 +357,14 @@ struct LidarrTopSongsCache {
     }
 
     /// Replaces the rows only when the songs differ (by id, in order); the same songs take the fresh details silently.
+    /// Round 27 A (D303): a change past the five shown replaces the list too, but only a change in the five counts as one
+    /// the page sees.
     private func show(_ fresh: [Song]) {
-        if fresh.map(\.id) != songs.map(\.id) {
-            songs = fresh
-            visibleChanges += 1
-        } else if fresh != songs {
-            songs = fresh
-        }
+        let fresh = Array(fresh.prefix(LidarrTopSongs.playLimit))
+        guard fresh != playable else { return }
+        let seen = LidarrTopSongs.shown(fresh).map(\.id) != songs.map(\.id)
+        playable = fresh
+        if seen { visibleChanges += 1 }
     }
 }
 

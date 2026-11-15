@@ -141,6 +141,10 @@ final class AppModel {
     var madeForYouShelf: [MadeForYou.Playlist] = []
     /// Home's feed for the signed-in account (P5, HomeFeed.swift).
     @ObservationIgnored var homeFeedSlot: HomeFeed?
+    // Round 27 H
+    /// Round 27 H (D297): the account's flow plays as last loaded or noted (AppModel+FlowPlays.swift).
+    @ObservationIgnored var flowPlaysSlot: (scope: String, plays: [String: Date])?
+    // Round 27 H end
     /// B1: recommended artists' pictures (AppModel+OutsideArt.swift).
     @ObservationIgnored var recommendedArtSlot: OutsideArtLoader?
     /// B1: the outside pictures' disk cache (one per account).
@@ -229,6 +233,18 @@ final class AppModel {
     /// R19: what the outside artist and album pages read from MusicBrainz, in memory for this session only.
     @ObservationIgnored var outsideCatalogStore: OutsideCatalog?
     @ObservationIgnored let lidarrTopSongsSession = LidarrTopSongsSession()   // Round 26 K2 (D264)
+    // Round 27 D1: Discover's saved rows and pages (AppModel+DiscoverSnapshot.swift, D283); removed with D90's feeds
+    // file in `forgetDiscoverReads` (sign-out, Aurral sign-out, another Aurral user).
+    @ObservationIgnored let discoverSnapshots = DiscoverSnapshotStore()
+    // Round 27 R
+    /// Settings › Lidarr › Missing albums: the last search's answer and a Clear all's run (AppModel+MissingAlbums, D290–D292).
+    let missingAlbums = MissingAlbumsState()
+    // Round 27 R end
+    // Round 27 D2
+    /// Round 27 D2 fix round 1 (I3, D319): the chart flows (Aurral playlist ids) being sent right now, by hand (Refresh
+    /// now, Songs: N) or by keeping up; one at a time per flow (AppModel+ChartFlows.swift).
+    @ObservationIgnored var chartFlowsSending: Set<String> = []
+    // Round 27 D2 end
     /// Spaces the app's `api.listenbrainz.org` calls ("Made for you"); labs search never waits on it.
     @ObservationIgnored let listenBrainzLimiter = RateLimiter(perSecond: 2)
     @ObservationIgnored private var unlockObserver: NSObjectProtocol?
@@ -255,6 +271,20 @@ final class AppModel {
     @ObservationIgnored var shownTranscodeHint = false
     /// A footnote under the Now Playing scrubber (the transcode fallback); nil when none.
     var playbackHint: String?
+    // Round 27 P
+    /// The song `playbackHint` was raised for: a new current song clears it (D276, AppModel+Playback.swift).
+    @ObservationIgnored var playbackHintSongId: String?
+    // End Round 27 P
+    // Round 27 L
+    /// The lyrics asked for each song played, kept for the pane, and Find lyrics online (D310–D313, AppModel+Lyrics.swift).
+    @ObservationIgnored let lyricsKeeper = LyricsKeeper()
+    /// The watcher that asks the server for each new song's lyrics (D310).
+    @ObservationIgnored var lyricsWatch: Task<Void, Never>?
+    // End Round 27 L
+    // Round 27 A
+    /// The running Automix / Play top songs builder (AppModel+Automix.swift, D304, D307).
+    @ObservationIgnored let queueBuilder = QueueBuilder()
+    // End Round 27 A
     /// Whether the server answered last time it was tried (Task 14): Automatic offline mode follows it.
     var serverReachable = true { didSet { offlineInputsChanged() } }
     /// Offline as the URLs and the scrobbler read it, and Automatic mode's bookkeeping (AppModel+Offline.swift).
@@ -410,12 +440,14 @@ final class AppModel {
         wireAurralFeeds()   // round 14 A4
         readLidarrPermissions()
         readSlskdConnection()   // R23 (D192)
+        watchLyrics()   // Round 27 L (D310)
     }
 
     isolated deinit {
         qualityWatch?.cancel()
         hintWatch?.cancel()
         preDownloadWatch?.cancel()
+        lyricsWatch?.cancel()   // Round 27 L (D310)
     }
 
     /// The write switch and setup of the connected Lidarr (both are kept per instance).
@@ -617,6 +649,7 @@ final class AppModel {
         let retiring = runner, doomed = requestStore
         let signedOutScope = navidromeScope   // R24A fix round 1 (I1): Discover's per-account keys go after `session = nil`
         sleepTimer.cancel()
+        queueBuilder.cancel()   // Round 27 A (D307): nothing more is added to the queue
         player.play([], startAt: 0)
         playbackHint = nil
         if let navidromeScope {
@@ -652,6 +685,7 @@ final class AppModel {
         letGo.forget()   // round 15 C3 (the file goes with the requests: RequestStore.eraseAll)
         PopularSongsCache.removeAll(root: dataDirectory)   // R3
         forgetLidarrTopSongs()   // Round 26 K2 (D263): the saved Top songs and the session's reads
+        forgetLyrics()   // Round 27 L (D310): the kept lyrics and the read under way
         advertisedExtensions = nil
         reconnectTask = nil
         noteReachable()   // nothing to reach; the next session starts online
@@ -660,6 +694,7 @@ final class AppModel {
         box.set(nil)
         ArtworkCache.shared.removeAll()
         forgetHomeShelves()
+        forgetFlowPlays()   // Round 27 H (D297): the file goes with Home's folder above
         forgetOutsideArt()   // B1
         stopMatchIndex(erase: true)
         forgetLidarrPermissions()
@@ -906,6 +941,7 @@ final class AppModel {
         if let scope = lidarrScope {
             gateDefaults.removeObject(forKey: LidarrWriteGate.enabledKey(scope: scope))
             gateDefaults.removeObject(forKey: LidarrWriteGate.monitoringChangesKey(scope: scope))   // R24H fix round 1 I3
+            forgetMissingAlbums(scope: scope)   // Round 27 R (D291)
             Ledger.forgetMonitoring(otherThan: scope, in: dataDirectory)   // R24H fix round 3 H-L6
             setupStore.clear(scope: scope)
             findsStore.clear(lidarrScope: scope)

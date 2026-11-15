@@ -59,6 +59,15 @@ planted=(
   'URLSession.shared.data(from: URL(string: "https://is1-ssl.mzstatic.com/image/thumb/a.jpg")!)'
   'URLSession.shared.data(from: URL(string: "https://rss.applemarketingtools.com/api/v2/au")!)'
   'URLSession.shared.data(from: URL(string: "https://itunes.apple.com/lookup?id=1")!)'
+  # Round 27 L (D311): LRCLIB's host named outside LrcLib.swift.
+  'URLSession.shared.data(from: URL(string: "https://lrclib.net/api/search?q=x")!)'
+  'URLSession.shared.data(from: URL(string: "https://LRCLIB.NET/api/get")!)'
+  # L fix round 1 (LL1): LRCLIB's client made with a transport that follows redirects.
+  'LrcLib(transport: URLSessionTransport(), userAgent: "Magpie/1")'
+  'LrcLib (transport: transport, userAgent: ua)'
+  # Fix round 2 (N2): through `.init(`, and a second construction on the pinned line.
+  'LrcLib.init(transport: URLSessionTransport(), userAgent: "Magpie/1")'
+  'LrcLib(transport: LrcLibTransport(), userAgent: ua); _ = LrcLib(transport: URLSessionTransport(), userAgent: ua)'
   'aurral.ok(method: AurralRoute.imageProxyMethod, path: "api/image-proxy", body: other)'
   # Round 22 R22A (D186): a third caller of Download songs.
   'client.downloadFlow("flow-1")'
@@ -236,6 +245,58 @@ for w in "${host_weakened[@]}"; do
 done
 cp "$work/RefusedMediaHosts.orig" "$hosts_src"; cp "$work/OutsideArt.orig" "$art_src"
 weakened+=("${host_weakened[@]}")
+
+# Round 27 L (D311): LRCLIB's one request weakened: plain http, another route, a second URL, another header or verb, a
+# second send, cookies on, the 512 KB cap or the User-Agent changed, the built URL's check dropped.
+lrclib_src="$work/Packages/MagpieKit/Sources/MagpieCore/LrcLib.swift"
+cp "$lrclib_src" "$work/LrcLib.orig"
+lrclib_weakened=(
+  's#"https://lrclib.net/api/get"#"http://lrclib.net/api/get"#'
+  's#"https://lrclib.net/api/get"#"https://lrclib.net/api/search"#'
+  's#^public actor LrcLib {#public actor LrcLib {\n    static let search = URL(string: "https://lrclib.net/api/search")!#'
+  's#^public actor LrcLib {#public actor LrcLib {\n    static let other = URL(string: "https://lyrics.example/api")!#'
+  's#        request.setValue(userAgent, forHTTPHeaderField: "User-Agent")#&\n        request.setValue("x", forHTTPHeaderField: "Authorization")#'
+  's#        request.setValue(userAgent, forHTTPHeaderField: "User-Agent")#&\n        request.addValue("jordan", forHTTPHeaderField: "X-User")#'
+  's#        request.httpMethod = "GET"#        request.httpMethod = "POST"#'
+  's#        request.httpShouldHandleCookies = false#        request.httpShouldHandleCookies = true#'
+  's#    public static let maxResponseBytes = 512 \* 1024#    public static let maxResponseBytes = 64 * 1024 * 1024#'
+  's#"Magpie/\\(version)"#"Magpie/\\(version) (jordan)"#'
+  's#(data, response) = try await transport.send(request, maxBytes: Self.maxResponseBytes)#(data, response) = try await transport.send(request)#'
+  's#(data, response) = try await transport.send(request, maxBytes: Self.maxResponseBytes)#&; _ = try await transport.send(request, maxBytes: 1)#'
+  's#url.scheme == "https", url.host() == getURL.host(), url.path == getURL.path#true#'
+  # L fix round 1 (LM1): the security review's spellings 1-5 and 7, and an unmeasured JSON parse (LH1).
+  's#        request.setValue(userAgent, forHTTPHeaderField: "User-Agent")#&\n        request.setValue ("dev-1", forHTTPHeaderField: "X-Device")#'
+  's#        request.httpShouldHandleCookies = false#&\n        request.httpShouldHandleCookies = true#'
+  's#        components.queryItems = items#        items.append(URLQueryItem(name: "server", value: userAgent))\n&#'
+  's#        request.setValue("en", forHTTPHeaderField: "Accept-Language")#&\n        request.url = getURL.deletingLastPathComponent().appending(path: "search")#'
+  's#        switch response.statusCode {#        _ = try? await URLSession.shared.data(for: request)\n&#'
+  's#        switch response.statusCode {#        let s: @Sendable (URLRequest) async throws -> (Data, HTTPURLResponse) = transport.send; _ = try? await s(request)\n&#'
+  's#JSONNesting.object(with: data) as? \[String: Any\]#(try? JSONSerialization.jsonObject(with: data)) as? [String: Any]#'
+  's#URLQueryItem(name: "album_name", value: album)#URLQueryItem(name: albumKey, value: album)#'
+  # L fix round 1 (LL1): LRCLIB's transport follows a redirect or keeps cookies (lines in LrcLibTransport.swift).
+  'T|s#newRequest request: URLRequest) async -> URLRequest? { nil }#newRequest request: URLRequest) async -> URLRequest? { request }#'
+  'T|s#delegate: NoRedirects.shared#delegate: SameOriginRedirects.shared#'
+  'T|s#        config.httpCookieStorage = nil#        config.httpCookieStorage = .shared#'
+  # Fix round 2 (N3): a second session beside the pinned one, and cookies switched back on after the pinned line.
+  'T|s#^    static let session = URLSession(configuration: sessionConfiguration(), delegate: NoRedirects.shared, delegateQueue: nil)#&\n    static let other = URLSession(configuration: .default)#'
+  'T|s#^        config.httpCookieStorage = nil#&\n        config.httpCookieStorage = .shared#'
+)
+lrclib_transport_src="$work/Packages/MagpieKit/Sources/MagpieCore/LrcLibTransport.swift"
+cp "$lrclib_transport_src" "$work/LrcLibTransport.orig"
+for entry in "${lrclib_weakened[@]}"; do
+  cp "$work/LrcLib.orig" "$lrclib_src"; cp "$work/LrcLibTransport.orig" "$lrclib_transport_src"
+  target="$lrclib_src" expr="$entry" orig="$work/LrcLib.orig"
+  case "$entry" in T\|*) target="$lrclib_transport_src" expr="${entry#T|}" orig="$work/LrcLibTransport.orig" ;; esac
+  sed -i '' "$expr" "$target"
+  if cmp -s "$orig" "$target"; then echo "selftest: the weakening didn't apply: $expr" >&2; failed=1; continue; fi
+  if out=$("$work/scripts/check-writes.sh" 2>&1); then
+    echo "selftest: NOT caught: $expr" >&2; failed=1
+  elif ! grep -qE 'G1:' <<< "$out"; then
+    echo "selftest: failed without a G1 reason: $expr" >&2; failed=1
+  fi
+done
+cp "$work/LrcLib.orig" "$lrclib_src"; cp "$work/LrcLibTransport.orig" "$lrclib_transport_src"
+weakened+=("${lrclib_weakened[@]}")
 
 # S14 L5 (D119): the id validators, Not for me's body, the picture fetch's allow-list check and the 8 MB cap weakened.
 discover_src="$work/Packages/MagpieKit/Sources/AurralKit/AurralClient+Discover.swift"
@@ -446,6 +507,79 @@ for entry in "${c_inplace[@]}"; do
   cp "$file.orig" "$file"; rm -f "$file.orig"
 done
 planted+=("${c_inplace[@]}")
+
+# Round 27 R (D289–D293): the whole-library MissingAlbumSearch and Clear all, planted where they would really go: an
+# unnamed send, a body with an artist, the gate's body rule, guard and checks loosened, the shape on a second line or in
+# another file, the record's key or store elsewhere, a raw queue delete for Clear all, a search (or a restart) before
+# every removal was tried, the confirmation's flag set elsewhere, the restarter made elsewhere.
+wg="Packages/MagpieKit/Sources/LidarrKit/WriteGate.swift"
+dl="Packages/MagpieKit/Sources/Requests/DownloadsInLidarr.swift"
+r_inplace=(
+  'App/AppModel+MissingAlbums.swift|append|extension AppModel { func plantedUnnamed() async throws { guard let gate else { return }; _ = try await gate.send("POST", "command", body: MissingAlbumSearch.Body()) } }'
+  'App/AppModel+MissingAlbums.swift|append|private struct PlantedBody: Encodable { var name = "MissingAlbumSearch"; var artistId = 3 }'
+  'App/AppModel+Requests.swift|append|private struct PlantedBody: Encodable { var name = "missingAlbumSearch" }'
+  "$wg|sed|s/return object.count == 1 ? nil : \"MissingAlbumSearch body must be exactly its name\"/return nil/"
+  "$wg|sed|s/\"refreshartist\", \"missingalbumsearch\"\\]/\"refreshartist\", \"missingalbumsearch\", \"renamefiles\"]/"
+  "$wg|sed|s/if missingSearch, shape != .missingAlbumSearch || owned != nil {/if missingSearch, false {/"
+  "$wg|sed|s/if running { throw refused(target, MissingAlbumSearch.alreadyRunning) }/_ = running/"
+  "$wg|sed|s/if t.timeIntervalSince(last) < MissingAlbumSearch.floor { throw refused(target, MissingAlbumSearch.tooSoon) }/_ = last/"
+  "$wg|sed|/do { try missingSearchStore.save(t, scope: scope) } catch { throw WriteGateError.logUnavailable }/d"
+  'App/AppModel+MissingAlbums.swift|append|    _ = try await gate.send("POST", "command", body: MissingAlbumSearch.Body(), confinedAs: .missingAlbumSearch)'
+  'Packages/MagpieKit/Sources/Requests/RequestRunner+Stall.swift|append|    _ = try await gate.send("POST", "command", body: MissingAlbumSearch.Body(), confinedAs: .missingAlbumSearch)'
+  'App/AppModel+MissingAlbums.swift|append|let plantedKey = "magpie.lidarr.missingSearch." + "abc"'
+  'App/AppModel+Requests.swift|append|let plantedKey = MissingAlbumSearch.recordKey(scope: "abc")'
+  'App/AppModel+MissingAlbums.swift|append|struct PlantedStore: MissingAlbumSearchStore {}'
+  'App/AppModel+MissingAlbums.swift|append|func plantedClear(_ id: Int) async throws { _ = try await gate.send("DELETE", "queue/\\(id)?\\(Self.queueRemoval)", body: nil, confinedAs: .queueRestartAny) }'
+  "$dl|sed|s/^                removed.append((albums, removal.request, removal.album, startedAt))\$/&; _ = await searchFor(albums)/"
+  # Fix round 1: a helper that searches on the way (L2), the record forgotten or an entry point called elsewhere (M3),
+  # the gate's turn, second switch check, running predicate or strict read loosened (L1, L7).
+  "$dl|sed|s/^                outcome.cleared += 1\$/&; await sneak(albums)/"
+  'App/AppModel+Requests.swift|append|func plantedForget(_ d: UserDefaults) { MissingAlbumSearch.forgetRecord(scope: "x", in: d) }'
+  'App/Screens/Settings/LidarrDownloadsView.swift|append|func plantedSearch(_ m: AppModel) async { await m.searchMissingAlbumsNow() }'
+  'App/AppModel+Requests.swift|append|func plantedSchedule() async { await runMissingAlbumSchedule() }'
+  'App/AppModel+Requests.swift|append|func plantedForget2(_ d: UserDefaults) { LidarrWriteGate.forgetMissingAlbumSearch(scope: "x", in: d) }'
+  "$wg|sed|/private func sendMissingAlbumSearch/,/return try await deliver/s/^        await takeConfinedTurn()\$/        \\/\\/ no turn/"
+  "$wg|sed|/if running { throw/,/missingSearchStore.save/s/^        guard enabled else { throw WriteGateError.disabled }   \\/\\/ turned off during the read\$/        \\/\\/ no second check/"
+  "$wg|sed|s/\\[\"queued\", \"started\"\\].contains(\$0.status) }/\$0.status == \"started\" }/"
+  # Fix round 2 (the security re-check's plants A–D, F, G): the shared restarter driven from elsewhere (SM1); the ask
+  # step reached from elsewhere, a spaced call, a function reference (L-M3b); a computed property that searches on the
+  # way (L-L2b); a second deliver in the gate's MissingAlbumSearch send (L-L1b); Clear all's removal saying a finished
+  # copy may go (L-M2b).
+  'App/AppModel+Requests.swift|append|extension AppModel { func plantedRestart(_ rows: [LidarrDownloads.Row]) async { _ = await lidarrRestarter?.restartAll(rows) } }'
+  'App/AppModel+MissingAlbums.swift|append|extension AppModel { func plantedAsk() async { _ = await askAndRecord(now: Date()) } }'
+  'App/Screens/Settings/LidarrDownloadsView.swift|append|extension AppModel { func plantedSearch2() { Task { await self.searchMissingAlbumsNow () } } }'
+  'App/Screens/Settings/LidarrDownloadsView.swift|append|extension AppModel { func plantedSearch3() { let f = self.searchMissingAlbumsNow; Task { await f(Date()) } } }'
+  "$dl|append|extension LidarrDownloadRestarter { var sneak: Void { Task { _ = await self.searchFor([1]) } } }"
+  "$wg|sed|s/^        do { try missingSearchStore.save(t, scope: scope) } catch { throw WriteGateError.logUnavailable }\$/&\n        if target.key.isEmpty { _ = try? await deliver(target, data) }/"
+  "$dl|sed|s/confinedAs: .queueRestartAny, allowForeign: false, allowFinished: !deferred)/confinedAs: .queueRestartAny, allowForeign: false, allowFinished: true)/"
+  'App/AppModel+Requests.swift|append|extension AppModel { func plantedRun(_ m: AppModel) async { _ = try? await m.lidarrRestarter?.clearAllPlan() } }'
+  # Fix round 3: two delivers on the MissingAlbumSearch line (G2), a gate extension that delivers (H), the restarter's
+  # cache no longer fileprivate (L-SM1c).
+  "$wg|sed|/private func sendMissingAlbumSearch/,/^    }\$/s/^            return try await deliver(target, data)\$/            _ = try? await deliver(target, data); return try await deliver(target, data)/"
+  "$wg|append|extension LidarrWriteGate { func plantedNudge(_ t: WriteTarget) async { _ = try? await deliver(t, Data(\"{}\".utf8)) } }"
+  'App/AppModel+MissingAlbums.swift|sed|s/    @ObservationIgnored fileprivate var restarter:/    @ObservationIgnored var restarter:/'
+  "$wg|sed|s/guard let commands = try? await strictCommandNamesAndStatuses() else {/guard let commands = try? await reader.commands().map({ (\$0.name.lowercased(), \$0.status.lowercased()) }) else {/"
+  "$dl|sed|s/^                if firstRemoval == nil { firstRemoval = startedAt }\$/&; if let r = removal.request { await runner?.clearAllSearch(r) }/"
+  "$dl|sed|s/let removal = try await removeOne(target.queueId, item, albums: albums, allowForeign: foreign, deferred: true)/let removal = try await removeOne(target.queueId, item, albums: albums, allowForeign: foreign, deferred: false)/"
+  'App/Screens/Settings/LidarrDownloadsView.swift|append|func plantedFlag(_ m: AppModel, _ p: ClearAllPlan) { Task { await m.clearAllDownloads(p, includeForeign: true) } }'
+  'App/AppModel+Requests.swift|append|let plantedRestarter = LidarrDownloadRestarter(lidarr: client, gate: gate, runner: runner)'
+  'App/AppModel+Requests.swift|append|func plantedRun(_ restarter: LidarrDownloadRestarter, _ p: ClearAllPlan) async { _ = await restarter.clearAll(p, includeForeign: false) }'
+)
+for entry in "${r_inplace[@]}"; do
+  rel="${entry%%|*}" rest="${entry#*|}"
+  mode="${rest%%|*}" text="${rest#*|}"
+  file="$work/$rel"
+  cp "$file" "$file.orig"
+  if [ "$mode" = append ]; then printf '%b\n' "$text" >> "$file"; else sed -i '' "$text" "$file"; fi
+  if cmp -s "$file.orig" "$file"; then echo "selftest: the plant didn't apply: $entry" >&2; failed=1
+  elif out=$("$work/scripts/check-writes.sh" 2>&1); then
+    echo "selftest: NOT caught: $entry" >&2; failed=1
+  elif ! grep -qE 'L1:|G1:' <<< "$out"; then
+    echo "selftest: failed without a G1/L1 reason: $entry" >&2; failed=1
+  fi
+  cp "$file.orig" "$file"; rm -f "$file.orig"
+done
+planted+=("${r_inplace[@]}")
 
 [ "$failed" = 0 ] || exit 1
 echo "check-writes selftest: all ${#planted[@]} planted violations and ${#weakened[@]} allow-list weakenings caught; the clean tree passes"

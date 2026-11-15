@@ -152,8 +152,9 @@ struct LibraryView: View {
     }
 }
 
-/// Album tiles in columns (two on a phone, more on wider screens).
+/// Album tiles in columns (two on a phone, more on wider screens; Round 27 H: three at least with Small covers, D296).
 struct AlbumGrid: View {
+    @Environment(AppModel.self) private var model
     let albums: [Album]
     let subtitle: (Album) -> String
     var onAppearLast: (() -> Void)?
@@ -162,22 +163,40 @@ struct AlbumGrid: View {
 
     /// Columns of at least 150 pt (two at least); Y7 audit: at accessibility sizes tiles are at least
     /// `AlbumTile.accessibilityWidth` wide, so a phone shows one column instead of two overlapping ones.
-    static func columnCount(width: CGFloat, accessibility: Bool) -> Int {
-        let minimum: CGFloat = accessibility ? AlbumTile.accessibilityWidth : 150
+    /// Round 27 H (owner, 2026-11-14): Small covers, columns of at least 100 pt, three at least (three on a 375 pt
+    /// phone); accessibility sizes are the same either way (D296).
+    static func columnCount(width: CGFloat, accessibility: Bool, size: AlbumCoverSize = .large) -> Int {
+        if accessibility {
+            return max(1, Int((width + Tokens.Spacing.l) / (AlbumTile.accessibilityWidth + Tokens.Spacing.l)))
+        }
+        let minimum: CGFloat = size == .small ? 100 : 150
         let fit = Int((width + Tokens.Spacing.l) / (minimum + Tokens.Spacing.l))
-        return accessibility ? max(1, fit) : max(2, fit)
+        return max(size == .small ? 3 : 2, fit)
     }
 
-    private var columns: Int { Self.columnCount(width: width, accessibility: typeSize.isAccessibilitySize) }
-    private var tileWidth: CGFloat { max(100, (width - CGFloat(columns - 1) * Tokens.Spacing.l) / CGFloat(columns)) }
+    /// A tile's width for `columns` in `width`: at least 100 pt with Large covers (as before); with Small, whatever
+    /// three columns leave on the narrowest phone (about 83 pt on a 320 pt one), so they never run off the screen.
+    static func tileWidth(width: CGFloat, columns: Int, size: AlbumCoverSize) -> CGFloat {
+        let count = CGFloat(max(1, columns))
+        return max(size == .small ? 60 : 100, (width - (count - 1) * Tokens.Spacing.l) / count)
+    }
+
+    /// Small covers have their own tile (title and subtitle on one line each); at accessibility sizes the large tile,
+    /// as the columns are the same there.
+    static func usesSmallTiles(_ size: AlbumCoverSize, accessibility: Bool) -> Bool { size == .small && !accessibility }
+
+    private var size: AlbumCoverSize { model.preferences.layout.albumCovers }
+    private var columns: Int { Self.columnCount(width: width, accessibility: typeSize.isAccessibilitySize, size: size) }
+    private var tileWidth: CGFloat { Self.tileWidth(width: width, columns: columns, size: size) }
 
     var body: some View {
+        let small = Self.usesSmallTiles(size, accessibility: typeSize.isAccessibilitySize)
         LazyVGrid(columns: Array(repeating: GridItem(.fixed(tileWidth), spacing: Tokens.Spacing.l, alignment: .top),
                                  count: columns),
-                  alignment: .leading, spacing: Tokens.Spacing.xl) {
+                  alignment: .leading, spacing: small ? Tokens.Spacing.l : Tokens.Spacing.xl) {
             ForEach(Array(albums.enumerated()), id: \.element.id) { index, album in
                 NavigationLink(value: Route.album(id: album.id)) {
-                    AlbumTileView(album: album, subtitle: subtitle(album), width: tileWidth)
+                    AlbumGridTile(album: album, subtitle: subtitle(album), width: tileWidth, small: small)
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("album-\(index)")
@@ -188,4 +207,85 @@ struct AlbumGrid: View {
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
         .padding(.horizontal, Tokens.Spacing.largeTitleMargin)
     }
+}
+
+/// Round 27 H (D296): one album grid tile, large (`AlbumTileView`, as before) or small (`SmallAlbumTile`), with the
+/// album's long-press menu and download mark either way.
+struct AlbumGridTile: View {
+    @Environment(AppModel.self) private var model
+    let album: Album
+    let subtitle: String
+    let width: CGFloat
+    let small: Bool
+
+    var body: some View {
+        if small {
+            Artwork(album.coverArtId, side: width) { image in
+                SmallAlbumTile(title: album.name, subtitle: subtitle, artwork: image, width: width,
+                               mark: model.downloadIndex.mark(album: album))   // P1
+            }
+            .albumMenu(album)   // R7 Favourite, R8 Add to playlist…, P4 Reload artwork
+        } else {
+            AlbumTileView(album: album, subtitle: subtitle, width: width)
+        }
+    }
+}
+
+/// Round 27 H (owner, 2026-11-14): "an option to view albums as smaller icons" (D296). A small cover with its title and
+/// subtitle on one line each (truncated; fix round 1: the title two lines from xLarge text up), at least 44 pt high; VoiceOver reads both, and the download mark, as the
+/// large tile does.
+struct SmallAlbumTile: View {
+    let title: String
+    let subtitle: String
+    let artwork: Image?
+    let width: CGFloat
+    var mark: DownloadMark = .none
+    @Environment(\.dynamicTypeSize) private var typeSize
+    private let themed = Themed()
+
+    static func accessibilityLabel(title: String, subtitle: String) -> String { "\(title), \(subtitle)" }
+
+    /// Fix round 1 (design M1): from xLarge text up a title may take two lines, so it isn't cut to a few letters.
+    static func titleLines(_ typeSize: DynamicTypeSize) -> Int { typeSize >= .xLarge ? 2 : 1 }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Tokens.Spacing.xs) {
+            SleeveArt(image: artwork, side: width)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title).font(.footnote.weight(.semibold)).lineLimit(Self.titleLines(typeSize))
+                HStack(spacing: 2) {
+                    Text(subtitle).font(.caption2).foregroundStyle(themed.palette.ink2Color).lineLimit(1)
+                    DownloadMarkView(mark)
+                }
+            }
+        }
+        .frame(width: width, alignment: .leading)
+        .frame(minHeight: Tokens.minHitSize)
+        .foregroundStyle(themed.palette.inkColor)
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Self.accessibilityLabel(title: title, subtitle: subtitle))
+        .accessibilityValue(mark.joined(to: nil))
+    }
+}
+
+/// Round 27 H (D296): the words for album covers (Settings › Home & Library, Library › Albums' toolbar).
+enum AlbumCoversCopy {
+    static let setting = "Album covers"
+    /// Fix round 1 (design H1): why the choice does nothing at the largest text sizes.
+    static let accessibilityNote = "At the largest text sizes, covers stay large so titles can be read."
+    /// Fix round 1 (design L1): said by VoiceOver after the toolbar's tap.
+    static func announcement(_ size: AlbumCoverSize) -> String { size == .small ? "Small covers" : "Large covers" }
+
+    static func title(_ size: AlbumCoverSize) -> String {
+        switch size {
+        case .large: "Large"
+        case .small: "Small"
+        }
+    }
+
+    /// The toolbar button says what a tap does.
+    static func toolbarLabel(_ size: AlbumCoverSize) -> String { size == .large ? "Smaller covers" : "Larger covers" }
+
+    static func toolbarSymbol(_ size: AlbumCoverSize) -> String { size == .large ? "square.grid.3x3" : "square.grid.2x2" }
 }

@@ -289,14 +289,18 @@ public final class OutsideArtLoader {
     }
 
     public func image(_ key: OutsideArtKey, priority: OutsideArtPriority = .visible) async -> CGImage? {
+        // Round 27 crash hunt (R27X): the generation is taken before the disk check, so a reset (the screen closed, new
+        // results) while the disk is read stops this load too, instead of it going on to the network for a screen
+        // that's gone.
+        let started = generation
         if let hit = await cached(key) { return hit }
+        guard generation == started else { return nil }
         if let task = inFlight[key] { return await task.value }
         guard !isOffline() else { return nil }
         if case .artist = key {
             guard artistImage != nil, artistLookups < maxArtistLookups else { return nil }
             artistLookups += 1
         }
-        let started = generation
         let sources = Sources(transport: transport, userAgent: userAgent, artistImage: artistImage, covers: covers,
                               limiter: limiter, stepTimeout: stepTimeout, priority: priority)
         // Second fix round (re-review Important 1): the album's name is looked up when the Aurral step runs, not now, so

@@ -42,6 +42,14 @@ public final class Player {
     public private(set) var hasEnded = false
     /// The last song that failed to transcode and fell back to its original (Task 7).
     public private(set) var lastFallbackSongId: String?
+    /// Round 27 P (owner item 11, 2026-11-14): the song whose dropped connection is being picked up (Now Playing's
+    /// "Connection dropped…" hint, D278). Nil again once sound arrives, the song changes or the retries run out.
+    public private(set) var reconnectingSongId: String?
+    /// Round 27 P (D278, D281): whether the server can start a conversion part-way (`transcodeOffset`); read at each use.
+    @ObservationIgnored public var startsConversionsPartWay: () -> Bool = { false }
+    /// Round 27 P (D278): whether the server can be reached right now (a connection, and not offline). A dropped stream
+    /// is picked up only then; otherwise it stops as before and `retryAfterFailure()` takes it up later.
+    @ObservationIgnored public var canReachServer: () -> Bool = { true }
     /// Overall volume (the sleep timer's fade), forwarded to the engine.
     public var volume: Float = 1 {
         didSet { engine.setVolume(volume) }
@@ -82,6 +90,10 @@ public final class Player {
     @ObservationIgnored private var needsReload = false
     /// The current entry failed; engine item changes are ignored until the user acts.
     @ObservationIgnored private var failedEntryId: UUID?
+    /// Round 27 A fix round 2 (N1, D307): the entries the queue moved past by itself (a song ending, a gapless move, an
+    /// unplayable song passed over), newest last, at most 50; cleared by `play`. A builder tells a song ending from a skip
+    /// by it.
+    @ObservationIgnored public private(set) var leftNaturally: [UUID] = []
     /// `main` order before shuffle was switched on, so switching it off can put it back.
     @ObservationIgnored private var unshuffledOrder: [UUID]?
     @ObservationIgnored private var pendingScrobbles: [UUID: Task<Void, Never>] = [:]
@@ -93,6 +105,23 @@ public final class Player {
     /// lands near the start, or `restartTickGrace` passes, a later one for that entry is dropped.
     @ObservationIgnored private var restartedAt: (entryId: UUID, at: Date)?
     private static let restartTickGrace: TimeInterval = 2
+
+    /// Round 27 P (D278): how long to wait before each pick-up of a dropped converted stream; their count is the most
+    /// tries an entry gets.
+    static let retryDelays: [Duration] = [.seconds(1), .seconds(3)]
+    @ObservationIgnored private let sleep: @Sendable (Duration) async -> Void
+    /// Pick-ups tried for an entry (its own count; another entry starts at 0).
+    @ObservationIgnored private var networkRetries: (entryId: UUID, count: Int)?
+    /// The pick-up waiting to run: only the latest (by generation) applies, and only while its entry is current.
+    @ObservationIgnored private var pendingRetry: (entryId: UUID, generation: Int, message: String)?
+    @ObservationIgnored private var retryGeneration = 0
+    /// The engine's own clock for the current load (no offset): how long this load has played, for `PlaybackFailure`.
+    @ObservationIgnored private var engineTime: TimeInterval = 0
+    /// Fix round 1 (M2): the current load is a pick-up. Its first second isn't the conversion's first second, so an
+    /// unrecognised failure then counts as the network again, not as a conversion failure.
+    @ObservationIgnored private var pickedUpLoad = false
+    /// Round 27 P (D282): stalls of the current entry, logged by kind of stream only.
+    @ObservationIgnored private var stalls: (entryId: UUID, count: Int)?
 
     /// The URL the current entry plays from (a file on the phone or a server stream), nil before it is loaded.
     /// Round 12 Y3: Now Playing says what is heard from it, not from the quality set now.
@@ -129,8 +158,10 @@ public final class Player {
                 isFind: @escaping (Song) -> Bool = { _ in false },
                 now: @escaping () -> Date = { Date() },
                 gain: @escaping (Song) -> Float = { _ in 1 },
-                scrobbleRule: @escaping () -> ScrobbleRule = { .standard }) {
+                scrobbleRule: @escaping () -> ScrobbleRule = { .standard },
+                sleep: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) }) {
         self.engine = engine
+        self.sleep = sleep
         self.scrobbler = scrobbler
         self.urls = urls
         self.isFind = isFind
@@ -149,6 +180,7 @@ public final class Player {
     // MARK: - Transport
 
     public func play(_ songs: [Song], startAt: Int) {
+        leftNaturally = []
         queue.replace(with: songs, startAt: startAt)
         isShuffled = false
         unshuffledOrder = nil
@@ -221,7 +253,7 @@ public final class Player {
     private var stoppedOnItsOwn: Bool { failedEntryId != nil || hasEnded }
 
     /// Previous past 3 s (or on the first song) starts the song again. Stopped on its own, the song loads and plays as a
-    /// new play. Otherwise a song that seeks (a file on the phone, an Original or MP3 stream) seeks to 0 as before.
+    /// new play. Otherwise a song that seeks (a file on the phone, an original stream) seeks to 0 as before.
     /// Round 24 G (owner item 11, D235), defensive, the cause unconfirmed on a device: a converted AAC or Opus stream
     /// comes chunked, with no byte ranges (D42, D45), so a seek to 0 may leave the sound where it was while Now Playing
     /// shows 0:00; that one is loaded afresh instead. Emptying the engine's list first makes it drop the item, so the
@@ -233,17 +265,68 @@ public final class Player {
             resume()
             return
         }
+        // Round 27 P (D281): where the server starts a conversion part-way, a converted stream reloads from 0 by asking
+        // for it (`timeOffset=0`), on the URL built for the source that is current now.
+        if let url = currentURL, startsConversionsPartWay(), isConvertedStream(url) {
+            let fresh = urls.streamURL(for: current.song)
+            if isConvertedStream(fresh), let top = StreamOffset.url(fresh, startingAt: 0) {
+                return reloadCurrent(on: top, seekTo: nil, play: false)
+            }
+        }
         guard let url = currentURL, !Self.seeksReliably(url) else { return seek(0) }
         engine.setItems([], startAt: 0)
         loaded = nil
+        engineTime = 0
+        pickedUpLoad = false
         syncEngine()
         position = 0
         anchorTick(at: 0)
         restartedAt = (current.id, now())
     }
 
+    /// Round 27 P (D278, D281): a server stream that isn't the original: a conversion (`isOriginal` says which).
+    private func isConvertedStream(_ url: URL) -> Bool {
+        guard !url.isFileURL, let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" else { return false }
+        return !urls.isOriginal(url)
+    }
+
+    /// Whole seconds for a `timeOffset`, never trapping (a huge or negative time is held to `StreamOffset`'s bounds).
+    nonisolated static func wholeSeconds(_ t: TimeInterval) -> Int {
+        guard t.isFinite, t > 0 else { return 0 }
+        return t < TimeInterval(StreamOffset.maxSeconds) ? Int(t) : StreamOffset.maxSeconds
+    }
+
+    /// Round 27 P (D278, D281): loads the current entry again on `url`. The engine drops what it holds first, so even
+    /// the same URL reloads. A `timeOffset` in the URL is where the stream starts and becomes the position; otherwise
+    /// `seekTo` (a best-effort seek, today's for a converted stream) does. `play`: start it (after a failure the engine
+    /// stopped wanting to); otherwise it plays or stays paused as it was.
+    private func reloadCurrent(on url: URL, seekTo: TimeInterval?, play: Bool) {
+        guard let current = queue.current else { return }
+        engine.setItems([], startAt: 0)
+        loaded = (current.id, url)
+        engineTime = 0
+        pickedUpLoad = false
+        syncEngine()
+        let start = TimeInterval(StreamOffset.seconds(in: url))
+        var at = start
+        if let seekTo, seekTo.isFinite, seekTo > start {
+            engine.seek(to: seekTo - start)
+            at = seekTo
+        }
+        position = at
+        anchorTick(at: at)   // a jump is not listening
+        // A tick from the load before (its clock far from this one's start) is dropped, as after D235's restart. Not
+        // after a seek: the new load's own ticks are near the old position then.
+        restartedAt = seekTo == nil ? (current.id, now()) : nil
+        if play {
+            engine.play()
+            isPlaying = true
+        }
+    }
+
     /// Round 24 G (D235): whether a seek on `url` lands: a file on the phone, or a stream sent with its length
-    /// (`estimateContentLength`: Original and MP3). A converted AAC or Opus stream goes out chunked without it (D42, D45).
+    /// (`estimateContentLength`: the original). A converted AAC or Opus stream goes out chunked without it (D42, D45),
+    /// and since round 27 P a converted MP3 too (D282).
     nonisolated static func seeksReliably(_ url: URL) -> Bool {
         if url.isFileURL { return true }
         let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
@@ -254,7 +337,14 @@ public final class Player {
         guard t.isFinite else { return }   // NaN or infinity would trap where the position becomes whole seconds
         hasEnded = false
         restartedAt = nil   // R24 G (D235): a seek after a restart is followed at once
-        engine.seek(to: t)
+        // Round 27 P (D281): a converted stream has no byte ranges to seek in (D42, D45); where the server starts a
+        // conversion part-way, it is asked for from the target instead. Paused stays paused.
+        if let url = currentURL, !needsReload, startsConversionsPartWay(), isConvertedStream(url),
+           let target = StreamOffset.url(url, startingAt: Self.wholeSeconds(t)) {
+            return reloadCurrent(on: target, seekTo: nil, play: false)
+        }
+        let offset = TimeInterval(StreamOffset.seconds(in: currentURL))
+        engine.seek(to: offset > 0 ? max(0, t - offset) : t)   // the engine's clock starts where the stream did
         position = t
         anchorTick(at: t)   // a jump is not listening
     }
@@ -271,6 +361,35 @@ public final class Player {
         let wasIdle = queue.current == nil
         queue.addToEnd(songs)
         wasIdle ? loadCurrent() : syncEngine()
+    }
+
+    /// Round 27 A fix round 1 (design M5, D307): a builder's songs for the end of the queue. While shuffled they land at
+    /// seeded random places after the current song (not all at the end) and join the order shuffle-off restores, at
+    /// its end; otherwise as `addToEnd`.
+    public func addToEnd(_ songs: [Song], shuffleSeed: UInt64) {
+        guard isShuffled else { return addToEnd(songs) }
+        let wasIdle = queue.current == nil
+        let added = queue.insertRandomly(songs, seed: shuffleSeed)
+        unshuffledOrder?.append(contentsOf: added)
+        wasIdle ? loadCurrent() : syncEngine()
+    }
+
+    /// Round 27 P (owner, 2026-11-14): Automix (Q5, D282): what's coming up after the current song becomes `songs`;
+    /// the current song plays on and Play next songs stay. One re-send of the engine's list; an idle queue starts with
+    /// them like `addToEnd`.
+    public func replaceUpcoming(with songs: [Song]) {
+        let wasIdle = queue.current == nil
+        queue.replaceUpcoming(with: songs)
+        guard queue.current != nil else { return }
+        wasIdle ? loadCurrent() : syncEngine()
+    }
+
+    /// Round 27 D1 fix round 2 (N2, D285): a Discover page's late library copies swapped into what's coming up, each in
+    /// its own slot (`PlayQueue.replaceRestSongs`): one re-send of the engine's list in which every unchanged item keeps
+    /// its id and URL, so the next stream is never opened twice; the current song and Play next songs stay.
+    public func replaceUpcomingSongs(_ copies: [String: Song]) {
+        guard queue.current != nil, queue.replaceRestSongs(copies) else { return }
+        syncEngine()
     }
 
     public func remove(id: UUID) {
@@ -378,7 +497,7 @@ public final class Player {
             // late event about a list replaced since (the engine was told to play the current entry): following it
             // would name a song that isn't playing and drop its ticks as stale (crash hunt 1).
             guard sent.contains(where: { $0.id == id }) else { return }
-            while queue.current?.id != id, queue.advance() != nil {}
+            advanceNaturally(to: id)
             adoptLoaded(id)
             beginEntry()
             topUpWindow()
@@ -391,32 +510,42 @@ public final class Player {
                 if t > Self.restartThreshold, now().timeIntervalSince(restart.at) < Self.restartTickGrace { return }
                 restartedAt = nil
             }
-            position = max(0, t)
+            // Round 27 P (D278): a stream that started part-way (`timeOffset`) counts from there; the engine's clock
+            // starts at 0 on it.
+            engineTime = max(0, t)
+            let offset = TimeInterval(StreamOffset.seconds(in: currentURL))
+            let at = engineTime + offset
+            position = at
+            if pendingRetry == nil, reconnectingSongId != nil { reconnectingSongId = nil }   // sound again (D278)
             if var p = playback, p.entryId == id {
                 // A step is listening only when the wall clock could have covered it (ticks come less often in the
                 // background). A bigger jump forward, or any step back, is a seek, or a stale tick from before one:
                 // it re-anchors and adds nothing.
-                let at = now()
-                let step = t - p.lastTick
-                if step > 0, step <= at.timeIntervalSince(p.lastTickAt) + Self.tickSlack, step <= Self.maxTickCredit {
+                let clock = now()
+                let step = at - p.lastTick
+                if step > 0, step <= clock.timeIntervalSince(p.lastTickAt) + Self.tickSlack, step <= Self.maxTickCredit {
                     p.listened += step
                 }
-                p.lastTick = t
-                p.lastTickAt = at
+                p.lastTick = at
+                p.lastTickAt = clock
                 playback = p
             }
             // The API's song duration wins (D45: Ogg and other transcoded lengths are estimates); the engine's only
             // fills in when the server gave none.
-            if let d, d.isFinite, d > 0, (queue.current?.song.duration ?? 0) <= 0 { duration = d }
+            if let d, d.isFinite, d > 0, (queue.current?.song.duration ?? 0) <= 0 { duration = d + offset }
             maybeSubmitScrobble()
         case .stalled:
-            break
+            noteStall()
         case .failed(let id, let message, let undecodable):
             // Only the current entry matters; the engine retries a failed upcoming item when it
             // is reached. Stop the engine too, so a dead server can't race through the queue.
             guard let current = queue.current, id == current.id else { return }
             let key = FallbackKey(entryId: id, songId: current.song.id)
             let loadedURL = loaded?.url
+            // Round 27 P (D277): what kind of failure, from the engine's cause and how long this load had played.
+            var cause = engine.failureCause(for: id)
+            if cause == .unknown, pickedUpLoad { cause = .network }   // fix round 1 (M2)
+            let kind = PlaybackFailure.kind(cause: cause, playedFor: engineTime)
             if !fellBack.contains(key), let loadedURL, loadedURL.isFileURL {
                 // The song's file on the phone failed: it streams instead, once (the app drops the file only when it
                 // is damaged). Without a connection there is no stream, and it is skipped like any song that can't play.
@@ -428,6 +557,11 @@ public final class Player {
                 }
                 // No stream (offline): the file is kept and the next song that can play does.
                 if skipToNextPlayable() { return }
+            } else if kind == .network, let loadedURL, isConvertedStream(loadedURL) {
+                // Round 27 P (owner item 11, D278): the connection dropped, the conversion didn't fail. The same quality
+                // picks up from where it was (supersedes Task 7's "any failure": the original is many times the size,
+                // so on mobile data it only stalled more). Never the original for this; out of tries, it stops.
+                if pickUpLater(current, message: message) { return }
             } else if !fellBack.contains(key), let original = urls.originalURL(for: current.song),
                       let loadedURL, original != loadedURL, !urls.isOriginal(loadedURL) {
                 // The server couldn't convert it: play the original instead, once.
@@ -436,12 +570,7 @@ public final class Player {
                 restartCurrent(rebuild: true)
                 return
             }
-            if !isPlayable(current.song), skipToNextPlayable() { return }
-            lastError = message
-            failedEntryId = id
-            needsReload = true
-            engine.pause()
-            isPlaying = false
+            stopOnFailure(current, message: message)
         case .ended(let id):
             // Only the end of the list last sent counts: one about a list replaced since (queued before `play`, or
             // before a top-up re-sent the window) would skip songs.
@@ -470,6 +599,10 @@ public final class Player {
     /// was when it can play now, otherwise the next song that can does. Nothing happens unless the current one failed.
     public func retryAfterFailure() {
         guard let current = queue.current, failedEntryId == current.id else { return }
+        // Round 27 P (D278): a dropped stream waiting to be picked up is picked up now.
+        if let pending = pendingRetry, pending.entryId == current.id {
+            return pickUpDroppedStream(generation: pending.generation, play: isPlaying)
+        }
         guard isPlayable(current.song) else {
             _ = skipToNextPlayable()
             return
@@ -490,6 +623,8 @@ public final class Player {
         lastError = message
         failedEntryId = current.id
         needsReload = true
+        reconnectingSongId = nil   // R27 P (D278): no pick-up while it can't play
+        pendingRetry = nil
     }
 
     /// Waits for scrobble requests already started (tests; app suspension).
@@ -502,8 +637,12 @@ public final class Player {
     // MARK: - Internals
 
     private func resume() {
-        guard queue.current != nil else { return }
+        guard let current = queue.current else { return }
         hasEnded = false
+        // Round 27 P (D278): play during the wait picks the dropped stream up now, from where it was.
+        if let pending = pendingRetry, pending.entryId == current.id {
+            return pickUpDroppedStream(generation: pending.generation, play: true)
+        }
         if needsReload { loadCurrent() }
         engine.play()
         isPlaying = true
@@ -516,6 +655,8 @@ public final class Player {
         guard let current = queue.current else {
             loaded = nil
             sent = []
+            reconnectingSongId = nil
+            pendingRetry = nil
             engine.setItems([], startAt: 0)
             engine.pause()
             isPlaying = false
@@ -534,6 +675,10 @@ public final class Player {
         let entries = [current] + following
         // Volumes first: the engine applies them as it enqueues.
         engine.setVolumes(Dictionary(entries.map { ($0.id, gain($0.song)) }, uniquingKeysWith: { a, _ in a }))
+        // Round 27 P (D279): and the API's lengths, so a chunked transcode's next song opens only in its last 20 s.
+        engine.setLengths(Dictionary(entries.compactMap { e -> (UUID, TimeInterval)? in
+            e.song.duration.isFinite && e.song.duration > 0 ? (e.id, e.song.duration) : nil
+        }, uniquingKeysWith: { a, _ in a }))
         let items = [(current.id, currentURL)] + following.map { ($0.id, urls.streamURL(for: $0.song)) }
         sent = items.map { (id: $0.0, url: $0.1) }
         engine.setItems(items, startAt: 0)
@@ -566,8 +711,11 @@ public final class Player {
     /// Puts the current entry back on where it was, on a new URL (`loaded` already holds it unless `rebuild`).
     private func restartCurrent(rebuild: Bool) {
         let resumeAt = position
+        engineTime = 0
+        pickedUpLoad = false
         syncEngine(rebuildCurrent: rebuild)
-        if resumeAt > 0 { engine.seek(to: resumeAt) }
+        let offset = TimeInterval(StreamOffset.seconds(in: loaded?.url))   // R27 P: 0 unless the URL starts part-way
+        if resumeAt > offset { engine.seek(to: resumeAt - offset) }
         anchorTick(at: resumeAt)
         engine.play()
         isPlaying = true
@@ -583,12 +731,21 @@ public final class Player {
     /// The engine ran out of its window while playable songs remain after it (an `.itemChanged` went missing, so
     /// the window wasn't topped up): carry on with the first playable song after what the engine was last sent,
     /// instead of ending. Not under repeat one or stop after current, whose window is the current song alone.
+    /// Moves the queue on to `id` by itself (not a skip), noting each entry it leaves (N1).
+    private func advanceNaturally(to id: UUID) {
+        while let current = queue.current?.id, current != id {
+            guard queue.advance() != nil else { break }
+            leftNaturally.append(current)
+        }
+        if leftNaturally.count > 50 { leftNaturally.removeFirst(leftNaturally.count - 50) }
+    }
+
     private func continueAfterWindow() -> Bool {
         guard repeatMode != .one, !stopsAfterCurrent else { return false }
         let upcoming = queue.upcoming
         let start = sent.last.flatMap { last in upcoming.firstIndex { $0.id == last.id } }.map { $0 + 1 } ?? 0
         guard let target = upcoming[start...].first(where: { isPlayable($0.song) }) else { return false }
-        while queue.current?.id != target.id, queue.advance() != nil {}
+        advanceNaturally(to: target.id)
         loadCurrent()
         engine.play()
         isPlaying = true
@@ -599,7 +756,7 @@ public final class Player {
     /// song that can and keep playing. False when none is left.
     private func skipToNextPlayable() -> Bool {
         guard let target = queue.upcoming(limit: 1, where: { isPlayable($0.song) }).first else { return false }
-        while queue.current?.id != target.id, queue.advance() != nil {}
+        advanceNaturally(to: target.id)
         loadCurrent()
         engine.play()
         isPlaying = true
@@ -617,11 +774,94 @@ public final class Player {
         duration = queue.current.flatMap { $0.song.duration > 0 ? $0.song.duration : nil }
         lastError = nil
         playback = nil
+        forgetPickUp()
+    }
+
+    /// Round 27 P (D276, D278): a new current entry: no pick-up, hint or stall count carries over from the last one.
+    private func forgetPickUp() {
+        reconnectingSongId = nil
+        pendingRetry = nil
+        networkRetries = nil
+        engineTime = 0
+        pickedUpLoad = false
+        stalls = nil
+    }
+
+    /// Round 27 P (owner item 11, D278): the current converted stream's connection dropped. Online and with tries left,
+    /// it waits (1 s, then 3 s) and picks up on the same quality from where it was; meanwhile it counts as stopped on
+    /// its own (a skip plays what it lands on, D235) and Now Playing says it's picking up. False: stop as before.
+    private func pickUpLater(_ current: QueueEntry, message: String) -> Bool {
+        guard canReachServer() else { return false }
+        let done = networkRetries.flatMap { $0.entryId == current.id ? $0.count : nil } ?? 0
+        guard done < Self.retryDelays.count else { return false }
+        networkRetries = (current.id, done + 1)
+        retryGeneration += 1
+        let generation = retryGeneration
+        pendingRetry = (current.id, generation, message)
+        failedEntryId = current.id
+        needsReload = true
+        lastError = nil
+        reconnectingSongId = current.song.id
+        Log.logger("playback").info("connection dropped on a converted stream: picking up (try \(done + 1, privacy: .public))")
+        let delay = Self.retryDelays[done], sleep = self.sleep
+        Task { [weak self] in
+            await sleep(delay)
+            self?.pickUpDroppedStream(generation: generation, play: nil)
+        }
+        return true
+    }
+
+    /// Runs the waiting pick-up `generation` if it is still the latest and its entry still current: the same stream
+    /// from the position, `timeOffset` where the server starts conversions part-way, otherwise from 0 with a seek.
+    /// Offline by now: it stops with the error. `play` nil: plays if the player still means to (a pause meanwhile holds).
+    private func pickUpDroppedStream(generation: Int, play: Bool?) {
+        guard let pending = pendingRetry, pending.generation == generation,
+              let current = queue.current, current.id == pending.entryId else { return }
+        pendingRetry = nil
+        guard canReachServer(), let base = loaded.flatMap({ $0.entryId == current.id ? $0.url : nil }) else {
+            return stopOnFailure(current, message: pending.message)
+        }
+        failedEntryId = nil
+        needsReload = false
+        let at = max(0, position)
+        let plays = play ?? isPlaying
+        if startsConversionsPartWay(), let url = StreamOffset.url(base, startingAt: Self.wholeSeconds(at)) {
+            reloadCurrent(on: url, seekTo: nil, play: plays)
+        } else {
+            reloadCurrent(on: base, seekTo: at, play: plays)
+        }
+        pickedUpLoad = true   // fix round 1 (M2): after `reloadCurrent`, which clears it
+        // Fix round 1 (M1): paused, nothing is picking up any more: the hint goes now, not at some later play.
+        if !plays { reconnectingSongId = nil }
+    }
+
+    /// The current entry can't play on: when it can't play right now (offline) the next song that can plays; otherwise
+    /// the player stops on it showing `message`.
+    private func stopOnFailure(_ current: QueueEntry, message: String) {
+        reconnectingSongId = nil
+        pendingRetry = nil
+        if !isPlayable(current.song), skipToNextPlayable() { return }
+        lastError = message
+        failedEntryId = current.id
+        needsReload = true
+        engine.pause()
+        isPlaying = false
+    }
+
+    /// Round 27 P (D282): the engine waited for data. Counted per entry and logged by the kind of stream only (no URL),
+    /// so a device log shows whether converted streams stall more than files and originals.
+    private func noteStall() {
+        guard let current = queue.current else { return }
+        let n = (stalls.flatMap { $0.entryId == current.id ? $0.count : nil } ?? 0) + 1
+        stalls = (current.id, n)
+        let kind = currentURL.map { $0.isFileURL ? "file" : isConvertedStream($0) ? "converted stream" : "stream" } ?? "nothing loaded"
+        Log.logger("playback").info("stalled (\(n, privacy: .public) on this song) on a \(kind, privacy: .public)")
     }
 
     /// A new entry became current: reset position and scrobble state, send "now playing".
     private func beginEntry() {
         if playback?.entryId != queue.current?.id { lastFallbackSongId = nil }
+        forgetPickUp()
         hasEnded = false
         needsReload = false
         failedEntryId = nil

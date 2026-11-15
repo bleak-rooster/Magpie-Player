@@ -19,8 +19,11 @@ struct NowPlayingView: View {
     @State private var showsQueue = false
     /// Lyrics in the art's place; stays on across songs.
     @State private var showsLyrics = false
-    /// The server advertises `songLyrics` (A13); the Lyrics button is hidden until it does.
+    /// The server advertises `songLyrics` (A13), or Find lyrics online is on (round 27 L, D311); the Lyrics button is
+    /// hidden until then.
     @State private var lyricsAvailable = false
+    /// Tests open Now Playing in lyrics mode as if the server offered them (round 27 L fix round 1: never re-asked).
+    private let lyricsPinned: Bool
     /// Measured heights of everything but the art and Up next (D43).
     @State private var partHeights: [String: CGFloat] = [:]
     /// Up next's last measured height, kept while it is hidden so the plan doesn't flip back and forth.
@@ -38,6 +41,7 @@ struct NowPlayingView: View {
     init(showingLyrics: Bool = false) {
         _showsLyrics = State(initialValue: showingLyrics)
         _lyricsAvailable = State(initialValue: showingLyrics)
+        lyricsPinned = showingLyrics
     }
 
     /// Lyrics in the art's place, laid out to fill the page (P6).
@@ -71,7 +75,8 @@ struct NowPlayingView: View {
         .foregroundStyle(themed.palette.inkColor)
         .background { ArtBackdrop(coverArtId: model.player.queue.current?.song.coverArtId) }
         .presentationDragIndicator(theme.character == .classic ? .visible : .hidden)
-        .task { if !lyricsAvailable { lyricsAvailable = (try? await model.serverAdvertises("songLyrics")) ?? false } }
+        // Round 27 L (D311; fix round 1 M5): asked again when Find lyrics online is switched.
+        .task(id: model.lyricsKeeper.findOnline) { if !lyricsPinned { lyricsAvailable = await model.lyricsButtonAvailable() } }
         .sheet(isPresented: $showsQueue) { QueueView() }
         .modifier(OutputRouteTracking(output: $output))   // R21 (D167)
         .task(id: "\(model.player.queue.current?.song.id ?? "")|\(model.offlinePageKey)") { await resolveLinks() }

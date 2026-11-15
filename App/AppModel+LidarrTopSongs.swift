@@ -133,8 +133,10 @@ extension AppModel {
     /// the album step through Lidarr; a linked song is fetched (`getSong`, at most `lidarrTopSongsFetches`) and must pass
     /// `LidarrTopSongs.confirms` before it shows; a track the index can't link is searched for (at most
     /// `lidarrTopSongsSearches`, `lidarrTopSongsSearchWait` each) and must pass the same rule. `fresh` (pull to refresh)
-    /// asks Aurral again; otherwise its answer this session is used (a failure is never kept).
-    func readLidarrTopSongs(name: String, mbid: MBID?, lidarrArtistId: Int, fresh: Bool) async -> LidarrTopSongs.Result {
+    /// asks Aurral again; otherwise its answer this session is used (a failure is never kept). Round 27 A (D303): the
+    /// page's refresh asks for `LidarrTopSongs.playLimit` (fifteen, five shown) from the same reads.
+    func readLidarrTopSongs(name: String, mbid: MBID?, lidarrArtistId: Int, fresh: Bool,
+                            limit: Int = LidarrTopSongs.limit) async -> LidarrTopSongs.Result {
         let aurralOn = mbid != nil && !isOffline && lidarrTopSongsUsesAurral
         let listenBrainzOn = mbid != nil && hasListenBrainzToken
         async let aurral = readAurralTopSongs(mbid: aurralOn ? mbid : nil, name: name, fresh: fresh)
@@ -152,7 +154,7 @@ extension AppModel {
         if case .answered(let candidates) = sources.library {
             for case .library(let song) in candidates { resolver.held[song.id] = song }
         }
-        return await LidarrTopSongs.merge(sources: sources, discoverLibraries: discoverLibraryIds) { _, candidate in
+        return await LidarrTopSongs.merge(sources: sources, discoverLibraries: discoverLibraryIds, limit: limit) { _, candidate in
             switch candidate {
             case .library(let song): return .song(song)   // Navidrome's top songs are library songs already (D259)
             case .aurral(let song):
