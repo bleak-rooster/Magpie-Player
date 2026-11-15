@@ -615,6 +615,8 @@ final class BrowseFlowTests: XCTestCase {
         XCTAssertTrue(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == '1'"), object: toggle)],
                                      timeout: 5) == .completed, "changes allowed")
         let provision = app.buttons["settings-provision"]
+        // Round 27 R (D290): Missing albums sits above the set-up button, so it may be below the fold.
+        for _ in 0..<6 where !provision.isHittable { app.swipeUp() }
         XCTAssertTrue(provision.waitForExistence(timeout: 10))
         for _ in 0..<20 where !provision.isEnabled { usleep(200_000) }
         provision.tap()
@@ -622,6 +624,7 @@ final class BrowseFlowTests: XCTestCase {
         XCTAssertTrue(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: setUp, object: provision)], timeout: 30) == .completed,
                       "Magpie is set up in Lidarr")
         let root = app.buttons["settings-root"]
+        for _ in 0..<6 where !root.exists { app.swipeDown() }   // back up to New music goes to, above Missing albums
         if root.waitForExistence(timeout: 5) {
             root.tap()
             let library = app.buttons["/music/library"]
@@ -763,7 +766,10 @@ final class BrowseFlowTests: XCTestCase {
         let toggle = app.switches["settings-allow-changes"]
         XCTAssertTrue(toggle.waitForExistence(timeout: 10))
         XCTAssertEqual(toggle.value as? String, "0", "G1: changes are off until the owner turns them on")
-        XCTAssertTrue(app.buttons["settings-provision"].exists)
+        let provision = app.buttons["settings-provision"]
+        // Round 27 R (D290): Missing albums sits above the set-up button, so it may be below the fold.
+        for _ in 0..<6 where !provision.isHittable { app.swipeUp() }
+        XCTAssertTrue(provision.exists)
         XCTAssertFalse(app.buttons["settings-provision"].isEnabled, "set-up needs changes allowed")
         attachScreenshot(app, "settings-requests")
         let log = app.buttons["settings-change-log"]
