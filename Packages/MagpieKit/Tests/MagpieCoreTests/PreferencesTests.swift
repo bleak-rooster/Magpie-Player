@@ -208,13 +208,15 @@ import Testing
         #expect(l.visibleHomeSections(offline: false, hasListenBrainzToken: false) == library + [.playlists, .genres])
         // The car shows Made for you too (T23 ruling): one rule for the phone and the car.
         #expect(l.visibleHomeSections(offline: false, hasListenBrainzToken: true) == library + [.madeForYou, .playlists, .genres])
-        #expect(l.visibleHomeSections(offline: true, hasListenBrainzToken: true) == [.downloaded])
+        // Round 28 O3 (D340): offline, the sections that show what's on the phone (OfflineLayoutTests).
+        #expect(l.visibleHomeSections(offline: true, hasListenBrainzToken: true) == [.greeting, .quickAccess, .downloaded, .playlists])
         // Round 13: Songs shows in the car too (letter groups); Requests never does.
         #expect(l.visibleLibraryRows(offline: false, findsSetUp: false, lidarrConnected: true, carPlay: true)
                 == [.playlists, .artists, .albums, .songs, .genres, .favourites, .downloads])
         #expect(l.visibleLibraryRows(offline: false, findsSetUp: true, lidarrConnected: false, carPlay: false)
                 == [.playlists, .artists, .albums, .songs, .genres, .favourites, .downloads, .finds])
-        #expect(l.visibleLibraryRows(offline: true, findsSetUp: true, lidarrConnected: true, carPlay: false) == [.genres, .downloads])
+        #expect(l.visibleLibraryRows(offline: true, findsSetUp: true, lidarrConnected: true, carPlay: false)
+                == [.playlists, .artists, .albums, .songs, .genres, .downloads])   // round 28 O3 (D340)
     }
 
     /// Round 12 Y6: Discover (Home and Library, the phone and the car) only while Aurral is set up, never offline.
@@ -225,26 +227,30 @@ import Testing
         #expect(l.visibleHomeSections(offline: false, hasListenBrainzToken: false, discoverSetUp: true)
                 == [.greeting, .filterChips, .quickAccess, .discover, .jumpBackIn, .recentlyAdded, .favourites, .mostPlayed,
                     .playlists, .genres])
-        #expect(l.visibleHomeSections(offline: true, hasListenBrainzToken: false, discoverSetUp: true) == [.downloaded])
+        // Round 28 O3 (D340): offline, Your flows shows the flows on the phone.
+        #expect(l.visibleHomeSections(offline: true, hasListenBrainzToken: false, discoverSetUp: true)
+                == [.greeting, .quickAccess, .discover, .downloaded, .playlists])
         #expect(!l.visibleLibraryRows(offline: false, findsSetUp: true, lidarrConnected: true, carPlay: false).contains(.discover))
         #expect(l.visibleLibraryRows(offline: false, findsSetUp: false, lidarrConnected: false, carPlay: true, discoverSetUp: true)
                 == [.playlists, .artists, .albums, .songs, .genres, .favourites, .downloads, .discover])
         #expect(l.visibleLibraryRows(offline: true, findsSetUp: false, lidarrConnected: false, carPlay: false, discoverSetUp: true)
-                == [.genres, .downloads])
+                == [.playlists, .artists, .albums, .songs, .genres, .downloads, .discover])   // round 28 O3 (D340)
     }
 
-    /// Offline (one rule for the phone and the car): Downloads, which always shows, and Genres (read from the phone)
-    /// when it is switched on, in the owner's order.
+    /// Offline (one rule for the phone and the car): Downloads, which always shows, and (round 28 O3, D340) the rows
+    /// that list what's on the phone when they are switched on, in the owner's order.
     @Test func offlineLibraryRows() {
         var l = LayoutPreferences.defaultValue
         l.library.move(fromOffsets: IndexSet(integer: 6), toOffset: 0)   // Downloads first
         for carPlay in [false, true] {
-            #expect(l.visibleLibraryRows(offline: true, findsSetUp: true, lidarrConnected: true, carPlay: carPlay) == [.downloads, .genres])
+            #expect(l.visibleLibraryRows(offline: true, findsSetUp: true, lidarrConnected: true, carPlay: carPlay)
+                    == [.downloads, .playlists, .artists, .albums, .songs, .genres])
         }
-        l.setLibraryRow(.genres, visible: false)
+        for row in [LibraryRow.playlists, .artists, .albums, .songs, .genres] { l.setLibraryRow(row, visible: false) }
+        l.setLibraryRow(.favourites, visible: true)
         l.setLibraryRow(.downloads, visible: false)
         #expect(l.visibleLibraryRows(offline: true, findsSetUp: false, lidarrConnected: false, carPlay: true) == [.downloads],
-                "Downloads shows offline even when switched off; Genres doesn't")
+                "Downloads shows offline even when switched off; the others don't")
     }
 
     @Test func qualityStreamParameters() {

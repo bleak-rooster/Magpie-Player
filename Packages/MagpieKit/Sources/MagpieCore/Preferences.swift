@@ -412,12 +412,21 @@ public struct LayoutPreferences: PreferenceArea {
     }
 
     /// The Home sections to show, in the owner's order, for the phone and the car alike (the car shows Made for you too,
-    /// T23): Made for you only with a ListenBrainz token; offline, Downloaded.
+    /// T23): Made for you only with a ListenBrainz token.
     /// Y6: Discover only while Aurral is set up (`discoverSetUp`). Round 14 A6: a provided section (`isProvided`) only
     /// while Aurral is set up and its provider offers it (`outside`); Because you like not at 0 rows.
+    /// Round 28 O3 (owner, 2026-11-15): offline, the sections that can show what's on the phone, in the owner's order
+    /// and switches: the greeting, the quick grid, Your flows (Aurral set up), Playlists, and Recently downloaded, which
+    /// shows offline even when switched off (as before). Home leaves out the ones with nothing in them (D340).
     public func visibleHomeSections(offline: Bool, hasListenBrainzToken: Bool, discoverSetUp: Bool = false,
                                     outside: Set<HomeSection> = []) -> [HomeSection] {
-        if offline { return [.downloaded] }
+        if offline {
+            let onPhone: Set<HomeSection> = [.greeting, .quickAccess, .discover, .playlists]
+            return home.entries.filter { entry in
+                entry.item == .downloaded
+                    || (entry.visible && onPhone.contains(entry.item) && (entry.item != .discover || discoverSetUp))
+            }.map(\.item)
+        }
         return home.visibleItems.filter { section in
             if section.isProvided { return discoverSetUp && outside.contains(section)
                                        && (section != .becauseYouLike || becauseYouLikeRows > 0) }
@@ -425,16 +434,23 @@ public struct LayoutPreferences: PreferenceArea {
         }
     }
 
-    /// The Library rows to show, in the owner's order. Offline (the phone and the car alike): Downloads, which always
-    /// shows, and Genres (read from the phone) when switched on. The car never shows Requests (spec §3); round 13: Songs
-    /// shows in the car too (it opens on letter groups).
+    /// The Library rows to show, in the owner's order. The car never shows Requests (spec §3); round 13: Songs shows in
+    /// the car too (it opens on letter groups).
     /// Y6: Discover only while Aurral is set up (`discoverSetUp`), in the car too. Round 14 A4: Trending and Recommended
     /// only while Aurral is set up and can give them (`trendingSetUp`, `recommendedSetUp`), never in the car.
+    /// Round 28 O3 (owner, 2026-11-15: "only downloaded songs are visible within albums, artists, songs, etc."): offline
+    /// (the phone and the car alike) the rows that list what's on the phone, in the owner's order and switches:
+    /// Playlists, Artists, Albums, Songs, Genres, Discover (Aurral set up), and Downloads, which always shows. Rows that
+    /// need a server (Favourites, Finds, Requests, Trending, Recommended) hide (D340; amends Task 14's Downloads only).
     public func visibleLibraryRows(offline: Bool, findsSetUp: Bool, lidarrConnected: Bool, carPlay: Bool,
                                    discoverSetUp: Bool = false, trendingSetUp: Bool = false,
                                    recommendedSetUp: Bool = false) -> [LibraryRow] {
         if offline {
-            return library.entries.filter { $0.item == .downloads || ($0.item == .genres && $0.visible) }.map(\.item)
+            let onPhone: Set<LibraryRow> = [.playlists, .artists, .albums, .songs, .genres, .discover]
+            return library.entries.filter { entry in
+                entry.item == .downloads
+                    || (entry.visible && onPhone.contains(entry.item) && (entry.item != .discover || discoverSetUp))
+            }.map(\.item)
         }
         return library.visibleItems.filter { row in
             switch row {
