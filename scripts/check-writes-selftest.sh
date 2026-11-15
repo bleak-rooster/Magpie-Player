@@ -564,6 +564,21 @@ r_inplace=(
   'App/Screens/Settings/LidarrDownloadsView.swift|append|func plantedFlag(_ m: AppModel, _ p: ClearAllPlan) { Task { await m.clearAllDownloads(p, includeForeign: true) } }'
   'App/AppModel+Requests.swift|append|let plantedRestarter = LidarrDownloadRestarter(lidarr: client, gate: gate, runner: runner)'
   'App/AppModel+Requests.swift|append|func plantedRun(_ restarter: LidarrDownloadRestarter, _ p: ClearAllPlan) async { _ = await restarter.clearAll(p, includeForeign: false) }'
+  # Round 28 O1 (D328): a transport kept or made outside the offline gate, a closure that keeps the ungated one, the gate
+  # skipped in a send, manual offline letting a send out.
+  'App/AppModel.swift|sed|s/^        self.probeTransport = GatedTransport(probeTransport, gate: offlineGate, role: .probe)$/        self.probeTransport = probeTransport/'
+  'App/AppModel.swift|sed|s/^        self.transport = gatedTransport$/        self.transport = transport/'
+  'App/AppModel.swift|sed|s/listenBrainz: { \[tokenStore, transport = gatedTransport, listenBrainzLimiter\] in/listenBrainz: { [tokenStore, transport, listenBrainzLimiter] in/'
+  'App/AppModel.swift|sed|s/^        self.previewTransport = GatedTransport(previewTransport ?? PreviewResolver.defaultTransport(), gate: offlineGate, role: .outside)$/        self.previewTransport = previewTransport ?? PreviewResolver.defaultTransport()/'
+  'App/AppModel.swift|sed|s/^        startReachability()   \/\/ Round 28 O1/        _ = { [probeTransport] in probeTransport }; startReachability()   \/\/ Round 28 O1/'
+  'App/AppModel+Lyrics.swift|sed|s/LrcLib(transport: GatedTransport(LrcLibTransport(), gate: offlineGate, role: .outside), userAgent:/LrcLib(transport: LrcLibTransport(), userAgent:/'
+  'App/AppModel+OutsideArt.swift|sed|s/let transport = GatedTransport(outside, gate: offlineGate, role: .outside)/let transport = outside/'
+  'App/AppModel+Slskd.swift|append|let plantedTransport: HTTPTransport = URLSessionTransport()'
+  'App/AppModel+Slskd.swift|append|let plantedArt = OutsideArtTransport()'
+  'App/AppModel+Offline.swift|sed|s/offlineGate.setMode(forced ? .manual : offline ? .automatic : .open)/offlineGate.setMode(.open)/'
+  'Packages/MagpieKit/Sources/MagpieCore/OfflineGate.swift|sed|s/        case .manual: return false/        case .manual: return true/'
+  'Packages/MagpieKit/Sources/MagpieCore/OfflineGate.swift|sed|s/        guard gate.admit(request, role: role) else { throw URLError(.notConnectedToInternet) }/        _ = gate/'
+  'Packages/MagpieKit/Sources/MagpieCore/OfflineGate.swift|append|extension GatedTransport { func plantedBypass(_ r: URLRequest) async throws -> (Data, HTTPURLResponse) { try await inner.send(r) } }'
 )
 for entry in "${r_inplace[@]}"; do
   rel="${entry%%|*}" rest="${entry#*|}"

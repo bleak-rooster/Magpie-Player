@@ -61,6 +61,8 @@
 #       A POST into a URLProtocol stub (redirect policy test); nothing leaves the process.
 #   Packages/MagpieKit/Tests/MagpieCoreTests/SharedLoginTransportTests.swift  auth/login
 #       A login request handed to MockTransport.
+#   Packages/MagpieKit/Tests/MagpieCoreTests/OfflineGateTests.swift  auth/login
+#       Round 28 O1 (D328): a login request the offline gate is asked about, handed to MockTransport.
 #   Packages/MagpieKit/Sources/SlskdKit/SlskdRoute.swift, SlskdClient.swift  G1 allowlist: slskd clean-up
 #       Round 23 (D192): slskd's three clean-up DELETEs (a finished transfer's record, a file or folder directly inside
 #       its downloads folder), only through `SlskdWriteGate.perform`, only from the clean slate. Pinned below.
@@ -104,6 +106,7 @@ allow=(
   "Tests/MagpieUITests/ChartFlowUITests.swift|G1 allowlist: stub reset"
   "Packages/MagpieKit/Tests/MagpieCoreTests/HTTPTransportTests.swift|RedirectStub"
   "Packages/MagpieKit/Tests/MagpieCoreTests/SharedLoginTransportTests.swift|auth/login"
+  "Packages/MagpieKit/Tests/MagpieCoreTests/OfflineGateTests.swift|auth/login"
   "Packages/MagpieKit/Sources/SlskdKit/SlskdRoute.swift|G1 allowlist: slskd clean-up"
   "Packages/MagpieKit/Sources/SlskdKit/SlskdClient.swift|G1 allowlist: slskd clean-up"
   "Packages/MagpieKit/Sources/SlskdKit/SlskdRoute.swift|G1 allowlist: slskd keep connected"
@@ -1147,11 +1150,12 @@ if [ -z "${G1_SRC:-}" ]; then
   fi
   # L fix round 1 (LL1): the app makes LRCLIB's client only with its own transport, which never follows a redirect
   # and keeps no cookie.
+  # Round 28 O1 (D328): wrapped in the offline gate.
   # Fix round 2 (N2): every construction counted (`LrcLib(`, `LrcLib.init(`, several on a line): exactly one, the
   # pinned one.
   lrclib_makes=$(grep -rnE --include='*.swift' 'LrcLib(\.init)?[[:space:]]*\(' "${product[@]}" | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' || true)
   { [ "$(printf '%s\n' "$lrclib_makes" | grep -oE 'LrcLib(\.init)?[[:space:]]*\(' | grep -c . || true)" = 1 ] &&
-    printf '%s\n' "$lrclib_makes" | grep -qF 'LrcLib(transport: LrcLibTransport(), userAgent:'; } ||
+    printf '%s\n' "$lrclib_makes" | grep -qF 'LrcLib(transport: GatedTransport(LrcLibTransport(), gate: offlineGate, role: .outside), userAgent:'; } ||
     { echo "G1: LRCLIB's client made other than once, with its no-redirect transport" >&2; bad=1; }
   lrclib_transport="Packages/MagpieKit/Sources/MagpieCore/LrcLibTransport.swift"
   if [ -f "$lrclib_src" ]; then
@@ -1472,6 +1476,60 @@ if [ -z "${G1_SRC:-}" ]; then
     case "$f" in "$slkeep"|"$slgatef") ;;
       *) echo "G1: the slskd reconnect named outside SlskdKit: $f" >&2; bad=1 ;; esac
   done
+fi
+if [ -z "${G1_SRC:-}" ]; then
+  # Round 28 O1 (owner, 2026-11-15, D328): everything the app sends goes through the offline gate. Every transport made
+  # in App/ is one of these pinned lines: wrapped in `GatedTransport(…, gate: offlineGate, role: …)` where it is made,
+  # or where `init` keeps it (the two parameter defaults), or Artwork's own session (cover art: offline its URLs are
+  # never built, `coverArtURL` answers nil; pinned by OfflineAppTests.forcedOnSendsNothing and OfflineEgressAppTests).
+  # The download fetchers aren't HTTP transports; the download manager makes no task offline (pinned by tests).
+  og_model="App/AppModel.swift"
+  og_gate="Packages/MagpieKit/Sources/MagpieCore/OfflineGate.swift"
+  og_makes=$(grep -rnE --include='*.swift' '[A-Za-z]*Transport[[:space:]]*\(|defaultTransport[[:space:]]*\(' App |
+             grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' | grep -vE 'GatedTransport\((transport|probeTransport|outside),' |
+             sed -E 's/^([^:]+):[0-9]+:[[:space:]]*/\1|/' | sort || true)
+  og_want=$(printf '%s\n' \
+    "App/AppModel.swift|transport: HTTPTransport = URLSessionTransport()," \
+    "App/AppModel.swift|probeTransport: HTTPTransport = URLSessionTransport(timeout: 6)," \
+    "App/AppModel.swift|self.previewTransport = GatedTransport(previewTransport ?? PreviewResolver.defaultTransport(), gate: offlineGate, role: .outside)" \
+    "App/AppModel+OutsideArt.swift|var outside: HTTPTransport = OutsideArtTransport()" \
+    "App/AppModel+Lyrics.swift|lrclib: LrcLib(transport: GatedTransport(LrcLibTransport(), gate: offlineGate, role: .outside), userAgent: LrcLib.userAgent(version: Self.marketingVersion)))   // Round 28 O1 (D328)" \
+    "App/Screens/Shared/Artwork.swift|URLSessionTransport(timeout: 20, session: SameOriginRedirects.session(configuration: sessionConfiguration))" | sort)
+  [ "$og_makes" = "$og_want" ] ||
+    { echo "G1: a transport made in App/ outside the offline gate's pinned lines (D328): $(diff <(printf '%s\n' "$og_want") <(printf '%s\n' "$og_makes") | grep '^>' | head -3)" >&2; bad=1; }
+  # The kept transports are assigned once each, from the gate; outside art wraps whatever it was given.
+  for want in \
+    "$og_model|        let gatedTransport = GatedTransport(transport, gate: offlineGate, role: .main)" \
+    "$og_model|        self.transport = gatedTransport" \
+    "$og_model|        self.probeTransport = GatedTransport(probeTransport, gate: offlineGate, role: .probe)" \
+    "App/AppModel+OutsideArt.swift|        let transport = GatedTransport(outside, gate: offlineGate, role: .outside)   // Round 28 O1 (D328)" \
+    "App/AppModel+Offline.swift|        offlineGate.setMode(forced ? .manual : offline ? .automatic : .open)   // Round 28 O1 (D328)"; do
+    file="${want%%|*}" line="${want#*|}"
+    grep -qxF -- "$line" "$file" || { echo "G1: $file: the offline gate's wiring changed (missing: $line)" >&2; bad=1; }
+  done
+  [ "$(grep -cE '^[[:space:]]*self\.(transport|probeTransport|previewTransport)[[:space:]]*=' "$og_model")" = 3 ] ||
+    { echo "G1: $og_model: a kept transport assigned other than once" >&2; bad=1; }
+  # In `init` the parameters are named only on these lines, so no closure keeps the ungated transport.
+  og_init=$(awk '/^    init\(store: any SessionStoring/,/^    isolated deinit/' "$og_model" | grep -vE '^[[:space:]]*//' |
+            grep -E '(^|[^.A-Za-z0-9_])(transport|probeTransport|previewTransport)([^A-Za-z0-9_]|$)' |
+            sed -E 's/^[[:space:]]+//' | sort || true)
+  og_init_want=$(printf '%s\n' \
+    'transport: HTTPTransport = URLSessionTransport(),' \
+    'probeTransport: HTTPTransport = URLSessionTransport(timeout: 6),' \
+    'previewTransport: HTTPTransport? = nil,' \
+    'let gatedTransport = GatedTransport(transport, gate: offlineGate, role: .main)' \
+    'self.probeTransport = GatedTransport(probeTransport, gate: offlineGate, role: .probe)' \
+    'listenBrainz: { [tokenStore, transport = gatedTransport, listenBrainzLimiter] in   // the token is read at send time' \
+    'tokenStore.load().map { ListenBrainzClient(transport: transport, token: $0, limiter: listenBrainzLimiter,' \
+    'self.previewTransport = GatedTransport(previewTransport ?? PreviewResolver.defaultTransport(), gate: offlineGate, role: .outside)' | sort)
+  [ "$og_init" = "$og_init_want" ] ||
+    { echo "G1: $og_model: init names an ungated transport (D328): $(diff <(printf '%s\n' "$og_init_want") <(printf '%s\n' "$og_init") | grep '^>' | head -3)" >&2; bad=1; }
+  # The gate asks before every send (both of them) and lets nothing out in manual offline.
+  [ "$(grep -cxF '        guard gate.admit(request, role: role) else { throw URLError(.notConnectedToInternet) }' "$og_gate")" = 2 ] ||
+    { echo "G1: $og_gate: a gated send no longer asks the gate first" >&2; bad=1; }
+  grep -qxF '        case .manual: return false' "$og_gate" ||
+    { echo "G1: $og_gate: manual offline no longer refuses everything" >&2; bad=1; }
+  [ "$(grep -cE 'inner\.send\(' "$og_gate")" = 2 ] || { echo "G1: $og_gate: the inner transport is sent more than its two ways" >&2; bad=1; }
 fi
 [ "$bad" = 0 ] || { echo "G1 check failed: route Lidarr writes through LidarrWriteGate (or extend the allowlist in $0)" >&2; exit 1; }
 echo "G1 check: no write verbs outside LidarrWriteGate in ${product[*]}${tests[*]:+ and ${tests[*]}} (allowlisted: Navidrome auth/login, dev-only IT helpers)"
