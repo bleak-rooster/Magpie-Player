@@ -18,6 +18,10 @@ final class ArtworkCache {
         let config = URLSessionConfiguration.ephemeral
         config.urlCache = nil
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
+        // Round 28 O1 fix round 2 (security SN7): no cookies kept or sent.
+        config.httpCookieStorage = nil
+        config.httpShouldSetCookies = false
+        config.httpCookieAcceptPolicy = .never
         return config
     }()
     nonisolated static let transport: HTTPTransport =

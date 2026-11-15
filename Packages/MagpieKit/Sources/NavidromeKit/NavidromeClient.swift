@@ -36,6 +36,8 @@ public actor NavidromeClient {
 
     /// Round 28 O1 fix round 1 (security M2): the most a ping's answer may be; a Subsonic ping is a few dozen bytes.
     public static let pingMaxBytes = 16 * 1024
+    /// Round 28 O1 fix round 2 (security SN5): the most a login's answer may be (a token and a few names).
+    public static let loginMaxBytes = 64 * 1024
 
     /// Round 28 O1 fix round 1 (security L2): the login URL on the first address, the one a reconnect's client (made
     /// with the address that answered first) signs in at; the app's offline gate lets exactly that one out.
@@ -96,10 +98,10 @@ public actor NavidromeClient {
         request.httpBody = try JSONEncoder().encode(["username": credentials.username,
                                                       "password": credentials.password])
         Log.request(request)
-        let (data, response) = try await transport.send(request)
+        let (data, response) = try await transport.send(request, maxBytes: Self.loginMaxBytes)   // Round 28 O1 fix round 2 (SN5)
         switch response.statusCode {
         case 200..<300: break
-        default: throw Self.failure(status: response.statusCode, data, refusals: [401, 403], emptyIsForeign: true)
+        default: throw Self.failure(status: response.statusCode, data, refusals: [401, 403], emptyIsForeign: true, needsShape: true)
         }
         let dto = try Self.decode(LoginDTO.self, data)
         let login = LoginResult(userId: dto.id, isAdmin: dto.isAdmin ?? false,
@@ -182,11 +184,22 @@ public actor NavidromeClient {
     /// fails over and probes. An empty or JSON body is the library's (or a gateway's bare) answer and keeps its status.
     /// `emptyIsForeign` (the login): there only the library's JSON is its answer, so an empty failure (other than a
     /// refusal) isn't either (security L4 with M3).
-    static func failure(status: Int, _ data: Data, refusals: Set<Int>, emptyIsForeign: Bool = false) -> NavidromeError {
+    /// Fix round 2 (security SN6): `needsShape` (the login): JSON counts as the library's only with its error shape, a
+    /// Subsonic envelope or Navidrome's `{"error": …}`; other JSON (a CDN's, a proxy's) is no answer.
+    static func failure(status: Int, _ data: Data, refusals: Set<Int>, emptyIsForeign: Bool = false,
+                        needsShape: Bool = false) -> NavidromeError {
         if isForeignBody(data) { return .unexpectedResponse }
+        let empty = !data.contains(where: { !$0.isASCIIWhitespace })
+        if needsShape, !empty, !hasLibraryShape(data) { return .unexpectedResponse }
         if refusals.contains(status) { return .badCredentials }
-        if emptyIsForeign, !data.contains(where: { !$0.isASCIIWhitespace }) { return .unexpectedResponse }
+        if emptyIsForeign, empty { return .unexpectedResponse }
         return .http(status: status)
+    }
+
+    /// A Subsonic envelope, or Navidrome's native error object.
+    static func hasLibraryShape(_ data: Data) -> Bool {
+        guard let object = JSONNesting.object(with: data) as? [String: Any] else { return false }
+        return object["subsonic-response"] is [String: Any] || object["error"] is String
     }
 
     /// Non-empty and not JSON.

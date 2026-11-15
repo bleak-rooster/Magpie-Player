@@ -90,6 +90,8 @@ enum OfflineState: Equatable {
     @ObservationIgnored var appliedForcedJustLeft = false
     /// Security L4: no login until then (seconds on `clock`) after a 429.
     @ObservationIgnored var loginHeldUntil: Double?
+    /// Fix round 2 (security SN6): when a bare ping last answered as the library (the app's probe), on `clock`.
+    @ObservationIgnored var serverPingAt: Double?
     // Round 28 O1 fix round 1 end
 
     var isSuspect: Bool { machine.isSuspect }
@@ -125,11 +127,13 @@ extension AppModel {
     /// Round 28 O1 (D323): Go offline automatically, remembered while Offline mode is on (its own key; unset is on).
     nonisolated static let automaticChoiceKey = "magpie.offline.automaticChoice"
 
+    /// Round 28 O1 fix round 2 (re-review m2): while Offline mode's leaving check runs, still offline (the notice shows
+    /// "Trying…"), with Go offline automatically off too.
     var isOffline: Bool {
         switch preferences.downloads.offlineMode {
         case .on: true
-        case .off: false
-        case .automatic: !serverReachable
+        case .off: reachability.leavingManual
+        case .automatic: !serverReachable   // leaving On here goes offline by itself until answered (design H1)
         }
     }
 
@@ -443,6 +447,7 @@ extension AppModel {
         reachability.failures += 1
         reachability.authRejected = false   // a real outage now: "isn't answering", not the sign-in error
         reachability.pendingBackOnline = false   // fix round 1 (design H1): the login didn't answer; nothing to say
+        endLeavingManual(answered: false)
         downloads?.serverDropConfirmed()
         noteUnreachable()
     }
@@ -466,6 +471,7 @@ extension AppModel {
         r.lastAnswerAt = session == nil ? nil : r.clock.now()
         reachabilityEvent(session == nil ? .signedOut : .answered)
         if !serverReachable { serverReachable = true }
+        if session != nil { endLeavingManual(answered: true) }
         if r.pendingBackOnline, session != nil {   // fix round 1 (design H1): Offline mode left, and the library answered
             r.pendingBackOnline = false
             say(OfflineNoticeCopy.announceOnline)
@@ -487,7 +493,9 @@ extension AppModel {
     func reconnectLogin(_ client: NavidromeClient, replacing old: NavidromeClient) async -> LoginResult? {
         let r = reachability
         if let held = r.loginHeldUntil, r.clock.now() < held {
-            noteReachable()   // it answered "too many" a moment ago: there, but not asked again yet
+            // It answered "too many" a moment ago: not asked again yet. Fix round 2 (security SN6): an answer only if
+            // this check's bare ping just answered as the library.
+            if let ping = r.serverPingAt, r.clock.now() - ping <= Self.loginDeadline { noteReachable() }
             return nil
         }
         r.loginHeldUntil = nil
@@ -569,9 +577,23 @@ extension AppModel {
         reachabilityEvent(.probeRequested)
         if let probe = reachability.probeTask { return await probe.value }
         let gate = offlineGate
+        let leaving = reachability.leavingManual
+        if leaving { reachability.checking = true }   // fix round 2 (m2): "Trying…" while Offline mode's login runs
         gate.beginReconnect()
         await reconnect(rebuildAlways: true)
         gate.endReconnect()
+        if leaving { reachability.checking = false }
+        endLeavingManual(answered: false)   // a reconnect with no verdict (signed out meanwhile) ends it too
+    }
+
+    /// Fix round 2 (re-review m2): Offline mode's leaving check is over. Answered: online (and "Back online."); not, with
+    /// Go offline automatically off: online quietly (Off never offline); with it on, the machine stays offline.
+    func endLeavingManual(answered: Bool) {
+        let r = reachability
+        guard r.leavingManual else { return }
+        r.leavingManual = false
+        if !answered { r.quietNextSwitch = preferences.downloads.offlineMode == .off }   // Off: online quietly now
+        offlineInputsChanged()
     }
 
     // MARK: - Applying offline mode
@@ -628,7 +650,9 @@ extension AppModel {
         if (reachability.machine.state == .manualOffline) != (mode == .on) {
             reachabilityEvent(.manual(on: mode == .on))
             // Fix round 1 (design H1): leaving On checks first; the notice shows "Trying…" in place meanwhile.
-            reachability.leavingManual = mode != .on && reachability.machine.isAutomaticOffline && reachability.checking
+            // Fix round 2 (re-review m2): with Go offline automatically off, the restore's login is that check.
+            reachability.leavingManual = mode != .on && session != nil
+                && (reachability.machine.isAutomaticOffline && reachability.checking || mode == .off)
         }
     }
 

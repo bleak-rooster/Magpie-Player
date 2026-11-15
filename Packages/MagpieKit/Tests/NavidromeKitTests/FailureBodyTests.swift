@@ -70,6 +70,34 @@ import Testing
         await #expect(throws: NavidromeError.http(status: 500)) { _ = try await answered.connect() }
     }
 
+    /// Fix round 2 (security SN6): at the login a JSON failure counts as the library's only with its error shape (a
+    /// Subsonic envelope, or Navidrome's `{"error": …}`); other JSON (a CDN's, a proxy's) is no answer.
+    @Test func loginJSONCountsOnlyWithTheLibrarysShape() async throws {
+        func login(_ status: Int, _ body: String) async -> Error? {
+            let t = MockTransport()
+            t.stub(method: "POST", pathSuffix: "/auth/login", status: status, body: Data(body.utf8))
+            let (client, _) = makeClient(transport: t)
+            do { _ = try await client.connect(); return nil } catch { return error }
+        }
+        #expect(await login(503, #"{"code":503,"cf_ray":"abc"}"#) as? NavidromeError == .unexpectedResponse)
+        #expect(await login(403, #"{"message":"blocked by policy"}"#) as? NavidromeError == .unexpectedResponse)
+        #expect(await login(500, #"{"error":"database is locked"}"#) as? NavidromeError == .http(status: 500))
+        #expect(await login(403, #"{"error":"Invalid username or password"}"#) as? NavidromeError == .badCredentials)
+        #expect(await login(500, #"{"subsonic-response":{"status":"failed","version":"1.16.1"}}"#) as? NavidromeError == .http(status: 500))
+    }
+
+    /// Fix round 2 (security SN5): the login's answer is capped at 64 KiB.
+    @Test func loginAnswerOver64KiBIsRefused() async throws {
+        let t = MockTransport()
+        var big = Data(#"{"id":"u1","token":"jwt","pad":""#.utf8)
+        big.append(Data(repeating: UInt8(ascii: "x"), count: 65 * 1024))
+        big.append(Data(#""}"#.utf8))
+        t.stub(method: "POST", pathSuffix: "/auth/login", body: big)
+        let (client, _) = makeClient(transport: t)
+        await #expect(throws: ResponseTooLarge.self) { _ = try await client.connect() }
+        #expect(NavidromeClient.loginMaxBytes == 64 * 1024)
+    }
+
     @Test func pingAnswerOver16KiBIsNotAServer() async throws {
         let transport = MockTransport()
         var big = Data(#"{"subsonic-response":{"status":"ok","version":"1.16.1","pad":""#.utf8)

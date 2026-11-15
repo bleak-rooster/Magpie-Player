@@ -101,6 +101,8 @@ private let noNetwork = NetworkStatus(isConnected: false, isCellular: false, isC
         model.updatePreferences { $0.downloads.offlineMode = .on }
         #expect(model.isOffline && model.serverReachable)
         model.updatePreferences { $0.downloads.offlineMode = .off }
+        // Round 28 O1 fix round 2 (m2): online once Offline mode's login has answered; Off never goes offline after.
+        #expect(await eventually { !model.isOffline })
         model.noteUnreachable()
         #expect(!model.isOffline)
     }
