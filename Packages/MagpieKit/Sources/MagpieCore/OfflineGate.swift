@@ -27,6 +27,8 @@ public final class OfflineGate: Sendable {
     private struct State {
         var mode: Mode = .open
         var reconnects = 0
+        /// Fix round 1 (security L2): the one login URL the reconnect under way is about to send.
+        var loginURL: URL?
         var passed = 0
         var refused = 0
     }
@@ -40,30 +42,40 @@ public final class OfflineGate: Sendable {
 
     /// A reconnect is under way: in automatic offline its login may go out. Balanced by `endReconnect`.
     public func beginReconnect() { state.withLock { $0.reconnects += 1 } }
-    public func endReconnect() { state.withLock { $0.reconnects = max(0, $0.reconnects - 1) } }
+    public func endReconnect() {
+        state.withLock {
+            $0.reconnects = max(0, $0.reconnects - 1)
+            if $0.reconnects == 0 { $0.loginURL = nil }
+        }
+    }
+
+    /// Fix round 1 (security L2): the reconnect's login, by its exact URL, may go out once (in automatic offline,
+    /// while the reconnect holds the gate). Aurral's login, or a second login, may not.
+    public func permitLoginOnce(_ url: URL) { state.withLock { $0.loginURL = url } }
 
     /// Sends let through and refused since this gate was made.
     public var passedCount: Int { state.withLock { $0.passed } }
     public var refusedCount: Int { state.withLock { $0.refused } }
 
-    /// Whether `request` may go out through `role` now; counts the answer.
+    /// Whether `request` may go out through `role` now; counts the answer. A login let through uses up its permission.
     public func admit(_ request: URLRequest, role: Role) -> Bool {
         state.withLock { s in
-            let ok = Self.permits(request, role: role, mode: s.mode, reconnecting: s.reconnects > 0)
+            let ok = Self.permits(request, role: role, mode: s.mode, reconnecting: s.reconnects > 0, loginURL: s.loginURL)
+            if ok, s.mode == .automatic, let url = request.url, url == s.loginURL { s.loginURL = nil }
             if ok { s.passed += 1 } else { s.refused += 1 }
             return ok
         }
     }
 
     /// The rule, on its own.
-    public static func permits(_ request: URLRequest, role: Role, mode: Mode, reconnecting: Bool) -> Bool {
+    public static func permits(_ request: URLRequest, role: Role, mode: Mode, reconnecting: Bool, loginURL: URL? = nil) -> Bool {
         switch mode {
         case .open: return true
         case .manual: return false
         case .automatic:
             guard role != .outside, let url = request.url else { return false }
             if isBarePing(request, url: url) { return true }
-            return role == .main && reconnecting && isLogin(request, url: url)
+            return role == .main && reconnecting && url == loginURL && isLogin(request, url: url)
         }
     }
 
@@ -88,10 +100,16 @@ public final class OfflineGate: Sendable {
 }
 
 /// A transport that asks the gate before every send (D328). Both sends are forwarded, so a capped read stays capped.
+/// Fix round 1 (security M4): `inner` is private, so nothing can send past the gate through it.
 public struct GatedTransport: HTTPTransport {
-    public let inner: HTTPTransport
+    private let inner: HTTPTransport
     public let gate: OfflineGate
     public let role: OfflineGate.Role
+
+    #if DEBUG
+    /// Tests: the transport a test passed in, to stub it after the model was made.
+    public var innerForTesting: HTTPTransport { inner }
+    #endif
 
     public init(_ inner: HTTPTransport, gate: OfflineGate, role: OfflineGate.Role) {
         self.inner = inner

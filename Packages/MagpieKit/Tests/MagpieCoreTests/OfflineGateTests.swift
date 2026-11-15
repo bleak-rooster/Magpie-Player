@@ -83,6 +83,8 @@ import Testing
         let (main, inner) = transport(gate, .main)
         #expect(await refused(main, login), "no reconnect under way")
         gate.beginReconnect()
+        #expect(await refused(main, login), "fix round 1 (L2): a reconnect without the login it is about to send")
+        gate.permitLoginOnce(login.url!)
         _ = try await main.send(login)
         #expect(await refused(main, page), "a reconnect lets only its login out")
         var getLogin = login
@@ -93,11 +95,38 @@ import Testing
         #expect(inner.requests.count == 1)
         // Nested reconnects count: the login stays allowed until the last one ends.
         gate.beginReconnect(); gate.beginReconnect(); gate.endReconnect()
+        gate.permitLoginOnce(login.url!)
         _ = try await main.send(login)
+        #expect(await refused(main, login), "fix round 1 (L2): one login per permission")
         gate.endReconnect(); gate.endReconnect()   // one too many is harmless
         #expect(await refused(main, login))
         gate.setMode(.open)
         _ = try await main.send(page)
+    }
+
+    /// Fix round 1 (L2): during a reconnect, only the exact login URL it is about to use; Aurral's login (also
+    /// `…/auth/login`) on the same transport is refused.
+    @Test func gate_aurralLoginRefusedDuringAReconnect() async throws {
+        let gate = OfflineGate()
+        gate.setMode(.automatic)
+        let (main, inner) = transport(gate, .main)
+        inner.stub(method: "POST", pathSuffix: "/api/auth/login", body: Data("{}".utf8))
+        var aurral = URLRequest(url: URL(string: "http://aurral.local:3001/api/auth/login")!)   // auth/login
+        aurral.httpMethod = "POST"
+        aurral.httpBody = Data("{}".utf8)
+        gate.beginReconnect()
+        gate.permitLoginOnce(login.url!)
+        #expect(await refused(main, aurral))
+        _ = try await main.send(login)
+        gate.endReconnect()
+        #expect(inner.requests.map { $0.url!.host() } == ["nas.local"])
+    }
+
+    /// Fix round 1 (L3): the main transport keeps and sends no cookies.
+    @Test func transport_keepsNoCookies() {
+        let config = URLSessionTransport.defaultConfiguration()
+        #expect(config.httpCookieStorage == nil && !config.httpShouldSetCookies && config.httpCookieAcceptPolicy == .never)
+        #expect(URLSessionTransport().sessionConfiguration.httpCookieStorage == nil)
     }
 
     @Test func gate_forwardsTheCappedSend() async throws {
@@ -112,6 +141,9 @@ import Testing
         #expect(OfflineGate.permits(page, role: .main, mode: .open, reconnecting: false))
         #expect(!OfflineGate.permits(ping, role: .main, mode: .manual, reconnecting: true))
         #expect(OfflineGate.permits(ping, role: .probe, mode: .automatic, reconnecting: false))
+        #expect(OfflineGate.permits(login, role: .main, mode: .automatic, reconnecting: true, loginURL: login.url))
+        #expect(!OfflineGate.permits(login, role: .main, mode: .automatic, reconnecting: true, loginURL: nil))
+        #expect(!OfflineGate.permits(login, role: .main, mode: .automatic, reconnecting: false, loginURL: login.url))
         #expect(!OfflineGate.permits(URLRequest(url: URL(string: "http://nas.local/rest/ping.view?x=1")!), role: .outside,
                                      mode: .automatic, reconnecting: true))
         #expect(!OfflineGate.permits(URLRequest(url: URL(string: "http://nas.local/rest/pingX")!), role: .probe,

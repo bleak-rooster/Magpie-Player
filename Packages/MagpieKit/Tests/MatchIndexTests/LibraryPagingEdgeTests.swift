@@ -143,7 +143,8 @@ private func pageRanges(_ t: MockTransport) -> [Range<Int>] {
         try await store.refresh(using: client)
         #expect(await store.index.count == 3000)
         fail.withLock { $0 = true }
-        await #expect(throws: NavidromeError.http(status: 502)) { try await store.refresh(using: client) }
+        // Round 28 O1 fix round 1 (D325): a gateway's HTML page is judged by its body, not its 502.
+        await #expect(throws: NavidromeError.unexpectedResponse) { try await store.refresh(using: client) }
         #expect(await store.index.count == 3000)
     }
 
