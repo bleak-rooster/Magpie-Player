@@ -5,16 +5,20 @@ import SwiftUI
 
 /// Home (spec §3, Task 20): the "Finish setting up" card pinned on top, then the owner's sections in the owner's order
 /// (Settings › Home & Library › Home, or Edit Home at the bottom). Made for you shows only with a listening-history
-/// token (Task 7.1c) and fills in after the library's shelves. Empty sections are left out. Offline (Task 14): "You're
-/// offline", then the Downloaded shelf (albums on the phone).
+/// token (Task 7.1c) and fills in after the library's shelves. Empty sections are left out.
 /// Round 14 A6 (Spotify-style): the greeting, the filter chips and the quick grid lead by default; each
 /// shelf has its own card size and count, and the provided sections (Recommended, Trending…) come from
 /// `HomeAurralShelves`.
+/// Round 28 O3 (owner, 2026-11-15; D340, amends Task 14's Downloaded only): offline, the notice as a top inset (so
+/// shelves never jump under a finger when it comes or goes), then the quick grid's tiles that open on the phone, Recently
+/// downloaded, Your flows (flows on the phone) and Playlists (on the phone). Pull to refresh tries the library again.
 struct HomeView: View {
     @Environment(AppModel.self) private var model
     @State private var editsHome = false
     /// The chip picked (not saved: Home opens on All).
     @State private var filter: HomeFilter = .all
+    /// Round 28 O3 (D340): offline, the quick grid's tiles that open on the phone; nil online.
+    @State private var quickOnPhone: Set<String>?
     private let themed = Themed()
 
     private var key: HomeLoad.Key {
@@ -26,8 +30,10 @@ struct HomeView: View {
         ScrollView {
             content
         }
+        // Round 28 O3 (O1's design M4, D329): the notice above the scroll view, never a row in it.
+        .safeAreaInset(edge: .top, spacing: 0) { OfflineNoticeInset() }
         .refreshable {
-            guard !model.isOffline else { return await model.checkReachability() }
+            guard !model.isOffline else { return await model.reconnectNow() }
             async let made: Void = model.refreshMadeForYou()
             await model.homeFeed.refresh(key)
             await made
@@ -61,6 +67,8 @@ struct HomeView: View {
         .task(id: model.listenBrainzTokenGeneration) {
             if model.madeForYouShelf.isEmpty, !model.isOffline { await model.refreshMadeForYou() }
         }
+        // Round 28 O3 (D340): offline, which of the quick grid's tiles open on the phone (again as songs come and go).
+        .task(id: model.offlinePageKey) { quickOnPhone = await model.offlineQuickIds() }
         .sheet(isPresented: $editsHome) {
             LayoutEditorSheet(doneIdentifier: "home-edit-done") { HomeLayoutView() }
         }
@@ -68,10 +76,7 @@ struct HomeView: View {
 
     private var content: some View {
         VStack(alignment: .leading, spacing: Tokens.Spacing.xxl) {
-            if model.isOffline {
-                OfflineNotice()
-                    .padding(.horizontal, Tokens.Spacing.margin)
-            } else if model.showsFinishSettingUp {   // final fix 2 B-M2: only while a step is left
+            if !model.isOffline, model.showsFinishSettingUp {   // final fix 2 B-M2: only while a step is left
                 FinishSettingUpCard()
                     .padding(.horizontal, Tokens.Spacing.margin)
             }
@@ -135,7 +140,9 @@ struct HomeView: View {
         let albums = read.found[.quickAccess]?.items.compactMap { item -> Album? in
             if case .album(let album) = item { album } else { nil }
         } ?? []
-        return model.quickAccessTiles(recentAlbums: albums)
+        // Round 28 O3 (D340): offline only the tiles that open on the phone (none until they're known).
+        guard model.isOffline else { return model.quickAccessTiles(recentAlbums: albums) }
+        return model.quickAccessTiles(recentAlbums: [], onPhone: quickOnPhone ?? [])
     }
 
     /// A section that couldn't be read: its title, and a line saying so.

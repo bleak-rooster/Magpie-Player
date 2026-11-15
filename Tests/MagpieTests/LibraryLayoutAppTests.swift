@@ -73,22 +73,24 @@ private func queryValue(_ request: URLRequest, _ name: String) -> String? {
         #expect(!model.libraryRows.contains(.requests), "no Lidarr connected")
     }
 
-    /// Controller addition: offline the Library is Downloads plus Genres (read from the phone), in the owner's order;
-    /// Downloads shows even when switched off, Genres only when switched on.
+    /// Controller addition: offline the Library is Downloads plus (round 28 O3, D340) the rows that list what's on the
+    /// phone, in the owner's order; Downloads shows even when switched off, the others only when switched on.
     @Test func recentlyAddedGridToggleAndOffline() async throws {
         let model = try await signedInModel(fetcher: FakeFetcher())
         #expect(model.showsRecentlyAddedGrid)
         model.updatePreferences { $0.layout.showsRecentlyAdded = false }
         #expect(!model.showsRecentlyAddedGrid)
         model.updatePreferences { $0.layout.showsRecentlyAdded = true; $0.downloads.offlineMode = .on }
-        #expect(!model.showsRecentlyAddedGrid && model.libraryRows == [.genres, .downloads])
+        #expect(!model.showsRecentlyAddedGrid
+                && model.libraryRows == [.playlists, .artists, .albums, .songs, .genres, .downloads])
         model.updatePreferences {
             $0.layout.library.moveUp(.downloads); $0.layout.library.moveUp(.downloads)
             $0.layout.library.set(.downloads, visible: false, keepingOneOf: LayoutPreferences.alwaysAvailableRows)
         }
-        #expect(model.libraryRows == [.downloads, .genres], "the owner's order; Downloads always shows offline")
+        #expect(model.libraryRows == [.playlists, .artists, .albums, .songs, .downloads, .genres],
+                "the owner's order; Downloads always shows offline")
         model.updatePreferences { $0.layout.library.set(.genres, visible: false, keepingOneOf: LayoutPreferences.alwaysAvailableRows) }
-        #expect(model.libraryRows == [.downloads])
+        #expect(model.libraryRows == [.playlists, .artists, .albums, .songs, .downloads])
     }
 
     @Test func favouritesReadStarred() async throws {

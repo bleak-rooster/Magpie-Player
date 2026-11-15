@@ -31,9 +31,6 @@ struct DownloadsView: View {
                 .pickerStyle(.segmented)
                 .padding(.horizontal, Tokens.Spacing.largeTitleMargin)
                 .accessibilityIdentifier("downloads-kind")
-                if model.isOffline {
-                    OfflineNotice().padding(.horizontal, Tokens.Spacing.largeTitleMargin)
-                }
                 if let catalog {
                     content(catalog, sections: index.sections)
                 } else {
@@ -52,6 +49,13 @@ struct DownloadsView: View {
                 index.ids[$0]
             }
         }
+        }
+        // Round 28 O3 (O1's design M4, D329): the offline notice above the scroll view, never a row in it; pull to refresh
+        // offline tries the library again (D326), online reads the phone again.
+        .safeAreaInset(edge: .top, spacing: 0) { OfflineNoticeInset() }
+        .refreshable {
+            if model.isOffline { await model.reconnectNow() }
+            catalog = await model.offlineCatalog
         }
         .navigationTitle("Downloads")
         .magpieScreen()

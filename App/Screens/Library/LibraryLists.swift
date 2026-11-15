@@ -8,12 +8,15 @@ import SwiftUI
 /// only, or every artist, from the toolbar's filter menu (the same preference as Settings › Library).
 /// Round 24 (owner, 2026-11-08): a "Search artists" field at the top (D224), and a header per letter past 25 artists
 /// (D225).
+/// Round 28 O3 (owner, 2026-11-15; D340): offline, the artists on the phone (album artists only, or every artist, as
+/// the filter says), with the A–Z bar and headers; nothing on the phone says "Nothing downloaded yet".
 struct ArtistsListView: View {
     @Environment(AppModel.self) private var model
     @State private var artists: Loadable<[Artist]> = .loading
     @State private var sections: [LetterIndex.Section] = []
-    /// The "Album artists only" value the list was read for: coming back to the list doesn't read it again (M1).
-    @State private var loadedFor: Bool?
+    /// The "Album artists only" value (round 28 O3: and the offline key) the list was read for: coming back to the list
+    /// doesn't read it again (M1).
+    @State private var loadedFor: String?
     /// Round 24 (D224): the list's own search, artists only.
     @State private var search: SearchModel?
     private let themed = Themed()
@@ -33,6 +36,8 @@ struct ArtistsListView: View {
                 proxy.scrollToLetter(index: target.range.lowerBound, sections: sections, itemCount: list.count) { list[$0].id }
             }
         }
+        // Round 28 O3 (D340): offline with nothing on the phone, today's Home copy.
+        .overlay { if model.isOffline, artists.value?.isEmpty == true { NothingDownloadedView() } }
         // Fix round 1 (M4): no field over an empty or failed list.
         .kindSearch(.artists, search, available: artists.value?.isEmpty == false)
         .task { if search == nil { search = model.kindSearchModel(.artists) } }
@@ -54,10 +59,12 @@ struct ArtistsListView: View {
             }
         }
         .magpieScreen()
-        // Again when "Album artists only" changes (here or in Settings).
-        .task(id: albumArtistsOnly) {
-            guard loadedFor != albumArtistsOnly || artists.value == nil else { return }
-            loadedFor = albumArtistsOnly
+        // Again when "Album artists only" changes (here or in Settings). Round 28 O3 (D340): and offline or back online,
+        // and offline when what's on the phone changes.
+        .task(id: "\(albumArtistsOnly)|\(model.offlinePageKey)") {
+            let key = "\(albumArtistsOnly)|\(model.offlinePageKey)"
+            guard loadedFor != key || artists.value == nil else { return }
+            loadedFor = key
             await load()
         }
     }
@@ -87,7 +94,11 @@ struct ArtistsListView: View {
 
     private func load() async {
         do {
-            let sorted = Self.sorted(try await model.libraryArtists())
+            // Round 28 O3 (D340): offline, the artists on the phone (the same filter), nothing asked of the server.
+            let read = model.isOffline
+                ? await OfflineLists.artists(model, albumArtistsOnly: model.preferences.layout.albumArtistsOnly)
+                : try await model.libraryArtists()
+            let sorted = Self.sorted(read)
             sections = LetterIndex.sections(sorted, ignoringArticles: LetterIndex.navidromeArticles, name: \.name)
             artists = .loaded(sorted)
         } catch {
@@ -107,6 +118,8 @@ struct ArtistsListView: View {
 /// All albums, A–Z, a page at a time, with the letter index (P2: `PagedLetterList` jumps over the server's order,
 /// which drops Navidrome's default articles). Round 24 (owner, 2026-11-08): a "Search albums" field at the top (D224),
 /// and a header per loaded letter run past 25 albums (D225).
+/// Round 28 O3 (owner, 2026-11-15; D340): offline, the albums on the phone (`OfflineAlbumsList`), nothing asked of the
+/// server.
 struct AlbumsListView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dynamicTypeSize) private var typeSize
@@ -117,6 +130,10 @@ struct AlbumsListView: View {
     @State private var search: SearchModel?
 
     var body: some View {
+        if model.isOffline { OfflineAlbumsList() } else { online }
+    }
+
+    private var online: some View {
         ScrollViewReader { proxy in
             ScrollView {
                 if let list {
@@ -279,6 +296,8 @@ struct AlbumLetterGrid: View {
 /// Round 22 R22P (owner, 2026-11-06): All or Yours above the list, remembered per account (D179, D180).
 /// Round 24 (owner, 2026-11-08): in All, who made each playlist under its name and what All covers at the end (D223); a
 /// header per letter past 25 playlists (D225).
+/// Round 28 O3 (owner, 2026-11-15; D340): offline, the playlists on the phone (downloaded, and per Q3 the ones read
+/// online since this build that hold a download), with no "+"; nothing on the phone says "Nothing downloaded yet".
 struct PlaylistsListView: View {
     @Environment(AppModel.self) private var model
     /// Every playlist but Discover's, A–Z; `show` picks what is listed from it.
@@ -288,8 +307,11 @@ struct PlaylistsListView: View {
     @State private var naming = false
     @State private var newName = ""
     @State private var createError: String?
-    /// The playlists revision the list was read for (M1).
-    @State private var loadedRevision: Int?
+    /// The playlists revision (round 28 O3: and the offline key) the list was read for (M1).
+    @State private var loadedRevision: String?
+    /// Round 28 O3 (D345): offline, the downloaded playlists: their long press and swipes queue the songs on the phone;
+    /// a playlist only recorded (Q3) has none, as the queue can't read it.
+    @State private var downloadedIds: Set<String> = []
     private let themed = Themed()
 
     var body: some View {
@@ -324,9 +346,12 @@ struct PlaylistsListView: View {
             }
         }
         // Over the list, not a row in it, so no separators frame it (H3 M8). An empty Yours says so (D179).
+        // Round 28 O3 (D340): offline with nothing on the phone, today's Home copy.
         .overlay {
             if let all = playlists.value, listed(all).isEmpty {
-                ContentUnavailableView(show.emptyTitle, systemImage: "music.note.list")
+                if model.isOffline, all.isEmpty { NothingDownloadedView() } else {
+                    ContentUnavailableView(show.emptyTitle, systemImage: "music.note.list")
+                }
             }
         }
         .safeAreaInset(edge: .top, spacing: 0) { showPicker }
@@ -338,16 +363,18 @@ struct PlaylistsListView: View {
         .navigationTitle("Playlists")
         .navigationBarTitleDisplayMode(.inline)   // as with rows; an empty list would otherwise show a large title
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    newName = ""
-                    naming = true
-                } label: {
-                    Image(systemName: "plus").frame(minWidth: Tokens.minHitSize, minHeight: Tokens.minHitSize)
+            // Round 28 O3 (D345): offline a new playlist can't be made, so "+" hides rather than sitting greyed.
+            if !model.isOffline {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        newName = ""
+                        naming = true
+                    } label: {
+                        Image(systemName: "plus").frame(minWidth: Tokens.minHitSize, minHeight: Tokens.minHitSize)
+                    }
+                    .accessibilityLabel("New playlist")
+                    .accessibilityIdentifier("new-playlist")
                 }
-                .accessibilityLabel("New playlist")
-                .disabled(model.isOffline)
-                .accessibilityIdentifier("new-playlist")
             }
         }
         .alert(PlaylistCopy.newPlaylistTitle, isPresented: $naming) {
@@ -369,10 +396,12 @@ struct PlaylistsListView: View {
             Text(createError ?? "")
         }
         .magpieScreen()
-        .task(id: model.libraryEdits.playlistsRevision) {
+        // Round 28 O3 (D340): and offline or back online, and offline when what's on the phone changes.
+        .task(id: "\(model.libraryEdits.playlistsRevision)|\(model.offlinePageKey)") {
             // Once per change, not each time the list comes back into view (M1).
-            guard loadedRevision != model.libraryEdits.playlistsRevision || playlists.value == nil else { return }
-            loadedRevision = model.libraryEdits.playlistsRevision
+            let key = "\(model.libraryEdits.playlistsRevision)|\(model.offlinePageKey)"
+            guard loadedRevision != key || playlists.value == nil else { return }
+            loadedRevision = key
             await load()
         }
     }
@@ -396,6 +425,20 @@ struct PlaylistsListView: View {
     }
 
     private func row(_ playlist: Playlist) -> some View {
+        Group {
+            if !model.isOffline || downloadedIds.contains(playlist.id) {
+                link(playlist)
+                    .collectionMenu(.playlist(playlist.id), coverArtId: playlist.coverArtId)   // R12, P4
+                    .collectionSwipeActions(.playlist(playlist.id), in: .list)   // R12
+            } else {
+                link(playlist)   // round 28 O3 (D345): nothing that would queue nothing
+            }
+        }
+        .listRowBackground(Color.clear)
+        .id(playlist.id)
+    }
+
+    private func link(_ playlist: Playlist) -> some View {
         NavigationLink(value: Route.playlist(id: playlist.id)) {
             HStack(spacing: Tokens.Spacing.m) {
                 Artwork(playlist.coverArtId, side: 56) { SleeveArt(image: $0, side: 56) }
@@ -412,20 +455,148 @@ struct PlaylistsListView: View {
             }
             .accessibilityElement(children: .combine)
         }
-        .collectionMenu(.playlist(playlist.id), coverArtId: playlist.coverArtId)   // R12, P4
-        .collectionSwipeActions(.playlist(playlist.id), in: .list)   // R12
-        .listRowBackground(Color.clear)
-        .id(playlist.id)
     }
 
     private func load() async {
         do {
-            // A–Z for the letter index (P2); Discover's are under Discover (Y6).
-            let sorted = try await model.libraryPlaylists()
+            // A–Z for the letter index (P2); Discover's are under Discover (Y6). Round 28 O3 (D340): offline, the
+            // playlists on the phone (downloaded, and recorded per Q3; Discover's kept out, D185).
+            let sorted: [Playlist]
+            if model.isOffline {
+                sorted = await OfflineLists.playlists(model)
+                downloadedIds = Set(await model.offlineCatalog.playlists().map(\.id))
+            } else {
+                sorted = try await model.libraryPlaylists()
+            }
             sections = LetterIndex.sections(listed(sorted), name: \.name)
             playlists = .loaded(sorted)
         } catch {
             if playlists.value == nil { playlists = .failed(BrowseErrorCopy.message(for: error)) }
         }
+    }
+}
+
+/// Round 28 O3 (owner, 2026-11-15, item 1: "In offline mode, only downloaded songs are visible within albums, artists,
+/// songs, etc."; D340): what Library's lists show offline, read from the phone's catalogue (O2), never the server.
+enum OfflineLists {
+    /// Playlists: the downloaded ones and (Q3) the recorded ones holding a download, A–Z; flows and Discover's shared
+    /// playlists stay out (D185: Discover lists them).
+    static func playlists(_ model: AppModel) async -> [Playlist] {
+        await model.offlineCatalog.playlists(includingRecorded: true)
+            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
+
+    /// The albums on the phone, A–Z.
+    static func albums(_ model: AppModel) async -> [Album] { await model.offlineCatalog.albums() }
+
+    /// The downloaded songs, A–Z by title (cached songs never, per Q2).
+    static func songs(_ model: AppModel) async -> [Song] { await model.offlineCatalog.songs() }
+
+    /// The artists on the phone; with "Album artists only" (R11) those with an album on the phone they are the album
+    /// artist of (worked out off the main actor).
+    static func artists(_ model: AppModel, albumArtistsOnly: Bool) async -> [Artist] {
+        let catalog = await model.offlineCatalog
+        let all = catalog.artists()
+        guard albumArtistsOnly else { return all }
+        return await Task.detached { all.filter { catalog.artistPage(id: $0.id)?.albums.isEmpty == false } }.value
+    }
+}
+
+/// Round 28 O3 (D340): Library › Albums offline: the albums on the phone as the same lettered grid (A–Z bar, headers past
+/// 25, D225), each opening its phone page; nothing on the phone says "Nothing downloaded yet".
+struct OfflineAlbumsList: View {
+    @Environment(AppModel.self) private var model
+    @State private var albums: [Album]?
+    @State private var sections: [LetterIndex.Section] = []
+
+    var body: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                if let albums, !albums.isEmpty {
+                    AlbumLetterGrid(albums: albums, sections: sections, proxy: proxy)
+                        .padding(.vertical, Tokens.Spacing.l)
+                }
+            }
+            .letterIndex(available: Set(sections.map(\.key)), hidden: sections.isEmpty) { letter in
+                guard let target = LetterIndex.target(letter, in: sections), let albums,
+                      albums.indices.contains(target.range.lowerBound) else { return }
+                proxy.scrollToLetter(index: target.range.lowerBound, sections: sections, itemCount: albums.count) {
+                    albums[$0].id
+                }
+            }
+        }
+        .overlay {
+            if albums == nil { ProgressView() } else if albums?.isEmpty == true { NothingDownloadedView() }
+        }
+        .navigationTitle("Albums")
+        .navigationBarTitleDisplayMode(.inline)
+        .magpieScreen()
+        .task(id: model.offlinePageKey) {
+            let read = await OfflineLists.albums(model)
+            sections = LetterIndex.sections(read, name: \.name)
+            albums = read
+        }
+    }
+}
+
+/// Round 28 O3 (D340): Library › Songs offline: the downloaded songs A–Z with the A–Z bar and pinned headers (D225); a
+/// row plays the list from that song; Remove download asks first. Nothing on the phone says "Nothing downloaded yet".
+struct OfflineSongsList: View {
+    @Environment(AppModel.self) private var model
+    @State private var songs: [Song]?
+    @State private var sections: [LetterIndex.Section] = []
+    @State private var removing: Song?
+    private let themed = Themed()
+
+    var body: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                if let songs, !songs.isEmpty {
+                    LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
+                        LetterSectionedRows(items: Array(songs.enumerated()), sections: sections, id: \.element.id,
+                                            pinned: true) { index, song in
+                            row(song, index: index, in: songs).id(song.id)
+                            Divider().overlay(themed.palette.sepColor).padding(.leading, 76)
+                        }
+                    }
+                }
+            }
+            .letterIndex(available: Set(sections.map(\.key)), hidden: sections.isEmpty) { letter in
+                guard let target = LetterIndex.target(letter, in: sections), let songs,
+                      songs.indices.contains(target.range.lowerBound) else { return }
+                proxy.scrollToLetter(index: target.range.lowerBound, sections: sections, itemCount: songs.count) {
+                    songs[$0].id
+                }
+            }
+        }
+        .overlay {
+            if songs == nil { ProgressView() } else if songs?.isEmpty == true { NothingDownloadedView() }
+        }
+        .navigationTitle("Songs")
+        .navigationBarTitleDisplayMode(.inline)
+        .magpieScreen()
+        .songRemovalDialog($removing)
+        .task(id: model.offlinePageKey) {
+            let read = await OfflineLists.songs(model)
+            sections = LetterIndex.sections(read, name: \.title)
+            songs = read
+        }
+    }
+
+    private func row(_ song: Song, index: Int, in songs: [Song]) -> some View {
+        Button { model.play(songs, startAt: index) } label: {
+            Artwork(song.coverArtId, side: 48) { SongRow(song: song, state: .library, artwork: $0) }
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityIdentifier("offline-song-\(index)")
+        .contextMenu {
+            SongQueueMenuItems(song: song)
+            SongDownloadMenuItem(song: song, removing: $removing)
+        }
+        .songSwipeActions(song, in: .stack,
+                          destructive: RowDestructiveAction(title: SongDownloadMenuItem.removeTitle, symbol: "trash") {
+                              removing = song
+                          })
     }
 }

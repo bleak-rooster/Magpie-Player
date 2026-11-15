@@ -5,8 +5,10 @@ import SwiftUI
 
 /// Library (spec §3, Task 21): the owner's rows in the owner's order (Settings › Home & Library › Library): Playlists,
 /// Artists, Albums, Songs, Genres, Favourites, Downloads, Finds (once a Finds library is chosen), Requests (with Lidarr
-/// connected); then, when switched on, recently added albums. Offline (Task 14): "You're offline", then Downloads (and
-/// Genres, read from the phone).
+/// connected); then, when switched on, recently added albums.
+/// Round 28 O3 (owner, 2026-11-15; D340, amends Task 14's Downloads only): offline, the notice as a top inset, then the
+/// rows that list what's on the phone (Playlists, Artists, Albums, Songs, Genres, Discover with Aurral, Downloads), each
+/// opening a list of only what's here; rows that need a server hide. Pull to refresh tries the library again.
 struct LibraryView: View {
     @Environment(AppModel.self) private var model
     @State private var recent: Loadable<[Album]> = .loading
@@ -18,19 +20,16 @@ struct LibraryView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Tokens.Spacing.xxl) {
-                VStack(alignment: .leading, spacing: Tokens.Spacing.m) {
-                    if model.isOffline {   // Task 14 (kept by Task 21): only what's on the phone
-                        OfflineNotice().padding(.horizontal, Tokens.Spacing.largeTitleMargin)
-                    }
-                    rows
-                }
+                rows
                 if model.showsRecentlyAddedGrid { recentlyAdded }
             }
             .padding(.vertical, Tokens.Spacing.s)
         }
+        // Round 28 O3 (O1's design M4, D329): the notice above the scroll view, never a row in it.
+        .safeAreaInset(edge: .top, spacing: 0) { OfflineNoticeInset() }
         .refreshable {
             await RefreshSafety.run {   // Round 13 Z2
-                if model.isOffline { await model.checkReachability() } else if model.showsRecentlyAddedGrid { await load() }
+                if model.isOffline { await model.reconnectNow() } else if model.showsRecentlyAddedGrid { await load() }
             }
         }
         .magpieLargeTitle("Library")

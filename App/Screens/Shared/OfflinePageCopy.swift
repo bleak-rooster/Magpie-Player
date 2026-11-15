@@ -68,6 +68,27 @@ struct OnPhoneCountLine: View {
     }
 }
 
+/// Round 28 O3 (owner, 2026-11-15; O1's design M4, D329): the offline notice as a screen's top inset (Home, Library,
+/// Search, Downloads), above the scroll view rather than a row in it, so nothing under a finger moves when it comes or
+/// goes. Nothing while online or only checking; never animated in or out.
+struct OfflineNoticeInset: View {
+    @Environment(AppModel.self) private var model
+    private let themed = Themed()
+
+    var body: some View {
+        Group {
+            if OfflineNotice.variant(for: model) != nil {
+                OfflineNotice()
+                    .padding(.horizontal, Tokens.Spacing.largeTitleMargin)
+                    .padding(.vertical, Tokens.Spacing.s)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(themed.palette.bgColor)
+            }
+        }
+        .transaction { $0.animation = nil }
+    }
+}
+
 /// Round 28 O3 (D340): an offline list with nothing in it (today's Home copy).
 struct NothingDownloadedView: View {
     var body: some View {

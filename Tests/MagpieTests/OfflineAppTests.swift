@@ -332,9 +332,10 @@ private let noNetwork = NetworkStatus(isConnected: false, isCellular: false, isC
         #expect(try await model.groupSongs("rock").isEmpty)
         #expect(try await model.genreAlbums("Rock").isEmpty)
         #expect(try await model.genreSongs("Rock").isEmpty)
-        // Home (T20) with every section switched on: Downloaded only, and nothing asked even for every section.
+        // Home (T20) with every section switched on: (round 28 O3, D340) the sections that show what's on the phone, and
+        // nothing asked even for every section; only Recently downloaded has anything here.
         model.updatePreferences { for s in HomeSection.allCases { $0.layout.home.set(s, visible: true, keepingOneOf: []) } }
-        #expect(model.homeSections == [.downloaded])
+        #expect(model.homeSections == [.greeting, .quickAccess, .downloaded, .playlists])
         #expect(try await model.homeShelves(for: model.homeSections).map(\.section) == [.downloaded])
         #expect(try await model.homeShelves(for: HomeSection.allCases).map(\.section) == [.downloaded])
         // Library (T21) with every row switched on: Genres (from the phone) and Downloads only, no Recently added
@@ -343,17 +344,20 @@ private let noNetwork = NetworkStatus(isConnected: false, isCellular: false, isC
             for row in LibraryRow.allCases { $0.layout.library.set(row, visible: true, keepingOneOf: []) }
             $0.layout.showsRecentlyAdded = true
         }
-        #expect(model.libraryRows == [.genres, .downloads] && !model.showsRecentlyAddedGrid)
+        // Round 28 O3 (D340): the rows that list what's on the phone.
+        let offlineRows: [LibraryRow] = [.playlists, .artists, .albums, .songs, .genres, .downloads]
+        #expect(model.libraryRows == offlineRows && !model.showsRecentlyAddedGrid)
         // The car (T22) mirrors it: Home is the Downloaded shelf, opened from the phone, and the Library the offline rows.
         let car = CarPlayLibraryAdapter(model: model)
-        #expect(car.homeSections == [.downloaded] && car.libraryRows == [.genres, .downloads])
+        #expect(car.homeSections == [.downloaded] && car.libraryRows == offlineRows)
         #expect(car.isOffline)
         let carHome = CarPlayRows.home(try await car.homeShelves(car.homeSections, size: CarPlayRows.homeShelfMaxSize))
         #expect(carHome.map(\.header) == ["Recently downloaded"])   // Y3: the shelf's new name
         let carRows = carHome.flatMap(\.rows)
         #expect(carRows.map(\.id) == ["home.downloaded.al-1"])
         #expect(carRows.first?.action == .open(.downloadedAlbum(id: "al-1", title: carRows.first?.title ?? "")))
-        #expect(CarPlayRows.libraryRoot(car.libraryRows).flatMap(\.rows).map(\.title) == ["Genres", "Downloads"])
+        #expect(CarPlayRows.libraryRoot(car.libraryRows).flatMap(\.rows).map(\.title)
+                == ["Playlists", "Artists", "Albums", "Songs", "Genres", "Downloads"])   // round 28 O3 (D340)
         // Every car destination (T23) reads the phone, or nothing: Genres, Downloads (albums, artists, playlists), an
         // album or playlist opened from search, Favourites, Made for you, genre Play and Shuffle, and the Finds shelf.
         #expect(try await car.genreGroups().isEmpty)

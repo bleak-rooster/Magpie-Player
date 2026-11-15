@@ -280,14 +280,16 @@ private func subsonic(_ body: String) -> Data {
     }
 
     /// The brief has `[.downloads]`; T22's controller ruling (one offline rule for the phone and the car) keeps Genres,
-    /// read from the phone, when it is switched on, as the phone does.
+    /// read from the phone, when it is switched on, as the phone does. Round 28 O3 (D340): the phone's offline rows now
+    /// list what's on the phone (Playlists, Artists, Albums, Songs, Genres), each when switched on; the car follows.
     @Test func offlineCarLibraryIsDownloadsOnly() async throws {
         let model = try await signedInModel(fetcher: FakeFetcher())
         model.updatePreferences { $0.downloads.offlineMode = .on }
         let adapter = CarPlayLibraryAdapter(model: model)
-        #expect(adapter.isOffline && adapter.libraryRows == [.genres, .downloads] && adapter.homeSections == [.downloaded])
+        #expect(adapter.isOffline && adapter.libraryRows == [.playlists, .artists, .albums, .songs, .genres, .downloads]
+                && adapter.homeSections == [.downloaded])
         model.updatePreferences { $0.layout.setLibraryRow(.genres, visible: false) }
-        #expect(adapter.libraryRows == [.downloads])
+        #expect(adapter.libraryRows == [.playlists, .artists, .albums, .songs, .downloads])
     }
 
     @Test func carSongsForGenreRequests() async throws {
