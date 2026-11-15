@@ -37,6 +37,11 @@ public struct AudioMetadata: Codable, Hashable, Sendable {
     public var bitRate: Int?
     public var samplingRate: Int?
     public var bitDepth: Int?
+    /// Round 28 O2 (owner, 2026-11-15): the album's artist, as an album page read online names it, so offline a
+    /// compilation or a featured song's album groups under its album artist, not its first track's (D332). Nil until a
+    /// page read online names it.
+    public var albumArtist: String?
+    public var albumArtistId: String?
 
     public init(_ song: Song) {
         songId = song.id; title = song.title; artist = song.artist; artistId = song.artistId
@@ -71,16 +76,30 @@ public struct AudioEntry: Codable, Hashable, Sendable {
     public var metadata: AudioMetadata
 }
 
+/// Round 28 O2 (owner, 2026-11-15): what a playlist kept on the phone is (D331): an ordinary playlist, a flow, or a
+/// playlist shared through Discover. Unknown values (a later version) read as nil.
+public enum OfflinePlaylistKind: String, Codable, Sendable, Hashable {
+    case playlist, flow, sharedPlaylist
+}
+
 /// A playlist as it was when downloaded (refreshed when it's opened with a connection).
+///
+/// Round 28 O2 (owner, 2026-11-15): also the playlist record of `OfflineRecords` (D331, D333): the owner's username,
+/// the kind and the server's `changed`. Files from before read with those nil.
 public struct DownloadedPlaylist: Codable, Hashable, Sendable {
     public var id: String
     public var name: String
     public var coverArtId: String?
     public var songIds: [String]
     public var savedAt: Date
+    public var owner: String?
+    public var kind: OfflinePlaylistKind?
+    public var changed: Date?
 
-    public init(id: String, name: String, coverArtId: String?, songIds: [String], savedAt: Date) {
+    public init(id: String, name: String, coverArtId: String?, songIds: [String], savedAt: Date, owner: String? = nil,
+                kind: OfflinePlaylistKind? = nil, changed: Date? = nil) {
         self.id = id; self.name = name; self.coverArtId = coverArtId; self.songIds = songIds; self.savedAt = savedAt
+        self.owner = owner; self.kind = kind; self.changed = changed
     }
 }
 
@@ -145,5 +164,23 @@ extension AudioMetadata {
         bitRate = (try? c.decodeIfPresent(Int.self, forKey: .bitRate)).flatMap { $0 }
         samplingRate = (try? c.decodeIfPresent(Int.self, forKey: .samplingRate)).flatMap { $0 }
         bitDepth = (try? c.decodeIfPresent(Int.self, forKey: .bitDepth)).flatMap { $0 }
+        albumArtist = (try? c.decodeIfPresent(String.self, forKey: .albumArtist)).flatMap { $0 }
+        albumArtistId = (try? c.decodeIfPresent(String.self, forKey: .albumArtistId)).flatMap { $0 }
+    }
+}
+
+extension DownloadedPlaylist {
+    /// Round 28 O2: an id and a name are required (as before); the rest takes a safe default, and the fields added in
+    /// round 28 read as nil when missing or not understood (D331).
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        coverArtId = (try? c.decodeIfPresent(String.self, forKey: .coverArtId)).flatMap { $0 }
+        songIds = (try? c.decodeIfPresent([String].self, forKey: .songIds)).flatMap { $0 } ?? []
+        savedAt = (try? c.decodeIfPresent(Date.self, forKey: .savedAt)).flatMap { $0 } ?? Date(timeIntervalSinceReferenceDate: 0)
+        owner = (try? c.decodeIfPresent(String.self, forKey: .owner)).flatMap { $0 }
+        kind = (try? c.decodeIfPresent(OfflinePlaylistKind.self, forKey: .kind)).flatMap { $0 }
+        changed = (try? c.decodeIfPresent(Date.self, forKey: .changed)).flatMap { $0 }
     }
 }

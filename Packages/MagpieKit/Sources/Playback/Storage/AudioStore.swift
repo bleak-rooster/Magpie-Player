@@ -8,6 +8,7 @@ import MagpieCore
 /// - `<sha256(songId|quality)>.<ext>`: the audio, with its `AudioEntry` beside it as `<fileName>.json`;
 /// - `index.json`: every entry and playlist (written atomically), rebuilt from the sidecars when unreadable;
 /// - `playlists/<sha256(id)>.json` and `covers/<sha256(coverArtId)>.jpg`;
+/// - round 28 O2: `records.json` (`OfflineRecords`) and `lyrics/<sha256(songId)>.json` (`OfflineLyrics`);
 /// - `partials/`: what downloads stopped part-way leave (R1, `PartialDownloads`).
 ///
 /// No path is made from a server string. Everything is kept out of backups and, on iOS, readable after the first
@@ -17,20 +18,24 @@ public actor AudioStore {
     public nonisolated let directory: URL
     /// R1: resume data and partial bytes; they count toward the downloads limit, and go with the scope.
     public nonisolated var partialsDirectory: URL { directory.appending(path: "partials", directoryHint: .isDirectory) }
-    private let now: @Sendable () -> Date
+    let now: @Sendable () -> Date   // (+Records, +Lyrics)
     /// Reads a file; tests inject one that fails like protected data before first unlock.
-    private let reader: @Sendable (URL) throws -> Data
+    let reader: @Sendable (URL) throws -> Data   // (+Records, +Lyrics)
     /// Whether protected data can be read now (the app passes UIApplication's answer; false before first unlock).
-    private let isProtectedDataAvailable: @Sendable () -> Bool
+    let isProtectedDataAvailable: @Sendable () -> Bool   // (+Records)
     /// The shortest gap between two retries of a reconcile that couldn't read its files.
     private let retryInterval: TimeInterval
-    private var index = Index()
+    private(set) var index = Index()   // (+Records, read only)
     /// The last reconcile met a file it could not read yet (protected data before first unlock). Until a retry
     /// succeeds the store is read-only: reads serve the stand-in index, every write throws `notReady`.
     private var reconcilePending = false
     private var lastAttempt: Date?
+    /// Round 28 O2: `records.json` as last read or written (nil: not read yet, or it couldn't be read yet) (D331).
+    var recordsCache: OfflineRecords?
+    /// Round 28 O2: the most all kept lyrics may take (D336: 20 MB; tests lower it).
+    var lyricsTotalLimit = OfflineLyrics.maxTotalBytes
 
-    private struct Index: Codable, Equatable {
+    struct Index: Codable, Equatable {
         var entries: [String: AudioEntry] = [:]
         var playlists: [String: DownloadedPlaylist] = [:]
     }
@@ -347,6 +352,7 @@ public actor AudioStore {
             }
         }
         saveIndex()
+        pruneAfterRemoval()   // Round 28 O2: records and lyrics no download needs go with it (D333, D336)
         return removed.sorted()
     }
 
@@ -367,7 +373,8 @@ public actor AudioStore {
         return victims.map(\.songId).sorted()
     }
 
-    /// Removing all downloads also drops the saved playlists and covers that went with them.
+    /// Removing all downloads also drops the saved playlists and covers that went with them, and (round 28 O2) the page
+    /// records and kept lyrics.
     public func removeAll(kind: AudioKind) throws {
         try ensureReady()
         for entry in index.entries.values where entry.kind == kind { remove(entry) }
@@ -375,6 +382,7 @@ public actor AudioStore {
             index.playlists = [:]
             try? FileManager.default.removeItem(at: playlistsDirectory)
             try? FileManager.default.removeItem(at: coversDirectory)
+            clearRecordsAndLyrics()   // Round 28 O2 (D331, D336)
         }
         saveIndex()
     }
@@ -383,6 +391,7 @@ public actor AudioStore {
     public func eraseScope() {
         try? FileManager.default.removeItem(at: directory)
         index = Index()
+        recordsCache = nil   // Round 28 O2: the records and lyrics went with the folder
         reconcilePending = false
     }
 
@@ -467,7 +476,7 @@ public actor AudioStore {
 
     private var indexURL: URL { directory.appending(path: Self.indexName) }
     private var playlistsDirectory: URL { directory.appending(path: "playlists", directoryHint: .isDirectory) }
-    private nonisolated var coversDirectory: URL { directory.appending(path: "covers", directoryHint: .isDirectory) }
+    nonisolated var coversDirectory: URL { directory.appending(path: "covers", directoryHint: .isDirectory) }
     private func playlistURL(_ id: String) -> URL { playlistsDirectory.appending(path: Self.sha256(id) + ".json") }
     private nonisolated func coverFileURL(_ id: String) -> URL { coversDirectory.appending(path: Self.sha256(id) + ".jpg") }
     private func url(for entry: AudioEntry) -> URL { directory.appending(path: entry.fileName) }
@@ -495,12 +504,12 @@ public actor AudioStore {
     }
 
     /// Creates `directory`, kept out of backups, and readable after first unlock on iOS.
-    private func prepareDirectory() throws {
+    func prepareDirectory() throws {   // (+Records, +Lyrics)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         try protect(directory)
     }
 
-    private func protect(_ url: URL) throws {
+    func protect(_ url: URL) throws {   // (+Records, +Lyrics)
         var values = URLResourceValues()
         values.isExcludedFromBackup = true
         var target = url
@@ -512,7 +521,7 @@ public actor AudioStore {
     }
 
     /// Writes the sidecar, then the index.
-    private func store(_ entry: AudioEntry, writeIndex: Bool = true) throws {
+    func store(_ entry: AudioEntry, writeIndex: Bool = true) throws {   // (+Records)
         try AtomicFile.write(entry, to: sidecarURL(entry.fileName))
         index.entries[entry.songId] = entry
         if writeIndex { saveIndex() }
@@ -545,7 +554,7 @@ public actor AudioStore {
         load()
     }
 
-    private func ensureReady() throws {
+    func ensureReady() throws {   // (+Records, +Lyrics)
         retryLoad()
         if reconcilePending { throw AudioStoreError.notReady }
     }
@@ -576,7 +585,7 @@ public actor AudioStore {
 
     /// A temporary file `AtomicFile` leaves when the store's own write was cut short (never `pending.json`'s).
     static func isStoreTemp(_ name: String) -> Bool {
-        name.wholeMatch(of: /\.(index\.json|[0-9a-f]{64}(\.[a-z0-9]+)?\.json)\.[0-9A-Fa-f-]{36}\.tmp/) != nil
+        name.wholeMatch(of: /\.(index\.json|records\.json|[0-9a-f]{64}(\.[a-z0-9]+)?\.json)\.[0-9A-Fa-f-]{36}\.tmp/) != nil
     }
 
     /// Makes the index agree with the disk, failing safe:
