@@ -13,6 +13,13 @@ public struct SongRow: View {
     /// The not-yet button's word: "Try", or what Try does on this server ("Ask for it", D8).
     private let tryTitle: String
     private let onKeep: (() -> Void)?
+    /// Round 28 S (owner, 2026-11-15): the second line and VoiceOver label in place of the plain artist, where a screen
+    /// says what the row is ("Song · Corin Hale" in Search). Nil is today's artist line (D338).
+    private let detail: String?
+    private let label: String?
+    /// Round 28 S: the same, for song rows another view builds inside one of the screen's rows (D338).
+    @Environment(\.songRowText) private var screenText
+    @Environment(\.songRowProbe) private var probe
     private let themed = ThemedPalette()
     @Environment(\.dynamicTypeSize) private var typeSize
     /// P1: a song on the phone as a download shows the Downloaded mark (cached songs don't).
@@ -20,8 +27,10 @@ public struct SongRow: View {
     @ScaledMetric(relativeTo: .body) private var thumb: CGFloat = 48
 
     public init(song: Song, state: RowState, artwork: Image? = nil, quality: Quality? = nil,
+                detail: String? = nil, label: String? = nil,
                 tryTitle: String = "Try", onTry: @escaping () -> Void = {}, onKeep: (() -> Void)? = nil) {
         self.song = song; self.state = state; self.artwork = artwork; self.quality = quality
+        self.detail = detail; self.label = label
         self.tryTitle = tryTitle; self.onTry = onTry; self.onKeep = onKeep
     }
 
@@ -30,6 +39,8 @@ public struct SongRow: View {
     public var body: some View {
         // The `.downloaded` state already says so.
         let mark: DownloadMark = state != .downloaded && songIsDownloaded(song.id) ? .downloaded : .none
+        let line = detail ?? screenText?.detail(song) ?? song.artist
+        let spoken = label ?? screenText?.label(song) ?? Self.accessibilityLabel(for: song)
         let layout = typeSize.isAccessibilitySize
             ? AnyLayout(VStackLayout(alignment: .leading, spacing: Tokens.Spacing.m))
             : AnyLayout(HStackLayout(spacing: Tokens.Spacing.m))
@@ -38,7 +49,8 @@ public struct SongRow: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text(song.title).font(.callout).lineLimit(typeSize.isAccessibilitySize ? nil : 1)
                 HStack(spacing: 6) {
-                    Text(song.artist).font(.footnote).foregroundStyle(themed.palette.ink2Color)
+                    Text(line)
+                        .font(.footnote).foregroundStyle(themed.palette.ink2Color)
                         .lineLimit(typeSize.isAccessibilitySize ? nil : 1)
                     if let quality { Hallmark(quality) }
                     DownloadMarkView(mark)
@@ -53,10 +65,11 @@ public struct SongRow: View {
         .foregroundStyle(themed.palette.inkColor)
         .contentShape(Rectangle())
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(Self.accessibilityLabel(for: song))
+        .accessibilityLabel(spoken)
         .accessibilityValue(mark.joined(to: state.voiceOverValue))
         .accessibilityHint(state.accessibilityHint ?? "")
         .modifier(RowActions(state: state, tryTitle: tryTitle, onTry: onTry, onKeep: onKeep))
+        .onAppear { probe?.report(song.id, line, spoken) }   // tests only (fix round 1, review M6)
     }
 
     @ViewBuilder private var artView: some View {
@@ -77,6 +90,32 @@ public struct SongRow: View {
         default: EmptyView()
         }
     }
+}
+
+/// Round 28 S (owner, 2026-11-15): what a screen's song rows say on their second line and to VoiceOver, for a row
+/// another view builds (Search's "Not in your library" songs, D338). Rows outside such a screen keep the artist.
+public struct SongRowText: Sendable {
+    public let detail: @Sendable (Song) -> String
+    public let label: @Sendable (Song) -> String
+
+    public init(detail: @escaping @Sendable (Song) -> String, label: @escaping @Sendable (Song) -> String) {
+        self.detail = detail; self.label = label
+    }
+}
+
+/// Round 28 S fix round 1 (review M6): hosted tests read what a song row rendered (song id, second line, VoiceOver
+/// label), wherever it was built. Nil in the app.
+public struct SongRowProbeSink {
+    public let report: @MainActor (_ songId: String, _ detail: String, _ label: String) -> Void
+
+    public init(report: @escaping @MainActor (_ songId: String, _ detail: String, _ label: String) -> Void) {
+        self.report = report
+    }
+}
+
+extension EnvironmentValues {
+    @Entry public var songRowText: SongRowText? = nil
+    @Entry public var songRowProbe: SongRowProbeSink? = nil
 }
 
 private struct RowActions: ViewModifier {
