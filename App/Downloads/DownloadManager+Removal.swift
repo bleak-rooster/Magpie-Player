@@ -41,6 +41,7 @@ extension DownloadManager {
         savePending()
         prunePartials()   // R1: a cancelled download leaves nothing part-way behind
         let freed = await applyRemoval(removal)
+        await pruneCovers()   // Round 28 O2 (D334): the store pruned records and lyrics with the removal
         await refresh()
         if freed { requeueStoppedByFull() }
         pump()
@@ -79,7 +80,9 @@ extension DownloadManager {
         jobs.removeAll { $0.kind != .cache }
         failed = []
         stoppedByFull = []
-        pendingCovers = []
+        dropCoverFetches()   // Round 28 O2 (fix rounds 1 and 2: security L2, SN6): no late cover lands after this
+        followEpoch &+= 1   // fix round 3 (SN9a): no follow under way removes or downloads after this
+        parkedRecords = []
         deferredRemovals = []
         deferredPlaylists = []
         discardUnreadPending()
@@ -90,6 +93,7 @@ extension DownloadManager {
         } catch {
             Log.logger("downloads").error("remove all failed: \(Log.category(of: error), privacy: .public)")
         }
+        recordsChanged()   // Round 28 O2: the records and lyrics went too
         await refresh()
         pump()
     }
