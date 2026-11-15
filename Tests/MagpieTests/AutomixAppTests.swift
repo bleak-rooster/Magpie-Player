@@ -197,6 +197,7 @@ final class AutomixLibrary: @unchecked Sendable {
         model.updatePreferences { $0.downloads.offlineMode = .on }
         #expect(!model.automixAvailable(for: try song("sim2")) && !model.automixAvailable(artistId: "ar1", albums: []))
         model.updatePreferences { $0.downloads.offlineMode = .off }
+        #expect(await eventually { !model.isOffline })   // Round 28 O1 fix round 2 (m2): online once Offline mode's login answers
         #expect(!model.automixAvailable(artistId: "magpie.local:artist:aurora field", albums: []),
                 "an artist grouped from the phone")
         let links = NowPlayingLinks(album: nil, artist: nil)
