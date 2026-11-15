@@ -134,6 +134,7 @@ struct OwnedSongRow: View {
         .accessibilityLabel("\(r.title), \(r.artist)")
         .accessibilityValue(failed ? SearchCopy.couldNotPlay : SearchCopy.inYourLibrary)
         .accessibilityAddTraits(.isButton)
+        .searchRowProbe("search-owned-\(item.songId)", detail: r.artist, label: "\(r.title), \(r.artist)")
         .listRowInsets(EdgeInsets())
         .listRowBackground(Color.clear)
     }

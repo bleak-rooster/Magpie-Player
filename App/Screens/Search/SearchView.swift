@@ -64,7 +64,8 @@ struct SearchView: View {
     }
 }
 
-private struct SearchContent: View {
+/// Internal (round 28 S) so hosted tests can show it with set results.
+struct SearchContent: View {
     @Environment(AppModel.self) private var app
     let model: SearchModel
     @Binding var scope: SearchScope
@@ -355,6 +356,7 @@ private struct SearchContent: View {
                         tryTitle: RequestCopy.tryTitle(app.tryAvailability),
                         onTry: { trying = TryTarget(recording: recording) })
             }
+            .searchRowProbe("search-notyet-song-\(index)", detail: song.artist, label: SongRow.accessibilityLabel(for: song))
         }
             .searchPreviewSlot(recording)   // Round 14: A3's preview goes here
             .accessibilityIdentifier("search-notyet-song-\(index)")
@@ -420,6 +422,9 @@ private struct SearchContent: View {
             NotYetAlbumRow(title: album.title, detail: [album.kind ?? "Album", album.artist].joined(separator: " \u{00B7} "),
                            label: "\(album.title), \(album.kind ?? "Album") by \(album.artist)", artwork: art)
         }
+        .searchRowProbe("search-notyet-album-\(album.title)",
+                        detail: [album.kind ?? "Album", album.artist].joined(separator: " \u{00B7} "),
+                        label: "\(album.title), \(album.kind ?? "Album") by \(album.artist)")
         .listRowBackground(Color.clear)
     }
 
@@ -454,6 +459,7 @@ private struct SearchContent: View {
         .buttonStyle(.plain)
         .accessibilityAddTraits(.isButton)
         .accessibilityIdentifier(id ?? "search-song-\(index)")
+        .searchRowProbe(id ?? "search-song-\(index)", detail: song.artist, label: SongRow.accessibilityLabel(for: song))
         .contextMenu {
             SongQueueMenuItems(song: song)
             FindsLibraryMenuItem(songId: song.id, artist: song.artist, host: FindsLibraryMenuItem.main)   // R18/R20: Keep
@@ -501,6 +507,8 @@ private struct SearchContent: View {
             }
             .accessibilityElement(children: .combine)
         }
+        .searchRowProbe("search-album-\(album.id)", detail: ["Album", album.artist].joined(separator: " \u{00B7} "),
+                        label: album.name)
         .albumMenu(album)   // R12, R7 Favourite, R8 Add to playlist…, P4 Reload artwork
         .collectionSwipeActions(.album(album.id), in: .list)   // R12
         .listRowBackground(Color.clear)
@@ -531,5 +539,29 @@ private extension View {
     func tracked(_ model: SearchModel, _ section: SearchModel.ResultSection, _ index: Int) -> some View {
         onAppear { model.rowAppeared(section, index: index) }
             .onDisappear { model.rowDisappeared(section, index: index) }
+    }
+}
+
+extension EnvironmentValues {
+    /// Round 28 S (owner, 2026-11-15): hosted tests read what each song and album row in Search says under its title
+    /// and to VoiceOver, as the row appears (D338). Nil in the app.
+    @Entry var searchRowProbe: (@MainActor (_ id: String, _ detail: String, _ label: String) -> Void)? = nil
+}
+
+extension View {
+    /// Round 28 S: tells `searchRowProbe` (tests only) the row's second line and VoiceOver label.
+    func searchRowProbe(_ id: String, detail: String, label: String) -> some View {
+        modifier(SearchRowProbe(id: id, detail: detail, label: label))
+    }
+}
+
+private struct SearchRowProbe: ViewModifier {
+    @Environment(\.searchRowProbe) private var probe
+    let id: String
+    let detail: String
+    let label: String
+
+    func body(content: Content) -> some View {
+        content.onAppear { probe?(id, detail, label) }
     }
 }
