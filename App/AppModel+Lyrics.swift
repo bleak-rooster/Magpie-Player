@@ -53,8 +53,15 @@ enum ShownLyrics: Sendable, Equatable {
     /// L fix round 1 (I1): background reads in flight at once, each left to finish (nd-lyrics may be fetching).
     nonisolated static let maxBackgroundReads = 3
 
-    /// Find lyrics online: off by default, per phone (D311).
-    var findOnline = false { didSet { defaults?.set(findOnline, forKey: Self.findOnlineKey) } }
+    /// Find lyrics online: off by default, per phone (D311). Round 28 O2 fix round 1 (security L4, D336 amended):
+    /// turning it off removes the lyrics found online kept on the phone (`onFindOnlineOff`).
+    var findOnline = false {
+        didSet {
+            defaults?.set(findOnline, forKey: Self.findOnlineKey)
+            if oldValue, !findOnline { onFindOnlineOff?() }
+        }
+    }
+    @ObservationIgnored var onFindOnlineOff: (@MainActor () -> Void)?
 
     /// One song's kept answers: the server's (`nil` lyrics = none) and LRCLIB's (`nil` = none).
     struct Entry: Equatable {
@@ -200,6 +207,7 @@ extension AppModel {
     func watchLyrics() {
         lyricsKeeper.attach(defaults: appDefaults,
                             lrclib: LrcLib(transport: LrcLibTransport(), userAgent: LrcLib.userAgent(version: Self.marketingVersion)))
+        lyricsKeeper.onFindOnlineOff = { [weak self] in self?.findLyricsOnlineTurnedOff() }   // Round 28 O2 (L4)
         lyricsWatch = Task { [weak self, player] in
             let inputs = Observations { @MainActor [weak self] in
                 LyricsTriggerInputs(songId: player.queue.current?.song.id, signedIn: self?.session != nil,
@@ -263,7 +271,10 @@ extension AppModel {
             }
             guard let self, self.lyricsKeeper.generation == generation else { return result }
             switch result {
-            case .success(let lyrics): self.lyricsKeeper.keepLibrary(id, lyrics)
+            case .success(let lyrics):
+                self.lyricsKeeper.keepLibrary(id, lyrics)
+                // Round 28 O2 (D336): a downloaded song's lyrics are kept on the phone too.
+                self.keepLyricsOnPhone(id, lyrics.flatMap { $0.lines.isEmpty ? nil : .lines($0, .library) })
             case .failure(let error) where error is LyricsReadSkipped: self.lyricsKeeper.forgetAskedServer(id)
             case .failure: break
             }
@@ -321,6 +332,8 @@ extension AppModel {
     func lyricsForPane(_ song: Song, fresh: Bool = false) async throws -> ShownLyrics? {
         let keeper = lyricsKeeper
         if !fresh, let kept = keeper.shown(song.id) { return kept }
+        // Round 28 O2 (D336): then the lyrics kept on the phone for a downloaded song (offline, always).
+        if !fresh || isOffline, let saved = await savedLyrics(songId: song.id) { return saved }
         guard session != nil, !isOffline else { return nil }
         let advertises = (try? await serverAdvertises("songLyrics")) ?? false
         let keptNone: Bool = if case .some(.none) = keeper.library(song.id) { true } else { false }
@@ -359,9 +372,15 @@ extension AppModel {
             await lrclib.get(title: title, artist: artist, album: album, duration: duration)
         }
         guard keeper.generation == generation else { return nil }
+        // Round 28 O2 fix round 2 (SN3): switched off while LRCLIB was asked: nothing is shown or kept.
+        guard keeper.findOnline else {
+            keeper.forgetAskedOnline(song.id)
+            return nil
+        }
         switch result {
         case .success(let found):
             keeper.keepOnline(song.id, found)
+            keepLyricsOnPhone(song.id, ShownLyrics(online: found))   // Round 28 O2 (D336)
             return ShownLyrics(online: found)
         case .failure(let error) where error is CancellationError:
             keeper.forgetAskedOnline(song.id)
