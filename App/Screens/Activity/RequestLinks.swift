@@ -129,7 +129,12 @@ struct RequestedItemRow: View {
     let title: String
     let detail: String
     let request: MagpieRequest
+    /// Round 28 S fix round 1 (design M3, D338): VoiceOver's label in place of "<title>, <detail>" (Search gives
+    /// "<name>, EP by <artist>", so the middle dot isn't read out).
+    var label: String? = nil
     private let themed = Themed()
+    /// Round 28 S fix round 2 (m1): the detail line wraps at accessibility sizes.
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
         NavigationLink(value: Route.request(request.id)) {
@@ -138,14 +143,19 @@ struct RequestedItemRow: View {
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(title).font(.body).lineLimit(2)
-                    Text(detail).font(.footnote).foregroundStyle(themed.palette.ink2Color).lineLimit(1)
+                    Text(detail).font(.footnote).foregroundStyle(themed.palette.ink2Color)
+                        .lineLimit(typeSize.isAccessibilitySize ? nil : 1)
                     Label(RequestCopy.status(request, context: app.waitContext), systemImage: RequestCopy.symbol(request))
                         .font(.caption).foregroundStyle(themed.palette.accentInkColor).lineLimit(2)
                 }
             }
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel("\(title), \(detail)")
+            .accessibilityLabel(Self.accessibilityLabel(title: title, detail: detail, label: label))
             .accessibilityValue(RequestCopy.status(request, context: app.waitContext))
         }
+    }
+
+    static func accessibilityLabel(title: String, detail: String, label: String?) -> String {
+        label ?? "\(title), \(detail)"
     }
 }
