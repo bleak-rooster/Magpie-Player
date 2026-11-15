@@ -412,8 +412,8 @@ private let search3 = ok(#"""
 
     // MARK: - Whole-row history (D226)
 
-    /// Search's two history lists (the only ones in the app; the car's recents are `CPListItem`s): its recent searches
-    /// and, offline, its "Recently played on this phone". Each row is tappable across its whole width: the recent
+    /// Search's history list (the only one in the app; the car's recents are `CPListItem`s): its recent searches (its
+    /// offline "Recently played on this phone" went in round 28, D339). Each row is tappable across its whole width: the recent
     /// search's label carries `.contentShape(Rectangle())`; a recently played song is Search's `songRow`, whose
     /// `SongRow` body is full width and shaped itself (round 24, owner item 9). Any new `ForEach(recent…)` list is
     /// held to the same.
@@ -437,7 +437,8 @@ private let search3 = ok(#"""
                 #expect(shaped, "\(file.lastPathComponent):\(i + 1): a history row without .contentShape(Rectangle())")
             }
         }
-        #expect(blocks >= 2, "Search's recent searches and its recently played songs")
+        // Round 28 S (owner Q2, D339): Search's "Recently played on this phone" went; its recent searches remain.
+        #expect(blocks >= 1, "Search's recent searches")
     }
 
     /// Search's `songRow` labels its button with `SongRow`, and `SongRow`'s own `body` (not just anywhere in its file)

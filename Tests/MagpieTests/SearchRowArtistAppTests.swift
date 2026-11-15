@@ -222,7 +222,8 @@ import UIKit
         let source = try String(contentsOf: URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent()
             .appending(path: "App/Screens/Search/SearchView.swift"), encoding: .utf8)
-        #expect(!source.contains("\"Recently played on this phone\""), "the section's heading is gone")
+        #expect(!source.contains("header(\"Recently played on this phone\")"), "the section's heading is gone")
+        #expect(!source.contains("sections.recentlyPlayed"), "nothing reads the recently played songs")
     }
 
     // MARK: - Four setups
