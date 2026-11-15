@@ -33,8 +33,10 @@ import Testing
         let car = l.visibleLibraryRows(offline: false, findsSetUp: false, lidarrConnected: false, carPlay: true,
                                        discoverSetUp: true, trendingSetUp: true, recommendedSetUp: true)
         #expect(car.last == .discover)
+        // Round 28 O3 (D340): offline, the rows that list what's on the phone; never Trending or Recommended.
         #expect(l.visibleLibraryRows(offline: true, findsSetUp: false, lidarrConnected: false, carPlay: false,
-                                     discoverSetUp: true, trendingSetUp: true, recommendedSetUp: true) == [.genres, .downloads])
+                                     discoverSetUp: true, trendingSetUp: true, recommendedSetUp: true)
+                == [.playlists, .artists, .albums, .songs, .genres, .downloads, .discover])
     }
 
     /// A layout saved before round 14 (rearranged: Discover moved to the top, Songs hidden) gains both rows right after
