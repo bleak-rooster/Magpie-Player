@@ -102,6 +102,8 @@ struct OwnedSongRow: View {
     let model: SearchModel
     let onPlay: () -> Void
     private let themed = Themed()
+    /// Fix round 1 (review I1, design H2): the title and artist lines wrap at accessibility sizes.
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
         let r = item.recording
@@ -120,8 +122,9 @@ struct OwnedSongRow: View {
                 }
                 .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(r.title).font(.callout).lineLimit(1)
-                    Text(detail).font(.footnote).foregroundStyle(themed.palette.ink2Color).lineLimit(1)
+                    Text(r.title).font(.callout).lineLimit(typeSize.isAccessibilitySize ? nil : 1)
+                    Text(detail).font(.footnote).foregroundStyle(themed.palette.ink2Color)
+                        .lineLimit(typeSize.isAccessibilitySize ? nil : 1)
                     Label(failed ? SearchCopy.couldNotPlay : SearchCopy.inYourLibrary,
                           systemImage: failed ? "exclamationmark.circle" : "checkmark.circle")
                         .font(.caption).foregroundStyle(themed.palette.ink2Color)

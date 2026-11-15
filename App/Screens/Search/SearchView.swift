@@ -77,6 +77,8 @@ struct SearchContent: View {
     @State private var trying: TryTarget?
     @State private var removing: Song?
     private let themed = Themed()
+    /// Fix round 1 (review I1, design H2): album rows wrap their lines at accessibility sizes.
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
         let sections = model.results
@@ -376,8 +378,12 @@ struct SearchContent: View {
     @ViewBuilder private func notYetAlbumRow(_ album: NotYetAlbum) -> some View {
         if let request = RequestLinks.request(releaseGroup: album.mbid, in: app.requests) {   // R17
             // Round 28 S (D338): the same never-blank line as the album's own row.
-            RequestedItemRow(title: album.title, detail: SearchRowText.albumDetail(artist: album.artist, kind: album.kind),
-                             request: request)
+            // Fix round 1 (design M3): VoiceOver "<name>, EP by <artist>", not the middle dot.
+            let detail = SearchRowText.albumDetail(artist: album.artist, kind: album.kind)
+            let label = SearchRowText.albumLabel(name: album.title, artist: album.artist, kind: album.kind)
+            RequestedItemRow(title: album.title, detail: detail, request: request, label: label)
+                .searchRowProbe("search-requested-album-\(album.title)", detail: detail,
+                                label: label)
                 .listRowBackground(Color.clear)
         } else if album.mbid != nil {
             // R19: opens the outside album page.
@@ -504,10 +510,15 @@ struct SearchContent: View {
         return NavigationLink(value: Route.album(id: album.id)) {
             HStack(spacing: Tokens.Spacing.m) {
                 Artwork(album.coverArtId, side: 48) { SleeveArt(image: $0, side: 48) }
+                // Fix round 1 (review I1, design H2): at accessibility sizes the lines wrap rather than cut off, and the
+                // download mark goes below the artist line.
+                let large = typeSize.isAccessibilitySize
+                let line = large ? AnyLayout(VStackLayout(alignment: .leading, spacing: 2))
+                                 : AnyLayout(HStackLayout(spacing: 4))
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(album.name).font(.body).lineLimit(2)
-                    HStack(spacing: 4) {
-                        Text(detail).font(.footnote).foregroundStyle(themed.palette.ink2Color).lineLimit(1)
+                    Text(album.name).font(.body).lineLimit(large ? nil : 2)
+                    line {
+                        Text(detail).font(.footnote).foregroundStyle(themed.palette.ink2Color).lineLimit(large ? nil : 1)
                         DownloadMarkView(mark)   // P1
                     }
                 }
@@ -555,14 +566,28 @@ extension SongRowText {
     static let search = SongRowText(detail: { SearchRowText.songDetail($0) }, label: { SearchRowText.songLabel($0) })
 }
 
+/// Round 28 S: what one Search row says under its title and to VoiceOver, and (fix round 1, design M1) how tall it is
+/// on screen, so a test can tell a wrapped artist line from one cut off.
+struct SearchRowReport: Equatable {
+    var detail: String
+    var label: String
+    var height: CGFloat = 0
+}
+
+/// Round 28 S fix round 1 (review M3): the probe's closure in a struct, so `@Entry` doesn't warn about storing a
+/// closure.
+struct SearchRowProbeSink {
+    let report: @MainActor (_ id: String, _ row: SearchRowReport) -> Void
+}
+
 extension EnvironmentValues {
     /// Round 28 S (owner, 2026-11-15): hosted tests read what each song and album row in Search says under its title
     /// and to VoiceOver, as the row appears (D338). Nil in the app.
-    @Entry var searchRowProbe: (@MainActor (_ id: String, _ detail: String, _ label: String) -> Void)? = nil
+    @Entry var searchRowProbe: SearchRowProbeSink? = nil
 }
 
 extension View {
-    /// Round 28 S: tells `searchRowProbe` (tests only) the row's second line and VoiceOver label.
+    /// Round 28 S: tells `searchRowProbe` (tests only) the row's second line, VoiceOver label and height.
     func searchRowProbe(_ id: String, detail: String, label: String) -> some View {
         modifier(SearchRowProbe(id: id, detail: detail, label: label))
     }
@@ -575,6 +600,12 @@ private struct SearchRowProbe: ViewModifier {
     let label: String
 
     func body(content: Content) -> some View {
-        content.onAppear { probe?(id, detail, label) }
+        if let probe {
+            content.onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { height in
+                probe.report(id, SearchRowReport(detail: detail, label: label, height: height))
+            }
+        } else {
+            content
+        }
     }
 }

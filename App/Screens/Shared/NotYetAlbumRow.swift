@@ -10,13 +10,16 @@ struct NotYetAlbumRow: View {
     /// R15: the release group's cover from outside (Search), as the record's label; nil is the bare record.
     var artwork: Image? = nil
     private let themed = Themed()
+    /// Round 28 S fix round 1 (review I1, design H2): the detail line wraps at accessibility sizes.
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
         HStack(spacing: Tokens.Spacing.m) {
             RecordArt(image: artwork, side: 48).recordBadge(RowState.notYet.statusSymbol)
             VStack(alignment: .leading, spacing: 1) {
                 Text(title).font(.body).lineLimit(2)
-                Text(detail).font(.footnote).foregroundStyle(themed.palette.ink2Color).lineLimit(1)
+                Text(detail).font(.footnote).foregroundStyle(themed.palette.ink2Color)
+                    .lineLimit(typeSize.isAccessibilitySize ? nil : 1)
                 StatusLine(.notYet)
             }
         }

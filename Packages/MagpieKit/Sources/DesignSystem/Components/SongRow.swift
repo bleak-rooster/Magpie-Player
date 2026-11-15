@@ -19,6 +19,7 @@ public struct SongRow: View {
     private let label: String?
     /// Round 28 S: the same, for song rows another view builds inside one of the screen's rows (D338).
     @Environment(\.songRowText) private var screenText
+    @Environment(\.songRowProbe) private var probe
     private let themed = ThemedPalette()
     @Environment(\.dynamicTypeSize) private var typeSize
     /// P1: a song on the phone as a download shows the Downloaded mark (cached songs don't).
@@ -38,6 +39,8 @@ public struct SongRow: View {
     public var body: some View {
         // The `.downloaded` state already says so.
         let mark: DownloadMark = state != .downloaded && songIsDownloaded(song.id) ? .downloaded : .none
+        let line = detail ?? screenText?.detail(song) ?? song.artist
+        let spoken = label ?? screenText?.label(song) ?? Self.accessibilityLabel(for: song)
         let layout = typeSize.isAccessibilitySize
             ? AnyLayout(VStackLayout(alignment: .leading, spacing: Tokens.Spacing.m))
             : AnyLayout(HStackLayout(spacing: Tokens.Spacing.m))
@@ -46,7 +49,7 @@ public struct SongRow: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text(song.title).font(.callout).lineLimit(typeSize.isAccessibilitySize ? nil : 1)
                 HStack(spacing: 6) {
-                    Text(detail ?? screenText?.detail(song) ?? song.artist)
+                    Text(line)
                         .font(.footnote).foregroundStyle(themed.palette.ink2Color)
                         .lineLimit(typeSize.isAccessibilitySize ? nil : 1)
                     if let quality { Hallmark(quality) }
@@ -62,10 +65,11 @@ public struct SongRow: View {
         .foregroundStyle(themed.palette.inkColor)
         .contentShape(Rectangle())
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(label ?? screenText?.label(song) ?? Self.accessibilityLabel(for: song))
+        .accessibilityLabel(spoken)
         .accessibilityValue(mark.joined(to: state.voiceOverValue))
         .accessibilityHint(state.accessibilityHint ?? "")
         .modifier(RowActions(state: state, tryTitle: tryTitle, onTry: onTry, onKeep: onKeep))
+        .onAppear { probe?.report(song.id, line, spoken) }   // tests only (fix round 1, review M6)
     }
 
     @ViewBuilder private var artView: some View {
@@ -99,8 +103,19 @@ public struct SongRowText: Sendable {
     }
 }
 
+/// Round 28 S fix round 1 (review M6): hosted tests read what a song row rendered (song id, second line, VoiceOver
+/// label), wherever it was built. Nil in the app.
+public struct SongRowProbeSink {
+    public let report: @MainActor (_ songId: String, _ detail: String, _ label: String) -> Void
+
+    public init(report: @escaping @MainActor (_ songId: String, _ detail: String, _ label: String) -> Void) {
+        self.report = report
+    }
+}
+
 extension EnvironmentValues {
     @Entry public var songRowText: SongRowText? = nil
+    @Entry public var songRowProbe: SongRowProbeSink? = nil
 }
 
 private struct RowActions: ViewModifier {

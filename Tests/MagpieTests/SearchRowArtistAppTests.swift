@@ -3,6 +3,7 @@ import Foundation
 import MagpieCore
 import MagpieTestSupport
 import Playback
+import Requests
 import Search
 import SwiftUI
 import Testing
@@ -76,26 +77,35 @@ import UIKit
     // MARK: - Hosting
 
     final class RowLog {
-        var rows: [String: (detail: String, label: String)] = [:]
+        var rows: [String: SearchRowReport] = [:]
+        /// What each `SongRow` rendered (by song id), wherever it was built (fix round 1, review M6).
+        var songRows: [String: SearchRowReport] = [:]
     }
 
     /// Shows Search with `sections` for "harbour" in a tall iPhone-wide window (every row on screen) and returns what
-    /// the rows said.
-    private func show(_ sections: SearchSections, offline: Bool = false,
+    /// the rows said. `prepare` sets the model up first (requests); `typeSize` is the text size.
+    private func show(_ sections: SearchSections, offline: Bool = false, typeSize: DynamicTypeSize = .large,
+                      prepare: (AppModel) -> Void = { _ in },
                       until expected: Set<String>) async throws -> (RowLog, UIWindow, AppModel) {
         let app = makeModel(offline: offline)
+        #expect(app.isOffline == offline, "the model's offline state")   // fix round 1 (review M1)
+        prepare(app)
         let model = SearchModel(search: { _, _ in sections }, sleep: { _ in }, debounce: .zero)
         model.update(query: "harbour")
         #expect(await eventually { model.phase == .done }, "the search never finished")
         let log = RowLog()
         let scene = try #require(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
         let window = UIWindow(windowScene: scene)
-        window.frame = CGRect(x: 0, y: 0, width: 402, height: 3000)
+        window.frame = CGRect(x: 0, y: 0, width: 402, height: typeSize.isAccessibilitySize ? 9000 : 3000)
         let root = NavigationStack { SearchContent(model: model, scope: .constant(.all), depth: 0) }
             .environment(app)
             .environment(\.songIsDownloaded, app.songIsDownloaded)
             .magpieTheme(Theme())
-            .environment(\.searchRowProbe) { id, detail, label in log.rows[id] = (detail, label) }
+            .environment(\.dynamicTypeSize, typeSize)
+            .environment(\.searchRowProbe, SearchRowProbeSink { id, row in log.rows[id] = row })
+            .environment(\.songRowProbe, SongRowProbeSink { id, detail, label in
+                log.songRows[id] = SearchRowReport(detail: detail, label: label)
+            })
         window.rootViewController = UIHostingController(rootView: root)
         window.isHidden = false
         let shown = await eventually { expected.isSubset(of: Set(log.rows.keys)) }
@@ -181,7 +191,7 @@ import UIKit
         var setters: [String] = []
         for file in files {
             let source = try String(contentsOf: file, encoding: .utf8)
-            if source.contains("\\.songRowText") { setters.append(file.lastPathComponent) }
+            if source.contains(".environment(\\.songRowText") { setters.append(file.lastPathComponent) }
             if !file.path.contains("/Screens/Search/") {
                 #expect(!source.contains("SearchRowText."), "\(file.lastPathComponent): Search's row text outside Search")
             }
@@ -229,7 +239,9 @@ import UIKit
     // MARK: - Four setups
 
     /// Each setup's sections, online: every song and album row names its artist (or its kind alone when the artist is
-    /// blank); artist rows never repeat it (they aren't song or album rows).
+    /// blank); artist rows never repeat it (they aren't song or album rows). What varies per setup (fix round 1, review
+    /// M2) is only the sections fed in, the ones that setup's sources can produce (`sections(_:)`): the model isn't
+    /// connected to Lidarr or Aurral, because Search's rows don't read the setup, only the sections they're given.
     @Test(arguments: Setup.allCases)
     func fourSetups(_ setup: Setup) async throws {
         let sections = Self.sections(setup)
@@ -246,5 +258,100 @@ import UIKit
                     "\(setup) \(id): \(row.detail)")
             #expect(row.label.contains(" by ") || !row.detail.contains("\u{00B7}"), "\(setup) \(id): \(row.label)")
         }
+    }
+
+    // MARK: - Accessibility sizes (fix round 1: review I1, design H2 and M1)
+
+    private static let longName = "The Extraordinarily Long-Named Midnight Cartographers Ensemble and All Their Friends"
+
+    /// At AX3 the artist line wraps instead of being cut off: each row with a long artist is taller than the same row
+    /// with a short one (a one-line limit would make them the same height, the long one cut off with "…").
+    @Test func searchRows_artistLineWrapsAtAX3() async throws {
+        func song(_ id: String, _ artist: String) -> Song {
+            Song(id: id, title: "Harbour Lights", artist: artist, album: "Saltwater Hymns", duration: 215)
+        }
+        func album(_ id: String, _ artist: String) -> Album {
+            Album(id: id, name: "Glasshouse", artist: artist, songCount: 10, duration: 2400)
+        }
+        var s = SearchSections(songs: [song("s-short", Self.corin), song("s-long", Self.longName)],
+                               albums: [album("al-short", Self.corin), album("al-long", Self.longName)])
+        s.notYet.albums = [NotYetAlbum(title: "Tide A", artist: Self.corin, kind: "EP"),
+                           NotYetAlbum(title: "Tide B", artist: Self.longName, kind: "EP")]
+        s.notYet.owned = [OwnedOutsideSong(recording: Self.recording("Tidewater"), songId: "o-short"),
+                          OwnedOutsideSong(recording: Self.recording("Tidewater", artist: Self.longName), songId: "o-long")]
+        let pairs = [("search-song-0", "search-song-1"), ("search-album-al-short", "search-album-al-long"),
+                     ("search-notyet-album-Tide A", "search-notyet-album-Tide B"),
+                     ("search-owned-o-short", "search-owned-o-long")]
+        let ids = Set(pairs.flatMap { [$0.0, $0.1] })
+        let (log, window, _) = try await show(s, typeSize: .accessibility3, until: ids)
+        defer { window.isHidden = true }
+        func taller(_ pair: (String, String)) -> Bool {
+            guard let short = log.rows[pair.0]?.height, let long = log.rows[pair.1]?.height, short > 0 else { return false }
+            return long > short + 10
+        }
+        _ = await eventually { pairs.allSatisfy(taller) }
+        for pair in pairs {
+            let long = log.rows[pair.1]?.height ?? 0, short = log.rows[pair.0]?.height ?? 0
+            #expect(taller(pair), "\(pair.1) (\(long)) isn't taller than \(pair.0) (\(short)): cut off at AX3")
+        }
+    }
+
+
+    // MARK: - Rows other views build (fix round 1: review M6, design L4 and M3)
+
+    private static let releaseGroup = MBID("00000000-0000-4000-8000-000000000010")!
+
+    private static func request(_ recording: ExternalRecording, state: RequestState,
+                                releaseGroup: MBID? = nil) -> MagpieRequest {
+        var r = MagpieRequest(recording: recording, tier: .standard, createdAt: Date(timeIntervalSince1970: 1_900_000_000))
+        r.state = state
+        if let releaseGroup {
+            let other = MBID("00000000-0000-4000-8000-000000000020")!
+            r.plan = Plan(recordingMBID: other, releaseGroupMBID: releaseGroup, artistMBID: other, lidarrArtistId: 7,
+                          mode: .fallback)
+        }
+        return r
+    }
+
+    /// A ready request in "Not in your library" is the library song in its place (built by `NotYetSongLink`): the
+    /// `SongRow` it renders says "Song · <artist>" and "song by" too, through Search's `songRowText`.
+    @Test func searchRows_readyRequestBecomesALibrarySongNamingTheArtist() async throws {
+        var s = SearchSections()
+        s.notYet.songs = [Self.recording("Northern Rooms")]
+        let ready = Self.request(Self.recording("Northern Rooms"), state: .ready)
+        let landed = Song(id: "landed", title: "Northern Rooms", artist: Self.corin, album: "Northern Rooms", duration: 200)
+        let (log, window, app) = try await show(s, prepare: { app in
+            app.requests = [ready]
+            app.readySongs[ready.id] = landed
+        }, until: [])
+        defer { window.isHidden = true }
+        #expect(RequestLinks.songRow(for: Self.recording("Northern Rooms"), in: app.requests, readySongs: app.readySongs)
+                == .library(landed, ready.id), "precondition: the row is the library song")
+        #expect(await eventually { log.songRows["landed"] != nil }, "the library song's row never showed")
+        #expect(log.songRows["landed"]?.detail == "Song \u{00B7} Corin Hale")
+        #expect(log.songRows["landed"]?.label == "Northern Rooms, song by Corin Hale")
+    }
+
+    /// A song or album on its way: VoiceOver hears "song by" / "EP by", never the middle dot. Elsewhere (Activity) a
+    /// request row keeps "<title>, <artist>".
+    @Test func searchRows_requestRowsSayByNotTheDot() async throws {
+        let song = Self.request(Self.recording("Northern Rooms"), state: .searching)
+        #expect(RequestRow.accessibilityLabel(song, label: nil, screenText: .search) == "Northern Rooms, song by Corin Hale")
+        #expect(RequestRow.accessibilityLabel(song, label: nil, screenText: nil) == "Northern Rooms, Corin Hale")
+        #expect(RequestRow.accessibilityLabel(song, label: "Mine", screenText: .search) == "Mine")
+        #expect(RequestedItemRow.accessibilityLabel(title: "Low Tide", detail: "EP \u{00B7} Corin Hale", label: nil)
+                == "Low Tide, EP \u{00B7} Corin Hale")
+        #expect(RequestedItemRow.accessibilityLabel(title: "Low Tide", detail: "EP \u{00B7} Corin Hale",
+                                                    label: "Low Tide, EP by Corin Hale") == "Low Tide, EP by Corin Hale")
+
+        // In Search, the album on its way gets the "EP by" label.
+        var s = SearchSections()
+        s.notYet.albums = [NotYetAlbum(title: "Low Tide", artist: Self.corin, mbid: Self.releaseGroup, kind: "EP")]
+        let album = Self.request(Self.recording("Low Tide Opener"), state: .searching, releaseGroup: Self.releaseGroup)
+        let (log, window, _) = try await show(s, prepare: { $0.requests = [album] },
+                                              until: ["search-requested-album-Low Tide"])
+        defer { window.isHidden = true }
+        #expect(log.rows["search-requested-album-Low Tide"]?.label == "Low Tide, EP by Corin Hale")
+        #expect(log.rows["search-requested-album-Low Tide"]?.detail == "EP \u{00B7} Corin Hale")
     }
 }

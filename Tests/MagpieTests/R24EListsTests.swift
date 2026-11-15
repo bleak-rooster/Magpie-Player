@@ -412,11 +412,10 @@ private let search3 = ok(#"""
 
     // MARK: - Whole-row history (D226)
 
-    /// Search's history list (the only one in the app; the car's recents are `CPListItem`s): its recent searches (its
-    /// offline "Recently played on this phone" went in round 28, D339). Each row is tappable across its whole width: the recent
-    /// search's label carries `.contentShape(Rectangle())`; a recently played song is Search's `songRow`, whose
-    /// `SongRow` body is full width and shaped itself (round 24, owner item 9). Any new `ForEach(recent…)` list is
-    /// held to the same.
+    /// Search's history list (the only one in the app; the car's recents are `CPListItem`s): its recent searches (round
+    /// 28, D339: its offline "Recently played on this phone" went). Each row is tappable across its whole width: the
+    /// recent search's label carries `.contentShape(Rectangle())`. Any new `ForEach(recent…)` list is held to the same;
+    /// one built from Search's `songRow` passes because `SongRow`'s body is full width and shaped itself.
     @Test func everyHistoryList_hasContentShape() throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .deletingLastPathComponent()

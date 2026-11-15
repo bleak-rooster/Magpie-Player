@@ -135,6 +135,10 @@ struct RequestRow: View {
     var context: RequestCopy.WaitContext = .unknown
     /// R16: the screen's outside artwork; nil shows the library cover once listed, else the bare record.
     var outsideArt: OutsideArtLoader? = nil
+    /// Round 28 S fix round 1 (design M3, D338): VoiceOver's label in place of "<title>, <artist>"; inside Search the
+    /// screen's song wording (`songRowText`) gives "<title>, song by <artist>".
+    var label: String? = nil
+    @Environment(\.songRowText) private var screenText
     private let themed = Themed()
 
     var body: some View {
@@ -156,8 +160,18 @@ struct RequestRow: View {
         }
         .padding(.vertical, Tokens.Spacing.xs)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(request.recording.title), \(request.recording.artist)")
+        .accessibilityLabel(Self.accessibilityLabel(request, label: label, screenText: screenText))
         .accessibilityValue(RequestCopy.status(request, context: context))
+    }
+
+    /// The given label, else the screen's song wording, else "<title>, <artist>" (Activity and elsewhere).
+    static func accessibilityLabel(_ request: MagpieRequest, label: String?, screenText: SongRowText?) -> String {
+        if let label { return label }
+        let r = request.recording
+        if let screenText {
+            return screenText.label(Song(id: "", title: r.title, artist: r.artist, album: "", duration: 0))
+        }
+        return "\(r.title), \(r.artist)"
     }
 }
 

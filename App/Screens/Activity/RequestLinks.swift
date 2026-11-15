@@ -129,6 +129,9 @@ struct RequestedItemRow: View {
     let title: String
     let detail: String
     let request: MagpieRequest
+    /// Round 28 S fix round 1 (design M3, D338): VoiceOver's label in place of "<title>, <detail>" (Search gives
+    /// "<name>, EP by <artist>", so the middle dot isn't read out).
+    var label: String? = nil
     private let themed = Themed()
 
     var body: some View {
@@ -144,8 +147,12 @@ struct RequestedItemRow: View {
                 }
             }
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel("\(title), \(detail)")
+            .accessibilityLabel(Self.accessibilityLabel(title: title, detail: detail, label: label))
             .accessibilityValue(RequestCopy.status(request, context: app.waitContext))
         }
+    }
+
+    static func accessibilityLabel(title: String, detail: String, label: String?) -> String {
+        label ?? "\(title), \(detail)"
     }
 }
