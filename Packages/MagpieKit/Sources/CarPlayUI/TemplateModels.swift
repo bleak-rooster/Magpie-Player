@@ -384,14 +384,17 @@ public enum CarPlayRows {
 
     // MARK: Leaves (depth 3): rows play, never push
 
-    public static func album(_ album: Album, playingId: String?) -> [CPSectionModel] {
+    /// - Parameter onPhone: the album as it is on the phone (offline): `songCount` is how many songs it has, `songs` the
+    ///   ones on the phone, and Play says "<n> of <m> on this iPhone" when they differ (round 28 O4, D347).
+    public static func album(_ album: Album, playingId: String?, onPhone: Bool = false) -> [CPSectionModel] {
         let songs = album.songs ?? []
         guard !songs.isEmpty else { return state(.empty) }
         let tracks = songs.enumerated().map { i, song in
             CPRowModel(id: "track.\(i).\(song.id)", title: display(song.title, untitled), detail: duration(song.duration),
                        playing: song.id == playingId, action: .play(.songs(songs, startAt: i)))
         }
-        return [playShuffle(id: "album", detail: songCount(songs.count), play: .songs(songs, startAt: 0),
+        let detail = (onPhone ? partialDetail(onPhone: songs.count, total: album.songCount) : nil) ?? songCount(songs.count)
+        return [playShuffle(id: "album", detail: detail, play: .songs(songs, startAt: 0),
                             shuffle: .album(id: album.id, shuffled: true)),
                 CPSectionModel(header: album.artist, rows: tracks)]
     }
@@ -405,9 +408,11 @@ public enum CarPlayRows {
         ])
     }
 
-    public static func playlist(_ playlist: Playlist, songs: [Song], playingId: String?) -> [CPSectionModel] {
+    /// - Parameter onPhone: as for `album`: the playlist's `songCount` against the songs on the phone (D347).
+    public static func playlist(_ playlist: Playlist, songs: [Song], playingId: String?, onPhone: Bool = false) -> [CPSectionModel] {
         guard !songs.isEmpty else { return state(.empty) }
-        return [playShuffle(id: "playlist", detail: songCount(songs.count), play: .songs(songs, startAt: 0),
+        let detail = (onPhone ? partialDetail(onPhone: songs.count, total: playlist.songCount) : nil) ?? songCount(songs.count)
+        return [playShuffle(id: "playlist", detail: detail, play: .songs(songs, startAt: 0),
                             shuffle: .shuffle(songs)),
                 CPSectionModel(header: nil, rows: songs.enumerated().map { i, song in
             CPRowModel(id: "track.\(i).\(song.id)", title: display(song.title, untitled), detail: song.artist,
@@ -428,6 +433,42 @@ public enum CarPlayRows {
         return [playShuffle(id: "artist", detail: display(artist.name, unknownArtist), play: .artistInOrder(id: artist.id),
                             shuffle: .artistShuffle(id: artist.id)),
                 CPSectionModel(header: "Albums", rows: rows)]
+    }
+
+    // MARK: Round 28 O4: offline (owner, 2026-11-15; D347, D348)
+
+    /// D347: a page with only some of its songs on the phone says so: "<n> of <m> on this iPhone"; nil when all of
+    /// them are (or none: such a page isn't listed).
+    public static func partialDetail(onPhone: Int, total: Int) -> String? {
+        guard onPhone > 0, total > onPhone else { return nil }
+        return "\(onPhone) of \(total) on this iPhone"
+    }
+
+    /// D347: `sections` (an album or playlist page, its Play row first) with Play's detail saying how much of it is on
+    /// the phone, for pages built elsewhere (Downloads'); as they are when it is all there.
+    public static func onPhone(_ sections: [CPSectionModel], songs: Int, total: Int) -> [CPSectionModel] {
+        guard let detail = partialDetail(onPhone: songs, total: total) else { return sections }
+        return sections.map { section in
+            var section = section
+            section.rows = section.rows.map { row in
+                guard row.id.hasSuffix(".play"), row.action != .none else { return row }
+                var row = row
+                row.detail = detail
+                return row
+            }
+            return section
+        }
+    }
+
+    /// D348: what an empty list reads offline (copy describes, never instructs: D12).
+    public static let nothingDownloaded = "Nothing downloaded yet"
+
+    /// D348: offline, a list with nothing in it says nothing is downloaded instead of "Nothing here yet". Still a state
+    /// row (a placeholder), so the list's real rows replace it in place; any other rows or state are left as they are.
+    public static func offlineEmpty(_ sections: [CPSectionModel]) -> [CPSectionModel] {
+        guard sections == state(.empty) else { return sections }
+        return [CPSectionModel(header: nil, rows: [CPRowModel(id: "state.nothingDownloaded", title: nothingDownloaded,
+                                                              action: .none)])]
     }
 
     // MARK: Helpers
