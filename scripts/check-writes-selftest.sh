@@ -579,6 +579,24 @@ r_inplace=(
   'Packages/MagpieKit/Sources/MagpieCore/OfflineGate.swift|sed|s/        case .manual: return false/        case .manual: return true/'
   'Packages/MagpieKit/Sources/MagpieCore/OfflineGate.swift|sed|s/        guard gate.admit(request, role: role) else { throw URLError(.notConnectedToInternet) }/        _ = gate/'
   'Packages/MagpieKit/Sources/MagpieCore/OfflineGate.swift|append|extension GatedTransport { func plantedBypass(_ r: URLRequest) async throws -> (Data, HTTPURLResponse) { try await inner.send(r) } }'
+  # Round 28 O1 fix round 1 (security M4), E1–E14: an app transport type, another session, the shared session, a third
+  # fetcher, artwork unwrapped or its session taken, a second gate, `inner` made public, the mode set elsewhere, an
+  # unbalanced reconnect hold, automatic's login rule or outside refusal loosened, a default transport put back, the
+  # test peek used by product code.
+  'App/AppModel+Slskd.swift|append|struct PlantedTransport: HTTPTransport { func send(_ r: URLRequest) async throws -> (Data, HTTPURLResponse) { throw URLError(.badURL) } }'
+  'App/AppModel+Slskd.swift|append|let plantedSession = URLSession(configuration: .ephemeral)'
+  'App/AppModel+Slskd.swift|append|let plantedShared = URLSession.shared'
+  'App/AppModel+Slskd.swift|append|let plantedFetcher = URLSessionAudioFetcher()'
+  'App/Screens/Shared/Artwork.swift|sed|s/        let transport = GatedTransport(raw, gate: gate, role: .main)/        let transport = raw/'
+  'App/AppModel+Slskd.swift|append|let plantedArt = ArtworkCache.transport'
+  'App/AppModel+Slskd.swift|append|let plantedGate = OfflineGate()'
+  'Packages/MagpieKit/Sources/MagpieCore/OfflineGate.swift|sed|s/^    private let inner: HTTPTransport$/    public let inner: HTTPTransport/'
+  'App/AppModel+Slskd.swift|append|extension AppModel { func plantedOpen() { offlineGate.setMode(.open) } }'
+  'App/AppModel+Slskd.swift|append|extension AppModel { func plantedHold() { offlineGate.beginReconnect() } }'
+  'Packages/MagpieKit/Sources/MagpieCore/OfflineGate.swift|sed|s/            return role == .main \&\& reconnecting \&\& url == loginURL \&\& isLogin(request, url: url)/            return role == .main \&\& isLogin(request, url: url)/'
+  'Packages/MagpieKit/Sources/MagpieCore/OfflineGate.swift|sed|s/            guard role != .outside, let url = request.url else { return false }/            guard let url = request.url else { return false }/'
+  'Packages/MagpieKit/Sources/AurralKit/PreviewResolver.swift|sed|s/    public init(base: URL, transport: HTTPTransport) {/    public init(base: URL, transport: HTTPTransport = PreviewResolver.defaultTransport()) {/'
+  'App/AppModel+Slskd.swift|append|func plantedPeek(_ t: GatedTransport) -> HTTPTransport { t.innerForTesting }'
 )
 for entry in "${r_inplace[@]}"; do
   rel="${entry%%|*}" rest="${entry#*|}"
