@@ -105,6 +105,10 @@ public final class CarPlayController: NSObject {
     }
     /// R24F fix round 1 (I1): a page is being put in place of the list on screen (+Paging.swift).
     var pageInFlight = false
+    /// Round 28 O4 fix round 1 (design H2): how long offline-by-itself lasts before the car's server lists go (15 s;
+    /// tests their own), and the wait under way (+Customisation.swift).
+    var offlinePopWait: @Sendable () async -> Void = { try? await Task.sleep(for: .seconds(15)) }
+    var offlinePopTask: Task<Void, Never>?
 
     /// Artwork requests in flight per list.
     private static let artworkConcurrency = 4
@@ -138,6 +142,7 @@ public final class CarPlayController: NSObject {
     /// The car disconnected: stop all work.
     public func disconnect() {
         CPNowPlayingTemplate.shared.remove(self)
+        offlinePopTask?.cancel()   // Round 28 O4 fix round 1
         linksTask?.cancel()
         favouriteTask?.cancel()
         watches.forEach { $0.cancel() }
@@ -187,7 +192,7 @@ public final class CarPlayController: NSObject {
     }
 
     /// The third tab shows its screen at the root (depth 1); its lists are read again when the car's limits change.
-    private func loadThirdTab() {
+    func loadThirdTab() {
         guard let thirdRoot, let thirdTab else { return }
         thirdRoot.destination = thirdTab.destination
         load(thirdRoot, fetcher(for: thirdTab.destination, into: thirdRoot))
@@ -275,16 +280,27 @@ public final class CarPlayController: NSObject {
         let library = library
         switch destination {
         case .album(let id, _):
-            return { let a = try await library.album(id: id); return { CarPlayRows.album(a, playingId: $0) } }
+            return {
+                let a = try await library.album(id: id)
+                let onPhone = library.isOffline   // Round 28 O4 (D347): offline, "<n> of <m> on this iPhone"
+                return { CarPlayRows.album(a, playingId: $0, onPhone: onPhone) }
+            }
         case .playlist(let id, _):
             return {
                 let (p, songs) = try await library.playlist(id: id)
-                return { CarPlayRows.playlist(p, songs: songs, playingId: $0) }
+                let onPhone = library.isOffline   // Round 28 O4 (D347)
+                return { CarPlayRows.playlist(p, songs: songs, playingId: $0, onPhone: onPhone) }
             }
         case .artist(let id, _):
             let albumsOpen = CPNavigator.allowsPush(atDepth: browseDepth)   // I2: the album page fits below this one
             return {
                 let (a, albums) = try await library.artist(id: id)
+                if library.isOffline {   // Round 28 O4 fix round 1 (design H5): the phone's page, with their songs
+                    let songs = await library.artistSongsOnPhone(id: id)
+                    return { _ in
+                        CarPlayRows.artistOnPhone(a, albums: albums, songs: songs, albumsOpen: albumsOpen, downloadedPages: false)
+                    }
+                }
                 return { _ in CarPlayRows.artist(a, albums: albums, albumsOpen: albumsOpen) }
             }
         case .searchResults(let query):
@@ -446,6 +462,8 @@ public final class CarPlayController: NSObject {
     }
 
     func resetBindings() {
+        offlinePopTask?.cancel()   // Round 28 O4 fix round 2 (m1): a pop waiting for these tabs goes with them
+        offlinePopTask = nil
         // Z3 review I1: the layout watch goes with the tabs, so it can never bring them back over a state screen.
         if let old = layoutWatch {
             old.cancel()
@@ -488,7 +506,8 @@ public final class CarPlayController: NSObject {
         binding.generation += 1
         let generation = binding.generation
         let playing = player.queue.current?.song.id
-        let sections = await Task.detached(priority: .userInitiated) { content(playing) }.value
+        let built = await Task.detached(priority: .userInitiated) { content(playing) }.value
+        let sections = offlineCopy(built, for: binding)   // Round 28 O4 (D348): "Nothing downloaded yet"
         guard bindings[ObjectIdentifier(binding.template)] === binding, binding.generation == generation else { return }
         apply(sections, to: binding, placeholder: CarPlayRows.isPlaceholder(sections))
     }

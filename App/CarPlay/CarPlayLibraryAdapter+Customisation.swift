@@ -9,15 +9,17 @@ import Playback
 /// the phone's own. Offline, every read here is the phone's and nothing is asked of the server.
 extension CarPlayLibraryAdapter {
     /// The car's Home sections (round 13: Settings › CarPlay › Home, the phone's Home until changed there; Made for you
-    /// with a token, Discover with Aurral, as on the phone). Offline: Downloaded.
+    /// with a token, Discover with Aurral, as on the phone). Offline (round 28 O4, D347): Downloaded, Discover's flows on
+    /// the phone and Playlists, in the car's order.
     var homeSections: [HomeSection] {
         model.preferences.carPlay.visibleHomeSections(phone: model.preferences.layout, offline: model.isOffline,
                                                       hasListenBrainzToken: model.hasListenBrainzToken,
                                                       discoverSetUp: model.aurralSetUp)
     }
 
-    /// The phone's Library rows without Requests. Offline: Downloads, and Genres when shown. Round 27 H (D300): with
-    /// Flows with your playlists on, no Discover row (its playlists are in Playlists).
+    /// The phone's Library rows without Requests; offline, the phone's offline rows (round 28 O4, D347: each opens from
+    /// what's on the phone). Round 27 H (D300): with Flows with your playlists on, no Discover row (its playlists are in
+    /// Playlists).
     var libraryRows: [LibraryRow] {
         let rows = model.libraryRows(carPlay: true)
         return model.carFlowsWithPlaylists ? rows.filter { $0 != .discover } : rows
@@ -49,6 +51,8 @@ extension CarPlayLibraryAdapter {
     func homeShelves(_ sections: [HomeSection], size: Int) async throws -> [CPHomeShelf] {
         let model = model
         // Read once per token: an empty answer isn't asked for again on every reload (a new token asks again).
+        // Round 28 O4 (D347): offline the phone's own shelves, built here from what's on it.
+        if model.isOffline { return await offlineHomeShelves(sections, size: size) }
         let generation = model.listenBrainzTokenGeneration
         let readsMadeForYou = sections.contains(.madeForYou) && model.hasListenBrainzToken && !model.isOffline
             && model.madeForYouShelf.isEmpty && madeForYouReadGeneration != generation
@@ -181,18 +185,96 @@ extension CarPlayLibraryAdapter {
 
     func downloadedPlaylists() async -> [Playlist] { await model.offlineCatalog.playlists() }
 
-    func downloadedAlbum(id: String) async -> Album? { await model.offlineCatalog.album(id: id) }
-
-    func downloadedArtist(id: String) async -> (Artist, [Album])? {
+    /// Round 28 O4 (D347): the album page on the phone (O2): its songs on the phone, in the server's order where it
+    /// was read online, with `songCount` the album's own when known.
+    func downloadedAlbum(id: String) async -> Album? {
         let catalog = await model.offlineCatalog
-        guard let artist = catalog.artists().first(where: { $0.id == id }) else { return nil }
-        return (artist, catalog.albums(byArtist: id))
+        guard let page = catalog.albumPage(id: id) else { return catalog.album(id: id) }
+        var album = page.album
+        album.songCount = page.total ?? page.onPhone
+        return album
     }
 
+    /// Round 28 O4 (D347): an album artist or a track artist (O2's page): the albums they made with a song on the
+    /// phone. Fix round 1 (design H5): their songs on other artists' albums are `artistSongsOnPhone`, never those albums.
+    func downloadedArtist(id: String) async -> (Artist, [Album])? {
+        guard let page = await model.offlineCatalog.artistPage(id: id) else { return nil }
+        return (page.artist, page.albums)
+    }
+
+    /// Fix round 1 (design H5): the artist's songs on the phone on other artists' albums ("Songs on this iPhone").
+    func artistSongsOnPhone(id: String) async -> [Song] {
+        await model.offlineCatalog.artistPage(id: id)?.songs ?? []
+    }
+
+    /// Fix round 1 (design H2): Offline mode is on (the car pops at once; offline by itself it waits 15 s).
+    var isOfflineByChoice: Bool { model.isOffline && model.isForcedOffline }
+
+    /// A playlist downloaded as a whole (Downloads), with only its songs on the phone; `songCount` is the playlist's.
     func downloadedPlaylist(id: String) async -> (Playlist, [Song])? {
         let catalog = await model.offlineCatalog
-        guard let playlist = catalog.playlists().first(where: { $0.id == id }) else { return nil }
-        return (playlist, catalog.songs(inPlaylist: id))
+        guard catalog.playlists().contains(where: { $0.id == id }), let page = catalog.playlistPage(id: id) else { return nil }
+        return Self.withTotal(page)
+    }
+
+    // MARK: - Round 28 O4: offline lists (owner, 2026-11-15; D347)
+
+    /// Offline Playlists: the playlists holding a download, downloaded or read online since (Q3), as Playlists lists
+    /// them (D185, D188: Discover's stay out); with Flows with your playlists (D300), the flows on the phone joined.
+    func offlinePlaylists(combined: Bool) async -> [Playlist] {
+        let listed = await model.offlineCatalog.playlists(includingRecorded: true).filter { !model.leavesOutOfPlaylists($0) }
+        guard combined else { return listed }
+        return model.carPlaylistsWithFlows(listed, flows: await model.offlineFlows())
+    }
+
+    /// Offline, a playlist's page from the phone (downloaded, or read online holding a download), else a flow's.
+    func offlinePlaylistPage(id: String) async -> (Playlist, [Song])? {
+        if let page = await model.offlineCatalog.playlistPage(id: id) { return Self.withTotal(page) }
+        return await model.offlineFlowPage(id: id).map(Self.withTotal)
+    }
+
+    /// The page's playlist with `songCount` how many songs it has, and its songs on the phone.
+    static func withTotal(_ page: OfflinePlaylistPage) -> (Playlist, [Song]) {
+        var playlist = page.playlist
+        playlist.songCount = page.total ?? page.onPhone
+        return (playlist, page.songs)
+    }
+
+    /// Car Home offline (`CarPlayPreferences.visibleHomeSections`): Downloaded (the phone's shelf), Discover (the flows
+    /// on the phone, by the car's last-played order, D297) and Playlists (those holding a download), each cut to
+    /// `size`; empty shelves left out. Nothing is asked of the server.
+    private func offlineHomeShelves(_ sections: [HomeSection], size: Int) async -> [CPHomeShelf] {
+        let count = max(0, size)
+        let downloaded = sections.contains(.downloaded) ? ((try? await model.homeShelves(for: [.downloaded])) ?? []) : []
+        var flows: [Playlist] = []
+        if sections.contains(.discover) {
+            flows = HomeFlowsOrder.lastPlayed.sorted(await model.offlineFlows(), lastPlayed: model.flowPlays)
+        }
+        let playlists = sections.contains(.playlists) ? await offlinePlaylists(combined: false) : []
+        return sections.compactMap { section -> CPHomeShelf? in
+            let items: [CPHomeShelf.Item]
+            var captions: [String: String] = [:]
+            switch section {
+            case .downloaded:
+                items = (downloaded.first { $0.section == .downloaded }?.items ?? []).prefix(count).compactMap { item in
+                    switch item {
+                    case .album(let album), .downloadedAlbum(let album): .album(album)
+                    case .playlist(let playlist): .playlist(playlist)
+                    case .genreGroup, .outside: nil
+                    }
+                }
+            case .discover:
+                let shown = Array(flows.prefix(count))
+                items = shown.map(CPHomeShelf.Item.playlist)
+                captions = Dictionary(shown.compactMap { p in model.homeFlowCaption(playlistId: p.id).map { (p.id, $0) } },
+                                      uniquingKeysWith: { first, _ in first })
+            case .playlists:
+                items = playlists.prefix(count).map(CPHomeShelf.Item.playlist)
+            default:
+                items = []
+            }
+            return items.isEmpty ? nil : CPHomeShelf(section: section, items: items, captions: captions)
+        }
     }
 
     // MARK: - Favourites and Made for you
