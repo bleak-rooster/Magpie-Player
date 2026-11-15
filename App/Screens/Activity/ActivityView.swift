@@ -140,6 +140,8 @@ struct RequestRow: View {
     var label: String? = nil
     @Environment(\.songRowText) private var screenText
     private let themed = Themed()
+    /// Round 28 S fix round 2 (m1): the artist line wraps at accessibility sizes.
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
         HStack(spacing: Tokens.Spacing.m) {
@@ -150,7 +152,8 @@ struct RequestRow: View {
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
                 Text(request.recording.title).font(.body).lineLimit(2)
-                Text(request.recording.artist).font(.footnote).foregroundStyle(themed.palette.ink2Color).lineLimit(1)
+                Text(request.recording.artist).font(.footnote).foregroundStyle(themed.palette.ink2Color)
+                    .lineLimit(typeSize.isAccessibilitySize ? nil : 1)
                 Label(RequestCopy.status(request, context: context), systemImage: RequestCopy.symbol(request))
                     .font(.caption).foregroundStyle(themed.palette.accentInkColor).lineLimit(2)
                 if request.tier == .patient, RequestCopy.group(request) == .inProgress {

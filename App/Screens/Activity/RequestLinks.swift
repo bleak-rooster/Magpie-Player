@@ -133,6 +133,8 @@ struct RequestedItemRow: View {
     /// "<name>, EP by <artist>", so the middle dot isn't read out).
     var label: String? = nil
     private let themed = Themed()
+    /// Round 28 S fix round 2 (m1): the detail line wraps at accessibility sizes.
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
         NavigationLink(value: Route.request(request.id)) {
@@ -141,7 +143,8 @@ struct RequestedItemRow: View {
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(title).font(.body).lineLimit(2)
-                    Text(detail).font(.footnote).foregroundStyle(themed.palette.ink2Color).lineLimit(1)
+                    Text(detail).font(.footnote).foregroundStyle(themed.palette.ink2Color)
+                        .lineLimit(typeSize.isAccessibilitySize ? nil : 1)
                     Label(RequestCopy.status(request, context: app.waitContext), systemImage: RequestCopy.symbol(request))
                         .font(.caption).foregroundStyle(themed.palette.accentInkColor).lineLimit(2)
                 }

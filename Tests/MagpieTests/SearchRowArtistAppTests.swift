@@ -279,11 +279,18 @@ import UIKit
                            NotYetAlbum(title: "Tide B", artist: Self.longName, kind: "EP")]
         s.notYet.owned = [OwnedOutsideSong(recording: Self.recording("Tidewater"), songId: "o-short"),
                           OwnedOutsideSong(recording: Self.recording("Tidewater", artist: Self.longName), songId: "o-long")]
+        // Fix round 2 (m1): outside albums on their way (`RequestedItemRow`), short and long artist.
+        let shortGroup = MBID("00000000-0000-4000-8000-000000000031")!, longGroup = MBID("00000000-0000-4000-8000-000000000032")!
+        s.notYet.albums += [NotYetAlbum(title: "Req A", artist: Self.corin, mbid: shortGroup, kind: "EP"),
+                            NotYetAlbum(title: "Req B", artist: Self.longName, mbid: longGroup, kind: "EP")]
+        let requests = [Self.request(Self.recording("Req A Opener"), state: .searching, releaseGroup: shortGroup),
+                        Self.request(Self.recording("Req B Opener"), state: .searching, releaseGroup: longGroup)]
         let pairs = [("search-song-0", "search-song-1"), ("search-album-al-short", "search-album-al-long"),
                      ("search-notyet-album-Tide A", "search-notyet-album-Tide B"),
-                     ("search-owned-o-short", "search-owned-o-long")]
+                     ("search-owned-o-short", "search-owned-o-long"),
+                     ("search-requested-album-Req A", "search-requested-album-Req B")]
         let ids = Set(pairs.flatMap { [$0.0, $0.1] })
-        let (log, window, _) = try await show(s, typeSize: .accessibility3, until: ids)
+        let (log, window, _) = try await show(s, typeSize: .accessibility3, prepare: { $0.requests = requests }, until: ids)
         defer { window.isHidden = true }
         func taller(_ pair: (String, String)) -> Bool {
             guard let short = log.rows[pair.0]?.height, let long = log.rows[pair.1]?.height, short > 0 else { return false }
