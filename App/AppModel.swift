@@ -460,6 +460,10 @@ final class AppModel {
         hintWatch?.cancel()
         preDownloadWatch?.cancel()
         lyricsWatch?.cancel()   // Round 27 L (D310)
+        // Round 28 O1
+        reachability.inputsWatch?.cancel()
+        reachability.timer?.cancel()
+        // Round 28 O1 end
     }
 
     /// The write switch and setup of the connected Lidarr (both are kept per instance).

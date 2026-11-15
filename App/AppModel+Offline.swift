@@ -440,9 +440,12 @@ extension AppModel {
         let offline = isOffline, forced = isForcedOffline
         offlineGate.setMode(forced ? .manual : offline ? .automatic : .open)   // Round 28 O1 (D328)
         let leftForced = r.appliedForced && !forced
+        let enteredForced = forced && !r.appliedForced
         r.appliedForced = forced
         guard offline != r.appliedOffline else {
             if leftForced { restoreAfterOffline(reconnecting: true) }   // On to Off with the server reachable
+            // Round 28 O1 (D330): from automatic offline (where a stream plays on) to On, which sends nothing.
+            if enteredForced { player.stopUnplayableCurrent(message: Self.offlineCopy) }
             return
         }
         r.appliedOffline = offline

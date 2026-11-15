@@ -283,6 +283,19 @@ private let home = URL(string: "http://192.168.1.2:4533")!
         #expect(model.player.queue.current?.song.id == "s2" && model.player.isPlaying)
     }
 
+    /// Offline mode turned on while automatically offline, with a stream still playing: On sends nothing, so the
+    /// stream gives way to the next song on the phone at once (plan §7.1, "manual on: stop a streaming song").
+    @Test func transitions_manualFromAutomaticStopsTheStream() async throws {
+        let (model, clock) = try await signedIn()
+        model.download([song("s2")], reason: .song); await model.downloads!.settled()
+        model.play([song("s1"), song("s2")], startAt: 0)   // s1 streams
+        await goAutomaticallyOffline(model, clock)
+        #expect(model.player.queue.current?.song.id == "s1" && model.player.isPlaying)
+        model.setOfflineMode(on: true)
+        #expect(model.player.queue.current?.song.id == "s2" && model.player.isPlaying)
+        #expect(engine.setItemsCalls.last!.items.allSatisfy { $0.1.isFileURL })
+    }
+
     /// Back online: queued plays are sent, waiting downloads land, and a song that failed plays again from where it was;
     /// the local file playing is never reloaded (D282).
     @Test func transitions_backOnlineDrainsResumesAndRetries() async throws {
