@@ -88,12 +88,4 @@ extension AppModel {
                                   uniquingKeysWith: { first, _ in first })
         return CarPlayRows.playlistsWithFlows(playlists, flows: flows, captions: captions, signedInUser: session?.username)
     }
-
-    /// The car's Playlists offline (D185, D300): the downloaded playlists Playlists lists (`leavesOutOfPlaylists`), and
-    /// with `combined`, the downloaded Discover playlists Discover shows too.
-    func carOfflinePlaylists(_ downloaded: [Playlist], combined: Bool) -> [Playlist] {
-        let listed = downloaded.filter { !leavesOutOfPlaylists($0) }
-        guard combined else { return listed }
-        return carPlaylistsWithFlows(listed, flows: downloaded.filter { isDiscoverPlaylist($0) && isShownInDiscover($0) })
-    }
 }

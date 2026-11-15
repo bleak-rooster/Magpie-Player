@@ -196,14 +196,19 @@ extension CarPlayLibraryAdapter {
     }
 
     /// Round 28 O4 (D347): an album artist or a track artist (O2's page): the albums they made with a song on the
-    /// phone, then the albums holding their songs on someone else's album (so those songs still play from the car).
+    /// phone. Fix round 1 (design H5): their songs on other artists' albums are `artistSongsOnPhone`, never those albums.
     func downloadedArtist(id: String) async -> (Artist, [Album])? {
-        let catalog = await model.offlineCatalog
-        guard let page = catalog.artistPage(id: id) else { return nil }
-        let own = Set(page.albums.map(\.id))
-        let featured = catalog.albums(byArtist: id).filter { !own.contains($0.id) }
-        return (page.artist, page.albums + featured)
+        guard let page = await model.offlineCatalog.artistPage(id: id) else { return nil }
+        return (page.artist, page.albums)
     }
+
+    /// Fix round 1 (design H5): the artist's songs on the phone on other artists' albums ("Songs on this iPhone").
+    func artistSongsOnPhone(id: String) async -> [Song] {
+        await model.offlineCatalog.artistPage(id: id)?.songs ?? []
+    }
+
+    /// Fix round 1 (design H2): Offline mode is on (the car pops at once; offline by itself it waits 15 s).
+    var isOfflineByChoice: Bool { model.isOffline && model.isForcedOffline }
 
     /// A playlist downloaded as a whole (Downloads), with only its songs on the phone; `songCount` is the playlist's.
     func downloadedPlaylist(id: String) async -> (Playlist, [Song])? {

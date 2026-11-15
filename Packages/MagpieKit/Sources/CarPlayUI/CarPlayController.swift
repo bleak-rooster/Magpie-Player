@@ -105,6 +105,10 @@ public final class CarPlayController: NSObject {
     }
     /// R24F fix round 1 (I1): a page is being put in place of the list on screen (+Paging.swift).
     var pageInFlight = false
+    /// Round 28 O4 fix round 1 (design H2): how long offline-by-itself lasts before the car's server lists go (15 s;
+    /// tests their own), and the wait under way (+Customisation.swift).
+    var offlinePopWait: @Sendable () async -> Void = { try? await Task.sleep(for: .seconds(15)) }
+    var offlinePopTask: Task<Void, Never>?
 
     /// Artwork requests in flight per list.
     private static let artworkConcurrency = 4
@@ -138,6 +142,7 @@ public final class CarPlayController: NSObject {
     /// The car disconnected: stop all work.
     public func disconnect() {
         CPNowPlayingTemplate.shared.remove(self)
+        offlinePopTask?.cancel()   // Round 28 O4 fix round 1
         linksTask?.cancel()
         favouriteTask?.cancel()
         watches.forEach { $0.cancel() }
@@ -187,7 +192,7 @@ public final class CarPlayController: NSObject {
     }
 
     /// The third tab shows its screen at the root (depth 1); its lists are read again when the car's limits change.
-    private func loadThirdTab() {
+    func loadThirdTab() {
         guard let thirdRoot, let thirdTab else { return }
         thirdRoot.destination = thirdTab.destination
         load(thirdRoot, fetcher(for: thirdTab.destination, into: thirdRoot))
@@ -290,6 +295,12 @@ public final class CarPlayController: NSObject {
             let albumsOpen = CPNavigator.allowsPush(atDepth: browseDepth)   // I2: the album page fits below this one
             return {
                 let (a, albums) = try await library.artist(id: id)
+                if library.isOffline {   // Round 28 O4 fix round 1 (design H5): the phone's page, with their songs
+                    let songs = await library.artistSongsOnPhone(id: id)
+                    return { _ in
+                        CarPlayRows.artistOnPhone(a, albums: albums, songs: songs, albumsOpen: albumsOpen, downloadedPages: false)
+                    }
+                }
                 return { _ in CarPlayRows.artist(a, albums: albums, albumsOpen: albumsOpen) }
             }
         case .searchResults(let query):

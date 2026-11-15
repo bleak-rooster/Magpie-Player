@@ -19,8 +19,34 @@ import UIKit
     enum State: CaseIterable { case online, automatic, manual }
 
     /// What a car list may show offline: real rows, or a state that says why (D348, Task 23).
-    static let allowedStates: Set<String> = [CarPlayRows.nothingDownloaded, "You're offline", "Nothing here yet",
-                                              "Finds aren't set up on this iPhone"]
+    static let allowedStates: Set<String> = [CarPlayRows.nothingDownloaded, "No playlists on this iPhone",
+                                              "No genres on this iPhone", "You're offline", "Nothing here yet",
+                                              "Finds aren't set up on this iPhone", CarPlayRows.offlineHomeLine,
+                                              "Not on this iPhone"]
+
+    /// Review M2: what the list on top shows is real rows, or (rows that do nothing) one of `allowedStates`.
+    func checkShown(_ car: FakeCarInterface, _ ctx: String) async {
+        let loaded = await eventually { !FakeCarInterface.texts(car.topList).isEmpty }
+        #expect(loaded, "\(ctx): never loaded")
+        let items = car.topList?.sections.flatMap(\.items).compactMap { $0 as? CPListItem } ?? []
+        for item in items where !item.isEnabled {
+            #expect(Self.allowedStates.contains(item.text ?? "") || Self.allowedStates.contains(item.detailText ?? ""),
+                    "\(ctx): a dead row \(item.text ?? "")")
+        }
+        #expect(Self.deadStates.isDisjoint(with: FakeCarInterface.texts(car.topList)), "\(ctx)")
+    }
+
+    func enabledTexts(_ list: CPListTemplate?) -> [String] {
+        list?.sections.flatMap(\.items).compactMap { $0 as? CPListItem }.filter(\.isEnabled).compactMap(\.text) ?? []
+    }
+
+    /// The song playing is on the phone (a file), and playing.
+    func playsFromThePhone(_ model: AppModel, _ engine: FakeEngine, _ ctx: String) async {
+        #expect(await eventually { model.player.isPlaying }, "\(ctx): nothing plays")
+        let current = model.player.queue.current?.id
+        let url = engine.setItemsCalls.last?.items.first { $0.0 == current }?.1
+        #expect(url?.isFileURL == true, "\(ctx): not from the phone")
+    }
     static let deadStates: Set<String> = ["Your library didn't send this", "Your library is out of reach"]
 
     @Test func matrix_car_noDeadRows() async throws {
@@ -47,7 +73,6 @@ import UIKit
         model.useReachabilityClock(clock)
         let (car, controller) = await h.car(model)
         defer { controller.disconnect() }
-        let onlineTabs = car.tabs
         switch state {
         case .online:
             break
@@ -60,7 +85,7 @@ import UIKit
             await h.goOffline(model)
         }
         if state != .online {
-            #expect(await eventually { car.tabs !== onlineTabs && car.templates.count == 1 }, "\(ctx): back to the first lists")
+            #expect(await eventually { car.templates.count == 1 }, "\(ctx): back to the first lists")
         }
         h.routes.forget()
 
@@ -78,10 +103,8 @@ import UIKit
             guard let tabs = car.tabs else { break }
             car.pop(to: tabs, animated: false, completion: nil)
             car.tap(title, in: car.tab(1))
-            let loaded = await eventually { !FakeCarInterface.texts(car.topList).isEmpty }
+            await checkShown(car, "\(ctx): \(title)")
             let shown = FakeCarInterface.texts(car.topList)
-            #expect(loaded, "\(ctx): \(title) never loaded")
-            #expect(Self.deadStates.isDisjoint(with: shown), "\(ctx): \(title) shows \(shown)")
             if title == "Favourites" { #expect(shown == ["You're offline"], "\(ctx): Favourites says why") }
             if title == "Downloads" { #expect(shown.contains("A"), "\(ctx): Downloads lists the album on the phone") }
         }
@@ -91,7 +114,43 @@ import UIKit
         #expect(sections.contains(.discover) == aurral, "\(ctx): Discover's flows only with Aurral")
         let shelves = try await adapter.homeShelves(sections, size: 4)
         #expect(shelves.contains { $0.section == .downloaded }, "\(ctx): Downloaded")
-        if aurral { #expect(shelves.contains { $0.section == .discover }, "\(ctx): the flow on the phone") }
+        if aurral, sections.contains(.discover) {
+            #expect(shelves.contains { $0.section == .discover }, "\(ctx): the flow on the phone")
+        }
+
+        // Design M4 / review M2: Home's tiles, an artist's album, an artist's Play and Up Next's rows all work.
+        guard let tabs = car.tabs else { return }
+        car.pop(to: tabs, animated: false, completion: nil)
+        #expect(await eventually { FakeCarInterface.texts(car.tab(0)).first == CarPlayRows.offlineHomeLine }, "\(ctx): Home")
+        for tile in enabledTexts(car.tab(0)) {
+            car.pop(to: tabs, animated: false, completion: nil)
+            car.tap(tile, in: car.tab(0))
+            if car.templates.last === CPNowPlayingTemplate.shared {
+                await playsFromThePhone(model, h.engine, "\(ctx): Home \(tile)")
+            } else {
+                await checkShown(car, "\(ctx): Home \(tile)")
+            }
+        }
+        car.pop(to: tabs, animated: false, completion: nil)
+        controller.open(.artist(id: "ar-q", name: "Q"))
+        await checkShown(car, "\(ctx): artist")
+        let artistPage = car.topList
+        if let album = enabledTexts(artistPage).first(where: { $0 != "Play" && $0 != "Shuffle" }) {
+            car.tap(album, in: artistPage)
+            await checkShown(car, "\(ctx): artist › \(album)")
+            car.pop(to: artistPage!, animated: false, completion: nil)
+        }
+        car.tap("Play", in: artistPage)
+        await playsFromThePhone(model, h.engine, "\(ctx): artist Play")
+        car.pop(to: tabs, animated: false, completion: nil)
+        model.player.play([CarPlayOfflineAppTests.song("m-ref1"), CarPlayOfflineAppTests.song("m-lullaby")], startAt: 0)
+        controller.showNowPlaying()
+        controller.upNextTapped()
+        await checkShown(car, "\(ctx): Up Next")
+        #expect(enabledTexts(car.topList).contains("m-ref1"), "\(ctx): Up Next's song on the phone")
+        car.tap("m-ref1", in: car.topList)
+        await playsFromThePhone(model, h.engine, "\(ctx): Up Next row")
+        car.pop(to: tabs, animated: false, completion: nil)
 
         // What left the phone meanwhile: nothing in manual offline; only the reconnect check in automatic.
         let sent = h.routes.sent

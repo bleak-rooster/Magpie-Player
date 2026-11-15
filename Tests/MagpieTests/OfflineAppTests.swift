@@ -346,7 +346,8 @@ private let noNetwork = NetworkStatus(isConnected: false, isCellular: false, isC
         }
         #expect(model.libraryRows == [.genres, .downloads] && !model.showsRecentlyAddedGrid)
         // The car (T22) mirrors it: Home is the Downloaded shelf, opened from the phone, and the Library the offline rows.
-        // Round 28 O4 (D347): Playlists too (shown only when one holds a download; none does here).
+        // Round 28 O4 fix round 1 (design M5, D347): offline the car keeps the shelves the phone can fill that are
+        // switched on (every one is here): Downloaded and Playlists (none holds a download, so no Playlists shelf).
         let car = CarPlayLibraryAdapter(model: model)
         #expect(Set(car.homeSections) == [.downloaded, .playlists] && car.libraryRows == [.genres, .downloads])
         #expect(car.isOffline)

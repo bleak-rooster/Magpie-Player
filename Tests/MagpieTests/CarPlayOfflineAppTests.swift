@@ -1,5 +1,6 @@
 import CarPlay
 import Foundation
+import MediaPlayer
 import MagpieCore
 import MagpieTestSupport
 import NavidromeKit
@@ -9,6 +10,7 @@ import Testing
 import UIKit
 @testable import CarPlayUI
 @testable import Magpie
+@testable import Playback
 
 /// Round 28 O4: the routes the car tests talk to (the stub Navidrome and Aurral of `FailableD1Routing`), which can be
 /// made unreachable (a tunnel), and which keep every URL that reached them (after the offline gate).
@@ -102,11 +104,13 @@ final class CarOfflineRoutes: HTTPTransport, @unchecked Sendable {
         await model.downloads!.settled()
     }
 
-    /// The car on the fake screen, showing its tabs.
-    func car(_ model: AppModel) async -> (FakeCarInterface, CarPlayController) {
+    /// The car on the fake screen, showing its tabs. `popWait`: the automatic-offline pop's 15 s wait (fix round 1,
+    /// design H2); none by default.
+    func car(_ model: AppModel, popWait: (@Sendable () async -> Void)? = nil) async -> (FakeCarInterface, CarPlayController) {
         let car = FakeCarInterface()
         let controller = CarPlayController(interfaceController: car, library: CarPlayLibraryAdapter(model: model),
                                            player: model.player)
+        controller.offlinePopWait = popWait ?? {}
         controller.setAvailability(.ready(account: "one"))
         _ = await eventually { car.tabs != nil }
         return (car, controller)
@@ -125,6 +129,18 @@ final class CarOfflineRoutes: HTTPTransport, @unchecked Sendable {
 
     var nowPlaying: CPNowPlayingTemplate { CPNowPlayingTemplate.shared }
 
+    /// The Library tab shows the rows for the state the phone is in now.
+    func libraryTabFollows(_ car: FakeCarInterface, _ model: AppModel) async -> Bool {
+        await eventually {
+            FakeCarInterface.texts(car.tab(1))
+                == CarPlayRows.libraryRoot(CarPlayLibraryAdapter(model: model).libraryRows).flatMap(\.rows).map(\.title)
+        }
+    }
+
+    static func item(_ list: CPListTemplate?, _ text: String) -> CPListItem? {
+        list?.sections.flatMap(\.items).compactMap { $0 as? CPListItem }.first { $0.text == text }
+    }
+
     // MARK: - D347: the pop
 
     @Test func car_goingOfflinePopsToTheFirstList() async throws {
@@ -135,11 +151,10 @@ final class CarOfflineRoutes: HTTPTransport, @unchecked Sendable {
         controller.open(.artist(id: "ar-server", name: "Someone"))
         #expect(car.templates.count == 3)
         let tabs = car.tabs
-        await goOffline(model)
+        await goOffline(model)   // Offline mode on: at once (fix round 1, design H2)
         #expect(await eventually { car.templates.count == 1 }, "back to the tabs")
-        #expect(car.tabs != nil && car.tabs !== tabs, "the tabs are built again from what's on the phone")
-        #expect(FakeCarInterface.texts(car.tab(1)) == CarPlayRows.libraryRoot(CarPlayLibraryAdapter(model: model).libraryRows)
-            .flatMap(\.rows).map(\.title), "the Library tab's first list is the offline one")
+        #expect(car.tabs === tabs, "the same tabs, the chosen one still chosen")
+        #expect(await libraryTabFollows(car, model), "the Library tab's first list is the offline one")
         #expect(controller.bindings.count == [controller.home, controller.libraryRoot, controller.thirdRoot].compactMap { $0 }.count + 1,
                 "nothing left of the popped lists (the tab roots and Search only)")
     }
@@ -153,9 +168,101 @@ final class CarOfflineRoutes: HTTPTransport, @unchecked Sendable {
         model.play([Self.song("m-ref1"), Self.song("m-ref2")], startAt: 0)
         controller.showNowPlaying()
         #expect(car.templates.last === nowPlaying && car.templates.count == 3)
+        let sentBefore = engine.setItemsCalls.count
         await goOffline(model)
         #expect(await eventually { car.templates.count == 2 })
         #expect(car.templates.first is CPTabBarTemplate && car.templates.last === nowPlaying, "Now Playing stays on top")
+        // Review M7: nothing the engine is given after going offline is a stream.
+        #expect(engine.setItemsCalls.count > sentBefore)
+        #expect(engine.setItemsCalls.dropFirst(sentBefore).allSatisfy { $0.items.allSatisfy { $0.1.isFileURL } })
+    }
+
+    // MARK: - Fix round 1 (design H2): automatic offline waits 15 s; phone lists stay
+
+    /// A wait the test lets go of.
+    final class Gate: @unchecked Sendable {
+        private let lock = NSLock()
+        private var waiting: [CheckedContinuation<Void, Never>] = []
+        var count: Int { lock.withLock { waiting.count } }
+        func wait() async { await withCheckedContinuation { c in lock.withLock { waiting.append(c) } } }
+        func open() {
+            let all = lock.withLock { () -> [CheckedContinuation<Void, Never>] in defer { waiting = [] }; return waiting }
+            all.forEach { $0.resume() }
+        }
+    }
+
+    /// Automatic offline pops only once it has lasted 15 s; Offline mode on during the wait pops at once.
+    @Test func car_automaticOfflinePopsOnlyAfterItsWait() async throws {
+        let model = try await signedIn()
+        let clock = ManualReachabilityClock()
+        model.useReachabilityClock(clock)
+        let gate = Gate()
+        let (car, controller) = await car(model, popWait: { await gate.wait() })
+        defer { controller.disconnect() }
+        controller.open(.album(id: "al-server", title: "On the server"))
+        routes.down = true
+        model.reachabilityEvent(.pathChanged(connected: false))
+        #expect(await model.advanceReachability(clock, to: 3))
+        #expect(model.offlineState == .automatic)
+        #expect(await eventually { gate.count == 1 }, "the 15 s wait started")
+        #expect(car.templates.count == 2, "the list stays during the wait")
+        gate.open()
+        #expect(await eventually { car.templates.count == 1 }, "15 s offline: back to the first lists")
+
+        // Offline mode turned on during a wait pops at once.
+        controller.open(.album(id: "al-server", title: "On the server"))
+        routes.down = false
+        model.reachabilityEvent(.pathChanged(connected: true))
+        #expect(await model.advanceReachability(clock, to: 10))
+        #expect(await eventually(10) { !model.isOffline })
+        controller.open(.album(id: "al-other", title: "Another"))
+        routes.down = true
+        model.reachabilityEvent(.pathChanged(connected: false))
+        #expect(await model.advanceReachability(clock, to: 14))
+        #expect(await eventually { gate.count == 1 })
+        model.updatePreferences { $0.downloads.offlineMode = .on }
+        #expect(await eventually { car.templates.count == 1 }, "Offline mode on: at once")
+        gate.open()
+    }
+
+    /// Back online before the 15 s are up: nothing moves.
+    @Test func car_backOnlineWithinTheWaitDoesntPop() async throws {
+        let model = try await signedIn()
+        let clock = ManualReachabilityClock()
+        model.useReachabilityClock(clock)
+        let gate = Gate()
+        let (car, controller) = await car(model, popWait: { await gate.wait() })
+        defer { controller.disconnect() }
+        controller.open(.album(id: "al-server", title: "On the server"))
+        let stack = car.templates.map(ObjectIdentifier.init)
+        routes.down = true
+        model.reachabilityEvent(.pathChanged(connected: false))
+        #expect(await model.advanceReachability(clock, to: 3))
+        #expect(await eventually { gate.count == 1 })
+        routes.down = false
+        model.reachabilityEvent(.pathChanged(connected: true))
+        #expect(await model.advanceReachability(clock, to: 10))
+        #expect(await eventually(10) { !model.isOffline })
+        gate.open()
+        #expect(await libraryTabFollows(car, model))
+        for _ in 0..<20 { await Task.yield() }
+        #expect(car.templates.map(ObjectIdentifier.init) == stack, "the tunnel was short: the car stays put")
+    }
+
+    /// Lists from the phone (Downloads and what it opens) stay; only server lists above them go.
+    @Test func car_goingOfflineKeepsPhoneLists() async throws {
+        let model = try await signedIn()
+        await download(model, [Self.song("m-ref1")])
+        let (car, controller) = await car(model)
+        defer { controller.disconnect() }
+        controller.open(.downloads)
+        controller.open(.downloadedAlbum(id: "al-m-ref1", title: "A"))
+        let phone = car.templates.map(ObjectIdentifier.init)
+        controller.open(.album(id: "al-server", title: "On the server"))
+        #expect(car.templates.count == 4)
+        await goOffline(model)
+        #expect(await eventually { car.templates.count == 3 })
+        #expect(car.templates.map(ObjectIdentifier.init) == phone, "Downloads and its album stay, the server album goes")
     }
 
     @Test func car_comingOnlineKeepsItsPlace() async throws {
@@ -163,9 +270,8 @@ final class CarOfflineRoutes: HTTPTransport, @unchecked Sendable {
         await download(model, [Self.song("m-ref1")])
         let (car, controller) = await car(model)
         defer { controller.disconnect() }
-        let onlineTabs = car.tabs
         await goOffline(model)
-        #expect(await eventually { car.tabs !== onlineTabs && car.templates.count == 1 })
+        #expect(await libraryTabFollows(car, model))
         let offlineLibrary = FakeCarInterface.texts(car.tab(1))
         car.tap("Downloads", in: car.tab(1))
         #expect(await eventually { FakeCarInterface.texts(car.topList).contains("A") }, "the album on the phone")
@@ -209,11 +315,11 @@ final class CarOfflineRoutes: HTTPTransport, @unchecked Sendable {
         let (car, controller) = await car(model)
         defer { controller.disconnect() }
         controller.open(.album(id: "al-things", title: "Things"))
-        #expect(await eventually { car.topList?.sections.first?.items.first.map { ($0 as? CPListItem)?.detailText } == "1 of 3 on this iPhone" })
+        #expect(await eventually { Self.item(car.topList, "Play")?.detailText == "1 of 3 songs on this iPhone" })
         // Downloads opens it the same way.
         car.pop(to: car.tabs!, animated: false, completion: nil)
         controller.open(.downloadedAlbum(id: "al-things", title: "Things"))
-        #expect(await eventually { car.topList?.sections.first?.items.first.map { ($0 as? CPListItem)?.detailText } == "1 of 3 on this iPhone" })
+        #expect(await eventually { Self.item(car.topList, "Play")?.detailText == "1 of 3 songs on this iPhone" })
     }
 
     @Test func car_offlineArtistIncludesAlbumArtists() async throws {
@@ -228,8 +334,39 @@ final class CarOfflineRoutes: HTTPTransport, @unchecked Sendable {
         #expect(artists.contains("ar-va") && artists.contains("ar-q"), "album artists and track artists")
         let (va, vaAlbums) = try await adapter.artist(id: "ar-va")
         #expect(va.name == "Various Artists" && vaAlbums.map(\.id) == ["al-comp"])
+        // Fix round 1 (design H5): a track artist's song on someone else's album is one of their songs, not the album.
         let (_, qAlbums) = try await adapter.artist(id: "ar-q")
-        #expect(qAlbums.map(\.id) == ["al-comp"], "a featured song's album still plays from the car")
+        #expect(qAlbums.isEmpty)
+        #expect(await adapter.artistSongsOnPhone(id: "ar-q").map(\.id) == ["m-ref1"])
+    }
+
+    /// Fix round 1 (design H5): an artist's page offline is their albums, then "Songs on this iPhone" (their songs on
+    /// other artists' albums); Play and Shuffle play only those, never another artist's song.
+    @Test func car_offlineArtistPlayPlaysOnlyTheirSongs() async throws {
+        let model = try await signedIn()
+        let own = [Self.song("m-ref1", title: "One", artist: "Low", artistId: "ar-low", album: "Things", albumId: "al-low"),
+                   Self.song("m-ref2", title: "Two", artist: "Low", artistId: "ar-low", album: "Things", albumId: "al-low")]
+        let featured = Self.song("m-lullaby", title: "Lullaby", artist: "Low", artistId: "ar-low", album: "Sampler",
+                                 albumId: "al-comp")
+        let other = Self.song("a-unknown", title: "Not theirs", artist: "Q", artistId: "ar-q", album: "Sampler",
+                              albumId: "al-comp")
+        await download(model, own + [featured, other])
+        await model.recordAlbumPage(Album(id: "al-comp", name: "Sampler", artist: "Various Artists", artistId: "ar-va",
+                                          songCount: 2, duration: 1), songs: [featured, other], into: model.downloads)
+        await goOffline(model)
+        let (car, controller) = await car(model)
+        defer { controller.disconnect() }
+        controller.open(.artist(id: "ar-low", name: "Low"))
+        #expect(await eventually { FakeCarInterface.headers(car.topList).contains("Songs on this iPhone") })
+        #expect(FakeCarInterface.texts(car.topList) == ["Play", "Shuffle", "Things", "Lullaby"])
+        car.tap("Play", in: car.topList)
+        #expect(await eventually { model.player.queue.main.count == 3 })
+        #expect(model.player.queue.main.map(\.song.id) == ["m-ref1", "m-ref2", "m-lullaby"])
+        #expect(model.player.queue.main.allSatisfy { $0.song.artist == "Low" }, "no song by another artist")
+        // Downloads opens the same page.
+        car.pop(to: car.tabs!, animated: false, completion: nil)
+        controller.open(.downloadedArtist(id: "ar-low", name: "Low"))
+        #expect(await eventually { FakeCarInterface.texts(car.topList) == ["Play", "Shuffle", "Things", "Lullaby"] })
     }
 
     @Test func car_offlineDiscoverListsFlowsOnThePhone() async throws {
@@ -274,6 +411,13 @@ final class CarOfflineRoutes: HTTPTransport, @unchecked Sendable {
                                        songs: [Self.song("m-ref1"), Self.song("m-ref2"), Self.song("m-lullaby")],
                                        kind: .playlist, into: model.downloads)
         await goOffline(model)
+        // Fix round 1 (design M5): offline the car's Home keeps the owner's switches, Downloaded always on.
+        model.updatePreferences {
+            var list = $0.carPlay.homeList(following: $0.layout.home)
+            list.set(.playlists, visible: true, keepingOneOf: [])
+            list.set(.discover, visible: true, keepingOneOf: [])
+            $0.carPlay.home = list
+        }
         let adapter = CarPlayLibraryAdapter(model: model)
         let sections = adapter.homeSections
         #expect(Set(sections) == [.downloaded, .discover, .playlists])
@@ -292,17 +436,50 @@ final class CarOfflineRoutes: HTTPTransport, @unchecked Sendable {
         #expect(Set(ids(.downloaded)) == ["al-m-ref1", "al-m-ref2"])
         #expect(ids(.discover) == ["pl-dw"] && ids(.playlists) == ["pl-road"])
         #expect(routes.sent.isEmpty, "nothing asked of the server offline")
+        // Review M5: the flows shelf is "Your flows"; design M2: Home opens with the offline line.
+        let rows = CarPlayRows.offlineHome(CarPlayRows.home(shelves))
+        #expect(rows.compactMap(\.header).contains("Your flows"))
+        let banner = try #require(rows.first?.rows.first)
+        #expect(banner.title == "Offline \u{00B7} music on this iPhone" && banner.statusSymbol == "wifi.slash"
+                && banner.action == .none)
+        // Switched off, a shelf stays off offline; Downloaded shows whatever its switch.
+        model.updatePreferences {
+            var list = $0.carPlay.homeList(following: $0.layout.home)
+            list.set(.playlists, visible: false, keepingOneOf: [])
+            list.set(.downloaded, visible: false, keepingOneOf: [])
+            $0.carPlay.home = list
+        }
+        #expect(Set(adapter.homeSections) == [.downloaded, .discover])
+    }
+
+    /// Design M2: offline, the car's Home tab starts with "Offline · music on this iPhone" (not tappable).
+    @Test func car_offlineHomeSaysItsOffline() async throws {
+        let model = try await signedIn()
+        await download(model, [Self.song("m-ref1")])
+        let (car, controller) = await car(model)
+        defer { controller.disconnect() }
+        await goOffline(model)
+        #expect(await eventually { FakeCarInterface.texts(car.tab(0)).first == "Offline \u{00B7} music on this iPhone" })
+        #expect(Self.item(car.tab(0), "Offline \u{00B7} music on this iPhone")?.isEnabled == false)
+        #expect(FakeCarInterface.headers(car.tab(0)).contains("Recently downloaded"))
     }
 
     @Test func car_offlineEmptyListSaysNothingDownloaded() async throws {
         let model = try await signedIn()
         let (car, controller) = await car(model)
         defer { controller.disconnect() }
-        let onlineTabs = car.tabs
         await goOffline(model)
-        #expect(await eventually { car.tabs !== onlineTabs && car.templates.count == 1 })
+        #expect(await libraryTabFollows(car, model))
         car.tap("Downloads", in: car.tab(1))
         #expect(await eventually { FakeCarInterface.texts(car.topList) == ["Nothing downloaded yet"] })
+        // Fix round 1 (design M1): with its symbol; other lists say what isn't on the phone.
+        #expect(Self.item(car.topList, "Nothing downloaded yet")?.accessoryImage != nil)
+        car.pop(to: car.tabs!, animated: false, completion: nil)
+        controller.open(.playlists)
+        #expect(await eventually { FakeCarInterface.texts(car.topList) == ["No playlists on this iPhone"] })
+        car.pop(to: car.tabs!, animated: false, completion: nil)
+        controller.open(.genres)
+        #expect(await eventually { FakeCarInterface.texts(car.topList) == ["No genres on this iPhone"] })
         // Favourites keeps today's out-of-reach line (the phone doesn't know what's starred offline).
         car.pop(to: car.tabs!, animated: false, completion: nil)
         controller.open(.favourites)
@@ -322,6 +499,56 @@ final class CarOfflineRoutes: HTTPTransport, @unchecked Sendable {
             controller.nowPlayingLinks.album == .downloadedAlbum(id: "al-things", title: "Things")
                 && controller.nowPlayingLinks.artist == .downloadedArtist(id: "ar-low", name: "Low")
         })
+    }
+
+    // MARK: - Fix round 1 (design H4): Up Next offline
+
+    @Test func car_upNextOfflineSaysWhatIsntOnThePhone() async throws {
+        let model = try await signedIn()
+        await download(model, [Self.song("m-ref1"), Self.song("m-ref2")])
+        let (car, controller) = await car(model)
+        defer { controller.disconnect() }
+        model.player.play([Self.song("m-ref1"), Self.song("m-lullaby"), Self.song("m-ref2")], startAt: 0)
+        controller.showNowPlaying()
+        controller.upNextTapped()
+        #expect(await eventually { FakeCarInterface.texts(car.topList) == ["m-ref1", "m-lullaby", "m-ref2"] })
+        let upNext = car.topList
+        await goOffline(model)
+        #expect(await eventually { Self.item(upNext, "m-lullaby")?.detailText == "Not on this iPhone" })
+        let row = try #require(Self.item(upNext, "m-lullaby"))
+        #expect(!row.isEnabled && row.accessoryImage != nil, "not tappable, with its symbol")
+        #expect(Self.item(upNext, "m-ref2")?.isEnabled == true && Self.item(upNext, "m-ref2")?.detailText == "Q")
+        #expect(car.topList === upNext, "Up Next stays (it isn't a server list)")
+        await goOnline(model)
+        #expect(await eventually { Self.item(upNext, "m-lullaby")?.detailText == "Q" })
+        #expect(Self.item(upNext, "m-lullaby")?.isEnabled == true)
+    }
+
+    // MARK: - Fix round 1 (design H1, H3): Now Playing while stalled or held
+
+    @Test func bridge_heldSaysNotOnThisIPhoneAndPlayDoesNothing() async throws {
+        let player = Player(engine: FakeEngine(), scrobbler: FakeScrobbler(), urls: FakeURLs())
+        player.canReachServer = { false }
+        player.isPlayable = { _ in false }
+        let bridge = NowPlayingBridge(player: player, artworkURL: { _ in nil }, onLike: { _ in })
+        defer { bridge.invalidate() }
+        func info(_ key: String) -> Any? { MPNowPlayingInfoCenter.default().nowPlayingInfo?[key] }
+        player.play([Self.song("s1", artist: "Low")], startAt: 0)   // offline, not on the phone: held
+        #expect(player.isHeldUnplayable && !player.isPlaying)
+        #expect(await eventually { info(MPMediaItemPropertyArtist) as? String == "Not on this iPhone \u{00B7} You're offline" })
+        #expect(info(MPNowPlayingInfoPropertyPlaybackRate) as? Double == 0)
+        let status = NowPlayingBridge.dispatch(.none, player: player, refusesWhileHeld: bridge.heldForCommands) { p, _ in p.toggle() }
+        #expect(status == .noActionableNowPlayingItem && !player.isPlaying)
+        // It can play now: the artist comes back.
+        player.isPlayable = { _ in true }
+        player.retryAfterFailure()
+        #expect(player.isPlaying && !player.isHeldUnplayable)
+        #expect(await eventually { info(MPMediaItemPropertyArtist) as? String == "Low" })
+        #expect(NowPlayingBridge.dispatch(.none, player: player, refusesWhileHeld: bridge.heldForCommands) { _, _ in } == .success)
+        // An offline stall shows as stopped.
+        player.handle(.stalled)
+        #expect(player.isStalled)
+        #expect(await eventually { info(MPNowPlayingInfoPropertyPlaybackRate) as? Double == 0 })
     }
 
     // MARK: - The tunnel (design critique L4)
@@ -352,9 +579,13 @@ final class CarOfflineRoutes: HTTPTransport, @unchecked Sendable {
         let stack = car.templates.map(ObjectIdentifier.init)
         // The buffer runs out: the next song on the phone plays; nothing is dropped from the queue.
         let current = try #require(model.player.queue.current)
+        let beforeFailure = engine.setItemsCalls.count
         model.player.handle(.failed(current.id, "The network connection was lost.", undecodable: false))
         #expect(model.player.queue.current?.song.id == "m-ref2" && model.player.isPlaying)
         #expect(model.player.queue.main.map(\.song.id) == queue.map(\.id), "no queue is lost")
+        // Review M7: offline, once the stream gave way, the engine is only ever given files.
+        #expect(engine.setItemsCalls.count > beforeFailure)
+        #expect(engine.setItemsCalls.dropFirst(beforeFailure).allSatisfy { $0.items.allSatisfy { $0.1.isFileURL } })
 
         // Out of the tunnel 20 s later.
         routes.down = false
@@ -374,8 +605,8 @@ final class CarOfflineRoutes: HTTPTransport, @unchecked Sendable {
 
     /// 120 seeded sequences (hosted, so fewer than the package's 500) of opens, Now Playing, pops, plays and offline
     /// pops through the real controller. After every step: the stack within CarPlay's depth limit and browse depth
-    /// within the budget; after going offline only the tabs (and Now Playing), and no binding left for a list that
-    /// isn't on screen (the fake car never says a list went, so only the offline pop's clean-up is checked).
+    /// within the budget; after an offline pop no server list is left and no phone list went, and nothing stays bound
+    /// for a list the pop took (the fake car never says a list went, so only the offline pop's clean-up is checked).
     @Test func offline_randomFlipsAndCarPushesKeepTheStack() async throws {
         let model = try await signedIn()
         await download(model, [Self.song("m-ref1"), Self.song("m-ref2", albumId: "al-m-ref1")])
@@ -383,7 +614,12 @@ final class CarOfflineRoutes: HTTPTransport, @unchecked Sendable {
         defer { controller.disconnect() }
         let destinations: [CPDestination] = [.albums, .artists, .playlists, .downloads, .genres, .songs,
                                              .album(id: "al-m-ref1", title: "A"), .downloadedAlbum(id: "al-m-ref1", title: "A"),
-                                             .artist(id: "ar-q", name: "Q"), .favourites]
+                                             .downloadedArtist(id: "ar-q", name: "Q"), .artist(id: "ar-q", name: "Q"),
+                                             .favourites]
+        func isPhoneList(_ t: CPTemplate) -> Bool {
+            guard let destination = controller.bindings[ObjectIdentifier(t)]?.destination else { return true }
+            return CarPlayController.isFromThePhone(destination)
+        }
         for seed in 0..<UInt64(120) {
             var rng = SeededRNG(seed: seed &+ 0x0A4)
             for step in 0..<12 {
@@ -394,21 +630,26 @@ final class CarOfflineRoutes: HTTPTransport, @unchecked Sendable {
                 case 3:
                     if let tabs = car.tabs { car.pop(to: tabs, animated: false, completion: nil) }
                 case 4:
-                    // Going offline, as the layout watch does it.
-                    controller.goToFirstLists()
-                    let rest = car.templates.dropFirst()
-                    #expect(car.templates.first is CPTabBarTemplate && rest.count <= 1
-                            && rest.allSatisfy { $0 === self.nowPlaying }, "\(ctx): \(car.templates)")
+                    // Going offline, as the layout watch does it: server lists go; the phone's and Now Playing stay.
+                    let phoneBefore = car.templates.prefix { isPhoneList($0) }.count
+                    controller.popServerLists()
+                    #expect(car.templates.first is CPTabBarTemplate, "\(ctx)")
+                    #expect(car.templates.dropFirst().allSatisfy { isPhoneList($0) }, "\(ctx): a server list stayed")
+                    #expect(car.templates.count >= phoneBefore, "\(ctx): a phone list went")
                 default:
                     model.player.play([Self.song("m-ref1"), Self.song("m-ref2")], startAt: 0)
                 }
                 #expect(car.templates.count <= CPNavigator.carPlayTemplateDepthLimit, "\(ctx): \(car.templates.count) deep")
                 #expect(controller.browseDepth <= CPNavigator.maxBrowseDepth, "\(ctx)")
             }
+            controller.open(.album(id: "al-m-ref1", title: "A"))
+            let before = Set(car.templates.map(ObjectIdentifier.init))
+            controller.popServerLists()
+            let taken = before.subtracting(car.templates.map(ObjectIdentifier.init))
+            #expect(!taken.isEmpty || car.templates.count == CPNavigator.carPlayTemplateDepthLimit,
+                    "seed \(seed): the server album went")
+            #expect(taken.allSatisfy { controller.bindings[$0] == nil }, "seed \(seed): nothing bound for a list the pop took")
             if let tabs = car.tabs { car.pop(to: tabs, animated: false, completion: nil) }
-            controller.goToFirstLists()
-            #expect(controller.bindings.count == [controller.home, controller.libraryRoot, controller.thirdRoot]
-                .compactMap { $0 }.count + 1, "seed \(seed): only the tabs' lists are bound after going offline")
         }
     }
 }

@@ -73,10 +73,17 @@ public protocol CarPlayCustomisationLibrary: AnyObject {
     func discoverOwnerCaption(playlistId: String) -> String?
     /// Round 27 H (D300): whether Flows with your playlists applies now (false by default). Observable.
     var flowsWithPlaylists: Bool { get }
+    /// Round 28 O4 fix round 1 (design H2): offline because the owner turned Offline mode on (not by itself). Observable.
+    var isOfflineByChoice: Bool { get }
+    /// Round 28 O4 fix round 1 (design H5): the artist's songs on the phone on other artists' albums ("Songs on this
+    /// iPhone"); none by default.
+    func artistSongsOnPhone(id: String) async -> [Song]
 }
 
 extension CarPlayCustomisationLibrary {
     public var flowsWithPlaylists: Bool { false }
+    public var isOfflineByChoice: Bool { false }
+    public func artistSongsOnPhone(id: String) async -> [Song] { [] }
     public func notePlaylistPlayed(id: String) {}
     public func discoverOwnerCaption(playlistId: String) -> String? { nil }
 }
@@ -91,9 +98,16 @@ extension CarPlayController {
         let library = library
         let sections = library.homeSections
         let (maxItems, maxSections) = listLimits()   // R24F: the same limits the pages use
+        let offline = library.isOffline
         load(home) {
             let shelves = try await library.homeShelves(sections, size: CarPlayRows.homeShelfMaxSize)
-            return { _ in CarPlayRows.home(shelves, maxItems: maxItems, maxSections: maxSections) }
+            // Round 28 O4 fix round 1 (design M2): offline Home opens with "Offline · music on this iPhone", one row
+            // and section of the car's limits.
+            guard offline else { return { _ in CarPlayRows.home(shelves, maxItems: maxItems, maxSections: maxSections) } }
+            return { _ in
+                CarPlayRows.offlineHome(CarPlayRows.home(shelves, maxItems: max(0, maxItems - 1),
+                                                         maxSections: max(0, maxSections - 1)))
+            }
         }
     }
 
@@ -106,33 +120,42 @@ extension CarPlayController {
             watches.removeAll { $0 == old }
         }
         let library = library
-        let shown = Self.layout(of: library)
+        let shown = Self.watched(library)
         let task = Task { [weak self] in
-            let layouts = Observations { @MainActor in Self.layout(of: library) }
+            let states = Observations { @MainActor in Self.watched(library) }
             var last = shown
-            for await layout in layouts where layout != last {
+            for await now in states where now != last {
                 guard let self, !Task.isCancelled else { return }
-                let change = CPLayoutChange(from: last, to: layout)
-                let wentOffline = !last.offline && layout.offline, cameOnline = last.offline && !layout.offline
-                last = layout
-                if wentOffline {   // Round 28 O4 (D347): back to each tab's first list (and this watch with them)
-                    guard self.tabBar != nil else { return }
-                    self.goToFirstLists()
-                    return
-                }
+                let layout = now.layout
+                let change = CPLayoutChange(from: last.layout, to: layout)
+                let wentOffline = !last.layout.offline && layout.offline, cameOnline = last.layout.offline && !layout.offline
+                let becameManual = layout.offline && now.manual && !last.manual
+                last = now
                 if change.rebuildsTabs {   // round 13: a new third tab; the tabs are built again (and this watch with them)
                     guard self.tabBar != nil else { return }   // Z3 review I1: only while the tabs are showing
                     self.resetBindings()
                     self.showTabs()
                     return
                 }
-                // Round 28 O4 (D347): back online the car stays where it is; the third tab reads the library again the
-                // next time it is chosen (its list was the phone's).
-                if cameOnline { self.thirdRoot?.isPlaceholder = true }
+                // Round 28 O4 (D347): back online the car stays where it is (a pop still waiting is called off); the
+                // third tab reads the library again the next time it is chosen (its list was the phone's).
+                if cameOnline {
+                    self.offlinePopTask?.cancel()
+                    self.offlinePopTask = nil
+                    self.thirdRoot?.isPlaceholder = true
+                }
                 if change.reloadsHome { self.loadCustomHome() }
                 if change.redrawsLibrary, let libraryRoot = self.libraryRoot {
                     let rows = CarPlayRows.libraryRoot(layout.library)
                     self.apply(rows, to: libraryRoot, placeholder: CarPlayRows.isPlaceholder(rows))
+                }
+                // Fix round 1 (design H4, M1): Up Next's rows and empty lines follow, in place.
+                if wentOffline || cameOnline { self.refreshListsInPlace() }
+                // Fix round 1 (design H2): Offline mode pops at once; offline by itself only once it has lasted 15 s.
+                if (wentOffline && now.manual) || becameManual {
+                    self.popServerLists()
+                } else if wentOffline {
+                    self.popServerListsAfterTheWait()
                 }
             }
         }
@@ -140,31 +163,102 @@ extension CarPlayController {
         watches.append(task)
     }
 
-    // MARK: - Round 28 O4: going offline (owner, 2026-11-15; D347, D348)
+    // MARK: - Round 28 O4: going offline (owner, 2026-11-15; D347, D348; fix round 1, design H2, H4, M1)
 
-    /// The car went offline: a list pushed over the tabs (a server album, say) would be rows that can't play, so the
-    /// tabs are built again from what's on the phone and each is back at its first list, the one chosen still chosen.
-    /// Now Playing, if it was open, is put back on top. Only on the way to offline (`watchLayout`): coming back online
-    /// leaves the car where it is, and a list on screen keeps its shape until it is off screen (`apply`).
-    func goToFirstLists() {
-        let nowPlaying = CPNowPlayingTemplate.shared
-        let keepsNowPlaying = interface.templates.contains { $0 === nowPlaying }
-        let selected = tabBar.flatMap { tabs in
-            tabs.selectedTemplate.flatMap { chosen in tabs.templates.firstIndex { $0 === chosen } }
-        }
-        resetBindings()
-        showTabs()
-        if let selected, let tabs = tabBar, selected > 0, tabs.templates.indices.contains(selected) {
-            tabs.selectTemplate(at: selected)
-        }
-        if keepsNowPlaying { interface.pushTemplate(nowPlaying, animated: false, completion: nil) }
+    /// What the watch follows: the layout, and whether offline is the owner's choice.
+    struct Watched: Equatable {
+        var layout: CPLayout
+        var manual: Bool
     }
 
-    /// D348: offline, an empty list (Search's results aside, which say nothing matched) reads "Nothing downloaded yet".
+    private static func watched(_ library: any CarPlayLibrary) -> Watched {
+        Watched(layout: layout(of: library), manual: library.isOfflineByChoice)
+    }
+
+    /// Whether a list is the phone's own (Downloads and what it opens): it plays offline, so it stays.
+    static func isFromThePhone(_ destination: CPDestination) -> Bool {
+        switch destination {
+        case .downloads, .downloadedAlbum, .downloadedArtist, .downloadedPlaylist: true
+        case .page(let ref): ref.base.map(isFromThePhone) ?? false
+        default: false
+        }
+    }
+
+    /// A pushed list read from the server (Up Next, Now Playing and Search have no server list behind them).
+    private func isServerList(_ template: CPTemplate) -> Bool {
+        guard let destination = bindings[ObjectIdentifier(template)]?.destination else { return false }
+        return !Self.isFromThePhone(destination)
+    }
+
+    /// Design H2: offline by itself, the pop waits `offlinePopWait` (15 s), called off if the library answers sooner.
+    func popServerListsAfterTheWait() {
+        offlinePopTask?.cancel()
+        let wait = offlinePopWait
+        offlinePopTask = Task { [weak self] in
+            await wait()
+            guard !Task.isCancelled, let self, self.library.isOffline, self.tabBar != nil else { return }
+            self.popServerLists()
+        }
+    }
+
+    /// The car went offline (D347): every list read from the server goes, from the first one pushed (rows that can't
+    /// play); the phone's own lists below it stay (fix round 1, design H2), and so does the chosen tab. Now Playing, if
+    /// it was above, is put back on top. The tabs' first lists are read again now from what's on the phone. Only on the
+    /// way to offline: coming back online leaves the car where it is.
+    func popServerLists() {
+        offlinePopTask?.cancel()
+        offlinePopTask = nil
+        guard tabBar != nil else { return }
+        let templates = interface.templates
+        let nowPlaying = CPNowPlayingTemplate.shared
+        if let cut = templates.indices.dropFirst().first(where: { isServerList(templates[$0]) }) {
+            let keep = templates[cut - 1]
+            let popped = templates[cut...]
+            let putBack = popped.contains { $0 === nowPlaying }
+            for template in popped {
+                let id = ObjectIdentifier(template)
+                bindings[id]?.cancel()
+                bindings[id] = nil
+            }
+            interface.pop(to: keep, animated: false) { [weak self] done, _ in
+                MainActor.assumeIsolated {
+                    guard done, putBack, let self, self.interface.topTemplate === keep else { return }
+                    self.interface.pushTemplate(nowPlaying, animated: false, completion: nil)
+                }
+            }
+        }
+        // Each tab's first list now, even the one on screen (its server rows wouldn't play).
+        home?.isPlaceholder = true
+        loadCustomHome()
+        if let libraryRoot {
+            libraryRoot.isPlaceholder = true
+            let rows = CarPlayRows.libraryRoot(library.libraryRows)
+            apply(rows, to: libraryRoot, placeholder: CarPlayRows.isPlaceholder(rows))
+        }
+        if let thirdRoot {
+            thirdRoot.isPlaceholder = true
+            loadThirdTab()
+        }
+    }
+
+    /// Every list with rows builds them again; one of the same shape changes in place (`apply`).
+    private func refreshListsInPlace() {
+        for binding in bindings.values where binding.content != nil {
+            Task { [weak self] in await self?.refresh(binding) }
+        }
+    }
+
+    /// Offline: an empty list says what isn't on the phone (D348; fix round 1, design M1), and Up Next's songs not on
+    /// the phone say so and do nothing (design H4). Home has its own line (`loadCustomHome`).
     func offlineCopy(_ sections: [CPSectionModel], for binding: ListBinding) -> [CPSectionModel] {
-        guard library.isOffline else { return sections }
-        if case .searchResults? = binding.destination { return sections }
-        return CarPlayRows.offlineEmpty(sections)
+        guard library.isOffline, binding !== home else { return sections }
+        if sections.contains(where: { $0.rows.contains { $0.id.hasPrefix(CarPlayRows.upNextRowPrefix) } }) {
+            let current = player.queue.current?.id
+            let notOnPhone = Set(player.queue.upcoming.filter { $0.id != current && !player.isPlayable($0.song) }.map(\.id))
+            return CarPlayRows.upNextOffline(sections, notOnPhone: notOnPhone)
+        }
+        guard let kind = binding.destination.flatMap(CarPlayRows.offlineEmptyKind) else { return sections }
+        return CarPlayRows.offlineEmpty(sections, kind)
     }
 
     private static func layout(of library: any CarPlayLibrary) -> CPLayout {
@@ -205,7 +299,11 @@ extension CarPlayController {
             let albumsOpen = CPNavigator.allowsPush(atDepth: browseDepth)   // fix round 1 (I2)
             return {
                 guard let page = await library.downloadedArtist(id: id) else { return { _ in CarPlayRows.state(.empty) } }
-                return { _ in CarPlayRows.downloadedArtist(page.0, albums: page.1, albumsOpen: albumsOpen) }
+                // Round 28 O4 fix round 1 (design H5): their albums, then their songs on other artists' albums.
+                let songs = await library.artistSongsOnPhone(id: id)
+                return { _ in
+                    CarPlayRows.artistOnPhone(page.0, albums: page.1, songs: songs, albumsOpen: albumsOpen, downloadedPages: true)
+                }
             }
         case .downloadedPlaylist(let id, _):
             return {
