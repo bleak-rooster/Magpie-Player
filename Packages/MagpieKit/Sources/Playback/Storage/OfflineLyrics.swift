@@ -71,7 +71,11 @@ extension AudioStore {
         try ensureReady()
         guard index.entries[lyrics.songId]?.kind == .download else { return false }
         if let lines = lyrics.lyrics, !lines.lines.contains(where: { !$0.text.isEmpty }) { return false }
-        if let saved = savedLyrics(songId: lyrics.songId), saved.showsSame(as: lyrics) { return false }
+        if let saved = savedLyrics(songId: lyrics.songId) {
+            if saved.showsSame(as: lyrics) { return false }
+            // D311's order: the library's lyrics are never replaced by ones found online (a late LRCLIB answer).
+            if saved.source == .library, lyrics.source == .online { return false }
+        }
         let data = try JSONEncoder().encode(lyrics)
         guard data.count <= OfflineLyrics.maxFileBytes else { return false }
         try prepareDirectory()

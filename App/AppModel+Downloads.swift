@@ -33,6 +33,8 @@ extension AppModel {
             isOnlySuspect: { [weak self] in self.map { !$0.isOffline && $0.reachability.isSuspect } ?? false },
             backgroundFetcher: backgroundAudioFetcher)
         downloads = manager
+        // Round 28 O2 (D334): a recorded artist's picture at 300 px.
+        manager.artistCoverURL = { [weak self] id in self?.coverArtURL(id, size: 300) }
         // R1: a launch for the background session's events stores what they delivered before the system is told.
         (backgroundAudioFetcher as? BackgroundAudioFetcher)?.onEventsFinished = { @MainActor [weak self] in
             await self?.downloads?.deliveriesSettled()
@@ -167,7 +169,7 @@ extension AppModel {
     /// A downloaded playlist opened with a connection: songs added since are downloaded, songs taken out lose the
     /// playlist (and leave the phone unless something else keeps them). A playlist that isn't downloaded is left be.
     func refreshDownloadedPlaylist(_ playlist: Playlist, songs: [Song]) async {
-        guard let downloads,
+        guard !isOffline, let downloads,   // Round 28 O2: never offline (Q4, D335)
               let saved = await downloads.store.playlists().first(where: { $0.id == playlist.id }),
               self.downloads === downloads else { return }
         let ids = songs.map(\.id)
@@ -175,8 +177,10 @@ extension AppModel {
         let kept = Set(ids), before = Set(saved.songIds)
         await downloads.remove(.playlist(playlist.id), songIds: saved.songIds.filter { !kept.contains($0) })
         guard self.downloads === downloads else { return }
+        // Round 28 O2: what kind it is (a flow stays a flow) and its owner carry over (D331).
         let snapshot = DownloadedPlaylist(id: playlist.id, name: playlist.name, coverArtId: playlist.coverArtId,
-                                          songIds: ids, savedAt: .now)
+                                          songIds: ids, savedAt: .now, owner: playlist.owner ?? saved.owner,
+                                          kind: saved.kind, changed: playlist.changed ?? saved.changed)
         downloads.download(songs.filter { !before.contains($0.id) }, reason: .playlist(playlist.id), playlist: snapshot,
                            coverArtId: playlist.coverArtId)
     }

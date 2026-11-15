@@ -49,9 +49,15 @@ import MagpieCore
         // Empty lines are none; an instrumental is kept as the note.
         #expect(try await store.saveLyrics(OfflineLyrics(songId: "d1", source: .online, lyrics: Lyrics(synced: false, lines: []),
                                                          savedAt: .now)) == false)
-        #expect(try await store.saveLyrics(OfflineLyrics(songId: "d1", source: .online, lyrics: nil, savedAt: .now)))
-        let instrumental = await store.savedLyrics(songId: "d1")
+        #expect(try await store.saveLyrics(OfflineLyrics(songId: "d1", source: .online, lyrics: nil, savedAt: .now)) == false,
+                "the library's lyrics are never replaced by ones found online (D311's order)")
+        #expect(await store.savedLyrics(songId: "d1")?.source == .library)
+        try await add(store, "d2")
+        #expect(try await store.saveLyrics(OfflineLyrics(songId: "d2", source: .online, lyrics: nil, savedAt: .now)))
+        let instrumental = await store.savedLyrics(songId: "d2")
         #expect(instrumental?.lyrics == nil && instrumental?.source == .online)
+        #expect(try await store.saveLyrics(OfflineLyrics(songId: "d2", source: .library, lyrics: Self.lines, savedAt: .now)),
+                "the library's replace ones found online")
     }
 
     @Test func lyrics_boundsApplied() async throws {

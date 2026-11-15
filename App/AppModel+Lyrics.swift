@@ -263,7 +263,10 @@ extension AppModel {
             }
             guard let self, self.lyricsKeeper.generation == generation else { return result }
             switch result {
-            case .success(let lyrics): self.lyricsKeeper.keepLibrary(id, lyrics)
+            case .success(let lyrics):
+                self.lyricsKeeper.keepLibrary(id, lyrics)
+                // Round 28 O2 (D336): a downloaded song's lyrics are kept on the phone too.
+                self.keepLyricsOnPhone(id, lyrics.flatMap { $0.lines.isEmpty ? nil : .lines($0, .library) })
             case .failure(let error) where error is LyricsReadSkipped: self.lyricsKeeper.forgetAskedServer(id)
             case .failure: break
             }
@@ -321,6 +324,8 @@ extension AppModel {
     func lyricsForPane(_ song: Song, fresh: Bool = false) async throws -> ShownLyrics? {
         let keeper = lyricsKeeper
         if !fresh, let kept = keeper.shown(song.id) { return kept }
+        // Round 28 O2 (D336): then the lyrics kept on the phone for a downloaded song (offline, always).
+        if !fresh || isOffline, let saved = await savedLyrics(songId: song.id) { return saved }
         guard session != nil, !isOffline else { return nil }
         let advertises = (try? await serverAdvertises("songLyrics")) ?? false
         let keptNone: Bool = if case .some(.none) = keeper.library(song.id) { true } else { false }
@@ -362,6 +367,7 @@ extension AppModel {
         switch result {
         case .success(let found):
             keeper.keepOnline(song.id, found)
+            keepLyricsOnPhone(song.id, ShownLyrics(online: found))   // Round 28 O2 (D336)
             return ShownLyrics(online: found)
         case .failure(let error) where error is CancellationError:
             keeper.forgetAskedOnline(song.id)

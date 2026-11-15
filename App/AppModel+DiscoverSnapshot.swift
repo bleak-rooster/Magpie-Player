@@ -188,6 +188,7 @@ extension AppModel {
         show(page)
         swapQueuedDiscoverCopies(copies)   // fix round 1 (I1): once, when every lookup is done
         saveDiscoverPage(page, held: background)
+        followDownloadedFlow(page)   // Round 28 O2 (Q4, D335): a downloaded flow keeps in step
         return page
     }
 
