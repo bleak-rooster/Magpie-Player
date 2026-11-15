@@ -65,6 +65,109 @@ import Testing
         ids.map { Song(id: $0, title: $0, artist: "A", album: "B", duration: 200) }
     }
 
+    /// A sleep the test lets go of (the stall grace, D349 fix round 1).
+    final class Sleeper: @unchecked Sendable {
+        private let lock = NSLock()
+        private var waiting: [CheckedContinuation<Void, Never>] = []
+        private(set) var asked: [Duration] = []
+        func sleep(_ d: Duration) async {
+            await withCheckedContinuation { c in lock.withLock { asked.append(d); waiting.append(c) } }
+        }
+        var count: Int { lock.withLock { waiting.count } }
+        func releaseAll() {
+            let all = lock.withLock { () -> [CheckedContinuation<Void, Never>] in defer { waiting = [] }; return waiting }
+            all.forEach { $0.resume() }
+        }
+    }
+
+    func rig(local: Set<String>, sleeper: Sleeper) -> Rig {
+        let engine = Engine()
+        let urls = PlayerChaosFuzzTests.ChaosURLs()
+        urls.local = local
+        let player = Player(engine: engine, scrobbler: PlayerChaosFuzzTests.CountingScrobbler(), urls: urls,
+                            sleep: { await sleeper.sleep($0) })
+        player.canReachServer = { [urls] in !urls.offline }
+        return Rig(player: player, engine: engine, urls: urls, phone: Phone(local))
+    }
+
+    /// Polls (no sleeps) until `condition`, yielding to the tasks the player started.
+    func settle(_ condition: () -> Bool) async -> Bool {
+        for _ in 0..<1000 where !condition() { await Task.yield() }
+        return condition()
+    }
+
+    // MARK: D349 fix round 1 (design H1, H3; review M3)
+
+    /// The tunnel's silence: automatic offline, the stream stalls and never starts again; after the grace (about 6 s)
+    /// it counts as failed and the next song on the phone plays. While stalled, it isn't counted as playing.
+    @Test func playback_offlineStallPastTheGraceMovesOn() async {
+        let sleeper = Sleeper()
+        let r = rig(local: ["s3"], sleeper: sleeper)
+        r.player.play(songs(["s1", "s2", "s3"]), startAt: 0)
+        r.goOffline(manual: false)
+        r.player.handle(.stalled)
+        #expect(r.player.isStalled, "Now Playing shows it stopped")
+        #expect(await settle { sleeper.count == 1 })
+        #expect(sleeper.asked == [Player.offlineStallGrace] && Player.offlineStallGrace == .seconds(6))
+        #expect(r.currentId == "s1", "not before the grace runs out")
+        sleeper.releaseAll()
+        #expect(await settle { r.currentId == "s3" })
+        #expect(r.player.isPlaying && r.currentURL?.isFileURL == true && !r.player.isStalled)
+        #expect(r.player.queue.main.count == 3)
+    }
+
+    /// The stall clears within the grace (sound again): the same song carries on.
+    @Test func playback_offlineStallThatClearsCarriesOn() async {
+        let sleeper = Sleeper()
+        let r = rig(local: ["s3"], sleeper: sleeper)
+        r.player.play(songs(["s1", "s2", "s3"]), startAt: 0)
+        r.player.handle(.time(r.player.queue.current!.id, 10, duration: 200))
+        r.goOffline(manual: false)
+        r.player.handle(.stalled)
+        #expect(await settle { sleeper.count == 1 })
+        r.player.handle(.time(r.player.queue.current!.id, 11, duration: 200))
+        #expect(!r.player.isStalled)
+        sleeper.releaseAll()
+        for _ in 0..<50 { await Task.yield() }
+        #expect(r.currentId == "s1" && r.player.isPlaying, "the same song carries on")
+    }
+
+    /// With nothing on the phone the stall past its grace holds the song (paused, nothing loaded, saying why).
+    @Test func playback_offlineStallWithNothingOnThePhoneHolds() async {
+        let sleeper = Sleeper()
+        let r = rig(local: [], sleeper: sleeper)
+        r.player.play(songs(["s1", "s2"]), startAt: 0)
+        r.goOffline(manual: false)
+        r.player.handle(.stalled)
+        #expect(await settle { sleeper.count == 1 })
+        sleeper.releaseAll()
+        #expect(await settle { !r.player.isPlaying })
+        #expect(r.player.isHeldUnplayable && r.player.lastError == "You're offline" && r.engine.items.isEmpty)
+        r.goOnline()
+        #expect(!r.player.isHeldUnplayable && r.player.isPlaying && r.currentId == "s1")
+    }
+
+    /// Online a stall is today's (D282): no grace, nothing moves on.
+    @Test func playback_onlineStallHasNoGrace() async {
+        let sleeper = Sleeper()
+        let r = rig(local: ["s2"], sleeper: sleeper)
+        r.player.play(songs(["s1", "s2"]), startAt: 0)
+        r.player.handle(.stalled)
+        for _ in 0..<50 { await Task.yield() }
+        #expect(sleeper.count == 0 && !r.player.isStalled && r.currentId == "s1")
+    }
+
+    /// Review M3: a stream paused in automatic offline, then Play: the next song on the phone plays, never the stream.
+    @Test func playback_pausedAutomaticStreamResumesToThePhone() {
+        let r = rig(local: ["s3"])
+        r.player.play(songs(["s1", "s2", "s3"]), startAt: 0)
+        r.player.toggle()   // paused, the stream still loaded
+        r.goOffline(manual: false)
+        #expect(r.currentId == "s1" && !r.player.isPlaying)
+        r.player.toggle()   // Play
+        #expect(r.currentId == "s3" && r.player.isPlaying && r.currentURL?.isFileURL == true)
+    }
+
     // MARK: D349
 
     /// Automatic offline (the tunnel): a stream plays on until it fails, then the next song on the phone plays; the
@@ -242,7 +345,7 @@ import Testing
         func currentURL() -> URL? { player.queue.current.flatMap { c in engine.items.first { $0.0 == c.id }?.1 } }
 
         for step in 0..<ops {
-            let op = Int.random(in: 0...13, using: &rng)
+            let op = Int.random(in: 0...14, using: &rng)
             log.append("\(op)")
             switch op {
             case 0: player.play(songs(), startAt: Int.random(in: 0...7, using: &rng))
@@ -299,6 +402,10 @@ import Testing
             case 11: player.toggle()
             case 12:
                 if let c = player.queue.current { player.handle(.time(c.id, player.position + 1, duration: nil)) }
+            case 14:
+                // A stall (fix round 1, design H1): offline its grace runs out at the next yield (sleep is instant here).
+                player.handle(.stalled)
+                await Task.yield()
             default:
                 let all = player.queue.main + player.queue.upNext
                 player.remove(id: all.randomElement(using: &rng)?.id ?? UUID())

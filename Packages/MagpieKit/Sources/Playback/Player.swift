@@ -60,6 +60,18 @@ public final class Player {
     /// Round 28 O4 (owner, 2026-11-15; D349): what the player says when it waits on a song that can't play right now
     /// (offline, not on the phone) and nothing after it can.
     @ObservationIgnored public var unplayableMessage = "You're offline"
+    /// Round 28 O4 fix round 1 (design H3): the player waits on a song it can't play right now (`holdUnplayable`):
+    /// Now Playing says so and Play does nothing until it can.
+    public private(set) var isHeldUnplayable = false
+    /// Round 28 O4 fix round 1 (design H1): offline, the stream playing stalled and hasn't started again yet (Now
+    /// Playing shows it stopped). After `offlineStallGrace` it counts as failed.
+    public private(set) var isStalled = false
+    /// How long an offline stall may last before the stream counts as failed (a tunnel's silence, then the next song on
+    /// the phone).
+    public static let offlineStallGrace: Duration = .seconds(6)
+    /// The stall being waited out (its entry and where it stopped), and which wait is the latest.
+    private var stalledAt: (entryId: UUID, position: TimeInterval)?
+    private var stallGeneration = 0
     /// Pause once the current song ends, on the next song. Holds back the upcoming items like repeat one,
     /// and switches itself off when it fires.
     public var stopsAfterCurrent = false {
@@ -530,6 +542,8 @@ public final class Player {
             let offset = TimeInterval(StreamOffset.seconds(in: currentURL))
             let at = engineTime + offset
             position = at
+            // Round 28 O4 fix round 1 (design H1): sound again after an offline stall: the same song carries on.
+            if let stall = stalledAt, stall.entryId == id, at > stall.position { clearStall() }
             if pendingRetry == nil, reconnectingSongId != nil { reconnectingSongId = nil }   // sound again (D278)
             if var p = playback, p.entryId == id {
                 // A step is listening only when the wall clock could have covered it (ticks come less often in the
@@ -550,6 +564,7 @@ public final class Player {
             maybeSubmitScrobble()
         case .stalled:
             noteStall()
+            startStallGrace()   // Round 28 O4 fix round 1 (design H1)
         case .failed(let id, let message, let undecodable):
             // Only the current entry matters; the engine retries a failed upcoming item when it
             // is reached. Stop the engine too, so a dead server can't race through the queue.
@@ -623,6 +638,7 @@ public final class Player {
         }
         // Round 28 O4 (D349): an entry held without starting (`holdUnplayable`) starts now, as a new play.
         if playback?.entryId != current.id { beginEntry() }
+        isHeldUnplayable = false
         failedEntryId = nil
         lastError = nil
         needsReload = false
@@ -648,6 +664,8 @@ public final class Player {
               !loaded.url.isFileURL, isPlayable(current.song) else { return false }
         let file = urls.streamURL(for: current.song)
         guard file.isFileURL else { return false }
+        isHeldUnplayable = false
+        clearStall()
         failedEntryId = nil
         lastError = nil
         needsReload = false
@@ -660,6 +678,8 @@ public final class Player {
     /// Nothing from `current` on can play right now: the player waits on it, paused, showing `message`, with nothing
     /// loaded; `retryAfterFailure()` (back online) or Play starts it again.
     private func holdUnplayable(_ current: QueueEntry, message: String) {
+        isHeldUnplayable = true
+        clearStall()
         engine.pause()
         // Round 28 O1 fix round 1 (security M1): nothing on the phone can play, so the remote item is released (no
         // stream URL with its credentials stays loaded); Play loads it again (`needsReload`).
@@ -847,7 +867,46 @@ public final class Player {
     }
 
     /// Round 27 P (D276, D278): a new current entry: no pick-up, hint or stall count carries over from the last one.
+    /// Round 28 O4 fix round 1 (owner, 2026-11-15; design H1, D349): offline (no server to reach), the current stream
+    /// stalled: a tunnel's silence. It gets `offlineStallGrace` to start again (a tick past where it stopped); if it
+    /// doesn't, it counts as failed: the next song on the phone plays, or the player waits on it (`holdUnplayable`).
+    /// Online a stall is waited out as before (D282). Meanwhile `isStalled` (Now Playing's rate 0).
+    private func startStallGrace() {
+        guard !canReachServer(), let current = queue.current, let loaded, loaded.entryId == current.id,
+              !loaded.url.isFileURL, stalledAt?.entryId != current.id else { return }
+        isStalled = true
+        stalledAt = (current.id, position)
+        stallGeneration += 1
+        let generation = stallGeneration, sleep = self.sleep
+        Task { [weak self] in
+            await sleep(Self.offlineStallGrace)
+            self?.stallGraceEnded(generation)
+        }
+    }
+
+    private func clearStall() {
+        guard stalledAt != nil || isStalled else { return }
+        isStalled = false
+        stalledAt = nil
+        stallGeneration += 1
+    }
+
+    /// The grace ran out with no sound: offline still, the stream counts as failed; back online, it is left to pick up.
+    private func stallGraceEnded(_ generation: Int) {
+        guard generation == stallGeneration, let stall = stalledAt, let current = queue.current,
+              current.id == stall.entryId else { return }
+        clearStall()
+        guard !canReachServer() else { return }
+        Log.logger("playback").info("an offline stall outlasted its grace: moving on")
+        if isPlayable(current.song) {
+            stopOnFailure(current, message: unplayableMessage)
+        } else if !skipToNextPlayable() {
+            holdUnplayable(current, message: unplayableMessage)
+        }
+    }
+
     private func forgetPickUp() {
+        clearStall()
         reconnectingSongId = nil
         pendingRetry = nil
         networkRetries = nil
@@ -931,6 +990,7 @@ public final class Player {
 
     /// A new entry became current: reset position and scrobble state, send "now playing".
     private func beginEntry() {
+        isHeldUnplayable = false
         if playback?.entryId != queue.current?.id { lastFallbackSongId = nil }
         forgetPickUp()
         hasEnded = false

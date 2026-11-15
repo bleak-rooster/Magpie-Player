@@ -3,6 +3,7 @@ import Foundation
 import MagpieCore
 import MediaPlayer
 import Observation
+import os
 import UIKit
 
 /// Mirrors `Player` into the system's Now Playing surfaces (lock screen, Control Center, CarPlay)
@@ -29,6 +30,13 @@ public final class NowPlayingBridge {
     private var previewArtTask: Task<Void, Never>?
     private var observation: Task<Void, Never>?
     private var commandTargets: [(MPRemoteCommand, Any)] = []
+    /// Round 28 O4 fix round 1 (design H3): whether the player waits on a song it can't play (offline, not on the
+    /// phone), as last published, for Play arriving off the main thread.
+    let heldForCommands = OSAllocatedUnfairLock(initialState: false)
+
+    /// Round 28 O4 fix round 1 (owner, 2026-11-15; design H3): the artist line while the player waits on a song it
+    /// can't play right now; the song's own artist comes back when it plays.
+    public static let heldArtistLine = "Not on this iPhone \u{00B7} You're offline"
 
     /// Values that, when changed, republish Now Playing info. Elapsed time is sent at whole seconds;
     /// the system extrapolates in between from the rate.
@@ -42,6 +50,9 @@ public final class NowPlayingBridge {
         var repeatMode: RepeatMode
         var liked: Bool
         var preview: PreviewSnapshot?
+        /// Round 28 O4 fix round 1 (design H1, H3): an offline stall (rate 0) and a song held offline.
+        var stalled = false
+        var held = false
     }
 
     /// What the lock screen shows of a preview.
@@ -70,7 +81,8 @@ public final class NowPlayingBridge {
                          second: NowPlayingBridge.wholeSeconds(player.position), upcomingCount: player.queue.upcomingCount,
                          isShuffled: player.isShuffled, repeatMode: player.repeatMode,
                          liked: player.queue.current.map { isLiked($0.song) } ?? false,
-                         preview: NowPlayingBridge.previewSnapshot(preview))
+                         preview: NowPlayingBridge.previewSnapshot(preview), stalled: player.isStalled,
+                         held: player.isHeldUnplayable)
             }
             for await snapshot in snapshots where snapshot != last {
                 guard let self else { return }
@@ -145,12 +157,15 @@ public final class NowPlayingBridge {
             return
         }
         let song = entry.song
+        let held = player.isHeldUnplayable
+        heldForCommands.withLock { $0 = held }
         var info: [String: Any] = [
             MPMediaItemPropertyTitle: song.title,
-            MPMediaItemPropertyArtist: song.artist,
+            MPMediaItemPropertyArtist: held ? Self.heldArtistLine : song.artist,   // R28 O4 fix round 1 (design H3)
             MPMediaItemPropertyAlbumTitle: song.album,
             MPNowPlayingInfoPropertyElapsedPlaybackTime: player.position.isFinite ? player.position : 0,
-            MPNowPlayingInfoPropertyPlaybackRate: player.isPlaying ? 1.0 : 0.0,
+            // R28 O4 fix round 1 (design H1): an offline stall shows as stopped, not as time running on.
+            MPNowPlayingInfoPropertyPlaybackRate: player.isPlaying && !player.isStalled ? 1.0 : 0.0,
             MPNowPlayingInfoPropertyDefaultPlaybackRate: 1.0,
             MPNowPlayingInfoPropertyMediaType: MPNowPlayingInfoMediaType.audio.rawValue,
         ]
@@ -249,9 +264,15 @@ public final class NowPlayingBridge {
     private func registerCommands() {
         let c = MPRemoteCommandCenter.shared()
         let preview = self.preview
-        add(c.playCommand) { p, _ in if !Self.previewTakes(.play, preview), !p.isPlaying { p.toggle() } }
+        // Round 28 O4 fix round 1 (design H3): while the player waits on a song it can't play, Play and Play/Pause
+        // answer that there is nothing to play (the car's button doesn't pretend).
+        add(c.playCommand, refusesWhileHeld: true) { p, _ in
+            if !Self.previewTakes(.play, preview), !p.isPlaying { p.toggle() }
+        }
         add(c.pauseCommand) { p, _ in if !Self.previewTakes(.pause, preview), p.isPlaying { p.toggle() } }
-        add(c.togglePlayPauseCommand) { p, _ in if !Self.previewTakes(.togglePlayPause, preview) { p.toggle() } }
+        add(c.togglePlayPauseCommand, refusesWhileHeld: true) { p, _ in
+            if !Self.previewTakes(.togglePlayPause, preview) { p.toggle() }
+        }
         add(c.nextTrackCommand) { p, _ in if !Self.previewTakes(.nextTrack, preview) { p.next() } }
         add(c.previousTrackCommand) { p, _ in if !Self.previewTakes(.previousTrack, preview) { p.previous() } }
         add(c.changePlaybackPositionCommand) { p, input in
@@ -296,28 +317,41 @@ public final class NowPlayingBridge {
     }
 
     /// Registers a handler that runs on the main actor with the event's input.
-    private func add(_ command: MPRemoteCommand,
+    private func add(_ command: MPRemoteCommand, refusesWhileHeld: Bool = false,
                      _ action: @escaping @Sendable @MainActor (Player, CommandInput) -> Void) {
         command.isEnabled = true
-        let target = command.addTarget(handler: Self.commandHandler(player: player, action: action))
+        let held = refusesWhileHeld ? heldForCommands : nil
+        let target = command.addTarget(handler: Self.commandHandler(player: player, refusesWhileHeld: held, action: action))
         commandTargets.append((command, target))
     }
 
     /// Built in a nonisolated context: MediaPlayer may invoke command handlers off the main
     /// thread, so the closure must not be main-actor-isolated. It hops to the main actor itself.
     nonisolated static func commandHandler(
-        player: Player, action: @escaping @Sendable @MainActor (Player, CommandInput) -> Void
+        player: Player, refusesWhileHeld: OSAllocatedUnfairLock<Bool>? = nil,
+        action: @escaping @Sendable @MainActor (Player, CommandInput) -> Void
     ) -> (MPRemoteCommandEvent) -> MPRemoteCommandHandlerStatus {
-        { event in dispatch(CommandInput(event), player: player, action: action) }
+        { event in dispatch(CommandInput(event), player: player, refusesWhileHeld: refusesWhileHeld, action: action) }
     }
 
     /// Runs a command's action on the main actor: at once on the main thread, otherwise by a hop. Round 24 G (D234):
     /// split out of `commandHandler` so tests can send a command from either thread without a MediaPlayer event.
+    /// Round 28 O4 fix round 1 (design H3): with `refusesWhileHeld`, a player waiting on a song it can't play answers
+    /// `.noActionableNowPlayingItem` and nothing runs (on the main thread read from the player itself, otherwise from
+    /// what was last published).
     nonisolated static func dispatch(
-        _ input: CommandInput, player: Player, action: @escaping @Sendable @MainActor (Player, CommandInput) -> Void
+        _ input: CommandInput, player: Player, refusesWhileHeld: OSAllocatedUnfairLock<Bool>? = nil,
+        action: @escaping @Sendable @MainActor (Player, CommandInput) -> Void
     ) -> MPRemoteCommandHandlerStatus {
         if Thread.isMainThread {
-            MainActor.assumeIsolated { action(player, input) }
+            let refused = MainActor.assumeIsolated { () -> Bool in
+                if refusesWhileHeld != nil, player.isHeldUnplayable { return true }
+                action(player, input)
+                return false
+            }
+            if refused { return .noActionableNowPlayingItem }
+        } else if refusesWhileHeld?.withLock({ $0 }) == true {
+            return .noActionableNowPlayingItem
         } else {
             Task { @MainActor in action(player, input) }
         }
