@@ -271,3 +271,28 @@ public struct ReachabilityMachine: Sendable, Equatable {
         return goOffline(now)
     }
 }
+
+/// Round 28 O1 (owner, 2026-11-15): the clock the app runs the machine on, in seconds. Tests pass one they move by hand,
+/// so the 30 s rule and the probe schedule are driven exactly and nothing sleeps (plan §4).
+public protocol ReachabilityClock: Sendable {
+    func now() -> Double
+    /// Returns at `deadline` (or at once if it has passed); throws when the task is cancelled.
+    func sleep(until deadline: Double) async throws
+}
+
+/// The real clock: seconds since it was made, on the continuous clock.
+public struct ContinuousReachabilityClock: ReachabilityClock {
+    private let origin = ContinuousClock.now
+
+    public init() {}
+
+    public func now() -> Double {
+        let elapsed = (ContinuousClock.now - origin).components
+        return Double(elapsed.seconds) + Double(elapsed.attoseconds) / 1e18
+    }
+
+    public func sleep(until deadline: Double) async throws {
+        let finite = deadline.isFinite ? max(0, deadline) : 0
+        try await Task.sleep(until: origin + .seconds(finite), clock: .continuous)
+    }
+}

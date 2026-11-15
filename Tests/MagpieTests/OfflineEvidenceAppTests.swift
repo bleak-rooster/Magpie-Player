@@ -1,0 +1,171 @@
+import Foundation
+import MagpieCore
+import MagpieTestSupport
+import NavidromeKit
+import os
+import Playback
+import Testing
+@testable import Magpie
+
+private let ok = Data(#"{"subsonic-response":{"status":"ok","version":"1.16.1"}}"#.utf8)
+private let loginJSON = Data(#"""
+{"id":"u1","isAdmin":true,"name":"Admin","subsonicSalt":"salt","subsonicToken":"tok","token":"jwt","username":"jordan"}
+"""#.utf8)
+private let albums = Data(#"{"subsonic-response":{"status":"ok","version":"1.16.1","albumList2":{"album":[]}}}"#.utf8)
+private let subsonicError = Data(#"{"subsonic-response":{"status":"failed","version":"1.16.1","error":{"code":70,"message":"not found"}}}"#.utf8)
+private let portal = Data("<html><body>Sign in to the café Wi-Fi</body></html>".utf8)
+private let home = URL(string: "http://192.168.1.2:4533")!
+private let away = URL(string: "https://music.example.com/navidrome")!
+
+/// Round 28 O1 (owner, 2026-11-15): what counts as no answer (D325). A proxy whose library has stopped, a captive
+/// portal, a refused redirect: fail over and probe like a connection error; `requestOnce` never resends. A library
+/// that answers in any way is never offline.
+@MainActor @Suite(.serialized) final class OfflineEvidenceAppTests {
+    let tmp = FileManager.default.temporaryDirectory.appending(path: "OfflineEvidenceAppTests-\(UUID().uuidString)")
+    let store = SessionStore(keychain: KeychainStore(service: "com.bleak-rooster.magpie.tests.\(UUID().uuidString)"))
+    let defaults = UserDefaults(suiteName: "OfflineEvidenceAppTests.\(UUID().uuidString)")!
+    let transport = HostSwitchTransport()
+
+    /// What stands between Magpie and the library (nil: nothing, the library answers).
+    enum Front: Sendable { case status(Int), portal, redirect, subsonicError, slowPages }
+    let front = OSAllocatedUnfairLock<Front?>(initialState: nil)
+
+    init() {
+        let front = self.front
+        @Sendable func answer(_ normal: Data, page: Bool) -> @Sendable (URLRequest) throws -> MockTransport.Response {
+            { _ in
+                switch front.withLock({ $0 }) {
+                case .status(let code)?: return .init(status: code, body: Data("<html>Bad gateway</html>".utf8))
+                case .portal?: return .init(status: 200, body: portal, headers: ["Content-Type": "text/html"])
+                case .redirect?: return .init(status: 302, headers: ["Location": "http://portal.example/login"])
+                case .subsonicError? where page: return .init(status: 200, body: subsonicError)
+                case .slowPages? where page: throw URLError(.timedOut)
+                default: return .init(status: 200, body: normal)
+                }
+            }
+        }
+        transport.inner.stub(pathSuffix: "/rest/ping", handler: answer(ok, page: false))
+        transport.inner.stub(method: "POST", pathSuffix: "/auth/login", handler: answer(loginJSON, page: false))
+        transport.inner.stub(pathSuffix: "/rest/getAlbumList2", handler: answer(albums, page: true))
+        transport.inner.stub(pathSuffix: "/rest/createPlaylist", handler: answer(ok, page: true))
+        transport.inner.stub(pathSuffix: "/api/song", body: Data("[]".utf8), headers: ["X-Total-Count": "0"])
+    }
+
+    deinit {
+        store.clear()
+        try? FileManager.default.removeItem(at: tmp)
+    }
+
+    func signedIn(_ urls: [URL] = [home]) async throws -> (AppModel, ManualReachabilityClock) {
+        let model = AppModel(store: store, lidarrStore: MemoryLidarrStore(), tokenStore: MemoryTokenStore(nil),
+                             matchIndexDirectory: nil, dataDirectory: tmp, transport: transport, probeTransport: transport,
+                             engine: FakeEngine(), defaults: defaults, systemNowPlaying: false, notifications: false,
+                             network: FakeNetwork(.wifi), audioFetcher: FakeFetcher())
+        try await model.signIn(urls: urls, username: "jordan", password: "pw")
+        await model.matchIndexSettled()
+        let clock = ManualReachabilityClock()
+        model.useReachabilityClock(clock)
+        return (model, clock)
+    }
+
+    func page(_ model: AppModel) async throws { _ = try await model.request { try await $0.albumList(.newest, size: 1, offset: 0) } }
+
+    func count(_ suffix: String) -> Int { transport.inner.requests.filter { $0.url?.path.hasSuffix(suffix) == true }.count }
+
+    @Test func request_proxy502FailsOverAndProbes() async throws {
+        let (model, clock) = try await signedIn()
+        front.withLock { $0 = .status(502) }
+        let pings = count("/rest/ping")
+        await #expect(throws: NavidromeError.http(status: 502)) { try await self.page(model) }
+        #expect(count("/rest/ping") > pings, "a probe, as for a connection error")
+        #expect(model.reachability.isSuspect && !model.isOffline)
+        #expect(await model.advanceReachability(clock, to: 30))
+        #expect(model.isOffline, "a stopped library behind a proxy goes offline at 30 s")
+        for code in [503, 504] { #expect(AppModel.isServerPathFailure(NavidromeError.http(status: code))) }
+    }
+
+    @Test func request_captivePortalHTMLCountsTowardsOffline() async throws {
+        let (model, clock) = try await signedIn()
+        front.withLock { $0 = .portal }
+        await #expect(throws: NavidromeError.unexpectedResponse) { try await self.page(model) }
+        #expect(model.reachability.isSuspect)
+        #expect(await model.advanceReachability(clock, to: 30))
+        #expect(model.isOffline)
+        #expect(!transport.inner.requests.contains { $0.url?.path.hasSuffix("/auth/login") == true && $0.url?.host == "portal.example" })
+    }
+
+    /// A redirect `SameOriginRedirects` refuses hands back the 3xx itself, which the client surfaces as
+    /// `NavidromeError.http(status: 3xx)`: no answer from the library.
+    @Test func request_refusedRedirectCountsAsNoAnswer() async throws {
+        let (model, _) = try await signedIn()
+        front.withLock { $0 = .redirect }
+        await #expect(throws: NavidromeError.http(status: 302)) { try await self.page(model) }
+        #expect(model.reachability.isSuspect)
+        #expect(AppModel.isServerPathFailure(NavidromeError.http(status: 307)))
+        #expect(!AppModel.isServerPathFailure(NavidromeError.http(status: 500)), "a 500 is the library answering")
+        #expect(!AppModel.isServerPathFailure(NavidromeError.unexpectedData))
+    }
+
+    @Test func requestOnce_neverResendsOnProxyError() async throws {
+        let (model, _) = try await signedIn()
+        front.withLock { $0 = .status(503) }
+        let before = count("/rest/createPlaylist")
+        await #expect(throws: NavidromeError.http(status: 503)) {
+            _ = try await model.requestOnce { try await $0.createPlaylist(name: "Road trip", songIds: []) }
+        }
+        #expect(count("/rest/createPlaylist") == before + 1, "sent once, never again")
+        #expect(model.reachability.isSuspect, "but probed, for what comes next")
+    }
+
+    @Test func request_successWhileSuspectEndsSuspect() async throws {
+        let (model, _) = try await signedIn()
+        model.noteUnreachable()
+        #expect(model.reachability.isSuspect && model.reachability.hasScheduledWake)
+        try await page(model)
+        #expect(!model.reachability.isSuspect && model.reachability.machine.state == .online)
+        #expect(model.reachability.machine.nextWake == nil, "probes cancelled")
+    }
+
+    @Test func slowServerAnsweringPingStaysOnline() async throws {
+        let (model, clock) = try await signedIn()
+        front.withLock { $0 = .slowPages }
+        await #expect(throws: URLError.self) { try await self.page(model) }
+        #expect(!model.reachability.isSuspect, "the ping answered: the library is there, only slow")
+        #expect(await model.advanceReachability(clock, to: 31))
+        #expect(!model.isOffline)
+    }
+
+    @Test func secondAddressAnsweringIsNotOffline() async throws {
+        let (model, clock) = try await signedIn([home, away])
+        transport.setDown(["192.168.1.2"])
+        try await page(model)
+        #expect(model.session?.activeBase == away && !model.reachability.isSuspect)
+        #expect(await model.advanceReachability(clock, to: 31))
+        #expect(!model.isOffline)
+    }
+
+    @Test func subsonicErrorIsAnAnswer() async throws {
+        let (model, clock) = try await signedIn()
+        model.noteUnreachable()
+        front.withLock { $0 = .subsonicError }
+        await #expect(throws: NavidromeError.api(code: 70, message: "not found")) { try await self.page(model) }
+        #expect(!model.reachability.isSuspect && model.reachability.machine.state == .online)
+        #expect(await model.advanceReachability(clock, to: 31))
+        #expect(!model.isOffline)
+        #expect(AppModel.isLibraryAnswer(NavidromeError.http(status: 500)) && AppModel.isLibraryAnswer(NavidromeError.badCredentials))
+    }
+
+    /// Automatically offline, `request` asks nothing (D328): a screen's read fails at once; the machine's checks bring
+    /// Magpie back.
+    @Test func automaticOfflineRequestFailsAtOnce() async throws {
+        let (model, clock) = try await signedIn()
+        transport.setDown(["192.168.1.2"])
+        model.noteUnreachable()
+        #expect(await model.advanceReachability(clock, to: 30))
+        #expect(model.isOffline)
+        transport.setDown([])
+        let sent = transport.inner.requests.count
+        await #expect(throws: URLError.self) { try await self.page(model) }
+        #expect(transport.inner.requests.count == sent, "nothing asked")
+    }
+}

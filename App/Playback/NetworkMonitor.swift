@@ -1,3 +1,4 @@
+import Foundation
 import MagpieCore
 import Network
 import Observation
@@ -6,6 +7,13 @@ import Observation
 @MainActor
 protocol NetworkStatusProviding: AnyObject {
     var status: NetworkStatus { get }
+    /// Round 28 O1 (owner, 2026-11-15): Low Power Mode doubles the reconnect checks' spacing (D326).
+    var isLowPowerMode: Bool { get }
+}
+
+extension NetworkStatusProviding {
+    /// Fakes and the fixed network: never in Low Power Mode.
+    var isLowPowerMode: Bool { false }
 }
 
 /// Wraps `NWPathMonitor`: connected, mobile data (or an expensive path) and Low Data Mode.
@@ -14,7 +22,10 @@ final class NetworkMonitor: NetworkStatusProviding {
     /// `NWPathMonitor` has no synchronous read, so this is Wi-Fi until the first path arrives (a moment after
     /// launch, on the main queue); a song started in that gap streams at the Wi-Fi quality.
     private(set) var status = NetworkStatus.wifi
+    /// Round 28 O1 (D326): watched, so the reconnect schedule follows it.
+    private(set) var isLowPowerMode = ProcessInfo.processInfo.isLowPowerModeEnabled
     @ObservationIgnored private let monitor = NWPathMonitor()
+    @ObservationIgnored private var powerObserver: NSObjectProtocol?
 
     init() {
         // Updates arrive on the main queue in order, so none is overtaken by a later one.
@@ -26,9 +37,16 @@ final class NetworkMonitor: NetworkStatusProviding {
             }
         }
         monitor.start(queue: .main)
+        powerObserver = NotificationCenter.default.addObserver(forName: .NSProcessInfoPowerStateDidChange, object: nil,
+                                                               queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.isLowPowerMode = ProcessInfo.processInfo.isLowPowerModeEnabled }
+        }
     }
 
-    deinit { monitor.cancel() }
+    isolated deinit {
+        monitor.cancel()
+        if let powerObserver { NotificationCenter.default.removeObserver(powerObserver) }
+    }
 }
 
 /// UI tests pin the network (T23 fix round 1): the host Mac may be on an expensive hotspot, which the simulator reports
