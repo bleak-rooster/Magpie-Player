@@ -94,21 +94,26 @@ struct QueueView: View {
     private func row(_ entry: QueueEntry) -> some View {
         let skipped = Self.skippedOffline(entry.song.id, offline: model.isOffline,
                                           onPhone: { model.downloads?.localFiles[$0] != nil })
-        return VStack(alignment: .leading, spacing: 0) {
-            Artwork(entry.song.coverArtId, side: 48) { SongRow(song: entry.song, state: .library, artwork: $0) }
-                .opacity(skipped ? 0.45 : 1)
+        return Group {
             if skipped {
-                Label(OfflinePageCopy.notOnThisPhone, systemImage: OfflinePageCopy.notOnThisPhoneSymbol)
-                    .font(.caption)
-                    .foregroundStyle(themed.palette.ink2Color)
-                    .padding(.leading, 76)
-                    .padding(.bottom, Tokens.Spacing.xs)
-                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 0) {
+                    Artwork(entry.song.coverArtId, side: 48) { SongRow(song: entry.song, state: .library, artwork: $0) }
+                        .opacity(0.45)
+                    Label(OfflinePageCopy.notOnThisPhone, systemImage: OfflinePageCopy.notOnThisPhoneSymbol)
+                        .font(.caption)
+                        .foregroundStyle(themed.palette.ink2Color)
+                        .padding(.leading, 76)
+                        .padding(.bottom, Tokens.Spacing.xs)
+                        .accessibilityHidden(true)
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityValue(OfflinePageCopy.notOnThisPhoneValue)
+                .accessibilityIdentifier("queue-not-on-phone")
+            } else {
+                Artwork(entry.song.coverArtId, side: 48) { SongRow(song: entry.song, state: .library, artwork: $0) }
             }
         }
         .transaction { $0.animation = nil }
-        .accessibilityElement(children: .combine)
-        .accessibilityValue(skipped ? OfflinePageCopy.notOnThisPhoneValue : "")
         .listRowInsets(EdgeInsets())
         .listRowBackground(Color.clear)
         .accessibilityAction(named: "Remove") { QueueRowEdits.remove(entry.id, player: model.player) }

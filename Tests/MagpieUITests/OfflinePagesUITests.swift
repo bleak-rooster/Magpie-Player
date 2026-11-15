@@ -109,12 +109,16 @@ final class OfflinePagesUITests: XCTestCase {
         let title = app.navigationBars.firstMatch.staticTexts.firstMatch.label
         // Download only its first song.
         app.buttons["track-0"].press(forDuration: 1.0)
-        let download = app.buttons["Download"]
+        let download = app.collectionViews.buttons["Download"]   // the menu's, not the page's capsule
         XCTAssertTrue(download.waitForExistence(timeout: 5))
         download.tap()
-        app.buttons["track-0"].press(forDuration: 1.0)
-        XCTAssertTrue(app.buttons["Remove download"].waitForExistence(timeout: 30), "the song landed")
-        app.tap()   // close the menu
+        var landed = false
+        for _ in 0..<10 where !landed {
+            app.buttons["track-0"].press(forDuration: 1.0)
+            landed = app.collectionViews.buttons["Remove download"].waitForExistence(timeout: 3)
+            app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.08)).tap()   // close the menu
+        }
+        XCTAssertTrue(landed, "the song landed")
         setOfflineMode(true, app)
         libraryRoot(app)
         app.buttons["library-albums"].tap()
@@ -136,7 +140,7 @@ final class OfflinePagesUITests: XCTestCase {
         let row = app.buttons["downloads-song-0"]
         if row.waitForExistence(timeout: 10) {
             row.press(forDuration: 1.0)
-            app.buttons["Remove download"].tap()
+            app.collectionViews.buttons["Remove download"].tap()
             let confirm = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Remove'")).firstMatch
             if confirm.waitForExistence(timeout: 5) { confirm.tap() }
         }

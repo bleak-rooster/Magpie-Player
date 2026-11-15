@@ -67,7 +67,8 @@ struct AlbumView: View {
         .task(id: model.offlinePageKey) {
             if shown.value == nil || loadedOffline != model.isOffline || model.isOffline { await load() }
         }
-        // Round 28 O3 (D341): a download started here records the page (O2 parks it until a song lands).
+        // Round 28 O3 (D341): a download started here (the album, or one of its songs) records the page (O2 parks it
+        // until a song lands), so offline it says "<n> of <m>".
         .onChange(of: startedDownload) { _, started in
             guard started, let shown = shown.value, shown.source == .server else { return }
             let target = model.downloads
@@ -75,10 +76,10 @@ struct AlbumView: View {
         }
     }
 
-    /// Round 28 O3: whether this album's own download has started (it was none).
+    /// Round 28 O3: whether a download of this album's songs has started from the page (the album's or one song's).
     private var startedDownload: Bool {
         guard let album, shown.value?.source == .server else { return false }
-        return model.downloadStatus((album.songs ?? []).map(\.id), reason: .album(album.id)) != .none
+        return model.downloadStatus((album.songs ?? []).map(\.id)) != .none
     }
 
     /// Round 28 O3 (D341): Favourite, Add to playlist and Reload artwork need the server: only on the server's page,
