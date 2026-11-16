@@ -72,6 +72,10 @@ public final class Player {
     /// The stall being waited out (its entry and where it stopped), and which wait is the latest.
     private var stalledAt: (entryId: UUID, position: TimeInterval)?
     private var stallGeneration = 0
+    /// Round 28 crash hunt (R28X): the current stream stalled while the server could still be reached, and no sound
+    /// has come since (where it stopped). Going offline then starts the grace (`retryAfterFailure`): in a tunnel the
+    /// buffer often runs dry before the switch, and the silent stream never failed.
+    private var silentSince: (entryId: UUID, position: TimeInterval)?
     /// Pause once the current song ends, on the next song. Holds back the upcoming items like repeat one,
     /// and switches itself off when it fires.
     public var stopsAfterCurrent = false {
@@ -546,6 +550,7 @@ public final class Player {
             position = at
             // Round 28 O4 fix round 1 (design H1): sound again after an offline stall: the same song carries on.
             if let stall = stalledAt, stall.entryId == id, at > stall.position { clearStall() }
+            if let silent = silentSince, silent.entryId == id, at > silent.position { silentSince = nil }   // R28X
             if pendingRetry == nil, reconnectingSongId != nil { reconnectingSongId = nil }   // sound again (D278)
             if var p = playback, p.entryId == id {
                 // A step is listening only when the wall clock could have covered it (ticks come less often in the
@@ -566,6 +571,8 @@ public final class Player {
             maybeSubmitScrobble()
         case .stalled:
             noteStall()
+            // R28X: online the stall is waited out (D282), but remembered until sound comes, for a switch to offline.
+            if canReachServer(), let current = queue.current { silentSince = (current.id, position) }
             startStallGrace()   // Round 28 O4 fix round 1 (design H1)
         case .failed(let id, let message, let undecodable):
             // Only the current entry matters; the engine retries a failed upcoming item when it
@@ -629,6 +636,11 @@ public final class Player {
     /// The server may be back, or offline mode changed (Task 14): a current song that failed plays again from where it
     /// was when it can play now, otherwise the next song that can does. Nothing happens unless the current one failed.
     public func retryAfterFailure() {
+        // R28X: gone offline while the stream sat stalled with no sound since: its grace starts now (D349).
+        if let silent = silentSince, let current = queue.current, silent.entryId == current.id, !canReachServer() {
+            silentSince = nil
+            startStallGrace()
+        }
         guard let current = queue.current, failedEntryId == current.id else { return }
         // Round 27 P (D278): a dropped stream waiting to be picked up is picked up now.
         if let pending = pendingRetry, pending.entryId == current.id {
@@ -886,6 +898,7 @@ public final class Player {
     }
 
     private func clearStall() {
+        silentSince = nil   // R28X: a pause, a seek or another song ends the online stall's memory too
         guard stalledAt != nil || isStalled else { return }
         isStalled = false
         stalledAt = nil
