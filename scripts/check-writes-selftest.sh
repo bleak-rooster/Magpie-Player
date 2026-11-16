@@ -587,7 +587,7 @@ r_inplace=(
   'App/AppModel+Slskd.swift|append|let plantedSession = URLSession(configuration: .ephemeral)'
   'App/AppModel+Slskd.swift|append|let plantedShared = URLSession.shared'
   'App/AppModel+Slskd.swift|append|let plantedFetcher = URLSessionAudioFetcher()'
-  'App/Screens/Shared/Artwork.swift|sed|s/        let transport = GatedTransport(raw, gate: gate, role: .main)/        let transport = raw/'
+  'App/Screens/Shared/Artwork.swift|sed|s/        return GatedTransport(raw, gate: gate, role: .main)/        return raw/'
   'App/AppModel+Slskd.swift|append|let plantedArt = ArtworkCache.transport'
   'App/AppModel+Slskd.swift|append|let plantedGate = OfflineGate()'
   'Packages/MagpieKit/Sources/MagpieCore/OfflineGate.swift|sed|s/^    private let inner: HTTPTransport$/    public let inner: HTTPTransport/'
@@ -597,13 +597,69 @@ r_inplace=(
   'Packages/MagpieKit/Sources/MagpieCore/OfflineGate.swift|sed|s/            guard role != .outside, let url = request.url else { return false }/            guard let url = request.url else { return false }/'
   'Packages/MagpieKit/Sources/AurralKit/PreviewResolver.swift|sed|s/    public init(base: URL, transport: HTTPTransport) {/    public init(base: URL, transport: HTTPTransport = PreviewResolver.defaultTransport()) {/'
   'App/AppModel+Slskd.swift|append|func plantedPeek(_ t: GatedTransport) -> HTTPTransport { t.innerForTesting }'
+  # Round 28 O1 fix round 2 (security SN1–SN3): `.init(`, a session by type or `.init`, `.shared` across a line break, a
+  # session through `SameOriginRedirects`, an alias, a pinned line hidden in a block comment or `#if false`, reflection,
+  # new package sessions and transports, a default put back or named otherwise or `any`, and the other ways out (images,
+  # media, web, sockets, contents-of reads). Named after the security re-check's evasions (N…).
+  'App/AppModel+Slskd.swift|append|let plantedN1b = URLSessionTransport.init()'
+  'App/AppModel+Slskd.swift|append|let plantedN2b: URLSession = .init(configuration: .ephemeral)'
+  'App/AppModel+Slskd.swift|append|let plantedN3 = URLSession\n    .shared'
+  'App/AppModel+Slskd.swift|append|let plantedN4b = SameOriginRedirects.session(configuration: .ephemeral)'
+  'App/AppModel+Slskd.swift|append|typealias PlantedN5b = URLSessionTransport'
+  'Packages/MagpieKit/Sources/MagpieCore/OfflineGate.swift|sed|s/^        case .manual: return false$/        case .manual: return true \/* case .manual: return false *\//'
+  'Packages/MagpieKit/Sources/MagpieCore/OfflineGate.swift|append|#if false\n        case .manual: return false\n#endif'
+  'App/AppModel+Slskd.swift|append|func plantedN9(_ t: GatedTransport) -> HTTPTransport? { Mirror(reflecting: t).children.first?.value as? HTTPTransport }'
+  'Packages/MagpieKit/Sources/AurralKit/AurralClient.swift|append|let plantedN12 = URLSession(configuration: .default)'
+  'Packages/MagpieKit/Sources/MagpieCore/LrcLib.swift|append|let plantedN16 = URLSessionTransport()'
+  'Packages/MagpieKit/Sources/AurralKit/AurralImageProxy.swift|sed|s/public init(base: URL, directory: URL?, openTransport: HTTPTransport) {/public init(base: URL, directory: URL?, openTransport: HTTPTransport = AurralOpenTransport()) {/'
+  'App/AppModel+Slskd.swift|append|extension AppModel { func plantedN17(via t: HTTPTransport = PreviewResolver.defaultTransport()) {} }'
+  'Packages/MagpieKit/Sources/AurralKit/AurralClient.swift|append|func plantedN18(_ t: any HTTPTransport = AurralOpenTransport()) {}'
+  'App/Screens/Shared/Artwork.swift|append|struct PlantedN11: View { var body: some View { AsyncImage(url: URL(string: "https://music.example/a.jpg")) } }'
+  'App/AppModel+Slskd.swift|append|let plantedN22 = AVURLAsset(url: URL(string: "https://music.example/a.mp3")!)'
+  'App/AppModel+Slskd.swift|append|let plantedN23 = try? Data(contentsOf: URL(string: "https://music.example/a")!)'
+  # Round 28 O1 fix round 3 (security SN8–SN14): the security re-check's shapes the ruling keeps (P…): a session made or
+  # handed back by return type, a comment between a name and its `.shared`, a pinned line hidden in a string or behind
+  # a string that looks like a comment, `#if false … #else`, artwork's session reached from outside, other ways out with
+  # `.init` or another AV type, package reads, a decoy of the gate's rule or wiring in a multi-line string, a split
+  # `.init`, a reference to setMode, a protocol or a line-broken conformance. Not chased (known limit, D328): backtick
+  # names (P01, P02), `.self.init` (P08), `Optional<URLSession>.some(.init…)` (P15), `(URLSession)(…)` (P16).
+  'App/AppModel+Slskd.swift|append|func p03() -> URLSession { .init(configuration: .ephemeral) }'
+  'App/AppModel+Slskd.swift|append|func p04() -> URLSession { .shared }'
+  'App/AppModel+Slskd.swift|append|let p05 = URLSession // x\n    .shared'
+  'App/AppModel+Slskd.swift|append|let p06a = "/*"\nlet p06 = URLSession(configuration: .ephemeral)\nlet p06b = "*/"'
+  'App/AppModel+Slskd.swift|append|let p06c = "*/*"\nlet p06d = URLSession(configuration: .ephemeral)'
+  'App/AppModel+Slskd.swift|append|#if false\n#else\nlet p07 = URLSession(configuration: .ephemeral)\n#endif'
+  'App/AppModel+Slskd.swift|append|extension ArtworkCache { static func p09() -> HTTPTransport { transport } }'
+  'App/AppModel+Slskd.swift|append|let p10 = NWConnection.init(host: "music.example", port: 443, using: .tls)'
+  'App/AppModel+Slskd.swift|append|let p11 = AVQueuePlayer(url: URL(string: "https://music.example/a.mp3")!)'
+  'Packages/MagpieKit/Sources/MagpieCore/LrcLib.swift|append|let p12 = try? Data(contentsOf: URL(string: "https://music.example/a")!)'
+  'Packages/MagpieKit/Sources/NavidromeKit/NavidromeClient.swift|append|let p12b = try? Data(contentsOf: URL(string: "https://music.example/a")!)'
+  'Packages/MagpieKit/Sources/MagpieCore/OfflineGate.swift|sedappend|s/^        case .manual: return false$/        case .manual: return true/@@let p13 = """\n        case .manual: return false\n"""'
+  'App/AppModel+Offline.swift|sedappend|s/^        offlineGate.setMode(forced ? .manual : offline ? .automatic : .open)   \/\/ Round 28 O1 (D328)$/        offlineGate.setMode(.open)/@@let p13b = """\n        offlineGate.setMode(forced ? .manual : offline ? .automatic : .open)\n"""'
+  'App/AppModel+Slskd.swift|append|let p14 = URLSessionTransport\n    .init()'
+  'App/AppModel+Slskd.swift|append|let p17 = AVURLAsset.init(url: URL(string: "https://music.example/a")!)'
+  'App/AppModel+Slskd.swift|append|let p18 = AVAsset(url: URL(string: "https://music.example/a")!)'
+  'Packages/MagpieKit/Sources/MagpieCore/OfflineGate.swift|append|let p19 = """\n/*\n"""'
+  'App/AppModel+Slskd.swift|append|let p20 = URLSession(\n    configuration: .ephemeral)'
+  'App/AppModel+Slskd.swift|append|let p21 = Foundation.URLSession.shared'
+  'App/AppModel+Slskd.swift|append|let p22 = AsyncImage.init(url: URL(string: "https://music.example/a.jpg"))'
+  'App/AppModel+Slskd.swift|append|extension AppModel { func p23() { let f = offlineGate.setMode; f(.open) } }'
+  'App/AppModel+Slskd.swift|append|let p24 = ArtworkCache.self.transport'
+  'App/AppModel+Slskd.swift|append|protocol P25: HTTPTransport {}'
+  'App/AppModel+Slskd.swift|append|struct P26:\n    HTTPTransport { func send(_ r: URLRequest) async throws -> (Data, HTTPURLResponse) { fatalError() } }'
+  'App/AppModel+Slskd.swift|append|let p27 = URLSession.shared'
+  'App/AppModel+Slskd.swift|append|func p28() -> URLSessionTransport { .init() }'
+  'Packages/MagpieKit/Sources/NavidromeKit/NavidromeClient.swift|append|let p29 = AVURLAsset(url: URL(string: "https://music.example/a")!)'
 )
 for entry in "${r_inplace[@]}"; do
   rel="${entry%%|*}" rest="${entry#*|}"
   mode="${rest%%|*}" text="${rest#*|}"
   file="$work/$rel"
   cp "$file" "$file.orig"
-  if [ "$mode" = append ]; then printf '%b\n' "$text" >> "$file"; else sed -i '' "$text" "$file"; fi
+  # Round 28 O1 fix round 3: `sedappend` runs "sed@@append" (a pinned line changed and a decoy of it added).
+  if [ "$mode" = append ]; then printf '%b\n' "$text" >> "$file"
+  elif [ "$mode" = sedappend ]; then sed -i '' "${text%%@@*}" "$file"; printf '%b\n' "${text#*@@}" >> "$file"
+  else sed -i '' "$text" "$file"; fi
   if cmp -s "$file.orig" "$file"; then echo "selftest: the plant didn't apply: $entry" >&2; failed=1
   elif out=$("$work/scripts/check-writes.sh" 2>&1); then
     echo "selftest: NOT caught: $entry" >&2; failed=1

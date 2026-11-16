@@ -150,6 +150,33 @@ private let home = URL(string: "http://192.168.1.2:4533")!
         #expect(all.filter { $0.path.hasSuffix("/auth/login") }.count == 1)
     }
 
+    /// Fix round 2 (security SN4): a cover fetch under way when Magpie goes offline is cancelled; it is asked again
+    /// once back online.
+    @Test func goingOfflineCancelsCoverFetchesInFlight() async throws {
+        let fetcher = FakeFetcher()
+        let (model, clock) = try await signedIn(fetcher: fetcher)
+        let before = fetcher.urls.count
+        fetcher.hold(after: before)   // the cover (asked first) and the song are held
+        model.download([song("s7")], reason: .album("al-7"), coverArtId: "al-7")
+        #expect(await eventually {
+            fetcher.inFlight >= 1 && fetcher.urls.dropFirst(before).contains { $0.path.hasSuffix("/rest/getCoverArt") }
+        }, "fetched \(fetcher.urls.map(\.path)), in flight \(fetcher.inFlight)")
+        model.setOfflineMode(on: true)
+        #expect(await eventually { fetcher.inFlight == 0 }, "the cover fetch is cancelled")
+        #expect(await model.downloads!.store.coverURL(coverArtId: "al-7") == nil)
+        fetcher.release()
+        #expect(await model.advanceReachability(clock, to: 30))
+        model.setOfflineMode(on: false)
+        #expect(await eventually { !model.isOffline })
+        #expect(await eventually { await model.downloads!.store.coverURL(coverArtId: "al-7") != nil }, "asked again online")
+    }
+
+    /// Fix round 2 (security SN7): cover art's session keeps and sends no cookies.
+    @Test func artworkSessionKeepsNoCookies() {
+        let config = ArtworkCache.sessionConfiguration
+        #expect(config.httpCookieStorage == nil && !config.httpShouldSetCookies && config.httpCookieAcceptPolicy == .never)
+    }
+
     nonisolated static func isBarePing(_ url: URL) -> Bool {
         let names = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.map(\.name) ?? []
         return url.path.hasSuffix("/rest/ping") && !names.contains("u") && !names.contains("t") && !names.contains("s")

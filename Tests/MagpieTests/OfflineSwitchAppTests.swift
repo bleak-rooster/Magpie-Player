@@ -360,6 +360,41 @@ final class Hold: Sendable {
         }
     }
 
+    /// Fix round 2 (re-review m2): with Go offline automatically off, Go online keeps the manual notice showing "Trying…"
+    /// while the login runs, then goes online (and only then says "Back online.").
+    @Test func goOnline_withAutomaticOffShowsTryingUntilTheLoginAnswers() async throws {
+        let (model, _) = try await signedIn()
+        model.setGoOfflineAutomatically(false)
+        model.setOfflineMode(on: true)
+        var heard: [String] = []
+        model.reachability.announce = { heard.append($0) }
+        let hold = Hold()
+        transport.setHook { r in if r.url?.path.hasSuffix("/auth/login") == true { await hold.wait() } }
+        model.goOnline()
+        #expect(model.preferences.downloads.offlineMode == .off)
+        #expect(await eventually { model.reachability.leavingManual })
+        let trying = try #require(OfflineNotice.variant(for: model), "the notice stays while the login runs")
+        #expect(trying.text == "Offline mode is on" && trying.action == .trying)
+        #expect(model.isOffline && !heard.contains("Back online."))
+        hold.release()
+        transport.setHook(nil)
+        #expect(await eventually { !model.isOffline && !model.reachability.leavingManual })
+        #expect(OfflineNotice.variant(for: model) == nil && heard == ["Back online."])
+    }
+
+    /// Fix round 2 (re-review m3): Settings shows "Still out of reach" under its Try again after a failed check it started.
+    @Test func settings_stillOutOfReachUnderTryAgain() async throws {
+        #expect(OfflineModeSection.stillOutOfReachLine(.automatic, stillOutOfReach: true, checking: false) == "Still out of reach")
+        #expect(OfflineModeSection.stillOutOfReachLine(.automatic, stillOutOfReach: true, checking: true) == nil)
+        #expect(OfflineModeSection.stillOutOfReachLine(.automatic, stillOutOfReach: false, checking: false) == nil)
+        #expect(OfflineModeSection.stillOutOfReachLine(.online, stillOutOfReach: true, checking: false) == nil)
+        let (model, clock) = try await signedIn()
+        await goAutomaticallyOffline(model, clock)
+        await model.tryAgain()
+        #expect(OfflineModeSection.stillOutOfReachLine(model.offlineState, stillOutOfReach: model.reachability.stillOutOfReach,
+                                                        checking: model.reachability.checking) == "Still out of reach")
+    }
+
     /// Security L5: the remembered Go offline automatically is read again once the phone is unlocked (a launch before
     /// first unlock couldn't read it).
     @Test func unlockReadsTheRememberedChoiceAgain() async throws {

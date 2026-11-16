@@ -32,7 +32,7 @@ struct OfflineNotice: View {
         case .manual:
             return Variant(text: OfflineNoticeCopy.manual, symbol: "wifi.slash", action: .goOnline,
                            actionTitle: OfflineNoticeCopy.goOnline, actionIdentifier: "offline-go-online")
-        case .automatic where leavingManual && checking:
+        case .automatic where leavingManual:
             // Design H1: Go online's check, in place of the button, under the words it had.
             return Variant(text: OfflineNoticeCopy.manual, symbol: "wifi.slash", action: .trying,
                            actionTitle: OfflineNoticeCopy.trying, actionIdentifier: "offline-go-online")

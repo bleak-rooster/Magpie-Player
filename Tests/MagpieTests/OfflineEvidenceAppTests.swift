@@ -232,6 +232,64 @@ private let away = URL(string: "https://music.example.com/navidrome")!
         #expect(AppModel.isLoginAnswer(NavidromeError.http(status: 500)) && AppModel.isLoginAnswer(NavidromeError.http(status: 429)))
     }
 
+    /// Fix round 2 (security SN5): signing in ends by the login deadline whatever the transport does.
+    @Test func signIn_tricklingLoginEndsAtItsDeadline() async throws {
+        let model = AppModel(store: store, lidarrStore: MemoryLidarrStore(), tokenStore: MemoryTokenStore(nil),
+                             matchIndexDirectory: nil, dataDirectory: tmp, transport: transport, probeTransport: transport,
+                             engine: FakeEngine(), defaults: defaults, systemNowPlaying: false, notifications: false,
+                             network: FakeNetwork(.wifi), audioFetcher: FakeFetcher())
+        let clock = ManualReachabilityClock()
+        model.useReachabilityClock(clock)
+        let hold = Hold()
+        transport.setHook { r in if r.url?.path.hasSuffix("/auth/login") == true { await hold.wait() } }
+        let signing = Task { try await model.signIn(urls: [home], username: "jordan", password: "pw") }
+        #expect(await eventually { self.transport.inner.requests.contains { $0.url?.path.hasSuffix("/rest/ping") == true } })
+        try await Task.yield()
+        clock.set(AppModel.loginDeadline - 0.1)
+        #expect(await eventually(0.3) { model.session != nil } == false)
+        clock.set(AppModel.loginDeadline + 1)
+        await #expect(throws: URLError.self) { try await signing.value }
+        #expect(model.session == nil)
+        transport.setHook(nil)
+        hold.release()
+    }
+
+    /// Fix round 2 (security SN6): while logins are held after a 429, a check counts as an answer only if its ping just
+    /// answered as the library; otherwise nothing changes.
+    @Test func heldLoginNeedsAServerPing() async throws {
+        let (model, clock) = try await signedIn()
+        model.noteUnreachable()
+        model.reachability.loginHeldUntil = clock.now() + 60
+        model.reachability.serverPingAt = nil
+        let client = try #require(model.session?.client)
+        _ = await model.reconnectLogin(client, replacing: client)
+        #expect(model.reachability.isSuspect, "no ping proved the library: not an answer")
+        model.reachability.serverPingAt = clock.now()
+        _ = await model.reconnectLogin(client, replacing: client)
+        #expect(!model.reachability.machine.isDown, "the ping just answered as the library: held, but there")
+        // The app's probe records a server ping.
+        model.reachability.serverPingAt = nil
+        #expect(await model.probe(home) == nil && model.reachability.serverPingAt != nil)
+    }
+
+    /// Fix round 3 (security SN15b): a server ping from one session never vouches for the next: sign-out clears it, and
+    /// signing in (perhaps to another server) starts from none.
+    @Test func serverPingClearedOnSignOutAndSignIn() async throws {
+        let (model, clock) = try await signedIn()
+        model.reachability.serverPingAt = 999
+        model.signOut()
+        #expect(model.reachability.serverPingAt == nil)
+        model.reachability.serverPingAt = 999
+        clock.set(5)
+        transport.setDown(["192.168.1.2"])
+        await #expect(throws: (any Error).self) { try await model.signIn(urls: [home], username: "jordan", password: "pw") }
+        #expect(model.reachability.serverPingAt == nil, "a sign-in whose ping didn't answer keeps none")
+        transport.setDown([])
+        try await model.signIn(urls: [home], username: "jordan", password: "pw")
+        #expect(model.reachability.serverPingAt == 5, "only this sign-in's own ping")
+        model.signOut()
+    }
+
     /// Automatically offline, `request` asks nothing (D328): a screen's read fails at once; the machine's checks bring
     /// Magpie back.
     @Test func automaticOfflineRequestFailsAtOnce() async throws {
