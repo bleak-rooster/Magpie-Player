@@ -238,6 +238,7 @@ extension AppModel {
     /// library. True when it was on (Connect said so beforehand).
     @discardableResult
     func leaveOfflineModeForSignIn() -> Bool {
+        reachability.serverPingAt = nil   // fix round 3 (security SN15b): only this sign-in's own ping vouches for it
         guard isForcedOffline else { return false }
         setOfflineMode(on: false, fromSettings: true)
         return true
@@ -469,6 +470,7 @@ extension AppModel {
         r.failures = 0
         r.authRejected = false
         r.lastAnswerAt = session == nil ? nil : r.clock.now()
+        if session == nil { r.serverPingAt = nil }   // fix round 3 (security SN15b): signed out, nothing vouched for
         reachabilityEvent(session == nil ? .signedOut : .answered)
         if !serverReachable { serverReachable = true }
         if session != nil { endLeavingManual(answered: true) }

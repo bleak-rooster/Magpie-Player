@@ -24,13 +24,24 @@ final class ArtworkCache {
         config.httpCookieAcceptPolicy = .never
         return config
     }()
-    nonisolated static let transport: HTTPTransport =
+    /// Round 28 O1 fix round 3 (security SN12): private; the only way to it is `gatedTransport(_:)`, under the gate.
+    private nonisolated static let transport: HTTPTransport =
         URLSessionTransport(timeout: 20, session: SameOriginRedirects.session(configuration: sessionConfiguration))
 
     #if DEBUG
     /// Tests: artwork requests go here instead of the network (G0).
     var transportForTesting: HTTPTransport?
     #endif
+
+    /// The one accessor: the session (or the test's), under the model's offline gate.
+    private func gatedTransport(_ gate: OfflineGate) -> HTTPTransport {
+        var raw = Self.transport
+        #if DEBUG
+        if let transportForTesting { raw = transportForTesting }
+        #endif
+        return GatedTransport(raw, gate: gate, role: .main)
+    }
+
 
     init() { cache.countLimit = 400 }
 
@@ -63,11 +74,7 @@ final class ArtworkCache {
         if let hit = cached(key) { return hit }
         if let task = inFlight[key] { return await task.value.image }
         let started = generation
-        var raw = Self.transport
-        #if DEBUG
-        if let transportForTesting { raw = transportForTesting }
-        #endif
-        let transport = GatedTransport(raw, gate: gate, role: .main)
+        let transport = gatedTransport(gate)
         let task = Task<(image: UIImage?, data: Data?), Never> { [transport] in
             guard let (data, response) = try? await transport.send(URLRequest(url: url)),
                   response.statusCode == 200 else { return (nil, nil) }

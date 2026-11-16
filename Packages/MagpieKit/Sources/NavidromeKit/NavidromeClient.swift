@@ -200,10 +200,12 @@ public actor NavidromeClient {
         return .http(status: status)
     }
 
-    /// A Subsonic envelope, or Navidrome's native error object.
+    /// A Subsonic envelope, or Navidrome's native error object. Fix round 3 (security SN15a): exactly `{"error": "…"}`,
+    /// not any object that happens to carry an `error` string (a CDN's or proxy's JSON).
     static func hasLibraryShape(_ data: Data) -> Bool {
         guard let object = JSONNesting.object(with: data) as? [String: Any] else { return false }
-        return object["subsonic-response"] is [String: Any] || object["error"] is String
+        if object["subsonic-response"] is [String: Any] { return true }
+        return Set(object.keys) == ["error"] && object["error"] is String
     }
 
     /// Non-empty and not JSON.

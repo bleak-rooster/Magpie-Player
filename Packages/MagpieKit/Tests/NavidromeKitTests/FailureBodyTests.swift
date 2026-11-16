@@ -84,6 +84,10 @@ import Testing
         #expect(await login(500, #"{"error":"database is locked"}"#) as? NavidromeError == .http(status: 500))
         #expect(await login(403, #"{"error":"Invalid username or password"}"#) as? NavidromeError == .badCredentials)
         #expect(await login(500, #"{"subsonic-response":{"status":"failed","version":"1.16.1"}}"#) as? NavidromeError == .http(status: 500))
+        // Fix round 3 (security SN15a): Navidrome's exact error object, not any object with an `error` string.
+        #expect(await login(403, #"{"error":"blocked","cf_ray":"abc"}"#) as? NavidromeError == .unexpectedResponse)
+        #expect(await login(500, #"{"error":"oops","status":500,"path":"/auth/login"}"#) as? NavidromeError == .unexpectedResponse)
+        #expect(await login(500, #"{"error":7}"#) as? NavidromeError == .unexpectedResponse)
     }
 
     /// Fix round 2 (security SN5): the login's answer is capped at 64 KiB.

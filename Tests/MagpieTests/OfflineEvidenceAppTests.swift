@@ -272,6 +272,24 @@ private let away = URL(string: "https://music.example.com/navidrome")!
         #expect(await model.probe(home) == nil && model.reachability.serverPingAt != nil)
     }
 
+    /// Fix round 3 (security SN15b): a server ping from one session never vouches for the next: sign-out clears it, and
+    /// signing in (perhaps to another server) starts from none.
+    @Test func serverPingClearedOnSignOutAndSignIn() async throws {
+        let (model, clock) = try await signedIn()
+        model.reachability.serverPingAt = 999
+        model.signOut()
+        #expect(model.reachability.serverPingAt == nil)
+        model.reachability.serverPingAt = 999
+        clock.set(5)
+        transport.setDown(["192.168.1.2"])
+        await #expect(throws: (any Error).self) { try await model.signIn(urls: [home], username: "jordan", password: "pw") }
+        #expect(model.reachability.serverPingAt == nil, "a sign-in whose ping didn't answer keeps none")
+        transport.setDown([])
+        try await model.signIn(urls: [home], username: "jordan", password: "pw")
+        #expect(model.reachability.serverPingAt == 5, "only this sign-in's own ping")
+        model.signOut()
+    }
+
     /// Automatically offline, `request` asks nothing (D328): a screen's read fails at once; the machine's checks bring
     /// Magpie back.
     @Test func automaticOfflineRequestFailsAtOnce() async throws {
