@@ -165,7 +165,7 @@ import Testing
         #expect(l.visibleHomeSections(offline: false, hasListenBrainzToken: false, discoverSetUp: false, outside: outside)
                 == navidrome)
         #expect(l.visibleHomeSections(offline: true, hasListenBrainzToken: true, discoverSetUp: true, outside: outside)
-                == [.downloaded])
+                == [.greeting, .quickAccess, .discover, .downloaded, .playlists])   // round 28 O3 (D340)
         var none = l
         none.becauseYouLikeRows = 0
         #expect(!none.visibleHomeSections(offline: false, hasListenBrainzToken: false, discoverSetUp: true, outside: outside)

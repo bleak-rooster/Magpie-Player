@@ -138,6 +138,7 @@ private func songsJSON(_ ids: [String]) -> String {
         }
         // Online, it asks as before.
         model.updatePreferences { $0.downloads.offlineMode = .off }
+        #expect(await eventually { !model.isOffline })   // Round 28 O1 fix round 2 (m2): online once Offline mode's login answers
         await model.offerQueue(.album("al1"), .end)
         #expect(model.queueActions.pendingCollection?.collection == .album("al1"))
     }

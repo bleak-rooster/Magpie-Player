@@ -48,6 +48,7 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack(path: $path) {
             List {
+                OfflineModeSection()   // Round 28 O1 (D323): first, above Accounts & Servers
                 Section {
                     ForEach(SettingsPage.accountsAndServers, id: \.self, content: link)
                 } header: {

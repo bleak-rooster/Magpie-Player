@@ -237,7 +237,10 @@ enum DiscoverPagesCopy {
     static let noDownloader = "Songs already in your library will appear; others can\u{2019}t be downloaded until a downloader is set up on your server."
     static let couldntDownload = "Couldn\u{2019}t download"
     static let retry = "Retry"
-    static let downloadSongs = "Download songs"
+    /// Round 28 O3 fix round 1 (design H2): Aurral's own download brings the flow's songs into the library; it says so,
+    /// so it isn't mistaken for Download (to this phone) beside it.
+    static let downloadSongs = "Add these songs to your library"
+    static let downloadSongsSymbol = "plus.circle"
     static let updating = "Updating\u{2026} Check back in a little while."
     static let notReady = "Not ready yet. Check back later."
     static let couldntUpdate = "Couldn\u{2019}t update just now. Showing the last copy."

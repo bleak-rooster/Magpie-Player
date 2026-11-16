@@ -6,7 +6,8 @@ import SwiftUI
 
 /// Search tab: type to search. Recent searches when the field is empty; otherwise the library's Top
 /// result, Songs, Artists and Albums, then a "Not in your library" band (D4: library first). Offline (Task 14) it
-/// searches what's on the phone instead: "Downloads", then "Recently played on this phone".
+/// searches what's on the phone instead: "Downloads" only (round 28 S, owner Q2, D339). Round 28 S (D338): every song
+/// row says "Song · <artist>" and every album row "Album · <artist>" (`SearchRowText`); artist rows keep their line.
 struct SearchView: View {
     @Environment(AppModel.self) private var app
     @State private var model: SearchModel?
@@ -64,7 +65,8 @@ struct SearchView: View {
     }
 }
 
-private struct SearchContent: View {
+/// Internal (round 28 S) so hosted tests can show it with set results.
+struct SearchContent: View {
     @Environment(AppModel.self) private var app
     let model: SearchModel
     @Binding var scope: SearchScope
@@ -75,13 +77,14 @@ private struct SearchContent: View {
     @State private var trying: TryTarget?
     @State private var removing: Song?
     private let themed = Themed()
+    /// Fix round 1 (review I1, design H2): album rows wrap their lines at accessibility sizes.
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
         let sections = model.results
         List {
-            if app.isOffline {
-                OfflineNotice().listRowBackground(Color.clear).listRowSeparator(.hidden)
-            }
+            // Round 28 O3 fix round 1 (design H5): at accessibility sizes the notice is the first row and scrolls away.
+            OfflineNoticeRow().listRowBackground(Color.clear).listRowSeparator(.hidden)
             switch model.phase {
             case .idle:
                 recentSection
@@ -111,8 +114,20 @@ private struct SearchContent: View {
         .listStyle(.plain)
         .listRowSeparatorTint(themed.palette.sepColor)
         // Round 23 (owner, D201): the choices stay at the top whenever there's a query, searching or not.
+        // Round 28 O3 (O1's design M4, D329): the offline notice above them, an inset rather than a row, so results never
+        // jump under a finger when it comes or goes.
         .safeAreaInset(edge: .top, spacing: 0) {
-            if model.phase != .idle { SearchScopePicker(scope: $scope) }
+            VStack(spacing: 0) {
+                OfflineNoticeInset()
+                if model.phase != .idle { SearchScopePicker(scope: $scope) }
+            }
+        }
+        // Round 28 O3 (D326): pull to refresh offline tries the library again (as Home and Library do); online it searches
+        // again. Fix round 1 (design M5): in Offline mode it searches the phone again and says Offline mode is on.
+        .refreshable {
+            let again = { if !model.query.isEmpty { model.update(query: model.query) } }
+            if await OfflineRefresh.run(app, reread: { again() }) { return }
+            again()
         }
         .navigationTitle("Search")
         .magpieScreen()
@@ -259,7 +274,7 @@ private struct SearchContent: View {
 
     // MARK: - Offline
 
-    /// What's on the phone (Task 14): the downloads under one heading, by kind, then the cached songs that played.
+    /// What's on the phone (Task 14): the downloads under one heading, by kind (round 28 S, D339: downloads only).
     @ViewBuilder private func offlineResults(_ sections: SearchSections) -> some View {
         let songs = scope == .all || scope == .songs ? sections.songs : []
         let artists = scope == .all || scope == .artists ? sections.artists : []
@@ -284,15 +299,7 @@ private struct SearchContent: View {
                 }
             }
         }
-        let recent = scope == .all || scope == .songs ? sections.recentlyPlayed : []
-        if !recent.isEmpty {
-            Section {
-                header("Recently played on this phone")
-                ForEach(Array(recent.enumerated()), id: \.element.id) { index, song in
-                    songRow(song, index: index, in: recent, id: "search-recent-\(index)")
-                }
-            }
-        }
+        // Round 28 S (owner Q2, D339): no "Recently played on this phone": offline, Search lists downloads only.
     }
 
     // MARK: - Not in your library
@@ -345,6 +352,7 @@ private struct SearchContent: View {
     private func notYetSongRow(_ recording: ExternalRecording, index: Int) -> some View {
         let song = Song(id: "notyet-\(index)", title: recording.title, artist: recording.artist,
                         album: recording.releaseTitle ?? "", duration: recording.duration ?? 0)
+        let detail = SearchRowText.songDetail(song), label = SearchRowText.songLabel(song)
         return NotYetSongLink(recording: recording, play: { song in
             remember(model.query)
             app.play([song], startAt: 0)
@@ -352,10 +360,14 @@ private struct SearchContent: View {
             // R15: the release's cover from outside, never cached.
             OutsideArtwork(model.outsideArt, key: .cover(releaseGroup: nil, release: recording.releaseMBID)) { art in
                 SongRow(song: song, state: RequestCopy.rowState(for: recording, in: app.requests), artwork: art,
+                        detail: detail, label: label,   // Round 28 S (D338)
                         tryTitle: RequestCopy.tryTitle(app.tryAvailability),
                         onTry: { trying = TryTarget(recording: recording) })
             }
+            .searchRowProbe("search-notyet-song-\(index)", detail: detail, label: label)
         }
+            // Round 28 S (D338): the library song a ready request became, shown in this row's place, says it too.
+            .environment(\.songRowText, .search)
             .searchPreviewSlot(recording)   // Round 14: A3's preview goes here
             .accessibilityIdentifier("search-notyet-song-\(index)")
             .listRowInsets(EdgeInsets())
@@ -376,8 +388,13 @@ private struct SearchContent: View {
 
     @ViewBuilder private func notYetAlbumRow(_ album: NotYetAlbum) -> some View {
         if let request = RequestLinks.request(releaseGroup: album.mbid, in: app.requests) {   // R17
-            RequestedItemRow(title: album.title,
-                             detail: [album.kind ?? "Album", album.artist].joined(separator: " \u{00B7} "), request: request)
+            // Round 28 S (D338): the same never-blank line as the album's own row.
+            // Fix round 1 (design M3): VoiceOver "<name>, EP by <artist>", not the middle dot.
+            let detail = SearchRowText.albumDetail(artist: album.artist, kind: album.kind)
+            let label = SearchRowText.albumLabel(name: album.title, artist: album.artist, kind: album.kind)
+            RequestedItemRow(title: album.title, detail: detail, request: request, label: label)
+                .searchRowProbe("search-requested-album-\(album.title)", detail: detail,
+                                label: label)
                 .listRowBackground(Color.clear)
         } else if album.mbid != nil {
             // R19: opens the outside album page.
@@ -416,10 +433,14 @@ private struct SearchContent: View {
     }
 
     private func plainNotYetAlbumRow(_ album: NotYetAlbum) -> some View {
-        OutsideArtwork(model.outsideArt, key: album.mbid.map(OutsideArtKey.releaseGroup)) { art in   // R15
-            NotYetAlbumRow(title: album.title, detail: [album.kind ?? "Album", album.artist].joined(separator: " \u{00B7} "),
-                           label: "\(album.title), \(album.kind ?? "Album") by \(album.artist)", artwork: art)
+        // Round 28 S (D338): "<kind> · <artist>" ("EP" alone when the artist is blank); VoiceOver "<name>, EP by
+        // <artist>".
+        let detail = SearchRowText.albumDetail(artist: album.artist, kind: album.kind)
+        let label = SearchRowText.albumLabel(name: album.title, artist: album.artist, kind: album.kind)
+        return OutsideArtwork(model.outsideArt, key: album.mbid.map(OutsideArtKey.releaseGroup)) { art in   // R15
+            NotYetAlbumRow(title: album.title, detail: detail, label: label, artwork: art)
         }
+        .searchRowProbe("search-notyet-album-\(album.title)", detail: detail, label: label)
         .listRowBackground(Color.clear)
     }
 
@@ -445,15 +466,20 @@ private struct SearchContent: View {
     }
 
     private func songRow(_ song: Song, index: Int, in songs: [Song], id: String? = nil) -> some View {
-        Button {
+        let detail = SearchRowText.songDetail(song), label = SearchRowText.songLabel(song)
+        return Button {
             remember(model.query)
             app.play(songs, startAt: index)
         } label: {
-            Artwork(song.coverArtId, side: 48) { SongRow(song: song, state: .library, artwork: $0) }
+            // Round 28 S (D338): "Song · <artist>", and VoiceOver "<title>, song by <artist>".
+            Artwork(song.coverArtId, side: 48) {
+                SongRow(song: song, state: .library, artwork: $0, detail: detail, label: label)
+            }
         }
         .buttonStyle(.plain)
         .accessibilityAddTraits(.isButton)
         .accessibilityIdentifier(id ?? "search-song-\(index)")
+        .searchRowProbe(id ?? "search-song-\(index)", detail: detail, label: label)
         .contextMenu {
             SongQueueMenuItems(song: song)
             FindsLibraryMenuItem(songId: song.id, artist: song.artist, host: FindsLibraryMenuItem.main)   // R18/R20: Keep
@@ -487,20 +513,32 @@ private struct SearchContent: View {
     }
 
     private func albumRow(_ album: Album) -> some View {
-        NavigationLink(value: Route.album(id: album.id)) {
+        // Round 28 S (D338): "Album · <artist>" ("Album" alone when the artist is blank); VoiceOver "<name>, album by
+        // <artist>", the Downloaded mark as its value.
+        let detail = SearchRowText.albumDetail(artist: album.artist)
+        let label = SearchRowText.albumLabel(name: album.name, artist: album.artist)
+        let mark = app.downloadIndex.mark(album: album)
+        return NavigationLink(value: Route.album(id: album.id)) {
             HStack(spacing: Tokens.Spacing.m) {
                 Artwork(album.coverArtId, side: 48) { SleeveArt(image: $0, side: 48) }
+                // Fix round 1 (review I1, design H2): at accessibility sizes the lines wrap rather than cut off, and the
+                // download mark goes below the artist line.
+                let large = typeSize.isAccessibilitySize
+                let line = large ? AnyLayout(VStackLayout(alignment: .leading, spacing: 2))
+                                 : AnyLayout(HStackLayout(spacing: 4))
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(album.name).font(.body).lineLimit(2)
-                    HStack(spacing: 4) {
-                        Text(["Album", album.artist].joined(separator: " \u{00B7} "))
-                            .font(.footnote).foregroundStyle(themed.palette.ink2Color).lineLimit(1)
-                        DownloadMarkView(app.downloadIndex.mark(album: album))   // P1
+                    Text(album.name).font(.body).lineLimit(large ? nil : 2)
+                    line {
+                        Text(detail).font(.footnote).foregroundStyle(themed.palette.ink2Color).lineLimit(large ? nil : 1)
+                        DownloadMarkView(mark)   // P1
                     }
                 }
             }
-            .accessibilityElement(children: .combine)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(label)
+            .accessibilityValue(mark.text ?? "")
         }
+        .searchRowProbe("search-album-\(album.id)", detail: detail, label: label)
         .albumMenu(album)   // R12, R7 Favourite, R8 Add to playlist…, P4 Reload artwork
         .collectionSwipeActions(.album(album.id), in: .list)   // R12
         .listRowBackground(Color.clear)
@@ -531,5 +569,54 @@ private extension View {
     func tracked(_ model: SearchModel, _ section: SearchModel.ResultSection, _ index: Int) -> some View {
         onAppear { model.rowAppeared(section, index: index) }
             .onDisappear { model.rowDisappeared(section, index: index) }
+    }
+}
+
+extension SongRowText {
+    /// Round 28 S (owner, 2026-11-15): Search's song rows, "Song · <artist>" / "<title>, song by <artist>" (D338).
+    static let search = SongRowText(detail: { SearchRowText.songDetail($0) }, label: { SearchRowText.songLabel($0) })
+}
+
+/// Round 28 S: what one Search row says under its title and to VoiceOver, and (fix round 1, design M1) how tall it is
+/// on screen, so a test can tell a wrapped artist line from one cut off.
+struct SearchRowReport: Equatable {
+    var detail: String
+    var label: String
+    var height: CGFloat = 0
+}
+
+/// Round 28 S fix round 1 (review M3): the probe's closure in a struct, so `@Entry` doesn't warn about storing a
+/// closure.
+struct SearchRowProbeSink {
+    let report: @MainActor (_ id: String, _ row: SearchRowReport) -> Void
+}
+
+extension EnvironmentValues {
+    /// Round 28 S (owner, 2026-11-15): hosted tests read what each song and album row in Search says under its title
+    /// and to VoiceOver, as the row appears (D338). Nil in the app.
+    @Entry var searchRowProbe: SearchRowProbeSink? = nil
+}
+
+extension View {
+    /// Round 28 S: tells `searchRowProbe` (tests only) the row's second line, VoiceOver label and height.
+    func searchRowProbe(_ id: String, detail: String, label: String) -> some View {
+        modifier(SearchRowProbe(id: id, detail: detail, label: label))
+    }
+}
+
+private struct SearchRowProbe: ViewModifier {
+    @Environment(\.searchRowProbe) private var probe
+    let id: String
+    let detail: String
+    let label: String
+
+    func body(content: Content) -> some View {
+        if let probe {
+            content.onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { height in
+                probe.report(id, SearchRowReport(detail: detail, label: label, height: height))
+            }
+        } else {
+            content
+        }
     }
 }

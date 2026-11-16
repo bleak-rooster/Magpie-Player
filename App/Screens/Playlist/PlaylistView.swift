@@ -26,6 +26,11 @@ struct PlaylistView: View {
     struct Page {
         var playlist: Playlist
         var songs: [Song]
+        /// Round 28 O3 (D341): where the page came from; on the phone's page, its kind and how many songs are here.
+        var source: PageSource = .server
+        var kind: OfflinePlaylistKind = .playlist
+        var onPhone = 0
+        var total: Int?
     }
 
     var body: some View {
@@ -49,7 +54,8 @@ struct PlaylistView: View {
         .toolbar {
             if let page = page.value, !fromPhone {
                 ToolbarItem(placement: .topBarTrailing) {
-                    PlaylistMoreMenu(playlist: page.playlist, songs: page.songs,
+                    // Round 28 O3 (D341): on the phone's page only what works there (Add to queue).
+                    PlaylistMoreMenu(playlist: page.playlist, songs: page.songs, onServer: page.source == .server,
                                      rename: { newName = page.playlist.name; renaming = true },
                                      delete: { confirmingDelete = true })
                 }
@@ -94,31 +100,49 @@ struct PlaylistView: View {
         let songs = page.songs
         let minutes = DurationText.minutes(page.playlist.duration > 0 ? page.playlist.duration
                                                                        : songs.reduce(0) { $0 + $1.duration })
-        let editable = !fromPhone && model.canEdit(page.playlist)
+        let editable = Self.isEditable(canEdit: model.canEdit(page.playlist), fromPhone: fromPhone, source: page.source)
+            && !model.isOffline
+        let countLine = page.source.isPhone ? OfflinePageCopy.onPhone(page.onPhone, of: page.total) : nil
+        if page.source == .phoneCopy { PhoneCopyNote(retry: load) }   // round 28 O3 (D341)
         VStack(spacing: Tokens.Spacing.l) {
             VStack(spacing: Tokens.Spacing.s) {
                 Artwork(page.playlist.coverArtId, side: 220) { SleeveArt(image: $0, side: 220) }
-                    .reloadArtworkMenu(page.playlist.coverArtId)
+                    .reloadArtworkMenu(page.source == .server ? page.playlist.coverArtId : nil)
                     .shadow(color: .black.opacity(0.18), radius: 16, y: 8)
                     .padding(.bottom, Tokens.Spacing.s)
                 Text(page.playlist.name).magpieDisplay(.title).multilineTextAlignment(.center)
                     .accessibilityAddTraits(.isHeader)
-                Text("\(songs.count) \(songs.count == 1 ? "song" : "songs") · \(minutes) min")
-                    .font(theme.numberFont(.footnote)).foregroundStyle(p.ink2Color)
-                if !editable, !fromPhone, !model.isOffline, let owner = page.playlist.owner {
+                // Fix round 1 (design L1): one count line: "<n> of <m> songs on this phone" replaces "N songs · M min".
+                if countLine == nil {
+                    Text("\(songs.count) \(songs.count == 1 ? "song" : "songs") · \(minutes) min")
+                        .font(theme.numberFont(.footnote)).foregroundStyle(p.ink2Color)
+                }
+                if page.source.isPhone {
+                    // Round 28 O3 (D341, D205 offline too): who made another user's playlist or flow (a flow's owner is
+                    // its saved caption, which already leaves your own out), and how many of its songs are here.
+                    OwnerCaption(owner: page.playlist.owner,
+                                 signedInUser: page.kind == .playlist ? model.session?.username : nil)
+                    OnPhoneCountLine(onPhone: page.onPhone, total: page.total)
+                } else if !editable, !fromPhone, !model.isOffline, let owner = page.playlist.owner {
                     Text(PlaylistCopy.madeBy(owner)).font(.footnote).foregroundStyle(p.ink2Color)
                         .multilineTextAlignment(.center)
                         .accessibilityIdentifier("playlist-read-only")
                 }
-                DownloadMarkLine(model.downloadIndex.mark(playlistId: page.playlist.id, songIds: songs.map(\.id)))
+                if OfflinePageCopy.showsMark(page.source, onPhone: page.onPhone, total: page.total) {   // design H1
+                    DownloadMarkLine(model.downloadIndex.mark(playlistId: page.playlist.id, songIds: songs.map(\.id)))
+                }
             }
             .padding(.horizontal, Tokens.Spacing.largeTitleMargin)
 
             VStack(spacing: Tokens.Spacing.s) {
                 ActionBar {
                     PlayShuffleButtons(songs: songs, recent: fromPhone ? nil : .playlist(page.playlist))   // round 14
-                    DownloadButton(reason: .playlist(page.playlist.id), songs: songs, playlist: snapshot(page),
-                                   coverArtId: page.playlist.coverArtId)
+                    // Round 28 O3 (D341): on the phone's page only once there is a download to remove.
+                    if AlbumView.showsDownload(page.source, status: model.downloadStatus(songs.map(\.id),
+                                                                                         reason: .playlist(page.playlist.id))) {
+                        DownloadButton(reason: .playlist(page.playlist.id), songs: songs, playlist: snapshot(page),
+                                       coverArtId: page.playlist.coverArtId)
+                    }
                 }
                 DownloadNote(reason: .playlist(page.playlist.id), songs: songs)
             }
@@ -141,7 +165,13 @@ struct PlaylistView: View {
                 .buttonStyle(.plain)
                 .accessibilityAddTraits(.isButton)
                 .accessibilityIdentifier("track-\(index)")
-                .contextMenu { SongQueueMenuItems(song: song); SongDownloadMenuItem(song: song, removing: $removing) }
+                .contextMenu {
+                    if OfflinePageCopy.serverRowMenus(page.source, offline: model.isOffline) {
+                        SongQueueMenuItems(song: song); SongDownloadMenuItem(song: song, removing: $removing)
+                    } else {
+                        PhoneSongMenuItems(song: song, removing: $removing)   // fix round 1 (design M10)
+                    }
+                }
                 Divider().overlay(p.sepColor).padding(.leading, 76)
             }
             .foregroundStyle(p.inkColor)
@@ -150,9 +180,11 @@ struct PlaylistView: View {
             // position (review fix I2), and the list reads again after.
             .songSwipeActions(song, in: .list, destructive: editable
                               ? RowDestructiveAction(title: "Remove from playlist", symbol: "minus.circle") { remove(at: index, song) }
-                              : nil)
+                              : nil,
+                              // Round 28 O3 fix round 2 (m5): like the menu (design M10) on the phone's pages.
+                              serverActions: OfflinePageCopy.serverRowMenus(page.source, offline: model.isOffline))
         }
-        if !fromPhone, !model.isOffline { ComingRows(playlistId: page.playlist.id) }   // round 14 A3: "Coming"
+        if !fromPhone, !model.isOffline, page.source == .server { ComingRows(playlistId: page.playlist.id) }   // R14 A3
         Color.clear.frame(height: Tokens.Spacing.l)
     }
 
@@ -180,25 +212,72 @@ struct PlaylistView: View {
         edit { try await model.removeSong(at: index, songId: song.id, from: $0) }
     }
 
+    /// Round 28 O3 (D341): whether the page may change the playlist (rename, delete, remove a song): the user's own, on
+    /// the server's page; never on the phone's copy or offline.
+    static func isEditable(canEdit: Bool, fromPhone: Bool, source: PageSource) -> Bool {
+        canEdit && !fromPhone && source == .server
+    }
+
     private func load() async {
         loadedOffline = model.isOffline
-        if model.isOffline || fromPhone {   // Task 14: the playlist as downloaded, its songs on the phone
-            let catalog = await model.offlineCatalog
-            guard let playlist = catalog.playlists().first(where: { $0.id == playlistId }) else {
-                page = .failed(OfflineCopy.notOnPhone)
-                return
+        await Self.load(model, playlistId: playlistId, fromPhone: fromPhone, onScreen: page.value?.source) { outcome in
+            switch outcome {
+            case .shown(let new): page = .loaded(new)
+            case .notOnPhone: page = .failed(OfflineCopy.notOnPhone)
+            // Deleted (here or elsewhere): nothing to show; the list behind reads again.
+            case .failed(let error): page = page.failing(error, noticeTo: model)   // Round 13 Z2: never for a load cut short
             }
-            page = .loaded(Page(playlist: playlist, songs: catalog.songs(inPlaylist: playlistId)))
+        }
+    }
+
+    /// Round 28 O3 (D341): what one load of the page gives.
+    enum Outcome {
+        case shown(Page)
+        /// From the phone, with none of its songs on the phone.
+        case notOnPhone
+        case failed(any Error)
+    }
+
+    /// Round 28 O3 (D341, D343): one load of the playlist page, handed to `show`, then (online) recorded for the phone.
+    /// Offline, or opened from Downloads (T23): the phone's page: a flow on the phone (O2's `offlineFlowPage`, from the
+    /// saved Discover file) or a downloaded or recorded playlist (`playlistPage`, Q3). Online: the server's, a downloaded
+    /// playlist following it (`readPlaylistPage`); a read that got no answer shows the phone's copy when it has one and
+    /// nothing from the server is on screen (fix round 1, I1, I2). The record goes into the downloads captured **before**
+    /// the read (O2, security M3), and never for a Discover playlist (fix round 1, review M2: a flow is no playlist; its
+    /// copy comes from the saved Discover file).
+    static func load(_ model: AppModel, playlistId: String, fromPhone: Bool, onScreen: PageSource? = nil,
+                     show: (Outcome) -> Void) async {
+        if model.isOffline || fromPhone {
+            show(await phonePage(model, playlistId: playlistId, source: .phone).map(Outcome.shown) ?? .notOnPhone)
             return
         }
+        let target = model.downloads
         do {
-            let (playlist, songs) = try await model.request { [playlistId] in try await $0.playlist(id: playlistId) }
-            page = .loaded(Page(playlist: playlist, songs: songs))
-            // Loaded with a connection: a downloaded playlist follows the server's version.
-            await model.refreshDownloadedPlaylist(playlist, songs: songs)
+            // Loaded with a connection: a downloaded playlist follows the server's version. Round 28 O2 fix round 2 (SN5):
+            // into the downloads as they were before the read (`readPlaylistPage`).
+            let (playlist, songs) = try await model.readPlaylistPage(id: playlistId)
+            show(.shown(Page(playlist: playlist, songs: songs)))
+            guard !model.isDiscoverPlaylist(id: playlistId) else { return }
+            await model.recordPlaylistPage(playlist, songs: songs, kind: .playlist, into: target)   // O2's D333, Q3
         } catch {
-            // Deleted (here or elsewhere): nothing to show; the list behind reads again.
-            page = page.failing(error, noticeTo: model)   // Round 13 Z2: also never for a load cut short
+            if PageSource.fallsBack(after: error, onScreen: onScreen),
+               let copy = await phonePage(model, playlistId: playlistId, source: .phoneCopy) {
+                show(.shown(copy))
+            } else {
+                show(.failed(error))
+            }
         }
+    }
+
+    /// Round 28 O3 (D341, D343): the phone's page: a flow listed offline first (its songs, library copies where
+    /// downloaded, and its owner from the saved caption), else the downloaded or recorded playlist.
+    private static func phonePage(_ model: AppModel, playlistId: String, source: PageSource) async -> Page? {
+        if let flow = await model.offlineFlowPage(id: playlistId) {
+            return Page(playlist: flow.playlist, songs: flow.songs, source: source, kind: flow.kind,
+                        onPhone: flow.onPhone, total: flow.total)
+        }
+        guard let page = await model.offlineCatalog.playlistPage(id: playlistId) else { return nil }
+        return Page(playlist: page.playlist, songs: page.songs, source: source, kind: page.kind,
+                    onPhone: page.onPhone, total: page.total)
     }
 }

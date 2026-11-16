@@ -140,17 +140,19 @@ import UIKit
         defer { window.isHidden = true }
         let list = try #require(Self.scrollView(in: sheet.view), "the top level is a list")
         let rows = (0..<list.numberOfSections).reduce(0) { $0 + list.numberOfItems(inSection: $1) }
-        #expect(rows == 11, "round 24: five accounts and servers, then six pages (CarPlay among them)")
+        // Round 28 O1 (D323): Offline mode first, in a section of its own; then the five accounts and servers.
+        #expect(rows == 12, "Offline mode, five accounts and servers, then six pages (CarPlay among them)")
+        #expect(list.numberOfItems(inSection: 0) == 1, "Offline mode, alone at the top")
         let visible = list.bounds.height - list.adjustedContentInset.top - list.adjustedContentInset.bottom
         print("T21b settings: content \(list.contentSize.height) pt in \(visible) pt visible (sheet \(sheet.view.frame))")
         #expect(sheet.view.frame.height < 667, "measured inside the sheet, not the whole window")
-        #expect(list.numberOfItems(inSection: 0) == 5)
+        #expect(list.numberOfItems(inSection: 1) == 5)
         // The first screen, in the list's own coordinates, at rest.
         let bottom = list.contentOffset.y + list.bounds.height - list.adjustedContentInset.bottom
-        let accounts = try #require(list.layoutAttributesForItem(at: IndexPath(item: 4, section: 0)))
+        let accounts = try #require(list.layoutAttributesForItem(at: IndexPath(item: 4, section: 1)))
         #expect(accounts.frame.maxY <= bottom, "the Accounts & Servers block fits the first screen")
         if list.contentSize.height > visible {
-            let next = try #require(list.layoutAttributesForItem(at: IndexPath(item: 0, section: 1)))
+            let next = try #require(list.layoutAttributesForItem(at: IndexPath(item: 0, section: 2)))
             #expect(next.frame.minY < bottom, "the list scrolls, and the next row shows where it goes on")
         }
 
@@ -159,6 +161,42 @@ import UIKit
         let (axWindow, _) = try await Self.host(model, typeSize: .accessibility2)
         defer { axWindow.isHidden = true }
         try Self.render(axWindow, "settings-375x667-ax2.png")
+    }
+
+    /// Round 28 O1 fix round 2 (re-review m1): offline by itself, Offline mode's section holds the switch and Try again;
+    /// the Accounts & Servers block still fits the first screen.
+    @Test func settingsTopLevel_offlineFitsAccountsBlock_375x667() async throws {
+        let name = "settings-offline-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: name)!
+        defer { defaults.removePersistentDomain(forName: name) }
+        let transport = HostSwitchTransport()
+        transport.inner.stub(pathSuffix: "/rest/ping", body: Data(#"{"subsonic-response":{"status":"ok","version":"1.16.1"}}"#.utf8))
+        transport.inner.stub(method: "POST", pathSuffix: "/auth/login", body: Data(#"""
+        {"id":"u1","isAdmin":true,"name":"Admin","subsonicSalt":"salt","subsonicToken":"tok","token":"jwt","username":"jordan"}
+        """#.utf8))
+        transport.inner.stub(pathSuffix: "/api/song", body: Data("[]".utf8), headers: ["X-Total-Count": "0"])
+        let model = AppModel(store: SessionStore(keychain: KeychainStore(service: "com.bleak-rooster.magpie.tests.\(UUID().uuidString)")),
+                             lidarrStore: MemoryLidarrStore(), tokenStore: MemoryTokenStore(), matchIndexDirectory: nil,
+                             dataDirectory: nil, transport: transport, probeTransport: transport,
+                             engine: FakeEngine(), defaults: defaults, systemNowPlaying: false, notifications: false)
+        try await model.signIn(urls: [URL(string: "http://nas.local:4533")!], username: "jordan", password: "pw")
+        defer { model.signOut() }
+        let clock = ManualReachabilityClock()
+        model.useReachabilityClock(clock)
+        transport.setDown(["nas.local"])
+        model.noteUnreachable()
+        #expect(await model.advanceReachability(clock, to: 30))
+        #expect(model.offlineState == .automatic)
+
+        let (window, sheet) = try await Self.host(model)
+        defer { window.isHidden = true }
+        let list = try #require(Self.scrollView(in: sheet.view))
+        #expect(list.numberOfItems(inSection: 0) == 2, "the switch, then Try again")
+        #expect(list.numberOfItems(inSection: 1) == 5)
+        let bottom = list.contentOffset.y + list.bounds.height - list.adjustedContentInset.bottom
+        let accounts = try #require(list.layoutAttributesForItem(at: IndexPath(item: 4, section: 1)))
+        #expect(accounts.frame.maxY <= bottom, "the Accounts & Servers block fits the first screen offline too")
+        try Self.render(window, "settings-375x667-offline.png")
     }
 
     /// Settings presented as a page sheet over a 375 × 667 window, as Library and Home present it.

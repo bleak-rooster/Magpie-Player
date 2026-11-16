@@ -34,6 +34,15 @@ public actor NavidromeClient {
 
     // MARK: - Connect and auth
 
+    /// Round 28 O1 fix round 1 (security M2): the most a ping's answer may be; a Subsonic ping is a few dozen bytes.
+    public static let pingMaxBytes = 16 * 1024
+    /// Round 28 O1 fix round 2 (security SN5): the most a login's answer may be (a token and a few names).
+    public static let loginMaxBytes = 64 * 1024
+
+    /// Round 28 O1 fix round 1 (security L2): the login URL on the first address, the one a reconnect's client (made
+    /// with the address that answered first) signs in at; the app's offline gate lets exactly that one out.
+    public nonisolated var firstLoginURL: URL? { endpoint.bases.first.flatMap { endpoint.url($0, path: "auth/login") } }
+
     /// Picks the first base answering `/rest/ping` with a Subsonic answer, then logs in. Concurrent callers share one login.
     public func connect() async throws -> LoginResult {
         let s = try await singleFlightLogin(reprobe: true, staleGeneration: nil)
@@ -72,7 +81,10 @@ public actor NavidromeClient {
                     URLQueryItem(name: "c", value: clientName),
                     URLQueryItem(name: "f", value: "json"),
                 ]) else { return false }
-                guard let (data, response) = try? await transport.send(URLRequest(url: url)) else { return false }
+                // Round 28 O1 fix round 1 (security M2): capped, like the app's own probe.
+                guard let (data, response) = try? await transport.send(URLRequest(url: url), maxBytes: Self.pingMaxBytes) else {
+                    return false
+                }
                 // Security H2: a 200 from a router or captive portal is not a server; the password stays home.
                 return (200..<300).contains(response.statusCode) && SubsonicPing.isServerAnswer(data)
             }
@@ -86,11 +98,14 @@ public actor NavidromeClient {
         request.httpBody = try JSONEncoder().encode(["username": credentials.username,
                                                       "password": credentials.password])
         Log.request(request)
-        let (data, response) = try await transport.send(request)
+        // Round 28 O1 fix round 2 (SN5): capped; an answer bigger than a login is no answer from the library.
+        let (data, response): (Data, HTTPURLResponse)
+        do { (data, response) = try await transport.send(request, maxBytes: Self.loginMaxBytes) } catch is ResponseTooLarge {
+            throw NavidromeError.unexpectedResponse
+        }
         switch response.statusCode {
         case 200..<300: break
-        case 401, 403: throw NavidromeError.badCredentials
-        default: throw NavidromeError.http(status: response.statusCode)
+        default: throw Self.failure(status: response.statusCode, data, refusals: [401, 403], emptyIsForeign: true, needsShape: true)
         }
         let dto = try Self.decode(LoginDTO.self, data)
         let login = LoginResult(userId: dto.id, isAdmin: dto.isAdmin ?? false,
@@ -147,7 +162,7 @@ public actor NavidromeClient {
             return URLRequest(url: url)
         }, isExpired: Self.subsonicAuthFailure)
         guard (200..<300).contains(response.statusCode) else {
-            throw response.statusCode == 401 ? NavidromeError.badCredentials : NavidromeError.http(status: response.statusCode)
+            throw Self.failure(status: response.statusCode, data, refusals: [401])
         }
         let body = try Self.decode(SubsonicEnvelope.self, data).response
         if body.status != "ok" {
@@ -166,6 +181,37 @@ public actor NavidromeClient {
             throw first == UInt8(ascii: "{") || first == UInt8(ascii: "[")
                 ? NavidromeError.unexpectedData : NavidromeError.unexpectedResponse
         }
+    }
+
+    /// Round 28 O1 fix round 1 (security M3, D325): a failed answer is judged by its body. Text that isn't JSON (a
+    /// proxy's or portal's page, a CDN's error) is `unexpectedResponse` at any status: it isn't the library, so the app
+    /// fails over and probes. An empty or JSON body is the library's (or a gateway's bare) answer and keeps its status.
+    /// `emptyIsForeign` (the login): there only the library's JSON is its answer, so an empty failure (other than a
+    /// refusal) isn't either (security L4 with M3).
+    /// Fix round 2 (security SN6): `needsShape` (the login): JSON counts as the library's only with its error shape, a
+    /// Subsonic envelope or Navidrome's `{"error": …}`; other JSON (a CDN's, a proxy's) is no answer.
+    static func failure(status: Int, _ data: Data, refusals: Set<Int>, emptyIsForeign: Bool = false,
+                        needsShape: Bool = false) -> NavidromeError {
+        if isForeignBody(data) { return .unexpectedResponse }
+        let empty = !data.contains(where: { !$0.isASCIIWhitespace })
+        if needsShape, !empty, !hasLibraryShape(data) { return .unexpectedResponse }
+        if refusals.contains(status) { return .badCredentials }
+        if emptyIsForeign, empty { return .unexpectedResponse }
+        return .http(status: status)
+    }
+
+    /// A Subsonic envelope, or Navidrome's native error object. Fix round 3 (security SN15a): exactly `{"error": "…"}`,
+    /// not any object that happens to carry an `error` string (a CDN's or proxy's JSON).
+    static func hasLibraryShape(_ data: Data) -> Bool {
+        guard let object = JSONNesting.object(with: data) as? [String: Any] else { return false }
+        if object["subsonic-response"] is [String: Any] { return true }
+        return Set(object.keys) == ["error"] && object["error"] is String
+    }
+
+    /// Non-empty and not JSON.
+    static func isForeignBody(_ data: Data) -> Bool {
+        guard let first = data.first(where: { !$0.isASCIIWhitespace }) else { return false }
+        return first != UInt8(ascii: "{") && first != UInt8(ascii: "[")
     }
 
     private func int(_ name: String, _ v: Int) -> URLQueryItem { URLQueryItem(name: name, value: String(v)) }
@@ -680,7 +726,7 @@ public actor NavidromeClient {
             return request
         }, isExpired: { _, r in r.statusCode == 401 })
         guard (200..<300).contains(response.statusCode) else {
-            throw response.statusCode == 401 ? NavidromeError.badCredentials : NavidromeError.http(status: response.statusCode)
+            throw Self.failure(status: response.statusCode, data, refusals: [401])
         }
         if let refreshed = response.value(forHTTPHeaderField: "X-ND-Authorization")?
             .replacingOccurrences(of: "Bearer ", with: ""), !refreshed.isEmpty {

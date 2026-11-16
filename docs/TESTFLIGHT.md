@@ -36,6 +36,39 @@ Two build variants:
 12. **CarPlay.** Request the CarPlay audio entitlement at developer.apple.com/contact/carplay (sign in, choose Audio, describe Magpie as a music player for your own server). Approval takes days to weeks. Granted (2026-11-05): `scripts/archive.sh --team AB12CD34EF --build N --upload` now carries it by default, and `MAGPIE_CARPLAY` is `YES` in `project.yml`, so runs from Xcode on your phone have CarPlay too. If CarPlay is ever revoked, archive with `--no-carplay`.
 13. **CarPlay without a car.** Download **Additional Tools for Xcode** (developer.apple.com/download/all), open **CarPlay Simulator**, connect the iPhone by cable, and Magpie appears once it carries the entitlement. The Xcode iOS simulator (I/O › External Displays › CarPlay) always works: simulator builds carry the entitlement.
 
+## Build 30: what to try
+
+Round 28: your two items, music on this phone offline and the artist in Search.
+
+**What's new**
+- **Offline mode** is a switch at the top of Settings. On, only music on this phone plays and Magpie sends nothing at all; it stays on until you turn it off (signing in turns it off too).
+- **Offline by itself.** When your library hasn't answered for 30 seconds (at once with no connection at all), Magpie switches to the music on this phone, keeps checking in the background while it can, and switches back by itself. **Go offline automatically** in Settings › Downloads & Storage turns this off.
+- **Everything downloaded opens offline.** Library and Home keep their rows, each showing only what's on the phone. Albums, artists, playlists and flows open with only their downloaded songs and say "2 of 12 songs on this phone". Covers and lyrics come with every download.
+- **Download a flow** from its page; it keeps in step with the flow while you're online.
+- **The car** goes back to its first lists when you go offline and shows only what's on this iPhone.
+- **Search names the artist** under every song ("Song · artist") and album ("Album · artist").
+
+**What to test**
+1. **The switch.** Settings › Offline mode on: the line under it says "Only music on this phone plays", and Home, Library, Search and Downloads say "Offline mode is on". Tap **Go online**: it says "Trying…", then you're back.
+2. **No connection.** Turn on aeroplane mode: within a couple of seconds the notice says "No connection. Showing music on this phone." Turn it off: Magpie comes back by itself.
+3. **Your library out of reach.** Away from home without Tailscale (or with the server stopped), tap something: after about 30 seconds the notice says "Your library is out of reach…". **Try again** says "Still out of reach" if it still can't.
+4. **An album with one song downloaded.** Download one song of an album, open the album once online, then go offline: it shows just that song and "1 of N songs on this phone".
+5. **A whole downloaded album, an artist from Library › Artists, a compilation's album artist, a playlist** (yours and someone else's, with their name): each opens offline with only what's downloaded.
+6. **Library and Home offline.** Playlists, Artists, Albums, Songs, Genres, Discover and Downloads stay, each with only what's on the phone; Finds, Requests, Trending and Recommended go. With **Keep favourites downloaded** on, Favourites stays too.
+7. **Flows.** Open a flow, tap **Download**, then go offline: it's in Library › Discover and Home's Your flows and opens with its songs. Online again after the flow refreshes, the new songs download.
+8. **The queue offline.** Queue an album you haven't downloaded behind one you have, then go offline: the missing songs are dimmed, say "Not on this phone" and are skipped.
+9. **Lyrics.** Open lyrics for a downloaded song online, then offline: they're still there.
+10. **The car.** Open a server album in the car, turn on Offline mode: the car goes back to its first lists and Now Playing stays. Car Home says "Offline · music on this iPhone". A partly downloaded album's Play row says "<n> of <m> songs on this iPhone". Turn Offline mode off: the car stays where it is.
+11. **A tunnel.** Play a streamed album on a drive through a tunnel: after a few quiet seconds the next downloaded song plays (or it waits with "You're offline"), and the car's lists stay put for 15 seconds.
+12. **Search.** Search a song and an album: the artist shows under each, even at the largest text size. Turn on Offline mode and search again: only downloads are listed.
+
+**Known gaps**
+- In a tunnel a stream goes quiet for up to 6 s before the next song on the phone plays; with no signal, the car's server lists stay up to 15 s before going back to the first lists.
+- When a song that was streaming switches to its downloaded file offline, there may be a short gap in the sound.
+- Search no longer lists recently played songs offline (only downloads), by your answer to question 2.
+- Pages you hadn't opened online since this build look as they did before (no "n of m"), until you open them online once.
+- Magpie can only check for your library while iOS lets it run: while it plays, while the car is connected or while it's open.
+
 ## Build 29: what to try
 
 Round 27. The numbers follow your list of 17.

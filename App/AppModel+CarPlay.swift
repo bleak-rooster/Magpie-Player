@@ -75,9 +75,10 @@ extension AppModel {
     /// in the library (albums and artists from outside aren't offered in the car).
     func carPlaySearch(_ query: String) async throws -> CarPlaySearchResult {
         if isOffline {   // Task 14: what's on the phone, nothing from the server or outside
+            // Round 28 S (owner Q2, D339): downloads only, as on the phone.
             let found = await OfflineSearch(catalog: offlineCatalog).sections(query)
-            return CarPlaySearchResult(library: LibrarySearchResult(songs: found.songs + found.recentlyPlayed,
-                                                                    albums: found.albums), notYet: [])
+            return CarPlaySearchResult(library: LibrarySearchResult(songs: found.songs, albums: found.albums),
+                                       notYet: [])
         }
         let sections = try await mergedSearch(libraryTimeout: Self.carPlayLibraryTimeout,
                                                 sourceTimeout: Self.carPlaySourceTimeout).runReportingLibraryFailure(query)

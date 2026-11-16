@@ -29,6 +29,20 @@ enum PlaylistShow: String, CaseIterable, Sendable {
         case .yours: nil
         }
     }
+
+    /// Round 28 O3 fix round 1 (design H3): offline, All lists only the playlists with songs on this phone.
+    func footer(offline: Bool) -> String? {
+        offline && self == .all ? "Playlists with songs on this phone." : footer
+    }
+
+    /// Round 28 O3 fix round 1 (design H3): offline, an empty list says it's this phone that lacks them.
+    func emptyTitle(offline: Bool) -> String {
+        guard offline else { return emptyTitle }
+        switch self {
+        case .all: return "No playlists on this phone"
+        case .yours: return "None of your playlists are on this phone"
+        }
+    }
 }
 
 extension AppModel {

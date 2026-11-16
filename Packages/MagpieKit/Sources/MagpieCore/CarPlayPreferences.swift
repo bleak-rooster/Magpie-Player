@@ -133,9 +133,19 @@ public struct CarPlayPreferences: PreferenceArea {
     }
 
     /// The sections the car's Home shows, in order: as the phone's rule (`visibleHomeSections`), over the car's list.
+    /// Round 28 O4 (owner, 2026-11-15; D347, amends Task 23's "offline, Downloaded"): offline, the shelves the phone
+    /// can fill from what's on it, in the car's order: Downloaded (always, as before), and Discover (the flows on the
+    /// phone, with Aurral set up) and Playlists as the owner switched them (fix round 1, design M5). An empty one isn't
+    /// shown.
     public func visibleHomeSections(phone: LayoutPreferences, offline: Bool, hasListenBrainzToken: Bool,
                                     discoverSetUp: Bool) -> [HomeSection] {
-        if offline { return [.downloaded] }
+        if offline {
+            let onPhone: Set<CarPlayHomeShelf> = discoverSetUp ? [.discover, .playlists] : [.playlists]
+            let entries = homeList(following: phone.home).entries
+            let shown: [CarPlayHomeShelf] = entries.filter { $0.item == .downloaded || ($0.visible && onPhone.contains($0.item)) }
+                .map(\.item)
+            return shown.map(\.section)
+        }
         return homeList(following: phone.home).visibleItems.map(\.section)
             .filter { ($0 != .madeForYou || hasListenBrainzToken) && ($0 != .discover || discoverSetUp) }
     }

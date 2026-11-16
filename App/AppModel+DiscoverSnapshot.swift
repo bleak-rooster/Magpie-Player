@@ -177,17 +177,21 @@ extension AppModel {
                                 entries: songs.map { DiscoverEntry(song: known[$0.id] ?? $0, original: $0) })
         }
         show(page)
-        let copies = await lookUpLibraryCopies(for: songs, flowId: flow?.id, fresh: fresh, budget: budget) { id, copy in
+        let lookups = await lookUpLibraryCopiesReporting(for: songs, flowId: flow?.id, fresh: fresh, budget: budget) { id, copy in
             page.entries = page.entries.map { entry in
                 entry.original.id == id ? DiscoverEntry(song: copy ?? entry.original, original: entry.original) : entry
             }
             show(page)
         }
+        let copies = lookups.copies
         guard aurralFeedsScope == feeds else { throw CancellationError() }
         page.entries = DiscoverRules.swapped(songs, copies: copies)
         show(page)
         swapQueuedDiscoverCopies(copies)   // fix round 1 (I1): once, when every lookup is done
         saveDiscoverPage(page, held: background)
+        // Round 28 O2 (Q4, D335): a downloaded flow keeps in step, only from a page whose lookups all finished and
+        // answered (fix rounds 1 and 2, security M1 and SN1).
+        followDownloadedFlow(page, complete: lookups.complete)
         return page
     }
 

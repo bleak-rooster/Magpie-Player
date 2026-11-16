@@ -51,6 +51,7 @@ enum ScreenFixtureProbe {
 
     /// Phase 2: Y6's Discover page uses the same bars: Play and Shuffle (one row, equal), then its own actions
     /// (Artists in this playlist; Refresh Flow when it has a flow) in a second ActionBar, all 44 pt and on the margins.
+    /// Round 28 O3 (D343): Download (the flow to the phone) joins Play and Shuffle's row, the three equal.
     @Test func discoverPageUsesActionBars() async throws {
         let fixture = ScreenFixture()
         let model = try await fixture.signedInModel()
@@ -58,11 +59,12 @@ enum ScreenFixtureProbe {
             let frames = try await measure(AnyView(DiscoverPlaylistView(playlistId: "p1")), model: model,
                                            theme: Theme(character: character))
             let items = frames.all.values.sorted { ($0.minY, $0.minX) < ($1.minY, $1.minX) }
-            #expect(items.count == 3, "\(character): \(items)")
-            guard items.count == 3 else { continue }
+            #expect(items.count == 4, "\(character): \(items)")
+            guard items.count == 4 else { continue }
             #expect(Set(items.map { ($0.height * 2).rounded() }).count == 1 && items[0].height >= 44, "\(character): \(items)")
-            #expect(abs(items[0].width - items[1].width) < 0.5 && abs(items[0].minY - items[1].minY) < 0.5, "\(character): \(items)")
-            #expect(abs(items[2].minX - 16) < 0.5 && abs(items[2].maxX - 386) < 0.5 && items[2].minY > items[0].maxY,
+            #expect(abs(items[0].width - items[1].width) < 0.5 && abs(items[1].width - items[2].width) < 0.5
+                    && abs(items[0].minY - items[2].minY) < 0.5, "\(character): \(items)")
+            #expect(abs(items[3].minX - 16) < 0.5 && abs(items[3].maxX - 386) < 0.5 && items[3].minY > items[0].maxY,
                     "\(character): \(items)")
         }
     }

@@ -60,7 +60,7 @@ public actor AurralImageProxy {
 
     /// `directory` holds the mappings (nil: in memory only); `openTransport` fetches the pictures (its default never
     /// follows a redirect and keeps no cookie or cache).
-    public init(base: URL, directory: URL?, openTransport: HTTPTransport = AurralOpenTransport()) {
+    public init(base: URL, directory: URL?, openTransport: HTTPTransport) {   // Round 28 O1 fix round 2 (SN2): no default; the app passes its gated transport
         self.base = base
         self.server = Self.serverKey(base)
         self.file = directory?.appending(path: server + ".json")

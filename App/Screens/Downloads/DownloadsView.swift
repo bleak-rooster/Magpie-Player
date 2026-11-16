@@ -24,6 +24,7 @@ struct DownloadsView: View {
         ScrollViewReader { proxy in
         ScrollView {
             VStack(alignment: .leading, spacing: Tokens.Spacing.l) {
+                OfflineNoticeRow()   // round 28 O3 fix round 1 (design H5): at accessibility sizes, it scrolls away
                 DownloadingNowLink().padding(.horizontal, Tokens.Spacing.largeTitleMargin)   // P1, while anything downloads
                 Picker("Show", selection: $kind) {
                     ForEach(Kind.allCases) { Text($0.rawValue).tag($0) }
@@ -31,9 +32,6 @@ struct DownloadsView: View {
                 .pickerStyle(.segmented)
                 .padding(.horizontal, Tokens.Spacing.largeTitleMargin)
                 .accessibilityIdentifier("downloads-kind")
-                if model.isOffline {
-                    OfflineNotice().padding(.horizontal, Tokens.Spacing.largeTitleMargin)
-                }
                 if let catalog {
                     content(catalog, sections: index.sections)
                 } else {
@@ -52,6 +50,18 @@ struct DownloadsView: View {
                 index.ids[$0]
             }
         }
+        }
+        // Round 28 O3 (O1's design M4, D329): the offline notice above the scroll view, never a row in it; pull to refresh
+        // offline tries the library again (D326), online reads the phone again.
+        .safeAreaInset(edge: .top, spacing: 0) { OfflineNoticeInset() }
+        .refreshable {
+            // Fix round 1 (review M5): in its own task, so a pull cut short never shows an error (Z2).
+            await RefreshSafety.run {
+                // Fix round 2 (m3): in Offline mode, read the phone again and say Offline mode is on; offline by itself,
+                // try the library; then (as before) read the phone again.
+                _ = await OfflineRefresh.run(model, reread: { catalog = await model.offlineCatalog })
+                catalog = await model.offlineCatalog
+            }
         }
         .navigationTitle("Downloads")
         .magpieScreen()

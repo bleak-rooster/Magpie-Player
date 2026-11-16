@@ -57,11 +57,17 @@ struct DownloadsSettingsView: View {
                 Picker("Downloads limit", selection: binding(\.downloadsLimit)) {
                     ForEach(DownloadsLimit.allCases, id: \.self) { Text(Self.title($0)).tag($0) }
                 }
-                Picker("Offline mode", selection: binding(\.offlineMode)) {
-                    ForEach(OfflineMode.allCases, id: \.self) { Text(Self.title($0)).tag($0) }
-                }
             } footer: {
                 Text(Self.footer(inBackground: model.preferences.downloads.downloadInBackground))
+            }
+            // Round 28 O1 (D323): the Automatic / On / Off picker became this switch; Offline mode itself is Settings'
+            // first row.
+            Section {
+                Toggle(OfflineModeCopy.automaticTitle, isOn: Binding(get: { model.goesOfflineAutomatically },
+                                                                     set: { model.setGoOfflineAutomatically($0) }))
+                    .accessibilityIdentifier("settings-offline-automatic")
+            } footer: {
+                Text(OfflineModeCopy.automaticFooter)
             }
             Section {
                 Toggle("Keep favourites downloaded", isOn: binding(\.keepFavourites))
@@ -179,14 +185,6 @@ struct DownloadsSettingsView: View {
         case .gb10: "10 GB"
         case .gb20: "20 GB"
         case .gb50: "50 GB"
-        }
-    }
-
-    static func title(_ mode: OfflineMode) -> String {
-        switch mode {
-        case .automatic: "Automatic"
-        case .on: "On"
-        case .off: "Off"
         }
     }
 }

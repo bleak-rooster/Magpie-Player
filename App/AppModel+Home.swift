@@ -69,8 +69,9 @@ extension AppModel {
     nonisolated static let homeShelfSize = HomeSectionStyle.countRange.upperBound
 
     /// The sections Home shows now, on the phone: the owner's order and switches; Made for you only with a token;
-    /// Discover and the provided sections only with Aurral (round 14 A6: and a provider, `homeOutsideSections`);
-    /// offline, Downloaded.
+    /// Discover and the provided sections only with Aurral (round 14 A6: and a provider, `homeOutsideSections`).
+    /// Round 28 O3 (D340): offline, the greeting, the quick grid, Your flows, Playlists and Recently downloaded, each
+    /// from the phone.
     var homeSections: [HomeSection] {
         preferences.layout.visibleHomeSections(offline: isOffline, hasListenBrainzToken: hasListenBrainzToken,
                                                discoverSetUp: aurralSetUp, outside: homeOutsideSections)   // Y6
@@ -186,7 +187,11 @@ extension AppModel {
         case .favourites: return try await albums(.starred)
         case .randomAlbums: return try await albums(.random)
         case .playlists:
-            guard !isOffline else { return [] }
+            // Round 28 O3 (owner, 2026-11-15; D340): offline, the playlists on the phone (downloaded, and recorded per Q3).
+            guard !isOffline else {
+                return Self.homePlaylists(await offlineCatalog.playlists(includingRecorded: true), username: session?.username)
+                    .prefix(size).map(HomeShelf.Item.playlist)
+            }
             let all = try await request { try await $0.playlists() }
             return Self.homePlaylists(all, username: session?.username, isDiscover: isDiscoverPlaylist)
                 .prefix(size).map(HomeShelf.Item.playlist)
@@ -216,6 +221,9 @@ extension AppModel {
             return try await homeAurralShelves.items(for: section, limit: size * rows).prefix(size * rows)
                 .map(HomeShelf.Item.outside)
         case .discover:   // Y6: Aurral's flow playlists (AppModel+Discover.swift)
+            // Round 28 O3 (D340, D343): offline, the flows on the phone (O2's `offlineFlows`), in the same order; nothing
+            // from Aurral (For you).
+            if isOffline { return homeFlowsSorted(await offlineFlows()).prefix(size).map(HomeShelf.Item.playlist) }
             // Round 27 H (D298): in Settings › Home & Library's order, Last played or A to Z (AppModel+FlowPlays.swift).
             let flows = homeFlowsSorted(try await discoverPlaylists()).prefix(size).map(HomeShelf.Item.playlist)
             return flows + (await forYouOnHome(limit: size - flows.count)).map(HomeShelf.Item.outside)   // round 14 A4
@@ -261,8 +269,8 @@ extension AppModel {
     static let songsPageSize = 100
 
     /// The rows the Library shows now. Online: the owner's order and switches, Finds only once set up, Requests only
-    /// with Lidarr connected. Offline (Task 14): Downloads, which always shows, and Genres (read from the phone) when
-    /// switched on, in the owner's order.
+    /// with Lidarr connected. Offline (round 28 O3, D340; amends Task 14): Playlists, Artists, Albums, Songs, Genres,
+    /// Discover (with Aurral) and Downloads (always), each listing only what's on the phone, in the owner's order.
     var libraryRows: [LibraryRow] { libraryRows(carPlay: false) }
 
     /// The phone's rows, or the car's (no Songs, no Requests): one rule for both (`visibleLibraryRows`).
@@ -272,7 +280,9 @@ extension AppModel {
                                               lidarrConnected: lidarr != nil, carPlay: carPlay,
                                               discoverSetUp: aurralSetUp,   // Y6
                                               trendingSetUp: aurralFeeds?.can.trending ?? false,   // round 14 A4
-                                              recommendedSetUp: aurralFeeds?.can.recommendations ?? false)
+                                              recommendedSetUp: aurralFeeds?.can.recommendations ?? false,
+                                              // Round 28 O3 fix round 1 (design M7): the phone's (the car's is O4's).
+                                              favouritesOnPhone: !carPlay && preferences.downloads.keepFavourites)
     }
 
     /// The Recently added grid at the bottom of the Library: its own switch, and never offline.
@@ -285,7 +295,15 @@ extension AppModel {
     }
 
     /// Library › Favourites: every starred song, album and artist (`getStarred2`), noted as favourites (R7).
+    /// Round 28 O3 fix round 1 (design M7, amends D340): offline, with favourites kept downloaded, the favourite songs on
+    /// the phone (downloads kept for being favourites), asking nothing.
     func favourites() async throws -> Starred {
+        if isOffline, preferences.downloads.keepFavourites, let downloads {   // otherwise offline refuses, as before
+            // Fix round 2 (m4): marked starred, so Favourites' own filter keeps them on a cold launch.
+            let songs = await offlineCatalog.songs().filter { downloads.reasons(for: $0.id).contains(.favourites) }
+                .map { song -> Song in var song = song; song.starred = true; return song }
+            return Starred(songs: songs)
+        }
         let starred = try await request { try await $0.starred() }
         noteFavourites(starred)
         return starred
