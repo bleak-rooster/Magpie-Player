@@ -13,6 +13,11 @@ struct OfflineModeSection: View {
     /// Design M3: Try again shows only when Magpie went offline by itself.
     static func offersTryAgain(_ state: OfflineState) -> Bool { state == .automatic }
 
+    /// Fix round 2 (re-review m3): "Still out of reach" under Try again after a failed check it started.
+    static func stillOutOfReachLine(_ state: OfflineState, stillOutOfReach: Bool, checking: Bool) -> String? {
+        offersTryAgain(state) && stillOutOfReach && !checking ? OfflineNoticeCopy.stillOutOfReach : nil
+    }
+
     var body: some View {
         let line = OfflineModeCopy.stateLine(for: model)
         let on = model.offlineModeOn
@@ -45,6 +50,13 @@ struct OfflineModeSection: View {
                 }
                 .disabled(checking)
                 .accessibilityIdentifier("settings-offline-try-again")
+                if let still = Self.stillOutOfReachLine(model.offlineState, stillOutOfReach: model.reachability.stillOutOfReach,
+                                                        checking: checking) {
+                    Text(still)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .accessibilityIdentifier("settings-offline-still-out-of-reach")
+                }
             }
         }
     }

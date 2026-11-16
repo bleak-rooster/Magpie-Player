@@ -637,7 +637,8 @@ final class AppModel {
         guard let client = makeClient(Self.preferring(base, in: endpoint), credentials)?.client else {
             throw PlainHTTPConsentRequired(urls: urls.filter { !plainHTTPConsent.allows($0) })
         }
-        let login = try await client.connect()
+        // Round 28 O1 fix round 2 (security SN5): the sign-in ends by the login deadline whatever the transport does.
+        let login = try await withReachabilityDeadline(Self.loginDeadline) { try await client.connect() }
         try store.save(endpoint: endpoint, credentials: credentials)
         savedSessionAwaitingConsent = nil
         reconnectTask = nil
@@ -891,7 +892,9 @@ final class AppModel {
             }
             // Round 28 O1 fix round 1 end
             guard (200..<300).contains(response.statusCode) else { return NavidromeError.http(status: response.statusCode) }
-            return SubsonicPing.isServerAnswer(data) ? nil : NavidromeError.unexpectedResponse
+            guard SubsonicPing.isServerAnswer(data) else { return NavidromeError.unexpectedResponse }
+            reachability.serverPingAt = reachability.clock.now()   // Round 28 O1 fix round 2 (SN6): a bare ping answered as the library
+            return nil
         } catch {
             return error
         }

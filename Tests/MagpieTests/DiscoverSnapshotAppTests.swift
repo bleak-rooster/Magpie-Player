@@ -146,6 +146,7 @@ import Testing
         #expect(try await model.discoverPlaylists().isEmpty)
         #expect(model.discover.playlists.isEmpty, "offline: nothing restored")
         model.updatePreferences { $0.downloads.offlineMode = .off }
+        #expect(await eventually { !model.isOffline })   // Round 28 O1 fix round 2 (m2): online once Offline mode's login answers
         model.discover.flowsNotPermitted = true
         #expect(try await model.discoverPlaylists().isEmpty)
         #expect(model.discover.playlists.isEmpty, "no flows allowed: nothing restored")

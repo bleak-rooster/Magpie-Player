@@ -142,6 +142,8 @@ final class DownloadManager {
     @ObservationIgnored var coverQueue: [(id: String, isArtist: Bool)] = []
     @ObservationIgnored var coversRunning = 0
     @ObservationIgnored var coverEpoch = 0
+    /// Round 28 O1 fix round 2 (security SN4): each running cover fetch's task, by cover id.
+    @ObservationIgnored var coverTaskKeys: [String: (key: UUID, isArtist: Bool)] = [:]
     /// Fix round 3 (SN9a): advanced by Remove all and sign-out; a downloaded flow's follow begun before it does nothing
     /// after it.
     @ObservationIgnored var followEpoch = 0
@@ -612,6 +614,7 @@ final class DownloadManager {
                 tasks[run]?.cancel()
             }
         }
+        if isOffline() { cancelCoverFetchesOffline() }   // Round 28 O1 fix round 2 (security SN4)
         if isOffline() {   // Task 14: pre-downloads still fetching stop (one whose bytes are here is stored)
             for job in jobs where job.kind == .cache && job.needsNetwork {
                 if case let .running(run) = job.state { tasks[run]?.cancel() }
@@ -854,11 +857,12 @@ final class DownloadManager {
             coversInFlight.insert(id)
             coversRunning += 1
             let epoch = coverEpoch
-            track { [weak self, store, fetcher] gen in
+            coverTaskKeys[id] = (track { [weak self, store, fetcher] gen in
                 defer {
                     if let self, self.isLive(gen), self.coverEpoch == epoch {
                         self.coversInFlight.remove(id)
                         self.coversRunning -= 1
+                        self.coverTaskKeys[id] = nil
                         self.pumpCovers()
                     }
                 }
@@ -884,12 +888,32 @@ final class DownloadManager {
                     // A missing cover never fails the download.
                     Log.logger("downloads").error("cover failed: \(Log.category(of: error), privacy: .public)")
                 }
-            }
+            }, isArtist)
         }
+    }
+
+    /// Round 28 O1 fix round 2 (security SN4): going offline cancels the cover fetches under way (a new `coverEpoch`, so
+    /// nothing of theirs is saved); they and the queued ones are asked again once manual downloads may run.
+    func cancelCoverFetchesOffline() {
+        guard !coverTaskKeys.isEmpty || !coverQueue.isEmpty else { return }
+        let running = coverTaskKeys
+        coverEpoch &+= 1
+        for (id, run) in running {
+            tasks[run.key]?.cancel()
+            if run.isArtist { pendingArtistCovers.append(id) } else { pendingCovers.append(id) }
+        }
+        for (id, isArtist) in coverQueue {
+            if isArtist { pendingArtistCovers.append(id) } else { pendingCovers.append(id) }
+        }
+        coverTaskKeys = [:]
+        coverQueue = []
+        coversRunning = 0
+        coversInFlight = []
     }
 
     /// Fix round 2 (SN6): every queued and running cover fetch is dropped (Remove all, sign-out).
     func dropCoverFetches() {
+        coverTaskKeys = [:]   // Round 28 O1 fix round 2 (SN4)
         coverEpoch &+= 1
         coverQueue = []
         coversRunning = 0

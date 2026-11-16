@@ -173,6 +173,7 @@ import Testing
         let offline = Set(try await CarPlayLibraryAdapter(model: first).playlists().map(\.id))
         #expect(offline.contains("pl-road") && !offline.contains("pl-dw"), "offline, the car's Playlists: \(offline)")
         first.updatePreferences { $0.downloads.offlineMode = .off }
+        #expect(await eventually { !first.isOffline })   // Round 28 O1 fix round 2 (m2): online once Offline mode's login answers
         // As after a relaunch (nothing read this session), with Aurral out of reach.
         first.discover.forgetReads()
         aurral.setDown(true)
