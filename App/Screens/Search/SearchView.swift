@@ -83,9 +83,8 @@ struct SearchContent: View {
     var body: some View {
         let sections = model.results
         List {
-            if app.isOffline {
-                OfflineNotice().listRowBackground(Color.clear).listRowSeparator(.hidden)
-            }
+            // Round 28 O3 fix round 1 (design H5): at accessibility sizes the notice is the first row and scrolls away.
+            OfflineNoticeRow().listRowBackground(Color.clear).listRowSeparator(.hidden)
             switch model.phase {
             case .idle:
                 recentSection
@@ -115,8 +114,20 @@ struct SearchContent: View {
         .listStyle(.plain)
         .listRowSeparatorTint(themed.palette.sepColor)
         // Round 23 (owner, D201): the choices stay at the top whenever there's a query, searching or not.
+        // Round 28 O3 (O1's design M4, D329): the offline notice above them, an inset rather than a row, so results never
+        // jump under a finger when it comes or goes.
         .safeAreaInset(edge: .top, spacing: 0) {
-            if model.phase != .idle { SearchScopePicker(scope: $scope) }
+            VStack(spacing: 0) {
+                OfflineNoticeInset()
+                if model.phase != .idle { SearchScopePicker(scope: $scope) }
+            }
+        }
+        // Round 28 O3 (D326): pull to refresh offline tries the library again (as Home and Library do); online it searches
+        // again. Fix round 1 (design M5): in Offline mode it searches the phone again and says Offline mode is on.
+        .refreshable {
+            let again = { if !model.query.isEmpty { model.update(query: model.query) } }
+            if await OfflineRefresh.run(app, reread: { again() }) { return }
+            again()
         }
         .navigationTitle("Search")
         .magpieScreen()

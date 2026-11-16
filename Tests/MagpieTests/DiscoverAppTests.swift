@@ -517,7 +517,9 @@ final class DiscoverNavidrome: @unchecked Sendable {
         await #expect(throws: (any Error).self) { try await model.refreshFlow("flow-dw") }
         #expect(try await model.discoverPlaylists().isEmpty)
         #expect(aurral.requests.count == before, "nothing sent to Aurral offline")
-        #expect(!model.homeSections.contains(.discover))
+        // Round 28 O3 (D340): Your flows stays offline, listing the flows on the phone (read from the saved file).
+        #expect(model.homeSections.contains(.discover))
+        #expect(aurral.requests.count == before)
     }
 
     /// §5: Discover's own words name no service (Settings' Aurral page may, as Lidarr's does); curly quotes only.

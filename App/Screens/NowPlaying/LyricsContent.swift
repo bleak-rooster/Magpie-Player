@@ -108,7 +108,7 @@ struct LyricsContent: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("np-lyrics")
-        .task(id: song?.id) { await load(song) }
+        .task(id: Self.reloadKey(songId: song?.id, offline: model.isOffline)) { await load(song) }
     }
 
     private func content(_ lyrics: Lyrics, footer: String, proxy: ScrollViewProxy) -> some View {
@@ -157,6 +157,10 @@ struct LyricsContent: View {
     /// has no lyrics.
     static func emptyTitle(offline: Bool) -> String { offline ? AppModel.offlineCopy : "No lyrics for this song" }
     static func emptySymbol(offline: Bool) -> String { offline ? "wifi.slash" : "quote.bubble" }
+
+    /// Round 28 O3 (D344): what the pane reads again on: the song, and Magpie going offline or coming back (offline the
+    /// lyrics kept on the phone, else "You're offline"; back online the library's).
+    static func reloadKey(songId: String?, offline: Bool) -> String { "\(songId ?? "")|\(offline)" }
 
     /// Round 27 L (D311): the instrumental note, with where it came from.
     private func instrumental(footer: String) -> some View {

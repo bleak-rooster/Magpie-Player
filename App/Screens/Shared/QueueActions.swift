@@ -191,7 +191,12 @@ extension AppModel {
             switch collection {
             case .album(let id): return catalog.album(id: id)?.songs ?? []
             case .artist(let id), .downloadedArtist(let id): return catalog.albums(byArtist: id).flatMap { $0.songs ?? [] }
-            case .playlist(let id), .downloadedPlaylist(let id): return catalog.songs(inPlaylist: id)
+            case .downloadedPlaylist(let id): return catalog.songs(inPlaylist: id)
+            // Round 28 O3 fix round 1 (review I3, design H4): offline, a playlist's songs on the phone wherever the phone
+            // has it: downloaded or recorded (Q3), else a flow on the phone (D335).
+            case .playlist(let id):
+                if let page = catalog.playlistPage(id: id) { return page.songs }
+                return await offlineFlowPage(id: id)?.songs ?? []
             }
         }
         switch collection {
@@ -236,8 +241,10 @@ enum SwipeHost { case list, stack }
 
 extension View {
     /// R12 on a song row: the user's swipe right and swipe left actions, plus the row's own destructive one if any.
-    func songSwipeActions(_ song: Song, in host: SwipeHost, destructive: RowDestructiveAction? = nil) -> some View {
-        modifier(SongSwipeModifier(song: song, host: host, destructive: destructive))
+    /// Round 28 O3 fix round 2 (m5): `serverActions` false on the phone's pages (no Favourite or Add to playlist).
+    func songSwipeActions(_ song: Song, in host: SwipeHost, destructive: RowDestructiveAction? = nil,
+                          serverActions: Bool = true) -> some View {
+        modifier(SongSwipeModifier(song: song, host: host, destructive: destructive, serverActions: serverActions))
     }
 
     /// R12 on an album, playlist or artist list row: right = Add to queue, left = Play next, then In order or Shuffled.
@@ -258,15 +265,27 @@ struct SwipeButtonModel: Identifiable {
     let action: () -> Void
 }
 
+/// Round 28 O3 fix round 2 (m5, ruled with design M10): on the phone's pages (offline, or the phone's copy of a failed
+/// read) a row's swipes carry no Favourite or Add to playlist (they need the server); the owner's other choices stay.
+enum SongSwipe {
+    static func action(_ action: SwipeAction, serverActions: Bool) -> SwipeAction {
+        guard !serverActions, action == .favourite || action == .addToPlaylist else { return action }
+        return .none
+    }
+}
+
 private struct SongSwipeModifier: ViewModifier {
     @Environment(AppModel.self) private var model
     let song: Song
     let host: SwipeHost
     let destructive: RowDestructiveAction?
+    var serverActions = true
 
     func body(content: Content) -> some View {
         let prefs = model.preferences.playback
-        let layout = SwipeLayout.song(right: prefs.swipeRight, left: prefs.swipeLeft, destructive: destructive?.title)
+        let layout = SwipeLayout.song(right: SongSwipe.action(prefs.swipeRight, serverActions: serverActions),
+                                      left: SongSwipe.action(prefs.swipeLeft, serverActions: serverActions),
+                                      destructive: destructive?.title)
         content.modifier(SwipeRenderer(leading: layout.leading.map(button), trailing: layout.trailing.map(button),
                                        leadingFull: layout.leadingFullSwipe, trailingFull: layout.trailingFullSwipe,
                                        host: host))

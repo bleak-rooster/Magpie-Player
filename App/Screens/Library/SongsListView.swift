@@ -16,6 +16,11 @@ struct SongsListView: View {
     @State private var search: SearchModel?
 
     var body: some View {
+        // Round 28 O3 (owner, 2026-11-15; D340): offline, the downloaded songs (LibraryLists.swift), never the server.
+        if model.isOffline { OfflineSongsList() } else { online }
+    }
+
+    private var online: some View {
         ScrollViewReader { proxy in
             ScrollView {
                 if let list {

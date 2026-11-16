@@ -161,7 +161,8 @@ private func queryValue(_ request: URLRequest, _ name: String) -> String? {
         let model = try await signedInModel(fetcher: FakeFetcher())
         model.download([song("s1")], reason: .album("a1")); await model.downloads!.settled()
         model.updatePreferences { $0.downloads.offlineMode = .on }
-        #expect(model.homeSections == [.downloaded])
+        // Round 28 O3 (D340): the sections that can show what's on the phone; only Recently downloaded has anything.
+        #expect(model.homeSections == [.greeting, .quickAccess, .downloaded, .playlists])
         let shelves = try await model.homeShelves(for: model.homeSections)
         #expect(shelves.map(\.section) == [.downloaded] && shelves[0].items.count == 1)
         guard case .downloadedAlbum = shelves[0].items.first else { Issue.record("albums only"); return }

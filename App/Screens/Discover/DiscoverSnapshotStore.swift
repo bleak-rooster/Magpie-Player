@@ -170,6 +170,8 @@ struct DiscoverSnapshotFile {
 @MainActor @Observable final class DiscoverPageModel {
     let playlistId: String
     private(set) var state: Loadable<DiscoverPage> = .loading
+    /// Round 28 O3 fix round 2 (N1): the error of the last read, nil once one answers (the page's phone copy needs it).
+    private(set) var failure: (any Error)?
     /// How many times what shows changed after it first showed (tests).
     @ObservationIgnored private(set) var visibleChanges = 0
 
@@ -184,7 +186,9 @@ struct DiscoverSnapshotFile {
             _ = try await model.openDiscoverPage(playlistId: playlistId, fresh: fresh, waitForRead: true) { [weak self] page in
                 self?.show(page)
             }
+            failure = nil
         } catch {
+            failure = error   // round 28 O3 fix round 2 (N1)
             state = fresh ? state.failing(error, noticeTo: model) : state.failing(error)
         }
     }

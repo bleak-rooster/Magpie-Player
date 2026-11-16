@@ -88,7 +88,31 @@ extension AppModel {
 
     /// The quick grid's tiles now: the history and the Quick access shelf's albums.
     func quickAccessTiles(recentAlbums: [Album]) -> [RecentPlay] {
-        QuickAccess.tiles(history: homeFeed.recentPlays, recentAlbums: recentAlbums,
-                          count: preferences.layout.style(for: .quickAccess).count)
+        quickAccessTiles(recentAlbums: recentAlbums, onPhone: nil)
+    }
+
+    /// Round 28 O3 (owner, 2026-11-15; D340): offline (`onPhone` from `offlineQuickIds`), only the tiles that open on
+    /// the phone (an album or playlist the catalogue has, a flow on the phone), and none of the server's recently played
+    /// albums. `onPhone` nil: every tile, as before.
+    func quickAccessTiles(recentAlbums: [Album], onPhone: Set<String>?) -> [RecentPlay] {
+        let count = preferences.layout.style(for: .quickAccess).count
+        guard let onPhone else {
+            return QuickAccess.tiles(history: homeFeed.recentPlays, recentAlbums: recentAlbums, count: count)
+        }
+        return QuickAccess.tiles(history: homeFeed.recentPlays.filter { onPhone.contains($0.id) }, recentAlbums: [],
+                                 count: count)
+    }
+
+    /// Round 28 O3 (D340): offline, the ids of the quick grid's history that open on the phone; nil online.
+    func offlineQuickIds() async -> Set<String>? {
+        guard isOffline else { return nil }
+        let catalog = await offlineCatalog
+        let flows = Set(await offlineFlows().map(\.id))
+        return Set(homeFeed.recentPlays.filter { play in
+            switch play.kind {
+            case .album: catalog.albumPage(id: play.itemId) != nil
+            case .playlist: flows.contains(play.itemId) || catalog.playlistPage(id: play.itemId) != nil
+            }
+        }.map(\.id))
     }
 }
