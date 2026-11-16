@@ -911,7 +911,11 @@ public final class Player {
               current.id == stall.entryId else { return }
         clearStall()
         // Fix round 2 (N1): paused meanwhile (or back online), nothing starts.
-        guard isPlaying, !canReachServer() else { return }
+        guard isPlaying, !canReachServer() else {
+            // R28X: back online with no sound yet, the stall is remembered: offline again, it is waited out again.
+            if isPlaying { silentSince = (stall.entryId, stall.position) }
+            return
+        }
         Log.logger("playback").info("an offline stall outlasted its grace: moving on")
         if isPlayable(current.song) {
             stopOnFailure(current, message: unplayableMessage)

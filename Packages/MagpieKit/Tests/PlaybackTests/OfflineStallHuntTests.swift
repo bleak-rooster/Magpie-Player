@@ -53,6 +53,26 @@ import Testing
         #expect(!r.player.isStalled && sleeper.count == 0 && r.currentId == "s1" && r.player.isPlaying)
     }
 
+    /// Offline stall, back online before the grace runs out (it is left to pick up), still no sound, offline again: the
+    /// stall gets its grace again rather than staying silent for good (found by `OfflineStallFuzzTests`).
+    @Test func stall_graceEndingOnlineIsKeptForTheNextSwitch() async {
+        let sleeper = Sleeper()
+        let r = rig(local: ["s3"], sleeper: sleeper)
+        r.player.play(songs(["s1", "s2", "s3"]), startAt: 0)
+        r.goOffline(manual: false)
+        r.player.handle(.stalled)
+        #expect(await poll { sleeper.count == 1 })
+        r.goOnline()
+        sleeper.releaseAll()   // the grace runs out online: left to pick up
+        #expect(await poll { !r.player.isStalled })
+        #expect(r.currentId == "s1" && r.player.isPlaying)
+        r.goOffline(manual: false)   // still no sound
+        #expect(r.player.isStalled, "the silent stream is waited out again")
+        #expect(await poll { sleeper.count == 1 })
+        sleeper.releaseAll()
+        #expect(await poll { r.currentId == "s3" }, "past the grace the next song on the phone plays")
+    }
+
     /// Paused after the online stall: the switch starts no grace (nothing is meant to be heard).
     @Test func stall_pausedBeforeGoingOfflineStartsNoGrace() async {
         let sleeper = Sleeper()
