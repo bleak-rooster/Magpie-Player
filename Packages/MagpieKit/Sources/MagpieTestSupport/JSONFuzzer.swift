@@ -235,13 +235,15 @@ public struct JSONFuzzer {
     }
 }
 
-/// Wall-clock timing for fuzz tests. A sum over thousands of cases measures the machine, not the algorithm, and
-/// failed whenever other suites ran alongside (merged crash-hunt review, I1). So quadratic blow-ups are caught per case
-/// (`caseBound`) and by how time grows with size (`growth`); a whole sweep's bound is only a hang backstop.
+/// Timing for fuzz tests. A sum over thousands of cases measures the machine, not the algorithm, and failed whenever
+/// other suites ran alongside (merged crash-hunt review, I1). So quadratic blow-ups are caught per case (`caseBound`)
+/// and by how time grows with size (`growth`); a whole sweep's bound is only a hang backstop.
+/// Round 28 crash hunt (R28X): the seconds are CPU time of the thread doing the work (`FuzzCPUClock`), not wall-clock
+/// time: six checks still failed with an app build alongside, where waiting for a core counted as the work's.
 public enum FuzzClock {
-    /// No single case over this many seconds: ~0.1 s idle, a quadratic blow-up takes many seconds.
+    /// No single case over this many CPU seconds: ~0.1 s idle, a quadratic blow-up takes many seconds.
     public static let caseBound = 3.0
-    /// A whole sweep or a large input: generous, so a loaded machine never trips it, but a hang still fails.
+    /// A whole sweep or a large input, in CPU seconds: a hang (a loop that never ends) still fails.
     public static let sweepBackstop = 90.0
 
     /// How much longer the work takes at `factor` × `n` than at `n`: about `factor` when linear, `factor`² when
@@ -269,16 +271,15 @@ public enum FuzzClock {
     /// The most `growth` may be and still count as linear (or n log n): twice `factor`, half of quadratic's `factor`².
     public static func linearBound(factor: Int = 4) -> Double { Double(factor * 2) }
 
-    /// Seconds `body` takes.
+    /// CPU seconds `body` takes on this thread (R28X).
     public static func seconds(_ body: () throws -> Void) rethrows -> Double {
-        let start = DispatchTime.now().uptimeNanoseconds
+        let start = FuzzCPUClock.threadSeconds()
         try body()
-        return Double(DispatchTime.now().uptimeNanoseconds - start) / 1e9
+        return FuzzCPUClock.threadSeconds() - start
     }
 
+    /// CPU seconds `body` takes, run on an executor thread of its own (R28X).
     public static func seconds(_ body: () async throws -> Void) async rethrows -> Double {
-        let start = DispatchTime.now().uptimeNanoseconds
-        try await body()
-        return Double(DispatchTime.now().uptimeNanoseconds - start) / 1e9
+        try await FuzzCPUClock.seconds(body)
     }
 }
