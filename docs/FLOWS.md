@@ -8,7 +8,7 @@ Magpie is an iPhone and CarPlay player for **your own Navidrome**. It can option
 
 | In v1 | Not in v1 |
 |---|---|
-| Sign-in with several addresses and automatic failover | Offline downloads, or any on-device copy of audio |
+| Sign-in with several addresses and automatic failover; downloads, and an offline mode (a Settings switch, or by itself when the library doesn't answer) that plays and browses what's on the phone (§3k) | Reconnect checks while iOS has Magpie suspended: they run only while it plays, the car is connected or it is open |
 | Browse, search, play (AVQueuePlayer), queue, shuffle and repeat, lock screen and CarPlay Now Playing, lyrics (if the server has them), stars | App-side transcoding, or a quality/bitrate setting (the app never asks Navidrome for one) |
 | Scrobbling through Navidrome ("Count plays"); finds are never scrobbled | Quick fetch (slskd/Soulseek; Magpie only clears a removed artist's leftovers there, D192). The `quickFetch` tier exists in the code but nothing ever selects it |
 | Merged search: library, then ListenBrainz labs and Lidarr | Push notifications, Live Activity. The "ready" notice is a local notification, posted only while the app runs |
@@ -59,7 +59,7 @@ MagpieCore holds the models, the HTTP transport (ephemeral, no URL cache, same-o
 - **Login.** `POST /auth/login {username, password}` returns a JWT plus a server-issued Subsonic token and salt. Subsonic calls send `u, t, s, v=1.16.1, c=Magpie, f=json`. If the server gave no token/salt, the app uses `md5(password+salt)` with a random salt. The password itself is never put in a URL. Native `/api/*` calls send the JWT in `X-ND-Authorization` and adopt a refreshed one when the server sends it.
 - **Re-login.** A 401, or Subsonic error 40/44, triggers one shared re-login and one retry.
 - **Resumed launch.** The saved session is used at once and reconnected in the background: the addresses are probed in order, then there is one login per launch. Calls made meanwhile (the match index, the first screens) wait for that reconnect and use its client.
-- **Failover.** On a connection error (timeout, host not found, connection lost…), the app re-probes the addresses in order and retries once on the first one that answers (the client is rebuilt only if that is a different address). A playback error triggers the same check. If the address changed, the player rebuilds every stream URL and seeks back to where it was. Playback that was running carries on; playback stopped by a failed song stays paused until you press play.
+- **Failover.** On a connection error (timeout, host not found, connection lost…; since round 28 also a proxy's 502/503/504, a captive portal's page or a refused redirect, D325), the app re-probes the addresses in order and retries once on the first one that answers (the client is rebuilt only if that is a different address). A playback error triggers the same check. If the address changed, the player rebuilds every stream URL and seeks back to where it was. Playback that was running carries on; playback stopped by a failed song stays paused until you press play.
 - **Stored.** Addresses and credentials are kept in the Keychain (service `com.bleak-rooster.magpie.session`, `AfterFirstUnlockThisDeviceOnly`, set on every add and update). A launch before first unlock waits for unlock and does not sign out.
 - **Sign-out** stops playback and clears:
   - the Keychain session and the Lidarr connection;
@@ -120,7 +120,7 @@ section isn't shown.
 - **Now Playing** (lock screen, Control Center, CarPlay, AirPlay receivers, Bluetooth car displays) gets the title, artist, album, duration, elapsed time, playback rate, queue index and artwork, republished on every song change, play/pause and seek (D169). The artwork is a 600 px cover fetched with an ephemeral session that has no cache.
 - **Remote commands:** play, pause, toggle, next, previous, seek, shuffle, repeat and like (which toggles the star: it stars the song, or unstars one that is already starred). The like button's state follows the app's star state at once, including a like made a moment ago.
 - **Lyrics** use `getLyricsBySongId`. The button shows only when `getOpenSubsonicExtensions` lists `songLyrics`. It swaps the art for the lyrics in the same slot (they scroll there, the screen doesn't) and stays on across songs (D43).
-- **No audio is ever cached or stored on the device.** Streams use AVPlayer's normal network loading, and the app has no download code.
+- **Audio on the phone.** Streams use AVPlayer's normal network loading. Downloads (albums, playlists, songs, favourites kept, flows) and a size-limited cache of upcoming songs live in the account's own folder; a song on the phone plays from its file. Offline only downloads are listed (§3k).
 
 Code: `Playback/{Player,AVQueueEngine,PlaybackEngine,Queue,NowPlayingBridge}.swift`, `App/Playback/NavidromeAdapters.swift`, `NavidromeClient.streamURL`, `LidarrKit/Provisioner.swift` (profiles), `project.yml` (background mode)
 
@@ -163,7 +163,8 @@ in memory, so opening Lyrics shows it at once. With **Settings › Playback › 
 default), a song your library has no lyrics for, or one your server takes more than 6 s to answer, is looked up on
 LRCLIB from the pane (§4); the footer says "Lyrics found online" instead of "Lyrics from your library", and the next
 time you open it your library's lyrics win if they've arrived. Synced lyrics are preferred, then plain, then "No
-lyrics: it’s an instrumental." Offline, only lyrics already fetched this session show, else "You’re offline". The
+lyrics: it’s an instrumental." Offline, lyrics fetched this session or kept on the phone for a downloaded song
+(round 28, D336, D344) show, else "You’re offline". The
 Lyrics button shows when the server supports lyrics or Find lyrics online is on.
 
 ### d. Scrobbling ("Count plays")
@@ -187,6 +188,17 @@ Code: `Playback/Player.swift` (`scrobble`, `maybeSubmitScrobble`), `App/Playback
 - **All / Songs / Artists / Albums** (round 23, D201). A segmented choice ("Search in") pinned at the top of the results whenever there's a query: while typing, after the Search key, after scrolling, after a page and back, after a recent search, online and offline. It hides with an empty query (Recent searches). The choice is kept until you change it. It's the app's own picker, not the system scope bar, which showed only while the search field was active.
 
 Code: `Search/{MergedSearch,SearchSections}.swift`, `ListenBrainzKit/ListenBrainzClient.swift`, `App/AppModel.swift` (`mergedSearch`), `App/Screens/Search/*` (`SearchScopePicker.swift`: the choices)
+
+Round 28, the artist on every row (D338–D339): each song row in Search (Top result, Songs, offline Downloads, "Also in
+your library", "Not in your library", and the library song a ready request becomes) says "Song · <artist>" under its
+title, and each album row "Album · <artist>" ("Album · Various Artists" for a compilation; an album from outside your
+library its kind, such as "EP · <artist>"). When a source gives no artist, just the kind shows ("Song", "Album", "EP"),
+never a blank line or a dangling dot. VoiceOver reads "<title>, song by <artist>" and "<name>, album by <artist>" (a
+kind in lower case, except EP and LP). At accessibility sizes the lines wrap instead of cutting off, and an album's
+Downloaded mark moves below the artist line. Artist rows are unchanged ("Artist · N albums"), and Library › Songs keeps
+its plain artist line. The car's search rows read the same. Offline, Search (phone and car) looks only through your
+downloads: "Recently played on this phone" is gone, and a song only fetched ahead isn't listed (one already in the
+queue still plays). With nothing found: "Nothing on this phone for “<query>”".
 
 Round 24: a recent search's whole row is the button, and the Recent list refreshes when Search goes back to idle
 (D226). Library › Artists, Albums and Songs each have their own search field that searches only that kind with
@@ -413,7 +425,7 @@ look at it: a flow you just played moves up the next time Home is read (when you
 Aurral playlists also appear in the car’s Playlists list, A to Z."), the car's Playlists list (Library › Playlists and
 the Playlists tab) mixes in the flows and Aurral playlists Discover shows, each once, A to Z in the usual letter groups
 and pages, and the Library › Discover row goes; the Discover tab, if you chose it, stays, and car Home is the same either
-way. Offline, downloaded flows join the downloaded playlists. Switching it rebuilds the car's tabs at once. With
+way. Offline, the flows on the phone join the phone's playlists (round 28, D347). Switching it rebuilds the car's tabs at once. With
 everyone's flows shown, another person's flow ends " · sam" in the car's Discover rows and in the mixed Playlists list,
 never your own or one with no known owner. The car opens a flow from Discover's saved copy when it is still current
 (same change date and song count as the playlist's row), else it reads it (D285).
@@ -438,6 +450,109 @@ never your own or one with no known owner. The car opens a flow from Discover's 
 
 Code: `LidarrKit/{WriteGate,WriteConfinement,Ledger,LocalFile}.swift`, `MagpieCore/{Redactor,Log,AtomicFile}.swift`, `scripts/check-writes.sh`
 
+### k. Offline (round 28, D323–D350)
+
+Offline, Magpie plays and shows only what's downloaded to the phone. It gets there in two ways: by hand (**Offline
+mode**) or by itself when your library stops answering.
+
+- **The switch** (D323). Settings starts with **Offline mode**, with a line under it saying what's happening: "Only
+  music on this phone plays", "Offline for now: your library is out of reach", "Offline for now: no connection", "Goes
+  offline by itself if your library is out of reach" or "Stays online". On, Magpie sends nothing at all, not even a
+  check, and it stays on after a relaunch. **Go offline automatically** (Settings › Downloads & Storage, on by default)
+  replaces the old Automatic / On / Off picker; turn it off and Magpie never goes offline by itself. Existing settings
+  read as before (On stays on; Off becomes both switches off). Signing in from Connect turns Offline mode off, and
+  Connect says so first ("Offline mode is on. Signing in turns it off.").
+- **Offline by itself** (D324–D325, D327). When your library hasn't answered for 30 seconds since the first try that
+  got no answer, Magpie goes offline, decided by a timer at the 30-second mark. With no network at all (aeroplane
+  mode, no signal) it goes at once, after 2 s. Any answer resets the wait. No answer means a connection error after
+  every address was tried, a proxy's 502, 503, 504 (and 407, 511, 520–530) with no body, a web page instead of the
+  library's answer (a captive portal, a proxy sign-in page), or a redirect Magpie won't follow. A wrong password, a
+  server error with the library's own answer, or a slow answer within the ping's 6 s is an answer: never offline (the
+  sign-in error shows instead). Offline by itself is never remembered: each launch starts by trying, with downloads
+  playing meanwhile.
+- **Checks to come back** (D326). Only while offline by itself or while a request has gone unanswered, never in Offline
+  mode. A check is a ping with no password to each address (8 s each at most), then one sign-in on the one that
+  answered (16 s at most). They run 5 s after the first miss and every 10 s while waiting; once offline every 30 s for
+  5 minutes, every minute to 15 minutes, then every 2 minutes; twice as far apart in Low Power Mode. A check runs at
+  once 2 s after the network comes back or changes, when Magpie comes to the front, on pull to refresh and on Try
+  again. Coming to the front while online pings once if the library hasn't answered for a minute. A failed song or a
+  download that couldn't connect asks for a check at most once every 5 s. Checks need iOS to let Magpie run: while it
+  plays, while the car is connected, or while it's open.
+- **The notice** (D329). At the top of Home, Library, Search and Downloads (an inset above the list, never animated;
+  at accessibility sizes the first row, so it scrolls away). Offline mode: "Offline mode is on" with **Go online**,
+  which shows "Trying…" until the library answers. Offline by itself: "Your library is out of reach. Showing music on
+  this phone." (or "No connection. Showing music on this phone.") with **Try again**; a failed try says "Still out of
+  reach". Nothing shows while Magpie is only waiting. VoiceOver hears "Offline. Showing music on this phone." and
+  "Back online." once per switch, not again for a quick flap (no second "Offline" within a minute, no "Back online"
+  after an unannounced spell under 20 s), and not for the Settings switch itself. Settings offers Try again too when
+  Magpie went offline by itself. Pull to refresh offline tries the library again (Offline mode: reads the phone again
+  and says "Offline mode is on").
+- **What the phone keeps** (D331–D336). Each album, artist and playlist page read online leaves a small record (what
+  its header shows, the server's song order and count) when the page has a downloaded song, only when something
+  changed, never while offline, and only into the account that made the read. Download details are refreshed from
+  pages read online. Every download keeps its cover (an album's once; a song on its own, a favourite or a playlist's
+  songs their own), and the lyrics shown for a downloaded song are kept (those found online only while Find lyrics
+  online is on; turning it off deletes them). Records, covers and lyrics go with the last song that needs them, with
+  Remove all downloads and at sign-out. Playlists you opened since build 30 that hold a downloaded song are recorded
+  too.
+- **Library and Home** (D340). Library keeps Playlists, Artists (honouring Album artists only), Albums, Songs, Genres,
+  Discover (with Aurral) and Downloads, each listing only what's on the phone with its A–Z bar; Favourites stays when
+  favourites are kept downloaded (Settings › Downloads & Storage). Finds, Requests, Trending, Recommended and the
+  Recently added grid hide, as does New playlist. An empty list says "Nothing downloaded yet" only when nothing is
+  downloaded; otherwise what it lacks ("No playlists on this phone", "No flows on this phone", "No album artists on
+  this phone. Turn off Album artists only to see everyone."). Home shows the quick grid's tiles that open on the phone,
+  Your flows and Playlists on the phone, and Recently downloaded (when switched on, or when nothing else would show).
+- **Pages** (D341). Album, artist, playlist and flow pages open from the phone with only their downloaded songs, saying
+  "<n> of <m> songs on this phone" when some are missing ("<n> songs on this phone" when the full count isn't known).
+  An album shows its year and genre; an artist page lists the albums they made, then **Also on this phone** for their
+  songs on other people's albums (so a compilation sits under its album artist, and an album artist's page opens);
+  Play and Shuffle there play only those songs. Playlists and flows show who made them. What needs the server hides:
+  Favourite, Add to playlist, Reload artwork, Rename, Delete, Remove from playlist, songs still coming, Automix and
+  Download (the download capsule stays to Remove download); song menus offer Play next, Add to queue and Remove
+  download. Online, when a page read gets no answer and the phone has the page, the phone's copy shows under
+  "Couldn’t reach your library. Showing what’s on this phone." with Try again; a library that answers with an error
+  keeps its error, and a page already on screen is never swapped for the phone's copy.
+- **Flows** (D335, D343). A flow's page has **Download** beside Play and Shuffle (online): every song, using your
+  library's copy where it has one. Once started, the capsule shows its progress, with Remove download in its menu.
+  While online the phone's copy keeps in step with the flow (new songs download, on Wi-Fi unless mobile data is
+  allowed; songs that left the flow leave the phone unless something else keeps them), but only from a page read in
+  full: a lookup that failed never drops a song. Aurral's own button now reads **Add these songs to your library**.
+  Offline, flows with a song on the phone are listed (Library › Discover, Home's Your flows) from Discover's saved file
+  and open as a playlist page from the phone with their owner's name and none of Aurral's actions. Without Aurral there
+  are no flows; a downloaded Discover playlist is an ordinary playlist.
+- **Queue and lyrics** (D342, D344). Offline the queue keeps every song; one not on the phone is dimmed and says "Not on
+  this phone" and is skipped (VoiceOver: "Not on this phone, skipped while offline"). Play next and Add to queue on a
+  playlist or flow offline queue its songs on the phone. The lyrics pane shows kept lyrics, else "You’re offline".
+- **Search and refusals.** Offline, Search looks only through downloads (§3e). Try, Add, Keep, Not for me and Bring in
+  more say "You're offline"; the star refuses with the same words (D139, D345).
+- **The car** (D347–D348). The car says "this iPhone" where the phone says "this phone". Going offline pops the server
+  lists back to each tab's first list, read again from the phone; Downloads and its pages, Up Next, Search and Now
+  Playing stay. In Offline mode this happens at once; offline by itself it waits 15 s and only pops lists that were
+  open at the switch, and not at all if the library answers first. Coming back online leaves the car where it is.
+  Offline the car's Library rows are the phone's (no Requests or Favourites); albums, artists and playlists open from
+  the phone, a partial one's Play row reading "<n> of <m> songs on this iPhone"; an artist page has Play and Shuffle
+  (only their songs), their albums, then "Songs on this iPhone"; Up Next's songs not on the phone say "Not on this
+  iPhone". Car Home starts with "Offline · music on this iPhone", then Downloaded, and Your flows and Playlists if
+  switched on. An empty list says "Nothing downloaded yet", "No playlists on this iPhone" or "No genres on this
+  iPhone"; Favourites says "You're offline".
+- **Playback, and the tunnel** (D330, D349). Offline, nothing that isn't on the phone is started: Next, Previous,
+  repeat all, shuffle, Play and a new queue go to the songs on the phone, or the player waits on the song with "You're
+  offline" (the lock screen and car read "Not on this iPhone · You're offline", and Play does nothing). Going offline by
+  itself lets a playing stream carry on until it runs out; Offline mode stops it. When a stream stalls with no
+  connection (a tunnel), it gets 6 s to pick up again; then the next song on the phone plays, or the player waits. A
+  song that's on the phone but was streaming carries on from its file, from where it was. Back online, a waiting or
+  failed song plays again from where it was, the song playing from the phone isn't reloaded, scrobbles go, and
+  downloads resume.
+- **Scrobbles** (D350). Plays heard offline queue with when they were heard and go, in order, when the library answers
+  again. A find is never sent from the queue, and a song the library no longer has is dropped.
+- **Four setups.** Navidrome alone and + Lidarr: albums, artists, playlists and songs offline, no flows. + Aurral and
+  all: flows too. Every control shown works or says why, on the phone and in the car (D345).
+
+Code: `MagpieCore/{ReachabilityMachine,OfflineGate}.swift`, `App/AppModel+Offline.swift`, `App/AppModel+OfflineCatalog.swift`,
+`Playback/Storage/{OfflineRecords,OfflineLyrics,OfflineCatalog}.swift`, `App/Screens/Settings/OfflineModeSection.swift`,
+`App/Screens/Shared/{OfflineNotice,OfflinePageCopy,PhoneCopyNote}.swift`, `Playback/Player.swift`,
+`CarPlayUI/CarPlayController+Customisation.swift`
+
 ## 4. Where data lives and what leaves the phone
 
 | Data | Where | Protection |
@@ -445,8 +560,10 @@ Code: `LidarrKit/{WriteGate,WriteConfinement,Ledger,LocalFile}.swift`, `MagpieCo
 | Navidrome addresses + credentials, Lidarr address + API key, ListenBrainz token | Keychain, service `com.bleak-rooster.magpie.session` | `AfterFirstUnlockThisDeviceOnly` |
 | Write switch, Lidarr setup, Finds setup, Finds library id, Finds song ids and played finds, Count plays, http consent, look, recent searches (last 8 queries, cleared on sign-out) | UserDefaults | none (not secret) |
 | Match index snapshot, change log, ledger, requests | `Application Support/Magpie/…` | atomic writes, `completeFileProtectionUntilFirstUserAuthentication`, excluded from backup. On sign-out: snapshot and every requests file erased; ledger entries kept only for a Lidarr with an open entry; change log never deleted |
-| Cover art | memory only | cleared on sign-in/out |
-| Audio | nowhere: streamed | n/a |
+| Cover art | memory, and on disk for downloads (`Magpie/Audio/<scope>/covers/`, one per album or song, artist pictures at 300 px; round 28, D334) | memory cleared on sign-in/out; covers no download or record names are deleted |
+| Audio | downloads and the cache of upcoming songs, `Magpie/Audio/<scope>/` (the scope is the app's own id, never a server string) | excluded from backup; erased at sign-out; Remove all downloads clears downloads |
+| Round 28: offline page records (album, artist and playlist names, ids, owners' usernames, counts, order and dates only; never URLs, tokens, salts or addresses) and lyrics kept for downloaded songs | `Magpie/Audio/<scope>/records.json` (at most 8 MB) and `lyrics/<sha256(song id)>.json` (at most 20 MB in all) | atomic writes, complete-until-first-unlock, excluded from backup; pruned with the last download that needs them; cleared by Remove all downloads and at sign-out |
+| Round 28: Offline mode and Go offline automatically | UserDefaults (the `OfflineMode` preference; `magpie.offline.automaticChoice` while Offline mode is on) | none (not secret); Offline mode survives a relaunch, offline by itself never does |
 | Round 27: Discover's saved rows and pages (row fields, ids and owners' usernames only; never URLs, tokens, MBIDs, ISRCs or addresses) | `Application Support/Magpie/Discover/<hash>-lists.json`, per account and Aurral user, at most 4 MB | excluded from backup; removed with the Discover feeds file (Aurral sign-out, sign-out, another Aurral user) |
 | Round 27: flow plays (playlist id and date, at most 300) | `Magpie/Home/<scope>.flowplays.json` | excluded from backup; removed at sign-out with Home's folder |
 | Round 27: missing-album search schedule (`missingSearchEvery`, `missingSearchAsked`, `missingSearchFrom`) and the gate's ten-minute record (`magpie.lidarr.missingSearch.<scope>`), per Lidarr; Automix length and variety; Find lyrics online | UserDefaults | none (not secret); the Lidarr keys go on disconnect and sign-out |
@@ -461,6 +578,14 @@ Code: `LidarrKit/{WriteGate,WriteConfinement,Ledger,LocalFile}.swift`, `MagpieCo
 | musicbrainz.org | recording MBID with a User-Agent (Try, and Bring in more: its offer and "This album only") |
 | Lidarr's metadata server (indirectly) | search terms and MBIDs, via Lidarr's `search` and `lookup` |
 | lrclib.net (round 27, D311) | Only with Settings › Playback › Lyrics › Find lyrics online on (off by default), only from the Lyrics pane, for a song your library has no lyrics for (or whose server hasn't answered within 6 s). One https `GET /api/get` with the song's title, artist, album and length (whole seconds). The headers are `User-Agent: Magpie/<version>` and `Accept-Language: en`, plus the system's own `Accept`, `Accept-Encoding`, `Host` and `Connection`. No account, key, cookie or server name. Redirects are never followed. At most once per song per session, 15 s in all. A 429 pauses LRCLIB for as long as it asks (at most an hour). |
+
+Round 28, offline (D328): every request Magpie makes goes through one gate (`OfflineGate`). With **Offline mode** on,
+nothing leaves the phone at all, not even a check. Offline by itself, only the reconnect check leaves: a bare
+`GET rest/ping` with no credentials to each address, and, when one answers, that check's one login. No outside host
+(LRCLIB, outside art, previews, Aurral's pictures) is asked while offline. Three things stay outside the gate by
+design: the song already playing (AVPlayer's stream, let go when Offline mode is turned on with nothing on the phone to
+play), the download session (it makes no task offline) and the Local Network check (a connection to a home address
+that sends no request).
 
 ## 5. Known limits
 - Requests advance only while the app is running. There is no background fetch, and the ready notice is local only.
@@ -480,4 +605,10 @@ Code: `LidarrKit/{WriteGate,WriteConfinement,Ledger,LocalFile}.swift`, `MagpieCo
 - Round 27: a chart flow keeps up with its chart only when Magpie reads that chart (Trending, Home's Trending shelf or the genre's chart page) with the app open; there is no background update. If the phone fails to save when it last sent, a later launch may update the flow again within the day, but only if the chart has changed since.
 - Round 27: Trending matches a chart song to its flow's song strictly (the song Magpie sent, or one same artist, title and length); a song Aurral filed under a different title or length stays a preview (§3h).
 - Round 27: Automix and Play top songs can't tell a song whose file is missing on the server; they rely on Navidrome leaving missing files out of its similar-songs, genre, album and top-songs reads (§3c).
+- Round 28: reconnect checks run only while iOS lets Magpie run (playing, the car connected, or open); otherwise the next check is when Magpie opens (§3k). No background task is added for it.
+- Round 28: with the phone connected but the library silent, a launch or a dead tap waits up to 30 s before Magpie switches to the phone's music; downloaded songs play throughout, and pages fall back to the phone's copy meanwhile (§3k).
+- Round 28: records, covers and lyrics exist only for pages and songs opened online since build 30; an album downloaded earlier gets its record (and a single song its cover) the next time its page opens online, and playlists you didn't download show offline only once opened online since then.
+- Round 28: in the car, server lists pop back to each tab's first list when Magpie goes offline rather than turning into their phone pages (§3k).
+- Round 28: a downloaded flow kept in step by Discover's background pass stops following once that pass has spent its 400 lookups; opening the flow on the phone follows it.
+- Round 28: the offline gate's `check-writes.sh` pin catches honest mistakes, not deliberately disguised code (D328; RUNBOOK §5).
 - More: [RUNBOOK §5](RUNBOOK.md#5-known-limits-risks-and-troubleshooting) and the residual risks in [security-v1-finds.md](reviews/security-v1-finds.md#residual-risks-accepted-or-out-of-client-reach).

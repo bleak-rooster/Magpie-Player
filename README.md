@@ -40,7 +40,7 @@ distributed only through TestFlight. It is not on the App Store. Expect rough ed
 | An artist page with their top songs | From Aurral, ListenBrainz and your library: the ones you have for artists you collect, with previews for the rest, and **Play top songs** to play up to fifteen in order |
 | A mix that keeps going from any song | **Automix**: songs like this one, or like this artist, from your own library, 20 to 100 of them, as close or as adventurous as you like |
 | Lyrics for whatever's playing | Your server's lyrics (its lyrics plugin is asked for every song you play), and optionally lyrics looked up online |
-| Offline listening, in the car too | Downloads, a size-limited cache, and a full CarPlay app |
+| Offline listening, in the car too | Downloads that open just as they did online, an Offline mode switch or offline by itself when your server is out of reach, a size-limited cache, and a full CarPlay app |
 
 Every part beyond Navidrome is optional. Each feature works, is hidden, or explains why not, depending on which
 services you connect. Navidrome alone is enough to use Magpie as a player.
@@ -75,8 +75,9 @@ and keeps playlists up to date for each person on your server. Magpie turns it i
 - Discover is in the car too.
 
 **Your library, through Navidrome**
-- Browse playlists, artists, albums, songs and genres; search as you type; star favourites. Artists, Albums and
-  Songs each have their own search field, and long lists have a header for each letter beside the A–Z bar.
+- Browse playlists, artists, albums, songs and genres; search as you type; star favourites. Every song and album in
+  Search names its artist ("Song · artist", "Album · artist"). Artists, Albums and Songs each have their own search
+  field, and long lists have a header for each letter beside the A–Z bar.
 - Playlists can show only yours or everyone's shared ones; under everyone's, each playlist says who made it.
 - An artist's page shows their top songs (from Aurral, ListenBrainz or your library, with 30-second previews for the
   ones you don't have). An artist Lidarr looks after shows up to five of their top songs that you already have — found
@@ -93,7 +94,13 @@ and keeps playlists up to date for each person on your server. Magpie turns it i
 - Songs converted for mobile data no longer skip: a dropped connection picks up where it left off on the same
   quality, seeks land where you drag (on servers that support it), and an error under Now Playing goes when the next
   song starts.
-- Download albums and playlists for offline listening, with a size-limited cache for what you stream.
+- Download albums, playlists, songs and flows, with a size-limited cache for what you stream. Every download keeps
+  its cover and lyrics, and a downloaded flow keeps in step with the flow while you're online.
+- **Offline mode.** A switch at the top of Settings plays only what's on the phone and sends nothing at all. Magpie
+  also goes offline by itself when your server hasn't answered for 30 seconds (at once with no connection), keeps
+  checking, and comes back by itself. Offline, Library and Home keep their rows, albums, artists, playlists and flows
+  open with just their downloaded songs ("2 of 12 songs on this phone"), Search looks through your downloads, and the
+  queue marks songs that aren't on the phone.
 - Several server addresses (home and away). Magpie uses the first that answers and switches when one stops
   responding.
 - Album covers large or small (three across) in every album grid.
@@ -148,6 +155,8 @@ and keeps playlists up to date for each person on your server. Magpie turns it i
   pages, within the limits the car sets.
 - Your flows on the car's Home are in the order you last played them, and an option mixes your flows and Aurral
   playlists into the car's Playlists list, A to Z, with other people's names on theirs.
+- Offline, the car goes back to its first lists and shows only what's on the iPhone, and Search names the artist on
+  every song and album there too.
 
 ## Setting up your server
 
@@ -236,7 +245,9 @@ home; [`docs/RUNBOOK.md`](docs/RUNBOOK.md) has the full checklist and what Magpi
   over plain http to a public address, but on an untrusted network your credentials can still be intercepted. Use
   HTTPS for anything that leaves your home network.
 - **Background work is limited by iOS.** Requests are followed while the app runs and whenever iOS grants background
-  time, so a download that finishes while the app is closed may only show up the next time you open it.
+  time, so a download that finishes while the app is closed may only show up the next time you open it. Likewise,
+  when Magpie has gone offline by itself it checks for your server only while it plays, the car is connected or it is
+  open.
 - **Not built yet:**
   - in CarPlay: Not for me, Automix and lyrics;
   - Siri;
