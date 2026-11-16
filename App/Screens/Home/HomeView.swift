@@ -71,7 +71,7 @@ struct HomeView: View {
         }
         // Round 28 O3 (D340): offline, which of the quick grid's tiles open on the phone (again as songs come and go).
         // Fix round 1 (review M4): and again as plays are noted (a tile played offline joins at once).
-        .task(id: Self.quickKey(pageKey: model.offlinePageKey, plays: model.homeFeed.recentPlays.count)) {
+        .task(id: Self.quickKey(pageKey: model.offlinePageKey, plays: model.homeFeed.recentPlays.map(\.id))) {
             quickOnPhone = await model.offlineQuickIds()
         }
         .sheet(isPresented: $editsHome) {
@@ -146,7 +146,8 @@ struct HomeView: View {
     }
 
     /// Fix round 1 (review M4): what the quick grid's offline tiles are read again on.
-    static func quickKey(pageKey: String, plays: Int) -> String { "\(pageKey)|\(plays)" }
+    /// Fix round 2 (m1): by the plays' ids, so a full history (its count fixed at the cap) still reads again.
+    static func quickKey(pageKey: String, plays: [String]) -> String { "\(pageKey)|\(plays.joined(separator: ","))" }
 
     /// Whether `section` has something to show. The greeting always does; the chips when there is more than All to
     /// pick; the quick grid when it has a tile. A section never stands in for another (round 13).

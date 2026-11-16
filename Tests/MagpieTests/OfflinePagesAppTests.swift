@@ -445,5 +445,12 @@ private func songJSON(_ id: String, album: String = "al1", artist: String = "Ann
         #expect(!OfflinePageCopy.serverRowMenus(.phoneCopy, offline: false), "the phone's copy: like offline")
         #expect(!OfflinePageCopy.serverRowMenus(.phone, offline: true))
         #expect(OfflinePageCopy.tryAgain == "Try again")
+        // Fix round 2 (m5): a row's swipes on the phone's pages (and the phone's copy) carry no Favourite or Add to
+        // playlist; the rest stay.
+        #expect(SongSwipe.action(.favourite, serverActions: false) == SwipeAction.none)
+        #expect(SongSwipe.action(.addToPlaylist, serverActions: false) == SwipeAction.none)
+        #expect(SongSwipe.action(.playNext, serverActions: false) == .playNext)
+        #expect(SongSwipe.action(.addToQueue, serverActions: false) == .addToQueue)
+        #expect(SongSwipe.action(.favourite, serverActions: true) == .favourite)
     }
 }

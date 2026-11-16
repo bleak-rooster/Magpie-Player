@@ -180,7 +180,9 @@ struct PlaylistView: View {
             // position (review fix I2), and the list reads again after.
             .songSwipeActions(song, in: .list, destructive: editable
                               ? RowDestructiveAction(title: "Remove from playlist", symbol: "minus.circle") { remove(at: index, song) }
-                              : nil)
+                              : nil,
+                              // Round 28 O3 fix round 2 (m5): like the menu (design M10) on the phone's pages.
+                              serverActions: OfflinePageCopy.serverRowMenus(page.source, offline: model.isOffline))
         }
         if !fromPhone, !model.isOffline, page.source == .server { ComingRows(playlistId: page.playlist.id) }   // R14 A3
         Color.clear.frame(height: Tokens.Spacing.l)

@@ -57,7 +57,9 @@ struct DownloadsView: View {
         .refreshable {
             // Fix round 1 (review M5): in its own task, so a pull cut short never shows an error (Z2).
             await RefreshSafety.run {
-                if model.isOffline { await model.reconnectNow() }
+                // Fix round 2 (m3): in Offline mode, read the phone again and say Offline mode is on; offline by itself,
+                // try the library; then (as before) read the phone again.
+                _ = await OfflineRefresh.run(model, reread: { catalog = await model.offlineCatalog })
                 catalog = await model.offlineCatalog
             }
         }

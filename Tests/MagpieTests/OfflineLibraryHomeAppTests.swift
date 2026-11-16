@@ -252,9 +252,27 @@ import Testing
         let model = try await signedIn()
         _ = try await page(model)
         await download(model, ["m-ref1"])
-        let copy = await DiscoverPlaylistView.phoneCopy(model, playlistId: "pl-dw", failed: true)
+        let copy = await DiscoverPlaylistView.phoneCopy(model, playlistId: "pl-dw", failure: URLError(.cannotConnectToHost))
         #expect(copy?.songs.map(\.id) == ["m-ref1"])
-        #expect(await DiscoverPlaylistView.phoneCopy(model, playlistId: "pl-dw", failed: false) == nil)
+        #expect(await DiscoverPlaylistView.phoneCopy(model, playlistId: "pl-dw", failure: nil) == nil)
+    }
+
+    /// Fix round 2 (N1): the flow's page falls back only when the library didn't answer; its own answer (Subsonic 70:
+    /// gone) keeps the error, as on the other pages (I1). The page model keeps the failure it showed.
+    @Test func flow_libraryAnswerKeepsTheError() async throws {
+        let model = try await signedIn()
+        _ = try await page(model)
+        await download(model, ["m-ref1"])
+        #expect(await DiscoverPlaylistView.phoneCopy(model, playlistId: "pl-dw",
+                                                      failure: NavidromeError.api(code: 70, message: "Not found")) == nil)
+        #expect(await DiscoverPlaylistView.phoneCopy(model, playlistId: "pl-dw",
+                                                      failure: NavidromeError.http(status: 503)) != nil)
+        #expect(DiscoverPlaylistView.phoneCopyKey(NavidromeError.api(code: 70, message: "x"))
+                != DiscoverPlaylistView.phoneCopyKey(URLError(.timedOut)))
+        #expect(DiscoverPlaylistView.phoneCopyKey(nil) == "none")
+        let pageModel = DiscoverPageModel(playlistId: "pl-gone")
+        await pageModel.load(model, fresh: false)
+        #expect(pageModel.failure != nil, "a failed read keeps its error")
     }
 
     /// Design H3: "Nothing downloaded yet" only when nothing is; otherwise each list says what it lacks.
@@ -284,6 +302,10 @@ import Testing
         #expect(!model.libraryRows(carPlay: true).contains(.favourites), "the car's Favourites is O4's")
         let before = nav.state.withLock { $0.getPlaylists }
         #expect(try await model.favourites().songs.map(\.id) == ["m-ref1"])
+        // Fix round 2 (m4): through Favourites' own filter, on a cold launch nothing has noted it as a favourite yet.
+        model.libraryEdits.known = [:]
+        model.libraryEdits.overrides = [:]
+        #expect(try await model.favourites().songs.filter(model.isStarred).map(\.id) == ["m-ref1"])
         #expect(nav.state.withLock { $0.getPlaylists } == before)
         model.updatePreferences { $0.downloads.keepFavourites = false }
         #expect(!model.libraryRows.contains(.favourites))
@@ -299,7 +321,15 @@ import Testing
                 == sections, "nothing else to show: it shows")
         #expect(HomeView.offlineSections(sections, downloadedOn: true, hasContent: { _ in true }) == sections)
         // Review M4: the quick grid reads again as plays are noted.
-        #expect(HomeView.quickKey(pageKey: "offline|1|0", plays: 2) != HomeView.quickKey(pageKey: "offline|1|0", plays: 3))
+        // Fix round 2 (m1): by the plays' ids, so a full history (16, the cap) that changes keeps its count yet reads again.
+        let full = (0..<16).map { "album-a\($0)" }
+        let next = ["album-new"] + full.prefix(15)
+        #expect(full.count == QuickAccess.historyLimit && next.count == full.count)
+        #expect(HomeView.quickKey(pageKey: "offline|1|0", plays: full) != HomeView.quickKey(pageKey: "offline|1|0", plays: next))
+        #expect(HomeView.quickKey(pageKey: "offline|1|0", plays: full) == HomeView.quickKey(pageKey: "offline|1|0", plays: full))
+        // Fix round 2 (m2): the flow's Download hint only while it would download.
+        #expect(DiscoverPlaylistView.flowHint(.none) == "Downloads this flow to this phone")
+        #expect(DiscoverPlaylistView.flowHint(.downloaded) == nil)
         // H5: at accessibility sizes the notice scrolls with the page.
         #expect(OfflineNoticeInset.pinned(accessibility: false) && !OfflineNoticeInset.pinned(accessibility: true))
         // M5: in Offline mode pull to refresh reads the phone again and says so; by itself it tries the library.

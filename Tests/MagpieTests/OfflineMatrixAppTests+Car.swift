@@ -22,7 +22,11 @@ import UIKit
     static let allowedStates: Set<String> = [CarPlayRows.nothingDownloaded, "No playlists on this iPhone",
                                               "No genres on this iPhone", "You're offline", "Nothing here yet",
                                               "Finds aren't set up on this iPhone", CarPlayRows.offlineHomeLine,
-                                              "Not on this iPhone"]
+                                              "Not on this iPhone",
+                                              // Round 28 O3 merge (D340): the car's Library offline now has Artists,
+                                              // Albums, Songs and Playlists; their A–Z bands show an empty band
+                                              // disabled with what it lacks (LetterBands, round 13).
+                                              "No artists", "No albums", "No songs", "No playlists"]
 
     /// Review M2: what the list on top shows is real rows, or (rows that do nothing) one of `allowedStates`.
     func checkShown(_ car: FakeCarInterface, _ ctx: String) async {

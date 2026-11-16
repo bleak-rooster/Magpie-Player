@@ -299,7 +299,9 @@ extension AppModel {
     /// the phone (downloads kept for being favourites), asking nothing.
     func favourites() async throws -> Starred {
         if isOffline, preferences.downloads.keepFavourites, let downloads {   // otherwise offline refuses, as before
+            // Fix round 2 (m4): marked starred, so Favourites' own filter keeps them on a cold launch.
             let songs = await offlineCatalog.songs().filter { downloads.reasons(for: $0.id).contains(.favourites) }
+                .map { song -> Song in var song = song; song.starred = true; return song }
             return Starred(songs: songs)
         }
         let starred = try await request { try await $0.starred() }

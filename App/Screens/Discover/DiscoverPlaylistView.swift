@@ -79,7 +79,10 @@ struct DiscoverPlaylistView: View {
                     .listRowBackground(Color.clear)
             }
         }
-        .task(id: failed) { phoneCopy = await Self.phoneCopy(model, playlistId: playlistId, failed: failed) }
+        // Fix round 2 (N1): keyed on the failure's kind; only a read that got no answer shows the phone's copy.
+        .task(id: Self.phoneCopyKey(failed ? pageModel.failure : nil)) {
+            phoneCopy = await Self.phoneCopy(model, playlistId: playlistId, failure: failed ? pageModel.failure : nil)
+        }
         .transaction { $0.animation = nil }   // Round 27 D1 (D284): a swap behind the owner never animates
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
@@ -265,7 +268,7 @@ struct DiscoverPlaylistView: View {
                         retry: { model.retryDownloads() },
                         remove: { Task { await model.removeDownload(.playlist(page.playlist.id)) } })
             .accessibilityLabel(OfflinePageCopy.downloadFlowLabel)
-            .accessibilityHint(OfflinePageCopy.downloadFlowHint)
+            .accessibilityHint(Self.flowHint(flowStatus(page)) ?? "")   // fix round 2 (m2)
     }
 
     private func flowStatus(_ page: DiscoverPage) -> DownloadStatus {
@@ -286,9 +289,21 @@ struct DiscoverPlaylistView: View {
 
     /// Round 28 O3 (D341; fix round 1, review M3): the phone's copy of a flow whose read failed with nothing on screen
     /// (from the saved Discover file, D335); nil otherwise.
-    static func phoneCopy(_ model: AppModel, playlistId: String, failed: Bool) async -> OfflinePlaylistPage? {
-        failed ? await model.offlineFlowPage(id: playlistId) : nil
+    /// Fix round 2 (N1): only when the read got no answer (`PageSource.fallsBack`, I1); the library's own answer keeps
+    /// today's error.
+    static func phoneCopy(_ model: AppModel, playlistId: String, failure: (any Error)?) async -> OfflinePlaylistPage? {
+        guard let failure, PageSource.fallsBack(after: failure) else { return nil }
+        return await model.offlineFlowPage(id: playlistId)
     }
+
+    /// Fix round 2 (N1): what the phone copy's task reads again on: no failure, an answer, or no answer.
+    static func phoneCopyKey(_ failure: (any Error)?) -> String {
+        guard let failure else { return "none" }
+        return PageSource.fallsBack(after: failure) ? "no-answer" : "answer"
+    }
+
+    /// Fix round 2 (m2): the capsule's hint while it would download; its status says the rest.
+    static func flowHint(_ status: DownloadStatus) -> String? { status == .none ? OfflinePageCopy.downloadFlowHint : nil }
 
     /// Round 28 O3 (D341): the flow's read failed with nothing on screen and the phone has it: its songs on the phone, in
     /// the flow's order, with the note; Try again and pull to refresh read again.
@@ -320,7 +335,7 @@ struct DiscoverPlaylistView: View {
                 Divider().overlay(p.sepColor).padding(.leading, 76)
             }
             .foregroundStyle(p.inkColor)
-            .songSwipeActions(song, in: .list, destructive: nil)
+            .songSwipeActions(song, in: .list, destructive: nil, serverActions: false)   // fix round 2 (m5)
         }
     }
 

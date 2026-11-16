@@ -281,7 +281,7 @@ struct ArtistView: View {
                 .accessibilityAddTraits(.isButton)
                 .accessibilityIdentifier("artist-phone-song-\(index)")
                 .contextMenu { SongQueueMenuItems(song: song) }
-                .songSwipeActions(song, in: .stack)
+                .songSwipeActions(song, in: .stack, serverActions: false)   // fix round 2 (m5): the phone page only
             }
         }
         .accessibilityIdentifier("artist-songs-on-phone")

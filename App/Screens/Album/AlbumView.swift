@@ -341,6 +341,6 @@ private struct TrackList: View {
                 PhoneSongMenuItems(song: song, removing: $removing)   // round 28 O3 fix round 1 (design M10)
             }
         }
-        .songSwipeActions(song, in: .stack)   // R12
+        .songSwipeActions(song, in: .stack, serverActions: serverMenus)   // R12; round 28 O3 fix round 2 (m5)
     }
 }
