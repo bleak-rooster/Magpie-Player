@@ -45,11 +45,24 @@ final class FakeCarInterface: CarPlayInterface {
     /// Z3 review M5: a pop the car refuses (nothing changes, the completion says so).
     var failsPops = false
 
+    /// R28X: the car finishes a pop later (as a real one does, after its animation); `finishPops` calls the completions.
+    var defersPopCompletions = false
+    private var popCompletions: [(Bool, (any Error)?) -> Void] = []
+
     func pop(to targetTemplate: CPTemplate, animated: Bool, completion: ((Bool, (any Error)?) -> Void)?) {
         if failsPops { completion?(false, nil); return }
         if let index = templates.firstIndex(where: { $0 === targetTemplate }) { templates = Array(templates.prefix(index + 1)) }
+        if defersPopCompletions, let completion { popCompletions.append(completion); return }
         completion?(true, nil)
     }
+
+    func finishPops() {
+        let all = popCompletions
+        popCompletions = []
+        all.forEach { $0(true, nil) }
+    }
+
+    var pendingPops: Int { popCompletions.count }
 
     func presentTemplate(_ templateToPresent: CPTemplate, animated: Bool, completion: ((Bool, (any Error)?) -> Void)?) {
         presentedTemplate = templateToPresent

@@ -227,9 +227,12 @@ extension CarPlayController {
                 bindings[id]?.cancel()
                 bindings[id] = nil
             }
+            // R28X: the car finishes the pop later; disconnected (or the tabs rebuilt) by then, nothing is pushed.
+            let tabs = tabBar
             interface.pop(to: keep, animated: false) { [weak self] done, _ in
                 MainActor.assumeIsolated {
-                    guard done, putBack, let self, self.interface.topTemplate === keep else { return }
+                    guard done, putBack, let self, self.tabBar != nil, self.tabBar === tabs,
+                          self.interface.topTemplate === keep else { return }
                     self.interface.pushTemplate(nowPlaying, animated: false, completion: nil)
                 }
             }

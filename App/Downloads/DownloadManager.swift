@@ -80,6 +80,8 @@ final class DownloadManager {
     @ObservationIgnored var beforeStoreForTesting: (@MainActor (_ songId: String) async -> Void)?
     /// Round 28 O2 fix round 3 (SN9a) tests: runs in a flow's follow after its removal and before its download.
     @ObservationIgnored var beforeFollowDownloadForTesting: (@MainActor () async -> Void)?
+    /// R28X tests: runs in `applyRecord` after the record's write returned, before what follows it.
+    @ObservationIgnored var afterRecordWriteForTesting: (@MainActor () async -> Void)?
     #endif
 
     // Members below marked "(+Removal)" are internal, not private, only because DownloadManager+Removal.swift
@@ -977,9 +979,16 @@ final class DownloadManager {
             if await refreshSnapshot(song, for: record) { changed = true }
         }
         if isCurrent() {
-            switch try? await write(record) {
-            case .written?: changed = true; recorded(record)
-            case .unchanged?: recorded(record)
+            let outcome = try? await write(record)
+            #if DEBUG
+            if let afterRecordWriteForTesting { await afterRecordWriteForTesting() }
+            #endif
+            // R28X: signed out, another account or offline during the write: its cover (D334) isn't this manager's to
+            // fetch any more (it would go out on the next account's session, into a scope being erased).
+            let stillCurrent = isCurrent()
+            switch outcome {
+            case .written?: changed = true; if stillCurrent { recorded(record) }
+            case .unchanged?: if stillCurrent { recorded(record) }
             case .noDownload?: if isQueued(record) { park(record) }
             case .refused?, nil: break   // refused, or the store can't be written yet (the next read asks again)
             }
